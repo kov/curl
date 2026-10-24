@@ -335,7 +335,10 @@ mod tests {
         fn bind_to_device(&self, _: &[u8]) -> std::io::Result<()> {
             unreachable!()
         }
-        fn connect(&self, _: std::net::SocketAddr) -> std::io::Result<crate::conn::io::Connect> {
+        fn connect(
+            &self,
+            _: &crate::conn::io::Remote,
+        ) -> std::io::Result<crate::conn::io::Connect> {
             unreachable!()
         }
         fn recv(&self, _: &mut [u8]) -> std::io::Result<Recv> {

@@ -68,7 +68,7 @@ witness: curl-sys-abi handle_tests::limits_are_checked_as_in_c
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::unresolved_and_immediate_failures
 --- old
-        trace_trying(cx, remote);
+        trace_trying(cx, &remote);
         let fd = socket.key().get();
 --- new
         let fd = socket.key().get();

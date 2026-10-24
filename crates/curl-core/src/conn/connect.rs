@@ -24,7 +24,8 @@ use super::chain::SetupPoint;
 use super::dns::DnsCache;
 use super::dns::{Answer, Lookup, Names};
 use super::io::{
-    Closer, Connect, Events, Family, Net, ResolveFailure, Sock, Socket, SocketOption, SocketPoll,
+    Closer, Connect, Events, Family, Net, Remote, ResolveFailure, Sock, Socket, SocketOption,
+    SocketPoll, UnixPeer,
 };
 use super::layer::{LayerAnswer, LayerCx, LayerQuery};
 use super::shutdown::ConnSettings;
@@ -72,11 +73,11 @@ const MAX_REDIALS: u8 = 5;
 /// kept for the connection's first reader.
 #[derive(Debug)]
 pub(crate) struct Dialed {
-    remote: SocketAddr,
+    remote: Remote,
     stream: Stream,
     connected_at: Instant,
     /// The addresses raced to reach the proxy, raced again on a redial.
-    answer: TryArc<Answer>,
+    answer: Addresses,
     /// The destination's addresses, for a SOCKS proxy that is not to
     /// resolve its name, or why there are none.
     target: Option<Result<(TryArc<Answer>, Found), Unresolved>>,
@@ -137,8 +138,8 @@ impl Dialed {
     }
 
     /// The proxy's address, and the connection's end here.
-    pub(crate) fn ends(&self) -> (SocketAddr, Option<SocketAddr>) {
-        (self.remote, self.stream.local_addr())
+    pub(crate) fn ends(&self) -> (Remote, Option<SocketAddr>) {
+        (self.remote.clone(), self.stream.local_addr())
     }
 }
 
@@ -174,7 +175,7 @@ pub(crate) trait ConnCx: LayerCx {
 
     /// A socket for `address`: the application's opener's, which may
     /// change the address, or else the network's (`socket_open`).
-    fn open_socket(&mut self, address: &mut SocketAddr) -> Opened;
+    fn open_socket(&mut self, address: &mut Remote) -> Opened;
 
     /// The socket set by the application's configurer, if it has one,
     /// before it connects.
@@ -258,9 +259,9 @@ impl ConnCx for Plain<'_> {
         true
     }
 
-    fn open_socket(&mut self, address: &mut SocketAddr) -> Opened {
+    fn open_socket(&mut self, address: &mut Remote) -> Opened {
         Opened {
-            socket: self.net.open(*address),
+            socket: self.net.open(address),
             by_application: false,
         }
     }
@@ -319,11 +320,28 @@ pub(crate) enum Asked {
     Resolver,
 }
 
+/// What a setup's attempts connect to: the addresses a name resolved to,
+/// or the Unix socket the route's first hop is, its one address
+/// (`Curl_unix2addr`). A pointer's size, as the setup's slot holds it.
+#[derive(Clone, Debug)]
+enum Addresses {
+    Resolved(TryArc<Answer>),
+    Unix,
+}
+
+/// An address an attempt is made to.
+enum Candidate {
+    Ip(IpAddr),
+    /// The route's Unix socket.
+    Unix,
+}
+
 /// The attempts to make, over an answer (C's ballers): the families
-/// alternate, IPv6 first, each in the answer's order.
+/// alternate, IPv6 first, each in the answer's order. A Unix socket's one
+/// address is tried once.
 #[derive(Debug)]
 struct Eyeballs {
-    answer: TryArc<Answer>,
+    answer: Addresses,
     /// How many of each family's addresses were tried.
     v6: usize,
     v4: usize,
@@ -334,8 +352,11 @@ struct Eyeballs {
 }
 
 impl Eyeballs {
-    fn new(answer: TryArc<Answer>, ip: IpVersion) -> Eyeballs {
-        let any = !answer.resolved() || ip == IpVersion::Any;
+    fn new(answer: Addresses, ip: IpVersion) -> Eyeballs {
+        let any = match &answer {
+            Addresses::Resolved(a) => !a.resolved() || ip == IpVersion::Any,
+            Addresses::Unix => true,
+        };
         Eyeballs {
             answer,
             v6: 0,
@@ -348,9 +369,12 @@ impl Eyeballs {
 
     /// The `n`th address of IPv6 if `v6`, else of IPv4.
     fn nth(&self, v6: bool, n: usize) -> Option<IpAddr> {
+        let Addresses::Resolved(answer) = &self.answer else {
+            return None;
+        };
         let usable = if v6 { self.use_v6 } else { self.use_v4 };
         let of = |a: &&IpAddr| a.is_ipv6() == v6;
-        self.answer
+        answer
             .addrs()
             .iter()
             .filter(of)
@@ -360,30 +384,41 @@ impl Eyeballs {
     }
 
     /// The address to try next, if one is left (`cf_ip_ballers_run`).
-    fn next(&mut self) -> Option<IpAddr> {
+    fn next(&mut self) -> Option<Candidate> {
+        if let Addresses::Unix = self.answer {
+            // Counted among IPv4's, as C's family is not IPv6's.
+            let left = self.v4 == 0;
+            self.v4 = 1;
+            return left.then_some(Candidate::Unix);
+        }
         if (self.last_v4 || self.nth(false, self.v4).is_none())
             && let Some(a) = self.nth(true, self.v6)
         {
             self.v6 += 1;
             self.last_v4 = false;
-            return Some(a);
+            return Some(Candidate::Ip(a));
         }
         let a = self.nth(false, self.v4)?;
         self.v4 += 1;
         self.last_v4 = true;
-        Some(a)
+        Some(Candidate::Ip(a))
     }
 
     /// Whether an address is left to try.
     fn more(&self) -> bool {
-        self.nth(true, self.v6).is_some() || self.nth(false, self.v4).is_some()
+        match &self.answer {
+            Addresses::Unix => self.v4 == 0,
+            Addresses::Resolved(_) => {
+                self.nth(true, self.v6).is_some() || self.nth(false, self.v4).is_some()
+            }
+        }
     }
 }
 
 /// A socket connecting to one address.
 #[derive(Debug)]
 struct Attempt {
-    remote: SocketAddr,
+    remote: Remote,
     socket: Sock,
 }
 
@@ -411,7 +446,7 @@ pub(crate) enum Progress {
             not(test),
             expect(dead_code, reason = "the race's tests tell the families by it")
         )]
-        remote: SocketAddr,
+        remote: Remote,
         at_once: bool,
         until: Option<Instant>,
     },
@@ -455,6 +490,9 @@ pub(crate) enum Unresolved {
     /// Only IPv6 addresses are allowed, and IPv6 does not work here: no
     /// resolver is asked (`can_resolve_dns_queries`).
     NoIpv6,
+    /// A Unix socket's path is too long for its address
+    /// (`Curl_unix2addr`'s `CURLE_TOO_LARGE`).
+    UnixPathTooLong,
 }
 
 impl ConnectMachine {
@@ -535,7 +573,10 @@ impl ConnectMachine {
     pub(crate) fn answer(&self) -> Option<&TryArc<Answer>> {
         match &self.stage {
             Stage::Resolving | Stage::Dialed(_) => None,
-            Stage::Racing(r) => Some(&r.eyeballs.answer),
+            Stage::Racing(r) => match &r.eyeballs.answer {
+                Addresses::Resolved(answer) => Some(answer),
+                Addresses::Unix => None,
+            },
         }
     }
 
@@ -560,9 +601,9 @@ impl ConnectMachine {
     /// What a setup that fails keeps of its connection to the first hop,
     /// if it made one (`Curl_conn_report_failed`): its ends, and when it
     /// connected. Attempts still racing have nothing to keep.
-    pub(crate) fn partly_made(&self) -> Option<(SocketAddr, Option<SocketAddr>, Instant)> {
+    pub(crate) fn partly_made(&self) -> Option<(Remote, Option<SocketAddr>, Instant)> {
         match &self.stage {
-            Stage::Dialed(d) => Some((d.remote, d.stream.local_addr(), d.connected_at)),
+            Stage::Dialed(d) => Some((d.remote.clone(), d.stream.local_addr(), d.connected_at)),
             Stage::Resolving | Stage::Racing(_) => None,
         }
     }
@@ -615,7 +656,7 @@ impl ConnectMachine {
             cx.of(Component::HttpProxy, format_args!("destroy"));
             cx.of(Component::H1Proxy, format_args!("destroy"));
         }
-        discard(cx, d.stream.into_socket());
+        discard(cx, self.route.socket_component(), d.stream.into_socket());
         self.stage = Stage::Racing(Racing {
             eyeballs: Eyeballs::new(d.answer, self.route.ip),
             attempts: Vec::new(),
@@ -632,9 +673,22 @@ impl ConnectMachine {
     ) -> Result<Drove, ConnectError> {
         let now = cx.now();
         let delay = setup.delay;
+        let component = self.route.socket_component();
         let r = match &mut self.stage {
             Stage::Resolving => {
-                let (answer, found) = self.resolve(cx, setup)?;
+                let (answer, found) = match self.unix_peer() {
+                    // Its one address, made at once (`resolv_unix`).
+                    Some(peer) => {
+                        if peer.path().len() >= curl_os::net::UNIX_PATH_ROOM {
+                            return Err(ConnectError::Unresolved(Unresolved::UnixPathTooLong));
+                        }
+                        (Addresses::Unix, Found::Resolved(Asked::Shortcut))
+                    }
+                    None => {
+                        let (answer, found) = self.resolve(cx, setup)?;
+                        (Addresses::Resolved(answer), found)
+                    }
+                };
                 let eyeballs = Eyeballs::new(answer, self.route.ip);
                 if !eyeballs.more() {
                     return Err(ConnectError::Unresolved(Unresolved::NoAddress(found)));
@@ -651,11 +705,11 @@ impl ConnectMachine {
         };
         // A running attempt that connected wins; one that failed is
         // dropped (`cf_ip_ballers_run`).
-        match r.check(cx) {
+        match r.check(cx, component) {
             Checked::Pending => {}
             Checked::Won(i) => return self.won(cx, setup, i, now),
             Checked::Failed(i, error) => {
-                let failure = r.attempts.remove(i).fail(cx, error)?;
+                let failure = r.attempts.remove(i).fail(cx, component, error)?;
                 return r
                     .failed(failure, ErrorKind::CouldntConnect)
                     .map(|p| Drove::Connecting(self, p));
@@ -679,7 +733,7 @@ impl ConnectMachine {
         if r.attempts.len() == MAX_ATTEMPTS {
             // The oldest makes room (`cf_ip_ballers_prune`).
             let oldest = r.attempts.remove(0);
-            discard(cx, oldest.socket);
+            discard(cx, component, oldest.socket);
             cx.of(
                 Component::HappyEyeballs,
                 format_args!("discarding oldest attempt to keep limit"),
@@ -688,10 +742,15 @@ impl ConnectMachine {
         if r.attempts.try_reserve(1).is_err() {
             return Err(ConnectError::OutOfMemory);
         }
-        let ip = r.eyeballs.next().expect("an address is left");
+        let candidate = r.eyeballs.next().expect("an address is left");
+        // A Unix socket's family is not IPv4's either.
         let (which, v) = (
             if first { "first" } else { "next" },
-            if ip.is_ipv4() { 4 } else { 6 },
+            if matches!(candidate, Candidate::Ip(IpAddr::V4(_))) {
+                4
+            } else {
+                6
+            },
         );
         cx.of(
             Component::HappyEyeballs,
@@ -701,17 +760,25 @@ impl ConnectMachine {
         // The attempts running are checked again before the new one's
         // first connect (`goto evaluate`): one connecting now wins before
         // it is made, and one failing now is dropped as it is made.
-        match r.check(cx) {
+        match r.check(cx, component) {
             Checked::Pending => {}
             Checked::Won(i) => return self.won(cx, setup, i, now),
             Checked::Failed(i, error) => {
                 // Traced; whatever the new attempt comes to supersedes it.
-                let superseded = r.attempts.remove(i).fail(cx, error)?;
+                let superseded = r.attempts.remove(i).fail(cx, component, error)?;
                 drop(superseded);
             }
         }
-        let (mut remote, scope_found) =
-            address(ip, self.route.destination(), setup.scope, cx.net());
+        let (mut remote, scope_found) = match candidate {
+            Candidate::Ip(ip) => {
+                let (at, found) = address(ip, self.route.destination(), setup.scope, cx.net());
+                (Remote::Inet(at), found)
+            }
+            Candidate::Unix => {
+                let peer = self.unix_peer().expect("a route to a Unix socket");
+                (Remote::Unix(peer), None)
+            }
+        };
         if let Some(scope) = scope_found {
             cx.info(format_args!(
                 "determined scope_id={scope} for link-local address from local interface"
@@ -730,9 +797,13 @@ impl ConnectMachine {
                 return self.not_opened(cx, None, ErrorKind::CouldntConnect, none);
             }
         };
-        trace_trying(cx, remote);
+        trace_trying(cx, &remote);
         let fd = socket.key().get();
-        set_up(cx, &*socket, setup.socket);
+        // Only TCP's are set (`is_tcp`).
+        let unix = matches!(remote, Remote::Unix(_));
+        if !unix {
+            set_up(cx, &*socket, setup.socket);
+        }
         let connected = match cx.configure_socket(&*socket) {
             Configured::Ok => false,
             Configured::AlreadyConnected => true,
@@ -740,24 +811,24 @@ impl ConnectMachine {
                 cx.net().close(Sock::new(socket, self.closer.clone()));
                 let none = io::Error::from_raw_os_error(0);
                 let kind = ErrorKind::AbortedByCallback;
-                return self.not_opened(cx, Some(remote), kind, none);
+                return self.not_opened(cx, Some(&remote), kind, none);
             }
         };
         // The local end bound, as the route says, for the address's
-        // family (`bindlocal`); a failure closes the socket, and one for
-        // the family alone lets the next address be tried.
-        if let Some(local) = self.route.local.clone() {
+        // family, TCP's alone (`bindlocal`); a failure closes the socket,
+        // and one for the family alone lets the next address be tried.
+        if let (Some(local), Remote::Inet(at)) = (self.route.local.clone(), &remote) {
             let scope = setup
                 .scope
                 .or(self.route.destination().scope())
                 .map_or(0, NonZeroU32::get);
-            if let Err(failed) = bind_local(cx, &*socket, remote, &local, scope, setup) {
+            if let Err(failed) = bind_local(cx, &*socket, *at, &local, scope, setup) {
                 cx.net().close(Sock::new(socket, self.closer.clone()));
                 if failed == BindFailed::OutOfMemory {
                     return Err(ConnectError::OutOfMemory);
                 }
                 let none = io::Error::from_raw_os_error(0);
-                return self.not_opened(cx, Some(remote), failed.kind(), none);
+                return self.not_opened(cx, Some(&remote), failed.kind(), none);
             }
         }
         if opened.by_application
@@ -765,12 +836,9 @@ impl ConnectMachine {
         {
             cx.net().close(Sock::new(socket, self.closer.clone()));
             let kind = ErrorKind::UnsupportedProtocol;
-            return self.not_opened(cx, Some(remote), kind, error);
+            return self.not_opened(cx, Some(&remote), kind, error);
         }
-        cx.of(
-            Component::Tcp,
-            format_args!("cf_socket_open() -> 0, fd={fd}"),
-        );
+        cx.of(component, format_args!("cf_socket_open() -> 0, fd={fd}"));
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("an attempt is made in a race");
         };
@@ -784,24 +852,27 @@ impl ConnectMachine {
             let i = r.attempts.len() - 1;
             return self.won(cx, setup, i, now);
         }
-        if setup.socket.fastopen && socket.set(SocketOption::FastOpenConnect).is_err() {
+        if !unix && setup.socket.fastopen && socket.set(SocketOption::FastOpenConnect).is_err() {
             cx.of(
                 Component::Tcp,
                 format_args!("Failed to enable TCP Fast Open on fd {fd}"),
             );
         }
-        let connect = socket.connect(remote);
+        let connect = socket.connect(&remote);
         let local = socket.local_addr().ok();
         let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
         cx.of(
-            Component::Tcp,
+            component,
             format_args!("local address {lip} port {lport}..."),
         );
         let socket = Sock::new(socket, self.closer.clone());
         match connect {
             Ok(connect) => {
                 r.attempts
-                    .try_push(Attempt { remote, socket })
+                    .try_push(Attempt {
+                        remote: remote.clone(),
+                        socket,
+                    })
                     .expect("reserved");
                 let tried = Progress::Trying {
                     remote,
@@ -815,17 +886,14 @@ impl ConnectMachine {
                 // never got a local address (`cf_tcp_connect`).
                 cx.socket_failed(&error);
                 let why = OsError(&error);
-                cx.info(format_args!(
-                    "Immediate connect fail for {}: {why}",
-                    remote.ip()
-                ));
+                let rip = remote.shown_ip();
+                cx.info(format_args!("Immediate connect fail for {rip}: {why}"));
                 cx.net().close(socket);
                 cx.info(format_args!(
-                    "connect to {} port {} from {lip} port {lport} failed: {why}",
-                    remote.ip(),
+                    "connect to {rip} port {} from {lip} port {lport} failed: {why}",
                     remote.port()
                 ));
-                cx.of(Component::Tcp, format_args!("destroy"));
+                cx.of(component, format_args!("destroy"));
                 r.failed(error, ErrorKind::CouldntConnect)
                     .map(|p| Drove::Connecting(self, p))
             }
@@ -840,21 +908,25 @@ impl ConnectMachine {
     fn not_opened(
         mut self,
         cx: &mut dyn ConnCx,
-        remote: Option<SocketAddr>,
+        remote: Option<&Remote>,
         kind: ErrorKind,
         error: io::Error,
     ) -> Result<Drove, ConnectError> {
         let code = crate::trace::Code(Err(kind));
-        cx.of(
-            Component::Tcp,
-            format_args!("cf_socket_open() -> {code}, fd=-1"),
-        );
-        let (rip, rport) = (Ip(remote.map(|r| r.ip())), remote.map_or(0, |r| r.port()));
-        cx.info(format_args!(
-            "connect to {rip} port {rport} from  port 0 failed: {}",
-            OsError(&error)
-        ));
-        cx.of(Component::Tcp, format_args!("destroy"));
+        let component = self.route.socket_component();
+        cx.of(component, format_args!("cf_socket_open() -> {code}, fd=-1"));
+        let rport = remote.map_or(0, Remote::port);
+        let why = OsError(&error);
+        match remote {
+            Some(remote) => cx.info(format_args!(
+                "connect to {} port {rport} from  port 0 failed: {why}",
+                remote.shown_ip()
+            )),
+            None => cx.info(format_args!(
+                "connect to  port {rport} from  port 0 failed: {why}"
+            )),
+        }
+        cx.of(component, format_args!("destroy"));
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("an attempt is made in a race");
         };
@@ -878,8 +950,9 @@ impl ConnectMachine {
             format_args!("connect attempt #{i} successful"),
         );
         let won = r.attempts.remove(i);
+        let component = self.route.socket_component();
         for a in r.attempts.drain(..) {
-            discard(cx, a.socket);
+            discard(cx, component, a.socket);
         }
         // Whatever the attempts said is let go (`cf_ip_happy_connect`).
         cx.reset_fail();
@@ -924,7 +997,14 @@ impl ConnectMachine {
             stream.layers_mut().push(layer).expect("a test's memory");
         }
         let conn = Self::conn(made, stream, won.remote, now);
+
         Ok(Drove::Established(conn))
+    }
+
+    /// The Unix socket the first hop is at, if it is one.
+    fn unix_peer(&self) -> Option<UnixPeer> {
+        let peer = self.route.destination_shared();
+        peer.is_unix().then(|| UnixPeer::of(peer.clone()))
     }
 
     /// The peer's answer (`hostip_resolv`): what the cache keeps, or what
@@ -967,7 +1047,7 @@ impl ConnectMachine {
     fn conn(
         made: (ConnNumber, Tcp, Instant, ConnSettings),
         stream: Stream,
-        remote: SocketAddr,
+        remote: Remote,
         at: Instant,
     ) -> Conn {
         let (number, route, created, settings) = made;
@@ -1011,7 +1091,7 @@ impl Racing {
     /// Each running attempt's socket checked for its connect, oldest
     /// first, as `cf_tcp_connect` checks it (`SOCKET_WRITABLE(sock, 0)`):
     /// the first decided ends the check.
-    fn check(&self, cx: &mut dyn ConnCx) -> Checked {
+    fn check(&self, cx: &mut dyn ConnCx, component: Component) -> Checked {
         for (i, a) in self.attempts.iter().enumerate() {
             let socket = a.socket.socket();
             let fd = socket.key().get();
@@ -1021,7 +1101,7 @@ impl Racing {
                 Err(error) => return Checked::Failed(i, error),
             };
             if revents.is_empty() {
-                cx.of(Component::Tcp, format_args!("not connected yet on fd={fd}"));
+                cx.of(component, format_args!("not connected yet on fd={fd}"));
                 continue;
             }
             // Writable alone, the connect is decided by the socket's
@@ -1030,11 +1110,11 @@ impl Racing {
                 .into_iter()
                 .any(|e| revents.contains(e));
             if broken {
-                cx.of(Component::Tcp, format_args!("poll/select error on fd={fd}"));
+                cx.of(component, format_args!("poll/select error on fd={fd}"));
             }
             return match socket.take_error() {
                 Ok(None) if !broken => {
-                    cx.of(Component::Tcp, format_args!("connected on fd={fd}"));
+                    cx.of(component, format_args!("connected on fd={fd}"));
                     Checked::Won(i)
                 }
                 // C fails it with whatever error the socket says, none
@@ -1076,7 +1156,12 @@ impl Attempt {
     /// The attempt failed with `error`: its socket is closed, its local
     /// address read first, as C reads it for the trace, and the failure
     /// traced as the attempt goes.
-    fn fail(self, cx: &mut dyn ConnCx, error: io::Error) -> Result<io::Error, ConnectError> {
+    fn fail(
+        self,
+        cx: &mut dyn ConnCx,
+        component: Component,
+        error: io::Error,
+    ) -> Result<io::Error, ConnectError> {
         let local = self.socket.socket().local_addr().ok();
         cx.net().close(self.socket);
         if error.kind() == io::ErrorKind::OutOfMemory {
@@ -1085,37 +1170,38 @@ impl Attempt {
         cx.socket_failed(&error);
         let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
         let why = OsError(&error);
-        let remote = self.remote;
+        let remote = &self.remote;
         cx.info(format_args!(
             "connect to {} port {} from {lip} port {lport} failed: {why}",
-            remote.ip(),
+            remote.shown_ip(),
             remote.port()
         ));
-        cx.of(Component::Tcp, format_args!("destroy"));
+        cx.of(component, format_args!("destroy"));
         Ok(error)
     }
 }
 
 /// A socket whose filter goes, still open (`cf_socket_destroy`).
-fn discard(cx: &mut dyn ConnCx, socket: Sock) {
+fn discard(cx: &mut dyn ConnCx, component: Component, socket: Sock) {
     let fd = socket.key().get();
-    cx.of(Component::Tcp, format_args!("destroy"));
-    cx.of(Component::Tcp, format_args!("cf_socket_close, fd={fd}"));
+    cx.of(component, format_args!("destroy"));
+    cx.of(component, format_args!("cf_socket_close, fd={fd}"));
     cx.net().close(socket);
 }
 
 /// An attempt to `remote` has its socket (`cf_socket_open`), with the
 /// scope it has.
-fn trace_trying(cx: &mut dyn ConnCx, remote: SocketAddr) {
+fn trace_trying(cx: &mut dyn ConnCx, remote: &Remote) {
     match remote {
-        SocketAddr::V4(_) => cx.info(format_args!("  Trying {remote}...")),
-        SocketAddr::V6(v6) if v6.scope_id() != 0 => {
+        Remote::Inet(remote @ SocketAddr::V4(_)) => cx.info(format_args!("  Trying {remote}...")),
+        Remote::Inet(SocketAddr::V6(v6)) if v6.scope_id() != 0 => {
             let (ip, port, scope) = (v6.ip(), v6.port(), v6.scope_id());
             cx.info(format_args!("  Trying [{ip}]:{port} scope_id={scope}..."));
         }
-        SocketAddr::V6(v6) => {
+        Remote::Inet(SocketAddr::V6(v6)) => {
             cx.info(format_args!("  Trying [{}]:{}...", v6.ip(), v6.port()));
         }
+        Remote::Unix(_) => cx.info(format_args!("  Trying {}:0...", remote.shown_ip())),
     }
 }
 
@@ -1386,7 +1472,9 @@ mod tests {
         );
         m.stage = Stage::Racing(Racing {
             eyeballs: Eyeballs::new(
-                TryArc::try_new(Answer::new(b"abc.test", addrs).unwrap()).unwrap(),
+                Addresses::Resolved(
+                    TryArc::try_new(Answer::new(b"abc.test", addrs).unwrap()).unwrap(),
+                ),
                 ip,
             ),
             attempts: Vec::new(),
@@ -1422,13 +1510,17 @@ mod tests {
                     raced.most_running = raced.most_running.max(m.sockets().count());
                     match progress {
                         Progress::Trying {
-                            remote: SocketAddr::V4(_),
+                            remote: Remote::Inet(SocketAddr::V4(_)),
                             ..
                         } => raced.v4_starts.push(ms),
                         Progress::Trying {
-                            remote: SocketAddr::V6(_),
+                            remote: Remote::Inet(SocketAddr::V6(_)),
                             ..
                         } => raced.v6_starts.push(ms),
+                        Progress::Trying {
+                            remote: Remote::Unix(_),
+                            ..
+                        } => unreachable!("no Unix socket"),
                         Progress::Failed => {}
                         Progress::Waiting { .. } => clock.advance(Duration::from_millis(1)),
                         Progress::Resolved(_) => unreachable!("resolved already"),
@@ -1503,7 +1595,7 @@ mod tests {
                 Drove::Established(conn) => break conn,
             }
         };
-        assert_eq!(conn.remote, Some(up));
+        assert_eq!(conn.remote, Some(Remote::Inet(up)));
         assert_eq!(net.open_sockets(), 1, "the winner's alone");
         let Transport::Tcp(stream) = conn.transport else {
             panic!("over the network");
@@ -1610,8 +1702,19 @@ mod tests {
     fn eyeballs_alternate_the_families() {
         let ip = |s: &str| s.parse::<IpAddr>().unwrap();
         let addrs = ["1.1.1.1", "::1", "2.2.2.2", "3.3.3.3", "::2"].map(ip);
-        let answer = || TryArc::try_new(Answer::new(b"a.test", addrs.to_vec()).unwrap()).unwrap();
-        let order = |mut e: Eyeballs| std::iter::from_fn(move || e.next()).collect::<Vec<_>>();
+        let answer = || {
+            Addresses::Resolved(
+                TryArc::try_new(Answer::new(b"a.test", addrs.to_vec()).unwrap()).unwrap(),
+            )
+        };
+        let order = |mut e: Eyeballs| {
+            std::iter::from_fn(move || e.next())
+                .map(|c| match c {
+                    Candidate::Ip(ip) => ip,
+                    Candidate::Unix => panic!("an answer has addresses"),
+                })
+                .collect::<Vec<_>>()
+        };
         let all = ["::1", "1.1.1.1", "::2", "2.2.2.2", "3.3.3.3"].map(ip);
         assert_eq!(order(Eyeballs::new(answer(), IpVersion::Any)), all);
         assert_eq!(
@@ -1622,8 +1725,9 @@ mod tests {
             order(Eyeballs::new(answer(), IpVersion::V6)),
             ["::1", "::2"].map(ip)
         );
-        let literal =
-            TryArc::try_new(Answer::new(b"1.1.1.1", vec![ip("1.1.1.1")]).unwrap()).unwrap();
+        let literal = Addresses::Resolved(
+            TryArc::try_new(Answer::new(b"1.1.1.1", vec![ip("1.1.1.1")]).unwrap()).unwrap(),
+        );
         assert_eq!(
             order(Eyeballs::new(literal, IpVersion::V6)),
             [ip("1.1.1.1")]

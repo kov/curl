@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use curl_core::conn::ProxyError;
+use curl_core::conn::io::Remote;
 use curl_core::options::AuthMethods;
 use curl_core::report::{ResponseVersion, TransferReport};
 use curl_core::version::Protocol;
@@ -263,10 +264,15 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
             None => Value::Ptr(core::ptr::null_mut()),
         },
         // Empty, and ports of -1, before any connection.
-        ffi::CURLINFO_PRIMARY_IP => match r.primary() {
-            Some(ends) => string(
-                ip_text(ends.remote.ip()).and_then(|t| kept(easy, |i| &mut i.primary_ip, &t)),
-            ),
+        ffi::CURLINFO_PRIMARY_IP => match r.primary().map(|ends| &ends.remote) {
+            Some(Remote::Inet(remote)) => {
+                string(ip_text(remote.ip()).and_then(|t| kept(easy, |i| &mut i.primary_ip, &t)))
+            }
+            // A Unix socket's path.
+            Some(remote) => {
+                let path = remote.unix_path().unwrap_or_default();
+                string(kept(easy, |i| &mut i.primary_ip, path))
+            }
             None => string(kept(easy, |i| &mut i.primary_ip, b"")),
         },
         ffi::CURLINFO_LOCAL_IP => match r.primary().and_then(|ends| ends.local) {
@@ -275,13 +281,17 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
             }
             None => string(kept(easy, |i| &mut i.local_ip, b"")),
         },
-        ffi::CURLINFO_PRIMARY_PORT => Value::Long(
-            r.primary()
-                .map_or(-1, |ends| c_long::from(ends.remote.port())),
-        ),
-        ffi::CURLINFO_LOCAL_PORT => Value::Long(r.primary().map_or(-1, |ends| {
-            ends.local.map_or(0, |local| c_long::from(local.port()))
-        })),
+        // A Unix socket has no ports (`CUR_IP_QUAD_HAS_PORTS`).
+        ffi::CURLINFO_PRIMARY_PORT => Value::Long(match r.primary().map(|ends| &ends.remote) {
+            Some(Remote::Inet(remote)) => c_long::from(remote.port()),
+            Some(Remote::Unix(_)) | None => -1,
+        }),
+        ffi::CURLINFO_LOCAL_PORT => Value::Long(match r.primary() {
+            Some(ends) if matches!(ends.remote, Remote::Inet(_)) => {
+                ends.local.map_or(0, |local| c_long::from(local.port()))
+            }
+            Some(_) | None => -1,
+        }),
         // The handle's, empty before any chain is reported.
         ffi::CURLINFO_CERTINFO => {
             let mut infos = easy.string_infos.borrow_mut();

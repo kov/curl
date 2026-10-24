@@ -379,7 +379,10 @@ fn a_handshake_cut_short_keeps_the_connection_s_ends_and_time() {
     assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
     let report = ran.easy.report();
     let ends = report.primary().expect("the ends kept");
-    assert_eq!(ends.remote, SocketAddr::from(([127, 0, 0, 1], PORT)));
+    assert_eq!(
+        ends.remote,
+        crate::conn::io::Remote::Inet(SocketAddr::from(([127, 0, 0, 1], PORT)))
+    );
     assert!(ends.local.is_some());
     assert_eq!(report.timings().connect(), accepted);
 }

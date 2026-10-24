@@ -6,7 +6,6 @@
 
 use std::fmt;
 use std::io;
-use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 
@@ -206,15 +205,15 @@ pub trait HeaderHandler: Send + Sync {
 }
 
 /// Opens the sockets a transfer connects over, in place of the system
-/// (`CURLOPT_OPENSOCKETFUNCTION`): a TCP socket for `address`'s family,
-/// not connected yet, which is made nonblocking once set. It may change
-/// `address`, which is then the one connected to. An error fails the
-/// attempt, as a socket the system could not open does.
+/// (`CURLOPT_OPENSOCKETFUNCTION`): a stream socket for `address`'s
+/// family, TCP or Unix, not connected yet, which is made nonblocking once
+/// set. It may change `address`, which is then the one connected to. An
+/// error fails the attempt, as a socket the system could not open does.
 pub trait SocketOpener: Send + Sync {
     fn open(
         &self,
         cx: &mut TransferCx<'_>,
-        address: &mut SocketAddr,
+        address: &mut crate::conn::io::Remote,
     ) -> io::Result<Box<dyn Socket>>;
 }
 

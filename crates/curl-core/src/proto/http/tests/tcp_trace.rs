@@ -9,6 +9,7 @@ use std::net::IpAddr;
 
 use super::*;
 use crate::components::Components;
+use crate::conn::io::Remote;
 
 /// A handle tracing the socket, the race and the multi.
 fn tracing_tcp() -> Easy {
@@ -358,17 +359,17 @@ impl crate::handler::SocketOpener for Hooks {
     fn open(
         &self,
         _: &mut TransferCx<'_>,
-        address: &mut SocketAddr,
+        address: &mut Remote,
     ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
         if let Some(errno) = self.fail {
             return Err(std::io::Error::from_raw_os_error(errno));
         }
         if let Some(to) = self.to {
-            *address = to;
+            *address = Remote::Inet(to);
         }
-        let socket = crate::conn::io::Net::open(&mut *self.net.lock().unwrap(), *address)?;
+        let socket = crate::conn::io::Net::open(&mut *self.net.lock().unwrap(), address)?;
         if self.dial {
-            socket.connect(*address)?;
+            socket.connect(address)?;
         }
         Ok(socket)
     }
@@ -441,7 +442,7 @@ fn hooked(peer: Peer, hooks: impl FnOnce(&mut Hooks)) -> Hooked {
         fn open(
             &self,
             cx: &mut TransferCx<'_>,
-            a: &mut SocketAddr,
+            a: &mut Remote,
         ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
             self.0.open(cx, a)
         }
@@ -633,12 +634,13 @@ fn told_by_two_attempts(v6: Option<Peer>, refused: &'static [bool]) -> (Ran, Vec
         fn open(
             &self,
             _: &mut TransferCx<'_>,
-            address: &mut SocketAddr,
+            address: &mut Remote,
         ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
-            if self.1[usize::from(address.is_ipv6())] {
+            let v6 = address.inet().is_some_and(|a| a.is_ipv6());
+            if self.1[usize::from(v6)] {
                 return Err(std::io::Error::from_raw_os_error(0));
             }
-            crate::conn::io::Net::open(&mut *self.0.lock().unwrap(), *address)
+            crate::conn::io::Net::open(&mut *self.0.lock().unwrap(), address)
         }
     }
     #[derive(Clone, Default)]

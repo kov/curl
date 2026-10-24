@@ -186,7 +186,7 @@ fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState,
         format_args!(
             "Opened SOCKS connection from {} port {lport} to {name} port {port} (via {} port {})",
             Ip(lip),
-            remote.ip(),
+            remote.shown_ip(),
             remote.port()
         ),
     );

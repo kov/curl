@@ -9,6 +9,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec, try_format};
+use curl_core::conn::io::Remote;
 use curl_core::error::ErrorKind;
 use curl_core::report::{CertInfo, HeaderStore, Origins, Request, ResponseVersion, TransferReport};
 use curl_core::url::{GetOptions, ParseOptions, Part, Url};
@@ -766,16 +767,23 @@ fn value<'a>(var: Var, facts: &Facts<'a>) -> Value<'a> {
             Some(local) => Value::Ip(local.ip()),
             None => Value::Bytes(b""),
         },
+        // A Unix socket has no ports (`CUR_IP_QUAD_HAS_PORTS`).
         Var::LocalPort => match (debug_time(), r.primary()) {
             (Some(n), _) => number(n),
-            (None, Some(ends)) => Value::Number(ends.local.map_or(0, |l| l.port().into())),
-            (None, None) => Value::Number(-1),
+            (None, Some(ends)) if ends.remote.inet().is_some() => {
+                Value::Number(ends.local.map_or(0, |l| l.port().into()))
+            }
+            (None, _) => Value::Number(-1),
         },
-        Var::RemoteIp => match r.primary() {
-            Some(ends) => Value::Ip(ends.remote.ip()),
+        Var::RemoteIp => match r.primary().map(|ends| &ends.remote) {
+            Some(Remote::Inet(remote)) => Value::Ip(remote.ip()),
+            Some(remote) => Value::Bytes(remote.unix_path().unwrap_or_default()),
             None => Value::Bytes(b""),
         },
-        Var::RemotePort => Value::Number(r.primary().map_or(-1, |ends| ends.remote.port().into())),
+        Var::RemotePort => Value::Number(match r.primary().and_then(|ends| ends.remote.inet()) {
+            Some(remote) => remote.port().into(),
+            None => -1,
+        }),
         Var::NumConnects => Value::Number(r.connects().into()),
         Var::NumRedirects => Value::Number(r.redirects().into()),
         Var::Method => Value::Bytes(facts.method),

@@ -3,7 +3,7 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::tcp_trace::a_losing_attempt_is_closed_as_c_closes_it
 --- old
         // it is made, and one failing now is dropped as it is made.
-        match r.check(cx) {
+        match r.check(cx, component) {
 --- new
         // it is made, and one failing now is dropped as it is made.
         match Checked::Pending {
@@ -17,13 +17,15 @@ witness: curl-core proto::http::tests::tcp_trace::a_losing_attempt_is_closed_as_
             format_args!("connect attempt #{i} successful"),
         );
         let won = r.attempts.remove(i);
+        let component = self.route.socket_component();
         for a in r.attempts.drain(..) {
-            discard(cx, a.socket);
+            discard(cx, component, a.socket);
         }
 --- new
         let won = r.attempts.remove(i);
+        let component = self.route.socket_component();
         for a in r.attempts.drain(..) {
-            discard(cx, a.socket);
+            discard(cx, component, a.socket);
         }
         cx.of(
             Component::HappyEyeballs,
@@ -44,16 +46,16 @@ witness: curl-core proto::http::tests::tcp_trace::a_refused_socket_is_traced_as_
 --- old
         cx.info(format_args!(
             "connect to {} port {} from {lip} port {lport} failed: {why}",
-            remote.ip(),
+            remote.shown_ip(),
             remote.port()
         ));
-        cx.of(Component::Tcp, format_args!("destroy"));
+        cx.of(component, format_args!("destroy"));
         Ok(error)
 --- new
-        cx.of(Component::Tcp, format_args!("destroy"));
+        cx.of(component, format_args!("destroy"));
         cx.info(format_args!(
             "connect to {} port {} from {lip} port {lport} failed: {why}",
-            remote.ip(),
+            remote.shown_ip(),
             remote.port()
         ));
         Ok(error)

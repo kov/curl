@@ -96,7 +96,7 @@ impl Net for Counting {
 
     fn open(
         &mut self,
-        addr: std::net::SocketAddr,
+        addr: &crate::conn::io::Remote,
     ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
         self.0.open(addr)
     }

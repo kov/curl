@@ -13,7 +13,7 @@ use curl_alloc::try_box;
 
 use super::{Connecting, Handshake, OsError, StepCx, TransferState, Wake};
 use crate::conn::Made;
-use crate::conn::io::{Events, Sent};
+use crate::conn::io::{Events, Remote, Sent};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::proto::http1::request::decimal;
@@ -35,13 +35,18 @@ impl Preface {
 
 /// The line for a connection from `local` to `remote`, the first hop's
 /// socket, saying `client` in place of both addresses if given
-/// (`cf_haproxy_date_out_set`). A connection over a Unix socket would
-/// say `PROXY UNKNOWN`; there are none yet.
+/// (`cf_haproxy_date_out_set`). A connection over a Unix socket says
+/// `PROXY UNKNOWN`.
 fn line(
-    remote: SocketAddr,
+    remote: &Remote,
     local: Option<SocketAddr>,
     client: Option<&[u8]>,
 ) -> Result<Vec<u8>, OutOfMemory> {
+    let Remote::Inet(remote) = *remote else {
+        let mut out = Vec::new();
+        out.try_extend_from_slice(b"PROXY UNKNOWN\r\n")?;
+        return Ok(out);
+    };
     // The longest address an IPv6 socket gives, 45 bytes, and more.
     let mut src = [0u8; 64];
     let mut dst = [0u8; 64];
@@ -94,7 +99,7 @@ fn line(
 pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     let (remote, local) = c.lease.dialed().ends();
     let client = cx.easy().options().proxy.haproxy_client_ip.as_deref();
-    let preface = line(remote, local, client)
+    let preface = line(&remote, local, client)
         .and_then(|line| try_box(Handshake::Haproxy(Preface { line, sent: 0 })));
     match preface {
         Ok(h) => {
@@ -117,7 +122,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
     };
     while p.sent < p.line.len() {
         let sent = c.lease.dialed().stream().send(cx, &p.line[p.sent..]);
-        trace::sent(cx, p.line.len() - p.sent, &sent);
+        trace::sent(cx, c.route.socket_component(), p.line.len() - p.sent, &sent);
         match sent {
             Ok(Sent::Bytes(n)) => p.sent += n.get(),
             Ok(Sent::WouldBlock) => return (TransferState::Connecting(c), Wake::Idle),

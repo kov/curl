@@ -97,9 +97,9 @@ witness: curl-core proto::http::tests::tls::https_without_a_tls_library_is_not_s
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_followed_its_answer_first
 --- old
-    let proxy = match choose_proxy(cx, &origin, &scheme, via.is_some() || secured) {
+        match choose_proxy(cx, &origin, &scheme, via.is_some() || secured) {
 --- new
-    let proxy = match choose_proxy(cx, &origin, &scheme, via.is_some()) {
+        match choose_proxy(cx, &origin, &scheme, via.is_some()) {
 
 === https's default port is HTTP's
 file: crates/curl-core/src/proto/http.rs

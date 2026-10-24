@@ -1,0 +1,100 @@
+# Transfers over a Unix socket (CURLOPT_UNIX_SOCKET_PATH,
+# CURLOPT_ABSTRACT_UNIX_SOCKET, a SOCKS proxy at localhost with a path).
+
+=== a Unix socket's path is compared in any case
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::unix_sockets_are_told_apart_as_c_tells_them
+--- old
+                PeerAt::Unix | PeerAt::AbstractUnix => self.host == other.host,
+--- new
+                PeerAt::Unix | PeerAt::AbstractUnix => self.host.eq_ignore_ascii_case(&other.host),
+
+=== a Unix socket is the same as a host of its path
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::unix_sockets_are_told_apart_as_c_tells_them
+--- old
+        *scheme == other.scheme
+            && *port == other.port
+            && *at == other.at
+--- new
+        *scheme == other.scheme
+            && *port == other.port
+            && (*at == other.at || *at != PeerAt::AbstractUnix)
+
+=== a proxy is gone through over a Unix socket
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::unix_trace::a_proxy_is_not_gone_through_over_a_unix_socket
+--- old
+    let proxy = if over_unix {
+--- new
+    let proxy = if over_unix && false {
+
+=== TCP's options are set on a Unix socket
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::unix_trace::a_unix_socket_is_connected_in_place_of_the_host
+--- old
+        if !unix {
+            set_up(cx, &*socket, setup.socket);
+--- new
+        if !unix || unix {
+            set_up(cx, &*socket, setup.socket);
+
+=== a path filling the address is connected to
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::unix_trace::a_path_too_long_is_not_resolved
+--- old
+                        if peer.path().len() >= curl_os::net::UNIX_PATH_ROOM {
+--- new
+                        if peer.path().len() > curl_os::net::UNIX_PATH_ROOM {
+
+=== a SOCKS proxy at localhost without a path is a Unix socket
+file: crates/curl-core/src/conn/proxy.rs
+witness: curl-core conn::proxy::tests::a_socks_proxy_at_localhost_with_a_path_is_a_unix_socket
+--- old
+        Ok(path) if socks && host.eq_ignore_ascii_case(b"localhost") && path != b"/" => {
+--- new
+        Ok(path) if socks && host.eq_ignore_ascii_case(b"localhost") => {
+
+=== a failure over a Unix socket names it as a host's port
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::unix_trace::a_unix_socket_refused_fails_over_it
+--- old
+            Some(peer) if peer.is_unix() => write!(f, " over unix://{}", Bytes(peer.name())),
+--- new
+            Some(peer) if peer.is_unix() && false => write!(f, " over unix://{}", Bytes(peer.name())),
+
+=== an abstract name shows as its name
+file: crates/curl-core/src/conn/io.rs
+witness: curl-core proto::http::tests::unix_trace::an_abstract_name_shows_as_nothing
+--- old
+            Remote::Unix(u) if u.is_abstract() => Ok(()),
+--- new
+
+=== an empty path is connected to
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::unix_trace::an_empty_path_fails_the_transfer
+--- old
+    if unix.path.is_empty() {
+        return Err(ErrorKind::FailedInit);
+--- new
+    if unix.path.is_empty() && false {
+        return Err(ErrorKind::FailedInit);
+
+=== an abstract name has no zero before it
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::a_unix_address_is_sized_as_c_sizes_it
+features: net
+--- old
+    let at = usize::from(abstract_name);
+    for (to, &b) in un.sun_path[at..].iter_mut().zip(path) {
+--- new
+    let at = usize::from(abstract_name) * 0;
+    for (to, &b) in un.sun_path[at..].iter_mut().zip(path) {
+
+=== an opener is handed a Unix path without its terminator's room
+file: crates/curl-sys-abi/src/sockets.rs
+witness: curl-sys-abi sockets::tests::a_unix_address_is_handed_over_as_c_hands_it
+--- old
+        let len = core::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1;
+--- new
+        let len = core::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len();

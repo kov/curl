@@ -11,7 +11,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
 use crate::conn::chain::{Chain, SetupPoint};
-use crate::conn::io::{Closer, Events, ResolveFailure, SocketKey};
+use crate::conn::io::{Closer, Events, Remote, ResolveFailure, SocketKey};
 use crate::conn::layer::{LayerAnswer, LayerCx, LayerQuery};
 use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
@@ -575,8 +575,9 @@ impl TransferState {
 pub(crate) struct PollsetTrace<T> {
     wants: Wants,
     /// While the setup runs: whether its sockets are connected, a
-    /// handshake under way over the one dialed.
-    setup: Option<bool>,
+    /// handshake under way over the one dialed, and what their filter
+    /// traces as.
+    setup: Option<(bool, Component)>,
     timers: T,
     /// Sending and receiving, paused.
     paused: (bool, bool),
@@ -590,9 +591,10 @@ impl Run {
     ) -> PollsetTrace<impl Iterator<Item = (Instant, TimerKind)> + Clone + use<>> {
         let wants = self.state.pollset(pause).wants();
         let setup = match &self.state {
-            TransferState::Connecting(c) => {
-                Some(matches!(c.lease.reached(), Some(SetupPoint::Dialed(_))))
-            }
+            TransferState::Connecting(c) => Some((
+                matches!(c.lease.reached(), Some(SetupPoint::Dialed(_))),
+                c.route.socket_component(),
+            )),
             _ => None,
         };
         PollsetTrace {
@@ -623,15 +625,15 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
     /// of timers armed, then each timer in the order they fire.
     pub(crate) fn trace<H: Host>(self, cx: &mut StepCx<'_, H>) {
         let wants = self.wants.as_slice();
-        if let Some(dialed) = self.setup {
+        if let Some((dialed, component)) = self.setup {
             for &(key, _) in wants {
                 let fd = key.get();
                 if dialed {
                     let line = format_args!("adjust_pollset, !active, POLLIN fd={fd}");
-                    trace::of(cx, Component::Tcp, line);
+                    trace::of(cx, component, line);
                 } else {
                     let line = format_args!("adjust_pollset, !connected, POLLOUT fd={fd}");
-                    trace::of(cx, Component::Tcp, line);
+                    trace::of(cx, component, line);
                 }
             }
         }
@@ -1684,9 +1686,13 @@ fn connect_once<H: Host>(
     }
     match connected {
         Ok(Connected::Connecting(Progress::Resolved(found))) => {
-            trace_lookup(cx, &c.route, Some(found));
-            if let Found::Stale(asked) | Found::Resolved(asked) = found {
-                trace_resolved(cx, &c.route, Ok(asked));
+            // A Unix socket's address is made, not looked up
+            // (`resolv_unix`).
+            if !c.route.destination().is_unix() {
+                trace_lookup(cx, &c.route, Some(found));
+                if let Found::Stale(asked) | Found::Resolved(asked) = found {
+                    trace_resolved(cx, &c.route, Ok(asked));
+                }
             }
             cx.mark(Timer::NameLookup);
             report_answer(cx, &c);
@@ -1704,7 +1710,7 @@ fn connect_once<H: Host>(
         }
         Ok(Connected::Connecting(Progress::Dialed)) => {
             let (remote, _) = c.lease.dialed().ends();
-            eyeballs_won(cx, &c.route, remote);
+            eyeballs_won(cx, &c.route, &remote);
             (TransferState::Connecting(c), Wake::Again)
         }
         Ok(Connected::Connecting(Progress::Waiting { until })) => {
@@ -1712,7 +1718,7 @@ fn connect_once<H: Host>(
             (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Connected::Established { remote, local, at }) => {
-            eyeballs_won(cx, &c.route, remote);
+            eyeballs_won(cx, &c.route, &remote);
             up(c, cx, remote, local, at, false)
         }
         // A reused connection is up: nothing to trace or time
@@ -1924,11 +1930,11 @@ fn eyeballs_due<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, at: Instant) {
 /// The race's attempt to `remote`, the peer `route` connects to first
 /// or the proxy a handshake goes through, connected: the race is over,
 /// and counted (`cf_ip_happy_connect`).
-fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, remote: SocketAddr) {
+fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, remote: &Remote) {
     let he = Component::HappyEyeballs;
     let (name, ip, port) = (
         Bytes(route.destination().name()),
-        remote.ip(),
+        remote.shown_ip(),
         remote.port(),
     );
     trace::of(
@@ -1975,7 +1981,7 @@ pub(crate) fn trace_timer<H: Host>(
 /// connection's ends and when it connected (`Curl_conn_report_failed`).
 fn report_failed<H: Host>(
     cx: &mut StepCx<'_, H>,
-    partly: Option<(SocketAddr, Option<SocketAddr>, Instant)>,
+    partly: Option<(Remote, Option<SocketAddr>, Instant)>,
 ) {
     let Some((remote, local, at)) = partly else {
         return;
@@ -1990,7 +1996,7 @@ fn report_failed<H: Host>(
 fn up<H: Host>(
     c: Connecting,
     cx: &mut StepCx<'_, H>,
-    remote: SocketAddr,
+    remote: Remote,
     local: Option<SocketAddr>,
     at: Instant,
     preface: bool,
@@ -2004,7 +2010,6 @@ fn up<H: Host>(
     }
     let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
     mstate::marked(cx, Timer::Connect, marked);
-    cx.report_mut().set_primary(Ends { remote, local });
     // `CURL_CONN_HOST_DISPNAME`.
     let host = Bytes(c.route.destination().shown());
     let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
@@ -2013,10 +2018,11 @@ fn up<H: Host>(
         cx,
         format_args!(
             "Established connection to {host} ({} port {}) from {lip} port {lport} ",
-            remote.ip(),
+            remote.shown_ip(),
             remote.port()
         ),
     );
+    cx.report_mut().set_primary(Ends { remote, local });
     // The setup filters go once the chain is connected
     // (`Curl_conn_remove_setup_filters`).
     let connected = Chain::connected(&c.route, preface);
@@ -2045,6 +2051,19 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
         ConnectError::Unresolved(why) => {
             match why {
                 Unresolved::NoIpv6 => return no_ipv6(cx, route, proxy.is_some()),
+                Unresolved::UnixPathTooLong => {
+                    // `resolv_unix`, then the name's filter, which says
+                    // the path alone.
+                    let path = Bytes(first.name());
+                    let kind = ErrorKind::CouldntResolveHost;
+                    let kind = trace::fail(
+                        cx,
+                        kind,
+                        format_args!("Unix socket path too long: '{path}'"),
+                    );
+                    trace::info(cx, format_args!("Could not resolve: {path}"));
+                    return kind;
+                }
                 Unresolved::Negative => trace_lookup(cx, route, None),
                 Unresolved::Resolver(_) => {
                     trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver)));
@@ -2147,6 +2166,7 @@ struct Via<'a>(Option<&'a Peer>);
 impl std::fmt::Display for Via<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
+            Some(peer) if peer.is_unix() => write!(f, " over unix://{}", Bytes(peer.name())),
             Some(peer) => write!(f, " via {}:{}", Bytes(peer.name()), peer.port()),
             None => Ok(()),
         }
@@ -2774,14 +2794,29 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     if run.first.is_none() {
         run.first = Some(origin.clone());
     }
-    let via = match connect_to(cx, &origin) {
-        Ok(via) => via,
+    // A Unix socket is connected to in place of the origin's host, and
+    // of any connect-to entry, and no proxy is gone through
+    // (`url_set_conn_origin_etc`).
+    let unix = match unix_peer(cx, &origin) {
+        Ok(unix) => unix,
         Err(e) => return TransferState::Init.fail(e),
     };
+    let over_unix = unix.is_some();
+    let via = match unix {
+        Some(peer) => Some(peer),
+        None => match connect_to(cx, &origin) {
+            Ok(via) => via,
+            Err(e) => return TransferState::Init.fail(e),
+        },
+    };
     let secured = proto.secured();
-    let proxy = match choose_proxy(cx, &origin, &scheme, via.is_some() || secured) {
-        Ok(proxy) => proxy,
-        Err(e) => return TransferState::Init.fail(e),
+    let proxy = if over_unix {
+        None
+    } else {
+        match choose_proxy(cx, &origin, &scheme, via.is_some() || secured) {
+            Ok(proxy) => proxy,
+            Err(e) => return TransferState::Init.fail(e),
+        }
     };
     // A request a proxy sends on names the whole URL, and the connection
     // is the proxy's (`origin_is_proxy`).
@@ -2831,6 +2866,26 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         local,
     };
     setup(cx, Plan { proto, route })
+}
+
+/// The peer at the Unix socket the options name, if they name one,
+/// spoken to as `origin` is (`Curl_peer_uds_create`): an empty path
+/// fails the transfer, unsaid.
+fn unix_peer<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    origin: &Peer,
+) -> Result<Option<TryArc<Peer>>, ErrorKind> {
+    let Some(unix) = cx.easy().options().sockets.unix.as_ref() else {
+        return Ok(None);
+    };
+    if unix.path.is_empty() {
+        return Err(ErrorKind::FailedInit);
+    }
+    let oom = |OutOfMemory| ErrorKind::OutOfMemory;
+    let mut path = Vec::new();
+    path.try_extend_from_slice(&unix.path).map_err(oom)?;
+    let peer = Peer::unix(origin.scheme(), path, 0, unix.abstract_name);
+    TryArc::try_new(peer).map(Some).map_err(oom)
 }
 
 /// The proxy the transfer to `origin` goes through, if any

@@ -86,7 +86,7 @@ impl Chain {
             Component::HttpProxy | Component::H1Proxy => made.has(Made::TUNNEL),
             Component::Haproxy => made.has(Made::PREFACE),
             Component::Ssl => made.has(Made::TLS),
-            Component::HappyEyeballs | Component::Tcp => true,
+            Component::HappyEyeballs | Component::Tcp | Component::Unix => true,
             _ => false,
         };
         let installed = installed || made.has(Made::TUNNEL);
@@ -137,7 +137,7 @@ impl Chain {
             push(Component::Socks);
         }
         push(Component::HappyEyeballs);
-        push(Component::Tcp);
+        push(route.socket_component());
         chain
     }
 

@@ -1157,8 +1157,9 @@ pub(crate) enum ConnSlot { Connecting(ConnectMachine), Open(Conn), Failed(ConnNu
 
 pub(crate) struct Conn {
     number: ConnNumber, route: Route,
-    transport: Transport,              // Tcp(Stream) | Local; later Unix, Udp
-    remote: Option<SocketAddr>,        // none without a network; the local end is the socket's
+    transport: Transport,              // Tcp(Stream), a Unix socket's too | Local; later Udp
+    remote: Option<Remote>,            // Inet(SocketAddr) | Unix(UnixPeer); none without a
+                                       // network; the local end is the socket's
     created: Instant, connected_at: Instant,
     use_: Use,                         // Leased(n) | Idle { since }
     served: bool,                      // carried a request before (C's bits.reuse)
@@ -1341,6 +1342,16 @@ socket before its connect.
   in turn. A failure closes the socket as one not opened; an address of the other family fails
   the attempt as `CouldntConnect`, letting the next address be tried, any other as
   `InterfaceFailed`.
+- **Unix sockets.** A transfer over the network with `Sockets::unix` set connects to that
+  socket in place of its host (`url_set_conn_origin_etc`): the route's `via` is a `Peer` at it
+  (`PeerAt::Unix` or `AbstractUnix`, the path as its host, compared exactly), no connect-to entry
+  is read and no proxy is chosen. A SOCKS proxy at `localhost` with a path is at the Unix socket
+  of that path (`conn/proxy.rs`). The setup makes the socket's one address rather than resolving
+  (`Addresses::Unix`; a path its address cannot hold fails as `CouldntResolveHost`), and its
+  attempt opens an `AF_UNIX` socket (`Remote::Unix`, which `Net::open`, `Socket::connect`, the
+  opener hook and `Ends` carry) with none of TCP's options or bind; its filter traces as `UNIX`,
+  its address as the path (nothing for an abstract name) at port 0, and the infos give it no
+  ports.
 - Happy-eyeballs parameters are C's: 25 ms AAAA wait, `happy_eyeballs_timeout` attempt delay, at
   most 6 concurrent attempts, IPv6 first then alternating. Unit 2600 is ported before a second
   attempt is implemented.

@@ -5004,6 +5004,7 @@ mod time_condition;
 mod timer_trace;
 mod tls;
 mod tls_hands;
+mod unix_trace;
 mod wait_trace;
 mod write_trace;
 
@@ -5100,7 +5101,10 @@ fn the_report_has_the_media_type_and_the_ends() {
     let report = ran.easy.report();
     assert_eq!(report.content_type(), Some(&b"text/html; charset=x"[..]));
     let ends = report.primary().expect("the connection's ends");
-    assert_eq!(ends.remote, SocketAddr::from(([127, 0, 0, 1], PORT)));
+    assert_eq!(
+        ends.remote,
+        crate::conn::io::Remote::Inet(SocketAddr::from(([127, 0, 0, 1], PORT)))
+    );
     assert!(ends.local.is_some());
     assert!(!report.used_proxy());
 }

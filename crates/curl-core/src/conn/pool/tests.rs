@@ -1,6 +1,6 @@
 use super::*;
 use crate::conn::connect::Plain;
-use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Sent};
+use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Remote, Sent};
 use crate::conn::layer::Silent;
 use crate::conn::{DnsCache, Limit, Scheme, Setup, Tcp};
 
@@ -510,7 +510,7 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
     let tried = connect(&mut lease, &mut net, now).unwrap();
     let to = SocketAddr::from(([127, 0, 0, 1], 1));
     assert!(
-        matches!(tried, Connected::Connecting(Progress::Trying { remote, .. }) if remote == to)
+        matches!(tried, Connected::Connecting(Progress::Trying { remote, .. }) if remote == Remote::Inet(to))
     );
     assert_eq!(socket(&lease), Some(1000), "the attempt's");
     assert!(idle_conn(&pool, id).is_none(), "leased");
@@ -521,7 +521,7 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
     else {
         panic!("{up:?}");
     };
-    assert_eq!((remote, at), (to, now));
+    assert_eq!((remote, at), (Remote::Inet(to), now));
     assert_eq!(local, Some(SocketAddr::from(([127, 0, 0, 1], 40000))));
     assert_eq!(lease.conn().number, ConnNumber(0));
     assert!(matches!(

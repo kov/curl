@@ -176,6 +176,61 @@ pub fn open(addr: SocketAddr, protocol: Protocol, nonblocking: bool) -> io::Resu
     })))
 }
 
+/// Open a close-on-exec Unix stream socket (`AF_UNIX`), nonblocking if
+/// `nonblocking`: not connected yet. It is held as a TCP socket is, its
+/// reads, writes and errors being the same calls; it has no local
+/// address of TCP's families.
+pub fn open_unix(nonblocking: bool) -> io::Result<TcpSocket> {
+    let mut kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+    if nonblocking {
+        kind |= libc::SOCK_NONBLOCK;
+    }
+    // SAFETY: `socket` takes no pointers; a negative result is an error.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, kind, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` was just opened and is owned by nothing else.
+    Ok(TcpSocket(TcpStream::from(unsafe {
+        OwnedFd::from_raw_fd(fd)
+    })))
+}
+
+/// The room a Unix socket's address has for its path, its terminator or,
+/// for an abstract name, the zero before it among it (`sun_path`).
+pub const UNIX_PATH_ROOM: usize = {
+    // SAFETY: all-zero bytes are a valid `sockaddr_un`.
+    let un: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    std::mem::size_of_val(&un.sun_path)
+};
+
+/// The address of the Unix socket at `path`, or of the abstract name
+/// `path` if `abstract_name`, as C writes it (`Curl_unix2addr`): the path
+/// and its terminator, or a zero and the name, without one after. `None`
+/// if it does not fit, or a path holds a zero byte.
+fn unix_address(path: &[u8], abstract_name: bool) -> Option<SockAddr> {
+    if path.len() >= UNIX_PATH_ROOM || (!abstract_name && path.contains(&0)) {
+        return None;
+    }
+    // SAFETY: all-zero bytes are a valid `sockaddr_un`.
+    let mut un: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    un.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    let at = usize::from(abstract_name);
+    for (to, &b) in un.sun_path[at..].iter_mut().zip(path) {
+        *to = b as libc::c_char;
+    }
+    let len = std::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1;
+    // SAFETY: all-zero bytes are a valid `sockaddr_storage`.
+    let mut raw: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    // SAFETY: `sockaddr_storage` is large enough and aligned for any
+    // socket address, `sockaddr_un` among them.
+    unsafe { (&raw mut raw).cast::<libc::sockaddr_un>().write(un) };
+    Some(SockAddr {
+        raw,
+        len: libc::socklen_t::try_from(len).expect("a Unix socket address length fits"),
+    })
+}
+
 /// The socket `fd`, which an application opened and gives up: closing
 /// the `TcpSocket` closes it.
 ///
@@ -506,6 +561,28 @@ impl TcpSocket {
         let mut storage = SockAddr::from(addr);
         // SAFETY: `storage` holds a sockaddr of `addr`'s family, valid for
         // the length given, and lives through the call; the socket is open.
+        let rc = unsafe {
+            libc::connect(
+                self.fd().as_raw_fd(),
+                (&raw mut storage.raw).cast::<libc::sockaddr>(),
+                storage.len,
+            )
+        };
+        if rc == 0 {
+            return Ok(Connect::Done);
+        }
+        connect_failed(io::Error::last_os_error())
+    }
+
+    /// Start connecting it, a Unix socket, to the one at `path`, or of
+    /// the abstract name `path` if `abstract_name`: refused with `EINVAL`
+    /// if the address cannot hold it (see [`UNIX_PATH_ROOM`]).
+    pub fn connect_unix(&self, path: &[u8], abstract_name: bool) -> io::Result<Connect> {
+        let Some(mut storage) = unix_address(path, abstract_name) else {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        };
+        // SAFETY: `storage` holds a `sockaddr_un`, valid for the length
+        // given, and lives through the call; the socket is open.
         let rc = unsafe {
             libc::connect(
                 self.fd().as_raw_fd(),
@@ -1201,5 +1278,68 @@ mod tests {
         assert_eq!(unknown.raw_os_error(), Some(libc::ENODEV));
         let too_long = taken.bind_to_device(&[b'x'; 255]).unwrap_err();
         assert_eq!(too_long.raw_os_error(), Some(libc::EINVAL));
+    }
+
+    /// A Unix socket's address is its path and terminator, or a zero and
+    /// the abstract name, after the family, as C sizes it; one that does
+    /// not fit is none.
+    #[test]
+    fn a_unix_address_is_sized_as_c_sizes_it() {
+        let at = std::mem::offset_of!(libc::sockaddr_un, sun_path);
+        let path = unix_address(b"/tmp/s", false).unwrap();
+        assert_eq!(path.len as usize, at + 7);
+        let abs = unix_address(b"name", true).unwrap();
+        assert_eq!(abs.len as usize, at + 5);
+        // SAFETY: the storage holds the `sockaddr_un` written.
+        let un = unsafe { (&raw const abs.raw).cast::<libc::sockaddr_un>().read() };
+        assert_eq!(i32::from(un.sun_family), libc::AF_UNIX);
+        let name: Vec<u8> = un.sun_path[..6].iter().map(|&c| c as u8).collect();
+        assert_eq!(name, b"\0name\0");
+        assert!(unix_address(&[b'x'; UNIX_PATH_ROOM - 1], false).is_some());
+        assert!(unix_address(&[b'x'; UNIX_PATH_ROOM], false).is_none());
+        assert!(unix_address(&[b'x'; UNIX_PATH_ROOM], true).is_none());
+        assert!(unix_address(b"a\0b", false).is_none());
+    }
+
+    /// A Unix socket connects to one listening at a path, and to one of
+    /// an abstract name; to a path nothing listens at, it fails at once.
+    #[test]
+    #[cfg_attr(miri, ignore = "FFI")]
+    fn a_unix_socket_connects_by_path_and_by_name() {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::{SocketAddr as UnixAddr, UnixListener};
+        let dir = std::env::temp_dir().join(format!("curl-os-uds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s");
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let s = open_unix(false).unwrap();
+        let bytes = path.as_os_str().as_encoded_bytes();
+        assert_eq!(s.connect_unix(bytes, false).unwrap(), Connect::Done);
+        let (accepted, _) = listener.accept().unwrap();
+        assert_eq!(
+            s.send(b"hi").unwrap(),
+            Sent::Bytes(NonZeroUsize::new(2).unwrap())
+        );
+        let mut got = [0; 2];
+        std::io::Read::read_exact(&mut &accepted, &mut got).unwrap();
+        assert_eq!(&got, b"hi");
+        assert!(s.local_addr().is_err(), "no address of TCP's families");
+        let name = format!("curl-os-uds-{}", std::process::id());
+        let abs = UnixListener::bind_addr(&UnixAddr::from_abstract_name(&name).unwrap()).unwrap();
+        let s = open_unix(false).unwrap();
+        assert_eq!(
+            s.connect_unix(name.as_bytes(), true).unwrap(),
+            Connect::Done
+        );
+        abs.accept().unwrap();
+        drop(listener);
+        std::fs::remove_file(&path).unwrap();
+        let refused = open_unix(true)
+            .unwrap()
+            .connect_unix(bytes, false)
+            .unwrap_err();
+        assert_eq!(refused.raw_os_error(), Some(libc::ENOENT));
+        std::fs::remove_dir(&dir).unwrap();
     }
 }

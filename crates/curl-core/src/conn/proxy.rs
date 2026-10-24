@@ -340,9 +340,22 @@ pub(crate) fn parse(
     };
     let user = part(Part::User, UrlErrorKind::NoUser)?;
     let password = part(Part::Password, UrlErrorKind::NoPassword)?;
+    // A SOCKS proxy at `localhost` with a path is at the Unix socket of
+    // that path (`Curl_peer_from_proxy_url`).
+    let socks = matches!(
+        kind,
+        ProxyType::Socks4 | ProxyType::Socks4a | ProxyType::Socks5 | ProxyType::Socks5Hostname
+    );
+    let peer = match url.get(Part::Path, decoded) {
+        Ok(path) if socks && host.eq_ignore_ascii_case(b"localhost") && path != b"/" => {
+            Peer::unix(scheme, path, port, false)
+        }
+        Err(UrlErrorKind::OutOfMemory) => return Err(Refused::OutOfMemory),
+        _ => Peer::new(scheme, host, port, zone),
+    };
     Ok(Parsed {
         kind,
-        peer: Peer::new(scheme, host, port, zone),
+        peer,
         user,
         password,
     })

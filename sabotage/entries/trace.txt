@@ -307,7 +307,7 @@ witness: curl-core proto::http::tests::multi_trace::sends_and_receives_are_trace
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::multi_trace::sends_and_receives_are_traced_as_c
 --- old
-            trace::sent(cx, len, &sent);
+            trace::sent(cx, component, len, &sent);
 --- new
 
 === a debug build ignores CURL_DEBUG

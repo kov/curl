@@ -325,6 +325,31 @@ fn proxy_urls_read_as_c() {
     assert_eq!((p.user, p.password), (None, None));
 }
 
+/// A SOCKS proxy at `localhost` with a path is at the Unix socket of the
+/// path, decoded; at `localhost` without one, or an HTTP proxy, is not
+/// (`Curl_peer_from_proxy_url`).
+#[test]
+fn a_socks_proxy_at_localhost_with_a_path_is_a_unix_socket() {
+    use crate::conn::PeerAt;
+    let peer = |text: &str, kind| parse(text.as_bytes(), kind, None).unwrap().peer;
+    let unix = peer(
+        "socks5h://LocalHost/tmp/s%20ocks",
+        ProxyType::Socks5Hostname,
+    );
+    assert_eq!(
+        (unix.at(), unix.name(), unix.port()),
+        (PeerAt::Unix, &b"/tmp/s ocks"[..], 1080)
+    );
+    for (text, kind) in [
+        ("socks5://localhost/", ProxyType::Socks5),
+        ("socks4://localhost", ProxyType::Socks4),
+        ("http://localhost/tmp/s", ProxyType::Http),
+        ("socks5://127.0.0.1/tmp/s", ProxyType::Socks5),
+    ] {
+        assert_eq!(peer(text, kind).at(), PeerAt::Network, "{text}");
+    }
+}
+
 /// A user or password that decodes to a control byte fails with the
 /// URL's error, not as the proxy's syntax (`parse_proxy`).
 #[test]

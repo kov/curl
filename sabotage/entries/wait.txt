@@ -292,6 +292,8 @@ witness: curl-core proto::http::tests::a_proxy_handshake_waits_to_send_then_to_r
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::wait_trace::a_tunnel_s_waits_are_traced_as_c
 --- old
-                Some(matches!(c.lease.reached(), Some(SetupPoint::Dialed(_))))
+                matches!(c.lease.reached(), Some(SetupPoint::Dialed(_))),
+                c.route.socket_component(),
 --- new
-                Some(false)
+                false,
+                c.route.socket_component(),

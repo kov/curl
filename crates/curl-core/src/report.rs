@@ -24,9 +24,9 @@ use crate::version::Protocol;
 
 /// The ends of a connection: the peer's address, and the local one if
 /// it was read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ends {
-    pub remote: SocketAddr,
+    pub remote: crate::conn::io::Remote,
     pub local: Option<SocketAddr>,
 }
 
@@ -261,8 +261,8 @@ impl TransferReport {
 
     /// The ends of the connection the transfer last used
     /// (`CURLINFO_PRIMARY_IP`, `CURLINFO_LOCAL_IP` and their ports).
-    pub fn primary(&self) -> Option<Ends> {
-        self.primary
+    pub fn primary(&self) -> Option<&Ends> {
+        self.primary.as_ref()
     }
 
     pub(crate) fn set_primary(&mut self, ends: Ends) {

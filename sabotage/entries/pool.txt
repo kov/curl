@@ -164,11 +164,9 @@ witness: curl-core conn::buf::tests::received_bytes_wait_until_used
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::pool::tests::a_host_in_capitals_reuses_the_connection
 --- old
-            && self.name().eq_ignore_ascii_case(other.name())
-            && *scope == other.scope
+                PeerAt::Network => self.name().eq_ignore_ascii_case(other.name()),
 --- new
-            && self.name() == other.name()
-            && *scope == other.scope
+                PeerAt::Network => self.name() == other.name(),
 
 === a peer's zone is ignored
 file: crates/curl-core/src/conn/mod.rs
@@ -215,10 +213,10 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::the_winner_closes_the_other_attempts
 --- old
         for a in r.attempts.drain(..) {
-            discard(cx, a.socket);
+            discard(cx, component, a.socket);
         }
 --- new
-        let _ = &mut r.attempts;
+        let _ = (&mut r.attempts, component);
 
 === a transfer is not woken for its next attempt
 file: crates/curl-core/src/multi/state.rs

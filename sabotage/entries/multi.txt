@@ -365,10 +365,10 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::a_refused_connect_fails_as_c_says
 --- old
         let why = OsError(&error);
-        let remote = self.remote;
+        let remote = &self.remote;
 --- new
         let why = OsError(&error);
-        let remote = self.remote;
+        let remote = &self.remote;
         if remote.port() > 0 {
             let _ = (lip, lport, why);
             return Ok(error);
@@ -488,17 +488,17 @@ witness: curl-core proto::http::tests::a_request_over_a_reused_connection_that_d
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 --- old
-        let any = !answer.resolved() || ip == IpVersion::Any;
+            Addresses::Resolved(a) => !a.resolved() || ip == IpVersion::Any,
 --- new
-        let any = true;
+            Addresses::Resolved(_) => true,
 
 === an IP version limits an address the URL names
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::eyeballs_alternate_the_families
 --- old
-        let any = !answer.resolved() || ip == IpVersion::Any;
+            Addresses::Resolved(a) => !a.resolved() || ip == IpVersion::Any,
 --- new
-        let any = ip == IpVersion::Any;
+            Addresses::Resolved(_) => ip == IpVersion::Any,
 
 === IPv4 is tried first
 file: crates/curl-core/src/conn/connect.rs

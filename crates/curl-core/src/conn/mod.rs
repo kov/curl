@@ -228,6 +228,24 @@ impl Tcp {
         }
     }
 
+    /// `destination`, shared.
+    pub(crate) fn destination_shared(&self) -> &TryArc<Peer> {
+        match &self.proxy {
+            Some(proxy) => proxy.first_peer_shared(),
+            None => self.via.as_ref().unwrap_or(&self.origin),
+        }
+    }
+
+    /// What the socket's filter traces as: `UNIX` for a Unix socket's
+    /// (`Curl_cft_unix`), else `TCP`.
+    pub(crate) fn socket_component(&self) -> crate::components::Component {
+        if self.destination().is_unix() {
+            crate::components::Component::Unix
+        } else {
+            crate::components::Component::Tcp
+        }
+    }
+
     /// The SOCKS proxy on the way, and where it is asked to connect.
     pub(crate) fn socks(&self) -> Option<SocksLeg<'_>> {
         self.proxy.as_ref()?.socks(self.target())
@@ -336,6 +354,11 @@ impl ProxyRoute {
 
     /// The peer connected to first.
     pub(crate) fn first_peer(&self) -> &Peer {
+        self.first_peer_shared()
+    }
+
+    /// `first_peer`, shared.
+    pub(crate) fn first_peer_shared(&self) -> &TryArc<Peer> {
         self.pre.as_ref().map_or(&self.peer, |pre| &pre.peer)
     }
 
@@ -410,10 +433,11 @@ impl PartialEq for Destination<'_> {
             port,
             zone,
             scope,
+            at,
         } = a;
         *port == b.port
-            && a.ipv6() == b.ipv6()
-            && a.name().eq_ignore_ascii_case(b.name())
+            && *at == b.at
+            && a.same_name(b)
             && *scope == b.scope
             && (*scope != 0 || *zone == b.zone)
     }
@@ -442,6 +466,19 @@ pub(crate) struct Peer {
     /// The IPv6 scope: the zone as a number, or the index of the
     /// interface it names; 0 if neither (`scopeid`).
     scope: u32,
+    /// What the host names: a host on the network, or the path of a Unix
+    /// socket (`unix_socket`, `abstract_uds`).
+    at: PeerAt,
+}
+
+/// What a peer's host names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PeerAt {
+    Network,
+    /// A Unix socket by its path, the host, at port 0.
+    Unix,
+    /// A Unix socket in the abstract namespace, the host its name.
+    AbstractUnix,
 }
 
 impl Peer {
@@ -467,7 +504,47 @@ impl Peer {
             port,
             zone,
             scope,
+            at: PeerAt::Network,
         }
+    }
+
+    /// The Unix socket at `path`, in the abstract namespace if
+    /// `abstract_name`, spoken to with `scheme`'s protocol: one the
+    /// options name is at port 0 (`Curl_peer_uds_create`), a SOCKS
+    /// proxy's at its URL's port, which no connect uses.
+    pub(crate) fn unix(scheme: Scheme, path: Vec<u8>, port: u16, abstract_name: bool) -> Peer {
+        Peer {
+            scheme,
+            host: path,
+            port,
+            zone: None,
+            scope: 0,
+            at: if abstract_name {
+                PeerAt::AbstractUnix
+            } else {
+                PeerAt::Unix
+            },
+        }
+    }
+
+    /// What the host names.
+    pub(crate) fn at(&self) -> PeerAt {
+        self.at
+    }
+
+    /// Whether the host is a Unix socket's path.
+    pub(crate) fn is_unix(&self) -> bool {
+        self.at != PeerAt::Network
+    }
+
+    /// The same host: a Unix socket's path exactly, as file systems tell
+    /// case apart, and a host's name in any case (`peer_same_hostname`).
+    fn same_name(&self, other: &Peer) -> bool {
+        self.ipv6() == other.ipv6()
+            && match self.at {
+                PeerAt::Network => self.name().eq_ignore_ascii_case(other.name()),
+                PeerAt::Unix | PeerAt::AbstractUnix => self.host == other.host,
+            }
     }
 
     /// A peer in the IPv6 scope `scope`, which takes the place of any
@@ -479,6 +556,7 @@ impl Peer {
             port,
             zone: None,
             scope: scope.get(),
+            at: PeerAt::Network,
         }
     }
 
@@ -498,6 +576,7 @@ impl Peer {
             port: self.port,
             zone: self.zone.as_deref().map(copy).transpose()?,
             scope: self.scope,
+            at: self.at,
         })
     }
 
@@ -518,8 +597,12 @@ impl Peer {
         &self.host
     }
 
-    /// The host without an IPv6 address's brackets (`hostname`).
+    /// The host without an IPv6 address's brackets (`hostname`); a Unix
+    /// socket's path as it is.
     pub(crate) fn name(&self) -> &[u8] {
+        if self.is_unix() {
+            return &self.host;
+        }
         self.host
             .strip_prefix(b"[")
             .and_then(|h| h.strip_suffix(b"]"))
@@ -528,7 +611,7 @@ impl Peer {
 
     /// Whether the host is an IPv6 address.
     pub(crate) fn ipv6(&self) -> bool {
-        self.host.first() == Some(&b'[')
+        !self.is_unix() && self.host.first() == Some(&b'[')
     }
 
     pub(crate) fn port(&self) -> u16 {
@@ -555,11 +638,12 @@ impl PartialEq for Peer {
             port,
             zone,
             scope,
+            at,
         } = self;
         *scheme == other.scheme
             && *port == other.port
-            && self.ipv6() == other.ipv6()
-            && self.name().eq_ignore_ascii_case(other.name())
+            && *at == other.at
+            && self.same_name(other)
             && *scope == other.scope
             && (*scope != 0 || *zone == other.zone)
     }
@@ -571,6 +655,7 @@ impl Peer {
     /// Whether connections to the two count toward one per-host limit:
     /// C's `destination`, `host:port` in lowercase, an IPv6 address in
     /// brackets with its scope; the scheme and a zone's name aside.
+    /// A Unix socket's path is lowercased too, as it is in C's text.
     pub(crate) fn same_bundle(&self, other: &Peer) -> bool {
         self.port == other.port
             && self.ipv6() == other.ipv6()
@@ -594,7 +679,7 @@ pub(crate) struct Conn {
     transport: Transport,
     /// The address connected to; none without a network. Its end here
     /// is its socket's to say (`local`).
-    remote: Option<SocketAddr>,
+    remote: Option<io::Remote>,
     /// When its setup started (C's `conn->created`), and when it was
     /// found connected (TIMER_CONNECT's `connected_at`).
     created: Instant,
@@ -616,6 +701,14 @@ pub(crate) struct Conn {
 }
 
 impl Conn {
+    /// What its socket's filter traces as (`TCP`, `UNIX`).
+    pub(crate) fn socket_component(&self) -> crate::components::Component {
+        match &self.route {
+            Route::Tcp(route) => route.socket_component(),
+            Route::Local => crate::components::Component::Tcp,
+        }
+    }
+
     fn stream(&mut self) -> &mut Stream {
         match &mut self.transport {
             Transport::Tcp(stream) => stream,
@@ -747,6 +840,37 @@ mod tests {
 
     fn peer(host: &[u8], port: u16, zone: Option<&[u8]>) -> Peer {
         Peer::new(HTTP, host.to_vec(), port, zone.map(<[u8]>::to_vec))
+    }
+
+    /// A Unix socket is the same as another of the same path, in the same
+    /// namespace, its path's case told apart, and never a host of that
+    /// name (`peer_same_hostname`).
+    #[test]
+    fn unix_sockets_are_told_apart_as_c_tells_them() {
+        let unix = |path: &[u8], abstract_name| Peer::unix(HTTP, path.to_vec(), 0, abstract_name);
+        assert_eq!(unix(b"/tmp/s", false), unix(b"/tmp/s", false));
+        assert_ne!(unix(b"/tmp/s", false), unix(b"/tmp/S", false));
+        assert_ne!(unix(b"/tmp/s", false), unix(b"/tmp/s", true));
+        assert_ne!(
+            unix(b"/tmp/s", false),
+            Peer::new(HTTP, b"/tmp/s".to_vec(), 0, None)
+        );
+        assert!(Destination(&unix(b"s", true)) != Destination(&unix(b"S", true)));
+        assert!(!unix(b"[::1]", false).ipv6());
+        assert_eq!(unix(b"[::1]", false).name(), b"[::1]");
+        // A connection over one serves only a transfer over the same.
+        let over = |path: &[u8]| {
+            Route::Tcp(Tcp {
+                origin: TryArc::try_new(peer(b"o.example", 80, None)).unwrap(),
+                via: Some(TryArc::try_new(unix(path, false)).unwrap()),
+                ip: IpVersion::Any,
+                proxy: None,
+                tls: None,
+                local: None,
+            })
+        };
+        assert!(over(b"/tmp/s").serves(&over(b"/tmp/s")));
+        assert!(!over(b"/tmp/s").serves(&over(b"/tmp/t")));
     }
 
     /// Peers are the same as `Curl_peer_equal` finds them: the host in

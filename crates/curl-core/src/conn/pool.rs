@@ -78,7 +78,7 @@ impl ConnLease {
                 }
                 Ok(Drove::Established(conn)) => {
                     let up = Connected::Established {
-                        remote: conn.remote.expect("set up over the network"),
+                        remote: conn.remote.clone().expect("set up over the network"),
                         local: conn.local(),
                         at: conn.connected_at,
                     };
@@ -88,7 +88,7 @@ impl ConnLease {
             },
             ConnSlot::Open(conn) => {
                 let up = Connected::AlreadyUp {
-                    remote: conn.remote,
+                    remote: conn.remote.clone(),
                     local: conn.local(),
                 };
                 (ConnSlot::Open(conn), Ok(up))
@@ -133,7 +133,7 @@ impl ConnLease {
     pub(crate) fn partly_made(
         &self,
     ) -> Option<(
-        std::net::SocketAddr,
+        super::io::Remote,
         Option<std::net::SocketAddr>,
         crate::time::Instant,
     )> {
@@ -171,7 +171,7 @@ impl ConnLease {
         };
         let conn = machine.handshaken();
         let up = Connected::Established {
-            remote: conn.remote.expect("set up over the network"),
+            remote: conn.remote.clone().expect("set up over the network"),
             local: conn.local(),
             at: conn.connected_at,
         };
@@ -414,14 +414,14 @@ pub(crate) enum Connected {
     /// Up, from `local` to `remote`, found so at `at`: as the race is
     /// won, or at the end of a proxy's handshake.
     Established {
-        remote: SocketAddr,
+        remote: super::io::Remote,
         local: Option<SocketAddr>,
         at: Instant,
     },
     /// Up before this step: a reused connection, from `local` to
     /// `remote`.
     AlreadyUp {
-        remote: Option<SocketAddr>,
+        remote: Option<super::io::Remote>,
         local: Option<SocketAddr>,
     },
 }

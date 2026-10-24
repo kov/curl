@@ -99,18 +99,22 @@ witness: curl-os net::tests::a_reset_connection_fails_both_ways
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::descriptors_run_from_zero_to_the_limit
 --- old
+    let fd = unsafe { libc::socket(family, kind, protocol) };
     if fd < 0 {
 --- new
+    let fd = unsafe { libc::socket(family, kind, protocol) };
     if fd <= 0 {
 
 === a failed socket(2) is taken for a descriptor
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::descriptors_run_from_zero_to_the_limit
 --- old
+    let fd = unsafe { libc::socket(family, kind, protocol) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
 --- new
+    let fd = unsafe { libc::socket(family, kind, protocol) };
 
 === a file kept for appending is emptied
 file: crates/curl-os/src/fs.rs

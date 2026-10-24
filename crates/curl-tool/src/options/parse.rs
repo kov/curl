@@ -777,6 +777,37 @@ mod tests {
         }
     }
 
+    /// `--unix-socket` and `--abstract-unix-socket` set one path, the
+    /// last given saying which namespace it is in; neither takes a blank.
+    #[test]
+    fn the_last_unix_socket_named_is_taken() {
+        let socket = |args: &[&str]| {
+            let l = line(args);
+            (
+                l.operations[0].unix_socket,
+                l.operations[0].abstract_unix_socket,
+            )
+        };
+        assert_eq!(
+            socket(&["x", "--unix-socket", "/a"]),
+            (Some(&b"/a"[..]), false)
+        );
+        assert_eq!(
+            socket(&["x", "--unix-socket", "/a", "--abstract-unix-socket", "b"]),
+            (Some(&b"b"[..]), true)
+        );
+        assert_eq!(
+            socket(&["x", "--abstract-unix-socket", "b", "--unix-socket", "/a"]),
+            (Some(&b"/a"[..]), false)
+        );
+        for opt in ["--unix-socket", "--abstract-unix-socket"] {
+            assert!(matches!(
+                parsed(&["x", opt, ""]),
+                Err(ParamError::BlankString)
+            ));
+        }
+    }
+
     /// `--local-port` reads a port, or a range with a blank allowed on
     /// each side of its dash, as the first port and how many to try
     /// (`parse_localport`); anything else is badly used.

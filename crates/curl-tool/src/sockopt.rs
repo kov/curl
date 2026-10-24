@@ -4,10 +4,9 @@
 //! `sockopt_callback`).
 
 use std::io;
-use std::net::SocketAddr;
 
 use curl_alloc::try_box;
-use curl_core::conn::io::{Protocol, Socket, SocketOption};
+use curl_core::conn::io::{Protocol, Remote, Socket, SocketOption};
 use curl_core::handler::{Configured, SocketConfigurer, SocketOpener, SocketToSet};
 use curl_core::multi::TransferCx;
 
@@ -18,14 +17,11 @@ use crate::msgs::Messages;
 pub(crate) struct Mptcp;
 
 impl SocketOpener for Mptcp {
-    fn open(
-        &self,
-        _: &mut TransferCx<'_>,
-        address: &mut SocketAddr,
-    ) -> io::Result<Box<dyn Socket>> {
+    fn open(&self, _: &mut TransferCx<'_>, address: &mut Remote) -> io::Result<Box<dyn Socket>> {
         // As the opener is asked for one: neither connected nor
-        // nonblocking yet.
-        let socket = curl_core::conn::io::open(*address, Protocol::Mptcp, false)?;
+        // nonblocking yet. A Unix socket speaks no TCP to make
+        // Multipath.
+        let socket = curl_core::conn::io::open_remote(address, Protocol::Mptcp, false)?;
         Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?)
     }
 }

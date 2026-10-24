@@ -1241,6 +1241,19 @@ fn apply(
             };
             tcp(options, |s| s.local.interface = interface)?;
         }
+        (ffi::CURLOPT_UNIX_SOCKET_PATH | ffi::CURLOPT_ABSTRACT_UNIX_SOCKET, Ptr(p)) => {
+            // SAFETY: as above.
+            let path = unsafe { owned(p) }?;
+            // NULL is none, and an empty one is kept, for the transfer
+            // to fail on (`Curl_setstropt`); the last one set says which
+            // namespace the path is in.
+            let abstract_name = option == ffi::CURLOPT_ABSTRACT_UNIX_SOCKET;
+            let unix = path.map(|path| curl_core::options::UnixSocket {
+                path,
+                abstract_name,
+            });
+            tcp(options, |s| s.unix = unix)?;
+        }
         (ffi::CURLOPT_LOCALPORT, Long(n)) => {
             let port = u16::try_from(n).map_err(|_| Refused::Bad)?;
             tcp(options, |s| s.local.port = port)?;
@@ -1296,9 +1309,19 @@ fn tcp(options: &mut Options, change: impl FnOnce(&mut Sockets)) -> Result<(), O
     let mut probe = <Sockets as ColdGroup>::NONE;
     change(&mut probe);
     let unset = <Sockets as ColdGroup>::UNSET;
-    if (probe.nodelay, probe.keepalive, probe.fastopen, &probe.local)
-        != (unset.nodelay, unset.keepalive, unset.fastopen, &unset.local)
-    {
+    if (
+        probe.nodelay,
+        probe.keepalive,
+        probe.fastopen,
+        &probe.local,
+        &probe.unix,
+    ) != (
+        unset.nodelay,
+        unset.keepalive,
+        unset.fastopen,
+        &unset.local,
+        &unset.unix,
+    ) {
         *options.sockets.make_mut()? = probe;
     }
     Ok(())

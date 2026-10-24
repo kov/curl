@@ -1862,6 +1862,20 @@ fn setopts(
             Ok(())
         })?;
     }
+    if let Some(path) = op.unix_socket {
+        let name = if op.abstract_unix_socket {
+            "CURLOPT_ABSTRACT_UNIX_SOCKET"
+        } else {
+            "CURLOPT_UNIX_SOCKET_PATH"
+        };
+        s.str(name, Some(path), |o| {
+            o.sockets.make_mut().map_err(oom)?.unix = Some(options::UnixSocket {
+                path: copy(path).map_err(oom)?,
+                abstract_name: op.abstract_unix_socket,
+            });
+            Ok(())
+        })?;
+    }
     let default = op.default_protocol;
     s.str(
         "CURLOPT_DEFAULT_PROTOCOL",

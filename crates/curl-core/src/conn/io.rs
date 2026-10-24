@@ -8,7 +8,7 @@ use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd as _, BorrowedFd};
 use std::time::Duration;
 
-use curl_alloc::{OutOfMemory, TryVec, try_box};
+use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 
 use crate::handler::{Handler, SocketCloser};
 use crate::time::Instant;
@@ -39,6 +39,92 @@ impl SocketKey {
     }
 }
 
+/// Where a socket connects: an address on the network, or a Unix socket.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Remote {
+    Inet(SocketAddr),
+    Unix(UnixPeer),
+}
+
+impl Remote {
+    /// The address, for one on the network.
+    pub fn inet(&self) -> Option<SocketAddr> {
+        match self {
+            Remote::Inet(a) => Some(*a),
+            Remote::Unix(_) => None,
+        }
+    }
+
+    /// The address as C's traces and infos show it (`ip_quadruple`'s
+    /// `remote_ip`): an IP address, or a Unix socket's path, which for an
+    /// abstract name shows as nothing, as it starts with a zero byte.
+    pub fn shown_ip(&self) -> RemoteIp<'_> {
+        RemoteIp(self)
+    }
+
+    /// The path a Unix socket's address shows, as C's infos show it: an
+    /// abstract name's is empty, as its text starts with a zero byte.
+    pub fn unix_path(&self) -> Option<&[u8]> {
+        match self {
+            Remote::Inet(_) => None,
+            Remote::Unix(u) if u.is_abstract() => Some(b""),
+            Remote::Unix(u) => Some(u.path()),
+        }
+    }
+
+    /// The port as C's traces show it: a Unix socket's is 0, and its
+    /// infos say it has none (`CUR_IP_QUAD_HAS_PORTS`).
+    pub fn port(&self) -> u16 {
+        match self {
+            Remote::Inet(a) => a.port(),
+            Remote::Unix(_) => 0,
+        }
+    }
+}
+
+/// A remote address as C's text shows it.
+pub struct RemoteIp<'a>(&'a Remote);
+
+impl fmt::Display for RemoteIp<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Remote::Inet(a) => a.ip().fmt(f),
+            Remote::Unix(u) if u.is_abstract() => Ok(()),
+            Remote::Unix(u) => crate::trace::Bytes(u.path()).fmt(f),
+        }
+    }
+}
+
+/// A Unix socket connected to: the peer that names it, shared.
+#[derive(Clone, Debug)]
+pub struct UnixPeer(TryArc<super::Peer>);
+
+impl UnixPeer {
+    /// The Unix socket `peer` names, which must be one.
+    pub(crate) fn of(peer: TryArc<super::Peer>) -> UnixPeer {
+        assert!(peer.is_unix(), "a peer at a Unix socket");
+        UnixPeer(peer)
+    }
+
+    /// The path, or the abstract name.
+    pub fn path(&self) -> &[u8] {
+        self.0.name()
+    }
+
+    /// Whether the name is in the abstract namespace.
+    pub fn is_abstract(&self) -> bool {
+        self.0.at() == super::PeerAt::AbstractUnix
+    }
+}
+
+impl PartialEq for UnixPeer {
+    fn eq(&self, other: &UnixPeer) -> bool {
+        self.path() == other.path() && self.is_abstract() == other.is_abstract()
+    }
+}
+
+impl Eq for UnixPeer {}
+
 /// A socket the network opened.
 pub trait Socket: fmt::Debug + Send {
     fn key(&self) -> SocketKey;
@@ -66,7 +152,7 @@ pub trait Socket: fmt::Debug + Send {
     fn bind_to_device(&self, name: &[u8]) -> io::Result<()>;
 
     /// Start connecting it to `addr`.
-    fn connect(&self, addr: SocketAddr) -> io::Result<Connect>;
+    fn connect(&self, addr: &Remote) -> io::Result<Connect>;
 
     /// Receive into `buf`, which is not empty.
     fn recv(&self, buf: &mut [u8]) -> io::Result<Recv>;
@@ -192,9 +278,9 @@ pub trait Net {
         timeout: Duration,
     ) -> io::Result<u32>;
 
-    /// Open a nonblocking TCP socket for `addr`'s family, not connected
-    /// yet.
-    fn open(&mut self, addr: SocketAddr) -> io::Result<Box<dyn Socket>>;
+    /// Open a nonblocking stream socket for `addr`'s family, TCP or Unix,
+    /// not connected yet.
+    fn open(&mut self, addr: &Remote) -> io::Result<Box<dyn Socket>>;
 
     /// Close a socket the network opened, through its closer.
     fn close(&mut self, socket: Sock);
@@ -259,8 +345,11 @@ impl Socket for curl_os::net::TcpSocket {
         curl_os::net::TcpSocket::bind_to_device(self, name)
     }
 
-    fn connect(&self, addr: SocketAddr) -> io::Result<Connect> {
-        curl_os::net::TcpSocket::connect(self, addr)
+    fn connect(&self, addr: &Remote) -> io::Result<Connect> {
+        match addr {
+            Remote::Inet(a) => curl_os::net::TcpSocket::connect(self, *a),
+            Remote::Unix(u) => self.connect_unix(u.path(), u.is_abstract()),
+        }
     }
 
     fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
@@ -273,6 +362,16 @@ impl Socket for curl_os::net::TcpSocket {
 
     fn release(self: Box<Self>) -> SocketKey {
         SocketKey(self.into_raw())
+    }
+}
+
+/// A close-on-exec stream socket for `addr`'s family, speaking `protocol`
+/// over TCP's, nonblocking if `nonblocking`: not connected yet. A Unix
+/// socket speaks no protocol of TCP's (`CURL_SOCKET`'s, protocol 0).
+pub fn open_remote(addr: &Remote, protocol: Protocol, nonblocking: bool) -> io::Result<TcpSocket> {
+    match addr {
+        Remote::Inet(a) => curl_os::net::open(*a, protocol, nonblocking),
+        Remote::Unix(_) => curl_os::net::open_unix(nonblocking),
     }
 }
 
@@ -290,8 +389,8 @@ impl Net for SystemNet {
         poll_together(sockets, fds, timeout)
     }
 
-    fn open(&mut self, addr: SocketAddr) -> io::Result<Box<dyn Socket>> {
-        let socket = curl_os::net::open(addr, Protocol::Tcp, true)?;
+    fn open(&mut self, addr: &Remote) -> io::Result<Box<dyn Socket>> {
+        let socket = open_remote(addr, Protocol::Tcp, true)?;
         Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?)
     }
 
@@ -716,12 +815,12 @@ impl Conversation {
 #[derive(Debug)]
 pub struct FakeNet {
     clock: crate::time::ManualClock,
-    peers: Vec<(SocketAddr, Peer)>,
+    peers: Vec<(Remote, Peer)>,
     /// The names it knows, with their addresses in the order answered.
     names: Vec<(Vec<u8>, Vec<IpAddr>)>,
     /// The conversations to come, each for the next connection to its
     /// address.
-    conversations: Vec<(SocketAddr, Conversation)>,
+    conversations: Vec<(Remote, Conversation)>,
     /// The scope of its interface with a link-local address, if it has one.
     link_local: Option<NonZeroU32>,
     /// Whether IPv6 works, as a multi's probe finds.
@@ -859,7 +958,17 @@ impl FakeNet {
     }
 
     /// The next connection to `addr` has `conversation`.
-    pub fn with_conversation(mut self, addr: SocketAddr, conversation: Conversation) -> FakeNet {
+    pub fn with_conversation(self, addr: SocketAddr, conversation: Conversation) -> FakeNet {
+        self.with_conversation_at(Remote::Inet(addr), conversation)
+    }
+
+    /// `with_conversation`, at an address on the network or a Unix
+    /// socket.
+    pub(crate) fn with_conversation_at(
+        mut self,
+        addr: Remote,
+        conversation: Conversation,
+    ) -> FakeNet {
         self.conversations
             .try_push((addr, conversation))
             .expect("a test's conversations fit");
@@ -877,7 +986,12 @@ impl FakeNet {
         self
     }
 
-    pub fn with_peer(mut self, addr: SocketAddr, peer: Peer) -> FakeNet {
+    pub fn with_peer(self, addr: SocketAddr, peer: Peer) -> FakeNet {
+        self.with_peer_at(Remote::Inet(addr), peer)
+    }
+
+    /// `with_peer`, at an address on the network or a Unix socket.
+    pub(crate) fn with_peer_at(mut self, addr: Remote, peer: Peer) -> FakeNet {
         self.peers
             .try_push((addr, peer))
             .expect("a test's peers fit");
@@ -961,9 +1075,9 @@ impl Net for FakeNet {
     /// A socket to the peer at `addr`, if there is one, whose next
     /// conversation it has; to an address without one, its connect is
     /// refused at once.
-    fn open(&mut self, addr: SocketAddr) -> io::Result<Box<dyn Socket>> {
-        let peer = self.peers.iter().find(|(a, _)| *a == addr).map(|&(_, p)| p);
-        let wire = match self.conversations.iter().position(|(a, _)| *a == addr) {
+    fn open(&mut self, addr: &Remote) -> io::Result<Box<dyn Socket>> {
+        let peer = self.peers.iter().find(|(a, _)| a == addr).map(|&(_, p)| p);
+        let wire = match self.conversations.iter().position(|(a, _)| a == addr) {
             Some(at) if peer.is_some() => self.conversations.remove(at).1,
             _ => Conversation(
                 curl_alloc::TryArc::try_new(std::sync::Mutex::new(Wire::default()))
@@ -973,9 +1087,13 @@ impl Net for FakeNet {
         let key = self.open_number(wire.clone())?;
         // The port the kernel would have picked.
         let port = 40000 + u16::try_from(key.0 - FIRST_FAKE).expect("a test opens few sockets");
+        // A Unix socket has no address of TCP's families.
         let local = match addr {
-            SocketAddr::V4(_) => SocketAddr::from(([127, 0, 0, 1], port)),
-            SocketAddr::V6(_) => SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)),
+            Remote::Inet(SocketAddr::V4(_)) => Some(SocketAddr::from(([127, 0, 0, 1], port))),
+            Remote::Inet(SocketAddr::V6(_)) => {
+                Some(SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)))
+            }
+            Remote::Unix(_) => None,
         };
         let now = crate::time::Clock::now(&self.clock);
         let ready_at = match peer {
@@ -989,7 +1107,7 @@ impl Net for FakeNet {
             binding: self.binding.clone(),
             bound: std::sync::Mutex::new(None),
             connected: std::sync::atomic::AtomicBool::new(false),
-            opened_for: addr,
+            opened_for: addr.clone(),
             clock: self.clock.clone(),
             ready_at,
             wire,
@@ -1056,13 +1174,13 @@ struct FakeSocket {
     /// once.
     peer: Option<Peer>,
     /// The address the kernel would bind it to as it connects.
-    local: SocketAddr,
+    local: Option<SocketAddr>,
     binding: Option<curl_alloc::TryArc<Binding>>,
     /// What it was bound to before it connected.
     bound: std::sync::Mutex<Option<SocketAddr>>,
     /// Whether its connect started: only then is it bound.
     connected: std::sync::atomic::AtomicBool,
-    opened_for: SocketAddr,
+    opened_for: Remote,
     clock: crate::time::ManualClock,
     /// When a peer that answers late answers.
     ready_at: Option<Instant>,
@@ -1132,29 +1250,32 @@ impl Socket for FakeSocket {
     /// refused at once, unless it was bound.
     fn local_addr(&self) -> io::Result<SocketAddr> {
         let bound = *self.bound.lock().expect("no test panics holding it");
+        let Some(local) = self.local else {
+            return Err(io::Error::from_raw_os_error(libc_errno::EINVAL));
+        };
         if self.connected.load(std::sync::atomic::Ordering::Relaxed) {
             // What the bind left open, the connect chooses.
             return Ok(match bound {
                 Some(at) => {
                     let ip = if at.ip().is_unspecified() {
-                        self.local.ip()
+                        local.ip()
                     } else {
                         at.ip()
                     };
                     let port = if at.port() == 0 {
-                        self.local.port()
+                        local.port()
                     } else {
                         at.port()
                     };
                     SocketAddr::new(ip, port)
                 }
-                None => self.local,
+                None => local,
             });
         }
         if let Some(at) = bound {
             return Ok(at);
         }
-        Ok(match self.local {
+        Ok(match local {
             SocketAddr::V4(_) => SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0)),
             SocketAddr::V6(_) => SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
         })
@@ -1201,9 +1322,9 @@ impl Socket for FakeSocket {
 
     /// Its peer is the one at the address it was opened for, which it
     /// must connect to.
-    fn connect(&self, addr: SocketAddr) -> io::Result<Connect> {
+    fn connect(&self, addr: &Remote) -> io::Result<Connect> {
         assert_eq!(
-            addr, self.opened_for,
+            *addr, self.opened_for,
             "a fake socket connects where it was opened for"
         );
         if self.peer.is_none() {
@@ -1298,6 +1419,7 @@ mod libc_errno {
     pub(super) const ECONNREFUSED: i32 = 111;
     pub(super) const EPIPE: i32 = 32;
     pub(super) const EADDRINUSE: i32 = 98;
+    pub(super) const EINVAL: i32 = 22;
     pub(super) const ENODEV: i32 = 19;
 }
 
@@ -1316,7 +1438,7 @@ impl Net for SharedNet {
         self.0.lock().unwrap().poll(sockets, fds, timeout)
     }
 
-    fn open(&mut self, addr: SocketAddr) -> io::Result<Box<dyn Socket>> {
+    fn open(&mut self, addr: &Remote) -> io::Result<Box<dyn Socket>> {
         self.0.lock().unwrap().open(addr)
     }
 
@@ -1354,8 +1476,9 @@ impl Net for SharedNet {
 /// need one connecting.
 #[cfg(test)]
 pub(crate) fn dial(net: &mut dyn Net, at: SocketAddr) -> Box<dyn Socket> {
-    let socket = net.open(at).expect("a test's socket opens");
-    socket.connect(at).expect("a test's connect starts");
+    let at = Remote::Inet(at);
+    let socket = net.open(&at).expect("a test's socket opens");
+    socket.connect(&at).expect("a test's connect starts");
     socket
 }
 
@@ -1471,15 +1594,18 @@ mod tests {
             .with_peer(at(1), Peer::Accepts)
             .with_peer(at(2), Peer::Refuses)
             .with_peer(at(3), Peer::Silent);
-        let nobody = net.open(at(9)).unwrap();
-        let err = nobody.connect(at(9)).unwrap_err();
+        let nobody = net.open(&Remote::Inet(at(9))).unwrap();
+        let err = nobody.connect(&Remote::Inet(at(9))).unwrap_err();
         assert_eq!(err.raw_os_error(), Some(111), "no peer: refused at once");
         let unbound = SocketAddr::from(([0, 0, 0, 0], 0));
         assert_eq!(nobody.local_addr().unwrap(), unbound, "never bound");
         net.close(Sock::new(nobody, Closer::System));
-        let a = net.open(at(1)).unwrap();
+        let a = net.open(&Remote::Inet(at(1))).unwrap();
         assert_eq!(a.local_addr().unwrap(), unbound, "bound as it connects");
-        assert_eq!(a.connect(at(1)).unwrap(), Connect::InProgress);
+        assert_eq!(
+            a.connect(&Remote::Inet(at(1))).unwrap(),
+            Connect::InProgress
+        );
         assert_eq!(a.local_addr().unwrap(), at(40000));
         let (b, c) = (dial(&mut net, at(2)), dial(&mut net, at(3)));
         assert_eq!(
@@ -1528,8 +1654,8 @@ mod tests {
         let at = SocketAddr::from(([127, 0, 0, 1], 1));
         let talk = Conversation::new(b"", false);
         let mut net = FakeNet::new(clock).with_conversation(at, talk.clone());
-        let refused = net.open(at).unwrap();
-        assert!(refused.connect(at).is_err(), "no peer yet");
+        let refused = net.open(&Remote::Inet(at)).unwrap();
+        assert!(refused.connect(&Remote::Inet(at)).is_err(), "no peer yet");
         net.close(Sock::new(refused, Closer::System));
         let mut net = net.with_peer(at, Peer::Accepts);
         let s = dial(&mut net, at);
@@ -1573,7 +1699,7 @@ mod tests {
         let clock = crate::time::ManualClock::new().unwrap();
         let at = SocketAddr::from(([127, 0, 0, 1], 1));
         let mut net = FakeNet::new(clock).with_peer(at, Peer::Accepts);
-        let s = net.open(at).unwrap();
+        let s = net.open(&Remote::Inet(at)).unwrap();
         s.set(SocketOption::NoDelay).unwrap();
         s.set(SocketOption::KeepIdle(5)).unwrap();
         assert_eq!(

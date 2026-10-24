@@ -6,7 +6,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use std::fmt;
 use std::io;
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::time::Duration;
 
 use crate::components::Component;
@@ -360,7 +360,7 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         self.step.rest.ipv6_works
     }
 
-    fn open_socket(&mut self, address: &mut SocketAddr) -> Opened {
+    fn open_socket(&mut self, address: &mut crate::conn::io::Remote) -> Opened {
         let opener = self.step.easy().options().sockets.open.clone();
         match opener {
             Some(opener) => Opened {
@@ -368,7 +368,7 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
                 by_application: true,
             },
             None => Opened {
-                socket: self.step.rest.net.open(*address),
+                socket: self.step.rest.net.open(address),
                 by_application: false,
             },
         }
@@ -401,7 +401,7 @@ impl<H: Host> Net for DriveCx<'_, '_, H> {
         self.step.rest.net.poll(sockets, fds, timeout)
     }
 
-    fn open(&mut self, addr: SocketAddr) -> io::Result<Box<dyn Socket>> {
+    fn open(&mut self, addr: &crate::conn::io::Remote) -> io::Result<Box<dyn Socket>> {
         self.step.rest.net.open(addr)
     }
 
@@ -505,7 +505,7 @@ impl Net for CloseLater<'_> {
         self.net.poll(sockets, fds, timeout)
     }
 
-    fn open(&mut self, addr: SocketAddr) -> io::Result<Box<dyn Socket>> {
+    fn open(&mut self, addr: &crate::conn::io::Remote) -> io::Result<Box<dyn Socket>> {
         self.net.open(addr)
     }
 
@@ -579,7 +579,7 @@ impl<H: Host> Net for Announcing<'_, H> {
         self.net.poll(sockets, fds, timeout)
     }
 
-    fn open(&mut self, addr: SocketAddr) -> io::Result<Box<dyn Socket>> {
+    fn open(&mut self, addr: &crate::conn::io::Remote) -> io::Result<Box<dyn Socket>> {
         self.net.open(addr)
     }
 
@@ -915,7 +915,7 @@ impl<H: Host> NotifyCx<'_, H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conn::io::{Closer, FakeNet, Peer};
+    use crate::conn::io::{Closer, FakeNet, Peer, Remote};
     use crate::time::ManualClock;
 
     /// The fake network, its closes recorded in order.
@@ -931,7 +931,7 @@ mod tests {
             self.0.poll(sockets, fds, timeout)
         }
 
-        fn open(&mut self, addr: SocketAddr) -> io::Result<Box<dyn Socket>> {
+        fn open(&mut self, addr: &crate::conn::io::Remote) -> io::Result<Box<dyn Socket>> {
             self.0.open(addr)
         }
 
@@ -961,10 +961,10 @@ mod tests {
 
     /// A network and `n` sockets open on it.
     fn opened(n: usize) -> (Recording, Vec<Sock>) {
-        let at = SocketAddr::from(([127, 0, 0, 1], 1));
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
         let mut net = FakeNet::new(ManualClock::new().unwrap()).with_peer(at, Peer::Accepts);
         let socks = (0..n)
-            .map(|_| Sock::new(net.open(at).unwrap(), Closer::System))
+            .map(|_| Sock::new(net.open(&Remote::Inet(at)).unwrap(), Closer::System))
             .collect();
         (Recording(net, Vec::new()), socks)
     }

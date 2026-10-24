@@ -598,9 +598,30 @@ pub struct Sockets {
     pub fastopen: bool,
     /// What each socket's local end is bound to before it connects.
     pub local: LocalBind,
+    /// The Unix socket every transfer over the network connects to in
+    /// place of its host and any proxy (`CURLOPT_UNIX_SOCKET_PATH`,
+    /// `CURLOPT_ABSTRACT_UNIX_SOCKET`).
+    pub unix: Option<UnixSocket>,
     pub open: Option<Handler<dyn SocketOpener>>,
     pub configure: Option<Handler<dyn SocketConfigurer>>,
     pub close: Option<Handler<dyn SocketCloser>>,
+}
+
+/// A Unix socket by its path, or by its name in the abstract namespace.
+#[derive(Debug, PartialEq, Eq)]
+pub struct UnixSocket {
+    /// An empty one fails the transfer, as no socket has it.
+    pub path: Vec<u8>,
+    pub abstract_name: bool,
+}
+
+impl UnixSocket {
+    fn try_clone(&self) -> Result<UnixSocket, OutOfMemory> {
+        Ok(UnixSocket {
+            path: copy(&self.path)?,
+            abstract_name: self.abstract_name,
+        })
+    }
 }
 
 /// The kernel's probes of an idle connection (`CURLOPT_TCP_KEEPALIVE`,
@@ -672,6 +693,7 @@ impl Sockets {
             keepalive: self.keepalive,
             fastopen: self.fastopen,
             local: self.local.try_clone()?,
+            unix: self.unix.as_ref().map(UnixSocket::try_clone).transpose()?,
             open: self.open.clone(),
             configure: self.configure.clone(),
             close: self.close.clone(),
@@ -806,6 +828,7 @@ impl ColdGroup for Sockets {
         keepalive: KeepAlive::DEFAULT,
         fastopen: false,
         local: LocalBind::NONE,
+        unix: None,
         open: None,
         configure: None,
         close: None,

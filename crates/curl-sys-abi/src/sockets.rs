@@ -17,7 +17,7 @@ use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use curl_alloc::{OutOfMemory, try_box};
-use curl_core::conn::io::{Socket, SocketKey};
+use curl_core::conn::io::{Remote, Socket, SocketKey};
 use curl_core::handler::{
     Configured, Handler, SocketCloser, SocketConfigurer, SocketOpener, SocketToSet,
 };
@@ -149,6 +149,36 @@ impl SockaddrEx {
         }
     }
 
+    /// A Unix stream to the socket at `path`, or of the abstract name
+    /// `path` if `abstract_name`, as C asks the opener for one
+    /// (`Curl_unix2addr`): no protocol, and the address's length its
+    /// path's and the terminator's, or the zero before the name and the
+    /// name's, after the family.
+    fn unix(path: &[u8], abstract_name: bool) -> SockaddrEx {
+        // SAFETY: all-zero bytes are a valid `sockaddr_un`.
+        let mut un: libc::sockaddr_un = unsafe { core::mem::zeroed() };
+        un.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        let at = usize::from(abstract_name);
+        // The setup refused a path too long for it.
+        assert!(at + path.len() < un.sun_path.len(), "a Unix path fits");
+        for (to, &b) in un.sun_path[at..].iter_mut().zip(path) {
+            *to = b as libc::c_char;
+        }
+        let len = core::mem::offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1;
+        // SAFETY: all-zero bytes are a valid `sockaddr_storage`.
+        let mut addr: libc::sockaddr_storage = unsafe { core::mem::zeroed() };
+        // SAFETY: a `sockaddr_un` fits in the storage, which is aligned
+        // for any address.
+        unsafe { (&raw mut addr).cast::<libc::sockaddr_un>().write(un) };
+        SockaddrEx {
+            family: libc::AF_UNIX,
+            socktype: libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+            protocol: 0,
+            addrlen: c_uint::try_from(len).expect("an address's size fits"),
+            addr,
+        }
+    }
+
     /// The address as the opener left it, if it is one of TCP's
     /// families.
     fn read(&self) -> Option<SocketAddr> {
@@ -183,20 +213,22 @@ impl SocketOpener for Adapter {
     /// The descriptor the application's opener returns, owned from then
     /// on, and the address it may have changed; `CURL_SOCKET_BAD` with
     /// the error number it left (`socket_open`).
-    fn open(
-        &self,
-        cx: &mut TransferCx<'_>,
-        address: &mut SocketAddr,
-    ) -> io::Result<Box<dyn Socket>> {
+    fn open(&self, cx: &mut TransferCx<'_>, address: &mut Remote) -> io::Result<Box<dyn Socket>> {
         let c = self.sockets();
         let Some(f) = c.open else {
             // Cleared since the transfer started: the system opens it,
             // as C does once its function is NULL.
-            let socket =
-                curl_core::conn::io::open(*address, curl_core::conn::io::Protocol::Tcp, false)?;
+            let socket = curl_core::conn::io::open_remote(
+                address,
+                curl_core::conn::io::Protocol::Tcp,
+                false,
+            )?;
             return Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?);
         };
-        let mut ex = SockaddrEx::tcp(*address);
+        let mut ex = match address {
+            Remote::Inet(to) => SockaddrEx::tcp(*to),
+            Remote::Unix(to) => SockaddrEx::unix(to.path(), to.is_abstract()),
+        };
         let fd = self.call(cx, || {
             // SAFETY: the application's opener takes its data, the
             // purpose and the address, which lives through the call with
@@ -215,8 +247,10 @@ impl SocketOpener for Adapter {
         // SAFETY: the opener hands the descriptor over, open, as its
         // contract says; nothing else closes it.
         let socket = unsafe { curl_core::conn::io::adopt(fd) };
-        if let Some(changed) = ex.read() {
-            *address = changed;
+        // A Unix socket's address is not read back: it is connected to
+        // as the options name it.
+        if let (Remote::Inet(to), Some(changed)) = (&mut *address, ex.read()) {
+            *to = changed;
         }
         Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?)
     }
@@ -266,5 +300,31 @@ impl SocketCloser for CCloser {
         // SAFETY: the application's closer takes its data and the
         // descriptor it now owns.
         unsafe { (self.f)(self.data, socket.get()) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An opener is handed a Unix socket's address as C hands it
+    /// (`Curl_unix2addr`): no protocol, the path and its terminator, or a
+    /// zero and the abstract name, and the length after the family.
+    #[test]
+    fn a_unix_address_is_handed_over_as_c_hands_it() {
+        let at = core::mem::offset_of!(libc::sockaddr_un, sun_path);
+        let path = SockaddrEx::unix(b"/tmp/s46.sock", false);
+        assert_eq!(
+            (path.family, path.protocol, path.addrlen as usize),
+            (libc::AF_UNIX, 0, at + 14)
+        );
+        assert_eq!(path.socktype, libc::SOCK_STREAM | libc::SOCK_CLOEXEC);
+        let abs = SockaddrEx::unix(b"s46abs", true);
+        assert_eq!(abs.addrlen as usize, at + 7);
+        // SAFETY: the storage holds the `sockaddr_un` written.
+        let un = unsafe { (&raw const abs.addr).cast::<libc::sockaddr_un>().read() };
+        let name: Vec<u8> = un.sun_path[..8].iter().map(|&c| c as u8).collect();
+        assert_eq!(name, b"\0s46abs\0");
+        assert_eq!(abs.read(), None, "not read back as TCP's");
     }
 }

@@ -38,6 +38,8 @@ pub enum Feature {
     Psl,
     /// TLS, by OpenSSL, which the tool and the C ABI give every handle.
     Ssl,
+    /// Connections over Unix sockets, by path or abstract name.
+    UnixSockets,
     /// The `zstd` content coding is undone by zstd, which the tool and the
     /// C ABI give every handle.
     Zstd,
@@ -55,6 +57,7 @@ impl Feature {
             Feature::Libz => "libz",
             Feature::Psl => "PSL",
             Feature::Ssl => "SSL",
+            Feature::UnixSockets => "UnixSockets",
             Feature::Zstd => "zstd",
         }
     }
@@ -69,6 +72,7 @@ const FEATURES: &[Feature] = &[
     Feature::Libz,
     Feature::Psl,
     Feature::Ssl,
+    Feature::UnixSockets,
     Feature::Zstd,
 ];
 #[cfg(not(feature = "debug-hooks"))]
@@ -79,6 +83,7 @@ const FEATURES: &[Feature] = &[
     Feature::Libz,
     Feature::Psl,
     Feature::Ssl,
+    Feature::UnixSockets,
     Feature::Zstd,
 ];
 
@@ -207,6 +212,7 @@ mod tests {
     fn features_are_named_as_c_names_them() {
         let names: Vec<_> = version().features.iter().map(|f| f.name()).collect();
         assert!(names.contains(&"IPv6"), "{names:?}");
+        assert!(names.contains(&"UnixSockets"), "{names:?}");
     }
 
     #[test]

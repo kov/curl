@@ -93,8 +93,14 @@ pub(crate) fn of<H: Host>(cx: &mut StepCx<'_, H>, component: Component, args: fm
     text(cx, line.bytes());
 }
 
-/// What a send of `len` bytes on the connection came to (`cf_socket_send`).
-pub(crate) fn sent<H: Host>(cx: &mut StepCx<'_, H>, len: usize, sent: &std::io::Result<Sent>) {
+/// What a send of `len` bytes on the connection came to (`cf_socket_send`),
+/// in the socket's filter's name, `component`.
+pub(crate) fn sent<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    component: Component,
+    len: usize,
+    sent: &std::io::Result<Sent>,
+) {
     let (code, n) = match sent {
         Ok(Sent::Bytes(n)) => (0, n.get()),
         Ok(Sent::WouldBlock) => (AGAIN_NUMBER, 0),
@@ -102,15 +108,16 @@ pub(crate) fn sent<H: Host>(cx: &mut StepCx<'_, H>, len: usize, sent: &std::io::
     };
     of(
         cx,
-        Component::Tcp,
+        component,
         format_args!("send(len={len}) -> {code}, {n}"),
     );
 }
 
 /// What a receive of up to `len` bytes on the connection came to
-/// (`cf_socket_recv`).
+/// (`cf_socket_recv`), in the socket's filter's name, `component`.
 pub(crate) fn received<H: Host>(
     cx: &mut StepCx<'_, H>,
+    component: Component,
     len: usize,
     got: &Result<Recv, RecvFailed>,
 ) {
@@ -123,7 +130,7 @@ pub(crate) fn received<H: Host>(
     };
     of(
         cx,
-        Component::Tcp,
+        component,
         format_args!("recv(len={len}) -> {code}, {n}"),
     );
 }

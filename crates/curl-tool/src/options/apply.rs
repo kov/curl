@@ -330,6 +330,10 @@ pub(crate) struct Operation<'a> {
     pub(crate) mptcp: bool,
     /// `--interface`, never empty.
     pub(crate) interface: Option<&'a [u8]>,
+    /// `--unix-socket` or `--abstract-unix-socket`, the last given, and
+    /// which.
+    pub(crate) unix_socket: Option<&'a [u8]>,
+    pub(crate) abstract_unix_socket: bool,
     /// `--local-port`: the first port, 0 for none, and how many from it
     /// are tried.
     pub(crate) local_port: u16,
@@ -1306,6 +1310,15 @@ pub(crate) fn apply<'a>(
         Opt::TcpNodelay => line.current().nagle = !value.toggle(),
         Opt::TcpFastopen => line.current().tcp_fastopen = value.toggle(),
         Opt::Mptcp => line.current().mptcp = value.toggle(),
+        Opt::UnixSocket | Opt::AbstractUnixSocket => {
+            let path = value.text();
+            if path.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            let op = line.current();
+            op.unix_socket = Some(path);
+            op.abstract_unix_socket = spec.opt == Opt::AbstractUnixSocket;
+        }
         Opt::Interface => {
             let name = value.text();
             if name.is_empty() {
@@ -1615,8 +1628,7 @@ pub(crate) fn apply<'a>(
             }
             line.global.libcurl = Some(file);
         }
-        Opt::AbstractUnixSocket
-        | Opt::AltSvc
+        Opt::AltSvc
         | Opt::Append
         | Opt::CompressedSsh
         | Opt::Delegation
@@ -1697,7 +1709,6 @@ pub(crate) fn apply<'a>(
         | Opt::TftpBlksize
         | Opt::TftpNoOptions
         | Opt::TlsEarlydata
-        | Opt::UnixSocket
         | Opt::UploadFlags
         | Opt::UseAscii => line.not_implemented(spec, "--"),
     }

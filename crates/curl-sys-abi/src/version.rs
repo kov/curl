@@ -89,6 +89,7 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::Libz => (c"libz", crate::ffi::CURL_VERSION_LIBZ),
         Feature::Psl => (c"PSL", crate::ffi::CURL_VERSION_PSL),
         Feature::Ssl => (c"SSL", crate::ffi::CURL_VERSION_SSL),
+        Feature::UnixSockets => (c"UnixSockets", crate::ffi::CURL_VERSION_UNIX_SOCKETS),
         Feature::Zstd => (c"zstd", crate::ffi::CURL_VERSION_ZSTD),
     }
 }
@@ -293,7 +294,15 @@ mod tests {
             (names.as_slice(), info.features),
             (
                 &[
-                    "brotli", "Debug", "HTTPSIG", "IPv6", "libz", "PSL", "SSL", "zstd"
+                    "brotli",
+                    "Debug",
+                    "HTTPSIG",
+                    "IPv6",
+                    "libz",
+                    "PSL",
+                    "SSL",
+                    "UnixSockets",
+                    "zstd"
                 ][..],
                 ffi::CURL_VERSION_BROTLI
                     | ffi::CURL_VERSION_DEBUG
@@ -301,6 +310,7 @@ mod tests {
                     | ffi::CURL_VERSION_LIBZ
                     | ffi::CURL_VERSION_PSL
                     | ffi::CURL_VERSION_SSL
+                    | ffi::CURL_VERSION_UNIX_SOCKETS
                     | ffi::CURL_VERSION_ZSTD
             )
         );
@@ -308,12 +318,22 @@ mod tests {
         assert_eq!(
             (names.as_slice(), info.features),
             (
-                &["brotli", "HTTPSIG", "IPv6", "libz", "PSL", "SSL", "zstd"][..],
+                &[
+                    "brotli",
+                    "HTTPSIG",
+                    "IPv6",
+                    "libz",
+                    "PSL",
+                    "SSL",
+                    "UnixSockets",
+                    "zstd"
+                ][..],
                 ffi::CURL_VERSION_BROTLI
                     | ffi::CURL_VERSION_IPV6
                     | ffi::CURL_VERSION_LIBZ
                     | ffi::CURL_VERSION_PSL
                     | ffi::CURL_VERSION_SSL
+                    | ffi::CURL_VERSION_UNIX_SOCKETS
                     | ffi::CURL_VERSION_ZSTD
             )
         );

@@ -1395,6 +1395,7 @@ impl Request {
                 trace::debug_info(cx, format_args!("sending last upload chunk of {len} bytes"));
             }
             let said = cx.easy().report().reasons();
+            let component = lease.get().socket_component();
             let sent = lease.get().send(cx, &self.out[self.sent..end]);
             // The failure is said before the send is traced
             // (`cf_socket_send`), unless a layer said why already, as
@@ -1411,7 +1412,7 @@ impl Request {
                 }
                 Ok(_) => None,
             };
-            trace::sent(cx, len, &sent);
+            trace::sent(cx, component, len, &sent);
             let (code, n) = match (&sent, failed) {
                 (Ok(Sent::Bytes(n)), _) => (0, n.get()),
                 (_, Some(kind)) => (kind.number(), 0),
@@ -1615,8 +1616,9 @@ impl Request {
             };
             reads += 1;
             let said = cx.easy().report().reasons();
+            let component = lease.get().socket_component();
             let got = lease.get().recv(cx, max);
-            trace::received(cx, max, &got);
+            trace::received(cx, component, max, &got);
             match got {
                 // Bytes a layer holds wake no poll: the step runs again
                 // (`sendrecv_dl`'s `data_pending`).

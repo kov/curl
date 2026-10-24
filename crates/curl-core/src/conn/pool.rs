@@ -154,9 +154,9 @@ impl ConnLease {
 
     /// What the handshake under way over the connection to the first
     /// hop waits for, as its layers say: TLS's.
-    pub(crate) fn handshake_pollset(&self) -> Events {
+    pub(crate) fn handshake_pollset(&self, wanted: Events) -> Events {
         match self.slot() {
-            ConnSlot::Connecting(machine) => machine.handshake_pollset(),
+            ConnSlot::Connecting(machine) => machine.handshake_pollset(wanted),
             _ => panic!("{:?} is not setting up", self.id),
         }
     }

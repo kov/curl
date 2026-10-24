@@ -462,6 +462,136 @@ fn https_through_a_proxy_reads_what_followed_its_answer_first() {
     assert_eq!((log.port, log.kind), (443, Some(TlsPeerKind::Name)));
 }
 
+/// Set `o` to go through the HTTPS proxy on the test's port.
+fn https_proxy(o: &mut Options, url: &[u8]) {
+    o.set_url(Some(url)).unwrap();
+    let proxy = format!("https://127.0.0.1:{PORT}");
+    o.proxy.make_mut().unwrap().url = Some(proxy.into_bytes());
+}
+
+/// Plain HTTP through an HTTPS proxy is forwarded over TLS made with the
+/// proxy (`cf_ssl_proxy`, added as the origin's filter): the request,
+/// with the URL whole, goes as records, and the session's peer is the
+/// proxy, not the origin.
+#[test]
+fn http_through_an_https_proxy_goes_over_tls_to_the_proxy() {
+    let (backend, libraries) = tls();
+    let [welcome, response] = served(OK);
+    let (mut m, talk, _) = server(&[&welcome, &response], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        https_proxy(o, b"http://origin.example/p");
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"ok\n");
+    let wire = talk.received();
+    assert!(!wire.windows(4).any(|w| w == b"GET "), "{wire:?}");
+    let sent = String::from_utf8(sent(&talk)).unwrap();
+    let request = sent.strip_prefix("FAKETLS HELLO\r\n\r\nFAKETLS FINISHED\n");
+    let request = request.unwrap_or_else(|| panic!("{sent}"));
+    assert!(
+        request.starts_with("GET http://origin.example/p HTTP/1.1\r\nHost: origin.example\r\n"),
+        "{request}"
+    );
+    let log = backend.log();
+    assert_eq!((log.sessions, log.handshakes), (1, 1));
+    assert_eq!(log.name(), b"127.0.0.1");
+    assert_eq!((log.port, log.kind), (PORT, Some(TlsPeerKind::Ipv4)));
+    // Its TLS is the proxy's: the transfer's connection is not secured
+    // by TLS with the origin (`TIMER_APPCONNECT` is the origin's), and
+    // the verification is the proxy's.
+    let report = ran.easy.report();
+    assert_eq!(report.timings().appconnect(), Duration::ZERO);
+    assert_eq!(
+        (report.proxy_verify_result(), report.verify_result()),
+        (1, 0)
+    );
+}
+
+/// HTTPS through an HTTPS proxy makes TLS with the proxy first, then the
+/// tunnel through it, then TLS with the origin inside that: the origin's
+/// records travel inside the proxy's, and the CONNECT never goes in the
+/// clear.
+#[test]
+fn https_through_an_https_proxy_is_tls_in_tls() {
+    let (backend, libraries) = tls();
+    let established = fake::records(b"HTTP/1.1 200 Connection established\r\n\r\n").unwrap();
+    let inner_welcome = fake::records(WELCOME).unwrap();
+    let response = fake::records(&fake::records(OK).unwrap()).unwrap();
+    let (mut m, talk, _) = server(&[WELCOME, &established, &inner_welcome, &response], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        https_proxy(o, b"https://origin.example/p");
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"ok\n");
+    let wire = talk.received();
+    assert!(wire.starts_with(HELLO), "{}", wire.escape_ascii());
+    assert!(!wire.windows(8).any(|w| w == b"CONNECT "), "{wire:?}");
+    let connect = b"CONNECT origin.example:443 HTTP/1.1\r\nHost: origin.example:443\r\n\
+        User-Agent: curl/test\r\nProxy-Connection: Keep-Alive\r\n\r\n";
+    let request = b"GET /p HTTP/1.1\r\nHost: origin.example\r\nUser-Agent: curl/test\r\n\
+        Accept: */*\r\n\r\n";
+    let outer = sent(&talk);
+    let inner = [HELLO, FINISHED, connect].concat();
+    assert!(outer.starts_with(&inner), "{}", outer.escape_ascii());
+    let through = fake::read_client(&outer[inner.len()..]).unwrap();
+    assert_eq!(through, handshake_then(request));
+    let log = backend.log();
+    assert_eq!((log.sessions, log.handshakes), (2, 2));
+    assert_eq!(
+        log.name(),
+        b"origin.example",
+        "the last session, the origin's"
+    );
+    assert_eq!((log.port, log.kind), (443, Some(TlsPeerKind::Name)));
+    let report = ran.easy.report();
+    assert!(report.timings().appconnect() > Duration::ZERO);
+    // Each session's verification is kept as its own: the proxy's, the
+    // first, apart from the origin's (`CURLINFO_PROXY_SSL_VERIFYRESULT`).
+    assert_eq!(
+        (report.proxy_verify_result(), report.verify_result()),
+        (1, 2)
+    );
+}
+
+/// A connection through an HTTPS proxy serves the next transfer only if
+/// its TLS with the proxy would be made the same (`url_match_proxy_use`
+/// comparing `proxy_ssl_config`): another proxy CA file makes another
+/// connection, the same one reuses it.
+#[test]
+fn an_https_proxy_s_connection_is_reused_only_with_the_same_proxy_tls() {
+    use crate::options::CaSetting;
+    let (backend, libraries) = tls();
+    let [welcome, response] = served(OK);
+    let first = Conversation::replies(&[&welcome, &response, &response], false);
+    let other = Conversation::replies(&[&welcome, &response], false);
+    let mut m = serving(Peer::Accepts, &[&first, &other]);
+    let mut get = |path: &str, talk: &Conversation, ca: Option<&[u8]>| {
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        let url = format!("http://origin.example{path}");
+        get_with(&mut m, e, path, talk.clone(), |o| {
+            https_proxy(o, url.as_bytes());
+            if let Some(ca) = ca {
+                let tls = &mut o.proxy.make_mut().unwrap().tls;
+                tls.options.make_mut().unwrap().ca_file = CaSetting::Given(ca.to_vec());
+            }
+        })
+    };
+    assert_eq!(get("/a", &first, None).result, Ok(()));
+    assert_eq!(get("/b", &first, None).result, Ok(()));
+    assert_eq!(get("/c", &other, Some(b"/other/ca.crt")).result, Ok(()));
+    assert_eq!(backend.log().sessions, 2);
+    let gets = |talk: &Conversation| {
+        let text = String::from_utf8(sent(talk)).unwrap();
+        text.matches("GET http://origin.example/").count()
+    };
+    assert_eq!((gets(&first), gets(&other)), (2, 1));
+}
+
 /// The PROXY protocol's line goes before the TLS handshake, in the
 /// clear, as cf-setup.c adds the SSL filter last.
 #[test]

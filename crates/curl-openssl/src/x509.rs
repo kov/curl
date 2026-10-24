@@ -439,7 +439,9 @@ fn info_cert(cert: &Cert, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
             format_args!("BIO_new return NULL, OpenSSL error {e}"),
         ));
     };
-    io.info(format_args!("Server certificate:"));
+    // An HTTPS proxy's is the proxy's (`Curl_ssl_cf_is_proxy`).
+    let whose = if io.for_proxy() { "Proxy" } else { "Server" };
+    io.info(format_args!("{whose} certificate:"));
     // SAFETY: the certificate, alive while `cert` is.
     let subject = unsafe { openssl_sys::X509_get_subject_name(cert.as_ptr()) };
     match name_line(subject, &mut bio) {

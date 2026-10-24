@@ -333,3 +333,136 @@ fn versions_that_allow_none_fail_the_tls_filter_s_connect() {
     );
     assert_eq!(talk.received(), b"", "no hello sent");
 }
+
+/// The replies of an HTTPS proxy that tunnels, its handshake first; and
+/// through the tunnel, the origin's: with TLS if `tls`, else in the
+/// clear.
+fn https_proxy_tunnel(tls: bool) -> Conversation {
+    let established = fake::records(b"HTTP/1.1 200 Connection established\r\n\r\n").unwrap();
+    if tls {
+        let inner_welcome = fake::records(WELCOME).unwrap();
+        let response = fake::records(&fake::records(OK).unwrap()).unwrap();
+        Conversation::replies(&[WELCOME, &established, &inner_welcome, &response], true)
+    } else {
+        let response = fake::records(OK).unwrap();
+        Conversation::replies(&[WELCOME, &established, &response], true)
+    }
+}
+
+/// A GET of `url` through an HTTPS proxy that tunnels, by a handle of
+/// the fake library `libraries` tracing all, the lines it traced, each
+/// without its transfer's and connection's numbers.
+fn through_https_proxy(
+    libraries: &'static Libraries,
+    url: &str,
+    talk: &Conversation,
+    set: impl FnOnce(&mut Options),
+) -> Vec<String> {
+    let mut m = serving(Peer::Accepts, &[talk]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let c = Components::new().unwrap();
+    c.configure(b"all");
+    e.set_components(Some(c));
+    let ran = https_get(&mut m, e, url, |o| {
+        let proxy = format!("https://127.0.0.1:{PORT}");
+        o.proxy.make_mut().unwrap().url = Some(proxy.into_bytes());
+        set(o);
+    });
+    assert_eq!(ran.result, Ok(()));
+    ran.seen
+        .text()
+        .into_iter()
+        .map(|l| {
+            l.trim_end()
+                .split_once("] ")
+                .map_or(&*l, |(_, l)| l)
+                .to_owned()
+        })
+        .collect()
+}
+
+/// HTTPS through an HTTPS proxy, as C traces its setup: the proxy's TLS
+/// and the tunnel's filter added together, the TLS made before the
+/// CONNECT, the origin's TLS added once the tunnel is up; the tunnel's
+/// answer read a byte at a time through the proxy's TLS
+/// (`recv_CONNECT_resp`), so that nothing past it leaves the session.
+#[test]
+fn tls_in_tls_sets_up_as_c() {
+    let (backend, libraries) = super::tls::tls();
+    let talk = https_proxy_tunnel(true);
+    let got = through_https_proxy(libraries, "https://origin.example/", &talk, |_| {});
+    let picked: Vec<&str> = got
+        .iter()
+        .map(String::as_str)
+        .filter(|l| {
+            l.starts_with("[SETUP] added ")
+                || l.starts_with("[SSL-PROXY] cf_connect()")
+                || l.starts_with("[SSL] cf_connect()")
+                || l.starts_with("Establishing")
+                || l.contains("query ALPN")
+                || l.starts_with("using")
+                || l.starts_with("CONNECT")
+        })
+        .collect();
+    assert_eq!(
+        picked,
+        [
+            "[SETUP] added SSL filter for HTTP proxy",
+            "[SETUP] added HTTP proxy tunnel filter",
+            "[SSL-PROXY] cf_connect()",
+            "[SSL-PROXY] cf_connect() -> 0, done=1",
+            "[SSL-PROXY] query ALPN",
+            "[SSL-PROXY] query ALPN: returning '(nil)'",
+            "CONNECT: no ALPN negotiated",
+            "Establishing HTTP proxy tunnel to origin.example:443",
+            "CONNECT phase completed for HTTP proxy",
+            "CONNECT tunnel established, response 200",
+            "[SETUP] added SSL filter for origin",
+            "[SSL] cf_connect()",
+            "[SSL] cf_connect() -> 0, done=1",
+            "[SETUP] query ALPN",
+            "[SSL] query ALPN: returning '(nil)'",
+            "[SSL] query ALPN",
+            "[SSL] query ALPN: returning '(nil)'",
+            "using HTTP/1.x",
+        ],
+        "{got:#?}"
+    );
+    // The answer's bytes, each asked of the proxy's session alone, the
+    // first reads made of a session (the log keeps 32).
+    assert_eq!(backend.log().asked(), [1; 32]);
+}
+
+/// Plain HTTP tunneled through an HTTPS proxy: the tunnel's filter,
+/// asked what ALPN agreed, keeps the question (`cf_h1_proxy_query`), so
+/// the proxy's TLS below it, which answered for the CONNECT, says
+/// nothing.
+#[test]
+fn a_tunnel_through_an_https_proxy_keeps_the_alpn_question() {
+    let (_, libraries) = super::tls::tls();
+    let talk = https_proxy_tunnel(false);
+    let url = format!("http://127.0.0.1:{PORT}/");
+    let got = through_https_proxy(libraries, &url, &talk, |o| {
+        o.proxy.make_mut().unwrap().tunnel = true
+    });
+    let picked: Vec<&str> = got
+        .iter()
+        .map(String::as_str)
+        .filter(|l| {
+            l.contains("query ALPN") || l.starts_with("using") || l.starts_with("[SETUP] added ")
+        })
+        .collect();
+    assert_eq!(
+        picked,
+        [
+            "[SETUP] added SSL filter for HTTP proxy",
+            "[SETUP] added HTTP proxy tunnel filter",
+            "[SSL-PROXY] query ALPN",
+            "[SSL-PROXY] query ALPN: returning '(nil)'",
+            "[H1-PROXY] query ALPN",
+            "using HTTP/1.x",
+        ],
+        "{got:#?}"
+    );
+}

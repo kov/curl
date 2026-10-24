@@ -14,7 +14,8 @@
 //! A session allocates nothing past its own box, so what a test counts
 //! is the library's. A library made `ticketing` resumes a session the
 //! transfer's cache holds, and gives one to keep as its handshake ends,
-//! each a ticket of TLS 1.3 good for two hours. A record a send cannot put on the wire whole is
+//! each a ticket of TLS 1.3 good for two hours. A session says its
+//! verification of the peer gave its number, counting from 1. A record a send cannot put on the wire whole is
 //! kept and sent before anything else: a read that must send first
 //! waits to write.
 
@@ -226,7 +227,7 @@ impl TlsBackend for FakeTls {
             .with(|| FakeState::new(&self.log), |s| s.number)
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?
             .expect("one library per multi in the tests");
-        {
+        let number = {
             let mut log = self.log.lock().expect("no test panics holding the log");
             log.state = state;
             log.sessions += 1;
@@ -236,9 +237,11 @@ impl TlsBackend for FakeTls {
             log.port = peer.port;
             log.kind = Some(peer.kind);
             log.verify_peer = identity.verify_peer;
-        }
+            log.sessions
+        };
         let session = FakeSession {
             log: self.log.clone(),
+            number,
             made: false,
             pause: self.pause,
             tickets: self.tickets,
@@ -283,6 +286,9 @@ enum Stage {
 
 struct FakeSession {
     log: TryArc<Mutex<FakeLog>>,
+    /// Its number, counting from 1 in the order the library made them:
+    /// what it says its verification of the peer gave.
+    number: usize,
     /// Its own object is made, at the first step, after the application
     /// set its context up: its `body`, which `native` points at, as its
     /// context is its `out`.
@@ -457,6 +463,9 @@ impl TlsSession for FakeSession {
                             let to = read + n.get();
                             if buf[read..to] != WELCOME[read..to] {
                                 return Err(ErrorKind::SslConnectError);
+                            }
+                            if to == WELCOME.len() {
+                                io.verified(self.number as i64);
                             }
                             self.stage = if to == WELCOME.len() {
                                 Stage::Finished(0)

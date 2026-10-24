@@ -330,8 +330,8 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
         LayerCx::certinfo_report(&mut *self.step)
     }
 
-    fn tls_verified(&mut self, result: i64) {
-        LayerCx::tls_verified(&mut *self.step, result);
+    fn tls_verified(&mut self, filter: Component, result: i64) {
+        LayerCx::tls_verified(&mut *self.step, filter, result);
     }
 
     fn configures_tls(&self) -> bool {

@@ -79,9 +79,9 @@ file: crates/curl-core/src/conn/tls.rs
 witness: curl-core proto::http::tests::https_trace::what_alpn_agreed_is_asked_of_a_new_connection_only
 features: test-util
 --- old
-            LayerQuery::Alpn => Some(LayerAnswer::Alpn(self.session.chosen())),
+            LayerQuery::Alpn => Some(LayerAnswer::Alpn(self.session.chosen(), self.filter)),
 --- new
-            LayerQuery::Alpn => Some(LayerAnswer::Alpn(None)),
+            LayerQuery::Alpn => Some(LayerAnswer::Alpn(None, self.filter)),
 
 === the winning attempt is not asked what ALPN agreed
 file: crates/curl-core/src/multi/state.rs
@@ -97,9 +97,9 @@ file: crates/curl-core/src/multi/state/tunnel.rs
 witness: curl-core proto::http::tests::setup_trace::a_pre_proxy_s_and_a_tunnel_s_setup_is_traced_as_c
 features: test-util
 --- old
-    let below = if c.route.socks().is_some() {
+    } else if c.route.socks().is_some() {
 --- new
-    let below = if c.route.socks().is_none() {
+    } else if c.route.socks().is_none() {
 
 === a newest TLS version older than the oldest is let through
 file: crates/curl-core/src/multi/state/tls.rs

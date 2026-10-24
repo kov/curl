@@ -147,6 +147,8 @@ pub struct TransferReport {
     /// code, 0 being verified: the handle's, kept as transfers start over
     /// (C's `set.ssl.certverifyresult`).
     verify_result: i64,
+    /// The same of an HTTPS proxy's (`set.proxy_ssl.certverifyresult`).
+    proxy_verify_result: i64,
 }
 
 impl TransferReport {
@@ -162,6 +164,7 @@ impl TransferReport {
         TransferReport {
             headers: HeaderStore::after(&self.headers),
             verify_result: self.verify_result,
+            proxy_verify_result: self.proxy_verify_result,
             transfer: self.transfer,
             ..TransferReport::default()
         }
@@ -175,6 +178,7 @@ impl TransferReport {
         TransferReport {
             os_errno: self.os_errno,
             verify_result: 0,
+            proxy_verify_result: 0,
             ..self.cleared()
         }
     }
@@ -280,6 +284,16 @@ impl TransferReport {
 
     pub(crate) fn set_verify_result(&mut self, result: i64) {
         self.verify_result = result;
+    }
+
+    /// What the TLS library made of an HTTPS proxy's certificate, as
+    /// `verify_result` (`CURLINFO_PROXY_SSL_VERIFYRESULT`).
+    pub fn proxy_verify_result(&self) -> i64 {
+        self.proxy_verify_result
+    }
+
+    pub(crate) fn set_proxy_verify_result(&mut self, result: i64) {
+        self.proxy_verify_result = result;
     }
 
     pub fn certinfo(&self) -> Option<&CertInfo> {

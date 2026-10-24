@@ -75,8 +75,11 @@ impl Tunnel {
 /// (`http_proxy_cf_connect`).
 pub(super) fn dialed<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     // The filter below the tunnel's is asked (`http_proxy_cf_connect`):
-    // the SOCKS proxy's, or the one that dialed the proxy.
-    let below = if c.route.socks().is_some() {
+    // an HTTPS proxy's TLS, the SOCKS proxy's, or the one that dialed the
+    // proxy.
+    let below = if c.route.proxy_tls().is_some() {
+        Component::SslProxy
+    } else if c.route.socks().is_some() {
         Component::Socks
     } else {
         Component::HappyEyeballs
@@ -215,6 +218,9 @@ enum Ran {
 }
 
 fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, ErrorKind> {
+    // Through an HTTPS proxy's TLS, the socket's sends and receives are
+    // the TLS session's records, traced as C's socket filter traces them.
+    let traced = c.route.proxy_tls().map(|_| c.route.socket_component());
     loop {
         let t = tunnel(&mut c.handshake);
         if t.sent < t.request.len() {
@@ -222,7 +228,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
                 .lease
                 .dialed()
                 .stream()
-                .send(cx, &t.request[t.sent..], None);
+                .send(cx, &t.request[t.sent..], traced);
             let n = match sent {
                 Ok(Sent::Bytes(n)) => n.get(),
                 Ok(Sent::WouldBlock) => return Ok(Ran::Idle),
@@ -247,10 +253,18 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
         // C reads the answer a byte at a time, taking stock of the
         // transfer after each read, the end of the connection's too, and
         // once more as it returns for more or with the answer whole
-        // (`recv_CONNECT_resp`, `H1_CONNECT`).
+        // (`recv_CONNECT_resp`, `H1_CONNECT`). Through an HTTPS proxy's
+        // TLS, each of those reads is one of the TLS filter's, which says
+        // so: they are made a byte at a time too, and what follows the
+        // answer stays in the TLS session.
+        let size = if c.route.proxy_tls().is_some() {
+            1
+        } else {
+            READ_SIZE
+        };
         let dialed = c.lease.dialed().stream();
         if dialed.received().is_empty() {
-            match dialed.recv(cx, READ_SIZE, None) {
+            match dialed.recv(cx, size, traced) {
                 Ok(Recv::Data(_)) => {}
                 Ok(Recv::WouldBlock) => {
                     progress::update(cx, false)?;

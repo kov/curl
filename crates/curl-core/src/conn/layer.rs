@@ -52,14 +52,17 @@ pub(crate) enum LayerQuery {
     /// What the origin's TLS session waits for on the socket (its
     /// `io_need`).
     TlsWaits,
+    /// What an HTTPS proxy's TLS session waits for, likewise.
+    ProxyTlsWaits,
 }
 
 /// What a layer answers a `LayerQuery`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LayerAnswer {
     TlsNative(crate::tls::TlsNative),
-    /// What the peer chose, if it chose.
-    Alpn(Option<crate::tls::Chosen>),
+    /// What the peer chose, if it chose, and the TLS filter that says
+    /// so: the origin's or an HTTPS proxy's.
+    Alpn(Option<crate::tls::Chosen>, Component),
     TlsWaits(crate::tls::TlsWait),
 }
 
@@ -103,10 +106,12 @@ pub(crate) trait LayerCx {
         None
     }
 
-    /// What the TLS library made of the origin's certificate, for the
-    /// transfer's report (`set.ssl.certverifyresult`). Work done for no
-    /// transfer keeps nothing.
-    fn tls_verified(&mut self, _result: i64) {}
+    /// What the TLS library made of the certificate of the peer the TLS
+    /// filter `filter` talks to, the origin (`SSL`) or an HTTPS proxy
+    /// (`SSL-PROXY`), for the transfer's report
+    /// (`set.ssl.certverifyresult`, `set.proxy_ssl.certverifyresult`).
+    /// Work done for no transfer keeps nothing.
+    fn tls_verified(&mut self, _filter: Component, _result: i64) {}
 
     /// The transfer has a TLS context handler (`CURLOPT_SSL_CTX_FUNCTION`).
     fn configures_tls(&self) -> bool {

@@ -22,20 +22,30 @@ pub(crate) struct TlsLayer {
     early: Vec<u8>,
     /// Who the session's tickets are kept for.
     peer: SessionPeer,
+    /// The filter C's chain holds for it: the origin's (`SSL`) or an
+    /// HTTPS proxy's (`SSL-PROXY`).
+    filter: Component,
 }
 
 impl TlsLayer {
     /// The layer over a connection that received `early` and has not
-    /// used it, its sessions kept for `peer`.
+    /// used it, its sessions kept for `peer`, the filter `filter` of C's
+    /// chain: `SSL` for the origin's, `SSL-PROXY` for an HTTPS proxy's.
     pub(crate) fn boxed(
         session: Box<dyn TlsSession>,
         early: Vec<u8>,
         peer: SessionPeer,
+        filter: Component,
     ) -> Result<Box<dyn Layer>, OutOfMemory> {
+        assert!(
+            matches!(filter, Component::Ssl | Component::SslProxy),
+            "a TLS filter"
+        );
         Ok(try_box(TlsLayer {
             session,
             early,
             peer,
+            filter,
         })?)
     }
 
@@ -49,8 +59,9 @@ impl TlsLayer {
             session,
             early,
             peer,
+            filter,
         } = self;
-        let io = TlsIo::new(below, cx, early, Component::Ssl, peer);
+        let io = TlsIo::new(below, cx, early, *filter, peer);
         (&mut **session, io)
     }
 }
@@ -60,6 +71,7 @@ impl fmt::Debug for TlsLayer {
         f.debug_struct("TlsLayer")
             .field("early", &self.early.len())
             .field("peer", &self.peer)
+            .field("filter", &self.filter)
             .finish_non_exhaustive()
     }
 }
@@ -101,14 +113,22 @@ impl Layer for TlsLayer {
         session.shutdown(&mut io)
     }
 
-    /// The session's objects, once its library made them. The origin's
-    /// layer is the only TLS one yet; an HTTPS proxy's (43i) is to pass
-    /// the question down, as C's answers only for the origin.
+    /// The session's objects, once its library made them, the origin's
+    /// alone: an HTTPS proxy's layer passes the question down, as C's
+    /// answers only for the origin (`ssl_cf_query`). Either answers what
+    /// was agreed by ALPN, saying it is the one that answers, and what it
+    /// waits for, the proxy's asked apart.
     fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
+        let origin = self.filter == Component::Ssl;
         match q {
-            LayerQuery::TlsNative => self.session.native().map(LayerAnswer::TlsNative),
-            LayerQuery::Alpn => Some(LayerAnswer::Alpn(self.session.chosen())),
-            LayerQuery::TlsWaits => Some(LayerAnswer::TlsWaits(self.session.waits())),
+            LayerQuery::TlsNative if origin => self.session.native().map(LayerAnswer::TlsNative),
+            LayerQuery::TlsNative => None,
+            LayerQuery::Alpn => Some(LayerAnswer::Alpn(self.session.chosen(), self.filter)),
+            LayerQuery::TlsWaits if origin => Some(LayerAnswer::TlsWaits(self.session.waits())),
+            LayerQuery::ProxyTlsWaits if !origin => {
+                Some(LayerAnswer::TlsWaits(self.session.waits()))
+            }
+            LayerQuery::TlsWaits | LayerQuery::ProxyTlsWaits => None,
         }
     }
 }
@@ -157,7 +177,13 @@ mod tests {
         let socket = crate::conn::io::dial(&mut net, at);
         let pending = |session: Holding, early: &[u8]| {
             let peer = crate::tls::SessionPeer::testing();
-            let layer = TlsLayer::boxed(try_box(session).unwrap(), early.to_vec(), peer).unwrap();
+            let layer = TlsLayer::boxed(
+                try_box(session).unwrap(),
+                early.to_vec(),
+                peer,
+                Component::Ssl,
+            )
+            .unwrap();
             let mut layers = [layer];
             let (top, rest) = layers.split_last_mut().unwrap();
             top.data_pending(Below::new(rest, &*socket))
@@ -167,8 +193,13 @@ mod tests {
         assert!(pending(Holding(false, TlsWait::Nothing), b"early"));
         let waits = |w| {
             let peer = crate::tls::SessionPeer::testing();
-            let layer =
-                TlsLayer::boxed(try_box(Holding(false, w)).unwrap(), Vec::new(), peer).unwrap();
+            let layer = TlsLayer::boxed(
+                try_box(Holding(false, w)).unwrap(),
+                Vec::new(),
+                peer,
+                Component::Ssl,
+            )
+            .unwrap();
             layer.adjust_pollset(Events::IN)
         };
         assert_eq!(waits(TlsWait::Nothing), Events::IN);

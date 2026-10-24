@@ -42,6 +42,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use crate::options::{IpVersion, ProxyType};
 use crate::report::ResponseVersion;
+use crate::tls::TlsIdentity;
 
 pub(crate) use self::buf::RecvBuf;
 /// How the tests' layer shuts down, for `Multi::linger_connections`.
@@ -261,6 +262,18 @@ impl Tcp {
         self.via.as_deref().unwrap_or(&self.origin)
     }
 
+    /// A connection on it speaks TLS: to the origin, to an HTTPS proxy,
+    /// or to both, one inside the other.
+    pub(crate) fn secured(&self) -> bool {
+        self.tls.is_some() || self.proxy_tls().is_some()
+    }
+
+    /// The settings an HTTPS proxy's TLS is made with, if the route goes
+    /// through one.
+    pub(crate) fn proxy_tls(&self) -> Option<&TryArc<TlsIdentity>> {
+        self.proxy.as_ref()?.tls()
+    }
+
     /// The route goes through a proxy by a handshake the setup makes
     /// over the connection to it: SOCKS's, or an HTTP proxy's tunnel.
     pub(crate) fn handshakes(&self) -> bool {
@@ -302,10 +315,20 @@ pub(crate) struct ProxyRoute {
     /// in `CURLOPT_SOCKS5_AUTH`): what the transfer asks of a connection,
     /// not what the connection shares with it.
     pub(crate) auth_only: bool,
-    /// The SOCKS proxy in front of it, which only an HTTP proxy has:
-    /// shared, as few routes have one and every connection's slot holds
+    /// What few proxies have: shared, as every connection's slot holds
     /// its route inline.
-    pre: Option<TryArc<PreProxy>>,
+    cold: Option<TryArc<ProxyCold>>,
+}
+
+/// What of a proxy few routes have.
+#[derive(Debug, Default)]
+struct ProxyCold {
+    /// The SOCKS proxy in front of it, which only an HTTP proxy has.
+    pre: Option<PreProxy>,
+    /// The settings an HTTPS proxy's TLS is made with, which a connection
+    /// must share to serve the transfer (C's `proxy_ssl_config`); none for
+    /// any other proxy.
+    tls: Option<TryArc<TlsIdentity>>,
 }
 
 /// The user and password a proxy is given, each empty for none.
@@ -324,6 +347,9 @@ struct ProxyKey<'a> {
     creds: Option<&'a ProxyCreds>,
     forward: bool,
     pre: Option<(ProxyType, Destination<'a>, Option<&'a ProxyCreds>)>,
+    /// An HTTPS proxy's TLS settings (`url_match_proxy_use`'s
+    /// `Curl_ssl_conn_config_match`).
+    tls: Option<&'a TlsIdentity>,
 }
 
 impl ProxyRoute {
@@ -340,8 +366,50 @@ impl ProxyRoute {
             creds,
             forward,
             auth_only,
-            pre: None,
+            cold: None,
         }
+    }
+
+    /// The same proxy, what few have changed by `change`.
+    fn with_cold(self, change: impl FnOnce(&mut ProxyCold)) -> Result<ProxyRoute, OutOfMemory> {
+        let mut cold = match self.cold.as_deref() {
+            Some(ProxyCold { pre, tls }) => ProxyCold {
+                pre: pre.clone(),
+                tls: tls.clone(),
+            },
+            None => ProxyCold::default(),
+        };
+        change(&mut cold);
+        Ok(ProxyRoute {
+            cold: Some(TryArc::try_new(cold)?),
+            ..self
+        })
+    }
+
+    /// The same proxy, an HTTPS one, its TLS made with `identity`.
+    pub(crate) fn secured(self, identity: TryArc<TlsIdentity>) -> Result<ProxyRoute, OutOfMemory> {
+        assert!(self.https(), "only an HTTPS proxy speaks TLS");
+        self.with_cold(|cold| cold.tls = Some(identity))
+    }
+
+    /// The settings an HTTPS proxy's TLS is made with; none for any other
+    /// proxy.
+    pub(crate) fn tls(&self) -> Option<&TryArc<TlsIdentity>> {
+        self.cold.as_deref()?.tls.as_ref()
+    }
+
+    /// The SOCKS proxy in front of it, if any.
+    fn pre(&self) -> Option<&PreProxy> {
+        self.cold.as_deref()?.pre.as_ref()
+    }
+
+    /// Whether it is an HTTPS proxy, which the connection to speaks TLS
+    /// (`CURL_PROXY_IS_HTTPS`).
+    pub(crate) fn https(&self) -> bool {
+        matches!(
+            self.kind,
+            ProxyType::Https | ProxyType::Https2 | ProxyType::Https3
+        )
     }
 
     /// The same HTTP proxy, reached through the SOCKS proxy `pre`.
@@ -351,10 +419,7 @@ impl ProxyRoute {
             socks::Version::of(pre.kind).is_some(),
             "a pre-proxy is SOCKS"
         );
-        Ok(ProxyRoute {
-            pre: Some(TryArc::try_new(pre)?),
-            ..self
-        })
+        self.with_cold(|cold| cold.pre = Some(pre))
     }
 
     /// The peer connected to first.
@@ -364,13 +429,13 @@ impl ProxyRoute {
 
     /// `first_peer`, shared.
     pub(crate) fn first_peer_shared(&self) -> &TryArc<Peer> {
-        self.pre.as_ref().map_or(&self.peer, |pre| &pre.peer)
+        self.pre().map_or(&self.peer, |pre| &pre.peer)
     }
 
     /// The SOCKS proxy on the way to `target`: the one in front, asked
     /// for this proxy, else this one if it is SOCKS.
     pub(crate) fn socks<'a>(&'a self, target: &'a Peer) -> Option<SocksLeg<'a>> {
-        match &self.pre {
+        match self.pre() {
             Some(pre) => Some(SocksLeg {
                 version: socks::Version::of(pre.kind).expect("a pre-proxy is SOCKS"),
                 creds: pre.creds.as_deref(),
@@ -408,17 +473,22 @@ impl ProxyRoute {
             // `Conn::serves` checks against what the connection did; not
             // something the two routes share.
             auth_only: _,
-            pre,
+            cold,
         } = self;
+        let (pre, tls) = match cold.as_deref() {
+            Some(ProxyCold { pre, tls }) => (pre.as_ref(), tls.as_deref()),
+            None => (None, None),
+        };
         ProxyKey {
             kind: *kind,
             peer: Destination(peer),
             creds: creds.as_deref(),
             forward: *forward,
-            pre: pre.as_ref().map(|pre| {
-                let PreProxy { kind, peer, creds } = &**pre;
+            pre: pre.map(|pre| {
+                let PreProxy { kind, peer, creds } = pre;
                 (*kind, Destination(peer), creds.as_deref())
             }),
+            tls,
         }
     }
 }
@@ -740,6 +810,11 @@ impl Conn {
             Route::Tcp(Tcp { proxy: Some(p), .. }) if p.forward => Some(p),
             _ => None,
         }
+    }
+
+    /// Whether it goes through an HTTP proxy's tunnel.
+    pub(crate) fn tunnels(&self) -> bool {
+        matches!(&self.route, Route::Tcp(Tcp { proxy: Some(p), .. }) if p.tunnels())
     }
 
     /// Whether it goes through an HTTP proxy (`http_proxy.peer`).

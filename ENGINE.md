@@ -474,7 +474,11 @@ HTTP starts on a new connection (`http_check_new_conn`: `[TCP]`, `[UNIX]`, `[SOC
 `[H1-PROXY]`, `[SSL]`); the TLS layer adds what it answers (`query ALPN: returning
 'http/1.1'`, `'(nil)'` for none). Each call of the chain's connect ends with its top filter's
 `[DNS] Curl_conn_connect(block=0) -> R, done=D`. `SSLS` traces the session cache's lookups,
-additions and takings as C's (§4.9). Planned: `SSL-PROXY`, an HTTPS proxy's layer (43i). C's `[SHUTDOWN]` lines and a
+additions and takings as C's (§4.9). `SSL-PROXY` traces an HTTPS proxy's TLS layer as `SSL`
+traces the origin's, its part of a pollset said once, and twice once a tunnel through it is made
+(the tunnel's filter asks it again); a tunnel's filter keeps the ALPN question it is asked, so
+the proxy's layer answers only when it is the top. The tunnel's answer is read through it a
+byte at a time, as C's `recv_CONNECT_resp` reads, each read the socket's. C's `[SHUTDOWN]` lines and a
 shutdown's TLS lines are its internal handle's, so not traced (§4.6).
 
 `READ` traces a request's body as C's client readers read it: the reader set as the request is
@@ -1535,8 +1539,8 @@ with `Proxy-Connection: Keep-Alive`; the response's `Proxy-Connection` keeps or 
 connection (`Asked::http_proxy`). A tunnel (`CURLOPT_HTTPPROXYTUNNEL`, a connect-to peer, or
 an `https` origin, which never goes whole) is set up with `CONNECT` (`multi/state/tunnel.rs`), SOCKS4, 4a and 5 with their handshakes
 (`conn/socks.rs`, driven from `multi/state/socks.rs`), over the connection to the proxy the
-setup dialed. An HTTPS proxy fails with `NotBuiltIn` until it is built in step 43 (§4.9),
-after the origin's TLS.
+setup dialed. An HTTPS proxy (`https://`, refused as `NotBuiltIn` without a TLS library)
+speaks TLS before anything else goes to it (§4.9).
 
 `Route` is computed once per leg from the `Target` and options and never mutated. Matching is
 `candidate.route.reusable_for(&needle)`: `Eq` on each sub-struct plus the deliberate
@@ -2009,7 +2013,14 @@ A transfer that verifies never takes a connection made without (the CVE-2021-229
 CA file and path keep the build's default apart from none (`CaSetting`), and the identity
 carries the library's defaults, so it compares the file and path they resolve to: a handle that
 names the default's path matches one that keeps the default, as C finds them, having copied the
-default into the setting (`Curl_ssl_filter_config_tmp_init`). `ProxyRoute` gains the proxy's identity with the HTTPS proxy (43i).
+default into the setting (`Curl_ssl_filter_config_tmp_init`). An HTTPS proxy's route carries an
+identity of its own (`ProxyRoute::tls`, `TlsIdentity::of_proxy`), C's `proxy_ssl_config`: the
+proxy's options (`Proxy::tls`, `CURLOPT_PROXY_SSL*`), its CA defaulting as the origin's, without
+curves or signature algorithms, which C has no proxy options for, and with the origin's ALPN,
+CA cache, engine and session cache, which C keeps once for both. The proxy key compares it
+(`url_match_proxy_use`), so a connection never serves a transfer whose proxy TLS differs,
+whatever its origin's; sessions with the proxy share the multi's cache, keyed by the proxy as a
+peer.
 
 **The session cache** (`tls/cache.rs`, vtls_scache.c) keeps what peers give to resume. Its one
 owner is the multi (`Caches::sessions`, 25 peers, `curl_easy_perform`'s own multi 3 as
@@ -2091,7 +2102,11 @@ An HTTPS proxy's TLS is made after the eyeballs race and any SOCKS pre-proxy, be
 proxy's `CONNECT`, and stays a layer: `[SSL][H1-PROXY][SSL-PROXY][TCP]` through a tunnel, TLS in
 TLS, the origin's layer's `Below` being the proxy's layer; `[SSL-PROXY][TCP]` for a request
 forwarded to the proxy, whose SETUP line C words `added SSL filter for origin`. The race does
-not apply to the proxy's handshake.
+not apply to the proxy's handshake. The two sides are `TlsSide`, the layer's filter
+(`Component::SslProxy`) telling its session it is the proxy's (`TlsIo::for_proxy`): it offers
+`http/1.1` by ALPN (`cf_ssl_proxy_create`), names the peer's certificate `Proxy certificate:`,
+keeps its verification apart (`Report::proxy_verify_result`), answers neither the TLS library's
+objects nor the waits of the origin's layer, and does not mark `TIMER_APPCONNECT`.
 
 **Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the
 multi's `ShutdownSet` until the peer's goodbye or the connection's 2 s. OpenSSL's is

@@ -251,8 +251,9 @@ pub(crate) enum Refused {
     Syntax(UrlErrorKind),
     /// Its scheme is no proxy's: "Unsupported proxy scheme for '…'".
     Scheme,
-    /// It is an HTTPS proxy, which needs TLS: "Unsupported proxy '…',
-    /// libcurl is built without the HTTPS-proxy support."
+    /// It is an HTTPS proxy, which needs TLS, and the build has no TLS
+    /// library: "Unsupported proxy '…', libcurl is built without the
+    /// HTTPS-proxy support."
     Https,
     /// Its user or password does not decode, which C fails with the
     /// URL's error and says nothing of.
@@ -268,11 +269,13 @@ impl From<OutOfMemory> for Refused {
 /// The proxy the URL `text` names, of type `kind` and on port `port`
 /// unless it says otherwise (`parse_proxy`, `Curl_peer_from_proxy_url`):
 /// a URL without a scheme is one of `kind`'s, and one without a port is
-/// on `port`, or else its scheme's.
+/// on `port`, or else its scheme's. An HTTPS proxy is one only if the
+/// build has a TLS library, `tls` (`SSLSUPP_HTTPS_PROXY`).
 pub(crate) fn parse(
     text: &[u8],
     kind: ProxyType,
     port: Option<NonZeroU16>,
+    tls: bool,
 ) -> Result<Parsed, Refused> {
     let opts = ParseOptions {
         guess_scheme: true,
@@ -299,10 +302,12 @@ pub(crate) fn parse(
         // `Curl_peer_from_proxy_url` report it.
         Err(_) => return Err(Refused::OutOfMemory),
     };
-    if matches!(
-        kind,
-        ProxyType::Https | ProxyType::Https2 | ProxyType::Https3
-    ) {
+    if !tls
+        && matches!(
+            kind,
+            ProxyType::Https | ProxyType::Https2 | ProxyType::Https3
+        )
+    {
         return Err(Refused::Https);
     }
     let decoded = GetOptions {

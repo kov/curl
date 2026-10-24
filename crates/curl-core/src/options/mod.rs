@@ -190,6 +190,13 @@ pub struct Proxy {
     /// The address it says, as source and destination both, in place of
     /// the connection's (`CURLOPT_HAPROXY_CLIENT_IP`).
     pub haproxy_client_ip: Option<Vec<u8>>,
+    /// How an HTTPS proxy's TLS is set up and the proxy checked
+    /// (`CURLOPT_PROXY_SSL_VERIFYPEER`, `CURLOPT_PROXY_CAINFO` and the
+    /// rest, C's `set.proxy_ssl`). Of its options, the ones C keeps on the
+    /// handle (ALPN, the CA store's cache, the engine, the session cache,
+    /// the context handler) are the origin's, which a proxy's identity
+    /// takes (`TlsIdentity::of_proxy`).
+    pub tls: Tls,
 }
 
 /// The methods a SOCKS5 proxy may authenticate with
@@ -245,6 +252,7 @@ impl Proxy {
             unified_headers: self.unified_headers,
             haproxy: self.haproxy,
             haproxy_client_ip: self.haproxy_client_ip.as_deref().map(copy).transpose()?,
+            tls: self.tls.try_clone()?,
         })
     }
 
@@ -596,6 +604,7 @@ impl ColdGroup for Proxy {
         unified_headers: false,
         haproxy: false,
         haproxy_client_ip: None,
+        tls: Tls::NONE,
     };
 }
 
@@ -1926,16 +1935,19 @@ pub struct Tls {
 
 impl Default for Tls {
     fn default() -> Self {
-        Tls {
-            verify_peer: true,
-            verify_host: true,
-            certinfo: false,
-            options: Cold::new(),
-        }
+        Tls::NONE
     }
 }
 
 impl Tls {
+    /// Nothing set: the peer verified, by name too.
+    pub const NONE: Tls = Tls {
+        verify_peer: true,
+        verify_host: true,
+        certinfo: false,
+        options: Cold::new(),
+    };
+
     fn try_clone(&self) -> Result<Tls, OutOfMemory> {
         Ok(Tls {
             verify_peer: self.verify_peer,

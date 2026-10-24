@@ -14,7 +14,7 @@ use std::net::Ipv4Addr;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
-use curl_alloc::{OutOfMemory, TryArc, try_box};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use crate::components::Component;
 use crate::conn::Peer;
@@ -395,12 +395,17 @@ impl TlsIo<'_> {
     }
 
     /// What the library made of the peer's certificate, its own code, 0
-    /// being verified (`CURLINFO_SSL_VERIFYRESULT`). The origin's alone:
-    /// a proxy's has its own info (43i).
+    /// being verified: the origin's (`CURLINFO_SSL_VERIFYRESULT`) or an
+    /// HTTPS proxy's (`CURLINFO_PROXY_SSL_VERIFYRESULT`), as the session
+    /// is the one or the other's.
     pub fn verified(&mut self, result: impl Into<i64>) {
-        if self.component == Component::Ssl {
-            self.cx.tls_verified(result.into());
-        }
+        self.cx.tls_verified(self.component, result.into());
+    }
+
+    /// The session is an HTTPS proxy's, not the origin's
+    /// (`Curl_ssl_cf_is_proxy`): its certificate is the proxy's.
+    pub fn for_proxy(&self) -> bool {
+        self.component == Component::SslProxy
     }
 
     /// The transfer asked for its peer's chain (`CURLOPT_CERTINFO`).
@@ -574,6 +579,41 @@ impl TlsIdentity {
         TryArc::try_new(TlsIdentity {
             verify_peer: tls.verify_peer,
             verify_host: tls.verify_host,
+            options,
+            ca_defaults,
+        })
+    }
+
+    /// The identity an HTTPS proxy's TLS is made with: the proxy's
+    /// options `proxy` (`set.proxy_ssl`), but for what C keeps on the
+    /// handle and reads for either filter, which the origin's `origin`
+    /// give (ALPN, the CA store's cache, the engine, the session cache),
+    /// and for the curves and signature algorithms, which C sets for the
+    /// origin alone (`Curl_ssl_filter_config_tmp_init`).
+    pub(crate) fn of_proxy(
+        proxy: &Tls,
+        origin: &TlsOptions,
+        ca_defaults: CaDefaults,
+    ) -> Result<TryArc<TlsIdentity>, OutOfMemory> {
+        let mut options = proxy.options.try_clone()?;
+        options.context = None;
+        options.curves = None;
+        options.signature_algorithms = None;
+        options.alpn = origin.alpn;
+        options.ca_cache = origin.ca_cache;
+        options.engine = match origin.engine.as_deref() {
+            Some(engine) => {
+                let mut copy = Vec::new();
+                copy.try_extend_from_slice(engine)?;
+                Some(copy)
+            }
+            None => None,
+        };
+        options.engine_default = origin.engine_default;
+        options.session_cache = origin.session_cache;
+        TryArc::try_new(TlsIdentity {
+            verify_peer: proxy.verify_peer,
+            verify_host: proxy.verify_host,
             options,
             ca_defaults,
         })

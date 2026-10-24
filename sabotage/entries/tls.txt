@@ -33,14 +33,11 @@ witness: curl-core proto::http::tests::tls::the_proxy_protocol_s_line_goes_befor
     if c.lease.sends_preface() && !made.has(Made::PREFACE) {
         return Some(Due::Preface);
     }
-    if c.route.tls.is_some() && !made.has(Made::TLS) {
-        return Some(Due::Tls);
-    }
 --- new
-    if c.route.tls.is_some() && !made.has(Made::TLS) {
-        return Some(Due::Tls);
-    }
-    if c.lease.sends_preface() && !made.has(Made::PREFACE) {
+    if c.lease.sends_preface()
+        && !made.has(Made::PREFACE)
+        && (c.route.tls.is_none() || made.has(Made::TLS))
+    {
         return Some(Due::Preface);
     }
 
@@ -48,7 +45,7 @@ witness: curl-core proto::http::tests::tls::the_proxy_protocol_s_line_goes_befor
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::tls::an_https_get_goes_through_its_tls_layer
 --- old
-        if self.route.handshakes() || setup.haproxy || self.route.tls.is_some() {
+        if self.route.handshakes() || setup.haproxy || self.route.secured() {
 --- new
         if self.route.handshakes() || setup.haproxy {
 
@@ -64,9 +61,9 @@ witness: curl-core proto::http::tests::tls::a_read_waits_to_write_what_tls_still
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls::a_handshake_waits_to_write_while_it_reads
 --- old
-            Handshake::Tls => lease.handshake_pollset(),
+            Handshake::Tls(_) => lease.handshake_pollset(Events::NONE),
 --- new
-            Handshake::Tls => Events::NONE,
+            Handshake::Tls(_) => Events::NONE,
 
 === the TLS layer asks its session for less than the caller's length
 file: crates/curl-core/src/conn/tls.rs
@@ -153,6 +150,7 @@ witness: curl-core an_https_get_stays_within_its_allocation_budget
             session,
             early,
             peer,
+            filter,
         })?)
 --- new
         let spare = try_box(0u8)?;
@@ -161,6 +159,7 @@ witness: curl-core an_https_get_stays_within_its_allocation_budget
             session,
             early,
             peer,
+            filter,
         })?)
 
 === a TLS identity compares the CA file as set, so naming the default differs from keeping it

@@ -34,8 +34,9 @@ pub(crate) struct Head {
 }
 
 /// The most filters a chain holds: three DNS, HTTPS-CONNECT, SETUP, SSL,
-/// HAPROXY, HTTP-PROXY, H1-PROXY, SOCKS, HAPPY-EYEBALLS and TCP.
-const MOST: usize = 12;
+/// HAPROXY, HTTP-PROXY, H1-PROXY, SSL-PROXY, SOCKS, HAPPY-EYEBALLS and
+/// TCP.
+const MOST: usize = 13;
 
 /// A chain of filters, top first, each connected or not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,7 +63,10 @@ impl Chain {
     /// SOCKS, HTTP-PROXY or HAPROXY filter, added but not connected. A
     /// handshake's filter is there once it is under way or made. The
     /// HTTP proxy's tunnel shows its H1-PROXY filter once `installed`, as
-    /// C installs it in the tunnel filter's first connect.
+    /// C installs it in the tunnel filter's first connect. An HTTPS
+    /// proxy's TLS under way below a tunnel has the tunnel's filter added
+    /// with it, as C adds both at once (`cf_setup_add_http_proxy`), its
+    /// H1-PROXY not yet installed.
     pub(crate) fn of(
         route: &Tcp,
         head: Head,
@@ -86,21 +90,25 @@ impl Chain {
             SetupPoint::Dialed(made) => made,
         };
         let added = |which: Made, filter: Component| made.has(which) || under_way == Some(filter);
+        let tunnels = route.proxy.as_ref().is_some_and(|p| p.tunnels());
+        let proxy_tls_first = tunnels && under_way == Some(Component::SslProxy);
         let added = Handshakes {
             socks: added(Made::SOCKS, Component::Socks),
-            tunnel: added(Made::TUNNEL, Component::HttpProxy),
+            proxy_tls: added(Made::PROXY_TLS, Component::SslProxy),
+            tunnel: added(Made::TUNNEL, Component::HttpProxy) || proxy_tls_first,
             preface: added(Made::PREFACE, Component::Haproxy),
             tls: added(Made::TLS, Component::Ssl),
         };
         let connected = |filter| match filter {
             Component::Socks => made.has(Made::SOCKS),
+            Component::SslProxy => made.has(Made::PROXY_TLS),
             Component::HttpProxy | Component::H1Proxy => made.has(Made::TUNNEL),
             Component::Haproxy => made.has(Made::PREFACE),
             Component::Ssl => made.has(Made::TLS),
             Component::HappyEyeballs | Component::Tcp | Component::Unix => true,
             _ => false,
         };
-        let installed = installed || made.has(Made::TUNNEL);
+        let installed = (installed && !proxy_tls_first) || made.has(Made::TUNNEL);
         Chain::dialed(route, head, added, installed, connected)
     }
 
@@ -121,6 +129,7 @@ impl Chain {
     pub(crate) fn connected(route: &Tcp, head: Head, haproxy: bool) -> Chain {
         let added = Handshakes {
             socks: route.socks().is_some(),
+            proxy_tls: route.proxy_tls().is_some(),
             tunnel: route.proxy.as_ref().is_some_and(|p| p.tunnels()),
             preface: haproxy,
             tls: route.tls.is_some(),
@@ -152,9 +161,15 @@ impl Chain {
         }
         push(Component::Setup);
         // Each filter the setup adds goes right below it, so the last,
-        // TLS's, is on top.
+        // TLS's, is on top. An HTTPS proxy's TLS goes below its tunnel,
+        // or, with none, is the origin's filter (`origin_is_proxy`), added
+        // last.
+        let tunnels = route.proxy.as_ref().is_some_and(|p| p.tunnels());
         if added.tls {
             push(Component::Ssl);
+        }
+        if added.proxy_tls && !tunnels {
+            push(Component::SslProxy);
         }
         if added.preface {
             push(Component::Haproxy);
@@ -164,6 +179,9 @@ impl Chain {
             if installed {
                 push(Component::H1Proxy);
             }
+        }
+        if added.proxy_tls && tunnels {
+            push(Component::SslProxy);
         }
         if added.socks {
             push(Component::Socks);
@@ -221,6 +239,7 @@ impl Chain {
 #[derive(Clone, Copy)]
 struct Handshakes {
     socks: bool,
+    proxy_tls: bool,
     tunnel: bool,
     preface: bool,
     tls: bool,

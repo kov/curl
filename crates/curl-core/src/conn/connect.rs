@@ -104,6 +104,9 @@ impl Made {
     pub(crate) const TUNNEL: Made = Made(2);
     pub(crate) const PREFACE: Made = Made(4);
     pub(crate) const TLS: Made = Made(8);
+    /// An HTTPS proxy's TLS, which stays as a layer below what follows
+    /// (`[SSL-PROXY][TCP]`).
+    pub(crate) const PROXY_TLS: Made = Made(16);
 
     pub(crate) fn has(self, which: Made) -> bool {
         self.0 & which.0 != 0
@@ -591,9 +594,9 @@ impl ConnectMachine {
         }
     }
 
-    pub(crate) fn handshake_pollset(&self) -> Events {
+    pub(crate) fn handshake_pollset(&self, wanted: Events) -> Events {
         match &self.stage {
-            Stage::Dialed(d) => d.stream.adjust_pollset(Events::NONE),
+            Stage::Dialed(d) => d.stream.adjust_pollset(wanted),
             Stage::Resolving | Stage::Racing(_) => panic!("no handshake is made"),
         }
     }
@@ -956,7 +959,7 @@ impl ConnectMachine {
         }
         // Whatever the attempts said is let go (`cf_ip_happy_connect`).
         cx.reset_fail();
-        if self.route.handshakes() || setup.haproxy || self.route.tls.is_some() {
+        if self.route.handshakes() || setup.haproxy || self.route.secured() {
             // The connection is the first hop's; the handshakes over it
             // are still to be made.
             let answer = r.eyeballs.answer.clone();

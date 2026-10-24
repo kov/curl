@@ -354,7 +354,7 @@ witness: curl-core proto::http::tests::a_new_connection_sends_the_proxy_protocol
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_forwards
 --- old
-        self.pre.as_ref().map_or(&self.peer, |pre| &pre.peer)
+        self.pre().map_or(&self.peer, |pre| &pre.peer)
 --- new
         &self.peer
 
@@ -380,9 +380,9 @@ witness: curl-core conn::tests::proxied_routes_match_as_c
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_tunnels
 --- old
-    if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) && !made.has(Made::TUNNEL) {
+    let tunnels = c.route.proxy.as_ref().is_some_and(|p| p.tunnels());
 --- new
-    if c.route.proxy.as_ref().is_some_and(|p| !p.http()) && !made.has(Made::TUNNEL) {
+    let tunnels = c.route.proxy.as_ref().is_some_and(|p| !p.http());
 
 === an HTTP pre-proxy is taken
 file: crates/curl-core/src/multi/state.rs
@@ -519,9 +519,9 @@ witness: curl-core multi::tests::a_failed_connect_names_the_first_proxy
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::a_connection_is_not_open_until_its_proxy_line_is_sent
 --- old
-        if self.route.handshakes() || setup.haproxy || self.route.tls.is_some() {
+        if self.route.handshakes() || setup.haproxy || self.route.secured() {
 --- new
-        if self.route.handshakes() || self.route.tls.is_some() {
+        if self.route.handshakes() || self.route.secured() {
 
 === a transfer removed mid-connect gives back its connection as open
 file: crates/curl-core/src/multi/state.rs
@@ -616,3 +616,65 @@ witness: curl-core proto::http::tests::the_proxy_protocol_s_line_follows_every_p
         if !socks && !tunnel {
 --- new
         if !socks {
+
+=== a connection serves a transfer whose HTTPS proxy's TLS differs
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::tls::an_https_proxy_s_connection_is_reused_only_with_the_same_proxy_tls
+--- old
+            tls,
+        }
+    }
+--- new
+            tls: tls.and(None),
+        }
+    }
+
+=== a tunnel through an HTTPS proxy is asked for before its TLS
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::https_through_an_https_proxy_is_tls_in_tls
+--- old
+    if proxy_tls && tunnels {
+--- new
+    if proxy_tls && tunnels && made.has(Made::TUNNEL) {
+
+=== a request forwarded to an HTTPS proxy goes without its TLS
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::http_through_an_https_proxy_goes_over_tls_to_the_proxy
+--- old
+    if proxy_tls {
+        return Some(Due::Tls(TlsSide::Proxy));
+    }
+    if c.route.tls.is_some()
+--- new
+    if proxy_tls && tunnels {
+        return Some(Due::Tls(TlsSide::Proxy));
+    }
+    if c.route.tls.is_some()
+
+=== a tunnel's answer is read past its end through an HTTPS proxy's TLS
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::https_trace::tls_in_tls_sets_up_as_c
+--- old
+        let size = if c.route.proxy_tls().is_some() {
+            1
+--- new
+        let size = if c.route.proxy_tls().is_some() {
+            READ_SIZE
+
+=== the proxy's TLS answers the ALPN question a tunnel above it keeps
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::https_trace::a_tunnel_through_an_https_proxy_keeps_the_alpn_question
+--- old
+        && (filter != Component::SslProxy || top == Component::SslProxy)
+--- new
+        && (filter != Component::SslProxy || top != Component::Ssl)
+
+=== the proxy's verification is kept as the origin's
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::https_through_an_https_proxy_is_tls_in_tls
+--- old
+        if filter == Component::SslProxy {
+            self.report_mut().set_proxy_verify_result(result);
+--- new
+        if filter != Component::SslProxy {
+            self.report_mut().set_proxy_verify_result(result);

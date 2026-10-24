@@ -250,7 +250,17 @@ fn the_environment_names_proxies_as_c() {
 }
 
 fn parsed(text: &str, kind: ProxyType, port: u16) -> Result<(ProxyType, String, u16), Refused> {
-    let p = parse(text.as_bytes(), kind, NonZeroU16::new(port))?;
+    parsed_by(text, kind, port, true)
+}
+
+/// As `parsed`, by a build with a TLS library or, `tls` false, without.
+fn parsed_by(
+    text: &str,
+    kind: ProxyType,
+    port: u16,
+    tls: bool,
+) -> Result<(ProxyType, String, u16), Refused> {
+    let p = parse(text.as_bytes(), kind, NonZeroU16::new(port), tls)?;
     let host = String::from_utf8(p.peer.shown().to_vec()).unwrap();
     Ok((
         p.kind,
@@ -312,16 +322,42 @@ fn proxy_urls_read_as_c() {
         parsed("gopherz://example.com", Http, 0),
         Err(Refused::Scheme)
     );
-    assert_eq!(parsed("https://example.com", Http, 0), Err(Refused::Https));
-    assert_eq!(parsed("example.com", Https, 0), Err(Refused::Https));
+    // An HTTPS proxy, on 443 unless it says, of the HTTP version asked
+    // for; refused by a build without TLS.
+    assert_eq!(
+        parsed("https://example.com", Http, 0),
+        ok(Https, "https://example.com", 443)
+    );
+    assert_eq!(
+        parsed("https://example.com:3129", Https2, 0),
+        ok(Https2, "https://example.com", 3129)
+    );
+    assert_eq!(
+        parsed("example.com", Https, 0),
+        ok(Https, "https://example.com", 443)
+    );
+    assert_eq!(
+        parsed_by("https://example.com", Http, 0, false),
+        Err(Refused::Https)
+    );
+    assert_eq!(
+        parsed_by("example.com", Https, 0, false),
+        Err(Refused::Https)
+    );
     assert!(matches!(
         parsed("http://exa mple", Http, 0),
         Err(Refused::Syntax(_))
     ));
-    let p = parse(b"http://us%3Aer:p%40ss@example.com", ProxyType::Http, None).unwrap();
+    let p = parse(
+        b"http://us%3Aer:p%40ss@example.com",
+        ProxyType::Http,
+        None,
+        true,
+    )
+    .unwrap();
     assert_eq!(p.user.as_deref(), Some(&b"us:er"[..]));
     assert_eq!(p.password.as_deref(), Some(&b"p@ss"[..]));
-    let p = parse(b"example.com", ProxyType::Http, None).unwrap();
+    let p = parse(b"example.com", ProxyType::Http, None, true).unwrap();
     assert_eq!((p.user, p.password), (None, None));
 }
 
@@ -331,7 +367,7 @@ fn proxy_urls_read_as_c() {
 #[test]
 fn a_socks_proxy_at_localhost_with_a_path_is_a_unix_socket() {
     use crate::conn::PeerAt;
-    let peer = |text: &str, kind| parse(text.as_bytes(), kind, None).unwrap().peer;
+    let peer = |text: &str, kind| parse(text.as_bytes(), kind, None, true).unwrap().peer;
     let unix = peer(
         "socks5h://LocalHost/tmp/s%20ocks",
         ProxyType::Socks5Hostname,
@@ -356,7 +392,7 @@ fn a_socks_proxy_at_localhost_with_a_path_is_a_unix_socket() {
 fn undecodable_credentials_are_the_url_s_error() {
     for url in ["http://u%01@example.com", "http://u:p%01@example.com"] {
         assert_eq!(
-            parse(url.as_bytes(), ProxyType::Http, None).unwrap_err(),
+            parse(url.as_bytes(), ProxyType::Http, None, true).unwrap_err(),
             Refused::Credentials(UrlErrorKind::Urldecode),
             "{url}"
         );
@@ -427,11 +463,21 @@ proptest! {
         port in proptest::option::of(any::<NonZeroU16>()),
         name in crate::untrusted::input(PROXY_WORDS, PROXIES, 4),
     ) {
-        if let Ok(parsed) = parse(&text, kind, port) {
+        if let Ok(parsed) = parse(&text, kind, port, false) {
             prop_assert!(!matches!(
                 parsed.kind,
                 ProxyType::Https | ProxyType::Https2 | ProxyType::Https3
             ));
+        }
+        // With TLS, an HTTPS proxy is one by its scheme.
+        if let Ok(parsed) = parse(&text, kind, port, true) {
+            prop_assert_eq!(
+                parsed.peer.scheme().name == "https",
+                matches!(
+                    parsed.kind,
+                    ProxyType::Https | ProxyType::Https2 | ProxyType::Https3
+                )
+            );
         }
         excluded(&name, &text);
     }

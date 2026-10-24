@@ -40,7 +40,7 @@ use crate::proto::http1::follow::Inherited;
 use crate::proto::{Before, DoStep, Ended, ProtoState, ProtoStep};
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
 use crate::time::{Instant, TimeLimit};
-use crate::tls::{TlsNative, TlsWait};
+use crate::tls::{TlsIdentity, TlsNative, TlsWait};
 use crate::trace::{self, Bytes, Ip, OsError};
 use crate::upload::{self, Readers};
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
@@ -52,6 +52,7 @@ use super::sched::RowSet;
 use super::sockets::{Pollset, Wants};
 use super::timers::{Deadlines, Phase, TimeLeft, TimerKind, wait_ms};
 use super::{Census, Host, Slots, TransferId};
+use tls::TlsSide;
 
 /// The longest host name a URL may name (`MAX_URL_LEN`).
 const MAX_HOST: usize = 0xffff;
@@ -180,9 +181,9 @@ enum Handshake {
     Connect(tunnel::Tunnel),
     /// The PROXY protocol's line, once the connection is up.
     Haproxy(haproxy::Preface),
-    /// The origin's TLS, whose state is the layer on the connection's
-    /// stream.
-    Tls,
+    /// The origin's or an HTTPS proxy's TLS, whose state is the layer on
+    /// the connection's stream.
+    Tls(TlsSide),
 }
 
 impl Handshake {
@@ -192,18 +193,20 @@ impl Handshake {
             Handshake::Socks(_) => Component::Socks,
             Handshake::Connect(_) => Component::HttpProxy,
             Handshake::Haproxy(_) => Component::Haproxy,
-            Handshake::Tls => Component::Ssl,
+            Handshake::Tls(side) => side.filter(),
         }
     }
 
     /// What it waits for on the connection's socket, which `lease`
-    /// holds: TLS's, what its layer says.
+    /// holds: TLS's, what its layer says; the others', what they want as
+    /// the layers below adjust it, an HTTPS proxy's TLS under a tunnel or
+    /// the PROXY line.
     fn interest(&self, lease: &ConnLease) -> Events {
         match self {
-            Handshake::Socks(s) => s.interest(),
-            Handshake::Connect(t) => t.interest(),
-            Handshake::Haproxy(p) => p.interest(),
-            Handshake::Tls => lease.handshake_pollset(),
+            Handshake::Socks(s) => lease.handshake_pollset(s.interest()),
+            Handshake::Connect(t) => lease.handshake_pollset(t.interest()),
+            Handshake::Haproxy(p) => lease.handshake_pollset(p.interest()),
+            Handshake::Tls(_) => lease.handshake_pollset(Events::NONE),
         }
     }
 }
@@ -305,14 +308,35 @@ impl TransferState {
     /// What the origin's TLS session waits for on the socket, if it
     /// waits.
     fn tls_waits(&self) -> Option<TlsWait> {
+        self.waits(LayerQuery::TlsWaits)
+    }
+
+    /// What an HTTPS proxy's TLS session waits for on the socket, if it
+    /// waits, and whether the tunnel through it is made, whose filter,
+    /// connected, asks it again (`cf_h1_proxy_adjust_pollset`).
+    fn proxy_tls_waits(&self) -> Option<(TlsWait, bool)> {
+        let waits = self.waits(LayerQuery::ProxyTlsWaits)?;
+        let tunneled = match self {
+            TransferState::Connecting(c) => {
+                matches!(c.lease.reached(), Some(SetupPoint::Dialed(m)) if m.has(Made::TUNNEL))
+            }
+            state => state
+                .lease()
+                .is_some_and(|l| l.is_up() && l.conn().tunnels()),
+        };
+        Some((waits, tunneled))
+    }
+
+    /// What the TLS session `q` asks of waits for, if it waits.
+    fn waits(&self, q: LayerQuery) -> Option<TlsWait> {
         let lease = match self {
             TransferState::Done(_) => None,
             state => state.lease(),
         }?;
-        match lease.query(LayerQuery::TlsWaits)? {
+        match lease.query(q)? {
             LayerAnswer::TlsWaits(TlsWait::Nothing) => None,
             LayerAnswer::TlsWaits(waits) => Some(waits),
-            LayerAnswer::TlsNative(_) | LayerAnswer::Alpn(_) => {
+            LayerAnswer::TlsNative(_) | LayerAnswer::Alpn(..) => {
                 unreachable!("an answer of another question")
             }
         }
@@ -599,6 +623,9 @@ pub(crate) struct PollsetTrace<T> {
     setup: Option<(bool, Component, bool)>,
     /// What the origin's TLS session waits for, if it waits.
     tls: Option<TlsWait>,
+    /// What an HTTPS proxy's waits for, if it waits, and whether a tunnel
+    /// through it is made.
+    proxy_tls: Option<(TlsWait, bool)>,
     timers: T,
     /// Sending and receiving, paused.
     paused: (bool, bool),
@@ -623,6 +650,7 @@ impl Run {
             wants,
             setup,
             tls: self.state.tls_waits(),
+            proxy_tls: self.state.proxy_tls_waits(),
             timers: self.deadlines.in_order(),
             paused: (pause.send_paused(), pause.recv != RecvPause::Running),
         }
@@ -637,6 +665,7 @@ impl PollsetTrace<std::iter::Empty<(Instant, TimerKind)>> {
             wants: Wants::NONE,
             setup: None,
             tls: None,
+            proxy_tls: None,
             timers: std::iter::empty(),
             paused: (pause.send_paused(), pause.recv != RecvPause::Running),
         }
@@ -658,6 +687,20 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
                 TlsWait::Recv | TlsWait::Nothing => format_args!("adjust_pollset, POLLIN fd={fd}"),
             };
             trace::of(cx, Component::Ssl, line);
+        }
+        // An HTTPS proxy's, below it, asked twice once a tunnel through it
+        // is made: by the tunnel's filter and on its own.
+        if let (Some((waits, tunneled)), Some(&(key, _))) = (self.proxy_tls, wants.first()) {
+            let fd = key.get();
+            for _ in 0..1 + u8::from(tunneled) {
+                let line = match waits {
+                    TlsWait::Send => format_args!("adjust_pollset, POLLOUT fd={fd}"),
+                    TlsWait::Recv | TlsWait::Nothing => {
+                        format_args!("adjust_pollset, POLLIN fd={fd}")
+                    }
+                };
+                trace::of(cx, Component::SslProxy, line);
+            }
         }
         if let Some((dialed, component, https)) = self.setup {
             for &(key, _) in wants {
@@ -808,8 +851,12 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
         asked.then(|| self.report_mut())
     }
 
-    fn tls_verified(&mut self, result: i64) {
-        self.report_mut().set_verify_result(result);
+    fn tls_verified(&mut self, filter: Component, result: i64) {
+        if filter == Component::SslProxy {
+            self.report_mut().set_proxy_verify_result(result);
+        } else {
+            self.report_mut().set_verify_result(result);
+        }
     }
 
     fn configures_tls(&self) -> bool {
@@ -1153,7 +1200,7 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
 pub(super) fn tls_native(lease: &ConnLease) -> Option<TlsNative> {
     match lease.query(LayerQuery::TlsNative)? {
         LayerAnswer::TlsNative(native) => Some(native),
-        LayerAnswer::Alpn(_) | LayerAnswer::TlsWaits(_) => {
+        LayerAnswer::Alpn(..) | LayerAnswer::TlsWaits(_) => {
             unreachable!("an answer of another question")
         }
     }
@@ -1165,10 +1212,14 @@ pub(super) fn tls_native(lease: &ConnLease) -> Option<TlsNative> {
 /// others answer none, or pass the question on, saying nothing.
 pub(crate) fn query_alpn<H: Host>(cx: &mut StepCx<'_, H>, lease: &ConnLease, top: Component) {
     trace::of(cx, top, format_args!("query ALPN"));
-    if let Some(LayerAnswer::Alpn(chosen)) = lease.query(LayerQuery::Alpn) {
+    // An HTTPS proxy's TLS answers only when asked first: a tunnel's
+    // filter above it keeps the question (`cf_h1_proxy_query`).
+    if let Some(LayerAnswer::Alpn(chosen, filter)) = lease.query(LayerQuery::Alpn)
+        && (filter != Component::SslProxy || top == Component::SslProxy)
+    {
         let name = chosen.map_or("(nil)", crate::tls::Chosen::name);
         let line = format_args!("query ALPN: returning '{name}'");
-        trace::of(cx, Component::Ssl, line);
+        trace::of(cx, filter, line);
     }
 }
 
@@ -1649,7 +1700,7 @@ fn connecting<H: Host>(
                 kind,
                 format_args!("Proxy CONNECT aborted due to timeout"),
             ),
-            Some(Handshake::Socks(_) | Handshake::Haproxy(_) | Handshake::Tls) | None => {
+            Some(Handshake::Socks(_) | Handshake::Haproxy(_) | Handshake::Tls(_)) | None => {
                 trace::fail(
                     cx,
                     kind,
@@ -1790,6 +1841,13 @@ fn enter_setup<H: Host>(
     let Some(due) = handshake_due(c, made) else {
         return Some(chain(reached, None, true));
     };
+    // The tunnel's filter was added with the HTTPS proxy's TLS below it,
+    // and goes on connecting in the same call.
+    if let Due::Tunnel = due
+        && made.has(Made::PROXY_TLS)
+    {
+        return Some(chain(reached, Some(Component::HttpProxy), false));
+    }
     let filter = match due {
         Due::Socks(_) => {
             let leg = c.route.socks().expect("through a SOCKS proxy");
@@ -1813,13 +1871,30 @@ fn enter_setup<H: Host>(
             trace::of(cx, Component::Setup, format_args!("added HAPROXY filter"));
             Component::Haproxy
         }
-        Due::Tls => {
+        // An HTTPS proxy's TLS below its tunnel is added with it
+        // (`cf_setup_add_http_proxy`); one requests go whole to is the
+        // origin's filter (`cf_setup_add_origin_filters`), whose line says
+        // so though the TLS is the proxy's.
+        Due::Tls(TlsSide::Proxy) if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) => {
+            trace::of(
+                cx,
+                Component::Setup,
+                format_args!("added SSL filter for HTTP proxy"),
+            );
+            trace::of(
+                cx,
+                Component::Setup,
+                format_args!("added HTTP proxy tunnel filter"),
+            );
+            Component::SslProxy
+        }
+        Due::Tls(side) => {
             trace::of(
                 cx,
                 Component::Setup,
                 format_args!("added SSL filter for origin"),
             );
-            Component::Ssl
+            side.filter()
         }
     };
     // The tunnel's filter installs its HTTP/1.1 one as it first connects.
@@ -1838,7 +1913,7 @@ fn connect_once<H: Host>(
         Some(Handshake::Socks(_)) => return socks::step(c, cx),
         Some(Handshake::Connect(_)) => return tunnel::step(c, cx),
         Some(Handshake::Haproxy(_)) => return haproxy::step(c, cx),
-        Some(Handshake::Tls) => return tls::step(c, cx),
+        Some(&Handshake::Tls(side)) => return tls::step(c, cx, side),
         None => {}
     }
     if let Some(SetupPoint::Dialed(_)) = c.lease.reached() {
@@ -1955,7 +2030,7 @@ fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Transf
         Some(Due::Socks(version)) => return socks::dialed(c, cx, version),
         Some(Due::Tunnel) => return tunnel::dialed(c, cx),
         Some(Due::Preface) => return haproxy::start(c, cx),
-        Some(Due::Tls) => return tls::start(c, cx),
+        Some(Due::Tls(side)) => return tls::start(c, cx, side),
         None => {}
     }
     let preface = c.lease.sends_preface();
@@ -1973,7 +2048,7 @@ enum Due {
     Socks(crate::conn::socks::Version),
     Tunnel,
     Preface,
-    Tls,
+    Tls(TlsSide),
 }
 
 /// The handshake to make next over a connection that made `made`, in
@@ -1984,14 +2059,24 @@ fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
     {
         return Some(Due::Socks(version));
     }
-    if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) && !made.has(Made::TUNNEL) {
+    let tunnels = c.route.proxy.as_ref().is_some_and(|p| p.tunnels());
+    let proxy_tls = c.route.proxy_tls().is_some() && !made.has(Made::PROXY_TLS);
+    if proxy_tls && tunnels {
+        return Some(Due::Tls(TlsSide::Proxy));
+    }
+    if tunnels && !made.has(Made::TUNNEL) {
         return Some(Due::Tunnel);
     }
     if c.lease.sends_preface() && !made.has(Made::PREFACE) {
         return Some(Due::Preface);
     }
+    // Requests go whole to the HTTPS proxy: its TLS is the origin's
+    // filter, the last but for none.
+    if proxy_tls {
+        return Some(Due::Tls(TlsSide::Proxy));
+    }
     if c.route.tls.is_some() && !made.has(Made::TLS) {
-        return Some(Due::Tls);
+        return Some(Due::Tls(TlsSide::Origin));
     }
     None
 }
@@ -3180,12 +3265,31 @@ fn choose_proxy<H: Host>(
     // HTTP's schemes are the only ones here.
     let tunnel = cx.easy().options().proxy.tunnel || tunnels;
     let route = ProxyRoute::new(kind, peer, creds, !tunnel, auth_only);
-    Ok(Some(match pre {
+    let route = match pre {
         Some((kind, peer, creds)) => route
             .behind(PreProxy { kind, peer, creds })
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
         None => route,
-    }))
+    };
+    if !route.https() {
+        return Ok(Some(route));
+    }
+    // The settings the HTTPS proxy's TLS is made with, which a
+    // connection must share to serve the transfer
+    // (`Curl_ssl_filter_config_tmp_init`'s `ssl_proxy`).
+    let defaults = cx
+        .easy()
+        .libraries()
+        .tls
+        .expect("an HTTPS proxy is one only with a TLS library")
+        .ca_defaults();
+    let options = cx.easy().options();
+    let identity = TlsIdentity::of_proxy(&options.proxy.tls, &options.tls.options, defaults)
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    let route = route
+        .secured(identity)
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    Ok(Some(route))
 }
 
 /// A proxy's URL, `text`, as its type, its peer and its credentials
@@ -3199,7 +3303,8 @@ fn parse_proxy<H: Host>(
 ) -> Result<(ProxyType, TryArc<Peer>, Option<TryArc<ProxyCreds>>), ErrorKind> {
     let options = &cx.easy().options().proxy;
     let kind = if pre { ProxyType::Socks4 } else { options.kind };
-    let parsed = match proxy::parse(text, kind, options.port) {
+    let tls = cx.easy().libraries().tls.is_some();
+    let parsed = match proxy::parse(text, kind, options.port, tls) {
         Ok(parsed) => parsed,
         Err(Refused::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
         Err(Refused::Syntax(e)) => {

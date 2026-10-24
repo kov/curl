@@ -84,6 +84,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   when a 10 s `timeout` killed it. Pinned by `a_part_read_answering_stop_filling_fails`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+- **A GSS-API status the library has no words for is said without them.** SOCKS5's GSS-API
+  method lays a failed call's status out as `check_gss_err` does (`lib/socks_gssapi.c`), the
+  major code's text, `.\n`, the minor code's; for each it asks `gss_display_status` once. C asks
+  again while the call fails and says no more follows (`while(!msg_ctx)`), which is for ever for
+  a minor code the library does not know: measured against the C build with its GSS-API stub,
+  whose `C` answer to a Kerberos context fails with such a code, the transfer had not returned
+  when a 10 s `timeout` killed it. Here it fails, 97, the minor code's text empty. Pinned by
+  `a_status_without_words_is_said_without_them` (`crates/curl-gssapi/tests/socks.rs`).
+
 ## Waits C makes blocking
 
 - **SOCKS5's GSS-API messages are sent and read as the socket lets them.** C makes the socket
@@ -261,6 +270,14 @@ not a difference: it is tracked in `MILESTONES.md`.
   with `-` and crashes. Both crashes measured against the C build. Pinned by
   `formadd_refuses_as_c_does` and `a_type_past_the_last_file_is_a_part_without_content`
   (`crates/curl-sys-abi/src/formdata.rs`).
+
+- **A GSS-API stub's context is nothing to the library, and fails.** In the debug build, a SOCKS5
+  GSS-API context the stub (`CURL_STUB_GSS_CREDS`) completed is then asked who it authenticated
+  (`gss_inquire_context`), which the stub has no stand-in for: C hands the stub's context to the
+  library, which crashes (measured against the C build: a segmentation fault). Here the library
+  is not asked; the call fails as on a context it never made, "GSS-API error:
+  gss_inquire_context failed: ...", then "Failed to determine username.", 97. Pinned by
+  `the_stub_s_context_names_no_user` (`crates/curl-gssapi/tests/socks.rs`).
 
 ## Codes C passes through
 

@@ -9,12 +9,12 @@
 /// The toggles fixed whatever the build; `resolv-threaded` follows the
 /// library's resolver (`toggles`).
 const TOGGLES: &[(&str, bool)] = &[
-    ("bindlocal", false),
+    ("bindlocal", true),
     ("cookies", true),
     ("basic-auth", true),
     ("bearer-auth", true),
     ("digest", true),
-    ("negotiate-auth", false),
+    ("negotiate-auth", true),
     ("aws", true),
     ("httpsig", true),
     ("DoH", false),
@@ -43,8 +43,8 @@ const TOGGLES: &[(&str, bool)] = &[
     ("--libcurl", true),
     ("override-dns", false),
     ("ssl-sessions", false),
-    ("cert-status", false),
-    ("getrlimit", false),
+    ("cert-status", true),
+    ("getrlimit", true),
 ];
 
 /// Each toggle, `resolv-threaded` ON when the library resolves with the

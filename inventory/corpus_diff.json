@@ -1,7 +1,7 @@
 {
- "c-commit": "19e7b749b96689fe013a2a53bf41e416d8bb552b",
+ "c-commit": "4108959f46a3140956e6490001287295587d2240",
  "data": {
-  "differ": 11,
+  "differ": 9,
   "distinct": 1411,
   "groups": [
    {
@@ -178,72 +178,6 @@
     "rust_line": "curl: option --httpN: not implemented yet"
    },
    {
-    "c_exit": "26",
-    "c_line": "",
-    "differs_in": "exit",
-    "distinct": 2,
-    "examples": [
-     {
-      "argv": [
-       "-nfs",
-       "-X",
-       "POST",
-       "x",
-       "-F",
-       "jenkinsfile=<-",
-       "http://example.invalid//pipeline-model-converter/validate",
-       "--proto",
-       "=file",
-       "--proto-default",
-       "file"
-      ],
-      "c": {
-       "exit": 26,
-       "files": [],
-       "stderr": "",
-       "stdout": ""
-      },
-      "from": [
-       "python-jenkinsapi 0.3.13-1: bin/pipelint:21"
-      ],
-      "rust": {
-       "exit": 1,
-       "files": [],
-       "stderr": "",
-       "stdout": ""
-      }
-     },
-     {
-      "argv": [
-       "-nfs",
-       "http://example.invalid//crumbIssuer/api/xml?xpath=concat(//crumbRequestField,%22:%22,//crumb)",
-       "--proto",
-       "=file",
-       "--proto-default",
-       "file"
-      ],
-      "c": {
-       "exit": 26,
-       "files": [],
-       "stderr": "",
-       "stdout": ""
-      },
-      "from": [
-       "python-jenkinsapi 0.3.13-1: bin/pipelint:18"
-      ],
-      "rust": {
-       "exit": 1,
-       "files": [],
-       "stderr": "",
-       "stdout": ""
-      }
-     }
-    ],
-    "invocations": 2,
-    "rust_exit": "1",
-    "rust_line": ""
-   },
-   {
     "c_exit": "3",
     "c_line": "curl: (N) Protocol \"http\" is disabled",
     "differs_in": "exit+stderr",
@@ -404,7 +338,7 @@
    }
   ],
   "invocations": 2263,
-  "same": 1400,
+  "same": 1402,
   "unrunnable": 0
  },
  "generated-by": "inventory/measure/corpus_run.py --diff",

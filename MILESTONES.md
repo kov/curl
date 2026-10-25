@@ -789,8 +789,11 @@ the system's under the HTTP-only programs installed here.
       (`--http2`, step 52; FTP's `-Q`, `-l` and `--ftp-create-dirs`, stage 6), 2 are `-V`'s
       lists, and 2 a required `.netrc` that is missing, which C fails before it looks at the
       protocol (d).
-    - **d. The differences closed.** **In progress.** Each one made as C's, or, where C's is a
-      clear bug, put to the user as a divergence; those waiting on later steps say which.
+    - **d. The differences closed.** **Done.** A `.netrc` is read before the protocol is
+      checked, as C reads it, for every scheme. 1402 of the 1411 distinct invocations behave the
+      same; the 9 left wait on later steps: 7 use options not built yet (`--http2`, step 52;
+      FTP's `-Q`, `-l` and `--ftp-create-dirs`, stage 6), and 2 are `-V`'s lists of protocols
+      and features, which grow as steps 48–52 and the later stages add them.
     - **e. Closing the step.** **To do.** The sweep and cargo-mutants on what it changed.
 48. **The threaded resolver,** `AsynchDNS` as distributions build it, beside c-ares. **To do.**
 49. **IDN** through libidn2. **To do.**

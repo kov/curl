@@ -392,7 +392,9 @@ impl Request {
                 ));
             }
         };
-        let credentials = super::with_netrc(credentials, peer.shown(), cx)?;
+        // By the host's name: an IPv6 address without its brackets, a name
+        // in Unicode in its ASCII form (`Curl_netrc_scan` of `hostname`).
+        let credentials = super::with_netrc(credentials, peer.name(), cx)?;
         Ok(Request {
             pipeline: Pipeline::new(Reach::Network),
             target,

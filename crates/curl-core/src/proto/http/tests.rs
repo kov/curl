@@ -2505,6 +2505,41 @@ fn a_netrc_file_gives_the_host_s_credentials() {
     std::fs::remove_file(&path).unwrap();
 }
 
+/// A `.netrc` entry names an IPv6 host without its brackets, as C looks
+/// one up by the host's name (`Curl_netrc_scan` of `hostname`).
+#[test]
+fn a_netrc_entry_names_an_ipv6_host_without_brackets() {
+    use crate::options::NetrcMode;
+    let path = std::env::temp_dir().join(format!("curl-core-netrc6-{}", std::process::id()));
+    let file = path.as_os_str().as_encoded_bytes().to_vec();
+    for (entry, sent) in [("::1", true), ("[::1]", false)] {
+        std::fs::write(&path, format!("machine {entry} login a password b\n")).unwrap();
+        let clock = ManualClock::new().unwrap();
+        let at = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, PORT));
+        let talk = Conversation::replies(&[OK], false);
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        let env = Env {
+            clock: Box::new(clock),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m = Multi::new(env).unwrap();
+        let url = format!("http://[::1]:{PORT}/a");
+        let ran = get(&mut m, "/a", talk.clone(), |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.netrc.make_mut().unwrap().mode = NetrcMode::Optional;
+            o.netrc.make_mut().unwrap().file = Some(file.clone());
+        });
+        assert_eq!(ran.result, Ok(()), "{entry}");
+        let found = fixture::find(&talk.received(), b"Authorization: Basic YTpi\r\n");
+        assert_eq!(found.is_some(), sent, "{entry}");
+    }
+    std::fs::remove_file(&path).unwrap();
+}
+
 /// A `.netrc` is read before the protocol is checked, as C reads it
 /// (`parseurlandfillconn`, before `url_set_conn_scheme`): a required one
 /// that is missing fails a URL of a protocol the build lacks, and of

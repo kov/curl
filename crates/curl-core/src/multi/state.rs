@@ -1745,10 +1745,15 @@ fn connecting<H: Host>(
                 format_args!("Proxy CONNECT aborted due to timeout"),
             ),
             Some(Handshake::Socks(_) | Handshake::Haproxy(_) | Handshake::Tls(_)) | None => {
+                // Named for the name, while it is not resolved yet.
+                let what = match c.lease.reached() {
+                    Some(SetupPoint::Resolving) => "Resolving",
+                    _ => "Connection",
+                };
                 trace::fail(
                     cx,
                     kind,
-                    format_args!("Connection timed out after {ms} milliseconds"),
+                    format_args!("{what} timed out after {ms} milliseconds"),
                 )
             }
         };

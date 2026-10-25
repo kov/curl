@@ -1309,6 +1309,45 @@ fn a_late_answer_is_waited_for() {
     assert_eq!(shared.lock().unwrap().resolving(), 0, "cancelled");
 }
 
+/// A resolve that does not answer within the connect limit fails the
+/// transfer as resolving, not connecting (`multi_handle_timeout`'s
+/// `dns_resolved`), and is cancelled.
+#[test]
+fn a_resolve_that_never_answers_times_out_as_resolving() {
+    use crate::conn::io::{Late, SharedNet};
+    let clock = ManualClock::new().unwrap();
+    let never = Late::new();
+    let net =
+        FakeNet::new(clock.clone()).with_late_name("never.test", &[[127, 0, 0, 1].into()], &never);
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(net));
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(SharedNet(shared.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let (mut e, lines) = traced("tcp://never.test:1/");
+    e.options_mut().limits.connect = TimeLimit::from_millis(1500);
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.timeout(), Some(Duration::from_millis(1500)));
+    clock.advance(Duration::from_millis(1500));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::OperationTimedout), 0)]
+    );
+    assert_eq!(
+        trace_of(&lines),
+        [
+            "Resolving timed out after 1500 milliseconds\n",
+            "closing connection #0\n",
+        ]
+    );
+    assert_eq!(shared.lock().unwrap().resolving(), 0, "cancelled");
+}
+
 /// A connection established before the next attempt was due leaves no
 /// wait for that attempt behind (`Curl_expire_done`, HAPPY_EYEBALLS).
 #[test]

@@ -58,34 +58,59 @@ pub struct DebugVars {
     pub fail_starts: u32,
 }
 
+/// The debug build's variables as the environment sets them, each value
+/// as given, or `fail_negative` set at all.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GivenVars<'a> {
+    pub delay: Option<&'a [u8]>,
+    pub fail_delay: Option<&'a [u8]>,
+    pub fail_negative: bool,
+    pub max_threads: Option<&'a [u8]>,
+    pub fail_starts: Option<&'a [u8]>,
+}
+
 impl DebugVars {
     /// As the environment sets them, in a debug build; none in another.
     pub fn from_env() -> DebugVars {
         #[cfg(feature = "debug-hooks")]
         {
-            let ms = |name: &[u8]| number(name, u64::from(u32::MAX)).map(Duration::from_millis);
-            DebugVars {
-                delay: ms(b"CURL_DBG_RESOLV_DELAY").filter(|d| !d.is_zero()),
-                fail_delay: ms(b"CURL_DBG_RESOLV_FAIL_DELAY"),
-                fail_negative: curl_os::env::is_set(b"CURL_DBG_RESOLV_FAIL_NEGATIVE"),
-                max_threads: number(b"CURL_DBG_RESOLV_MAX_THREADS", u64::from(u32::MAX))
-                    .and_then(|n| NonZeroU32::new(n as u32)),
-                fail_starts: number(b"CURL_DBG_THRDPOOL_FAIL_STARTS", i32::MAX as u64)
-                    .map_or(0, |n| n as u32),
-            }
+            use curl_os::env::{is_set, var_into};
+            let mut bufs = [[0u8; 32]; 4];
+            let [delay, fail_delay, max_threads, fail_starts] = &mut bufs;
+            DebugVars::from_given(GivenVars {
+                delay: var_into(b"CURL_DBG_RESOLV_DELAY", delay),
+                fail_delay: var_into(b"CURL_DBG_RESOLV_FAIL_DELAY", fail_delay),
+                fail_negative: is_set(b"CURL_DBG_RESOLV_FAIL_NEGATIVE"),
+                max_threads: var_into(b"CURL_DBG_RESOLV_MAX_THREADS", max_threads),
+                fail_starts: var_into(b"CURL_DBG_THRDPOOL_FAIL_STARTS", fail_starts),
+            })
         }
         #[cfg(not(feature = "debug-hooks"))]
         DebugVars::default()
     }
+
+    /// The variables' values read as C reads them: each a number it
+    /// starts with, no larger than C's type holds; a delay of 0 is none,
+    /// and so are no threads.
+    pub fn from_given(given: GivenVars<'_>) -> DebugVars {
+        let max = u64::from(u32::MAX);
+        let ms = |v| number(v, max).map(Duration::from_millis);
+        DebugVars {
+            delay: ms(given.delay).filter(|d| !d.is_zero()),
+            fail_delay: ms(given.fail_delay),
+            fail_negative: given.fail_negative,
+            max_threads: number(given.max_threads, max)
+                .and_then(|n| NonZeroU32::new(u32::try_from(n).expect("no larger than max"))),
+            fail_starts: number(given.fail_starts, i32::MAX as u64)
+                .map_or(0, |n| u32::try_from(n).expect("no larger than max")),
+        }
+    }
 }
 
-/// The number variable `name` starts with, if it is set to one no
-/// larger than `max` (`curlx_str_number`).
-#[cfg(feature = "debug-hooks")]
-fn number(name: &[u8], max: u64) -> Option<u64> {
-    let mut buf = [0u8; 32];
-    let given = curl_os::env::var_into(name, &mut buf)?;
-    let digits = given.iter().take_while(|b| b.is_ascii_digit());
+/// The number `given` starts with, if it is one no larger than `max`
+/// (`curlx_str_number`).
+fn number(given: Option<&[u8]>, max: u64) -> Option<u64> {
+    let digits = given?.iter().take_while(|b| b.is_ascii_digit());
     let mut n: Option<u64> = None;
     for &d in digits {
         let next = n.unwrap_or(0) * 10 + u64::from(d - b'0');
@@ -641,6 +666,11 @@ mod tests {
         let answers = answer_all(&mut r, &ids);
         let found = answers[0].as_ref().unwrap();
         assert!(found.contains(&IpAddr::from([127, 0, 0, 1])), "{found:?}");
+        // Each family's answer is kept: IPv6's too, where the system has
+        // one for the name.
+        for v6 in curl_os::resolve::lookup(b"localhost", Family::V6).unwrap_or_default() {
+            assert!(found.contains(&v6), "{v6} in {found:?}");
+        }
         if let Some(v6) = found.iter().position(IpAddr::is_ipv6) {
             assert!(
                 found[..v6].iter().all(IpAddr::is_ipv6),
@@ -657,7 +687,6 @@ mod tests {
         );
     }
 
-    /// The answer is negative only if every query said so.
     /// A failure has no reason beside the name, as C's threaded resolver
     /// gives none: c-ares's are the reference build's.
     #[test]
@@ -672,6 +701,7 @@ mod tests {
         }
     }
 
+    /// The answer is negative only if every query said so.
     #[test]
     fn a_failure_is_negative_only_if_every_query_says_so() {
         use ResolveFailure::*;
@@ -734,6 +764,112 @@ mod tests {
         }
     }
 
+    /// A resolve cancelled while its query waits for a thread takes it out
+    /// of the queue, leaving the others'; and queries waiting for want of
+    /// a thread, none having failed to start, ask for no retry.
+    #[test]
+    fn a_cancel_takes_its_queries_from_the_queue() {
+        let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
+        r.shared.lock().threads_max = 0;
+        let mut start = || match r.start(b"localhost", Family::Any, Waiter::NONE) {
+            Ok(Resolve::Pending(Queued { id, .. })) => id,
+            other => panic!("{other:?}"),
+        };
+        let (gone, kept) = (start(), start());
+        assert_eq!(r.retry(), None, "no start failed");
+        r.cancel(gone);
+        let queued: Vec<_> = r
+            .shared
+            .lock()
+            .queue
+            .iter()
+            .map(|q| (q.id, q.family))
+            .collect();
+        assert_eq!(queued, [(kept, Family::V6), (kept, Family::V4)]);
+        assert_eq!(r.resolving.len(), 1);
+    }
+
+    /// An idle thread waits out its idle time while no more than the most
+    /// run, though another took the work it was woken for; past the most
+    /// (the most lowered), it ends.
+    #[test]
+    fn an_idle_thread_waits_for_work_within_the_most() {
+        let threads_now = |r: &ThreadedResolver| {
+            let state = r.shared.lock();
+            (state.threads, state.idle)
+        };
+        let settle = |r: &ThreadedResolver, want: (u32, u32)| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while threads_now(r) != want {
+                assert!(std::time::Instant::now() < deadline, "{:?}", threads_now(r));
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        let start = |r: &mut ThreadedResolver| match r.start(b"localhost", Family::V4, Waiter::NONE)
+        {
+            Ok(Resolve::Pending(Queued { id, .. })) => id,
+            other => panic!("{other:?}"),
+        };
+        let long = Duration::from_secs(60);
+        let mut r = ThreadedResolver::new(Threads {
+            max: NonZeroU32::new(2).unwrap(),
+            idle: long,
+        })
+        .unwrap();
+        // Two at once take a thread each.
+        let ids = [start(&mut r), start(&mut r)];
+        assert!(answer_all(&mut r, &ids).iter().all(Result::is_ok));
+        settle(&r, (2, 2));
+        // One woken thread takes the next; the other, woken too, waits on.
+        let id = start(&mut r);
+        assert!(r.wait(id).is_ok());
+        std::thread::sleep(Duration::from_millis(20));
+        settle(&r, (2, 2));
+        // With the most lowered to 1, a thread woken past it ends.
+        r.shared.lock().threads_max = 1;
+        let id = start(&mut r);
+        assert!(r.wait(id).is_ok());
+        settle(&r, (1, 1));
+
+        let mut r = ThreadedResolver::new(Threads {
+            max: NonZeroU32::MIN,
+            idle: long,
+        })
+        .unwrap();
+        let id = start(&mut r);
+        assert!(r.wait(id).is_ok());
+        std::thread::sleep(Duration::from_millis(20));
+        settle(&r, (1, 1));
+    }
+
+    /// The resolver going ends its idle threads at once, without waiting
+    /// out their idle time.
+    #[test]
+    fn the_resolver_going_ends_its_threads() {
+        let mut r = ThreadedResolver::new(Threads {
+            max: NonZeroU32::MIN,
+            idle: Duration::from_secs(60),
+        })
+        .unwrap();
+        let Ok(Resolve::Pending(Queued { id, .. })) =
+            r.start(b"localhost", Family::V4, Waiter::NONE)
+        else {
+            panic!("pending");
+        };
+        assert!(r.wait(id).is_ok());
+        let shared = r.shared.clone();
+        r.shared.lock().join = false;
+        drop(r);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while shared.lock().threads > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the idle thread ended"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// The settings the multi reaches through the pool are the
     /// resolver's: the most threads bounds those it starts, and a query
     /// left queued for want of a thread wakes the multi when the most is
@@ -785,6 +921,66 @@ mod tests {
         r.shared.lock().queue.clear();
         pool.set_max_threads(NonZeroU32::MIN);
         assert!(!woken(), "nothing queued, nothing woken");
+    }
+
+    /// The debug build's variables are read as C reads them
+    /// (`curlx_str_number`): the number each starts with, none past what
+    /// its type holds or not starting with a digit; a delay of 0 is none,
+    /// as are 0 threads.
+    #[test]
+    fn the_debug_build_s_variables_are_read_as_c_reads_them() {
+        let read = |v: &[u8]| {
+            DebugVars::from_given(GivenVars {
+                delay: Some(v),
+                fail_delay: Some(v),
+                max_threads: Some(v),
+                fail_starts: Some(v),
+                fail_negative: true,
+            })
+        };
+        let ms = Duration::from_millis;
+        let some = read(b"42ms");
+        assert_eq!(
+            some,
+            DebugVars {
+                delay: Some(ms(42)),
+                fail_delay: Some(ms(42)),
+                fail_negative: true,
+                max_threads: NonZeroU32::new(42),
+                fail_starts: 42,
+            }
+        );
+        let zero = read(b"0");
+        assert_eq!(
+            (
+                zero.delay,
+                zero.fail_delay,
+                zero.max_threads,
+                zero.fail_starts
+            ),
+            (None, Some(ms(0)), None, 0)
+        );
+        // Past `INT_MAX` for the starts, past `UINT_MAX` for the rest.
+        let big = read(b"3000000000");
+        assert_eq!(
+            (big.delay, big.max_threads, big.fail_starts),
+            (Some(ms(3_000_000_000)), NonZeroU32::new(3_000_000_000), 0)
+        );
+        let past = read(b"4294967296");
+        assert_eq!((past.delay, past.max_threads), (None, None));
+        assert_eq!(read(b"4294967295").max_threads, NonZeroU32::new(u32::MAX));
+        assert_eq!(read(b"2147483647").fail_starts, i32::MAX as u32);
+        assert_eq!(
+            read(b"x1"),
+            DebugVars {
+                fail_negative: true,
+                ..DebugVars::default()
+            }
+        );
+        assert_eq!(
+            DebugVars::from_given(GivenVars::default()),
+            DebugVars::default()
+        );
     }
 
     /// The debug build's variables: a held-back failure is negative only

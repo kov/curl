@@ -1164,6 +1164,15 @@ impl<H: Host> StepCx<'_, H> {
         mstate::marked(self, timer, marked);
     }
 
+    /// As `mark`, at the clock's time now rather than the pass's: C reads
+    /// the clock for each mark (`Curl_pgrs_now`), and the queue time is
+    /// what passed between two marks of one step.
+    pub(crate) fn mark_now(&mut self, timer: Timer) {
+        let now = self.rest.clock.now();
+        let marked = self.report_mut().timings_mut().mark(timer, now);
+        mstate::marked(self, timer, marked);
+    }
+
     /// Where the transfer is in C's states.
     pub(crate) fn mstate(&self) -> MState {
         self.rest
@@ -3175,7 +3184,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     mstate::enter(cx, MState::Connect);
     // The request starts from nothing (`Curl_req_hard_reset`).
     upload::trace_reset(cx, false);
-    cx.mark(Timer::PostQueue);
+    cx.mark_now(Timer::PostQueue);
     // Counted from nothing for each request (`Curl_init_do`).
     let (speedometer, report) = cx.progress_parts();
     report.sizes_mut().new_request();

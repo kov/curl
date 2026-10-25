@@ -257,3 +257,11 @@ witness: curl-core version::tests::the_threaded_resolver_is_claimed_as_asynch_dn
 --- new
     Feature::AltSvc,
     Feature::AsynchDns,
+
+=== the queue time is taken from the pass's reading of the clock
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::the_queue_time_is_read_from_the_clock_as_it_is_marked
+--- old
+    cx.mark_now(Timer::PostQueue);
+--- new
+    cx.mark(Timer::PostQueue);

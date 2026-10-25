@@ -7043,3 +7043,41 @@ fn traced_bytes_with_the_ids_keep_a_zero_byte() {
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.seen.of("data").concat(), b"[0-0] ab\0cd");
 }
+
+/// A clock that moves a millisecond each time it is read.
+struct Ticking(std::sync::Mutex<crate::time::Instant>);
+
+impl crate::time::Clock for Ticking {
+    fn now(&self) -> crate::time::Instant {
+        let mut at = self.0.lock().unwrap();
+        *at = at.after(std::time::Duration::from_millis(1));
+        *at
+    }
+
+    fn unix_time(&self) -> i64 {
+        0
+    }
+}
+
+/// The queue time is what the clock says passed between the transfer's
+/// start and its leaving the queue, read as each is marked, as C reads
+/// it (`Curl_pgrs_now`): not the step's one reading.
+#[test]
+fn the_queue_time_is_read_from_the_clock_as_it_is_marked() {
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let talk = Conversation::replies(&[OK], false);
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock)
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(Ticking(std::sync::Mutex::new(crate::time::Instant::EPOCH))),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let ran = get(&mut m, "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert!(ran.easy.report().timings().queue() > std::time::Duration::ZERO);
+}

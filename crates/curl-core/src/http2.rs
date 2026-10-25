@@ -176,6 +176,7 @@ pub mod code {
     pub const STREAM_CLOSED: u32 = 5;
     pub const REFUSED_STREAM: u32 = 7;
     pub const CANCEL: u32 = 8;
+    pub const HTTP_1_1_REQUIRED: u32 = 0xd;
 }
 
 #[cfg(any(test, feature = "test-util"))]

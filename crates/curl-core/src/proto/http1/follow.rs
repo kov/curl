@@ -20,6 +20,18 @@ pub(crate) struct Inherited {
     /// A 417 refused `Expect: 100-continue`: the library adds it no more
     /// (`state.disableexpect`).
     pub(in crate::proto) no_expect: bool,
+    /// An HTTP/2 stream said HTTP/1.1 is required: the requests after it
+    /// speak HTTP/1 only (`http_neg.wanted` and `allowed` set to
+    /// `CURL_HTTP_V1x`).
+    pub(in crate::proto) h1_only: bool,
+}
+
+impl Inherited {
+    /// HTTP/1.1 was required: the requests after this one speak HTTP/1
+    /// only.
+    pub(crate) fn downgrade(&mut self) {
+        self.h1_only = true;
+    }
 }
 
 /// Where `location` leads from `base`, the request's URL, for a response

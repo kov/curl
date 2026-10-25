@@ -94,15 +94,15 @@ witness: curl-core proto::http::tests::h2::a_get_goes_as_fields_and_its_response
 file: crates/curl-core/src/multi/state/tls.rs
 witness: curl-core proto::http::tests::h2::alpn_offers_h2_where_a_library_speaks_it
 --- old
-    let h2 = version.h2() && cx.easy().libraries().h2.is_some();
+    let h2 = versions.h2 && cx.easy().libraries().h2.is_some();
 --- new
-    let h2 = version.h2();
+    let h2 = versions.h2;
 
 === prior knowledge over TLS offers HTTP/1.1 too
 file: crates/curl-core/src/multi/state/tls.rs
 witness: curl-core proto::http::tests::h2::alpn_offers_h2_where_a_library_speaks_it
 --- old
-        (true, TlsSide::Origin, v) if h2 && !v.h1() => Alpn::H2,
+        (true, TlsSide::Origin, _) if h2 && !versions.h1 => Alpn::H2,
 --- new
 
 === the application's chunked framing goes over HTTP/2
@@ -168,6 +168,21 @@ witness: curl-core proto::http::tests::h2::a_connection_shutting_down_says_goawa
 --- old
             h2.goodbye(&mut Silent(now), &mut self.conn);
 --- new
+
+=== a request told HTTP/1.1 is required asks for HTTP/2 again
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::http_1_1_required_downgrades_the_request
+--- old
+                    run.http.downgrade();
+--- new
+
+=== a connection is reused whatever HTTP version it speaks
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::a_connection_is_reused_only_by_a_transfer_that_speaks_its_version
+--- old
+        if !speaks {
+--- new
+        if false {
 
 === a stream reads past its receive limit
 file: crates/curl-core/src/proto/http/h2.rs

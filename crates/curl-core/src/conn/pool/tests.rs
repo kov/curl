@@ -725,6 +725,7 @@ fn a_search_tries_the_transfer_s_last_connection_first() {
             route: &route,
             auth: Wants::NONE,
             last,
+            versions: crate::proto::http::Versions::ALL,
         };
         let mut notes = Vec::new();
         pool.find(&Home::Multi, wanted, RULES, net, now, &mut notes)

@@ -128,7 +128,7 @@ impl Request {
         let top = lease.conn().top();
         let alpn = crate::multi::state::query_alpn(cx, lease, top);
         let library = cx.easy().libraries().h2;
-        let prior = cx.easy().options().http.version == Wanted::Http2Prior;
+        let prior = cx.easy().options().http.version == Wanted::Http2Prior && !self.h1_only;
         let h2 = match library {
             None => false,
             Some(_) if alpn == Some(Chosen::H2) => true,
@@ -168,9 +168,9 @@ impl Request {
     ) -> Result<Option<Vec<u8>>, ErrorKind> {
         let wanted = cx.easy().options().http.version;
         let library = cx.easy().libraries().h2;
-        let Some(library) =
-            library.filter(|_| !h2 && wanted == Wanted::Http2 && !lease.conn().over_tls())
-        else {
+        let Some(library) = library.filter(|_| {
+            !h2 && wanted == Wanted::Http2 && !self.h1_only && !lease.conn().over_tls()
+        }) else {
             return Ok(None);
         };
         let mut payload = [0u8; 80];
@@ -429,6 +429,14 @@ impl Request {
     fn custom_method<H: Host>(&self, cx: &StepCx<'_, H>) -> Option<Vec<u8>> {
         let custom = cx.easy().options().http.custom.method.as_deref();
         custom.filter(|_| self.custom).and_then(|m| copied(m).ok())
+    }
+
+    /// The stream was reset with HTTP/1.1 required
+    /// (`Curl_h2_http_1_1_error`).
+    pub(crate) fn h1_required(&self) -> bool {
+        self.h2
+            .as_ref()
+            .is_some_and(|s| s.reset && s.error == code::HTTP_1_1_REQUIRED)
     }
 
     fn stream(&mut self) -> &mut H2Stream {

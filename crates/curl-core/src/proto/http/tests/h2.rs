@@ -367,6 +367,69 @@ fn a_connection_shutting_down_says_goaway() {
     assert!(sent.ends_with("\n\nG 0 0\n"), "{sent}");
 }
 
+/// A stream reset with HTTP_1_1_REQUIRED is made again in HTTP/1.1, on a
+/// fresh connection whose TLS offers HTTP/1.1 alone, its failure let go
+/// (`Curl_h2_http_1_1_error`, "Downgrades to HTTP/1.1").
+#[test]
+fn http_1_1_required_downgrades_the_request() {
+    use crate::libraries::Library;
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    static FAKE: FakeH2 = FakeH2;
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        h2: Some(&FAKE),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let refused = fake::records(b"S\nR 1 13\n").unwrap();
+    let ok = fake::records(OK).unwrap();
+    let first = Conversation::replies(&[WELCOME, &refused], false).per_send();
+    let second = Conversation::replies(&[WELCOME, &ok], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let url = format!("https://127.0.0.1:{PORT}/");
+    let ran = get_with(&mut m, e, "/", second.clone(), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"ok\n");
+    assert_eq!(backend.log().alpn, Some(crate::tls::Alpn::Http11));
+    assert_eq!(backend.log().sessions, 2);
+    let text = ran.seen.text();
+    assert!(
+        text.iter().any(|l| l == "Downgrades to HTTP/1.1\n"),
+        "{text:?}"
+    );
+    assert_eq!(ran.easy.report().failure(), None, "the failure let go");
+}
+
+/// A transfer that speaks HTTP/1.1 only does not reuse a connection
+/// that speaks HTTP/2, nor one that wants HTTP/2 alone one that speaks
+/// HTTP/1 (`url_match_http_version`).
+#[test]
+fn a_connection_is_reused_only_by_a_transfer_that_speaks_its_version() {
+    let h2 = Conversation::replies(&[RESPONSE], false).per_send();
+    let h1 = Conversation::new(OK, false);
+    let mut m = serving(Peer::Accepts, &[&h2, &h1]);
+    for (version, body) in [
+        (HttpVersion::Http2Prior, &b"hello"[..]),
+        (HttpVersion::Http11, b"ok\n"),
+    ] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let ran = get_with(&mut m, e, "/", h1.clone(), |o| o.http.version = version);
+        assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+        assert_eq!(ran.seen.body(), body);
+        assert!(
+            !ran.seen.text().iter().any(|l| l.starts_with("Reusing")),
+            "{:?}",
+            ran.seen.text()
+        );
+    }
+}
+
 /// Under a receive limit, a stream's reads take no more than the limit
 /// allows, and the transfer waits for it (`sendrecv_dl`'s
 /// `rate_limited`, test 02_24).

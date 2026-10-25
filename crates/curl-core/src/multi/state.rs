@@ -1451,6 +1451,19 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                         Wake::Again,
                     ),
                 },
+                // A stream that said HTTP/1.1 is required is made again
+                // in it, on a fresh connection, its failure let go
+                // (`multistate_performing`).
+                Err(ErrorKind::Http2Stream) if x.proto.h1_required() => {
+                    trace::info(cx, format_args!("Downgrades to HTTP/1.1"));
+                    run.http.downgrade();
+                    x.lease.get().mark_close();
+                    trace::reset_fail(cx);
+                    (
+                        TransferState::Done(x.retried(Ok(()), Reached::Made)),
+                        Wake::Again,
+                    )
+                }
                 Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
                 // `Curl_sendrecv` looks at the time limit again, but the
                 // step's time is the one checked as it started.
@@ -3907,6 +3920,7 @@ fn acquire<H: Host>(
         None => Home::Multi,
     };
     let last = cx.easy().last_conn.map(|l| l.id);
+    let versions = proto.http_versions(cx.easy().options());
     let found = if pool::searches(&route, rules) {
         cx.rest.pool_search(cx.me, &home, |pool, exits, here| {
             pool.find(
@@ -3915,6 +3929,7 @@ fn acquire<H: Host>(
                     route: &route,
                     auth: wants,
                     last,
+                    versions,
                 },
                 rules,
                 exits,

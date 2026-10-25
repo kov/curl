@@ -85,6 +85,17 @@ pub(crate) const HTTPS: Scheme = Scheme {
     reuse: true,
 };
 
+/// The HTTP versions a request may speak (`CURL_HTTP_V1x`, `CURL_HTTP_V2x`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Versions {
+    pub(crate) h1: bool,
+    pub(crate) h2: bool,
+}
+
+impl Versions {
+    pub(crate) const ALL: Versions = Versions { h1: true, h2: true };
+}
+
 /// What a final response's challenges offered and led to, its code, and
 /// the origin the request authenticated with.
 struct Challenged<'r> {
@@ -208,6 +219,9 @@ pub(crate) struct Request {
     /// It asks to go on in HTTP/2 over clear text, with these settings
     /// (`upgr101 == UPGR101_H2`), which a 101 takes up.
     upgrade: Option<Vec<u8>>,
+    /// A request before it was told HTTP/1.1 is required: it speaks
+    /// HTTP/1 only.
+    h1_only: bool,
 }
 
 #[derive(Debug)]
@@ -337,6 +351,22 @@ enum Body {
 }
 
 impl Request {
+    /// The HTTP versions it may speak (`http_neg.allowed`): the
+    /// application's, or HTTP/1 alone once HTTP/1.1 was required.
+    pub(crate) fn versions(&self, wanted: HttpVersion) -> Versions {
+        if self.h1_only {
+            Versions {
+                h1: true,
+                h2: false,
+            }
+        } else {
+            Versions {
+                h1: wanted.h1(),
+                h2: wanted.h2(),
+            }
+        }
+    }
+
     /// It went on a stream HTTP/2 refused, which may be made again: said
     /// once.
     pub(crate) fn take_refused(&mut self) -> bool {
@@ -447,6 +477,7 @@ impl Request {
             h2: None,
             refused: false,
             upgrade: None,
+            h1_only: before.http.h1_only,
         })
     }
 

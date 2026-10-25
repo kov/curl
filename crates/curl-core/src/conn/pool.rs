@@ -325,6 +325,9 @@ pub(crate) struct Wanted<'w> {
     /// of a connection gone, or of another pool, finds nothing or an
     /// unrelated connection judged as any other, so it needs no clearing.
     pub(crate) last: Option<ConnId>,
+    /// The HTTP versions the transfer may speak: a connection that speaks
+    /// another is passed over (`url_match_http_version`).
+    pub(crate) versions: crate::proto::http::Versions,
 }
 
 /// How long the transfer looking for a connection lets one be idle, and
@@ -563,6 +566,7 @@ impl Pool {
                     route: &route,
                     auth: Wants::NONE,
                     last: None,
+                    versions: crate::proto::http::Versions::ALL,
                 },
                 rules,
                 exits,
@@ -701,6 +705,14 @@ impl Pool {
             unreachable!("an idle connection is idle");
         };
         if !conn.serves(wanted.route) || !conn.serves_auth(&wanted.auth) {
+            return Ok(None);
+        }
+        let speaks = if conn.is_h2() {
+            wanted.versions.h2
+        } else {
+            wanted.versions.h1
+        };
+        if !speaks {
             return Ok(None);
         }
         let number = conn.number;

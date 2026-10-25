@@ -77,14 +77,16 @@ pub(super) fn start<H: Host>(
             )
         }
     };
-    // HTTP/2 is offered only where a library speaks it.
+    // HTTP/2 is offered only where a library speaks it, and the request
+    // may.
     let version = options.http.version;
-    let h2 = version.h2() && cx.easy().libraries().h2.is_some();
+    let versions = c.proto.http_versions(options);
+    let h2 = versions.h2 && cx.easy().libraries().h2.is_some();
     let alpn = match (options.tls.options.alpn, side, version) {
         (false, ..) => Alpn::None,
         (true, TlsSide::Proxy, _) => Alpn::Http11,
         (true, TlsSide::Origin, HttpVersion::Http10) => Alpn::Http10,
-        (true, TlsSide::Origin, v) if h2 && !v.h1() => Alpn::H2,
+        (true, TlsSide::Origin, _) if h2 && !versions.h1 => Alpn::H2,
         (true, TlsSide::Origin, _) if h2 => Alpn::H2Http11,
         (true, TlsSide::Origin, _) => Alpn::Http11,
     };

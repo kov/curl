@@ -537,6 +537,23 @@ impl ProtoState {
         }
     }
 
+    /// The HTTP versions the request may speak; any, for another protocol.
+    pub(crate) fn http_versions(&self, options: &Options) -> http::Versions {
+        match self {
+            ProtoState::Http(r) => r.versions(options.http.version),
+            _ => http::Versions::ALL,
+        }
+    }
+
+    /// An HTTP/2 stream said HTTP/1.1 is required
+    /// (`Curl_h2_http_1_1_error`).
+    pub(crate) fn h1_required(&self) -> bool {
+        match self {
+            ProtoState::Http(r) => r.h1_required(),
+            _ => false,
+        }
+    }
+
     /// The request went on a stream HTTP/2 refused, which is safe to make
     /// again (`state.refused_stream`): said once.
     pub(crate) fn take_refused(&mut self) -> bool {

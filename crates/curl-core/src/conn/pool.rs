@@ -1167,12 +1167,22 @@ fn health(
     let Transport::Tcp(stream) = &mut conn.transport else {
         return Ok(());
     };
-    // Input waiting is unhealthy too: the connection is idle, and it is
-    // HTTP/1's.
+    // Input waiting is unhealthy too, on an idle HTTP/1 connection; on
+    // an HTTP/2 one it is the peer's frames, which its session reads
+    // (`http2_connisalive`).
     match stream.is_alive(&mut Silent(now)) {
         Alive::Alive {
             input_pending: false,
         } => Ok(()),
+        Alive::Alive {
+            input_pending: true,
+        } if conn.is_h2() => {
+            if conn.h2_stray_input(&mut Silent(now)) {
+                Ok(())
+            } else {
+                Err(None)
+            }
+        }
         Alive::Alive {
             input_pending: true,
         }

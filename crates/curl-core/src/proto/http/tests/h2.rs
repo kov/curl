@@ -324,3 +324,35 @@ fn an_upgrade_not_taken_is_answered_in_http_1() {
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.seen.body(), b"ok\n");
 }
+
+/// An idle HTTP/2 connection with frames to read is not taken for dead
+/// as an HTTP/1 one with input waiting is: its session reads them, and
+/// the next transfer reuses it (`http2_connisalive`).
+#[test]
+fn an_idle_connection_s_frames_are_read_and_it_is_reused() {
+    let mut first = RESPONSE.to_vec();
+    for _ in 0..600 {
+        first.extend_from_slice(b"P\n");
+    }
+    let second: &[u8] = b"H 3 0\n:status: 200\n\nD 3 2 1\nok";
+    let talk = Conversation::replies(&[&first, second], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    for (path, body) in [("/1", &b"hello"[..]), ("/2", b"ok")] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let ran = get_with(&mut m, e, path, talk.clone(), |o| {
+            o.http.version = HttpVersion::Http2Prior;
+            // The first read leaves frames behind the response.
+            o.limits.buffer_size = crate::options::BufferSize::clamped(1024);
+        });
+        assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+        assert_eq!(ran.seen.body(), body);
+        if path == "/2" {
+            let text = ran.seen.text();
+            assert!(
+                text.iter().any(|l| l.starts_with("Reusing existing")),
+                "{text:?}"
+            );
+        }
+    }
+}

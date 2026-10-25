@@ -153,3 +153,11 @@ witness: curl-core proto::http::tests::h2::a_101_switches_an_upgrade_to_http2
                         return self.upgraded_input(cx, lease, input);
                     }
 --- new
+
+=== an idle HTTP/2 connection with frames to read is taken for dead
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::an_idle_connection_s_frames_are_read_and_it_is_reused
+--- old
+        } if conn.is_h2() => {
+--- new
+        } if false => {

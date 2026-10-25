@@ -868,6 +868,36 @@ impl Conn {
         self.h2.take()
     }
 
+    /// What an idle HTTP/2 connection has to read, read by its session,
+    /// which a frame for no stream leaves alive: whether it still is, its
+    /// session neither failed, told to go away nor done
+    /// (`http2_connisalive`, `should_close_session`).
+    pub(crate) fn h2_stray_input(&mut self, cx: &mut dyn LayerCx) -> bool {
+        use crate::http2::{Event, Heard};
+        let Some(mut h2) = self.h2.take() else {
+            return false;
+        };
+        let alive = match self.recv(cx, 16 * 1024) {
+            Ok(Recv::WouldBlock) => true,
+            Ok(Recv::Eof) | Err(_) => false,
+            Ok(Recv::Data(_)) => {
+                let mut rx = std::mem::take(self.rx_mut());
+                let mut goaway = false;
+                let read = h2.session().recv(rx.filled(), &mut |event| {
+                    goaway |= matches!(event, Event::GoAway { .. });
+                    Heard::Fine
+                });
+                let all = rx.filled().len();
+                rx.consume(all);
+                *self.rx_mut() = rx;
+                let wants = h2.session().wants();
+                read.is_ok() && !goaway && (wants.read || wants.write)
+            }
+        };
+        self.h2 = Some(h2);
+        alive
+    }
+
     /// Put an HTTP/2 session on it, a new one or one taken out.
     pub(crate) fn put_h2(&mut self, h2: Box<crate::proto::http2::H2Conn>) {
         assert!(self.h2.is_none(), "one session per connection");

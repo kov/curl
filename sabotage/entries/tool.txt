@@ -153,7 +153,7 @@ witness: curl-tool trace::tests::writes_plain_lines_as_c
 
 === every `-v` starts the count over
 file: crates/curl-tool/src/options/apply.rs
-witness: curl-tool options::parse::tests::reads_tracing_as_c
+witness: curl-tool options::parse::tests::reads_the_trace_components_as_c
 --- old
     if first_in_word {
 --- new

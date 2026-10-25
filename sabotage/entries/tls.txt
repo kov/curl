@@ -298,3 +298,11 @@ witness: curl-openssl a_resumed_get_stays_within_its_allocation_budget
 --- new
         drop(curl_alloc::try_box(0u8));
         let mut der = ticket.data.as_ptr();
+
+=== the tool opens SSLKEYLOGFILE as it starts, as C's global init does
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool the_key_log_is_opened_at_start
+--- old
+        self.keylog.open();
+--- new
+        let _ = &self.keylog;

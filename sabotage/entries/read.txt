@@ -98,7 +98,7 @@ features: test-util
                         self.outgoing = Sending::HeadSent;
                         return Ok(false);
 --- new
-                        let wait = cx.easy().options().http.continue_wait.0;
+                        let wait = cx.easy().options().http.continue_wait.get();
                         let until = cx.now().after(wait);
                         self.outgoing = Sending::AwaitingContinue(until);
                         state::trace_set(cx, TimerKind::Proto, until);

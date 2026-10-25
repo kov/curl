@@ -1032,7 +1032,7 @@ witness: curl-core proto::http1::auth::tests::looks_in_netrc_as_c
                 if c.user.is_empty() || c.password.is_empty() =>
 
 === a required netrc file that is missing is passed over
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::http::tests::a_netrc_file_gives_the_host_s_credentials
 --- old
         Err(e) if e == NetrcError::NoMatch || mode == NetrcMode::Optional => {
@@ -1422,3 +1422,11 @@ witness: curl-core proto::http::tests::the_wait_for_a_100_starts_once_a_pause_en
 --- new
                     Sending::HeadSent => {
                         if !read {
+
+=== a .netrc is read only by an HTTP request
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_netrc_file_is_read_before_the_protocol_is_checked
+--- old
+    if (refused || !http)
+--- new
+    if false && (refused || !http)

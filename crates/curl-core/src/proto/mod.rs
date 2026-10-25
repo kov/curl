@@ -22,9 +22,16 @@ use crate::error::ErrorKind;
 use crate::error::{UrlErrorKind, url_error};
 use crate::multi::Host;
 use crate::multi::state::{AfterRequest, StepCx};
+use crate::netrc::{self, NetrcError};
+use crate::options::NetrcMode;
 use crate::options::{Method, Options};
+use crate::proto::http1::auth::{Credentials, CredentialsError, NetrcLookup};
 use crate::proto::http1::follow::Inherited;
+use crate::proto::http1::request::Trusted;
+use crate::trace;
 use crate::url::{GetOptions, Part, Url};
+use curl_alloc::TryVec as _;
+use std::ffi::CStr;
 
 /// The peer `url` names, at `host` and `port`: in the IPv6 scope
 /// `scope` if the application sets one (`CURLOPT_ADDRESS_SCOPE`), the
@@ -118,6 +125,107 @@ pub(crate) enum DoStep {
     /// as the drive reads the clock before it, as C's
     /// `Curl_pgrsCheck` reads it within the one call.
     More,
+}
+
+/// `credentials` completed or replaced from a `.netrc` file, if the
+/// options ask for one and leave room for it (`url_set_data_creds_netrc`).
+pub(crate) fn with_netrc<H: Host>(
+    credentials: Option<Credentials>,
+    host: &[u8],
+    cx: &mut StepCx<'_, H>,
+) -> Result<Option<Credentials>, ErrorKind> {
+    let copy = |bytes: &[u8]| {
+        let mut v = Vec::new();
+        v.try_extend_from_slice(bytes)
+            .map(|()| v)
+            .map_err(|_| ErrorKind::OutOfMemory)
+    };
+    let netrc = &cx.easy().options().netrc;
+    let mode = netrc.mode;
+    let user = match Credentials::netrc_lookup(credentials.as_ref(), mode) {
+        NetrcLookup::No => return Ok(credentials),
+        NetrcLookup::For(user) => user.map(copy).transpose()?,
+    };
+    let path = match &netrc.file {
+        Some(file) => Some(copy(file)?),
+        None => netrc::default_path().map_err(|_| ErrorKind::OutOfMemory)?,
+    };
+    let found = match path {
+        None => Err(NetrcError::FileMissing),
+        Some(mut path) => {
+            path.try_push(0).map_err(|_| ErrorKind::OutOfMemory)?;
+            match CStr::from_bytes_with_nul(&path) {
+                Ok(path) => {
+                    netrc::load(path).and_then(|text| netrc::scan(&text, host, user.as_deref()))
+                }
+                Err(_) => Err(NetrcError::FileMissing),
+            }
+        }
+    };
+    match found {
+        Ok(found) => Ok(Some(Credentials::with_netrc(credentials, found))),
+        Err(NetrcError::OutOfMemory) => Err(ErrorKind::OutOfMemory),
+        Err(e) if e == NetrcError::NoMatch || mode == NetrcMode::Optional => {
+            let file = match &cx.easy().options().netrc.file {
+                Some(file) => copy(file)?,
+                None => copy(b".netrc")?,
+            };
+            trace::info_with(
+                cx,
+                &[
+                    b"Could not find host ",
+                    host,
+                    b" in the ",
+                    &file,
+                    b" file; using defaults",
+                ],
+            );
+            Ok(credentials)
+        }
+        Err(e) => Err(trace::fail(
+            cx,
+            ErrorKind::ReadError,
+            format_args!(".netrc error: {}", e.text()),
+        )),
+    }
+}
+
+/// C's `.netrc` step for a URL that no HTTP request is made for: one of
+/// another protocol, or one the application does not let the transfer go
+/// to. C reads the file before it checks the protocol
+/// (`parseurlandfillconn`, before `url_set_conn_scheme`), so a required
+/// file that is missing or malformed fails the transfer whatever its
+/// scheme; an HTTP request reads it as it is made (`http::Request::new`).
+/// The credentials are C's at that point, the application's and the
+/// URL's, and are not kept: no protocol here sends any.
+pub(crate) fn netrc_before_protocol<H: Host>(
+    url: &Url,
+    cx: &mut StepCx<'_, H>,
+) -> Result<(), ErrorKind> {
+    let login = &cx.easy().options().login;
+    let credentials = match Credentials::for_request(login, Some(Trusted::own_url()), url) {
+        Ok(credentials) => credentials,
+        Err(CredentialsError::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+        Err(CredentialsError::Malformed) => {
+            return Err(trace::fail(
+                cx,
+                ErrorKind::UrlMalformat,
+                format_args!("error extracting credentials from URL"),
+            ));
+        }
+    };
+    // The host as C's origin holds it: none for `file:///`, an IPv6
+    // address without its brackets.
+    let host = match url.get(Part::Host, GetOptions::NONE) {
+        Ok(host) => host,
+        Err(UrlErrorKind::NoHost) => Vec::new(),
+        Err(e) => return Err(url_error(e)),
+    };
+    let bare = host
+        .strip_prefix(b"[")
+        .and_then(|h| h.strip_suffix(b"]"))
+        .unwrap_or(&host);
+    with_netrc(credentials, bare, cx).map(drop)
 }
 
 impl ProtoState {

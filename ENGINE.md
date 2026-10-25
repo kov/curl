@@ -2759,6 +2759,11 @@ login, over the URL's only to complete them, or, when required, to replace their
 (`netrc_lookup`); an entry found replaces the user and password and goes to its host wherever
 the transfer started. `netrc.rs` is the file's parser, a port of `lib/netrc.c` bounded as C's
 is. Unlike C, the entry is not written into the request's URL: the next leg looks it up again.
+C reads the file before it checks the protocol, so a URL no HTTP request is made for (another
+protocol's, or one `CURLOPT_PROTOCOLS_STR` refuses) has it read by the leg itself
+(`proto::netrc_before_protocol`, from the application's and the URL's credentials): a required
+file missing or malformed fails it with `ReadError`, and an entry not found is said, before the
+protocol is refused.
 What one request takes from the ones before it is on `Run`, reset at a transfer's start: the
 first origin and the method (C's `state.httpreq`), which any protocol's request reads, and
 HTTP's own, `http1::follow::Inherited`, which the engine holds for HTTP and never reads:

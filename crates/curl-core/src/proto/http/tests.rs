@@ -2505,6 +2505,67 @@ fn a_netrc_file_gives_the_host_s_credentials() {
     std::fs::remove_file(&path).unwrap();
 }
 
+/// A `.netrc` is read before the protocol is checked, as C reads it
+/// (`parseurlandfillconn`, before `url_set_conn_scheme`): a required one
+/// that is missing fails a URL of a protocol the build lacks, and of
+/// `file:`, as it fails HTTP's; an entry not found is said before the
+/// protocol is refused, and of `file:`'s empty host.
+#[test]
+fn a_netrc_file_is_read_before_the_protocol_is_checked() {
+    use crate::options::NetrcMode;
+    let path = std::env::temp_dir().join(format!("curl-core-netrc-first-{}", std::process::id()));
+    std::fs::write(&path, b"machine elsewhere login nu password np\n").unwrap();
+    let file = path.as_os_str().as_encoded_bytes().to_vec();
+    let name = String::from_utf8_lossy(&file).into_owned();
+    let missing = [&file[..], b".missing"].concat();
+    let ftp = format!("ftp://127.0.0.1:{PORT}/a");
+    let local = format!("file://{name}");
+    let not_found =
+        |host: &str| format!("Could not find host {host} in the {name} file; using defaults\n");
+    for (url, mode, netrc, result, said) in [
+        (
+            &ftp,
+            NetrcMode::Required,
+            &missing,
+            Err(ErrorKind::ReadError),
+            ".netrc error: no such file\n".to_string(),
+        ),
+        (
+            &local,
+            NetrcMode::Required,
+            &missing,
+            Err(ErrorKind::ReadError),
+            ".netrc error: no such file\n".to_string(),
+        ),
+        (
+            &ftp,
+            NetrcMode::Required,
+            &file,
+            Err(ErrorKind::UnsupportedProtocol),
+            not_found("127.0.0.1"),
+        ),
+        (&local, NetrcMode::Optional, &file, Ok(()), not_found("")),
+    ] {
+        let (mut m, talk, _) = server(&[OK], false);
+        let ran = get(&mut m, "/a", talk.clone(), |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.netrc.make_mut().unwrap().mode = mode;
+            o.netrc.make_mut().unwrap().file = Some(netrc.clone());
+        });
+        assert_eq!(ran.result, result, "{url} {mode:?}");
+        let text = ran.seen.text();
+        let at = text.iter().position(|l| *l == said);
+        assert!(at.is_some(), "{url} {mode:?}: {text:?}");
+        if result == Err(ErrorKind::UnsupportedProtocol) {
+            let refused = text
+                .iter()
+                .position(|l| l.starts_with("Protocol \"ftp\" is disabled"));
+            assert!(at < refused, "{text:?}");
+        }
+    }
+    std::fs::remove_file(&path).unwrap();
+}
+
 /// Basic sent and offered again is refused: the 401 is the answer, and
 /// fails a request that asked to fail on errors. Without credentials, a
 /// 401 is no different from any other error.

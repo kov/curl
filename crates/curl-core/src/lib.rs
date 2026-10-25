@@ -19,6 +19,7 @@ pub mod error;
 pub mod gss;
 pub mod handler;
 mod hash;
+pub mod hsts;
 pub mod id;
 pub mod idn;
 pub mod libraries;

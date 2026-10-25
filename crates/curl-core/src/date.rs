@@ -401,6 +401,23 @@ impl HttpDate {
     }
 }
 
+impl HttpDate {
+    /// The moment as an HSTS cache writes it: `19700101 00:00:00`.
+    pub(crate) fn write_hsts(&self, out: &mut impl fmt::Write) -> fmt::Result {
+        let s = self.secs;
+        write!(
+            out,
+            "{}{:02}{:02} {:02}:{:02}:{:02}",
+            self.year,
+            self.month + 1,
+            self.day,
+            s / 3600,
+            s / 60 % 60,
+            s % 60
+        )
+    }
+}
+
 impl fmt::Display for HttpDate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

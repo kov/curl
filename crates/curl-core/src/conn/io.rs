@@ -267,6 +267,92 @@ impl<'a> SocketPoll<'a> {
 }
 
 /// The network as the engine reaches it.
+/// One resolve a resolver started, never named again once done or
+/// cancelled: a stale one fails closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ResolveId(std::num::NonZeroU64);
+
+impl ResolveId {
+    /// The first a resolver gives.
+    pub const FIRST: ResolveId = ResolveId(std::num::NonZeroU64::MIN);
+
+    /// The one after it.
+    pub fn next(self) -> ResolveId {
+        ResolveId(self.0.checked_add(1).expect("fewer than 2^64 resolves"))
+    }
+}
+
+/// The transfer a resolve is for, which the multi runs again once its
+/// answer comes (C's `mid` in each queued item); none for a setup that
+/// no transfer drives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Waiter(pub(crate) Option<crate::multi::TransferId>);
+
+impl Waiter {
+    /// No transfer.
+    pub const NONE: Waiter = Waiter(None);
+}
+
+/// A resolve's start: the answer, where it is known at once, or the
+/// resolve to wait for.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Resolve {
+    Answer(Vec<IpAddr>),
+    Pending(ResolveId),
+}
+
+/// What finds the addresses names stand for (C's resolver backends):
+/// the system's, at once, or one that answers later, telling the multi
+/// which transfers to run again.
+pub trait Resolver {
+    /// Start finding the addresses of `family` that `name` stands for,
+    /// for `waiter`.
+    fn start(
+        &mut self,
+        name: &[u8],
+        family: Family,
+        waiter: Waiter,
+    ) -> Result<Resolve, ResolveFailure>;
+
+    /// The answer of `id`, once it has come, taken; none while it has not.
+    fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>>;
+
+    /// The answer of `id`, waited for (C's `Curl_async_await`).
+    fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure>;
+
+    /// `id` is not wanted: its answer, if it comes, is dropped.
+    fn cancel(&mut self, id: ResolveId);
+
+    /// Each resolve whose answer has come since last asked, with its
+    /// waiter, told once (`Curl_async_thrdd_multi_process`).
+    fn answered(&mut self, each: &mut dyn FnMut(Waiter, ResolveId));
+}
+
+/// The system's resolver as C's synchronous one: `getaddrinfo`, its
+/// answer waited for as it starts.
+#[derive(Debug, Default)]
+pub struct SystemResolver;
+
+impl Resolver for SystemResolver {
+    fn start(&mut self, name: &[u8], family: Family, _: Waiter) -> Result<Resolve, ResolveFailure> {
+        curl_os::resolve::lookup(name, family).map(Resolve::Answer)
+    }
+
+    fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
+        unreachable!("{id:?}: the system's resolver answers as it starts")
+    }
+
+    fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure> {
+        unreachable!("{id:?}: the system's resolver answers as it starts")
+    }
+
+    fn cancel(&mut self, id: ResolveId) {
+        unreachable!("{id:?}: the system's resolver answers as it starts")
+    }
+
+    fn answered(&mut self, _: &mut dyn FnMut(Waiter, ResolveId)) {}
+}
+
 pub trait Net {
     /// Wait up to `timeout` for any of `sockets` or `fds` to be ready;
     /// with none, sleep. Returns how many have events; a signal ending the
@@ -285,9 +371,8 @@ pub trait Net {
     /// Close a socket the network opened, through its closer.
     fn close(&mut self, socket: Sock);
 
-    /// The addresses of `name`, of `family`, as the system's resolver
-    /// finds them, waiting for its answer (C's synchronous resolver).
-    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure>;
+    /// `f` given the network's resolver.
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver));
 
     /// The scope of the first local interface that is up, is not
     /// loopback and has a link-local IPv6 address, if any.
@@ -398,8 +483,8 @@ impl Net for SystemNet {
         socket.close_with(drop);
     }
 
-    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
-        curl_os::resolve::lookup(name, family)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
+        f(&mut SystemResolver);
     }
 
     fn link_local_scope(&mut self) -> Option<NonZeroU32> {
@@ -818,6 +903,14 @@ pub struct FakeNet {
     peers: Vec<(Remote, Peer)>,
     /// The names it knows, with their addresses in the order answered.
     names: Vec<(Vec<u8>, Vec<IpAddr>)>,
+    /// The names answered only once their test lets them, each with its
+    /// gate; a resolve of one waits until then.
+    late: Vec<(Vec<u8>, Late)>,
+    /// The resolves waiting, with their waiter, name and family, and
+    /// whether their answer was told of.
+    resolving: Vec<Resolving>,
+    /// The id the next resolve gets.
+    next_resolve: ResolveId,
     /// The conversations to come, each for the next connection to its
     /// address.
     conversations: Vec<(Remote, Conversation)>,
@@ -835,6 +928,46 @@ pub struct FakeNet {
     /// where a test says nothing of it, so that opening a socket
     /// allocates nothing.
     binding: Option<curl_alloc::TryArc<Binding>>,
+}
+
+/// The gate of a fake name answered late: its resolves wait until the
+/// test lets the answer come.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Clone, Debug)]
+pub struct Late(TryArc<std::sync::atomic::AtomicBool>);
+
+#[cfg(any(test, feature = "test-util"))]
+impl Late {
+    pub fn new() -> Late {
+        Late(TryArc::try_new(std::sync::atomic::AtomicBool::new(false)).expect("a test's gate"))
+    }
+
+    /// The answer comes now.
+    pub fn release(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn released(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl Default for Late {
+    fn default() -> Late {
+        Late::new()
+    }
+}
+
+/// A fake resolve waiting.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug)]
+struct Resolving {
+    id: ResolveId,
+    waiter: Waiter,
+    name: Vec<u8>,
+    family: Family,
+    told: bool,
 }
 
 /// What a fake socket may bind to.
@@ -871,6 +1004,9 @@ impl FakeNet {
             clock,
             peers: Vec::new(),
             names: Vec::new(),
+            late: Vec::new(),
+            resolving: Vec::new(),
+            next_resolve: ResolveId::FIRST,
             conversations: Vec::new(),
             link_local: None,
             ipv6: true,
@@ -984,6 +1120,54 @@ impl FakeNet {
         a.try_extend_from_slice(addrs).expect("a test's names fit");
         self.names.try_push((n, a)).expect("a test's names fit");
         self
+    }
+
+    /// `name` resolves to `addrs` once `late` lets it: until then, a
+    /// resolve of it waits.
+    pub fn with_late_name(mut self, name: &str, addrs: &[IpAddr], late: &Late) -> FakeNet {
+        self = self.with_name(name, addrs);
+        let mut n = Vec::new();
+        n.try_extend_from_slice(name.as_bytes())
+            .expect("a test's names fit");
+        self.late
+            .try_push((n, late.clone()))
+            .expect("a test's names fit");
+        self
+    }
+
+    /// How many resolves wait for their answer to be taken.
+    #[cfg(test)]
+    pub(crate) fn resolving(&self) -> usize {
+        self.resolving.len()
+    }
+
+    /// Whether `name`'s answer waits for its gate.
+    fn held(&self, name: &[u8]) -> bool {
+        self.late
+            .iter()
+            .any(|(n, late)| n.eq_ignore_ascii_case(name) && !late.released())
+    }
+
+    /// The addresses of `family` the test gave `name`.
+    fn lookup(&self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
+        let (_, addrs) = self
+            .names
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .ok_or(ResolveFailure::NotFound)?;
+        let wanted = |a: &&IpAddr| match family {
+            Family::Any => true,
+            Family::V4 => a.is_ipv4(),
+            Family::V6 => a.is_ipv6(),
+        };
+        let mut found = Vec::new();
+        for &a in addrs.iter().filter(wanted) {
+            found.try_push(a).map_err(|_| ResolveFailure::OutOfMemory)?;
+        }
+        if found.is_empty() {
+            return Err(ResolveFailure::NoData);
+        }
+        Ok(found)
     }
 
     pub fn with_peer(self, addr: SocketAddr, peer: Peer) -> FakeNet {
@@ -1125,25 +1309,8 @@ impl Net for FakeNet {
         socket.close_with(drop);
     }
 
-    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
-        let (_, addrs) = self
-            .names
-            .iter()
-            .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            .ok_or(ResolveFailure::NotFound)?;
-        let wanted = |a: &&IpAddr| match family {
-            Family::Any => true,
-            Family::V4 => a.is_ipv4(),
-            Family::V6 => a.is_ipv6(),
-        };
-        let mut found = Vec::new();
-        for &a in addrs.iter().filter(wanted) {
-            found.try_push(a).map_err(|_| ResolveFailure::OutOfMemory)?;
-        }
-        if found.is_empty() {
-            return Err(ResolveFailure::NoData);
-        }
-        Ok(found)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
+        f(self);
     }
 
     fn link_local_scope(&mut self) -> Option<NonZeroU32> {
@@ -1423,6 +1590,96 @@ mod libc_errno {
     pub(super) const ENODEV: i32 = 19;
 }
 
+#[cfg(any(test, feature = "test-util"))]
+impl Resolver for FakeNet {
+    fn start(
+        &mut self,
+        name: &[u8],
+        family: Family,
+        waiter: Waiter,
+    ) -> Result<Resolve, ResolveFailure> {
+        if !self.held(name) {
+            return self.lookup(name, family).map(Resolve::Answer);
+        }
+        let id = self.next_resolve;
+        self.next_resolve = id.next();
+        let mut n = Vec::new();
+        n.try_extend_from_slice(name)
+            .map_err(|_| ResolveFailure::OutOfMemory)?;
+        self.resolving
+            .try_push(Resolving {
+                id,
+                waiter,
+                name: n,
+                family,
+                told: false,
+            })
+            .map_err(|_| ResolveFailure::OutOfMemory)?;
+        Ok(Resolve::Pending(id))
+    }
+
+    fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
+        let at = self
+            .resolving
+            .iter()
+            .position(|r| r.id == id)
+            .expect("a resolve not taken or cancelled");
+        if self.held(&self.resolving[at].name) {
+            return None;
+        }
+        let r = self.resolving.remove(at);
+        Some(self.lookup(&r.name, r.family))
+    }
+
+    fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure> {
+        let at = self
+            .resolving
+            .iter()
+            .position(|r| r.id == id)
+            .expect("a resolve not taken or cancelled");
+        let r = self.resolving.remove(at);
+        self.lookup(&r.name, r.family)
+    }
+
+    fn cancel(&mut self, id: ResolveId) {
+        self.resolving.retain(|r| r.id != id);
+    }
+
+    fn answered(&mut self, each: &mut dyn FnMut(Waiter, ResolveId)) {
+        for at in 0..self.resolving.len() {
+            if !self.resolving[at].told && !self.held(&self.resolving[at].name) {
+                self.resolving[at].told = true;
+                each(self.resolving[at].waiter, self.resolving[at].id);
+            }
+        }
+    }
+}
+
+/// A tests' resolver whose every answer `F` gives as its resolve starts.
+#[cfg(any(test, feature = "test-util"))]
+pub struct AtOnce<F>(pub F);
+
+#[cfg(any(test, feature = "test-util"))]
+impl<F: FnMut(&[u8], Family) -> Result<Vec<IpAddr>, ResolveFailure>> Resolver for AtOnce<F> {
+    fn start(&mut self, name: &[u8], family: Family, _: Waiter) -> Result<Resolve, ResolveFailure> {
+        (self.0)(name, family).map(Resolve::Answer)
+    }
+
+    fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
+        unreachable!("{id:?}: answered as it starts")
+    }
+
+    fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure> {
+        unreachable!("{id:?}: answered as it starts")
+    }
+
+    fn cancel(&mut self, id: ResolveId) {
+        unreachable!("{id:?}: answered as it starts")
+    }
+
+    fn answered(&mut self, _: &mut dyn FnMut(Waiter, ResolveId)) {}
+}
+
 /// A fake network the test reaches while the multi holds it.
 #[cfg(test)]
 pub(crate) struct SharedNet(pub(crate) std::sync::Arc<std::sync::Mutex<FakeNet>>);
@@ -1446,8 +1703,8 @@ impl Net for SharedNet {
         self.0.lock().unwrap().close(socket);
     }
 
-    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
-        self.0.lock().unwrap().resolve(name, family)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
+        self.0.lock().unwrap().with_resolver(f);
     }
 
     fn link_local_scope(&mut self) -> Option<NonZeroU32> {
@@ -1493,9 +1750,16 @@ mod tests {
     /// The system's network resolves names with the system's resolver.
     #[test]
     fn the_system_resolves_names() {
-        let addrs = SystemNet.resolve(b"localhost", Family::V4).unwrap();
+        let mut answers = Vec::new();
+        SystemNet.with_resolver(&mut |r| {
+            answers.push(r.start(b"localhost", Family::V4, Waiter::NONE));
+            answers.push(r.start(b"nonexist.invalid", Family::Any, Waiter::NONE));
+        });
+        let Ok(Resolve::Answer(addrs)) = &answers[0] else {
+            panic!("{answers:?}");
+        };
         assert!(addrs.contains(&IpAddr::from([127, 0, 0, 1])), "{addrs:?}");
-        assert!(SystemNet.resolve(b"nonexist.invalid", Family::Any).is_err());
+        assert!(answers[1].is_err(), "{answers:?}");
     }
 
     #[test]

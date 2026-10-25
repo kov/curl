@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use curl_alloc::TryArc;
 use curl_core::conn::io::{
-    Connect, Family, InterfaceAddress, Ipv6Scope, Net, PollFd, Readiness, Recv, Remote,
-    ResolveFailure, Sent, Sock, Socket, SocketKey, SocketOption, SocketPoll,
+    AtOnce, Connect, InterfaceAddress, Ipv6Scope, Net, PollFd, Readiness, Recv, Remote, Resolver,
+    Sent, Sock, Socket, SocketKey, SocketOption, SocketPoll,
 };
 use curl_core::options::{Method, UploadSource};
 
@@ -159,11 +159,14 @@ impl Net for Stutter {
     fn close(&mut self, socket: Sock) {
         self.0.close(socket)
     }
-    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
         if self.1.any_name {
-            return Ok(track::untracked(|| vec![IpAddr::from([127, 0, 0, 1])]));
+            f(&mut AtOnce(|_: &[u8], _| {
+                Ok(track::untracked(|| vec![IpAddr::from([127, 0, 0, 1])]))
+            }));
+            return;
         }
-        self.0.resolve(name, family)
+        self.0.with_resolver(f);
     }
     fn link_local_scope(&mut self) -> Option<NonZeroU32> {
         self.0.link_local_scope()

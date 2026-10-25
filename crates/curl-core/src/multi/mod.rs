@@ -521,6 +521,7 @@ impl<H: Host> Multi<H> {
 
     fn perform_unchecked(&mut self, ev: &mut dyn MultiEvents<H>) -> Result<u32, MultiErrorKind> {
         let now = self.clock.now();
+        self.take_answers();
         // The connections shutting down first, as C's internal handle is
         // the first it runs.
         self.drive_shutdowns(now, ev);
@@ -538,6 +539,22 @@ impl<H: Host> Multi<H> {
         self.shutdowns.expire(now);
         self.update_timer(ev)?;
         Ok(self.counts.get().running)
+    }
+
+    /// The transfers whose resolves the resolver has answered are run
+    /// (`Curl_async_thrdd_multi_process`, the multi's own work). An answer
+    /// for a transfer gone is for a setup closed, which cancelled it.
+    fn take_answers(&mut self) {
+        let (slots, dirty) = (&self.slots, &mut self.dirty);
+        self.net.with_resolver(&mut |r| {
+            r.answered(&mut |waiter, _| {
+                if let Some(id) = waiter.0
+                    && slots.get(id).is_some()
+                {
+                    dirty.insert(id.index());
+                }
+            });
+        });
     }
 
     /// Move the shutdowns on (`Curl_cshutdn_perform`), as the multi's own
@@ -608,6 +625,7 @@ impl<H: Host> Multi<H> {
                 }
             }
         }
+        self.take_answers();
         let mut now = self.clock.now();
         self.mark_expired_dirty(now, ev);
         // A socket callback's abort ends the call before notifications and

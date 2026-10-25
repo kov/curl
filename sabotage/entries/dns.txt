@@ -29,7 +29,7 @@ witness: curl-core multi::tests::stale_answers_are_dropped
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 --- old
-        Lookup::Found(answer) => return Ok((answer, Found::Cached)),
+        Lookup::Found(answer) => return Ok(Looked::Found(answer, Found::Cached)),
 --- new
         Lookup::Found(_) => Found::Resolved,
 
@@ -37,14 +37,12 @@ witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::connections_are_numbered_in_their_traces
 --- old
-        .section(|c| c.put(answer.clone(), port, now, false))
-        .map_err(oom)?;
-    Ok((answer, found))
+        cx.names()
+            .section(|c| c.put(answer.clone(), port, now, false))
+            .map_err(oom)?;
+        return Ok(Looked::Found(answer, found(Asked::Shortcut)));
 --- new
-        .section(|c| c.put(answer.clone(), port, now, false))
-        .map_err(oom)?;
-    setup.dns.section(|c| c.remove(name, port));
-    Ok((answer, found))
+        return Ok(Looked::Found(answer, found(Asked::Shortcut)));
 
 === a transfer's end drops nothing stale
 file: crates/curl-core/src/multi/state.rs
@@ -76,9 +74,9 @@ witness: curl-core multi::tests::a_bad_resolve_entry_fails_the_transfer
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_resolver_s_answers_are_kept
 --- old
-                    .section(|c| c.put(none, port, now, false))
+                .section(|c| c.put(none, port, now, false))
 --- new
-                    .section(|_| Ok::<(), OutOfMemory>(drop((none, port))))
+                .section(|_| Ok::<(), OutOfMemory>(drop((none, port))))
 
 === an answer for one family answers for both
 file: crates/curl-core/src/conn/dns.rs
@@ -92,10 +90,11 @@ witness: curl-core multi::tests::the_resolver_s_answers_are_kept
 file: crates/curl-core/src/multi/cx.rs
 witness: curl-core multi::tests::the_resolver_s_answers_are_kept
 --- old
-        self.step.rest.net.resolve(name, family)
+        self.step.rest.net.with_resolver(f);
 --- new
-        let _ = (name, family);
-        Err(ResolveFailure::NotFound)
+        f(&mut crate::conn::io::AtOnce(|_: &[u8], _| {
+            Err(crate::conn::io::ResolveFailure::NotFound)
+        }));
 
 === a negative answer ages as an answer does
 file: crates/curl-core/src/conn/dns.rs
@@ -145,19 +144,17 @@ witness: curl-core multi::tests::without_ipv6_only_ipv4_is_resolved
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::without_ipv6_only_ipv4_is_resolved
 --- old
-    let ipv6 = cx.ipv6_works();
-    let family = match ip {
+        IpVersion::Any if cx.ipv6_works() => Family::Any,
 --- new
-    let ipv6 = true;
-    let family = match ip {
+        IpVersion::Any if true => Family::Any,
 
 === a name is resolved for IPv6 alone though IPv6 does not work
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::without_ipv6_only_ipv4_is_resolved
 --- old
-        None if family == Family::V6 && !ipv6 => {
+    if family == Family::V6 && !ipv6 {
 --- new
-        None if family == Family::V6 && ipv6 && !ipv6 => {
+    if family == Family::V6 && ipv6 && !ipv6 {
 
 === the queries traced ask for IPv6 though it does not work
 file: crates/curl-core/src/conn/connect.rs
@@ -166,3 +163,20 @@ witness: curl-core multi::tests::without_ipv6_only_ipv4_is_resolved
         IpVersion::Any => (true, ipv6_works),
 --- new
         IpVersion::Any => (true, true),
+
+=== a closed setup leaves its resolve in the resolver
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::a_closed_setup_cancels_its_resolve
+--- old
+                net.with_resolver(&mut |r| r.cancel(p.id));
+--- new
+
+=== a pending resolve dropped goes unnoticed
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::a_dropped_pending_resolve_is_caught
+--- old
+            std::thread::panicking(),
+            "a resolve was dropped, neither answered nor cancelled"
+--- new
+            true,
+            "a resolve was dropped, neither answered nor cancelled"

@@ -924,12 +924,8 @@ impl Net for SharedNet {
         self.0.lock().unwrap().close(socket);
     }
 
-    fn resolve(
-        &mut self,
-        name: &[u8],
-        family: curl_core::conn::io::Family,
-    ) -> Result<Vec<std::net::IpAddr>, curl_core::conn::io::ResolveFailure> {
-        self.0.lock().unwrap().resolve(name, family)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn curl_core::conn::io::Resolver)) {
+        self.0.lock().unwrap().with_resolver(f);
     }
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {

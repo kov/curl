@@ -740,3 +740,12 @@ witness: curl-core multi::tests::transfers_are_numbered_as_c_numbers_them
         let mid = id.index() + u32::from(self.slots.reserved() == 0);
 --- new
         let mid = id.index() + 1;
+
+=== socket_action runs no transfer whose resolve was answered
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_late_answer_is_waited_for
+--- old
+        self.take_answers();
+        let mut now = self.clock.now();
+--- new
+        let mut now = self.clock.now();

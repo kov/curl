@@ -873,13 +873,10 @@ impl Net for BrokenNet {
         socket.close_with(drop);
     }
 
-    fn resolve(
-        &mut self,
-        name: &[u8],
-        family: crate::conn::io::Family,
-    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
-        let _ = (name, family);
-        Err(crate::conn::io::ResolveFailure::Failed)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn crate::conn::io::Resolver)) {
+        f(&mut crate::conn::io::AtOnce(|_: &[u8], _| {
+            Err(crate::conn::io::ResolveFailure::Failed)
+        }));
     }
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
@@ -1248,6 +1245,70 @@ fn networked() -> (Multi, ManualClock) {
     (Multi::new(env).unwrap(), clock)
 }
 
+/// A resolve the resolver answers later is waited for: the transfer
+/// stays in its setup, connecting nowhere, until the answer comes, and is
+/// then run again, by `socket_action` as by `perform`, as C's admin handle
+/// dispatches the thread queue's answers. A transfer removed while it
+/// waits cancels its resolve.
+#[test]
+fn a_late_answer_is_waited_for() {
+    use crate::conn::io::{Late, Peer, SharedNet};
+    let clock = ManualClock::new().unwrap();
+    let (late, never) = (Late::new(), Late::new());
+    let net = FakeNet::new(clock.clone())
+        .with_peer(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
+            Peer::Accepts,
+        )
+        .with_late_name("late.test", &[[127, 0, 0, 1].into()], &late)
+        .with_late_name("never.test", &[[127, 0, 0, 1].into()], &never);
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(net));
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(SharedNet(shared.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let (e, lines) = traced("tcp://late.test:1/");
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..3 {
+        m.socket_action(SocketEvent::Timeout, &mut NoEvents)
+            .unwrap();
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(messages(&mut m).is_empty(), "{:?}", trace_of(&lines));
+    assert_eq!(shared.lock().unwrap().resolving(), 1);
+    assert!(
+        !trace_of(&lines).iter().any(|l| l.contains("was resolved")),
+        "{:?}",
+        trace_of(&lines)
+    );
+    late.release();
+    // The answer runs the transfer, though no socket or timer of its is
+    // due.
+    for _ in 0..2 {
+        m.socket_action(SocketEvent::Timeout, &mut NoEvents)
+            .unwrap();
+    }
+    assert_eq!(shared.lock().unwrap().resolving(), 0, "the answer taken");
+    assert!(
+        trace_of(&lines).contains(&"Host late.test:1 was resolved.\n".to_string()),
+        "{:?}",
+        trace_of(&lines)
+    );
+    perform_and_connect(&mut m);
+    assert_eq!(messages(&mut m).last().map(|r| r.1), Some(Ok(())));
+    m.remove(id, &mut NoEvents).unwrap();
+    // One whose answer never comes is cancelled as it goes.
+    let (e, _) = traced("tcp://never.test:1/");
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(shared.lock().unwrap().resolving(), 1);
+    m.remove(id, &mut NoEvents).unwrap();
+    assert_eq!(shared.lock().unwrap().resolving(), 0, "cancelled");
+}
+
 /// A connection established before the next attempt was due leaves no
 /// wait for that attempt behind (`Curl_expire_done`, HAPPY_EYEBALLS).
 #[test]
@@ -1369,12 +1430,8 @@ impl Net for Patient {
         self.net.close(socket);
     }
 
-    fn resolve(
-        &mut self,
-        name: &[u8],
-        family: crate::conn::io::Family,
-    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
-        self.net.resolve(name, family)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn crate::conn::io::Resolver)) {
+        self.net.with_resolver(f);
     }
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
@@ -2050,12 +2107,8 @@ impl Net for Closes {
         self.0.close(socket);
     }
 
-    fn resolve(
-        &mut self,
-        name: &[u8],
-        family: crate::conn::io::Family,
-    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
-        self.0.resolve(name, family)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn crate::conn::io::Resolver)) {
+        self.0.with_resolver(f);
     }
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
@@ -2098,12 +2151,8 @@ impl Net for OneNet {
         self.0.lock().unwrap().close(socket);
     }
 
-    fn resolve(
-        &mut self,
-        name: &[u8],
-        family: crate::conn::io::Family,
-    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
-        self.0.lock().unwrap().resolve(name, family)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn crate::conn::io::Resolver)) {
+        self.0.lock().unwrap().with_resolver(f);
     }
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
@@ -3865,12 +3914,8 @@ impl Net for Probed {
         self.0.close(socket);
     }
 
-    fn resolve(
-        &mut self,
-        name: &[u8],
-        family: crate::conn::io::Family,
-    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
-        self.0.resolve(name, family)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn crate::conn::io::Resolver)) {
+        self.0.with_resolver(f);
     }
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {

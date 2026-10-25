@@ -1920,9 +1920,10 @@ the resolver then asks to be tried again in 100 ms (`Resolver::retry`), which th
 its `ASYNC_NAME` timer, and the next pass starts one. The debug build's
 `CURL_DBG_RESOLV_FAIL_IPV6`, `hostip_resolv`'s for every resolver, is read as the multi is made:
 a resolve of IPv6 addresses alone then fails before the cache and the shortcuts are asked
-(`Unresolved::DebugFailIpv6`), for the setup and for a bind alike. Not built yet: the blocking
-resolve's `await` lines and the thread queue's own trace, which no test reads and whose count
-depends on the threads' timing. Not ported: C's re-query, for `AF_UNSPEC`, of an IPv6 answer
+(`Unresolved::DebugFailIpv6`), for the setup and for a bind alike. Left out by decision: the
+blocking resolve's `await` lines (`Curl_async_await`'s "await, waiting Nms") and the thread
+queue's own trace (`thrdq`), which no test reads and whose count depends on the threads'
+timing. Not ported: C's re-query, for `AF_UNSPEC`, of an IPv6 answer
 with a link-local address but no scope (`async_thrdd_item_missing_scope`), a workaround for a
 glibc that gives scopes only to `AF_UNSPEC` queries. Reproduced against glibc 2.43 (a DNS
 server in a network namespace answering `fe80::1`), neither query gives a scope, so the

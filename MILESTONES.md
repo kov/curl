@@ -803,8 +803,8 @@ the system's under the HTTP-only programs installed here.
       later, and the cache, the shortcuts and the negative answers stay where they are. The
       system's resolver and the fake network answer through it, the fake one at once or later
       as a test asks.
-    - **b. The threaded resolver.** **Done** but for the blocking resolve's `await` lines and
-      the thread queue's trace, which no test reads (ENGINE.md §4.8). C's
+    - **b. The threaded resolver.** **Done.** The blocking resolve's `await` lines and the
+      thread queue's trace, which no test reads, are left out by decision (ENGINE.md §4.8). C's
       (`lib/vdns/asyn-thrdd.c`, `thrdpool.c`, `thrdqueue.c`): a thread pool per multi
       (`CURLMOPT_RESOLVE_THREADS_MAX`, threads made as needed and let go when idle), each
       address family a query of its own, an answer delivered by waking the multi, the

@@ -811,11 +811,17 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let long = Duration::from_secs(60);
-        let mut r = ThreadedResolver::new(Threads {
+        // Each query held back a while, so that two at once find no
+        // thread idle.
+        let held = DebugVars {
+            delay: Some(Duration::from_millis(50)),
+            ..DebugVars::default()
+        };
+        let threads = Threads {
             max: NonZeroU32::new(2).unwrap(),
             idle: long,
-        })
-        .unwrap();
+        };
+        let mut r = ThreadedResolver::with_debug(threads, held).unwrap();
         // Two at once take a thread each.
         let ids = [start(&mut r), start(&mut r)];
         assert!(answer_all(&mut r, &ids).iter().all(Result::is_ok));

@@ -1,5 +1,5 @@
 {
- "c-commit": "7f413e222f0eee750e112ad7881808f6b4408724",
+ "c-commit": "549501dcc73b088374609b81b8dacfa3efbe9976",
  "data": {
   "backends": {
    "all": [
@@ -8159,14 +8159,14 @@
     "NTLM_WB"
    ],
    "table-missing-from-docs": [],
-   "test-feature-blocks": 1037,
+   "test-feature-blocks": 1056,
    "test-feature-vocabulary": [
     {
      "name": "--libcurl",
      "origin": {
       "kind": "src/curlinfo.c"
      },
-     "tests": 13
+     "tests": 14
     },
     {
      "name": "AppleIDN",
@@ -8187,7 +8187,7 @@
       ],
       "regex": "\\bDebug"
      },
-     "tests": 150
+     "tests": 157
     },
     {
      "name": "DoH",
@@ -8220,7 +8220,7 @@
       ],
       "regex": "GSS-API"
      },
-     "tests": 6
+     "tests": 12
     },
     {
      "name": "GnuTLS",
@@ -8375,7 +8375,7 @@
       ],
       "regex": "SSL"
      },
-     "tests": 146
+     "tests": 147
     },
     {
      "name": "SSLS-EXPORT",
@@ -8541,7 +8541,7 @@
      "origin": {
       "kind": "src/curlinfo.c"
      },
-     "tests": 66
+     "tests": 67
     },
     {
      "name": "crypto",
@@ -8578,7 +8578,7 @@
      "origin": {
       "kind": "protocol-as-feature"
      },
-     "tests": 15
+     "tests": 18
     },
     {
      "name": "form-api",
@@ -8628,7 +8628,7 @@
      "origin": {
       "kind": "protocol-as-feature"
      },
-     "tests": 99
+     "tests": 106
     },
     {
      "name": "http/2",
@@ -8733,7 +8733,7 @@
       "kind": "runtests.pl-assignment",
       "line": 818
      },
-     "tests": 27
+     "tests": 28
     },
     {
      "name": "manual",
@@ -8799,7 +8799,7 @@
      "origin": {
       "kind": "src/curlinfo.c"
      },
-     "tests": 267
+     "tests": 272
     },
     {
      "name": "python",
@@ -8922,7 +8922,7 @@
      "origin": {
       "kind": "src/curlinfo.c"
      },
-     "tests": 12
+     "tests": 14
     },
     {
      "name": "wakeup",
@@ -8983,7 +8983,7 @@
      "tests": 2
     }
    ],
-   "test-files-with-features": 1031,
+   "test-files-with-features": 1050,
    "tool-added-features": [
     {
      "bit": null,

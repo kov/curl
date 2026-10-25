@@ -1,19 +1,20 @@
 {
- "c-commit": "7f413e222f0eee750e112ad7881808f6b4408724",
+ "c-commit": "549501dcc73b088374609b81b8dacfa3efbe9976",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
-   "crlf=headers": 1101,
-   "crlf=yes": 627,
+   "crlf=headers": 1117,
+   "crlf=yes": 629,
    "delay=1": 3,
-   "mode=text": 195,
+   "mode=text": 208,
    "mode=warn": 2,
-   "nocheck=yes": 523,
+   "nocheck=yes": 533,
    "nonewline=yes": 167,
    "option=binary-trace": 29,
    "option=force-output": 1,
-   "option=no-include": 40,
+   "option=no-include": 42,
    "option=no-output": 48,
+   "option=no-output no-include": 6,
    "option=no-output,no-include": 94,
    "option=no-output/no-include": 1,
    "option=no-q": 2,
@@ -24,8 +25,9 @@
   "command_option_counts": {
    "binary-trace": 29,
    "force-output": 1,
-   "no-include": 40,
+   "no-include": 42,
    "no-output": 48,
+   "no-output no-include": 6,
    "no-output,no-include": 94,
    "no-output/no-include": 1,
    "no-q": 2,
@@ -36,7 +38,7 @@
   },
   "counts": {
    "c_server_programs": 8,
-   "default_run_candidates": 2138,
+   "default_run_candidates": 2167,
    "disabled_conditional_only": 5,
    "disabled_entries": 20,
    "disabled_unconditional": 14,
@@ -44,7 +46,7 @@
    "perf_programs": 10,
    "pytest_functions": 357,
    "server_keywords_mapped": 36,
-   "test_files": 2152,
+   "test_files": 2181,
    "tunit_programs": 6,
    "unit_programs": 81
   },
@@ -353,8 +355,8 @@
    "%else": 2,
    "%endif": 2,
    "%if": 2,
-   "0": 68,
-   "1": 18,
+   "0": 69,
+   "1": 20,
    "10": 4,
    "100": 4,
    "101": 1,
@@ -373,13 +375,13 @@
    "23": 11,
    "25": 7,
    "26": 12,
-   "28": 18,
+   "28": 20,
    "3": 38,
    "30": 1,
    "33": 6,
    "35": 4,
    "36": 2,
-   "37": 6,
+   "37": 7,
    "4": 2,
    "41": 4,
    "42": 7,
@@ -393,13 +395,13 @@
    "55": 10,
    "56": 20,
    "6": 7,
-   "60": 10,
+   "60": 11,
    "61": 11,
    "63": 7,
    "64": 5,
    "67": 33,
    "69": 2,
-   "7": 26,
+   "7": 29,
    "70": 1,
    "71": 1,
    "77": 2,
@@ -409,7 +411,7 @@
    "85": 1,
    "9": 3,
    "90": 4,
-   "97": 8
+   "97": 9
   },
   "feature_forbidden_counts": {
    "AppleIDN": 1,
@@ -432,11 +434,11 @@
    "wolfssl-5.9.2": 1
   },
   "feature_required_counts": {
-   "--libcurl": 13,
-   "Debug": 150,
+   "--libcurl": 14,
+   "Debug": 157,
    "DoH": 6,
    "ECH": 3,
-   "GSS-API": 6,
+   "GSS-API": 12,
    "HSTS": 19,
    "HTTPS-proxy": 1,
    "HTTPSRR": 1,
@@ -447,7 +449,7 @@
    "NTLM": 52,
    "OpenSSL": 5,
    "PSL": 8,
-   "SSL": 146,
+   "SSL": 147,
    "SSLS-EXPORT": 1,
    "SSLpinning": 10,
    "Schannel": 8,
@@ -460,18 +462,18 @@
    "blank-env": 1,
    "brotli": 4,
    "codeset-utf8": 20,
-   "cookies": 66,
+   "cookies": 67,
    "crypto": 107,
    "dict": 3,
    "digest": 86,
-   "file": 15,
+   "file": 18,
    "form-api": 10,
    "ftp": 22,
    "getrlimit": 3,
    "gopher": 1,
    "h2c": 6,
    "headers-api": 14,
-   "http": 99,
+   "http": 106,
    "http/2": 10,
    "http/3": 4,
    "https": 14,
@@ -483,7 +485,7 @@
    "ldap": 1,
    "libssh2": 3,
    "libz": 21,
-   "local-http": 27,
+   "local-http": 28,
    "manual": 7,
    "mqtt": 27,
    "mqtts": 3,
@@ -491,7 +493,7 @@
    "nghttpx-h3": 2,
    "override-dns": 3,
    "pop3": 2,
-   "proxy": 266,
+   "proxy": 271,
    "python": 3,
    "rtsp": 1,
    "scp": 1,
@@ -505,7 +507,7 @@
    "threaded-resolver": 1,
    "threadsafe": 1,
    "unittest": 88,
-   "verbose-strings": 12,
+   "verbose-strings": 14,
    "wakeup": 5,
    "win32": 2,
    "ws": 29,
@@ -692,12 +694,13 @@
   "keyword_counts": {
    "%header": 6,
    "%{certs}": 1,
-   "--anyauth": 13,
+   "--anyauth": 14,
    "--clobber": 1,
    "--config": 18,
    "--connect-to": 3,
    "--continue-at": 2,
-   "--crlf": 2,
+   "--create-file-mode": 1,
+   "--crlf": 4,
    "--data-binary": 5,
    "--data-urlencode": 2,
    "--disable-eprt": 1,
@@ -707,7 +710,7 @@
    "--etag-compare": 1,
    "--etag-save": 1,
    "--fail": 5,
-   "--fail-early": 1,
+   "--fail-early": 2,
    "--fail-with-body": 3,
    "--follow": 3,
    "--ftp-account": 1,
@@ -720,7 +723,7 @@
    "--insecure": 1,
    "--interface": 9,
    "--json": 4,
-   "--libcurl": 13,
+   "--libcurl": 14,
    "--limit-rate": 2,
    "--local-port": 1,
    "--location": 8,
@@ -735,10 +738,10 @@
    "--no-remote-name": 1,
    "--output-dir": 3,
    "--path-as-is": 1,
-   "--proto": 3,
+   "--proto": 5,
    "--proto-default": 8,
-   "--proto-redir": 2,
-   "--proxy-anyauth": 4,
+   "--proto-redir": 4,
+   "--proxy-anyauth": 6,
    "--quote": 1,
    "--raw": 2,
    "--remote-header-name": 1,
@@ -747,13 +750,17 @@
    "--request": 1,
    "--request-target": 3,
    "--resolve": 26,
-   "--retry": 4,
+   "--retry": 6,
+   "--retry-connrefused": 1,
    "--retry-delay": 1,
    "--show-headers": 4,
    "--silent": 1,
+   "--speed-time": 1,
    "--ssl-sessions": 1,
    "--stderr": 1,
    "--styled-output": 2,
+   "--test-event": 1,
+   "--trace-config": 2,
    "--url": 2,
    "--url-query": 2,
    "--variable": 8,
@@ -885,7 +892,7 @@
    "Early Hints": 1,
    "Expect: 100-continue": 4,
    "FETCH": 18,
-   "FILE": 42,
+   "FILE": 46,
    "FLUSH": 1,
    "FORM": 8,
    "FTP": 295,
@@ -901,31 +908,32 @@
    "HELP": 1,
    "HMAC": 1,
    "HSTS": 19,
-   "HTTP": 1099,
+   "HTTP": 1124,
    "HTTP 1xx response code": 1,
    "HTTP Basic": 3,
    "HTTP Basic auth": 39,
-   "HTTP CONNECT": 53,
+   "HTTP CONNECT": 54,
    "HTTP DELETE": 1,
    "HTTP Digest auth": 53,
    "HTTP FORMPOST": 17,
-   "HTTP GET": 674,
+   "HTTP GET": 686,
    "HTTP HEAD": 8,
    "HTTP MIME": 4,
    "HTTP MIME POST": 7,
    "HTTP NTLM auth": 23,
-   "HTTP Negotiate auth (stub krb5)": 2,
+   "HTTP Negotiate auth (stub krb5)": 6,
    "HTTP Negotiate auth (stub ntlm)": 1,
    "HTTP POST": 106,
-   "HTTP PUT": 57,
+   "HTTP PUT": 58,
    "HTTP added headers": 4,
    "HTTP auth in URL": 1,
    "HTTP custom request": 2,
    "HTTP file upload": 4,
-   "HTTP proxy": 185,
+   "HTTP proxy": 188,
    "HTTP proxy Basic auth": 19,
    "HTTP proxy Digest auth": 16,
    "HTTP proxy NTLM auth": 18,
+   "HTTP proxy Negotiate auth (stub krb5)": 2,
    "HTTP proxy auth": 1,
    "HTTP replaced headers": 14,
    "HTTP set cookie": 4,
@@ -933,7 +941,7 @@
    "HTTP/1.0": 10,
    "HTTP/2": 15,
    "HTTP/3": 4,
-   "HTTPS": 61,
+   "HTTPS": 62,
    "HTTPS GET": 1,
    "HTTPS PUT": 1,
    "HTTPS RR": 1,
@@ -1043,7 +1051,7 @@
    "SMTP HELO": 1,
    "SMTPS": 1,
    "SOCKS4": 7,
-   "SOCKS5": 26,
+   "SOCKS5": 28,
    "SOCKS5h": 6,
    "SPNEGO NTLM disallowed": 2,
    "STARTTLS": 7,
@@ -1093,18 +1101,18 @@
    "case-normalization": 1,
    "cfilter": 1,
    "checksrc": 1,
-   "chunked Transfer-Encoding": 44,
+   "chunked Transfer-Encoding": 45,
    "cipher_suite": 1,
    "cmdline": 8,
    "compressed": 23,
    "config": 1,
    "config file": 4,
    "connect timeout": 1,
-   "connect to non-listen": 7,
+   "connect to non-listen": 9,
    "connection reuse": 13,
    "cookie path": 1,
    "cookiejar": 12,
-   "cookies": 74,
+   "cookies": 75,
    "crash": 1,
    "curl": 4,
    "curl tool": 1,
@@ -1156,7 +1164,7 @@
    "etags": 1,
    "expand": 1,
    "flaky": 12,
-   "followlocation": 90,
+   "followlocation": 92,
    "ftp_213_date": 1,
    "ftplistparser": 8,
    "getASN1Element": 1,
@@ -1217,12 +1225,13 @@
    "oauth2-bearer": 2,
    "options": 1,
    "options-in-versions": 1,
-   "parallel": 2,
+   "parallel": 8,
    "persistent connection": 3,
    "post-quote": 12,
    "pre-quote": 7,
    "preexisting-signature": 1,
    "printf": 1,
+   "progress": 3,
    "progressbar": 1,
    "protocol": 2,
    "proxy": 9,
@@ -1257,7 +1266,7 @@
    "thread-safe": 1,
    "threads": 3,
    "time2str": 1,
-   "timeout": 14,
+   "timeout": 16,
    "timing-dependent": 7,
    "tool-progress": 1,
    "tool-sizeparser": 1,
@@ -1291,15 +1300,15 @@
   },
   "macro_counts": {
    "AMP": 3,
-   "CR": 113,
+   "CR": 114,
    "EMPTY": 3,
    "GT": 86,
    "LT": 7,
    "SP": 32,
    "TAB": 13,
-   "b64": 211,
+   "b64": 217,
    "days": 6,
-   "hex": 105,
+   "hex": 106,
    "if": 20,
    "include": 26,
    "repeat": 101
@@ -1336,36 +1345,36 @@
     "data1706-stdout.txt",
     "DISABLED"
    ],
-   "testcases_listed": 2152
+   "testcases_listed": 2181
   },
   "part_counts": {
-   "client/command": 2042,
+   "client/command": 2071,
    "client/connectport": 1,
    "client/disable": 11,
-   "client/features": 1030,
-   "client/file": 364,
+   "client/features": 1049,
+   "client/file": 367,
    "client/file1": 13,
    "client/file2": 13,
    "client/file3": 4,
    "client/file4": 2,
    "client/killserver": 13,
-   "client/name": 2152,
+   "client/name": 2181,
    "client/precheck": 27,
-   "client/server": 1910,
-   "client/setenv": 195,
+   "client/server": 1936,
+   "client/setenv": 201,
    "client/stdin": 88,
    "client/stdout": 5,
    "client/tool": 112,
    "client/verify": 1,
-   "info/keywords": 2152,
-   "reply/connect": 75,
-   "reply/connect1": 1,
+   "info/keywords": 2181,
+   "reply/connect": 76,
+   "reply/connect1": 2,
    "reply/connect1000": 3,
    "reply/connect1001": 6,
    "reply/connect1002": 5,
    "reply/connect2": 1,
-   "reply/data": 1515,
-   "reply/data1": 119,
+   "reply/data": 1531,
+   "reply/data1": 127,
    "reply/data10": 2,
    "reply/data100": 11,
    "reply/data1000": 58,
@@ -1389,38 +1398,38 @@
    "reply/data1500": 3,
    "reply/data1501": 3,
    "reply/data1502": 3,
-   "reply/data2": 186,
+   "reply/data2": 193,
    "reply/data200": 10,
-   "reply/data3": 35,
+   "reply/data3": 37,
    "reply/data300": 9,
    "reply/data4": 13,
    "reply/data400": 8,
    "reply/data5": 2,
    "reply/data500": 7,
    "reply/data6": 1,
-   "reply/datacheck": 350,
+   "reply/datacheck": 354,
    "reply/dns": 3,
    "reply/mdtm": 10,
    "reply/postcmd": 6,
-   "reply/servercmd": 319,
+   "reply/servercmd": 324,
    "reply/size": 18,
    "verify/data": 2,
    "verify/dns": 1,
-   "verify/errorcode": 511,
-   "verify/file": 162,
-   "verify/file1": 68,
-   "verify/file2": 69,
-   "verify/file3": 26,
+   "verify/errorcode": 522,
+   "verify/file": 173,
+   "verify/file1": 70,
+   "verify/file2": 70,
+   "verify/file3": 27,
    "verify/limits": 31,
    "verify/notexists": 44,
-   "verify/postcheck": 25,
-   "verify/protocol": 1638,
+   "verify/postcheck": 26,
+   "verify/protocol": 1654,
    "verify/proxy": 41,
    "verify/socks": 5,
-   "verify/stderr": 59,
-   "verify/stdout": 261,
+   "verify/stderr": 66,
+   "verify/stdout": 268,
    "verify/strip": 116,
-   "verify/stripfile": 45,
+   "verify/stripfile": 51,
    "verify/stripfile2": 24,
    "verify/strippart": 107,
    "verify/upload": 92,
@@ -26479,7 +26488,7 @@
    }
   },
   "runner_counts": {
-   "curl": 1642,
+   "curl": 1671,
    "libtest": 394,
    "perl-script": 28,
    "tunit": 6,
@@ -26497,20 +26506,20 @@
   "server_counts": {
    "dict": 1,
    "dns": 3,
-   "file": 27,
+   "file": 30,
    "ftp": 268,
    "ftp-ipv6": 6,
    "ftps": 9,
    "gopher": 5,
    "gopher-ipv6": 1,
    "gophers": 1,
-   "http": 1190,
+   "http": 1211,
    "http-ipv6": 15,
    "http-proxy": 50,
    "http-unix": 2,
    "http/2": 11,
    "http/3": 4,
-   "https": 73,
+   "https": 74,
    "https-mtls": 3,
    "https-proxy": 6,
    "imap": 72,
@@ -26525,7 +26534,7 @@
    "smtp": 91,
    "smtps": 1,
    "socks4": 6,
-   "socks5": 21,
+   "socks5": 23,
    "socks5unix": 3,
    "telnet": 2,
    "tftp": 18
@@ -27074,7 +27083,7 @@
    "CURL_SMALLREQSEND": 3,
    "CURL_SMALLSENDS": 4,
    "CURL_SSL_BACKEND": 6,
-   "CURL_STUB_GSS_CREDS": 3,
+   "CURL_STUB_GSS_CREDS": 9,
    "CURL_TIME": 15,
    "CURL_UPLOAD_SIZE": 1,
    "CURL_WS_FORCE_ZERO_MASK": 24,
@@ -83000,6 +83009,260 @@
     ]
    },
    {
+    "attr_values": [
+     "crlf=headers"
+    ],
+    "bytes": 1646,
+    "command": "--anyauth -u : http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "GSS-API"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--anyauth",
+     "HTTP",
+     "HTTP GET",
+     "HTTP Negotiate auth (stub krb5)"
+    ],
+    "killserver": [],
+    "macros": [
+     "b64"
+    ],
+    "name": "HTTP Negotiate picked from a 401 by --anyauth (stub krb5)",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2096,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "client/setenv",
+     "info/keywords",
+     "reply/data",
+     "reply/data1",
+     "reply/datacheck",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [
+     "CURL_STUB_GSS_CREDS"
+    ],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers"
+    ],
+    "bytes": 1338,
+    "command": "--negotiate http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "GSS-API"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "HTTP GET",
+     "HTTP Negotiate auth (stub krb5)"
+    ],
+    "killserver": [],
+    "macros": [
+     "b64"
+    ],
+    "name": "HTTP Negotiate challenge the context cannot continue (stub krb5)",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2097,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "client/setenv",
+     "info/keywords",
+     "reply/data1",
+     "reply/datacheck",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [
+     "CURL_STUB_GSS_CREDS"
+    ],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "nocheck=yes"
+    ],
+    "bytes": 1645,
+    "command": "--negotiate http://%HOSTIP:%HTTPPORT/%TESTNUMBER http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "GSS-API"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "HTTP GET",
+     "HTTP Negotiate auth (stub krb5)"
+    ],
+    "killserver": [],
+    "macros": [
+     "b64"
+    ],
+    "name": "HTTP Negotiate with Persistent-Auth: true, two requests (stub krb5)",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2098,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "client/setenv",
+     "info/keywords",
+     "reply/data",
+     "reply/data1",
+     "verify/protocol",
+     "verify/stdout"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [
+     "CURL_STUB_GSS_CREDS"
+    ],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "nocheck=yes"
+    ],
+    "bytes": 1828,
+    "command": "--negotiate http://%HOSTIP:%HTTPPORT/%TESTNUMBER http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "GSS-API"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "HTTP GET",
+     "HTTP Negotiate auth (stub krb5)"
+    ],
+    "killserver": [],
+    "macros": [
+     "b64"
+    ],
+    "name": "HTTP Negotiate without Persistent-Auth, two requests (stub krb5)",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2099,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "client/setenv",
+     "info/keywords",
+     "reply/data1",
+     "reply/data2",
+     "verify/protocol",
+     "verify/stdout"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [
+     "CURL_STUB_GSS_CREDS"
+    ],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
     "attr_values": [],
     "bytes": 457,
     "command": "-I -d FOOO -F moo=moo localhost",
@@ -83770,6 +84033,142 @@
    },
    {
     "attr_values": [
+     "crlf=headers"
+    ],
+    "bytes": 1813,
+    "command": "--proxy-anyauth -U : -x http://%HOSTIP:%HTTPPORT http://remote.example/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "GSS-API",
+     "proxy"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--proxy-anyauth",
+     "HTTP",
+     "HTTP GET",
+     "HTTP proxy",
+     "HTTP proxy Negotiate auth (stub krb5)"
+    ],
+    "killserver": [],
+    "macros": [
+     "b64"
+    ],
+    "name": "HTTP proxy Negotiate picked from a 407 by --proxy-anyauth (stub krb5)",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2111,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "client/setenv",
+     "info/keywords",
+     "reply/data",
+     "reply/data1",
+     "reply/datacheck",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [
+     "CURL_STUB_GSS_CREDS"
+    ],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers"
+    ],
+    "bytes": 2106,
+    "command": "http://test.remote.example.com.%TESTNUMBER:%HTTPPORT/path/%TESTNUMBER0002 --proxy http://%HOSTIP:%HTTPPORT --proxy-user : --proxy-anyauth --proxytunnel",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "GSS-API",
+     "proxy"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--proxy-anyauth",
+     "HTTP",
+     "HTTP CONNECT",
+     "HTTP GET",
+     "HTTP proxy",
+     "HTTP proxy Negotiate auth (stub krb5)"
+    ],
+    "killserver": [],
+    "macros": [
+     "CR",
+     "b64"
+    ],
+    "name": "HTTP CONNECT with Negotiate picked from a 407 (stub krb5)",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2112,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "client/setenv",
+     "info/keywords",
+     "reply/connect",
+     "reply/connect1",
+     "reply/data2",
+     "reply/datacheck",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [
+     "CURL_STUB_GSS_CREDS"
+    ],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER",
+     "TESTNUMBER0002",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
      "crlf=yes"
     ],
     "bytes": 1885,
@@ -84221,6 +84620,60 @@
     "variables": [
      "FTPPORT",
      "HOSTIP",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "mode=text"
+    ],
+    "bytes": 921,
+    "command": "-sS --cacert %CERTDIR/certs/test-client-cert.crt https://localhost:%HTTPSPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "60",
+    "features": [
+     "SSL",
+     "local-http"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP GET",
+     "HTTPS"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "HTTPS with a peer that fails verification says where to learn more",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2120,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "verify/errorcode",
+     "verify/stderr"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "https"
+    ],
+    "servers": [
+     "https"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "CERTDIR",
+     "HTTPSPORT",
      "TESTNUMBER"
     ]
    },
@@ -101923,6 +102376,68 @@
      "crlf=headers",
      "mode=text"
     ],
+    "bytes": 1113,
+    "command": "\"http://%HOSTIP:%HTTPPORT/%hex[%c3%a9]hex%/%c3%a9/%TESTNUMBER?q=%hex[%c3%a9]hex%&%c3%a9\" -c %LOGDIR/jar%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "cookies"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "HTTP GET",
+     "cookies"
+    ],
+    "killserver": [],
+    "macros": [
+     "hex"
+    ],
+    "name": "HTTP GET with raw and lowercase-encoded bytes in the path and query",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3265,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "verify/file",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "A9",
+     "C3",
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "mode=text"
+    ],
     "bytes": 1606,
     "command": "http://%HOSTIP:%HTTPPORT/we/want/%TESTNUMBER -b none -c %LOGDIR/cookies%TESTNUMBER http://%HOSTIP:%HTTPPORT/we/want/%TESTNUMBER0002",
     "command_option": null,
@@ -102076,6 +102591,566 @@
    },
    {
     "attr_values": [
+     "option=no-include"
+    ],
+    "bytes": 784,
+    "command": "file://localhost%FILE_PWD/%LOGDIR/result%TESTNUMBER.txt -T %LOGDIR/upload%TESTNUMBER.txt --create-file-mode 0640",
+    "command_option": "no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--create-file-mode",
+     "FILE"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--create-file-mode sets the permissions of a file:// upload",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3280,
+    "parts": [
+     "client/command",
+     "client/file",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "verify/file",
+     "verify/postcheck"
+    ],
+    "postcheck": true,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "file"
+    ],
+    "servers": [
+     "file"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "FILE_PWD",
+     "LOGDIR",
+     "PERL",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "mode=text",
+     "nocheck=yes"
+    ],
+    "bytes": 943,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER --speed-time 1 -m 10 -sS",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "28",
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--speed-time",
+     "HTTP",
+     "HTTP GET",
+     "timeout"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--speed-time alone fails a transfer slower than a byte a second",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3281,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/servercmd",
+     "verify/errorcode",
+     "verify/protocol",
+     "verify/stderr"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [],
+    "bytes": 570,
+    "command": "http://%HOSTIP:%NOLISTENPORT/%TESTNUMBER --retry 1 --retry-delay 1 --retry-connrefused -s -w \"%{num_retries}\\n\"",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "7",
+    "features": [
+     "http"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--retry",
+     "--retry-connrefused",
+     "HTTP"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--retry-connrefused tries a refused connection again",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3282,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "info/keywords",
+     "verify/errorcode",
+     "verify/stdout"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [],
+    "servers": [],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "NOLISTENPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "mode=text"
+    ],
+    "bytes": 1180,
+    "command": "-v --trace-config setup,multi http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "verbose-strings"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--trace-config",
+     "HTTP",
+     "HTTP GET"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--trace-config setup,multi traces the connection setup's filter chain",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3283,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "verify/file",
+     "verify/stripfile"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "mode=text"
+    ],
+    "bytes": 813,
+    "command": "-v --trace-config multi http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "verbose-strings"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--trace-config",
+     "HTTP",
+     "HTTP GET"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--trace-config multi traces the wait before the first step",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3284,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "verify/file",
+     "verify/stripfile"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "nocheck=yes",
+     "option=no-output no-include"
+    ],
+    "bytes": 1206,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER http://%HOSTIP:%HTTPPORT/%TESTNUMBER0002 -Z --parallel-max 1 -o %LOGDIR/out1-%TESTNUMBER -o %LOGDIR/out2-%TESTNUMBER --stderr %LOGDIR/meter%TESTNUMBER",
+    "command_option": "no-output no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "parallel",
+     "progress"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--parallel progress meter: header and last line",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3285,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/data2",
+     "verify/file",
+     "verify/file1",
+     "verify/stripfile"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER",
+     "TESTNUMBER0002"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "nocheck=yes",
+     "option=no-output no-include"
+    ],
+    "bytes": 1165,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER0001 http://%HOSTIP:%HTTPPORT/%TESTNUMBER0002 http://%HOSTIP:%HTTPPORT/%TESTNUMBER0003 -Z --parallel-max 1 -s -w \"%{urlnum} %{response_code}\\n\"",
+    "command_option": "no-output no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "parallel"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--parallel-max 1 runs the transfers one at a time, in order",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3286,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data1",
+     "reply/data2",
+     "reply/data3",
+     "verify/protocol",
+     "verify/stdout"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER0001",
+     "TESTNUMBER0002",
+     "TESTNUMBER0003",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "mode=text",
+     "nocheck=yes",
+     "option=no-output no-include"
+    ],
+    "bytes": 2271,
+    "command": "file://%FILE_PWD/%LOGDIR/nosuch%TESTNUMBER http://%HOSTIP:%HTTPPORT/%TESTNUMBER -Z --fail-early -sS -o %LOGDIR/out1-%TESTNUMBER -o %LOGDIR/out2-%TESTNUMBER -w \"%{urlnum} %{exitcode}\\n\"",
+    "command_option": "no-output no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "37",
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--fail-early",
+     "FILE",
+     "HTTP",
+     "parallel"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--parallel --fail-early stops the transfers running once one fails",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3287,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/servercmd",
+     "verify/errorcode",
+     "verify/stderr",
+     "verify/stdout"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "FILE_PWD",
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "nocheck=yes",
+     "option=no-output no-include"
+    ],
+    "bytes": 990,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER -Z --retry 1 --retry-delay 1 -s -o %LOGDIR/out%TESTNUMBER -w \"%{num_retries} %{exitcode}\\n\"",
+    "command_option": "no-output no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--retry",
+     "HTTP",
+     "parallel"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--parallel tries a transfer again, added again after its wait",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3288,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/data1",
+     "verify/file",
+     "verify/protocol",
+     "verify/stdout"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "nocheck=yes",
+     "option=no-output no-include"
+    ],
+    "bytes": 885,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER000[1-3] -Z --parallel-max-host 1 --parallel-immediate -o %LOGDIR/out#1-%TESTNUMBER",
+    "command_option": "no-output no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "parallel"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--parallel-max-host 1 runs every transfer to the host",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3289,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data1",
+     "reply/data2",
+     "reply/data3",
+     "verify/file1",
+     "verify/file2",
+     "verify/file3"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER",
+     "TESTNUMBER000"
+    ]
+   },
+   {
+    "attr_values": [
      "crlf=headers",
      "mode=text"
     ],
@@ -102132,6 +103207,301 @@
      "HOSTIP",
      "HTTPPORT",
      "LOGDIR",
+     "TESTNUMBER",
+     "TESTNUMBER0002",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "mode=text",
+     "option=no-output no-include"
+    ],
+    "bytes": 711,
+    "command": "file://localhost%FILE_PWD/%LOGDIR/nonexistent%TESTNUMBER -Z --test-event -w \"%{http_code}\\n\" -o %LOGDIR/out%TESTNUMBER",
+    "command_option": "no-output no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "0",
+    "features": [
+     "Debug"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--test-event",
+     "FILE",
+     "parallel"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--parallel with --test-event says it needs libuv and runs nothing",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3290,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "verify/errorcode",
+     "verify/file",
+     "verify/stderr",
+     "verify/stdout"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "file"
+    ],
+    "servers": [
+     "file"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "FILE_PWD",
+     "LOGDIR",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "mode=text",
+     "nocheck=yes"
+    ],
+    "bytes": 644,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER --proto =file -sS",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "1",
+    "features": [
+     "file",
+     "http"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--proto",
+     "HTTP"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--proto without http refuses an http URL before it connects",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3291,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "verify/errorcode",
+     "verify/protocol",
+     "verify/stderr"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "mode=text"
+    ],
+    "bytes": 883,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER -L --proto-redir -all,+file --proto all -sS",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "1",
+    "features": [
+     "file",
+     "http"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--proto-redir",
+     "HTTP",
+     "followlocation"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--proto-redir without http refuses a redirect to http",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3292,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/data2",
+     "verify/errorcode",
+     "verify/protocol",
+     "verify/stderr"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER",
+     "TESTNUMBER0002",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "mode=text"
+    ],
+    "bytes": 983,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER --libcurl %LOGDIR/test%TESTNUMBER.c --proto =HTTP,FILE --proto-redir =file,-http,+FILE",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "--libcurl",
+     "file",
+     "http"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--libcurl",
+     "--proto",
+     "--proto-redir",
+     "HTTP"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--libcurl writes the --proto and --proto-redir sets by name, sorted",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3293,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "verify/file",
+     "verify/protocol",
+     "verify/stripfile"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "nocheck=yes"
+    ],
+    "bytes": 1203,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER -L -m 1",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "28",
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "HTTP GET",
+     "followlocation",
+     "timeout"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--max-time limits the whole transfer, its redirects counted",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3294,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/data2",
+     "reply/servercmd",
+     "verify/errorcode",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
      "TESTNUMBER",
      "TESTNUMBER0002",
      "VERSION"
@@ -102614,6 +103984,223 @@
     ]
    },
    {
+    "attr_values": [
+     "crlf=headers"
+    ],
+    "bytes": 996,
+    "command": "http://%HOSTIP:1/%TESTNUMBER -x socks5://uz3r:p4ssworm@%HOSTIP:%SOCKSPORT --socks5-basic",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "proxy"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "SOCKS5"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "SOCKS5 proxy auth with --socks5-basic offers no GSS-API",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3310,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/servercmd",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http",
+     "socks5"
+    ],
+    "servers": [
+     "socks5",
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "SOCKSPORT",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "mode=text"
+    ],
+    "bytes": 852,
+    "command": "http://localhost:99/%TESTNUMBER -x socks5://uz3r:p4ssworm@%HOSTIP:%SOCKSPORT --socks5-gssapi -sS",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "97",
+    "features": [
+     "http",
+     "proxy"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "SOCKS5"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "SOCKS5 proxy asking for user+password with --socks5-gssapi alone",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3311,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/servercmd",
+     "verify/errorcode",
+     "verify/stderr"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "socks5"
+    ],
+    "servers": [
+     "socks5"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "SOCKSPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "mode=text"
+    ],
+    "bytes": 712,
+    "command": "http://%HOSTIP:%NOLISTENPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "7",
+    "features": [
+     "http"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "connect to non-listen",
+     "progress"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "no progress meter for a connect refused",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3312,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "info/keywords",
+     "verify/errorcode",
+     "verify/file",
+     "verify/stripfile"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [],
+    "servers": [],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "LOGDIR",
+     "NOLISTENPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "mode=text"
+    ],
+    "bytes": 778,
+    "command": "-x %HOSTIP:%NOLISTENPORT http://example.invalid/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "7",
+    "features": [
+     "http",
+     "proxy"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "HTTP proxy",
+     "connect to non-listen",
+     "progress"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "no progress meter for a proxy refusing the connect",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3313,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "info/keywords",
+     "verify/errorcode",
+     "verify/file",
+     "verify/stripfile"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [],
+    "servers": [],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "LOGDIR",
+     "NOLISTENPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
     "attr_values": [],
     "bytes": 574,
     "command": "tftp://%HOSTIP:%TFTPPORT//%TESTNUMBER --tftp-blksize 400",
@@ -102660,6 +104247,112 @@
      "HOSTIP",
      "TESTNUMBER",
      "TFTPPORT"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=yes"
+    ],
+    "bytes": 849,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER -T %LOGDIR/test%TESTNUMBER.txt --crlf",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--crlf",
+     "HTTP",
+     "HTTP PUT",
+     "chunked Transfer-Encoding"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "HTTP PUT from file with --crlf",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3320,
+    "parts": [
+     "client/command",
+     "client/file",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=yes",
+     "option=no-include"
+    ],
+    "bytes": 551,
+    "command": "file://%FILE_PWD/%LOGDIR/result%TESTNUMBER.txt -T %LOGDIR/upload%TESTNUMBER.txt --crlf",
+    "command_option": "no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--crlf",
+     "FILE"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "file:// upload with --crlf",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3321,
+    "parts": [
+     "client/command",
+     "client/file",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "verify/file"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "file"
+    ],
+    "servers": [
+     "file"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "FILE_PWD",
+     "LOGDIR",
+     "TESTNUMBER"
     ]
    },
    {
@@ -146482,7 +148175,7 @@
     ]
    }
   ],
-  "tests_without_server_section": 243,
+  "tests_without_server_section": 246,
   "variable_counts": {
    "A1": 2,
    "A2": 3,
@@ -146491,6 +148184,7 @@
    "A6": 1,
    "A7": 2,
    "A8": 1,
+   "A9": 1,
    "AD": 1,
    "AF": 1,
    "B0": 1,
@@ -146504,9 +148198,9 @@
    "BE": 1,
    "BLANK": 1,
    "C1": 1,
-   "C3": 1,
+   "C3": 2,
    "C4": 1,
-   "CERTDIR": 29,
+   "CERTDIR": 30,
    "CLIENT6IP": 5,
    "CLIENTIP": 15,
    "CURL": 4,
@@ -146526,7 +148220,7 @@
    "F7": 1,
    "FA": 1,
    "FD": 1,
-   "FILE_PWD": 38,
+   "FILE_PWD": 42,
    "FTP6PORT": 6,
    "FTPPORT": 268,
    "FTPSPORT": 9,
@@ -146543,20 +148237,20 @@
    "GTT": 1,
    "H2CVER": 2,
    "HOST6IP": 22,
-   "HOSTIP": 1848,
+   "HOSTIP": 1873,
    "HTTP2PORT": 5,
    "HTTP2TLSPORT": 6,
    "HTTP3PORT": 4,
    "HTTP6PORT": 14,
-   "HTTPPORT": 1171,
+   "HTTPPORT": 1192,
    "HTTPS": 3,
-   "HTTPSPORT": 68,
+   "HTTPSPORT": 69,
    "HTTPSPROXYPORT": 6,
    "HTTPUNIXPATH": 2,
    "IMAPPORT": 72,
    "IMAPSPORT": 1,
    "LIBTESTS": 5,
-   "LOGDIR": 639,
+   "LOGDIR": 653,
    "LT1972": 1,
    "LTA": 2,
    "LTB27397": 6,
@@ -146565,9 +148259,9 @@
    "MISSING": 1,
    "MQTTPORT": 25,
    "MQTTSPORT": 3,
-   "NOLISTENPORT": 34,
+   "NOLISTENPORT": 37,
    "O3": 1,
-   "PERL": 33,
+   "PERL": 34,
    "POP3PORT": 52,
    "POP3SPORT": 1,
    "POST": 3,
@@ -146579,7 +148273,7 @@
    "SFTP_PWD": 44,
    "SMTPPORT": 91,
    "SMTPSPORT": 1,
-   "SOCKSPORT": 27,
+   "SOCKSPORT": 29,
    "SOCKSUNIXPATH": 3,
    "SRCDIR": 98,
    "SSHKEYALGO": 1,
@@ -146594,12 +148288,13 @@
    "TABTRUE": 4,
    "TELNETPORT": 2,
    "TESTNUM": 1,
-   "TESTNUMBER": 1818,
+   "TESTNUMBER": 1846,
+   "TESTNUMBER000": 1,
    "TESTNUMBER0000": 1,
    "TESTNUMBER00001": 1,
-   "TESTNUMBER0001": 83,
-   "TESTNUMBER0002": 188,
-   "TESTNUMBER0003": 30,
+   "TESTNUMBER0001": 84,
+   "TESTNUMBER0002": 193,
+   "TESTNUMBER0003": 31,
    "TESTNUMBER0004": 10,
    "TESTNUMBER0005": 2,
    "TESTNUMBER0006": 1,
@@ -146618,7 +148313,7 @@
    "TFTPPORT": 18,
    "USER": 54,
    "VALUE2": 2,
-   "VERSION": 893
+   "VERSION": 908
   }
  },
  "generated-by": "inventory/gen/tests.py",
@@ -147642,6 +149337,10 @@
   "tests/data/test2093",
   "tests/data/test2094",
   "tests/data/test2095",
+  "tests/data/test2096",
+  "tests/data/test2097",
+  "tests/data/test2098",
+  "tests/data/test2099",
   "tests/data/test21",
   "tests/data/test210",
   "tests/data/test2100",
@@ -147656,6 +149355,8 @@
   "tests/data/test2109",
   "tests/data/test211",
   "tests/data/test2110",
+  "tests/data/test2111",
+  "tests/data/test2112",
   "tests/data/test2113",
   "tests/data/test2114",
   "tests/data/test2115",
@@ -147664,6 +149365,7 @@
   "tests/data/test2118",
   "tests/data/test2119",
   "tests/data/test212",
+  "tests/data/test2120",
   "tests/data/test213",
   "tests/data/test214",
   "tests/data/test215",
@@ -147978,10 +149680,26 @@
   "tests/data/test3262",
   "tests/data/test3263",
   "tests/data/test3264",
+  "tests/data/test3265",
   "tests/data/test327",
   "tests/data/test3271",
   "tests/data/test328",
+  "tests/data/test3280",
+  "tests/data/test3281",
+  "tests/data/test3282",
+  "tests/data/test3283",
+  "tests/data/test3284",
+  "tests/data/test3285",
+  "tests/data/test3286",
+  "tests/data/test3287",
+  "tests/data/test3288",
+  "tests/data/test3289",
   "tests/data/test329",
+  "tests/data/test3290",
+  "tests/data/test3291",
+  "tests/data/test3292",
+  "tests/data/test3293",
+  "tests/data/test3294",
   "tests/data/test33",
   "tests/data/test330",
   "tests/data/test3300",
@@ -147992,7 +149710,13 @@
   "tests/data/test3305",
   "tests/data/test3306",
   "tests/data/test331",
+  "tests/data/test3310",
+  "tests/data/test3311",
+  "tests/data/test3312",
+  "tests/data/test3313",
   "tests/data/test332",
+  "tests/data/test3320",
+  "tests/data/test3321",
   "tests/data/test333",
   "tests/data/test334",
   "tests/data/test335",

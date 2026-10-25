@@ -3198,6 +3198,13 @@ freed.
   ERRORBUFFER as `failf` gives it: the core tells `Callbacks::failure` a transfer's first reason,
   and the shim's sink copies it, in a multi as in a perform. Shim-only codes: RECURSIVE_API_CALL, CURLE_AGAIN from `Recv::WouldBlock` in
   `curl_easy_recv`/`send`, CURLM_BAD_SOCKET, CURLM_BAD_FUNCTION_ARGUMENT.
+- Every function the system's libcurl exports is exported, so a program linked against it
+  loads (Fedora's binaries bind every symbol as they start). The entry points of what the build
+  leaves out answer as C's build without them does (`unbuilt.rs`): WebSockets and TLS session
+  export `CURLE_NOT_BUILT_IN`, a server push's headers NULL. `curl_easy_option_*` walk C's
+  table, generated from `lib/easyoptions.c` and checked against the inventory
+  (`gen/easyoptions.py`). `curl_multi_get_handles` answers NULL inside a transfer's callback,
+  as `curl_multi_info_read` does here, where the handles are not reached.
 
 ### 7.8 Deliberate differences from C
 

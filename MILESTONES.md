@@ -856,7 +856,10 @@ the system's under the HTTP-only programs installed here.
     the handle leaves the application's multi or performs again. 556, 696, 3231, 3232 and 3234
     pass.
 54. **Closing the milestone.** The `tests/http` pytest suite's HTTP/1.1 and HTTP/2 cases on
-    both legs; the installed programs that link libcurl for HTTP run on ours. **To do.**
+    both legs; the installed programs that link libcurl for HTTP run on ours. **In progress.**
+    Every function the system's libcurl exports is exported: the 507 installed programs that
+    link it resolve every libcurl symbol against ours, and the system's `curl` and cmake's
+    downloads run on it.
 
 ## Milestone 5: HTTP/3
 

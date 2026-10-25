@@ -587,6 +587,134 @@ pub unsafe extern "C" fn curl_multi_socket_action(
     }
 }
 
+/// `curl_multi_socket_action` without its event mask, for programs of
+/// old.
+///
+/// # Safety
+///
+/// As `curl_multi_socket_action`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_multi_socket(
+    m: *mut CURLM,
+    s: curl_socket_t,
+    running_handles: *mut c_int,
+) -> CURLMcode {
+    // SAFETY: as the caller guarantees.
+    unsafe { socket_call(m, MultiCall::Socket, Some(s), running_handles) }
+}
+const _: ffi::proto::curl_multi_socket = curl_multi_socket;
+
+/// Run every transfer, as `curl_multi_perform` does, telling the socket
+/// callback what each waits on (`multi_socket` with `checkall`).
+///
+/// # Safety
+///
+/// `m` is NULL or a live multi; `running_handles` is NULL or points at an
+/// `int`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_multi_socket_all(
+    m: *mut CURLM,
+    running_handles: *mut c_int,
+) -> CURLMcode {
+    // SAFETY: as the caller guarantees.
+    unsafe { socket_call(m, MultiCall::SocketAll, None, running_handles) }
+}
+const _: ffi::proto::curl_multi_socket_all = curl_multi_socket_all;
+
+/// A socket call on `m` as `call`: for the socket `s`, or for every
+/// transfer without one.
+///
+/// # Safety
+///
+/// As `curl_multi_socket_all`.
+unsafe fn socket_call(
+    m: *mut CURLM,
+    call: MultiCall,
+    s: Option<curl_socket_t>,
+    running_handles: *mut c_int,
+) -> CURLMcode {
+    // SAFETY: as the caller guarantees.
+    let entry = match unsafe { enter(m, call) } {
+        Ok(entry) => entry,
+        Err(code) => return code,
+    };
+    assert!(
+        matches!(entry.reach, Reach::Direct),
+        "socket calls do not recurse"
+    );
+    // SAFETY: admitted on `m`, which nothing else runs on.
+    let multi = unsafe { multi(m) };
+    // SAFETY: as above.
+    let core = unsafe { multi.core_mut() };
+    let mut events = ShimEvents::new(multi);
+    let result = match s {
+        Some(CURL_SOCKET_TIMEOUT) => core
+            .socket_action(SocketEvent::Timeout, &mut events)
+            .map(|_| ()),
+        Some(s) => core
+            .socket_action(SocketEvent::Socket(SocketKey::new(s)), &mut events)
+            .map(|_| ()),
+        None => core.perform(&mut events).map(|_| ()),
+    };
+    // SAFETY: as the caller guarantees.
+    unsafe { put(running_handles, running(core.counts().running)) };
+    match result {
+        Ok(()) => CURLM_OK,
+        Err(kind) => multi_code(kind),
+    }
+}
+
+/// The handles in `m`, in the order they joined it, then NULL, in an
+/// array the application frees with `curl_free`; NULL for no memory, or
+/// inside a transfer's callback, where they are not reached.
+///
+/// # Safety
+///
+/// `m` is NULL or a live multi.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_multi_get_handles(m: *mut CURLM) -> *mut *mut CURL {
+    // SAFETY: as the caller guarantees.
+    let Ok(entry) = (unsafe { enter(m, MultiCall::GetHandles) }) else {
+        return ptr::null_mut();
+    };
+    // SAFETY: admitted on `m`.
+    let multi = unsafe { multi(m) };
+    let mut handles: Vec<*mut CURL> = Vec::new();
+    let mut gather = |owners: &mut dyn Iterator<Item = &NonNull<ShimEasy>>| {
+        for owner in owners {
+            if handles.try_push(owner.as_ptr().cast()).is_err() {
+                return false;
+            }
+        }
+        true
+    };
+    let gathered = match entry.reach {
+        // SAFETY: the reach is direct.
+        Reach::Direct => gather(&mut unsafe { multi.core_mut() }.owners()),
+        // SAFETY: as in `curl_multi_info_read`.
+        Reach::Frame(Frame::Event(cx)) => gather(&mut unsafe { &*cx.as_ptr() }.owners()),
+        // SAFETY: as above.
+        Reach::Frame(Frame::Notify(cx)) => gather(&mut unsafe { &*cx.as_ptr() }.owners()),
+        Reach::Frame(Frame::Transfer(_)) => return ptr::null_mut(),
+    };
+    if !gathered {
+        return ptr::null_mut();
+    }
+    let size = (handles.len() + 1) * core::mem::size_of::<*mut CURL>();
+    let a = crate::root::allocator().malloc(size).cast::<*mut CURL>();
+    if a.is_null() {
+        return a;
+    }
+    for (i, h) in handles.iter().chain([&ptr::null_mut()]).enumerate() {
+        // SAFETY: `a` has room for the handles and the NULL after them.
+        let at = unsafe { a.add(i) };
+        // SAFETY: as above.
+        unsafe { at.write(*h) };
+    }
+    a
+}
+const _: ffi::proto::curl_multi_get_handles = curl_multi_get_handles;
+
 /// # Safety
 ///
 /// `m` is NULL or a live multi.

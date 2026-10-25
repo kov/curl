@@ -188,7 +188,10 @@ pub(crate) fn decode_but_zero(s: &[u8]) -> Result<Option<Bytes>, UrlErrorKind> {
     decode_rejecting(s, |b| b == 0)
 }
 
-fn decode_rejecting(s: &[u8], reject: fn(u8) -> bool) -> Result<Option<Bytes>, UrlErrorKind> {
+pub(super) fn decode_rejecting(
+    s: &[u8],
+    reject: fn(u8) -> bool,
+) -> Result<Option<Bytes>, UrlErrorKind> {
     let mut out = Bytes::new();
     out.try_reserve_exact(s.len())
         .map_err(|_| UrlErrorKind::OutOfMemory)?;

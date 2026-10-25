@@ -655,6 +655,25 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
 }
 const _: ffi::proto::curl_easy_duphandle = curl_easy_duphandle;
 
+/// Keep the handle's connections alive (`Curl_cpool_upkeep`): an HTTP/1
+/// connection has nothing to send to stay so, and no other is spoken.
+///
+/// # Safety
+///
+/// `curl` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_easy_upkeep(curl: *mut CURL) -> CURLcode {
+    // SAFETY: as the caller guarantees.
+    let Some(easy) = (unsafe { handle(curl) }) else {
+        return CURLE_BAD_FUNCTION_ARGUMENT;
+    };
+    let Ok(_entry) = easy.enter(EasyCall::Upkeep) else {
+        return CURLE_RECURSIVE_API_CALL;
+    };
+    CURLE_OK
+}
+const _: ffi::proto::curl_easy_upkeep = curl_easy_upkeep;
+
 /// # Safety
 ///
 /// `curl` is NULL or a live handle.

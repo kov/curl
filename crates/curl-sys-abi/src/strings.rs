@@ -171,6 +171,110 @@ pub unsafe extern "C" fn curl_getenv(variable: *const c_char) -> *mut c_char {
 }
 const _: ffi::proto::curl_getenv = curl_getenv;
 
+/// The bytes of `string`: `length` of them, or up to its NUL if 0. `None`
+/// for NULL or a negative length.
+///
+/// # Safety
+///
+/// `string` is NULL, or readable for `length` bytes, or a C string if
+/// `length` is 0.
+unsafe fn given<'a>(string: *const c_char, length: c_int) -> Option<&'a [u8]> {
+    if string.is_null() {
+        return None;
+    }
+    let length = usize::try_from(length).ok()?;
+    Some(match length {
+        // SAFETY: a C string, as the caller guarantees.
+        0 => unsafe { core::ffi::CStr::from_ptr(string) }.to_bytes(),
+        // SAFETY: readable for `length` bytes, as the caller guarantees.
+        n => unsafe { core::slice::from_raw_parts(string.cast::<u8>(), n) },
+    })
+}
+
+/// `string` with every byte but letters, digits and `-._~` escaped as
+/// `%XX`, in a C string the application frees with `curl_free`; NULL for
+/// NULL, a negative length or no memory.
+///
+/// # Safety
+///
+/// As `given`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_easy_escape(
+    _curl: *mut ffi::CURL,
+    string: *const c_char,
+    length: c_int,
+) -> *mut c_char {
+    // SAFETY: as the caller guarantees.
+    let Some(bytes) = (unsafe { given(string, length) }) else {
+        return ptr::null_mut();
+    };
+    match curl_core::url::escape(bytes) {
+        Ok(escaped) => root::allocator().c_string(&escaped),
+        Err(_) => ptr::null_mut(),
+    }
+}
+const _: ffi::proto::curl_easy_escape = curl_easy_escape;
+
+/// `curl_easy_escape` without a handle, for programs of old.
+///
+/// # Safety
+///
+/// As `given`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_escape(string: *const c_char, length: c_int) -> *mut c_char {
+    // SAFETY: as the caller guarantees.
+    unsafe { curl_easy_escape(ptr::null_mut(), string, length) }
+}
+const _: ffi::proto::curl_escape = curl_escape;
+
+/// `string` with its `%XX` escapes decoded, in a C string the application
+/// frees with `curl_free`, its length in `outlength` if that is not NULL;
+/// NULL for NULL, a negative length, a result too long for an `int` to
+/// say, or no memory.
+///
+/// # Safety
+///
+/// As `given`; `outlength` is NULL or points at an `int`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_easy_unescape(
+    _curl: *mut ffi::CURL,
+    string: *const c_char,
+    length: c_int,
+    outlength: *mut c_int,
+) -> *mut c_char {
+    // SAFETY: as the caller guarantees.
+    let Some(bytes) = (unsafe { given(string, length) }) else {
+        return ptr::null_mut();
+    };
+    let Ok(decoded) = curl_core::url::unescape(bytes) else {
+        return ptr::null_mut();
+    };
+    let said = match c_int::try_from(decoded.len()) {
+        Ok(n) => n,
+        Err(_) if outlength.is_null() => 0,
+        Err(_) => return ptr::null_mut(),
+    };
+    let out = root::allocator().c_string(&decoded);
+    if !out.is_null() && !outlength.is_null() {
+        // SAFETY: points at an `int`, as the caller guarantees.
+        unsafe { outlength.write(said) };
+    }
+    out
+}
+const _: ffi::proto::curl_easy_unescape = curl_easy_unescape;
+
+/// `curl_easy_unescape` without a handle or a length out.
+///
+/// # Safety
+///
+/// As `given`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_unescape(string: *const c_char, length: c_int) -> *mut c_char {
+    // SAFETY: as the caller guarantees.
+    unsafe { curl_easy_unescape(ptr::null_mut(), string, length, ptr::null_mut()) }
+}
+const _: ffi::proto::curl_unescape = curl_unescape;
+
 #[cfg(test)]
 mod tests {
     use super::*;

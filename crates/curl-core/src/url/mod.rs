@@ -40,6 +40,16 @@ pub fn escape(bytes: &[u8]) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
     encode::escape(bytes).map_err(|_| curl_alloc::OutOfMemory)
 }
 
+/// `bytes` with its `%XX` escapes decoded, nothing refused
+/// (`curl_easy_unescape`, `Curl_urldecode` with `REJECT_NADA`).
+pub fn unescape(bytes: &[u8]) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
+    match encode::decode_rejecting(bytes, |_| false) {
+        Ok(Some(decoded)) => Ok(decoded),
+        Ok(None) => unreachable!("nothing is refused"),
+        Err(_) => Err(curl_alloc::OutOfMemory),
+    }
+}
+
 /// The longest URL C accepts (`CURL_MAX_INPUT_LENGTH`); its buffers also
 /// stop just short of it.
 pub const MAX_INPUT: usize = 8_000_000;

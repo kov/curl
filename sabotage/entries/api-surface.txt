@@ -1,0 +1,55 @@
+=== an option's id finds its alias
+file: crates/curl-sys-abi/src/easyoption.rs
+witness: curl-sys-abi easyoption::tests::options_are_found_as_c_finds_them
+--- old
+        .find(|r| r.0.id == id && !r.alias())
+--- new
+        .find(|r| r.0.id == id)
+
+=== an option's name is found only in capitals
+file: crates/curl-sys-abi/src/easyoption.rs
+witness: curl-sys-abi easyoption::tests::options_are_found_as_c_finds_them
+--- old
+                .is_some_and(|n| n.to_bytes().eq_ignore_ascii_case(name))
+--- new
+                .is_some_and(|n| n.to_bytes() == name)
+
+=== the walk of the options skips one
+file: crates/curl-sys-abi/src/easyoption.rs
+witness: curl-sys-abi easyoption::tests::options_are_found_as_c_finds_them
+--- old
+    let next = at / size_of::<Row>() + 1;
+--- new
+    let next = at / size_of::<Row>() + 2;
+
+=== unescaping leaves the length unsaid
+file: crates/curl-sys-abi/src/strings.rs
+witness: curl-sys-abi handle_tests::strings_escape_and_unescape_as_c_does
+--- old
+        unsafe { outlength.write(said) };
+--- new
+        unsafe { outlength.write(0) };
+
+=== a zero length escapes nothing
+file: crates/curl-sys-abi/src/strings.rs
+witness: curl-sys-abi handle_tests::strings_escape_and_unescape_as_c_does
+--- old
+        0 => unsafe { core::ffi::CStr::from_ptr(string) }.to_bytes(),
+--- new
+        0 => &[],
+
+=== the multi's handles end without NULL
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::multi_handles_and_old_socket_calls
+--- old
+    for (i, h) in handles.iter().chain([&ptr::null_mut()]).enumerate() {
+--- new
+    for (i, h) in handles.iter().chain([&a.cast()]).enumerate() {
+
+=== socket_all runs no transfer
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::multi_handles_and_old_socket_calls
+--- old
+        None => core.perform(&mut events).map(|_| ()),
+--- new
+        None => Ok(()),

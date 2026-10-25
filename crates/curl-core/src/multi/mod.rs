@@ -890,6 +890,17 @@ impl<H: Host> Multi<H> {
         self.slots.get(id).map(|s| &s.owner)
     }
 
+    /// What the application gave with each transfer, in id order
+    /// (`curl_multi_get_handles`).
+    pub fn owners(&self) -> impl Iterator<Item = &H::Transfer> {
+        let mut cursor = None;
+        std::iter::from_fn(move || {
+            let id = self.next_transfer(cursor)?;
+            cursor = Some(id);
+            self.owner(id)
+        })
+    }
+
     pub fn easy(&self, id: TransferId) -> Option<&Easy> {
         self.slots.get(id).map(|s| &*s.easy)
     }

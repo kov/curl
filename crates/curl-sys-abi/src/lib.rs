@@ -25,6 +25,8 @@ mod callbacks;
 mod certinfo;
 mod date;
 mod easy;
+mod easyoption;
+mod easyoptions;
 mod formdata;
 mod gate;
 mod getinfo;
@@ -43,6 +45,7 @@ mod strings;
 mod tls;
 #[cfg(test)]
 mod tls_tests;
+mod unbuilt;
 mod url;
 mod version;
 

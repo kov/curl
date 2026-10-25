@@ -6614,3 +6614,86 @@ fn hsts_read_function_errors_fail_the_transfer() {
         }
     }
 }
+
+/// Escaping and unescaping as C's `lib/escape.c`: letters, digits and
+/// `-._~` kept, every other byte `%XX` in capitals; a zero length reads
+/// to the NUL, a negative one or NULL gives NULL; unescaping takes any
+/// byte, says the length, and leaves a `%` not followed by two hex digits.
+#[test]
+fn strings_escape_and_unescape_as_c_does() {
+    use crate::root::curl_free;
+    use crate::strings::{curl_easy_escape, curl_easy_unescape, curl_escape, curl_unescape};
+    let text = |p: *mut c_char| {
+        assert!(!p.is_null());
+        // SAFETY: a C string the library made, freed once read.
+        let s = unsafe { CStr::from_ptr(p) }.to_bytes().to_vec();
+        // SAFETY: as above.
+        unsafe { curl_free(p.cast()) };
+        s
+    };
+    // SAFETY: C strings and lengths within them.
+    unsafe {
+        assert_eq!(
+            text(curl_easy_escape(ptr::null_mut(), c"a b/~é".as_ptr(), 0)),
+            b"a%20b%2F~%C3%A9"
+        );
+        assert_eq!(text(curl_escape(b"a\0b".as_ptr().cast(), 3)), b"a%00b");
+        assert_eq!(text(curl_escape(c"".as_ptr(), 0)), b"");
+        assert!(curl_escape(c"x".as_ptr(), -1).is_null());
+        assert!(curl_escape(ptr::null(), 0).is_null());
+        let mut n: c_int = -1;
+        let p = curl_easy_unescape(ptr::null_mut(), c"a%20b%00c%4".as_ptr(), 0, &raw mut n);
+        assert_eq!(n, 7);
+        // SAFETY: the decoded bytes and their NUL.
+        let decoded = core::slice::from_raw_parts(p.cast::<u8>(), 8).to_vec();
+        curl_free(p.cast());
+        assert_eq!(decoded, b"a b\0c%4\0");
+        assert_eq!(text(curl_unescape(c"%41%4a%gg%".as_ptr(), 0)), b"AJ%gg%");
+        assert!(curl_unescape(c"x".as_ptr(), -1).is_null());
+    }
+}
+
+/// `curl_multi_get_handles` gives the handles in the order they joined,
+/// then NULL; `curl_multi_socket_all` runs them as a perform does, and
+/// `curl_multi_socket` as `curl_multi_socket_action`; `curl_easy_upkeep`
+/// has nothing to do, and refuses NULL.
+#[test]
+fn multi_handles_and_old_socket_calls() {
+    use crate::easy::curl_easy_upkeep;
+    use crate::multi::{curl_multi_get_handles, curl_multi_socket, curl_multi_socket_all};
+    use crate::root::curl_free;
+    let m = curl_multi_init();
+    let (a, b) = (curl_easy_init(), curl_easy_init());
+    // SAFETY: a live multi and handles, and an `int` to write.
+    unsafe {
+        let empty = curl_multi_get_handles(m);
+        assert!((*empty).is_null());
+        curl_free(empty.cast());
+        assert_eq!(curl_multi_add_handle(m, b), CURLM_OK);
+        assert_eq!(curl_multi_add_handle(m, a), CURLM_OK);
+        let list = curl_multi_get_handles(m);
+        assert_eq!([*list, *list.add(1), *list.add(2)], [b, a, ptr::null_mut()]);
+        curl_free(list.cast());
+        let mut running: c_int = -1;
+        // Neither has a URL: both fail at once, as in a perform.
+        assert_eq!(curl_multi_socket_all(m, &raw mut running), CURLM_OK);
+        assert_eq!(running, 0);
+        running = -1;
+        assert_eq!(
+            curl_multi_socket(m, ffi::CURL_SOCKET_TIMEOUT, &raw mut running),
+            CURLM_OK
+        );
+        assert_eq!(running, 0);
+        assert_eq!(curl_easy_upkeep(a), CURLE_OK);
+        assert_eq!(
+            curl_easy_upkeep(ptr::null_mut()),
+            CURLE_BAD_FUNCTION_ARGUMENT
+        );
+        assert!(curl_multi_get_handles(ptr::null_mut()).is_null());
+        for h in [a, b] {
+            assert_eq!(curl_multi_remove_handle(m, h), CURLM_OK);
+            curl_easy_cleanup(h);
+        }
+        curl_multi_cleanup(m);
+    }
+}

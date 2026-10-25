@@ -951,6 +951,16 @@ impl<H: Host> EventCx<'_, H> {
         self.slots.get(id).map(|s| &s.owner)
     }
 
+    /// What the application gave with each transfer, in id order.
+    pub fn owners(&self) -> impl Iterator<Item = &H::Transfer> {
+        let mut cursor = None;
+        std::iter::from_fn(move || {
+            let id = self.slots.next_after(cursor)?;
+            cursor = Some(id);
+            self.slots.get(id).map(|s| &s.owner)
+        })
+    }
+
     /// As `Multi::assign`.
     pub fn assign(&mut self, s: SocketKey, value: Option<H::Socket>) -> Result<(), UnknownSocket> {
         self.sockets.assign(s, value)
@@ -1030,6 +1040,11 @@ impl<H: Host> NotifyCx<'_, H> {
     /// As `Multi::owner`.
     pub fn owner(&self, id: TransferId) -> Option<&H::Transfer> {
         self.multi.owner(id)
+    }
+
+    /// As `Multi::owners`.
+    pub fn owners(&self) -> impl Iterator<Item = &H::Transfer> {
+        self.multi.owners()
     }
 
     /// As `Multi::pause`.

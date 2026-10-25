@@ -7,6 +7,10 @@ tests/runtests.pl over every test, and keeps the raw results in
 build/c/baseline/. Without `--run`, the stored results are parsed into
 inventory/baseline.{json,md}.
 
+`--threaded` does the same for the second oracle, the reference build with
+the threaded resolver in place of c-ares (SCOPE.md): build/c-threaded,
+inventory/baseline-threaded.{json,md}.
+
 This is a measurement, not a derivation from source, so inventory/gen/all.py
 does not run it: rerun it with `--run` when the C tree or the build
 configuration changes.
@@ -18,6 +22,7 @@ import pathlib
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "gen"))
 import common
@@ -25,8 +30,6 @@ import deps
 import suite
 from common import ROOT, check
 
-BUILD = ROOT / "build" / "c"
-RESULTS = BUILD / "baseline"
 # Every backend and feature this machine can provide; see SCOPE.md.
 CMAKE_ARGS = {
     "CMAKE_BUILD_TYPE": "Debug",
@@ -56,49 +59,78 @@ CMAKE_ARGS = {
     "DANTED": "/usr/bin/sockd",
     "SFTPD": "/usr/libexec/openssh/sftp-server",
 }
-# Test programs that link libcurl and ngtcp2 themselves.
-TEST_PROGRAMS = [BUILD / "tests/libtest/libtests",
-                 BUILD / "tests/unit/units", BUILD / "tests/tunit/tunits"]
 
 
-def run():
+@dataclass(frozen=True)
+class Oracle:
+    """A C build the rewrite is checked against, and where its results go."""
+    build: pathlib.Path
+    # The stem of its inventory/<stem>.{json,md}.
+    inventory: str
+    # What its inventory page is titled, and the flag that selects it.
+    title: str
+    flag: str
+    cmake_args: dict
+
+    @property
+    def results(self):
+        return self.build / "baseline"
+
+    @property
+    def test_programs(self):
+        """Test programs that link libcurl and ngtcp2 themselves."""
+        return [self.build / "tests/libtest/libtests",
+                self.build / "tests/unit/units",
+                self.build / "tests/tunit/tunits"]
+
+
+REFERENCE = Oracle(ROOT / "build" / "c", "baseline", "C reference baseline",
+                   "", CMAKE_ARGS)
+# The resolver distributions build libcurl with, in place of c-ares.
+THREADED = Oracle(ROOT / "build" / "c-threaded", "baseline-threaded",
+                  "C threaded-resolver baseline", "--threaded",
+                  {**CMAKE_ARGS, "ENABLE_ARES": "OFF",
+                   "ENABLE_THREADED_RESOLVER": "ON"})
+
+
+def run(oracle):
     commit = common.c_commit()
     check(not commit.endswith("-dirty"),
           "C tree has local changes; a baseline must name a commit")
     dep_env = deps.build()
     # A fresh cache: nothing configured by hand earlier, such as another
     # library location, may carry into the measurement.
-    (BUILD / "CMakeCache.txt").unlink(missing_ok=True)
-    subprocess.run(["cmake", "-S", str(ROOT), "-B", str(BUILD), "-G",
-                    "Ninja", *(f"-D{k}={v}" for k, v in CMAKE_ARGS.items())],
+    (oracle.build / "CMakeCache.txt").unlink(missing_ok=True)
+    subprocess.run(["cmake", "-S", str(ROOT), "-B", str(oracle.build), "-G",
+                    "Ninja", *(f"-D{k}={v}" for k, v in oracle.cmake_args.items())],
                    check=True, stdout=subprocess.DEVNULL,
                    env={**os.environ, **dep_env})
     # The test programs are not in the default target.
-    subprocess.run(["ninja", "-C", str(BUILD), "all", "testdeps"],
+    subprocess.run(["ninja", "-C", str(oracle.build), "all", "testdeps"],
                    check=True, stdout=subprocess.DEVNULL)
-    for binary in [next(BUILD.glob("lib/libcurl*.so.*.*.*")),
-                   BUILD / "src/curl", *TEST_PROGRAMS]:
+    for binary in [next(oracle.build.glob("lib/libcurl*.so.*.*.*")),
+                   oracle.build / "src/curl", *oracle.test_programs]:
         deps.check_linked(binary)
-    meta = suite.run(BUILD, RESULTS, dict(os.environ))
-    (RESULTS / "run.json").write_text(
+    meta = suite.run(oracle.build, oracle.results, dict(os.environ))
+    (oracle.results / "run.json").write_text(
         json.dumps({"c-commit": commit, **meta}, indent=1) + "\n")
 
 
-def build_config():
+def build_config(oracle):
     cache = {}
-    for line in (BUILD / "CMakeCache.txt").read_text().splitlines():
+    for line in (oracle.build / "CMakeCache.txt").read_text().splitlines():
         m = re.match(r"^(\w+):\w+=(.*)$", line)
         if m:
             cache[m.group(1)] = m.group(2)
-    for k, v in CMAKE_ARGS.items():
+    for k, v in oracle.cmake_args.items():
         check(cache.get(k) == v,
-              f"build/c has {k}={cache.get(k)!r}, CMAKE_ARGS says {v!r}")
+              f"{oracle.build} has {k}={cache.get(k)!r}, it should be {v!r}")
     return cache
 
 
-def exports():
+def exports(oracle):
     """Return the built library's soname and defined dynamic symbols."""
-    libs = sorted(BUILD.glob("lib/libcurl*.so.*.*.*"))
+    libs = sorted(oracle.build.glob("lib/libcurl*.so.*.*.*"))
     check(len(libs) == 1, f"expected one built libcurl, found {libs}")
     dyn = subprocess.run(["readelf", "-d", str(libs[0])], check=True,
                          capture_output=True, text=True).stdout
@@ -111,28 +143,29 @@ def exports():
 
 
 def main():
+    oracle = THREADED if "--threaded" in sys.argv[1:] else REFERENCE
     if "--run" in sys.argv[1:]:
-        run()
-    meta = json.loads((RESULTS / "run.json").read_text())
+        run(oracle)
+    meta = json.loads((oracle.results / "run.json").read_text())
     check(meta["c-commit"] == common.c_commit(),
           f"baseline was run at {meta['c-commit'][:12]}, the C tree is at "
           f"{common.c_commit()[:12]}: rerun with --run")
-    cache = build_config()
+    cache = build_config(oracle)
     tests = json.loads((common.INVENTORY / "tests.json").read_text())["data"]
     check(json.loads((common.INVENTORY / "tests.json").read_text())
           ["c-commit"] == meta["c-commit"], "tests inventory is stale")
     by_num = {t["number"]: t for t in tests["tests"]}
     results, pytest_cases, pytest_uncollected = suite.results(
-        BUILD, RESULTS, tests)
+        oracle.build, oracle.results, tests)
     failures = {n: r["failed-parts"] for n, r in results.items()
                 if r["result"] == "failed"}
     failed = set(failures)
     skipped = {n: r["reason"] for n, r in results.items()
                if r["result"] == "skipped"}
     ran = set(by_num) - set(skipped)
-    log = (RESULTS / "runtests.log").read_text(errors="replace")
+    log = (oracle.results / "runtests.log").read_text(errors="replace")
 
-    version = subprocess.run([str(BUILD / "src/curl"), "-V"],
+    version = subprocess.run([str(oracle.build / "src/curl"), "-V"],
                              capture_output=True, text=True,
                              check=True).stdout
     features = re.search(r"^Features: (.*)$", version, re.MULTILINE).group(1).split()
@@ -149,7 +182,7 @@ def main():
         if c["outcome"] == "skipped":
             skip_reasons[c["message"]] = skip_reasons.get(c["message"], 0) + 1
 
-    lib = exports()
+    lib = exports(oracle)
     abi = json.loads((common.INVENTORY / "abi.json").read_text())["data"]
     public = {f["name"] for f in abi["functions"]}
     lib["not-public"] = sorted(set(lib["symbols"]) - public)
@@ -160,7 +193,7 @@ def main():
                      "finished": meta["finished"]},
         "runtests-args": meta["runtests-args"],
         "runtests-exit-status": meta["exit-status"],
-        "cmake-args": CMAKE_ARGS,
+        "cmake-args": oracle.cmake_args,
         "compiler": cache.get("CMAKE_C_COMPILER"),
         "curl-version": version.strip().splitlines(),
         "features": features,
@@ -181,9 +214,10 @@ def main():
     reasons = {}
     for n, why in skipped.items():
         reasons.setdefault(why, []).append(n)
+    rel = oracle.build.relative_to(ROOT)
     md = [
-        "# C reference baseline\n",
-        ("What the C build in `build/c` does on the C test suite: the floor "
+        f"# {oracle.title}\n",
+        (f"What the C build in `{rel}` does on the C test suite: the floor "
          "the rewrite is scored against. Measured "
          f"{meta['started']} to {meta['finished']} with `runtests.pl "
          f"{' '.join(meta['runtests-args'])}`; build flags are in "
@@ -227,9 +261,10 @@ def main():
          + (", ".join(f"`{n}`" for n in pytest_uncollected) or "none")
          + ".\n"),
     ]
-    common.write("baseline", data, "\n".join(md), [
-        "build/c/baseline/", "build/c/CMakeCache.txt", "tests/runtests.pl"],
-        generated_by="inventory/measure/baseline.py")
+    common.write(oracle.inventory, data, "\n".join(md), [
+        f"{rel}/baseline/", f"{rel}/CMakeCache.txt", "tests/runtests.pl"],
+        generated_by=" ".join(filter(None, ["inventory/measure/baseline.py",
+                                            oracle.flag])))
 
 
 if __name__ == "__main__":

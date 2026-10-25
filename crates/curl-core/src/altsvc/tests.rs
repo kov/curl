@@ -223,6 +223,13 @@ fn a_lookup_finds_the_first_allowed_alternative() {
             .is_none()
     );
     assert!(a.is_empty());
+    // A field's alternatives replace those an earlier field gave.
+    parse(&mut a, "h1=\"first:1\"", "origin", 80, Alpn::H1);
+    parse(&mut a, "h1=\"second:2\"", "origin", 80, Alpn::H1);
+    let found = a.lookup((b"origin", 80, Alpn::H1), ALL, NOW).unwrap();
+    assert_eq!(found.host, b"second");
+    assert_eq!(a.len(), 1);
+    a.flush(b"origin", 80, Alpn::H1);
     // The origin's own host and port, by another version.
     parse(&mut a, "h2=\":80\"", "origin", 80, Alpn::H1);
     assert!(a.lookup((b"origin", 80, Alpn::H1), ALL, NOW).unwrap().same);

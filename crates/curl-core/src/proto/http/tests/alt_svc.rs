@@ -133,8 +133,9 @@ fn the_application_s_alt_used_replaces_the_library_s() {
 #[test]
 fn an_alternative_is_taken_only_where_c_takes_one() {
     type Set = fn(&mut Easy);
-    let cases: [(&str, &str, Set); 4] = [
+    let cases: [(&str, &str, Set); 5] = [
         ("plain", "http", |_| {}),
+        ("plain-field", "http", |_| {}),
         ("ten", "https", |e| {
             e.options_mut().http.version = crate::options::HttpVersion::Http10;
         }),
@@ -172,14 +173,14 @@ fn an_alternative_is_taken_only_where_c_takes_one() {
         let url = format!("{scheme}://origin.example:{PORT}/a");
         let mut ran = get_with(&mut m, e, "/a", talk, |o| {
             o.set_url(Some(url.as_bytes())).unwrap();
-            if name == "plain" {
+            if name == "plain-field" {
                 // Reached, to show the field is passed over.
                 let entry = format!("origin.example:{PORT}:127.0.0.1:{PORT}");
                 o.connect_to.set([entry.as_bytes()]).unwrap();
             }
         });
         ran.easy.save_alt_svc().unwrap();
-        if name == "plain" {
+        if name == "plain-field" {
             assert_eq!(ran.result, Ok(()));
             assert!(!file.text().contains("next.example"), "{}", file.text());
         }
@@ -188,7 +189,7 @@ fn an_alternative_is_taken_only_where_c_takes_one() {
             !text.iter().any(|l| l.starts_with("Alt-svc connecting")),
             "{name}: {text:?}"
         );
-        if name == "connect-to" || name == "plain" {
+        if name == "connect-to" || name == "plain-field" {
             // Reached by the entry, with no `Alt-Used:`.
             assert_eq!(ran.result, Ok(()), "{name}");
             let request =

@@ -41,12 +41,72 @@ impl Threads {
     };
 }
 
+/// The C debug build's variables for the resolver, read as it is made:
+/// each query held back `delay` before it is asked
+/// (`CURL_DBG_RESOLV_DELAY`), or held back `fail_delay` and up to 255 ms
+/// more and then failed, as a name that does not exist if `fail_negative`
+/// (`CURL_DBG_RESOLV_FAIL_DELAY`, `CURL_DBG_RESOLV_FAIL_NEGATIVE`); at most
+/// `max_threads` threads (`CURL_DBG_RESOLV_MAX_THREADS`, 0 not taken); and
+/// the first `fail_starts` threads not started
+/// (`CURL_DBG_THRDPOOL_FAIL_STARTS`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DebugVars {
+    pub delay: Option<Duration>,
+    pub fail_delay: Option<Duration>,
+    pub fail_negative: bool,
+    pub max_threads: Option<NonZeroU32>,
+    pub fail_starts: u32,
+}
+
+impl DebugVars {
+    /// As the environment sets them, in a debug build; none in another.
+    pub fn from_env() -> DebugVars {
+        #[cfg(feature = "debug-hooks")]
+        {
+            let ms = |name: &[u8]| number(name, u64::from(u32::MAX)).map(Duration::from_millis);
+            DebugVars {
+                delay: ms(b"CURL_DBG_RESOLV_DELAY").filter(|d| !d.is_zero()),
+                fail_delay: ms(b"CURL_DBG_RESOLV_FAIL_DELAY"),
+                fail_negative: curl_os::env::is_set(b"CURL_DBG_RESOLV_FAIL_NEGATIVE"),
+                max_threads: number(b"CURL_DBG_RESOLV_MAX_THREADS", u64::from(u32::MAX))
+                    .and_then(|n| NonZeroU32::new(n as u32)),
+                fail_starts: number(b"CURL_DBG_THRDPOOL_FAIL_STARTS", i32::MAX as u64)
+                    .map_or(0, |n| n as u32),
+            }
+        }
+        #[cfg(not(feature = "debug-hooks"))]
+        DebugVars::default()
+    }
+}
+
+/// The number variable `name` starts with, if it is set to one no
+/// larger than `max` (`curlx_str_number`).
+#[cfg(feature = "debug-hooks")]
+fn number(name: &[u8], max: u64) -> Option<u64> {
+    let mut buf = [0u8; 32];
+    let given = curl_os::env::var_into(name, &mut buf)?;
+    let digits = given.iter().take_while(|b| b.is_ascii_digit());
+    let mut n: Option<u64> = None;
+    for &d in digits {
+        let next = n.unwrap_or(0) * 10 + u64::from(d - b'0');
+        if next > max {
+            return None;
+        }
+        n = Some(next);
+    }
+    n
+}
+
 /// One query of a resolve: one family's addresses.
 #[derive(Debug)]
 struct Query {
     id: ResolveId,
     name: Vec<u8>,
     family: Family,
+    /// What the debug build makes of it: held back before it is asked;
+    /// or held back and failed so, not asked at all.
+    delay: Option<Duration>,
+    fail: Option<(Duration, ResolveFailure)>,
 }
 
 /// A query's answer.
@@ -72,6 +132,11 @@ struct State {
     join: bool,
     /// The resolver is gone: the threads end as their query does.
     aborted: bool,
+    /// The last thread wanted could not be started: queries wait for the
+    /// next try.
+    start_failed: bool,
+    /// The debug build's starts still to fail.
+    fail_starts: u32,
 }
 
 #[derive(Debug)]
@@ -112,6 +177,7 @@ pub struct ThreadedResolver {
     next: ResolveId,
     /// The threads started, joined as they end, or at the end.
     handles: Vec<JoinHandle<()>>,
+    debug: DebugVars,
 }
 
 impl ThreadedResolver {
@@ -136,7 +202,22 @@ impl ThreadedResolver {
             resolving: Vec::new(),
             next: ResolveId::FIRST,
             handles: Vec::new(),
+            debug: DebugVars::default(),
         })
+    }
+
+    /// One that does what the debug build's variables `vars` say.
+    pub fn with_debug(
+        threads: Threads,
+        vars: DebugVars,
+    ) -> Result<ThreadedResolver, std::io::Error> {
+        let mut r = ThreadedResolver::new(Threads {
+            max: vars.max_threads.unwrap_or(threads.max),
+            ..threads
+        })?;
+        r.shared.lock().fail_starts = vars.fail_starts;
+        r.debug = vars;
+        Ok(r)
     }
 
     /// Queue `queries`, starting a thread for them if none is idle.
@@ -165,6 +246,12 @@ impl ThreadedResolver {
                 let mut state = self.shared.lock();
                 let wanted = state.queue.len() as u32;
                 if wanted <= state.idle || state.threads >= state.threads_max {
+                    state.start_failed = false;
+                    return;
+                }
+                if state.fail_starts > 0 {
+                    state.fail_starts -= 1;
+                    state.start_failed = true;
                     return;
                 }
                 state.threads += 1;
@@ -181,7 +268,9 @@ impl ThreadedResolver {
                     let _detached = self.handles.try_push(handle);
                 }
                 Err(_) => {
-                    self.shared.lock().threads -= 1;
+                    let mut state = self.shared.lock();
+                    state.threads -= 1;
+                    state.start_failed = true;
                     return;
                 }
             }
@@ -267,7 +356,16 @@ fn work(shared: &Shared) {
         if !state.queue.is_empty() {
             let q = state.queue.remove(0);
             drop(state);
-            let result = curl_os::resolve::lookup(&q.name, q.family);
+            if let Some(delay) = q.delay {
+                std::thread::sleep(delay);
+            }
+            let result = match q.fail {
+                Some((delay, why)) => {
+                    std::thread::sleep(delay);
+                    Err(why)
+                }
+                None => curl_os::resolve::lookup(&q.name, q.family),
+            };
             state = shared.lock();
             let done = Done {
                 id: q.id,
@@ -327,10 +425,22 @@ impl Resolver for ThreadedResolver {
         for &family in families {
             let mut copy = Vec::new();
             copy.try_extend_from_slice(name)?;
+            let fail = self.debug.fail_delay.map(|delay| {
+                // A random byte more, as C's debug build adds.
+                let mut more = [0u8];
+                let _unrandom = curl_os::random::fill(&mut more);
+                let why = match self.debug.fail_negative {
+                    true => ResolveFailure::NotFound,
+                    false => ResolveFailure::Failed,
+                };
+                (delay + Duration::from_millis(u64::from(more[0])), why)
+            });
             queries.try_push(Query {
                 id,
                 name: copy,
                 family,
+                delay: self.debug.delay,
+                fail,
             })?;
         }
         self.resolving.try_push(Resolving {
@@ -409,6 +519,11 @@ impl Resolver for ThreadedResolver {
 
     fn pool(&self) -> Option<ResolverThreads> {
         Some(ResolverThreads(self.shared.clone()))
+    }
+
+    fn retry(&self) -> Option<Duration> {
+        let state = self.shared.lock();
+        (state.start_failed && !state.queue.is_empty()).then_some(Duration::from_millis(100))
     }
 }
 
@@ -638,6 +753,8 @@ mod tests {
             id: ResolveId::FIRST,
             name: b"localhost".to_vec(),
             family: Family::V4,
+            delay: None,
+            fail: None,
         };
         r.shared.lock().threads_max = 0;
         r.shared.lock().queue.push(query);
@@ -648,5 +765,57 @@ mod tests {
         r.shared.lock().queue.clear();
         pool.set_max_threads(NonZeroU32::MIN);
         assert!(!woken(), "nothing queued, nothing woken");
+    }
+
+    /// The debug build's variables: a held-back failure is negative only
+    /// when asked to be; a held-back query still answers; and a thread
+    /// that is not started leaves the queries for a retry, 100 ms on,
+    /// whose start takes them.
+    #[test]
+    fn the_debug_build_s_variables_shape_the_resolves() {
+        let start = |r: &mut ThreadedResolver| match r.start(b"localhost", Family::V4, Waiter::NONE)
+        {
+            Ok(Resolve::Pending(Queued { id, .. })) => id,
+            other => panic!("{other:?}"),
+        };
+        let quick = Duration::from_millis(1);
+        for (negative, why) in [
+            (false, ResolveFailure::Failed),
+            (true, ResolveFailure::NotFound),
+        ] {
+            let vars = DebugVars {
+                fail_delay: Some(quick),
+                fail_negative: negative,
+                ..DebugVars::default()
+            };
+            let mut r = ThreadedResolver::with_debug(Threads::EASY, vars).unwrap();
+            let id = start(&mut r);
+            assert_eq!(r.wait(id), Err(why));
+        }
+        let vars = DebugVars {
+            delay: Some(Duration::from_millis(20)),
+            ..DebugVars::default()
+        };
+        let mut r = ThreadedResolver::with_debug(Threads::EASY, vars).unwrap();
+        let begun = std::time::Instant::now();
+        let id = start(&mut r);
+        assert!(r.wait(id).is_ok());
+        assert!(begun.elapsed() >= Duration::from_millis(20));
+
+        let vars = DebugVars {
+            max_threads: NonZeroU32::new(1),
+            fail_starts: 2,
+            ..DebugVars::default()
+        };
+        let mut r = ThreadedResolver::with_debug(Threads::MULTI, vars).unwrap();
+        assert_eq!(r.shared.lock().threads_max, 1);
+        let id = start(&mut r);
+        let threads = r.shared.lock().threads;
+        assert_eq!(threads, 0, "the first start failed");
+        assert_eq!(r.retry(), Some(Duration::from_millis(100)));
+        assert_eq!(r.answer(id), None, "the second failed");
+        assert_eq!(r.retry(), Some(Duration::from_millis(100)));
+        assert!(r.wait(id).is_ok(), "the third started");
+        assert_eq!(r.retry(), None);
     }
 }

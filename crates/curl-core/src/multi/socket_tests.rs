@@ -632,3 +632,132 @@ fn an_easy_handle_s_quick_exit_is_its_multi_s() {
     assert!(e.perform_in(&mut m, crate::easy::Drive::Waits).is_err());
     assert_eq!(pool.settings(), (2, true));
 }
+
+/// A resolver whose queries wait for a thread it could not start: it
+/// tells no answer, and asks to be tried again in 100 ms.
+struct Stalled<'r>(&'r mut dyn crate::conn::io::Resolver);
+
+impl crate::conn::io::Resolver for Stalled<'_> {
+    fn start(
+        &mut self,
+        name: &[u8],
+        family: crate::conn::io::Family,
+        waiter: crate::conn::io::Waiter,
+    ) -> Result<crate::conn::io::Resolve, crate::conn::io::ResolveFailure> {
+        self.0.start(name, family, waiter)
+    }
+
+    fn answer(
+        &mut self,
+        id: crate::conn::io::ResolveId,
+    ) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
+        self.0.answer(id)
+    }
+
+    fn wait(
+        &mut self,
+        id: crate::conn::io::ResolveId,
+    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
+        self.0.wait(id)
+    }
+
+    fn cancel(&mut self, id: crate::conn::io::ResolveId) {
+        self.0.cancel(id);
+    }
+
+    fn answered(&mut self, _: &mut dyn FnMut(crate::conn::io::Waiter, crate::conn::io::ResolveId)) {
+    }
+
+    fn waker(&self) -> Option<TryArc<Waker>> {
+        None
+    }
+
+    fn retry(&self) -> Option<Duration> {
+        Some(Duration::from_millis(100))
+    }
+}
+
+/// The fake network, its resolver `Stalled`.
+struct Stalling(Arc<Mutex<FakeNet>>);
+
+impl Net for Stalling {
+    fn poll(
+        &mut self,
+        sockets: &mut [SocketPoll<'_>],
+        fds: &mut [PollFd<'_>],
+        timeout: Duration,
+    ) -> std::io::Result<u32> {
+        self.0.lock().unwrap().poll(sockets, fds, timeout)
+    }
+
+    fn open(
+        &mut self,
+        addr: &crate::conn::io::Remote,
+    ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
+        self.0.lock().unwrap().open(addr)
+    }
+
+    fn close(&mut self, socket: crate::conn::io::Sock) {
+        self.0.lock().unwrap().close(socket);
+    }
+
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn crate::conn::io::Resolver)) {
+        self.0
+            .lock()
+            .unwrap()
+            .with_resolver(&mut |r| f(&mut Stalled(r)));
+    }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        self.0.lock().unwrap().link_local_scope()
+    }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.0
+            .lock()
+            .unwrap()
+            .interface_address(name, v6, remote_scope, scope_id)
+    }
+}
+
+/// A resolve whose queries wait for a thread is tried again by the
+/// transfer's own timer, 100 ms on (`EXPIRE_ASYNC_NAME`), though nothing
+/// tells of an answer: the timer runs the transfer, which takes it.
+#[test]
+fn a_stalled_resolve_is_tried_again_by_its_timer() {
+    use crate::conn::io::Late;
+    let clock = ManualClock::new().unwrap();
+    let late = Late::new();
+    let at = SocketAddr::from(([127, 0, 0, 1], 4));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_late_name("late.test", &[[127, 0, 0, 1].into()], &late);
+    let net = Arc::new(Mutex::new(net));
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(Stalling(net.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+    let mut ev = Sockets::default();
+    m.add(Box::new(easy("tcp://late.test:4/")), (), &mut ev)
+        .unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(m.timeout(), Some(Duration::from_millis(100)));
+    assert_eq!(net.lock().unwrap().resolving(), 1);
+    late.release();
+    // Not yet due: the transfer is not run, the answer not taken.
+    clock.advance(Duration::from_millis(99));
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(net.lock().unwrap().resolving(), 1);
+    clock.advance(Duration::from_millis(1));
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(net.lock().unwrap().resolving(), 0, "the timer took it");
+}

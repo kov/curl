@@ -364,6 +364,13 @@ pub trait Resolver {
     fn pool(&self) -> Option<super::threaded::ResolverThreads> {
         None
     }
+
+    /// How soon to ask again for answers whose queries wait for a thread
+    /// that could not be started (`Curl_async_pollset`'s 100 ms), if any
+    /// do.
+    fn retry(&self) -> Option<Duration> {
+        None
+    }
 }
 
 /// The system's resolver as C's synchronous one: `getaddrinfo`, its
@@ -515,7 +522,12 @@ impl SystemNet {
     /// with a pool of `threads`.
     pub fn for_multi(threads: super::threaded::Threads) -> io::Result<SystemNet> {
         #[cfg(feature = "threaded-resolver")]
-        let threaded = Some(super::threaded::ThreadedResolver::new(threads)?);
+        let threaded = {
+            let debug = super::threaded::DebugVars::from_env();
+            Some(super::threaded::ThreadedResolver::with_debug(
+                threads, debug,
+            )?)
+        };
         #[cfg(not(feature = "threaded-resolver"))]
         let threaded = {
             let _unused = threads;

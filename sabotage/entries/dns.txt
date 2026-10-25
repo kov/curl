@@ -310,3 +310,27 @@ witness: curl-core conn::io::resolve_ids_count_as_c_s
         ResolveId(self.0.checked_add(1).unwrap_or(std::num::NonZeroU32::MIN))
 --- new
         ResolveId(self.0.checked_add(1).unwrap_or(std::num::NonZeroU32::MAX))
+
+=== a debug start failure leaves the queries for a retry
+file: crates/curl-core/src/conn/threaded.rs
+witness: curl-core conn::threaded::tests::the_debug_build_s_variables_shape_the_resolves
+--- old
+                if state.fail_starts > 0 {
+--- new
+                if state.fail_starts > 1000 {
+
+=== a held-back failure is negative only when asked to be
+file: crates/curl-core/src/conn/threaded.rs
+witness: curl-core conn::threaded::tests::the_debug_build_s_variables_shape_the_resolves
+--- old
+                    true => ResolveFailure::NotFound,
+--- new
+                    true => ResolveFailure::Failed,
+
+=== a stalled resolve arms its retry timer
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::socket_tests::a_stalled_resolve_is_tried_again_by_its_timer
+--- old
+                    arm(&mut run.deadlines, cx, TimerKind::AsyncName, wait);
+--- new
+                    arm(&mut run.deadlines, cx, TimerKind::AsyncName, wait * 2);

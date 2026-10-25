@@ -3,6 +3,7 @@
 //! end over those waits (`easy_transfer`), or over what the multi tells its
 //! timer and socket callbacks (`easy_events`).
 
+use std::os::fd::AsRawFd as _;
 use std::time::Duration;
 
 use curl_alloc::{TryArc, TryVec};
@@ -181,8 +182,9 @@ impl<H: Host> Multi<H> {
     /// Wait up to `timeout`, or for as long as it takes, for the sockets
     /// `watched` names to be ready, each for its events, and give those
     /// that are, in `watched`'s order. Each is a socket a transfer waits
-    /// on, as the multi says REMOVE before one closes. With none watched,
-    /// sleep for `timeout`, if there is one.
+    /// on, as the multi says REMOVE before one closes, or the resolver's
+    /// wake while a transfer is alive. With none watched, sleep for
+    /// `timeout`, if there is one.
     fn poll_watched(
         &mut self,
         watched: &[(SocketKey, Events)],
@@ -200,16 +202,24 @@ impl<H: Host> Multi<H> {
                 found[at].get_or_insert(s);
             }
         });
+        let wake = self.alive.waker.as_deref().filter(|_| self.alive.count > 0);
+        let wake_key = wake.map(|w| SocketKey::new(w.fd().as_raw_fd()));
+        let mut wake_fd = None;
         let mut sockets = Vec::new();
         sockets.try_reserve_exact(watched.len()).map_err(oom)?;
         for (s, &(key, events)) in found.iter().zip(watched) {
-            let s = s.unwrap_or_else(|| panic!("socket {key:?} was watched after its REMOVE"));
-            sockets
-                .try_push(SocketPoll::new(s, events))
-                .expect("reserved");
+            match (s, wake) {
+                (Some(s), _) => sockets
+                    .try_push(SocketPoll::new(*s, events))
+                    .expect("reserved"),
+                (None, Some(w)) if wake_key == Some(key) => {
+                    wake_fd = Some(PollFd::new(w.fd(), events));
+                }
+                (None, _) => panic!("socket {key:?} was watched after its REMOVE"),
+            }
         }
         let mut ready = Vec::new();
-        if sockets.is_empty() {
+        if sockets.is_empty() && wake_fd.is_none() {
             if let Some(t) = timeout.filter(|t| !t.is_zero()) {
                 self.net
                     .poll(&mut [], &mut [], t)
@@ -217,11 +227,20 @@ impl<H: Host> Multi<H> {
             }
             return Ok(ready);
         }
+        let fds: &mut [PollFd<'_>] = match &mut wake_fd {
+            Some(fd) => std::slice::from_mut(fd),
+            None => &mut [],
+        };
         self.net
-            .poll(&mut sockets, &mut [], timeout.unwrap_or(Duration::MAX))
+            .poll(&mut sockets, fds, timeout.unwrap_or(Duration::MAX))
             .map_err(|_| MultiErrorKind::UnrecoverablePoll)?;
-        for (s, &(key, _)) in sockets.iter().zip(watched) {
-            if !s.revents().is_empty() {
+        let mut polled = sockets.iter();
+        for (s, &(key, _)) in found.iter().zip(watched) {
+            let revents = match s {
+                Some(_) => polled.next().expect("one polled for each found").revents(),
+                None => wake_fd.as_ref().expect("the wake, if not found").revents(),
+            };
+            if !revents.is_empty() {
                 ready
                     .try_push(key)
                     .map_err(|_| MultiErrorKind::OutOfMemory)?;

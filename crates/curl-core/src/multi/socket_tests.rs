@@ -761,3 +761,33 @@ fn a_stalled_resolve_is_tried_again_by_its_timer() {
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(net.lock().unwrap().resolving(), 0, "the timer took it");
 }
+
+/// Driven by its events alone (`easy_events`), a transfer whose multi
+/// listens on the resolver's wake polls the wake with its own sockets: it
+/// is the multi's, in no transfer's pollset, and was told as one.
+#[test]
+fn a_transfer_driven_by_events_polls_the_resolver_s_wake() {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], 4));
+    let net =
+        FakeNet::new(clock.clone()).with_peer(at, Peer::AcceptsAfter(Duration::from_millis(5)));
+    let waker = TryArc::try_new(Waker::new().unwrap()).unwrap();
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(Waking(net, waker.clone(), None)),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+    let id = m
+        .add(
+            Box::new(easy("tcp://127.0.0.1:4/")),
+            (),
+            &mut Sockets::default(),
+        )
+        .unwrap();
+    let start = crate::time::Clock::now(&clock);
+    assert_eq!(super::wait::drive_by_events(&mut m, id), Ok(Ok(())));
+    let spent = crate::time::Clock::now(&clock).since(start);
+    assert_eq!(spent, Duration::from_millis(5), "waited for the connect");
+}

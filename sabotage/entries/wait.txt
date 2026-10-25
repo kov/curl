@@ -297,3 +297,11 @@ witness: curl-core proto::http::tests::wait_trace::a_tunnel_s_waits_are_traced_a
 --- new
                 false,
                 c.route.socket_component(),
+
+=== a wait driven by events looks for the resolver's wake among the transfers' sockets alone
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core multi::socket_tests::a_transfer_driven_by_events_polls_the_resolver_s_wake
+--- old
+                (None, Some(w)) if wake_key == Some(key) => {
+--- new
+                (None, Some(w)) if wake_key == Some(key) && key.get() < 0 => {

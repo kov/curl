@@ -7,9 +7,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 
 use super::connect::{Asked, ConnCx, ConnectError, Found, Setup, Unresolved, lookup_name};
-use super::io::{
-    AF_INET, AF_INET6, Family, InterfaceAddress, ResolveFailure, Socket, SocketOption, ipv6_scope,
-};
+use super::io::{AF_INET, AF_INET6, Family, InterfaceAddress, Socket, SocketOption, ipv6_scope};
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::options::LocalBind;
@@ -341,15 +339,13 @@ fn resolve_host(
                     format_args!("[{queries}] hostip_resolv started -> {AGAIN_NUMBER}"),
                 );
             }
-            // The reference build's resolver, c-ares, gives its reason
-            // (`ares_strerror`).
+            // With the resolver's reason, if it gives one, as the
+            // reference build's c-ares does (`ares_strerror`).
             match why {
-                Unresolved::Resolver(ResolveFailure::NotFound, _) => cx.fail(format_args!(
-                    "Could not resolve host: {name} (Domain name not found)"
-                )),
-                Unresolved::Resolver(ResolveFailure::NoData, _) => cx.fail(format_args!(
-                    "Could not resolve host: {name} (DNS server returned answer with no data)"
-                )),
+                Unresolved::Resolver {
+                    explained: Some(reason),
+                    ..
+                } => cx.fail(format_args!("Could not resolve host: {name} ({reason})")),
                 _ => cx.fail(format_args!("Could not resolve host: {name}")),
             }
             Ok(None)

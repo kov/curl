@@ -334,3 +334,31 @@ witness: curl-core multi::socket_tests::a_stalled_resolve_is_tried_again_by_its_
                     arm(&mut run.deadlines, cx, TimerKind::AsyncName, wait);
 --- new
                     arm(&mut run.deadlines, cx, TimerKind::AsyncName, wait * 2);
+
+=== the threaded resolver gives c-ares's reason for a failure
+file: crates/curl-core/src/conn/threaded.rs
+witness: curl-core conn::threaded::tests::a_failure_is_given_no_reason
+--- old
+    fn explain(&self, _: ResolveFailure) -> Option<&'static str> {
+        None
+    }
+--- new
+    fn explain(&self, why: ResolveFailure) -> Option<&'static str> {
+        crate::conn::io::c_ares_explains(why)
+    }
+
+=== a resolver's failure without a reason is said once
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_failure_without_a_reason_is_said_twice
+--- old
+                        None => {
+                            trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"))
+                        }
+                    };
+                    trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"))
+--- new
+                        None => {
+                            trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"))
+                        }
+                    };
+                    kind

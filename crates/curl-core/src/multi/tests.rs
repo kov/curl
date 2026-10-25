@@ -2970,6 +2970,36 @@ fn stale_answers_are_dropped() {
     assert!(pruned.contains(&"Host localhost:1 was resolved.\n".to_string()));
 }
 
+/// A resolver that gives no reason, as the threaded one gives none, says
+/// it could not resolve the name as it answers, and the lookup says so
+/// again: the same line twice (`Curl_async_failed`).
+#[test]
+fn a_failure_without_a_reason_is_said_twice() {
+    let clock = ManualClock::new().unwrap();
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(FakeNet::new(clock).without_reasons()),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let (e, lines) = traced("tcp://nowhere.test:1/");
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
+    let result = messages(&mut m).last().map(|r| r.1);
+    m.remove(id, &mut NoEvents).unwrap();
+    assert_eq!(result, Some(Err(ErrorKind::CouldntResolveHost)));
+    assert_eq!(
+        trace_of(&lines),
+        [
+            "Could not resolve host: nowhere.test\n",
+            "Could not resolve host: nowhere.test\n",
+            "Could not resolve: nowhere.test:1\n",
+            "closing connection #0\n",
+        ]
+    );
+}
+
 /// A name neither the cache nor the shortcuts know is asked of the
 /// resolver; that it does not exist is kept, for the family asked, and
 /// told from the cache after (`fetch_entry`, `Curl_async_failed`).

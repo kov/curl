@@ -516,9 +516,13 @@ pub(crate) enum ConnectError {
 /// Why a name has no address to try.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Unresolved {
-    /// The resolver said so now, having queued its queries as `.1`
-    /// says, if it did.
-    Resolver(ResolveFailure, Option<Queued>),
+    /// The resolver said so now, having queued its queries as `queued`
+    /// says, if it did, and what it says of why, if anything.
+    Resolver {
+        why: ResolveFailure,
+        queued: Option<Queued>,
+        explained: Option<&'static str>,
+    },
     /// It said so before, and the cache kept its word.
     Negative,
     /// None of the addresses found, as `.0` says they were, is of the
@@ -1528,6 +1532,15 @@ pub(super) fn settle(
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
     let queued = pending.queued();
     let (family, found, keep_negative) = pending.done();
+    let refused = |why: ResolveFailure, cx: &mut dyn ConnCx| {
+        let mut explained = None;
+        cx.net().with_resolver(&mut |r| explained = r.explain(why));
+        ConnectError::Unresolved(Unresolved::Resolver {
+            why,
+            queued,
+            explained,
+        })
+    };
     let answer = match answer {
         Ok(addrs) => Answer::of(name, addrs, family).map_err(oom)?,
         Err(ResolveFailure::OutOfMemory) => return Err(ConnectError::OutOfMemory),
@@ -1537,9 +1550,9 @@ pub(super) fn settle(
             cx.names()
                 .section(|c| c.put(none, port, now, false))
                 .map_err(oom)?;
-            return Err(ConnectError::Unresolved(Unresolved::Resolver(why, queued)));
+            return Err(refused(why, cx));
         }
-        Err(why) => return Err(ConnectError::Unresolved(Unresolved::Resolver(why, queued))),
+        Err(why) => return Err(refused(why, cx)),
     };
     let answer = TryArc::try_new(answer).map_err(oom)?;
     cx.names()

@@ -517,6 +517,12 @@ impl Resolver for ThreadedResolver {
         Some(self.shared.waker.clone())
     }
 
+    /// Nothing: C's threaded resolver gives no reason
+    /// (`async_thrdd_check_done`).
+    fn explain(&self, _: ResolveFailure) -> Option<&'static str> {
+        None
+    }
+
     fn pool(&self) -> Option<ResolverThreads> {
         Some(ResolverThreads(self.shared.clone()))
     }
@@ -652,6 +658,20 @@ mod tests {
     }
 
     /// The answer is negative only if every query said so.
+    /// A failure has no reason beside the name, as C's threaded resolver
+    /// gives none: c-ares's are the reference build's.
+    #[test]
+    fn a_failure_is_given_no_reason() {
+        let r = ThreadedResolver::new(Threads::MULTI).unwrap();
+        for why in [
+            ResolveFailure::NotFound,
+            ResolveFailure::NoData,
+            ResolveFailure::Failed,
+        ] {
+            assert_eq!(r.explain(why), None);
+        }
+    }
+
     #[test]
     fn a_failure_is_negative_only_if_every_query_says_so() {
         use ResolveFailure::*;

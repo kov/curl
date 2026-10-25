@@ -359,6 +359,10 @@ pub trait Resolver {
     /// that answers later from elsewhere (C's `wakeup_internal`).
     fn waker(&self) -> Option<TryArc<Waker>>;
 
+    /// What it says of `why` beside the name it could not resolve, if
+    /// anything.
+    fn explain(&self, why: ResolveFailure) -> Option<&'static str>;
+
     /// The settings of the threads it answers from, for a resolver that
     /// answers from a pool of them.
     fn pool(&self) -> Option<super::threaded::ResolverThreads> {
@@ -399,6 +403,20 @@ impl Resolver for SystemResolver {
 
     fn waker(&self) -> Option<TryArc<Waker>> {
         None
+    }
+
+    fn explain(&self, why: ResolveFailure) -> Option<&'static str> {
+        c_ares_explains(why)
+    }
+}
+
+/// What the reference build's resolver, c-ares, says of a failure
+/// (`ares_strerror`), which the resolvers that stand in for it say.
+pub fn c_ares_explains(why: ResolveFailure) -> Option<&'static str> {
+    match why {
+        ResolveFailure::NotFound => Some("Domain name not found"),
+        ResolveFailure::NoData => Some("DNS server returned answer with no data"),
+        _ => None,
     }
 }
 
@@ -1004,6 +1022,9 @@ pub struct FakeNet {
     /// where a test says nothing of it, so that opening a socket
     /// allocates nothing.
     binding: Option<curl_alloc::TryArc<Binding>>,
+    /// Whether its resolver gives no reason for a failure, as the
+    /// threaded resolver gives none, rather than c-ares's.
+    no_reasons: bool,
 }
 
 /// The gate of a fake name answered late: its resolves wait until the
@@ -1089,6 +1110,7 @@ impl FakeNet {
             open,
             interfaces: Vec::new(),
             binding: None,
+            no_reasons: false,
         }
     }
 
@@ -1200,6 +1222,13 @@ impl FakeNet {
 
     /// `name` resolves to `addrs` once `late` lets it: until then, a
     /// resolve of it waits.
+    /// Its resolver gives no reason for a failure, as the threaded
+    /// resolver gives none.
+    pub fn without_reasons(mut self) -> FakeNet {
+        self.no_reasons = true;
+        self
+    }
+
     pub fn with_late_name(mut self, name: &str, addrs: &[IpAddr], late: &Late) -> FakeNet {
         self = self.with_name(name, addrs);
         let mut n = Vec::new();
@@ -1738,6 +1767,10 @@ impl Resolver for FakeNet {
     fn waker(&self) -> Option<TryArc<Waker>> {
         None
     }
+
+    fn explain(&self, why: ResolveFailure) -> Option<&'static str> {
+        c_ares_explains(why).filter(|_| !self.no_reasons)
+    }
 }
 
 /// A tests' resolver whose every answer `F` gives as its resolve starts.
@@ -1766,6 +1799,10 @@ impl<F: FnMut(&[u8], Family) -> Result<Vec<IpAddr>, ResolveFailure>> Resolver fo
 
     fn waker(&self) -> Option<TryArc<Waker>> {
         None
+    }
+
+    fn explain(&self, why: ResolveFailure) -> Option<&'static str> {
+        c_ares_explains(why)
     }
 }
 

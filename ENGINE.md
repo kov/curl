@@ -1833,7 +1833,9 @@ pub trait Resolver {
     fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>>;
     fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure>;
     fn cancel(&mut self, id: ResolveId);
-    fn answered(&mut self, each: &mut dyn FnMut(Waiter));
+    fn answered(&mut self, each: &mut dyn FnMut(Waiter, ResolveId));
+    fn waker(&self) -> Option<TryArc<Waker>>;
+    fn explain(&self, why: ResolveFailure) -> Option<&'static str>;
 }
 pub enum Resolve { Answer(Vec<IpAddr>), Pending(ResolveId) }
 ```
@@ -1918,8 +1920,10 @@ seconds unless set, for ever at -1). That a name does not exist, or has no addre
 asked, is kept too, as an answer with no addresses ("Negative DNS entry"), which ages twice as
 fast; that the resolver could not answer is not. A name's HTTPS-RR answer is an entry of its
 own beside its addresses (C's `CURL_DNST_HTTPS`), that it has none, aging as a negative answer
-does; it shares the name with the addresses' answer. A failure gives
-the reference build's reason, c-ares's ("Domain name not found"), then fails again without it. `CURLOPT_RESOLVE` entries are read into the cache when a transfer
+does; it shares the name with the addresses' answer. A resolver's failure is said as it answers,
+with the resolver's reason if it gives one (`Resolver::explain`: c-ares's "Domain name not
+found" for the resolvers that stand in for the reference build's, none for the threaded
+resolver, as C's gives none), then said again without it. `CURLOPT_RESOLVE` entries are read into the cache when a transfer
 starts, once for each time the list is set (`Options::resolve` carries a stamp, the easy the
 stamp it last read), as its source has them then; a list set while one is read, from the
 debug handler, is taken as read too, as C clears `state.resolve` after reading. They are permanent unless given with `+`, and `*` answers for any name on

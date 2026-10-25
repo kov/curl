@@ -2477,7 +2477,7 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
                     return kind;
                 }
                 Unresolved::Negative => trace_lookup(cx, route, None),
-                Unresolved::Resolver(_, queued) => {
+                Unresolved::Resolver { queued, .. } => {
                     trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver(queued))));
                     trace_resolved(cx, route, Err(queued), &[]);
                 }
@@ -2495,29 +2495,35 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
                 Some(_) => ("proxy", ErrorKind::CouldntResolveProxy),
                 None => ("host", ErrorKind::CouldntResolveHost),
             };
-            // The reference build's resolver, c-ares, gives its reason
-            // (`ares_strerror`), then fails again without it.
-            let reason = match why {
-                Unresolved::Resolver(ResolveFailure::NotFound, _) => Some("Domain name not found"),
-                Unresolved::Resolver(ResolveFailure::NoData, _) => {
-                    Some("DNS server returned answer with no data")
-                }
-                _ => None,
-            };
             if why == Unresolved::Negative {
                 trace::info(cx, format_args!("Negative DNS entry"));
             }
-            let kind = match reason {
-                Some(reason) => {
-                    let first = format_args!("Could not resolve {what}: {host} ({reason})");
-                    let kind = trace::fail(cx, kind, first);
+            let kind = match why {
+                // The resolver says so as it answers, with its reason if
+                // it gives one, as the reference build's c-ares does
+                // (`ares_strerror`), and the lookup again without
+                // (`Curl_async_failed`, twice).
+                Unresolved::Resolver { explained, .. } => {
+                    let kind = match explained {
+                        Some(reason) => trace::fail(
+                            cx,
+                            kind,
+                            format_args!("Could not resolve {what}: {host} ({reason})"),
+                        ),
+                        None => {
+                            trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"))
+                        }
+                    };
                     trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"))
                 }
-                None => trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}")),
+                _ => trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}")),
             };
             // What the resolver said no to is kept as said
             // (`Curl_dnscache_add_negative`).
-            if let Unresolved::Resolver(ResolveFailure::NotFound | ResolveFailure::NoData, _) = why
+            if let Unresolved::Resolver {
+                why: ResolveFailure::NotFound | ResolveFailure::NoData,
+                ..
+            } = why
             {
                 let queries = queries(first, route.ip, cx.rest.ipv6_works);
                 trace::of(

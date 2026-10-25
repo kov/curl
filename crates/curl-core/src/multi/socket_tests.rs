@@ -463,6 +463,10 @@ impl crate::conn::io::Resolver for Woken<'_> {
         Some(self.1.clone())
     }
 
+    fn explain(&self, why: crate::conn::io::ResolveFailure) -> Option<&'static str> {
+        self.0.explain(why)
+    }
+
     fn pool(&self) -> Option<ResolverThreads> {
         self.2.clone()
     }
@@ -670,6 +674,10 @@ impl crate::conn::io::Resolver for Stalled<'_> {
 
     fn waker(&self) -> Option<TryArc<Waker>> {
         None
+    }
+
+    fn explain(&self, why: crate::conn::io::ResolveFailure) -> Option<&'static str> {
+        self.0.explain(why)
     }
 
     fn retry(&self) -> Option<Duration> {

@@ -60,7 +60,7 @@ pub(crate) struct Slot<'s, 'a> {
     /// Sets the trust store up, unless `flags.store_ready`.
     pub(crate) store: StoreSetup<'s>,
     /// Where the secrets the library tells of are logged, if anywhere.
-    pub(crate) keylog: Option<&'static KeyLog>,
+    pub(crate) keylog: Option<&'s KeyLog>,
 }
 
 /// The BIO method (`ossl_bio_cf_method_create`), one per session, as C

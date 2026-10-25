@@ -6,7 +6,7 @@
 use super::*;
 use crate::conn::io::Events;
 use crate::handler::TlsContextHandler;
-use crate::libraries::Libraries;
+use crate::libraries::{Libraries, Library, SharedLibraries};
 use crate::multi::TransferId;
 use crate::tls::TlsNative;
 use crate::tls::fake::{self, FakeTls, WELCOME};
@@ -65,19 +65,20 @@ impl WriteHandler for Reaching {
 }
 
 /// A fake library of the test's own, and the libraries naming it.
-fn library(backend: FakeTls) -> (&'static FakeTls, &'static Libraries) {
+fn library(backend: FakeTls) -> (&'static FakeTls, SharedLibraries) {
     let backend: &'static FakeTls = Box::leak(Box::new(backend));
-    let libraries = Box::leak(Box::new(Libraries {
-        tls: Some(backend),
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
         ..Libraries::NONE
-    }));
+    })
+    .unwrap();
     (backend, libraries)
 }
 
 /// An HTTPS GET of `/` by a handle with `libraries`, set as `set` says.
-fn https(libraries: &'static Libraries, set: impl FnOnce(&mut Options)) -> Box<Easy> {
+fn https(libraries: &SharedLibraries, set: impl FnOnce(&mut Options)) -> Box<Easy> {
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let o = e.options_mut();
     let url = format!("https://127.0.0.1:{PORT}/");
     o.set_url(Some(url.as_bytes())).unwrap();
@@ -98,7 +99,7 @@ fn the_context_handler_and_the_handlers_reach_the_library_s_objects() {
     let talk = Conversation::replies(&[&welcome, &response], false);
     let mut m = serving(Peer::Accepts, &[&talk]);
     let notes = Notes::default();
-    let e = https(libraries, |o| {
+    let e = https(&libraries, |o| {
         let configure = Configure(notes.clone(), Ok(()));
         o.tls.options.make_mut().unwrap().context = Some(Handler::tls_context(configure).unwrap());
         let write = Reaching(notes.clone(), Arc::default());
@@ -137,7 +138,7 @@ fn the_context_handler_s_error_fails_the_transfer() {
     let talk = Conversation::new(WELCOME, false);
     let mut m = serving(Peer::Accepts, &[&talk]);
     let notes = Notes::default();
-    let e = https(libraries, |o| {
+    let e = https(&libraries, |o| {
         let configure = Configure(notes.clone(), Err(ErrorKind::SslCertproblem));
         o.tls.options.make_mut().unwrap().context = Some(Handler::tls_context(configure).unwrap());
     });
@@ -170,7 +171,7 @@ fn a_handler_reaches_another_transfer_s_objects_by_its_id() {
     }
     let one = m
         .add(
-            https(libraries, |o| {
+            https(&libraries, |o| {
                 o.callbacks.write = Some(Handler::write(Pausing).unwrap());
             }),
             (),
@@ -183,7 +184,7 @@ fn a_handler_reaches_another_transfer_s_objects_by_its_id() {
     let held = m.tls_native(one).expect("the first holds its connection");
     let notes = Notes::default();
     let other = Arc::new(Mutex::new(Some(one)));
-    let e = https(libraries, |o| {
+    let e = https(&libraries, |o| {
         o.limits.reuse.fresh = true;
         let write = Reaching(notes.clone(), other.clone());
         o.callbacks.write = Some(Handler::write(write).unwrap());
@@ -211,7 +212,7 @@ fn a_handshake_paused_for_the_application_waits_for_its_word() {
     let [welcome, response] = [WELCOME.to_vec(), fake::records(OK).unwrap()];
     let talk = Conversation::replies(&[&welcome, &response], false);
     let mut m = serving(Peer::Accepts, &[&talk]);
-    let id = m.add(https(libraries, |_| {}), (), &mut NoEvents).unwrap();
+    let id = m.add(https(&libraries, |_| {}), (), &mut NoEvents).unwrap();
     for _ in 0..20 {
         m.perform(&mut NoEvents).unwrap();
     }

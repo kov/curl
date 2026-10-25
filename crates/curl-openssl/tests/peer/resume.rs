@@ -3,7 +3,7 @@
 //! the multi's cache and resumed by the next connection to the peer; and
 //! the key log (`SSLKEYLOGFILE`).
 
-use curl_core::tls::KeyLog;
+use curl_core::tls::{KeyLog, SharedKeyLog};
 use openssl::ssl::{SslAcceptor, SslVersion};
 
 use super::*;
@@ -28,6 +28,10 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
     (
         "the_key_log_has_each_connection_s_secrets",
         the_key_log_has_each_connection_s_secrets,
+    ),
+    (
+        "a_session_keeps_its_key_log_past_its_owner",
+        a_session_keeps_its_key_log_past_its_owner,
     ),
 ];
 
@@ -186,9 +190,10 @@ fn a_failed_check_forgets_the_peer_s_sessions() {
 
 /// The key log the tests' OpenSSL logs to.
 static KEYLOG: KeyLog = KeyLog::new();
-static LOGGING: curl_openssl::OpenSsl = curl_openssl::OpenSsl::logging_keys_to(&KEYLOG);
+static LOGGING: curl_openssl::OpenSsl =
+    curl_openssl::OpenSsl::logging_keys_to(curl_core::tls::SharedKeyLog::of_static(&KEYLOG));
 static LOGGING_LIBRARIES: Libraries = Libraries {
-    tls: Some(&LOGGING),
+    tls: Some(Library::Static(&LOGGING)),
     ..Libraries::NONE
 };
 
@@ -212,7 +217,7 @@ fn the_key_log_has_each_connection_s_secrets() {
     for _ in 0..2 {
         let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
         let mut easy = Easy::new();
-        easy.set_libraries(&LOGGING_LIBRARIES);
+        easy.set_libraries(SharedLibraries::of_static(&LOGGING_LIBRARIES));
         let o = easy.options_mut();
         let url = track::untracked(|| format!("https://localhost:{}/", at.port()));
         o.set_url(Some(url.as_bytes())).unwrap();
@@ -267,4 +272,62 @@ fn the_key_log_has_each_connection_s_secrets() {
                 .all(|p| p.bytes().all(|b| b.is_ascii_hexdigit()))
         );
     }
+}
+
+/// A key log of the tool's kind, owned and shared rather than static,
+/// lasts while a session holds it: with the log's maker, the libraries
+/// naming it and the handle's hold on them all gone mid-handshake, the
+/// session still writes the connection's secrets to the file.
+fn a_session_keeps_its_key_log_past_its_owner() {
+    let path = certs_dir().join("keys-owned.log");
+    std::fs::create_dir_all(certs_dir()).unwrap();
+    std::fs::write(&path, b"").unwrap();
+    let certs = certs("keylog-owned", "localhost", &["localhost"]);
+    let (at, server) = serve_each(vec![acceptor(&certs, |_| {})]);
+    let mut m = multi(try_box(SystemClock::new()).unwrap());
+    let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
+    let mut easy = Easy::new();
+    {
+        let log = SharedKeyLog::new().unwrap();
+        log.open_named(path.to_str().unwrap().as_bytes());
+        let tls = try_box(curl_openssl::OpenSsl::logging_keys_to(log.clone())).unwrap();
+        easy.set_libraries(
+            SharedLibraries::new(Libraries {
+                tls: Some(Library::Owned(tls)),
+                ..Libraries::NONE
+            })
+            .unwrap(),
+        );
+    }
+    let o = easy.options_mut();
+    let url = track::untracked(|| format!("https://localhost:{}/", at.port()));
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.ip_version = IpVersion::V4;
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(Taker(seen.clone())).unwrap());
+    o.callbacks.write = Some(Handler::write(Taker(seen.clone())).unwrap());
+    trusting(&certs)(o);
+    let id = m.add(try_box(easy).unwrap(), (), &mut NoEvents).unwrap();
+    // Until the client hello is sent: the session exists, the handshake
+    // is not done.
+    let hello = |seen: &Seen| seen.lines.iter().any(|l| l.contains("Client hello"));
+    while !track::untracked(|| hello(&seen.lock().unwrap())) {
+        m.perform(&mut NoEvents).unwrap();
+        assert!(m.info_read().is_none(), "{:#?}", seen.lock().unwrap().lines);
+    }
+    m.easy_mut(id)
+        .unwrap()
+        .set_libraries(SharedLibraries::default());
+    let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    m.remove(id, &mut NoEvents).unwrap();
+    server.join().unwrap();
+    assert_eq!(result, Ok(()));
+    let said = format!(
+        "SSLKEYLOGFILE set, all TLS secrets are logged to '{}'",
+        path.display()
+    );
+    let lines = track::untracked(|| std::mem::take(&mut seen.lock().unwrap().lines));
+    assert!(lines.contains(&said), "{lines:#?}");
+    let log = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(log.lines().count(), 5, "TLS 1.3's five secrets: {log}");
 }

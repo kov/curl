@@ -96,10 +96,14 @@ fn main() -> ExitCode {
     // C's `curl_global_init`: OpenSSL's configuration is read now, and
     // the key log opened.
     curl_openssl::init();
-    operate::KEYLOG.open();
+    let mut msgs = Messages::new();
+    let Ok(linked) = operate::Linked::new() else {
+        msgs.error(&[b"out of memory"]);
+        return ExitCode::from(exit_code(ErrorKind::OutOfMemory));
+    };
+    linked.open_key_log();
     // C takes the environment's locale but for numbers (`operate`).
     curl_os::locale::from_environment_but_numbers();
-    let mut msgs = Messages::new();
     let curlrc = if config::reads_curlrc(&argv) {
         match config::find_curlrc(
             |var| Ok(curl_os::env::var(var.as_bytes())?.map(OsString::from_vec)),
@@ -130,20 +134,22 @@ fn main() -> ExitCode {
         &mut msgs,
         &mut wipe,
         |parsed, msgs| match parsed {
-            Ok(Parsed::Run(mut line)) => run(&mut line, argv.len(), curlrc_name, msgs),
+            Ok(Parsed::Run(mut line)) => run(&mut line, argv.len(), curlrc_name, msgs, &linked),
             Ok(Parsed::Request(request)) => show(request, msgs),
             Err(e) => ExitCode::from(exit_code(e.kind())),
         },
     )
 }
 
-/// Run what `line` asks for; `argc` words were given, and `curlrc` is the
-/// default configuration file, if one was read.
+/// Run what `line` asks for, with the libraries `linked`; `argc` words
+/// were given, and `curlrc` is the default configuration file, if one
+/// was read.
 fn run(
     line: &mut CommandLine<'_>,
     argc: usize,
     curlrc: Option<&[u8]>,
     msgs: &mut Messages,
+    linked: &operate::Linked,
 ) -> ExitCode {
     // With no arguments, only a configuration file could name a URL.
     let first_url = line.operations[0].nodes.first().and_then(|n| n.url);
@@ -179,7 +185,7 @@ fn run(
     {
         msgs.note(&[b"Read config file from '", name, b"'"]);
     }
-    match operate::run(line, *msgs) {
+    match operate::run(line, *msgs, linked) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => ExitCode::from(exit_code(e)),
     }

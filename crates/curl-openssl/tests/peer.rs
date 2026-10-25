@@ -25,7 +25,7 @@ use curl_core::easy::Easy;
 use curl_core::error::ErrorKind;
 use curl_core::handler::{DebugHandler, DebugKind, Handler, Write, WriteHandler};
 use curl_core::id::ArenaPolicy;
-use curl_core::libraries::Libraries;
+use curl_core::libraries::{Libraries, Library, SharedLibraries};
 use curl_core::multi::{Env, Multi, NoEvents, TransferCx};
 use curl_core::options::{CaCache, CaSetting, IpVersion, Options, SslOptions};
 use curl_core::time::{Clock, ManualClock, SystemClock};
@@ -77,7 +77,7 @@ mod waits;
 static ALLOCATOR: Tracker = Tracker;
 
 static LIBRARIES: Libraries = Libraries {
-    tls: Some(&curl_openssl::OPENSSL),
+    tls: Some(Library::Static(&curl_openssl::OPENSSL)),
     ..Libraries::NONE
 };
 
@@ -468,7 +468,7 @@ fn get_in(
     let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
     let (result, failure, chain, verify) = {
         let mut easy = Easy::new();
-        easy.set_libraries(&LIBRARIES);
+        easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
         if ssl {
             let components = Components::new().unwrap();
             components.configure(b"ssl");
@@ -784,7 +784,7 @@ fn a_handle_s_own_multi_keeps_its_store_between_performs() {
     let certs = certs("own", "localhost", &["localhost"]);
     let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
     let mut easy = Easy::new();
-    easy.set_libraries(&LIBRARIES);
+    easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
     let components = Components::new().unwrap();
     components.configure(b"ssl");
     easy.set_components(Some(components));

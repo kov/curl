@@ -126,7 +126,7 @@ mod leaks {
     use curl_core::easy::Easy;
     use curl_core::error::ErrorKind;
     use curl_core::handler::{Handler, Write, WriteHandler};
-    use curl_core::libraries::Libraries;
+    use curl_core::libraries::{Libraries, Library, SharedLibraries};
     use curl_core::multi::TransferCx;
     use curl_core::options::{CaSetting, IpVersion, Options};
     use openssl::asn1::{Asn1Time, Asn1Type};
@@ -141,7 +141,7 @@ mod leaks {
     use openssl::x509::{X509, X509Name};
 
     static LIBRARIES: Libraries = Libraries {
-        tls: Some(&crate::OPENSSL),
+        tls: Some(Library::Static(&crate::OPENSSL)),
         ..Libraries::NONE
     };
 
@@ -363,7 +363,7 @@ mod leaks {
     /// A GET of the server's page, in a handle of its own, freed after.
     pub(super) fn transfer(port: u16, set: &Set) -> Result<(), ErrorKind> {
         let mut easy = Easy::new();
-        easy.set_libraries(&LIBRARIES);
+        easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
         let o = easy.options_mut();
         let url = format!("https://localhost:{port}/");
         o.set_url(Some(url.as_bytes())).unwrap();

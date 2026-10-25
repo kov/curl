@@ -408,3 +408,11 @@ witness: curl-openssl an_ed25519_certificate_binds_nothing
     if mandatory && undef {
         return false;
     }
+
+=== a session logs keys only through what made it
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_session_keeps_its_key_log_past_its_owner
+--- old
+            keylog: self.keylog.clone(),
+--- new
+            keylog: None,

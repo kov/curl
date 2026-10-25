@@ -55,10 +55,11 @@ pub(super) fn start<H: Host>(
     cx: &mut StepCx<'_, H>,
     side: TlsSide,
 ) -> (TransferState, Wake) {
-    let backend = cx
-        .easy()
-        .libraries()
+    // Held apart from the handle, as the multi's state is borrowed too.
+    let libraries = cx.easy().shared_libraries();
+    let backend = libraries
         .tls
+        .as_deref()
         .expect("a route has TLS only with a TLS library");
     let options = cx.easy().options();
     let (identity, peer, via) = match side {

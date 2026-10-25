@@ -93,7 +93,7 @@ fn try_get(
         };
         let mut m: Multi = Multi::new(env)?;
         let mut easy = Easy::new();
-        easy.set_libraries(&LIBRARIES);
+        easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
         let o = easy.options_mut();
         let url = track::untracked(|| format!("https://localhost:{}/", at.port()));
         o.set_url(Some(url.as_bytes()))?;

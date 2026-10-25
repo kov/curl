@@ -225,7 +225,7 @@ fn a_message_signature_signs_the_request_sent() {
 /// not built in.
 #[test]
 fn an_ed25519_message_signature_is_the_handle_s_libraries_own() {
-    use crate::libraries::{Libraries, testing::Keyed};
+    use crate::libraries::{Libraries, SharedLibraries, testing::Keyed};
     static SIGNING: Libraries = Libraries {
         ed25519: Some(&Keyed),
         ..Libraries::NONE
@@ -241,7 +241,7 @@ fn an_ed25519_message_signature_is_the_handle_s_libraries_own() {
     let (mut m, talk, clock) = server(&[OK], false);
     let now = clock.unix_time();
     let mut e = Easy::new();
-    e.set_libraries(&SIGNING);
+    e.set_libraries(SharedLibraries::of_static(&SIGNING));
     let ran = get_with(&mut m, e, "/p", talk, set);
     assert_eq!(ran.result, Ok(()));
     let signature = crate::options::MessageSignature {

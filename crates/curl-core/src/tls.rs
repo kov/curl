@@ -29,7 +29,7 @@ use crate::time::Instant;
 pub use crate::conn::layer::Handshake;
 pub(crate) use cache::SessionCache;
 pub use cache::{SessionPeer, TLS1_3, TlsTicket};
-pub use keylog::KeyLog;
+pub use keylog::{KeyLog, SharedKeyLog};
 pub use pin::pin_peer_pubkey;
 
 mod cache;

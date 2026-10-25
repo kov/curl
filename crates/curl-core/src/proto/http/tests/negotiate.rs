@@ -6,17 +6,18 @@
 use super::*;
 use crate::gss::testing::{Answer, Asked, Scripted};
 use crate::gss::{Flags, GssCall, GssFailure, GssStatus, Mech, Progress};
-use crate::libraries::Libraries;
+use crate::libraries::{Libraries, Library, SharedLibraries};
 use crate::options::{Delegation, HttpAuth};
 
 /// A scripted library, and the libraries naming it, kept to the test's
 /// end as a handle's are.
-fn scripted() -> (&'static Scripted, &'static Libraries) {
+fn scripted() -> (&'static Scripted, SharedLibraries) {
     let gss = Scripted::leaked();
-    let libraries = Box::leak(Box::new(Libraries {
+    let libraries = SharedLibraries::new(Libraries {
         gss: Some(gss),
         ..Libraries::NONE
-    }));
+    })
+    .unwrap();
     (gss, libraries)
 }
 
@@ -41,9 +42,9 @@ fn plain_get(path: &str) -> String {
 }
 
 /// A handle with the scripted library, negotiating with the origin.
-fn negotiating(libraries: &'static Libraries) -> Easy {
+fn negotiating(libraries: &SharedLibraries) -> Easy {
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     e.options_mut().http.auth = HttpAuth(AuthMethods::NEGOTIATE);
     e
 }
@@ -76,7 +77,7 @@ fn the_first_token_goes_at_once() {
     let (gss, libraries) = scripted();
     gss.then_token(b"first");
     let (mut m, talk, _) = server(&[OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
         String::from_utf8(ran.request.clone()).unwrap(),
@@ -95,7 +96,7 @@ fn the_context_takes_the_service_and_the_delegation() {
     let (gss, libraries) = scripted();
     gss.then_token(b"t");
     let (mut m, talk, _) = server(&[OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |o| {
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |o| {
         o.login.make_mut().unwrap().service = Some(b"web".to_vec());
         o.login.make_mut().unwrap().delegation = Delegation {
             by_policy: true,
@@ -121,7 +122,7 @@ fn a_first_token_not_made_goes_without() {
         GssStatus::new(7 << 16, 3),
     )));
     let (mut m, talk, _) = server(&[OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
         String::from_utf8(ran.request.clone()).unwrap(),
@@ -145,7 +146,7 @@ fn a_first_token_not_made_goes_without() {
         kind: crate::gss::GssFailureKind::EmptyToken,
     }));
     let (mut m, talk, _) = server(&[OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
     assert_eq!(
         String::from_utf8(ran.request.clone()).unwrap(),
         plain_get("/")
@@ -157,7 +158,7 @@ fn a_first_token_not_made_goes_without() {
         GssCall::InitSecContext,
     )));
     let (mut m, talk, _) = server(&[OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
     assert_eq!(ran.result, Err(ErrorKind::OutOfMemory));
 }
 
@@ -174,7 +175,7 @@ fn a_401_offering_negotiate_has_it_picked() {
     let ok = b"HTTP/1.1 200 OK\r\nPersistent-Auth: true\r\nContent-Length: 3\r\n\r\nok\n";
     let (mut m, talk, _) = server(&[unauthorized, ok], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.http.auth = HttpAuth(AuthMethods::ANY);
         o.login.make_mut().unwrap().user = Some(Vec::new());
@@ -210,7 +211,7 @@ fn a_401_offering_negotiate_has_it_picked() {
     let (_, libraries) = scripted();
     let (mut m, talk, _) = server(&[unauthorized], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.http.auth = HttpAuth(AuthMethods::ANY);
     });
@@ -232,7 +233,7 @@ fn a_challenge_is_taken_and_answered() {
         b64(b"challenge")
     );
     let (mut m, talk, _) = server(&[unauthorized.as_bytes(), OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
         String::from_utf8(ran.request.clone()).unwrap(),
@@ -269,7 +270,7 @@ fn a_challenge_refused_ends_with_the_401() {
                 GssStatus::new(13 << 16, 0),
             )));
         let (mut m, talk, _) = server(&[unauthorized.as_bytes()], false);
-        let ran = get_with(&mut m, negotiating(libraries), "/", talk, |o| {
+        let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |o| {
             o.http.fail_on_error = fail;
         });
         let want = if fail {
@@ -318,7 +319,7 @@ fn a_challenge_not_decoded_is_refused() {
             "HTTP/1.1 401 Who\r\nWWW-Authenticate: Negotiate {challenge}\r\nContent-Length: 0\r\n\r\n"
         );
         let (mut m, talk, _) = server(&[unauthorized.as_bytes()], false);
-        let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+        let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
         assert_eq!(ran.result, Ok(()));
         assert_eq!(
             String::from_utf8(ran.request.clone()).unwrap(),
@@ -342,7 +343,7 @@ fn an_empty_challenge_after_a_token_is_a_refusal() {
     let unauthorized =
         b"HTTP/1.1 401 Who\r\nWWW-Authenticate: Negotiate\r\nContent-Length: 0\r\n\r\n";
     let (mut m, talk, _) = server(&[unauthorized], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
         String::from_utf8(ran.request.clone()).unwrap(),
@@ -362,7 +363,7 @@ fn an_interim_response_does_not_accept_the_token() {
     let unauthorized = b"HTTP/1.1 100 Continue\r\n\r\n\
         HTTP/1.1 401 Who\r\nWWW-Authenticate: Negotiate\r\nContent-Length: 0\r\n\r\n";
     let (mut m, talk, _) = server(&[unauthorized], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
         String::from_utf8(ran.request.clone()).unwrap(),
@@ -383,7 +384,7 @@ fn a_complete_context_asked_again_is_refused() {
         b64(b"more")
     );
     let (mut m, talk, _) = server(&[unauthorized.as_bytes()], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(gss.asked(), [context(), Asked::Step(None), Asked::Dropped]);
 }
@@ -403,9 +404,9 @@ fn the_next_request_authenticates_again_unless_it_persists() {
         };
         let talk = Conversation::replies(&[first, OK_200], false);
         let mut m = serving(Peer::Accepts, &[&talk]);
-        let ran = get_with(&mut m, negotiating(libraries), "/a", talk.clone(), |_| {});
+        let ran = get_with(&mut m, negotiating(&libraries), "/a", talk.clone(), |_| {});
         assert_eq!(ran.result, Ok(()));
-        let ran = get_with(&mut m, negotiating(libraries), "/b", talk.clone(), |_| {});
+        let ran = get_with(&mut m, negotiating(&libraries), "/b", talk.clone(), |_| {});
         assert_eq!(ran.result, Ok(()));
         let sent = String::from_utf8(talk.received()).unwrap();
         let cleaned =
@@ -489,11 +490,11 @@ fn a_negotiated_connection_serves_only_its_own() {
         let first = Conversation::replies(&[OK_200, OK_200], false);
         let second = Conversation::replies(&[OK_200], false);
         let mut m = serving(Peer::Accepts, &[&first, &second]);
-        let ran = get_with(&mut m, negotiating(libraries), "/a", first.clone(), |o| {
+        let ran = get_with(&mut m, negotiating(&libraries), "/a", first.clone(), |o| {
             o.login.make_mut().unwrap().user = Some(b"u".to_vec());
         });
         assert_eq!(ran.result, Ok(()), "{what}");
-        let ran = get_with(&mut m, negotiating(libraries), "/b", first.clone(), set);
+        let ran = get_with(&mut m, negotiating(&libraries), "/b", first.clone(), set);
         assert_eq!(ran.result, Ok(()), "{what}");
         assert_eq!(
             text_has(&ran, reused),
@@ -509,10 +510,10 @@ fn a_negotiated_connection_serves_only_its_own() {
     let talk = Conversation::replies(&[OK_200, OK_200], false);
     let mut m = serving(Peer::Accepts, &[&talk]);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/a", talk.clone(), |_| {});
     assert_eq!(ran.result, Ok(()));
-    let ran = get_with(&mut m, negotiating(libraries), "/b", talk.clone(), |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/b", talk.clone(), |_| {});
     assert!(text_has(&ran, reused));
 }
 
@@ -534,7 +535,7 @@ fn a_challenge_taken_holds_the_connection() {
         gss.then_token(b"one");
         let talk = Conversation::replies(&[unauthorized, unauthorized], false);
         let mut m = serving(Peer::Accepts, &[&talk]);
-        let ran = get_with(&mut m, negotiating(libraries), "/", talk.clone(), |o| {
+        let ran = get_with(&mut m, negotiating(&libraries), "/", talk.clone(), |o| {
             custom(o);
             o.limits.reuse.forbid = forbid;
         });
@@ -563,7 +564,7 @@ fn a_challenge_taken_holds_the_connection() {
     let first = Conversation::replies(&[closing], true);
     let second = Conversation::replies(&[OK_200], false);
     let mut m = serving(Peer::Accepts, &[&first, &second]);
-    let ran = get_with(&mut m, negotiating(libraries), "/", first.clone(), custom);
+    let ran = get_with(&mut m, negotiating(&libraries), "/", first.clone(), custom);
     assert_eq!(ran.result, Ok(()));
     let text = ran.seen.text();
     let said = text
@@ -599,7 +600,7 @@ fn a_body_still_going_closes_unless_negotiate_started() {
         let mut m = serving(Peer::Accepts, &[&first, &second]);
         let stream = Stream::new(big_body(SIZE));
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         let ran = get_with(&mut m, e, "/a", first.clone(), |o| {
             o.method = Method::Upload;
             o.upload = stream.source(true);
@@ -629,7 +630,7 @@ fn the_library_s_failures_are_said_as_c_says_them() {
     let (gss, libraries) = scripted();
     gss.import_fails(GssStatus::new(2 << 16, 5));
     let (mut m, talk, _) = server(&[OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert!(text_has(
         &ran,
@@ -645,7 +646,7 @@ fn the_library_s_failures_are_said_as_c_says_them() {
     )))
     .then_token(b"t");
     let (mut m, talk, _) = server(&[OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
     assert!(text_has(
         &ran,
         "gss_set_neg_mechs() failed: status 65536.2. \n"
@@ -660,7 +661,7 @@ fn the_library_s_failures_are_said_as_c_says_them() {
         kind: crate::gss::GssFailureKind::NtlmChosen,
     }));
     let (mut m, talk, _) = server(&[OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
     assert!(text_has(
         &ran,
         "SPNEGO chose NTLM, but NTLM is not allowed\n"
@@ -683,12 +684,12 @@ fn persistent_auth_false_authenticates_each_request() {
         b"HTTP/1.1 200 OK\r\nPersistent-Auth: FALSE, really\r\nContent-Length: 3\r\n\r\nok\n";
     let talk = Conversation::replies(&[first, OK_200], false);
     let mut m = serving(Peer::Accepts, &[&talk]);
-    let ran = get_with(&mut m, negotiating(libraries), "/a", talk.clone(), |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/a", talk.clone(), |_| {});
     assert!(text_has(
         &ran,
         "Negotiate: noauthpersist -> 1, header part: FALSE, really\n"
     ));
-    let ran = get_with(&mut m, negotiating(libraries), "/b", talk.clone(), |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/b", talk.clone(), |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
         String::from_utf8(talk.received()).unwrap(),
@@ -697,7 +698,7 @@ fn persistent_auth_false_authenticates_each_request() {
     let (_, libraries) = scripted();
     let (mut m, talk, _) = server(&[first], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.http.auth = HttpAuth(AuthMethods::BASIC);
         *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
@@ -799,7 +800,7 @@ fn a_forwarding_proxy_gets_the_first_token_at_once() {
         gss.then_token(b"first");
         let (mut m, talk, _) = server(&[OK_200], false);
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         let ran = get_with(&mut m, e, "/", talk, |o| {
             via_proxy(o, false);
             if service != b"HTTP" {
@@ -828,7 +829,7 @@ fn the_proxy_s_token_is_made_before_the_origin_s() {
     let (gss, libraries) = scripted();
     gss.then_token(b"proxy").then_token(b"origin");
     let (mut m, talk, _) = server(&[OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |o| {
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |o| {
         via_proxy(o, false);
     });
     assert_eq!(ran.result, Ok(()));
@@ -872,7 +873,7 @@ fn a_forwarding_proxy_s_407_has_negotiate_picked() {
         gss.then_token(b"tok");
         let (mut m, talk, _) = server(&[required, OK_200], false);
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         let ran = get_with(&mut m, e, "/", talk, |o| {
             via_proxy(o, false);
             o.proxy.make_mut().unwrap().auth = HttpAuth(AuthMethods::ANY);
@@ -913,7 +914,7 @@ fn a_forwarding_proxy_s_challenge_is_taken() {
     gss.then_token(b"first").then_token(b"second");
     let (mut m, talk, _) = server(&[required.as_bytes(), OK_200], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| {
         via_proxy(o, false);
         // Without credentials for the proxy, a connection negotiating
@@ -942,7 +943,7 @@ fn a_forwarding_proxy_s_challenge_is_taken() {
         )));
     let (mut m, talk, _) = server(&[required.as_bytes()], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| via_proxy(o, false));
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.easy.report().response_code(), Some(407));
@@ -982,7 +983,7 @@ fn a_forwarding_proxy_closing_mid_handshake_is_said() {
     let second = Conversation::replies(&[OK_200], false);
     let mut m = serving(Peer::Accepts, &[&first, &second]);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", first.clone(), |o| {
         via_proxy(o, false);
         // The proxy's own header keeps the first token out, the challenge
@@ -1030,7 +1031,7 @@ fn a_forwarding_proxy_s_challenge_taken_holds_the_connection() {
         let mut m = serving(Peer::Accepts, &[&first, &second]);
         let stream = Stream::new(big_body(SIZE));
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         let ran = get_with(&mut m, e, "/", first.clone(), |o| {
             via_proxy(o, false);
             empty_proxy_user(o);
@@ -1071,7 +1072,7 @@ fn the_proxy_s_own_proxy_authorization_keeps_negotiate_out() {
         };
         let (mut m, talk, _) = server(replies, false);
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         let ran = get_with(&mut m, e, "/", talk, |o| {
             via_proxy(o, tunnel);
             o.proxy.make_mut().unwrap().headers =
@@ -1097,7 +1098,7 @@ fn a_tunnel_s_connect_negotiates_with_the_proxy() {
     gss.then_token(b"first");
     let (mut m, talk, _) = server(&[TUNNEL_200, OK_200], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| via_proxy(o, true));
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
@@ -1122,7 +1123,7 @@ fn a_tunnel_s_connect_negotiates_with_the_proxy() {
     )));
     let (mut m, talk, _) = server(&[TUNNEL_200, OK_200], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| via_proxy(o, true));
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
@@ -1151,7 +1152,7 @@ fn a_tunnel_s_407_has_negotiate_picked() {
     gss.then_token(b"tok");
     let (mut m, talk, _) = server(&[required, TUNNEL_200, OK_200], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| {
         via_proxy(o, true);
         o.proxy.make_mut().unwrap().auth = HttpAuth(AuthMethods::ANY);
@@ -1181,7 +1182,7 @@ fn a_tunnel_s_challenge_is_taken() {
     gss.then_token(b"first").then_token(b"second");
     let (mut m, talk, _) = server(&[required.as_bytes(), TUNNEL_200, OK_200], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| via_proxy(o, true));
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
@@ -1205,7 +1206,7 @@ fn a_tunnel_s_challenge_is_taken() {
         )));
     let (mut m, talk, _) = server(&[required.as_bytes()], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| via_proxy(o, true));
     assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
     let lines = in_and_text(&ran);
@@ -1240,7 +1241,7 @@ fn a_tunnel_redialed_keeps_negotiating() {
     let second = Conversation::replies(&[TUNNEL_200, OK_200], false);
     let mut m = serving(Peer::Accepts, &[&first, &second]);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", second.clone(), |o| via_proxy(o, true));
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
@@ -1271,7 +1272,7 @@ fn the_origin_s_token_goes_through_the_tunnel() {
     let (gss, libraries) = scripted();
     gss.then_token(b"origin");
     let (mut m, talk, _) = server(&[TUNNEL_200, OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |o| {
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |o| {
         via_proxy(o, true);
         o.proxy.make_mut().unwrap().auth = HttpAuth(AuthMethods::BASIC);
     });
@@ -1327,7 +1328,7 @@ fn a_connection_negotiating_with_its_proxy_serves_only_its_own() {
     let mut m = serving(Peer::Accepts, &[&first, &second]);
     for _ in 0..2 {
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         let ran = get_with(&mut m, e, "/", first.clone(), |o| via_proxy(o, true));
         assert_eq!(ran.result, Ok(()));
         assert!(!text_has(
@@ -1346,14 +1347,14 @@ fn a_connection_negotiating_with_its_proxy_serves_only_its_own() {
         let second = Conversation::replies(&[OK_200], false);
         let mut m = serving(Peer::Accepts, &[&first, &second]);
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         let ran = get_with(&mut m, e, "/", first.clone(), |o| {
             via_proxy(o, false);
             first_set(o);
         });
         assert_eq!(ran.result, Ok(()), "{what}");
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         let ran = get_with(&mut m, e, "/", first.clone(), |o| {
             via_proxy(o, false);
             then(o);
@@ -1384,7 +1385,7 @@ fn no_proxy_is_negotiated_with_where_none_is_asked() {
     gss.then_token(b"first");
     let (mut m, talk, _) = server(&[OK_200], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.proxy.make_mut().unwrap().auth = HttpAuth(AuthMethods::NEGOTIATE);
     });
@@ -1400,21 +1401,22 @@ fn no_proxy_is_negotiated_with_where_none_is_asked() {
 /// channel as `binding` says, and the libraries naming both.
 fn scripted_over_tls(
     binding: crate::tls::fake::FakeBinding,
-) -> (&'static Scripted, &'static Libraries) {
+) -> (&'static Scripted, SharedLibraries) {
     let gss = Scripted::leaked();
     let tls = Box::leak(Box::new(
         crate::tls::fake::FakeTls::binding(binding).unwrap(),
     ));
-    let libraries = Box::leak(Box::new(Libraries {
+    let libraries = SharedLibraries::new(Libraries {
         gss: Some(gss),
-        tls: Some(tls),
+        tls: Some(Library::Static(tls)),
         ..Libraries::NONE
-    }));
+    })
+    .unwrap();
     (gss, libraries)
 }
 
 /// A Negotiate GET of `/` over HTTPS, its server answering `response`.
-fn negotiated_https(libraries: &'static Libraries, response: &[u8]) -> Ran {
+fn negotiated_https(libraries: &SharedLibraries, response: &[u8]) -> Ran {
     let replies = [
         crate::tls::fake::WELCOME.to_vec(),
         crate::tls::fake::records(response).unwrap(),
@@ -1434,7 +1436,7 @@ fn negotiated_https(libraries: &'static Libraries, response: &[u8]) -> Ran {
 fn a_step_over_https_is_bound_to_the_channel() {
     let (gss, libraries) = scripted_over_tls(crate::tls::fake::FakeBinding::Bound);
     gss.then_token(b"first");
-    let ran = negotiated_https(libraries, OK_200);
+    let ran = negotiated_https(&libraries, OK_200);
     assert_eq!(ran.result, Ok(()));
     let bound = [crate::tls::fake::BINDING, &[1]].concat();
     assert_eq!(gss.bindings(), [Some(bound)]);
@@ -1442,7 +1444,7 @@ fn a_step_over_https_is_bound_to_the_channel() {
     let (gss, libraries) = scripted();
     gss.then_token(b"first");
     let (mut m, talk, _) = server(&[OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(gss.bindings(), [None]);
 }
@@ -1453,7 +1455,7 @@ fn a_step_over_https_is_bound_to_the_channel() {
 fn a_certificate_naming_no_digest_binds_nothing() {
     let (gss, libraries) = scripted_over_tls(crate::tls::fake::FakeBinding::NoDigest);
     gss.then_token(b"first");
-    let ran = negotiated_https(libraries, OK_200);
+    let ran = negotiated_https(&libraries, OK_200);
     assert_eq!(ran.result, Ok(()));
     assert_eq!(gss.bindings(), [None]);
     assert!(text_has(
@@ -1467,7 +1469,7 @@ fn a_certificate_naming_no_digest_binds_nothing() {
 #[test]
 fn a_binding_not_made_fails_the_request() {
     let (gss, libraries) = scripted_over_tls(crate::tls::fake::FakeBinding::Fails);
-    let ran = negotiated_https(libraries, OK_200);
+    let ran = negotiated_https(&libraries, OK_200);
     assert_eq!(ran.result, Err(ErrorKind::SslInvalidcertstatus));
     assert_eq!(
         ran.easy.report().failure(),
@@ -1495,13 +1497,13 @@ fn second_reuses(
     let talk = Conversation::replies(&all, false);
     let other = Conversation::replies(&[OK_200], false);
     let mut m = serving(Peer::Accepts, &[&talk, &other]);
-    let ran = get_with(&mut m, negotiating(libraries), "/a", talk.clone(), first);
+    let ran = get_with(&mut m, negotiating(&libraries), "/a", talk.clone(), first);
     assert_eq!(ran.result, want_first);
     let e = if negotiates {
-        negotiating(libraries)
+        negotiating(&libraries)
     } else {
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         e
     };
     let ran = get_with(&mut m, e, "/b", talk.clone(), set);
@@ -1571,12 +1573,12 @@ fn a_handshake_of_rounds_persists_unless_told_otherwise() {
         );
         let talk = Conversation::replies(&[challenge.as_bytes(), OK_200, OK_200], false);
         let mut m = serving(Peer::Accepts, &[&talk]);
-        let ran = get_with(&mut m, negotiating(libraries), "/a", talk.clone(), |_| {});
+        let ran = get_with(&mut m, negotiating(&libraries), "/a", talk.clone(), |_| {});
         assert_eq!(ran.result, Ok(()), "{told}");
         let cleaned =
             "Curl_output_negotiate, no persistent authentication: cleanup existing context\n";
         assert!(!text_has(&ran, cleaned), "{told}");
-        let ran = get_with(&mut m, negotiating(libraries), "/b", talk.clone(), |_| {});
+        let ran = get_with(&mut m, negotiating(&libraries), "/b", talk.clone(), |_| {});
         assert_eq!(ran.result, Ok(()), "{told}");
         let sent = String::from_utf8(talk.received()).unwrap();
         let handshake = negotiated_get("/a", b"one") + &negotiated_get("/a", b"two");
@@ -1613,7 +1615,7 @@ fn a_post_sends_its_body_with_its_token() {
             vec![challenge.as_bytes(), OK_200]
         };
         let (mut m, talk, _) = server(&replies, false);
-        let ran = get_with(&mut m, negotiating(libraries), "/", talk, |o| {
+        let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |o| {
             o.method = crate::options::Method::Post;
             o.upload = crate::options::UploadSource::Bytes(
                 curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap(),
@@ -1640,7 +1642,7 @@ fn the_proxy_s_other_method_is_said_before_the_origin_s_negotiate() {
     let (gss, libraries) = scripted();
     gss.then_token(b"origin");
     let (mut m, talk, _) = server(&[OK_200], false);
-    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |o| {
+    let ran = get_with(&mut m, negotiating(&libraries), "/", talk, |o| {
         via_proxy(o, false);
         let proxy = o.proxy.make_mut().unwrap();
         proxy.auth = HttpAuth(AuthMethods::BASIC);

@@ -18,11 +18,11 @@ witness: curl-sys-abi easy::tests::a_handle_has_gss_api_where_claimed
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool operate::tests::a_transfer_has_gss_api_where_claimed
 --- old
-    if claims.gssapi {
-        &LIBRARIES
+        match claims.gssapi {
+            true => self.with_gss.clone(),
 --- new
-    if claims.gssapi || true {
-        &LIBRARIES
+        match claims.gssapi || true {
+            true => self.with_gss.clone(),
 
 === NEC's protection level is wrapped
 file: crates/curl-core/src/conn/socks/gss.rs

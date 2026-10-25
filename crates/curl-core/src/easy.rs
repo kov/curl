@@ -13,7 +13,7 @@ use crate::cookie::{Jar, LoadError, Suffixes};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::handler::Handler;
 use crate::id::ArenaPolicy;
-use crate::libraries::Libraries;
+use crate::libraries::{Libraries, SharedLibraries};
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
 use crate::options::{Lines, Options};
 use crate::proto::http1::auth::Auth;
@@ -66,8 +66,8 @@ pub struct Easy {
     /// domain needs a dot, as in C built without libpsl.
     suffixes: SuffixList,
     /// What the libraries bound beside the core do for it: the content
-    /// codings it undoes, the signatures it makes.
-    libraries: &'static Libraries,
+    /// codings it undoes, the signatures it makes, the TLS it speaks.
+    libraries: SharedLibraries,
     /// Which components trace, read at each line: shared with whoever
     /// gave it, kept through `reset` and by a copy of the handle. Without
     /// one, only the lines of a verbose transfer that belong to no
@@ -158,7 +158,7 @@ impl Easy {
                 SuffixList::Made(make) => SuffixList::Made(*make),
                 SuffixList::None => SuffixList::None,
             },
-            libraries: self.libraries,
+            libraries: self.libraries.clone(),
             components: self.components.clone(),
         })
     }
@@ -214,12 +214,17 @@ impl Easy {
     /// The libraries the handle's transfers use, kept through `reset`
     /// (those C's build has): the content codings its responses can be
     /// undone from, what signs its requests.
-    pub fn set_libraries(&mut self, libraries: &'static Libraries) {
+    pub fn set_libraries(&mut self, libraries: SharedLibraries) {
         self.libraries = libraries;
     }
 
-    pub(crate) fn libraries(&self) -> &'static Libraries {
-        self.libraries
+    pub(crate) fn libraries(&self) -> &Libraries {
+        &self.libraries
+    }
+
+    /// The handle's libraries, held apart from it.
+    pub(crate) fn shared_libraries(&self) -> SharedLibraries {
+        self.libraries.clone()
     }
 
     pub(crate) fn decoders(&self) -> Decoders {

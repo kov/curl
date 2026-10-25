@@ -93,7 +93,7 @@ impl GssContext for Kept {
 static KEEPING: Keeping = Keeping;
 
 static BINDING_LIBRARIES: Libraries = Libraries {
-    tls: Some(&curl_openssl::OPENSSL),
+    tls: Some(Library::Static(&curl_openssl::OPENSSL)),
     gss: Some(&KEEPING),
     ..Libraries::NONE
 };
@@ -130,7 +130,7 @@ fn bound(tag: &str, cert: X509, key: PKey<Private>) -> (Option<Vec<u8>>, Got) {
     let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
     let mut m = multi(try_box(SystemClock::new()).unwrap());
     let mut easy = Easy::new();
-    easy.set_libraries(&BINDING_LIBRARIES);
+    easy.set_libraries(SharedLibraries::of_static(&BINDING_LIBRARIES));
     let o = easy.options_mut();
     let url = track::untracked(|| format!("https://localhost:{}/", at.port()));
     o.set_url(Some(url.as_bytes())).unwrap();

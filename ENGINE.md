@@ -1582,6 +1582,28 @@ the connection goes back, before any other work, so the WINDOW_UPDATE goes out w
 does. The last lease given back decides the connection's fate as `multi_done_locked` does; a
 GOAWAY or a connection error ends every stream on it.
 
+What building it found it needs, beyond the above (not built yet):
+
+- A connection becomes `Attached` as it is given back to its place after the step in which its
+  first request found it speaks HTTP/2 (the pool cannot be reached from the protocol's step):
+  the lease's slot moves into the place and the lease becomes a key. Only the multi's own pool
+  attaches; a share's keeps a connection leased one transfer at a time, as its place is behind
+  the share's lock and the pollsets below borrow the connection's socket.
+- Everything that reads a lease's connection outside a step reads an attached one in its place:
+  the pollsets (`TransferState::pollset`, `pollsets`, the traces) take the multi's pool beside
+  the transfers; `tls_native` for a sibling likewise.
+- `find` attaches a transfer to an `Attached` connection that serves its route, speaks a
+  version it may, is not closing nor told GOAWAY, with the multi multiplexing
+  (`CURLMOPT_PIPELINING`) and fewer users than the server's `SETTINGS_MAX_CONCURRENT_STREAMS`;
+  the session's binding then reports that setting.
+- The session's stream ids map to their transfers (`H2Conn`'s routes, set as a request opens
+  its stream and let go as it is done); a sibling's body read by another's egress is deferred
+  until the sibling's step resumes it.
+- `PIPEWAIT` (which the tool sets for `--parallel`): a transfer finding a connection to its
+  route still being set up, or not yet known to multiplex, waits in PENDING
+  (`url_match_multiplex_needs`, `seen_pending_conn`), and each change to a connection's
+  multiplexing lets the waiting ones look again.
+
 ### 4.5 Route and reuse
 
 ```rust

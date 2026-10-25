@@ -609,6 +609,8 @@ mod tests {
             curl_dbg_free(ours.cast(), 12, c"t.c".as_ptr());
             (app, ours)
         };
+        // Held until the buffer fills or the process exits, as C's are.
+        track::flush_log();
         let log = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         let lines = [

@@ -11,7 +11,9 @@
 //! The C side of the shim logs to the same memdump and counts against the
 //! same limit through [`log`] and [`limit_reached`], so there is one of
 //! each per process. Nothing here allocates while logging: lines are built
-//! on the stack and written to the file directly.
+//! on the stack and gathered in a buffer of C's size, written out when it
+//! fills and as the process exits, as C's `membuf` is: a file size limit
+//! the program sets for a while (test 2380) then cuts no line short.
 //!
 //! Allocations are also counted per thread, tracked or not, for the
 //! allocation budget tests: see [`count_allocations`].
@@ -36,6 +38,9 @@ const PLAIN: u64 = 0x504c_4149_4e21_2121;
 
 struct State {
     log: Option<File>,
+    /// The lines not written to the memdump yet, `buf[..held]`.
+    buf: [u8; LOG_BUFFER],
+    held: usize,
     /// Tracked allocations left before they fail, once a limit is set.
     limit: Option<u64>,
     /// Tracked allocations refused so far.
@@ -50,8 +55,13 @@ struct State {
     here: bool,
 }
 
+/// The lines kept before they are written (C's `membuf`).
+const LOG_BUFFER: usize = 10000;
+
 static STATE: Mutex<State> = Mutex::new(State {
     log: None,
+    buf: [0; LOG_BUFFER],
+    held: 0,
     limit: None,
     refused: 0,
     quiet: false,
@@ -101,9 +111,39 @@ pub fn start_log(path: &Path) -> io::Result<()> {
     let mut state = state();
     if state.log.is_none() {
         state.log = Some(file);
+        // SAFETY: `flush_at_exit` is a function that lives as long as the
+        // process, which takes the tracker's lock and nothing else.
+        let registered = unsafe { atexit(flush_at_exit) };
+        // A memdump not written at exit is short of its last lines, which
+        // the test reading it then fails on, as it would in C.
+        assert_eq!(registered, 0, "atexit has room for a handler");
     }
     ACTIVE.store(true, Ordering::Release);
     Ok(())
+}
+
+unsafe extern "C" {
+    fn atexit(f: extern "C" fn()) -> std::ffi::c_int;
+}
+
+/// The lines held written out as the process exits (`curl_dbg_cleanup`).
+extern "C" fn flush_at_exit() {
+    flush_log();
+}
+
+/// Write the lines held to the memdump now, as a test reading it while the
+/// process runs needs.
+pub fn flush_log() {
+    flush(&mut state());
+}
+
+fn flush(state: &mut State) {
+    if let Some(mut file) = state.log.as_ref() {
+        // A memdump that cannot be written has nowhere to report it; the
+        // test then fails on the memdump it reads.
+        let _unwritten = file.write_all(&state.buf[..state.held]);
+    }
+    state.held = 0;
 }
 
 /// Let `limit` more tracked allocations succeed and fail the rest. Only
@@ -280,15 +320,22 @@ impl<T> fmt::Display for Ptr<T> {
 
 /// Append `line` to the memdump, if there is one.
 pub fn log(line: &Line) {
-    write_log(&state(), line);
+    write_log(&mut state(), line);
 }
 
-fn write_log(state: &State, line: &Line) {
-    if let Some(mut file) = state.log.as_ref() {
-        // A memdump that cannot be written has nowhere to report it; the
-        // test then fails on the memdump it reads.
-        let _ = file.write_all(line.bytes());
+/// Keep `line` for the memdump, writing out what is held first when it
+/// does not fit (`curl_dbg_vlog`).
+fn write_log(state: &mut State, line: &Line) {
+    if state.log.is_none() {
+        return;
     }
+    let bytes = line.bytes();
+    if LOG_BUFFER - state.held < bytes.len() {
+        flush(state);
+    }
+    let held = state.held;
+    state.buf[held..held + bytes.len()].copy_from_slice(bytes);
+    state.held += bytes.len();
 }
 
 /// Count a tracked call against the limit. When the limit is spent, log
@@ -316,7 +363,7 @@ pub fn limit_reached(func: &str, source: impl FnOnce(&mut Line)) -> bool {
     line.push(b"LIMIT ");
     source(&mut line);
     let _ = writeln!(line, " {func} reached memlimit");
-    write_log(&state, &line);
+    write_log(&mut state, &line);
     if !state.quiet {
         // Standard error is unbuffered and does not allocate. A failed
         // write there has nowhere to be reported.

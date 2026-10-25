@@ -54,6 +54,12 @@ fn logs_tracked_blocks_and_fails_past_the_limit() {
     let refused = refused.try_reserve(16).is_err()
         && TryRc::try_new([0u8; 64]).is_err()
         && TryArc::try_new([0u8; 64]).is_err();
+    // Held until the buffer fills or the process exits, as C's
+    // `membuf` holds them: a file size limit set for a while cuts none
+    // short.
+    let held = track::untracked(|| std::fs::read(&path).unwrap());
+    assert!(held.is_empty(), "written before the buffer filled");
+    track::flush_log();
     track::untracked(|| check(&path, refused, [tracked_at, grown_at]));
     track::untracked(|| drop(ok));
 }

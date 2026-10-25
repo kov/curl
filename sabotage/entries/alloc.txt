@@ -21,3 +21,15 @@ features: debug-hooks
         hold(-signed(layout.size()));
 --- new
         hold(0);
+
+=== the memdump is written line by line, as a file size limit then cuts one short
+file: crates/curl-alloc/src/track.rs
+witness: curl-alloc logs_tracked_blocks_and_fails_past_the_limit
+features: debug-hooks
+--- old
+    state.held += bytes.len();
+}
+--- new
+    state.held += bytes.len();
+    flush(state);
+}

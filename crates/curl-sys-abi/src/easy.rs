@@ -11,11 +11,13 @@
 use core::cell::{Cell, OnceCell, RefCell, UnsafeCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::{self, NonNull};
+use core::slice;
 
 use curl_alloc::{OutOfMemory, try_box};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, MultiErrorKind};
 use curl_core::handler::{Handler, WriteHandler};
+use curl_core::multi::raw::RawIo;
 use curl_core::multi::{PauseRequest, TransferId, drive_by_events, drive_to_completion};
 use curl_core::options::{Callbacks, Options};
 use curl_core::report::TransferReport;
@@ -827,6 +829,20 @@ fn perform(easy: &ShimEasy, drive: Drive) -> CURLcode {
 }
 
 impl ShimEasy {
+    /// Run `f` on the handle's transfer while it is in no multi; `None`
+    /// while it is moved, as a perform moves it.
+    pub(crate) fn with_detached<R>(&self, f: impl FnOnce(&mut Easy) -> R) -> Option<R> {
+        match &mut *self.home.borrow_mut() {
+            Home::Detached(e) => Some(f(e)),
+            Home::Added { .. } | Home::Nowhere => None,
+        }
+    }
+
+    /// The multi `curl_easy_perform` runs the handle in, once made.
+    pub(crate) fn private_multi(&self) -> Option<NonNull<ShimMulti>> {
+        self.private.get()
+    }
+
     /// The transfer the multi gave back.
     pub(crate) fn return_home(&self, easy: Box<Easy>) {
         self.home.replace(Home::Detached(easy));
@@ -890,12 +906,13 @@ pub unsafe extern "C" fn curl_easy_pause(curl: *mut CURL, action: c_int) -> CURL
 }
 const _: ffi::proto::curl_easy_pause = curl_easy_pause;
 
-/// Bytes from a `CURLOPT_CONNECT_ONLY` connection: no handle has one,
-/// as that option is not built in (`easy_connection`).
+/// Bytes from the connection the handle's transfer only made
+/// (`CURLOPT_CONNECT_ONLY`).
 ///
 /// # Safety
 ///
-/// `curl` is NULL or a live handle; `n` is NULL or points at a `size_t`.
+/// `curl` is NULL or a live handle; `n` is NULL or points at a `size_t`;
+/// `buffer` is NULL or has room for `buflen` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_easy_recv(
     curl: *mut CURL,
@@ -904,15 +921,16 @@ pub unsafe extern "C" fn curl_easy_recv(
     n: *mut usize,
 ) -> CURLcode {
     // SAFETY: as the caller guarantees.
-    unsafe { connect_only(curl, EasyCall::Recv, buffer.is_null(), buflen, n) }
+    unsafe { raw(curl, EasyCall::Recv, Raw::Recv(buffer.cast(), buflen), n) }
 }
 const _: ffi::proto::curl_easy_recv = curl_easy_recv;
 
-/// Bytes to a `CURLOPT_CONNECT_ONLY` connection, which no handle has.
+/// Bytes to the connection the handle's transfer only made
+/// (`CURLOPT_CONNECT_ONLY`).
 ///
 /// # Safety
 ///
-/// As `curl_easy_recv`.
+/// As `curl_easy_recv`, `buffer` holding `buflen` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_easy_send(
     curl: *mut CURL,
@@ -921,24 +939,26 @@ pub unsafe extern "C" fn curl_easy_send(
     n: *mut usize,
 ) -> CURLcode {
     // SAFETY: as the caller guarantees.
-    unsafe { connect_only(curl, EasyCall::Send, buffer.is_null(), buflen, n) }
+    unsafe { raw(curl, EasyCall::Send, Raw::Send(buffer.cast(), buflen), n) }
 }
 const _: ffi::proto::curl_easy_send = curl_easy_send;
 
-/// `curl_easy_recv` and `curl_easy_send` on a handle without a
-/// `CURLOPT_CONNECT_ONLY` connection: refused inside a callback, and
-/// otherwise `CURLE_UNSUPPORTED_PROTOCOL` with nothing moved.
+/// The application's buffer for a raw receive or send.
+#[derive(Clone, Copy)]
+enum Raw {
+    Recv(*mut u8, usize),
+    Send(*const u8, usize),
+}
+
+/// `curl_easy_recv` and `curl_easy_send`: the handle's raw receive or
+/// send through the core, where its connection is: in its own multi once
+/// `curl_easy_perform` is done, or in the application's multi it is still
+/// in. Refused inside a callback.
 ///
 /// # Safety
 ///
 /// As `curl_easy_recv`.
-unsafe fn connect_only(
-    curl: *mut CURL,
-    call: EasyCall,
-    no_buffer: bool,
-    buflen: usize,
-    n: *mut usize,
-) -> CURLcode {
+unsafe fn raw(curl: *mut CURL, call: EasyCall, buffer: Raw, n: *mut usize) -> CURLcode {
     // SAFETY: as the caller guarantees.
     let Some(easy) = (unsafe { handle(curl) }) else {
         return CURLE_BAD_FUNCTION_ARGUMENT;
@@ -946,12 +966,78 @@ unsafe fn connect_only(
     let Ok(_entry) = easy.enter(call) else {
         return CURLE_RECURSIVE_API_CALL;
     };
-    if n.is_null() || (buflen > 0 && no_buffer) {
+    let (ptr, len) = match buffer {
+        Raw::Recv(p, len) => (p.cast_const(), len),
+        Raw::Send(p, len) => (p, len),
+    };
+    if n.is_null() || (len > 0 && ptr.is_null()) {
         return CURLE_BAD_FUNCTION_ARGUMENT;
     }
     // SAFETY: `n` points at a `size_t`, as the caller guarantees.
     unsafe { n.write(0) };
-    ffi::CURLE_UNSUPPORTED_PROTOCOL
+    let bytes = match buffer {
+        Raw::Recv(_, 0) => Bytes::In(&mut []),
+        // SAFETY: the buffer has room for `len` bytes, as the caller
+        // guarantees, and is the application's alone during the call.
+        Raw::Recv(p, len) => Bytes::In(unsafe { slice::from_raw_parts_mut(p, len) }),
+        Raw::Send(_, 0) => Bytes::Out(&[]),
+        // SAFETY: the buffer holds `len` bytes, as the caller guarantees.
+        Raw::Send(p, len) => Bytes::Out(unsafe { slice::from_raw_parts(p, len) }),
+    };
+    let got = match easy.added() {
+        None => {
+            let private = easy.private.get();
+            let got = easy.with_detached(|e| match (private, bytes) {
+                (Some(m), Bytes::In(buf)) => {
+                    // SAFETY: the handle owns its private multi.
+                    let m = unsafe { m.as_ref() };
+                    // SAFETY: nothing runs on it once its perform is done.
+                    unsafe { m.core_mut() }.recv_raw_for(e, buf)
+                }
+                (Some(m), Bytes::Out(out)) => {
+                    // SAFETY: as above.
+                    let m = unsafe { m.as_ref() };
+                    // SAFETY: as above.
+                    unsafe { m.core_mut() }.send_raw_for(e, out)
+                }
+                (None, Bytes::In(buf)) => e.recv_raw(buf),
+                (None, Bytes::Out(out)) => e.send_raw(out),
+            });
+            let Some(got) = got else {
+                return CURLE_RECURSIVE_API_CALL;
+            };
+            got
+        }
+        Some((multi, id)) => {
+            // SAFETY: the handle's multi outlives its `Added`.
+            let m = unsafe { multi.as_ref() };
+            let Ok(Reach::Direct) = m.stack.reach() else {
+                return CURLE_RECURSIVE_API_CALL;
+            };
+            // SAFETY: nothing runs on the multi.
+            let core = unsafe { m.core_mut() };
+            let got = match bytes {
+                Bytes::In(buf) => core.recv_raw(id, buf),
+                Bytes::Out(out) => core.send_raw(id, out),
+            };
+            got.expect("an added handle is in its multi")
+        }
+    };
+    match got {
+        Ok(RawIo::Bytes(moved)) => {
+            // SAFETY: as above.
+            unsafe { n.write(moved) };
+            CURLE_OK
+        }
+        Ok(RawIo::WouldBlock) => ffi::CURLE_AGAIN,
+        Err(kind) => easy_code(kind),
+    }
+}
+
+/// The application's buffer for a raw receive or send, as a slice.
+enum Bytes<'a> {
+    In(&'a mut [u8]),
+    Out(&'a [u8]),
 }
 
 #[cfg(test)]

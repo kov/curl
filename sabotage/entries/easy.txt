@@ -46,15 +46,13 @@ witness: curl-sys-abi handle_tests::http_options_reach_the_request
 --- new
         _ => Ok(HttpVersion::Http11),
 
-=== recv and send succeed without a connection
-file: crates/curl-sys-abi/src/easy.rs
+=== recv and send go on a handle that does not only connect
+file: crates/curl-core/src/multi/raw.rs
 witness: curl-sys-abi handle_tests::recv_and_send_need_a_connect_only_connection
 --- old
-    unsafe { n.write(0) };
-    ffi::CURLE_UNSUPPORTED_PROTOCOL
+    if !easy.options().connect_only.reserves() {
 --- new
-    unsafe { n.write(0) };
-    CURLE_OK
+    if false {
 
 === VERIFYHOST sets peer verification
 file: crates/curl-sys-abi/src/setopt/mod.rs

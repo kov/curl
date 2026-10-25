@@ -12,6 +12,7 @@ mod check;
 mod cx;
 pub(crate) mod mstate;
 mod notify;
+pub mod raw;
 mod sched;
 mod sockets;
 pub(crate) mod state;
@@ -27,6 +28,7 @@ use curl_alloc::{OutOfMemory, TryArc};
 use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
 use crate::conn::shutdown::{ShutdownSet, WithSet};
 use crate::conn::{AddLimits, Caches};
+use crate::conn::{ConnId, Home};
 use crate::deliver::{Pause, RecvPause, SendPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
@@ -282,6 +284,9 @@ pub struct Multi<H: Host = NoHost> {
     /// multi is made, as the tests set it before the process starts.
     fail_ipv6: bool,
     waker: Option<TryArc<Waker>>,
+    /// The multi is one handle's own, which `perform` runs it in (C's
+    /// `multi_easy`).
+    handle_own: bool,
     /// The transfers alive, and the resolver's wake listened on while
     /// any is.
     alive: cx::Alive,
@@ -327,6 +332,7 @@ impl<H: Host> Multi<H> {
             ipv6_works,
             fail_ipv6,
             waker: env.waker,
+            handle_own: false,
             alive,
             counts: Tally::default(),
             life: Life::Alive,
@@ -357,6 +363,31 @@ impl<H: Host> Multi<H> {
     /// that answers from a pool of them (`CURLMOPT_RESOLVE_THREADS_MAX`).
     pub fn set_resolve_threads_max(&mut self, max: NonZeroU32) {
         self.alive.set_resolve_threads_max(max);
+    }
+
+    /// Make the multi one handle's own, which `perform` runs it in (C's
+    /// `multi_easy`): a handle that only connected keeps its connection as
+    /// it comes out, and its next transfer here closes it if the handle
+    /// used it.
+    pub fn make_handle_own(&mut self) {
+        self.handle_own = true;
+    }
+
+    /// Close the connection `conn` transfer `id`'s handle had reserved,
+    /// if its pool still has it, and say so (`Curl_conn_close`).
+    fn close_reserved(&mut self, id: TransferId, conn: ConnId, ev: &mut dyn MultiEvents<H>) {
+        let now = self.clock.now();
+        let mut cx = StepCx::new(id, self.rest(now, ev));
+        let home = match cx.rest.kept(cx.me, Kind::Connections) {
+            Some(kept) => Home::Share(kept.share),
+            None => Home::Multi,
+        };
+        let closed = cx.rest.pool_section(cx.me, &home, |pool, exits, _| {
+            pool.close_reserved(conn, exits, now)
+        });
+        if let Some(n) = closed {
+            crate::trace::info(&mut cx, format_args!("closing connection {n}"));
+        }
     }
 
     /// Whether dropping the multi leaves its resolver's threads running
@@ -444,6 +475,15 @@ impl<H: Host> Multi<H> {
         };
         let easy = &mut self.slots.get_mut(id).expect("just added").easy;
         easy.report_mut().set_transfer(number);
+        // A connection the handle used itself, its last transfer having
+        // only connected, is closed as its own multi runs it again
+        // (`easy_perform`).
+        if let Some(last) = easy.last_conn.filter(|l| l.used && self.handle_own) {
+            self.close_reserved(id, last.id, ev);
+        }
+        // Its last connection is forgotten as it joins (`last_cpid`).
+        let easy = &mut self.slots.get_mut(id).expect("just added").easy;
+        easy.last_conn = None;
         self.dirty.insert(id.index());
         ev.added(id, &self.slots.get(id).expect("just added").owner);
         // The debug build says what it is, once for the multi, as the
@@ -525,6 +565,16 @@ impl<H: Host> Multi<H> {
             tell.went(ev);
         }
         self.abandon(id, run, ev);
+        // A connection the handle only connected is closed as it leaves a
+        // multi of the application's: no other can reach it (`multi_done`
+        // of `curl_multi_remove_handle`).
+        let easy = &self.slots.get(id).expect("still in the multi").easy;
+        if !self.handle_own
+            && easy.options().connect_only.reserves()
+            && let Some(last) = easy.last_conn
+        {
+            self.close_reserved(id, last.id, ev);
+        }
         // Whatever its state, it is traced as completed.
         let slot = self.slots.get_mut(id).expect("still in the multi");
         slot.mstate = mstate::MState::Completed;

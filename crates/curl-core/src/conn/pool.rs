@@ -13,7 +13,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use super::chain::SetupPoint;
 use super::connect::{ConnCx, ConnectError, ConnectMachine, Dialed, Drove, Made, Progress, Setup};
 use super::dns::Answer;
-use super::io::{Closer, Events, Socket};
+use super::io::{Closer, Events, Socket, SocketKey};
 use super::layer::{Alive, LayerAnswer, LayerQuery, Silent};
 use super::shutdown::{ConnSettings, Exits, discard};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, TransferNumber, Transport, Use};
@@ -348,6 +348,9 @@ pub(crate) struct Finish {
     /// The application forbade the connection's reuse
     /// (`CURLOPT_FORBID_REUSE`).
     pub(crate) forbid_reuse: bool,
+    /// The transfer only connected (`CURLOPT_CONNECT_ONLY`): the
+    /// connection is kept for its handle to send and receive on.
+    pub(crate) reserve: bool,
 }
 
 /// What the pool did with a connection given back (`multi_done_locked`).
@@ -445,6 +448,11 @@ enum Place {
     Idle(ConnSlot),
     /// Leased: its lease has it.
     Leased(Leased),
+    /// Kept for the handle whose transfer only connected
+    /// (`CURLOPT_CONNECT_ONLY`), which sends and receives on it: never
+    /// reused, pruned or closed to make room, but counted toward the
+    /// limits (`bits.connect_only`); always open.
+    Reserved(ConnSlot),
 }
 
 /// What the pool knows of a connection leased: enough to count it.
@@ -460,7 +468,7 @@ impl Place {
                 ConnSlot::Open(conn) => Some(conn),
                 _ => unreachable!("an idle connection is open"),
             },
-            Place::Leased(_) => None,
+            Place::Leased(_) | Place::Reserved(_) => None,
         }
     }
 
@@ -470,6 +478,15 @@ impl Place {
                 ConnSlot::Open(conn) => Some(conn),
                 _ => unreachable!("an idle connection is open"),
             },
+            Place::Leased(_) | Place::Reserved(_) => None,
+        }
+    }
+
+    /// The connection, if the pool holds it: idle or reserved.
+    fn held(&self) -> Option<&Conn> {
+        match self {
+            Place::Idle(ConnSlot::Open(conn)) | Place::Reserved(ConnSlot::Open(conn)) => Some(conn),
+            Place::Idle(_) | Place::Reserved(_) => unreachable!("a connection held is open"),
             Place::Leased(_) => None,
         }
     }
@@ -477,7 +494,7 @@ impl Place {
     /// The peer the connection goes to, if over a network.
     fn destination(&self) -> Option<&Peer> {
         match self {
-            Place::Idle(slot) => slot.destination(),
+            Place::Idle(slot) | Place::Reserved(slot) => slot.destination(),
             Place::Leased(Leased {
                 route: Route::Tcp(tcp),
                 ..
@@ -733,14 +750,59 @@ impl Pool {
 
     /// Discard every connection no one leases (`Curl_cpool_destroy`):
     /// each shut down once, and kept by the multi's set behind `exits`
-    /// if that does not finish.
+    /// if that does not finish; one reserved for its handle is closed at
+    /// once.
     pub(crate) fn close_idle(&mut self, exits: &mut dyn Exits, now: Instant) {
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
             cursor = Some(id);
-            if self.conns.get(id).and_then(Place::idle).is_some() {
-                close(&mut self.conns, id, Evicted::Linger, exits, now);
+            match self.conns.get(id) {
+                Some(Place::Idle(_)) => close(&mut self.conns, id, Evicted::Linger, exits, now),
+                Some(Place::Reserved(_)) => {
+                    self.close_reserved(id, exits, now);
+                }
+                Some(Place::Leased(_)) | None => {}
             }
+        }
+    }
+
+    /// The connection `id`, reserved for its handle, if the pool still
+    /// has it there.
+    pub(crate) fn reserved_mut(&mut self, id: ConnId) -> Option<&mut Conn> {
+        match self.conns.get_mut(id)? {
+            Place::Reserved(ConnSlot::Open(conn)) => Some(conn),
+            Place::Reserved(_) => unreachable!("a reserved connection is open"),
+            Place::Idle(_) | Place::Leased(_) => None,
+        }
+    }
+
+    /// Close the connection `id` reserved for its handle, at once, as C
+    /// closes one whose use it cannot know (`Curl_conn_close`, aborted):
+    /// its number, if the pool still had it there.
+    pub(crate) fn close_reserved(
+        &mut self,
+        id: ConnId,
+        exits: &mut dyn Exits,
+        now: Instant,
+    ) -> Option<ConnNumber> {
+        if !matches!(self.conns.get(id), Some(Place::Reserved(_))) {
+            return None;
+        }
+        let Some(Place::Reserved(ConnSlot::Open(conn))) = self.conns.remove(id) else {
+            unreachable!("a reserved connection is open");
+        };
+        let number = conn.number;
+        let left = self.conns.len();
+        discard(conn, true, false, left, exits, now);
+        Some(number)
+    }
+
+    /// The socket of the connection `id`, if the pool holds it, idle or
+    /// reserved (`Curl_getconnectinfo`).
+    pub(crate) fn socket(&self, id: ConnId) -> Option<SocketKey> {
+        match &self.conns.get(id)?.held()?.transport {
+            Transport::Tcp(stream) => Some(stream.socket().key()),
+            Transport::Local => None,
         }
     }
 
@@ -769,7 +831,8 @@ impl Pool {
         );
         if let ConnSlot::Open(conn) = &mut slot
             && let Route::Tcp(tcp) = &conn.route
-            && tcp.origin.scheme().reuse
+            // One only connected is the handle's, whatever its protocol.
+            && (tcp.origin.scheme().reuse || finish.reserve)
             && !finish.premature
             // Forbidden its reuse, it is kept all the same for the request
             // Negotiate's handshake makes again on it.
@@ -780,7 +843,10 @@ impl Pool {
             conn.use_ = Use::Idle { since: now };
             conn.served = true;
             let number = conn.number;
-            *self.conns.get_mut(id).expect("checked above") = Place::Idle(slot);
+            *self.conns.get_mut(id).expect("checked above") = match finish.reserve {
+                true => Place::Reserved(slot),
+                false => Place::Idle(slot),
+            };
             return match over_limit(&mut self.conns, limit, Evicted::of(here), exits, now) {
                 Some((full, closed)) if closed == Some(id) => Released::Evicted(full),
                 full => Released::Idle {
@@ -1066,6 +1132,7 @@ fn close(
             _ => unreachable!("an idle connection is open"),
         },
         Some(Place::Leased(_)) => panic!("{id:?} is leased"),
+        Some(Place::Reserved(_)) => panic!("{id:?} is reserved"),
         None => unreachable!("closing {id:?}, which the pool no longer has"),
     }
 }

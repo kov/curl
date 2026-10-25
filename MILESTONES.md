@@ -848,7 +848,12 @@ the system's under the HTTP-only programs installed here.
     multiplexing, `PIPEWAIT` and `--parallel-immediate`, a sibling stream's data delivered at
     once, server push, TLS early data, the request renderer writing through a field sink.
     **To do.**
-53. **`CURLOPT_CONNECT_ONLY`** with the pool's `Reserved` place (3231, 3232, 3234). **To do.**
+53. **`CURLOPT_CONNECT_ONLY`** with the pool's `Reserved` place (3231, 3232, 3234). **Done**,
+    ahead of 51 and 52, as it needs neither: a transfer that only connects is done once
+    connected, its connection reserved for the handle in its pool; `curl_easy_send`,
+    `curl_easy_recv`, `CURLINFO_ACTIVESOCKET` and `CURLINFO_LASTSOCKET`; the connection closed as
+    the handle leaves the application's multi or performs again. 556, 696, 3231, 3232 and 3234
+    pass.
 54. **Closing the milestone.** The `tests/http` pytest suite's HTTP/1.1 and HTTP/2 cases on
     both legs; the installed programs that link libcurl for HTTP run on ours. **To do.**
 

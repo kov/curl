@@ -3638,6 +3638,11 @@ fn a_closing_connection_s_socket_is_removed_by_the_internal_handle() {
 fn recv_and_send_need_a_connect_only_connection() {
     use crate::easy::{curl_easy_recv, curl_easy_send};
     let c = curl_easy_init();
+    let mut errbuf = [0u8; 256];
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_ERRORBUFFER, errbuf.as_mut_ptr()),
+        CURLE_OK
+    );
     let mut buf = [0u8; 4];
     let mut n = 9;
     // SAFETY: a live handle, a buffer of 4 bytes and a count to write.
@@ -3647,6 +3652,8 @@ fn recv_and_send_need_a_connect_only_connection() {
             ffi::CURLE_UNSUPPORTED_PROTOCOL
         );
         assert_eq!(n, 0);
+        let said = CStr::from_bytes_until_nul(&errbuf).unwrap();
+        assert_eq!(said, c"CONNECT_ONLY is required");
         n = 9;
         assert_eq!(
             curl_easy_send(c, buf.as_ptr().cast(), 4, &raw mut n),
@@ -6326,4 +6333,73 @@ fn alt_svc_options_read_and_write_the_file() {
         assert!(now.contains("h1 a.example 443 h1 b.example 443"), "{now}");
     }
     std::fs::remove_file(&path).unwrap();
+}
+
+/// `CURLOPT_CONNECT_ONLY` takes 0, 1 and 2; a perform with it connects
+/// and stops, the socket told by `CURLINFO_ACTIVESOCKET` and
+/// `CURLINFO_LASTSOCKET`, and `curl_easy_send` and `curl_easy_recv` talk
+/// on it.
+#[test]
+fn a_connect_only_perform_leaves_the_connection_to_the_handle() {
+    use crate::easy::{curl_easy_recv, curl_easy_send};
+    let c = curl_easy_init();
+    for (n, code) in [
+        (3, CURLE_BAD_FUNCTION_ARGUMENT),
+        (-1, CURLE_BAD_FUNCTION_ARGUMENT),
+        (2, CURLE_OK),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_CONNECT_ONLY, n), code, "{n}");
+    }
+    let (port, server) = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]);
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_CONNECT_ONLY, 1), CURLE_OK);
+    let mut active: ffi::curl_socket_t = 0;
+    let mut last: c_long = 0;
+    // SAFETY: a live handle, and pointers to values of the infos' types.
+    unsafe {
+        assert_eq!(
+            curl_easy_getinfo(c, ffi::CURLINFO_ACTIVESOCKET, &raw mut active),
+            CURLE_OK
+        );
+        assert_eq!(active, -1, "none before a transfer");
+        assert_eq!(curl_easy_perform(c), CURLE_OK);
+        assert_eq!(
+            curl_easy_getinfo(c, ffi::CURLINFO_ACTIVESOCKET, &raw mut active),
+            CURLE_OK
+        );
+        assert_eq!(
+            curl_easy_getinfo(c, ffi::CURLINFO_LASTSOCKET, &raw mut last),
+            CURLE_OK
+        );
+    }
+    assert!(active >= 0);
+    assert_eq!(c_long::from(active), last);
+    let request = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+    let mut n = 0;
+    // SAFETY: a live handle, the request's bytes and a count to write.
+    let sent = unsafe { curl_easy_send(c, request.as_ptr().cast(), request.len(), &raw mut n) };
+    assert_eq!((sent, n), (CURLE_OK, request.len()));
+    let mut got = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !got.ends_with(b"ok") && std::time::Instant::now() < deadline {
+        let mut buf = [0u8; 64];
+        // SAFETY: a live handle, a buffer of 64 bytes and a count to write.
+        match unsafe { curl_easy_recv(c, buf.as_mut_ptr().cast(), buf.len(), &raw mut n) } {
+            CURLE_OK => got.extend_from_slice(&buf[..n]),
+            ffi::CURLE_AGAIN => std::thread::sleep(Duration::from_millis(5)),
+            code => panic!("{code:?}"),
+        }
+    }
+    assert!(
+        got.starts_with(b"HTTP/1.1 200 OK\r\n"),
+        "{}",
+        String::from_utf8_lossy(&got)
+    );
+    assert_eq!(server.join().unwrap(), [request.to_vec()]);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
 }

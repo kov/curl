@@ -96,10 +96,10 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-            && tcp.origin.scheme().reuse
+            && (tcp.origin.scheme().reuse || finish.reserve)
             && !finish.premature
 --- new
-            && tcp.origin.scheme().reuse
+            && (tcp.origin.scheme().reuse || finish.reserve)
 
 === a multi leaves its idle connections open
 file: crates/curl-core/src/multi/mod.rs
@@ -491,6 +491,6 @@ witness: curl-core conn::pool::tests::a_search_tries_the_transfer_s_last_connect
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_redirect_goes_over_the_transfer_s_own_connection
 --- old
-                    last: *last,
+                    last,
 --- new
                     last: None,

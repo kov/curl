@@ -49,6 +49,8 @@ pub struct Options {
     /// `curl_easy_perform`'s multi leaves its resolver's threads running
     /// as it goes, rather than waiting for them (`CURLOPT_QUICK_EXIT`).
     pub quick_exit: bool,
+    /// What a transfer does once connected (`CURLOPT_CONNECT_ONLY`).
+    pub connect_only: ConnectOnly,
     /// The remote file is transferred only if its time meets this.
     pub time_condition: Option<TimeCondition>,
     pub limits: Limits,
@@ -443,6 +445,7 @@ impl Options {
             new_file_mode: self.new_file_mode,
             filetime: self.filetime,
             quick_exit: self.quick_exit,
+            connect_only: self.connect_only,
             time_condition: self.time_condition,
             limits: self.limits,
             flow: self.flow.try_clone(|f| Ok(*f))?,
@@ -1511,6 +1514,32 @@ pub struct Http {
     pub hsts: Cold<HstsOptions>,
     /// Where the alt-svc cache is written.
     pub alt_svc: Cold<AltSvcOptions>,
+}
+
+/// What a transfer does once connected (`CURLOPT_CONNECT_ONLY`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConnectOnly {
+    /// Makes its request.
+    #[default]
+    No,
+    /// Stops there: the connection, always a new one, is kept for the
+    /// handle to send and receive on itself (1).
+    Yes,
+    /// Makes its request, a WebSocket's upgrade, and then the connection
+    /// is the handle's (2, `connect_only_ws`).
+    WebSocket,
+}
+
+impl ConnectOnly {
+    /// Whether the connection ends up the handle's (`bits.connect_only`).
+    pub fn reserves(self) -> bool {
+        self != ConnectOnly::No
+    }
+
+    /// Whether the transfer makes its request.
+    pub fn requests(self) -> bool {
+        self != ConnectOnly::Yes
+    }
 }
 
 /// Where the alt-svc cache goes. The cache, and the file it last read,

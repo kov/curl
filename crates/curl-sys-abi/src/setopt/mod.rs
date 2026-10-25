@@ -26,9 +26,9 @@ use curl_core::error::ErrorKind;
 use curl_core::handler::{Handler, LineSource};
 use curl_core::hsts::LoadError as CacheLoadError;
 use curl_core::options::{
-    BufferSize, ColdGroup, ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion,
-    Lines, LowSpeed, MaxRedirects, Method, Options, PostRedir, Protocols, ProxyType, Resume,
-    ReuseLimits, Schemes, Sockets, TimeCondition, UploadBufferSize, UserHeaders,
+    BufferSize, ColdGroup, ConnectOnly, ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion,
+    IpVersion, Lines, LowSpeed, MaxRedirects, Method, Options, PostRedir, Protocols, ProxyType,
+    Resume, ReuseLimits, Schemes, Sockets, TimeCondition, UploadBufferSize, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -813,6 +813,14 @@ fn apply(
             };
         }
         (ffi::CURLOPT_QUICK_EXIT, Long(n)) => options.quick_exit = n != 0,
+        (ffi::CURLOPT_CONNECT_ONLY, Long(n)) => {
+            options.connect_only = match n {
+                0 => ConnectOnly::No,
+                1 => ConnectOnly::Yes,
+                2 => ConnectOnly::WebSocket,
+                _ => return Err(Refused::Bad),
+            };
+        }
         (ffi::CURLOPT_FORBID_REUSE, Long(n)) => options.limits.reuse.forbid = n != 0,
         (ffi::CURLOPT_FRESH_CONNECT, Long(n)) => options.limits.reuse.fresh = n != 0,
         (ffi::CURLOPT_MAXCONNECTS, Long(n)) => {

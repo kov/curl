@@ -5200,6 +5200,7 @@ fn an_origin_s_digest_is_answered_through_a_proxy() {
 mod alt_svc;
 mod bind_trace;
 mod coding;
+mod connect_only;
 #[cfg(feature = "debug-hooks")]
 mod debug_lines;
 mod hsts;

@@ -129,7 +129,12 @@ impl ShimMulti {
 
     /// The multi `curl_easy_perform` runs a handle in.
     pub(crate) fn private() -> Result<NonNull<ShimMulti>, OutOfMemory> {
-        ShimMulti::boxed()
+        let multi = ShimMulti::boxed()?;
+        // SAFETY: just made, and not freed.
+        let m = unsafe { multi.as_ref() };
+        // SAFETY: nothing runs on it.
+        unsafe { m.core_mut() }.make_handle_own();
+        Ok(multi)
     }
 
     /// Free a multi with no transfers in it.

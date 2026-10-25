@@ -9,6 +9,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 use crate::altsvc::{AltSvc, AltSvcCtrl};
 use crate::coding::Decoders;
 use crate::components::Components;
+use crate::conn::ConnId;
 use crate::conn::io::{SystemNet, Waker};
 use crate::cookie::{Jar, LoadError, Suffixes};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
@@ -57,6 +58,13 @@ pub struct Easy {
     /// the application. Past `MAX_SET_PER_REQUEST`, no cookie of any kind
     /// is stored until the next request starts.
     pub(crate) set_cookies: u8,
+    /// The connection the handle's transfer had last, in the pool of its
+    /// multi or its share: the one its next search tries first, and the
+    /// one a transfer that only connected sends and receives on
+    /// (`state.last_cpid`). Forgotten as the handle joins a multi or
+    /// changes to or from a share that keeps connections; a connection
+    /// gone since fails its lookup.
+    pub(crate) last_conn: Option<LastConn>,
     /// The HSTS and alt-svc caches, made the first time the application
     /// turns either on: few handles do.
     caches: Option<Box<HostCaches>>,
@@ -81,6 +89,17 @@ pub struct Easy {
     components: Option<Components>,
 }
 
+/// The connection a handle's transfer had last (`state.last_cpid`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LastConn {
+    pub(crate) id: ConnId,
+    /// The handle has sent or received on it itself, which a transfer
+    /// that only connected leaves it to (C's `data->conn`, attached again
+    /// by `curl_easy_send` and `curl_easy_recv`): the handle's next
+    /// perform closes it.
+    pub(crate) used: bool,
+}
+
 /// The caches of what servers said of hosts, each once the application
 /// turns it on, kept from one transfer to the next and through `reset`.
 #[derive(Debug, Default)]
@@ -102,7 +121,7 @@ enum SuffixList {
 }
 
 /// A handle's own multi (C's `multi_easy`).
-pub(crate) struct Private(Box<Multi>);
+pub(crate) struct Private(pub(crate) Box<Multi>);
 
 impl fmt::Debug for Private {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -178,6 +197,7 @@ impl Easy {
                 None => None,
             },
             set_cookies: 0,
+            last_conn: None,
             caches: None,
             share: None,
             share_watch: None,
@@ -267,6 +287,7 @@ impl Easy {
 
     /// Use `share` for the transfers from now on, or none.
     pub fn set_share(&mut self, share: Option<Share>) {
+        self.forget_pool(share.as_ref());
         self.share = share;
         self.share_watch = None;
     }
@@ -274,8 +295,20 @@ impl Easy {
     /// Use `share` for the transfers from now on, `watch` told around
     /// each use they make of what it keeps.
     pub fn set_share_watched(&mut self, share: Share, watch: Handler<dyn ShareLock>) {
+        self.forget_pool(Some(&share));
         self.share = Some(share);
         self.share_watch = Some(watch);
+    }
+
+    /// Forget the last connection, if the pool it is in changes: leaving
+    /// a share that keeps connections, or joining one
+    /// (`Curl_share_easy_unlink`, `Curl_share_easy_link`).
+    fn forget_pool(&mut self, next: Option<&Share>) {
+        let keeps = |s: Option<&Share>| s.is_some_and(|s| s.keeps(crate::share::Kind::Connections));
+        if keeps(self.share.as_ref()) || keeps(next) {
+            self.last_conn = None;
+            self.report.set_conn(None);
+        }
     }
 
     /// What is told around each use of the share, if anything is.
@@ -716,6 +749,7 @@ impl Easy {
                 let mut multi = try_box(Multi::new(env).map_err(oom)?).map_err(oom)?;
                 // As few TLS peers as C's `multi_easy` keeps.
                 multi.keep_tls_sessions_of(crate::tls::SessionCache::PERFORM_PEERS);
+                multi.make_handle_own();
                 multi
             }
         };

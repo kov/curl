@@ -149,6 +149,7 @@ fn local_connections_are_numbered_and_closed_when_released() {
     let premature = Finish {
         premature: true,
         forbid_reuse: false,
+        reserve: false,
     };
     assert_eq!(
         pool.release(&Home::Multi, b, premature, UNLIMITED, &mut net, now),
@@ -533,6 +534,7 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
     let premature = Finish {
         premature: true,
         forbid_reuse: false,
+        reserve: false,
     };
     assert_eq!(
         pool.release(&Home::Multi, lease, premature, UNLIMITED, &mut net, now),
@@ -575,6 +577,7 @@ fn refused_and_silent_attempts() {
     let premature = Finish {
         premature: true,
         forbid_reuse: false,
+        reserve: false,
     };
     assert_eq!(
         pool.release(&Home::Multi, refused, premature, UNLIMITED, &mut net, now),
@@ -608,6 +611,7 @@ fn unresolved_names_and_immediate_failures() {
     let premature = Finish {
         premature: true,
         forbid_reuse: false,
+        reserve: false,
     };
     for lease in [named, nobody] {
         assert!(matches!(
@@ -667,6 +671,7 @@ fn a_finished_connection_is_kept_for_an_equal_route() {
     let premature = Finish {
         premature: true,
         forbid_reuse: false,
+        reserve: false,
     };
     for lease in [other, third] {
         pool.release(&Home::Multi, lease, premature, UNLIMITED, &mut net, now);
@@ -889,6 +894,7 @@ fn a_search_closes_what_it_must_not_reuse() {
         Finish {
             premature: true,
             forbid_reuse: false,
+            reserve: false,
         },
         UNLIMITED,
         &mut net,
@@ -914,6 +920,7 @@ fn a_search_closes_what_it_must_not_reuse() {
         Finish {
             premature: true,
             forbid_reuse: false,
+            reserve: false,
         },
         UNLIMITED,
         &mut net,
@@ -972,6 +979,7 @@ fn a_limit_is_passed_a_whole_millisecond_after_it() {
                     Finish {
                         premature: true,
                         forbid_reuse: false,
+                        reserve: false,
                     },
                     UNLIMITED,
                     net,
@@ -1077,6 +1085,7 @@ fn a_search_prunes_once_a_second() {
         Finish {
             premature: true,
             forbid_reuse: false,
+            reserve: false,
         },
         UNLIMITED,
         &mut net,
@@ -1106,6 +1115,7 @@ fn a_search_prunes_once_a_second() {
         Finish {
             premature: true,
             forbid_reuse: false,
+            reserve: false,
         },
         UNLIMITED,
         &mut net,
@@ -1392,4 +1402,89 @@ fn a_host_in_capitals_reuses_the_connection() {
         now,
     );
     pool.close_idle(&mut net, now);
+}
+
+/// A connection given back by a transfer that only connected is reserved
+/// for its handle, whatever its protocol (`bits.connect_only`): never
+/// found for reuse, never closed to make room or by the limit on idle
+/// connections, but counted toward the limits; its socket is told, it
+/// moves bytes, and it closes at once when asked, or as the pool goes.
+#[test]
+fn a_reserved_connection_is_its_handle_s_alone() {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let mut pool = Pool::new().unwrap();
+    let once = Scheme {
+        name: "once",
+        reuse: false,
+    };
+    let mut lease = new(
+        &mut pool,
+        &Home::Multi,
+        to(once, b"127.0.0.1", 1),
+        &mut net,
+        now,
+    );
+    up(&mut lease, &mut net, now);
+    let (id, fd) = (lease.id(), socket(&lease));
+    let reserve = Finish {
+        reserve: true,
+        ..Finish::default()
+    };
+    let one = Limit {
+        max: NonZeroU32::new(1),
+        attached: 0,
+    };
+    assert_eq!(
+        pool.release(&Home::Multi, lease, reserve, one, &mut net, now),
+        Released::Idle {
+            number: ConnNumber(0),
+            full: None
+        }
+    );
+    assert_eq!(pool.socket(id).map(SocketKey::get), fd);
+    assert!(idle_conn(&pool, id).is_none(), "not idle");
+    // Not found for an equal route, nor closed for the room a new one
+    // needs: one connection to the host is all there may be.
+    let mut notes = Vec::new();
+    let limits = AddLimits {
+        max_host: NonZeroU32::new(1),
+        max_total: None,
+    };
+    let got = pool
+        .acquire(
+            &Home::Multi,
+            to(once, b"127.0.0.1", 1),
+            RULES,
+            limits,
+            &mut net,
+            now,
+            &mut notes,
+        )
+        .unwrap();
+    assert!(
+        matches!(got, Acquired::Wait(WaitReason::HostLimit)),
+        "{got:?}"
+    );
+    // Nor by a connection over the idle limit.
+    let mut other = new(&mut pool, &Home::Multi, tcp(4), &mut net, now);
+    up(&mut other, &mut net, now);
+    let released = pool.release(&Home::Multi, other, Finish::default(), one, &mut net, now);
+    assert!(matches!(released, Released::Evicted(_)), "{released:?}");
+    assert!(pool.reserved_mut(id).is_some());
+    // It moves bytes for its handle.
+    let conn = pool.reserved_mut(id).unwrap();
+    let sent = conn.send(&mut Silent(now), b"hello").unwrap();
+    assert!(matches!(sent, Sent::Bytes(_)), "{sent:?}");
+    assert_eq!(pool.close_reserved(id, &mut net, now), Some(ConnNumber(0)));
+    assert_eq!(pool.close_reserved(id, &mut net, now), None);
+    assert!(pool.socket(id).is_none());
+    assert_eq!((pool.len(), net.open_sockets()), (0, 0));
+    // One left reserved closes as the pool closes what it keeps.
+    let mut lease = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
+    up(&mut lease, &mut net, now);
+    pool.release(&Home::Multi, lease, reserve, UNLIMITED, &mut net, now);
+    assert_eq!(net.open_sockets(), 1);
+    pool.close_idle(&mut net, now);
+    assert_eq!((pool.len(), net.open_sockets()), (0, 0));
 }

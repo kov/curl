@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use curl_core::conn::ProxyError;
-use curl_core::conn::io::Remote;
+use curl_core::conn::io::{Remote, SocketKey};
 use curl_core::options::AuthMethods;
 use curl_core::report::{ResponseVersion, TransferReport};
 use curl_core::version::Protocol;
@@ -19,7 +19,7 @@ use crate::ffi::{
     self, CURL, CURLE_BAD_FUNCTION_ARGUMENT, CURLE_OK, CURLE_RECURSIVE_API_CALL,
     CURLE_UNKNOWN_OPTION, CURLINFO, CURLcode, curl_off_t,
 };
-use crate::gate::{EasyCall, Recursive};
+use crate::gate::{EasyCall, Reach, Recursive};
 use crate::strings::{curl_slist_append, curl_slist_free_all};
 
 /// An answer in one of C's types.
@@ -32,6 +32,8 @@ enum Value {
     List(*mut ffi::curl_slist),
     /// A structure of the handle's (`CURLINFO_PTR`).
     Struct(*mut c_void),
+    /// A socket (`CURLINFO_SOCKET`).
+    Socket(ffi::curl_socket_t),
     /// No answer, for this reason.
     Failed(CURLcode),
 }
@@ -44,6 +46,7 @@ enum Typed {
     Str(*mut c_char),
     List(*mut ffi::curl_slist),
     Ptr(*mut c_void),
+    Socket(ffi::curl_socket_t),
 }
 
 impl Typed {
@@ -71,6 +74,8 @@ impl Typed {
             Typed::List(p) => unsafe { put(out, p) },
             // SAFETY: as the caller guarantees.
             Typed::Ptr(p) => unsafe { put(out, p) },
+            // SAFETY: as the caller guarantees.
+            Typed::Socket(s) => unsafe { put(out, s) },
         }
     }
 }
@@ -459,6 +464,14 @@ pub unsafe extern "C" fn curl_easy_getinfo(
         cookie_list(easy)
     } else if info == ffi::CURLINFO_SSL_ENGINES {
         Ok(Some(engines()))
+    } else if info == ffi::CURLINFO_ACTIVESOCKET || info == ffi::CURLINFO_LASTSOCKET {
+        active_socket(easy).map(|s| {
+            let s = s.map_or(-1, SocketKey::get);
+            Some(match info {
+                ffi::CURLINFO_ACTIVESOCKET => Value::Socket(s),
+                _ => Value::Long(c_long::from(s)),
+            })
+        })
     } else if info == ffi::CURLINFO_TLS_SSL_PTR || info == ffi::CURLINFO_TLS_SESSION {
         crate::tls::session_info(easy, info).map(|tsi| Some(Value::Struct(tsi.cast())))
     } else {
@@ -482,6 +495,7 @@ pub unsafe extern "C" fn curl_easy_getinfo(
         Value::Ptr(p) if kind == ffi::CURLINFO_STRING => Typed::Str(p.cast()),
         Value::List(p) if kind == ffi::CURLINFO_SLIST => Typed::List(p),
         Value::Struct(p) if kind == ffi::CURLINFO_PTR => Typed::Ptr(p),
+        Value::Socket(s) if kind == ffi::CURLINFO_SOCKET => Typed::Socket(s),
         Value::Failed(_) => unreachable!("returned above"),
         _ => unreachable!("info {} answered in the wrong type", info.0 as c_int),
     };
@@ -491,6 +505,36 @@ pub unsafe extern "C" fn curl_easy_getinfo(
     CURLE_OK
 }
 const _: ffi::proto::curl_easy_getinfo = curl_easy_getinfo;
+
+/// The socket of the connection the handle's transfer had last, if it is
+/// still open (`Curl_getconnectinfo`): where the transfer is, its own
+/// multi once `curl_easy_perform` is done, or the application's. Inside a
+/// callback the transfer's connection is not reached, and none is told.
+fn active_socket(easy: &ShimEasy) -> Result<Option<SocketKey>, Recursive> {
+    let Some((multi, id)) = easy.added() else {
+        let private = easy.private_multi();
+        return easy
+            .with_detached(|e| match private {
+                Some(m) => {
+                    // SAFETY: the handle owns its private multi.
+                    let m = unsafe { m.as_ref() };
+                    // SAFETY: nothing runs on it once its perform is done.
+                    unsafe { m.core_mut() }.active_socket_for(e)
+                }
+                None => e.active_socket(),
+            })
+            .ok_or(Recursive);
+    };
+    // SAFETY: the handle's multi outlives its `Added`.
+    let m = unsafe { multi.as_ref() };
+    match m.stack.reach()? {
+        // SAFETY: nothing runs on the multi.
+        Reach::Direct => Ok(unsafe { m.core_mut() }
+            .active_socket(id)
+            .expect("an added handle is in its multi")),
+        Reach::Frame(_) => Ok(None),
+    }
+}
 
 /// A SOCKS proxy's error as its `CURLproxycode`.
 fn proxy_code(e: ProxyError) -> c_long {

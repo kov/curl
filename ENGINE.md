@@ -43,8 +43,8 @@ numbers are those of `SCOPE.md`.
    before. Operations that need a handshaken connection exist only on `Open`. Bytes move
    through one `Stream` (the socket, its layers and its receive buffer), owned first by
    `Dialed` and then by the `Conn`. The layers are a pull chain, as C's filters are (§4.3).
-   Where a connection is, is its place in its pool: `Leased` by one transfer or `Idle`, and
-   later `Reserved` and `Attached`; one shutting down is in no pool but in its multi's
+   Where a connection is, is its place in its pool: `Leased` by one transfer, `Idle`, or
+   `Reserved` for the handle whose transfer only connected, and later `Attached`; one shutting down is in no pool but in its multi's
    `ShutdownSet` (§4.6). A lease names its home pool and is given
    back only to it; every socket carries the closer it was opened with.
 7. **Generational ids everywhere**: `TransferId`, `ConnId` (whose generation is the
@@ -1651,7 +1651,7 @@ impl Pool {
 enum Place {                               // where a connection in the table is
     Idle(ConnSlot),                        // kept for another transfer; always open
     Leased(Leased),                        // its one lease has it
-    Reserved(..),                          // CONNECT_ONLY, kept for its handle (later)
+    Reserved(ConnSlot),                    // CONNECT_ONLY, kept for its handle; always open
     Attached { users: .. },                // multiplexed, leased by several (before stage 5)
 }
 pub(crate) struct Sock { socket: Box<dyn Socket>, closer: Closer }   // closed only by Net::close
@@ -1704,9 +1704,25 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   to, shares compared by pointer. Ids alone cannot tell: a share's arena and a multi's hand out
   equal ids. `Home` allocates nothing; an identity by counter would be global mutable state, and
   by address would move with the multi.
-- **Places.** Built: `Leased` and `Idle`. `Reserved` comes with CONNECT_ONLY (3231, 3232,
-  3234): the connection kept for its handle's `curl_easy_send` and `curl_easy_recv` after the
-  transfer. `Attached { users }` comes before stage 5, for a connection several transfers lease
+- **Places.** Built: `Leased`, `Idle` and `Reserved`. A transfer that only connects
+  (`Options::connect_only`, `CURLOPT_CONNECT_ONLY` 1) never searches, is done once connected
+  without a request (`multistate_do`), and gives its connection back as `Finish::reserve`: the
+  pool keeps it `Reserved`, whatever its protocol, unless it must close, as C keeps one with
+  `bits.connect_only`. A reserved connection is never found, pruned, closed to make room or by
+  the idle limit, but counts toward the limits (3231, 3232). The handle names it by its last
+  connection (`Easy::last_conn`, C's `last_cpid`): set as a transfer acquires one, forgotten as
+  the handle joins a multi or changes to or from a share that keeps connections (3234), and by
+  a lookup that finds it gone. `multi::raw` sends and receives on it for the handle
+  (`Multi::send_raw`/`recv_raw` for one added, `send_raw_for`/`recv_raw_for` for one a
+  handle's own multi ran; `curl_easy_send`, `curl_easy_recv`), refusing a handle that does not
+  only connect or whose connection is gone as C does; a failure is kept in the report and told
+  to the error sink, and traced nowhere, as no transfer runs. `Multi::active_socket` tells the
+  socket of the connection a transfer holds or its pool keeps (`CURLINFO_ACTIVESOCKET`,
+  `LASTSOCKET`). The connection closes at once, said "closing connection #N", as the handle
+  leaves a multi of the application's, or, in a handle's own multi
+  (`Multi::make_handle_own`, C's `multi_easy`), as the handle's next transfer is added if the
+  handle used it; else as the pool goes. `ConnectOnly::WebSocket` (2) makes its request and
+  reserves the connection after, for WebSockets, which the build does not speak. `Attached { users }` comes before stage 5, for a connection several transfers lease
   at once (a pool place, not the transfer state of §3.1 that holds a lease). Until then every
   lease count is asserted to be 1. A connection shutting down is in no pool: its multi's
   `ShutdownSet` owns it (below).

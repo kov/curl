@@ -254,6 +254,12 @@ pub(crate) fn fail_with<H: Host>(
 /// from the transfer, to be given with `fail_for` once nothing is.
 pub(crate) struct Reason(Text<DETAIL_MAX>);
 
+impl Reason {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        self.0.bytes()
+    }
+}
+
 pub(crate) fn reason(args: fmt::Arguments<'_>) -> Reason {
     Reason(Text::<DETAIL_MAX>::clipped(args).0)
 }

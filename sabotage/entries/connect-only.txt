@@ -1,0 +1,105 @@
+=== a transfer that only connects makes its request
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::connect_only::a_handle_that_only_connects_talks_on_its_connection
+--- old
+        TransferState::Do(x) if !cx.easy().options().connect_only.requests() => (
+--- new
+        TransferState::Do(x) if false => (
+
+=== a connection only connected goes idle for others
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::connect_only::a_handle_that_only_connects_talks_on_its_connection
+--- old
+        reserve: cx.easy().options().connect_only.reserves(),
+--- new
+        reserve: false,
+
+=== a transfer that only connects reuses an idle connection
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::connect_only::a_handle_that_only_connects_makes_a_new_connection
+--- old
+        fresh: limits.fresh || cx.easy().options().connect_only.reserves(),
+--- new
+        fresh: limits.fresh,
+
+=== a reserved connection is closed to make room
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_reserved_connection_is_its_handle_s_alone
+--- old
+            Place::Leased(_) | Place::Reserved(_) => None,
+        }
+    }
+
+    fn idle_mut(&mut self) -> Option<&mut Conn> {
+--- new
+            Place::Leased(_) => None,
+            Place::Reserved(slot) => match slot {
+                ConnSlot::Open(conn) => Some(conn),
+                _ => unreachable!("a reserved connection is open"),
+            },
+        }
+    }
+
+    fn idle_mut(&mut self) -> Option<&mut Conn> {
+
+=== a reserved connection outlives its pool
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_reserved_connection_is_its_handle_s_alone
+--- old
+                Some(Place::Reserved(_)) => {
+                    self.close_reserved(id, exits, now);
+                }
+--- new
+                Some(Place::Reserved(_)) => {}
+
+=== a connection only connected stays open as its handle leaves the multi
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::connect_only::a_handle_that_only_connects_talks_on_its_connection
+--- old
+        if !self.handle_own
+            && easy.options().connect_only.reserves()
+--- new
+        if false
+            && easy.options().connect_only.reserves()
+
+=== a handle's own multi leaves a used connection open as it runs again
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::connect_only::a_handle_s_own_multi_keeps_the_connection_until_used_and_run_again
+--- old
+        if let Some(last) = easy.last_conn.filter(|l| l.used && self.handle_own) {
+--- new
+        if let Some(last) = easy.last_conn.filter(|l| self.handle_own) {
+
+=== a raw send does not mark the connection used
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core proto::http::tests::connect_only::a_handle_s_own_multi_keeps_the_connection_until_used_and_run_again
+--- old
+        l.used = true;
+--- new
+        l.used = false;
+
+=== a share of connections keeps the last connection of another pool
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::connect_only::a_share_of_connections_forgets_the_last_connection
+--- old
+        if keeps(self.share.as_ref()) || keeps(next) {
+--- new
+        if keeps(self.share.as_ref()) && keeps(next) {
+
+=== the active socket is never told
+file: crates/curl-sys-abi/src/getinfo.rs
+witness: curl-sys-abi handle_tests::a_connect_only_perform_leaves_the_connection_to_the_handle
+--- old
+            let s = s.map_or(-1, SocketKey::get);
+--- new
+            let s = s.map_or(-1, |_| -1);
+
+=== CONNECT_ONLY takes any value
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_connect_only_perform_leaves_the_connection_to_the_handle
+--- old
+                2 => ConnectOnly::WebSocket,
+                _ => return Err(Refused::Bad),
+--- new
+                2 => ConnectOnly::WebSocket,
+                _ => ConnectOnly::Yes,

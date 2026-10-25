@@ -3061,6 +3061,18 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     // lets it (`url_set_conn_scheme`).
     let redirected = cx.report_mut().redirects() > 0;
     let refused = !cx.easy().options().schemes.permit(&scheme, redirected);
+    // C reads a `.netrc` before it checks the protocol; an HTTP request
+    // reads it as it is made, any other URL here.
+    let http = match &*scheme {
+        b"http" => true,
+        b"https" => cx.easy().libraries().tls.is_some(),
+        _ => false,
+    };
+    if (refused || !http)
+        && let Err(kind) = crate::proto::netrc_before_protocol(&url, cx)
+    {
+        return TransferState::Init.fail(kind);
+    }
     let started = if refused {
         Ok(None)
     } else {

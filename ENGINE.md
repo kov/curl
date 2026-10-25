@@ -170,6 +170,8 @@ curl-core/src/
   components.rs              Components, Component, Level: which components trace
   share.rs                   Share, Kind, ShareLock: what transfers of several handles keep
   cookie.rs                  Jar, Cookie, Suffixes: the cookie jar (cookie.c)
+  hsts.rs                    Hsts, HstsEntry, HstsReader, HstsWriter: the HSTS cache (hsts.c)
+  idn.rs                     Idn, IdnFailure: host names in Unicode, converted by a library
   netrc.rs                   .netrc files: the file's path, its entries for a host
   coding.rs                  Coding, Decoder, Decoders, AcceptEncoding: the content codings
   libraries.rs               Libraries, SharedLibraries, Library, Ed25519: what the bound C
@@ -2942,6 +2944,24 @@ every handle one list, as its share's `CURL_LOCK_DATA_PSL` does, and the shim ea
 own, loaded at the first question, as C's per-multi cache is. A handle given none behaves as
 C built without libpsl: a domain needs a dot not at its end, or to be `localhost`
 (`bad_domain`). A list that cannot be loaded refuses every domain, as C's does.
+
+### 6.6 HSTS
+
+`hsts::Hsts` is C's cache (`lib/hsts.c`), the hosts to reach only over HTTPS: each with whether
+its subdomains are included and when it expires, at most 10000 kept, oldest first. A handle has
+one once the application turns it on (`Easy::enable_hsts`, `add_hsts_file`: `CURLOPT_HSTS_CTRL`,
+`CURLOPT_HSTS`), kept through `reset`; a share does not keep one yet (milestone 7). As each
+transfer starts (pretransfer) the files named are read into it, then what the application's
+reader gives (`HstsReader`, `CURLOPT_HSTSREADFUNCTION`). As each leg starts, after the
+application's port is applied, an `http` URL to a host it keeps, by the host's own entry or the
+longest including it, is switched to `https`: the URL read back is the transfer's and the
+report's, and the trace says "Switched from HTTP to HTTPS due to HSTS". A
+`Strict-Transport-Security:` field is kept from a response over HTTPS, or over HTTP when the
+debug build's `CURL_HSTS_HTTP` says so; one the cache cannot take is said and passed over. The
+time is the clock's, or the debug build's `CURL_TIME`. The cache is written as the handle goes
+(`Easy::save_hsts`, which the shim's cleanup and the tool's handle call), to
+`HstsOptions::file` or the file last read, then to the application's writer (`HstsWriter`). A
+copy of the handle reads its file and reader into a new cache, then takes the entries alive.
 
 ---
 

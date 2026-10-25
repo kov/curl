@@ -69,6 +69,25 @@ pub(crate) struct CCallbacks {
     pub(crate) stderr: *mut libc::FILE,
 }
 
+/// The application's HSTS functions and data, as setopt left them.
+#[derive(Clone, Copy)]
+pub(crate) struct CHsts {
+    pub(crate) read: ffi::curl_hstsread_callback,
+    pub(crate) read_data: *mut c_void,
+    pub(crate) write: ffi::curl_hstswrite_callback,
+    pub(crate) write_data: *mut c_void,
+}
+
+impl CHsts {
+    /// None set, as a new handle has.
+    pub(crate) const NONE: CHsts = CHsts {
+        read: None,
+        read_data: ptr::null_mut(),
+        write: None,
+        write_data: ptr::null_mut(),
+    };
+}
+
 impl CCallbacks {
     /// What a new handle has: the standard streams (`Curl_init_userdefined`).
     pub(crate) fn new() -> CCallbacks {
@@ -215,6 +234,41 @@ pub(crate) fn sync_progress(
         Progress::Handler(Handler::progress(Adapter(easy))?)
     } else {
         Progress::Meter
+    };
+    Ok(())
+}
+
+/// The HSTS reader and writer adapters, while there are functions for
+/// them.
+pub(crate) fn sync_hsts(
+    options: &mut Options,
+    easy: NonNull<ShimEasy>,
+    c: &CHsts,
+) -> Result<(), OutOfMemory> {
+    let wanted = (c.read.is_some(), c.write.is_some());
+    let had = (
+        options.http.hsts.read.is_some(),
+        options.http.hsts.write.is_some(),
+    );
+    if wanted == had {
+        return Ok(());
+    }
+    let hsts = options.http.hsts.make_mut()?;
+    hsts.read = match wanted.0 {
+        true => Some(
+            hsts.read
+                .take()
+                .map_or_else(|| Handler::hsts_reader(Adapter(easy)), Ok)?,
+        ),
+        false => None,
+    };
+    hsts.write = match wanted.1 {
+        true => Some(
+            hsts.write
+                .take()
+                .map_or_else(|| Handler::hsts_writer(Adapter(easy)), Ok)?,
+        ),
+        false => None,
     };
     Ok(())
 }
@@ -480,6 +534,110 @@ impl ReadHandler for Adapter {
         } else {
             // Past `len` is the core's to reject.
             NonZeroUsize::new(got).map_or(Read::Eof, Read::Data)
+        }
+    }
+}
+
+/// The longest host name and date an HSTS entry holds, and the room for
+/// a NUL after each (`MAX_HSTS_HOSTLEN`, `MAX_HSTS_DATELEN`).
+const HSTS_NAME: usize = curl_core::hsts::MAX_HOST_LEN;
+const HSTS_DATE: usize = curl_core::hsts::MAX_DATE_LEN;
+
+/// An entry with nothing in it.
+fn empty_hsts_entry() -> ffi::curl_hstsentry {
+    // SAFETY: every field of the entry, a pointer, a length, bits and
+    // bytes, is valid as zeros.
+    unsafe { core::mem::zeroed() }
+}
+
+impl curl_core::hsts::HstsReader for Adapter {
+    /// One call of the read function, with an entry whose name and date
+    /// the application fills in (`hsts_pull`).
+    fn read(
+        &self,
+        keep: &mut dyn FnMut(
+            curl_core::hsts::HstsEntry<'_>,
+        ) -> Result<(), curl_core::hsts::BadEntry>,
+    ) -> Result<curl_core::hsts::HstsRead, curl_core::hsts::BadEntry> {
+        use curl_core::hsts::HstsRead;
+        let c = self.easy().hsts();
+        let Some(f) = c.read else {
+            return Ok(HstsRead::Done);
+        };
+        let mut name = [0 as c_char; HSTS_NAME + 1];
+        let mut e = empty_hsts_entry();
+        e.name = name.as_mut_ptr();
+        e.namelen = HSTS_NAME;
+        // SAFETY: the application's read function fills in the entry it
+        // is lent, its name in the room `namelen` says.
+        let sc = unsafe { f(self.handle(), &mut e, c.read_data) };
+        if sc == ffi::CURLSTS_FAIL {
+            return Ok(HstsRead::Abort);
+        }
+        if sc != ffi::CURLSTS_OK {
+            return Ok(HstsRead::Done);
+        }
+        // Read through the name it left, as C reads it.
+        if e.name.is_null() {
+            return Ok(HstsRead::Invalid);
+        }
+        // SAFETY: the name points to the room lent, or one the application
+        // gave in its place of at least as much, as C's contract has it.
+        let first = unsafe { *e.name };
+        // SAFETY: as above: the room's last byte.
+        let last = unsafe { *e.name.wrapping_add(HSTS_NAME) };
+        if first == 0 || last != 0 || e.expire[HSTS_DATE] != 0 {
+            return Ok(HstsRead::Invalid);
+        }
+        // SAFETY: as above: a NUL is at the end of the room, so this is a
+        // C string within it.
+        let name = unsafe { CStr::from_ptr(e.name) }.to_bytes();
+        // SAFETY: the date's last byte is NUL, checked above.
+        let expire = unsafe { CStr::from_ptr(e.expire.as_ptr()) }.to_bytes();
+        keep(curl_core::hsts::HstsEntry {
+            name,
+            expire,
+            subdomains: e.includeSubDomains(),
+        })?;
+        Ok(HstsRead::Given)
+    }
+}
+
+impl curl_core::hsts::HstsWriter for Adapter {
+    /// One call of the write function, with an entry, its place and the
+    /// number of them (`hsts_push`).
+    fn write(
+        &self,
+        entry: curl_core::hsts::HstsEntry<'_>,
+        index: usize,
+        total: usize,
+    ) -> curl_core::hsts::HstsWrite {
+        use curl_core::hsts::HstsWrite;
+        let c = self.easy().hsts();
+        let Some(f) = c.write else {
+            return HstsWrite::Stop;
+        };
+        let mut name = [0 as c_char; HSTS_NAME + 1];
+        let mut e = empty_hsts_entry();
+        for (to, &b) in name.iter_mut().zip(entry.name) {
+            *to = b as c_char;
+        }
+        for (to, &b) in e.expire.iter_mut().zip(entry.expire) {
+            *to = b as c_char;
+        }
+        e.name = name.as_mut_ptr();
+        e.namelen = entry.name.len();
+        e.set_includeSubDomains(entry.subdomains);
+        let mut i = ffi::curl_index { index, total };
+        // SAFETY: the application's write function reads the entry and
+        // the index it is lent.
+        let sc = unsafe { f(self.handle(), &mut e, &mut i, c.write_data) };
+        if sc == ffi::CURLSTS_OK {
+            HstsWrite::More
+        } else if sc == ffi::CURLSTS_FAIL {
+            HstsWrite::Fail
+        } else {
+            HstsWrite::Stop
         }
     }
 }

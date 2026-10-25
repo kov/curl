@@ -1,0 +1,42 @@
+=== an http URL to a host the cache keeps goes as http
+file: crates/curl-core/src/proto/http/hsts.rs
+witness: curl-core proto::http::tests::hsts::an_http_url_to_a_host_kept_goes_over_https
+--- old
+    if !hsts.applies(name, now) {
+--- new
+    if hsts.applies(name, now) {
+
+=== a Strict-Transport-Security field over plain HTTP is kept
+file: crates/curl-core/src/proto/http/hsts.rs
+witness: curl-core proto::http::tests::hsts::a_field_over_http_is_passed_over
+--- old
+    if !secured {
+        return Ok(());
+    }
+--- new
+
+=== an entry the application gives without a date expires at once
+file: crates/curl-core/src/hsts.rs
+witness: curl-core proto::http::tests::hsts::the_application_reads_and_writes_the_cache
+--- old
+                    expire: if entry.expire.is_empty() {
+                        b"unlimited"
+--- new
+                    expire: if entry.expire.is_empty() {
+                        b""
+
+=== the cache is written to no file as the handle goes
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::hsts::an_http_url_to_a_host_kept_goes_over_https
+--- old
+            result = crate::save::replace(file, &hsts.text()?);
+--- new
+            let _ = file;
+
+=== a copy of the handle starts with an empty cache
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::hsts::a_copy_of_the_handle_keeps_the_entries_alive
+--- old
+        copy.merge(alive)?;
+--- new
+        drop(alive);

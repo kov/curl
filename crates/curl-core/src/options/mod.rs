@@ -1506,6 +1506,42 @@ pub struct Http {
     pub cookies: Cold<Cookies>,
     /// What a request is signed with.
     pub signing: Cold<Signing>,
+    /// Where the HSTS cache is written, and what the application reads
+    /// and writes it with.
+    pub hsts: Cold<HstsOptions>,
+}
+
+/// Where the HSTS cache goes and what reads and writes it for the
+/// application. The files read are the handle's (`Easy::add_hsts_file`).
+#[derive(Debug)]
+pub struct HstsOptions {
+    /// Where the cache is written as the handle goes; without it, the
+    /// file last read (`CURLOPT_HSTS`).
+    pub file: Option<Vec<u8>>,
+    /// Gives entries as each transfer starts (`CURLOPT_HSTSREADFUNCTION`).
+    pub read: Option<Handler<dyn crate::hsts::HstsReader>>,
+    /// Is given every entry as the handle goes
+    /// (`CURLOPT_HSTSWRITEFUNCTION`).
+    pub write: Option<Handler<dyn crate::hsts::HstsWriter>>,
+}
+
+impl ColdGroup for HstsOptions {
+    const UNSET: &'static HstsOptions = &HstsOptions::NONE;
+    const NONE: HstsOptions = HstsOptions {
+        file: None,
+        read: None,
+        write: None,
+    };
+}
+
+impl HstsOptions {
+    fn try_clone(&self) -> Result<HstsOptions, OutOfMemory> {
+        Ok(HstsOptions {
+            file: self.file.as_deref().map(copy).transpose()?,
+            read: self.read.clone(),
+            write: self.write.clone(),
+        })
+    }
 }
 
 /// The parts of a request the application writes itself, which few do.
@@ -1953,6 +1989,7 @@ impl Http {
             auth: self.auth,
             cookies: self.cookies.try_clone(Cookies::try_clone)?,
             signing: self.signing.try_clone(Signing::try_clone)?,
+            hsts: self.hsts.try_clone(HstsOptions::try_clone)?,
         })
     }
 }

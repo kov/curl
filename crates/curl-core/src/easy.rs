@@ -12,6 +12,7 @@ use crate::conn::io::{SystemNet, Waker};
 use crate::cookie::{Jar, LoadError, Suffixes};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::handler::Handler;
+use crate::hsts::Hsts;
 use crate::id::ArenaPolicy;
 use crate::libraries::{Libraries, SharedLibraries};
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
@@ -54,6 +55,9 @@ pub struct Easy {
     /// the application. Past `MAX_SET_PER_REQUEST`, no cookie of any kind
     /// is stored until the next request starts.
     pub(crate) set_cookies: u8,
+    /// The HSTS cache, once the application turns it on (C's `hsts`):
+    /// kept from one transfer to the next, and through `reset`.
+    pub(crate) hsts: Option<Box<Hsts>>,
     /// Where connections, resolved names and cookies are kept for the
     /// transfers after, if not in the handle's own multi (`CURLOPT_SHARE`,
     /// C's `data->share`): kept through `reset`, not copied with the
@@ -151,6 +155,11 @@ impl Easy {
                 None => None,
             },
             set_cookies: 0,
+            hsts: self
+                .hsts
+                .as_deref()
+                .map(|h| self.hsts_copy(h))
+                .transpose()?,
             share: None,
             share_watch: None,
             suffixes: match &self.suffixes {
@@ -161,6 +170,29 @@ impl Easy {
             libraries: self.libraries.clone(),
             components: self.components.clone(),
         })
+    }
+
+    /// The HSTS cache a copy of the handle starts with
+    /// (`curl_easy_duphandle`): its file and the application's reader read
+    /// into a new one, as C reads them, then the entries alive here. What
+    /// fails to be read is passed over, as in C.
+    fn hsts_copy(&self, hsts: &Hsts) -> Result<Box<Hsts>, OutOfMemory> {
+        let now = crate::proto::http::hsts::now(SystemClock::new().unix_time());
+        let mut copy = try_box(Hsts::default())?;
+        let options = &*self.options.http.hsts;
+        if let Some(file) = &options.file
+            && let Err(crate::hsts::LoadError::OutOfMemory) = copy.load(file, now)
+        {
+            return Err(OutOfMemory);
+        }
+        if let Some(reader) = &options.read
+            && let Err(crate::hsts::PullError::OutOfMemory) = copy.pull(&**reader, now)
+        {
+            return Err(OutOfMemory);
+        }
+        let alive = hsts.alive_copy(now)?;
+        copy.merge(alive)?;
+        Ok(copy)
     }
 
     /// Every option back to its default, and the report with them but
@@ -254,6 +286,67 @@ impl Easy {
             SuffixList::Made(_) => unreachable!("made above"),
             SuffixList::None => None,
         })
+    }
+
+    /// Turn the HSTS cache on, empty, if it is not (`CURLHSTS_ENABLE`).
+    pub fn enable_hsts(&mut self) -> Result<(), OutOfMemory> {
+        if self.hsts.is_none() {
+            self.hsts = Some(try_box(Hsts::default())?);
+        }
+        Ok(())
+    }
+
+    /// Turn the HSTS cache off: its entries and the files named are
+    /// forgotten (`CURLOPT_HSTS_CTRL` without `CURLHSTS_ENABLE`).
+    pub fn disable_hsts(&mut self) {
+        self.hsts = None;
+    }
+
+    /// Read the HSTS file `file` into the cache as each transfer starts,
+    /// and write the cache to it as the handle goes; the cache is turned
+    /// on. Without a file, the files named are forgotten and the cache
+    /// turned off (`CURLOPT_HSTS`).
+    pub fn add_hsts_file(&mut self, file: Option<&[u8]>) -> Result<(), OutOfMemory> {
+        self.enable_hsts()?;
+        let Some(file) = file else {
+            self.disable_hsts();
+            return Ok(());
+        };
+        let mut copy = Vec::new();
+        copy.try_extend_from_slice(file)?;
+        let hsts = self.hsts.as_deref_mut().expect("enabled above");
+        hsts.read_at_start(file)?;
+        self.options.http.hsts.make_mut()?.file = Some(copy);
+        Ok(())
+    }
+
+    /// Whether the HSTS cache is on.
+    pub fn hsts_enabled(&self) -> bool {
+        self.hsts.is_some()
+    }
+
+    /// Write the HSTS cache, if it is on, to `HstsOptions::file` or else
+    /// the file last read, and give it to the application's writer
+    /// (`Curl_hsts_save`). A file not written, or a writer that says the
+    /// save fails, fails it, after the rest is done.
+    pub fn save_hsts(&mut self) -> Result<(), SaveError> {
+        let Some(hsts) = self.hsts.as_deref() else {
+            return Ok(());
+        };
+        let options = &*self.options.http.hsts;
+        let file = options.file.as_deref().or(hsts.file());
+        let mut result = Ok(());
+        if let Some(file) = file.filter(|f| !f.is_empty()) {
+            result = crate::save::replace(file, &hsts.text()?);
+        }
+        if let Some(writer) = &options.write {
+            // The writer's verdict is the save's, as C's is.
+            result = match hsts.push(&**writer) {
+                true => Ok(()),
+                false => Err(SaveError::Write),
+            };
+        }
+        result
     }
 
     /// Turn the cookie jar on: one of the handle's own, empty, if it has

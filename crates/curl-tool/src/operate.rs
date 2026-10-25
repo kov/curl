@@ -1298,6 +1298,9 @@ impl Drop for Handle {
         // A failure goes unsaid: C's cleanup stops tracing before it saves
         // the jar, so its warning is never seen.
         let _unsaid = self.0.save_cookies();
+        // Then the HSTS cache, as C's cleanup writes it, whose failure
+        // goes unsaid too.
+        let _unsaid = self.0.save_hsts();
     }
 }
 
@@ -1733,6 +1736,13 @@ fn setopts(
     proxy_setopts(s, op, run.claims)?;
     credentials_and_headers(s, op, config.etag, run.claims)?;
     transfer_setopts(s, op, run, config)?;
+    // `http_setopts` sets the HSTS file for any URL, before it looks at
+    // the protocol.
+    if let Some(file) = op.hsts {
+        s.str_handle("CURLOPT_HSTS", Some(file), |e| {
+            e.add_hsts_file(Some(file)).map_err(oom)
+        })?;
+    }
     if let UrlProto::Http { tls } = config.proto {
         http_setopts(s, op, tls, &run.msgs)?;
     }

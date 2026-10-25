@@ -33,6 +33,9 @@ pub enum Feature {
     /// GSS-API, by MIT krb5, which the tool and the C ABI give every
     /// handle.
     GssApi,
+    /// Strict Transport Security: hosts a server says to reach only over
+    /// HTTPS are, from a file, the application or the server's word.
+    Hsts,
     /// HTTPS proxies: TLS to the proxy, and TLS in TLS to an `https`
     /// origin through one, by the TLS library `Ssl` names.
     HttpsProxy,
@@ -75,6 +78,7 @@ impl Feature {
             #[cfg(feature = "debug-hooks")]
             Feature::Debug => "Debug",
             Feature::GssApi => "GSS-API",
+            Feature::Hsts => "HSTS",
             Feature::HttpsProxy => "HTTPS-proxy",
             Feature::Httpsig => "HTTPSIG",
             Feature::Idn => "IDN",
@@ -99,6 +103,7 @@ const FEATURES: &[Feature] = &[
     #[cfg(feature = "debug-hooks")]
     Feature::Debug,
     Feature::GssApi,
+    Feature::Hsts,
     Feature::HttpsProxy,
     Feature::Httpsig,
     Feature::Idn,

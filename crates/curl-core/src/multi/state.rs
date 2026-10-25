@@ -2778,6 +2778,7 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
     }
     crate::proto::http::cookies::load(cx)?;
     read_resolve(cx)?;
+    crate::proto::http::hsts::load(cx)?;
     // Taken as it is parsed, its text not read again.
     if let Some((_, copy)) = shared {
         return copy.map_err(url_error);
@@ -3089,6 +3090,41 @@ fn next_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transfe
     start_leg(run, cx, url)
 }
 
+/// An `http` URL to a host the HSTS cache says to reach only over HTTPS
+/// is switched to `https` (`hsts_upgrade`), after the application's port
+/// is applied: the URL read back, port and all, is the transfer's and the
+/// report's from then on.
+fn hsts_upgrade<H: Host>(
+    url: &mut Url,
+    run: &mut Run,
+    cx: &mut StepCx<'_, H>,
+) -> Result<(), ErrorKind> {
+    if cx.easy().hsts.is_none() {
+        return Ok(());
+    }
+    let scheme = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;
+    if !scheme.eq_ignore_ascii_case(b"http") {
+        return Ok(());
+    }
+    // The host as it is looked up: an IPv6 address without its brackets,
+    // a name in Unicode in its ASCII form (the origin's `hostname`).
+    let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
+    let bare = host
+        .strip_prefix(b"[")
+        .and_then(|h| h.strip_suffix(b"]"))
+        .unwrap_or(&host);
+    let idn = cx.easy().libraries().idn;
+    let ascii = crate::idn::lookup_name(idn, bare).map_err(crate::idn::IdnFailure::kind)?;
+    let name = ascii.as_deref().unwrap_or(bare);
+    if crate::proto::http::hsts::upgrade(url, name, cx)? {
+        run.url = url.get(Part::Url, GetOptions::NONE).map_err(url_error)?;
+        cx.report_mut()
+            .set_url(url)
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    }
+    Ok(())
+}
+
 /// Whether a request that got nothing back over a reused connection is
 /// made again on a fresh one (`Curl_retry_request`): the connection may
 /// have closed as it was reused. The fifth retry fails the transfer.
@@ -3166,6 +3202,9 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     // what a relative redirect resolves against (`Curl_peer_from_url`
     // sets it in `state.uh`).
     apply_port(&mut url, run, cx);
+    if let Err(kind) = hsts_upgrade(&mut url, run, cx) {
+        return TransferState::Init.fail(kind);
+    }
     let scheme = match url.get(Part::Scheme, GetOptions::NONE) {
         Ok(s) => s,
         Err(e) => return TransferState::Init.fail(url_error(e)),

@@ -5201,6 +5201,7 @@ mod bind_trace;
 mod coding;
 #[cfg(feature = "debug-hooks")]
 mod debug_lines;
+mod hsts;
 mod https_trace;
 mod idn;
 mod multi_trace;

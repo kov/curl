@@ -85,6 +85,7 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         #[cfg(feature = "debug-hooks")]
         Feature::Debug => (c"Debug", crate::ffi::CURL_VERSION_DEBUG),
         Feature::GssApi => (c"GSS-API", crate::ffi::CURL_VERSION_GSSAPI),
+        Feature::Hsts => (c"HSTS", crate::ffi::CURL_VERSION_HSTS),
         Feature::HttpsProxy => (c"HTTPS-proxy", crate::ffi::CURL_VERSION_HTTPS_PROXY),
         // A name alone, without a bit, as in C.
         Feature::Httpsig => (c"HTTPSIG", 0),
@@ -311,6 +312,7 @@ mod tests {
                 ffi::CURL_VERSION_DEBUG,
             ),
             (true, "GSS-API", ffi::CURL_VERSION_GSSAPI),
+            (true, "HSTS", ffi::CURL_VERSION_HSTS),
             (true, "HTTPS-proxy", ffi::CURL_VERSION_HTTPS_PROXY),
             (true, "HTTPSIG", 0),
             (true, "IDN", ffi::CURL_VERSION_IDN),

@@ -48,6 +48,7 @@ use crate::options::AuthMethods;
 use std::num::{NonZeroU32, NonZeroUsize};
 
 pub(crate) mod cookies;
+pub(crate) mod hsts;
 pub(crate) mod httpsig;
 pub(crate) mod negotiate;
 pub(crate) mod sigv4;
@@ -1964,6 +1965,14 @@ impl Request {
         {
             let site = cookie_site(cookie_host, target, peer);
             cookies::set_by_server(cx, value, &site)?;
+        }
+        // As is a host's HSTS, from a response over HTTPS (`http_header_s`).
+        if line.kind == LineKind::Header
+            && let Some(value) = strip_name(line.bytes, b"Strict-Transport-Security:")
+        {
+            let value = value.strip_suffix(b"\n").unwrap_or(value);
+            let value = value.strip_suffix(b"\r").unwrap_or(value);
+            hsts::from_field(cx, peer.name(), value, peer.scheme() == HTTPS)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         // What reading its transfer codings did, traced before the line, as

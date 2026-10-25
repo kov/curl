@@ -1239,6 +1239,32 @@ fn apply(
         (ffi::CURLOPT_XFERINFODATA, Ptr(p)) => ccb.progress_data = p,
         (ffi::CURLOPT_DEBUGDATA, Ptr(p)) => ccb.debug_data = p,
         (ffi::CURLOPT_TRAILERDATA, Ptr(p)) => ccb.trailer_data = p,
+        (
+            ffi::CURLOPT_HSTSREADDATA
+            | ffi::CURLOPT_HSTSWRITEDATA
+            | ffi::CURLOPT_HSTSREADFUNCTION
+            | ffi::CURLOPT_HSTSWRITEFUNCTION,
+            Ptr(p),
+        ) => {
+            // SAFETY: the handle outlives the call; its HSTS group is a
+            // cell of its own, apart from the options being set.
+            let room = unsafe { me.as_ref() }.hsts_room()?;
+            let mut c = room.get();
+            match option {
+                ffi::CURLOPT_HSTSREADDATA => c.read_data = p,
+                ffi::CURLOPT_HSTSWRITEDATA => c.write_data = p,
+                // SAFETY: the application passes a function of the
+                // option's type, or NULL.
+                ffi::CURLOPT_HSTSREADFUNCTION => c.read = unsafe { function(p) },
+                // SAFETY: as above.
+                _ => c.write = unsafe { function(p) },
+            }
+            callbacks::sync_hsts(options, me, &c)?;
+            room.set(c);
+        }
+        // On the handle's cache and its files, which `hsts_option`
+        // reaches.
+        (ffi::CURLOPT_HSTS, Ptr(_)) | (ffi::CURLOPT_HSTS_CTRL, Long(_)) => {}
         (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
             // SAFETY: the application passes a function of the option's
             // type, or NULL.
@@ -1486,6 +1512,11 @@ pub unsafe extern "C" fn curl_easy_setopt(
             Err(crate::share::Refused::OutOfMemory) => ffi::CURLE_OUT_OF_MEMORY,
         };
     }
+    let hsts = match (option, &arg) {
+        (ffi::CURLOPT_HSTS, Arg::Ptr(p)) => Some(HstsArg::File(*p)),
+        (ffi::CURLOPT_HSTS_CTRL, Arg::Long(n)) => Some(HstsArg::Ctrl(*n)),
+        _ => None,
+    };
     let jar = match (option, &arg) {
         (
             ffi::CURLOPT_COOKIEFILE | ffi::CURLOPT_COOKIEJAR | ffi::CURLOPT_COOKIELIST,
@@ -1511,10 +1542,58 @@ pub unsafe extern "C" fn curl_easy_setopt(
     easy.ccb.set(ccb);
     easy.set.set(set);
     easy.errbuf.set(errbuf);
+    if let Some(hsts) = hsts {
+        // SAFETY: the application passes a C string or NULL.
+        return unsafe { hsts_option(easy, hsts) };
+    }
     match jar {
         // SAFETY: the application passes a C string or NULL.
         Some(p) => unsafe { jar_option(easy, option, p) },
         None => code,
+    }
+}
+
+/// An HSTS option's argument.
+#[derive(Clone, Copy)]
+enum HstsArg {
+    /// `CURLOPT_HSTS`'s file, or NULL.
+    File(*mut c_void),
+    /// `CURLOPT_HSTS_CTRL`'s bits.
+    Ctrl(c_long),
+}
+
+/// What an HSTS option does to the handle's cache and files, beyond its
+/// options (`CURLOPT_HSTS`, `CURLOPT_HSTS_CTRL`).
+///
+/// # Safety
+///
+/// A file is NULL or a C string.
+unsafe fn hsts_option(shim: &ShimEasy, arg: HstsArg) -> CURLcode {
+    let file = match arg {
+        // SAFETY: as the caller guarantees; its length was checked with
+        // the option.
+        HstsArg::File(p) => unsafe { string(p) }.ok().flatten(),
+        HstsArg::Ctrl(_) => None,
+    };
+    let done = shim.with_easy(|e| {
+        let easy = match e {
+            easy::EasyRef::Easy(easy) => easy,
+            easy::EasyRef::Frame(..) => return Err(EasyError::RecursiveApiCall),
+        };
+        let oom = |_| ErrorKind::OutOfMemory;
+        match arg {
+            HstsArg::File(_) => easy.add_hsts_file(file).map_err(oom)?,
+            HstsArg::Ctrl(bits) if bits & c_long::from(ffi::CURLHSTS_ENABLE) != 0 => {
+                easy.enable_hsts().map_err(oom)?;
+            }
+            HstsArg::Ctrl(_) => easy.disable_hsts(),
+        }
+        Ok(())
+    });
+    match done {
+        Ok(Ok(())) => CURLE_OK,
+        Ok(Err(kind)) => crate::error_codes::easy_code(kind),
+        Err(_) => CURLE_RECURSIVE_API_CALL,
     }
 }
 

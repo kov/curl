@@ -45,6 +45,71 @@ pub struct HstsEntry<'a> {
     pub subdomains: bool,
 }
 
+/// What a reader gave (`CURLSTS_*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HstsRead {
+    /// An entry, given to `keep`.
+    Given,
+    /// No more.
+    Done,
+    /// The transfer fails, `CURLE_ABORTED_BY_CALLBACK` (`CURLSTS_FAIL`).
+    Abort,
+    /// It gave no name, or wrote past what an entry holds; the transfer
+    /// fails, `CURLE_BAD_FUNCTION_ARGUMENT`.
+    Invalid,
+}
+
+/// Gives the application's entries as each transfer starts
+/// (`CURLOPT_HSTSREADFUNCTION`): each call one, given to `keep`, until it
+/// says there are no more. An entry's empty `expire` never expires.
+pub trait HstsReader: Send + Sync {
+    fn read(
+        &self,
+        keep: &mut dyn FnMut(HstsEntry<'_>) -> Result<(), BadEntry>,
+    ) -> Result<HstsRead, BadEntry>;
+}
+
+/// What a writer said of an entry (`CURLSTS_*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HstsWrite {
+    /// The next, please.
+    More,
+    /// No more.
+    Stop,
+    /// No more, and the save fails.
+    Fail,
+}
+
+/// Is given every entry, its place and the number of them, as the
+/// handle goes (`CURLOPT_HSTSWRITEFUNCTION`).
+pub trait HstsWriter: Send + Sync {
+    fn write(&self, entry: HstsEntry<'_>, index: usize, total: usize) -> HstsWrite;
+}
+
+impl crate::handler::Handler<dyn HstsReader> {
+    pub fn hsts_reader(reader: impl HstsReader + 'static) -> Result<Self, OutOfMemory> {
+        let boxed: Box<dyn HstsReader> = curl_alloc::try_box(reader)?;
+        crate::handler::Handler::new(boxed)
+    }
+}
+
+impl crate::handler::Handler<dyn HstsWriter> {
+    pub fn hsts_writer(writer: impl HstsWriter + 'static) -> Result<Self, OutOfMemory> {
+        let boxed: Box<dyn HstsWriter> = curl_alloc::try_box(writer)?;
+        crate::handler::Handler::new(boxed)
+    }
+}
+
+/// Why the application's reader stopped the transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PullError {
+    /// It said to (`CURLE_ABORTED_BY_CALLBACK`).
+    Aborted,
+    /// It gave what no entry is (`CURLE_BAD_FUNCTION_ARGUMENT`).
+    Invalid,
+    OutOfMemory,
+}
+
 /// The cache (C's `struct hsts`).
 #[derive(Debug, Default)]
 pub struct Hsts {
@@ -52,6 +117,8 @@ pub struct Hsts {
     entries: Vec<Entry>,
     /// The file last read, written back when no other is named.
     file: Option<Vec<u8>>,
+    /// The files read as each transfer starts (C's `state.hstslist`).
+    to_read: Vec<Vec<u8>>,
 }
 
 /// Why a `Strict-Transport-Security:` header was not taken.
@@ -286,6 +353,69 @@ impl Hsts {
         Ok(())
     }
 
+    /// Keep what the application's reader gives, until it says no more
+    /// (`hsts_pull`).
+    pub fn pull(&mut self, reader: &dyn HstsReader, now: i64) -> Result<(), PullError> {
+        loop {
+            let read = reader.read(&mut |entry| {
+                let entry = HstsEntry {
+                    expire: if entry.expire.is_empty() {
+                        b"unlimited"
+                    } else {
+                        entry.expire
+                    },
+                    ..entry
+                };
+                self.add(entry, now)
+            });
+            match read {
+                Ok(HstsRead::Given) => {}
+                Ok(HstsRead::Done) => return Ok(()),
+                Ok(HstsRead::Abort) => return Err(PullError::Aborted),
+                Ok(HstsRead::Invalid) | Err(BadEntry::Date) => return Err(PullError::Invalid),
+                Err(BadEntry::OutOfMemory) => return Err(PullError::OutOfMemory),
+            }
+        }
+    }
+
+    /// Give every entry to the application's writer, until it says no
+    /// more (`Curl_hsts_save`'s `hsts_push`); false if it said the save
+    /// fails, or an entry's date could not be told.
+    pub fn push(&self, writer: &dyn HstsWriter) -> bool {
+        let mut ok = true;
+        self.each(|entry, index, total| match entry {
+            None => {
+                ok = false;
+                false
+            }
+            Some(entry) => match writer.write(entry, index, total) {
+                HstsWrite::More => true,
+                HstsWrite::Stop => false,
+                HstsWrite::Fail => {
+                    ok = false;
+                    false
+                }
+            },
+        });
+        ok
+    }
+
+    /// Read `file` as each transfer starts, from now on.
+    pub fn read_at_start(&mut self, file: &[u8]) -> Result<(), OutOfMemory> {
+        let mut name = Vec::new();
+        name.try_extend_from_slice(file)?;
+        self.to_read.try_push(name)
+    }
+
+    /// Read the files named to be read as each transfer starts
+    /// (`Curl_hsts_loadfiles`).
+    pub fn load_named(&mut self, now: i64) -> Result<(), LoadError> {
+        let files = std::mem::take(&mut self.to_read);
+        let loaded = files.iter().try_for_each(|f| self.load(f, now));
+        self.to_read = files;
+        loaded
+    }
+
     /// The file last read, if any.
     pub fn file(&self) -> Option<&[u8]> {
         self.file.as_deref()
@@ -337,6 +467,20 @@ impl Hsts {
             copy.create(&e.host, e.subdomains, e.expires)?;
         }
         Ok(copy)
+    }
+
+    /// Keep `other`'s entries after these, as they are (`Curl_hsts_copy`
+    /// into a cache that read its own first).
+    pub fn merge(&mut self, other: Hsts) -> Result<(), OutOfMemory> {
+        for e in other.entries {
+            self.create(&e.host, e.subdomains, e.expires)?;
+        }
+        Ok(())
+    }
+
+    /// How many files are read as each transfer starts.
+    pub fn files_to_read(&self) -> usize {
+        self.to_read.len()
     }
 
     /// How many entries it keeps.

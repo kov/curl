@@ -309,6 +309,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) cookie_files: Vec<&'a [u8]>,
     /// `--cookie-jar`.
     pub(crate) cookie_jar: Option<&'a [u8]>,
+    /// The HSTS cache's file (`--hsts`).
+    pub(crate) hsts: Option<&'a [u8]>,
     /// `--proxy` and `--proxy1.0`; empty for none.
     pub(crate) proxy: Option<&'a [u8]>,
     /// What `--proxy1.0` makes the proxy.
@@ -1114,6 +1116,7 @@ pub(crate) fn apply<'a>(
                 op.cookie_files.try_push(given)?;
             }
         }
+        Opt::Hsts => line.current().hsts = Some(value.text()),
         Opt::CookieJar => {
             let op = line.current();
             op.cookie_jar = None;
@@ -1775,7 +1778,6 @@ pub(crate) fn apply<'a>(
         | Opt::FtpSslReqd
         | Opt::Hostpubmd5
         | Opt::Hostpubsha256
-        | Opt::Hsts
         | Opt::Http2
         | Opt::Http2PriorKnowledge
         | Opt::Http3

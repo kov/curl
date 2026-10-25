@@ -419,7 +419,7 @@ impl Source {
 /// (`tool_setopt_*`). A value is applied first and written only once it
 /// is taken, as C writes only a call that succeeded.
 pub(crate) struct Setopt<'a> {
-    options: &'a mut Options,
+    easy: &'a mut Easy,
     source: Option<&'a mut Source>,
 }
 
@@ -430,10 +430,7 @@ fn oom(_: OutOfMemory) -> ErrorKind {
 impl<'a> Setopt<'a> {
     /// Set `easy`'s options, written to `source` if there is one.
     pub(crate) fn new(easy: &'a mut Easy, source: Option<&'a mut Source>) -> Setopt<'a> {
-        Setopt {
-            options: easy.options_mut(),
-            source,
-        }
+        Setopt { easy, source }
     }
 
     /// Apply `apply`; the program, if one is written.
@@ -441,7 +438,7 @@ impl<'a> Setopt<'a> {
         &mut self,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<Option<&mut Source>, ErrorKind> {
-        apply(self.options)?;
+        apply(self.easy.options_mut())?;
         Ok(self.source.as_deref_mut())
     }
 
@@ -547,6 +544,18 @@ impl<'a> Setopt<'a> {
                 .map_err(oom)?;
         }
         Ok(())
+    }
+
+    /// A string option of the handle's own state rather than its options
+    /// (`tool_setopt_str`, `CURLOPT_HSTS`): written if set.
+    pub(crate) fn str_handle(
+        &mut self,
+        name: &'static str,
+        value: Option<&[u8]>,
+        apply: impl FnOnce(&mut Easy) -> Result<(), ErrorKind>,
+    ) -> Result<(), ErrorKind> {
+        apply(self.easy)?;
+        self.bytes(name, value.map(c_string), |_| Ok(()))
     }
 
     /// A string option (`tool_setopt_str`): written if set, up to its
@@ -716,7 +725,7 @@ impl<'a> Setopt<'a> {
         _why: &'static str,
         apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
-        apply(self.options)
+        apply(self.easy.options_mut())
     }
 }
 

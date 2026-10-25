@@ -61,6 +61,9 @@ pub(crate) struct ShimEasy {
     /// The application's `SSL_CTX` function and data, made the first
     /// time one is set: few handles set either.
     tls: OnceCell<Box<Cell<CTls>>>,
+    /// The application's HSTS functions and data, made the first time
+    /// one is set: few handles set any.
+    hsts: OnceCell<Box<Cell<callbacks::CHsts>>>,
     /// What `CURLINFO_TLS_SSL_PTR` and `CURLINFO_TLS_SESSION` point to
     /// (C's `data->tsi`).
     pub(crate) tsi: UnsafeCell<ffi::curl_tlssessioninfo>,
@@ -131,6 +134,7 @@ struct CSide {
     errbuf: *mut c_char,
     sockets: Option<CSockets>,
     tls: Option<CTls>,
+    hsts: Option<callbacks::CHsts>,
 }
 
 impl CSide {
@@ -145,6 +149,7 @@ impl CSide {
             errbuf: ptr::null_mut(),
             sockets: None,
             tls: None,
+            hsts: None,
         }
     }
 }
@@ -164,6 +169,9 @@ impl ShimEasy {
         }
         if let Some(tls) = c.tls {
             shim.tls_room()?.set(tls);
+        }
+        if let Some(hsts) = c.hsts {
+            shim.hsts_room()?.set(hsts);
         }
         let shim = NonNull::from(Box::leak(shim));
         // SAFETY: just made, and reached only through this pointer.
@@ -209,7 +217,22 @@ impl ShimEasy {
         callbacks::sync_error_buffer(options, me, shim.errbuf.get())?;
         callbacks::install_defaults(options, me, &set, &ccb)?;
         crate::sockets::sync(options, me, &shim.sockets())?;
+        callbacks::sync_hsts(options, me, &shim.hsts())?;
         crate::tls::sync(options, me, &shim.tls())
+    }
+
+    /// The application's HSTS functions and data.
+    pub(crate) fn hsts(&self) -> callbacks::CHsts {
+        self.hsts.get().map_or(callbacks::CHsts::NONE, |c| c.get())
+    }
+
+    /// Room for the HSTS functions, made now if not yet.
+    pub(crate) fn hsts_room(&self) -> Result<&Cell<callbacks::CHsts>, OutOfMemory> {
+        if self.hsts.get().is_none() {
+            let made = try_box(Cell::new(callbacks::CHsts::NONE))?;
+            assert!(self.hsts.set(made).is_ok(), "not made yet");
+        }
+        Ok(self.hsts.get().expect("made above"))
     }
 
     /// The trees and the chain the handle posts, if it was ever given one.
@@ -289,6 +312,7 @@ impl ShimEasy {
             post_body: Cell::new(PostBody::Own),
             posted: OnceCell::new(),
             sockets: OnceCell::new(),
+            hsts: OnceCell::new(),
             tls: OnceCell::new(),
             tsi: UnsafeCell::new(ffi::curl_tlssessioninfo {
                 backend: ffi::CURLSSLBACKEND_NONE,
@@ -534,7 +558,9 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
     // that cannot be fails nothing, as in C, which says so only in the
     // trace, of which there is none outside a transfer here.
     let saved = easy.with_easy(|e| match e {
-        EasyRef::Easy(easy) => easy.save_cookies().ok(),
+        // Then the HSTS cache (`Curl_hsts_save`), whose failure goes
+        // unsaid too.
+        EasyRef::Easy(easy) => (easy.save_cookies().ok(), easy.save_hsts().ok()),
         EasyRef::Frame(..) => unreachable!("not added to a multi any more"),
     });
     assert!(saved.is_ok(), "the handle is its own");
@@ -590,6 +616,7 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
         errbuf: easy.errbuf.get(),
         sockets: easy.sockets.get().map(|c| c.get()),
         tls: easy.tls.get().map(|c| c.get()),
+        hsts: easy.hsts.get().map(|c| c.get()),
     };
     let dup = match ShimEasy::boxed(copy, c) {
         Ok(dup) => dup,
@@ -634,6 +661,9 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
     }
     if let Some(sockets) = easy.sockets.get() {
         sockets.set(CSockets::NONE);
+    }
+    if let Some(hsts) = easy.hsts.get() {
+        hsts.set(callbacks::CHsts::NONE);
     }
     // The write adapter stays, reading the reset callbacks; the defaults
     // need no other, so a reset allocates nothing, and cannot fail, as

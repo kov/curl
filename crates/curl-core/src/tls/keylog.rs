@@ -4,11 +4,16 @@
 //!
 //! The owner of the libraries a handle is given (the shim's root, the
 //! tool) owns one, opened as C opens it at global init and handed to the
-//! TLS library; the core keeps none.
+//! TLS library as a `SharedKeyLog`; the core keeps none. A session the
+//! library makes holds its own `SharedKeyLog`, so the log lasts while any
+//! does.
 
 use std::fs::File;
 use std::io::Write as _;
+use std::ops::Deref;
 use std::sync::Mutex;
+
+use curl_alloc::{OutOfMemory, TryArc};
 
 /// The longest line written, its line end included (C's 256 bytes with
 /// room for the line end and a zero byte).
@@ -126,6 +131,43 @@ impl Default for KeyLog {
     }
 }
 
+/// A key log as the TLS library and its sessions hold it: one a process
+/// keeps for good (the shim's), or one its owner shares, which lasts as
+/// long as the last holder (the tool's).
+#[derive(Clone, Debug)]
+pub struct SharedKeyLog(Backing);
+
+#[derive(Clone, Debug)]
+enum Backing {
+    Shared(TryArc<KeyLog>),
+    Static(&'static KeyLog),
+}
+
+impl SharedKeyLog {
+    /// A key log of its own, not yet opened.
+    pub fn new() -> Result<SharedKeyLog, OutOfMemory> {
+        Ok(SharedKeyLog(Backing::Shared(TryArc::try_new(
+            KeyLog::new(),
+        )?)))
+    }
+
+    /// The key log a process keeps for good.
+    pub const fn of_static(log: &'static KeyLog) -> SharedKeyLog {
+        SharedKeyLog(Backing::Static(log))
+    }
+}
+
+impl Deref for SharedKeyLog {
+    type Target = KeyLog;
+
+    fn deref(&self) -> &KeyLog {
+        match &self.0 {
+            Backing::Shared(shared) => shared,
+            Backing::Static(log) => log,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
@@ -160,6 +202,20 @@ mod tests {
         want.extend_from_slice(&[b'y'; LINE_MAX]);
         want.push(b'\n');
         assert_eq!(std::fs::read(&path).unwrap(), want);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A shared key log lasts while any holder does: a line written
+    /// through a clone after the first is dropped reaches the file.
+    #[test]
+    fn a_shared_log_outlives_the_holder_that_made_it() {
+        let path = std::env::temp_dir().join(format!("curl-keylog-shared-{}", std::process::id()));
+        let made = SharedKeyLog::new().unwrap();
+        made.open_named(path.to_str().unwrap().as_bytes());
+        let held = made.clone();
+        drop(made);
+        assert!(held.write_line(b"CLIENT_RANDOM 00 11"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"CLIENT_RANDOM 00 11\n");
         std::fs::remove_file(&path).unwrap();
     }
 }

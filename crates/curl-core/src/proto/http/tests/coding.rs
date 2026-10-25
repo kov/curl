@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::coding::{AcceptEncoding, Coding, Decoder, Decoders, Sink};
-use crate::libraries::Libraries;
+use crate::libraries::{Libraries, SharedLibraries};
 
 /// Each byte it is given, twice.
 #[derive(Debug)]
@@ -30,7 +30,7 @@ fn decoding() -> Easy {
         ..Libraries::NONE
     };
     let mut e = Easy::new();
-    e.set_libraries(&DECODING);
+    e.set_libraries(SharedLibraries::of_static(&DECODING));
     e
 }
 

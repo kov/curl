@@ -21,7 +21,7 @@ use curl_core::handler::{
     ProgressVerdict, Write, WriteHandler,
 };
 use curl_core::id::ArenaPolicy;
-use curl_core::libraries::Libraries;
+use curl_core::libraries::{Libraries, Library, SharedLibraries};
 use curl_core::multi::Multi;
 use curl_core::multi::{
     Abort, AddError, Env, EventCx, MultiEvents, NoEvents, NoHost, Notification, NotifyCx,
@@ -512,7 +512,7 @@ fn get_through(
     set: fn(&mut Options) -> Result<(), OutOfMemory>,
 ) -> Result<Got, OutOfMemory> {
     let wire = Wire {
-        libraries: &Libraries::NONE,
+        libraries: SharedLibraries::default(),
         sent: <[u8]>::to_vec,
     };
     get_over(clock, net, talk, (url, request), set, wire)
@@ -521,7 +521,7 @@ fn get_through(
 /// What a GET speaks to its server with: the libraries its handle has,
 /// and how what the server was sent reads as the request.
 struct Wire {
-    libraries: &'static Libraries,
+    libraries: SharedLibraries,
     sent: fn(&[u8]) -> Vec<u8>,
 }
 
@@ -792,17 +792,20 @@ const GET_BUDGET: u64 = 46;
 
 /// The fake TLS library and the libraries naming it, made once and
 /// untracked: the test's, not the library's to account for.
-fn fake_tls() -> &'static Libraries {
-    static LIBRARIES: std::sync::OnceLock<&'static Libraries> = std::sync::OnceLock::new();
-    LIBRARIES.get_or_init(|| {
-        track::untracked(|| {
-            let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().expect("memory")));
-            &*Box::leak(Box::new(Libraries {
-                tls: Some(backend),
-                ..Libraries::NONE
-            }))
+fn fake_tls() -> SharedLibraries {
+    static LIBRARIES: std::sync::OnceLock<SharedLibraries> = std::sync::OnceLock::new();
+    LIBRARIES
+        .get_or_init(|| {
+            track::untracked(|| {
+                let backend = Box::new(FakeTls::new().expect("memory"));
+                SharedLibraries::new(Libraries {
+                    tls: Some(Library::Owned(backend)),
+                    ..Libraries::NONE
+                })
+                .expect("memory")
+            })
         })
-    })
+        .clone()
 }
 
 /// A server at port 443 speaking the fake TLS, answering test 1's reply

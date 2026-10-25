@@ -3167,6 +3167,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
             .easy()
             .libraries()
             .tls
+            .as_deref()
             .expect("a secured scheme is one a TLS library speaks")
             .ca_defaults();
         match crate::tls::TlsIdentity::of(&cx.easy().options().tls, defaults) {
@@ -3313,6 +3314,7 @@ fn choose_proxy<H: Host>(
         .easy()
         .libraries()
         .tls
+        .as_deref()
         .expect("an HTTPS proxy is one only with a TLS library")
         .ca_defaults();
     let options = cx.easy().options();

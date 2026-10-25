@@ -16,7 +16,7 @@ use curl_core::easy::Easy;
 use curl_core::error::ErrorKind;
 use curl_core::handler::{DebugHandler, DebugKind, Handler, Write, WriteHandler};
 use curl_core::id::ArenaPolicy;
-use curl_core::libraries::Libraries;
+use curl_core::libraries::{Libraries, SharedLibraries};
 use curl_core::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
 use curl_core::options::Options;
 use curl_core::time::{ManualClock, TimeLimit};
@@ -99,7 +99,7 @@ fn through_proxy(replies: &[&[u8]], set: impl FnOnce(&mut Options)) -> Ran {
     };
     let mut m: Multi = Multi::new(env).unwrap();
     let mut e = Easy::new();
-    e.set_libraries(&LIBRARIES);
+    e.set_libraries(SharedLibraries::of_static(&LIBRARIES));
     let seen = Seen::default();
     let o = e.options_mut();
     o.set_url(Some(b"http://origin.example/a")).unwrap();

@@ -135,8 +135,11 @@ dependency cycle). `curl-core::conn::io::SystemNet` adapts `curl-os` to the `Net
 code. The libraries the core does not depend on (libpsl, the decoders, the Ed25519 signer, the
 TLS library and the GSS-API library) are handed to a handle by whoever builds it: the shim and
 the tool. The decoders, the signer, the TLS library and the GSS-API library come as one
-`&'static Libraries` (`curl_core::libraries`), a static of each; a handle given none has
-`Libraries::NONE`. The TLS library is OpenSSL's (`curl_openssl::OPENSSL`); the GSS-API library
+`Libraries` (`curl_core::libraries`), which a handle holds as `SharedLibraries`, as it holds its
+`Components`: the shim's are statics (`SharedLibraries::of_static`), the C ABI's one owned root;
+the tool's are made by `main` and shared with its handles (`SharedLibraries::new`, the TLS
+library owned by them, `Library::Owned`), so it keeps no static. A handle given none has
+`Libraries::NONE`. The TLS library is OpenSSL's (`curl_openssl::OpenSsl`); the GSS-API library
 is MIT krb5's (`curl_gssapi::GSSAPI`, behind `curl_core::gss::Gss`), with C's debug stub under
 `debug-hooks`, chosen per context by `CURL_STUB_GSS_CREDS` as C's wrappers choose per call. The
 shim and the tool each have a second static without it and hand a handle the one the build's
@@ -169,11 +172,13 @@ curl-core/src/
   cookie.rs                  Jar, Cookie, Suffixes: the cookie jar (cookie.c)
   netrc.rs                   .netrc files: the file's path, its entries for a host
   coding.rs                  Coding, Decoder, Decoders, AcceptEncoding: the content codings
-  libraries.rs               Libraries, Ed25519: what the bound C libraries do for a handle
+  libraries.rs               Libraries, SharedLibraries, Library, Ed25519: what the bound C
+                             libraries do for a handle
   gss.rs                     Gss, GssContext: the seam a GSS-API library implements
   tls.rs, tls/               TlsIdentity, the seam a TLS library implements (TlsBackend,
                              TlsSession, TlsIo, TlsPeer, TlsWait); cache.rs: SessionCache,
-                             SessionPeer, TlsTicket (vtls_scache.c); keylog.rs: KeyLog;
+                             SessionPeer, TlsTicket (vtls_scache.c); keylog.rs: KeyLog,
+                             SharedKeyLog;
                              fake.rs: FakeTls (test-util)
   hash.rs                    MD5, SHA-256 and SHA-512/256, for Digest
   save.rs                    a file written whole under a name of its own, then renamed
@@ -1933,9 +1938,9 @@ library's error is its `ErrorKind`, and it gives the text it fails with itself (
 C's failf), as C's filters each give theirs: a read or a send through a session that said why
 it failed is not said for again by HTTP, and a socket failing under a session is said first,
 as the socket says it (`Recv failure:`, `Send failure:`). A handle
-reaches its library through one `&'static Libraries` (the decoders, the Ed25519 signer, the
-TLS library, the GSS-API library), the shim's and the tool's statics, so a handle carries one pointer for all of
-them; `Easy: Default` takes `Libraries::NONE`. Without a TLS library `https` is a scheme the
+reaches its library through one `SharedLibraries` (the decoders, the Ed25519 signer, the
+TLS library, the GSS-API library), the shim's statics or the tool's shared value, so a handle
+carries one pointer for all of them; `Easy: Default` takes `Libraries::NONE`. Without a TLS library `https` is a scheme the
 build leaves out (`Protocol "https" is disabled`, `UnsupportedProtocol`), as in C built
 without TLS; the shim and the tool give every handle OpenSSL. One library
 is built, OpenSSL 3.0
@@ -2120,9 +2125,11 @@ keeps it in the multi's cache through its internal handle (not built, MILESTONES
 
 **The key log** (`tls/keylog.rs`, keylog.c): the file `SSLKEYLOGFILE` names, opened to append
 by the shim's first global init (also `curl_easy_init`'s, for a program that made none) and
-closed by its last cleanup, and opened by the tool as it starts: each owns one `KeyLog` in its
-root, handed to the OpenSSL value its handles are given (`OpenSsl::logging_keys_to`); the core
-keeps none. OpenSSL here is built without its own (`OPENSSL_NO_SSLKEYLOG`), so as C the
+closed by its last cleanup, and opened by the tool as it starts: each owns one `KeyLog`, the
+shim's a static in its root, the tool's in the value `main` holds, handed as a `SharedKeyLog` to
+the OpenSSL value its handles are given (`OpenSsl::logging_keys_to`); the core keeps none. Each
+session OpenSSL makes holds its own `SharedKeyLog`, so the log outlives its owner while a
+session does. OpenSSL here is built without its own (`OPENSSL_NO_SSLKEYLOG`), so as C the
 session sets the library's keylog callback while the log is open, whose lines are written
 whole, a line end added (NSS's format: five secrets for TLS 1.3, `CLIENT_RANDOM` before it);
 each handshake done says `SSLKEYLOGFILE set, all TLS secrets are logged to '<file>'`.

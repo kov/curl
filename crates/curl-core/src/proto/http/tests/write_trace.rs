@@ -5,7 +5,7 @@
 use super::*;
 use crate::coding::{Coding, Decoder, Decoders, Sink};
 use crate::components::Components;
-use crate::libraries::Libraries;
+use crate::libraries::{Libraries, SharedLibraries};
 
 /// A handle tracing its writers, and its header lines as `< line`.
 fn writing() -> Easy {
@@ -126,7 +126,7 @@ static GZIP_TWICE: Libraries = Libraries {
 fn each_coding_is_looked_for_and_its_decoder_named_as_c() {
     let undoing = || {
         let mut e = writing();
-        e.set_libraries(&GZIP_TWICE);
+        e.set_libraries(SharedLibraries::of_static(&GZIP_TWICE));
         e
     };
     let reply = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n";
@@ -326,7 +326,7 @@ fn a_coded_body_held_at_the_gate_is_traced_as_it_is_held_and_flushed() {
     let reply = b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 3\r\n\r\nabc";
     let (mut m, _talk, _clock) = server(&[reply], false);
     let mut e = writing();
-    e.set_libraries(&GZIP_TWICE);
+    e.set_libraries(SharedLibraries::of_static(&GZIP_TWICE));
     let seen = Seen::default();
     let header = PausesAtTheEnd::default();
     let o = e.options_mut();

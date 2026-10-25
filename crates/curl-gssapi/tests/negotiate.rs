@@ -16,7 +16,7 @@ use curl_core::easy::Easy;
 use curl_core::error::ErrorKind;
 use curl_core::handler::{DebugHandler, DebugKind, Handler, Write, WriteHandler};
 use curl_core::id::ArenaPolicy;
-use curl_core::libraries::Libraries;
+use curl_core::libraries::{Libraries, Library, SharedLibraries};
 use curl_core::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
 use curl_core::options::{AuthMethods, HttpAuth, Login, Options};
 use curl_core::time::ManualClock;
@@ -133,7 +133,7 @@ fn server(replies: &[&[u8]]) -> (Multi, Conversation) {
 /// A verbose GET of `path` on `m`, with the options `set` makes.
 fn get(m: &mut Multi, path: &str, set: impl FnOnce(&mut Options)) -> (Result<(), ErrorKind>, Seen) {
     let mut e = Easy::new();
-    e.set_libraries(&LIBRARIES);
+    e.set_libraries(SharedLibraries::of_static(&LIBRARIES));
     let seen = Seen::default();
     let o = e.options_mut();
     let url = format!("http://127.0.0.1:{PORT}{path}");

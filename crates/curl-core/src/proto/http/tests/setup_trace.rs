@@ -369,7 +369,7 @@ fn an_https_setup_is_traced_as_c() {
     let response = crate::tls::fake::records(OK).unwrap();
     let (mut m, talk, _) = server(&[welcome, &response], false);
     let mut e = tracing_setup();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| {
         let url = format!("https://127.0.0.1:{PORT}/");
         o.set_url(Some(url.as_bytes())).unwrap();

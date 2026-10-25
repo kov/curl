@@ -1,9 +1,14 @@
 //! What the C libraries bound beside the core do for a handle: the
 //! content codings they undo, the signatures they make, the TLS they
-//! speak and the GSS-API they authenticate with. The core links none of them; whoever builds a handle (the shim,
-//! the tool) gives it one `&'static Libraries` naming what its build has.
+//! speak and the GSS-API they authenticate with. The core links none of
+//! them; whoever builds a handle (the shim, the tool) gives it a
+//! `SharedLibraries` naming what its build has: a static the process
+//! keeps for good, or a `Libraries` its owner shares with its handles.
 
 use std::fmt;
+use std::ops::Deref;
+
+use curl_alloc::{OutOfMemory, TryArc};
 
 use crate::coding::Decoders;
 use crate::gss::Gss;
@@ -12,7 +17,7 @@ use crate::tls::TlsBackend;
 /// The libraries a handle uses. A handle without any is given
 /// `Libraries::NONE`: it undoes no coding, signs no Ed25519, speaks no
 /// TLS and knows no GSS-API.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct Libraries {
     /// The content codings it undoes.
     pub decoders: Decoders,
@@ -21,8 +26,9 @@ pub struct Libraries {
     /// library lacks it.
     pub ed25519: Option<&'static dyn Ed25519>,
     /// The TLS library, if any: without it, no scheme that needs TLS is
-    /// built in, as in a C build without one.
-    pub tls: Option<&'static dyn TlsBackend>,
+    /// built in, as in a C build without one. It may keep state (the key
+    /// log), so a `Libraries` of its own may own it.
+    pub tls: Option<Library<dyn TlsBackend>>,
     /// The GSS-API library, if any: without it, Negotiate and SOCKS5's
     /// GSS-API method are not built in, as in a C build without one.
     pub gss: Option<&'static dyn Gss>,
@@ -37,9 +43,70 @@ impl Libraries {
     };
 }
 
-impl Default for &'static Libraries {
-    fn default() -> &'static Libraries {
-        &Libraries::NONE
+/// A library `Libraries` names: one the process keeps for good, or one
+/// the `Libraries` owns.
+pub enum Library<T: ?Sized + 'static> {
+    Static(&'static T),
+    Owned(Box<T>),
+}
+
+impl<T: ?Sized + 'static> Deref for Library<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        match self {
+            Library::Static(library) => library,
+            Library::Owned(library) => library,
+        }
+    }
+}
+
+impl<T: ?Sized + fmt::Debug + 'static> fmt::Debug for Library<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        (**self).fmt(f)
+    }
+}
+
+/// The libraries a handle is given, as `Components` are given: the
+/// static ones a process keeps for good (the shim's), or ones their owner
+/// shares, which last as long as the last handle given them (the tool's).
+#[derive(Clone, Debug)]
+pub struct SharedLibraries(Backing);
+
+#[derive(Clone, Debug)]
+enum Backing {
+    Shared(TryArc<Libraries>),
+    Static(&'static Libraries),
+}
+
+impl SharedLibraries {
+    /// `libraries`, shared from now on.
+    pub fn new(libraries: Libraries) -> Result<SharedLibraries, OutOfMemory> {
+        Ok(SharedLibraries(Backing::Shared(TryArc::try_new(
+            libraries,
+        )?)))
+    }
+
+    /// Libraries a process keeps for good.
+    pub const fn of_static(libraries: &'static Libraries) -> SharedLibraries {
+        SharedLibraries(Backing::Static(libraries))
+    }
+}
+
+impl Default for SharedLibraries {
+    fn default() -> SharedLibraries {
+        SharedLibraries::of_static(&Libraries::NONE)
+    }
+}
+
+impl Deref for SharedLibraries {
+    type Target = Libraries;
+
+    fn deref(&self) -> &Libraries {
+        match &self.0 {
+            Backing::Shared(shared) => shared,
+            Backing::Static(libraries) => libraries,
+        }
     }
 }
 

@@ -14,16 +14,18 @@ use std::ops::{Deref, DerefMut};
 use std::os::fd::AsFd as _;
 use std::time::{Duration, Instant};
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box, try_format};
 use curl_core::cookie::Suffixes;
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, UrlErrorKind};
 use curl_core::handler::{Handler, HeaderOrigin, Read, ReadHandler, Rewind, RewindFailed};
+use curl_core::libraries::{Library, SharedLibraries};
 use curl_core::multi::TransferCx;
 use curl_core::options::{self, Method, Progress, UploadSource};
 use curl_core::report::{OsErrno, Request as HeaderRequest};
 use curl_core::share::{Kind, Share};
 use curl_core::time::TimeLimit;
+use curl_core::tls::SharedKeyLog;
 use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 use curl_core::version::Protocol;
 use curl_os::fs;
@@ -63,7 +65,7 @@ enum Step {
 
 /// Ask for the missing passwords, then run every operation's transfers
 /// in turn (`get_args`, `serial_transfers`).
-pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages) -> Ending {
+pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -> Ending {
     if ask_passwords(&mut line.operations).is_err() {
         return Err(ErrorKind::OutOfMemory);
     }
@@ -110,6 +112,7 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages) -> Ending {
         msgs,
         share: &share,
         suffixes: &suffixes,
+        linked,
         claims: Claims::of_build(),
         started: Cell::new(None),
     };
@@ -639,6 +642,7 @@ struct Shared<'a, 'l> {
     msgs: Messages,
     share: &'a Share,
     suffixes: &'a Suffixes,
+    linked: &'a Linked,
     claims: Claims,
     /// When the last transfer, or its last attempt, started, for
     /// `--rate`.
@@ -1015,7 +1019,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     let mut easy = Handle(Easy::new());
     easy.set_share(Some(run.share.clone()));
     easy.set_public_suffixes(Some(run.suffixes.clone()));
-    easy.set_libraries(libraries(run.claims));
+    easy.set_libraries(run.linked.for_handle(run.claims));
     easy.set_components(run.global.components.clone());
     // From here the transfer exists: a failure to set it up is its
     // result, and is finished as one (`run_all_transfers`'s cleanup).
@@ -3451,44 +3455,58 @@ fn in_list(headers: &[&[u8]], name: &[u8]) -> bool {
     })
 }
 
-/// What the libraries this build is linked with do for a handle, as C's:
-/// the content codings they undo, the signatures they make, the TLS they
-/// speak and, where the build claims it (`HAVE_GSSAPI`), the GSS-API they
-/// authenticate with; before then, as in a C build without it, SOCKS5
-/// offers no GSS-API.
-fn libraries(claims: Claims) -> &'static curl_core::libraries::Libraries {
-    if claims.gssapi {
-        &LIBRARIES
-    } else {
-        &WITHOUT_GSS
-    }
+/// What the libraries this build is linked with do for the tool's
+/// handles, as C's: the content codings they undo, the signatures they
+/// make, the TLS they speak and, where the build claims it
+/// (`HAVE_GSSAPI`), the GSS-API they authenticate with; before then, as
+/// in a C build without it, SOCKS5 offers no GSS-API. `main` makes it as
+/// C's global init makes its state, and holds it for the run.
+pub(crate) struct Linked {
+    /// The file TLS secrets are logged to (`SSLKEYLOGFILE`), which
+    /// OpenSSL's sessions hold.
+    keylog: SharedKeyLog,
+    with_gss: SharedLibraries,
+    without_gss: SharedLibraries,
 }
 
-static LIBRARIES: curl_core::libraries::Libraries = libraries_with(Some(&curl_gssapi::GSSAPI));
-static WITHOUT_GSS: curl_core::libraries::Libraries = libraries_with(None);
+impl Linked {
+    pub(crate) fn new() -> Result<Linked, OutOfMemory> {
+        let keylog = SharedKeyLog::new()?;
+        let with = |gss| -> Result<SharedLibraries, OutOfMemory> {
+            use curl_core::coding::{Coding, Decoders};
+            let tls: Box<dyn curl_core::tls::TlsBackend> =
+                try_box(curl_openssl::OpenSsl::logging_keys_to(keylog.clone()))?;
+            SharedLibraries::new(curl_core::libraries::Libraries {
+                decoders: Decoders::none()
+                    .with(Coding::Deflate, curl_zlib::deflate)
+                    .with(Coding::Gzip, curl_zlib::gzip)
+                    .with(Coding::Brotli, curl_brotli::decoder)
+                    .with(Coding::Zstd, curl_zstd::decoder),
+                ed25519: Some(&curl_openssl::ED25519),
+                tls: Some(Library::Owned(tls)),
+                gss,
+            })
+        };
+        Ok(Linked {
+            with_gss: with(Some(&curl_gssapi::GSSAPI))?,
+            without_gss: with(None)?,
+            keylog,
+        })
+    }
 
-const fn libraries_with(
-    gss: Option<&'static dyn curl_core::gss::Gss>,
-) -> curl_core::libraries::Libraries {
-    use curl_core::coding::{Coding, Decoders};
-    curl_core::libraries::Libraries {
-        decoders: Decoders::none()
-            .with(Coding::Deflate, curl_zlib::deflate)
-            .with(Coding::Gzip, curl_zlib::gzip)
-            .with(Coding::Brotli, curl_brotli::decoder)
-            .with(Coding::Zstd, curl_zstd::decoder),
-        ed25519: Some(&curl_openssl::ED25519),
-        tls: Some(&OPENSSL),
-        gss,
+    /// Open the key log, as C's global init opens it.
+    pub(crate) fn open_key_log(&self) {
+        self.keylog.open();
+    }
+
+    /// The libraries a handle is given, as `claims` has the build.
+    fn for_handle(&self, claims: Claims) -> SharedLibraries {
+        match claims.gssapi {
+            true => self.with_gss.clone(),
+            false => self.without_gss.clone(),
+        }
     }
 }
-
-/// The file TLS secrets are logged to (`SSLKEYLOGFILE`), opened as the
-/// tool starts, as C's global init opens it.
-pub(crate) static KEYLOG: curl_core::tls::KeyLog = curl_core::tls::KeyLog::new();
-
-/// OpenSSL, logging secrets to the tool's key log.
-static OPENSSL: curl_openssl::OpenSsl = curl_openssl::OpenSsl::logging_keys_to(&KEYLOG);
 
 #[cfg(test)]
 mod tests {
@@ -3501,9 +3519,10 @@ mod tests {
             spnego: false,
             gssapi,
         };
-        assert!(super::libraries(claims(true)).gss.is_some());
-        assert!(super::libraries(claims(false)).gss.is_none());
-        assert!(super::libraries(claims(false)).tls.is_some());
+        let linked = super::Linked::new().unwrap();
+        assert!(linked.for_handle(claims(true)).gss.is_some());
+        assert!(linked.for_handle(claims(false)).gss.is_none());
+        assert!(linked.for_handle(claims(false)).tls.is_some());
     }
 
     use super::*;
@@ -3783,6 +3802,7 @@ mod tests {
         let share = Share::new().unwrap();
         let suffixes = curl_psl::suffixes().unwrap();
         let program = RefCell::new(Source::new().unwrap());
+        let linked = Linked::new().unwrap();
         let run = Shared {
             libcurl: Some(&program),
             global: &line.global,
@@ -3791,6 +3811,7 @@ mod tests {
             msgs,
             share: &share,
             suffixes: &suffixes,
+            linked: &linked,
             claims,
             started: Cell::new(None),
         };

@@ -5,7 +5,7 @@
 use super::*;
 use crate::conn::io::Events;
 use crate::conn::io::{Recv, Sent};
-use crate::libraries::Libraries;
+use crate::libraries::{Libraries, Library, SharedLibraries};
 use crate::tls::fake::{self, FINISHED, FakeTls, HELLO, WELCOME};
 use crate::tls::{Handshake, TlsPeerKind, fake::FakeLog};
 use curl_alloc::TryArc;
@@ -13,12 +13,13 @@ use std::io;
 
 /// A fake TLS library of the test's own, and the libraries naming it,
 /// for the test's handles: made once per test, kept to its end.
-pub(super) fn tls() -> (&'static FakeTls, &'static Libraries) {
+pub(super) fn tls() -> (&'static FakeTls, SharedLibraries) {
     let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
-    let libraries = Box::leak(Box::new(Libraries {
-        tls: Some(backend),
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
         ..Libraries::NONE
-    }));
+    })
+    .unwrap();
     (backend, libraries)
 }
 
@@ -32,13 +33,13 @@ fn served(response: &[u8]) -> [Vec<u8>; 2] {
 /// handle with `libraries`.
 fn get_tls(
     m: &mut Multi,
-    libraries: &'static Libraries,
+    libraries: &SharedLibraries,
     path: &str,
     talk: Conversation,
     set: impl FnOnce(&mut Options),
 ) -> Ran {
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     get_with(m, e, path, talk, |o| {
         let url = format!("https://127.0.0.1:{PORT}{path}");
         o.set_url(Some(url.as_bytes())).unwrap();
@@ -61,9 +62,9 @@ fn sent_after(talk: &Conversation, n: usize) -> (Vec<u8>, Vec<u8>) {
 
 /// A handle with the libraries `libraries`, getting `/` from the server
 /// over HTTPS as `get` would.
-fn https_handle(libraries: &'static Libraries) -> Box<Easy> {
+fn https_handle(libraries: &SharedLibraries) -> Box<Easy> {
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let url = format!("https://127.0.0.1:{PORT}/");
     e.options_mut().set_url(Some(url.as_bytes())).unwrap();
     e.options_mut().http.user_agent = Some(b"curl/test".to_vec());
@@ -83,7 +84,7 @@ fn an_https_get_goes_through_its_tls_layer() {
     let (backend, libraries) = tls();
     let [welcome, response] = served(OK);
     let (mut m, talk, _) = server(&[&welcome, &response], false);
-    let ran = get_tls(&mut m, libraries, "/a", talk.clone(), |_| {});
+    let ran = get_tls(&mut m, &libraries, "/a", talk.clone(), |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(sent(&talk), handshake_then(&request_of("/a")));
     // On the wire the request is records, not in the clear.
@@ -120,7 +121,7 @@ fn the_socket_under_a_session_traces_what_the_session_asks_of_it() {
     let [welcome, response] = served(OK);
     let (mut m, talk, _) = server(&[&welcome, &response], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let components = crate::components::Components::new().unwrap();
     components.configure(b"tcp");
     e.set_components(Some(components));
@@ -165,7 +166,7 @@ fn a_record_longer_than_a_read_is_read_without_waiting() {
     let [welcome, records] = served(&response);
     let (mut m, talk, clock) = server(&[&welcome, &records], false);
     let start = clock.now();
-    let ran = get_tls(&mut m, libraries, "/", talk, |o| {
+    let ran = get_tls(&mut m, &libraries, "/", talk, |o| {
         o.limits.buffer_size = crate::options::BufferSize::clamped(1024);
     });
     assert_eq!(ran.result, Ok(()));
@@ -178,7 +179,13 @@ fn a_record_longer_than_a_read_is_read_without_waiting() {
 #[test]
 fn https_without_a_tls_library_is_not_supported() {
     let (mut m, talk, _) = server(&[OK], false);
-    let ran = get_tls(&mut m, &Libraries::NONE, "/", talk.clone(), |_| {});
+    let ran = get_tls(
+        &mut m,
+        &SharedLibraries::default(),
+        "/",
+        talk.clone(),
+        |_| {},
+    );
     assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
     assert_eq!(talk.received(), b"");
 }
@@ -195,9 +202,9 @@ fn an_https_connection_is_reused_only_with_the_same_tls() {
     let insecure = Conversation::replies(&[&welcome, &response], false);
     let plain = Conversation::new(OK, false);
     let mut m = serving(Peer::Accepts, &[&first, &insecure, &plain]);
-    let one = get_tls(&mut m, libraries, "/a", first.clone(), |_| {});
+    let one = get_tls(&mut m, &libraries, "/a", first.clone(), |_| {});
     assert_eq!(one.result, Ok(()));
-    let two = get_tls(&mut m, libraries, "/b", first.clone(), |_| {});
+    let two = get_tls(&mut m, &libraries, "/b", first.clone(), |_| {});
     assert_eq!(two.result, Ok(()));
     assert!(
         two.seen
@@ -207,7 +214,7 @@ fn an_https_connection_is_reused_only_with_the_same_tls() {
         "{:?}",
         two.seen.text()
     );
-    let three = get_tls(&mut m, libraries, "/c", insecure.clone(), |o| {
+    let three = get_tls(&mut m, &libraries, "/c", insecure.clone(), |o| {
         o.tls.verify_peer = false;
     });
     assert_eq!(three.result, Ok(()));
@@ -237,13 +244,13 @@ fn a_multi_keeps_one_state_of_the_library_s_for_its_sessions() {
     assert_eq!(backend.log().states_made, 0, "none before a session");
     let fresh = |o: &mut Options| o.limits.reuse.fresh = true;
     for talk in &talks[..2] {
-        let got = get_tls(&mut m, libraries, "/", talk.clone(), fresh);
+        let got = get_tls(&mut m, &libraries, "/", talk.clone(), fresh);
         assert_eq!(got.result, Ok(()));
     }
     let log = backend.log();
     assert_eq!((log.sessions, log.states_made, log.state), (2, 1, 1));
     let mut other = serving(Peer::Accepts, &[&talks[2]]);
-    let got = get_tls(&mut other, libraries, "/", talks[2].clone(), |_| {});
+    let got = get_tls(&mut other, &libraries, "/", talks[2].clone(), |_| {});
     assert_eq!(got.result, Ok(()));
     let log = backend.log();
     assert_eq!((log.sessions, log.states_made, log.state), (3, 2, 2));
@@ -266,14 +273,14 @@ fn naming_the_default_ca_file_reuses_a_connection_made_with_it() {
     let first = Conversation::replies(&[&welcome, &response, &response], false);
     let other = Conversation::replies(&[&welcome, &response], false);
     let mut m = serving(Peer::Accepts, &[&first, &other]);
-    let one = get_tls(&mut m, libraries, "/a", first.clone(), |_| {});
+    let one = get_tls(&mut m, &libraries, "/a", first.clone(), |_| {});
     assert_eq!(one.result, Ok(()));
-    let two = get_tls(&mut m, libraries, "/b", first.clone(), |o| {
+    let two = get_tls(&mut m, &libraries, "/b", first.clone(), |o| {
         o.tls.options.make_mut().unwrap().ca_file =
             CaSetting::Given(fake::CA_FILE.as_bytes().to_vec());
     });
     assert_eq!(two.result, Ok(()));
-    let three = get_tls(&mut m, libraries, "/c", other.clone(), |o| {
+    let three = get_tls(&mut m, &libraries, "/c", other.clone(), |o| {
         o.tls.options.make_mut().unwrap().ca_file = CaSetting::Unset;
     });
     assert_eq!(three.result, Ok(()));
@@ -318,7 +325,7 @@ fn a_handshake_waits_to_write_while_it_reads() {
         .late_replies()
         .stalling_sends_after(1, 1);
     let mut m = serving(Peer::Accepts, &[&talk]);
-    let id = m.add(https_handle(libraries), (), &mut NoEvents).unwrap();
+    let id = m.add(https_handle(&libraries), (), &mut NoEvents).unwrap();
     let waits = waits_until_done(&mut m, id);
     assert_eq!(
         waits,
@@ -350,7 +357,7 @@ fn a_read_waits_to_write_what_tls_still_has_to_send() {
     // read's first try to send it, stall.
     let talk = Conversation::replies(&[&welcome, &response], false).stalling_sends_after(2, 2);
     let mut m = serving(Peer::Accepts, &[&talk]);
-    let id = m.add(https_handle(libraries), (), &mut NoEvents).unwrap();
+    let id = m.add(https_handle(&libraries), (), &mut NoEvents).unwrap();
     let waits = waits_until_done(&mut m, id);
     assert!(waits.ends_with(&[Events::OUT]), "{waits:?}");
     assert!(matches!(
@@ -370,7 +377,7 @@ fn a_read_asks_the_session_for_the_transfer_s_length() {
     let [welcome, response] = served(OK);
     let (mut m, talk, _) = server(&[&welcome, &response], false);
     let size = crate::options::BufferSize::clamped(5000);
-    let ran = get_tls(&mut m, libraries, "/", talk, |o| {
+    let ran = get_tls(&mut m, &libraries, "/", talk, |o| {
         o.limits.buffer_size = size
     });
     assert_eq!(ran.result, Ok(()));
@@ -387,7 +394,7 @@ fn an_unanswered_handshake_times_out_as_the_connect() {
     let (_, libraries) = tls();
     let (mut m, _talk, _) = server(&[], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", Conversation::new(b"", false), |o| {
         let url = format!("https://127.0.0.1:{PORT}/");
         o.set_url(Some(url.as_bytes())).unwrap();
@@ -412,7 +419,7 @@ fn a_handshake_cut_short_keeps_the_connection_s_ends_and_time() {
     let accepted = std::time::Duration::from_millis(10);
     let mut m = serving(Peer::AcceptsAfter(accepted), &[&talk]);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk, |o| {
         let url = format!("https://127.0.0.1:{PORT}/");
         o.set_url(Some(url.as_bytes())).unwrap();
@@ -442,7 +449,7 @@ fn https_through_a_proxy_reads_what_followed_its_answer_first() {
     let response = fake::records(OK).unwrap();
     let (mut m, talk, _) = server(&[&answer, &response], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
         o.set_url(Some(b"https://origin.example/p")).unwrap();
         let proxy = format!("http://127.0.0.1:{PORT}");
@@ -479,7 +486,7 @@ fn http_through_an_https_proxy_goes_over_tls_to_the_proxy() {
     let [welcome, response] = served(OK);
     let (mut m, talk, _) = server(&[&welcome, &response], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
         https_proxy(o, b"http://origin.example/p");
     });
@@ -521,7 +528,7 @@ fn https_through_an_https_proxy_is_tls_in_tls() {
     let response = fake::records(&fake::records(OK).unwrap()).unwrap();
     let (mut m, talk, _) = server(&[WELCOME, &established, &inner_welcome, &response], false);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
         https_proxy(o, b"https://origin.example/p");
     });
@@ -571,7 +578,7 @@ fn an_https_proxy_s_connection_is_reused_only_with_the_same_proxy_tls() {
     let mut m = serving(Peer::Accepts, &[&first, &other]);
     let mut get = |path: &str, talk: &Conversation, ca: Option<&[u8]>| {
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         let url = format!("http://origin.example{path}");
         get_with(&mut m, e, path, talk.clone(), |o| {
             https_proxy(o, url.as_bytes());
@@ -599,7 +606,7 @@ fn the_proxy_protocol_s_line_goes_before_tls() {
     let (_, libraries) = tls();
     let [welcome, response] = served(OK);
     let (mut m, talk, _) = server(&[&welcome, &response], false);
-    let ran = get_tls(&mut m, libraries, "/", talk.clone(), |o| {
+    let ran = get_tls(&mut m, &libraries, "/", talk.clone(), |o| {
         o.proxy.make_mut().unwrap().haproxy = true;
     });
     assert_eq!(ran.result, Ok(()));
@@ -626,7 +633,7 @@ fn secure_cookies_go_over_tls() {
     let talk = Conversation::replies(&[&welcome, &first, &second], false);
     let mut m = serving(Peer::Accepts, &[&talk]);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let one = get_with(&mut m, e, "/", talk.clone(), |o| {
         o.set_url(Some(format!("https://127.0.0.1:{PORT}/").as_bytes()))
             .unwrap();
@@ -634,7 +641,7 @@ fn secure_cookies_go_over_tls() {
     });
     assert_eq!(one.result, Ok(()));
     let mut e = one.easy;
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let two = get_with(&mut m, e, "/", talk.clone(), |o| {
         o.set_url(Some(format!("https://127.0.0.1:{PORT}/b").as_bytes()))
             .unwrap();
@@ -742,12 +749,13 @@ impl crate::tls::TlsSession for SayingSession {
     }
 }
 
-fn saying() -> &'static Libraries {
+fn saying() -> SharedLibraries {
     static SAYING: Saying = Saying;
-    Box::leak(Box::new(Libraries {
-        tls: Some(&SAYING),
+    SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(&SAYING)),
         ..Libraries::NONE
-    }))
+    })
+    .unwrap()
 }
 
 /// A session that says why its read failed is not said for again: the
@@ -756,7 +764,7 @@ fn saying() -> &'static Libraries {
 #[test]
 fn a_session_s_reason_for_a_failed_read_is_the_transfer_s() {
     let (mut m, talk, _) = server(&[b"BAD"], false);
-    let ran = get_tls(&mut m, saying(), "/", talk, |_| {});
+    let ran = get_tls(&mut m, &saying(), "/", talk, |_| {});
     assert_eq!(ran.result, Err(ErrorKind::RecvError));
     assert_eq!(ran.easy.report().failure(), Some(&b"the peer said BAD"[..]));
     let text = ran.seen.text();
@@ -778,7 +786,7 @@ fn a_socket_failing_under_a_session_is_said_first() {
     let libraries = saying();
     let talk = Conversation::new(OK, false).breaking_after(0);
     let mut m = serving(Peer::Accepts, &[&talk]);
-    let ran = get_tls(&mut m, libraries, "/", talk, |_| {});
+    let ran = get_tls(&mut m, &libraries, "/", talk, |_| {});
     assert_eq!(ran.result, Err(ErrorKind::SendError));
     let failure = ran.easy.report().failure().unwrap();
     assert!(failure.starts_with(b"Send failure: "), "{failure:?}");
@@ -801,7 +809,7 @@ fn a_socket_failing_under_a_session_is_said_first() {
 #[test]
 fn a_session_s_records_reach_the_debug_handler() {
     let (mut m, talk, _) = server(&[OK], false);
-    let ran = get_tls(&mut m, saying(), "/", talk, |_| {});
+    let ran = get_tls(&mut m, &saying(), "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.seen.of("ssl_in").concat(), OK);
 }
@@ -823,7 +831,7 @@ fn a_session_traces_its_records_only_for_a_verbose_debug_handler() {
         let (mut m, talk, _) = server(&[OK], false);
         let stderr = Stderr::default();
         SAYING_DEBUGS.set(None);
-        let ran = get_tls(&mut m, saying(), "/", talk, |o| {
+        let ran = get_tls(&mut m, &saying(), "/", talk, |o| {
             if !handler {
                 o.callbacks.debug = None;
             }
@@ -851,7 +859,7 @@ fn a_session_traces_its_records_only_for_a_verbose_debug_handler() {
 #[test]
 fn a_session_s_info_and_trace_lines_reach_the_transfer() {
     let (mut m, talk, _) = server(&[OK], false);
-    let ran = get_tls(&mut m, saying(), "/", talk, |_| {});
+    let ran = get_tls(&mut m, &saying(), "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     let text = ran.seen.text();
     assert!(text.iter().any(|l| l == "SAYING: connected\n"), "{text:?}");
@@ -888,19 +896,19 @@ fn a_session_s_end_ends_the_body_and_its_failure_fails_the_read() {
     let response = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nto the end";
     let records = fake::records(response).unwrap();
     let (mut m, talk, _) = server(&[WELCOME, &records], true);
-    let ran = get_tls(&mut m, libraries, "/", talk, |_| {});
+    let ran = get_tls(&mut m, &libraries, "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.seen.body(), b"to the end");
 
     let cut = [&records[..], b"[00"].concat();
     let (mut m, talk, _) = server(&[WELCOME, &cut], true);
-    let ran = get_tls(&mut m, libraries, "/", talk, |_| {});
+    let ran = get_tls(&mut m, &libraries, "/", talk, |_| {});
     assert_eq!(ran.result, Err(ErrorKind::RecvError));
 
     let mut not_one = records.clone();
     not_one[0] = b'(';
     let (mut m, talk, _) = server(&[WELCOME, &not_one], true);
-    let ran = get_tls(&mut m, libraries, "/", talk, |_| {});
+    let ran = get_tls(&mut m, &libraries, "/", talk, |_| {});
     assert_eq!(ran.result, Err(ErrorKind::RecvError));
 }
 
@@ -913,7 +921,7 @@ fn a_body_longer_than_a_record_goes_as_many() {
     let (mut m, talk, _) = server(&[&welcome, &response], false);
     let body = vec![b'x'; fake::RECORD + 1000];
     let upload = body.clone();
-    let ran = get_tls(&mut m, libraries, "/p", talk.clone(), |o| {
+    let ran = get_tls(&mut m, &libraries, "/p", talk.clone(), |o| {
         o.method = Method::Post;
         o.upload = crate::options::UploadSource::Bytes(TryArc::try_new(upload).unwrap());
     });
@@ -929,12 +937,13 @@ fn a_body_longer_than_a_record_goes_as_many() {
 
 /// A fake TLS library that resumes tickets and gives them, and the
 /// libraries naming it.
-fn ticketing() -> (&'static FakeTls, &'static Libraries) {
+fn ticketing() -> (&'static FakeTls, SharedLibraries) {
     let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing().unwrap()));
-    let libraries = Box::leak(Box::new(Libraries {
-        tls: Some(backend),
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
         ..Libraries::NONE
-    }));
+    })
+    .unwrap();
     (backend, libraries)
 }
 
@@ -958,7 +967,7 @@ fn the_next_connection_to_a_peer_resumes_a_session_its_multi_kept() {
     let mut m = serving(Peer::Accepts, &refs);
     let fresh = |o: &mut Options| o.limits.reuse.fresh = true;
     let run = |m: &mut Multi, i: usize, set: &dyn Fn(&mut Options)| {
-        let got = get_tls(m, libraries, "/", talks[i].clone(), |o| {
+        let got = get_tls(m, &libraries, "/", talks[i].clone(), |o| {
             fresh(o);
             set(o);
         });
@@ -984,7 +993,7 @@ fn the_session_cache_traces_its_uses() {
     let mut lines = Vec::new();
     for talk in &talks {
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         let c = crate::components::Components::new().unwrap();
         c.configure(b"ssls");
         e.set_components(Some(c));
@@ -1043,7 +1052,7 @@ fn a_share_keeping_sessions_serves_them_across_multis() {
     for (i, talk) in talks[..2].iter().enumerate() {
         let mut m = serving(Peer::Accepts, &[talk]);
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         e.set_share_watched(share.clone(), told.handler());
         let c = crate::components::Components::new().unwrap();
         c.configure(b"ssls");
@@ -1076,7 +1085,7 @@ fn a_share_keeping_sessions_serves_them_across_multis() {
     for talk in &talks[2..] {
         let mut m = serving(Peer::Accepts, &[talk]);
         let mut e = Easy::new();
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         e.set_share(Some(other.clone()));
         let got = get_with(&mut m, e, "/", talk.clone(), |o| {
             let url = format!("https://127.0.0.1:{PORT}/");

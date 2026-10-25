@@ -7,14 +7,15 @@ use super::*;
 use crate::conn::ProxyError;
 use crate::gss::testing::{Answer, Asked, Scripted, TOO_LONG};
 use crate::gss::{Flags, GssCall, GssFailure, GssStatus, Mech, Progress, Step};
-use crate::libraries::Libraries;
+use crate::libraries::{Libraries, SharedLibraries};
 
-fn scripted() -> (&'static Scripted, &'static Libraries) {
+fn scripted() -> (&'static Scripted, SharedLibraries) {
     let gss = Scripted::leaked();
-    let libraries = Box::leak(Box::new(Libraries {
+    let libraries = SharedLibraries::new(Libraries {
         gss: Some(gss),
         ..Libraries::NONE
-    }));
+    })
+    .unwrap();
     (gss, libraries)
 }
 
@@ -22,7 +23,7 @@ fn scripted() -> (&'static Scripted, &'static Libraries) {
 /// test's server, which answers each send with the next of `replies`
 /// and closes after the last if `then_close`.
 fn through_gss(
-    libraries: &'static Libraries,
+    libraries: &SharedLibraries,
     replies: &[&[u8]],
     then_close: bool,
     set: impl FnOnce(&mut Options),
@@ -30,7 +31,7 @@ fn through_gss(
     let talk = Conversation::replies(replies, then_close).per_send();
     let mut m = serving(Peer::Accepts, &[&talk]);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     get_with(&mut m, e, "/", talk.clone(), |o| {
         through_socks(o, "socks5h", b"http://origin.example/a");
         set(o);
@@ -72,7 +73,7 @@ fn a_socks5_proxy_authenticates_by_gss_api() {
         .then(Answer::Wrapped(Ok(b"W2".to_vec())))
         .then(Answer::Unwrapped(Ok(b"\x00".to_vec())));
     let ran = through_gss(
-        libraries,
+        &libraries,
         &[
             b"\x05\x01",
             b"\x01\x01\x00\x02AB",
@@ -132,7 +133,7 @@ fn a_gss_api_failure_gives_c_s_three_reasons() {
         GssCall::InitSecContext,
         GssStatus::new(9, 8),
     )));
-    let ran = through_gss(libraries, &[b"\x05\x01"], false, |_| {});
+    let ran = through_gss(&libraries, &[b"\x05\x01"], false, |_| {});
     assert_eq!(ran.result, Err(ErrorKind::Proxy));
     assert_eq!(
         ran.easy.report().failure(),
@@ -150,7 +151,7 @@ fn a_gss_api_failure_gives_c_s_three_reasons() {
     // A text too long for C's buffer is not said at all.
     let (gss, libraries) = scripted();
     gss.import_fails(GssStatus::new(TOO_LONG, 0));
-    let ran = through_gss(libraries, &[b"\x05\x01"], false, |_| {});
+    let ran = through_gss(&libraries, &[b"\x05\x01"], false, |_| {});
     assert_eq!(
         ran.easy.report().failure(),
         Some(&b"Failed to create service name."[..])
@@ -171,7 +172,7 @@ fn a_proxy_s_rejection_is_the_reason() {
     let (gss, libraries) = scripted();
     gss.then_token(b"t");
     let ran = through_gss(
-        libraries,
+        &libraries,
         &[b"\x05\x01", b"\x01\xff\x00\x00"],
         false,
         |_| {},
@@ -206,7 +207,7 @@ fn a_proxy_closing_is_said_of_the_message_awaited() {
     ] {
         let (gss, libraries) = scripted();
         gss.then_token(b"t");
-        let ran = through_gss(libraries, replies, true, |_| {});
+        let ran = through_gss(&libraries, replies, true, |_| {});
         assert_eq!(ran.result, Err(ErrorKind::Proxy));
         assert_eq!(ran.easy.report().failure(), Some(said.as_bytes()));
         assert_eq!(ran.easy.report().proxy_error(), Some(ProxyError::Gssapi));
@@ -214,7 +215,7 @@ fn a_proxy_closing_is_said_of_the_message_awaited() {
     let (gss, libraries) = scripted();
     gss.then(Answer::Stepped(complete(false, false), Vec::new()))
         .then(Answer::Initiator(Ok(b"u".to_vec())));
-    let ran = through_gss(libraries, &[b"\x05\x01", b"\x01\x02\x00"], true, |o| {
+    let ran = through_gss(&libraries, &[b"\x05\x01", b"\x01\x02\x00"], true, |o| {
         o.proxy.make_mut().unwrap().socks5_gssapi_nec = true;
     });
     assert_eq!(
@@ -240,7 +241,7 @@ fn a_failed_send_is_said_of_its_message() {
         .breaking_after(1);
     let mut m = serving(Peer::Accepts, &[&talk]);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
         through_socks(o, "socks5h", b"http://origin.example/a");
     });
@@ -261,7 +262,7 @@ fn granted_protection_fails_after_the_request() {
         .then(Answer::Wrapped(Ok(b"w".to_vec())))
         .then(Answer::Unwrapped(Ok(b"\x02".to_vec())));
     let ran = through_gss(
-        libraries,
+        &libraries,
         &[b"\x05\x01", b"\x01\x02\x00\x01w", b"\x05\x00"],
         false,
         |_| {},
@@ -291,9 +292,14 @@ fn granted_protection_fails_after_the_request() {
 fn the_proxy_service_names_the_context() {
     let (gss, libraries) = scripted();
     gss.then_token(b"t");
-    let ran = through_gss(libraries, &[b"\x05\x01", b"\x01\xff\x00\x00"], false, |o| {
-        o.proxy.make_mut().unwrap().service = Some(b"svc".to_vec());
-    });
+    let ran = through_gss(
+        &libraries,
+        &[b"\x05\x01", b"\x01\xff\x00\x00"],
+        false,
+        |o| {
+            o.proxy.make_mut().unwrap().service = Some(b"svc".to_vec());
+        },
+    );
     assert!(ran.request.starts_with(b"\x05\x03\x00\x01\x02"));
     let Asked::Context { service, host, .. } = &gss.asked()[0] else {
         panic!()
@@ -318,7 +324,7 @@ fn an_unanswered_message_fails_its_read_when_the_time_is_out() {
     ] {
         let (gss, libraries) = scripted();
         gss.then_token(b"t");
-        let ran = through_gss(libraries, replies, false, |_| {});
+        let ran = through_gss(&libraries, replies, false, |_| {});
         assert_eq!(ran.result, Err(ErrorKind::Proxy));
         assert_eq!(ran.easy.report().failure(), Some(said.as_bytes()));
         assert_eq!(ran.easy.report().proxy_error(), Some(ProxyError::Gssapi));

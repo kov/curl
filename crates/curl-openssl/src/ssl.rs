@@ -17,8 +17,8 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, CaDefaults, Chosen, Handshake, KeyLog, TlsBackend, TlsIdentity, TlsIo, TlsNative,
-    TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
+    Alpn, CaDefaults, Chosen, Handshake, KeyLog, SharedKeyLog, TlsBackend, TlsIdentity, TlsIo,
+    TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX, SSL_SESSION};
@@ -35,10 +35,11 @@ mod ca {
 }
 
 /// OpenSSL, as the core's TLS library, logging the secrets of its
-/// connections to a key log if it is given one.
+/// connections to a key log if it is given one. Each session it makes
+/// holds the key log too, so it lasts as long as the session.
 #[derive(Debug)]
 pub struct OpenSsl {
-    keylog: Option<&'static KeyLog>,
+    keylog: Option<SharedKeyLog>,
 }
 
 /// OpenSSL, logging no secrets.
@@ -47,7 +48,7 @@ pub static OPENSSL: OpenSsl = OpenSsl { keylog: None };
 impl OpenSsl {
     /// OpenSSL logging the secrets of its connections to `keylog`
     /// (`SSLKEYLOGFILE`) while it is open.
-    pub const fn logging_keys_to(keylog: &'static KeyLog) -> OpenSsl {
+    pub const fn logging_keys_to(keylog: SharedKeyLog) -> OpenSsl {
         OpenSsl {
             keylog: Some(keylog),
         }
@@ -98,7 +99,7 @@ impl TlsBackend for OpenSsl {
             waits: TlsWait::Nothing,
             blocked_write: None,
             shut: false,
-            keylog: self.keylog,
+            keylog: self.keylog.clone(),
             reused: false,
         };
         Ok(try_box(session).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
@@ -193,7 +194,7 @@ struct Session {
     /// The goodbye is over, or failed (the filter's `shutdown`).
     shut: bool,
     /// Where the secrets are logged, if anywhere.
-    keylog: Option<&'static KeyLog>,
+    keylog: Option<SharedKeyLog>,
     /// The handshake resumes a session the cache kept
     /// (`reused_session`).
     reused: bool,
@@ -278,7 +279,7 @@ impl Session {
             flags: &mut self.flags,
             below: Below::Ok,
             store: &mut setup,
-            keylog: self.keylog,
+            keylog: self.keylog.as_deref(),
         };
         let r = bio::call(ssl, &mut slot, op);
         (r, slot.below)
@@ -456,7 +457,7 @@ impl Session {
         unsafe {
             openssl_sys::SSL_CTX_set_verify(ctx.as_ptr(), openssl_sys::SSL_VERIFY_NONE, None)
         };
-        if self.keylog.is_some_and(KeyLog::enabled) {
+        if self.keylog.as_deref().is_some_and(KeyLog::enabled) {
             // SAFETY: the context, and a callback of the library's
             // signature, which reaches only the BIO's slot.
             unsafe { openssl_sys::SSL_CTX_set_keylog_callback(c, Some(bio::keylog_line)) };
@@ -927,7 +928,7 @@ impl TlsSession for Session {
         }
         self.step = Step::Done;
         io.trace(format_args!("ossl_connect, done"));
-        if let Some(log) = self.keylog {
+        if let Some(log) = &self.keylog {
             log.with_name(|name| {
                 io.info(format_args!(
                     "SSLKEYLOGFILE set, all TLS secrets are logged to '{}'",

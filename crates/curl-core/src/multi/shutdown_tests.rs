@@ -583,10 +583,11 @@ fn over_tls(talk: &Conversation) -> (Multi, Wire, &'static crate::tls::fake::Fak
 /// An HTTPS transfer to port 4 by the TLS library `tls`, whose
 /// connection is closed once it is done.
 fn closing_tls(tls: &'static crate::tls::fake::FakeTls) -> Box<Easy> {
-    let libraries = Box::leak(Box::new(crate::libraries::Libraries {
-        tls: Some(tls),
+    let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+        tls: Some(crate::libraries::Library::Static(tls)),
         ..crate::libraries::Libraries::NONE
-    }));
+    })
+    .unwrap();
     let mut e = Easy::new();
     e.set_libraries(libraries);
     e.options_mut()

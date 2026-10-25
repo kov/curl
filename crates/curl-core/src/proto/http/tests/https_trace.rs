@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::components::Components;
-use crate::libraries::Libraries;
+use crate::libraries::{Libraries, Library, SharedLibraries};
 use crate::options::IpVersion;
 use crate::tls::fake::{self, FakeTls, WELCOME};
 
@@ -14,7 +14,7 @@ use crate::tls::fake::{self, FakeTls, WELCOME};
 fn tracing(components: &[u8]) -> Easy {
     let (_, libraries) = super::tls::tls();
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let c = Components::new().unwrap();
     c.configure(components);
     e.set_components(Some(c));
@@ -230,17 +230,18 @@ fn a_failed_https_setup_names_the_chain_to_its_filter() {
 #[test]
 fn what_alpn_agreed_is_asked_of_a_new_connection_only() {
     let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
-    let libraries: &'static Libraries = Box::leak(Box::new(Libraries {
-        tls: Some(backend),
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
         ..Libraries::NONE
-    }));
+    })
+    .unwrap();
     let response = fake::records(OK).unwrap();
     let talk = Conversation::replies(&[WELCOME, &response, &response], false);
     let mut m = serving(Peer::Accepts, &[&talk]);
     let url = format!("https://127.0.0.1:{PORT}/");
     let e = || {
         let mut e = tracing(b"setup,ssl,https-connect");
-        e.set_libraries(libraries);
+        e.set_libraries(libraries.clone());
         e
     };
     let starts = [
@@ -353,14 +354,14 @@ fn https_proxy_tunnel(tls: bool) -> Conversation {
 /// the fake library `libraries` tracing all, the lines it traced, each
 /// without its transfer's and connection's numbers.
 fn through_https_proxy(
-    libraries: &'static Libraries,
+    libraries: &SharedLibraries,
     url: &str,
     talk: &Conversation,
     set: impl FnOnce(&mut Options),
 ) -> Vec<String> {
     let mut m = serving(Peer::Accepts, &[talk]);
     let mut e = Easy::new();
-    e.set_libraries(libraries);
+    e.set_libraries(libraries.clone());
     let c = Components::new().unwrap();
     c.configure(b"all");
     e.set_components(Some(c));
@@ -391,7 +392,7 @@ fn through_https_proxy(
 fn tls_in_tls_sets_up_as_c() {
     let (backend, libraries) = super::tls::tls();
     let talk = https_proxy_tunnel(true);
-    let got = through_https_proxy(libraries, "https://origin.example/", &talk, |_| {});
+    let got = through_https_proxy(&libraries, "https://origin.example/", &talk, |_| {});
     let picked: Vec<&str> = got
         .iter()
         .map(String::as_str)
@@ -443,7 +444,7 @@ fn a_tunnel_through_an_https_proxy_keeps_the_alpn_question() {
     let (_, libraries) = super::tls::tls();
     let talk = https_proxy_tunnel(false);
     let url = format!("http://127.0.0.1:{PORT}/");
-    let got = through_https_proxy(libraries, &url, &talk, |o| {
+    let got = through_https_proxy(&libraries, &url, &talk, |o| {
         o.proxy.make_mut().unwrap().tunnel = true
     });
     let picked: Vec<&str> = got

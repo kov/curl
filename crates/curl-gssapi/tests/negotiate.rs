@@ -16,7 +16,7 @@ use curl_core::easy::Easy;
 use curl_core::error::ErrorKind;
 use curl_core::handler::{DebugHandler, DebugKind, Handler, Write, WriteHandler};
 use curl_core::id::ArenaPolicy;
-use curl_core::libraries::{Libraries, Library, SharedLibraries};
+use curl_core::libraries::{Libraries, SharedLibraries};
 use curl_core::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
 use curl_core::options::{AuthMethods, HttpAuth, Login, Options};
 use curl_core::time::ManualClock;

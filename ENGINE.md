@@ -2921,8 +2921,18 @@ The adapters are installed only where C's default differs from the core's: the w
 always (the body goes to the application's C stream, never Rust's standard output), the header
 one with a header function or data, the debug one with a debug function, the text one with a
 STDERR stream other than standard error, ERRORBUFFER's with a buffer, and the progress and read
-ones as the settings call for. A handle allocates about what C's does (751). A copy's
-adapters are its own, installed in place of the ones it was cloned with.
+ones as the settings call for. A handle allocates about what C's does (751).
+
+An adapter holds its handle's address, so a copy must never keep the original's: the copy would
+call the application with the original's `CURL *`, freed once the original is cleaned up. One
+function makes a handle's adapters whole, `ShimEasy::adapt`: it drops whatever adapters the
+options hold and makes every one again from the handle's C-side settings (the callbacks and
+settings, ERRORBUFFER, the socket and `SSL_CTX` functions). A new handle and a copy
+(`ShimEasy::boxed`, which `curl_easy_duphandle` reaches with a copy of the original's C side)
+and `curl_easy_reset` call it, and nothing else makes a set of them; a setopt adds or drops only
+the adapter of the option it sets. An option that brings a new adapter is made in `adapt` from
+its C-side setting, and gets a test that a copy calls through itself once the original is
+freed.
 
 ### 7.3 `curl_easy_pause`
 
@@ -3017,8 +3027,8 @@ adapters are its own, installed in place of the ones it was cloned with.
   holds the function and data it was made with, as a connection outlives its handle and a
   share's cleanup closes with no handle; it gets no context. The functions and data live in
   a store the handle makes when one is first set (8 bytes a handle), copied by
-  `curl_easy_duphandle`, whose adapters are made again for the copy, and cleared by
-  `curl_easy_reset`.
+  `curl_easy_duphandle`, whose adapters `ShimEasy::adapt` makes again for the copy (§7.2), and
+  cleared by `curl_easy_reset`.
 
 ### 7.7 setopt, getinfo, headers, errors
 

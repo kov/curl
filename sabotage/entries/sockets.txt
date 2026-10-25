@@ -114,9 +114,8 @@ file: crates/curl-sys-abi/src/easy.rs
 witness: curl-sys-abi handle_tests::socket_functions_are_called_as_c_calls_them
 features: debug-hooks
 --- old
-    if copy_sockets(easy, dup).is_err() || copy_tls(easy, dup).is_err() {
+        crate::sockets::sync(options, me, &shim.sockets())?;
 --- new
-    if copy_tls(easy, dup).is_err() {
 
 === a reset handle keeps its socket functions for the next data set
 file: crates/curl-sys-abi/src/easy.rs
@@ -130,9 +129,9 @@ features: debug-hooks
 file: crates/curl-sys-abi/src/easy.rs
 witness: curl-sys-abi tls_tests::a_copy_s_ssl_ctx_function_is_given_the_copy
 --- old
-    if copy_sockets(easy, dup).is_err() || copy_tls(easy, dup).is_err() {
+        crate::tls::sync(options, me, &shim.tls())
 --- new
-    if copy_sockets(easy, dup).is_err() {
+        Ok(())
 
 === a reset handle keeps its SSL_CTX data for the next function set
 file: crates/curl-sys-abi/src/easy.rs

@@ -73,11 +73,11 @@ features: debug-hooks
         drop(removed);
 
 === a copy keeps the original's adapters
-file: crates/curl-sys-abi/src/callbacks.rs
+file: crates/curl-sys-abi/src/easy.rs
 witness: curl-sys-abi easy::tests::a_copy_calls_back_with_its_own_data
 features: debug-hooks
 --- old
-    options.callbacks = Callbacks::default();
+        options.callbacks = Callbacks::default();
 --- new
 
 === an added handle keeps its old error text

@@ -19,7 +19,7 @@ use curl_core::handler::{
     TrailerHandler, TrailerLines, Trailers, Write, WriteHandler,
 };
 use curl_core::multi::TransferCx;
-use curl_core::options::{Callbacks, Method, Options, Progress, UploadSource};
+use curl_core::options::{Method, Options, Progress, UploadSource};
 
 use crate::easy::ShimEasy;
 use crate::ffi::{
@@ -123,24 +123,6 @@ impl CSettings {
             private: ptr::null_mut(),
         }
     }
-}
-
-/// Give `options` the adapters of the handle at `easy` its settings call
-/// for, in place of any it had: a copy's are the copy's own. Each looks at
-/// the application's choices when it runs.
-pub(crate) fn install(
-    options: &mut Options,
-    easy: NonNull<ShimEasy>,
-    set: &CSettings,
-    ccb: &CCallbacks,
-    errbuf: *mut c_char,
-) -> Result<(), OutOfMemory> {
-    options.callbacks = Callbacks::default();
-    // The body always goes through the application's C stream or
-    // function, never Rust's own standard output.
-    options.callbacks.write = Some(Handler::write(Adapter(easy))?);
-    sync_error_buffer(options, easy, errbuf)?;
-    install_defaults(options, easy, set, ccb)
 }
 
 /// The adapters besides the write and ERRORBUFFER ones: for the settings

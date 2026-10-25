@@ -23,8 +23,8 @@ pub mod threaded;
 pub(crate) mod tls;
 
 pub(crate) use connect::{
-    Asked, ConnCx, ConnectError, Found, MAX_ATTEMPTS, Made, Opened, Progress, Setup, SocketSetup,
-    Unresolved, queries,
+    Asked, Came, ConnCx, ConnectError, Found, MAX_ATTEMPTS, Made, Opened, Progress, Setup,
+    SocketSetup, Unresolved, queries,
 };
 pub(crate) use connect_to::{BadVia, via};
 pub(crate) use dns::{

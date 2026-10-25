@@ -284,7 +284,7 @@ fn resolve_host(
     let found = match &looked {
         Ok((_, found)) => Some(*found),
         Err(ConnectError::Unresolved(Unresolved::Negative)) => None,
-        Err(ConnectError::Unresolved(_)) => Some(Found::Resolved(Asked::Resolver)),
+        Err(ConnectError::Unresolved(_)) => Some(Found::Resolved(Asked::Resolver(None))),
         Err(ConnectError::OutOfMemory) => return Err(BindFailed::OutOfMemory),
         Err(ConnectError::Failed(..)) => unreachable!("a resolve makes no attempt"),
     };
@@ -316,7 +316,7 @@ fn resolve_host(
             if let Found::Stale(asked) | Found::Resolved(asked) = found {
                 let started = match asked {
                     Asked::Shortcut => 0,
-                    Asked::Resolver => AGAIN_NUMBER,
+                    Asked::Resolver(_) => AGAIN_NUMBER,
                 };
                 cx.of(
                     dns,
@@ -344,10 +344,10 @@ fn resolve_host(
             // The reference build's resolver, c-ares, gives its reason
             // (`ares_strerror`).
             match why {
-                Unresolved::Resolver(ResolveFailure::NotFound) => cx.fail(format_args!(
+                Unresolved::Resolver(ResolveFailure::NotFound, _) => cx.fail(format_args!(
                     "Could not resolve host: {name} (Domain name not found)"
                 )),
-                Unresolved::Resolver(ResolveFailure::NoData) => cx.fail(format_args!(
+                Unresolved::Resolver(ResolveFailure::NoData, _) => cx.fail(format_args!(
                     "Could not resolve host: {name} (DNS server returned answer with no data)"
                 )),
                 _ => cx.fail(format_args!("Could not resolve host: {name}")),

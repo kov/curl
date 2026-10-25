@@ -2690,7 +2690,11 @@ fn dns_lines(m: &mut Multi, url: &str, set: impl FnOnce(&mut Options)) -> Vec<St
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.remove(id, &mut NoEvents).unwrap();
-    let lines = trace_of(&lines);
+    dns_only(trace_of(&lines))
+}
+
+/// The DNS component's lines of `lines`, as `dns_lines` keeps them.
+fn dns_only(lines: Vec<String>) -> Vec<String> {
     let starts = lines
         .iter()
         .filter(|l| l.contains("] hostip_resolv("))
@@ -2709,6 +2713,70 @@ fn dns_lines(m: &mut Multi, url: &str, set: impl FnOnce(&mut Options)) -> Vec<St
         })
         .map(|l| l.trim_end().to_owned())
         .collect()
+}
+
+/// A resolver that queues each family as a query of its own and answers
+/// later is traced as C's threaded one: each query queued, IPv6's first,
+/// then each family's addresses as its answer is taken, IPv4's first; and
+/// none for a name that has none (`async_thrdd_query`,
+/// `async_thrdd_report_item`).
+#[test]
+fn a_queued_resolve_is_traced_as_c_s_threaded_resolver() {
+    use crate::conn::io::{Late, Peer, SharedNet};
+    let clock = ManualClock::new().unwrap();
+    let (late, gone) = (Late::new(), Late::new());
+    let net = FakeNet::new(clock.clone())
+        .with_peer(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
+            Peer::Accepts,
+        )
+        .with_late_name("late.test", &[[127, 0, 0, 1].into()], &late)
+        .with_late_name("gone.test", &[], &gone);
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(net));
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(SharedNet(shared)),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    // Each name's answer comes after its first pass.
+    let mut run = |url: &str, gate: &Late, v4: bool| {
+        let (mut e, lines) = traced(url);
+        if v4 {
+            e.options_mut().ip_version = IpVersion::V4;
+        }
+        let e = tracing(e, b"dns");
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        gate.release();
+        m.perform(&mut NoEvents).unwrap();
+        m.remove(id, &mut NoEvents).unwrap();
+        dns_only(trace_of(&lines))
+    };
+    assert_eq!(
+        run("tcp://late.test:1/", &late, false),
+        [
+            "[DNS] cache lookup late.test:1 queries=A+AAAA -> 0 not found",
+            "[DNS] queueing query [0/1] AAAA late.test:1",
+            "[DNS] queueing query [0/1] A late.test:1",
+            "[DNS] [A+AAAA] hostip_resolv started -> 81",
+            "[DNS] Host late.test:1 resolved IPv4: 127.0.0.1",
+            "[DNS] Host late.test:1 resolved IPv6: (none)",
+            "[DNS] [A+AAAA] resolve complete for late.test:1",
+            "[DNS] cached entry for late.test:1 queries=A+AAAA",
+        ]
+    );
+    assert_eq!(
+        run("tcp://gone.test:1/", &gone, true),
+        [
+            "[DNS] cache lookup gone.test:1 queries=A -> 0 not found",
+            "[DNS] queueing query [1/2] A gone.test:1",
+            "[DNS] [A] hostip_resolv started -> 81",
+            "[DNS] Host gone.test:1 resolved IPv4: (none)",
+            "[DNS] cache negative name resolve for gone.test:1 type=A",
+        ]
+    );
 }
 
 /// The DNS component traces the cache as C's does: each lookup, what

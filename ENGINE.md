@@ -1889,9 +1889,22 @@ waits for a thread wakes the multi, whose next pass starts one. A quick exit
 multi) leaves the threads running as the resolver goes rather than joining them; the tool asks
 for it always but in the debug build, where only `CURL_QUICK_EXIT` does.
 
+A resolve that answers later says how it was queued (`Queued`: its id, and which families went
+as a query of their own), which the answer, or the failure, carries back to the transfer's DNS
+trace: each query as queued, `queueing query [transfer/id] AAAA name:port`, IPv6's first, and
+each query's addresses as taken, `Host name:port resolved IPv4: ...`, IPv4's first, `(none)` for
+none, in the places C's lines fall among the cache's. They are written, with the rest of the
+lookup's lines, as the answer is taken; the passes between, and C's DNS filter's own lines,
+are not traced, as they are not for the system's resolver either. A name not answered within
+the connect limit times out as "Resolving", not "Connection".
+
 Built so far (step 48b): the pool, its queries and answers, the eventfd it wakes, `SystemNet`
-holding it in a build with the feature, the multi listening on that eventfd, and the two
-options. Not built yet: the resolver's DNS traces.
+holding it in a build with the feature, the multi listening on that eventfd, the two options and
+the resolver's DNS lines. Not built yet: the debug build's variables (`CURL_DBG_RESOLV_*`,
+`CURL_DBG_THRDPOOL_FAIL_STARTS`); the blocking resolve's `await` lines and the thread queue's
+own trace; and the re-query of an IPv6 answer with a link-local address but no scope, which
+glibc gives only to an `AF_UNSPEC` query, a workaround to reproduce before it is ported, which
+needs the resolver's addresses to keep their scope first.
 `DnsCache` is in the multi's `Caches`, or a share's (section 4.6.1): entries by name, in
 any case, and port, each a `TryRc<Answer>` that the connect machine using it shares, recording
 the family asked (`dns_queries`): an answer for one family is no answer for both. A setup

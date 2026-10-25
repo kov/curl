@@ -11,7 +11,7 @@ use crate::conn::socks::{
     Creds, Dest, Failed, GssError, GssLine, GssMethod, Handshake as Exchange, Resolved, SocksError,
     Took, Version,
 };
-use crate::conn::{Found, Made, RecvFailed};
+use crate::conn::{Came, Made, RecvFailed};
 use crate::error::ErrorKind;
 use crate::gss::Style;
 use crate::multi::Host;
@@ -76,14 +76,14 @@ fn start<H: Host>(
         None => Resolved::Remote,
         Some(Ok((answer, found))) => {
             match found {
-                Found::Cached => {
+                Came::Cached => {
                     let name = Bytes(answer.name());
                     trace::info(cx, format_args!("Hostname {name} was found in DNS cache"));
                 }
-                Found::Stale(_) => {
+                Came::Stale => {
                     trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"));
                 }
-                Found::Resolved(_) => {}
+                Came::Resolved => {}
             }
             report_resolved(cx, &answer, target.port());
             Resolved::pick(version, answer.addrs(), ip)

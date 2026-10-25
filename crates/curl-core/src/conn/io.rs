@@ -267,18 +267,24 @@ impl<'a> SocketPoll<'a> {
 }
 
 /// The network as the engine reaches it.
-/// One resolve a resolver started, never named again once done or
-/// cancelled: a stale one fails closed.
+/// One resolve a resolver started. Numbered as C numbers them, in 32
+/// bits from 1, past the last back to 1 (`last_resolv_id`): a resolve
+/// would have to wait out four billion others to meet its number again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ResolveId(std::num::NonZeroU64);
+pub struct ResolveId(std::num::NonZeroU32);
 
 impl ResolveId {
     /// The first a resolver gives.
-    pub const FIRST: ResolveId = ResolveId(std::num::NonZeroU64::MIN);
+    pub const FIRST: ResolveId = ResolveId(std::num::NonZeroU32::MIN);
+
+    /// Its number, as traces show it.
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
 
     /// The one after it.
     pub fn next(self) -> ResolveId {
-        ResolveId(self.0.checked_add(1).expect("fewer than 2^64 resolves"))
+        ResolveId(self.0.checked_add(1).unwrap_or(std::num::NonZeroU32::MIN))
     }
 }
 
@@ -298,7 +304,29 @@ impl Waiter {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Resolve {
     Answer(Vec<IpAddr>),
-    Pending(ResolveId),
+    Pending(Queued),
+}
+
+/// A resolve that answers later: its id, and which families it was
+/// queued as a query of their own for, IPv6's first, by a resolver that
+/// asks each family apart (`async_thrdd_query`); neither for one that
+/// asks once for what the resolve wants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Queued {
+    pub id: ResolveId,
+    pub v6: bool,
+    pub v4: bool,
+}
+
+impl Queued {
+    /// `id`, asked once for what it wants.
+    pub fn once(id: ResolveId) -> Queued {
+        Queued {
+            id,
+            v6: false,
+            v4: false,
+        }
+    }
 }
 
 /// What finds the addresses names stand for (C's resolver backends):
@@ -1651,7 +1679,12 @@ impl Resolver for FakeNet {
                 told: false,
             })
             .map_err(|_| ResolveFailure::OutOfMemory)?;
-        Ok(Resolve::Pending(id))
+        // Each family a query of its own, as the threaded resolver asks.
+        Ok(Resolve::Pending(Queued {
+            id,
+            v6: family != Family::V4,
+            v4: family != Family::V6,
+        }))
     }
 
     fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
@@ -2015,4 +2048,14 @@ mod tests {
         );
         net.close(Sock::new(s, Closer::System));
     }
+}
+
+/// Resolves are numbered as C's multi numbers them: from 1, and after
+/// `UINT32_MAX` from 1 again, never 0 (`last_resolv_id`).
+#[test]
+fn resolve_ids_count_as_c_s() {
+    assert_eq!(ResolveId::FIRST.get(), 1);
+    assert_eq!(ResolveId::FIRST.next().get(), 2);
+    let last = ResolveId(std::num::NonZeroU32::MAX);
+    assert_eq!(last.next(), ResolveId::FIRST);
 }

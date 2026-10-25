@@ -478,7 +478,7 @@ witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 --- old
-    Ok((answer, found(Asked::Resolver)))
+    Ok((answer, found(Asked::Resolver(queued))))
 --- new
     Ok((answer, found(Asked::Shortcut)))
 

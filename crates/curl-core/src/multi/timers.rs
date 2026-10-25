@@ -45,10 +45,13 @@ pub(crate) enum TimerKind {
     /// race starts while the attempts are not all known
     /// (`EXPIRE_ALPN_EYEBALLS`).
     AlpnEyeballs,
+    /// The resolver's next try at starting a thread for queries that
+    /// wait for one (`EXPIRE_ASYNC_NAME`).
+    AsyncName,
 }
 
 impl TimerKind {
-    const COUNT: usize = 7;
+    const COUNT: usize = 8;
 
     /// The name C's trace gives it (`Curl_trc_timer_name`). The
     /// protocol's own wait is HTTP's for a 100, the only one there is.
@@ -61,6 +64,7 @@ impl TimerKind {
             TimerKind::Proto => "100_TIMEOUT",
             TimerKind::TooFast => "TOOFAST",
             TimerKind::AlpnEyeballs => "ALPN_EYEBALLS",
+            TimerKind::AsyncName => "ASYNC_NAME",
         }
     }
 
@@ -74,6 +78,7 @@ impl TimerKind {
         TimerKind::Proto,
         TimerKind::TooFast,
         TimerKind::AlpnEyeballs,
+        TimerKind::AsyncName,
     ];
 
     fn slot(self) -> usize {

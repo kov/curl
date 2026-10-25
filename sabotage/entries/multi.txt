@@ -530,6 +530,7 @@ witness: curl-core multi::tests::an_established_connection_forgets_the_next_atte
                 | Progress::Trying { .. }
                 | Progress::Failed
                 | Progress::Waiting { .. }
+                | Progress::Resolving { .. }
         ))
     ) {
         run.deadlines.clear(TimerKind::Eyeballs);

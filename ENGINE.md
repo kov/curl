@@ -1899,10 +1899,14 @@ are not traced, as they are not for the system's resolver either. A name not ans
 the connect limit times out as "Resolving", not "Connection".
 
 Built so far (step 48b): the pool, its queries and answers, the eventfd it wakes, `SystemNet`
-holding it in a build with the feature, the multi listening on that eventfd, the two options and
-the resolver's DNS lines. Not built yet: the debug build's variables (`CURL_DBG_RESOLV_*`,
-`CURL_DBG_THRDPOOL_FAIL_STARTS`); the blocking resolve's `await` lines and the thread queue's
-own trace; and the re-query of an IPv6 answer with a link-local address but no scope, which
+holding it in a build with the feature, the multi listening on that eventfd, the two options,
+the resolver's DNS lines, and the debug build's variables (`DebugVars`, read as the resolver is
+made: `CURL_DBG_RESOLV_DELAY`, `_FAIL_DELAY`, `_FAIL_NEGATIVE`, `_MAX_THREADS`,
+`CURL_DBG_THRDPOOL_FAIL_STARTS`). A thread that cannot be started leaves its queries queued;
+the resolver then asks to be tried again in 100 ms (`Resolver::retry`), which the setup arms as
+its `ASYNC_NAME` timer, and the next pass starts one. Not built yet: `CURL_DBG_RESOLV_FAIL_IPV6`
+(`hostip_resolv`'s, for every resolver); the blocking resolve's `await` lines and the thread
+queue's own trace; and the re-query of an IPv6 answer with a link-local address but no scope, which
 glibc gives only to an `AF_UNSPEC` query, a workaround to reproduce before it is ported, which
 needs the resolver's addresses to keep their scope first.
 `DnsCache` is in the multi's `Caches`, or a share's (section 4.6.1): entries by name, in

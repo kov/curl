@@ -2012,12 +2012,14 @@ fn connect_once<H: Host>(
                 | Progress::Trying { .. }
                 | Progress::Failed
                 | Progress::Waiting { .. }
+                | Progress::Resolving { .. }
         ))
     ) {
         run.deadlines.clear(TimerKind::Eyeballs);
     }
     match connected {
         Ok(Connected::Connecting(Progress::Resolved(found))) => {
+            run.deadlines.clear(TimerKind::AsyncName);
             // A Unix socket's address is made, not looked up
             // (`resolv_unix`).
             if !c.route.destination().is_unix() {
@@ -2049,6 +2051,25 @@ fn connect_once<H: Host>(
         }
         Ok(Connected::Connecting(Progress::Waiting { until })) => {
             waiting(run, cx, until);
+            (TransferState::Connecting(c), Wake::Idle)
+        }
+        // The resolver's answer wakes the multi; a thread it could not
+        // start is tried for again at `retry`, or the connect limit's
+        // own timer ends the wait (`Curl_async_pollset`).
+        Ok(Connected::Connecting(Progress::Resolving { retry })) => {
+            match retry {
+                Some(at) => {
+                    let mut wait = wait_ms(cx.now(), at);
+                    let left = run
+                        .deadlines
+                        .time_left(starts(cx), cx.now(), Phase::Connecting);
+                    if let TimeLeft::Remaining(left) = left {
+                        wait = wait.min(left);
+                    }
+                    arm(&mut run.deadlines, cx, TimerKind::AsyncName, wait);
+                }
+                None => run.deadlines.clear(TimerKind::AsyncName),
+            }
             (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Connected::Established { remote, local, at }) => {

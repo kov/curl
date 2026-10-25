@@ -487,6 +487,10 @@ pub(crate) enum Progress {
     /// Nothing until a socket is ready, or until `until`, when the next
     /// attempt is due (`EXPIRE_HAPPY_EYEBALLS`).
     Waiting { until: Option<Instant> },
+    /// Nothing until the resolver answers, or until `retry`, when
+    /// queries waiting for a thread that could not be started are tried
+    /// again (`EXPIRE_ASYNC_NAME`).
+    Resolving { retry: Option<Instant> },
     /// Connected to the first hop, over which handshakes are to be made
     /// (`ConnLease::dialed`).
     Dialed,
@@ -746,10 +750,10 @@ impl ConnectMachine {
                             // multi runs the transfer again.
                             Looked::Pending(p) => {
                                 self.stage = Stage::Resolving(Some(p));
-                                return Ok(Drove::Connecting(
-                                    self,
-                                    Progress::Waiting { until: None },
-                                ));
+                                let mut retry = None;
+                                cx.net().with_resolver(&mut |r| retry = r.retry());
+                                let retry = retry.map(|after| cx.now().after(after));
+                                return Ok(Drove::Connecting(self, Progress::Resolving { retry }));
                             }
                         }
                     }
@@ -1705,7 +1709,9 @@ mod tests {
                         } => unreachable!("no Unix socket"),
                         Progress::Failed => {}
                         Progress::Waiting { .. } => clock.advance(Duration::from_millis(1)),
-                        Progress::Resolved(_) => unreachable!("resolved already"),
+                        Progress::Resolved(_) | Progress::Resolving { .. } => {
+                            unreachable!("resolved already")
+                        }
                         Progress::Dialed => unreachable!("no proxy"),
                     }
                 }
@@ -1764,7 +1770,7 @@ mod tests {
             now: clock.now(),
         };
         let m = match m.drive(&mut cx, setup) {
-            Ok(Drove::Connecting(m, Progress::Waiting { until: None })) => m,
+            Ok(Drove::Connecting(m, Progress::Resolving { retry: None })) => m,
             other => panic!("{other:?}"),
         };
         assert_eq!(net.resolving(), 1);

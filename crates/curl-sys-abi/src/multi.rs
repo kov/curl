@@ -856,6 +856,36 @@ pub unsafe extern "C" fn curl_multi_setopt(
         };
         return set_limit(limits, option, n);
     }
+    if matches!(
+        option,
+        ffi::CURLMOPT_RESOLVE_THREADS_MAX | ffi::CURLMOPT_QUICK_EXIT
+    ) {
+        // SAFETY: the application passes a long, the type of each.
+        let n = unsafe { args.next_arg::<c_long>() };
+        let setting = match resolving(option, n) {
+            Ok(Some(setting)) => setting,
+            Ok(None) => return CURLM_OK,
+            Err(code) => return code,
+        };
+        macro_rules! apply {
+            ($to:expr) => {
+                match setting {
+                    Resolving::ThreadsMax(max) => $to.set_resolve_threads_max(max),
+                    Resolving::QuickExit(quick) => $to.set_quick_exit(quick),
+                }
+            };
+        }
+        match entry.reach {
+            // SAFETY: the reach is direct.
+            Reach::Direct => apply!(unsafe { multi.core_mut() }),
+            // SAFETY: as in `curl_multi_info_read`.
+            Reach::Frame(Frame::Event(cx)) => apply!(unsafe { &mut *cx.as_ptr() }),
+            // SAFETY: as above.
+            Reach::Frame(Frame::Notify(cx)) => apply!(unsafe { &mut *cx.as_ptr() }),
+            Reach::Frame(Frame::Transfer(_)) => return CURLM_RECURSIVE_API_CALL,
+        }
+        return CURLM_OK;
+    }
     let mut cb = multi.cb.get();
     // SAFETY: the application passes a pointer, the type of each of these
     // options, and a function of the option's type.
@@ -901,6 +931,30 @@ fn set_limit(limits: &mut ConnLimits, option: CURLMoption, n: c_long) -> CURLMco
         limits.max_total = max;
     }
     code
+}
+
+/// A setting of the multi's resolver.
+#[derive(Clone, Copy)]
+enum Resolving {
+    ThreadsMax(NonZeroU32),
+    QuickExit(bool),
+}
+
+/// `CURLMOPT_RESOLVE_THREADS_MAX` and `CURLMOPT_QUICK_EXIT` from their
+/// long. The most threads is taken only by a build with the threaded
+/// resolver, which refuses 0, negative and past `UINT32_MAX`; another
+/// build takes any and has no threads to bound.
+fn resolving(option: CURLMoption, n: c_long) -> Result<Option<Resolving>, CURLMcode> {
+    if option == ffi::CURLMOPT_QUICK_EXIT {
+        return Ok(Some(Resolving::QuickExit(n != 0)));
+    }
+    if !cfg!(feature = "threaded-resolver") {
+        return Ok(None);
+    }
+    match u32::try_from(n).ok().and_then(NonZeroU32::new) {
+        Some(max) => Ok(Some(Resolving::ThreadsMax(max))),
+        None => Err(CURLM_BAD_FUNCTION_ARGUMENT),
+    }
 }
 
 /// What C polls an extra descriptor for.

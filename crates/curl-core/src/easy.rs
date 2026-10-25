@@ -506,6 +506,7 @@ impl Easy {
     pub(crate) fn perform_in(&mut self, multi: &mut Multi, drive: Drive) -> Result<(), Error> {
         // The easy handle's limit is its multi's (`curl_easy_perform`).
         multi.conn_limits_mut().max_connects = Some(self.options().limits.reuse.max_connects);
+        multi.set_quick_exit(self.options().quick_exit);
         // The multi holds its transfers in memory of their own.
         let result = match curl_alloc::try_box_or_back(std::mem::take(self)) {
             Ok(easy) => {

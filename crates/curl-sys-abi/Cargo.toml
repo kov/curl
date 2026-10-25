@@ -17,6 +17,8 @@ debug-hooks = ["curl-alloc/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/d
 # Read `long double` printf arguments in Rust (aarch64 only), with nightly's
 # `f128`; without it a C helper reads them.
 nightly = []
+# The threaded resolver as the system's (C's `--enable-threaded-resolver`).
+threaded-resolver = ["curl-core/threaded-resolver"]
 
 [dependencies]
 curl-alloc = { version = "0.1.0", path = "../curl-alloc" }

@@ -79,6 +79,7 @@ fn new_multi(line: &CommandLine<'_>) -> Result<Multi, OutOfMemory> {
     };
     let mut multi = Multi::new(env)?;
     multi.conn_limits_mut().max_host = line.global.parallel_host.map(NonZeroU32::from);
+    multi.set_quick_exit(super::quick_exit());
     Ok(multi)
 }
 

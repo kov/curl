@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use super::*;
+use crate::conn::io::Resolver as _;
 use crate::conn::io::{FakeNet, Peer, PollFd, SocketPoll};
+use crate::conn::threaded::{ResolverThreads, ThreadedResolver, Threads};
 use crate::time::ManualClock;
 
 /// A multi whose sockets the application tags with a number.
@@ -416,7 +418,11 @@ fn a_notification_assigns_as_the_multi_does() {
 
 /// A resolver lent with a wake of its own, as the threaded resolver's,
 /// answering through the fake network's.
-struct Woken<'r>(&'r mut dyn crate::conn::io::Resolver, TryArc<Waker>);
+struct Woken<'r>(
+    &'r mut dyn crate::conn::io::Resolver,
+    TryArc<Waker>,
+    Option<ResolverThreads>,
+);
 
 impl crate::conn::io::Resolver for Woken<'_> {
     fn start(
@@ -456,10 +462,14 @@ impl crate::conn::io::Resolver for Woken<'_> {
     fn waker(&self) -> Option<TryArc<Waker>> {
         Some(self.1.clone())
     }
+
+    fn pool(&self) -> Option<ResolverThreads> {
+        self.2.clone()
+    }
 }
 
 /// The fake network, its resolver woken by `.1`.
-struct Waking(FakeNet, TryArc<Waker>);
+struct Waking(FakeNet, TryArc<Waker>, Option<ResolverThreads>);
 
 impl Net for Waking {
     fn poll(
@@ -484,8 +494,9 @@ impl Net for Waking {
 
     fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn crate::conn::io::Resolver)) {
         let waker = self.1.clone();
+        let pool = self.2.clone();
         self.0
-            .with_resolver(&mut |r| f(&mut Woken(r, waker.clone())));
+            .with_resolver(&mut |r| f(&mut Woken(r, waker.clone(), pool.clone())));
     }
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
@@ -518,7 +529,7 @@ fn the_resolver_s_wake_is_listened_on_while_a_transfer_is_alive() {
     let wake = std::os::fd::AsRawFd::as_raw_fd(&waker.fd());
     let env = Env {
         clock: Box::new(clock.clone()),
-        net: Box::new(Waking(net, waker.clone())),
+        net: Box::new(Waking(net, waker.clone(), None)),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
@@ -553,4 +564,71 @@ fn the_resolver_s_wake_is_listened_on_while_a_transfer_is_alive() {
     let mut keys = Vec::new();
     m.sockets(&mut ev, |k, _| keys.push(k.get()));
     assert_eq!(keys, [], "none alive");
+}
+
+/// The resolver's settings reach the pool it answers from, from the
+/// multi and from inside its callbacks (`CURLMOPT_RESOLVE_THREADS_MAX`,
+/// `CURLMOPT_QUICK_EXIT`).
+#[test]
+fn the_resolver_s_settings_reach_its_pool() {
+    struct Setting;
+    impl MultiEvents<Tagged> for Setting {
+        fn wants_timer(&self) -> bool {
+            true
+        }
+        fn timer(&mut self, cx: &mut EventCx<'_, Tagged>, _: TimerChange) -> Result<(), Abort> {
+            cx.set_resolve_threads_max(NonZeroU32::new(7).unwrap());
+            cx.set_quick_exit(false);
+            Ok(())
+        }
+    }
+    let threaded = ThreadedResolver::new(Threads::MULTI).unwrap();
+    let pool = threaded.pool().unwrap();
+    let clock = ManualClock::new().unwrap();
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(Waking(
+            FakeNet::new(clock),
+            threaded.waker().unwrap(),
+            Some(pool.clone()),
+        )),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+    assert_eq!(pool.settings(), (20, true));
+    m.set_resolve_threads_max(NonZeroU32::new(3).unwrap());
+    m.set_quick_exit(true);
+    assert_eq!(pool.settings(), (3, false));
+    m.add(Box::new(easy("tcp://127.0.0.1:4/")), (), &mut Setting)
+        .unwrap();
+    assert_eq!(pool.settings(), (7, true), "set inside the timer callback");
+}
+
+/// An easy handle's quick exit is its multi's as `curl_easy_perform`
+/// runs it there (`CURLOPT_QUICK_EXIT`).
+#[test]
+fn an_easy_handle_s_quick_exit_is_its_multi_s() {
+    let threaded = ThreadedResolver::new(Threads::EASY).unwrap();
+    let pool = threaded.pool().unwrap();
+    let clock = ManualClock::new().unwrap();
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(Waking(
+            FakeNet::new(clock),
+            threaded.waker().unwrap(),
+            Some(pool.clone()),
+        )),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let mut e = easy("tcp://127.0.0.1:1/");
+    e.options_mut().quick_exit = true;
+    // No peer listens: the transfer fails, its multi set first.
+    assert!(e.perform_in(&mut m, crate::easy::Drive::Waits).is_err());
+    assert_eq!(pool.settings(), (2, false));
+    e.options_mut().quick_exit = false;
+    assert!(e.perform_in(&mut m, crate::easy::Drive::Waits).is_err());
+    assert_eq!(pool.settings(), (2, true));
 }

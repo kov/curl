@@ -299,7 +299,10 @@ impl<H: Host> Multi<H> {
         let mut net = env.net;
         let ipv6_works = net.probe_ipv6()?;
         let mut alive = cx::Alive::default();
-        net.with_resolver(&mut |r| alive.waker = r.waker());
+        net.with_resolver(&mut |r| {
+            alive.waker = r.waker();
+            alive.pool = r.pool();
+        });
         Ok(Multi {
             slots,
             dirty: RowSet::default(),
@@ -341,6 +344,18 @@ impl<H: Host> Multi<H> {
     #[cfg(any(test, feature = "test-util"))]
     pub fn linger_connections(&mut self, how: Option<crate::conn::Linger>) {
         self.linger = how;
+    }
+
+    /// The most threads the multi's resolver answers from, for a resolver
+    /// that answers from a pool of them (`CURLMOPT_RESOLVE_THREADS_MAX`).
+    pub fn set_resolve_threads_max(&mut self, max: NonZeroU32) {
+        self.alive.set_resolve_threads_max(max);
+    }
+
+    /// Whether dropping the multi leaves its resolver's threads running
+    /// rather than waiting for them (`CURLMOPT_QUICK_EXIT`).
+    pub fn set_quick_exit(&mut self, quick: bool) {
+        self.alive.set_quick_exit(quick);
     }
 
     /// The multi's limits on its connections.
@@ -1170,6 +1185,7 @@ impl<H: Host> Multi<H> {
             return Ok(());
         };
         let mut cx = EventCx {
+            alive: &self.alive,
             slots: &mut self.slots,
             limits: &mut self.limits,
             notify: &mut self.notify,

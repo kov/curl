@@ -239,6 +239,7 @@ impl curl_core::http2::Session for Session {
         &mut self,
         fields: &[(&[u8], &[u8])],
         body: bool,
+        weight: u16,
     ) -> Result<StreamId, FrameError> {
         let mut nva = Vec::new();
         nva.try_reserve_exact(fields.len())
@@ -265,12 +266,19 @@ impl curl_core::http2::Session for Session {
         } else {
             ptr::null()
         };
-        // SAFETY: the session, the fields, which outlive the call, and a
-        // provider whose callback reads through what `send` lends.
+        // No dependency, and the weight asked (`h2_pri_spec`).
+        let priority = sys::nghttp2_priority_spec {
+            stream_id: 0,
+            weight: i32::from(weight),
+            exclusive: 0,
+        };
+        // SAFETY: the session, the priority and the fields, which outlive
+        // the call, and a provider whose callback reads through what
+        // `send` lends.
         let id = unsafe {
             sys::nghttp2_submit_request2(
                 self.raw.as_ptr(),
-                ptr::null(),
+                &priority,
                 nva.as_ptr(),
                 nva.len(),
                 prd,

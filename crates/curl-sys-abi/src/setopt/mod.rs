@@ -711,6 +711,19 @@ fn apply(
         }
         (ffi::CURLOPT_AUTOREFERER, Long(n)) => options.http.auto_referer = n != 0,
         (ffi::CURLOPT_PIPEWAIT, Long(n)) => options.http.pipewait = n != 0,
+        // Out of 1 to 256, the weight stays as it was (`CURLOPT_STREAM_WEIGHT`).
+        (ffi::CURLOPT_STREAM_WEIGHT, Long(n)) => {
+            if let Some(w) = u16::try_from(n)
+                .ok()
+                .filter(|w| (1..=256).contains(w))
+                .and_then(std::num::NonZeroU16::new)
+            {
+                options.http.stream_weight = Some(w);
+            }
+        }
+        // A stream's dependency on another handle's: taken, and not sent,
+        // as C's HTTP/2 sends none (`h2_pri_spec`).
+        (ffi::CURLOPT_STREAM_DEPENDS | ffi::CURLOPT_STREAM_DEPENDS_E, Ptr(_)) => {}
         (ffi::CURLOPT_UNRESTRICTED_AUTH, Long(n)) => options.http.unrestricted_auth = n != 0,
         (ffi::CURLOPT_HTTPAUTH, Long(n)) => {
             // The mask as C reads it, an `unsigned long`.

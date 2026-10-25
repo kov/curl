@@ -24,7 +24,9 @@ pub(crate) struct nghttp2_option {
 
 #[repr(C)]
 pub(crate) struct nghttp2_priority_spec {
-    _private: [u8; 0],
+    pub(crate) stream_id: i32,
+    pub(crate) weight: i32,
+    pub(crate) exclusive: u8,
 }
 
 #[repr(C)]

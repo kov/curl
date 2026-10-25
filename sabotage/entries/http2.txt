@@ -223,3 +223,11 @@ witness: curl-core proto::http::tests::h2::the_settings_say_the_multi_s_streams
             let (conn, _) = H2Conn::open(library, &settings(cx.max_streams()), None)?;
 --- new
             let (conn, _) = H2Conn::open(library, &settings(100), None)?;
+
+=== a stream asks the default weight whatever the application set
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_stream_asks_its_weight
+--- old
+                .map_or(code::DEFAULT_WEIGHT, std::num::NonZeroU16::get);
+--- new
+                .map_or(code::DEFAULT_WEIGHT, |_| code::DEFAULT_WEIGHT);

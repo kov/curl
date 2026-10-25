@@ -115,12 +115,14 @@ pub trait Session: fmt::Debug + Send {
     /// Open the connection's receive window to `size`.
     fn set_local_window(&mut self, size: i32) -> Result<(), FrameError>;
 
-    /// Queue a request of `fields`, its pseudo-headers first; with a body
-    /// if `body`, read as `send` asks.
+    /// Queue a request of `fields`, its pseudo-headers first, with the
+    /// stream's `weight`, 1 to 256; with a body if `body`, read as `send`
+    /// asks.
     fn submit_request(
         &mut self,
         fields: &[(&[u8], &[u8])],
         body: bool,
+        weight: u16,
     ) -> Result<StreamId, FrameError>;
 
     /// The connection was upgraded from HTTP/1.1, the request having sent
@@ -177,6 +179,8 @@ pub mod code {
     pub const REFUSED_STREAM: u32 = 7;
     pub const CANCEL: u32 = 8;
     pub const HTTP_1_1_REQUIRED: u32 = 0xd;
+    /// The weight of a stream that asks for none (`NGHTTP2_DEFAULT_WEIGHT`).
+    pub const DEFAULT_WEIGHT: u16 = 16;
 }
 
 #[cfg(any(test, feature = "test-util"))]

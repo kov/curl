@@ -260,8 +260,16 @@ impl Request {
             let fields = fields_of(&self.out[start..start + head], custom.as_deref(), scheme)?;
             let pairs = fields.pairs().map_err(|_| ErrorKind::OutOfMemory)?;
             let body = self.body.is_some();
-            let id = with_session(lease, |h2, _| h2.session().submit_request(&pairs, body))
-                .map_err(|_| ErrorKind::SendError)?;
+            let weight = cx
+                .easy()
+                .options()
+                .http
+                .stream_weight
+                .map_or(code::DEFAULT_WEIGHT, std::num::NonZeroU16::get);
+            let id = with_session(lease, |h2, _| {
+                h2.session().submit_request(&pairs, body, weight)
+            })
+            .map_err(|_| ErrorKind::SendError)?;
             self.stream().id = Some(id);
             if cx.easy().options().output.verbose {
                 let url = cx.easy().report().url().map(copied).transpose()?;

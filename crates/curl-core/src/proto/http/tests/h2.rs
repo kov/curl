@@ -529,3 +529,18 @@ fn the_settings_say_the_multi_s_streams() {
     assert_eq!(ran.result, Ok(()));
     assert!(ran.request.starts_with(b"S MCS=7;IWS=65536;EP=0;\n"));
 }
+
+/// The stream asks the weight the application set, as its priority
+/// (`h2_pri_spec`).
+#[test]
+fn a_stream_asks_its_weight() {
+    let (ran, _) = h2_get(&[RESPONSE], "/", |o| {
+        o.http.stream_weight = std::num::NonZeroU16::new(200);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let sent = String::from_utf8(ran.request.clone()).unwrap();
+    assert!(
+        sent.contains("\nH 1 1\nweight: 200\n:method: GET\n"),
+        "{sent}"
+    );
+}

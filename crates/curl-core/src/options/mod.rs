@@ -1507,6 +1507,9 @@ pub struct Http {
     /// (`CURLOPT_PIPEWAIT`). Without HTTP/2, nothing multiplexes, and it
     /// changes nothing, as in C built without it.
     pub pipewait: bool,
+    /// The weight an HTTP/2 stream asks of its server, 1 to 256
+    /// (`CURLOPT_STREAM_WEIGHT`); none for the protocol's default, 16.
+    pub stream_weight: Option<std::num::NonZeroU16>,
     /// What the application said for the first origin goes to any a
     /// redirect leads to (`CURLOPT_UNRESTRICTED_AUTH`).
     pub unrestricted_auth: bool,
@@ -2045,6 +2048,7 @@ impl Http {
             post_redirect: self.post_redirect,
             auto_referer: self.auto_referer,
             pipewait: self.pipewait,
+            stream_weight: self.stream_weight,
             unrestricted_auth: self.unrestricted_auth,
             auth: self.auth,
             cookies: self.cookies.try_clone(Cookies::try_clone)?,

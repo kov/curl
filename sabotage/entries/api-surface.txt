@@ -69,3 +69,10 @@ witness: curl-sys-abi handle_tests::the_multi_s_callbacks_run_with_their_frames
             | ffi::CURLMOPT_MAX_CONCURRENT_STREAMS
 --- new
             | ffi::CURLMOPT_MAX_CONCURRENT_STREAMS
+
+=== CURLOPT_STREAM_WEIGHT takes any value
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::http_options_reach_the_request
+--- old
+                .filter(|w| (1..=256).contains(w))
+--- new

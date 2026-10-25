@@ -1077,6 +1077,21 @@ fn http_options_reach_the_request() {
         assert_eq!(long(c, ffi::CURLOPT_HTTP_VERSION, v), code, "{v}");
     }
     assert_eq!(version(c), HttpVersion::Http2Prior);
+    // A stream's weight is 1 to 256; others leave it, and a dependency is
+    // taken and not kept.
+    let weight = |c| options(c, |o| o.http.stream_weight.map(|w| w.get()));
+    for (n, want) in [
+        (256, Some(256)),
+        (0, Some(256)),
+        (257, Some(256)),
+        (1, Some(1)),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_STREAM_WEIGHT, n), CURLE_OK, "{n}");
+        assert_eq!(weight(c), want, "{n}");
+    }
+    for o in [ffi::CURLOPT_STREAM_DEPENDS, ffi::CURLOPT_STREAM_DEPENDS_E] {
+        assert_eq!(pointer(c, o, ptr::null_mut::<c_void>()), CURLE_OK);
+    }
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }

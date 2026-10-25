@@ -84,7 +84,7 @@ fn a_request_and_its_response() {
         (b":path", b"/upload"),
         (b"user-agent", b"curl/test"),
     ];
-    let stream = client.submit_request(&fields, true).unwrap();
+    let stream = client.submit_request(&fields, true, 16).unwrap();
     assert_eq!(stream, StreamId(1));
     let mut body = b"hello".to_vec();
     let mut at_server = Vec::new();
@@ -137,7 +137,7 @@ fn resets_goaways_and_garbage() {
         (b":authority", b"x"),
         (b":path", b"/"),
     ];
-    client.submit_request(&fields, false).unwrap();
+    client.submit_request(&fields, false, 16).unwrap();
     pump(&mut client, &mut server, &mut Vec::new(), &mut Vec::new());
     server.reset(StreamId(1), 8).unwrap();
     server.goaway(0, b"").unwrap();

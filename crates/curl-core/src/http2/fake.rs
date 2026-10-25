@@ -310,10 +310,15 @@ impl Session for FakeSession {
         &mut self,
         fields: &[(&[u8], &[u8])],
         body: bool,
+        weight: u16,
     ) -> Result<StreamId, FrameError> {
         self.next = if self.next == 0 { 1 } else { self.next + 2 };
         let id = self.next;
         let mut frame = format!("H {id} {}\n", u8::from(!body)).into_bytes();
+        // A weight not the default goes with the head, as PRIORITY does.
+        if weight != super::code::DEFAULT_WEIGHT {
+            frame.extend_from_slice(format!("weight: {weight}\n").as_bytes());
+        }
         for (name, value) in fields {
             frame.extend_from_slice(name);
             frame.extend_from_slice(b": ");

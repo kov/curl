@@ -270,3 +270,11 @@ witness: curl-sys-abi handle_tests::the_resolver_s_options_are_the_build_s
         (ffi::CURLOPT_QUICK_EXIT, Long(n)) => options.quick_exit = n != 0,
 --- new
         (ffi::CURLOPT_QUICK_EXIT, Long(n)) => options.quick_exit = n > 1,
+
+=== a transfer timed out before its name answered says it was resolving
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_resolve_that_never_answers_times_out_as_resolving
+--- old
+                    Some(SetupPoint::Resolving) => "Resolving",
+--- new
+                    Some(SetupPoint::Resolving) => "Connection",

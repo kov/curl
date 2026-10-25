@@ -1879,9 +1879,19 @@ the socket callback is told of it, as the multi's own socket, as the first trans
 before that transfer's sockets, and told to remove it as the last is done; `wait` and the fd
 set poll it, and `wait` counts it among the descriptors ready (`multi_assess_wakeup`).
 
+The pool's settings are the resolver's, under its lock; the multi reaches them through a
+`ResolverThreads` handle the resolver lends with its eventfd, so that an option set inside a
+socket or timer callback, while a transfer holds the network, still reaches them. The most
+threads (`CURLMOPT_RESOLVE_THREADS_MAX`) is taken by the shim only in a build with the feature,
+which refuses 0 and anything past `UINT32_MAX`, as C's `#ifdef` does; raising it while a query
+waits for a thread wakes the multi, whose next pass starts one. A quick exit
+(`CURLMOPT_QUICK_EXIT`, and an easy handle's `CURLOPT_QUICK_EXIT` for `curl_easy_perform`'s
+multi) leaves the threads running as the resolver goes rather than joining them; the tool asks
+for it always but in the debug build, where only `CURL_QUICK_EXIT` does.
+
 Built so far (step 48b): the pool, its queries and answers, the eventfd it wakes, `SystemNet`
-holding it in a build with the feature, and the multi listening on that eventfd. Not built yet:
-`CURLMOPT_RESOLVE_THREADS_MAX` and `CURLMOPT_QUICK_EXIT`, and the resolver's DNS traces.
+holding it in a build with the feature, the multi listening on that eventfd, and the two
+options. Not built yet: the resolver's DNS traces.
 `DnsCache` is in the multi's `Caches`, or a share's (section 4.6.1): entries by name, in
 any case, and port, each a `TryRc<Answer>` that the connect machine using it shares, recording
 the family asked (`dns_queries`): an answer for one family is no answer for both. A setup

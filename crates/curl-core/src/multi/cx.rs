@@ -3,6 +3,7 @@
 //! context only if C allows that call from that callback.
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
+use std::num::NonZeroU32;
 use std::os::fd::AsRawFd as _;
 
 use std::fmt;
@@ -13,6 +14,7 @@ use crate::components::Component;
 use crate::conn::io::{Events, Net, PollFd, Resolver, Sock, Socket, SocketKey, SocketPoll, Waker};
 use crate::conn::layer::LayerCx;
 use crate::conn::shutdown::{Exits, ShutdownSet, WithSet};
+use crate::conn::threaded::ResolverThreads;
 use crate::conn::{Caches, ConnCx, DnsCache, Home, Names, Opened, Pool};
 use crate::deliver::PauseRequest;
 use crate::easy::Easy;
@@ -724,6 +726,24 @@ impl<H: Host> Telling<'_, H> {
 pub(crate) struct Alive {
     pub(crate) count: u32,
     pub(crate) waker: Option<TryArc<Waker>>,
+    /// The settings of the resolver's threads, if it answers from a pool.
+    pub(crate) pool: Option<ResolverThreads>,
+}
+
+impl Alive {
+    /// As `Multi::set_resolve_threads_max`.
+    pub(crate) fn set_resolve_threads_max(&self, max: NonZeroU32) {
+        if let Some(pool) = &self.pool {
+            pool.set_max_threads(max);
+        }
+    }
+
+    /// As `Multi::set_quick_exit`.
+    pub(crate) fn set_quick_exit(&self, quick: bool) {
+        if let Some(pool) = &self.pool {
+            pool.set_join(!quick);
+        }
+    }
 }
 
 /// Tell the socket callback of `changes` for `who`, in order,
@@ -744,6 +764,7 @@ pub(super) fn tell<H: Host>(
             _ => t.sockets.assigned(change.key),
         };
         let mut cx = EventCx {
+            alive: &*t.alive,
             slots: &mut *t.slots,
             limits: &mut *t.limits,
             notify: &mut *t.notify,
@@ -842,9 +863,20 @@ pub struct EventCx<'a, H: Host> {
     pub(super) notify: &'a mut NotifyQueue,
     pub(super) counts: Counts,
     pub(super) sockets: &'a mut SocketTable<H::Socket>,
+    pub(super) alive: &'a Alive,
 }
 
 impl<H: Host> EventCx<'_, H> {
+    /// As `Multi::set_resolve_threads_max`.
+    pub fn set_resolve_threads_max(&mut self, max: NonZeroU32) {
+        self.alive.set_resolve_threads_max(max);
+    }
+
+    /// As `Multi::set_quick_exit`.
+    pub fn set_quick_exit(&mut self, quick: bool) {
+        self.alive.set_quick_exit(quick);
+    }
+
     pub fn info_read(&mut self) -> Option<Message<'_, H>> {
         read_message(self.slots)
     }
@@ -908,6 +940,16 @@ pub struct NotifyCx<'a, H: Host> {
 }
 
 impl<H: Host> NotifyCx<'_, H> {
+    /// As `Multi::set_resolve_threads_max`.
+    pub fn set_resolve_threads_max(&mut self, max: NonZeroU32) {
+        self.multi.set_resolve_threads_max(max);
+    }
+
+    /// As `Multi::set_quick_exit`.
+    pub fn set_quick_exit(&mut self, quick: bool) {
+        self.multi.set_quick_exit(quick);
+    }
+
     pub fn add(
         &mut self,
         easy: Box<Easy>,

@@ -1654,6 +1654,10 @@ fn setopts(
     config: &Config<'_>,
 ) -> Result<(), ErrorKind> {
     use easysrc::Pointer::{Function, Object};
+    s.unwritten("`config2setopts` sets it itself", |o| {
+        o.quick_exit = quick_exit();
+        Ok(())
+    })?;
     // `gen_trace_setopts`.
     if let Some(tracer) = run.tracer {
         s.ptr("CURLOPT_DEBUGFUNCTION", Function, |o| {
@@ -3133,6 +3137,16 @@ fn set_file_time(name: &[u8], t: i64, msgs: Messages) {
 fn output_expected(url: &[u8], upload: bool) -> bool {
     let prefixed = |p: &[u8]| url.len() >= p.len() && url[..p.len()].eq_ignore_ascii_case(p);
     !upload || prefixed(b"http://") || prefixed(b"https://")
+}
+
+/// Whether the resolver's threads are left running as the tool exits,
+/// rather than waited for: always, but in the debug test build only when
+/// `CURL_QUICK_EXIT` is set (`config2setopts`, `parallel_transfers`).
+pub(crate) fn quick_exit() -> bool {
+    if cfg!(feature = "debug-hooks") {
+        return curl_os::env::is_set(b"CURL_QUICK_EXIT");
+    }
+    true
 }
 
 /// Whether standard output is a terminal. The debug test build takes

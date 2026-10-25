@@ -330,6 +330,12 @@ pub trait Resolver {
     /// What an answer coming wakes, which the multi polls, for a resolver
     /// that answers later from elsewhere (C's `wakeup_internal`).
     fn waker(&self) -> Option<TryArc<Waker>>;
+
+    /// The settings of the threads it answers from, for a resolver that
+    /// answers from a pool of them.
+    fn pool(&self) -> Option<super::threaded::ResolverThreads> {
+        None
+    }
 }
 
 /// The system's resolver as C's synchronous one: `getaddrinfo`, its

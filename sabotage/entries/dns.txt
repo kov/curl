@@ -212,3 +212,61 @@ witness: curl-core multi::socket_tests::the_resolver_s_wake_is_listened_on_while
         if self.alive.count == 0 {
 --- new
         if self.alive.count == u32::MAX {
+
+=== the most threads set through the pool bounds the threads the resolver starts
+file: crates/curl-core/src/conn/threaded.rs
+witness: curl-core conn::threaded::tests::the_pool_s_settings_are_the_resolver_s
+--- old
+        state.threads_max = max.get();
+--- new
+        state.threads_max = state.threads_max.max(max.get());
+
+=== raising the most threads with a query left queued wakes the multi
+file: crates/curl-core/src/conn/threaded.rs
+witness: curl-core conn::threaded::tests::the_pool_s_settings_are_the_resolver_s
+--- old
+        if state.queue.len() as u32 > state.idle {
+--- new
+        if state.queue.len() as u32 > state.idle + 1 {
+
+=== a quick exit leaves the resolver's threads unjoined
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::socket_tests::the_resolver_s_settings_reach_its_pool
+--- old
+            pool.set_join(!quick);
+--- new
+            pool.set_join(true);
+
+=== the most threads set inside a callback reaches the pool
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::socket_tests::the_resolver_s_settings_reach_its_pool
+--- old
+    pub fn set_resolve_threads_max(&mut self, max: NonZeroU32) {
+        self.alive.set_resolve_threads_max(max);
+--- new
+    pub fn set_resolve_threads_max(&mut self, max: NonZeroU32) {
+        let _ = (&self.alive, max);
+
+=== curl_easy_perform's multi takes the easy handle's quick exit
+file: crates/curl-core/src/easy.rs
+witness: curl-core multi::socket_tests::an_easy_handle_s_quick_exit_is_its_multi_s
+--- old
+        multi.set_quick_exit(self.options().quick_exit);
+--- new
+        multi.set_quick_exit(false);
+
+=== only a threaded build refuses a most threads of 0
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::the_resolver_s_options_are_the_build_s
+--- old
+    if !cfg!(feature = "threaded-resolver") {
+--- new
+    if cfg!(feature = "threaded-resolver") {
+
+=== CURLOPT_QUICK_EXIT is the transfer's option
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::the_resolver_s_options_are_the_build_s
+--- old
+        (ffi::CURLOPT_QUICK_EXIT, Long(n)) => options.quick_exit = n != 0,
+--- new
+        (ffi::CURLOPT_QUICK_EXIT, Long(n)) => options.quick_exit = n > 1,

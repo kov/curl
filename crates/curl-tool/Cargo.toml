@@ -13,6 +13,8 @@ path = "src/main.rs"
 [features]
 # The debug test build: track allocations as the C tool's debug build does.
 debug-hooks = ["curl-alloc/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks"]
+# The threaded resolver as the system's (C's `--enable-threaded-resolver`).
+threaded-resolver = ["curl-core/threaded-resolver"]
 
 [[test]]
 name = "memdebug"

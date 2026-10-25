@@ -10,6 +10,7 @@
 //! pass, tries again.
 
 use std::net::IpAddr;
+use std::num::NonZeroU32;
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -22,20 +23,20 @@ use super::io::{Family, Resolve, ResolveFailure, ResolveId, Resolver, Waiter, Wa
 /// waits for work before it ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Threads {
-    pub max: u32,
+    pub max: NonZeroU32,
     pub idle: Duration,
 }
 
 impl Threads {
     /// A multi made for an easy handle's transfer (`curl_easy_perform`).
     pub const EASY: Threads = Threads {
-        max: 2,
+        max: NonZeroU32::new(2).expect("not 0"),
         idle: Duration::from_millis(10),
     };
 
     /// Any other multi (`CURLMOPT_RESOLVE_THREADS_MAX`'s default).
     pub const MULTI: Threads = Threads {
-        max: 20,
+        max: NonZeroU32::new(20).expect("not 0"),
         idle: Duration::from_millis(2000),
     };
 }
@@ -66,6 +67,9 @@ struct State {
     idle: u32,
     threads_max: u32,
     idle_time: Duration,
+    /// The threads are waited for as the resolver goes, unless the
+    /// application asked to exit quickly (`CURLMOPT_QUICK_EXIT`).
+    join: bool,
     /// The resolver is gone: the threads end as their query does.
     aborted: bool,
 }
@@ -108,9 +112,6 @@ pub struct ThreadedResolver {
     next: ResolveId,
     /// The threads started, joined as they end, or at the end.
     handles: Vec<JoinHandle<()>>,
-    /// The threads are waited for as the resolver goes, unless the
-    /// application asked to exit quickly (`CURLMOPT_QUICK_EXIT`).
-    join: bool,
 }
 
 impl ThreadedResolver {
@@ -118,8 +119,9 @@ impl ThreadedResolver {
         let waker = TryArc::try_new(Waker::new()?)
             .map_err(|OutOfMemory| std::io::ErrorKind::OutOfMemory)?;
         let state = State {
-            threads_max: threads.max,
+            threads_max: threads.max.get(),
             idle_time: threads.idle,
+            join: true,
             ..State::default()
         };
         let shared = TryArc::try_new(Shared {
@@ -134,19 +136,7 @@ impl ThreadedResolver {
             resolving: Vec::new(),
             next: ResolveId::FIRST,
             handles: Vec::new(),
-            join: true,
         })
-    }
-
-    /// The most threads kept (`CURLMOPT_RESOLVE_THREADS_MAX`).
-    pub fn set_max_threads(&mut self, max: u32) {
-        assert!(max > 0, "at least one thread");
-        self.shared.lock().threads_max = max;
-    }
-
-    /// Whether the threads are waited for as the resolver goes.
-    pub fn set_join(&mut self, join: bool) {
-        self.join = join;
     }
 
     /// Queue `queries`, starting a thread for them if none is idle.
@@ -412,6 +402,43 @@ impl Resolver for ThreadedResolver {
     fn waker(&self) -> Option<TryArc<Waker>> {
         Some(self.shared.waker.clone())
     }
+
+    fn pool(&self) -> Option<ResolverThreads> {
+        Some(ResolverThreads(self.shared.clone()))
+    }
+}
+
+/// The settings of a resolver's pool, reached beside the resolver that
+/// owns it: the multi keeps one, so that an option set from inside its
+/// callbacks, while a transfer holds the network, reaches the pool.
+#[derive(Clone, Debug)]
+pub struct ResolverThreads(TryArc<Shared>);
+
+impl ResolverThreads {
+    /// The most threads kept (`CURLMOPT_RESOLVE_THREADS_MAX`). A query
+    /// queued for want of a thread gets one at the multi's next pass,
+    /// which the wake brings on (`Curl_thrdq_set_props`).
+    pub fn set_max_threads(&self, max: NonZeroU32) {
+        let mut state = self.0.lock();
+        state.threads_max = max.get();
+        if state.queue.len() as u32 > state.idle {
+            // A wake that fails leaves the queries for the next pass.
+            let _unsaid = self.0.waker.wake();
+        }
+    }
+
+    /// Whether the threads are waited for as the resolver goes; not, as
+    /// the application asks to exit quickly (`CURLMOPT_QUICK_EXIT`).
+    pub fn set_join(&self, join: bool) {
+        self.0.lock().join = join;
+    }
+
+    /// The most threads, and whether they are joined.
+    #[cfg(test)]
+    pub(crate) fn settings(&self) -> (u32, bool) {
+        let state = self.0.lock();
+        (state.threads_max, state.join)
+    }
 }
 
 impl Drop for ThreadedResolver {
@@ -422,7 +449,7 @@ impl Drop for ThreadedResolver {
             state.queue.clear();
         }
         self.shared.work.notify_all();
-        if self.join {
+        if self.shared.lock().join {
             for handle in self.handles.drain(..) {
                 handle.join().expect("a resolver thread does not panic");
             }
@@ -540,7 +567,7 @@ mod tests {
     #[test]
     fn threads_are_kept_to_the_most_and_end_when_idle() {
         let mut r = ThreadedResolver::new(Threads {
-            max: 2,
+            max: NonZeroU32::new(2).unwrap(),
             idle: Duration::from_millis(10),
         })
         .unwrap();
@@ -550,12 +577,64 @@ mod tests {
                 other => panic!("{other:?}"),
             })
             .collect();
-        assert!(r.shared.lock().threads <= 2);
+        let threads = r.shared.lock().threads;
+        assert!(threads <= 2);
         assert!(answer_all(&mut r, &ids).iter().all(Result::is_ok));
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while r.shared.lock().threads > 0 {
             assert!(std::time::Instant::now() < deadline, "idle threads end");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// The settings the multi reaches through the pool are the
+    /// resolver's: the most threads bounds those it starts, and a query
+    /// left queued for want of a thread wakes the multi when the most is
+    /// raised; a quick exit leaves the threads unjoined.
+    #[test]
+    fn the_pool_s_settings_are_the_resolver_s() {
+        let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
+        let pool = r.pool().unwrap();
+        pool.set_max_threads(NonZeroU32::MIN);
+        let ids: Vec<ResolveId> = (0..4)
+            .map(|_| match r.start(b"localhost", Family::V4, Waiter::NONE) {
+                Ok(Resolve::Pending(id)) => id,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        let threads = r.shared.lock().threads;
+        assert_eq!(threads, 1);
+        assert!(answer_all(&mut r, &ids).iter().all(Result::is_ok));
+
+        assert_eq!(pool.settings(), (1, true));
+        pool.set_join(false);
+        assert_eq!(pool.settings(), (1, false));
+
+        // A query queued with no thread to take it, in a resolver that has
+        // started none: the raise wakes.
+        let r = ThreadedResolver::new(Threads::MULTI).unwrap();
+        let pool = r.pool().unwrap();
+        let waker = r.waker().unwrap();
+        let woken = || {
+            let fd = [curl_os::poll::PollFd::new(
+                waker.fd(),
+                curl_os::poll::Events::IN,
+            )];
+            curl_os::poll::poll(&mut { fd }, Duration::ZERO).unwrap() == 1
+        };
+        let query = Query {
+            id: ResolveId::FIRST,
+            name: b"localhost".to_vec(),
+            family: Family::V4,
+        };
+        r.shared.lock().threads_max = 0;
+        r.shared.lock().queue.push(query);
+        assert!(!woken(), "nothing woke yet");
+        pool.set_max_threads(NonZeroU32::MIN);
+        assert!(woken(), "the raise woke the multi");
+        waker.drain().unwrap();
+        r.shared.lock().queue.clear();
+        pool.set_max_threads(NonZeroU32::MIN);
+        assert!(!woken(), "nothing queued, nothing woken");
     }
 }

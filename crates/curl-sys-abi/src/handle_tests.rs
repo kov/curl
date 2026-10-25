@@ -6162,3 +6162,48 @@ fn a_local_end_is_read_as_c_reads_it() {
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }
+
+/// `CURLMOPT_RESOLVE_THREADS_MAX` is taken by a build with the threaded
+/// resolver, which refuses 0, negative and past `UINT32_MAX`; another
+/// build takes any. `CURLMOPT_QUICK_EXIT` and `CURLOPT_QUICK_EXIT` are
+/// taken by either.
+#[test]
+fn the_resolver_s_options_are_the_build_s() {
+    let m = curl_multi_init();
+    let set = |o, n: c_long| {
+        // SAFETY: a live multi and a `long` option.
+        unsafe { curl_multi_setopt(m, o, n) }
+    };
+    let refused = match cfg!(feature = "threaded-resolver") {
+        true => ffi::CURLM_BAD_FUNCTION_ARGUMENT,
+        false => CURLM_OK,
+    };
+    for (n, code) in [
+        (0, refused),
+        (-1, refused),
+        (1, CURLM_OK),
+        (5, CURLM_OK),
+        (c_long::from(u32::MAX), CURLM_OK),
+        (c_long::from(u32::MAX) + 1, refused),
+    ] {
+        assert_eq!(set(ffi::CURLMOPT_RESOLVE_THREADS_MAX, n), code, "{n}");
+    }
+    assert_eq!(set(ffi::CURLMOPT_QUICK_EXIT, 1), CURLM_OK);
+    assert_eq!(set(ffi::CURLMOPT_QUICK_EXIT, 0), CURLM_OK);
+    let c = curl_easy_init();
+    let quick = || {
+        // SAFETY: a live handle.
+        let easy = unsafe { crate::easy::handle(c) }.unwrap();
+        easy.with_options(|o| o.quick_exit).unwrap()
+    };
+    assert!(!quick());
+    assert_eq!(long(c, ffi::CURLOPT_QUICK_EXIT, 1), CURLE_OK);
+    assert!(quick());
+    assert_eq!(long(c, ffi::CURLOPT_QUICK_EXIT, 0), CURLE_OK);
+    assert!(!quick());
+    // SAFETY: live handles, cleaned up once.
+    unsafe {
+        curl_easy_cleanup(c);
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+    }
+}

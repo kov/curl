@@ -46,6 +46,9 @@ pub struct Options {
     /// The remote file's time is read, where the protocol has to ask for
     /// it (`CURLOPT_FILETIME`): HTTP's `Last-Modified`.
     pub filetime: bool,
+    /// `curl_easy_perform`'s multi leaves its resolver's threads running
+    /// as it goes, rather than waiting for them (`CURLOPT_QUICK_EXIT`).
+    pub quick_exit: bool,
     /// The remote file is transferred only if its time meets this.
     pub time_condition: Option<TimeCondition>,
     pub limits: Limits,
@@ -439,6 +442,7 @@ impl Options {
             range: self.range.as_deref().map(copy).transpose()?,
             new_file_mode: self.new_file_mode,
             filetime: self.filetime,
+            quick_exit: self.quick_exit,
             time_condition: self.time_condition,
             limits: self.limits,
             flow: self.flow.try_clone(|f| Ok(*f))?,

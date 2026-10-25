@@ -809,6 +809,7 @@ fn apply(
                 )),
             };
         }
+        (ffi::CURLOPT_QUICK_EXIT, Long(n)) => options.quick_exit = n != 0,
         (ffi::CURLOPT_FORBID_REUSE, Long(n)) => options.limits.reuse.forbid = n != 0,
         (ffi::CURLOPT_FRESH_CONNECT, Long(n)) => options.limits.reuse.fresh = n != 0,
         (ffi::CURLOPT_MAXCONNECTS, Long(n)) => {

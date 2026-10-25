@@ -948,7 +948,9 @@ fn resolving(option: CURLMoption, n: c_long) -> Result<Option<Resolving>, CURLMc
     if option == ffi::CURLMOPT_QUICK_EXIT {
         return Ok(Some(Resolving::QuickExit(n != 0)));
     }
-    if !cfg!(feature = "threaded-resolver") {
+    // The core's resolver, which claims `AsynchDNS` when it answers from
+    // a pool of threads.
+    if !curl_core::version::version().claims("AsynchDNS") {
         return Ok(None);
     }
     match u32::try_from(n).ok().and_then(NonZeroU32::new) {

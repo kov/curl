@@ -6177,7 +6177,7 @@ fn the_resolver_s_options_are_the_build_s() {
         // SAFETY: a live multi and a `long` option.
         unsafe { curl_multi_setopt(m, o, n) }
     };
-    let refused = match cfg!(feature = "threaded-resolver") {
+    let refused = match curl_core::version::version().claims("AsynchDNS") {
         true => ffi::CURLM_BAD_FUNCTION_ARGUMENT,
         false => CURLM_OK,
     };

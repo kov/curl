@@ -259,9 +259,9 @@ witness: curl-core multi::socket_tests::an_easy_handle_s_quick_exit_is_its_multi
 file: crates/curl-sys-abi/src/multi.rs
 witness: curl-sys-abi handle_tests::the_resolver_s_options_are_the_build_s
 --- old
-    if !cfg!(feature = "threaded-resolver") {
+    if !curl_core::version::version().claims("AsynchDNS") {
 --- new
-    if cfg!(feature = "threaded-resolver") {
+    if curl_core::version::version().claims("AsynchDNS") {
 
 === CURLOPT_QUICK_EXIT is the transfer's option
 file: crates/curl-sys-abi/src/setopt/mod.rs

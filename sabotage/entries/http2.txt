@@ -161,3 +161,10 @@ witness: curl-core proto::http::tests::h2::an_idle_connection_s_frames_are_read_
         } if conn.is_h2() => {
 --- new
         } if false => {
+
+=== an HTTP/2 connection shuts down without a GOAWAY
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::http::tests::h2::a_connection_shutting_down_says_goaway
+--- old
+            h2.goodbye(&mut Silent(now), &mut self.conn);
+--- new

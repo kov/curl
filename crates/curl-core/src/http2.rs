@@ -157,9 +157,9 @@ pub trait Session: fmt::Debug + Send {
     /// Reset `stream` with `error`.
     fn reset(&mut self, stream: StreamId, error: u32) -> Result<(), FrameError>;
 
-    /// Say goodbye, the last stream served being the last the client
-    /// opened.
-    fn goaway(&mut self, error: u32) -> Result<(), FrameError>;
+    /// Say goodbye with `error` and `debug` data, no stream of the
+    /// peer's having been served.
+    fn goaway(&mut self, error: u32, debug: &[u8]) -> Result<(), FrameError>;
 
     /// Send a PING.
     fn ping(&mut self) -> Result<(), FrameError>;

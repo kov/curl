@@ -356,3 +356,13 @@ fn an_idle_connection_s_frames_are_read_and_it_is_reused() {
         }
     }
 }
+
+/// An HTTP/2 connection that shuts down says GOAWAY first, no stream of
+/// the server's served (`cf_h2_shutdown`).
+#[test]
+fn a_connection_shutting_down_says_goaway() {
+    let (ran, talk) = h2_get(&[RESPONSE], "/", |o| o.limits.reuse.forbid = true);
+    assert_eq!(ran.result, Ok(()));
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert!(sent.ends_with("\n\nG 0 0\n"), "{sent}");
+}

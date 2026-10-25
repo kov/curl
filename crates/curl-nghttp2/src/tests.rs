@@ -140,7 +140,7 @@ fn resets_goaways_and_garbage() {
     client.submit_request(&fields, false).unwrap();
     pump(&mut client, &mut server, &mut Vec::new(), &mut Vec::new());
     server.reset(StreamId(1), 8).unwrap();
-    server.goaway(0).unwrap();
+    server.goaway(0, b"").unwrap();
     let mut seen = Vec::new();
     pump(&mut server, &mut client, &mut Vec::new(), &mut seen);
     assert!(seen.contains(&Seen::Reset(1, 8)), "{seen:?}");

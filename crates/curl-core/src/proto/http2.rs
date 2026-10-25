@@ -46,6 +46,8 @@ pub(crate) struct H2Conn {
     goaway: Option<GoAway>,
     /// The peer closed the connection.
     closed: bool,
+    /// The client said GOAWAY, as the connection shuts down.
+    sent_goaway: bool,
 }
 
 impl std::fmt::Debug for H2Conn {
@@ -110,6 +112,7 @@ impl H2Conn {
                 sent: 0,
                 goaway: None,
                 closed: false,
+                sent_goaway: false,
             },
             stream,
         ))
@@ -171,6 +174,21 @@ impl H2Conn {
             if self.out.is_empty() {
                 return Ok(true);
             }
+        }
+    }
+
+    /// Say goodbye as the connection shuts down, once, and send what the
+    /// connection takes of it now (`cf_h2_shutdown`): a peer that closed
+    /// hears nothing.
+    pub(crate) fn goodbye(&mut self, cx: &mut dyn LayerCx, conn: &mut Conn) {
+        if self.closed || self.sent_goaway {
+            return;
+        }
+        self.sent_goaway = true;
+        if self.session.goaway(0, b"shutdown\0").is_ok() {
+            let sent = self.egress(cx, conn, &mut |_, _| BodyRead::Failed, &mut |_| Heard::Fine);
+            // What does not go now goes with the connection.
+            drop(sent);
         }
     }
 

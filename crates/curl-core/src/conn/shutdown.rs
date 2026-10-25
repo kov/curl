@@ -91,6 +91,11 @@ impl Shutting {
         if self.left_ms(now) < 0 {
             return Tried::Done;
         }
+        // HTTP/2 says goodbye first (`cf_h2_shutdown`).
+        if let Some(mut h2) = self.conn.take_h2() {
+            h2.goodbye(&mut Silent(now), &mut self.conn);
+            self.conn.put_h2(h2);
+        }
         let Transport::Tcp(stream) = &mut self.conn.transport else {
             return Tried::Done;
         };

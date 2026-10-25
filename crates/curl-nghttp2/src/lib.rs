@@ -375,10 +375,10 @@ impl curl_core::http2::Session for Session {
         check_h2(unsafe { sys::nghttp2_submit_rst_stream(self.raw.as_ptr(), 0, stream.0, code) })
     }
 
-    fn goaway(&mut self, code: u32) -> Result<(), FrameError> {
-        // SAFETY: the session, and no opaque data.
+    fn goaway(&mut self, code: u32, debug: &[u8]) -> Result<(), FrameError> {
+        // SAFETY: the session, and the debug data, which it copies.
         check_h2(unsafe {
-            sys::nghttp2_submit_goaway(self.raw.as_ptr(), 0, 0, code, ptr::null(), 0)
+            sys::nghttp2_submit_goaway(self.raw.as_ptr(), 0, 0, code, debug.as_ptr(), debug.len())
         })
     }
 

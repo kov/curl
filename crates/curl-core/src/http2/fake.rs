@@ -434,10 +434,8 @@ impl Session for FakeSession {
         Ok(())
     }
 
-    fn goaway(&mut self, error: u32) -> Result<(), FrameError> {
-        let last = self.next;
-        self.queued
-            .push_back(format!("G {last} {error}\n").into_bytes());
+    fn goaway(&mut self, error: u32, _: &[u8]) -> Result<(), FrameError> {
+        self.queued.push_back(format!("G 0 {error}\n").into_bytes());
         self.goaway = true;
         Ok(())
     }

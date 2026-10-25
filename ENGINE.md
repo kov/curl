@@ -1563,10 +1563,10 @@ take it answers in HTTP/1.1.
 
 **The connection's life.** An idle HTTP/2 connection with input waiting is not dead as an HTTP/1
 one is: the pool's health check has the session read the frames, and it is alive unless the
-session failed, a GOAWAY came or the session wants nothing more (`http2_connisalive`).
-
-Not yet: shutdown through the session, `curl_easy_upkeep`'s PING, a paused stream's window,
-and the `CF` traces of `--trace-config http/2`.
+session failed, a GOAWAY came or the session wants nothing more (`http2_connisalive`). A
+connection that shuts down says GOAWAY first, with C's debug data (`cf_h2_shutdown`). Not
+yet: `curl_easy_upkeep`'s PING, a paused stream's window, and the `CF` traces of
+`--trace-config http/2`.
 
 **Ownership, once multiplexed** (review §2.1, approved). A connection that multiplexes lives
 in its pool place, `Attached { slot, users }`; an attached lease is a key, the `ConnId` and the

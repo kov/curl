@@ -1873,6 +1873,22 @@ mod tests {
 
     use super::*;
 
+    /// The system's resolver, which stands in for the reference build's
+    /// c-ares, gives c-ares's reasons, in any build.
+    #[test]
+    fn the_system_s_resolver_gives_c_ares_s_reasons() {
+        let r = SystemResolver;
+        assert_eq!(
+            r.explain(ResolveFailure::NotFound),
+            Some("Domain name not found")
+        );
+        assert_eq!(
+            r.explain(ResolveFailure::NoData),
+            Some("DNS server returned answer with no data")
+        );
+        assert_eq!(r.explain(ResolveFailure::Failed), None);
+    }
+
     /// A multi's network resolves as the build chooses: with the threaded
     /// resolver, which lends a wake and gives no reason for a failure;
     /// else with the system's, which answers as it starts and gives

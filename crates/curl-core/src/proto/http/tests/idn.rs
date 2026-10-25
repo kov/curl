@@ -43,6 +43,32 @@ fn a_host_in_unicode_is_sent_in_ascii() {
     }
 }
 
+/// A Unix socket's path and an IPv6 address are never converted, and a
+/// forwarding proxy's target keeps an IPv6 address's brackets.
+#[test]
+fn only_a_host_name_is_converted() {
+    let unix = crate::conn::Peer::unix(
+        crate::proto::http::HTTPS,
+        "/tmp/åäö".as_bytes().to_vec(),
+        0,
+        false,
+    );
+    let unix = unix.idn(Some(&FakeIdn)).unwrap();
+    assert_eq!(unix.name(), "/tmp/åäö".as_bytes());
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get_with(&mut m, converting(), "/", talk, |o| {
+        o.set_url(Some(b"http://[::1]:8080/a")).unwrap();
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let want = b"GET http://[::1]:8080/a HTTP/1.1\r\nHost: [::1]:8080\r\n";
+    assert!(
+        ran.request.starts_with(want),
+        "{}",
+        String::from_utf8_lossy(&ran.request)
+    );
+}
+
 /// A name the library cannot convert, or that converts to nothing, is a
 /// malformed URL's (tests 1034 and 763); nothing is connected.
 #[test]

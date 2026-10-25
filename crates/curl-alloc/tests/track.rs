@@ -46,6 +46,16 @@ fn logs_tracked_blocks_and_fails_past_the_limit() {
     tracked.reserve(1000);
     let grown_at = tracked.as_ptr();
     drop((before, excluded, tracked));
+    // Held until the buffer fills or the process exits, as C's
+    // `membuf` holds them: a file size limit set for a while cuts none
+    // short.
+    let held = track::untracked(|| std::fs::read(&path).unwrap());
+    assert!(held.is_empty(), "written before the buffer filled");
+    // Far more lines than the buffer holds: each written out whole as
+    // the next does not fit.
+    for size in 1000..1400 {
+        drop(Vec::<u8>::with_capacity(size));
+    }
 
     track::set_limit(1);
     let mut ok: Vec<u8> = Vec::new();
@@ -54,11 +64,6 @@ fn logs_tracked_blocks_and_fails_past_the_limit() {
     let refused = refused.try_reserve(16).is_err()
         && TryRc::try_new([0u8; 64]).is_err()
         && TryArc::try_new([0u8; 64]).is_err();
-    // Held until the buffer fills or the process exits, as C's
-    // `membuf` holds them: a file size limit set for a while cuts none
-    // short.
-    let held = track::untracked(|| std::fs::read(&path).unwrap());
-    assert!(held.is_empty(), "written before the buffer filled");
     track::flush_log();
     track::untracked(|| check(&path, refused, [tracked_at, grown_at]));
     track::untracked(|| drop(ok));
@@ -93,6 +98,13 @@ fn check(path: &std::path::Path, refused: bool, [tracked_at, grown_at]: [*const 
     ];
     for w in &want {
         assert!(log.lines().any(|l| l == w), "{w:?} not in\n{log}");
+    }
+    for size in 1000..1400 {
+        let malloc = format!("MEM rust:0 malloc({size}) = ");
+        assert!(
+            log.lines().any(|l| l.starts_with(&malloc)),
+            "{malloc} not in the log"
+        );
     }
     // As tests/memanalyzer.pm: every free names a block the log allocated.
     let mut live = std::collections::HashSet::new();

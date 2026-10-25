@@ -159,6 +159,12 @@ mod tests {
             IDN2.to_ascii("www.große.de".as_bytes()),
             Ok(b"www.xn--groe-xna.de".to_vec())
         );
+        // Normalised first: a decomposed ä is the composed one's
+        // (`IDN2_NFC_INPUT`).
+        assert_eq!(
+            IDN2.to_ascii("a\u{308}.test".as_bytes()),
+            IDN2.to_ascii("\u{e4}.test".as_bytes())
+        );
         assert_eq!(
             IDN2.to_ascii(b"invalid-utf8-\xe2\x90.local"),
             Err(IdnFailure::Malformed)

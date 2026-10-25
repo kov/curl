@@ -3034,7 +3034,10 @@ fn a_bind_s_name_is_resolved_waiting_and_keeping_no_failure() {
     let (mut m, _clock) = networked();
     let run = |m: &mut Multi, url: &str, host: &[u8]| {
         let (mut e, lines) = traced(url);
-        if !host.is_empty() {
+        if host.is_empty() {
+            // The family the bind looked up, which a kept answer is for.
+            e.options_mut().ip_version = IpVersion::V4;
+        } else {
             e.options_mut().sockets.make_mut().unwrap().local.interface =
                 crate::options::Interface::parse(host).unwrap();
         }

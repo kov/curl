@@ -597,4 +597,24 @@ exclude_re = [
     # thread left running ends with the process, and nothing can see it
     # outlived the exit.
     'curl-tool/src/operate\.rs:.*: replace quick_exit -> bool with (true|false)$',
+    # Without the threaded resolver, a multi's system network is the
+    # default one; with it, the test of the network catches the change.
+    'curl-core/src/conn/io\.rs:.*: replace SystemNet::for_multi -> io::Result<SystemNet> with Ok\(Default::default\(\)\)$',
+    # A quick exit decides only whether the multi's cleanup joins the
+    # resolver's threads, which nothing can see.
+    'curl-sys-abi/src/multi\.rs:.*: replace != with == in resolving$',
+    # The suites read curlinfo's lines; `toggles` is what they say, and is
+    # tested. Without the threaded resolver its own arm says what the
+    # table does.
+    'curl-tool/src/bin/curlinfo\.rs:.*: (replace main with \(\)|delete match arm "resolv-threaded" in toggles)$',
+    # libidn2's strings freed, its reservations sized, its answers on
+    # success never NULL, an allocation of its failing, and its flags'
+    # disjoint bits: none observable but by a leak checker, an
+    # allocation failure no test can make it have, or the same bits.
+    'curl-idn2/src/lib\.rs:.*: (replace <impl Drop for Made>::drop with \(\)|replace \+ with (-|\*) in terminated|delete match arm MALLOC in answer|replace match guard !made\.0\.is_null\(\) with true in answer|replace \| with \^ in <impl Idn for Idn2>::to_ascii|delete -)$',
+    # The memdump written as the process exits is read by curl-tool's
+    # memdebug test, a process of its own, which curl-alloc's in-process
+    # tests cannot be; a flush at exactly a full buffer is one too many,
+    # writing the same lines.
+    'curl-alloc/src/track\.rs:.*: (replace flush_at_exit with \(\)|replace < with <= in write_log)$',
 ]

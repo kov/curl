@@ -2960,8 +2960,10 @@ report's, and the trace says "Switched from HTTP to HTTPS due to HSTS". A
 debug build's `CURL_HSTS_HTTP` says so; one the cache cannot take is said and passed over. The
 time is the clock's, or the debug build's `CURL_TIME`. The cache is written as the handle goes
 (`Easy::save_hsts`, which the shim's cleanup and the tool's handle call), to
-`HstsOptions::file` or the file last read, then to the application's writer (`HstsWriter`). A
-copy of the handle reads its file and reader into a new cache, then takes the entries alive.
+`HstsOptions::file` or the file last read, unless the cache's file is read-only
+(`HstsFile::ReadOnly`, `CURLHSTS_READONLYFILE`, which C never honours: DIVERGENCE.md), then to
+the application's writer (`HstsWriter`). A copy of the handle reads its file and reader into a
+new cache of the same file mode, then takes the entries alive.
 
 ---
 

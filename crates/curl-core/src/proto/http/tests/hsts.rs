@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use curl_alloc::TryArc;
 
 use super::*;
-use crate::hsts::{BadEntry, HstsEntry, HstsRead, HstsReader, HstsWrite, HstsWriter};
+use crate::hsts::{BadEntry, HstsEntry, HstsFile, HstsRead, HstsReader, HstsWrite, HstsWriter};
 use crate::tls::fake::{self, WELCOME};
 
 /// The time the tests' clock says, 2024-10-09 09:25:47 UTC.
@@ -190,7 +190,7 @@ fn the_application_reads_and_writes_the_cache() {
     }
     let (mut m, talk) = named_server(&[OK]);
     let mut e = Easy::new();
-    e.enable_hsts().unwrap();
+    e.enable_hsts(HstsFile::ReadWrite).unwrap();
     let url = format!("http://sts.example:{PORT}/a");
     let mut ran = get_with(&mut m, e, "/a", talk, |o| {
         o.set_url(Some(url.as_bytes())).unwrap();
@@ -226,7 +226,7 @@ fn a_reader_s_failure_fails_the_transfer() {
     ] {
         let (mut m, talk) = named_server(&[OK]);
         let mut e = Easy::new();
-        e.enable_hsts().unwrap();
+        e.enable_hsts(HstsFile::ReadWrite).unwrap();
         let reader = Giving {
             entries: Mutex::new(Vec::new()),
             last,
@@ -257,4 +257,27 @@ fn a_copy_of_the_handle_keeps_the_entries_alive() {
     assert!(file.text().contains("\nkept.example \""), "{}", file.text());
     let off = Easy::new().try_clone().unwrap();
     assert!(!off.hsts_enabled());
+}
+
+/// A cache whose file is read-only reads it and never writes it back,
+/// nor does a copy of the handle (`CURLHSTS_READONLYFILE`). C tests the
+/// flag but never sets it, so writes the file back (DIVERGENCE.md).
+#[test]
+fn a_read_only_file_is_not_written_back() {
+    let text = "# kept as it is\n";
+    let file = Temp::new("read-only", text);
+    let mut e = Easy::new();
+    e.enable_hsts(HstsFile::ReadOnly).unwrap();
+    e.add_hsts_file(Some(file.name())).unwrap();
+    let hsts = e.hsts.as_deref_mut().unwrap();
+    let now = crate::time::SystemClock::new().unix_time();
+    hsts.parse(b"kept.example", b"max-age=1000", now).unwrap();
+    let mut copy = e.try_clone().unwrap();
+    copy.save_hsts().unwrap();
+    e.save_hsts().unwrap();
+    assert_eq!(file.text(), text);
+    // Enabled again without the flag, it is written back.
+    e.enable_hsts(HstsFile::ReadWrite).unwrap();
+    e.save_hsts().unwrap();
+    assert!(file.text().contains("\nkept.example \""), "{}", file.text());
 }

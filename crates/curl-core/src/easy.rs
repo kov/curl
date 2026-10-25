@@ -12,7 +12,7 @@ use crate::conn::io::{SystemNet, Waker};
 use crate::cookie::{Jar, LoadError, Suffixes};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::handler::Handler;
-use crate::hsts::Hsts;
+use crate::hsts::{Hsts, HstsFile};
 use crate::id::ArenaPolicy;
 use crate::libraries::{Libraries, SharedLibraries};
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
@@ -179,6 +179,7 @@ impl Easy {
     fn hsts_copy(&self, hsts: &Hsts) -> Result<Box<Hsts>, OutOfMemory> {
         let now = crate::proto::http::hsts::now(SystemClock::new().unix_time());
         let mut copy = try_box(Hsts::default())?;
+        copy.set_mode(hsts.mode());
         let options = &*self.options.http.hsts;
         if let Some(file) = &options.file
             && let Err(crate::hsts::LoadError::OutOfMemory) = copy.load(file, now)
@@ -288,12 +289,19 @@ impl Easy {
         })
     }
 
-    /// Turn the HSTS cache on, empty, if it is not (`CURLHSTS_ENABLE`).
-    pub fn enable_hsts(&mut self) -> Result<(), OutOfMemory> {
+    /// Turn the HSTS cache on, empty, if it is not, its file written back
+    /// as `mode` says (`CURLHSTS_ENABLE`, `CURLHSTS_READONLYFILE`).
+    pub fn enable_hsts(&mut self, mode: HstsFile) -> Result<(), OutOfMemory> {
+        self.hsts_made()?.set_mode(mode);
+        Ok(())
+    }
+
+    /// The HSTS cache, made empty now if the handle has none.
+    fn hsts_made(&mut self) -> Result<&mut Hsts, OutOfMemory> {
         if self.hsts.is_none() {
             self.hsts = Some(try_box(Hsts::default())?);
         }
-        Ok(())
+        Ok(self.hsts.as_deref_mut().expect("made above"))
     }
 
     /// Turn the HSTS cache off: its entries and the files named are
@@ -307,7 +315,7 @@ impl Easy {
     /// on. Without a file, the files named are forgotten and the cache
     /// turned off (`CURLOPT_HSTS`).
     pub fn add_hsts_file(&mut self, file: Option<&[u8]>) -> Result<(), OutOfMemory> {
-        self.enable_hsts()?;
+        self.hsts_made()?;
         let Some(file) = file else {
             self.disable_hsts();
             return Ok(());
@@ -336,7 +344,10 @@ impl Easy {
         let options = &*self.options.http.hsts;
         let file = options.file.as_deref().or(hsts.file());
         let mut result = Ok(());
-        if let Some(file) = file.filter(|f| !f.is_empty()) {
+        // C never sets the flag it tests, so writes a read-only file back
+        // (DIVERGENCE.md).
+        let written = hsts.mode() == HstsFile::ReadWrite;
+        if let Some(file) = file.filter(|f| written && !f.is_empty()) {
             result = crate::save::replace(file, &hsts.text()?);
         }
         if let Some(writer) = &options.write {

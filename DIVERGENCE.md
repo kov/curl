@@ -144,6 +144,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   build. Pinned by `a_silent_upload_of_standard_input_draws_no_meter`
   (`crates/curl-tool/tests/http.rs`).
 
+- **A read-only HSTS file is not written.** With `CURLOPT_HSTS_CTRL` set to `CURLHSTS_ENABLE |
+  CURLHSTS_READONLYFILE`, the file named by `CURLOPT_HSTS` is read and never written back, as
+  the option's documentation says; a copy of the handle keeps the mode. C's `Curl_hsts_save`
+  tests the flag, but `CURLOPT_HSTS_CTRL` never sets it, so cleanup rewrites the file:
+  measured against the C build, a file holding a comment and no entries is replaced by C's
+  two-line header. Pinned by `a_read_only_file_is_not_written_back`
+  (`crates/curl-core/src/proto/http/tests/hsts.rs`) and `a_read_only_hsts_file_is_not_written`
+  (`crates/curl-sys-abi/src/handle_tests.rs`).
+
 ## State C carries across transfers
 
 - **`--etag-compare` sends one `If-None-Match:` a transfer.** Each transfer of a URL pattern

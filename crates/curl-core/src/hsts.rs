@@ -110,9 +110,21 @@ pub enum PullError {
     OutOfMemory,
 }
 
+/// Whether the cache is written back to its file as the handle goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HstsFile {
+    /// Written back.
+    #[default]
+    ReadWrite,
+    /// Read, never written (`CURLHSTS_READONLYFILE`).
+    ReadOnly,
+}
+
 /// The cache (C's `struct hsts`).
 #[derive(Debug, Default)]
 pub struct Hsts {
+    /// Whether its file is written back.
+    mode: HstsFile,
     /// Oldest first.
     entries: Vec<Entry>,
     /// The file last read, written back when no other is named.
@@ -414,6 +426,16 @@ impl Hsts {
         let loaded = files.iter().try_for_each(|f| self.load(f, now));
         self.to_read = files;
         loaded
+    }
+
+    /// Whether its file is written back.
+    pub fn mode(&self) -> HstsFile {
+        self.mode
+    }
+
+    /// Write its file back, or not, from now on.
+    pub fn set_mode(&mut self, mode: HstsFile) {
+        self.mode = mode;
     }
 
     /// The file last read, if any.

@@ -40,3 +40,26 @@ witness: curl-core proto::http::tests::hsts::a_copy_of_the_handle_keeps_the_entr
         copy.merge(alive)?;
 --- new
         drop(alive);
+
+=== a read-only HSTS file is written back
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::hsts::a_read_only_file_is_not_written_back
+--- old
+        let written = hsts.mode() == HstsFile::ReadWrite;
+--- new
+        let written = true;
+
+=== a copy of the handle writes back a read-only HSTS file
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::hsts::a_read_only_file_is_not_written_back
+--- old
+        copy.set_mode(hsts.mode());
+--- new
+
+=== the shim takes CURLHSTS_READONLYFILE as nothing
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_read_only_hsts_file_is_not_written
+--- old
+                    _ => HstsFile::ReadOnly,
+--- new
+                    _ => HstsFile::ReadWrite,

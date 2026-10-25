@@ -22,6 +22,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::cookie::LoadError;
 use curl_core::error::ErrorKind;
 use curl_core::handler::{Handler, LineSource};
+use curl_core::hsts::HstsFile;
 use curl_core::options::{
     BufferSize, ColdGroup, ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion,
     Lines, LowSpeed, MaxRedirects, Method, Options, PostRedir, Protocols, ProxyType, Resume,
@@ -1584,7 +1585,11 @@ unsafe fn hsts_option(shim: &ShimEasy, arg: HstsArg) -> CURLcode {
         match arg {
             HstsArg::File(_) => easy.add_hsts_file(file).map_err(oom)?,
             HstsArg::Ctrl(bits) if bits & c_long::from(ffi::CURLHSTS_ENABLE) != 0 => {
-                easy.enable_hsts().map_err(oom)?;
+                let mode = match bits & c_long::from(ffi::CURLHSTS_READONLYFILE) {
+                    0 => HstsFile::ReadWrite,
+                    _ => HstsFile::ReadOnly,
+                };
+                easy.enable_hsts(mode).map_err(oom)?;
             }
             HstsArg::Ctrl(_) => easy.disable_hsts(),
         }

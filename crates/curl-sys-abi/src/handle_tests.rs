@@ -6210,3 +6210,30 @@ fn the_resolver_s_options_are_the_build_s() {
         assert_eq!(curl_multi_cleanup(m), CURLM_OK);
     }
 }
+
+/// `CURLHSTS_READONLYFILE` keeps the HSTS file from being written as the
+/// handle goes, and enabling again without it lets it be. C tests the
+/// flag but never sets it, so writes the file back (DIVERGENCE.md).
+#[test]
+fn a_read_only_hsts_file_is_not_written() {
+    let path = std::env::temp_dir().join(format!("curl-abi-hsts-ro-{}", std::process::id()));
+    let text = "# kept as it is\n";
+    let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    for (bits, written) in [
+        (ffi::CURLHSTS_ENABLE | ffi::CURLHSTS_READONLYFILE, false),
+        (ffi::CURLHSTS_ENABLE, true),
+    ] {
+        std::fs::write(&path, text).unwrap();
+        let c = curl_easy_init();
+        assert_eq!(long(c, ffi::CURLOPT_HSTS_CTRL, bits), CURLE_OK);
+        assert_eq!(
+            pointer(c, ffi::CURLOPT_HSTS, name.as_ptr().cast_mut()),
+            CURLE_OK
+        );
+        // SAFETY: a live handle, not used again.
+        unsafe { curl_easy_cleanup(c) };
+        let now = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(now != text, written, "{bits}: {now}");
+    }
+    std::fs::remove_file(&path).unwrap();
+}

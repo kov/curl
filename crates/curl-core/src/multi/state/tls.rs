@@ -77,10 +77,16 @@ pub(super) fn start<H: Host>(
             )
         }
     };
-    let alpn = match (options.tls.options.alpn, side, options.http.version) {
+    // HTTP/2 is offered only where a library speaks it.
+    let version = options.http.version;
+    let h2 = version.h2() && cx.easy().libraries().h2.is_some();
+    let alpn = match (options.tls.options.alpn, side, version) {
         (false, ..) => Alpn::None,
-        (true, TlsSide::Proxy, _) | (true, TlsSide::Origin, HttpVersion::Http11) => Alpn::Http11,
+        (true, TlsSide::Proxy, _) => Alpn::Http11,
         (true, TlsSide::Origin, HttpVersion::Http10) => Alpn::Http10,
+        (true, TlsSide::Origin, v) if h2 && !v.h1() => Alpn::H2,
+        (true, TlsSide::Origin, _) if h2 => Alpn::H2Http11,
+        (true, TlsSide::Origin, _) => Alpn::Http11,
     };
     // What the library keeps across the multi's connections, made with
     // its first session.

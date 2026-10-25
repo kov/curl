@@ -233,14 +233,19 @@ pub enum TlsWait {
 }
 
 /// The protocols a session offers its peer by ALPN, as the transfer's
-/// HTTP version asks (`alpn_get_spec`, in a build without HTTP/2):
-/// HTTP/1.0 offers HTTP/1.1 too, as some HTTP/1.0 servers know only it.
+/// HTTP versions ask (`alpn_get_spec`): HTTP/1.0 offers HTTP/1.1 too, as
+/// some HTTP/1.0 servers know only it; HTTP/2, where a library speaks it,
+/// goes first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Alpn {
     /// None (`CURLOPT_SSL_ENABLE_ALPN` off).
     None,
     Http11,
     Http10,
+    /// HTTP/2, or else HTTP/1.1.
+    H2Http11,
+    /// HTTP/2 only.
+    H2,
 }
 
 impl Alpn {
@@ -250,6 +255,8 @@ impl Alpn {
             Alpn::None => b"",
             Alpn::Http11 => b"\x08http/1.1",
             Alpn::Http10 => b"\x08http/1.0\x08http/1.1",
+            Alpn::H2Http11 => b"\x02h2\x08http/1.1",
+            Alpn::H2 => b"\x02h2",
         }
     }
 
@@ -259,6 +266,8 @@ impl Alpn {
             Alpn::None => None,
             Alpn::Http11 => Some("http/1.1"),
             Alpn::Http10 => Some("http/1.0,http/1.1"),
+            Alpn::H2Http11 => Some("h2,http/1.1"),
+            Alpn::H2 => Some("h2"),
         }
     }
 }
@@ -269,6 +278,7 @@ impl Alpn {
 pub enum Chosen {
     Http11,
     Http10,
+    H2,
 }
 
 impl Chosen {
@@ -278,6 +288,7 @@ impl Chosen {
         match name {
             b"http/1.1" => Some(Chosen::Http11),
             b"http/1.0" => Some(Chosen::Http10),
+            b"h2" => Some(Chosen::H2),
             _ => None,
         }
     }
@@ -287,6 +298,7 @@ impl Chosen {
         match self {
             Chosen::Http11 => "http/1.1",
             Chosen::Http10 => "http/1.0",
+            Chosen::H2 => "h2",
         }
     }
 }

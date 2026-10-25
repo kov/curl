@@ -847,10 +847,14 @@ the system's under the HTTP-only programs installed here.
 51. **The pool's `Attached` place,** a connection several transfers lease (ENGINE.md §4.4).
     **To do**, after 52a: its only user is HTTP/2's multiplexing.
 52. **HTTP/2** through nghttp2, in two stages (ENGINE.md §4.4). **To do.**
-    - **a. One stream per connection.** The session on the connection, beside its layers;
-      ALPN offering `h2`, prior knowledge and the `h2c` upgrade; the request through a field
-      sink and the response head through the whole-line entry; the session in the pool's
-      health check, shutdown and upkeep; a connection reused by one transfer after another.
+    - **a. One stream per connection.** **In progress.** Built: the session on the connection,
+      beside its layers; ALPN offering `h2`, and prior knowledge; the request's head read back
+      into the stream's fields, and the response head through the whole-line entry; the body
+      both ways, trailers, resets, GOAWAY; a connection reused by one transfer after another;
+      `--http2`, `--http2-prior-knowledge` and `HTTP2` claimed. 471, 2400, 2401, 2402, 2403
+      and 2406 pass. To do: the `h2c` upgrade (1700, 1702, 1704, 1800); the session in the
+      pool's health check, shutdown and upkeep; a paused stream's window;
+      `CURLOPT_STREAM_WEIGHT` (2404).
     - **b. Multiplexing,** with 51: streams of several transfers on one connection, a
       sibling's data delivered at once, `PIPEWAIT` and `--parallel-immediate`, server push,
       TLS early data.

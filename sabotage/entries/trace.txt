@@ -577,18 +577,18 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::debug_lines::a_failed_send_is_said_after_its_failure
 features: debug-hooks
 --- old
-                (_, Some(kind)) => (kind.number(), 0),
+            let code = failed.map_or(0, ErrorKind::number);
 --- new
-                (_, Some(_)) => (0, 0),
+            let code = 0;
 
 === a blocked send says nothing of what is left
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::debug_lines::a_blocked_send_leaves_the_rest_buffered
 features: debug-hooks
 --- old
-                    // Nothing went: what is left waits (`req_flush`).
-                    let left = self.filled - self.sent;
-                    trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
+                // Nothing went: what is left waits (`req_flush`).
+                let left = self.filled - self.sent;
+                trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
 --- new
 
 === a body passed on after the 100 is not said

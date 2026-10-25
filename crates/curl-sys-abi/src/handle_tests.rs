@@ -1057,15 +1057,26 @@ fn http_options_reach_the_request() {
         long(c, ffi::CURLOPT_HTTP_VERSION, ffi::CURL_HTTP_VERSION_NONE),
         CURLE_OK
     );
-    assert_eq!(version(c), HttpVersion::Http11);
+    assert_eq!(version(c), HttpVersion::Any);
+    for (v, want) in [
+        (ffi::CURL_HTTP_VERSION_1_1, HttpVersion::Http11),
+        (ffi::CURL_HTTP_VERSION_2_0, HttpVersion::Http2),
+        (ffi::CURL_HTTP_VERSION_2TLS, HttpVersion::Http2Tls),
+        (
+            ffi::CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE,
+            HttpVersion::Http2Prior,
+        ),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_HTTP_VERSION, v), CURLE_OK, "{v}");
+        assert_eq!(version(c), want);
+    }
     for (v, code) in [
-        (ffi::CURL_HTTP_VERSION_2_0, ffi::CURLE_UNSUPPORTED_PROTOCOL),
         (ffi::CURL_HTTP_VERSION_3, ffi::CURLE_UNSUPPORTED_PROTOCOL),
         (-1, CURLE_BAD_FUNCTION_ARGUMENT),
     ] {
         assert_eq!(long(c, ffi::CURLOPT_HTTP_VERSION, v), code, "{v}");
     }
-    assert_eq!(version(c), HttpVersion::Http11);
+    assert_eq!(version(c), HttpVersion::Http2Prior);
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }

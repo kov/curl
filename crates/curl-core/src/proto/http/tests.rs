@@ -5203,6 +5203,7 @@ mod coding;
 mod connect_only;
 #[cfg(feature = "debug-hooks")]
 mod debug_lines;
+mod h2;
 mod hsts;
 mod https_trace;
 mod idn;

@@ -176,6 +176,8 @@ curl-core/src/
   hsts.rs                    Hsts, HstsEntry, HstsReader, HstsWriter: the HSTS cache (hsts.c)
   altsvc.rs                  AltSvc, AltSvcCtrl, Alpn: the alt-svc cache (altsvc.c)
   idn.rs                     Idn, IdnFailure: host names in Unicode, converted by a library
+  http2.rs, http2/           Http2, Session, Event: the seam an HTTP/2 library implements;
+                             fake.rs: FakeH2, frames as lines (test-util)
   netrc.rs                   .netrc files: the file's path, its entries for a host
   coding.rs                  Coding, Decoder, Decoders, AcceptEncoding: the content codings
   libraries.rs               Libraries, SharedLibraries, Library, Ed25519: what the bound C
@@ -235,9 +237,12 @@ curl-core/src/
     mod.rs                   ProtoState (File, Http; test-util: Null, Stall, Script, Tcp),
                              Before, Ended
     file.rs
-    http.rs, http/           the HTTP/1 driver: the request sent, the response read;
-                             cookies.rs (the jar as HTTP uses it), sigv4.rs, httpsig.rs;
-                             suite.rs, C's test cases over the fake network
+    http.rs, http/           the HTTP driver: the request sent, the response read;
+                             h2.rs, the request's HTTP/2 stream; cookies.rs (the jar as
+                             HTTP uses it), sigv4.rs, httpsig.rs; suite.rs, C's test
+                             cases over the fake network
+    http2.rs                 H2Conn: a connection's HTTP/2 session and its output; the
+                             request's head read back into fields
     script.rs                the test protocol `script:` (test-util)
     http1/                   the parsers and the renderer, sans-IO, which import nothing of
                              the driver: request.rs, response.rs, framing.rs, chunked.rs
@@ -1503,16 +1508,25 @@ root and the tool own it and hand it to the backend.
 
 ### 4.4 Multiplexing
 
-Planned (milestone 4, steps 52 and 51), as review M3 §2.1, §2.3 and §2.4 decide it. Built in two
-stages: HTTP/2 with one stream per connection first, a connection leased by one transfer at a
-time as an HTTP/1 one is; then the `Attached` place and multiplexing.
+Milestone 4, steps 52 and 51, as review M3 §2.1, §2.3 and §2.4 decide it, in two stages: HTTP/2
+with one stream per connection first, a connection leased by one transfer at a time as an HTTP/1
+one is (built); then the `Attached` place and multiplexing (planned).
 
 **The session.** HTTP/2 is spoken by a session a binding crate makes (nghttp2,
-`crates/curl-nghttp2`), behind a core trait, as TLS is behind `TlsSession`: the core feeds it
-the connection's bytes and takes the bytes it wants sent; it hands back events per stream
-(headers, data, end, reset) and per connection (settings, goaway, ping). The session lives on
-the `Conn`, beside its layer stack, not as a `Layer`: a `Layer` moves one byte stream, and the
-session moves many (review §2.3, option two). The connection-wide operations ask the session
+`crates/curl-nghttp2`), behind the core's `http2::Http2` and `http2::Session`, as TLS is behind
+`TlsSession`, with a fake for the tests (`http2::fake`, frames as lines): the core feeds it the
+connection's bytes and takes the bytes it wants sent; it hands back events per stream (headers,
+data, end, window, close, reset) and per connection (settings, goaway). An event the caller
+cannot take fails the session's reading, as C's callbacks return `NGHTTP2_ERR_CALLBACK_FAILURE`;
+what C's callbacks call back into the session for (consuming, resetting, resuming) is done once
+the read returns. The session lives on the `Conn` (`proto::http2::H2Conn`, with the bytes it
+gave that the connection has not taken), beside its layer stack, not as a `Layer`: a `Layer`
+moves one byte stream, and the session moves many (review §2.3, option two). It is made by the
+connection's first request, which finds what the connection speaks (`http_check_new_conn`):
+HTTP/2 if TLS's ALPN agreed on `h2`, which is offered first where the handle has an HTTP/2
+library and its version allows it (`alpn_get_spec`), or by prior knowledge with nothing between;
+the connection then speaks HTTP/2 for good. A step takes the session off the connection for the
+call that drives it and puts it back after (`with_session`), so the lease is free beside it. The connection-wide operations ask the session
 first: the pool's health check lets it consume pending frames (an idle HTTP/2 connection with
 a SETTINGS or PING to read is healthy, so the input-pending rule is HTTP/1's alone), its
 shutdown sends GOAWAY, and `curl_easy_upkeep` sends PING past the interval. The pool checks a
@@ -1520,12 +1534,25 @@ multiplexed connection at most once a second (`lastchecked_ms`).
 
 **The head.** A response head reaches the HTTP head parser as C hands it on: the status as
 `HTTP/2 <code> \r\n` and each field as `name: value\r\n`, through one entry that takes a whole
-line (`ResponseHead::line`, C's `http_rw_hd`), with no folding, no hold of a last line, no
-line limit and no HTTP/0.9 decision; `feed` stays HTTP/1's assembler in front of it (review
-§2.4). The per-line work (cookies, file time, codings, Negotiate, the header store) moves into
-one function every version's stream calls; the status line's dialect sits in `Exchange`. A
-request goes out through a field sink: the renderer that writes HTTP/1's head writes HTTP/2's
-fields to the session, the pseudo-headers first.
+line (`HeadParser::line`, C's `http_rw_hd`), with no folding, no hold of a last line, no line
+limit and no HTTP/0.9 decision; `feed` stays HTTP/1's assembler in front of it (review §2.4).
+The per-line work (cookies, file time, codings, Negotiate, the header store) is `head_input`'s
+for either. A request is made as C makes it, its head rendered in HTTP/1's form with `HTTP/2`
+in its request line and traced as sent; as it is sent, the head is read back into the stream's
+fields (`proto::http2::fields_of`, C's `Curl_h1_req_parse_read` and `Curl_http_req_to_h2`):
+`:method`, `:scheme`, `:authority` from `Host:` and `:path` first, names in lowercase, the
+connection's own headers left out, `TE` only as `trailers`. Neither chunked framing nor an
+added `Expect:` goes over HTTP/2. The body goes into the stream's buffer, at most 64 KiB, which
+the session frames as the peer's window lets it; the body's end with no bytes left goes as an
+empty send (`req_flush`). What the session reads for the stream is handed on as it reads it,
+as C's callbacks write it: the head a line at a time, the body as the connection's would be,
+consumed as delivered, and the trailers once the stream closes. The stream's close is the
+response's end, as a connection's end is HTTP/1's (`stream_recv`,
+`http2_handle_stream_close`): a reset fails it, but for a refused stream, made again
+(`REFUSED_STREAM, retrying a fresh connect`); one closed before its head ended fails it too. A
+request over that is done with its stream open resets it (`http2_data_done`). Not yet: the
+`h2c` upgrade, the pool's health check and shutdown through the session, `curl_easy_upkeep`'s
+PING, a paused stream's window, and the `CF` traces of `--trace-config http/2`.
 
 **Ownership, once multiplexed** (review §2.1, approved). A connection that multiplexes lives
 in its pool place, `Attached { slot, users }`; an attached lease is a key, the `ConnId` and the

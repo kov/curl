@@ -261,9 +261,10 @@ impl std::fmt::Display for CurlVersion {
         let zstd = Library("zstd", curl_zstd::version());
         let idn = Library("libidn2", curl_idn2::version());
         let psl = Library("libpsl", curl_psl::version());
+        let h2 = Library("nghttp2", curl_nghttp2::version());
         let gss = Library("mit-krb5", curl_gssapi::version());
-        let libraries: [&dyn std::fmt::Display; 7] =
-            [&ssl, &zlib, &brotli, &zstd, &idn, &psl, &gss];
+        let libraries: [&dyn std::fmt::Display; 8] =
+            [&ssl, &zlib, &brotli, &zstd, &idn, &psl, &h2, &gss];
         version().components(&libraries).fmt(f)
     }
 }
@@ -343,7 +344,7 @@ mod tests {
     #[test]
     fn names_the_libraries_as_c() {
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libidn2/{} libpsl/{} mit-krb5/{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libidn2/{} libpsl/{} nghttp2/{} mit-krb5/{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -351,6 +352,7 @@ mod tests {
             curl_zstd::version(),
             curl_idn2::version(),
             curl_psl::version(),
+            curl_nghttp2::version(),
             curl_gssapi::version()
         );
         assert_eq!(CurlVersion.to_string(), want);

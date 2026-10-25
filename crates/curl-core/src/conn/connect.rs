@@ -1138,6 +1138,7 @@ impl ConnectMachine {
             close: false,
             settings,
             negotiate: None,
+            h2: None,
         }
     }
 

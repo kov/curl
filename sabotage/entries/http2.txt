@@ -1,0 +1,114 @@
+=== the connection's own headers go as HTTP/2 fields
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http2::tests::a_head_turns_into_fields_as_c_turns_it
+--- old
+        } else if !NOT_FIELDS.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+--- new
+        } else {
+
+=== a field's name keeps its case
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http2::tests::a_head_turns_into_fields_as_c_turns_it
+--- old
+        if lowercase {
+            self.bytes[start..].make_ascii_lowercase();
+        }
+--- new
+
+=== a TE that lists trailers goes as it was
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http2::tests::a_head_turns_into_fields_as_c_turns_it
+--- old
+                fields.add(name, b"trailers", true).map_err(oom)?;
+--- new
+                fields.add(name, value, true).map_err(oom)?;
+
+=== a custom method is cut at its first space
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http2::tests::methods_targets_and_authorities_are_read_as_c_reads_them
+--- old
+    let method_len = match custom.filter(|m| !m.is_empty() && request.starts_with(m)) {
+--- new
+    let method_len = match custom.filter(|_| false) {
+
+=== the status line over HTTP/2 lacks its trailing blank
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_get_goes_as_fields_and_its_response_comes_as_lines
+--- old
+                        .and_then(|()| line.try_extend_from_slice(b" \r\n"))
+--- new
+                        .and_then(|()| line.try_extend_from_slice(b"\r\n"))
+
+=== a body goes without ending the stream
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_body_goes_as_data_ending_the_stream
+--- old
+                        (_, true) => BodyRead::Last(n),
+--- new
+                        (_, true) => BodyRead::Bytes(n),
+
+=== a reset stream is taken as whole
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_reset_stream_fails_the_transfer
+--- old
+        if stream.reset {
+            let error = stream.error;
+--- new
+        if false {
+            let error = stream.error;
+
+=== a stream that closed before its head ended is taken as whole
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_stream_closed_before_its_head_fails
+--- old
+        if !stream.body_started {
+            return Err(trace::fail(
+--- new
+        if false {
+            return Err(trace::fail(
+
+=== trailers are never handed on
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::trailers_come_as_the_stream_closes
+--- old
+            self.pipeline.header(cx, line, HeaderOrigin::Trailer)?;
+--- new
+
+=== a connection closed under an open stream ends it whole
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_connection_closed_under_a_stream_fails_it
+--- old
+        let gone = h2.closed() || h2.goaway().is_some_and(|g| g.last.0 < id);
+--- new
+        let gone = h2.goaway().is_some_and(|g| g.last.0 < id);
+
+=== prior knowledge is ignored
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_get_goes_as_fields_and_its_response_comes_as_lines
+--- old
+            Some(_) => prior,
+--- new
+            Some(_) => false,
+
+=== ALPN offers h2 without a library to speak it
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::http::tests::h2::alpn_offers_h2_where_a_library_speaks_it
+--- old
+    let h2 = version.h2() && cx.easy().libraries().h2.is_some();
+--- new
+    let h2 = version.h2();
+
+=== prior knowledge over TLS offers HTTP/1.1 too
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::http::tests::h2::alpn_offers_h2_where_a_library_speaks_it
+--- old
+        (true, TlsSide::Origin, v) if h2 && !v.h1() => Alpn::H2,
+--- new
+
+=== the application's chunked framing goes over HTTP/2
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http::tests::h2::an_asked_chunked_body_goes_plain
+--- old
+        if head.version == SentIn::Http2 && h.is(b"Transfer-Encoding") {
+--- new
+        if false && h.is(b"Transfer-Encoding") {

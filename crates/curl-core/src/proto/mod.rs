@@ -10,6 +10,7 @@
 pub(crate) mod file;
 pub(crate) mod http;
 pub(crate) mod http1;
+pub(crate) mod http2;
 #[cfg(any(test, feature = "test-util"))]
 mod script;
 
@@ -533,6 +534,15 @@ impl ProtoState {
             ProtoState::File(_) => false,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
+        }
+    }
+
+    /// The request went on a stream HTTP/2 refused, which is safe to make
+    /// again (`state.refused_stream`): said once.
+    pub(crate) fn take_refused(&mut self) -> bool {
+        match self {
+            ProtoState::Http(r) => r.take_refused(),
+            _ => false,
         }
     }
 

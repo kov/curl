@@ -122,6 +122,8 @@ pub struct FakeLog {
     pub state: usize,
     /// Sessions that resumed a ticket the transfer's cache held.
     pub resumed: usize,
+    /// What the last session offered by ALPN.
+    pub alpn: Option<Alpn>,
 }
 
 /// What the fake keeps for a multi: its number, and the log it notes
@@ -181,6 +183,7 @@ impl FakeTls {
             states_dropped: 0,
             state: 0,
             resumed: 0,
+            alpn: None,
         };
         Ok(FakeTls {
             log: TryArc::try_new(Mutex::new(log))?,
@@ -266,6 +269,7 @@ impl TlsBackend for FakeTls {
             log.port = peer.port;
             log.kind = Some(peer.kind);
             log.verify_peer = identity.verify_peer;
+            log.alpn = Some(alpn);
             log.sessions
         };
         let session = FakeSession {
@@ -279,6 +283,7 @@ impl TlsBackend for FakeTls {
                 Alpn::None => None,
                 Alpn::Http11 => Some(Chosen::Http11),
                 Alpn::Http10 => Some(Chosen::Http10),
+                Alpn::H2Http11 | Alpn::H2 => Some(Chosen::H2),
             }
             .filter(|_| self.agree),
             stage: Stage::Hello(0),

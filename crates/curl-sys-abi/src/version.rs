@@ -87,6 +87,7 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::Debug => (c"Debug", crate::ffi::CURL_VERSION_DEBUG),
         Feature::GssApi => (c"GSS-API", crate::ffi::CURL_VERSION_GSSAPI),
         Feature::Hsts => (c"HSTS", crate::ffi::CURL_VERSION_HSTS),
+        Feature::Http2 => (c"HTTP2", crate::ffi::CURL_VERSION_HTTP2),
         Feature::HttpsProxy => (c"HTTPS-proxy", crate::ffi::CURL_VERSION_HTTPS_PROXY),
         // A name alone, without a bit, as in C.
         Feature::Httpsig => (c"HTTPSIG", 0),
@@ -192,8 +193,8 @@ fn info() -> &'static curl_version_info_data {
                 libssh_version: ptr::null(),
                 brotli_ver_num: curl_brotli::version_number(),
                 brotli_version: brotli.as_ptr(),
-                nghttp2_ver_num: 0,
-                nghttp2_version: ptr::null(),
+                nghttp2_ver_num: curl_nghttp2::version_number(),
+                nghttp2_version: curl_nghttp2::version_c().as_ptr(),
                 quic_version: ptr::null(),
                 cainfo: cainfo.map_or(ptr::null(), CBuf::as_ptr),
                 capath: capath.map_or(ptr::null(), CBuf::as_ptr),
@@ -219,8 +220,10 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let zstd = Library("zstd", curl_zstd::version());
             let idn = Library("libidn2", curl_idn2::version());
             let psl = Library("libpsl", curl_psl::version());
+            let h2 = Library("nghttp2", curl_nghttp2::version());
             let gss = Library("mit-krb5", curl_gssapi::version());
-            let libraries: [&dyn fmt::Display; 7] = [&ssl, &zlib, &brotli, &zstd, &idn, &psl, &gss];
+            let libraries: [&dyn fmt::Display; 8] =
+                [&ssl, &zlib, &brotli, &zstd, &idn, &psl, &h2, &gss];
             cbuf(format_args!("{}", version().components(&libraries)))
         })
         .as_ptr()
@@ -263,7 +266,7 @@ mod tests {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libidn2/{} libpsl/{} mit-krb5/{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libidn2/{} libpsl/{} nghttp2/{} mit-krb5/{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -271,6 +274,7 @@ mod tests {
             curl_zstd::version(),
             curl_idn2::version(),
             curl_psl::version(),
+            curl_nghttp2::version(),
             curl_gssapi::version()
         );
         assert_eq!(said, want);
@@ -315,6 +319,7 @@ mod tests {
             ),
             (true, "GSS-API", ffi::CURL_VERSION_GSSAPI),
             (true, "HSTS", ffi::CURL_VERSION_HSTS),
+            (true, "HTTP2", ffi::CURL_VERSION_HTTP2),
             (true, "HTTPS-proxy", ffi::CURL_VERSION_HTTPS_PROXY),
             (true, "HTTPSIG", 0),
             (true, "IDN", ffi::CURL_VERSION_IDN),

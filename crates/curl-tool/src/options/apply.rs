@@ -485,6 +485,10 @@ pub(crate) enum IpVersion {
 pub(crate) enum HttpVersion {
     Http10,
     Http11,
+    /// `--http2`.
+    Http2,
+    /// `--http2-prior-knowledge`.
+    Http2Prior,
 }
 
 /// The HTTP method the options chose (C's `HttpReq`); only one may be.
@@ -1404,11 +1408,12 @@ pub(crate) fn apply<'a>(
             };
             op.referer = (!given.is_empty()).then_some(given);
         }
-        Opt::Http10 | Opt::Http11 => {
-            let version = if spec.opt == Opt::Http10 {
-                HttpVersion::Http10
-            } else {
-                HttpVersion::Http11
+        Opt::Http10 | Opt::Http11 | Opt::Http2 | Opt::Http2PriorKnowledge => {
+            let version = match spec.opt {
+                Opt::Http10 => HttpVersion::Http10,
+                Opt::Http11 => HttpVersion::Http11,
+                Opt::Http2 => HttpVersion::Http2,
+                _ => HttpVersion::Http2Prior,
             };
             let op = line.current();
             if op.http_version.is_some_and(|v| v != version) {
@@ -1780,8 +1785,6 @@ pub(crate) fn apply<'a>(
         | Opt::FtpSslReqd
         | Opt::Hostpubmd5
         | Opt::Hostpubsha256
-        | Opt::Http2
-        | Opt::Http2PriorKnowledge
         | Opt::Http3
         | Opt::Http3Only
         | Opt::Knownhosts

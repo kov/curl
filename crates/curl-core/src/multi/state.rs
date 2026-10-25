@@ -3149,8 +3149,15 @@ fn retry_request<H: Host>(
     x: &mut Attached,
     cx: &mut StepCx<'_, H>,
 ) -> Result<bool, ErrorKind> {
-    if !x.proto.retryable() || !x.lease.conn().reused() {
+    let reused = x.proto.retryable() && x.lease.conn().reused();
+    // A stream HTTP/2 refused is safe to make again, on any connection,
+    // if nothing came on it.
+    let refused = x.proto.take_refused() && x.proto.retryable();
+    if !reused && !refused {
         return Ok(false);
+    }
+    if !reused {
+        trace::info(cx, format_args!("REFUSED_STREAM, retrying a fresh connect"));
     }
     if run.retries >= MAX_RETRIES {
         run.retries = 0;

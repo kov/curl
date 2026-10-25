@@ -430,9 +430,9 @@ witness: curl-core proto::http::tests::a_body_waits_for_a_100
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::the_application_s_transfer_encoding_decides
 --- old
-        let chunked = asked.unwrap_or(size_unknown);
+        let chunked = !h2 && asked.unwrap_or(size_unknown);
 --- new
-        let chunked = size_unknown;
+        let chunked = !h2 && size_unknown;
 
 === the custom method is not sent
 file: crates/curl-core/src/proto/http.rs
@@ -464,9 +464,9 @@ witness: curl-core proto::http1::chunked::tests::encodes_pieces_as_chunks
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::http_1_0_refuses_a_body_of_unknown_size
 --- old
-        if asked.is_none() && size_unknown && self.version == HttpVersion::Http10 {
+        if asked.is_none() && size_unknown && self.version == SentIn::Http10 {
 --- new
-        if false && size_unknown && self.version == HttpVersion::Http10 {
+        if false && size_unknown && self.version == SentIn::Http10 {
 
 === the library says chunked beside the application
 file: crates/curl-core/src/proto/http.rs
@@ -1227,15 +1227,15 @@ witness: curl-core proto::http::tests::last_modified_gives_the_file_time_when_as
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_connection_that_answered_http10_is_asked_in_it
 --- old
-    if after_http10 || seen == Some(ResponseVersion::Http10) {
+    } else if after_http10 || seen == Some(ResponseVersion::Http10) || wanted == HttpVersion::Http10
 --- new
-    if after_http10 {
+    } else if after_http10 || wanted == HttpVersion::Http10
 
 === a new connection's first request does not say its HTTP version
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
 --- old
-            trace::info(cx, format_args!("using HTTP/1.x"));
+        trace::info(cx, format_args!("using {version}"));
 --- new
 
 === a step reads for as long as its peer sends

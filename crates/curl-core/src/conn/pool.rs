@@ -622,6 +622,7 @@ impl Pool {
                 close: false,
                 settings,
                 negotiate: None,
+                h2: None,
             }),
             Route::Tcp(tcp) => {
                 ConnSlot::Connecting(ConnectMachine::new(number, tcp, now, closer, settings))

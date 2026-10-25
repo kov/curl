@@ -41,7 +41,7 @@ use super::http1::follow::{self, Inherited};
 use super::http1::framing::{self, Asked, CodingStep, CodingTale, Framing, Left, Unsent};
 use super::http1::request::{
     self, Accepted, Authorization, Conditional, CredentialGate, Forwarding, RangeLine, RequestHead,
-    Typed,
+    SentIn, Typed,
 };
 use super::{Before, Ended, ProtoStep};
 use crate::options::AuthMethods;
@@ -49,6 +49,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 
 pub(crate) mod alt_svc;
 pub(crate) mod cookies;
+mod h2;
 pub(crate) mod hsts;
 pub(crate) mod httpsig;
 pub(crate) mod negotiate;
@@ -165,7 +166,7 @@ pub(crate) struct Request {
     /// The application's custom method is sent in its place.
     custom: bool,
     /// The HTTP version sent, once the connection is known.
-    version: HttpVersion,
+    version: SentIn,
     /// An earlier response to the transfer said HTTP/1.0
     /// (`state.http_neg.rcvd_min`).
     after_http10: bool,
@@ -200,6 +201,10 @@ pub(crate) struct Request {
     /// The name a custom `Host:` header gives the cookies, in place of
     /// the URL's host.
     cookie_host: Option<Vec<u8>>,
+    /// The request's stream, over a connection that speaks HTTP/2.
+    h2: Option<h2::H2Stream>,
+    /// It went on a stream HTTP/2 refused (`state.refused_stream`).
+    refused: bool,
 }
 
 #[derive(Debug)]
@@ -324,9 +329,17 @@ enum Body {
     Chunked(ChunkDecoder),
     /// When the connection closes.
     UntilClose,
+    /// When the HTTP/2 stream closes.
+    Stream,
 }
 
 impl Request {
+    /// It went on a stream HTTP/2 refused, which may be made again: said
+    /// once.
+    pub(crate) fn take_refused(&mut self) -> bool {
+        std::mem::take(&mut self.refused)
+    }
+
     /// Credentials may go to the request's origin.
     pub(crate) fn trusted(&self) -> Option<request::Trusted> {
         self.gate.trusted()
@@ -415,7 +428,7 @@ impl Request {
             no_expect: before.http.no_expect,
             expect_refused: false,
             closing: false,
-            version: cx.easy().options().http.version,
+            version: SentIn::Http11,
             after_http10: before.http.http10,
             out: Vec::new(),
             filled: 0,
@@ -428,6 +441,8 @@ impl Request {
             stage: Stage::Head,
             interim: false,
             cookie_host: None,
+            h2: None,
+            refused: false,
         })
     }
 
@@ -655,6 +670,10 @@ impl Request {
         if self.sending() && !pause.send_paused() && !waiting {
             events = events | Events::OUT;
         }
+        // What HTTP/2's session holds waits for the socket.
+        if self.h2.as_ref().is_some_and(h2::H2Stream::out_pending) {
+            events = events | Events::OUT;
+        }
         events
     }
 
@@ -856,19 +875,21 @@ impl Request {
         self.cookie_host = cookies::custom_host(&options.http.headers, self.gate.same_origin())
             .map_err(|_| ErrorKind::OutOfMemory)?;
         let reused = lease.conn().reused();
-        // On a connection's first request (`http_check_new_conn`); no
-        // other version is spoken here.
-        if !reused {
-            let top = lease.conn().top();
-            crate::multi::state::query_alpn(cx, lease, top);
-            trace::info(cx, format_args!("using HTTP/1.x"));
-        }
+        // On a connection's first request, which finds what it speaks
+        // (`http_check_new_conn`).
+        let h2 = if reused {
+            lease.conn().is_h2()
+        } else {
+            self.check_new_conn(cx, lease)?
+        };
         let http_proxy = lease.conn().http_proxy();
         self.version = version(
             cx.easy().options().http.version,
             self.after_http10,
             lease.conn().seen_version(),
+            h2,
         );
+        self.h2 = h2.then(h2::H2Stream::default);
         // The proxy the request goes to whole, and what it is given.
         let forwarding = lease
             .conn()
@@ -1072,14 +1093,17 @@ impl Request {
         let converts = options.crlf && upload.is_some() && client_size != Some(0);
         let size = client_size.filter(|_| !converts);
         let size_unknown = upload.is_some() && size.is_none();
-        if asked.is_none() && size_unknown && self.version == HttpVersion::Http10 {
+        if asked.is_none() && size_unknown && self.version == SentIn::Http10 {
             return Err(trace::fail(
                 cx,
                 ErrorKind::UploadFailed,
                 format_args!("Chunky upload is not supported by HTTP 1.0"),
             ));
         }
-        let chunked = asked.unwrap_or(size_unknown);
+        // HTTP/2 frames the body itself, said once the head is made
+        // (`http_req_set_TE`).
+        let suppressed = h2 && asked == Some(true);
+        let chunked = !h2 && asked.unwrap_or(size_unknown);
         // Even a request without a body sends a last chunk if chunked.
         if chunked && upload.is_none() {
             upload = Some(Upload::empty());
@@ -1119,7 +1143,7 @@ impl Request {
         let added_expect = content.is_some()
             && expects.is_none()
             && !self.no_expect
-            && self.version == HttpVersion::Http11
+            && self.version == SentIn::Http11
             // Weighed by the client's size, converted or not
             // (`Curl_creader_client_length`).
             && client_size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
@@ -1224,8 +1248,9 @@ impl Request {
         request::render_h1(&head, &gate, &mut out)?;
         let exchange = Exchange {
             sent: match self.version {
-                HttpVersion::Http10 => response::HttpVersion::Http10,
-                HttpVersion::Http11 => response::HttpVersion::Http11,
+                SentIn::Http10 => response::HttpVersion::Http10,
+                SentIn::Http11 => response::HttpVersion::Http11,
+                SentIn::Http2 => response::HttpVersion::Http2,
             },
             reused,
             allow_09: http.allow_09,
@@ -1260,6 +1285,15 @@ impl Request {
             trace::info_with(
                 cx,
                 &[b"Server auth using ", name, b" with user '", user, b"'"],
+            );
+        }
+        if suppressed {
+            trace::info(
+                cx,
+                format_args!(
+                    "suppressing chunked transfer encoding on connection using HTTP version 2 \
+                     or higher"
+                ),
             );
         }
         let length = content.and_then(|c| c.length);
@@ -1428,6 +1462,11 @@ impl Request {
         while self.sending() {
             if self.sent == self.filled {
                 if let Sending::Body(Reading { eos_read: true, .. }) = self.outgoing {
+                    // The stream hears the body's end, which no bytes
+                    // carried (`req_flush`'s `xfer_send` of none).
+                    if self.h2.as_ref().is_some_and(|s| !s.body_eos()) {
+                        self.h2_send(cx, lease, self.sent, true)?;
+                    }
                     break;
                 }
                 self.sent = 0;
@@ -1498,25 +1537,30 @@ impl Request {
             }
             let said = cx.easy().report().reasons();
             // The socket traces the send, and says why it failed, as it
-            // reaches it (`cf_socket_send`); a layer may say why too.
-            let sent = lease.get().send(cx, &self.out[self.sent..end]);
-            let failed = match &sent {
-                Err(_) if cx.easy().report().reasons() > said => Some(ErrorKind::SendError),
-                Err(e) => {
-                    let why = OsError(e);
-                    Some(trace::fail(
-                        cx,
-                        ErrorKind::SendError,
-                        format_args!("Send failure: {why}"),
-                    ))
+            // reaches it (`cf_socket_send`); a layer may say why too. Over
+            // HTTP/2 the stream takes it (`cf_h2_send`).
+            let (taken, failed) = if self.h2.is_some() {
+                match self.h2_send(cx, lease, end, eos) {
+                    Ok(n) => (n, None),
+                    Err(kind) => (0, Some(kind)),
                 }
-                Ok(_) => None,
+            } else {
+                let sent = lease.get().send(cx, &self.out[self.sent..end]);
+                match sent {
+                    Ok(Sent::Bytes(n)) => (n.get(), None),
+                    Ok(_) => (0, None),
+                    Err(_) if cx.easy().report().reasons() > said => {
+                        (0, Some(ErrorKind::SendError))
+                    }
+                    Err(e) => {
+                        let why = OsError(&e);
+                        let said = format_args!("Send failure: {why}");
+                        (0, Some(trace::fail(cx, ErrorKind::SendError, said)))
+                    }
+                }
             };
-            let (code, n) = match (&sent, failed) {
-                (Ok(Sent::Bytes(n)), _) => (0, n.get()),
-                (_, Some(kind)) => (kind.number(), 0),
-                _ => (0, 0),
-            };
+            let code = failed.map_or(0, ErrorKind::number);
+            let n = taken;
             trace::debug_info(
                 cx,
                 format_args!(
@@ -1524,16 +1568,15 @@ impl Request {
                     u8::from(eos)
                 ),
             );
-            let n = match (sent, failed) {
-                (_, Some(kind)) => return Err(kind),
-                (Ok(Sent::Bytes(n)), _) => n.get(),
-                _ => {
-                    // Nothing went: what is left waits (`req_flush`).
-                    let left = self.filled - self.sent;
-                    trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
-                    return Ok(false);
-                }
-            };
+            if let Some(kind) = failed {
+                return Err(kind);
+            }
+            if n == 0 {
+                // Nothing went: what is left waits (`req_flush`).
+                let left = self.filled - self.sent;
+                trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
+                return Ok(false);
+            }
             // The head's part and the body's are traced apart
             // (`xfer_send`); both count as the request's.
             let head = match self.outgoing {
@@ -1648,6 +1691,8 @@ impl Request {
         // is to send (`KEEP_RECV` and `KEEP_SEND` both off).
         if self.sending() {
             self.send(cx, lease, true)?;
+        } else if self.h2.as_ref().is_some_and(h2::H2Stream::out_pending) && lease.conn().is_h2() {
+            self.h2_egress(cx, lease)?;
         }
         Ok(if matches!(self.stage, Stage::Done) && !self.sending() {
             ProtoStep::Done
@@ -1686,6 +1731,9 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<Read, ErrorKind> {
+        if self.h2.is_some() {
+            return self.h2_read_some(cx, lease);
+        }
         let mut reads = 0;
         loop {
             if matches!(self.stage, Stage::Done) || cx.pause().recv_paused() {
@@ -1811,8 +1859,8 @@ impl Request {
     ) -> Result<(), ErrorKind> {
         while !input.is_empty() {
             match self.stage {
-                Stage::Head => input = self.head_input(cx, lease, input)?,
-                Stage::Body(Body::Length | Body::UntilClose) => {
+                Stage::Head => input = self.head_input(cx, lease, input, false)?,
+                Stage::Body(Body::Length | Body::UntilClose | Body::Stream) => {
                     self.pipeline.body(cx, input)?;
                     input = &[];
                     if matches!(self.stage, Stage::Body(Body::Length)) && self.pipeline.body_done()
@@ -1829,12 +1877,13 @@ impl Request {
     }
 
     /// Feed the head parser once and deliver what it made; what is left of
-    /// `input`.
+    /// `input`. A `whole` input is one line, as HTTP/2 hands them on.
     fn head_input<'i, H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
         input: &'i [u8],
+        whole: bool,
     ) -> Result<&'i [u8], ErrorKind> {
         let Request {
             pipeline,
@@ -1864,12 +1913,13 @@ impl Request {
         let bodyless = head.meta().bodyless();
         let sent_all = matches!(outgoing, Sending::Done | Sending::Aborted);
         let unsent = Self::left_to_send(body.as_ref(), sent_all, *body_sent);
-        let fed = head.feed(
-            input,
-            &mut cx.report_mut().sizes_mut().header,
-            unsent,
-            conn_negotiate,
-        );
+        let header_bytes = &mut cx.report_mut().sizes_mut().header;
+        let fed = if whole {
+            head.line(input, header_bytes, unsent, conn_negotiate)
+                .map(|event| (input.len(), Some(event)))
+        } else {
+            head.feed(input, header_bytes, unsent, conn_negotiate)
+        };
         let (used, event) = match fed {
             Ok(fed) => fed,
             Err(e) => {
@@ -2206,7 +2256,10 @@ impl Request {
             ignore: head.meta().ignore_body(),
         });
         self.stage = match framing {
-            Framing::None | Framing::Abandoned => Stage::Done,
+            // Over HTTP/2, a body, if any, ends with the stream.
+            Framing::Abandoned => Stage::Done,
+            _ if self.h2.is_some() => Stage::Body(Body::Stream),
+            Framing::None => Stage::Done,
             Framing::Length(_) => Stage::Body(Body::Length),
             Framing::Chunked => {
                 let raw = cx.easy().options().http.raw;
@@ -2333,7 +2386,7 @@ impl Request {
                     _ => Ok(()),
                 }
             }
-            Stage::Body(Body::Length | Body::UntilClose) => self.pipeline.end(cx),
+            Stage::Body(Body::Length | Body::UntilClose | Body::Stream) => self.pipeline.end(cx),
             Stage::Body(Body::Chunked(decoder)) => match decoder.finish() {
                 Ok(()) => Ok(()),
                 Err(e) => Err(chunks_failed(cx, &e)),
@@ -2363,6 +2416,10 @@ impl Request {
         next: &AfterRequest,
         inherited: &mut Inherited,
     ) -> Result<(), ErrorKind> {
+        // A stream still open goes (`http2_data_done`).
+        if self.h2.is_some() {
+            self.h2_done(cx, lease);
+        }
         let Some(head) = self.head.as_ref() else {
             // The request was never made.
             return result;
@@ -2661,11 +2718,19 @@ fn head_failed<H: Host>(cx: &mut StepCx<'_, H>, e: &HeadError) -> ErrorKind {
 /// The version a request goes in, `wanted` the application's: HTTP/1.0
 /// after a response in it to the transfer, or on a connection whose last
 /// response was in it (`http_may_use_1_1`).
-fn version(wanted: HttpVersion, after_http10: bool, seen: Option<ResponseVersion>) -> HttpVersion {
-    if after_http10 || seen == Some(ResponseVersion::Http10) {
-        HttpVersion::Http10
+fn version(
+    wanted: HttpVersion,
+    after_http10: bool,
+    seen: Option<ResponseVersion>,
+    h2: bool,
+) -> SentIn {
+    if h2 {
+        SentIn::Http2
+    } else if after_http10 || seen == Some(ResponseVersion::Http10) || wanted == HttpVersion::Http10
+    {
+        SentIn::Http10
     } else {
-        wanted
+        SentIn::Http11
     }
 }
 

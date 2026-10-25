@@ -387,6 +387,24 @@ impl HeadParser {
         Ok((used, None))
     }
 
+    /// Read one whole line, as HTTP/2 and HTTP/3 hand them on
+    /// (`Curl_http_write_resp_hd`, which goes to `http_rw_hd`): the
+    /// status line `HTTP/2 200 \r\n`, each field `name: value\r\n` and
+    /// the blank line, with no folding, no line held back, no limit on a
+    /// line's length and no HTTP/0.9.
+    pub(crate) fn line<'s>(
+        &'s mut self,
+        line: &[u8],
+        transfer_bytes: &mut u64,
+        sending: Unsent,
+        conn: ConnNegotiate,
+    ) -> Result<HeadEvent<'s>, HeadError> {
+        assert!(self.phase == Phase::Head, "a line of a head not over");
+        self.line.clear();
+        self.line.try_extend_from_slice(line)?;
+        self.line_out(transfer_bytes, sending, conn)
+    }
+
     fn push(&mut self, bytes: &[u8]) -> Result<(), HeadError> {
         if self.line.len() + bytes.len() > MAX_LINE {
             return Err(HeadError::LineTooLong);

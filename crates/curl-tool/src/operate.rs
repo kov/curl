@@ -2765,6 +2765,11 @@ fn http_setopts(
         let (version, value) = match version {
             HttpVersion::Http10 => (options::HttpVersion::Http10, easysrc::CURL_HTTP_VERSION_1_0),
             HttpVersion::Http11 => (options::HttpVersion::Http11, easysrc::CURL_HTTP_VERSION_1_1),
+            HttpVersion::Http2 => (options::HttpVersion::Http2, easysrc::CURL_HTTP_VERSION_2_0),
+            HttpVersion::Http2Prior => (
+                options::HttpVersion::Http2Prior,
+                easysrc::CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE,
+            ),
         };
         s.enumerated("CURLOPT_HTTP_VERSION", easysrc::HTTP_VERSIONS, value, |o| {
             o.http.version = version;

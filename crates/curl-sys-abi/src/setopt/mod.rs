@@ -248,12 +248,16 @@ fn slist(p: *mut c_void) -> Result<Option<Handler<dyn LineSource>>, OutOfMemory>
         .transpose()
 }
 
-/// The HTTP version a request asks for (`setopt_HTTP_VERSION`): HTTP/2
-/// and HTTP/3 are not in this build.
+/// The HTTP version a request asks for (`setopt_HTTP_VERSION`): HTTP/3
+/// is not in this build.
 fn http_version(n: c_long) -> Result<HttpVersion, Refused> {
     match n {
+        ffi::CURL_HTTP_VERSION_NONE => Ok(HttpVersion::Any),
         ffi::CURL_HTTP_VERSION_1_0 => Ok(HttpVersion::Http10),
-        ffi::CURL_HTTP_VERSION_NONE | ffi::CURL_HTTP_VERSION_1_1 => Ok(HttpVersion::Http11),
+        ffi::CURL_HTTP_VERSION_1_1 => Ok(HttpVersion::Http11),
+        ffi::CURL_HTTP_VERSION_2_0 => Ok(HttpVersion::Http2),
+        ffi::CURL_HTTP_VERSION_2TLS => Ok(HttpVersion::Http2Tls),
+        ffi::CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE => Ok(HttpVersion::Http2Prior),
         n if n < ffi::CURL_HTTP_VERSION_NONE => Err(Refused::Bad),
         _ => Err(Refused::Unsupported),
     }

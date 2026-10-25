@@ -448,17 +448,17 @@ witness: curl-core multi::tests::connections_are_numbered_in_their_traces
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_fresh_connection_that_died_is_an_empty_reply
 --- old
-    if !x.proto.retryable() || !x.lease.conn().reused() {
+    let reused = x.proto.retryable() && x.lease.conn().reused();
 --- new
-    if !x.proto.retryable() {
+    let reused = x.proto.retryable();
 
 === a request that got something back is retried
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_response_until_close_over_a_reused_connection_is_whole
 --- old
-    if !x.proto.retryable() || !x.lease.conn().reused() {
+    let reused = x.proto.retryable() && x.lease.conn().reused();
 --- new
-    if !x.lease.conn().reused() {
+    let reused = x.lease.conn().reused();
 
 === a retried request is retried without end
 file: crates/curl-core/src/multi/state.rs

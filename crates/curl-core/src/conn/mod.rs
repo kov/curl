@@ -846,9 +846,34 @@ pub(crate) struct Conn {
     /// HTTP Negotiate's context with the origin, and what the connection
     /// is bound to by it; made the first time a request negotiates.
     negotiate: Option<Box<crate::proto::http::negotiate::Negotiate>>,
+    /// The HTTP/2 session over it, once its first request found HTTP/2
+    /// agreed on (`cf-h2`): it speaks nothing else from then on.
+    h2: Option<Box<crate::proto::http2::H2Conn>>,
 }
 
 impl Conn {
+    /// Whether it speaks HTTP/2 (`Curl_conn_http_version` 20).
+    pub(crate) fn is_h2(&self) -> bool {
+        self.h2.is_some()
+    }
+
+    /// Its HTTP/2 session, if it speaks HTTP/2.
+    pub(crate) fn h2(&self) -> Option<&crate::proto::http2::H2Conn> {
+        self.h2.as_deref()
+    }
+
+    /// Its HTTP/2 session, taken out for a step to drive beside the
+    /// connection, which it is put back on after (`put_h2`).
+    pub(crate) fn take_h2(&mut self) -> Option<Box<crate::proto::http2::H2Conn>> {
+        self.h2.take()
+    }
+
+    /// Put an HTTP/2 session on it, a new one or one taken out.
+    pub(crate) fn put_h2(&mut self, h2: Box<crate::proto::http2::H2Conn>) {
+        assert!(self.h2.is_none(), "one session per connection");
+        self.h2 = Some(h2);
+    }
+
     /// The filter at the top of its chain once it is up, which a question
     /// of it is asked of first (`conn->cfilter[FIRSTSOCKET]`).
     pub(crate) fn top(&self) -> crate::components::Component {

@@ -25,12 +25,50 @@ fn header(line: &[u8]) -> Result<UserHeader, OutOfMemory> {
     Ok(classify(copy))
 }
 
-/// The version an HTTP request is made in (`CURLOPT_HTTP_VERSION`).
+/// The HTTP versions a transfer may speak (`CURLOPT_HTTP_VERSION`, C's
+/// `http_neg.wanted`). HTTP/2 needs a library for it: without one, a
+/// version that allows HTTP/1 speaks HTTP/1, as a C build without
+/// nghttp2 refuses the others.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Version {
-    Http10,
+    /// HTTP/1.1, or HTTP/2 where TLS's ALPN agrees on it
+    /// (`CURL_HTTP_VERSION_NONE`).
     #[default]
+    Any,
+    /// HTTP/1.0, offering HTTP/1.1 too by ALPN.
+    Http10,
     Http11,
+    /// HTTP/2 by ALPN, or over clear text by an upgrade from HTTP/1.1
+    /// (`CURL_HTTP_VERSION_2_0`).
+    Http2,
+    /// HTTP/2 by ALPN only (`CURL_HTTP_VERSION_2TLS`).
+    Http2Tls,
+    /// HTTP/2 only, with no upgrade over clear text
+    /// (`CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE`).
+    Http2Prior,
+}
+
+impl Version {
+    /// HTTP/2 is one of them (`CURL_HTTP_V2x`).
+    pub(crate) fn h2(self) -> bool {
+        matches!(
+            self,
+            Version::Any | Version::Http2 | Version::Http2Tls | Version::Http2Prior
+        )
+    }
+
+    /// HTTP/1 is one of them (`CURL_HTTP_V1x`).
+    pub(crate) fn h1(self) -> bool {
+        self != Version::Http2Prior
+    }
+}
+
+/// The version a request goes in (`httpversion_sent`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SentIn {
+    Http10,
+    Http11,
+    Http2,
 }
 
 /// Whether what the application said for the first origin may go to the
@@ -437,7 +475,7 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) method: &'o [u8],
     /// The path and query, as the URL holds them.
     pub(crate) target: &'o [u8],
-    pub(crate) version: Version,
+    pub(crate) version: SentIn,
     /// The origin's host as the URL names it, an IPv6 address in
     /// brackets, and its port unless it is the scheme's.
     pub(crate) host: &'o [u8],
@@ -591,8 +629,9 @@ fn write_h1(
         match part {
             Part::Request => {
                 let version: &[u8] = match head.version {
-                    Version::Http10 => b"1.0",
-                    Version::Http11 => b"1.1",
+                    SentIn::Http10 => b"1.0",
+                    SentIn::Http11 => b"1.1",
+                    SentIn::Http2 => b"2",
                 };
                 out.line(&[head.method, b" ", head.target, b" HTTP/", version])?;
             }
@@ -818,6 +857,10 @@ fn custom(
         if head.probe && h.is(b"Content-Length") {
             continue;
         }
+        // HTTP/2 sends no chunked body.
+        if head.version == SentIn::Http2 && h.is(b"Transfer-Encoding") {
+            continue;
+        }
         if h.is(b"Content-Type")
             && head
                 .content
@@ -923,7 +966,7 @@ mod tests {
     }
 
     /// What `curl` sends for a GET of `target` with `headers`.
-    fn render(method: &[u8], target: &[u8], version: Version, headers: &[&[u8]]) -> Vec<u8> {
+    fn render(method: &[u8], target: &[u8], version: SentIn, headers: &[&[u8]]) -> Vec<u8> {
         let headers = UserHeaders::new(headers.iter().copied()).unwrap();
         let head = RequestHead {
             method,
@@ -959,7 +1002,7 @@ mod tests {
         u32,
         &'static [u8],
         &'static [u8],
-        Version,
+        SentIn,
         &'static [&'static [u8]],
     );
 
@@ -967,7 +1010,7 @@ mod tests {
     /// request head of a plain transfer.
     #[test]
     fn requests_are_what_the_tests_expect() {
-        use Version::{Http10, Http11};
+        use SentIn::{Http10, Http11};
         let cases: [Case; 6] = [
             (1, b"GET", b"/1", Http11, &[]),
             (14, b"HEAD", b"/want/14", Http11, &[]),
@@ -1001,7 +1044,7 @@ mod tests {
             let head = RequestHead {
                 method: b"GET",
                 target: b"/",
-                version: Version::Http11,
+                version: SentIn::Http11,
                 host: b"127.0.0.1",
                 port: Some(PORT),
                 user_agent: Some(b"ua/1"),
@@ -1055,7 +1098,7 @@ mod tests {
             let head = RequestHead {
                 method: b"GET",
                 target: b"/",
-                version: Version::Http11,
+                version: SentIn::Http11,
                 host: b"h",
                 port: None,
                 user_agent: Some(b"ua/1"),
@@ -1100,7 +1143,7 @@ mod tests {
         let got = render(
             b"GET",
             b"/",
-            Version::Http11,
+            SentIn::Http11,
             &[
                 b"Accept:",
                 b"User-Agent: me",
@@ -1123,7 +1166,7 @@ mod tests {
              Accept-Language :fr\r\n\
              \r\n"
         );
-        let spaced = render(b"GET", b"/", Version::Http11, &[b"Accept :x"]);
+        let spaced = render(b"GET", b"/", SentIn::Http11, &[b"Accept :x"]);
         assert!(
             find(&spaced, b"Accept: */*\r\n").is_some(),
             "a name and a blank do not replace the library's"
@@ -1139,7 +1182,7 @@ mod tests {
         let got = render(
             b"GET",
             b"/",
-            Version::Http11,
+            SentIn::Http11,
             &[
                 b"Connection: close\r",
                 b"Accept",
@@ -1173,7 +1216,7 @@ mod tests {
         let got = render(
             b"GET",
             b"/",
-            Version::Http11,
+            SentIn::Http11,
             &[b":foo", b";", b"  ;", b" :v", b"X-A;"],
         );
         assert_eq!(
@@ -1222,7 +1265,7 @@ mod tests {
         let got = render(
             b"GET",
             b"/",
-            Version::Http11,
+            SentIn::Http11,
             &[
                 b"Connection;",
                 b"Connection:  close  ",
@@ -1247,7 +1290,7 @@ mod tests {
         let head = |forwarded| RequestHead {
             method: b"GET",
             target: b"http://origin/",
-            version: Version::Http11,
+            version: SentIn::Http11,
             host: b"origin",
             port: None,
             user_agent: None,
@@ -1303,7 +1346,7 @@ mod tests {
         let head = RequestHead {
             method: b"GET",
             target: b"/",
-            version: Version::Http11,
+            version: SentIn::Http11,
             host: b"[::1]",
             port: None,
             user_agent: None,
@@ -1355,7 +1398,7 @@ mod tests {
             let head = RequestHead {
                 method: b"GET",
                 target: b"/",
-                version: Version::Http11,
+                version: SentIn::Http11,
                 host: b"h",
                 port: None,
                 user_agent: None,

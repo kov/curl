@@ -846,18 +846,27 @@ the system's under the HTTP-only programs installed here.
       cargo-mutants over the step's diff: each survivor tested or excluded with its reason.
 51. **The pool's `Attached` place,** a connection several transfers lease (ENGINE.md §4.4).
     **To do**, after 52a: its only user is HTTP/2's multiplexing.
-52. **HTTP/2** through nghttp2, in two stages (ENGINE.md §4.4). **To do.**
-    - **a. One stream per connection.** **In progress.** Built: the session on the connection,
-      beside its layers; ALPN offering `h2`, and prior knowledge; the request's head read back
-      into the stream's fields, and the response head through the whole-line entry; the body
-      both ways, trailers, resets, GOAWAY; a connection reused by one transfer after another;
-      `--http2`, `--http2-prior-knowledge` and `HTTP2` claimed. 471, 2400, 2401, 2402, 2403
-      and 2406 pass. To do: the `h2c` upgrade (1700, 1702, 1704, 1800); the session in the
-      pool's health check, shutdown and upkeep; a paused stream's window;
-      `CURLOPT_STREAM_WEIGHT` (2404).
+52. **HTTP/2** through nghttp2, in stages (ENGINE.md §4.4). **In progress.**
+    - **a. One stream per connection.** **Done.** The session on the connection, beside its
+      layers (`crates/curl-nghttp2` behind `http2::Http2`, a fake for the core's tests); ALPN
+      offering `h2` by the versions a request may speak, prior knowledge, and the `h2c`
+      upgrade on a 101; the request's head read back into the stream's fields, and the
+      response head through the whole-line entry; the body both ways, under the receive
+      limit; trailers, resets, GOAWAY, a refused stream made again, HTTP_1_1_REQUIRED made
+      again in HTTP/1.1; a connection reused by one transfer after another, only by one that
+      may speak its version, kept after a stream fails, its idle frames read by the pool's
+      health check, saying GOAWAY as it shuts down; `--http2`, `--http2-prior-knowledge`,
+      `CURLOPT_STREAM_WEIGHT`, `CURLMOPT_PIPELINING`, `CURLMOPT_MAX_CONCURRENT_STREAMS`;
+      `HTTP2` claimed and nghttp2 listed. 471, 1700, 1702, 1704, 1800, 2400–2403 and 2406
+      pass; of pytest's HTTP/2 cases, those of one transfer at a time. Not built: a paused
+      stream's window (one stream stops reading instead), `curl_easy_upkeep`'s PING, and the
+      `--trace-config http/2` lines.
     - **b. Multiplexing,** with 51: streams of several transfers on one connection, a
       sibling's data delivered at once, `PIPEWAIT` and `--parallel-immediate`, server push,
-      TLS early data.
+      TLS early data (2404, 2407; pytest's parallel HTTP/2 cases). **To do.**
+    - **c. HTTP/2 to an HTTPS proxy** (`--proxy-http2`, `CURLPROXY_HTTPS2`): a request sent
+      on through it, and a tunnel as a stream (`cf-h2-proxy.c`); pytest test_10, test_13 and
+      test_40's HTTP/2 proxy cases. **To do.**
 53. **`CURLOPT_CONNECT_ONLY`** with the pool's `Reserved` place (3231, 3232, 3234). **Done**,
     ahead of 51 and 52, as it needs neither: a transfer that only connects is done once
     connected, its connection reserved for the handle in its pool; `curl_easy_send`,

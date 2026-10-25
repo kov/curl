@@ -2002,7 +2002,7 @@ fn a_paused_transfer_does_not_connect() {
     m.perform(&mut NoEvents).unwrap();
     let watched = |m: &mut Multi| {
         let mut watched = Vec::new();
-        m.sockets(&mut NoEvents, |s, e| watched.push((s.key().get(), e)));
+        m.sockets(&mut NoEvents, |k, e| watched.push((k.get(), e)));
         watched
     };
     assert_eq!(watched(&mut m), [(1000, Events::OUT)]);

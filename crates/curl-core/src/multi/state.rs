@@ -87,6 +87,9 @@ pub(crate) struct Run {
     /// first (`state.last_cpid`, `state.last_conn_id`); none at `add`, as
     /// C forgets it there (`Curl_cpool_xfer_init`).
     last_conn: Option<ConnId>,
+    /// It has run its first step, and is neither done nor gone
+    /// (`state.really_alive`).
+    pub(crate) alive: bool,
 }
 
 impl Run {
@@ -101,6 +104,7 @@ impl Run {
             allow_port: true,
             http: Inherited::default(),
             last_conn: None,
+            alive: false,
         }
     }
 }
@@ -1279,6 +1283,14 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
     let mut within_do = false;
     let (next, wake) = match state {
         TransferState::Init => {
+            // Alive from its first step (`multistate_init`); a socket
+            // callback's abort ends the step there.
+            if !run.alive {
+                run.alive = true;
+                if cx.rest.tell.came_alive(&mut *cx.rest.events).is_err() {
+                    return Wake::Idle;
+                }
+            }
             let limits = cx.easy().options().limits;
             run.deadlines = Deadlines::new(limits.total, limits.connect);
             let now = cx.rest.now;
@@ -1582,6 +1594,10 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             mstate::enter(cx, MState::Completed);
             timers_cleared(run, cx);
             mstate::enter(cx, MState::MsgSent);
+        }
+        // Done: no longer alive (`multi_done`'s MSGSENT).
+        if std::mem::replace(&mut run.alive, false) {
+            cx.rest.tell.went(&mut *cx.rest.events);
         }
     } else if let Some(state) = next.c_state() {
         mstate::enter(cx, state);

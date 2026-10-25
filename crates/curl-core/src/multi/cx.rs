@@ -2,14 +2,15 @@
 //! of calls allowed inside each callback, as types. A method exists on a
 //! context only if C allows that call from that callback.
 
-use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
+use std::os::fd::AsRawFd as _;
 
 use std::fmt;
 use std::io;
 use std::time::Duration;
 
 use crate::components::Component;
-use crate::conn::io::{Net, PollFd, Resolver, Sock, Socket, SocketKey, SocketPoll};
+use crate::conn::io::{Events, Net, PollFd, Resolver, Sock, Socket, SocketKey, SocketPoll, Waker};
 use crate::conn::layer::LayerCx;
 use crate::conn::shutdown::{Exits, ShutdownSet, WithSet};
 use crate::conn::{Caches, ConnCx, DnsCache, Home, Names, Opened, Pool};
@@ -645,6 +646,7 @@ impl<H: Host> Announcing<'_, H> {
 /// What telling the socket callback reaches: the transfers, and the
 /// tables its `EventCx` may read or change.
 pub(crate) struct Telling<'a, H: Host> {
+    pub(super) alive: &'a mut Alive,
     pub(super) slots: &'a mut Slots<H>,
     /// `Multi::conn_limits_mut`.
     pub(super) limits: &'a mut ConnLimits,
@@ -664,8 +666,64 @@ impl<H: Host> Telling<'_, H> {
             counts: self.counts,
             sockets: &mut *self.sockets,
             life: &mut *self.life,
+            alive: &mut *self.alive,
         }
     }
+
+    /// A transfer came alive, running its first step
+    /// (`multistate_init`): the first one has the multi listen on the
+    /// resolver's wake, told to the socket callback as the multi's own.
+    pub(super) fn came_alive(&mut self, events: &mut dyn MultiEvents<H>) -> Result<(), Abort> {
+        self.alive.count += 1;
+        match self.alive.count {
+            1 => self.listen_to_resolver(true, events),
+            _ => Ok(()),
+        }
+    }
+
+    /// A transfer alive is done, or gone: with the last, the multi stops
+    /// listening on the resolver's wake (`multi_assess_wakeup`).
+    pub(super) fn went(&mut self, events: &mut dyn MultiEvents<H>) {
+        self.alive.count -= 1;
+        if self.alive.count == 0 {
+            // C does not mind the callback's answer here.
+            let _unsaid = self.listen_to_resolver(false, events);
+        }
+    }
+
+    fn listen_to_resolver(
+        &mut self,
+        on: bool,
+        events: &mut dyn MultiEvents<H>,
+    ) -> Result<(), Abort> {
+        let Some(waker) = &self.alive.waker else {
+            return Ok(());
+        };
+        if !events.wants_sockets() {
+            return Ok(());
+        }
+        let key = SocketKey::new(waker.fd().as_raw_fd());
+        let listen = [(key, Events::IN)];
+        let wants: &[(SocketKey, Events)] = if on { &listen } else { &[] };
+        let mut changes = Vec::new();
+        // Without room to listen, the answers are still taken as the
+        // multi next runs.
+        if let Err(OutOfMemory) = self
+            .sockets
+            .assess(SocketOwner::Resolver, wants, &mut changes)
+        {
+            return Ok(());
+        }
+        tell(&changes, SocketFor::Multi, events, self)
+    }
+}
+
+/// How many transfers are alive (C's `xfers_really_alive`), and the
+/// resolver's wake, which the multi listens on while any is.
+#[derive(Debug, Default)]
+pub(crate) struct Alive {
+    pub(crate) count: u32,
+    pub(crate) waker: Option<TryArc<Waker>>,
 }
 
 /// Tell the socket callback of `changes` for `who`, in order,

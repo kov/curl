@@ -47,6 +47,13 @@ impl<H: Host> Multi<H> {
         let timeout = internal.map_or(max, |t| t.min(max));
         let mut wanted = 0;
         pollsets(&self.slots, &self.shutdowns, |_, _| wanted += 1);
+        // The resolver's wake, listened on while a transfer is alive, is
+        // one of the multi's own (C's admin handle's pollset).
+        let resolver_waker = self.alive.waker.clone().filter(|_| self.alive.count > 0);
+        let resolver = resolver_waker
+            .as_deref()
+            .map(|w| PollFd::new(w.fd(), Events::IN));
+        wanted += usize::from(resolver.is_some());
         // The waker is watched when the wait will be one (multi.c:1574).
         let watch_waker = mode == WaitMode::Poll || wanted > 0 || !extra.is_empty();
         let waker_watched = self.waker.is_some() && watch_waker;
@@ -89,22 +96,36 @@ impl<H: Host> Multi<H> {
             .as_deref()
             .filter(|_| waker_watched)
             .map(|w| (w, PollFd::new(w.fd(), Events::IN)));
-        let n_fds = extra.len() + usize::from(waker.is_some());
+        // The application's, then the resolver's, then the waker's.
+        let resolver_at = extra.len();
+        let waker_at = resolver_at + usize::from(resolver.is_some());
+        let n_fds = waker_at + usize::from(waker.is_some());
         let mut few_fds;
         let mut more_fds = Vec::new();
-        let fds: &mut [PollFd<'_>] = match extra.first().copied().or(waker.map(|(_, fd)| fd)) {
+        let any = extra
+            .first()
+            .copied()
+            .or(resolver)
+            .or(waker.map(|(_, fd)| fd));
+        let fds: &mut [PollFd<'_>] = match any {
             None => &mut [],
             Some(any) if n_fds <= ON_STACK => {
                 few_fds = [any; ON_STACK];
                 few_fds[..extra.len()].copy_from_slice(extra);
+                if let Some(fd) = resolver {
+                    few_fds[resolver_at] = fd;
+                }
                 if let Some((_, fd)) = waker {
-                    few_fds[extra.len()] = fd;
+                    few_fds[waker_at] = fd;
                 }
                 &mut few_fds[..n_fds]
             }
             Some(_) => {
                 more_fds.try_reserve_exact(n_fds).map_err(oom)?;
                 more_fds.try_extend_from_slice(extra).expect("reserved");
+                if let Some(fd) = resolver {
+                    more_fds.try_push(fd).expect("reserved");
+                }
                 if let Some((_, fd)) = waker {
                     more_fds.try_push(fd).expect("reserved");
                 }
@@ -122,8 +143,10 @@ impl<H: Host> Multi<H> {
         for (mine, polled) in extra.iter_mut().zip(fds.iter()) {
             mine.copy_revents(polled);
         }
+        // The resolver's wake counts, as C's pollset socket does; it is
+        // drained as its answers are taken.
         if let Some(w) = waker
-            && fds[extra.len()].revents().contains(Events::IN)
+            && fds[waker_at].revents().contains(Events::IN)
         {
             // Draining is best effort: a wake left behind only ends the
             // next wait early.

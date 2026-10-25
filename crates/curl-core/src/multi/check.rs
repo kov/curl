@@ -96,7 +96,23 @@ impl<H: Host> Multi<H> {
                 self.shutdowns.holds(id),
                 "{key:?} names {id:?}, which is not shutting down"
             ),
+            super::SocketOwner::Resolver => assert!(
+                self.alive.count > 0,
+                "{key:?}, the resolver's wake, is listened on with no transfer alive"
+            ),
         });
+        // A transfer is alive from its first step until it is done.
+        let mut alive = 0;
+        let mut cursor = None;
+        while let Some(id) = self.slots.next_after(cursor) {
+            cursor = Some(id);
+            let slot = self.slots.get(id).expect("just found");
+            alive += u32::from(slot.run.as_ref().is_some_and(|r| r.alive));
+        }
+        assert_eq!(
+            alive, self.alive.count,
+            "the transfers alive are not the count"
+        );
         let mut row = 0;
         while let Some(r) = self.dirty.first_from(row) {
             assert!(

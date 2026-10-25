@@ -318,7 +318,9 @@ fn the_ssl_ctx_function_s_code_fails_the_transfer() {
     }
 }
 
-/// A copy of the handle calls the function with the copy.
+/// A copy of the handle calls the function with the copy, not the
+/// handle it was copied from: run while that one is still alive, so a
+/// copy calling through it fails here rather than reading freed memory.
 #[test]
 fn a_copy_s_ssl_ctx_function_is_given_the_copy() {
     let (port, server) = serve();
@@ -333,8 +335,8 @@ fn a_copy_s_ssl_ctx_function_is_given_the_copy() {
     unsafe { (*pair).1 = dup };
     // SAFETY: live handles, each not used again after its cleanup.
     unsafe {
-        curl_easy_cleanup(c);
         assert_eq!(crate::easy::curl_easy_perform(dup), CURLE_OK);
+        curl_easy_cleanup(c);
         curl_easy_cleanup(dup);
     }
     server.join().unwrap();

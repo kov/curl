@@ -366,3 +366,44 @@ fn a_connection_shutting_down_says_goaway() {
     let sent = String::from_utf8(talk.received()).unwrap();
     assert!(sent.ends_with("\n\nG 0 0\n"), "{sent}");
 }
+
+/// Under a receive limit, a stream's reads take no more than the limit
+/// allows, and the transfer waits for it (`sendrecv_dl`'s
+/// `rate_limited`, test 02_24).
+#[test]
+fn a_receive_limit_paces_a_stream() {
+    use std::num::NonZeroU64;
+    let mut reply = b"S\nH 1 0\n:status: 200\n\n".to_vec();
+    for i in 0..60 {
+        let end = u8::from(i == 59);
+        reply.extend_from_slice(format!("D 1 1000 {end}\n").as_bytes());
+        reply.extend_from_slice(&[b'x'; 1000]);
+    }
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let talk = Conversation::replies(&[&reply], false).per_send();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let start = clock.now();
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        o.http.version = HttpVersion::Http2Prior;
+        o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(20000);
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    assert_eq!(ran.seen.body().len(), 60000);
+    assert!(
+        clock.now().since(start) >= std::time::Duration::from_secs(2),
+        "{:?}",
+        clock.now().since(start)
+    );
+}

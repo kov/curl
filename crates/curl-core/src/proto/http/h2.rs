@@ -456,8 +456,15 @@ impl Request {
             if reads == MAX_READS {
                 return Ok(Read::Stopped);
             }
-            reads += 1;
+            // Under a receive limit, no more than it allows; once spent,
+            // the engine waits for it (`sendrecv_dl`'s `rate_limited`).
             let max = cx.easy().options().limits.buffer_size.get();
+            let max = match cx.rate_allowance(Way::Recv) {
+                Some(..=0) => return Ok(Read::Waits),
+                Some(allowed) => max.min(usize::try_from(allowed).unwrap_or(usize::MAX)),
+                None => max,
+            };
+            reads += 1;
             let said = cx.easy().report().reasons();
             let got = lease.get().recv(cx, max);
             match got {

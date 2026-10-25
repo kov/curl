@@ -168,3 +168,17 @@ witness: curl-core proto::http::tests::h2::a_connection_shutting_down_says_goawa
 --- old
             h2.goodbye(&mut Silent(now), &mut self.conn);
 --- new
+
+=== a stream reads past its receive limit
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_receive_limit_paces_a_stream
+--- old
+                Some(..=0) => return Ok(Read::Waits),
+                Some(allowed) => max.min(usize::try_from(allowed).unwrap_or(usize::MAX)),
+                None => max,
+            };
+            reads += 1;
+--- new
+                _ => max,
+            };
+            reads += 1;

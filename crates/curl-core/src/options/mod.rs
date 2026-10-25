@@ -915,7 +915,7 @@ impl Default for Cookies {
     }
 }
 
-fn copy(s: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+pub(crate) fn copy(s: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     let mut v = Vec::new();
     v.try_extend_from_slice(s)?;
     Ok(v)
@@ -1509,6 +1509,31 @@ pub struct Http {
     /// Where the HSTS cache is written, and what the application reads
     /// and writes it with.
     pub hsts: Cold<HstsOptions>,
+    /// Where the alt-svc cache is written.
+    pub alt_svc: Cold<AltSvcOptions>,
+}
+
+/// Where the alt-svc cache goes. The cache, and the file it last read,
+/// are the handle's (`Easy::add_alt_svc_file`).
+#[derive(Debug)]
+pub struct AltSvcOptions {
+    /// Where the cache is written as the handle goes, and what a copy of
+    /// the handle reads; without it, the file last read
+    /// (`CURLOPT_ALTSVC`).
+    pub file: Option<Vec<u8>>,
+}
+
+impl ColdGroup for AltSvcOptions {
+    const UNSET: &'static AltSvcOptions = &AltSvcOptions::NONE;
+    const NONE: AltSvcOptions = AltSvcOptions { file: None };
+}
+
+impl AltSvcOptions {
+    fn try_clone(&self) -> Result<AltSvcOptions, OutOfMemory> {
+        Ok(AltSvcOptions {
+            file: self.file.as_deref().map(copy).transpose()?,
+        })
+    }
 }
 
 /// Where the HSTS cache goes and what reads and writes it for the
@@ -1990,6 +2015,7 @@ impl Http {
             cookies: self.cookies.try_clone(Cookies::try_clone)?,
             signing: self.signing.try_clone(Signing::try_clone)?,
             hsts: self.hsts.try_clone(HstsOptions::try_clone)?,
+            alt_svc: self.alt_svc.try_clone(AltSvcOptions::try_clone)?,
         })
     }
 }

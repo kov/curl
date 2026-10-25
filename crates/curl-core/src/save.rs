@@ -30,6 +30,17 @@ impl From<io::Error> for SaveError {
     }
 }
 
+/// Whether a cache (HSTS, alt-svc) is written back to its file as the
+/// handle goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CacheFile {
+    /// Written back.
+    #[default]
+    ReadWrite,
+    /// Read, never written (`CURLHSTS_READONLYFILE`, `CURLALTSVC_READONLYFILE`).
+    ReadOnly,
+}
+
 /// How many random letters and digits name the file written first.
 const TEMP_NAME: usize = 40;
 

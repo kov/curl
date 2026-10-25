@@ -19,10 +19,12 @@ use core::ptr::NonNull;
 use core::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
+use curl_core::altsvc::{AltSvcCtrl, Versions};
 use curl_core::cookie::LoadError;
+use curl_core::easy::CacheFile;
 use curl_core::error::ErrorKind;
 use curl_core::handler::{Handler, LineSource};
-use curl_core::hsts::HstsFile;
+use curl_core::hsts::LoadError as CacheLoadError;
 use curl_core::options::{
     BufferSize, ColdGroup, ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion,
     Lines, LowSpeed, MaxRedirects, Method, Options, PostRedir, Protocols, ProxyType, Resume,
@@ -1265,7 +1267,8 @@ fn apply(
         }
         // On the handle's cache and its files, which `hsts_option`
         // reaches.
-        (ffi::CURLOPT_HSTS, Ptr(_)) | (ffi::CURLOPT_HSTS_CTRL, Long(_)) => {}
+        (ffi::CURLOPT_HSTS | ffi::CURLOPT_ALTSVC, Ptr(_))
+        | (ffi::CURLOPT_HSTS_CTRL | ffi::CURLOPT_ALTSVC_CTRL, Long(_)) => {}
         (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
             // SAFETY: the application passes a function of the option's
             // type, or NULL.
@@ -1516,6 +1519,11 @@ pub unsafe extern "C" fn curl_easy_setopt(
     let hsts = match (option, &arg) {
         (ffi::CURLOPT_HSTS, Arg::Ptr(p)) => Some(HstsArg::File(*p)),
         (ffi::CURLOPT_HSTS_CTRL, Arg::Long(n)) => Some(HstsArg::Ctrl(*n)),
+        (ffi::CURLOPT_ALTSVC, Arg::Ptr(p)) => Some(HstsArg::AltSvcFile(*p)),
+        // No bits at all is refused before anything changes
+        // (`Curl_altsvc_ctrl`).
+        (ffi::CURLOPT_ALTSVC_CTRL, Arg::Long(0)) => return CURLE_BAD_FUNCTION_ARGUMENT,
+        (ffi::CURLOPT_ALTSVC_CTRL, Arg::Long(n)) => Some(HstsArg::AltSvcCtrl(*n)),
         _ => None,
     };
     let jar = match (option, &arg) {
@@ -1554,17 +1562,22 @@ pub unsafe extern "C" fn curl_easy_setopt(
     }
 }
 
-/// An HSTS option's argument.
+/// An HSTS or alt-svc option's argument.
 #[derive(Clone, Copy)]
 enum HstsArg {
     /// `CURLOPT_HSTS`'s file, or NULL.
     File(*mut c_void),
     /// `CURLOPT_HSTS_CTRL`'s bits.
     Ctrl(c_long),
+    /// `CURLOPT_ALTSVC`'s file, or NULL.
+    AltSvcFile(*mut c_void),
+    /// `CURLOPT_ALTSVC_CTRL`'s bits, not none.
+    AltSvcCtrl(c_long),
 }
 
-/// What an HSTS option does to the handle's cache and files, beyond its
-/// options (`CURLOPT_HSTS`, `CURLOPT_HSTS_CTRL`).
+/// What an HSTS or alt-svc option does to the handle's cache and files,
+/// beyond its options (`CURLOPT_HSTS`, `CURLOPT_HSTS_CTRL`,
+/// `CURLOPT_ALTSVC`, `CURLOPT_ALTSVC_CTRL`).
 ///
 /// # Safety
 ///
@@ -1573,8 +1586,8 @@ unsafe fn hsts_option(shim: &ShimEasy, arg: HstsArg) -> CURLcode {
     let file = match arg {
         // SAFETY: as the caller guarantees; its length was checked with
         // the option.
-        HstsArg::File(p) => unsafe { string(p) }.ok().flatten(),
-        HstsArg::Ctrl(_) => None,
+        HstsArg::File(p) | HstsArg::AltSvcFile(p) => unsafe { string(p) }.ok().flatten(),
+        HstsArg::Ctrl(_) | HstsArg::AltSvcCtrl(_) => None,
     };
     let done = shim.with_easy(|e| {
         let easy = match e {
@@ -1586,12 +1599,32 @@ unsafe fn hsts_option(shim: &ShimEasy, arg: HstsArg) -> CURLcode {
             HstsArg::File(_) => easy.add_hsts_file(file).map_err(oom)?,
             HstsArg::Ctrl(bits) if bits & c_long::from(ffi::CURLHSTS_ENABLE) != 0 => {
                 let mode = match bits & c_long::from(ffi::CURLHSTS_READONLYFILE) {
-                    0 => HstsFile::ReadWrite,
-                    _ => HstsFile::ReadOnly,
+                    0 => CacheFile::ReadWrite,
+                    _ => CacheFile::ReadOnly,
                 };
                 easy.enable_hsts(mode).map_err(oom)?;
             }
             HstsArg::Ctrl(_) => easy.disable_hsts(),
+            HstsArg::AltSvcFile(_) => easy.add_alt_svc_file(file).map_err(|e| match e {
+                CacheLoadError::OutOfMemory => ErrorKind::OutOfMemory,
+                CacheLoadError::Read => ErrorKind::ReadError,
+                CacheLoadError::TooLarge => ErrorKind::TooLarge,
+            })?,
+            HstsArg::AltSvcCtrl(bits) => {
+                let set = |flag: c_long| bits & flag != 0;
+                let ctrl = AltSvcCtrl {
+                    file: match set(ffi::CURLALTSVC_READONLYFILE) {
+                        false => CacheFile::ReadWrite,
+                        true => CacheFile::ReadOnly,
+                    },
+                    versions: Versions {
+                        h1: set(ffi::CURLALTSVC_H1),
+                        h2: set(ffi::CURLALTSVC_H2),
+                        h3: set(ffi::CURLALTSVC_H3),
+                    },
+                };
+                easy.enable_alt_svc(ctrl).map_err(oom)?;
+            }
         }
         Ok(())
     });

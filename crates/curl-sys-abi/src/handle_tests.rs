@@ -6287,3 +6287,43 @@ fn a_copy_s_hsts_reader_is_handed_the_copy() {
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(d) };
 }
+
+/// `CURLOPT_ALTSVC_CTRL` refuses no bits at all; with
+/// `CURLALTSVC_READONLYFILE` the file `CURLOPT_ALTSVC` names is read and
+/// not written as the handle goes, and without it, it is.
+#[test]
+fn alt_svc_options_read_and_write_the_file() {
+    let c = curl_easy_init();
+    assert_eq!(
+        long(c, ffi::CURLOPT_ALTSVC_CTRL, 0),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    let path = std::env::temp_dir().join(format!("curl-abi-altsvc-{}", std::process::id()));
+    let text = "h1 a.example 443 h1 b.example 443 \"20991231 00:00:00\" 0 0\n";
+    let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    for (bits, written) in [
+        (ffi::CURLALTSVC_H1 | ffi::CURLALTSVC_READONLYFILE, false),
+        (ffi::CURLALTSVC_H1, true),
+    ] {
+        std::fs::write(&path, text).unwrap();
+        let c = curl_easy_init();
+        assert_eq!(long(c, ffi::CURLOPT_ALTSVC_CTRL, bits), CURLE_OK);
+        assert_eq!(
+            pointer(c, ffi::CURLOPT_ALTSVC, name.as_ptr().cast_mut()),
+            CURLE_OK
+        );
+        // SAFETY: a live handle, not used again.
+        unsafe { curl_easy_cleanup(c) };
+        let now = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            now.starts_with("# Your alt-svc cache."),
+            written,
+            "{bits}: {now}"
+        );
+        // The entry read survives the write.
+        assert!(now.contains("h1 a.example 443 h1 b.example 443"), "{now}");
+    }
+    std::fs::remove_file(&path).unwrap();
+}

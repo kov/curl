@@ -10,6 +10,31 @@ mod c_tests;
 
 use std::fmt;
 
+/// Now, for the HSTS and alt-svc caches, in seconds since 1970: the
+/// debug build's `CURL_TIME` where set (`hsts_debugtime`,
+/// `altsvc_debugtime`), else `clock`'s.
+pub(crate) fn cache_now(clock: i64) -> i64 {
+    #[cfg(feature = "debug-hooks")]
+    {
+        let mut buf = [0u8; 24];
+        if let Some(given) = curl_os::env::var_into(b"CURL_TIME", &mut buf) {
+            let digits = given.iter().take_while(|b| b.is_ascii_digit());
+            let mut n: i64 = 0;
+            for &d in digits {
+                n = match n
+                    .checked_mul(10)
+                    .and_then(|n| n.checked_add(i64::from(d - b'0')))
+                {
+                    Some(n) => n,
+                    None => return clock,
+                };
+            }
+            return n;
+        }
+    }
+    clock
+}
+
 /// A date that could not be read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BadDate;

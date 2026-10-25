@@ -9,6 +9,7 @@ use std::fmt;
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::date::HttpDate;
+use crate::save::CacheFile;
 use crate::url::is_ip_address;
 
 /// The most entries kept: past it, the oldest goes (`MAX_HSTS_ENTRIES`).
@@ -110,21 +111,11 @@ pub enum PullError {
     OutOfMemory,
 }
 
-/// Whether the cache is written back to its file as the handle goes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum HstsFile {
-    /// Written back.
-    #[default]
-    ReadWrite,
-    /// Read, never written (`CURLHSTS_READONLYFILE`).
-    ReadOnly,
-}
-
 /// The cache (C's `struct hsts`).
 #[derive(Debug, Default)]
 pub struct Hsts {
     /// Whether its file is written back.
-    mode: HstsFile,
+    mode: CacheFile,
     /// Oldest first.
     entries: Vec<Entry>,
     /// The file last read, written back when no other is named.
@@ -166,7 +157,7 @@ impl From<OutOfMemory> for LoadError {
 
 /// The whole of the file at `path`; `None` if it cannot be opened or is
 /// a directory.
-fn read_file(path: &[u8]) -> Result<Option<Vec<u8>>, LoadError> {
+pub(crate) fn read_file(path: &[u8]) -> Result<Option<Vec<u8>>, LoadError> {
     use std::io::Read as _;
     let mut z = Vec::new();
     z.try_extend_from_slice(path)?;
@@ -429,12 +420,12 @@ impl Hsts {
     }
 
     /// Whether its file is written back.
-    pub fn mode(&self) -> HstsFile {
+    pub fn mode(&self) -> CacheFile {
         self.mode
     }
 
     /// Write its file back, or not, from now on.
-    pub fn set_mode(&mut self, mode: HstsFile) {
+    pub fn set_mode(&mut self, mode: CacheFile) {
         self.mode = mode;
     }
 

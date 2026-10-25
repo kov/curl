@@ -1,0 +1,147 @@
+=== an alternative is taken for a request made in HTTP/1.0
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_where_c_takes_one
+--- old
+    if !secured || cx.easy().options().http.version == crate::options::HttpVersion::Http10 {
+--- new
+    if !secured {
+
+=== an HTTP/1 alternative is taken though the application allows none
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_where_c_takes_one
+--- old
+        h1: alt_svc.ctrl().versions.h1,
+--- new
+        h1: true,
+
+=== an alternative is taken for a plain http URL
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_where_c_takes_one
+--- old
+    let secured = scheme == b"https";
+--- new
+    let secured = scheme == b"https" || scheme == b"http";
+
+=== an alternative is taken where a connect-to entry names the peer
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_where_c_takes_one
+--- old
+            Ok(Some(via)) => Some(via),
+            // No connect-to entry: an alternative service, then.
+            Ok(None) => match alt_svc(cx, &origin, &scheme) {
+--- new
+            // No connect-to entry: an alternative service, then.
+            Ok(_) => match alt_svc(cx, &origin, &scheme) {
+
+=== a field over plain HTTP is kept
+file: crates/curl-core/src/proto/http/alt_svc.rs
+witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_where_c_takes_one
+--- old
+    if !secured {
+        return Ok(());
+    }
+--- new
+
+=== the request does not name the alternative it goes to
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http::tests::alt_svc::an_origin_is_reached_by_its_alternative
+--- old
+                    out.line(&[b"Alt-Used: ", used])?;
+--- new
+
+=== the library's Alt-Used goes beside the application's
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::alt_svc::the_application_s_alt_used_replaces_the_library_s
+--- old
+                .filter(|_| !http.headers.replaces(b"Alt-Used")),
+--- new
+                .filter(|_| true),
+
+=== a read-only alt-svc file is written back
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::alt_svc::a_read_only_file_is_kept_and_a_copy_reads_the_file
+--- old
+            Some(file) if alt_svc.ctrl().file == CacheFile::ReadWrite && !file.is_empty() => {
+--- new
+            Some(file) if !file.is_empty() => {
+
+=== a reset handle writes its alt-svc cache nowhere
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::alt_svc::a_reset_handle_writes_the_file_last_read
+--- old
+        let file = file.or(alt_svc.file());
+--- new
+
+=== a copy of the handle loses the alt-svc control
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core proto::http::tests::alt_svc::a_read_only_file_is_kept_and_a_copy_reads_the_file
+--- old
+            ctrl: self.ctrl,
+        }
+--- new
+            ctrl: AltSvcCtrl::DEFAULT,
+        }
+
+=== a copy of the handle reads no alt-svc file
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::alt_svc::a_read_only_file_is_kept_and_a_copy_reads_the_file
+--- old
+            if let Err(CacheLoadError::OutOfMemory) = a.load(file, now) {
+--- new
+            if let Err(CacheLoadError::OutOfMemory) = Ok::<(), CacheLoadError>(()) {
+
+=== the shim takes CURLALTSVC_READONLYFILE as nothing
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::alt_svc_options_read_and_write_the_file
+--- old
+                    file: match set(ffi::CURLALTSVC_READONLYFILE) {
+--- new
+                    file: match set(0) {
+
+=== the shim takes no alt-svc control bits
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::alt_svc_options_read_and_write_the_file
+--- old
+        (ffi::CURLOPT_ALTSVC_CTRL, Arg::Long(0)) => return CURLE_BAD_FUNCTION_ARGUMENT,
+--- new
+
+=== an alternative's lookup ignores its port
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core altsvc::tests::a_lookup_finds_the_first_allowed_alternative
+--- old
+                && e.src.port == port
+--- new
+
+=== an expired alternative is still taken
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core altsvc::tests::a_lookup_finds_the_first_allowed_alternative
+--- old
+            if e.expires < now {
+--- new
+            if false {
+
+=== a field's alternatives keep the origin's earlier ones
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core altsvc::tests::unit1654
+--- old
+                if entries == 0 {
+--- new
+                if entries == usize::MAX {
+
+=== an IPv6 alternative is written without brackets
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core altsvc::tests::an_ipv6_alternative_is_written_in_brackets
+--- old
+        if v6 {
+            write!(f, "[{host}]")
+--- new
+        if false {
+            write!(f, "[{host}]")
+
+=== ma is not capped
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core altsvc::tests::ages_and_dates_are_capped_and_checked
+--- old
+                max_age = n.min(CAP_MAX_AGE);
+--- new
+                max_age = n;

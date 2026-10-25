@@ -47,6 +47,7 @@ use super::{Before, Ended, ProtoStep};
 use crate::options::AuthMethods;
 use std::num::{NonZeroU32, NonZeroUsize};
 
+pub(crate) mod alt_svc;
 pub(crate) mod cookies;
 pub(crate) mod hsts;
 pub(crate) mod httpsig;
@@ -149,6 +150,9 @@ pub(crate) struct Request {
     /// The whole URL, the request's target when a proxy it goes to sends
     /// it on (`http_target`).
     forward_target: Option<Vec<u8>>,
+    /// The alternative service the connection goes to, `host:port` with
+    /// an IPv6 address bare, which `Alt-Used:` names (`altused`).
+    alt_used: Option<Vec<u8>>,
     /// What the URL says to authenticate with.
     credentials: Option<Credentials>,
     /// The scheme, the host as the URL names it, and the port the
@@ -402,6 +406,7 @@ impl Request {
             pipeline: Pipeline::new(Reach::Network),
             target,
             forward_target: None,
+            alt_used: None,
             credentials,
             peer,
             gate,
@@ -445,6 +450,22 @@ impl Request {
             ..GetOptions::NONE
         };
         self.forward_target = Some(url.get(Part::Url, get).map_err(url_error)?);
+        Ok(())
+    }
+
+    /// The connection goes to `via`, an alternative service of the
+    /// origin's, which the request names (`H1_HD_ALT_USED`).
+    pub(crate) fn alt_used(&mut self, via: &Peer) -> Result<(), OutOfMemory> {
+        let mut used = Vec::new();
+        let mut digits = [0u8; 20];
+        for part in [
+            via.name(),
+            b":",
+            crate::proto::http1::request::decimal(u64::from(via.port()), &mut digits),
+        ] {
+            used.try_extend_from_slice(part)?;
+        }
+        self.alt_used = Some(used);
         Ok(())
     }
 
@@ -1190,6 +1211,10 @@ impl Request {
                 && !http.headers.replaces(b"TE"),
             conditional,
             cookie: cookie.as_deref(),
+            alt_used: self
+                .alt_used
+                .as_deref()
+                .filter(|_| !http.headers.replaces(b"Alt-Used")),
             forwarded: forwarded.then(|| Forwarding {
                 own_headers: (!options.proxy.unified_headers).then_some(&options.proxy.headers),
             }),
@@ -1973,6 +1998,12 @@ impl Request {
             let value = value.strip_suffix(b"\n").unwrap_or(value);
             let value = value.strip_suffix(b"\r").unwrap_or(value);
             hsts::from_field(cx, peer.name(), value, peer.scheme() == HTTPS)?;
+        }
+        // And its alternative services (`http_header_a`).
+        if line.kind == LineKind::Header
+            && let Some(value) = strip_name(line.bytes, b"Alt-Svc:")
+        {
+            alt_svc::from_field(cx, peer, value, peer.scheme() == HTTPS)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         // What reading its transfer codings did, traced before the line, as

@@ -566,9 +566,13 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
     // that cannot be fails nothing, as in C, which says so only in the
     // trace, of which there is none outside a transfer here.
     let saved = easy.with_easy(|e| match e {
-        // Then the HSTS cache (`Curl_hsts_save`), whose failure goes
-        // unsaid too.
-        EasyRef::Easy(easy) => (easy.save_cookies().ok(), easy.save_hsts().ok()),
+        // Then the alt-svc cache (`Curl_altsvc_save`) and the HSTS cache
+        // (`Curl_hsts_save`), whose failures go unsaid too.
+        EasyRef::Easy(easy) => (
+            easy.save_cookies().ok(),
+            easy.save_alt_svc().ok(),
+            easy.save_hsts().ok(),
+        ),
         EasyRef::Frame(..) => unreachable!("not added to a multi any more"),
     });
     assert!(saved.is_ok(), "the handle is its own");

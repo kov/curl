@@ -9,7 +9,8 @@ use std::sync::Mutex;
 use curl_alloc::TryArc;
 
 use super::*;
-use crate::hsts::{BadEntry, HstsEntry, HstsFile, HstsRead, HstsReader, HstsWrite, HstsWriter};
+use crate::hsts::{BadEntry, HstsEntry, HstsRead, HstsReader, HstsWrite, HstsWriter};
+use crate::save::CacheFile;
 use crate::tls::fake::{self, WELCOME};
 
 /// The time the tests' clock says, 2024-10-09 09:25:47 UTC.
@@ -190,7 +191,7 @@ fn the_application_reads_and_writes_the_cache() {
     }
     let (mut m, talk) = named_server(&[OK]);
     let mut e = Easy::new();
-    e.enable_hsts(HstsFile::ReadWrite).unwrap();
+    e.enable_hsts(CacheFile::ReadWrite).unwrap();
     let url = format!("http://sts.example:{PORT}/a");
     let mut ran = get_with(&mut m, e, "/a", talk, |o| {
         o.set_url(Some(url.as_bytes())).unwrap();
@@ -226,7 +227,7 @@ fn a_reader_s_failure_fails_the_transfer() {
     ] {
         let (mut m, talk) = named_server(&[OK]);
         let mut e = Easy::new();
-        e.enable_hsts(HstsFile::ReadWrite).unwrap();
+        e.enable_hsts(CacheFile::ReadWrite).unwrap();
         let reader = Giving {
             entries: Mutex::new(Vec::new()),
             last,
@@ -247,11 +248,11 @@ fn a_copy_of_the_handle_keeps_the_entries_alive() {
     let file = Temp::new("copy", "");
     let mut e = Easy::new();
     e.add_hsts_file(Some(file.name())).unwrap();
-    let hsts = e.hsts.as_deref_mut().unwrap();
+    let hsts = e.hsts_mut().unwrap();
     let now = crate::time::SystemClock::new().unix_time();
     hsts.parse(b"kept.example", b"max-age=1000", now).unwrap();
     let copy = e.try_clone().unwrap();
-    assert!(copy.hsts.as_deref().is_some_and(|h| h.files_to_read() == 0));
+    assert!(copy.hsts().is_some_and(|h| h.files_to_read() == 0));
     let mut copy = copy;
     copy.save_hsts().unwrap();
     assert!(file.text().contains("\nkept.example \""), "{}", file.text());
@@ -267,9 +268,9 @@ fn a_read_only_file_is_not_written_back() {
     let text = "# kept as it is\n";
     let file = Temp::new("read-only", text);
     let mut e = Easy::new();
-    e.enable_hsts(HstsFile::ReadOnly).unwrap();
+    e.enable_hsts(CacheFile::ReadOnly).unwrap();
     e.add_hsts_file(Some(file.name())).unwrap();
-    let hsts = e.hsts.as_deref_mut().unwrap();
+    let hsts = e.hsts_mut().unwrap();
     let now = crate::time::SystemClock::new().unix_time();
     hsts.parse(b"kept.example", b"max-age=1000", now).unwrap();
     let mut copy = e.try_clone().unwrap();
@@ -277,7 +278,7 @@ fn a_read_only_file_is_not_written_back() {
     e.save_hsts().unwrap();
     assert_eq!(file.text(), text);
     // Enabled again without the flag, it is written back.
-    e.enable_hsts(HstsFile::ReadWrite).unwrap();
+    e.enable_hsts(CacheFile::ReadWrite).unwrap();
     e.save_hsts().unwrap();
     assert!(file.text().contains("\nkept.example \""), "{}", file.text());
 }

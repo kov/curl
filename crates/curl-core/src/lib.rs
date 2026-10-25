@@ -7,6 +7,7 @@
 // Tests may allocate infallibly; the non-test build is still checked.
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
+pub mod altsvc;
 mod base64;
 pub mod coding;
 pub mod components;

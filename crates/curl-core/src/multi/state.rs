@@ -3099,7 +3099,7 @@ fn hsts_upgrade<H: Host>(
     run: &mut Run,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
-    if cx.easy().hsts.is_none() {
+    if cx.easy().hsts().is_none() {
         return Ok(());
     }
     let scheme = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;
@@ -3302,10 +3302,19 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         Err(e) => return TransferState::Init.fail(e),
     };
     let over_unix = unix.is_some();
+    let mut alt_used = false;
     let via = match unix {
         Some(peer) => Some(peer),
         None => match connect_to(cx, &origin) {
-            Ok(via) => via,
+            Ok(Some(via)) => Some(via),
+            // No connect-to entry: an alternative service, then.
+            Ok(None) => match alt_svc(cx, &origin, &scheme) {
+                Ok(via) => {
+                    alt_used = via.is_some();
+                    via
+                }
+                Err(e) => return TransferState::Init.fail(e),
+            },
             Err(e) => return TransferState::Init.fail(e),
         },
     };
@@ -3321,6 +3330,12 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     // A request a proxy sends on names the whole URL, and the connection
     // is the proxy's (`origin_is_proxy`).
     let mut proto = proto;
+    if alt_used {
+        let via = via.as_deref().expect("an alternative is the peer");
+        if let Err(OutOfMemory) = proto.alt_used(via) {
+            return TransferState::Init.fail(ErrorKind::OutOfMemory);
+        }
+    }
     let origin = match &proxy {
         Some(p) if p.forward => {
             if let Err(e) = proto.forward(&url) {
@@ -3772,6 +3787,70 @@ fn connect_to<H: Host>(
         }
     };
     Err(trace::fail_for(cx, kind, reason))
+}
+
+/// The peer an alternative service sends a connection for `origin` to, if
+/// the cache is on and knows one other than the origin itself, for an
+/// `https` URL, or any in a debug build told `CURL_ALTSVC_HTTP`
+/// (`url_set_conn_peer`). Only HTTP/1 alternatives are taken, which is
+/// all this build speaks, and none for a request made in HTTP/1.0.
+fn alt_svc<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    origin: &Peer,
+    scheme: &[u8],
+) -> Result<Option<TryArc<Peer>>, ErrorKind> {
+    let Some(alt_svc) = cx.easy().alt_svc() else {
+        return Ok(None);
+    };
+    let secured = scheme == b"https";
+    #[cfg(feature = "debug-hooks")]
+    let secured = secured || curl_os::env::is_set(b"CURL_ALTSVC_HTTP");
+    if !secured || cx.easy().options().http.version == crate::options::HttpVersion::Http10 {
+        return Ok(None);
+    }
+    let allowed = crate::altsvc::Versions {
+        h1: alt_svc.ctrl().versions.h1,
+        h2: false,
+        h3: false,
+    };
+    let now = crate::date::cache_now(cx.unix_time());
+    let alt_svc = cx.easy_mut().alt_svc_mut().expect("on, as above");
+    let src = crate::altsvc::Alpn::H1;
+    let Some(found) = alt_svc.lookup((origin.name(), origin.port(), src), allowed, now) else {
+        return Ok(None);
+    };
+    // The same host and port by another version would change only the
+    // version wanted, and there is none other.
+    if found.same {
+        return Ok(None);
+    }
+    let oom = |OutOfMemory| ErrorKind::OutOfMemory;
+    let mut host = Vec::new();
+    let v6 = found.host.contains(&b':');
+    for part in [&b"["[..], found.host, b"]"] {
+        if v6 || (part != b"[" && part != b"]") {
+            host.try_extend_from_slice(part).map_err(oom)?;
+        }
+    }
+    let (dst_alpn, port) = (found.alpn, found.port);
+    let via = Peer::new(origin.scheme(), host, port, None);
+    // A name in Unicode is looked up by its ASCII form, as the origin's
+    // (`Curl_peer_create`).
+    let via = via.idn(cx.easy().libraries().idn);
+    let via = via.map_err(crate::idn::IdnFailure::kind)?;
+    trace::info(
+        cx,
+        format_args!(
+            "Alt-svc connecting from [{}]{}:{} to [{}]{}:{}",
+            src.name(),
+            Bytes(origin.name()),
+            origin.port(),
+            dst_alpn.name(),
+            Bytes(via.name()),
+            via.port()
+        ),
+    );
+    TryArc::try_new(via).map(Some).map_err(oom)
 }
 
 /// A connection for the transfer making `proto`, and the trace of what

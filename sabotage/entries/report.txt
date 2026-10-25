@@ -251,9 +251,9 @@ witness: curl-core report::certinfo::tests::fields_are_kept_as_label_colon_value
 file: crates/curl-core/src/version.rs
 witness: curl-core version::tests::the_threaded_resolver_is_claimed_as_asynch_dns
 --- old
-const FEATURES: &[Feature] = &[
+    Feature::AltSvc,
     #[cfg(feature = "threaded-resolver")]
     Feature::AsynchDns,
 --- new
-const FEATURES: &[Feature] = &[
+    Feature::AltSvc,
     Feature::AsynchDns,

@@ -171,6 +171,7 @@ curl-core/src/
   share.rs                   Share, Kind, ShareLock: what transfers of several handles keep
   cookie.rs                  Jar, Cookie, Suffixes: the cookie jar (cookie.c)
   hsts.rs                    Hsts, HstsEntry, HstsReader, HstsWriter: the HSTS cache (hsts.c)
+  altsvc.rs                  AltSvc, AltSvcCtrl, Alpn: the alt-svc cache (altsvc.c)
   idn.rs                     Idn, IdnFailure: host names in Unicode, converted by a library
   netrc.rs                   .netrc files: the file's path, its entries for a host
   coding.rs                  Coding, Decoder, Decoders, AcceptEncoding: the content codings
@@ -2962,11 +2963,32 @@ debug build's `CURL_HSTS_HTTP` says so; one the cache cannot take is said and pa
 time is the clock's, or the debug build's `CURL_TIME`. The cache is written as the handle goes
 (`Easy::save_hsts`, which the shim's cleanup and the tool's handle call), to
 `HstsOptions::file` or the file last read, unless the cache's file is read-only
-(`HstsFile::ReadOnly`, `CURLHSTS_READONLYFILE`, which C never honours: DIVERGENCE.md), then to
+(`CacheFile::ReadOnly`, `CURLHSTS_READONLYFILE`, which C never honours: DIVERGENCE.md), then to
 the application's writer (`HstsWriter`). A copy of the handle reads its file and reader into a
 new cache of the same file mode, then takes the entries alive; the shim makes the copy's
 adapters before that read (`Easy::try_clone_with`), so the application's reader is handed the
 copy, as C hands it `outcurl`.
+
+### 6.7 Alternative services
+
+`altsvc::AltSvc` is C's cache (`lib/altsvc.c`): for an origin spoken to by one HTTP version,
+another host, port and version it may be reached by, until when, at most 5000 kept, oldest
+first. A handle has one once the application turns it on (`Easy::enable_alt_svc`,
+`add_alt_svc_file`: `CURLOPT_ALTSVC_CTRL`, `CURLOPT_ALTSVC`), kept through `reset`; it and
+the HSTS cache share one box, made the first time either is turned on (`HostCaches`), which
+keeps a handle that turns on neither within its byte budget. The file is read as it is named,
+not as transfers start. As each leg picks its peer, an origin no connect-to entry sends
+elsewhere, over `https` (or any URL with the debug build's `CURL_ALTSVC_HTTP`), and not made in
+HTTP/1.0, is looked up by its ASCII name and port as an HTTP/1 origin, for an alternative of a
+version the control allows and the build speaks, which is HTTP/1 alone until HTTP/2 (step 52).
+One on another host or port is the peer, as a connect-to entry's is: traced "Alt-svc connecting
+from ...", and named by the request's `Alt-Used:` unless the application sends its own. An
+`Alt-Svc:` field from a response over HTTPS, or HTTP with `CURL_ALTSVC_HTTP`, is parsed as C
+parses it, the cache taken out of the handle meanwhile so that what parsing says is traced as
+it is said. The cache is written as the handle goes (`Easy::save_alt_svc`, the shim's cleanup
+and the tool's handle), to `AltSvcOptions::file` or the file last read, unless read-only. A copy
+of the handle has an empty cache of the same control, which reads the file named; C's copy
+loses the control (DIVERGENCE.md).
 
 ---
 

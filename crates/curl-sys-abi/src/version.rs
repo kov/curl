@@ -80,6 +80,7 @@ const MAX_FEATURES: usize = 64;
 /// A feature's name and bit in `curl_version_info_data`.
 fn c_feature(f: Feature) -> (&'static CStr, c_int) {
     match f {
+        Feature::AltSvc => (c"alt-svc", crate::ffi::CURL_VERSION_ALTSVC),
         Feature::AsynchDns => (c"AsynchDNS", crate::ffi::CURL_VERSION_ASYNCHDNS),
         Feature::Brotli => (c"brotli", crate::ffi::CURL_VERSION_BROTLI),
         #[cfg(feature = "debug-hooks")]
@@ -304,6 +305,7 @@ mod tests {
         // The resolver is the core's choice; the core's tests pin it.
         let asynch = version().features.contains(&Feature::AsynchDns);
         let (listed, listed_bits): (Vec<_>, Vec<_>) = [
+            (true, "alt-svc", ffi::CURL_VERSION_ALTSVC),
             (asynch, "AsynchDNS", ffi::CURL_VERSION_ASYNCHDNS),
             (true, "brotli", ffi::CURL_VERSION_BROTLI),
             (

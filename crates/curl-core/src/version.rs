@@ -24,6 +24,9 @@ pub enum Feature {
     /// resolver's pool of threads, which C counts as asynchronous: claimed
     /// by a build with the `threaded-resolver` feature.
     AsynchDns,
+    /// Alternative services: an origin's alternatives a server names are
+    /// kept, from and to a file, and connected to in its place.
+    AltSvc,
     /// The `br` content coding is undone by brotli, which the tool and the
     /// C ABI give every handle.
     Brotli,
@@ -73,6 +76,7 @@ impl Feature {
     /// The name `curl -V` lists it under.
     pub fn name(self) -> &'static str {
         match self {
+            Feature::AltSvc => "alt-svc",
             Feature::AsynchDns => "AsynchDNS",
             Feature::Brotli => "brotli",
             #[cfg(feature = "debug-hooks")]
@@ -97,6 +101,7 @@ impl Feature {
 
 /// Sorted by name, case-insensitively, as C lists them.
 const FEATURES: &[Feature] = &[
+    Feature::AltSvc,
     #[cfg(feature = "threaded-resolver")]
     Feature::AsynchDns,
     Feature::Brotli,

@@ -468,6 +468,9 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) conditional: Option<Conditional>,
     /// What the `Cookie:` line says, if the request has one.
     pub(crate) cookie: Option<&'o [u8]>,
+    /// The alternative service the connection goes to, `host:port`
+    /// (`Alt-Used:`), unless the application sends its own.
+    pub(crate) alt_used: Option<&'o [u8]>,
     /// The request goes to a proxy that sends it on: it asks to keep the
     /// connection to the proxy (`origin_is_proxy`).
     pub(crate) forwarded: Option<Forwarding<'o>>,
@@ -753,7 +756,12 @@ fn write_h1(
                     out.line(&[c.name, b": ", date.bytes()])?;
                 }
             }
-            Part::AltUsed | Part::Upgrade => {}
+            Part::AltUsed => {
+                if let Some(used) = head.alt_used {
+                    out.line(&[b"Alt-Used: ", used])?;
+                }
+            }
+            Part::Upgrade => {}
         }
     }
     Ok(())
@@ -936,6 +944,7 @@ mod tests {
             te: false,
             conditional: None,
             cookie: None,
+            alt_used: None,
             forwarded: None,
             headers: &headers,
         };
@@ -1008,6 +1017,7 @@ mod tests {
                 te: false,
                 conditional: None,
                 cookie: None,
+                alt_used: None,
                 forwarded: None,
 
                 headers: &headers,
@@ -1061,6 +1071,7 @@ mod tests {
                 te: false,
                 conditional: None,
                 cookie: None,
+                alt_used: None,
                 forwarded: None,
 
                 headers: &headers,
@@ -1252,6 +1263,7 @@ mod tests {
             te: false,
             conditional: None,
             cookie: None,
+            alt_used: None,
             forwarded,
             headers: &headers,
         };
@@ -1307,6 +1319,7 @@ mod tests {
             te: false,
             conditional: None,
             cookie: None,
+            alt_used: None,
             forwarded: None,
             headers: &headers,
         };
@@ -1358,6 +1371,7 @@ mod tests {
                 te: false,
                 conditional: None,
                 cookie: None,
+                alt_used: None,
                 forwarded: None,
 
                 headers: &headers,

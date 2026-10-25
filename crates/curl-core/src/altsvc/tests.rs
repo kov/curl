@@ -1,0 +1,294 @@
+//! The cache alone: C's unit tests 1654 and 1669, and what they leave
+//! out.
+
+use super::*;
+
+/// The time unit1654 runs at (`CURL_TIME`), 2019-01-24 22:34:21 UTC.
+const NOW: i64 = 1_548_369_261;
+
+/// A temporary file of the test's, removed as it goes.
+struct Temp(std::path::PathBuf);
+
+impl Temp {
+    fn new(name: &str, text: &[u8]) -> Temp {
+        let path =
+            std::env::temp_dir().join(format!("curl-core-altsvc-{name}-{}", std::process::id()));
+        std::fs::write(&path, text).unwrap();
+        Temp(path)
+    }
+
+    fn name(&self) -> &[u8] {
+        self.0.as_os_str().as_encoded_bytes()
+    }
+}
+
+impl Drop for Temp {
+    fn drop(&mut self) {
+        let _gone = std::fs::remove_file(&self.0);
+    }
+}
+
+fn parse(a: &mut AltSvc, value: &str, host: &str, port: u16, alpn: Alpn) -> Vec<String> {
+    let mut said = Vec::new();
+    a.parse(
+        value.as_bytes(),
+        (host.as_bytes(), port, alpn),
+        NOW,
+        &mut |args| said.push(args.to_string()),
+    )
+    .unwrap();
+    said
+}
+
+const ALL: Versions = Versions {
+    h1: true,
+    h2: true,
+    h3: true,
+};
+
+/// unit1654: a file read, fields parsed, a lookup, and the file written.
+#[test]
+fn unit1654() {
+    let file = Temp::new(
+        "1654",
+        b"h2 example.com 443 h3 shiny.example.com 8443 \"20191231 00:00:00\" 0 0\n\
+          h2 expired.com 443 h3 shiny.example.com 8443 \"20190122 00:00:00\" 0 0\n\
+          # a comment\n\
+          h2 foo.example.com 443 h3 shiny.example.com 8443 \"20291231 23:30:00\" 0 0\n\
+          \x20 h1 example.com 443 h3 shiny.example.com 8443 \"20221231 00:00:01\" 0 0\n\
+          \th3 example.com 443 h3 shiny.example.com 8443 \"20231231 00:00:00\" 0 0\n\
+          \x20   # also a comment\n\
+          bad example.com 443 h3 shiny.example.com 8443 \"20191231 00:00:00\" 0 0\n\
+          rubbish\n",
+    );
+    let mut a = AltSvc::default();
+    a.load(file.name(), NOW).unwrap();
+    assert_eq!(a.len(), 4);
+    let h1 = Alpn::H1;
+    let h2 = Alpn::H2;
+    parse(
+        &mut a,
+        "h2=\"example.com:8080\"\r\n",
+        "example.org",
+        8080,
+        h1,
+    );
+    assert_eq!(a.len(), 5);
+    parse(&mut a, "h3=\":8080\"\r\n", "2.example.org", 8080, h1);
+    assert_eq!(a.len(), 6);
+    let v = "h2=\"example.com:8080\", h3=\"yesyes.com:8080\"\r\n";
+    parse(&mut a, v, "3.example.org", 8080, h1);
+    assert_eq!(a.len(), 8);
+    parse(
+        &mut a,
+        "h2=\"example.com:443\"; ma = 120;\r\n",
+        "example.org",
+        80,
+        h2,
+    );
+    assert_eq!(a.len(), 9);
+    parse(
+        &mut a,
+        "h2=\"example.net:443\"; ma=\"180\";\r\n",
+        "example.net",
+        80,
+        h2,
+    );
+    assert_eq!(a.len(), 10);
+    let v = "h2=\":443\"; ma=180, h3=\":443\"; persist = \"1\"; ma = 120;\r\n";
+    parse(&mut a, v, "curl.se", 80, h1);
+    assert_eq!(a.len(), 12);
+    parse(&mut a, "clear;\r\n", "curl.se", 80, h1);
+    assert_eq!(a.len(), 10);
+    let v = "h2=\":443\", h3=\":443\"; persist = \"1\"; ma = 120;\r\n";
+    parse(&mut a, v, "curl.se", 80, h1);
+    assert_eq!(a.len(), 12);
+    parse(&mut a, "clear\r\n", "curl.se", 80, h1);
+    assert_eq!(a.len(), 10);
+    // A version not known, a missing quote, a missing port and one too
+    // large add nothing.
+    parse(
+        &mut a,
+        "h6=\"example.net:443\"; ma=\"180\";\r\n",
+        "5.example.net",
+        80,
+        h2,
+    );
+    parse(
+        &mut a,
+        "h2=\"example.net:443,; ma=\"180\";\r\n",
+        "6.example.net",
+        80,
+        h2,
+    );
+    parse(
+        &mut a,
+        "h2=\"example.net\"; ma=\"180\";\r\n",
+        "7.example.net",
+        80,
+        h2,
+    );
+    let said = parse(
+        &mut a,
+        "h2=\"example.net:70000\"; ma=\"180\";\r\n",
+        "8.example.net",
+        80,
+        h2,
+    );
+    assert_eq!(said, ["Unknown alt-svc port number, ignoring."]);
+    assert_eq!(a.len(), 10);
+    let v = "h2=\"test2.se:443\"; ma=\"180 \" ; unknown=2, h2=\"test3.se:443\"; ma = 120;\r\n";
+    parse(&mut a, v, "test.se", 443, h2);
+    // Unknown parameters do not hide later known ones.
+    let v = "h2=\":443\"; long-extension-parameter=token; ext=token; \
+             quoted=\"a;\\\"b\"; ma=120; persist=1\r\n";
+    parse(&mut a, v, "params.example", 443, h1);
+    let versions = Versions {
+        h1: false,
+        h2: true,
+        h3: false,
+    };
+    let found = a
+        .lookup((b"params.example", 443, h1), versions, NOW)
+        .unwrap();
+    assert!(found.same);
+    let e = a.entries.last().unwrap();
+    assert_eq!(e.expires, NOW + 120);
+    assert!(e.persist);
+    parse(&mut a, "clear\r\n", "params.example", 443, h1);
+    let text = a.text().unwrap();
+    assert_eq!(
+        String::from_utf8(text).unwrap(),
+        "# Your alt-svc cache. https://curl.se/docs/alt-svc.html\n\
+         # This file was generated by libcurl! Edit at your own risk.\n\
+         h2 example.com 443 h3 shiny.example.com 8443 \"20191231 00:00:00\" 0 0\n\
+         h2 foo.example.com 443 h3 shiny.example.com 8443 \"20291231 23:30:00\" 0 0\n\
+         h1 example.com 443 h3 shiny.example.com 8443 \"20221231 00:00:01\" 0 0\n\
+         h3 example.com 443 h3 shiny.example.com 8443 \"20231231 00:00:00\" 0 0\n\
+         h1 example.org 8080 h2 example.com 8080 \"20190125 22:34:21\" 0 0\n\
+         h1 2.example.org 8080 h3 2.example.org 8080 \"20190125 22:34:21\" 0 0\n\
+         h1 3.example.org 8080 h2 example.com 8080 \"20190125 22:34:21\" 0 0\n\
+         h1 3.example.org 8080 h3 yesyes.com 8080 \"20190125 22:34:21\" 0 0\n\
+         h2 example.org 80 h2 example.com 443 \"20190124 22:36:21\" 0 0\n\
+         h2 example.net 80 h2 example.net 443 \"20190124 22:37:21\" 0 0\n\
+         h2 test.se 443 h2 test2.se 443 \"20190124 22:37:21\" 0 0\n\
+         h2 test.se 443 h2 test3.se 443 \"20190124 22:36:21\" 0 0\n"
+    );
+}
+
+/// unit1669: a file of more entries than the cache keeps keeps the most.
+#[test]
+fn unit1669() {
+    let mut text = Vec::new();
+    for n in 0..5010 {
+        let line = format!("h2 host{n}.example 443 h3 alt.example 443 \"20391231 00:00:00\" 0 0\n");
+        text.extend_from_slice(line.as_bytes());
+    }
+    let file = Temp::new("1669", &text);
+    let mut a = AltSvc::default();
+    a.load(file.name(), NOW).unwrap();
+    assert_eq!(a.len(), MAX_ENTRIES);
+    // The oldest went.
+    assert_eq!(a.entries[0].src.host, b"host10.example");
+}
+
+/// A lookup finds the first alternative of the origin to a version
+/// allowed, drops those expired as it passes them, and tells whether it
+/// is the origin's own host and port; the host's one trailing dot and
+/// case do not matter.
+#[test]
+fn a_lookup_finds_the_first_allowed_alternative() {
+    let mut a = AltSvc::default();
+    parse(
+        &mut a,
+        "h3=\"alt3:1\", h1=\"Alt1:2\"",
+        "origin",
+        80,
+        Alpn::H1,
+    );
+    let h1_only = AltSvcCtrl::DEFAULT.versions;
+    let found = a.lookup((b"ORIGIN.", 80, Alpn::H1), h1_only, NOW).unwrap();
+    assert_eq!(
+        (found.host, found.port, found.alpn),
+        (&b"Alt1"[..], 2, Alpn::H1)
+    );
+    assert!(!found.same);
+    let found = a.lookup((b"origin", 80, Alpn::H1), ALL, NOW).unwrap();
+    assert_eq!(found.host, b"alt3");
+    assert!(a.lookup((b"origin", 81, Alpn::H1), ALL, NOW).is_none());
+    assert!(a.lookup((b"origin", 80, Alpn::H2), ALL, NOW).is_none());
+    // A day later, both have expired, and go.
+    assert!(
+        a.lookup((b"origin", 80, Alpn::H1), ALL, NOW + 86401)
+            .is_none()
+    );
+    assert!(a.is_empty());
+    // The origin's own host and port, by another version.
+    parse(&mut a, "h2=\":80\"", "origin", 80, Alpn::H1);
+    assert!(a.lookup((b"origin", 80, Alpn::H1), ALL, NOW).unwrap().same);
+}
+
+/// An IPv6 alternative is kept without its brackets and written with
+/// them; a bad one is said and passed over.
+#[test]
+fn an_ipv6_alternative_is_written_in_brackets() {
+    let mut a = AltSvc::default();
+    let said = parse(&mut a, "h1=\"[ffff::1]:8181\"", "127.0.0.1", 80, Alpn::H1);
+    assert_eq!(said, ["Added alt-svc: ffff::1:8181 over h1"]);
+    let text = String::from_utf8(a.text().unwrap()).unwrap();
+    assert!(
+        text.ends_with("h1 127.0.0.1 80 h1 [ffff::1] 8181 \"20190125 22:34:21\" 0 0\n"),
+        "{text}"
+    );
+    let said = parse(&mut a, "h1=\"[ffff::1:8181\"", "127.0.0.1", 80, Alpn::H1);
+    assert_eq!(said, ["Bad alt-svc IPv6 hostname, ignoring."]);
+    let said = parse(&mut a, "h1=\"", "127.0.0.1", 80, Alpn::H1);
+    assert_eq!(said, ["Bad alt-svc hostname, ignoring."]);
+}
+
+/// `ma` is capped at two years, a huge one too; a file's date too long
+/// is passed over, and one that cannot be read has expired.
+#[test]
+fn ages_and_dates_are_capped_and_checked() {
+    let mut a = AltSvc::default();
+    parse(
+        &mut a,
+        "h1=\"nowhere.foo:80\"; ma=315360000000000000000",
+        "o",
+        80,
+        Alpn::H1,
+    );
+    // Not a number C reads: the default day.
+    assert_eq!(a.entries[0].expires, NOW + DEFAULT_MAX_AGE);
+    parse(
+        &mut a,
+        "h1=\"nowhere.foo:80\"; ma=315360000",
+        "o",
+        80,
+        Alpn::H1,
+    );
+    assert_eq!(a.entries[0].expires, NOW + CAP_MAX_AGE);
+    let file = Temp::new(
+        "dates",
+        b"h1 a 1 h1 b 2 \"20290222 22:19:028\" 0 0\nh1 a 1 h1 b 2 \"nonsense\" 0 0\n\
+          h1 a 1 h1 b 2 \"20290222 22:19:28\" 1 0",
+    );
+    let mut a = AltSvc::default();
+    a.load(file.name(), NOW).unwrap();
+    // Only the last, its newline added as C reads a last line.
+    assert_eq!(a.len(), 1);
+    assert!(a.entries[0].persist);
+}
+
+/// A line longer than C reads one fails the load; a directory adds
+/// nothing and is still the file written back.
+#[test]
+fn a_long_line_fails_and_a_directory_adds_nothing() {
+    let file = Temp::new("long", &[b'x'; MAX_LINE + 1]);
+    let mut a = AltSvc::default();
+    assert_eq!(a.load(file.name(), NOW), Err(LoadError::TooLarge));
+    let dir = std::env::temp_dir();
+    let dir = dir.as_os_str().as_encoded_bytes();
+    a.load(dir, NOW).unwrap();
+    assert_eq!(a.file(), Some(dir));
+}

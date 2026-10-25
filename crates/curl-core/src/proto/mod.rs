@@ -317,6 +317,16 @@ impl ProtoState {
         }
     }
 
+    /// The connection goes to `via`, an alternative service of the
+    /// origin's: the request says so (`Alt-Used:`).
+    pub(crate) fn alt_used(&mut self, via: &Peer) -> Result<(), curl_alloc::OutOfMemory> {
+        match *self {
+            ProtoState::Http(ref mut r) => r.alt_used(via),
+            // Only HTTP's requests have alternatives.
+            _ => Ok(()),
+        }
+    }
+
     /// Make the request (C's `do_it`) over the connection `lease` holds,
     /// or a step of it: `file:`'s is the whole transfer, made a piece a
     /// step; the test protocols have none to make.

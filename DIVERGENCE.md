@@ -153,6 +153,13 @@ not a difference: it is tracked in `MILESTONES.md`.
   (`crates/curl-core/src/proto/http/tests/hsts.rs`) and `a_read_only_hsts_file_is_not_written`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+- **A duplicated handle keeps its alt-svc control.** `curl_easy_duphandle` of a handle with
+  `CURLOPT_ALTSVC_CTRL` set gives a copy whose cache behaves the same: a read-only file stays
+  unwritten, and only the versions allowed are taken. C's copy makes its cache with the default
+  control (`Curl_altsvc_init` in `curl_easy_duphandle`), so a copy of a handle told not to write
+  its file writes it as it goes. Pinned by `a_read_only_file_is_kept_and_a_copy_reads_the_file`
+  (`crates/curl-core/src/proto/http/tests/alt_svc.rs`).
+
 ## State C carries across transfers
 
 - **`--etag-compare` sends one `If-None-Match:` a transfer.** Each transfer of a URL pattern

@@ -6,13 +6,14 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
+use crate::altsvc::{AltSvc, AltSvcCtrl};
 use crate::coding::Decoders;
 use crate::components::Components;
 use crate::conn::io::{SystemNet, Waker};
 use crate::cookie::{Jar, LoadError, Suffixes};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::handler::Handler;
-use crate::hsts::{Hsts, HstsFile};
+use crate::hsts::{Hsts, LoadError as CacheLoadError};
 use crate::id::ArenaPolicy;
 use crate::libraries::{Libraries, SharedLibraries};
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
@@ -20,7 +21,8 @@ use crate::options::{Lines, Options};
 use crate::proto::http1::auth::Auth;
 use crate::report::TransferReport;
 use crate::save;
-pub use crate::save::SaveError;
+
+pub use crate::save::{CacheFile, SaveError};
 use crate::share::{Kind, Share, ShareLock, watched};
 use crate::time::{Clock as _, SystemClock};
 use crate::trace;
@@ -55,9 +57,9 @@ pub struct Easy {
     /// the application. Past `MAX_SET_PER_REQUEST`, no cookie of any kind
     /// is stored until the next request starts.
     pub(crate) set_cookies: u8,
-    /// The HSTS cache, once the application turns it on (C's `hsts`):
-    /// kept from one transfer to the next, and through `reset`.
-    pub(crate) hsts: Option<Box<Hsts>>,
+    /// The HSTS and alt-svc caches, made the first time the application
+    /// turns either on: few handles do.
+    caches: Option<Box<HostCaches>>,
     /// Where connections, resolved names and cookies are kept for the
     /// transfers after, if not in the handle's own multi (`CURLOPT_SHARE`,
     /// C's `data->share`): kept through `reset`, not copied with the
@@ -77,6 +79,16 @@ pub struct Easy {
     /// one, only the lines of a verbose transfer that belong to no
     /// component are traced.
     components: Option<Components>,
+}
+
+/// The caches of what servers said of hosts, each once the application
+/// turns it on, kept from one transfer to the next and through `reset`.
+#[derive(Debug, Default)]
+struct HostCaches {
+    /// C's `hsts`.
+    hsts: Option<Hsts>,
+    /// C's `asi`.
+    alt_svc: Option<AltSvc>,
 }
 
 /// Where a handle's public suffixes come from.
@@ -166,7 +178,7 @@ impl Easy {
                 None => None,
             },
             set_cookies: 0,
-            hsts: None,
+            caches: None,
             share: None,
             share_watch: None,
             suffixes: match &self.suffixes {
@@ -178,8 +190,23 @@ impl Easy {
             components: self.components.clone(),
         };
         prepare(&mut copy.options)?;
-        if let Some(hsts) = self.hsts.as_deref() {
-            copy.hsts = Some(copy.hsts_copy(hsts)?);
+        if let Some(hsts) = self.hsts() {
+            let hsts = copy.hsts_copy(hsts)?;
+            copy.caches_made()?.hsts = Some(hsts);
+        }
+        if let Some(original) = self.alt_svc() {
+            // A cache of its own, which reads the file named, as C's copy
+            // does; it keeps the original's control, which C's copy
+            // loses (DIVERGENCE.md).
+            let mut a = original.copy_empty();
+            if let Some(file) = &copy.options.http.alt_svc.file {
+                let now = crate::date::cache_now(SystemClock::new().unix_time());
+                // What fails to be read is passed over, as in C.
+                if let Err(CacheLoadError::OutOfMemory) = a.load(file, now) {
+                    return Err(OutOfMemory);
+                }
+            }
+            copy.caches_made()?.alt_svc = Some(a);
         }
         Ok(copy)
     }
@@ -188,9 +215,9 @@ impl Easy {
     /// (`curl_easy_duphandle`): its file and the application's reader read
     /// into a new one, as C reads them, then the entries alive in the
     /// original's `hsts`. What fails to be read is passed over, as in C.
-    fn hsts_copy(&self, hsts: &Hsts) -> Result<Box<Hsts>, OutOfMemory> {
-        let now = crate::proto::http::hsts::now(SystemClock::new().unix_time());
-        let mut copy = try_box(Hsts::default())?;
+    fn hsts_copy(&self, hsts: &Hsts) -> Result<Hsts, OutOfMemory> {
+        let now = crate::date::cache_now(SystemClock::new().unix_time());
+        let mut copy = Hsts::default();
         copy.set_mode(hsts.mode());
         let options = &*self.options.http.hsts;
         if let Some(file) = &options.file
@@ -303,23 +330,48 @@ impl Easy {
 
     /// Turn the HSTS cache on, empty, if it is not, its file written back
     /// as `mode` says (`CURLHSTS_ENABLE`, `CURLHSTS_READONLYFILE`).
-    pub fn enable_hsts(&mut self, mode: HstsFile) -> Result<(), OutOfMemory> {
+    pub fn enable_hsts(&mut self, mode: CacheFile) -> Result<(), OutOfMemory> {
         self.hsts_made()?.set_mode(mode);
         Ok(())
     }
 
     /// The HSTS cache, made empty now if the handle has none.
     fn hsts_made(&mut self) -> Result<&mut Hsts, OutOfMemory> {
-        if self.hsts.is_none() {
-            self.hsts = Some(try_box(Hsts::default())?);
+        Ok(self.caches_made()?.hsts.get_or_insert_with(Hsts::default))
+    }
+
+    /// The caches, made now if the handle has none.
+    fn caches_made(&mut self) -> Result<&mut HostCaches, OutOfMemory> {
+        if self.caches.is_none() {
+            self.caches = Some(try_box(HostCaches::default())?);
         }
-        Ok(self.hsts.as_deref_mut().expect("made above"))
+        Ok(self.caches.as_deref_mut().expect("made above"))
+    }
+
+    /// The HSTS cache, if on.
+    pub(crate) fn hsts(&self) -> Option<&Hsts> {
+        self.caches.as_deref()?.hsts.as_ref()
+    }
+
+    pub(crate) fn hsts_mut(&mut self) -> Option<&mut Hsts> {
+        self.caches.as_deref_mut()?.hsts.as_mut()
+    }
+
+    /// The alt-svc cache, if on.
+    pub(crate) fn alt_svc(&self) -> Option<&AltSvc> {
+        self.caches.as_deref()?.alt_svc.as_ref()
+    }
+
+    pub(crate) fn alt_svc_mut(&mut self) -> Option<&mut AltSvc> {
+        self.caches.as_deref_mut()?.alt_svc.as_mut()
     }
 
     /// Turn the HSTS cache off: its entries and the files named are
     /// forgotten (`CURLOPT_HSTS_CTRL` without `CURLHSTS_ENABLE`).
     pub fn disable_hsts(&mut self) {
-        self.hsts = None;
+        if let Some(caches) = self.caches.as_deref_mut() {
+            caches.hsts = None;
+        }
     }
 
     /// Read the HSTS file `file` into the cache as each transfer starts,
@@ -334,7 +386,7 @@ impl Easy {
         };
         let mut copy = Vec::new();
         copy.try_extend_from_slice(file)?;
-        let hsts = self.hsts.as_deref_mut().expect("enabled above");
+        let hsts = self.hsts_mut().expect("enabled above");
         hsts.read_at_start(file)?;
         self.options.http.hsts.make_mut()?.file = Some(copy);
         Ok(())
@@ -342,7 +394,7 @@ impl Easy {
 
     /// Whether the HSTS cache is on.
     pub fn hsts_enabled(&self) -> bool {
-        self.hsts.is_some()
+        self.hsts().is_some()
     }
 
     /// Write the HSTS cache, if it is on, to `HstsOptions::file` or else
@@ -350,7 +402,7 @@ impl Easy {
     /// (`Curl_hsts_save`). A file not written, or a writer that says the
     /// save fails, fails it, after the rest is done.
     pub fn save_hsts(&mut self) -> Result<(), SaveError> {
-        let Some(hsts) = self.hsts.as_deref() else {
+        let Some(hsts) = self.hsts() else {
             return Ok(());
         };
         let options = &*self.options.http.hsts;
@@ -358,7 +410,7 @@ impl Easy {
         let mut result = Ok(());
         // C never sets the flag it tests, so writes a read-only file back
         // (DIVERGENCE.md).
-        let written = hsts.mode() == HstsFile::ReadWrite;
+        let written = hsts.mode() == CacheFile::ReadWrite;
         if let Some(file) = file.filter(|f| written && !f.is_empty()) {
             result = crate::save::replace(file, &hsts.text()?);
         }
@@ -370,6 +422,60 @@ impl Easy {
             };
         }
         result
+    }
+
+    /// Turn the alt-svc cache on, empty, if it is not, and have it behave
+    /// as `ctrl` says (`CURLOPT_ALTSVC_CTRL`).
+    pub fn enable_alt_svc(&mut self, ctrl: AltSvcCtrl) -> Result<(), OutOfMemory> {
+        self.alt_svc_made()?.set_ctrl(ctrl);
+        Ok(())
+    }
+
+    /// The alt-svc cache, made empty now if the handle has none.
+    fn alt_svc_made(&mut self) -> Result<&mut AltSvc, OutOfMemory> {
+        Ok(self
+            .caches_made()?
+            .alt_svc
+            .get_or_insert_with(AltSvc::default))
+    }
+
+    /// Read the alt-svc file `file` into the cache now, and write the
+    /// cache to it as the handle goes; the cache is turned on. Without a
+    /// file, the cache is still turned on, and written to the file last
+    /// read (`CURLOPT_ALTSVC`). A file that cannot be opened adds
+    /// nothing; one that cannot be read fails, as C's does.
+    pub fn add_alt_svc_file(&mut self, file: Option<&[u8]>) -> Result<(), CacheLoadError> {
+        self.alt_svc_made()?;
+        let copy = file.map(crate::options::copy).transpose()?;
+        self.options.http.alt_svc.make_mut()?.file = copy;
+        let Some(file) = file else {
+            return Ok(());
+        };
+        let now = crate::date::cache_now(SystemClock::new().unix_time());
+        let alt_svc = self.alt_svc_mut().expect("made above");
+        alt_svc.load(file, now)
+    }
+
+    /// Whether the alt-svc cache is on.
+    pub fn alt_svc_enabled(&self) -> bool {
+        self.alt_svc().is_some()
+    }
+
+    /// Write the alt-svc cache, if it is on and its file not read-only,
+    /// to `AltSvcOptions::file` or else the file last read
+    /// (`Curl_altsvc_save`).
+    pub fn save_alt_svc(&mut self) -> Result<(), SaveError> {
+        let Some(alt_svc) = self.alt_svc() else {
+            return Ok(());
+        };
+        let file = self.options.http.alt_svc.file.as_deref();
+        let file = file.or(alt_svc.file());
+        match file {
+            Some(file) if alt_svc.ctrl().file == CacheFile::ReadWrite && !file.is_empty() => {
+                crate::save::replace(file, &alt_svc.text()?)
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Turn the cookie jar on: one of the handle's own, empty, if it has

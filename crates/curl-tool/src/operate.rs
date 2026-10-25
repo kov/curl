@@ -1298,8 +1298,9 @@ impl Drop for Handle {
         // A failure goes unsaid: C's cleanup stops tracing before it saves
         // the jar, so its warning is never seen.
         let _unsaid = self.0.save_cookies();
-        // Then the HSTS cache, as C's cleanup writes it, whose failure
-        // goes unsaid too.
+        // Then the alt-svc and HSTS caches, as C's cleanup writes them,
+        // whose failures go unsaid too.
+        let _unsaid = self.0.save_alt_svc();
         let _unsaid = self.0.save_hsts();
     }
 }
@@ -2793,6 +2794,15 @@ fn http_setopts(
         o.http.allow_09 = op.http09;
         Ok(())
     })?;
+    if let Some(file) = op.alt_svc {
+        s.str_handle("CURLOPT_ALTSVC", Some(file), |e| {
+            e.add_alt_svc_file(Some(file)).map_err(|e| match e {
+                curl_core::hsts::LoadError::OutOfMemory => ErrorKind::OutOfMemory,
+                curl_core::hsts::LoadError::Read => ErrorKind::ReadError,
+                curl_core::hsts::LoadError::TooLarge => ErrorKind::TooLarge,
+            })
+        })?;
+    }
     if op.expect100_timeout_ms > 0 {
         let ms = op.expect100_timeout_ms;
         s.long("CURLOPT_EXPECT_100_TIMEOUT_MS", long(ms), |o| {

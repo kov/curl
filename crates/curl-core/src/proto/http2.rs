@@ -15,10 +15,6 @@ use crate::conn::layer::LayerCx;
 use crate::error::ErrorKind;
 use crate::http2::{BodyRead, Event, FrameError, Heard, Http2, Session, Setting, StreamId};
 
-/// The streams a client lets its peer open at once
-/// (`CURLMOPT_MAX_CONCURRENT_STREAMS`'s default).
-pub(crate) const MAX_CONCURRENT_STREAMS: u32 = 100;
-
 /// A stream's receive window, as the client opens it
 /// (`H2_STREAM_WINDOW_SIZE_INITIAL`).
 pub(crate) const STREAM_WINDOW: u32 = 64 * 1024;
@@ -208,11 +204,12 @@ impl H2Conn {
     }
 }
 
-/// The settings a client sends (`populate_settings`): no server push, as
-/// no application asks for it.
-pub(crate) fn settings() -> [Setting; 3] {
+/// The settings a client sends (`populate_settings`), letting the server
+/// open `max_streams` at once: no server push, as no application asks
+/// for it.
+pub(crate) fn settings(max_streams: u32) -> [Setting; 3] {
     [
-        Setting::MaxConcurrentStreams(MAX_CONCURRENT_STREAMS),
+        Setting::MaxConcurrentStreams(max_streams),
         Setting::InitialWindowSize(STREAM_WINDOW),
         Setting::EnablePush(false),
     ]

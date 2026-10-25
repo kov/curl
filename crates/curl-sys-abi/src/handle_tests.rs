@@ -3009,6 +3009,36 @@ fn the_multi_s_callbacks_run_with_their_frames() {
             curl_multi_setopt(m, ffi::CURLMOPT_PUSHDATA, ptr::null_mut::<c_void>()),
             ffi::CURLM_UNKNOWN_OPTION
         );
+        // Multiplexing on or off, and the streams a server may open: none,
+        // or more than an int holds, is 100; the dropped pipelining
+        // options are taken.
+        let limits = |m| *crate::multi::multi(m).core_mut().conn_limits_mut();
+        assert!(limits(m).multiplex, "on by default");
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_PIPELINING, 0 as c_long),
+            CURLM_OK
+        );
+        assert!(!limits(m).multiplex);
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_PIPELINING, ffi::CURLPIPE_MULTIPLEX),
+            CURLM_OK
+        );
+        assert!(limits(m).multiplex);
+        for (n, want) in [
+            (7, 7),
+            (0, 100),
+            (-1, 100),
+            (1 << 31, 100),
+            (i32::MAX as c_long, i32::MAX as u32),
+        ] {
+            let streams = ffi::CURLMOPT_MAX_CONCURRENT_STREAMS;
+            assert_eq!(curl_multi_setopt(m, streams, n as c_long), CURLM_OK);
+            assert_eq!(limits(m).max_streams.get(), want, "{n}");
+        }
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_MAX_PIPELINE_LENGTH, 5 as c_long),
+            CURLM_OK
+        );
         for k in [ffi::CURLMNOTIFY_INFO_READ, ffi::CURLMNOTIFY_EASY_DONE] {
             assert_eq!(curl_multi_notify_enable(m, k as c_uint), CURLM_OK);
         }

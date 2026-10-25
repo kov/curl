@@ -975,6 +975,8 @@ pub unsafe extern "C" fn curl_multi_setopt(
         ffi::CURLMOPT_MAXCONNECTS
             | ffi::CURLMOPT_MAX_HOST_CONNECTIONS
             | ffi::CURLMOPT_MAX_TOTAL_CONNECTIONS
+            | ffi::CURLMOPT_PIPELINING
+            | ffi::CURLMOPT_MAX_CONCURRENT_STREAMS
     ) {
         // SAFETY: the application passes a long, the type of each.
         let n = unsafe { args.next_arg::<c_long>() };
@@ -988,6 +990,17 @@ pub unsafe extern "C" fn curl_multi_setopt(
             Reach::Frame(Frame::Transfer(_)) => return CURLM_RECURSIVE_API_CALL,
         };
         return set_limit(limits, option, n);
+    }
+    // Options of HTTP/1 pipelining C has dropped: taken, and nothing done.
+    if matches!(
+        option,
+        ffi::CURLMOPT_MAX_PIPELINE_LENGTH
+            | ffi::CURLMOPT_CONTENT_LENGTH_PENALTY_SIZE
+            | ffi::CURLMOPT_CHUNK_LENGTH_PENALTY_SIZE
+            | ffi::CURLMOPT_PIPELINING_SITE_BL
+            | ffi::CURLMOPT_PIPELINING_SERVER_BL
+    ) {
+        return CURLM_OK;
     }
     if matches!(
         option,
@@ -1044,6 +1057,19 @@ const _: ffi::proto::curl_multi_setopt = curl_multi_setopt;
 /// One of the multi's connection limits from its long, as C takes it:
 /// 0 for none.
 fn set_limit(limits: &mut ConnLimits, option: CURLMoption, n: c_long) -> CURLMcode {
+    if option == ffi::CURLMOPT_PIPELINING {
+        limits.multiplex = n & ffi::CURLPIPE_MULTIPLEX != 0;
+        return CURLM_OK;
+    }
+    if option == ffi::CURLMOPT_MAX_CONCURRENT_STREAMS {
+        // None, or more than an int holds, is C's 100.
+        limits.max_streams = u32::try_from(n)
+            .ok()
+            .filter(|&n| i32::try_from(n).is_ok())
+            .and_then(NonZeroU32::new)
+            .unwrap_or(NonZeroU32::new(100).expect("not zero"));
+        return CURLM_OK;
+    }
     if option == ffi::CURLMOPT_MAXCONNECTS {
         // Read unsigned: past `UINT32_MAX`, a negative one among them,
         // changes nothing; 0 is the guess.

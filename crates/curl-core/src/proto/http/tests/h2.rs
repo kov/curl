@@ -45,7 +45,7 @@ fn a_get_goes_as_fields_and_its_response_comes_as_lines() {
     assert_eq!(
         sent,
         format!(
-            "S\nH 1 1\n:method: GET\n:scheme: http\n:authority: 127.0.0.1:{PORT}\n\
+            "S MCS=100;IWS=65536;EP=0;\nH 1 1\n:method: GET\n:scheme: http\n:authority: 127.0.0.1:{PORT}\n\
              :path: /x?y\nuser-agent: curl/test\naccept: */*\n\n"
         )
     );
@@ -512,4 +512,20 @@ fn a_receive_limit_paces_a_stream() {
         "{:?}",
         clock.now().since(start)
     );
+}
+
+/// The client's SETTINGS let the server open as many streams as the
+/// multi says (`CURLMOPT_MAX_CONCURRENT_STREAMS`).
+#[test]
+fn the_settings_say_the_multi_s_streams() {
+    let talk = Conversation::replies(&[RESPONSE], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    m.conn_limits_mut().max_streams = std::num::NonZeroU32::new(7).unwrap();
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        o.http.version = HttpVersion::Http2Prior
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(ran.request.starts_with(b"S MCS=7;IWS=65536;EP=0;\n"));
 }

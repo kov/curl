@@ -4,7 +4,7 @@
 //!
 //! The client sends, and the server is written as, these frames:
 //!
-//! - `S\n`: SETTINGS.
+//! - `S\n`: SETTINGS; the client's with its settings, `S MCS=100;...\n`.
 //! - `H <id> <end>\n` then `name: value\n` per field and `\n`: a header
 //!   block; `<end>` is 1 if it ends the stream.
 //! - `D <id> <len> <end>\n` then `<len>` bytes: DATA.
@@ -296,8 +296,9 @@ impl FakeSession {
 }
 
 impl Session for FakeSession {
-    fn submit_settings(&mut self, _: &[Setting]) -> Result<(), FrameError> {
-        self.queued.push_back(b"S\n".to_vec());
+    fn submit_settings(&mut self, settings: &[Setting]) -> Result<(), FrameError> {
+        self.queued
+            .push_back(format!("S {}\n", settings_text(settings)).into_bytes());
         Ok(())
     }
 

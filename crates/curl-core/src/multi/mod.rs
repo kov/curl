@@ -223,8 +223,9 @@ pub enum SocketEvent {
     Socket(SocketKey),
 }
 
-/// The multi's limits on its connections; none set by default.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The multi's limits on its connections: none set by default, and HTTP/2
+/// multiplexing allowed with C's 100 streams.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConnLimits {
     /// How many it keeps once one goes idle (`CURLMOPT_MAXCONNECTS`):
     /// past it, the one longest unused is closed. None keeps twice the
@@ -238,6 +239,24 @@ pub struct ConnLimits {
     /// How many may be open at once (`CURLMOPT_MAX_TOTAL_CONNECTIONS`),
     /// likewise.
     pub max_total: Option<NonZeroU32>,
+    /// Transfers may share an HTTP/2 connection (`CURLMOPT_PIPELINING`'s
+    /// `CURLPIPE_MULTIPLEX`, C's default).
+    pub multiplex: bool,
+    /// The streams a server may open at once on a connection, as the
+    /// client's SETTINGS say (`CURLMOPT_MAX_CONCURRENT_STREAMS`).
+    pub max_streams: NonZeroU32,
+}
+
+impl Default for ConnLimits {
+    fn default() -> Self {
+        ConnLimits {
+            max_connects: None,
+            max_host: None,
+            max_total: None,
+            multiplex: true,
+            max_streams: NonZeroU32::new(100).expect("not zero"),
+        }
+    }
 }
 
 impl ConnLimits {

@@ -1038,6 +1038,12 @@ impl<H: Host> StepCx<'_, H> {
             .report_mut()
     }
 
+    /// The streams the multi lets a server open at once on an HTTP/2
+    /// connection (`Curl_multi_max_concurrent_streams`).
+    pub(crate) fn max_streams(&self) -> u32 {
+        self.rest.tell.limits.max_streams.get()
+    }
+
     pub(crate) fn pause(&self) -> Pause {
         self.rest
             .tell

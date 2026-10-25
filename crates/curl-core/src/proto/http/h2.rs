@@ -142,7 +142,7 @@ impl Request {
             Some(_) => prior,
         };
         if let Some(library) = library.filter(|_| h2) {
-            let (conn, _) = H2Conn::open(library, &settings(), None)?;
+            let (conn, _) = H2Conn::open(library, &settings(cx.max_streams()), None)?;
             lease
                 .get()
                 .put_h2(try_box(conn).map_err(|_| ErrorKind::OutOfMemory)?);
@@ -174,7 +174,7 @@ impl Request {
             return Ok(None);
         };
         let mut payload = [0u8; 80];
-        match library.settings_payload(&settings(), &mut payload) {
+        match library.settings_payload(&settings(cx.max_streams()), &mut payload) {
             Ok(n) if n > 0 => copied(&payload[..n]).map(Some),
             _ => Err(trace::fail(
                 cx,

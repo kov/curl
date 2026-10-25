@@ -60,3 +60,12 @@ witness: curl-sys-abi handle_tests::boolean_options_take_any_nonzero_value
 --- old
         (ffi::CURLOPT_PIPEWAIT, Long(n)) => options.http.pipewait = n != 0,
 --- new
+
+=== CURLMOPT_PIPELINING is unknown
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::the_multi_s_callbacks_run_with_their_frames
+--- old
+            | ffi::CURLMOPT_PIPELINING
+            | ffi::CURLMOPT_MAX_CONCURRENT_STREAMS
+--- new
+            | ffi::CURLMOPT_MAX_CONCURRENT_STREAMS

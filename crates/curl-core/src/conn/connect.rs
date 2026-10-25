@@ -177,6 +177,10 @@ pub(crate) trait ConnCx: LayerCx {
     /// IPv6 works here, as the multi's probe found (`ipv6works`).
     fn ipv6_works(&self) -> bool;
 
+    /// Every resolve of IPv6 addresses alone fails, as the debug build's
+    /// `CURL_DBG_RESOLV_FAIL_IPV6` asks.
+    fn fails_ipv6_resolves(&self) -> bool;
+
     /// The transfer the setup's resolves are for, which the multi runs
     /// again when one is answered.
     fn waiter(&self) -> Waiter;
@@ -265,6 +269,10 @@ impl ConnCx for Plain<'_> {
 
     fn ipv6_works(&self) -> bool {
         true
+    }
+
+    fn fails_ipv6_resolves(&self) -> bool {
+        false
     }
 
     fn waiter(&self) -> Waiter {
@@ -531,6 +539,9 @@ pub(crate) enum Unresolved {
     /// Only IPv6 addresses are allowed, and IPv6 does not work here: no
     /// resolver is asked (`can_resolve_dns_queries`).
     NoIpv6,
+    /// Only IPv6 addresses are asked for, and the debug build fails every
+    /// such resolve before the cache is looked in (`hostip_resolv`).
+    DebugFailIpv6,
     /// A Unix socket's path is too long for its address
     /// (`Curl_unix2addr`'s `CURLE_TOO_LARGE`).
     UnixPathTooLong,
@@ -1465,6 +1476,9 @@ pub(super) fn lookup_start(
     setup: Setup,
     keep_negative: bool,
 ) -> Result<Looked, ConnectError> {
+    if family == Family::V6 && cx.fails_ipv6_resolves() {
+        return Err(ConnectError::Unresolved(Unresolved::DebugFailIpv6));
+    }
     let now = cx.now();
     let ipv6 = cx.ipv6_works();
     let (wildcard, max_age) = (setup.wildcard, setup.max_age);

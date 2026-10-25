@@ -51,6 +51,8 @@ pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) net: &'a mut dyn Net,
     /// IPv6 works, as the multi's probe found.
     pub(crate) ipv6_works: bool,
+    /// Resolves of IPv6 addresses alone fail, as the debug build asks.
+    pub(crate) fail_ipv6: bool,
     pub(super) dirty: &'a mut RowSet,
     /// What the multi was driven with: the socket callback hears of a
     /// socket closing.
@@ -76,6 +78,7 @@ impl<H: Host> EngineRest<'_, H> {
             pending_after: &mut *self.pending_after,
             net: &mut *self.net,
             ipv6_works: self.ipv6_works,
+            fail_ipv6: self.fail_ipv6,
             dirty: &mut *self.dirty,
             events: &mut *self.events,
             now: self.now,
@@ -376,6 +379,10 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
 
     fn ipv6_works(&self) -> bool {
         self.step.rest.ipv6_works
+    }
+
+    fn fails_ipv6_resolves(&self) -> bool {
+        self.step.rest.fail_ipv6
     }
 
     fn waiter(&self) -> crate::conn::io::Waiter {

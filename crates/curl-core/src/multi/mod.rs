@@ -277,6 +277,10 @@ pub struct Multi<H: Host = NoHost> {
     /// (`Curl_probeipv6`, `multi->ipv6_works`): a property of the system
     /// its transfers run on, kept by the root they reach it through.
     ipv6_works: bool,
+    /// Every resolve of IPv6 addresses alone fails, as the debug build's
+    /// `CURL_DBG_RESOLV_FAIL_IPV6` asks (`hostip_resolv`): read as the
+    /// multi is made, as the tests set it before the process starts.
+    fail_ipv6: bool,
     waker: Option<TryArc<Waker>>,
     /// The transfers alive, and the resolver's wake listened on while
     /// any is.
@@ -298,6 +302,8 @@ impl<H: Host> Multi<H> {
         // As C's multi is made, after its waker (`Curl_multi_handle`).
         let mut net = env.net;
         let ipv6_works = net.probe_ipv6()?;
+        let fail_ipv6 =
+            cfg!(feature = "debug-hooks") && curl_os::env::is_set(b"CURL_DBG_RESOLV_FAIL_IPV6");
         let mut alive = cx::Alive::default();
         net.with_resolver(&mut |r| {
             alive.waker = r.waker();
@@ -319,6 +325,7 @@ impl<H: Host> Multi<H> {
             clock: env.clock,
             net,
             ipv6_works,
+            fail_ipv6,
             waker: env.waker,
             alive,
             counts: Tally::default(),
@@ -871,6 +878,14 @@ impl<H: Host> Multi<H> {
         pollsets(&self.slots, &self.shutdowns, |s, events| f(s.key(), events));
     }
 
+    /// Fail every resolve of IPv6 addresses alone, as the debug build's
+    /// `CURL_DBG_RESOLV_FAIL_IPV6` does, which the tests cannot set for
+    /// one multi.
+    #[cfg(all(test, feature = "debug-hooks"))]
+    pub(crate) fn fail_ipv6_resolves(&mut self) {
+        self.fail_ipv6 = true;
+    }
+
     /// The multi but for the runs out of their slots, for a step or a
     /// call-out.
     fn rest<'a>(&'a mut self, now: Instant, ev: &'a mut dyn MultiEvents<H>) -> EngineRest<'a, H> {
@@ -890,6 +905,7 @@ impl<H: Host> Multi<H> {
             pending_after: &mut self.pending_after,
             net: &mut *self.net,
             ipv6_works: self.ipv6_works,
+            fail_ipv6: self.fail_ipv6,
             dirty: &mut self.dirty,
             events: ev,
             now,

@@ -2970,6 +2970,61 @@ fn stale_answers_are_dropped() {
     assert!(pruned.contains(&"Host localhost:1 was resolved.\n".to_string()));
 }
 
+/// The debug build fails a resolve of IPv6 addresses alone before the
+/// cache or the shortcuts are asked (`CURL_DBG_RESOLV_FAIL_IPV6`), as
+/// C's `hostip_resolv` does, and a resolve of both families as before;
+/// a bind's resolve fails as well. The lines are the C build's.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn the_debug_build_fails_ipv6_resolves_when_asked() {
+    let (mut m, _clock) = networked();
+    m.fail_ipv6_resolves();
+    let mut run = |url: &str, set: &dyn Fn(&mut Options)| {
+        let (mut e, lines) = traced(url);
+        set(e.options_mut());
+        let e = tracing(e, b"dns");
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        perform_and_connect(&mut m);
+        let result = messages(&mut m).last().map(|r| r.1);
+        m.remove(id, &mut NoEvents).unwrap();
+        (result, trace_of(&lines))
+    };
+    let (result, lines) = run("tcp://localhost:1/", &|o| o.ip_version = IpVersion::V6);
+    assert_eq!(result, Some(Err(ErrorKind::CouldntResolveHost)));
+    assert_eq!(
+        lines,
+        [
+            "[DNS] [AAAA] hostip_resolv(localhost:1)\n",
+            "DEBUG fail ipv6 resolve\n",
+            "Could not resolve host: localhost\n",
+            "Could not resolve: localhost:1\n",
+            "Could not resolve: localhost\n",
+            "[DNS] Curl_conn_connect(block=0) -> 6, done=0\n",
+            "[DNS] Curl_conn_connect(), filter returned 6\n",
+            "closing connection #0\n",
+        ]
+    );
+    let (result, _) = run("tcp://localhost:1/", &|_| {});
+    assert_eq!(result, Some(Ok(())), "both families resolve");
+    let (result, lines) = run("tcp://[::1]:1/", &|o| {
+        o.sockets.make_mut().unwrap().local.interface =
+            crate::options::Interface::parse(b"host!bindhost").unwrap();
+    });
+    assert_eq!(result, Some(Err(ErrorKind::InterfaceFailed)));
+    let at = lines
+        .iter()
+        .position(|l| l == "[DNS] [AAAA] hostip_resolv(bindhost:80)\n")
+        .expect("the bind's resolve");
+    assert_eq!(
+        lines[at + 1..at + 4],
+        [
+            "DEBUG fail ipv6 resolve\n",
+            "Could not resolve host: bindhost\n",
+            "Could not resolve: bindhost:80\n",
+        ]
+    );
+}
+
 /// A resolver that gives no reason, as the threaded one gives none, says
 /// it could not resolve the name as it answers, and the lookup says so
 /// again: the same line twice (`Curl_async_failed`).

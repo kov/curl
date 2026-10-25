@@ -1906,9 +1906,11 @@ the resolver's DNS lines, and the debug build's variables (`DebugVars`, read as 
 made: `CURL_DBG_RESOLV_DELAY`, `_FAIL_DELAY`, `_FAIL_NEGATIVE`, `_MAX_THREADS`,
 `CURL_DBG_THRDPOOL_FAIL_STARTS`). A thread that cannot be started leaves its queries queued;
 the resolver then asks to be tried again in 100 ms (`Resolver::retry`), which the setup arms as
-its `ASYNC_NAME` timer, and the next pass starts one. Not built yet: `CURL_DBG_RESOLV_FAIL_IPV6`
-(`hostip_resolv`'s, for every resolver); the blocking resolve's `await` lines and the thread
-queue's own trace; and the re-query of an IPv6 answer with a link-local address but no scope, which
+its `ASYNC_NAME` timer, and the next pass starts one. The debug build's
+`CURL_DBG_RESOLV_FAIL_IPV6`, `hostip_resolv`'s for every resolver, is read as the multi is made:
+a resolve of IPv6 addresses alone then fails before the cache and the shortcuts are asked
+(`Unresolved::DebugFailIpv6`), for the setup and for a bind alike. Not built yet: the blocking
+resolve's `await` lines and the thread queue's own trace; and the re-query of an IPv6 answer with a link-local address but no scope, which
 glibc gives only to an `AF_UNSPEC` query, a workaround to reproduce before it is ported, which
 needs the resolver's addresses to keep their scope first.
 `DnsCache` is in the multi's `Caches`, or a share's (section 4.6.1): entries by name, in

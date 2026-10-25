@@ -279,6 +279,12 @@ fn resolve_host(
         format_args!("[{queries}] hostip_resolv({name}:{port})"),
     );
     let looked = lookup_name((shown, host, port), family, cx, setup, false);
+    if let Err(ConnectError::Unresolved(Unresolved::DebugFailIpv6)) = looked {
+        cx.info(format_args!("DEBUG fail ipv6 resolve"));
+        cx.fail(format_args!("Could not resolve host: {name}"));
+        cx.fail(format_args!("Could not resolve: {name}:{port}"));
+        return Ok(None);
+    }
     let found = match &looked {
         Ok((_, found)) => Some(*found),
         Err(ConnectError::Unresolved(Unresolved::Negative)) => None,

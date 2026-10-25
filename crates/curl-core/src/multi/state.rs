@@ -2176,6 +2176,31 @@ fn no_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, proxy: bool) -> ErrorKi
     trace::fail(cx, kind, format_args!("Could not resolve: {host}"))
 }
 
+/// The debug build failed the resolve of IPv6 addresses alone of the name
+/// `route` connects to first, before the cache was looked in
+/// (`hostip_resolv`, `CURL_DBG_RESOLV_FAIL_IPV6`).
+fn debug_failed_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, proxy: bool) -> ErrorKind {
+    let peer = route.destination();
+    let (host, port) = (Bytes(peer.name()), peer.port());
+    let queries = queries(peer, route.ip, cx.rest.ipv6_works);
+    // The C debug build's line, said here always: only a debug build
+    // fails the resolve.
+    trace::of(
+        cx,
+        Component::Dns,
+        format_args!("[{queries}] hostip_resolv({host}:{port})"),
+    );
+    trace::info(cx, format_args!("DEBUG fail ipv6 resolve"));
+    let (what, kind) = if proxy {
+        ("proxy", ErrorKind::CouldntResolveProxy)
+    } else {
+        ("host", ErrorKind::CouldntResolveHost)
+    };
+    let kind = trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"));
+    let kind = trace::fail(cx, kind, format_args!("Could not resolve: {host}:{port}"));
+    trace::fail(cx, kind, format_args!("Could not resolve: {host}"))
+}
+
 /// The name `route` connects to first was looked up in the cache, as
 /// C's `hostip_resolv` and `Curl_dnscache_get` trace it: found, missing
 /// (or stale, said first) and so resolved, or `None`, the resolver's no
@@ -2463,6 +2488,7 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
         ConnectError::Unresolved(why) => {
             match why {
                 Unresolved::NoIpv6 => return no_ipv6(cx, route, proxy.is_some()),
+                Unresolved::DebugFailIpv6 => return debug_failed_ipv6(cx, route, proxy.is_some()),
                 Unresolved::UnixPathTooLong => {
                     // `resolv_unix`, then the name's filter, which says
                     // the path alone.

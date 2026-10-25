@@ -362,3 +362,15 @@ witness: curl-core multi::tests::a_failure_without_a_reason_is_said_twice
                         }
                     };
                     kind
+
+=== the debug build's failed IPv6 resolve waits for the cache to miss
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::the_debug_build_fails_ipv6_resolves_when_asked
+features: debug-hooks
+--- old
+    if family == Family::V6 && cx.fails_ipv6_resolves() {
+        return Err(ConnectError::Unresolved(Unresolved::DebugFailIpv6));
+    }
+    let now = cx.now();
+--- new
+    let now = cx.now();

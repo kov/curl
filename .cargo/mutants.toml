@@ -617,4 +617,14 @@ exclude_re = [
     # tests cannot be; a flush at exactly a full buffer is one too many,
     # writing the same lines.
     'curl-alloc/src/track\.rs:.*: (replace flush_at_exit with \(\)|replace < with <= in write_log)$',
+    # A line's room made larger than any line needs changes nothing.
+    'curl-core/src/altsvc\.rs:.*: replace \+ with \* in AltSvc::text$',
+    # The room for an HSTS name's terminating NUL: taken away, only a C
+    # function reading past the name sees it, which no Rust test can
+    # without reading out of bounds; runtests 1915 and 1916 under valgrind
+    # do.
+    'curl-sys-abi/src/callbacks\.rs:.*: replace \+ with \* in <impl curl_core::hsts::Hsts(Reader|Writer) for Adapter>::(read|write)$',
+    # A write function's CURLSTS_FAIL and CURLSTS_DONE both stop the
+    # save; that one fails it goes unsaid as the handle goes, as in C.
+    'curl-sys-abi/src/callbacks\.rs:.*: delete match arm ffi::CURLSTS_FAIL in <impl curl_core::hsts::HstsWriter for Adapter>::write$',
 ]

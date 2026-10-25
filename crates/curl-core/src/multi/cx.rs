@@ -832,7 +832,7 @@ impl<'a> TransferCx<'a> {
 
     /// A copy of a transfer's `Easy` (`curl_easy_duphandle`).
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
-        self.calls.easy(id).map(Easy::try_clone)
+        self.duplicate_with(id, &mut |_| Ok(()))
     }
 
     /// As `duplicate`, through `Easy::try_clone_with`.
@@ -934,7 +934,7 @@ impl<H: Host> EventCx<'_, H> {
 
     /// A copy of a transfer's `Easy` (`curl_easy_duphandle`).
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
-        self.slots.get(id).map(|s| s.easy.try_clone())
+        self.duplicate_with(id, &mut |_| Ok(()))
     }
 
     /// As `duplicate`, through `Easy::try_clone_with`.
@@ -1047,7 +1047,7 @@ impl<H: Host> NotifyCx<'_, H> {
     }
 
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
-        self.multi.easy(id).map(Easy::try_clone)
+        self.duplicate_with(id, &mut |_| Ok(()))
     }
 
     /// As `duplicate`, through `Easy::try_clone_with`.

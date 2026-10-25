@@ -299,3 +299,130 @@ fn a_long_line_fails_and_a_directory_adds_nothing() {
     a.load(dir, NOW).unwrap();
     assert_eq!(a.file(), Some(dir));
 }
+
+/// A file's line: a host as long as C reads one is kept, one longer is
+/// not; the line must end after its priority; a source host of a dot
+/// alone is none; brackets go from an IPv6 address, and then its dot
+/// stays; a host of two brackets alone keeps them.
+#[test]
+fn a_file_s_lines_are_read_to_c_s_limits() {
+    let long = "a".repeat(MAX_HOST_LEN);
+    let longer = "a".repeat(MAX_HOST_LEN + 1);
+    let lines = [
+        format!("h1 {long} 1 h1 b 2 \"20991231 00:00:00\" 0 0\n"),
+        format!("h1 {longer} 1 h1 b 2 \"20991231 00:00:00\" 0 0\n"),
+        "h1 a 1 h1 b 2 \"20991231 00:00:00\" 0 0 trailing\n".to_string(),
+        "h1 . 1 h1 b 2 \"20991231 00:00:00\" 0 0\n".to_string(),
+        "h1 [a.] 1 h1 [c] 2 \"20991231 00:00:00\" 0 0\n".to_string(),
+        "h1 [] 1 h1 d. 2 \"20991231 00:00:00\" 0 0\n".to_string(),
+        "h1  e 1 h1 f 2 \"20991231 00:00:00\" 0 0\n".to_string(),
+    ];
+    let file = Temp::new("limits", lines.concat().as_bytes());
+    let mut a = AltSvc::default();
+    a.load(file.name(), NOW).unwrap();
+    let hosts: Vec<(String, String)> = a
+        .entries
+        .iter()
+        .map(|e| {
+            let s = |h: &[u8]| String::from_utf8(h.to_vec()).unwrap();
+            (s(&e.src.host), s(&e.dst.host))
+        })
+        .collect();
+    assert_eq!(
+        hosts,
+        [
+            (long.clone(), "b".into()),
+            ("a.".into(), "c".into()),
+            ("[]".into(), "d.".into()),
+        ]
+    );
+    assert!(!a.is_empty());
+    // An alternative of the longest hosts at both ends is written whole.
+    let field = format!("h1=\"{long}:2\"");
+    parse(&mut a, &field, &long, 1, Alpn::H1);
+    let text = String::from_utf8(a.text().unwrap()).unwrap();
+    assert!(
+        text.contains(&format!("h1 {long} 1 h1 {long} 2 ")),
+        "{}",
+        text.len()
+    );
+}
+
+/// A line as long as C's buffer holds, its newline counted, is read; one
+/// longer fails the load, as does a last line without a newline that
+/// one added would make too long.
+#[test]
+fn a_file_s_line_may_be_as_long_as_c_s_buffer() {
+    let line = |len: usize, newline: bool| {
+        let mut l = b"#".repeat(len - usize::from(newline));
+        if newline {
+            l.push(b'\n');
+        }
+        l
+    };
+    for (bytes, ok) in [
+        (line(MAX_LINE, true), true),
+        (line(MAX_LINE + 1, true), false),
+        (line(MAX_LINE - 1, false), true),
+        (line(MAX_LINE, false), false),
+    ] {
+        let file = Temp::new("buffer", &bytes);
+        let mut a = AltSvc::default();
+        let loaded = a.load(file.name(), NOW);
+        assert_eq!(loaded.is_ok(), ok, "{} bytes", bytes.len());
+    }
+}
+
+/// An alternative expiring this second is still taken (`expires < now`
+/// is what goes); one before it goes.
+#[test]
+fn an_alternative_lasts_through_its_last_second() {
+    let mut a = AltSvc::default();
+    parse(&mut a, "h1=\"alt:1\"; ma=10", "o", 80, Alpn::H1);
+    assert!(a.lookup((b"o", 80, Alpn::H1), ALL, NOW + 10).is_some());
+    assert!(a.lookup((b"o", 80, Alpn::H1), ALL, NOW + 11).is_none());
+}
+
+/// Blanks of any number, spaces or tabs, may come before a parameter's
+/// `;`; a quoted parameter that does not end, or ends in a backslash,
+/// ends the parameters, and an escaped quote does not end it.
+#[test]
+fn parameters_are_read_as_c_reads_them() {
+    let mut a = AltSvc::default();
+    parse(&mut a, "h1=\"alt:1\" \t ; ma=5", "o", 80, Alpn::H1);
+    assert_eq!(a.entries[0].expires, NOW + 5);
+    for value in [
+        "h1=\"alt:1\"; x=\"open; ma=5",
+        "h1=\"alt:1\"; x=\"open\\",
+        "h1=\"alt:1\"; x=\"a\\\"; ma=5",
+    ] {
+        let mut a = AltSvc::default();
+        parse(&mut a, value, "o", 80, Alpn::H1);
+        assert_eq!(a.entries[0].expires, NOW + DEFAULT_MAX_AGE, "{value}");
+    }
+    // Escaped, the quote is inside; the value goes on to the next one.
+    let mut a = AltSvc::default();
+    parse(
+        &mut a,
+        "h1=\"alt:1\"; x=\"a\\\"b\"; ma=5",
+        "o",
+        80,
+        Alpn::H1,
+    );
+    assert_eq!(a.entries[0].expires, NOW + 5);
+}
+
+/// A quoted word is as long as `max` allows, an escaped byte counting
+/// with its backslash: the date of a file's line, at most 17 bytes.
+#[test]
+fn a_quoted_word_is_at_most_its_limit() {
+    let mut c = Cursor::new(b"\"12345\" rest");
+    assert_eq!(c.quoted(5), Some(&b"12345"[..]));
+    assert_eq!(c.rest(), b" rest");
+    assert_eq!(Cursor::new(b"\"123456\"").quoted(5), None);
+    // `\"` counts as two.
+    assert_eq!(Cursor::new(b"\"123\\\"\"").quoted(5), Some(&b"123\\\""[..]));
+    assert_eq!(Cursor::new(b"\"1234\\\"\"").quoted(5), None);
+    assert_eq!(Cursor::new(b"\"1234\\").quoted(9), None);
+    assert_eq!(Cursor::new(b"\"12").quoted(9), None);
+}

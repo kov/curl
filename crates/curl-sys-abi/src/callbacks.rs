@@ -625,12 +625,10 @@ impl curl_core::hsts::HstsWriter for Adapter {
         // SAFETY: the application's write function reads the entry and
         // the index it is lent.
         let sc = unsafe { f(self.handle(), &mut e, &mut i, c.write_data) };
-        if sc == ffi::CURLSTS_OK {
-            HstsWrite::More
-        } else if sc == ffi::CURLSTS_FAIL {
-            HstsWrite::Fail
-        } else {
-            HstsWrite::Stop
+        match sc {
+            ffi::CURLSTS_OK => HstsWrite::More,
+            ffi::CURLSTS_FAIL => HstsWrite::Fail,
+            _ => HstsWrite::Stop,
         }
     }
 }

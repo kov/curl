@@ -124,9 +124,9 @@ witness: curl-core altsvc::tests::a_lookup_finds_the_first_allowed_alternative
 file: crates/curl-core/src/altsvc.rs
 witness: curl-core altsvc::tests::a_lookup_finds_the_first_allowed_alternative
 --- old
-                if entries == 0 {
+                if !flushed {
 --- new
-                if entries == usize::MAX {
+                if false {
 
 === an IPv6 alternative is written without brackets
 file: crates/curl-core/src/altsvc.rs

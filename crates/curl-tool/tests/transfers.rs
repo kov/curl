@@ -1943,3 +1943,37 @@ fn the_key_log_is_opened_at_start() {
     assert_eq!(run.stdout, b"x");
     assert_eq!(std::fs::read(&log).unwrap(), b"", "made, and empty");
 }
+
+/// `--hsts` reads the cache's file, an http URL to a host it keeps going
+/// as https, and the tool writes it back as it ends; `--alt-svc` reads
+/// and writes its file too.
+#[test]
+fn hsts_and_alt_svc_files_are_read_and_written() {
+    let dir = Scratch::new("caches");
+    dir.write("hsts", b"localhost \"20991231 00:00:00\"\n");
+    let run = curl(
+        &dir,
+        &["--hsts", &dir.path("hsts"), "-v", "http://localhost:1/"],
+    );
+    let switched = "Switched from HTTP to HTTPS due to HSTS => https://localhost:1/";
+    assert!(run.stderr.contains(switched), "{}", run.stderr);
+    let hsts = String::from_utf8(dir.read("hsts")).unwrap();
+    assert!(
+        hsts.starts_with("# Your HSTS cache.") && hsts.contains("\nlocalhost \""),
+        "{hsts}"
+    );
+    dir.write(
+        "alt",
+        b"h1 a.example 443 h1 b.example 443 \"20991231 00:00:00\" 0 0\n",
+    );
+    curl(
+        &dir,
+        &["--alt-svc", &dir.path("alt"), "http://127.0.0.1:1/"],
+    );
+    let alt = String::from_utf8(dir.read("alt")).unwrap();
+    assert!(alt.starts_with("# Your alt-svc cache."), "{alt}");
+    assert!(
+        alt.contains("\nh1 a.example 443 h1 b.example 443 \"20991231 00:00:00\" 0 0\n"),
+        "{alt}"
+    );
+}

@@ -6403,3 +6403,214 @@ fn a_connect_only_perform_leaves_the_connection_to_the_handle() {
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }
+
+/// An entry an HSTS write function was given: its name, `namelen`, date,
+/// reach, index and the number of entries.
+type HstsWritten = (Vec<u8>, usize, Vec<u8>, bool, usize, usize);
+
+/// What the HSTS functions of a test do and saw.
+struct HstsSeen {
+    /// The entries to give, last first, each a name, a date and whether
+    /// its subdomains are included; then `last` is answered.
+    give: Vec<(Vec<u8>, Vec<u8>, bool)>,
+    last: ffi::CURLSTScode,
+    /// Each entry written: its name, `namelen`, date, reach and index.
+    written: Vec<HstsWritten>,
+    /// What the write function answers each call, in turn.
+    answers: Vec<ffi::CURLSTScode>,
+}
+
+impl Default for HstsSeen {
+    fn default() -> Self {
+        HstsSeen {
+            give: Vec::new(),
+            last: ffi::CURLSTS_DONE,
+            written: Vec::new(),
+            answers: Vec::new(),
+        }
+    }
+}
+
+unsafe extern "C" fn hsts_give(
+    _easy: *mut CURL,
+    e: *mut ffi::curl_hstsentry,
+    data: *mut c_void,
+) -> ffi::CURLSTScode {
+    // SAFETY: the test's state and the entry lent, alive through the call.
+    let (seen, e) = unsafe { (&mut *data.cast::<HstsSeen>(), &mut *e) };
+    let Some((name, date, subdomains)) = seen.give.pop() else {
+        return seen.last;
+    };
+    // SAFETY: the name has room for `namelen` bytes and its NUL, and the
+    // test gives no more.
+    let room = unsafe { core::slice::from_raw_parts_mut(e.name.cast::<u8>(), e.namelen + 1) };
+    room[..name.len()].copy_from_slice(&name);
+    for (to, b) in e.expire.iter_mut().zip(date) {
+        *to = b as c_char;
+    }
+    e.set_includeSubDomains(subdomains);
+    ffi::CURLSTS_OK
+}
+
+unsafe extern "C" fn hsts_take(
+    _easy: *mut CURL,
+    e: *mut ffi::curl_hstsentry,
+    i: *mut ffi::curl_index,
+    data: *mut c_void,
+) -> ffi::CURLSTScode {
+    // SAFETY: the test's state, the entry and the index lent, alive
+    // through the call.
+    let (seen, e, i) = unsafe { (&mut *data.cast::<HstsSeen>(), &*e, &*i) };
+    // SAFETY: the name holds `namelen` bytes.
+    let name = unsafe { core::slice::from_raw_parts(e.name.cast::<u8>(), e.namelen) };
+    let date = e
+        .expire
+        .iter()
+        .take_while(|&&b| b != 0)
+        .map(|&b| u8::from_ne_bytes(b.to_ne_bytes()))
+        .collect();
+    seen.written.push((
+        name.to_vec(),
+        e.namelen,
+        date,
+        e.includeSubDomains(),
+        i.index,
+        i.total,
+    ));
+    if seen.answers.is_empty() {
+        ffi::CURLSTS_OK
+    } else {
+        seen.answers.remove(0)
+    }
+}
+
+/// A handle with the HSTS cache on, reading and writing it through the
+/// test's functions with `seen`, and a URL to a port nothing listens on.
+fn hsts_handle(seen: &mut HstsSeen) -> (*mut CURL, std::ffi::CString) {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    let c = curl_easy_init();
+    assert_eq!(
+        long(c, ffi::CURLOPT_HSTS_CTRL, ffi::CURLHSTS_ENABLE),
+        CURLE_OK
+    );
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    let give: ffi::curl_hstsread_callback = Some(hsts_give);
+    let take: ffi::curl_hstswrite_callback = Some(hsts_take);
+    // SAFETY: functions of the options' types.
+    let (give, take) = unsafe {
+        (
+            core::mem::transmute::<ffi::curl_hstsread_callback, *mut c_void>(give),
+            core::mem::transmute::<ffi::curl_hstswrite_callback, *mut c_void>(take),
+        )
+    };
+    let data: *mut HstsSeen = seen;
+    for (option, p) in [
+        (ffi::CURLOPT_HSTSREADFUNCTION, give),
+        (ffi::CURLOPT_HSTSREADDATA, data.cast()),
+        (ffi::CURLOPT_HSTSWRITEFUNCTION, take),
+        (ffi::CURLOPT_HSTSWRITEDATA, data.cast()),
+    ] {
+        assert_eq!(pointer(c, option, p), CURLE_OK);
+    }
+    (c, url)
+}
+
+/// The read function's entries are taken, a name as long as C allows
+/// among them, and given to the write function as the handle goes, with
+/// their places, until it says to stop.
+#[test]
+fn hsts_functions_read_and_write_the_cache() {
+    let long = vec![b'a'; 2048];
+    let mut seen = HstsSeen {
+        give: vec![
+            (b"b.example".to_vec(), b"".to_vec(), true),
+            (long.clone(), b"20991231 00:00:00".to_vec(), false),
+        ],
+        last: ffi::CURLSTS_DONE,
+        ..HstsSeen::default()
+    };
+    let (c, _url) = hsts_handle(&mut seen);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    assert_eq!(
+        seen.written,
+        [
+            (
+                long.clone(),
+                2048,
+                b"20991231 00:00:00".to_vec(),
+                false,
+                0,
+                2
+            ),
+            (b"b.example".to_vec(), 9, b"unlimited".to_vec(), true, 1, 2),
+        ]
+    );
+    // A write function that says it is done is called no more.
+    let mut seen = HstsSeen {
+        give: vec![
+            (b"b.example".to_vec(), b"".to_vec(), false),
+            (b"a.example".to_vec(), b"".to_vec(), false),
+        ],
+        last: ffi::CURLSTS_DONE,
+        answers: vec![ffi::CURLSTS_DONE],
+        ..HstsSeen::default()
+    };
+    let (c, _url) = hsts_handle(&mut seen);
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(curl_easy_perform(c), ffi::CURLE_COULDNT_CONNECT);
+        curl_easy_cleanup(c);
+    }
+    assert_eq!(seen.written.len(), 1);
+}
+
+/// A read function that fails the transfer aborts it; one that gives no
+/// name, a name filling its room to the last byte, or a date filling
+/// its, is a bad argument.
+#[test]
+fn hsts_read_function_errors_fail_the_transfer() {
+    let full_name = vec![b'n'; 2049];
+    let full_date = vec![b'1'; 18];
+    let cases = [
+        (vec![], ffi::CURLSTS_FAIL, ffi::CURLE_ABORTED_BY_CALLBACK),
+        (
+            vec![(b"".to_vec(), b"".to_vec(), false)],
+            ffi::CURLSTS_DONE,
+            CURLE_BAD_FUNCTION_ARGUMENT,
+        ),
+        (
+            vec![(full_name, b"".to_vec(), false)],
+            ffi::CURLSTS_DONE,
+            CURLE_BAD_FUNCTION_ARGUMENT,
+        ),
+        (
+            vec![(b"x".to_vec(), full_date, false)],
+            ffi::CURLSTS_DONE,
+            CURLE_BAD_FUNCTION_ARGUMENT,
+        ),
+    ];
+    for (give, last, code) in cases {
+        let mut seen = HstsSeen {
+            give,
+            last,
+            ..HstsSeen::default()
+        };
+        let (c, _url) = hsts_handle(&mut seen);
+        // SAFETY: a live handle, not used again.
+        unsafe {
+            assert_eq!(curl_easy_perform(c), code);
+            curl_easy_cleanup(c);
+        }
+    }
+}

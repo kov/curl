@@ -245,7 +245,9 @@ fn a_read_only_file_is_kept_and_a_copy_reads_the_file() {
 fn a_reset_handle_writes_the_file_last_read() {
     let file = cache_file("reset");
     let mut e = Easy::new();
+    assert!(!e.alt_svc_enabled());
     e.add_alt_svc_file(Some(file.name())).unwrap();
+    assert!(e.alt_svc_enabled());
     e.reset();
     assert!(e.options().http.alt_svc.file.is_none());
     e.save_alt_svc().unwrap();
@@ -253,5 +255,49 @@ fn a_reset_handle_writes_the_file_last_read() {
         file.text().starts_with("# Your alt-svc cache."),
         "{}",
         file.text()
+    );
+}
+
+/// An alternative at an IPv6 address is connected to as one, and named
+/// without its brackets, as C names it.
+#[test]
+fn an_ipv6_alternative_is_reached_by_its_address() {
+    let line = format!("h1 origin.example {PORT} h1 [::1] {PORT} \"20991231 00:00:00\" 0 0\n");
+    let file = Temp::new("ipv6", &line);
+    let (_backend, libraries) = super::tls::tls();
+    let clock = ManualClock::new().unwrap();
+    clock.set_unix_time(NOW);
+    let at = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, PORT));
+    let response = fake::records(SAID).unwrap();
+    let talk = Conversation::replies(&[WELCOME, &response], false);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    e.add_alt_svc_file(Some(file.name())).unwrap();
+    let url = format!("https://origin.example:{PORT}/a");
+    let ran = get_with(&mut m, e, "/a", talk, |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let request = String::from_utf8_lossy(&fake::read_client(&ran.request).unwrap()).into_owned();
+    assert!(
+        request.contains(&format!("\r\nAlt-Used: ::1:{PORT}\r\n")),
+        "{request}"
+    );
+    let connecting =
+        format!("Alt-svc connecting from [h1]origin.example:{PORT} to [h1]::1:{PORT}\n");
+    assert!(
+        ran.seen.text().contains(&connecting),
+        "{:?}",
+        ran.seen.text()
     );
 }

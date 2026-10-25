@@ -247,7 +247,10 @@ fn a_reader_s_failure_fails_the_transfer() {
 fn a_copy_of_the_handle_keeps_the_entries_alive() {
     let file = Temp::new("copy", "");
     let mut e = Easy::new();
+    assert!(!e.hsts_enabled());
     e.add_hsts_file(Some(file.name())).unwrap();
+    assert!(e.hsts_enabled());
+    assert_eq!(e.hsts().unwrap().files_to_read(), 1);
     let hsts = e.hsts_mut().unwrap();
     let now = crate::time::SystemClock::new().unix_time();
     hsts.parse(b"kept.example", b"max-age=1000", now).unwrap();
@@ -258,6 +261,9 @@ fn a_copy_of_the_handle_keeps_the_entries_alive() {
     assert!(file.text().contains("\nkept.example \""), "{}", file.text());
     let off = Easy::new().try_clone().unwrap();
     assert!(!off.hsts_enabled());
+    // Turned off, it is gone.
+    e.disable_hsts();
+    assert!(!e.hsts_enabled());
 }
 
 /// A cache whose file is read-only reads it and never writes it back,

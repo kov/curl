@@ -361,7 +361,7 @@ impl AltSvc {
             return Ok(());
         }
         let mut c = Cursor::new(value);
-        let mut entries = 0;
+        let mut flushed = false;
         while !c.rest().is_empty() {
             let Some(name) = c.until(b'=', MAX_LINE) else {
                 break;
@@ -375,10 +375,10 @@ impl AltSvc {
             };
             let (max_age, persist) = params(&mut c);
             if let Some(dst_alpn) = dst_alpn {
-                if entries == 0 {
+                if !flushed {
                     self.flush(host, port, alpn);
+                    flushed = true;
                 }
-                entries += 1;
                 let expires = now.checked_add(max_age).unwrap_or(i64::MAX);
                 let made = self.create(
                     (alpn, host, port),

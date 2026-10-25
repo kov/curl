@@ -18,21 +18,23 @@ pub(crate) fn cache_now(clock: i64) -> i64 {
     {
         let mut buf = [0u8; 24];
         if let Some(given) = curl_os::env::var_into(b"CURL_TIME", &mut buf) {
-            let digits = given.iter().take_while(|b| b.is_ascii_digit());
-            let mut n: i64 = 0;
-            for &d in digits {
-                n = match n
-                    .checked_mul(10)
-                    .and_then(|n| n.checked_add(i64::from(d - b'0')))
-                {
-                    Some(n) => n,
-                    None => return clock,
-                };
-            }
-            return n;
+            return given_time(given);
         }
     }
     clock
+}
+
+/// The time `CURL_TIME` gives: its leading digits; 0 for none, and past
+/// what the time holds, as C's `curlx_str_number` leaves it.
+#[cfg_attr(not(feature = "debug-hooks"), allow(dead_code))]
+fn given_time(given: &[u8]) -> i64 {
+    given
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .try_fold(0i64, |n, &d| {
+            n.checked_mul(10)?.checked_add(i64::from(d - b'0'))
+        })
+        .unwrap_or(0)
 }
 
 /// A date that could not be read.
@@ -583,6 +585,17 @@ mod tests {
         b"20040912 15:05:58 -0700",
         b"Thu, 01-Jan-1970 00:00:00 GMT",
     ];
+
+    /// `CURL_TIME` is its leading digits, 0 without any or past what a
+    /// time holds, as C reads it.
+    #[test]
+    fn a_given_time_is_read_as_c_reads_it() {
+        assert_eq!(given_time(b"1728465947"), 1_728_465_947);
+        assert_eq!(given_time(b"42x7"), 42);
+        assert_eq!(given_time(b"x"), 0);
+        assert_eq!(given_time(b"9223372036854775807"), i64::MAX);
+        assert_eq!(given_time(b"9223372036854775808"), 0);
+    }
 
     proptest::proptest! {
         #![proptest_config(crate::untrusted::config(512))]

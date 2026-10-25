@@ -828,8 +828,8 @@ the system's under the HTTP-only programs installed here.
     converts with `CURLU_PUNYCODE` and `CURLU_PUNY2IDN`; `IDN` is claimed and libidn2 listed.
     165, 763, 1034, 1035, 1448, 2046 and 2047 pass; the SMTP IDN tests (962–969) wait on
     stage 6.
-50. **HSTS and alt-svc,** their caches, files and options, without the share (milestone 7). **In
-    progress.**
+50. **HSTS and alt-svc,** their caches, files and options, without the share (milestone 7).
+    **Done.**
     - **a. HSTS.** **Done.** The cache (`hsts::Hsts`, unit1660 ported), read from its files and
       the application's reader as each transfer starts, an `http` URL switched to `https`, a
       response's field kept over HTTPS, the cache written to its file and the application's
@@ -842,7 +842,8 @@ the system's under the HTTP-only programs installed here.
       goes; `--alt-svc`, `CURLOPT_ALTSVC` and `CURLOPT_ALTSVC_CTRL`; `alt-svc` claimed. 355,
       356, 412, 413, 437, 438, 1713, 1908 and 1997 pass; 358 and 359, alternatives in HTTP/2,
       wait on step 52.
-    - **c. Closing the step.** **To do.** The sweep and cargo-mutants on what it changed.
+    - **c. Closing the step.** **Done.** The sweep over the HSTS and alt-svc entries, and
+      cargo-mutants over the step's diff: each survivor tested or excluded with its reason.
 51. **The pool's `Attached` place,** a connection several transfers lease (ENGINE.md). **To do.**
 52. **HTTP/2** through nghttp2: ALPN offering `h2`, prior knowledge and `h2c` upgrade,
     multiplexing, `PIPEWAIT` and `--parallel-immediate`, a sibling stream's data delivered at

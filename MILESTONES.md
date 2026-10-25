@@ -864,7 +864,11 @@ the system's under the HTTP-only programs installed here.
     both legs; the installed programs that link libcurl for HTTP run on ours. **In progress.**
     Every function the system's libcurl exports is exported: the 507 installed programs that
     link it resolve every libcurl symbol against ours, and the system's `curl` and cmake's
-    downloads run on it.
+    downloads run on it. Of the pytest suite's HTTP/1.1 cases that pass on C, these still fail on the
+    Rust leg: test_07_63 (a MIME part's read pause is never lifted after
+    `curl_easy_pause`), test_19_03 and 05 (C traces the shutdown through its internal
+    handle, which its debug build makes verbose under `CURL_DEBUG`), and the TLS early data
+    cases (02_32, 07_70, 08_08), which wait on step 52b; the FTP cases wait on stage 6.
 
 ## Milestone 5: HTTP/3
 

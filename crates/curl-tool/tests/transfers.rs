@@ -1930,3 +1930,16 @@ fn sets_the_tls_options_as_c_does() {
         assert_eq!(set(args, &[]), Err(want), "{args:?}");
     }
 }
+
+/// `SSLKEYLOGFILE` is opened as the tool starts, as C's global init opens
+/// it: the file is made though no transfer uses TLS.
+#[test]
+fn the_key_log_is_opened_at_start() {
+    let dir = Scratch::new("keylog");
+    std::fs::write(dir.path("in"), b"x").unwrap();
+    let log = dir.path("keys");
+    let run = curl_env(&dir, &["-s", &dir.url("in")], &[("SSLKEYLOGFILE", &log)]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, b"x");
+    assert_eq!(std::fs::read(&log).unwrap(), b"", "made, and empty");
+}

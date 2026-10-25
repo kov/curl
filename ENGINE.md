@@ -57,9 +57,10 @@ numbers are those of `SCOPE.md`.
    timer callbacks: no `pause`) and `NotifyCx` (adds `add`, `remove`). A method exists on a
    context only if C allows that call from that callback. Contexts reach every other transfer
    and the multi's tables through `EngineRest`.
-9. **No engine borrow is live across a call-out except two owned values moved out of their
-   homes**: the stepping transfer's `Run` and its connection's receive buffer. Everything
-   else stays in `EngineRest`, which the context borrows.
+9. **No engine borrow is live across a call-out except owned values moved out of their
+   homes**: the stepping transfer's `Run`, its connection's receive buffer, and a multiplexed
+   connection the step has out of its pool place (§4.4). Everything else stays in
+   `EngineRest`, which the context borrows.
 10. **Side effects are synchronous where C's are.** The timer callback fires inside `add`,
     `remove` and `pause`; the socket callback fires inside `remove` and `pause`; the pollset of
     each transfer is re-assessed right after it runs in `run_dirty`. Pause from a write
@@ -78,8 +79,10 @@ numbers are those of `SCOPE.md`.
     `Pause` counts (`Lifts`, §5.4.1). Rate limiting is a separate fact.
 13. **The response pipeline is a fixed struct**, ordered by its fields, not a phase-sorted list.
     Paused output is ranges into one buffer, O(1) per append, EOS a separate event.
-14. **Multiplexed connections buffer per stream inside the mux**, so a paused stream never
-    holds the connection's shared receive buffer.
+14. **A multiplexed connection delivers each stream's data at once, as C does**: what the
+    session reads for a sibling stream goes to that sibling's pipeline in the step that read
+    it, the sibling's `Run` moved out in turn; a paused sibling's bytes wait in its pipeline's
+    paused output (§4.4).
 15. **`TransferReport` is created whole at transfer start, written live by the engine during
     the transfer, and stays in the `Easy` afterwards.** getinfo inside a callback reads it live
     (lib1541, lib1485). The header store is part of it and spans every request of the transfer.
@@ -1500,28 +1503,43 @@ root and the tool own it and hand it to the backend.
 
 ### 4.4 Multiplexing
 
-```rust
-pub trait Mux {
-    fn open_stream(&mut self, id: TransferId, head: &RequestHead<'_>, now: Instant) -> Result<(), Error>;
-    /// Connection bytes in. Stream data is buffered per stream inside the session; `note`
-    /// reports only which transfers became runnable.
-    fn input(&mut self, data: &[u8], now: Instant, note: &mut dyn FnMut(TransferId, StreamNote))
-        -> Result<usize, Error>;
-    fn read_stream(&mut self, id: TransferId, out: &mut RecvBuf) -> Result<StreamRead, Error>;
-    fn output(&mut self, out: &mut SendBuf, now: Instant) -> Result<(), Error>;
-    fn stream_pause(&mut self, id: TransferId, recv: RecvPause);   // window updates
-    fn close_stream(&mut self, id: TransferId);
-    fn concurrency_left(&self) -> u32;
-}
-pub enum StreamNote { Readable, Closed, Reset }
-```
+Planned (milestone 4, steps 52 and 51), as review M3 §2.1, §2.3 and §2.4 decide it. Built in two
+stages: HTTP/2 with one stream per connection first, a connection leased by one transfer at a
+time as an HTTP/1 one is; then the `Attached` place and multiplexing.
 
-A note only marks the transfer dirty; each transfer drains its own stream during its own step,
-so a step never builds a callback context for another transfer, and the borrow rules of §3.6
-hold unchanged when HTTP/2 lands. Because data waits per stream inside the session, a paused
-stream never pins `conn.rx`, which the other streams need. Streams are keyed by `TransferId`, so
-a stale stream fails its lookup. The trait is defined in the first milestone and implemented at
-stage 5.
+**The session.** HTTP/2 is spoken by a session a binding crate makes (nghttp2,
+`crates/curl-nghttp2`), behind a core trait, as TLS is behind `TlsSession`: the core feeds it
+the connection's bytes and takes the bytes it wants sent; it hands back events per stream
+(headers, data, end, reset) and per connection (settings, goaway, ping). The session lives on
+the `Conn`, beside its layer stack, not as a `Layer`: a `Layer` moves one byte stream, and the
+session moves many (review §2.3, option two). The connection-wide operations ask the session
+first: the pool's health check lets it consume pending frames (an idle HTTP/2 connection with
+a SETTINGS or PING to read is healthy, so the input-pending rule is HTTP/1's alone), its
+shutdown sends GOAWAY, and `curl_easy_upkeep` sends PING past the interval. The pool checks a
+multiplexed connection at most once a second (`lastchecked_ms`).
+
+**The head.** A response head reaches the HTTP head parser as C hands it on: the status as
+`HTTP/2 <code> \r\n` and each field as `name: value\r\n`, through one entry that takes a whole
+line (`ResponseHead::line`, C's `http_rw_hd`), with no folding, no hold of a last line, no
+line limit and no HTTP/0.9 decision; `feed` stays HTTP/1's assembler in front of it (review
+§2.4). The per-line work (cookies, file time, codings, Negotiate, the header store) moves into
+one function every version's stream calls; the status line's dialect sits in `Exchange`. A
+request goes out through a field sink: the renderer that writes HTTP/1's head writes HTTP/2's
+fields to the session, the pseudo-headers first.
+
+**Ownership, once multiplexed** (review §2.1, approved). A connection that multiplexes lives
+in its pool place, `Attached { slot, users }`; an attached lease is a key, the `ConnId` and the
+stream. A step moves the `Conn` out of the place for its duration and back after, a third
+owned value decision 9 allows; the place says it is out meanwhile, and a lookup that finds it
+out is a bug. What the session reads for another transfer's stream is delivered at once, in
+the order C delivers it: input hands back `(TransferId, event)`, and the engine delivers each
+sibling's bytes by moving that sibling's `Run` out in turn, as the unpause replay does (§5.3),
+the stepping transfer's own connection out with it. A paused sibling's bytes wait in its
+pipeline's paused output, as C's client writer holds them. A pause or an unpause aimed at a
+sibling while the connection is out with another transfer is kept and told to the session as
+the connection goes back, before any other work, so the WINDOW_UPDATE goes out where C's
+does. The last lease given back decides the connection's fate as `multi_done_locked` does; a
+GOAWAY or a connection error ends every stream on it.
 
 ### 4.5 Route and reuse
 

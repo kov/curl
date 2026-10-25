@@ -97,7 +97,9 @@ detects at build time, kept as static strings. `curl_global_sslset` knows only O
   equal, plus the deliberate allowances C makes (a TLS connection serving the plain scheme,
   multiplexing limits). A setting added to the route joins the comparison by construction, and
   nothing is written onto a pooled connection when it is reused.
-- **The pool owns the idle connections and issues leases; a lease owns its busy one.** A
+- **The pool owns the idle connections and issues leases; a lease owns its busy one,** unless
+  the connection multiplexes: then it stays in its pool place, and each lease is a key to it
+  (a stream), the stepping transfer moving the connection out for its step. A
   connection is connecting or open under one id that survives its handshake, and closing in
   its multi's shutdown set, which owns it, under that set's own; setup is a
   pipeline of stages (resolve, race the addresses, proxy, TLS), each owning what the one before
@@ -105,10 +107,11 @@ detects at build time, kept as static strings. `curl_global_sslset` knows only O
   names the pool it came from, and goes back only there.
 - **Pause is one value per direction.** Receiving is running, stopped by `curl_easy_pause` (the
   current buffer still finishes) or held by a callback's pause (output is held at once); sending
-  is running or paused. A multiplexed connection buffers per stream, so a paused stream never
-  holds the connection's shared receive buffer.
+  is running or paused. A multiplexed connection delivers a sibling stream's data at once, as
+  C does; a paused sibling's bytes wait in its own pipeline's paused output.
 - **No engine borrow is live across a call-out** except values moved out of their homes for its
-  duration (the stepping transfer's state, the connection's receive buffer), so a callback's
+  duration (the stepping transfer's state, the connection's receive buffer, a multiplexed
+  connection the stepping transfer has out of its pool place), so a callback's
   context can reach every other transfer without aliasing. An option is never one of them: a
   callback may read and set the options, and must find them where they are.
 - **Reads are capped at the response's remaining size** on connections that are not

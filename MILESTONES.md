@@ -844,11 +844,16 @@ the system's under the HTTP-only programs installed here.
       wait on step 52.
     - **c. Closing the step.** **Done.** The sweep over the HSTS and alt-svc entries, and
       cargo-mutants over the step's diff: each survivor tested or excluded with its reason.
-51. **The pool's `Attached` place,** a connection several transfers lease (ENGINE.md). **To do.**
-52. **HTTP/2** through nghttp2: ALPN offering `h2`, prior knowledge and `h2c` upgrade,
-    multiplexing, `PIPEWAIT` and `--parallel-immediate`, a sibling stream's data delivered at
-    once, server push, TLS early data, the request renderer writing through a field sink.
-    **To do.**
+51. **The pool's `Attached` place,** a connection several transfers lease (ENGINE.md §4.4).
+    **To do**, after 52a: its only user is HTTP/2's multiplexing.
+52. **HTTP/2** through nghttp2, in two stages (ENGINE.md §4.4). **To do.**
+    - **a. One stream per connection.** The session on the connection, beside its layers;
+      ALPN offering `h2`, prior knowledge and the `h2c` upgrade; the request through a field
+      sink and the response head through the whole-line entry; the session in the pool's
+      health check, shutdown and upkeep; a connection reused by one transfer after another.
+    - **b. Multiplexing,** with 51: streams of several transfers on one connection, a
+      sibling's data delivered at once, `PIPEWAIT` and `--parallel-immediate`, server push,
+      TLS early data.
 53. **`CURLOPT_CONNECT_ONLY`** with the pool's `Reserved` place (3231, 3232, 3234). **Done**,
     ahead of 51 and 52, as it needs neither: a transfer that only connects is done once
     connected, its connection reserved for the handle in its pool; `curl_easy_send`,

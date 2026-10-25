@@ -81,7 +81,7 @@ pub struct InUse;
 impl Share {
     /// A share keeping nothing yet, whose connections are the system's.
     pub fn new() -> Result<Share, OutOfMemory> {
-        Share::with_net(try_box(SystemNet)?)
+        Share::with_net(try_box(SystemNet::default())?)
     }
 
     /// A share keeping nothing yet, whose connections are `net`'s.

@@ -326,6 +326,10 @@ pub trait Resolver {
     /// Each resolve whose answer has come since last asked, with its
     /// waiter, told once (`Curl_async_thrdd_multi_process`).
     fn answered(&mut self, each: &mut dyn FnMut(Waiter, ResolveId));
+
+    /// What an answer coming wakes, which the multi polls, for a resolver
+    /// that answers later from elsewhere (C's `wakeup_internal`).
+    fn waker(&self) -> Option<TryArc<Waker>>;
 }
 
 /// The system's resolver as C's synchronous one: `getaddrinfo`, its
@@ -351,6 +355,10 @@ impl Resolver for SystemResolver {
     }
 
     fn answered(&mut self, _: &mut dyn FnMut(Waiter, ResolveId)) {}
+
+    fn waker(&self) -> Option<TryArc<Waker>> {
+        None
+    }
 }
 
 pub trait Net {
@@ -460,9 +468,28 @@ pub fn open_remote(addr: &Remote, protocol: Protocol, nonblocking: bool) -> io::
     }
 }
 
-/// The operating system's network.
+/// The operating system's network, and its resolver: the system's,
+/// answering as a resolve starts, or, in a build with the threaded
+/// resolver, a pool of threads of the multi's own.
 #[derive(Debug, Default)]
-pub struct SystemNet;
+pub struct SystemNet {
+    threaded: Option<super::threaded::ThreadedResolver>,
+}
+
+impl SystemNet {
+    /// The network a multi uses: in a build with the threaded resolver,
+    /// with a pool of `threads`.
+    pub fn for_multi(threads: super::threaded::Threads) -> io::Result<SystemNet> {
+        #[cfg(feature = "threaded-resolver")]
+        let threaded = Some(super::threaded::ThreadedResolver::new(threads)?);
+        #[cfg(not(feature = "threaded-resolver"))]
+        let threaded = {
+            let _unused = threads;
+            None
+        };
+        Ok(SystemNet { threaded })
+    }
+}
 
 impl Net for SystemNet {
     fn poll(
@@ -484,7 +511,10 @@ impl Net for SystemNet {
     }
 
     fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
-        f(&mut SystemResolver);
+        match &mut self.threaded {
+            Some(threaded) => f(threaded),
+            None => f(&mut SystemResolver),
+        }
     }
 
     fn link_local_scope(&mut self) -> Option<NonZeroU32> {
@@ -1653,6 +1683,10 @@ impl Resolver for FakeNet {
             }
         }
     }
+
+    fn waker(&self) -> Option<TryArc<Waker>> {
+        None
+    }
 }
 
 /// A tests' resolver whose every answer `F` gives as its resolve starts.
@@ -1678,6 +1712,10 @@ impl<F: FnMut(&[u8], Family) -> Result<Vec<IpAddr>, ResolveFailure>> Resolver fo
     }
 
     fn answered(&mut self, _: &mut dyn FnMut(Waiter, ResolveId)) {}
+
+    fn waker(&self) -> Option<TryArc<Waker>> {
+        None
+    }
 }
 
 /// A fake network the test reaches while the multi holds it.
@@ -1751,7 +1789,7 @@ mod tests {
     #[test]
     fn the_system_resolves_names() {
         let mut answers = Vec::new();
-        SystemNet.with_resolver(&mut |r| {
+        SystemNet::default().with_resolver(&mut |r| {
             answers.push(r.start(b"localhost", Family::V4, Waiter::NONE));
             answers.push(r.start(b"nonexist.invalid", Family::Any, Waiter::NONE));
         });
@@ -1768,14 +1806,14 @@ mod tests {
         let mut fds = [PollFd::new(b.as_fd(), Events::IN)];
         let none = &mut [];
         assert_eq!(
-            SystemNet
+            SystemNet::default()
                 .poll(none, &mut fds, Duration::from_millis(1))
                 .unwrap(),
             0
         );
         a.write_all(b"x").unwrap();
         assert_eq!(
-            SystemNet
+            SystemNet::default()
                 .poll(none, &mut fds, Duration::from_secs(5))
                 .unwrap(),
             1
@@ -1788,24 +1826,24 @@ mod tests {
     #[test]
     fn sockets_and_descriptors_are_polled_together() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let socket = dial(&mut SystemNet, listener.local_addr().unwrap());
+        let socket = dial(&mut SystemNet::default(), listener.local_addr().unwrap());
         let (mut a, b) = UnixStream::pair().unwrap();
         a.write_all(b"x").unwrap();
         let mut sockets = [SocketPoll::new(&*socket, Events::OUT)];
         let mut fds = [PollFd::new(b.as_fd(), Events::IN)];
-        let ready = SystemNet
+        let ready = SystemNet::default()
             .poll(&mut sockets, &mut fds, Duration::from_secs(5))
             .unwrap();
         assert!(ready >= 1);
         assert!(fds[0].revents().contains(Events::IN));
         // The connect is decided by now or soon; once it is, writable.
         let mut sockets = [SocketPoll::new(&*socket, Events::OUT)];
-        SystemNet
+        SystemNet::default()
             .poll(&mut sockets, &mut [], Duration::from_secs(5))
             .unwrap();
         assert!(sockets[0].revents().contains(Events::OUT));
         assert!(socket.take_error().unwrap().is_none());
-        SystemNet.close(Sock::new(socket, Closer::System));
+        SystemNet::default().close(Sock::new(socket, Closer::System));
     }
 
     /// More sockets and descriptors than fit on the stack are polled all
@@ -1813,8 +1851,8 @@ mod tests {
     #[test]
     fn more_than_fit_on_the_stack_are_polled() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let one = dial(&mut SystemNet, listener.local_addr().unwrap());
-        let two = dial(&mut SystemNet, listener.local_addr().unwrap());
+        let one = dial(&mut SystemNet::default(), listener.local_addr().unwrap());
+        let two = dial(&mut SystemNet::default(), listener.local_addr().unwrap());
         let pairs: Vec<_> = (0..9).map(|_| UnixStream::pair().unwrap()).collect();
         (&pairs[8].0).write_all(b"x").unwrap();
         let mut sockets = [
@@ -1825,14 +1863,14 @@ mod tests {
             .iter()
             .map(|(_, b)| PollFd::new(b.as_fd(), Events::IN))
             .collect();
-        let ready = SystemNet
+        let ready = SystemNet::default()
             .poll(&mut sockets, &mut fds, Duration::from_secs(5))
             .unwrap();
         assert_eq!(ready, 1);
         assert!(fds[8].revents().contains(Events::IN));
         assert!(fds[..8].iter().all(|f| f.revents().is_empty()));
-        SystemNet.close(Sock::new(one, Closer::System));
-        SystemNet.close(Sock::new(two, Closer::System));
+        SystemNet::default().close(Sock::new(one, Closer::System));
+        SystemNet::default().close(Sock::new(two, Closer::System));
     }
 
     /// A socket goes only through its closer: one dropped unclosed is a

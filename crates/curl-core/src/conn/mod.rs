@@ -19,6 +19,7 @@ pub(crate) mod proxy;
 pub(crate) mod shutdown;
 pub(crate) mod socks;
 mod stream;
+pub mod threaded;
 pub(crate) mod tls;
 
 pub(crate) use connect::{

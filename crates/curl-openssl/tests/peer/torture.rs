@@ -87,7 +87,7 @@ fn try_get(
     let result = (|| {
         let env = Env {
             clock: try_box(SystemClock::new())?,
-            net: try_box(SystemNet)?,
+            net: try_box(SystemNet::default())?,
             arena: ArenaPolicy::new(16, 0).unwrap(),
             waker: None,
         };

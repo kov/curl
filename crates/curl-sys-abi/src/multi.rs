@@ -79,7 +79,11 @@ impl ShimMulti {
     /// A multi with the system's clock and network. Without a waker, which
     /// takes a descriptor, `curl_multi_wakeup` fails, as in C.
     fn new() -> Result<ShimMulti, OutOfMemory> {
-        ShimMulti::with_net(try_box(SystemNet)?)
+        // A multi whose resolver cannot be set up is not made
+        // (`Curl_multi_handle`'s `goto error`).
+        let net = SystemNet::for_multi(curl_core::conn::threaded::Threads::MULTI)
+            .map_err(|_| OutOfMemory)?;
+        ShimMulti::with_net(try_box(net)?)
     }
 
     fn with_net(net: Box<dyn Net + Send>) -> Result<ShimMulti, OutOfMemory> {

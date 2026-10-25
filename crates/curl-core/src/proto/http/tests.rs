@@ -6702,14 +6702,17 @@ fn the_system_s_ipv6_probe_is_the_system_s() {
             }
         };
         assert_eq!(err.raw_os_error(), Some(24), "EMFILE: {err}");
-        assert_eq!(crate::conn::io::SystemNet.probe_ipv6(), Ok(false));
+        assert_eq!(
+            crate::conn::io::SystemNet::default().probe_ipv6(),
+            Ok(false)
+        );
         return;
     }
     assert_eq!(
-        crate::conn::io::SystemNet.probe_ipv6(),
+        crate::conn::io::SystemNet::default().probe_ipv6(),
         curl_os::net::probe_ipv6().map_err(|_| curl_alloc::OutOfMemory)
     );
-    assert_eq!(crate::conn::io::SystemNet.probe_ipv6(), Ok(true));
+    assert_eq!(crate::conn::io::SystemNet::default().probe_ipv6(), Ok(true));
     let clock = ManualClock::new().unwrap();
     assert_eq!(FakeNet::new(clock.clone()).probe_ipv6(), Ok(true));
     assert_eq!(FakeNet::new(clock).without_ipv6().probe_ipv6(), Ok(false));
@@ -6733,7 +6736,7 @@ fn the_system_s_ipv6_probe_is_the_system_s() {
 fn the_system_s_scope_is_the_system_s() {
     use crate::conn::io::Net as _;
     assert_eq!(
-        crate::conn::io::SystemNet.link_local_scope(),
+        crate::conn::io::SystemNet::default().link_local_scope(),
         curl_os::net::link_local_scope()
     );
 }

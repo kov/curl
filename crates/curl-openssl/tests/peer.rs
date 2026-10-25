@@ -449,7 +449,7 @@ fn get_any(
 fn multi(clock: Box<dyn Clock>) -> Multi {
     let env = Env {
         clock,
-        net: try_box(SystemNet).unwrap(),
+        net: try_box(SystemNet::default()).unwrap(),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };

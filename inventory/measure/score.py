@@ -19,6 +19,11 @@ Other components can be swapped in to arm the harness:
   --lib stub  a library whose every export aborts, so nothing may pass
   --tool c    the C tool, loading whichever library is chosen
 
+`--threaded` scores the build that stands in for a distribution's
+library, with the threaded resolver, against the second C oracle
+(baseline.py --threaded): build/c-threaded's programs, compared with
+inventory/baseline-threaded.json, laid out in build/rust-threaded.
+
 `--report` re-reads the stored results without running anything.
 """
 
@@ -30,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "gen"))
 import baseline
@@ -37,10 +43,6 @@ import common
 import suite
 from common import ROOT, check
 
-C_BUILD = baseline.BUILD
-BUILD = ROOT / "build" / "rust"
-RESULTS = BUILD / "score"
-CARGO_OUT = ROOT / "build" / "target" / "debug"
 SONAME = "libcurl-d.so.4"
 # Overlay entries of build/c that are not linked into build/rust: replaced
 # by the Rust build, written by a run, or belonging to the C leg only.
@@ -52,30 +54,58 @@ UNIT_RUNNERS = {"unit", "tunit"}
 DESCEND = {"src", "lib", "tests"}
 
 
+@dataclass(frozen=True)
+class Leg:
+    """A Rust build, the C oracle it is scored against, and where it runs."""
+    oracle: baseline.Oracle
+    build: pathlib.Path
+    # Its own target directory, so neither build undoes the other's.
+    target: pathlib.Path
+    features: tuple
+
+    @property
+    def results(self):
+        return self.build / "score"
+
+    @property
+    def cargo_out(self):
+        return self.target / "debug"
+
+
+DEBUG_HOOKS = ("curl-sys-abi/debug-hooks", "curl-tool/debug-hooks")
+RUST = Leg(baseline.REFERENCE, ROOT / "build" / "rust",
+           ROOT / "build" / "target", DEBUG_HOOKS)
+THREADED = Leg(baseline.THREADED, ROOT / "build" / "rust-threaded",
+               ROOT / "build" / "target-threaded",
+               DEBUG_HOOKS + ("curl-sys-abi/threaded-resolver",
+                              "curl-tool/threaded-resolver"))
+
+
 def git(*args):
     return subprocess.run(["git", "-C", str(ROOT), *args], check=True,
                           capture_output=True, text=True).stdout.strip()
 
 
-def overlay(src, dst, skip):
-    """Link every entry of `src` into `dst`, except those in `skip`."""
+def overlay(root, src, dst, skip):
+    """Link every entry of `src`, under `root`, into `dst`, but `skip`."""
     dst.mkdir(parents=True)
     for entry in sorted(src.iterdir()):
-        rel = str(entry.relative_to(C_BUILD))
+        rel = str(entry.relative_to(root))
         if rel in skip or re.match(r"^lib/libcurl.*\.so", rel):
             continue
         if rel in DESCEND:
-            overlay(entry, dst / entry.name, skip)
+            overlay(root, entry, dst / entry.name, skip)
         else:
             (dst / entry.name).symlink_to(entry)
 
 
-def build_stub():
+def build_stub(leg):
     """Build a library exporting the C build's symbols, each aborting."""
-    lib = json.loads((common.INVENTORY / "baseline.json").read_text())
+    lib = json.loads((common.INVENTORY / f"{leg.oracle.inventory}.json")
+                     .read_text())
     symbols = lib["data"]["library"]["symbols"]
     check("curl_easy_init" in symbols, "baseline has no curl_easy_init")
-    stub = BUILD / "stub"
+    stub = leg.build / "stub"
     stub.mkdir()
     (stub / "stub.c").write_text(
         "#include <stdlib.h>\n" + "".join(
@@ -87,28 +117,30 @@ def build_stub():
     return out
 
 
-def assemble(lib, tool):
-    """Build the Rust crates and lay out build/rust."""
+def assemble(leg, lib, tool):
+    """Build the Rust crates and lay out the leg's build tree."""
     cargo = subprocess.run(
         ["cargo", "build", "-p", "curl-sys-abi", "-p", "curl-tool",
-         "--features", "curl-sys-abi/debug-hooks,curl-tool/debug-hooks"], cwd=ROOT, check=False)
+         "--target-dir", str(leg.target), "--features",
+         ",".join(leg.features)], cwd=ROOT, check=False)
     check(cargo.returncode == 0, "cargo build failed")
-    if BUILD.exists():
-        shutil.rmtree(BUILD)
-    overlay(C_BUILD, BUILD,
+    c_build = leg.oracle.build
+    if leg.build.exists():
+        shutil.rmtree(leg.build)
+    overlay(c_build, c_build, leg.build,
             NOT_LINKED if lib == "c" else NOT_LINKED | UNIT_PROGRAMS)
-    library = {"rust": CARGO_OUT / "libcurl.so",
-               "c": next(C_BUILD.glob("lib/libcurl-d.so.*.*.*")),
-               "stub": None}[lib] or build_stub()
-    shutil.copy2(library, BUILD / "lib" / SONAME)
-    tools = {"rust": CARGO_OUT, "c": C_BUILD / "src"}[tool]
+    library = {"rust": leg.cargo_out / "libcurl.so",
+               "c": next(c_build.glob("lib/libcurl-d.so.*.*.*")),
+               "stub": None}[lib] or build_stub(leg)
+    shutil.copy2(library, leg.build / "lib" / SONAME)
+    tools = {"rust": leg.cargo_out, "c": c_build / "src"}[tool]
     for name in ("curl", "curlinfo"):
-        shutil.copy2(tools / name, BUILD / "src" / name)
+        shutil.copy2(tools / name, leg.build / "src" / name)
 
 
-def environment():
-    """Return the environment the suites run with in build/rust."""
-    return {**os.environ, "LD_LIBRARY_PATH": str(BUILD / "lib")}
+def environment(leg):
+    """Return the environment the suites run with in the leg's tree."""
+    return {**os.environ, "LD_LIBRARY_PATH": str(leg.build / "lib")}
 
 
 def resolved_libcurl(binary, env):
@@ -124,23 +156,25 @@ def resolved_libcurl(binary, env):
     return pathlib.Path(m.group(1)).resolve()
 
 
-def check_loading(tool):
+def check_loading(leg, tool):
     """
-    Fail unless the test programs and tool load the library in build/rust.
+    Fail unless the test programs and tool load the library in the leg.
 
-    The C test programs carry a RUNPATH to build/c/lib, so a mistake in the
-    environment would silently test the C library. As a positive control,
-    the same check without the environment must find the C library.
+    The C test programs carry a RUNPATH to the C build's lib, so a mistake
+    in the environment would silently test the C library. As a positive
+    control, the same check without the environment must find the C
+    library.
     """
-    ours = (BUILD / "lib" / SONAME).resolve()
-    libtests = BUILD / "tests/libtest/libtests"
-    check(resolved_libcurl(libtests, environment()) == ours,
+    ours = (leg.build / "lib" / SONAME).resolve()
+    libtests = leg.build / "tests/libtest/libtests"
+    check(resolved_libcurl(libtests, environment(leg)) == ours,
           f"{libtests} does not load {ours}")
     c_lib = resolved_libcurl(libtests, {k: v for k, v in os.environ.items()
                                         if k != "LD_LIBRARY_PATH"})
-    check(c_lib is not None and c_lib.is_relative_to(C_BUILD),
-          f"without LD_LIBRARY_PATH libtests loads {c_lib}, not build/c's")
-    curl = resolved_libcurl(BUILD / "src/curl", environment())
+    check(c_lib is not None and c_lib.is_relative_to(leg.oracle.build),
+          f"without LD_LIBRARY_PATH libtests loads {c_lib}, not "
+          f"{leg.oracle.build}'s")
+    curl = resolved_libcurl(leg.build / "src/curl", environment(leg))
     if tool == "c":
         check(curl == ours, f"src/curl loads {curl}, not {ours}")
     else:
@@ -205,20 +239,21 @@ def compare_pytest(now, base):
     return classes
 
 
-def report():
-    meta = json.loads((RESULTS / "run.json").read_text())
+def report(leg):
+    meta = json.loads((leg.results / "run.json").read_text())
     check(meta["c-commit"] == common.c_commit(),
           f"results are for C commit {meta['c-commit'][:12]}, the tree is at "
           f"{common.c_commit()[:12]}")
     tests = json.loads((common.INVENTORY / "tests.json").read_text())["data"]
-    base = json.loads((common.INVENTORY / "baseline.json").read_text())["data"]
-    now, cases, _ = suite.results(BUILD, RESULTS, tests)
+    base = json.loads((common.INVENTORY / f"{leg.oracle.inventory}.json")
+                      .read_text())["data"]
+    now, cases, _ = suite.results(leg.build, leg.results, tests)
     classes = compare(now, {int(n): r for n, r in base["results"].items()},
                       {t["number"]: t for t in tests["tests"]})
     pyclasses = compare_pytest(cases, base["pytest"]["cases"])
     score = {**meta, "runtests": {k: sorted(v) for k, v in classes.items()},
              "pytest": {k: sorted(v) for k, v in pyclasses.items()}}
-    (RESULTS / "score.json").write_text(json.dumps(score, indent=1) + "\n")
+    (leg.results / "score.json").write_text(json.dumps(score, indent=1) + "\n")
 
     print(f"lib={meta['lib']} tool={meta['tool']} at {meta['rust-commit']}")
     for name, cls in (("runtests.pl", classes), ("pytest", pyclasses)):
@@ -238,25 +273,29 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--lib", choices=["rust", "c", "stub"], default="rust")
     ap.add_argument("--tool", choices=["rust", "c"], default="rust")
+    ap.add_argument("--threaded", action="store_true")
     ap.add_argument("--report", action="store_true")
     args = ap.parse_args()
+    leg = THREADED if args.threaded else RUST
     if not args.report:
         commit = common.c_commit()
-        run = json.loads((C_BUILD / "baseline/run.json").read_text())
+        c_build = leg.oracle.build
+        run = json.loads((leg.oracle.results / "run.json").read_text())
         check(run["c-commit"] == commit,
-              f"build/c was measured at {run['c-commit'][:12]}, the C tree "
-              f"is at {commit[:12]}: rerun baseline.py --run first")
-        assemble(args.lib, args.tool)
-        check_loading(args.tool)
+              f"{c_build} was measured at {run['c-commit'][:12]}, the C "
+              f"tree is at {commit[:12]}: rerun baseline.py "
+              f"{leg.oracle.flag} --run first")
+        assemble(leg, args.lib, args.tool)
+        check_loading(leg, args.tool)
         dirty = git("status", "--porcelain", "--untracked-files=no", "--",
                     *(p for p in common.NOT_C_TREE if p != "inventory"))
-        meta = suite.run(BUILD, RESULTS, environment())
-        (RESULTS / "run.json").write_text(json.dumps({
+        meta = suite.run(leg.build, leg.results, environment(leg))
+        (leg.results / "run.json").write_text(json.dumps({
             "c-commit": commit,
             "rust-commit": git("rev-parse", "HEAD")[:12]
             + ("-dirty" if dirty else ""),
             "lib": args.lib, "tool": args.tool, **meta}, indent=1) + "\n")
-    report()
+    report(leg)
 
 
 if __name__ == "__main__":

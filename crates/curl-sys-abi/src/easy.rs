@@ -513,6 +513,7 @@ const fn libraries_with(
         tls: Some(curl_core::libraries::Library::Static(&OPENSSL)),
         gss,
         idn: Some(IDN),
+        h2: Some(&curl_nghttp2::NGHTTP2),
     }
 }
 

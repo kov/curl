@@ -9,6 +9,7 @@ links = "nghttp2"
 
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }
+curl-core = { path = "../curl-core" }
 
 [lints]
 workspace = true

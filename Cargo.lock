@@ -101,6 +101,7 @@ name = "curl-nghttp2"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-core",
 ]
 
 [[package]]
@@ -141,6 +142,7 @@ dependencies = [
  "curl-core",
  "curl-gssapi",
  "curl-idn2",
+ "curl-nghttp2",
  "curl-openssl",
  "curl-psl",
  "curl-zlib",
@@ -159,6 +161,7 @@ dependencies = [
  "curl-core",
  "curl-gssapi",
  "curl-idn2",
+ "curl-nghttp2",
  "curl-openssl",
  "curl-os",
  "curl-psl",

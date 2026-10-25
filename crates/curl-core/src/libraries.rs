@@ -12,6 +12,7 @@ use curl_alloc::{OutOfMemory, TryArc};
 
 use crate::coding::Decoders;
 use crate::gss::Gss;
+use crate::http2::Http2;
 use crate::idn::Idn;
 use crate::tls::TlsBackend;
 
@@ -36,6 +37,9 @@ pub struct Libraries {
     /// What converts host names not in ASCII, if anything: without it,
     /// they are sent as they are, as in a C build without one.
     pub idn: Option<&'static dyn Idn>,
+    /// The HTTP/2 library, if any: without it, HTTP/2 is not built in, as
+    /// in a C build without nghttp2.
+    pub h2: Option<&'static dyn Http2>,
 }
 
 impl Libraries {
@@ -45,6 +49,7 @@ impl Libraries {
         tls: None,
         gss: None,
         idn: None,
+        h2: None,
     };
 }
 
@@ -198,7 +203,8 @@ mod tests {
         };
         let printed = format!("{libraries:?}");
         assert!(
-            printed.ends_with("ed25519: Some(Ed25519), tls: None, gss: None, idn: None }"),
+            printed
+                .ends_with("ed25519: Some(Ed25519), tls: None, gss: None, idn: None, h2: None }"),
             "{printed}"
         );
     }

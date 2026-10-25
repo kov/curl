@@ -123,6 +123,8 @@ pub(crate) const NGHTTP2_HEADERS: u8 = 0x01;
 pub(crate) const NGHTTP2_RST_STREAM: u8 = 0x03;
 pub(crate) const NGHTTP2_SETTINGS: u8 = 0x04;
 pub(crate) const NGHTTP2_GOAWAY: u8 = 0x07;
+pub(crate) const NGHTTP2_WINDOW_UPDATE: u8 = 0x08;
+pub(crate) const NGHTTP2_ERR_CALLBACK_FAILURE: c_int = -902;
 pub(crate) const NGHTTP2_FLAG_END_STREAM: u8 = 0x01;
 pub(crate) const NGHTTP2_FLAG_ACK: u8 = 0x01;
 pub const NGHTTP2_SETTINGS_ENABLE_PUSH: i32 = 0x02;
@@ -256,4 +258,29 @@ unsafe extern "C" {
         session: *mut nghttp2_session,
         id: i32,
     ) -> u32;
+    pub(crate) fn nghttp2_session_set_local_window_size(
+        session: *mut nghttp2_session,
+        flags: u8,
+        stream_id: i32,
+        window_size: i32,
+    ) -> c_int;
+    pub(crate) fn nghttp2_session_upgrade2(
+        session: *mut nghttp2_session,
+        settings_payload: *const u8,
+        settings_payloadlen: usize,
+        head_request: c_int,
+        stream_user_data: *mut c_void,
+    ) -> c_int;
+    pub(crate) fn nghttp2_pack_settings_payload2(
+        buf: *mut u8,
+        buflen: usize,
+        iv: *const nghttp2_settings_entry,
+        niv: usize,
+    ) -> nghttp2_ssize;
+    pub(crate) fn nghttp2_submit_ping(
+        session: *mut nghttp2_session,
+        flags: u8,
+        opaque_data: *const u8,
+    ) -> c_int;
+    pub(crate) fn nghttp2_is_fatal(lib_error_code: c_int) -> c_int;
 }

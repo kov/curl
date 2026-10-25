@@ -16,69 +16,68 @@ use core::ptr::{self, NonNull};
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
-pub use sys::{
-    NGHTTP2_SETTINGS_ENABLE_PUSH as SETTINGS_ENABLE_PUSH,
-    NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE as SETTINGS_INITIAL_WINDOW_SIZE,
-    NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS as SETTINGS_MAX_CONCURRENT_STREAMS,
-};
+use curl_core::http2::Http2;
+pub use curl_core::http2::{BodyRead, Event, FrameError, Heard, Setting, StreamId, Wants};
 
-/// A stream of a session, by its id.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct StreamId(pub i32);
+/// The library, as the handles are given it.
+pub static NGHTTP2: Nghttp2 = Nghttp2;
 
-/// What the session read, as it read it.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Event<'a> {
-    /// A field of a header block of `stream`: the response's head, an
-    /// interim response's, or the trailers.
-    Header {
-        stream: StreamId,
-        name: &'a [u8],
-        value: &'a [u8],
-    },
-    /// A header block of `stream` is over; the stream ends with it if
-    /// `end_stream`.
-    HeadersDone { stream: StreamId, end_stream: bool },
-    /// Body bytes of `stream`.
-    Data { stream: StreamId, bytes: &'a [u8] },
-    /// A DATA frame of `stream` ended it.
-    DataEnd { stream: StreamId },
-    /// `stream` closed, with this error code (0: none).
-    Closed { stream: StreamId, error: u32 },
-    /// The peer's settings arrived.
-    Settings,
-    /// The peer is going away: streams past `last_stream` are not served.
-    GoAway { last_stream: StreamId, error: u32 },
-    /// The peer reset `stream` with this error code.
-    Reset { stream: StreamId, error: u32 },
-}
+/// nghttp2, as a library the core speaks HTTP/2 through.
+#[derive(Debug)]
+pub struct Nghttp2;
 
-/// What a body read gave the session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BodyRead {
-    /// This many bytes, more to come.
-    Bytes(usize),
-    /// This many bytes, and the body is over.
-    Last(usize),
-    /// Nothing now: ask again once resumed.
-    Later,
-    /// The body could not be read: the stream is reset.
-    Failed,
-}
-
-/// The session failed (`nghttp2_*` error codes): the connection is done.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Error(pub c_int);
-
-impl Error {
-    /// The library's words for it (`nghttp2_strerror`).
-    pub fn text(self) -> &'static str {
-        // SAFETY: `nghttp2_strerror` takes any code.
-        let p = unsafe { sys::nghttp2_strerror(self.0) };
-        // SAFETY: and returns a static C string for it.
-        let s = unsafe { CStr::from_ptr(p) };
-        s.to_str().unwrap_or("unknown")
+impl Http2 for Nghttp2 {
+    fn client(&self) -> Result<Box<dyn curl_core::http2::Session>, OutOfMemory> {
+        let session = Session::client().map_err(|SessionError::OutOfMemory| OutOfMemory)?;
+        Ok(try_box(session)?)
     }
+
+    fn error_text(&self, code: u32) -> &'static str {
+        http2_error_text(code)
+    }
+
+    fn settings_payload(&self, settings: &[Setting], out: &mut [u8]) -> Result<usize, FrameError> {
+        let (iv, n) = entries(settings);
+        // SAFETY: `out`'s bytes, and `n` entries.
+        let len = unsafe {
+            sys::nghttp2_pack_settings_payload2(out.as_mut_ptr(), out.len(), iv.as_ptr(), n)
+        };
+        usize::try_from(len)
+            .map_err(|_| error(c_int::try_from(len).unwrap_or(sys::NGHTTP2_ERR_NOMEM)))
+    }
+}
+
+/// `settings` as the library's entries, and how many.
+fn entries(settings: &[Setting]) -> ([sys::nghttp2_settings_entry; 8], usize) {
+    let mut iv = [sys::nghttp2_settings_entry {
+        settings_id: 0,
+        value: 0,
+    }; 8];
+    assert!(settings.len() <= iv.len(), "at most eight settings");
+    for (to, setting) in iv.iter_mut().zip(settings) {
+        let (id, value) = match *setting {
+            Setting::MaxConcurrentStreams(n) => (sys::NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, n),
+            Setting::InitialWindowSize(n) => (sys::NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE, n),
+            Setting::EnablePush(on) => (sys::NGHTTP2_SETTINGS_ENABLE_PUSH, u32::from(on)),
+        };
+        *to = sys::nghttp2_settings_entry {
+            settings_id: id,
+            value,
+        };
+    }
+    (iv, settings.len())
+}
+
+/// The library's failure `code`, with its words for it
+/// (`nghttp2_strerror`) and whether it ends the session.
+fn error(code: c_int) -> FrameError {
+    // SAFETY: `nghttp2_strerror` takes any code.
+    let p = unsafe { sys::nghttp2_strerror(code) };
+    // SAFETY: and returns a static C string for it.
+    let text = unsafe { CStr::from_ptr(p) }.to_str().unwrap_or("unknown");
+    // SAFETY: it takes any code.
+    let fatal = unsafe { sys::nghttp2_is_fatal(code) } != 0;
+    FrameError { code, text, fatal }
 }
 
 /// The text of an HTTP/2 error code (`nghttp2_http2_strerror`).
@@ -92,23 +91,38 @@ pub fn http2_error_text(code: u32) -> &'static str {
 
 /// The library's version, as `curl -V` names it (`nghttp2_version`).
 pub fn version() -> &'static str {
+    version_c().to_str().unwrap_or("unknown")
+}
+
+/// The library's own description of itself (`nghttp2_version`).
+fn info() -> &'static sys::nghttp2_info {
     // SAFETY: with 0, `nghttp2_version` returns the library's own static
     // description.
     let info = unsafe { sys::nghttp2_version(0) };
     // SAFETY: as above, never NULL with 0.
-    let info = unsafe { &*info };
+    unsafe { &*info }
+}
+
+/// The library's version, as `curl_version_info` gives it.
+pub fn version_c() -> &'static CStr {
     // SAFETY: its version string is a static C string.
-    unsafe { CStr::from_ptr(info.version_str) }
-        .to_str()
-        .unwrap_or("unknown")
+    unsafe { CStr::from_ptr(info().version_str) }
+}
+
+/// The library's version as a number, `0x010A00` for 1.10.0.
+pub fn version_number() -> u32 {
+    u32::try_from(info().version_num).unwrap_or(0)
 }
 
 /// What the callbacks reach while a call into the session runs: the
 /// caller's sinks, lent for the call.
 struct Lent {
-    events: Option<*mut dyn FnMut(Event<'_>)>,
+    events: Option<*mut EventSink>,
     body: Option<*mut BodySource>,
 }
+
+/// What hears what the session read.
+type EventSink = dyn FnMut(Event<'_>) -> Heard;
 
 /// What reads a request's body: the stream's, into the room given.
 type BodySource = dyn FnMut(StreamId, &mut [u8]) -> BodyRead;
@@ -205,36 +219,30 @@ impl Session {
         let raw = NonNull::new(raw).ok_or(SessionError::OutOfMemory)?;
         Ok(Session { raw, lent })
     }
+}
 
-    /// Queue the client's SETTINGS (`nghttp2_submit_settings`).
-    pub fn submit_settings(&mut self, settings: &[(i32, u32)]) -> Result<(), Error> {
-        let mut iv = [sys::nghttp2_settings_entry {
-            settings_id: 0,
-            value: 0,
-        }; 8];
-        assert!(settings.len() <= iv.len(), "at most eight settings");
-        for (to, &(id, value)) in iv.iter_mut().zip(settings) {
-            *to = sys::nghttp2_settings_entry {
-                settings_id: id,
-                value,
-            };
-        }
-        // SAFETY: the session, and `settings.len()` entries.
+impl curl_core::http2::Session for Session {
+    fn submit_settings(&mut self, settings: &[Setting]) -> Result<(), FrameError> {
+        let (iv, n) = entries(settings);
+        // SAFETY: the session, and `n` entries.
+        check_h2(unsafe { sys::nghttp2_submit_settings(self.raw.as_ptr(), 0, iv.as_ptr(), n) })
+    }
+
+    fn set_local_window(&mut self, size: i32) -> Result<(), FrameError> {
+        // SAFETY: the session; stream 0 is the connection.
         check_h2(unsafe {
-            sys::nghttp2_submit_settings(self.raw.as_ptr(), 0, iv.as_ptr(), settings.len())
+            sys::nghttp2_session_set_local_window_size(self.raw.as_ptr(), 0, 0, size)
         })
     }
 
-    /// Queue a request of `fields`, its pseudo-headers first; with a body
-    /// if `body`, read as `send` asks (`nghttp2_submit_request2`).
-    pub fn submit_request(
+    fn submit_request(
         &mut self,
         fields: &[(&[u8], &[u8])],
         body: bool,
-    ) -> Result<StreamId, Error> {
+    ) -> Result<StreamId, FrameError> {
         let mut nva = Vec::new();
         nva.try_reserve_exact(fields.len())
-            .map_err(|_| Error(sys::NGHTTP2_ERR_NOMEM))?;
+            .map_err(|_| error(sys::NGHTTP2_ERR_NOMEM))?;
         for &(name, value) in fields {
             let pushed = nva.try_push(sys::nghttp2_nv {
                 name: name.as_ptr().cast_mut(),
@@ -270,44 +278,52 @@ impl Session {
             )
         };
         if id < 0 {
-            return Err(Error(id));
+            return Err(error(id));
         }
         Ok(StreamId(id))
     }
 
-    /// Feed the session `bytes` the connection received: what it read is
-    /// told to `events`, in order (`nghttp2_session_mem_recv2`).
-    pub fn recv(
+    fn upgrade(&mut self, settings: &[u8], head: bool) -> Result<StreamId, FrameError> {
+        // SAFETY: the session and the payload, which outlives the call.
+        check_h2(unsafe {
+            sys::nghttp2_session_upgrade2(
+                self.raw.as_ptr(),
+                settings.as_ptr(),
+                settings.len(),
+                c_int::from(head),
+                ptr::null_mut(),
+            )
+        })?;
+        Ok(StreamId(1))
+    }
+
+    fn recv(
         &mut self,
         bytes: &[u8],
-        events: &mut dyn FnMut(Event<'_>),
-    ) -> Result<usize, Error> {
-        let events: *mut (dyn FnMut(Event<'_>) + '_) = events;
+        events: &mut dyn FnMut(Event<'_>) -> Heard,
+    ) -> Result<usize, FrameError> {
+        let events: *mut (dyn FnMut(Event<'_>) -> Heard + '_) = events;
         // SAFETY: lent for the call only; taken back below, before
         // `events` goes out of scope.
         self.lent.events = Some(unsafe {
-            core::mem::transmute::<
-                *mut (dyn FnMut(Event<'_>) + '_),
-                *mut (dyn FnMut(Event<'_>) + 'static),
-            >(events)
+            core::mem::transmute::<*mut (dyn FnMut(Event<'_>) -> Heard + '_), *mut EventSink>(
+                events,
+            )
         });
         // SAFETY: the session and the bytes, which outlive the call.
         let n = unsafe {
             sys::nghttp2_session_mem_recv2(self.raw.as_ptr(), bytes.as_ptr(), bytes.len())
         };
         self.lent.events = None;
-        usize::try_from(n).map_err(|_| Error(i32::try_from(n).unwrap_or(sys::NGHTTP2_ERR_NOMEM)))
+        usize::try_from(n).map_err(|_| error(c_int::try_from(n).unwrap_or(sys::NGHTTP2_ERR_NOMEM)))
     }
 
-    /// The bytes the session wants sent next, given to `out` until it has
-    /// none or `out` takes less than all; a body is read with `body`
-    /// (`nghttp2_session_mem_send2`). What `out` did not take is lost:
-    /// `out` takes all or fails.
-    pub fn send(
+    fn send(
         &mut self,
         out: &mut dyn FnMut(&[u8]) -> bool,
         body: &mut dyn FnMut(StreamId, &mut [u8]) -> BodyRead,
-    ) -> Result<(), Error> {
+        events: &mut dyn FnMut(Event<'_>) -> Heard,
+    ) -> Result<(), FrameError> {
         let body: *mut (dyn FnMut(StreamId, &mut [u8]) -> BodyRead + '_) = body;
         // SAFETY: lent for the call only, taken back below.
         self.lent.body = Some(unsafe {
@@ -316,12 +332,19 @@ impl Session {
                 *mut BodySource,
             >(body)
         });
+        let events: *mut (dyn FnMut(Event<'_>) -> Heard + '_) = events;
+        // SAFETY: as above.
+        self.lent.events = Some(unsafe {
+            core::mem::transmute::<*mut (dyn FnMut(Event<'_>) -> Heard + '_), *mut EventSink>(
+                events,
+            )
+        });
         let r = loop {
             let mut data = ptr::null();
             // SAFETY: the session and an out pointer to fill.
             let n = unsafe { sys::nghttp2_session_mem_send2(self.raw.as_ptr(), &mut data) };
             let Ok(len) = usize::try_from(n) else {
-                break Err(Error(i32::try_from(n).unwrap_or(sys::NGHTTP2_ERR_NOMEM)));
+                break Err(error(c_int::try_from(n).unwrap_or(sys::NGHTTP2_ERR_NOMEM)));
             };
             if len == 0 {
                 break Ok(());
@@ -333,46 +356,47 @@ impl Session {
             }
         };
         self.lent.body = None;
+        self.lent.events = None;
         r
     }
 
-    /// The caller has used `n` bytes of `stream`'s data: the window opens
-    /// by as much (`nghttp2_session_consume`).
-    pub fn consume(&mut self, stream: StreamId, n: usize) -> Result<(), Error> {
+    fn consume(&mut self, stream: StreamId, n: usize) -> Result<(), FrameError> {
         // SAFETY: the session.
         check_h2(unsafe { sys::nghttp2_session_consume(self.raw.as_ptr(), stream.0, n) })
     }
 
-    /// A body that said `Later` has more (`nghttp2_session_resume_data`).
-    pub fn resume(&mut self, stream: StreamId) -> Result<(), Error> {
+    fn resume(&mut self, stream: StreamId) -> Result<(), FrameError> {
         // SAFETY: the session.
         check_h2(unsafe { sys::nghttp2_session_resume_data(self.raw.as_ptr(), stream.0) })
     }
 
-    /// Reset `stream` with `error` (`nghttp2_submit_rst_stream`).
-    pub fn reset(&mut self, stream: StreamId, error: u32) -> Result<(), Error> {
+    fn reset(&mut self, stream: StreamId, code: u32) -> Result<(), FrameError> {
         // SAFETY: the session.
-        check_h2(unsafe { sys::nghttp2_submit_rst_stream(self.raw.as_ptr(), 0, stream.0, error) })
+        check_h2(unsafe { sys::nghttp2_submit_rst_stream(self.raw.as_ptr(), 0, stream.0, code) })
     }
 
-    /// Say goodbye (`nghttp2_submit_goaway`), the last stream served
-    /// being the last the client opened.
-    pub fn goaway(&mut self, error: u32) -> Result<(), Error> {
+    fn goaway(&mut self, code: u32) -> Result<(), FrameError> {
         // SAFETY: the session, and no opaque data.
         check_h2(unsafe {
-            sys::nghttp2_submit_goaway(self.raw.as_ptr(), 0, 0, error, ptr::null(), 0)
+            sys::nghttp2_submit_goaway(self.raw.as_ptr(), 0, 0, code, ptr::null(), 0)
         })
     }
 
-    /// Whether the session wants to read, or has anything to send.
-    pub fn wants(&self) -> (bool, bool) {
+    fn ping(&mut self) -> Result<(), FrameError> {
+        // SAFETY: the session; no opaque data, which the library zeroes.
+        check_h2(unsafe { sys::nghttp2_submit_ping(self.raw.as_ptr(), 0, ptr::null()) })
+    }
+
+    fn wants(&self) -> Wants {
         // SAFETY: the session.
         let read = unsafe { sys::nghttp2_session_want_read(self.raw.as_ptr()) } != 0;
         // SAFETY: the session.
         let write = unsafe { sys::nghttp2_session_want_write(self.raw.as_ptr()) } != 0;
-        (read, write)
+        Wants { read, write }
     }
+}
 
+impl Session {
     /// The peer's limit on streams open at once
     /// (`NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS`).
     pub fn max_concurrent(&self) -> u32 {
@@ -403,7 +427,7 @@ impl Session {
         stream: StreamId,
         fields: &[(&[u8], &[u8])],
         body: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<(), FrameError> {
         let nva: Vec<sys::nghttp2_nv> = fields
             .iter()
             .map(|&(name, value)| sys::nghttp2_nv {
@@ -460,8 +484,8 @@ fn check(rc: c_int) -> Result<(), SessionError> {
     }
 }
 
-fn check_h2(rc: c_int) -> Result<(), Error> {
-    if rc == 0 { Ok(()) } else { Err(Error(rc)) }
+fn check_h2(rc: c_int) -> Result<(), FrameError> {
+    if rc == 0 { Ok(()) } else { Err(error(rc)) }
 }
 
 /// An object of the library's, freed by its function as it goes.
@@ -482,11 +506,15 @@ impl<T> Drop for Owned<T> {
 unsafe fn tell(user: *mut c_void, event: Event<'_>) -> c_int {
     // SAFETY: as the caller guarantees.
     let lent = unsafe { &*user.cast::<Lent>() };
-    if let Some(events) = lent.events {
-        // SAFETY: lent by `recv` for the call that runs this callback.
-        unsafe { (*events)(event) };
+    match lent.events {
+        // SAFETY: lent by `recv` or `send` for the call that runs this
+        // callback.
+        Some(events) => match unsafe { (*events)(event) } {
+            Heard::Fine => 0,
+            Heard::Failed => sys::NGHTTP2_ERR_CALLBACK_FAILURE,
+        },
+        None => 0,
     }
-    0
 }
 
 /// # Safety
@@ -511,6 +539,7 @@ unsafe extern "C" fn on_frame_recv(
             Event::DataEnd { stream }
         }
         sys::NGHTTP2_SETTINGS if hd.flags & sys::NGHTTP2_FLAG_ACK == 0 => Event::Settings,
+        sys::NGHTTP2_WINDOW_UPDATE => Event::WindowUpdate { stream },
         sys::NGHTTP2_GOAWAY => {
             // SAFETY: a GOAWAY frame, as its header says.
             let g = unsafe { frame.goaway };

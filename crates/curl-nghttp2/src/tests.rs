@@ -1,6 +1,7 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 use super::*;
+use curl_core::http2::Session as _;
 
 /// An event, owned.
 #[derive(Debug, PartialEq, Eq)]
@@ -11,6 +12,7 @@ enum Seen {
     DataEnd(i32),
     Closed(i32, u32),
     Settings,
+    WindowUpdate,
     GoAway(i32, u32),
     Reset(i32, u32),
 }
@@ -28,6 +30,7 @@ fn own(e: Event<'_>) -> Seen {
         Event::DataEnd { stream } => Seen::DataEnd(stream.0),
         Event::Closed { stream, error } => Seen::Closed(stream.0, error),
         Event::Settings => Seen::Settings,
+        Event::WindowUpdate { .. } => Seen::WindowUpdate,
         Event::GoAway { last_stream, error } => Seen::GoAway(last_stream.0, error),
         Event::Reset { stream, error } => Seen::Reset(stream.0, error),
     }
@@ -52,9 +55,15 @@ fn pump(from: &mut Session, to: &mut Session, body: &mut Vec<u8>, seen: &mut Vec
                 BodyRead::Bytes(n)
             }
         },
+        &mut |_| Heard::Fine,
     )
     .unwrap();
-    let n = to.recv(&wire, &mut |e| seen.push(own(e))).unwrap();
+    let n = to
+        .recv(&wire, &mut |e| {
+            seen.push(own(e));
+            Heard::Fine
+        })
+        .unwrap();
     assert_eq!(n, wire.len());
 }
 
@@ -65,7 +74,7 @@ fn a_request_and_its_response() {
     let mut client = Session::client().unwrap();
     let mut server = Session::server().unwrap();
     client
-        .submit_settings(&[(SETTINGS_MAX_CONCURRENT_STREAMS, 100)])
+        .submit_settings(&[Setting::MaxConcurrentStreams(100)])
         .unwrap();
     server.submit_settings(&[]).unwrap();
     let fields: [(&[u8], &[u8]); 5] = [
@@ -90,7 +99,10 @@ fn a_request_and_its_response() {
     let mut reply = b"ok\n".to_vec();
     let mut at_client = Vec::new();
     pump(&mut server, &mut client, &mut reply, &mut at_client);
-    let stream_events: Vec<&Seen> = at_client.iter().filter(|e| **e != Seen::Settings).collect();
+    let stream_events: Vec<&Seen> = at_client
+        .iter()
+        .filter(|e| !matches!(e, Seen::Settings | Seen::WindowUpdate))
+        .collect();
     assert_eq!(
         stream_events,
         [
@@ -117,7 +129,7 @@ fn resets_goaways_and_garbage() {
     client.submit_settings(&[]).unwrap();
     // A server's first frame is its SETTINGS.
     server
-        .submit_settings(&[(SETTINGS_MAX_CONCURRENT_STREAMS, 7)])
+        .submit_settings(&[Setting::MaxConcurrentStreams(7)])
         .unwrap();
     let fields: [(&[u8], &[u8]); 4] = [
         (b":method", b"GET"),

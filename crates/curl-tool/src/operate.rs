@@ -3520,6 +3520,7 @@ impl Linked {
                 tls: Some(Library::Owned(tls)),
                 gss,
                 idn: Some(&curl_idn2::IDN2),
+                h2: Some(&curl_nghttp2::NGHTTP2),
             })
         };
         Ok(Linked {

@@ -795,7 +795,23 @@ the system's under the HTTP-only programs installed here.
       FTP's `-Q`, `-l` and `--ftp-create-dirs`, stage 6), and 2 are `-V`'s lists of protocols
       and features, which grow as steps 48–52 and the later stages add them.
     - **e. Closing the step.** **To do.** The sweep and cargo-mutants on what it changed.
-48. **The threaded resolver,** `AsynchDNS` as distributions build it, beside c-ares. **To do.**
+48. **The threaded resolver,** `AsynchDNS` as distributions build it, beside c-ares. **In
+    progress.**
+    - **a. The resolver seam.** **In progress.** The `Resolver` trait ENGINE.md lays out
+      (`start`, `poll`, `cancel`, its sockets and its wake), in place of `Net::resolve`'s
+      answer-at-once: the connect machine waits in a resolving state for an answer that comes
+      later, and the cache, the shortcuts and the negative answers stay where they are. The
+      system's resolver and the fake network answer through it, the fake one at once or later
+      as a test asks.
+    - **b. The threaded resolver.** **To do.** C's (`lib/vdns/asyn-thrdd.c`, `thrdpool.c`,
+      `thrdqueue.c`): a thread pool per multi (`CURLMOPT_RESOLVE_THREADS_MAX`, threads made as
+      needed and let go when idle), each address family a query of its own, an answer
+      delivered by waking the multi, the resolve's own timer and timeout, the DNS traces, and
+      the debug build's variables.
+    - **c. The build's resolver and its oracle.** **To do.** Which resolver a build uses, what
+      it reports (`AsynchDNS`, `threaded-resolver`), and the C build that is its oracle; the
+      tests that name it (3026, the pytest DNS cases) on both legs.
+    - **d. Closing the step.** **To do.** The sweep and cargo-mutants on what it changed.
 49. **IDN** through libidn2. **To do.**
 50. **HSTS and alt-svc,** their caches, files and options, without the share (milestone 7). **To do.**
 51. **The pool's `Attached` place,** a connection several transfers lease (ENGINE.md). **To do.**

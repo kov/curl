@@ -1,0 +1,34 @@
+crates/curl-tool/src/main.rs:93:5: replace main -> ExitCode with Default::default()
+crates/curl-tool/src/easysrc.rs:60:5: replace proxy_type -> i64 with 0
+crates/curl-tool/src/easysrc.rs:60:5: replace proxy_type -> i64 with 1
+crates/curl-tool/src/easysrc.rs:60:5: replace proxy_type -> i64 with -1
+crates/curl-tool/src/easysrc.rs:81:5: replace auth_mask -> u64 with 0
+crates/curl-tool/src/easysrc.rs:81:5: replace auth_mask -> u64 with 1
+crates/curl-tool/src/easysrc.rs:97:14: replace |= with &= in auth_mask
+crates/curl-tool/src/easysrc.rs:97:30: replace & with | in auth_mask
+crates/curl-tool/src/easysrc.rs:97:30: replace & with ^ in auth_mask
+crates/curl-tool/src/easysrc.rs:97:32: delete ! in auth_mask
+crates/curl-tool/src/easysrc.rs:97:74: replace | with & in auth_mask
+crates/curl-tool/src/easysrc.rs:105:5: replace socks5_mask -> u64 with 0
+crates/curl-tool/src/easysrc.rs:105:5: replace socks5_mask -> u64 with 1
+crates/curl-tool/src/operate.rs:2258:5: replace tls_versions -> ((options::TlsMinVersion, i64), (options::TlsMaxVersion, i64)) with ((Default::default(), 0), (Default::default(), 0))
+crates/curl-tool/src/operate.rs:2258:5: replace tls_versions -> ((options::TlsMinVersion, i64), (options::TlsMaxVersion, i64)) with ((Default::default(), 0), (Default::default(), 1))
+crates/curl-tool/src/operate.rs:2258:5: replace tls_versions -> ((options::TlsMinVersion, i64), (options::TlsMaxVersion, i64)) with ((Default::default(), 0), (Default::default(), -1))
+crates/curl-tool/src/operate.rs:2258:5: replace tls_versions -> ((options::TlsMinVersion, i64), (options::TlsMaxVersion, i64)) with ((Default::default(), 1), (Default::default(), 0))
+crates/curl-tool/src/operate.rs:2258:5: replace tls_versions -> ((options::TlsMinVersion, i64), (options::TlsMaxVersion, i64)) with ((Default::default(), 1), (Default::default(), 1))
+crates/curl-tool/src/operate.rs:2258:5: replace tls_versions -> ((options::TlsMinVersion, i64), (options::TlsMaxVersion, i64)) with ((Default::default(), 1), (Default::default(), -1))
+crates/curl-tool/src/operate.rs:2258:5: replace tls_versions -> ((options::TlsMinVersion, i64), (options::TlsMaxVersion, i64)) with ((Default::default(), -1), (Default::default(), 0))
+crates/curl-tool/src/operate.rs:2258:5: replace tls_versions -> ((options::TlsMinVersion, i64), (options::TlsMaxVersion, i64)) with ((Default::default(), -1), (Default::default(), 1))
+crates/curl-tool/src/operate.rs:2258:5: replace tls_versions -> ((options::TlsMinVersion, i64), (options::TlsMaxVersion, i64)) with ((Default::default(), -1), (Default::default(), -1))
+crates/curl-tool/src/operate.rs:2265:9: delete match arm 1 in tls_versions
+crates/curl-tool/src/operate.rs:2266:9: delete match arm 2 in tls_versions
+crates/curl-tool/src/operate.rs:2267:9: delete match arm 0 | 3 in tls_versions
+crates/curl-tool/src/operate.rs:2271:9: delete match arm 0 in tls_versions
+crates/curl-tool/src/operate.rs:2272:9: delete match arm 1 in tls_versions
+crates/curl-tool/src/operate.rs:2273:9: delete match arm 2 in tls_versions
+crates/curl-tool/src/operate.rs:2274:9: delete match arm 3 in tls_versions
+crates/curl-tool/src/operate.rs:2694:5: replace http_setopts -> Result<(), ErrorKind> with Ok(())
+crates/curl-tool/src/operate.rs:3504:9: replace Linked::for_handle -> SharedLibraries with Default::default()
+crates/curl-tool/src/trace.rs:128:9: replace <impl DebugHandler for Entry>::debug with ()
+crates/curl-tool/src/write_out.rs:822:35: delete - in value
+crates/curl-tool/src/write_out.rs:825:35: delete - in value

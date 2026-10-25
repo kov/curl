@@ -1,0 +1,104 @@
+<title>curlrs cloud status</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: one narrow column of labelled blocks, read top to bottom in under a minute */
+:root {
+  --bg: #f6f7f8; --fg: #1b1f23; --muted: #5b6570; --rule: #d5dadf;
+  --accent: #1f5f8b; --warn: #9a5b00; --bad: #a12a2a; --ok: #2d6a3a;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #15191d; --fg: #e3e7ea; --muted: #9aa5af; --rule: #2c343b;
+  --accent: #7db8e0; --warn: #e0a54a; --bad: #e07a7a; --ok: #7fc48d; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #15191d; --fg: #e3e7ea; --muted: #9aa5af; --rule: #2c343b;
+  --accent: #7db8e0; --warn: #e0a54a; --bad: #e07a7a; --ok: #7fc48d; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font: 15px/1.5 var(--sans);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 24px; }
+main { max-width: 760px; margin: 0 auto; display: grid; gap: 22px; }
+h1 { font-size: 20px; margin: 0; text-wrap: balance; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 6px; }
+section { border-top: 1px solid var(--rule); padding-top: 12px; min-width: 0; }
+code, .mono { font-family: var(--mono); font-size: 13px; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; }
+dt { color: var(--muted); } dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+ul { margin: 0; padding-left: 18px; display: grid; gap: 8px; }
+.decide { border-left: 3px solid var(--warn); padding-left: 10px; }
+.blocked { border-left: 3px solid var(--bad); padding-left: 10px; }
+.pill { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid currentColor; }
+.run { color: var(--accent); } .ok { color: var(--ok); } .bad { color: var(--bad); }
+</style>
+<main>
+  <header>
+    <h1>curlrs cloud status</h1>
+    <div class="mono" id="updated">Updated Sun Oct 25 02:46:30 UTC 2026 · final report, work handed off</div>
+  </header>
+
+  <section>
+    <h2>Now</h2>
+    <dl>
+      <dt>Working on</dt><dd><b>Stopped here at the user's request.</b> Step 47 is done. Step 48b is done but for three small items (below); 48c and 48d remain, then steps 49–54.</dd>
+      <dt>Branch</dt><dd><code>cloud/m4</code>, rebased onto origin/master 4d4feeb</dd>
+      <dt>Last pushed</dt><dd><code>ae4124e</code> on cloud/m4. This session's commits: <code>3289904</code> (the multi listens on the resolver's wake), <code>e303988</code> (a tool test for <code>SSLKEYLOGFILE</code>), <code>96bcdaa</code> (<code>CURLMOPT_RESOLVE_THREADS_MAX</code>, <code>CURLMOPT_QUICK_EXIT</code>, <code>CURLOPT_QUICK_EXIT</code>), <code>db49787</code> ("Resolving timed out"), <code>4779e37</code> (the threaded resolver's DNS lines), <code>efeb1aa</code> (the debug variables, and a 100 ms retry when a thread fails to start), <code>ae4124e</code> (MILESTONES). The tree is clean; nothing is uncommitted.</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Tests and runs</h2>
+    <ul>
+      <li><span class="pill ok">done</span> cargo-mutants over the fixes' diff. curl-core: 72 tested, 44 caught, 12 timeouts, 15 unviable, 1 missed, closed by <code>55b36a5</code>. curl-tool: 2 of 2 caught. Sweep over every new entry: no hole.</li>
+      <li><span class="pill ok">done</span> Corpus: 2,263 invocations (995 shell, 708 docs, 381 CI, 106 Dockerfile, 73 makefile). Both tools: 1,400 of 1,411 the same. Of the 11: 7 use options not built yet (--http2, FTP's -Q, -l, --ftp-create-dirs), 2 are -V, and 2 are the .netrc order, being fixed.</li>
+      <li><span class="pill ok">done</span> Tenet findings: each armed by breaking it (sabotage entries swept RED; 3.8 by a release-build run). Sweeps of the proxy and SOCKS GSS-API areas: 118 entries, no hole.</li>
+      <li><span class="pill ok">done</span> <b>Step 47e cargo-mutants</b>: curl-core, curl-sys-abi and curl-tool missed none after <code>e303988</code>; curl-openssl caught 1, with 3 unviable. Sabotage entries in this session: each new one turned its witness red when planted by hand.</li>
+      <li><span class="pill ok">done</span> <b>Threaded C oracle</b> (<code>build/c-threaded</code>: AsynchDNS, no c-ares) full suite with valgrind: <b>2003 of 2006 OK</b>, no valgrind error; failed 1275, 2100, 2600, all three failing on build/c too. 2104 passes here and fails on build/c.</li>
+      <li><span class="pill ok">done</span> <b>Valgrind, back on.</b> My earlier note was wrong: the "possibly lost" thread-name block is not new. It comes from std's stack-overflow handler plus the debug build's tracking header (std keeps the block only through an interior pointer). A 20-line program with a header-adding allocator shows it under Rust 1.97 and 1.99, and so does origin/master's tool; earlier runs used <code>-n</code>, which hid it. Suppressed narrowly (<code>d2ff527</code>). The full Rust-leg run with valgrind then found one more: MIT krb5's internal <code>gss_display_status</code> leak, which the C leg already suppresses under C's callers. Same entry for the Rust callers (<code>4108959</code>). Result: Rust leg with valgrind, <b>1241 of 1274 OK</b>, and at the 1.2 commit <b>1246 of 1279 OK</b> with no valgrind error; the 33 failures are the same list with <code>-n</code>, and the same as origin/master's.</li>
+      <li>Each fix was checked against the C build, with a test armed by breaking it and a sabotage entry; no sweep hole. Tests: workspace as at baseline (the 3 container failures only); runtests on the Rust leg for each fix's area all pass.</li>
+      <li><span class="pill ok">done</span> Review: 33 findings, 7 refuted by the verifiers, and 24 after merging overlaps. Report: REVIEW-M3.md on branch review/m3.</li>
+      <li><span class="pill ok">done</span> Baseline <code>cargo test --workspace --no-fail-fast</code> at master: <b>1735 passed, 3 failed, 7 ignored</b>. The three failures come from this container: no IPv6, and an OpenSSL 3.0 with only the <code>dynamic</code> engine.</li>
+      <li><span class="pill ok">done</span> C suite on build/c: runtests.pl <b>1992 of 1996 OK</b>, 184 skipped; failed: 1275, 2100, 2104, 2600. pytest is not running yet (USER unset, and the SSH and HTTP/2 servers do not start); this gets fixed before step 52 or 54 needs it.</li>
+      <li>The C test programs are relinked with <code>-z lazy</code>: Ubuntu links with <code>-z now</code>, so the one <code>libtests</code> binary failed to load against a library still missing some exports. Fedora, the reference, binds lazily.</li>
+      <li>C oracle: libcurl 8.23.1-DEV debug, OpenSSL 3.0.13, c-ares 1.34.5 built from source, HTTPS-RR on. No HTTP/3, which needs OpenSSL 3.5; that is milestone 5.</li>
+    </ul>
+  </section>
+
+
+  <section>
+    <h2>Hand-off: remaining work, in order</h2>
+    <ul>
+      <li><b>48b, what is left</b> (ENGINE.md §4.8 lists it):
+        <ul>
+          <li><code>CURL_DBG_RESOLV_FAIL_IPV6</code> in <code>hostip_resolv</code>, for every resolver. It writes "DEBUG fail ipv6 resolve" between the hostip_resolv line and the cache lookup, which needs the lookup lines written on the first pass. pytest test_21_04 uses it.</li>
+          <li>The blocking resolve's <code>await, waiting Nms</code> lines, and the thread queue's own trace.</li>
+          <li>The link-local AAAA re-query (<code>AF_UNSPEC</code>): reproduce glibc's missing scope first, as CLAUDE.md asks. It needs <code>curl_os::resolve::lookup</code> to keep each address's scope id. Only test_21_16 uses it, and that test is skipped without DNS override.</li>
+        </ul></li>
+      <li><b>48c.</b>
+        <ul>
+          <li>The <code>threaded-resolver</code> feature is already forwarded by curl-sys-abi and curl-tool. Left to do: version and the feature list report <code>AsynchDNS</code> and threaded-resolver, so runtests stops skipping 3026 ("lacks threadsafe").</li>
+          <li>A threaded build must drop c-ares's reason, "(Domain name not found)", from "Could not resolve host" (state.rs <code>connect_failed</code>, and bind.rs). Tie it to the resolver, not to a cfg on the trace.</li>
+          <li>Run the Rust leg built with the feature against <code>build/c-threaded</code>, with valgrind: the full suite, then pytest test_21.</li>
+          <li>build/c-threaded's suite is already done: 2003/2006 OK, failing 1275, 2100, 2600, as build/c does; 2104 passes there.</li>
+        </ul></li>
+      <li><b>48d.</b> <code>sabotage/sweep.py dns multi trace</code> from a clean worktree, and cargo-mutants over <code>2b6a502..HEAD</code>, crate by crate. For curl-openssl, pass peer-test name filters after <code>-- --</code> (<code>a_verified_get resum</code>): the container cannot pass the engine test or one alert-text test (OpenSSL 3.0). Expect the tool's <code>quick_exit</code> to survive. It changes only whether exit joins the resolver threads; exclude it with a comment.</li>
+      <li><b>Steps 49–54</b> as MILESTONES.md has them. Step 51 starts by writing finding 2.1's ownership model into ENGINE.md.</li>
+      <li><b>Helpers</b> in the scratchpad (<code>/tmp/claude-0/-home-user-curl/bc197901-0af5-5d98-8a11-681020474f95/scratchpad</code>):
+        <ul>
+          <li><code>memcap.sh</code> (12 GiB at most), <code>testenv.sh</code>, and <code>rust_leg.py -a -j4 &lt;tests&gt;</code> (the Rust leg under valgrind).</li>
+          <li><code>arm.py &lt;entries file&gt; N</code> plants the last N sabotage entries by hand; <code>stale.py</code> lists stale entries.</li>
+          <li>The sweep needs <code>PATH=$S/bin:$PATH</code>.</li>
+        </ul></li>
+      <li><b>Known container failures</b> (not this branch's): no IPv6 (two probe tests); OpenSSL 3.0 with only the dynamic engine (<code>init_loads_the_built_in_engines</code>, the peer engine test); and the alert's wording in <code>failures.rs:296</code>.</li>
+    </ul>
+  </section>
+
+  <section class="decide">
+    <h2>Needs user decision</h2>
+    <p>None. Step 48's resolver is decided: (a), a build choice; the second C oracle (<code>build/c-threaded</code>) is recorded in SCOPE.md (<code>de64e26</code>) and built; its suite has run.</p>
+  </section>
+
+  <section class="blocked">
+    <h2>Blocked</h2>
+    <p>Nothing blocked.</p>
+  </section>
+</main>

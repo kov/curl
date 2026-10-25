@@ -1,0 +1,3 @@
+crates/curl-tool/src/operate.rs:69:5: replace run -> Ending with Default::default()
+crates/curl-tool/src/operate.rs:889:5: replace create -> Made<'a, 'l> with Default::default()
+crates/curl-tool/src/write_out.rs:730:5: replace value -> Value<'a> with Default::default()

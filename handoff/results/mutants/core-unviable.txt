@@ -1,0 +1,12 @@
+crates/curl-core/src/conn/socks.rs:763:9: replace Handshake::connected -> Result<Took, SocksError> with Ok(Default::default())
+crates/curl-core/src/conn/socks.rs:792:5: replace fixed -> Result<Took, SocksError> with Ok(Default::default())
+crates/curl-core/src/multi/state.rs:2846:5: replace follow_leg -> TransferState with Default::default()
+crates/curl-core/src/multi/state.rs:3012:5: replace start_leg -> TransferState with Default::default()
+crates/curl-core/src/multi/state.rs:3072:9: replace && with || in start_leg
+crates/curl-core/src/multi/state.rs:3248:5: replace choose_proxy -> Result<Option<ProxyRoute>, ErrorKind> with Ok(Some(Default::default()))
+crates/curl-core/src/tls/keylog.rs:156:9: replace SharedKeyLog::of_static -> SharedKeyLog with Default::default()
+crates/curl-core/src/conn/socks/gss.rs:343:9: replace Handshake::gss_token -> Result<Took, SocksError> with Ok(Default::default())
+crates/curl-core/src/conn/socks/gss.rs:409:9: replace Handshake::gss_level -> Result<Took, SocksError> with Ok(Default::default())
+crates/curl-core/src/multi/state/tls.rs:59:5: replace start -> (TransferState, Wake) with (Default::default(), Default::default())
+crates/curl-core/src/proto/http/cookies.rs:235:5: replace open -> Result<Opened, OutOfMemory> with Ok(Default::default())
+crates/curl-core/src/proto/http/cookies.rs:257:5: replace load_failed -> ErrorKind with Default::default()

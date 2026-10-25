@@ -1,0 +1,6 @@
+crates/curl-sys-abi/src/easy.rs:157:9: replace ShimEasy::boxed -> Result<NonNull<ShimEasy>, OutOfMemory> with Ok(NonNull::new())
+crates/curl-sys-abi/src/easy.rs:157:9: replace ShimEasy::boxed -> Result<NonNull<ShimEasy>, OutOfMemory> with Ok(NonNull::from_iter([Default::default()]))
+crates/curl-sys-abi/src/easy.rs:157:9: replace ShimEasy::boxed -> Result<NonNull<ShimEasy>, OutOfMemory> with Ok(NonNull::new(Default::default()))
+crates/curl-sys-abi/src/easy.rs:157:9: replace ShimEasy::boxed -> Result<NonNull<ShimEasy>, OutOfMemory> with Ok(NonNull::from(Default::default()))
+crates/curl-sys-abi/src/easy.rs:471:5: replace libraries_with -> curl_core::libraries::Libraries with Default::default()
+crates/curl-sys-abi/src/getinfo.rs:242:5: replace value -> Option<Value> with Some(Default::default())

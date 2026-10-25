@@ -1,0 +1,12 @@
+crates/curl-sys-abi/src/easy.rs:159:12: delete ! in ShimEasy::boxed
+crates/curl-sys-abi/src/easy.rs:200:9: replace ShimEasy::adapt -> Result<(), OutOfMemory> with Ok(())
+crates/curl-sys-abi/src/easy.rs:492:5: replace curl_easy_init -> *mut CURL with Default::default()
+crates/curl-sys-abi/src/getinfo.rs:242:5: replace value -> Option<Value> with None
+crates/curl-sys-abi/src/getinfo.rs:254:9: delete match arm ffi::CURLINFO_CONN_ID in value
+crates/curl-sys-abi/src/getinfo.rs:255:9: delete match arm ffi::CURLINFO_XFER_ID in value
+crates/curl-sys-abi/src/getinfo.rs:254:68: delete - in value
+crates/curl-sys-abi/src/getinfo.rs:255:72: delete - in value
+crates/curl-sys-abi/src/setopt/mod.rs:576:5: replace apply -> Result<(), Refused> with Ok(())
+crates/curl-sys-abi/src/setopt/mod.rs:685:9: delete match arm (ffi::CURLOPT_MAXREDIRS, Long(n)) in apply
+crates/curl-sys-abi/src/setopt/mod.rs:712:9: delete match arm (ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, Long(n)) in apply
+crates/curl-sys-abi/src/setopt/mod.rs:1570:5: replace cookie_command -> Result<(), ErrorKind> with Ok(())

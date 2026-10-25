@@ -1,0 +1,1 @@
+crates/curl-tool/src/operate.rs:3499:9: replace Linked::open_key_log with ()

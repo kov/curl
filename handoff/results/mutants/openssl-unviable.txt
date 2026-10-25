@@ -1,0 +1,3 @@
+crates/curl-openssl/src/ssl.rs:81:9: replace <impl TlsBackend for OpenSsl>::session -> Result<Box<dyn TlsSession>, ErrorKind> with Ok(Box::new(Default::default()))
+crates/curl-openssl/src/ssl.rs:272:9: replace Session::call -> (R, Below) with (Default::default(), Default::default())
+crates/curl-openssl/src/ssl.rs:899:9: replace <impl TlsSession for Session>::handshake -> Result<Handshake, ErrorKind> with Ok(Default::default())

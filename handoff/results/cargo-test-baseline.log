@@ -1,0 +1,2365 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running unittests src/lib.rs (build/target/debug/deps/curl_alloc-5fc48004cd623bf5)
+
+running 8 tests
+test boxed::tests::boxes_values_and_zero_sized_types ... ok
+test grow::tests::grows_and_formats ... ok
+test grow::tests::reports_failure_instead_of_aborting ... ok
+test rc::tests::shares_between_threads ... ok
+test track::tests::counts_this_threads_allocations ... ok
+test rc::tests::the_last_handle_drops_the_value ... ok
+test track::tests::measures_the_bytes_this_thread_holds ... ok
+test track::tests::keeps_alignment_and_contents ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/track.rs (build/target/debug/deps/track-0e9f6193b841054a)
+test logs_tracked_blocks_and_fails_past_the_limit ... LIMIT rust:0 malloc reached memlimit
+LIMIT rust:0 malloc reached memlimit
+LIMIT rust:0 malloc reached memlimit
+ok
+test one_allocation_is_refused_once ... LIMIT rust:0 malloc reached memlimit
+ok
+     Running tests/track_here.rs (build/target/debug/deps/track_here-0c8140cdd97b86e2)
+test a_refusal_here_spares_other_threads ... ok
+     Running unittests src/lib.rs (build/target/debug/deps/curl_brotli-805b9abc7cfcaa44)
+
+running 6 tests
+test tests::a_body_not_of_the_coding_fails ... ok
+test tests::bytes_after_the_stream_fail_it ... ok
+test tests::the_coding_is_undone ... ok
+test tests::the_version_is_the_library_s ... ok
+test tests::output_goes_in_pieces_of_at_most_16_kib ... ok
+test tests::a_transfer_out_of_time_stops_decoding ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (build/target/debug/deps/curl_core-490c5ae92211f009)
+
+running 1147 tests
+test coding::tests::a_coding_is_named_in_any_case_and_by_its_alias ... ok
+test base64::tests::base64_is_decoded_as_curlx_decodes_it ... ok
+test components::tests::a_bad_name_ends_the_configuration ... ok
+test components::tests::categories_name_their_components ... ok
+test components::tests::a_set_shows_the_components_it_traces ... ok
+test components::tests::copies_share_the_setting ... ok
+test components::tests::names_turn_components_on_and_off ... ok
+test conn::buf::tests::a_read_past_its_room_is_an_error ... ok
+test conn::buf::tests::received_bytes_wait_until_used ... ok
+test conn::connect::tests::eyeballs_alternate_the_families ... ok
+test conn::chain::tests::a_handshake_made_shows_connected ... ok
+test conn::connect::tests::literals_are_addresses ... ok
+test conn::connect::tests::localhost_names_are_loopback ... ok
+test conn::connect::tests::the_winner_closes_the_other_attempts ... ok
+test conn::connect_to::tests::entries_match_as_c_matches_them ... ok
+test conn::connect_to::tests::bad_entries_are_refused_as_c_refuses_them ... ok
+test conn::connect_to::tests::zones_are_kept ... ok
+test conn::dns::tests::a_name_s_https_record_is_kept_apart_from_its_addresses ... ok
+test conn::dns::tests::a_full_cache_drops_its_oldest_half ... ok
+test conn::dns::tests::answers_of_addresses_are_not_resolved ... ok
+test conn::dns::tests::entries_parse_as_c_parses_them ... ok
+test conn::dns::tests::the_cache_keeps_answers_until_they_go_stale ... ok
+test conn::dns::tests::the_cache_s_timeout_decides_what_is_stale ... ok
+test conn::connect::tests::attempts_race_as_unit_2600_has_them ... ok
+test conn::io::tests::a_fake_socket_keeps_its_options ... ok
+test conn::io::tests::a_refused_socket_leaves_the_conversation ... ok
+test conn::io::tests::a_system_socket_is_set_through_the_trait ... ok
+test conn::io::tests::fake_peers_answer_and_numbers_are_reused ... ok
+test conn::io::tests::more_than_fit_on_the_stack_are_polled ... ok
+test conn::io::tests::sockets_and_descriptors_are_polled_together ... ok
+test conn::io::tests::the_system_network_polls_the_descriptors ... ok
+test conn::io::tests::the_system_resolves_names ... ok
+test conn::layer::tests::a_layer_s_defaults_ask_below ... ok
+test conn::layer::tests::a_real_socket_with_bytes_to_read_is_input_pending ... ok
+test conn::layer::tests::the_socket_says_whether_the_connection_is_alive ... ok
+test conn::layer::tests::urgent_data_is_dead_and_any_other_input_pending ... ok
+test conn::pool::tests::a_clean_close_drains_the_socket_first ... ok
+test conn::pool::tests::a_connection_moves_bytes_both_ways ... ok
+test conn::connect_to::tests::any_entries_name_a_peer_or_are_refused ... ok
+test conn::pool::tests::a_finished_connection_is_kept_for_an_equal_route ... ok
+test conn::pool::tests::a_full_pool_closes_its_oldest_idle_connection ... ok
+test conn::pool::tests::a_host_in_capitals_reuses_the_connection ... ok
+test conn::dns::tests::any_line_is_an_entry_or_refused ... ok
+test conn::pool::tests::a_limit_is_passed_a_whole_millisecond_after_it ... ok
+test conn::pool::tests::a_new_connection_waits_for_room_within_the_limits ... ok
+test conn::pool::tests::a_search_closes_what_it_must_not_reuse ... ok
+test conn::pool::tests::a_search_prunes_once_a_second ... ok
+test conn::io::tests::a_dropped_socket_is_caught - should panic ... ok
+test conn::pool::tests::a_silent_peer_takes_what_it_is_sent ... ok
+test conn::pool::tests::a_dropped_lease_is_caught - should panic ... ok
+test conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot ... ok
+test conn::pool::tests::local_connections_are_numbered_and_closed_when_released ... ok
+test conn::pool::tests::refused_and_silent_attempts ... ok
+test conn::pool::tests::unresolved_names_and_immediate_failures ... ok
+test conn::pool::tests::room_is_made_by_the_connection_idle_longest ... ok
+test conn::pool::tests::a_lease_goes_back_only_to_its_home - should panic ... ok
+test conn::pool::tests::a_share_s_lease_goes_back_only_to_that_share - should panic ... ok
+test conn::proxy::tests::ranges_hold_addresses_as_c ... ok
+test conn::proxy::tests::the_environment_names_proxies_as_c ... ok
+test conn::proxy::tests::a_socks_proxy_at_localhost_with_a_path_is_a_unix_socket ... ok
+test conn::proxy::tests::proxy_urls_read_as_c ... ok
+test conn::proxy::tests::undecodable_credentials_are_the_url_s_error ... ok
+test conn::shutdown::tests::layers_shut_down_from_the_top_one_at_a_time ... ok
+test conn::proxy::tests::the_no_proxy_list_names_hosts_as_c ... ok
+test conn::socks::tests::a_socks5_proxy_s_pick_is_checked_against_what_is_allowed ... ok
+test conn::shutdown::tests::the_set_is_capped_as_c_caps_it ... ok
+test conn::socks::tests::a_socks5_answer_is_read_by_its_address_type ... ok
+test conn::socks::tests::fields_of_255_bytes_go ... ok
+test conn::socks::tests::gss::a_failed_send_or_read_is_said_of_its_message ... ok
+test conn::socks::tests::gss::a_token_must_fit_its_length ... ok
+test conn::socks::tests::gss::an_empty_token_is_not_sent ... ok
+test conn::socks::tests::gss::gss_api_failures_have_their_code ... ok
+test conn::socks::tests::gss::gss_api_is_offered_where_built_in_and_allowed ... ok
+test conn::socks::tests::gss::nec_sends_the_level_unwrapped ... ok
+test conn::socks::tests::gss::protection_granted_fails_once_the_request_went ... ok
+test conn::socks::tests::gss::the_exchange_is_rfc_1961_s ... ok
+test conn::socks::tests::gss::the_level_asked_is_the_last_step_s ... ok
+test conn::socks::tests::gss::the_library_s_failures_are_said_as_c ... ok
+test conn::socks::tests::gss::the_proxy_s_messages_are_checked_as_c ... ok
+test conn::socks::tests::gss::the_service_is_the_credentials_or_rcmd ... ok
+test conn::socks::tests::only_socks4_insists_on_ipv4 ... ok
+test conn::socks::tests::reply_codes_are_c_s ... ok
+test conn::socks::tests::socks4_asks_for_the_address_resolved_here ... ok
+test conn::socks::tests::socks4_refusals_are_said_as_c ... ok
+test conn::socks::tests::socks4a_sends_the_name ... ok
+test conn::socks::tests::socks5_asks_for_the_address_resolved_here ... ok
+test conn::socks::tests::socks5_logs_in_when_asked ... ok
+test conn::socks::tests::socks5_refusals_are_said_as_c ... ok
+test conn::socks::tests::socks5_sends_the_name_and_reads_the_whole_answer ... ok
+test conn::tests::bound_routes_match_as_c ... ok
+test conn::tests::peers_compare_as_c_compares_them ... ok
+test conn::tests::proxied_routes_match_as_c ... ok
+test conn::tests::proxies_compare_as_destinations ... ok
+test conn::tests::routes_compare_every_field ... ok
+test conn::tests::routes_compare_their_tls ... ok
+test conn::tests::unix_sockets_are_told_apart_as_c_tells_them ... ok
+test conn::tls::tests::the_layer_says_what_its_session_holds_and_waits_for ... ok
+test cookie::tests::a_cookie_for_its_host_alone_goes_to_no_other ... ok
+test cookie::tests::a_secure_cookie_is_not_overlaid_from_a_domain_it_covers ... ok
+test cookie::tests::a_server_s_cookie_sweeps_and_a_file_s_line_does_not ... ok
+test cookie::tests::an_address_sets_a_domain_only_for_itself ... ok
+test conn::socks::tests::any_gss_api_reply_is_read_alike_in_any_pieces ... ok
+test cookie::tests::caps_expiry_at_400_days ... ok
+test cookie::tests::caps_the_cookies_a_request_sends ... ok
+test cookie::tests::checks_public_suffixes ... ok
+test cookie::tests::clearing_the_session_counts_what_is_left ... ok
+test cookie::tests::clears_all_or_the_session ... ok
+test cookie::tests::drops_what_c_drops ... ok
+test cookie::tests::expiry_is_capped_without_overflowing ... ok
+test cookie::tests::files_and_the_application_are_not_checked_against_suffixes ... ok
+test cookie::tests::hashes_as_c ... ok
+test cookie::tests::matches_hosts_paths_and_security_as_c ... ok
+test cookie::tests::only_a_suffix_s_own_cookie_is_for_it_alone ... ok
+test cookie::tests::passes_over_session_cookies_in_a_new_session ... ok
+test cookie::tests::reads_attributes_as_c ... ok
+test conn::proxy::tests::any_proxy_and_no_proxy_list_is_read ... ok
+test cookie::tests::reads_netscape_lines_as_c ... ok
+test cookie::tests::reads_lines_and_dates_up_to_their_limits ... ok
+test cookie::tests::refuses_to_overlay_a_secure_cookie ... ok
+test cookie::tests::replaces_only_the_same_domain_and_path ... ok
+test cookie::tests::replaces_in_place_of_time_and_keeps_live_cookies ... ok
+test cookie::tests::requires_what_prefixes_promise ... ok
+test cookie::tests::suffixes_debug_as_a_name ... ok
+test cookie::tests::stores_50_set_cookie_lines_a_request ... ok
+test cookie::tests::sweeps_from_the_earliest_expiry ... ok
+test cookie::tests::sweeps_expired_cookies ... ok
+test cookie::tests::takes_application_lines_of_both_forms ... ok
+test cookie::tests::takes_defaults_from_the_request ... ok
+test cookie::tests::without_a_list_a_domain_s_dot_is_not_its_last_byte ... ok
+test cookie::tests::writes_a_file_newest_first ... ok
+test cookie::tests::without_the_list_every_domain_is_refused ... ok
+test cookie::tests::writes_negative_expiry_with_its_sign ... ok
+test date::tests::a_compact_date_s_month_is_at_most_12 ... ok
+test date::tests::a_compact_date_with_month_00_takes_a_later_month ... ok
+test date::tests::a_zero_byte_ends_the_date ... ok
+test date::tests::lib517_dates ... ok
+test date::tests::six_parts_are_read_and_the_rest_ignored ... ok
+test date::tests::the_latest_year_has_eight_digits ... ok
+test date::tests::unit4781_names ... ok
+test deliver::held::tests::a_partly_delivered_entry_goes_on_from_where_it_stopped ... ok
+test date::tests::any_text_is_a_date_or_not ... ok
+test deliver::held::tests::body_joins_body_and_each_header_line_stands_alone ... ok
+test deliver::held::tests::delivered_bytes_are_dropped_only_past_the_cap ... ok
+test conn::socks::tests::any_reply_is_read_alike_in_any_pieces ... ok
+test deliver::pause::tests::a_lift_counts_the_end_of_an_asked_pause ... ok
+test deliver::held::tests::at_most_64_mib_is_held_counting_what_is_left ... ok
+test deliver::pause::tests::a_request_sets_each_direction ... ok
+test deliver::pause::tests::held_output_stays_held_under_a_receive_pause ... ok
+test deliver::tests::a_body_of_no_known_size_is_never_cut ... ok
+test deliver::tests::a_body_past_its_expected_size_is_cut ... ok
+test deliver::tests::a_body_over_the_size_limit_is_cut_at_the_limit ... ok
+test deliver::tests::a_connect_answer_does_not_start_the_response ... ok
+test deliver::tests::a_copy_of_the_options_shares_the_handlers ... ok
+test deliver::tests::a_decoder_is_given_the_body_in_pieces_of_4_kib ... ok
+test deliver::tests::a_failed_header_write_ends_the_output ... ok
+test deliver::tests::a_decoder_learns_whether_the_transfer_s_time_is_up ... ok
+test deliver::tests::a_failed_replay_fails_the_unpause_and_then_the_transfer ... ok
+test deliver::tests::a_failed_write_fails_the_transfer ... ok
+test deliver::tests::a_handler_reaches_its_own_transfer ... ok
+test deliver::tests::a_failed_write_ends_the_output_mid_write ... ok
+test deliver::tests::a_handler_replaced_inside_its_own_call_takes_the_next_piece ... ok
+test deliver::tests::a_handler_reads_its_report_as_it_stands ... ok
+test deliver::tests::a_header_line_goes_out_whole ... ok
+test deliver::tests::a_handler_s_own_reason_is_the_only_one ... ok
+test deliver::tests::a_pause_where_none_is_supported_fails_the_write ... ok
+test deliver::tests::a_receive_pause_finishes_the_write_under_way ... ok
+test deliver::tests::a_receive_pause_inside_the_replay_lets_it_finish ... ok
+test deliver::tests::a_script_s_pieces_reach_their_handlers_in_order ... ok
+test deliver::tests::a_short_body_is_a_partial_file ... ok
+test deliver::tests::a_short_count_fails_with_c_s_reason ... ok
+test deliver::tests::a_sibling_s_unpause_replays_at_once ... ok
+test deliver::tests::a_transfer_not_exchanging_cannot_be_paused ... ok
+test deliver::tests::a_transfer_s_headers_are_stored_for_its_handlers_and_after ... ok
+test deliver::tests::a_verbose_transfer_traces_the_body_as_received ... ok
+test deliver::tests::an_ignored_body_is_counted_to_its_end ... ok
+test deliver::tests::an_invalid_header_line_fails_the_transfer ... ok
+test deliver::tests::an_unpause_inside_the_replay_lets_it_go_on ... ok
+test deliver::tests::an_unpause_tells_the_timer ... ok
+test deliver::tests::an_unwanted_body_is_dropped ... ok
+test cookie::tests::any_cookie_lines_are_stored_or_passed_over ... ok
+test deliver::tests::failed_output_stays_failed ... ok
+test deliver::held::tests::what_was_delivered_does_not_pile_up ... ok
+test deliver::tests::held_output_keeps_the_transfer_going_until_its_time_is_up ... ok
+test deliver::tests::included_header_lines_go_to_the_write_handler_first ... ok
+test deliver::tests::included_headers_count_against_the_size_limit ... ok
+test deliver::tests::no_bytes_reach_no_decoder ... ok
+test deliver::tests::held_output_is_replayed_in_the_order_it_came ... ok
+test deliver::tests::output_written_while_held_goes_behind_it ... ok
+test deliver::tests::the_body_goes_out_in_pieces_of_at_most_16_kib ... ok
+test deliver::tests::the_first_reason_is_the_one_kept ... ok
+test deliver::tests::the_paused_piece_is_given_again_whole ... ok
+test deliver::tests::without_handlers_the_output_goes_nowhere ... ok
+test easy::tests::a_failure_says_why ... ok
+test easy::tests::a_handle_moves_to_another_thread ... ok
+test easy::tests::a_perform_s_multi_has_a_waker ... ok
+test easy::tests::adding_a_handle_drops_its_own_multi ... ok
+test easy::tests::clones_options_and_resets_them ... ok
+test easy::tests::connects_over_loopback ... ok
+test easy::tests::cookie_commands_note_what_c_traces ... ok
+test easy::tests::cookies_are_added_cleared_and_forgotten ... ok
+test easy::tests::errors_read_as_their_kinds ... ok
+test easy::tests::performs_a_file_url_on_its_own ... ok
+test easy::tests::performs_a_path_with_the_default_protocol ... ok
+test easy::tests::performs_an_upload_and_resumes_it ... ok
+test easy::tests::the_application_s_cookies_count_toward_the_limit ... ok
+test error::tests::url_errors_map_as_c_maps_them ... ok
+test hash::tests::a_key_of_a_block_is_not_hashed ... ok
+test hash::tests::hashes_as_c ... ok
+test hash::tests::hmacs_as_rfc_4231 ... ok
+test deliver::tests::output_held_before_a_decoder_is_replayed_in_the_order_it_came ... ok
+test hash::tests::pads_the_last_block_as_c ... ok
+test id::tests::a_doubling_arena_grows_as_the_connection_pool ... ok
+test id::tests::a_transfer_table_grows_once_few_rows_are_free ... ok
+test id::tests::a_value_replaced_keeps_its_key ... ok
+test id::tests::hands_out_ids_as_c_does ... ok
+test id::tests::policies_leave_a_row_to_hand_out ... ok
+test id::tests::stale_keys_fail_their_lookup ... ok
+test id::tests::walks_rows_in_ascending_order ... ok
+test libraries::tests::libraries_print_their_signer ... ok
+test mime::tests::a_base64_part_s_size_is_c_s ... ok
+test mime::tests::a_boundary_is_drawn_as_c_draws_it ... ok
+test mime::tests::a_boundary_redraws_from_the_largest_multiple ... ok
+test mime::tests::a_file_is_read_as_it_is_sent ... ok
+test mime::tests::a_file_is_read_to_its_end ... ok
+test mime::tests::a_file_name_suggests_its_type ... ok
+test mime::tests::a_file_part_is_typed_from_its_name_or_path ... ok
+test mime::tests::a_file_that_fails_to_read_ends_or_fails ... ok
+test mime::tests::a_fill_calls_out_once ... ok
+test mime::tests::a_form_is_read_whole_and_sized ... ok
+test mime::tests::a_handler_s_failure_ends_the_read ... ok
+test mime::tests::a_line_without_a_colon_names_no_header ... ok
+test hash::tests::pads_at_every_length ... ok
+test mime::tests::a_part_of_known_size_ends_without_a_read ... ok
+test mime::tests::a_part_reached_before_starts_over_as_c_s ... ok
+test mime::tests::a_part_s_headers_are_c_s ... ok
+test mime::tests::a_part_without_a_name_is_no_attachment ... ok
+test mime::tests::a_pause_after_a_full_fill_is_the_next_fill_s ... ok
+test mime::tests::a_pause_holds_until_lifted ... ok
+test mime::tests::a_rewind_drops_what_the_encoder_held ... ok
+test mime::tests::a_rewind_leaves_a_part_not_reached ... ok
+test mime::tests::a_rewind_starts_over ... ok
+test mime::tests::a_short_body_is_detected ... ok
+test mime::tests::a_tree_read_whole_starts_over_with_its_headers ... ok
+test mime::tests::a_tree_read_whole_starts_with_its_headers ... ok
+test mime::tests::a_tree_s_depth_counts_its_levels ... ok
+test mime::tests::a_tree_too_deep_is_refused ... ok
+test mime::tests::an_encoder_is_found_by_its_name ... ok
+test mime::tests::backslash_quoting_refuses_a_line_break ... ok
+test mime::tests::encoders_encode_as_c_s ... ok
+test mime::tests::little_room_gives_the_same_bytes ... ok
+test mime::tests::sent_head_lines_are_kept_until_cleared ... ok
+test mime::tests::subparts_nest_with_their_own_boundary ... ok
+test mime::tests::the_application_s_type_is_read_after_its_separator ... ok
+test mime::tests::the_application_types_the_body ... ok
+test mime::tests::a_malformed_part_is_an_error_not_a_panic ... ok
+test mime::tests::what_a_read_got_is_c_s_size ... ok
+test multi::cx::tests::a_lease_given_back_closes_without_room_made ... ok
+test multi::cx::tests::a_socket_without_room_is_caught - should panic ... ok
+test multi::cx::tests::sockets_held_close_in_order_once_told ... ok
+test mime::tests::the_pieces_are_c_s ... ok
+test multi::sched::tests::rows_are_walked_in_order ... ok
+test multi::shutdown_tests::a_closed_connection_lets_a_waiting_transfer_look_again ... ok
+test multi::shutdown_tests::a_closing_connection_counts_only_toward_its_own_host ... ok
+test multi::shutdown_tests::a_closing_connection_owns_its_socket_until_the_set_closes_it ... ok
+test multi::shutdown_tests::a_connection_the_callback_refuses_is_closed_alone ... ok
+test multi::shutdown_tests::a_full_set_closes_its_oldest ... ok
+test multi::shutdown_tests::a_share_s_closing_connection_joins_the_releasing_multi_s_set ... ok
+test multi::shutdown_tests::a_share_s_search_holds_every_closing_socket_it_closes ... ok
+test multi::shutdown_tests::a_tls_connection_says_goodbye_as_it_closes ... ok
+test multi::shutdown_tests::a_tls_goodbye_waits_in_the_set_for_the_peer_s ... ok
+test multi::shutdown_tests::an_aborted_tls_transfer_says_no_goodbye ... ok
+test multi::shutdown_tests::an_aborted_transfer_s_connection_closes_at_once ... ok
+test multi::shutdown_tests::an_event_runs_the_set_once ... ok
+test multi::shutdown_tests::an_evicted_connection_shuts_down_where_its_pool_lets_it ... ok
+test multi::shutdown_tests::busy_connections_past_the_limit_close_every_closing_one ... ok
+test multi::shutdown_tests::cleanup_closes_every_connection_through_its_own_closer ... ok
+test multi::shutdown_tests::closing_connections_count_toward_the_limits ... ok
+test multi::shutdown_tests::perform_moves_each_shutdown_on ... ok
+test multi::shutdown_tests::room_closes_only_as_many_closing_connections_as_it_needs ... ok
+test multi::shutdown_tests::room_for_a_host_closes_that_host_s_closing_connection ... ok
+test multi::shutdown_tests::the_set_s_deadline_is_its_least_time_left ... ok
+test multi::shutdown_tests::the_set_s_run_counts_as_a_run ... ok
+test multi::shutdown_tests::the_shutdown_deadline_is_the_multi_s_own_row ... ok
+test multi::socket_tests::a_notification_assigns_as_the_multi_does ... ok
+test multi::socket_tests::a_pause_is_heard_inside_the_call ... ok
+test multi::socket_tests::a_refused_attempt_is_announced_before_it_is_found_refused ... ok
+test multi::socket_tests::a_removed_transfer_leaves_its_sockets ... ok
+test multi::socket_tests::a_socket_is_removed_before_it_closes ... ok
+test multi::socket_tests::a_timer_abort_inside_a_pause_tells_the_sockets_nothing ... ok
+test multi::socket_tests::a_transfer_s_socket_is_announced_and_removed ... ok
+test multi::socket_tests::an_aborting_socket_callback_kills_the_multi ... ok
+test multi::socket_tests::an_attempt_failing_in_a_drive_is_removed_before_it_closes ... ok
+test multi::socket_tests::perform_tells_the_socket_callback_nothing ... ok
+test multi::socket_tests::the_socket_callback_sees_the_transfers ... ok
+test multi::socket_tests::without_a_socket_callback_no_socket_is_recorded ... ok
+test multi::sockets::tests::a_pollset_holds_each_socket_once ... ok
+test multi::sockets::tests::a_socket_is_waited_on_for_what_its_users_want ... ok
+test multi::state::tests::a_url_without_a_scheme_takes_the_default ... ok
+test multi::tests::a_bad_resolve_entry_fails_the_transfer ... ok
+test multi::tests::a_connection_closed_as_it_comes_back_is_no_one_s ... ok
+test multi::tests::a_connection_closes_its_sockets_through_its_maker_s_closer ... ok
+test multi::tests::a_connection_s_slot_and_a_transfer_s_stay_their_size ... ok
+test multi::tests::a_connection_serves_only_the_peer_it_goes_through ... ok
+test multi::tests::a_dead_multi_fails_its_transfers_and_takes_no_more ... ok
+test multi::tests::a_failed_connect_names_the_first_proxy ... ok
+test multi::tests::a_failed_poll_is_unrecoverable ... ok
+test multi::tests::a_fired_timer_queues_the_next_one ... ok
+test multi::tests::a_full_pool_is_traced_by_the_transfer_filling_it ... ok
+test multi::tests::a_host_name_too_long_is_refused ... ok
+test multi::tests::a_kind_turned_off_before_delivery_is_dropped ... ok
+test multi::tests::a_link_local_address_without_a_scope_takes_an_interface_s ... ok
+test multi::tests::a_multi_closes_its_idle_connections_when_dropped ... ok
+test multi::tests::a_multi_probes_ipv6_once_as_it_is_made ... ok
+test multi::tests::a_pause_never_blocks_a_setup ... ok
+test multi::tests::a_paused_transfer_does_not_connect ... ok
+test multi::tests::a_race_with_no_attempt_left_says_so ... ok
+test multi::tests::a_refused_add_counts_nothing_as_running ... ok
+test multi::tests::a_refused_connect_fails_as_c_says ... ok
+test multi::tests::a_removed_transfer_s_notification_reaches_no_one ... ok
+test multi::tests::a_report_times_the_phases_a_transfer_reached ... ok
+test multi::tests::a_resolve_list_is_read_once_for_each_setting ... ok
+test multi::tests::a_share_keeps_connections_across_handles ... ok
+test multi::tests::a_share_s_connection_not_kept_is_closed_at_once ... ok
+test multi::tests::a_share_s_sockets_close_out_of_its_lock ... ok
+test multi::tests::a_silent_address_gives_way_after_the_eyeballs_delay ... ok
+test multi::tests::a_silent_peer_times_out_at_the_connect_limit ... ok
+test multi::tests::a_timer_abort_inside_add_refuses_the_transfer ... ok
+test multi::tests::a_timer_abort_inside_remove_still_removes ... ok
+test multi::tests::a_transfer_a_dead_multi_ends_unstarted_gets_a_report ... ok
+test multi::tests::a_transfer_can_refuse_to_share_its_connection ... ok
+test multi::tests::a_transfer_failing_before_its_request_gets_the_skipped_times ... ok
+test multi::tests::a_transfer_finding_room_lets_the_next_look ... ok
+test multi::tests::a_transfer_s_easy_is_reached_by_its_id ... ok
+test multi::tests::a_transfer_that_never_connects_shows_no_progress ... ok
+test multi::tests::a_transfer_waits_for_room_under_the_host_limit ... ok
+test multi::tests::a_url_too_long_to_read_back_fails_its_transfer ... ok
+test multi::tests::a_url_without_a_scheme_is_guessed ... ok
+test multi::tests::a_wait_takes_more_than_fit_on_the_stack ... ok
+test multi::tests::a_waiting_transfer_is_removed_cleanly ... ok
+test multi::tests::a_waiting_transfer_reads_its_ip_version_as_it_looks_again ... ok
+test multi::tests::a_waiting_transfer_runs_out_of_time ... ok
+test multi::tests::a_wake_ends_a_wait_on_a_transfer_s_socket ... ok
+test multi::tests::a_wake_ends_a_wait_without_counting_and_is_consumed ... ok
+test multi::tests::a_zone_is_the_socket_address_s_scope ... ok
+test multi::tests::an_accepted_connect_goes_on_to_the_request ... ok
+test multi::tests::an_established_connection_forgets_the_next_attempt ... ok
+test multi::tests::an_idle_connection_makes_room_under_the_total_limit ... ok
+test multi::tests::an_ip_version_limits_the_addresses_tried ... ok
+test multi::tests::an_ipv6_host_is_named_as_c_names_it ... ok
+test multi::tests::an_unresolved_proxy_is_named_in_the_failure ... ok
+test multi::tests::answers_may_be_kept_for_ever ... ok
+test multi::tests::callbacks_reach_the_multi_through_their_contexts ... ok
+test multi::tests::callbacks_read_reports_and_the_multi_counts_messages ... ok
+test multi::tests::completions_are_read_in_id_order ... ok
+test multi::tests::connections_are_numbered_in_their_traces ... ok
+test multi::tests::connections_are_reused_within_a_scope ... ok
+test multi::tests::driving_a_transfer_a_callback_takes_out_is_an_error ... ok
+test multi::tests::driving_a_transfer_to_completion_leaves_others_messages ... ok
+test multi::tests::events_drive_a_transfer_as_waits_do ... ok
+test multi::tests::events_wait_for_a_socket_with_nothing_due ... ok
+test multi::tests::events_wait_for_the_timer_the_multi_sets ... ok
+test multi::tests::every_run_reports_afresh ... ok
+test multi::tests::info_read_is_notified_again_once_every_message_is_read ... ok
+test multi::tests::localhost_names_are_the_loopback_addresses ... ok
+test multi::tests::notifications_are_off_until_enabled ... ok
+test multi::tests::notifications_come_in_the_order_things_happened ... ok
+test multi::tests::poll_sleeps_out_its_timeout_with_nothing_to_wait_for ... ok
+test multi::tests::ready_extra_descriptors_are_reported_in_their_entries ... ok
+test multi::tests::removing_a_connecting_transfer_closes_its_socket ... ok
+test multi::tests::removing_a_running_transfer_gives_its_connection_back ... ok
+test multi::tests::removing_twice_finds_nothing_the_second_time ... ok
+test multi::tests::socket_action_catches_what_came_due_while_it_ran ... ok
+test multi::tests::socket_action_delivers_notifications ... ok
+test multi::tests::socket_action_runs_nothing_late_when_nothing_ran ... ok
+test multi::tests::sockets_are_set_as_the_options_say ... ok
+test multi::tests::stale_answers_are_dropped ... ok
+test multi::tests::the_application_s_scope_overrides_the_zone ... ok
+test multi::tests::the_dns_cache_is_traced_as_c_looks_in_it ... ok
+test multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go ... ok
+test multi::tests::the_ids_start_each_line_but_a_failure ... ok
+test multi::tests::the_multi_s_own_timeout_cuts_a_wait_short ... ok
+test multi::tests::the_next_transfer_reuses_the_connection_left ... ok
+test multi::tests::the_pool_s_limit_is_guessed_from_the_transfers ... ok
+test multi::tests::the_proxy_protocol_is_read_once_its_stage_is_reached ... ok
+test multi::tests::the_race_is_traced_as_c_s_happy_eyeballs ... ok
+test multi::tests::the_resolver_s_answers_are_kept ... ok
+test multi::tests::the_timer_callback_can_read_messages ... ok
+test multi::tests::the_timer_hears_of_add_and_remove ... ok
+test multi::tests::timers_are_traced_as_c_arms_and_fires_them ... ok
+test multi::tests::timers_wake_transfers_through_socket_action ... ok
+test multi::tests::transfers_on_later_rows_get_timers ... ok
+test multi::tests::unresolved_and_immediate_failures ... ok
+test multi::tests::wait_with_nothing_to_wait_for_returns_at_once ... ok
+test multi::tests::without_ipv6_only_ipv4_is_resolved ... ok
+test multi::timers::tests::a_dirty_transfer_is_announced_at_each_new_instant ... ok
+test multi::timers::tests::a_stale_key_is_caught - should panic ... ok
+test multi::timers::tests::an_unchanged_wake_up_keeps_its_place ... ok
+test multi::timers::tests::limits_are_armed_per_leg_and_judged_from_their_anchors ... ok
+test multi::timers::tests::unit1303_time_left ... ok
+test multi::timers::tests::unit1309_due_order ... ok
+test multi::timers::tests::unit1309_remove_each_once ... ok
+test multi::timers::tests::unit1309_wait_rounds_up ... ok
+test multi::timers::tests::unit3230_timer_updates ... ok
+test multi::wait::tests::the_event_table_follows_the_socket_callback ... ok
+test multi::wait::tests::the_event_table_refuses_a_socket_removed_unknown - should panic ... ok
+test netrc::tests::any_file_is_read_and_scanned ... ok
+test netrc::tests::bounds_lines_files_and_tokens_as_c ... ok
+test netrc::tests::ends_a_macro_at_an_empty_line ... ok
+test netrc::tests::finds_entries_as_c ... ok
+test netrc::tests::finds_the_file_as_c ... ok
+test netrc::tests::leaves_out_comments_and_bounds_lines ... ok
+test netrc::tests::reads_again_when_interrupted ... ok
+test netrc::tests::reads_empty_literals_as_c ... ok
+test netrc::tests::reads_the_rest_of_the_grammar ... ok
+test netrc::tests::the_default_path_is_the_environment_s ... ok
+test options::tests::a_copy_keeps_the_lists_for_names ... ok
+test options::tests::a_copy_keeps_the_proxy_login_and_cookies ... ok
+test options::tests::a_group_s_option_is_set_and_cleared ... ok
+test options::tests::a_listed_option_is_as_large_as_its_lines ... ok
+test options::tests::a_proxy_s_user_and_password_are_split_and_decoded ... ok
+test options::tests::a_source_s_lines_are_read_again_as_refilled ... ok
+test options::tests::auth_methods_are_named ... ok
+test options::tests::auth_methods_are_sets ... ok
+test options::tests::buffer_sizes_are_held_to_their_bounds ... ok
+test progress::rate::tests::a_bucket_never_started_has_its_burst ... ok
+test progress::rate::tests::a_known_total_spreads_over_longer_steps ... ok
+test progress::rate::tests::a_new_rate_cuts_the_tokens ... ok
+test progress::rate::tests::a_pause_stops_the_bucket ... ok
+test progress::rate::tests::a_total_under_a_second_is_one_step ... ok
+test progress::rate::tests::earned_tokens_saturate ... ok
+test progress::rate::tests::steps_are_tuned_for_a_known_total ... ok
+test progress::rate::tests::the_verdict_weighs_both_directions ... ok
+test progress::rate::tests::unit3216 ... ok
+test progress::rate::tests::whole_steps_earn_their_tokens ... ok
+test progress::tests::a_count_of_100000_has_a_unit ... ok
+test progress::tests::a_done_request_shows_its_progress_at_once ... ok
+test progress::tests::a_handler_may_ask_for_the_meter ... ok
+test progress::tests::a_paused_transfer_is_not_too_slow ... ok
+test progress::tests::a_send_paused_transfer_is_not_too_slow ... ok
+test progress::tests::a_speed_back_over_the_limit_starts_the_time_over ... ok
+test progress::tests::a_transfer_cut_short_ends_the_meter_without_drawing_it ... ok
+test progress::tests::a_transfer_fast_enough_is_not_stopped ... ok
+test progress::tests::a_transfer_too_slow_for_too_long_times_out ... ok
+test progress::tests::an_abort_after_the_request_fails_the_transfer ... ok
+test progress::tests::an_abort_fails_the_transfer_with_no_last_call ... ok
+test progress::tests::an_unpause_forgets_the_slow_time ... ok
+test progress::tests::an_unpause_from_the_progress_handler_replays_at_once ... ok
+test progress::tests::an_unpause_measures_the_speed_afresh ... ok
+test progress::tests::both_directions_add_up ... ok
+test progress::tests::progress_is_shown_once_a_second ... ok
+test progress::tests::progress_off_calls_nothing_but_takes_stock ... ok
+test progress::tests::the_current_speed_spans_five_seconds_of_records ... ok
+test progress::tests::the_end_keeps_the_speed_it_had ... ok
+test progress::tests::the_handler_is_called_at_each_pass_and_at_the_end ... ok
+test progress::tests::the_largest_byte_count_fits_six_columns ... ok
+test progress::tests::the_meter_draws_once_a_second_and_ends_its_line ... ok
+test progress::tests::the_meter_estimates_only_with_a_speed ... ok
+test progress::tests::the_meter_line_shows_an_upload ... ok
+test progress::tests::the_meter_line_shows_both_directions_and_the_time_left ... ok
+test progress::tests::the_meter_shows_numbers_as_test1636_says ... ok
+test progress::tests::the_speed_check_times_out_as_unit1606_says ... ok
+test proto::file::tests::a_directory_cannot_be_resumed ... ok
+test proto::file::tests::a_directory_is_its_names ... ok
+test proto::file::tests::a_directory_listing_is_cut_at_its_range ... ok
+test proto::file::tests::a_download_delivers_its_range ... ok
+test proto::file::tests::a_download_is_timed_piece_by_piece ... ok
+test proto::file::tests::a_download_past_its_time_limit_names_no_size ... ok
+test proto::file::tests::a_download_resumed_at_the_end_is_the_last_byte ... ok
+test proto::file::tests::a_download_resumes_into_the_file ... ok
+test proto::file::tests::a_file_draws_its_meter_once ... ok
+test proto::file::tests::a_file_is_its_headers_then_its_body ... ok
+test proto::file::tests::a_file_is_read_as_far_as_its_size ... ok
+test proto::file::tests::a_file_that_cannot_be_read_fails ... ok
+test proto::file::tests::a_file_that_cannot_be_stated_cannot_be_resumed ... ok
+test proto::file::tests::a_file_that_cannot_be_stated_delivers_a_range_from_its_start ... ok
+test proto::file::tests::a_file_that_cannot_be_stated_is_read_without_its_size ... ok
+test proto::file::tests::a_file_the_time_condition_rules_out_is_not_read ... ok
+test proto::file::tests::a_head_request_is_the_headers ... ok
+test proto::file::tests::a_head_request_on_a_file_that_cannot_be_stated_reads_its_body ... ok
+test proto::file::tests::a_large_file_is_read_in_pieces ... ok
+test proto::file::tests::a_listing_failing_partway_fails ... ok
+test proto::file::tests::a_missing_file_cannot_be_read ... ok
+test proto::file::tests::a_pausing_read_fails ... ok
+test proto::file::tests::a_pausing_write_fails ... ok
+test proto::file::tests::a_range_is_read_as_c_reads_it ... ok
+test proto::file::tests::a_range_reads_past_a_time_condition ... ok
+test proto::file::tests::a_read_failing_partway_fails ... ok
+test proto::file::tests::a_send_limit_does_not_cut_an_upload_short ... ok
+test proto::file::tests::a_zero_byte_in_the_path_is_malformed ... ok
+test proto::file::tests::an_empty_file_is_its_headers ... ok
+test proto::file::tests::an_upload_is_read_as_c_reads_it ... ok
+test proto::file::tests::an_upload_is_timed_piece_by_piece ... ok
+test proto::file::tests::an_upload_is_written_no_further_than_its_size ... ok
+test proto::file::tests::an_upload_needs_a_file_to_write ... ok
+test proto::file::tests::an_upload_past_its_time_limit_is_written_then_times_out ... ok
+test proto::file::tests::an_upload_resumes_by_appending ... ok
+test proto::file::tests::an_upload_s_line_ends_are_converted ... ok
+test proto::file::tests::an_upload_writes_the_file ... ok
+test proto::file::tests::included_headers_are_written_before_the_body ... ok
+test proto::file::tests::the_calendar_has_its_leap_years ... ok
+test proto::file::tests::the_modification_time_is_a_date ... ok
+test proto::file::tests::the_url_rules_apply_to_a_file_url ... ok
+test proto::http1::auth::tests::a_message_signature_is_used_at_once_and_never_by_a_proxy ... ok
+test proto::http1::auth::tests::a_service_makes_credentials ... ok
+test proto::http1::auth::tests::acts_on_a_401_as_c ... ok
+test proto::http1::auth::tests::acts_on_a_407_as_c ... ok
+test proto::http1::auth::tests::acts_on_a_probe_as_c ... ok
+test proto::http1::auth::tests::acts_on_negotiate_as_c ... ok
+test proto::http1::auth::tests::any_challenges_are_read ... ok
+test proto::http1::auth::tests::aws_sigv4_is_used_at_once_and_never_by_a_proxy ... ok
+test proto::http1::auth::tests::composes_a_token_with_the_rest ... ok
+test proto::http1::auth::tests::composes_the_login_and_the_url_s_as_c ... ok
+test proto::http1::auth::tests::encodes_basic_as_c ... ok
+test proto::http1::auth::tests::keeps_digest_for_its_origin_and_credentials ... ok
+test proto::http1::auth::tests::keeps_the_handle_s_state ... ok
+test proto::http1::auth::tests::looks_in_netrc_as_c ... ok
+test proto::http1::auth::tests::picks_and_sends_by_what_the_credentials_have ... ok
+test proto::http1::auth::tests::reads_challenges_as_c ... ok
+test proto::http1::auth::tests::reads_digest_challenges_as_c ... ok
+test proto::http1::auth::tests::reads_negotiate_challenges_as_c ... ok
+test proto::http1::auth::tests::takes_the_url_s_credentials_as_c ... ok
+test proto::http1::chunked::tests::a_trailer_is_at_most_4_kib ... ok
+test proto::http1::chunked::tests::any_body_is_decoded_alike_in_any_pieces ... ok
+test proto::http1::chunked::tests::bad_chunks_are_refused ... ok
+test proto::http1::chunked::tests::chunks_are_joined_into_the_body ... ok
+test proto::http1::chunked::tests::encodes_pieces_as_chunks ... ok
+test proto::http1::chunked::tests::raw_chunks_go_on_as_they_came ... ok
+test proto::http1::chunked::tests::the_grammar_s_corners ... ok
+test proto::http1::chunked::tests::trailers_are_header_lines ... ok
+test proto::http1::chunked::tests::trailers_count_against_the_head_limit ... ok
+test proto::http1::digest::tests::answers_as_c ... ok
+test proto::http1::digest::tests::answers_with_a_qop ... ok
+test deliver::tests::at_most_64_mib_of_output_is_held ... ok
+test proto::http1::digest::tests::bounds_challenges_and_responses_as_c ... ok
+test proto::http1::digest::tests::counts_nonces_in_hex ... ok
+test proto::http1::digest::tests::quotes_and_hashes_the_user ... ok
+test proto::http1::digest::tests::reads_bare_values_as_c ... ok
+test proto::http1::digest::tests::reads_challenges_as_c ... ok
+test proto::http1::fields::tests::any_line_is_read ... ok
+test proto::http1::fields::tests::lines_are_verified_as_c_verifies_them ... ok
+test proto::http1::fields::tests::says_reads_no_further_than_the_value ... ok
+test proto::http1::fields::tests::tokens_are_found_as_c_finds_them ... ok
+test proto::http1::fields::tests::values_are_read_as_c_reads_them ... ok
+test proto::http1::fields::tests::values_are_read_within_c_s_limits ... ok
+test proto::http1::follow::tests::a_followed_location_is_encoded_as_c_encodes_it ... ok
+test proto::http1::follow::tests::resolves_against_the_request_without_credentials ... ok
+test proto::http1::request::tests::a_forwarded_request_sends_the_proxy_s_lines_after ... ok
+test proto::http1::digest::tests::any_challenge_is_read_and_answered ... ok
+test proto::http1::request::tests::basic_credentials_follow_host ... ok
+test proto::http1::request::tests::connection_headers_come_last ... ok
+test proto::http1::request::tests::requests_are_what_the_tests_expect ... ok
+test proto::http1::request::tests::the_application_s_headers_are_kept_as_given ... ok
+test proto::http1::request::tests::the_application_s_headers_replace_and_add ... ok
+test proto::http1::request::tests::the_application_s_odd_headers_go_as_in_c ... ok
+test proto::http1::request::tests::the_gate_holds_back_what_was_said_for_the_first_origin ... ok
+test proto::http1::request::tests::the_referer_follows_accept ... ok
+test proto::http1::request::tests::the_same_origin_is_the_same_wholly ... ok
+test multi::props::random_calls_keep_the_multi_consistent ... ok
+test proto::http1::response::tests::a_line_is_at_most_100_kib ... ok
+test proto::http1::response::tests::a_length_is_one_number ... ok
+test proto::http1::response::tests::a_proxy_says_whether_the_connection_stays ... ok
+test proto::http1::response::tests::a_reply_without_a_status_line_is_http_0_9 ... ok
+test proto::http1::response::tests::a_request_s_head_bytes_are_counted ... ok
+test proto::http1::response::tests::a_response_has_one_location ... ok
+test proto::http1::response::tests::a_size_past_the_limit_fails_at_the_head ... ok
+test proto::http1::request::tests::a_head_is_at_most_a_mebibyte_less_a_byte ... ok
+test proto::http1::response::tests::a_transfer_coding_overrides_the_length ... ok
+test proto::http1::response::tests::bad_heads_of_the_suite ... ok
+test proto::http1::response::tests::bad_lines_are_refused ... ok
+test proto::http1::response::tests::error_codes_fail_when_asked ... ok
+test proto::http1::response::tests::folded_lines_are_joined ... ok
+test proto::http1::response::tests::head_bytes_are_counted_to_c_s_limits ... ok
+test proto::http1::response::tests::any_head_is_read_alike_in_any_pieces ... ok
+test proto::http1::response::tests::interim_heads_alone_are_nothing ... ok
+test proto::http1::response::tests::interim_heads_come_before_the_final_one ... ok
+test proto::http1::response::tests::some_responses_have_no_body ... ok
+test proto::http1::response::tests::status_codes_are_three_digits ... ok
+test proto::http1::response::tests::status_lines_are_read_as_c_reads_them ... ok
+test proto::http1::response::tests::the_content_type_is_trimmed_and_an_empty_one_ignored ... ok
+test proto::http1::response::tests::trailers_are_noted ... ok
+test proto::http1::response::tests::transfer_codings_are_refused_as_c_refuses_them ... ok
+test proto::http1::response::tests::what_closes_the_connection ... ok
+test proto::http1::tunnel::tests::a_3xx_s_length_and_coding_are_read ... ok
+test proto::http1::tunnel::tests::a_blank_line_that_goes_on_folds_to_nothing ... ok
+test proto::http1::tunnel::tests::a_close_gives_out_the_line_read ... ok
+test proto::http1::tunnel::tests::a_line_is_held_to_c_s_buffer ... ok
+test proto::http1::tunnel::tests::any_answer_is_read_alike_in_any_pieces ... ok
+test proto::http1::tunnel::tests::decodes_chunks_over_a_length ... ok
+test proto::http1::tunnel::tests::drops_a_407_s_body ... ok
+test proto::http1::tunnel::tests::notes_are_said_as_c ... ok
+test proto::http1::tunnel::tests::reads_a_2xx_head_and_nothing_past_it ... ok
+test proto::http1::tunnel::tests::reads_byte_by_byte_and_unfolds ... ok
+test proto::http1::tunnel::tests::refuses_what_c_refuses ... ok
+test proto::http1::tunnel::tests::renders_connect_as_c ... ok
+test proto::http1::tunnel::tests::the_proxy_s_lines_replace_the_library_s_and_follow ... ok
+test proto::http::cookies::tests::a_cookie_file_is_read_whole_if_it_is_one ... ok
+test proto::http::cookies::tests::a_read_is_retried_when_interrupted_and_fails_otherwise ... ok
+test proto::http::cookies::tests::each_cookie_after_the_first_counts_its_separator ... ok
+test proto::http::cookies::tests::lines_are_held_only_for_a_verbose_transfer_and_until_one_fails ... ok
+test proto::http::cookies::tests::the_line_holds_8190_bytes_with_its_name ... ok
+test proto::http::cookies::tests::this_host_is_secure ... ok
+test proto::http::httpsig::tests::a_failure_has_c_s_code ... ok
+test proto::http::httpsig::tests::a_key_id_is_quoted_up_to_c_s_buffer ... ok
+test proto::http1::response::tests::heads_are_counted_against_their_limits ... ok
+test proto::http::httpsig::tests::an_hmac_key_has_any_length ... ok
+test proto::http::httpsig::tests::ed25519_checks_its_key_length ... ok
+test proto::http::httpsig::tests::ed25519_fails_as_its_signer_does ... ok
+test proto::http::httpsig::tests::ed25519_signs_the_base_with_the_handle_s_signer ... ok
+test proto::http::httpsig::tests::needs_its_options_and_steps_aside_for_the_application_s ... ok
+test proto::http::httpsig::tests::quotes_and_bounds_what_it_signs ... ok
+test proto::http::httpsig::tests::reads_a_leading_number ... ok
+test proto::http::httpsig::tests::reads_the_key_as_c_does ... ok
+test proto::http::httpsig::tests::refuses_components_as_c_does ... ok
+test proto::http::httpsig::tests::signs_as_c_does ... ok
+test proto::http::httpsig::tests::signs_the_components_named ... ok
+test proto::http::httpsig::tests::signs_the_query_the_url_has ... ok
+test proto::http::httpsig::tests::the_authority_is_a_component ... ok
+test proto::http::httpsig::tests::the_signature_is_made_now ... ok
+test proto::http::sigv4::tests::a_query_s_escapes_are_read_in_either_case ... ok
+test proto::http::sigv4::tests::canonical_paths_as_unit_1979 ... ok
+test proto::http::sigv4::tests::canonical_queries_as_unit_1980 ... ok
+test proto::http::sigv4::tests::hashes_the_payload_as_c ... ok
+test proto::http::sigv4::tests::lent_post_data_is_hashed_whole ... ok
+test proto::http::sigv4::tests::reads_the_parameters_as_c ... ok
+test proto::http::sigv4::tests::signs_as_test_439 ... ok
+test proto::http::sigv4::tests::signs_the_headers_as_c ... ok
+test proto::http::sigv4::tests::the_date_header_is_named_for_the_provider ... ok
+test proto::http1::response::tests::a_line_never_needs_more_than_four_notes ... ok
+test proto::http::tests::a_100_that_pauses_waits_for_the_application ... ok
+test proto::http::tests::a_401_is_answered_with_a_method_it_offers ... ok
+test proto::http::tests::a_401_reads_no_proxy_challenge ... ok
+test proto::http::tests::a_401_retry_names_the_url_without_the_application_s_port ... ok
+test proto::http::tests::a_401_to_credentials_sent_is_the_answer ... ok
+test proto::http::tests::a_407_not_from_a_forwarding_proxy_is_not_the_proxy_s ... ok
+test proto::http::tests::a_407_refusing_the_credentials_sent_ends_the_tunnel ... ok
+test proto::http::tests::a_416_to_a_resumed_get_is_read_and_dropped ... ok
+test proto::http::tests::a_417_after_the_100_is_one_while_sending ... ok
+test proto::http::suite::the_milestone_s_http_cases ... ok
+test proto::http::tests::a_417_retry_drops_the_application_s_port ... ok
+test proto::http::tests::a_417_without_expect_stops_the_body ... ok
+test proto::http::tests::a_bad_head_fails ... ok
+test proto::http::tests::a_body_all_sent_has_nothing_left ... ok
+test proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out ... ok
+test proto::http::tests::a_body_held_for_a_100_earns_from_the_head ... ok
+test proto::http::tests::a_body_is_read_no_further_than_its_size ... ok
+test proto::http::httpsig::tests::a_key_is_at_most_c_s_longest_option ... ok
+test proto::http::tests::a_body_of_unknown_size_goes_chunked ... ok
+test proto::http::tests::a_body_stopped_while_awaiting_a_100_stops_its_timer ... ok
+test proto::http::tests::a_body_larger_than_the_buffer_goes_in_buffers ... ok
+test proto::http::tests::a_challenge_mid_body_closes_rather_than_send_the_rest ... ok
+test proto::http::tests::a_challenge_with_nothing_to_pick_keeps_the_method_used ... ok
+test proto::http::tests::a_chunked_body_ends_with_its_trailers ... ok
+test proto::http::tests::a_chunked_body_has_an_unknown_amount_left ... ok
+test proto::http::tests::a_connection_is_not_open_until_its_proxy_line_is_sent ... ok
+test proto::http::tests::a_connection_that_answered_http10_is_asked_in_it ... ok
+test proto::http::tests::a_cookie_file_named_while_one_is_warned_of_is_read ... ok
+test proto::http::tests::a_cookie_set_goes_with_the_next_request ... ok
+test proto::http::tests::a_custom_host_in_brackets_names_the_cookies_host ... ok
+test proto::http::tests::a_custom_host_names_the_cookies_host ... ok
+test proto::http::tests::a_custom_method_follows_as_the_mode_says ... ok
+test proto::http::tests::a_custom_method_is_sent_with_the_body_kept ... ok
+test proto::http::tests::a_custom_method_set_while_a_redirect_is_traced_stands ... ok
+test proto::http::tests::a_custom_proxy_authorization_goes_beside_the_proxy_s ... ok
+test proto::http::tests::a_digest_answer_refused_ends_the_transfer ... ok
+test proto::http::tests::a_digest_client_nonce_is_random ... ok
+test proto::http::tests::a_digest_post_probes_without_its_body ... ok
+test proto::http::tests::a_failing_code_ends_the_transfer_at_its_head ... ok
+test proto::http::tests::a_followed_redirect_refers_to_where_it_came_from ... ok
+test proto::http::tests::a_forwarding_proxy_gets_the_whole_url ... ok
+test proto::http::tests::a_fresh_connection_that_died_is_an_empty_reply ... ok
+test proto::http::tests::a_get_is_sent_and_its_response_delivered ... ok
+test proto::http::tests::a_get_with_a_reused_connection_that_closes_mid_body_fails ... ok
+test proto::http::tests::a_handle_s_public_suffixes_refuse_cookies_for_a_suffix ... ok
+test proto::http::tests::a_handler_is_given_no_room_past_the_size ... ok
+test proto::http::tests::a_head_answered_in_http_0_9_is_refused ... ok
+test proto::http::tests::a_head_cut_short_misses_its_body ... ok
+test proto::http::tests::a_head_filling_the_buffer_sends_the_body_after_it ... ok
+test proto::http::tests::a_head_goes_beside_a_second_s_worth_of_the_body ... ok
+test proto::http::tests::a_head_s_end_fails_around_its_blank_line ... ok
+test proto::http::tests::a_head_wants_no_body ... ok
+test proto::http::tests::a_held_line_is_delivered_at_the_end ... ok
+test proto::http::tests::a_kept_connection_carries_the_next_request ... ok
+test proto::http::tests::a_kept_connection_is_left_intact ... ok
+test proto::http::tests::a_link_local_address_takes_the_interface_s_scope ... ok
+test proto::http::tests::a_location_not_followed_is_kept_resolved ... ok
+test proto::http::tests::a_location_outside_a_redirect_is_not_followed ... ok
+test proto::http::tests::a_location_without_a_scheme_keeps_the_applied_port ... ok
+test proto::http::tests::a_long_line_ending_the_head_is_delivered_whole ... ok
+test proto::http::tests::a_mime_post_of_unknown_size_goes_chunked ... ok
+test proto::http::tests::a_mime_post_types_its_head_with_the_boundary ... ok
+test proto::http::tests::a_mime_post_without_a_tree_is_empty ... ok
+test proto::http::tests::a_netrc_file_gives_the_host_s_credentials ... ok
+test proto::http::tests::a_new_connection_sends_the_proxy_protocol_s_line_first ... ok
+test proto::http::tests::a_pass_sends_one_buffer_of_the_body ... ok
+test proto::http::tests::a_paused_last_piece_waits_to_be_delivered ... ok
+test proto::http::tests::a_post_asked_chunked_as_its_request_is_built_reads_to_the_end ... ok
+test proto::http::tests::a_post_sends_its_body_after_its_head ... ok
+test proto::http::tests::a_pre_proxy_alone_is_the_socks_proxy_and_only_socks ... ok
+test proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_forwards ... ok
+test proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_tunnels ... ok
+test proto::http::tests::a_probe_after_a_sent_tree_sends_its_type ... ok
+test proto::http::tests::a_probe_let_through_is_made_again_with_its_body ... ok
+test proto::http::tests::a_probe_reads_none_of_the_tree ... ok
+test proto::http::tests::a_probe_sends_the_tree_s_head_as_last_sent ... ok
+test proto::http::tests::a_progress_abort_ends_the_tunnel_at_once ... ok
+test proto::http::tests::a_progress_abort_stops_an_endless_body ... ok
+test proto::http::tests::a_proxy_asked_for_a_signature_picks_from_the_rest ... ok
+test proto::http::tests::a_proxy_closing_after_a_wait_aborts_the_tunnel ... ok
+test proto::http::tests::a_proxy_closing_every_time_is_redialed_five_times ... ok
+test proto::http::tests::a_proxy_closing_mid_answer_aborts_the_tunnel ... ok
+test proto::http::tests::a_proxy_closing_on_the_credentials_is_connected_to_again ... ok
+test proto::http::tests::a_proxy_handshake_waits_to_send_then_to_read ... ok
+test proto::http::tests::a_proxy_is_answered_with_its_own_credentials ... ok
+test proto::http::tests::a_proxy_s_digest_is_traced_before_its_first_challenge ... ok
+test proto::http::tests::a_proxy_s_name_is_the_one_found_in_the_cache ... ok
+test proto::http::tests::a_proxy_service_alone_makes_the_proxy_s_credentials ... ok
+test proto::http::tests::a_proxy_user_that_does_not_decode_is_a_bad_url ... ok
+test proto::http::tests::a_put_is_sized_and_an_empty_body_announced ... ok
+test proto::http::tests::a_rate_limited_transfer_times_out ... ok
+test proto::http::tests::a_read_takes_the_buffer_s_size ... ok
+test proto::http::tests::a_receive_limit_lets_its_rate_through_each_second ... ok
+test proto::http::tests::a_receive_limit_spreads_a_known_size ... ok
+test proto::http::tests::a_redirect_goes_only_where_the_option_lets_it ... ok
+test proto::http::tests::a_redirect_is_followed_on_the_kept_connection ... ok
+test proto::http::tests::a_redirect_mid_body_closes_rather_than_send_the_rest ... ok
+test proto::http::tests::a_redirect_mid_body_of_unknown_size_closes ... ok
+test proto::http::tests::a_redirect_s_own_credentials_go_with_it ... ok
+test proto::http::tests::a_redirect_to_a_file_is_refused ... ok
+test proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does ... ok
+test proto::http::tests::a_redirect_weighs_the_body_once_at_its_location ... ok
+test proto::http::tests::a_redirect_with_little_of_the_body_left_keeps_the_connection ... ok
+test proto::http::tests::a_redirected_body_is_rewound_or_the_transfer_fails ... ok
+test proto::http::tests::a_redirected_body_of_bytes_needs_a_rewind ... ok
+test proto::http::tests::a_refused_answer_fails_the_tunnel_as_c ... ok
+test proto::http::tests::a_refusing_proxy_is_named_in_the_failure ... ok
+test proto::http::tests::a_relative_redirect_resolves_with_the_application_s_port ... ok
+test proto::http::tests::a_request_is_retried_five_times_at_most ... ok
+test proto::http::tests::a_request_over_a_reused_connection_that_died_is_made_again ... ok
+test proto::http::tests::a_request_stores_50_cookies_at_most ... ok
+test proto::http::tests::a_request_target_replaces_only_the_request_line_s ... ok
+test proto::http::tests::a_resolve_list_set_while_one_is_read_is_dropped ... ok
+test proto::http::tests::a_response_ending_on_a_closing_connection_stops_the_body ... ok
+test proto::http::tests::a_response_in_http_1_0_makes_the_next_request_one ... ok
+test proto::http::tests::a_response_until_close_over_a_reused_connection_is_whole ... ok
+test proto::http::tests::a_resumed_body_is_refused ... ok
+test proto::http::tests::a_resumed_get_takes_only_the_rest ... ok
+test proto::http::tests::a_retried_request_rewinds_its_body ... ok
+test proto::http::tests::a_retry_after_date_counts_from_the_clock ... ok
+test proto::http::tests::a_send_failing_on_a_reused_connection_is_made_again ... ok
+test proto::http::tests::a_send_limit_lets_its_rate_out_each_second ... ok
+test proto::http::tests::a_share_keeps_cookies_for_its_handles ... ok
+test proto::http::tests::a_share_s_dead_connection_is_not_reused ... ok
+test proto::http::tests::a_share_s_jar_serves_the_transfers_of_a_multi ... ok
+test proto::http::tests::a_share_s_jar_takes_cookies_from_two_threads ... ok
+test proto::http::tests::a_share_s_uses_are_told_where_c_locks_them ... ok
+test proto::http::tests::a_shared_url_is_read_as_each_transfer_starts ... ok
+test proto::http::tests::a_socks4_proxy_is_asked_for_the_address_resolved_here ... ok
+test proto::http::tests::a_socks5_proxy_logs_the_user_in_and_connects ... ok
+test proto::http::tests::a_socks_refusal_fails_with_the_proxy_s_error ... ok
+test proto::http::tests::a_step_reads_eleven_times_at_most_and_runs_again_at_once ... ok
+test proto::http::tests::a_token_goes_as_bearer ... ok
+test proto::http::tests::a_transfer_out_of_time_reads_no_more ... ok
+test proto::http::tests::a_transfer_removed_mid_connect_leaves_no_connection_to_reuse ... ok
+test proto::http::tests::a_tree_ending_short_of_its_size_fails ... ok
+test proto::http::tests::a_tree_is_started_over_by_its_handlers ... ok
+test proto::http::tests::a_tree_not_read_needs_no_rewind ... ok
+test proto::http::tests::a_tree_s_handler_pauses_its_sending ... ok
+test proto::http::tests::a_tree_that_cannot_start_over_is_not_sent_again ... ok
+test proto::http::tests::a_tunnel_after_a_redirect_elsewhere_sends_no_cookie ... ok
+test proto::http::tests::a_tunnel_answers_a_407_over_the_same_connection ... ok
+test proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on_its_407 ... ok
+test proto::http::tests::a_tunnel_s_answer_is_held_to_the_head_limit ... ok
+test proto::http::tests::a_tunnel_s_answer_takes_stock_after_each_byte ... ok
+test proto::http::tests::a_tunnel_s_connect_is_traced_and_its_answer_counted ... ok
+test proto::http::tests::a_url_goes_only_where_the_option_lets_it ... ok
+test proto::http::tests::an_abort_at_the_last_progress_pass_closes_the_connection ... ok
+test proto::http::tests::an_empty_body_says_the_request_went ... ok
+test proto::http::tests::an_endless_body_ends_at_the_time_limit ... ok
+test proto::http::tests::an_error_response_stops_the_body ... ok
+test proto::http::tests::an_exchange_waits_for_what_its_layers_want ... ok
+test proto::http::tests::an_exchange_waits_to_read_its_socket ... ok
+test proto::http::tests::an_idle_connection_a_layer_finds_dead_is_not_reused ... ok
+test proto::http::tests::an_interim_response_does_not_end_the_wait_for_a_100 ... ok
+test proto::http::tests::an_origin_s_digest_is_answered_through_a_proxy ... ok
+test proto::http::tests::an_unauthenticated_socks5_connection_serves_a_transfer_not_insisting ... ok
+test proto::http::tests::an_unauthenticated_socks5_connection_serves_no_transfer_insisting ... ok
+test proto::http::tests::an_unpause_starts_the_receive_limit_over ... ok
+test proto::http::tests::an_upload_stopped_says_how_much_went ... ok
+test proto::http::tests::bind_trace::a_host_of_the_other_family_cannot_connect ... ok
+test proto::http::tests::bind_trace::a_host_s_name_is_bound_to_as_resolved ... ok
+test proto::http::tests::bind_trace::a_name_binds_to_its_interface ... ok
+test proto::http::tests::bind_trace::a_port_in_use_gives_way_to_the_next_of_the_range ... ok
+test proto::http::tests::bind_trace::a_range_all_in_use_fails_to_bind ... ok
+test proto::http::tests::bind_trace::an_interface_is_bound_to_by_its_address ... ok
+test proto::http::tests::bind_trace::an_interface_not_there_fails_to_bind ... ok
+test proto::http::tests::bind_trace::an_interface_with_a_host_binds_to_both ... ok
+test proto::http::tests::built_schemes_are_named_in_any_case ... ok
+test proto::http::tests::bytes_a_layer_holds_are_read_without_waiting ... ok
+test proto::http::tests::bytes_after_a_tunnel_s_answer_are_read_first ... ok
+test proto::http::tests::bytes_after_the_chunks_are_left_over ... ok
+test proto::http::tests::bytes_pass_through_the_connection_s_layers ... ok
+test proto::http::tests::chunks_are_read_to_their_end ... ok
+test proto::http::tests::coding::a_coded_body_is_undone_when_asked_for ... ok
+test proto::http::tests::coding::a_trailer_stays_behind_the_body_held_before_its_decoder ... ok
+test proto::http::tests::coding::a_transfer_coded_body_is_undone_before_it_is_counted ... ok
+test proto::http::tests::coding::accept_encoding_says_what_is_asked_for ... ok
+test proto::http::tests::coding::an_unrecognized_coding_fails_while_paused ... ok
+test proto::http::tests::coding::codings_that_cannot_be_undone_fail ... ok
+test proto::http::tests::coding::decoders_show_their_codings ... ok
+test proto::http::tests::coding::identity_holds_no_gate_in_front_of_the_body ... ok
+test proto::http::tests::coding::te_asks_for_gzip_when_it_can_be_undone ... ok
+test proto::http::tests::cookie_files_are_read_as_a_transfer_starts ... ok
+test proto::http::tests::cookie_files_are_read_in_turn_with_their_lines_traced ... ok
+test proto::http::tests::cookies_are_counted_with_the_request_s_as_c_counts_them ... ok
+test proto::http::tests::digest_goes_beside_the_application_s_authorization ... ok
+test proto::http::tests::each_request_counts_its_own_upload ... ok
+test proto::http::tests::http_1_0_refuses_a_body_of_unknown_size ... ok
+test proto::http::tests::https_trace::a_failed_https_setup_names_the_chain_to_its_filter ... ok
+test proto::http::tests::https_trace::a_tunnel_through_an_https_proxy_keeps_the_alpn_question ... ok
+test proto::http::tests::https_trace::an_https_setup_to_a_name_waits_for_its_record_once ... ok
+test proto::http::tests::https_trace::an_https_setup_to_an_address_asks_for_no_record ... ok
+test proto::http::tests::https_trace::an_https_setup_without_alpn_has_no_https_connect_filter ... ok
+test proto::http::tests::https_trace::the_connect_calls_and_the_tls_filter_s_wait_are_traced ... ok
+test proto::http::tests::https_trace::tls_in_tls_sets_up_as_c ... ok
+test proto::http::tests::https_trace::versions_that_allow_none_fail_the_tls_filter_s_connect ... ok
+test proto::http::tests::https_trace::what_alpn_agreed_is_asked_of_a_new_connection_only ... ok
+test proto::http::tests::last_modified_gives_the_file_time_when_asked ... ok
+test proto::http::tests::lists_set_while_their_entries_are_traced_stand ... ok
+test proto::http::tests::multi_trace::a_failed_response_closes_its_connection_in_performing ... ok
+test proto::http::tests::multi_trace::a_redirect_starts_over_from_setup ... ok
+test proto::http::tests::multi_trace::a_refused_connect_is_done_with_where_it_failed ... ok
+test proto::http::tests::multi_trace::a_request_is_traced_through_c_s_states ... ok
+test proto::http::tests::multi_trace::a_request_sent_in_pieces_asks_for_what_is_left ... ok
+test proto::http::tests::multi_trace::a_response_that_closes_is_traced_as_closing ... ok
+test proto::http::tests::multi_trace::sends_and_receives_are_traced_as_c ... ok
+test proto::http::tests::multi_trace::the_proxy_protocol_s_line_sent_in_pieces_asks_for_what_is_left ... ok
+test proto::http::tests::negotiate::a_401_offering_negotiate_has_it_picked ... ok
+test proto::http::tests::negotiate::a_binding_not_made_fails_the_request ... ok
+test proto::http::tests::negotiate::a_body_still_going_closes_unless_negotiate_started ... ok
+test proto::http::tests::negotiate::a_certificate_naming_no_digest_binds_nothing ... ok
+test proto::http::tests::negotiate::a_challenge_is_taken_and_answered ... ok
+test proto::http::tests::negotiate::a_challenge_not_decoded_is_refused ... ok
+test proto::http::tests::negotiate::a_challenge_refused_ends_with_the_401 ... ok
+test proto::http::tests::negotiate::a_challenge_taken_holds_the_connection ... ok
+test proto::http::tests::negotiate::a_complete_context_asked_again_is_refused ... ok
+test proto::http::tests::negotiate::a_connection_negotiating_with_its_proxy_serves_only_its_own ... ok
+test proto::http::tests::negotiate::a_first_token_not_made_goes_without ... ok
+test proto::http::tests::negotiate::a_forwarding_proxy_closing_mid_handshake_is_said ... ok
+test proto::http::tests::negotiate::a_forwarding_proxy_gets_the_first_token_at_once ... ok
+test proto::http::tests::negotiate::a_forwarding_proxy_s_407_has_negotiate_picked ... ok
+test proto::http::tests::negotiate::a_forwarding_proxy_s_challenge_is_taken ... ok
+test proto::http::tests::negotiate::a_forwarding_proxy_s_challenge_taken_holds_the_connection ... ok
+test proto::http::tests::negotiate::a_handshake_of_rounds_persists_unless_told_otherwise ... ok
+test proto::http::tests::negotiate::a_negotiated_connection_serves_only_its_own ... ok
+test proto::http::tests::negotiate::a_post_sends_its_body_with_its_token ... ok
+test proto::http::tests::negotiate::a_refused_negotiation_unbinds_the_connection ... ok
+test proto::http::tests::negotiate::a_step_over_https_is_bound_to_the_channel ... ok
+test proto::http::tests::negotiate::a_token_made_empty_leaves_the_connection_bound ... ok
+test proto::http::tests::negotiate::a_tunnel_redialed_keeps_negotiating ... ok
+test proto::http::tests::negotiate::a_tunnel_s_407_has_negotiate_picked ... ok
+test proto::http::tests::negotiate::a_tunnel_s_challenge_is_taken ... ok
+test proto::http::tests::negotiate::a_tunnel_s_connect_negotiates_with_the_proxy ... ok
+test proto::http::tests::negotiate::an_empty_challenge_after_a_token_is_a_refusal ... ok
+test proto::http::tests::negotiate::no_proxy_is_negotiated_with_where_none_is_asked ... ok
+test proto::http::tests::negotiate::persistent_auth_false_authenticates_each_request ... ok
+test proto::http::tests::negotiate::the_context_takes_the_service_and_the_delegation ... ok
+test proto::http::tests::negotiate::the_first_token_goes_at_once ... ok
+test proto::http::tests::negotiate::the_library_s_failures_are_said_as_c_says_them ... ok
+test proto::http::tests::negotiate::the_next_request_authenticates_again_unless_it_persists ... ok
+test proto::http::tests::negotiate::the_origin_s_token_goes_through_the_tunnel ... ok
+test proto::http::tests::negotiate::the_proxy_s_other_method_is_said_before_the_origin_s_negotiate ... ok
+test proto::http::tests::negotiate::the_proxy_s_own_proxy_authorization_keeps_negotiate_out ... ok
+test proto::http::tests::negotiate::the_proxy_s_token_is_made_before_the_origin_s ... ok
+test proto::http::tests::negotiate::without_a_library_nothing_negotiates ... ok
+test proto::http::tests::no_jar_keeps_no_cookies ... ok
+test proto::http::tests::only_a_100_releases_a_held_body ... ok
+test proto::http::tests::os_errno::a_failed_send_keeps_its_number_until_the_next_transfer ... ok
+test proto::http::tests::os_errno::a_refused_attempt_s_number_outlives_the_next_s_success ... ok
+test proto::http::tests::os_errno::a_refused_connect_keeps_its_number ... ok
+test proto::http::tests::os_errno::a_transfer_without_a_socket_failure_has_none ... ok
+test proto::http::tests::os_errno::an_immediate_refusal_keeps_its_number ... ok
+test proto::http::tests::proxy_connection_counts_only_through_a_proxy ... ok
+test proto::http::tests::proxy_from_the_environment ... ok
+test proto::http::tests::range::a_download_asks_for_its_range ... ok
+test proto::http::tests::range::a_get_resumed_at_the_end_asks_from_minus_one ... ok
+test proto::http::tests::range::a_response_to_a_range_is_taken_as_it_comes ... ok
+test proto::http::tests::range::an_upload_names_its_range ... ok
+test proto::http::tests::read_trace::a_417_while_sending_keeps_the_body_to_rewind ... ok
+test proto::http::tests::read_trace::a_body_held_for_a_100_gives_nothing_until_it_comes ... ok
+test proto::http::tests::read_trace::a_body_held_for_a_100_is_asked_for_while_the_wait_runs ... ok
+test proto::http::tests::read_trace::a_body_paused_from_the_start_is_not_asked_for ... ok
+test proto::http::tests::read_trace::a_body_sent_again_is_kept_and_rewound ... ok
+test proto::http::tests::read_trace::a_handler_s_pieces_are_read_into_chunks ... ok
+test proto::http::tests::read_trace::a_lifted_pause_is_told_to_each_reader ... ok
+test proto::http::tests::read_trace::a_lifted_pause_is_told_to_the_conversion_stage ... ok
+test proto::http::tests::read_trace::a_lifted_pause_of_a_sized_post_is_told_to_its_reader ... ok
+test proto::http::tests::read_trace::a_lifted_pause_of_a_tree_is_told_to_its_reader ... ok
+test proto::http::tests::read_trace::a_line_end_split_between_reads_is_kept_as_it_is ... ok
+test proto::http::tests::read_trace::a_mime_read_that_fails_early_says_only_what_it_got ... ok
+test proto::http::tests::read_trace::a_retried_request_keeps_its_readers_to_rewind ... ok
+test proto::http::tests::read_trace::a_tree_is_read_through_the_mime_reader ... ok
+test proto::http::tests::read_trace::an_application_s_pause_is_told_to_no_reader ... ok
+test proto::http::tests::read_trace::an_empty_body_is_not_converted ... ok
+test proto::http::tests::read_trace::bytes_are_read_through_the_buffer_reader ... ok
+test proto::http::tests::read_trace::converted_line_ends_are_read_through_their_stage ... ok
+test proto::http::tests::read_trace::trailers_are_said_with_the_last_chunk ... ok
+test proto::http::tests::redirects_stop_at_the_limit ... ok
+test proto::http::tests::responses_end_as_c_ends_them ... ok
+test proto::http::tests::retry_after_reads_seconds_and_dates ... ok
+test proto::http::tests::setup_trace::a_direct_setup_is_traced_as_c ... ok
+test proto::http::tests::setup_trace::a_pre_proxy_s_and_a_tunnel_s_setup_is_traced_as_c ... ok
+test proto::http::tests::setup_trace::a_redial_starts_the_chain_over ... ok
+test proto::http::tests::setup_trace::a_refused_setup_names_the_chain_that_failed ... ok
+test proto::http::tests::setup_trace::a_refused_tunnel_names_the_chain_that_failed ... ok
+test proto::http::tests::setup_trace::a_reused_connection_traces_no_setup ... ok
+test proto::http::tests::setup_trace::a_socks_handshake_refused_as_it_starts_names_its_filter ... ok
+test proto::http::tests::setup_trace::a_socks_proxy_s_setup_is_traced_as_c ... ok
+test proto::http::tests::setup_trace::a_tunnel_failing_as_it_starts_names_its_filter ... ok
+test proto::http::tests::setup_trace::a_tunnel_s_setup_is_traced_as_c ... ok
+test proto::http::tests::setup_trace::an_https_setup_is_traced_as_c ... ok
+test proto::http::tests::setup_trace::the_proxy_line_after_a_tunnel_is_traced_as_c ... ok
+test proto::http::tests::setup_trace::the_proxy_protocol_s_filter_is_added_and_goes ... ok
+test proto::http::tests::sigv4::a_message_signature_signs_the_request_sent ... ok
+test proto::http::tests::sigv4::a_request_is_signed_where_authorization_goes ... ok
+test proto::http::tests::sigv4::a_signing_fails_as_c_fails_it ... ok
+test proto::http::tests::sigv4::an_ed25519_message_signature_is_the_handle_s_libraries_own ... ok
+test proto::http::tests::sigv4::an_own_authorization_is_not_signed ... ok
+test proto::http::tests::sigv4::nothing_is_signed_without_credentials ... ok
+test proto::http::tests::sigv4::the_request_signed_is_the_one_sent ... ok
+test proto::http::tests::socks_gss::a_failed_send_is_said_of_its_message ... ok
+test proto::http::tests::socks_gss::a_gss_api_failure_gives_c_s_three_reasons ... ok
+test proto::http::tests::socks_gss::a_proxy_closing_is_said_of_the_message_awaited ... ok
+test proto::http::tests::socks_gss::a_proxy_s_rejection_is_the_reason ... ok
+test proto::http::tests::socks_gss::a_socks5_proxy_authenticates_by_gss_api ... ok
+test proto::http::tests::socks_gss::an_unanswered_message_fails_its_read_when_the_time_is_out ... ok
+test proto::http::tests::socks_gss::granted_protection_fails_after_the_request ... ok
+test proto::http::tests::socks_gss::the_proxy_service_names_the_context ... ok
+test proto::http::tests::suppressed_connect_headers_are_kept_and_not_delivered ... ok
+test proto::http::tests::tcp_trace::a_configurer_failing_a_socket_aborts_as_c ... ok
+test proto::http::tests::tcp_trace::a_configurer_sets_its_socket_s_options ... ok
+test proto::http::tests::tcp_trace::a_connect_failing_at_once_is_traced_as_c ... ok
+test proto::http::tests::tcp_trace::a_losing_attempt_is_closed_as_c_closes_it ... ok
+test proto::http::tests::tcp_trace::a_reason_is_let_go_as_an_attempt_connects ... ok
+test proto::http::tests::tcp_trace::a_redial_closes_the_socket_as_c ... ok
+test proto::http::tests::tcp_trace::a_refused_family_gives_way_to_the_next ... ok
+test proto::http::tests::tcp_trace::a_refused_socket_is_traced_as_c ... ok
+test proto::http::tests::tcp_trace::a_socket_already_connected_wins_as_it_opens ... ok
+test proto::http::tests::tcp_trace::a_socket_hung_up_without_an_error_fails ... ok
+test proto::http::tests::tcp_trace::a_socket_s_setup_is_traced_as_c ... ok
+test proto::http::tests::tcp_trace::an_opener_may_change_the_address ... ok
+test proto::http::tests::tcp_trace::an_opener_opening_nothing_fails_as_c ... ok
+test proto::http::tests::tcp_trace::an_opener_out_of_memory_fails_its_attempt ... ok
+test proto::http::tests::tcp_trace::each_attempt_s_reason_is_let_go_as_the_race_goes_on ... ok
+test proto::http::tests::the_application_s_content_headers_replace_the_library_s ... ok
+test proto::http::tests::the_application_s_credentials_stay_with_the_first_origin ... ok
+test proto::http::tests::the_application_s_port_holds_until_an_absolute_redirect ... ok
+test proto::http::tests::the_application_s_transfer_encoding_decides ... ok
+test proto::http::tests::the_environment_names_a_proxy ... ok
+test proto::http::tests::the_header_size_counts_interim_heads_and_trailers ... ok
+test proto::http::tests::the_login_stays_with_the_first_origin ... ok
+test proto::http::tests::the_method_chosen_is_kept_for_the_next_transfer ... ok
+test proto::http::tests::the_path_is_sent_encoded_and_the_query_as_given ... ok
+test proto::http::tests::the_plain_build_says_no_debug_lines ... ok
+test proto::http::tests::the_proxy_protocol_s_line_follows_every_proxy_s_handshake ... ok
+test proto::http::tests::the_proxy_protocol_s_line_goes_through_a_tunnel ... ok
+test proto::http::tests::the_proxy_protocol_s_line_says_the_address_given ... ok
+test proto::http::tests::the_proxy_s_own_proxy_authorization_replaces_the_library_s ... ok
+test proto::http::tests::the_report_has_the_media_type_and_the_ends ... ok
+test proto::http::tests::the_report_knows_the_response_as_its_lines_arrive ... ok
+test proto::http::tests::the_report_s_url_and_the_request_keep_an_empty_query ... ok
+test proto::http::tests::the_report_s_url_has_no_credentials ... ok
+test proto::http::tests::the_system_s_ipv6_probe_is_the_system_s ... FAILED
+test proto::http::tests::the_system_s_scope_is_the_system_s ... ok
+test proto::http::tests::the_time_limit_is_the_whole_transfer_s ... ok
+test proto::http::tests::the_tunnel_takes_stock_for_each_byte_of_the_answer ... ok
+test proto::http::tests::the_upload_buffer_is_the_size_set ... ok
+test proto::http::tests::the_wait_for_a_100_starts_once_a_pause_ends ... ok
+test proto::http::tests::time_condition::a_304_says_the_condition_was_unmet ... ok
+test proto::http::tests::time_condition::a_document_that_meets_the_condition_is_read ... ok
+test proto::http::tests::time_condition::a_time_condition_is_sent_as_its_header ... ok
+test proto::http::tests::time_condition::an_older_document_ends_as_a_304 ... ok
+test proto::http::tests::timer_trace::a_leg_arms_its_limits_and_the_race_clears_its_timer ... ok
+test proto::http::tests::timer_trace::a_limit_s_first_step_is_a_whole_one ... ok
+test proto::http::tests::timer_trace::a_receive_limit_s_waits_are_traced_as_c ... ok
+test proto::http::tests::timer_trace::a_timer_left_at_the_end_is_said_to_be_cleared ... ok
+test proto::http::tests::timer_trace::a_wait_for_a_100_that_runs_out_is_cleared ... ok
+test proto::http::tests::timer_trace::the_speed_timers_are_armed_with_their_waits ... ok
+test proto::http::tests::timer_trace::the_wait_for_a_100_is_armed_and_cleared_as_c_does ... ok
+test proto::http::tests::tls::a_body_longer_than_a_record_goes_as_many ... ok
+test proto::http::tests::tls::a_handshake_cut_short_keeps_the_connection_s_ends_and_time ... ok
+test proto::http::tests::tls::a_handshake_waits_to_write_while_it_reads ... ok
+test proto::http::tests::tls::a_multi_keeps_one_state_of_the_library_s_for_its_sessions ... ok
+test proto::http::tests::tls::a_read_asks_the_session_for_the_transfer_s_length ... ok
+test proto::http::tests::tls::a_read_waits_to_write_what_tls_still_has_to_send ... ok
+test proto::http::tests::tls::a_record_longer_than_a_read_is_read_without_waiting ... ok
+test proto::http::tests::tls::a_session_s_end_ends_the_body_and_its_failure_fails_the_read ... ok
+test proto::http::tests::tls::a_session_s_info_and_trace_lines_reach_the_transfer ... ok
+test proto::http::tests::tls::a_session_s_reason_for_a_failed_read_is_the_transfer_s ... ok
+test proto::http::tests::tls::a_session_s_records_reach_the_debug_handler ... ok
+test proto::http::tests::tls::a_session_traces_its_records_only_for_a_verbose_debug_handler ... ok
+test proto::http::tests::tls::a_share_keeping_sessions_serves_them_across_multis ... ok
+test proto::http::tests::tls::a_socket_failing_under_a_session_is_said_first ... ok
+test proto::http::tests::tls::an_https_connection_is_reused_only_with_the_same_tls ... ok
+test proto::http::tests::tls::an_https_get_goes_through_its_tls_layer ... ok
+test proto::http::tests::tls::an_https_proxy_s_connection_is_reused_only_with_the_same_proxy_tls ... ok
+test proto::http::tests::tls::an_unanswered_handshake_times_out_as_the_connect ... ok
+test proto::http::tests::tls::http_through_an_https_proxy_goes_over_tls_to_the_proxy ... ok
+test proto::http::tests::tls::https_through_a_proxy_reads_what_followed_its_answer_first ... ok
+test proto::http::tests::tls::https_through_an_https_proxy_is_tls_in_tls ... ok
+test proto::http::tests::tls::https_without_a_tls_library_is_not_supported ... ok
+test proto::http::tests::tls::naming_the_default_ca_file_reuses_a_connection_made_with_it ... ok
+test proto::http::tests::tls::secure_cookies_go_over_tls ... ok
+test proto::http::tests::tls::the_next_connection_to_a_peer_resumes_a_session_its_multi_kept ... ok
+test proto::http::tests::tls::the_proxy_protocol_s_line_goes_before_tls ... ok
+test proto::http::tests::tls::the_session_cache_traces_its_uses ... ok
+test proto::http::tests::tls::the_socket_under_a_session_traces_what_the_session_asks_of_it ... ok
+test proto::http::tests::tls_hands::a_handler_reaches_another_transfer_s_objects_by_its_id ... ok
+test proto::http::tests::tls_hands::a_handshake_paused_for_the_application_waits_for_its_word ... ok
+test proto::http::tests::tls_hands::the_context_handler_and_the_handlers_reach_the_library_s_objects ... ok
+test proto::http::tests::tls_hands::the_context_handler_s_error_fails_the_transfer ... ok
+test proto::http::tests::traced_bytes_take_the_ids_as_c_does ... ok
+test proto::http::tests::traced_bytes_with_the_ids_keep_a_zero_byte ... ok
+test proto::http::tests::a_body_waits_for_a_100 ... ok
+test proto::http::tests::unix_trace::a_path_too_long_is_not_resolved ... ok
+test proto::http::tests::unix_trace::a_proxy_is_not_gone_through_over_a_unix_socket ... ok
+test proto::http::tests::unix_trace::a_unix_socket_is_connected_in_place_of_the_host ... ok
+test proto::http::tests::unix_trace::a_unix_socket_refused_fails_over_it ... ok
+test proto::http::tests::unix_trace::an_abstract_name_shows_as_nothing ... ok
+test proto::http::tests::unix_trace::an_empty_path_fails_the_transfer ... ok
+test proto::http::tests::wait_trace::a_connect_limit_is_waited_for_as_c ... ok
+test proto::http::tests::wait_trace::a_multi_without_a_waker_counts_none ... ok
+test proto::http::tests::transfers_with_endless_bodies_take_turns ... ok
+test proto::http::tests::wait_trace::a_race_s_waits_are_traced_as_c ... ok
+test proto::http::tests::wait_trace::a_request_s_waits_are_traced_as_c ... ok
+test proto::http::tests::wait_trace::a_transfer_run_by_events_is_traced_as_c ... ok
+test proto::http::tests::wait_trace::a_wait_counts_the_waker_only_when_it_waits_as_c ... ok
+test proto::http::tests::wait_trace::a_tunnel_s_waits_are_traced_as_c ... ok
+test proto::http::tests::write_trace::a_bad_end_of_chunks_is_traced_as_c ... ok
+test proto::http::tests::wait_trace::only_transfers_at_work_are_waited_on_as_c ... ok
+test proto::http::tests::write_trace::a_body_past_the_size_limit_is_not_written ... ok
+test proto::http::tests::write_trace::a_body_paused_part_way_holds_what_is_left ... ok
+test proto::http::tests::write_trace::a_chunked_body_is_traced_through_its_writers_as_c ... ok
+test proto::http::tests::write_trace::a_coded_body_held_at_the_gate_is_traced_as_it_is_held_and_flushed ... ok
+test proto::http::tests::write_trace::a_paused_body_is_traced_as_it_is_held_and_flushed ... ok
+test proto::http::tests::write_trace::each_kind_of_output_is_typed_as_c_marks_it ... ok
+test proto::tests::the_peer_keeps_the_url_s_zone ... ok
+test report::certinfo::tests::fields_are_kept_as_label_colon_value_per_certificate ... ok
+test report::headers::tests::a_cursor_from_an_earlier_transfer_leads_nowhere ... ok
+test report::headers::tests::a_line_is_split_into_name_and_trimmed_value ... ok
+test report::headers::tests::a_store_of_requests_keeps_each_apart ... ok
+test proto::http::tests::write_trace::each_coding_is_looked_for_and_its_decoder_named_as_c ... ok
+test report::headers::tests::at_most_5000_headers_are_stored ... ok
+test report::headers::tests::lookups_count_by_name_origin_and_index ... ok
+test report::headers::tests::next_walks_the_headers_in_order_with_their_counts ... ok
+test report::headers::tests::origins_join ... ok
+test report::headers::tests::what_is_not_a_header_line_is_refused_or_skipped ... ok
+test report::tests::a_phase_reached_at_its_start_counts_a_microsecond ... ok
+test report::tests::a_reason_let_go_is_replaced_by_the_next ... ok
+test report::tests::keeps_the_first_failure ... ok
+test report::tests::phases_add_up_across_a_redirect ... ok
+test report::tests::queue_time_sums_over_requests ... ok
+test save::tests::a_regular_file_is_replaced_and_any_other_written_in_place ... ok
+test save::tests::a_temporary_name_takes_every_letter_and_digit ... ok
+test save::tests::finds_the_directory_as_c ... ok
+test save::tests::replaces_a_file_and_keeps_its_mode ... ok
+test save::tests::the_mode_is_kept_only_where_the_group_is_the_same ... ok
+test share::tests::what_is_kept_changes_only_while_the_share_is_idle ... ok
+test text::tests::keeps_what_fits ... ok
+test time::tests::a_manual_clock_moves_when_told_for_every_clone ... ok
+test time::tests::instants_saturate ... ok
+test time::tests::the_system_clock_starts_at_its_epoch_and_does_not_go_back ... ok
+test time::tests::the_system_clock_tells_the_calendar_time ... ok
+test tls::cache::tests::a_key_holds_every_setting_a_session_must_share ... ok
+test tls::cache::tests::a_key_is_c_s_for_the_same_settings ... ok
+test tls::cache::tests::a_new_peer_takes_the_least_recently_used_slot ... ok
+test tls::cache::tests::a_peer_keeps_its_two_newest_tickets_while_they_are_good ... ok
+test tls::cache::tests::a_relative_path_is_made_absolute_or_the_key_local ... ok
+test tls::cache::tests::a_session_serves_only_its_client ... ok
+test tls::cache::tests::a_session_serves_only_the_settings_it_was_made_with ... ok
+test tls::cache::tests::every_session_of_a_peer_is_forgotten_at_once ... ok
+test tls::cache::tests::lifetimes_are_cut_to_the_most_a_version_is_kept ... ok
+test tls::cache::tests::the_cache_traces_as_c_does ... ok
+test tls::cache::tests::the_default_ca_is_keyed_as_the_file_it_resolves_to ... ok
+test tls::cache::tests::versions_do_not_mix ... ok
+test tls::keylog::tests::lines_are_appended_as_the_nss_format_has_them ... ok
+test tls::pin::tests::a_file_holds_the_key_in_der_or_pem ... ok
+test tls::pin::tests::a_hash_among_several_matches ... ok
+test tls::pin::tests::no_hash_that_matches_is_a_mismatch ... ok
+test tls::pin::tests::pem_is_read_as_c_reads_it ... ok
+test tls::tests::a_copy_of_the_options_keeps_the_tls_settings ... ok
+test tls::tests::alpn_does_not_tell_identities_apart ... ok
+test tls::tests::an_alpn_offer_is_put_as_c_puts_it ... ok
+test tls::tests::an_identity_copies_the_options ... ok
+test tls::tests::every_setting_tells_two_identities_apart ... ok
+test tls::tests::lists_match_in_any_case_and_paths_exactly ... ok
+test tls::tests::ssl_options_are_sets ... ok
+test tls::tests::the_ca_default_compares_as_the_file_it_names ... ok
+test trace::tests::ends_lines_as_c ... ok
+test upload::tests::a_known_size_bounds_the_reads_and_ends_the_body ... ok
+test upload::tests::a_pause_blocks_an_upload_only_every_way_it_moves ... ok
+test upload::tests::a_pause_in_a_step_still_sending_runs_it_again ... ok
+test upload::tests::a_pause_in_the_step_that_sent_the_body_blocks ... ok
+test upload::tests::a_pausing_handler_pauses_the_sending ... ok
+test upload::tests::a_request_with_a_body_is_sent_when_its_body_is ... ok
+test upload::tests::a_rewind_handler_s_reason_is_the_transfer_s ... ok
+test upload::tests::a_rewind_needs_the_handler_s_rewind_once_read ... ok
+test upload::tests::a_rewind_sends_the_body_again ... ok
+test upload::tests::an_aborting_read_is_timed_to_its_end ... ok
+test upload::tests::an_empty_size_never_calls_the_handler ... ok
+test upload::tests::an_end_short_of_the_size_is_a_read_error ... ok
+test upload::tests::an_unknown_size_ends_at_the_handler_s_eof ... ok
+test upload::tests::bytes_and_no_source_send_what_they_hold ... ok
+test upload::tests::bytes_need_a_rewind_once_read ... ok
+test upload::tests::lent_bytes_are_read_in_place_and_rewound ... ok
+test upload::tests::progress_counts_what_is_sent ... ok
+test upload::tests::the_handler_s_end_and_failures_stick ... ok
+test upload::tests::the_read_that_completes_the_size_ends_the_body ... ok
+test url::encode::tests::decodes_and_rejects_control_bytes ... ok
+test url::encode::tests::encodes_a_part_set_alone ... ok
+test url::encode::tests::push_stops_short_of_the_input_limit ... ok
+test url::encode::tests::reencodes_to_itself_as_reencode_says ... ok
+test url::encode::tests::reencodes_what_must_be ... ok
+test url::host::tests::ipv4_in_c_forms ... ok
+test url::host::tests::ipv6_as_c_prints_it ... ok
+test url::host::tests::ntop6_as_c_prints_it ... ok
+test url::tests::a_transfer_s_path_reads_encoded ... ok
+test report::headers::tests::any_headers_are_stored_and_looked_up ... ok
+test url::tests::any_url_is_parsed_read_and_changed ... ok
+test url::tests::escape_is_c_s ... ok
+test url::tests::lib1560_append ... ok
+test url::tests::lib1560_clear_url ... ok
+test url::tests::lib1560_get_parts ... ok
+test url::tests::lib1560_get_url ... ok
+test url::tests::lib1560_set_parts ... ok
+test url::tests::lib1560_set_url ... ok
+test url::tests::parses_the_milestone_urls ... ok
+test proto::http::tests::a_417_has_the_request_made_again_without_expect ... ok
+test url::tests::relative_urls_resolve_as_c_resolves_them ... ok
+test url::tests::sets_parts_as_c_does ... ok
+test url::tests::unit1395_dot_segments ... ok
+test version::tests::claims_a_listed_feature_by_name ... ok
+test version::tests::features_are_named_as_c_names_them ... ok
+test version::tests::protocols_are_named_by_their_schemes ... ok
+test version::tests::version_matches_its_parts ... ok
+test url::tests::parts_are_set_as_c_sets_them ... ok
+test url::tests::branches_as_c_takes_them ... ok
+test deliver::tests::a_pause_holds_the_body_before_it_is_decoded ... ok
+
+failures:
+
+---- proto::http::tests::the_system_s_ipv6_probe_is_the_system_s stdout ----
+
+thread 'proto::http::tests::the_system_s_ipv6_probe_is_the_system_s' (30044) panicked at crates/curl-core/src/proto/http/tests.rs:6574:5:
+assertion `left == right` failed
+  left: Ok(false)
+ right: Ok(true)
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/panicking.rs:80:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/panicking.rs:452:17
+   3: core::panicking::assert_failed::<core::result::Result<bool, curl_alloc::OutOfMemory>, core::result::Result<bool, curl_alloc::OutOfMemory>>
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/panicking.rs:407:5
+   4: curl_core::proto::http::tests::the_system_s_ipv6_probe_is_the_system_s
+             at ./src/proto/http/tests.rs:6574:5
+   5: curl_core::proto::http::tests::the_system_s_ipv6_probe_is_the_system_s::{closure#0}
+             at ./src/proto/http/tests.rs:6556:45
+   6: <curl_core::proto::http::tests::the_system_s_ipv6_probe_is_the_system_s::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/ops/function.rs:250:5
+   7: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    proto::http::tests::the_system_s_ipv6_probe_is_the_system_s
+
+test result: FAILED. 1146 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.27s
+
+error: test failed, to rerun pass `-p curl-core --lib`
+     Running tests/torture.rs (build/target/debug/deps/torture-0cb90193206dd022)
+test add_perform_remove_survives_every_allocation_failing ... torture: 188 allocations, each refused in turn
+ok
+test pausing_and_replaying_survives_every_allocation_failing ... torture: 45 allocations, each refused in turn
+ok
+test a_get_survives_every_allocation_failing ... torture: 46 allocations, each refused in turn
+ok
+test a_refused_connect_survives_every_allocation_failing ... torture: 34 allocations, each refused in turn
+ok
+test a_get_takes_no_refusal_for_success ... torture: 46 allocations, each refused alone
+ok
+test a_get_with_credentials_takes_no_refusal_for_success ... torture: 53 allocations, each refused alone
+ok
+test a_tunneled_get_takes_no_refusal_for_success ... torture: 68 allocations, each refused alone
+ok
+test a_get_stays_within_its_allocation_budget ... budget: a plain GET made 46 allocations
+ok
+test an_https_get_survives_every_allocation_failing ... torture: 55 allocations, each refused in turn
+ok
+test an_https_get_takes_no_refusal_for_success ... torture: 55 allocations, each refused alone
+ok
+test an_https_get_stays_within_its_allocation_budget ... budget: an HTTPS GET over the fake made 55 allocations
+ok
+test a_share_s_connection_survives_every_allocation_failing ... torture: 68 allocations, each refused in turn
+ok
+test a_lost_trailer_line_fails_the_request ... ok
+test a_cold_group_is_made_or_refused_at_its_first_set ... ok
+test a_file_part_s_long_name_is_read_without_a_copy ... ok
+     Running unittests src/lib.rs (build/target/debug/deps/curl_gssapi-4096e015cf7f121a)
+
+running 12 tests
+test tests::binding_in_a_child ... ok
+test tests::a_stub_status_has_no_text ... ok
+test tests::a_set_of_mechanisms_leaves_one_out ... ok
+test tests::cached_ticket_in_a_child ... ok
+test tests::long_status_in_a_child ... ok
+test tests::peek::md5_is_rfc_1321_s ... ok
+test tests::the_version_is_pkg_config_s ... ok
+test tests::without_credentials_in_a_child ... ok
+test tests::the_binding_goes_in_the_authenticator ... ok
+test tests::the_library_s_contexts_from_a_cached_ticket ... ok
+test tests::without_credentials_spnego_fails_to_acquire_them ... ok
+test tests::a_long_status_text_is_cut_where_c_cuts_it ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/negotiate.rs (build/target/debug/deps/negotiate-c6a6d25f816a21f3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/socks.rs (build/target/debug/deps/socks-12e64250b364b1db)
+
+running 2 tests
+test library_in_a_child ... ok
+test the_library_s_token_is_framed ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (build/target/debug/deps/curl_openssl-98f0a79c328eca26)
+
+running 34 tests
+test cache::tests::only_a_verified_peer_by_file_and_path_alone_is_cached ... ok
+test cache::tests::another_ca_file_path_or_partial_chain_bit_is_another_store ... ok
+test cache::tests::a_kept_store_serves_the_same_settings_until_it_is_a_day_old ... ok
+test cache::tests::the_last_store_set_is_kept ... ok
+test cert::tests::file_types_are_named_as_c_names_them ... ok
+test cert::tests::the_password_is_handed_over_only_where_it_fits ... ok
+test ffi::tests::the_values_are_the_headers_expansions ... ok
+test hostcheck::tests::a_two_byte_pattern_names_no_address_or_dotted_host ... ok
+test sign::tests::counted_signing ... ignored, run by signing_frees_what_it_made
+test cache::tests::the_age_is_the_asking_transfer_s ... ok
+test hostcheck::tests::unit1397 ... ok
+test sys::tests::configured_at_init ... ignored, run by init_reads_the_configuration, OPENSSL_CONF set
+test sys::tests::configured_later ... ignored, run by without_init_the_configuration_is_read_later, OPENSSL_CONF set
+test sys::tests::engines_after_init ... ignored, run by init_loads_the_built_in_engines, OPENSSL_CONF empty
+test sys::tests::engines_after_signing ... ignored, run by signing_initialises_the_library, OPENSSL_CONF empty
+test sys::tests::init_reads_the_configuration ... ok
+test sys::tests::the_flags_are_c_s ... ok
+test sys::tests::the_version_is_named_as_c_names_it ... ok
+test sys::tests::three_or_later_is_supported ... ok
+test sys::tests::signing_initialises_the_library ... ok
+test sys::tests::without_init_the_configuration_is_read_later ... ok
+test tests::an_error_s_library_and_reason_are_as_err_h_unpacks_them ... ok
+test tests::an_error_s_text_has_what_c_s_buffer_leaves_it ... ok
+test tests::counted_transfers ... ignored, run by a_transfer_frees_what_it_made_of_openssl_s
+test sign::tests::signing_frees_what_it_made ... ok
+test tests::signs_test_5001_s_base_with_the_test_key ... ok
+test tests::signs_rfc_8032_s_vectors ... ok
+test tests::the_engines_are_the_library_s ... ok
+test text::tests::every_message_type_is_named_as_c_names_it ... ok
+test text::tests::every_ssl_error_is_named_as_c_names_it ... ok
+test text::tests::every_record_type_is_named_as_c_names_it ... ok
+test text::tests::names_are_c_s ... ok
+test tests::a_transfer_frees_what_it_made_of_openssl_s ... ok
+test sys::tests::init_loads_the_built_in_engines ... FAILED
+
+failures:
+
+---- sys::tests::init_loads_the_built_in_engines stdout ----
+
+thread 'sys::tests::init_loads_the_built_in_engines' (30266) panicked at crates/curl-openssl/src/sys.rs:179:9:
+Output { status: ExitStatus(unix_wait_status(25856)), stdout: "\nrunning 1 test\ntest sys::tests::engines_after_init ... FAILED\n\nfailures:\n\n---- sys::tests::engines_after_init stdout ----\n\nthread 'sys::tests::engines_after_init' (30274) panicked at crates/curl-openssl/src/sys.rs:200:13:\n[\"dynamic\"]\nstack backtrace:\n   0: __rustc::rust_begin_unwind\n             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/std/src/panicking.rs:679:5\n   1: core::panicking::panic_fmt\n             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/panicking.rs:80:14\n   2: curl_openssl::sys::tests::engines_after_init\n             at ./src/sys.rs:200:13\n   3: curl_openssl::sys::tests::engines_after_init::{closure#0}\n             at ./src/sys.rs:194:28\n   4: <curl_openssl::sys::tests::engines_after_init::{closure#0} as core::ops::function::FnOnce<()>>::call_once\n             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/ops/function.rs:250:5\n   5: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once\n             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/ops/function.rs:250:5\nnote: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.\n\n\nfailures:\n    sys::tests::engines_after_init\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.09s\n\n", stderr: "" }
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/panicking.rs:80:14
+   2: curl_openssl::sys::tests::in_a_child
+             at ./src/sys.rs:179:9
+   3: curl_openssl::sys::tests::init_loads_the_built_in_engines
+             at ./src/sys.rs:189:9
+   4: curl_openssl::sys::tests::init_loads_the_built_in_engines::{closure#0}
+             at ./src/sys.rs:188:41
+   5: <curl_openssl::sys::tests::init_loads_the_built_in_engines::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/ops/function.rs:250:5
+   6: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    sys::tests::init_loads_the_built_in_engines
+
+test result: FAILED. 27 passed; 1 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+error: test failed, to rerun pass `-p curl-openssl --lib`
+     Running tests/peer.rs (build/target/debug/deps/peer-bd5f05824c8cf177)
+test a_verified_get_reads_the_body ... ok
+test a_name_the_certificate_lacks_fails_the_host_check ... ok
+test an_unverified_peer_is_not_checked ... ok
+test an_unknown_issuer_fails_the_verification ... ok
+test a_missing_ca_file_fails_as_a_bad_file_twice_said ... ok
+test no_ca_named_trusts_the_build_s_default ... ok
+test the_library_reads_no_more_than_it_asks ... ok
+test a_second_connection_takes_the_multi_s_store ... ok
+test a_handle_s_own_multi_keeps_its_store_between_performs ... ok
+test the_kept_store_serves_for_the_cache_s_age ... ok
+test another_ca_file_path_or_partial_chain_loads_its_own ... ok
+test an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own ... ok
+test an_https_get_stays_within_its_allocation_budget ... budget: an HTTPS GET over OpenSSL made 57 allocations, the plain GET 39
+ok
+test a_get_through_an_https_proxy_stays_within_its_allocation_budget ... budget: a GET through an HTTPS proxy made 75 allocations, through an HTTP one 56
+ok
+test a_resumed_get_stays_within_its_allocation_budget ... budget: a resumed HTTPS GET made 40 allocations, the first 56
+ok
+test a_step_is_bound_to_the_certificate_s_hash ... ok
+test a_certificate_signed_with_sha_1_is_bound_by_sha_256 ... ok
+test an_ed25519_certificate_binds_nothing ... ok
+test a_certificate_signed_by_another_kind_of_key_binds_nothing ... ok
+test the_verify_result_is_reported_as_openssl_gives_it ... ok
+test a_revoked_certificate_fails_the_verification ... ok
+test a_crl_that_revokes_nothing_lets_the_peer_verify ... ok
+test a_crl_file_that_cannot_be_read_fails_as_a_bad_crl ... ok
+test the_peer_s_key_matches_a_pinned_hash_or_file ... ok
+test another_pinned_key_fails_even_unverified ... ok
+test a_client_certificate_in_pem_files_is_shown ... ok
+test a_client_certificate_in_der_or_in_memory_is_shown ... ok
+test a_pkcs12_file_is_opened_with_its_password ... ok
+test an_encrypted_key_is_read_with_the_password ... ok
+test no_client_certificate_fails_as_the_server_alerts ... ok
+test a_client_certificate_and_key_in_der_blobs_are_shown ... ok
+test a_client_chain_in_a_blob_or_a_pkcs12_file_is_sent_whole ... ok
+test a_chain_blob_with_a_broken_certificate_fails ... ok
+test a_key_of_another_kind_than_the_certificate_fails_the_check ... ok
+test a_certificate_or_key_that_cannot_be_used_fails_as_c_says ... ok
+test the_chain_is_reported_as_c_words_it_when_asked ... ok
+test a_chain_of_c_s_hundred_is_reported_and_a_longer_one_fails ... ok
+test an_engine_or_provider_that_cannot_be_had_fails_as_c_says ... ok
+test a_provider_s_store_gives_the_client_certificate_and_key ... ok
+test an_engine_made_the_default_is_said ... ok
+test a_pkcs11_uri_loads_the_pkcs11_provider_when_none_is_loaded ... 
+thread 'main' (30297) panicked at crates/curl-openssl/tests/peer/engine.rs:377:9:
+None: Failed to initialize provider: error:12800067:DSO support routines::could not load the shared library
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/panicking.rs:80:14
+   2: peer::engine::a_pkcs11_uri_loads_the_pkcs11_provider_when_none_is_loaded
+             at ./tests/peer/engine.rs:377:9
+   3: peer::main
+             at ./tests/peer.rs:190:9
+   4: <fn() as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+error: test failed, to rerun pass `-p curl-openssl --test peer`
+     Running unittests src/lib.rs (build/target/debug/deps/curl_os-6c54cbc0cf007e08)
+
+running 72 tests
+test error::tests::cuts_a_long_text_to_c_s_buffer ... ok
+test env::tests::reads_set_unset_empty_and_non_utf8_values ... ok
+test error::tests::strips_the_line_end_as_c_does ... ok
+test error::tests::gives_the_system_text ... ok
+test error::tests::gives_a_text_for_any_number ... ok
+test error::tests::names_an_unknown_number ... ok
+test error::tests::takes_an_io_error_s_number_or_its_text ... ok
+test fs::tests::a_nonblocking_file_does_not_wait ... ok
+test fs::tests::denied_is_eacces_alone ... ok
+test fs::tests::a_real_path_resolves_links_and_dots ... ok
+test fs::tests::closes_a_file ... ok
+test fs::tests::a_listing_closes_its_directory ... ok
+test fs::tests::lists_a_directory ... ok
+test fs::tests::makes_moves_and_removes_names ... ok
+test fs::tests::points_standard_error_at_a_file ... ok
+test fs::tests::standard_input_has_a_descriptor_of_its_own ... ok
+test fs::tests::sets_a_file_s_times ... ok
+test fs::tests::opens_files_to_read_and_write ... ok
+test locale::tests::in_the_environment_s_locale ... ok
+test fs::tests::takes_a_name_as_c_does ... ok
+test net::tests::a_failed_probe_is_no_ipv6_unless_memory_ran_out ... ok
+test fs::tests::states_a_file ... ok
+test net::tests::a_link_local_address_takes_an_interface_s_scope ... ok
+test net::tests::a_refused_connect_reports_why ... ok
+test net::tests::a_reset_connection_fails_both_ways ... ok
+test fs::tests::descriptors_may_be_missing_or_zero ... ok
+test net::tests::a_shut_down_side_reads_as_the_end_at_the_peer ... ok
+test net::tests::a_socket_is_made_nonblocking ... ok
+test net::tests::a_socket_binds_its_local_end ... ok
+test net::tests::a_socket_is_set_as_asked ... ok
+test net::tests::a_socket_may_speak_multipath_tcp ... ok
+test net::tests::a_socket_let_go_of_stays_open ... ok
+test net::tests::a_unix_address_is_sized_as_c_sizes_it ... ok
+test net::tests::an_address_s_scope_is_c_s ... ok
+test net::tests::an_adopted_descriptor_is_the_socket_s ... ok
+test net::tests::a_unix_socket_connects_by_path_and_by_name ... ok
+test net::tests::an_interface_s_address_is_of_the_family_and_scope_asked ... ok
+test locale::tests::takes_the_environment_s_locale ... ok
+test net::tests::an_interrupted_call_reads_as_c_reads_it ... ok
+test net::tests::connects_over_ipv4_and_ipv6 ... ok
+test net::tests::interfaces_are_found_by_name ... ok
+test net::tests::the_link_local_scope_is_not_loopback_s ... ok
+test net::tests::receives_data_then_the_end_of_the_stream ... ok
+test net::tests::the_scope_reaches_the_socket_address ... ok
+test net::tests::the_type_of_service_needs_a_family ... ok
+test poll::tests::a_copy_s_events_go_back_to_the_entry ... ok
+test net::tests::a_send_into_full_buffers_would_block ... ok
+test poll::tests::a_sub_millisecond_timeout_still_waits ... ok
+test poll::tests::events_combine_and_contain ... ok
+test net::tests::descriptors_run_from_zero_to_the_limit ... ok
+test poll::tests::reports_the_ready_descriptor_only ... ok
+test poll::tests::an_interrupted_wait_reports_nothing_ready ... ok
+test random::tests::fills_with_different_bytes ... ok
+test random::tests::retries_only_an_interrupted_read ... ok
+test resolve::tests::a_short_address_is_none ... ok
+test resolve::tests::failures_say_why ... ok
+test resolve::tests::looks_up_names_as_the_system_knows_them ... ok
+test terminal::tests::answers ... ok
+test time::tests::follows_the_time_zone ... ok
+test time::tests::formats_a_time_in_utc ... ok
+test time::tests::in_a_zone_three_hours_west ... ok
+test time::tests::tells_the_time_of_day ... ok
+test users::tests::finds_this_users_home ... ok
+test wake::tests::a_full_count_wakes_and_an_empty_one_drains ... ok
+test wake::tests::a_wake_is_seen_until_drained ... ok
+test wake::tests::another_thread_wakes_a_waiting_one ... ok
+test poll::tests::waits_out_its_timeout_with_nothing_ready ... ok
+test wake::tests::the_waker_is_one_eventfd ... ok
+test xattr::tests::sets_an_attribute ... ok
+test net::tests::the_probe_finds_ipv6 ... FAILED
+test poll::tests::events_only_go_back_to_the_entry_polled - should panic ... ok
+test wake::tests::many_wakes_drain_as_one ... ok
+
+failures:
+
+---- net::tests::the_probe_finds_ipv6 stdout ----
+
+thread 'net::tests::the_probe_finds_ipv6' (30476) panicked at crates/curl-os/src/net.rs:748:9:
+assertion failed: probe_ipv6().unwrap()
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/std/src/panicking.rs:679:5
+   1: core::panicking::panic_fmt
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/panicking.rs:80:14
+   2: core::panicking::panic
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/panicking.rs:150:5
+   3: curl_os::net::tests::the_probe_finds_ipv6
+             at ./src/net.rs:748:9
+   4: curl_os::net::tests::the_probe_finds_ipv6::{closure#0}
+             at ./src/net.rs:747:30
+   5: <curl_os::net::tests::the_probe_finds_ipv6::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/ops/function.rs:250:5
+   6: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    net::tests::the_probe_finds_ipv6
+
+test result: FAILED. 71 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+error: test failed, to rerun pass `-p curl-os --lib`
+     Running tests/env_oom.rs (build/target/debug/deps/env_oom-18502c2cd0d3b3ee)
+test a_refused_copy_is_out_of_memory ... ok
+     Running tests/fs_alloc.rs (build/target/debug/deps/fs_alloc-f31e9c5a7b39d5de)
+
+running 1 test
+test takes_a_long_name_without_allocating ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/wipe.rs (build/target/debug/deps/wipe-9c9087fb0dd29190)
+wipe: ok
+     Running unittests src/lib.rs (build/target/debug/deps/curl_psl-c01be80524508fe0)
+
+running 4 tests
+test tests::answers_as_libpsl ... ok
+test tests::without_a_list_nothing_is_accepted ... ok
+test tests::names_end_in_one_zero_byte ... ok
+test tests::names_the_version_as_libpsl ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (build/target/debug/deps/curl-907ae2b07244d18d)
+
+running 137 tests
+test callbacks::tests::lent_fields_are_copied_from_an_offset_to_their_end ... ok
+test easy::tests::a_handle_has_gss_api_where_claimed ... ok
+test certinfo::tests::the_chain_reads_as_c_s_lists_and_lives_while_unchanged ... ok
+test easy::tests::a_copy_calls_back_with_its_own_data ... ok
+test easy::tests::calls_from_a_callback_reach_the_running_transfer ... ok
+test formdata::tests::a_chain_is_made_a_tree_once_each_time_it_is_set ... ok
+test easy::tests::the_error_buffer_fills_as_the_transfer_fails ... ok
+test formdata::tests::a_type_past_the_last_file_is_a_part_without_content ... ok
+test date::tests::getdate_answers_as_c ... ok
+test formdata::tests::formadd_lends_what_c_lends ... ok
+test formdata::tests::formadd_checks_parts_as_c_does ... ok
+test formdata::tests::formadd_refuses_as_c_does ... ok
+test formdata::tests::formadd_frees_what_it_made_when_refused ... ok
+test gate::tests::admits_as_api_c ... ok
+test formdata::tests::formadd_types_each_file_as_c_does ... ok
+test gate::tests::knows_the_callback_kinds ... ok
+test gate::tests::limits_the_depth ... ok
+test gate::tests::reads_api_c ... ok
+test formdata::tests::lengths_and_files_reach_what_formget_reads ... ok
+test getinfo::tests::times_are_c_s_units ... ok
+test easy::tests::a_handle_moves_between_multis ... ok
+test handle_tests::a_cookie_list_is_traced_as_it_is_set ... ok
+test handle_tests::a_local_end_is_read_as_c_reads_it ... ok
+test handle_tests::a_long_reason_is_cut_to_the_buffer ... ok
+test handle_tests::a_lock_function_alone_locks_what_is_shared ... ok
+test handle_tests::a_message_signature_is_the_one_method ... ok
+test handle_tests::a_part_read_answering_stop_filling_fails ... ok
+test handle_tests::a_part_s_pause_after_its_headers_holds_until_unpaused ... ok
+test handle_tests::a_closing_connection_s_socket_is_removed_by_the_internal_handle ... ok
+test handle_tests::a_range_is_kept ... ok
+test handle_tests::a_request_target_is_kept ... ok
+test handle_tests::a_share_is_held_and_locked_as_in_c ... ok
+test handle_tests::a_rewind_asks_the_application ... ok
+test handle_tests::a_sibling_may_not_perform_inside_a_callback ... ok
+test handle_tests::a_custom_method_set_from_the_debug_function_on_a_redirect_stands ... ok
+test handle_tests::a_tree_posted_again_starts_over_what_was_reached ... ok
+test handle_tests::a_wait_reports_the_application_s_descriptors ... ok
+test handle_tests::a_post_asked_chunked_as_its_request_is_built_reads_to_the_end ... ok
+test handle_tests::boolean_options_take_any_nonzero_value ... ok
+test handle_tests::c_numbers_translate_both_ways ... ok
+test handle_tests::callback_options_install_their_adapters ... ok
+test handle_tests::cleanup_removes_the_sockets_the_socket_function_was_told ... ok
+test handle_tests::an_opener_may_change_the_port ... ok
+test handle_tests::aws_sigv4_is_the_one_method ... ok
+test handle_tests::gss_options_are_read_as_c ... ok
+test handle_tests::connect_to_and_resolve_entries_appended_after_the_option_are_used ... ok
+test handle_tests::a_share_is_used_from_two_threads_at_once ... ok
+test handle_tests::headers_are_looked_up_and_walked_as_in_c ... ok
+test handle_tests::header_lines_appended_after_the_option_are_sent ... ok
+test handle_tests::headers_go_where_c_sends_them ... ok
+test handle_tests::header_lines_appended_during_a_redirect_go_with_the_next_request ... ok
+test handle_tests::http_options_reach_the_request ... ok
+test handle_tests::ids_are_told_apart_as_c_tells_them ... ok
+test handle_tests::http_ranges_are_checked_as_in_c ... ok
+test handle_tests::limits_are_checked_as_in_c ... ok
+test handle_tests::mime_options_take_the_form_escape_bit ... ok
+test handle_tests::openssl_configured ... ignored, run by the_global_init_reads_openssl_s_configuration, OPENSSL_CONF set
+test handle_tests::infos_answer_from_the_report ... ok
+test handle_tests::post_fields_are_read_in_place_and_rewound ... ok
+test handle_tests::proxy_credentials_are_decoded_as_in_c ... ok
+test handle_tests::each_socket_function_is_called_alone ... ok
+test handle_tests::proxy_header_lines_appended_after_the_option_are_sent ... ok
+test handle_tests::proxy_options_are_checked_as_in_c ... ok
+test handle_tests::recv_and_send_need_a_connect_only_connection ... ok
+test handle_tests::request_strings_reach_the_transfer ... ok
+test handle_tests::scheme_options_reach_the_transfer ... ok
+test handle_tests::socket_functions_are_called_as_c_calls_them ... ok
+test handle_tests::speed_limits_are_kept_and_copied ... ok
+test handle_tests::post_fields_asked_chunked_keep_their_size ... ok
+test handle_tests::tcp_options_are_held_to_c_s_range ... ok
+test handle_tests::the_buffer_size_is_held_to_its_range ... ok
+test handle_tests::proxy_failures_are_reported_as_in_c ... ok
+test handle_tests::the_chain_is_asked_for_and_answered_empty_before_any ... ok
+test handle_tests::the_engines_are_listed_and_one_made_the_default_with_1 ... ok
+test handle_tests::the_default_write_goes_to_standard_output ... ok
+test handle_tests::the_global_trace_reaches_every_handle ... ok
+test handle_tests::the_method_follows_nobody_and_upload_as_in_c ... ok
+test handle_tests::the_global_init_reads_openssl_s_configuration ... ok
+test handle_tests::the_multi_s_callbacks_run_with_their_frames ... ok
+test handle_tests::the_one_tls_library_is_openssl ... ok
+test handle_tests::strings_are_copied_and_bounded ... ok
+test handle_tests::the_post_options_combine_as_in_c ... ok
+test handle_tests::the_progress_function_s_answer_decides ... ok
+test handle_tests::the_read_function_feeds_an_upload ... ok
+test handle_tests::the_session_cache_is_off_only_with_0 ... ok
+test handle_tests::the_socket_function_is_called_as_c_calls_it ... ok
+test handle_tests::the_tls_check_and_identity_strings_are_copied ... ok
+test handle_tests::the_trace_goes_to_the_debug_function_or_the_stream ... ok
+test handle_tests::infos_answer_from_an_http_transfer ... ok
+test handle_tests::the_transfers_sockets_are_listed ... ok
+test handle_tests::the_upload_buffer_size_is_held_to_its_range ... ok
+test handle_tests::the_os_errno_is_the_last_socket_failure_s ... ok
+test handle_tests::tls_options_are_kept_as_c_keeps_them ... ok
+test handle_tests::the_write_function_s_answer_decides ... ok
+test headers::tests::origins_are_c_s_bits ... ok
+test mime::tests::a_copied_handle_copies_the_header_lines ... ok
+test handle_tests::the_multi_counts_running_and_waiting_transfers_apart ... ok
+test mime::tests::a_freed_tree_leaves_the_handle_posting_nothing ... ok
+test mime::tests::a_copied_handle_posts_a_copy_of_the_tree ... ok
+test mime::tests::a_tree_is_attached_once ... ok
+test mime::tests::a_tree_read_before_is_rewound_when_posted ... ok
+test mime::tests::basename_is_posix_s ... ok
+test mime::tests::frees_call_each_free_function_once ... ok
+test mime::tests::encoders_and_files_are_checked_when_set ... ok
+test mime::tests::setting_the_post_again_forgets_the_head_sent ... ok
+test mime::tests::the_post_options_say_which_post ... ok
+test mime::tests::whole_reads_a_function_s_part_as_c_does ... ok
+test multi::tests::a_socket_listed_twice_is_folded ... ok
+test setopt::proxy_tls::tests::sets_the_proxy_s_tls_alone ... ok
+test setopt::tests::checks_ranges_as_c ... ok
+test setopt::tests::knows_c_ids ... ok
+test setopt::tests::reads_delegation_as_c ... ok
+test setopt::tests::reads_gss_switches_only_where_claimed ... ok
+test setopt::tests::reads_negotiate_only_where_claimed ... ok
+test setopt::tests::reads_scheme_lists_as_c ... ok
+test setopt::tests::reads_scheme_masks_as_c ... ok
+test sockets::tests::a_unix_address_is_handed_over_as_c_hands_it ... ok
+test strerror::tests::errors_are_every_c_code ... ok
+test strings::tests::compares_like_c ... ok
+test strings::tests::slist_appends_in_order ... ok
+test handle_tests::the_trailer_function_ends_a_chunked_body ... ok
+test handle_tests::unknown_auth_bits_hold_basic_back ... ok
+test tls::tests::a_function_s_code_is_the_transfer_s_if_it_can_be ... ok
+test tls_tests::a_copy_s_ssl_ctx_function_is_given_the_copy ... ok
+test tls_tests::a_reset_forgets_the_ssl_ctx_data ... ok
+test tests::sabotage_entries_are_current ... ok
+test tests::generated_is_fresh ... ok
+test tls_tests::a_retried_verify_waits_for_the_application_to_unpause ... ok
+test tls_tests::the_ssl_ctx_function_s_code_fails_the_transfer ... ok
+test url::tests::copies_and_reads_back ... ok
+test url::tests::parts_are_named_as_in_c ... ok
+test version::tests::features_reach_the_c_struct ... ok
+test version::tests::names_the_libraries_as_c ... ok
+test version::tests::protocols_reach_the_c_struct ... ok
+test url::tests::rejects_what_c_rejects ... ok
+test tls_tests::the_ssl_ctx_function_and_getinfo_hand_out_the_connection_s_objects ... ok
+test mime::tests::whole_refuses_a_tree_deeper_than_the_core_sends ... ok
+
+test result: ok. 136 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.98s
+
+     Running unittests src/main.rs (build/target/debug/deps/curl-351c898cb7c87842)
+
+running 187 tests
+test bar::tests::bounces_a_ball_while_the_size_is_unknown ... ok
+test bar::tests::draws_the_share_done ... ok
+test bar::tests::counts_what_a_resumed_transfer_had ... ok
+test config::tests::a_zero_byte_ends_a_header_file_line_alone ... ok
+test config::tests::a_zero_byte_ends_its_line_alone ... ok
+test config::tests::a_zero_byte_ends_its_url_line_alone ... ok
+test bar::tests::bounces_the_ball_as_c_does ... ok
+test config::tests::looks_where_c_looks ... ok
+test bar::tests::takes_the_size_the_peer_gives ... ok
+test config::tests::q_or_disable_first_skips_it ... ok
+test config::tests::reads_lines_as_c_does ... ok
+test config::tests::readable_is_whether_it_opens ... ok
+test config::tests::reads_odd_lines_as_c_does ... ok
+test config::tests::reads_urls_a_line_each ... ok
+test config::tests::then_the_users_home ... ok
+test config::tests::reads_headers_a_line_each ... ok
+test easysrc::tests::escapes_as_c_does ... ok
+test easysrc::tests::names_the_tls_values_of_curl_h ... ok
+test easysrc::tests::takes_c_s_values ... ok
+test easysrc::tests::writes_masks_as_c_does ... ok
+test easysrc::tests::writes_the_program_as_c_does ... ok
+test easysrc::tests::writes_the_program_to_the_file_named ... ok
+test easysrc::tests::writes_tls_options_as_c_does ... ok
+test easysrc::tests::writes_values_as_c_does ... ok
+test form::tests::a_header_file_that_cannot_be_read_is_refused ... ok
+test easysrc::tests::only_setopt_changes_options ... ok
+test form::tests::a_string_is_taken_as_it_is ... ok
+test form::tests::a_type_runs_on_to_the_next_setting ... ok
+test form::tests::a_zero_byte_ends_its_header_line_alone ... ok
+test form::tests::basename_is_posix_s ... ok
+test form::tests::each_kind_of_part_takes_its_own_settings ... ok
+test form::tests::files_and_levels_nest_as_given ... ok
+test form::tests::header_files_are_read_as_c_reads_them ... ok
+test form::tests::names_standard_input_as_c_does ... ok
+test form::tests::parts_are_named_as_c_names_them ... ok
+test form::tests::settings_are_read_as_c_reads_them ... ok
+test form::tests::writes_the_tree_as_c_does ... ok
+test config::tests::any_file_is_read_or_refused ... ok
+test glob::tests::counts_its_patterns ... ok
+test glob::tests::expands_every_combination ... ok
+test glob::tests::names_outputs_from_the_patterns ... ok
+test glob::tests::refuses_as_c_does ... ok
+test hugehelp::tests::inflates_to_the_generated_text ... ok
+test hugehelp::tests::shows_an_option_as_c_does ... ok
+test ipfs::tests::reads_the_first_line_of_the_gateway_file ... ok
+test ipfs::tests::rewrites_as_c_does ... ok
+test msgs::tests::takes_the_width_c_takes ... ok
+test operate::parallel::tests::an_ended_transfer_stays_counted ... ok
+test operate::parallel::tests::counts_fit_five_columns ... ok
+test operate::parallel::tests::draws_at_most_every_half_second ... ok
+test operate::parallel::tests::draws_lines_as_c_does ... ok
+test form::tests::a_level_holds_as_many_parts_as_c_s ... ok
+test operate::parallel::tests::percentages_fit_three_columns ... ok
+test operate::parallel::tests::percentages_of_large_counts ... ok
+test operate::parallel::tests::retries_wait_whole_seconds ... ok
+test operate::parallel::tests::times_fit_eight_columns ... ok
+test operate::parallel::tests::the_speed_is_over_the_last_ten_lines ... ok
+test operate::tests::a_transfer_has_gss_api_where_claimed ... ok
+test operate::tests::adds_a_file_name_to_a_bare_path ... ok
+test operate::tests::allows_the_tls_versions_c_allows ... ok
+test operate::tests::adds_the_query_as_c_does ... ok
+test operate::tests::backs_off_as_c_does ... ok
+test operate::tests::ends_the_run_as_c_does ... ok
+test operate::tests::expects_output_of_downloads_and_http_uploads ... ok
+test operate::tests::finds_a_header_as_c_does ... ok
+test operate::tests::asks_for_a_low_speed_with_both ... ok
+test operate::tests::maps_url_errors_as_c ... ok
+test glob::tests::any_url_globs_or_is_refused ... ok
+test operate::tests::reads_no_more_than_the_rate_at_once ... ok
+test operate::tests::retries_for_c_reasons ... ok
+xtest operate::tests::resumes_only_what_c_resumes ... ok
+test operate::tests::says_why_a_directory_was_not_made_as_c_does ... ok
+test operate::tests::keeps_tls_sessions_unless_told_not_to ... ok
+test operate::tests::stops_at_fatal_errors ... ok
+test operate::tests::takes_a_url_s_protocol_as_c_does ... ok
+test operate::tests::sets_the_socket_options_it_writes ... ok
+test operate::tests::verifies_the_peer_unless_insecure ... ok
+test operate::tests::waits_what_is_left_of_the_rate ... ok
+curl: option --cacert: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --cacert: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --cacert: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --cacert: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --cacert: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --cacert: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+test operate::tests::writes_gss_options_as_c ... ok
+curl: option --crlfile: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --crlfile: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --crlfile: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --crlfile: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --crlfile: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --crlfile: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --form: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --form-string: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+test operate::tests::writes_what_c_writes ... ok
+test options::cert::tests::splits_as_unit_1394 ... ok
+curl: option --netrc-file: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --netrc-file: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --netrc-file: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --netrc-file: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --netrc-file: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --netrc-file: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-default: a specified protocol is unsupported by libcurl
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-default: a specified protocol is unsupported by libcurl
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-default: a specified protocol is unsupported by libcurl
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-default: a specified protocol is unsupported by libcurl
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-default: a specified protocol is unsupported by libcurl
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-default: a specified protocol is unsupported by libcurl
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-redir: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-redir: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-redir: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-redir: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-redir: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-redir: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-cacert: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-cacert: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-cacert: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-cacert: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-cacert: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-cacert: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-crlfile: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-crlfile: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-crlfile: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-crlfile: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-crlfile: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-crlfile: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --tftp-blksize: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --tftp-blksize: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --tftp-blksize: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --tftp-blksize: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --tftp-blksize: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --tls-max: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --tls-max: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --tls-max: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --tls-max: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --tls-max: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --tls-max: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+test operate::tests::writes_each_option_it_sets ... ok
+test options::number::tests::octal_like_c ... ok
+test options::number::tests::offset_like_c ... ok
+test options::number::tests::rate_like_c ... ok
+test options::number::tests::seconds_like_c ... ok
+test options::number::tests::signed_like_c ... ok
+test options::number::tests::size_like_c ... ok
+test options::number::tests::unsigned_like_c ... ok
+test options::parse::tests::a_failed_room_names_the_entry_that_wanted_it ... ok
+curl: option --local-port: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --local-port: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --local-port: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --local-port: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --local-port: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --local-port: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --local-port: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --local-port: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::a_local_port_range_is_read_as_c_reads_it ... ok
+test options::parse::tests::a_range_is_taken_as_c_takes_it ... ok
+test options::parse::tests::an_expansion_fits_the_room_to_its_last_byte ... ok
+test options::parse::tests::deprecated_options_are_warned_of_and_applied_nowhere ... ok
+curl: option --create-file-mode: too large number
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::fills_in_the_low_speed_as_c ... ok
+curl: option -o: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --next: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::fills_nodes_in_turn ... ok
+test options::parse::tests::keeps_every_expansion_for_the_parse ... ok
+test options::parse::tests::keeps_every_expansion_of_a_config_file ... ok
+test options::parse::tests::notes_a_variable_set_again_when_tracing ... ok
+test options::parse::tests::parallel_caps_are_clamped_as_c_clamps_them ... ok
+test options::parse::tests::reads_a_format_from_a_file ... ok
+curl: option -d: error encountered when reading a file
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::reads_data_from_files ... ok
+curl: option --service-name: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proxy-service-name: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --socks5-gssapi-service: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::reads_gss_options_as_c ... ok
+test options::parse::tests::reads_remote_names ... ok
+curl: option --httpsig-algo: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --httpsig-key: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --httpsig-keyid: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --httpsig-headers: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::reads_the_auth_methods ... ok
+test options::parse::tests::reads_the_http_options ... ok
+test options::parse::tests::reads_the_progress_meter_switch ... ok
+test options::parse::tests::reads_the_proxy_kind ... ok
+curl: option --max-redirs: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --max-redirs: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --max-redirs: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::reads_the_redirect_options ... ok
+curl: option --rate: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::reads_the_switches_for_every_transfer ... ok
+test options::parse::tests::reads_the_trace_components_as_c ... ok
+test options::parse::tests::reads_time_conditions_as_c ... ok
+curl: option --trace: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::reads_tracing_as_c ... ok
+curl: --continue-at and --remote-header-name cannot be combined
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::reads_urls_and_operations ... ok
+curl: option --bogus: is unknown
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option -: is unknown
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --=x: is unknown
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --abcdefghijklmnopqrstuvwxyzab=1: is unknown
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --no-url: the given option cannot be reversed with a --no- prefix
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option -o: requires parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --max-time: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option -m: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --retry: expected a positive numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --connect-timeout: too large number
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --next: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: missing URL before --next
+curl: option --next: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --next: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option -s:: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --url=: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --bogus: is unknown
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --expand-silent: variable expansion failure
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --proto-redir: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option -C: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --no-clobber: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option -C: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --remove-on-error: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option -C: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option -C: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option -r: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option -r: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --etag-save: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --etag-save: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --url: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option -D: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --max-filesize: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --max-filesize: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --no-head: is badly used here
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::rejects_like_c ... ok
+curl: option --ip-tos: expected a proper numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --ip-tos: too large number
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --ip-tos: expected a positive numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --vlan-priority: too large number
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --keepalive-time: expected a positive numerical parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::socket_options_are_read_as_c_reads_them ... ok
+curl: option --bogus: is unknown
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::stops_at_the_first_request ... ok
+test options::number::tests::any_argument_is_a_number_or_refused ... ok
+test options::parse::tests::the_last_fail_option_said_wins ... ok
+curl: option --unix-socket: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --abstract-unix-socket: blank argument where content is expected
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::the_last_unix_socket_named_is_taken ... ok
+curl: option -u: requires parameter
+curl: try 'curl --help' or 'curl --manual' for more information
+curl: option --bogus: is unknown
+curl: try 'curl --help' or 'curl --manual' for more information
+test options::parse::tests::wipes_secrets_where_they_are ... ok
+test options::protocols::tests::rejects_an_empty_result ... ok
+test options::protocols::tests::sets_go_to_the_library_by_name ... ok
+test options::protocols::tests::with_file_and_http ... ok
+test options::tests::finds_options ... ok
+test options::tests::searches_the_manual_as_c_does ... ok
+test options::tests::table_is_sorted_and_names_fit ... ok
+test options::protocols::tests::any_list_is_read_or_refused ... ok
+test output::tests::clobber_names_number_as_c_does ... ok
+test output::tests::counts_the_last_responses_header_lines ... ok
+test output::tests::dumps_headers_short_to_a_full_device ... ok
+test output::tests::dumps_headers_to_a_file ... ok
+test output::tests::keeps_up_to_the_largest_offset ... ok
+test output::tests::links_a_location_as_c_does ... ok
+test output::tests::names_the_file_from_the_response ... ok
+test output::tests::reads_a_file_name_as_c_does ... ok
+test output::tests::refuses_binary_at_the_start_of_a_terminal ... ok
+test output::tests::remembers_a_failed_write ... ok
+test output::tests::saves_an_etag_as_c_does ... ok
+test output::tests::shows_header_names_in_bold_on_a_terminal ... ok
+test output::tests::throws_away_only_from_a_regular_file ... ok
+test output::tests::throws_away_or_keeps_what_an_attempt_wrote ... ok
+test output::tests::writes_a_linked_location_as_c_does ... ok
+test slurp::tests::reads_text_and_binary ... ok
+test sockopt::tests::a_socket_is_marked_as_asked ... ok
+test sockopt::tests::numbers_are_written_in_decimal ... ok
+test stdio::tests::a_close_fails_with_the_sink_s ... ok
+test stdio::tests::a_line_buffer_writes_each_line ... ok
+test stdio::tests::counts_what_was_taken_as_glibc_does ... ok
+test stdio::tests::sizes_the_buffer_by_the_block ... ok
+test stdio::tests::writes_whole_blocks_and_holds_the_rest ... ok
+test stdout::tests::a_write_not_all_taken_fails ... ok
+test tests::names_the_libraries_as_c ... ok
+test tests::reads_memlimit_like_c ... ok
+test trace::tests::a_line_starts_with_the_time_then_the_ids ... ok
+test trace::tests::dumps_ascii_as_c ... ok
+test trace::tests::dumps_binary_as_c ... ok
+test trace::tests::dumps_text_and_titles ... ok
+test trace::tests::ids_name_the_transfer_and_its_connection ... ok
+test trace::tests::notes_no_data_shown_on_the_terminal ... ok
+test trace::tests::stamps_the_time_of_day ... ok
+test trace::tests::writes_plain_lines_as_c ... ok
+test vars::tests::a_zero_byte_is_refused_unless_a_function_takes_it ... ok
+test output::tests::any_header_names_a_file_or_not ... ok
+test vars::tests::decodes_base64_as_c_does ... ok
+test vars::tests::escapes_json_as_c_does ... ok
+test vars::tests::expands_as_c_does ... ok
+test vars::tests::imports_from_the_environment ... ok
+test vars::tests::says_what_c_says ... ok
+test vars::tests::takes_a_byte_range_as_c_does ... ok
+test vars::tests::the_last_set_wins ... ok
+test write_out::tests::any_format_is_written ... ok
+test write_out::tests::certs_are_written_as_c_writes_them ... ok
+test write_out::tests::reads_a_format_file_without_line_ends ... ok
+test write_out::tests::reads_formats_as_c ... ok
+test write_out::tests::variables_are_sorted ... ok
+test write_out::tests::writes_header_json_as_c ... ok
+test write_out::tests::writes_headers_as_c ... ok
+test write_out::tests::writes_json_as_c ... ok
+test write_out::tests::writes_json_strings_as_c ... ok
+test write_out::tests::writes_the_time_as_c ... ok
+test write_out::tests::writes_to_the_file_output_names ... ok
+test write_out::tests::writes_values_as_c ... ok
+test xattr::tests::strips_credentials_as_c_does ... ok
+test vars::tests::an_expansion_fits_c_s_buffer ... ok
+test operate::tests::waits_for_the_rate_and_says_so ... ok
+test config::tests::refuses_a_line_too_long ... ok
+
+test result: ok. 187 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+
+     Running unittests src/bin/curlinfo.rs (build/target/debug/deps/curlinfo-add44f980c560327)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/help.rs (build/target/debug/deps/help-9985b4c065d72efb)
+
+running 2 tests
+test shows_the_manual ... ok
+test shows_help_on_what_is_asked ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/http.rs (build/target/debug/deps/http-3c2a92e2868e91c3)
+
+running 57 tests
+test a_header_file_that_does_not_open_fails ... ok
+test a_304_leaves_the_output_alone ... ok
+test adds_the_url_query ... ok
+test an_etag_file_that_does_not_open_passes_over_its_urls ... ok
+test asks_for_each_operation_s_password ... ok
+test cannot_send_piped_standard_input_again ... ok
+test asks_for_a_missing_password ... ok
+test dumps_the_headers ... ok
+test compares_and_saves_etags ... ok
+test dumps_the_headers_of_each_transfer ... ok
+test each_transfer_compares_one_etag ... ok
+test dumps_the_headers_to_the_standard_streams ... ok
+test fails_on_an_error_code ... ok
+test bounds_the_password_asked_for ... ok
+test fails_on_an_error_code_after_its_body ... ok
+test fails_on_standard_input_it_cannot_read ... ok
+test fails_with_body_unless_failed_already ... ok
+test finds_the_ipfs_gateway_as_c_does ... ok
+test gives_http_s_options_only_to_http ... ok
+test gets_the_data_in_the_query ... ok
+test goes_to_the_ipfs_gateway ... ok
+test limits_the_file_size ... ok
+test joins_the_cookies_given ... ok
+test logs_in_as_told ... ok
+test options_shape_the_request ... ok
+test names_a_remote_file_as_the_server_says ... ok
+test parallel_transfers_share_cookies_and_connections ... ok
+test posts_json ... ok
+test posts_the_data_given ... ok
+test reads_headers_from_a_file ... ok
+test proxies_and_cookie_files_reach_the_request ... ok
+test removes_the_file_a_failed_transfer_wrote ... ok
+test resolves_as_told ... ok
+test reads_the_name_the_server_gives_as_c_does ... ok
+test a_silent_upload_of_standard_input_draws_no_meter ... ok
+test saves_the_cookie_jar ... ok
+test sends_a_proxy_protocol_line ... ok
+test sends_standard_input_again_as_it_stood ... ok
+test sends_the_request_target ... ok
+test sends_the_method_asked_for ... ok
+test serial_transfers_share_a_connection ... ok
+test sets_the_socket_options_it_handles ... ok
+test shows_the_connect_response_unless_suppressed ... ok
+test shows_the_headers_of_http ... ok
+test resumes_a_retried_download ... ok
+test takes_one_method ... ok
+test undoes_a_compressed_response ... ok
+test stores_where_a_download_came_from ... ok
+test uploads_standard_input ... ok
+test signs_the_request_as_told ... ok
+test gives_up_after_the_time_allowed ... ok
+test warns_of_form_fields_as_c_does ... ok
+test warns_of_odd_characters_in_a_range ... ok
+test warns_of_odd_header_and_version_options ... ok
+test uploads_standard_input_without_waiting_for_it ... ok
+test waits_for_a_continue_as_long_as_told ... ok
+test waits_as_the_server_says ... ok
+
+test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.42s
+
+     Running tests/transfers.rs (build/target/debug/deps/transfers-870e414894d0ed87)
+
+running 59 tests
+test an_included_header_that_cannot_be_written_fails ... ok
+test an_empty_download_leaves_an_empty_file ... ok
+test an_unmet_time_condition_leaves_the_output_alone ... ok
+test an_upload_that_cannot_be_read_fails ... ok
+test a_file_of_lines_that_cannot_be_read_fails ... ok
+test asks_for_the_status_and_the_engine ... ok
+test creates_the_header_file_directories ... ok
+test checks_urls_as_it_reaches_them ... ok
+test creates_the_output_directories ... ok
+test data_from_the_start_is_no_resume ... ok
+test draws_the_bar_of_an_upload_resumed_at_its_end ... ok
+test downloads_to_a_file_or_standard_output ... ok
+test draws_a_progress_bar ... ok
+test includes_headers ... ok
+test globs_unless_told_not_to ... ok
+test lists_the_engines ... ok
+test keeps_the_remote_time ... ok
+test notes_the_default_config_file ... ok
+test numbers_the_urls ... ok
+test parallel_fail_early_adds_nothing_more ... ok
+test parallel_fail_early_stops_the_others ... ok
+test parallel_skipped_transfers_end_last ... ok
+test names_a_remote_file_after_the_url ... ok
+test parallel_transfer_failing_as_it_is_made ... ok
+test parallel_transfers_ending_together ... ok
+test parallel_transfers_keep_the_first_failure ... ok
+test reads_options_from_files ... ok
+test reads_urls_from_a_file ... ok
+test refuses_a_netrc_file_that_is_not_there ... ok
+test refuses_bad_config_files ... ok
+test reports_a_bad_pattern ... ok
+test reports_a_failure ... ok
+test reports_an_output_it_cannot_open ... ok
+test reports_an_output_whose_close_fails ... ok
+test reports_an_upload_it_cannot_open ... ok
+test reports_output_it_cannot_write_when_stdio_would ... ok
+test resumes_into_the_output_file ... ok
+test retries_a_failure ... ok
+test retries_for_as_long_as_allowed ... ok
+test says_how_to_get_help_without_a_url ... ok
+test says_its_version ... ok
+test sends_standard_error_where_told ... ok
+test sets_the_socks5_methods_asked_for ... ok
+test sets_the_ssl_options_bits_asked_for ... ok
+test sets_the_tls_options_as_c_does ... ok
+test skips_an_existing_output_file ... ok
+test takes_a_path_with_the_default_protocol ... ok
+test takes_an_output_name_as_it_is_without_globbing ... ok
+test traces_to_a_file ... ok
+test uploads_a_file ... ok
+test uploads_to_a_directory_under_the_file_s_name ... ok
+test warns_of_a_config_argument_likely_wrong ... ok
+test warns_of_an_empty_format_file ... ok
+test parallel_transfers_are_tried_again ... ok
+test parallel_meter_is_drawn_unless_silenced ... ok
+test warns_of_redirect_options_overridden ... ok
+test warns_of_more_than_one_auth_with_standard_input ... ok
+test warns_of_trace_options_overridden ... ok
+curl: (28) Operation timed out after 1498 milliseconds with 0 bytes received
+curl: (28) Operation timed out after 1500 milliseconds with 0 bytes received
+test an_upload_ends_once_its_time_is_up ... ok
+
+test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.02s
+
+     Running unittests src/lib.rs (build/target/debug/deps/curl_zlib-45f0cf37211cb8f5)
+
+running 12 tests
+test tests::a_body_not_of_the_coding_fails_with_zlib_s_words ... ok
+test tests::a_body_in_pieces_makes_the_same ... ok
+test tests::a_failing_round_passes_nothing_on ... ok
+test tests::a_raw_deflate_body_is_read_as_one ... ok
+test tests::a_raw_stream_s_trailer_may_come_in_pieces ... ok
+test tests::a_second_gzip_member_is_refused ... ok
+test tests::a_stream_frees_zlib_s_memory_when_it_ends ... ok
+test tests::bytes_after_the_stream_fail_it ... ok
+test tests::the_codings_are_undone ... ok
+test tests::the_version_is_the_library_s ... ok
+test tests::output_goes_in_pieces_of_at_most_16_kib ... ok
+test tests::a_transfer_out_of_time_stops_decoding ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+     Running unittests src/lib.rs (build/target/debug/deps/curl_zstd-bdc4ff73660b819c)
+
+running 5 tests
+test tests::a_body_not_of_the_coding_fails ... ok
+test tests::the_coding_is_undone ... ok
+test tests::the_version_is_the_library_s ... ok
+test tests::output_goes_in_pieces_of_at_most_16_kib ... ok
+test tests::a_transfer_out_of_time_stops_decoding ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests curl_alloc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests curl_brotli
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests curl_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests curl_gssapi
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests curl_openssl
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests curl_os
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests curl_psl
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests curl_zlib
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests curl_zstd
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 4 targets failed:
+    `-p curl-core --lib`
+    `-p curl-openssl --lib`
+    `-p curl-openssl --test peer`
+    `-p curl-os --lib`

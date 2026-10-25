@@ -1,0 +1,5 @@
+crates/curl-core/src/proto/http.rs:1385:9: replace Request::send -> Result<bool, ErrorKind> with Ok(true)
+crates/curl-core/src/proto/http.rs:1385:9: replace Request::send -> Result<bool, ErrorKind> with Ok(false)
+crates/curl-core/src/proto/http1/chunked.rs:399:9: replace ChunkEncoder::wants -> Option<&mut[u8]> with None
+crates/curl-core/src/proto/http1/chunked.rs:416:9: replace ChunkEncoder::got -> Result<(), OutOfMemory> with Ok(())
+crates/curl-core/src/proto/http1/digest.rs:90:5: replace pair -> Result<Option<Pair<'_>>, OutOfMemory> with Ok(Some(Default::default()))

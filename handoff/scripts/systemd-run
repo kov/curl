@@ -1,0 +1,12 @@
+#!/bin/sh
+# Stand-in for `systemd-run --user --scope -p MemoryMax=NG ... cmd`: no systemd bus in
+# this container, so the cap goes through a cgroup-v1 memory group (memcap.sh).
+gb=6
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p) case "$2" in MemoryMax=*G) gb=${2#MemoryMax=}; gb=${gb%G};; esac; shift 2;;
+    --*) shift;;
+    *) break;;
+  esac
+done
+exec "$(dirname "$0")/memcap.sh" "$gb" "$@"

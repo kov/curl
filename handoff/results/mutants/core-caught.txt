@@ -1,0 +1,42 @@
+crates/curl-core/src/conn/socks.rs:702:9: replace Handshake::authenticated_reply -> Result<(), SocksError> with Ok(())
+crates/curl-core/src/conn/socks.rs:774:24: replace < with == in Handshake::connected
+crates/curl-core/src/conn/socks.rs:774:24: replace < with > in Handshake::connected
+crates/curl-core/src/conn/socks.rs:774:24: replace < with <= in Handshake::connected
+crates/curl-core/src/conn/socks.rs:784:5: replace head -> Result<&[u8; N], Took> with Ok(Box::leak(Box::new([0; N])))
+crates/curl-core/src/conn/socks.rs:784:5: replace head -> Result<&[u8; N], Took> with Ok(Box::leak(Box::new([1; N])))
+crates/curl-core/src/multi/state.rs:3067:9: delete match arm b"http" in start_leg
+crates/curl-core/src/multi/state.rs:3068:9: delete match arm b"https" in start_leg
+crates/curl-core/src/multi/state.rs:3071:17: replace || with && in start_leg
+crates/curl-core/src/multi/state.rs:3071:20: delete ! in start_leg
+crates/curl-core/src/multi/state.rs:3248:5: replace choose_proxy -> Result<Option<ProxyRoute>, ErrorKind> with Ok(None)
+crates/curl-core/src/proto/http.rs:1341:9: replace Request::held_back with ()
+crates/curl-core/src/tls/keylog.rs:164:9: replace <impl Deref for SharedKeyLog>::deref -> &KeyLog with Box::leak(Box::new(Default::default()))
+crates/curl-core/src/proto/http/cookies.rs:117:5: replace read_files -> Result<(), ErrorKind> with Ok(())
+crates/curl-core/src/proto/http/cookies.rs:284:5: replace read_all -> Result<Vec<u8>, LoadError> with Ok(vec![])
+crates/curl-core/src/proto/http/cookies.rs:284:5: replace read_all -> Result<Vec<u8>, LoadError> with Ok(vec![0])
+crates/curl-core/src/proto/http/cookies.rs:284:5: replace read_all -> Result<Vec<u8>, LoadError> with Ok(vec![1])
+crates/curl-core/src/proto/http/cookies.rs:290:23: replace match guard e.kind() == std::io::ErrorKind::Interrupted with true in read_all
+crates/curl-core/src/proto/http/cookies.rs:290:23: replace match guard e.kind() == std::io::ErrorKind::Interrupted with false in read_all
+crates/curl-core/src/proto/http/cookies.rs:290:32: replace == with != in read_all
+crates/curl-core/src/proto/http1/chunked.rs:399:9: replace ChunkEncoder::wants -> Option<&mut[u8]> with Some(Vec::leak(Vec::new()))
+crates/curl-core/src/proto/http1/chunked.rs:399:9: replace ChunkEncoder::wants -> Option<&mut[u8]> with Some(Vec::leak(vec![0]))
+crates/curl-core/src/proto/http1/chunked.rs:399:9: replace ChunkEncoder::wants -> Option<&mut[u8]> with Some(Vec::leak(vec![1]))
+crates/curl-core/src/proto/http1/digest.rs:90:5: replace pair -> Result<Option<Pair<'_>>, OutOfMemory> with Ok(None)
+crates/curl-core/src/proto/http1/digest.rs:90:45: replace == with != in pair
+crates/curl-core/src/proto/http1/digest.rs:93:16: replace || with && in pair
+crates/curl-core/src/proto/http1/digest.rs:93:11: replace == with != in pair
+crates/curl-core/src/proto/http1/digest.rs:93:22: replace > with == in pair
+crates/curl-core/src/proto/http1/digest.rs:93:22: replace > with < in pair
+crates/curl-core/src/proto/http1/digest.rs:93:22: replace > with >= in pair
+crates/curl-core/src/proto/http1/digest.rs:120:17: delete match arm b'"' in pair
+crates/curl-core/src/proto/http1/digest.rs:116:25: replace match guard !quoted with true in pair
+crates/curl-core/src/proto/http1/digest.rs:116:25: replace match guard !quoted with false in pair
+crates/curl-core/src/proto/http1/digest.rs:117:34: replace match guard quoted with true in pair
+crates/curl-core/src/proto/http1/digest.rs:117:34: replace match guard quoted with false in pair
+crates/curl-core/src/proto/http1/digest.rs:119:25: replace match guard quoted with true in pair
+crates/curl-core/src/proto/http1/digest.rs:119:25: replace match guard quoted with false in pair
+crates/curl-core/src/proto/http1/digest.rs:116:25: delete ! in pair
+crates/curl-core/src/proto/http1/digest.rs:124:26: replace >= with < in pair
+crates/curl-core/src/proto/http1/digest.rs:124:41: replace - with + in pair
+crates/curl-core/src/proto/http1/digest.rs:124:41: replace - with / in pair
+crates/curl-core/src/proto/http1/digest.rs:155:9: replace Digest::read -> Result<(), DigestError> with Ok(())

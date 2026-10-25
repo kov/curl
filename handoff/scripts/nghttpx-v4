@@ -1,0 +1,7 @@
+#!/bin/sh
+# nghttpx for the test servers in a container without IPv6: "*" frontends bind IPv4 only.
+for a; do
+  case "$a" in --frontend=\**) a="--frontend=127.0.0.1${a#--frontend=\*}";; esac
+  set -- "$@" "$a"; shift
+done
+exec /usr/sbin/nghttpx "$@"

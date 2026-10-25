@@ -1458,3 +1458,11 @@ features: debug-hooks
                               the maximum allowed time for retries.",
                 ]);
                 return Again::No(Ok(()));
+
+=== curlinfo reports the resolver the library does not have
+file: crates/curl-tool/src/bin/curlinfo.rs
+witness: curl-tool tests::the_threaded_resolver_is_reported_as_the_library_has_it
+--- old
+        "resolv-threaded" => (name, threaded),
+--- new
+        "resolv-threaded" => (name, !threaded),

@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+/// The toggles fixed whatever the build; `resolv-threaded` follows the
+/// library's resolver (`toggles`).
 const TOGGLES: &[(&str, bool)] = &[
     ("bindlocal", false),
     ("cookies", true),
@@ -22,6 +24,7 @@ const TOGGLES: &[(&str, bool)] = &[
     ("parsedate", true),
     ("proxy", true),
     ("shuffle-dns", false),
+    // Asked of the library: see `toggles`.
     ("resolv-threaded", false),
     // The type-checking macros of the C headers, which ship unchanged.
     ("typecheck", true),
@@ -44,8 +47,34 @@ const TOGGLES: &[(&str, bool)] = &[
     ("getrlimit", false),
 ];
 
+/// Each toggle, `resolv-threaded` ON when the library resolves with the
+/// threaded resolver, which it claims as `AsynchDNS`.
+fn toggles() -> impl Iterator<Item = (&'static str, bool)> {
+    let threaded = curl_core::version::version().claims("AsynchDNS");
+    TOGGLES.iter().map(move |&(name, on)| match name {
+        "resolv-threaded" => (name, threaded),
+        _ => (name, on),
+    })
+}
+
 fn main() {
-    for (name, on) in TOGGLES {
-        println!("{name}: {}", if *on { "ON" } else { "OFF" });
+    for (name, on) in toggles() {
+        println!("{name}: {}", if on { "ON" } else { "OFF" });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The threaded resolver is reported as C's curlinfo reports it, which
+    /// the test suites read to run its tests.
+    #[test]
+    fn the_threaded_resolver_is_reported_as_the_library_has_it() {
+        let threaded = toggles().find(|&(n, _)| n == "resolv-threaded");
+        assert_eq!(
+            threaded,
+            Some(("resolv-threaded", cfg!(feature = "threaded-resolver")))
+        );
     }
 }

@@ -15,8 +15,9 @@ use core::ptr::{self, NonNull};
 use curl_alloc::{OutOfMemory, try_box};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, MultiErrorKind};
+use curl_core::handler::{Handler, WriteHandler};
 use curl_core::multi::{PauseRequest, TransferId, drive_by_events, drive_to_completion};
-use curl_core::options::Options;
+use curl_core::options::{Callbacks, Options};
 use curl_core::report::TransferReport;
 use curl_core::tls::TlsNative;
 
@@ -118,36 +119,97 @@ enum Home {
     Nowhere,
 }
 
+/// The C side a handle is made with: the application's callbacks and
+/// settings, what it posts, its ERRORBUFFER and its socket and `SSL_CTX`
+/// functions, from which the handle's adapters are made.
+struct CSide {
+    ccb: CCallbacks,
+    set: CSettings,
+    post: callbacks::Post,
+    post_body: PostBody,
+    httppost: *mut ffi::curl_httppost,
+    errbuf: *mut c_char,
+    sockets: Option<CSockets>,
+    tls: Option<CTls>,
+}
+
+impl CSide {
+    /// A new handle's.
+    fn new() -> CSide {
+        CSide {
+            ccb: CCallbacks::new(),
+            set: CSettings::new(),
+            post: callbacks::Post::new(),
+            post_body: PostBody::Own,
+            httppost: ptr::null_mut(),
+            errbuf: ptr::null_mut(),
+            sockets: None,
+            tls: None,
+        }
+    }
+}
+
 impl ShimEasy {
-    /// A handle, in memory of its own, for `easy` with `ccb`, `set` and
-    /// `errbuf`.
-    fn boxed(
-        easy: Easy,
-        ccb: CCallbacks,
-        set: CSettings,
-        post: callbacks::Post,
-        post_body: PostBody,
-        httppost: *mut ffi::curl_httppost,
-        errbuf: *mut c_char,
-    ) -> Result<NonNull<ShimEasy>, OutOfMemory> {
+    /// A handle, in memory of its own, for `easy` with the C-side
+    /// settings `c`: its adapters are made for it (`adapt`), whatever
+    /// `easy`'s options were copied with.
+    fn boxed(easy: Easy, c: CSide) -> Result<NonNull<ShimEasy>, OutOfMemory> {
         let mut easy = try_box(easy)?;
-        let shim = try_box(ShimEasy::empty(false, ccb, set))?;
-        if !httppost.is_null() {
-            shim.posted_or_make()?.chain.set(httppost);
+        let shim = try_box(ShimEasy::empty(false, c.ccb, c.set))?;
+        if !c.httppost.is_null() {
+            shim.posted_or_make()?.chain.set(c.httppost);
+        }
+        if let Some(sockets) = c.sockets {
+            shim.sockets_room()?.set(sockets);
+        }
+        if let Some(tls) = c.tls {
+            shim.tls_room()?.set(tls);
         }
         let shim = NonNull::from(Box::leak(shim));
         // SAFETY: just made, and reached only through this pointer.
         let me = unsafe { shim.as_ref() };
-        me.errbuf.set(errbuf);
-        *me.post.borrow_mut() = post;
-        me.post_body.set(post_body);
-        if let Err(e) = callbacks::install(easy.options_mut(), shim, &set, &ccb, errbuf) {
+        me.errbuf.set(c.errbuf);
+        *me.post.borrow_mut() = c.post;
+        me.post_body.set(c.post_body);
+        if let Err(e) = ShimEasy::adapt(shim, easy.options_mut(), None) {
             // SAFETY: made above by `Box::leak`, used nowhere else.
             drop(unsafe { Box::from_raw(shim.as_ptr()) });
             return Err(e);
         }
         *me.home.borrow_mut() = Home::Detached(easy);
         Ok(shim)
+    }
+
+    /// Every adapter `options` holds, made again for the handle at `me`
+    /// from its C-side settings: the write, ERRORBUFFER, header, debug,
+    /// text, progress, trailer and upload adapters, the socket opener,
+    /// configurer and closer, and the `SSL_CTX` handler. Whatever adapters
+    /// the options held before are dropped, so a copy's call through the
+    /// copy. The one place a handle's adapters are made whole: a new
+    /// handle and a copy (`boxed`) and a reset call it; a setopt only adds
+    /// or drops the adapter of the option it sets. `write` is the
+    /// handle's own write adapter, which a reset keeps so that it
+    /// allocates nothing; without one, one is made.
+    fn adapt(
+        me: NonNull<ShimEasy>,
+        options: &mut Options,
+        write: Option<Handler<dyn WriteHandler>>,
+    ) -> Result<(), OutOfMemory> {
+        // SAFETY: the handle is live; only its C-side settings are read,
+        // cells apart from the options being set.
+        let shim = unsafe { me.as_ref() };
+        let (ccb, set) = (shim.ccb.get(), shim.set.get());
+        options.callbacks = Callbacks::default();
+        // The body always goes through the application's C stream or
+        // function, never Rust's own standard output.
+        options.callbacks.write = Some(match write {
+            Some(write) => write,
+            None => Handler::write(callbacks::Adapter(me))?,
+        });
+        callbacks::sync_error_buffer(options, me, shim.errbuf.get())?;
+        callbacks::install_defaults(options, me, &set, &ccb)?;
+        crate::sockets::sync(options, me, &shim.sockets())?;
+        crate::tls::sync(options, me, &shim.tls())
     }
 
     /// The trees and the chain the handle posts, if it was ever given one.
@@ -436,15 +498,7 @@ pub extern "C" fn curl_easy_init() -> *mut CURL {
         crate::setopt::gssapi(),
     )));
     handle.set_components(Some(crate::root::components()));
-    match ShimEasy::boxed(
-        handle,
-        CCallbacks::new(),
-        CSettings::new(),
-        callbacks::Post::new(),
-        PostBody::Own,
-        ptr::null_mut(),
-        ptr::null_mut(),
-    ) {
+    match ShimEasy::boxed(handle, CSide::new()) {
         Ok(easy) => easy.as_ptr().cast(),
         Err(OutOfMemory) => ptr::null_mut(),
     }
@@ -521,26 +575,22 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
     let Ok(Ok(copy)) = copy else {
         return ptr::null_mut();
     };
-    // The copy's adapters are its own (`install` replaces the original's).
-    let post = easy.post.borrow().clone();
-    let dup = match ShimEasy::boxed(
-        copy,
-        easy.ccb.get(),
-        easy.set.get(),
-        post,
-        easy.post_body.get(),
-        easy.posted().map_or(ptr::null_mut(), |p| p.chain.get()),
-        easy.errbuf.get(),
-    ) {
+    // The copy's adapters are its own, made from its copy of the C-side
+    // settings (`adapt`).
+    let c = CSide {
+        ccb: easy.ccb.get(),
+        set: easy.set.get(),
+        post: easy.post.borrow().clone(),
+        post_body: easy.post_body.get(),
+        httppost: easy.posted().map_or(ptr::null_mut(), |p| p.chain.get()),
+        errbuf: easy.errbuf.get(),
+        sockets: easy.sockets.get().map(|c| c.get()),
+        tls: easy.tls.get().map(|c| c.get()),
+    };
+    let dup = match ShimEasy::boxed(copy, c) {
         Ok(dup) => dup,
         Err(OutOfMemory) => return ptr::null_mut(),
     };
-    // The copy's socket and `SSL_CTX` functions call through it.
-    if copy_sockets(easy, dup).is_err() || copy_tls(easy, dup).is_err() {
-        // SAFETY: just made, and handed to no one.
-        unsafe { curl_easy_cleanup(dup.as_ptr().cast()) };
-        return ptr::null_mut();
-    }
     // The copy posts a copy of the tree, its own (`Curl_mime_duppart`).
     if crate::mime::duplicate(easy, dup).is_err() {
         // SAFETY: just made, and handed to no one.
@@ -550,34 +600,6 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
     dup.as_ptr().cast()
 }
 const _: ffi::proto::curl_easy_duphandle = curl_easy_duphandle;
-
-/// The socket functions of `easy`, set on its copy `dup`, whose opener
-/// and configurer call through the copy.
-fn copy_sockets(easy: &ShimEasy, dup: NonNull<ShimEasy>) -> Result<(), OutOfMemory> {
-    let c = easy.sockets();
-    if easy.sockets.get().is_none() {
-        return Ok(());
-    }
-    // SAFETY: just made, and reached only through this pointer.
-    let copy = unsafe { dup.as_ref() };
-    copy.sockets_room()?.set(c);
-    let synced = copy.with_options(|o| crate::sockets::sync(o, dup, &c));
-    synced.expect("a copy is in no callback")
-}
-
-/// The `SSL_CTX` function and data of `easy`, set on its copy `dup`,
-/// whose context handler calls through the copy.
-fn copy_tls(easy: &ShimEasy, dup: NonNull<ShimEasy>) -> Result<(), OutOfMemory> {
-    if easy.tls.get().is_none() {
-        return Ok(());
-    }
-    let c = easy.tls();
-    // SAFETY: just made, and reached only through this pointer.
-    let copy = unsafe { dup.as_ref() };
-    copy.tls_room()?.set(c);
-    let synced = copy.with_options(|o| crate::tls::sync(o, dup, &c));
-    synced.expect("a copy is in no callback")
-}
 
 /// # Safety
 ///
@@ -615,9 +637,7 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
     let fresh = |options: &mut Options| {
         let write = options.callbacks.write.take();
         *options = Options::default();
-        options.callbacks.write = write;
-        callbacks::install_defaults(options, me, &set, &ccb)
-            .expect("the defaults allocate no adapter");
+        ShimEasy::adapt(me, options, write).expect("the defaults allocate no adapter");
     };
     let reset = easy.with_easy(|e| match e {
         EasyRef::Easy(easy) => {

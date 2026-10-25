@@ -236,6 +236,16 @@ witness: curl-core mime::tests::a_pause_after_a_full_fill_is_the_next_fill_s
 file: crates/curl-core/src/mime/read.rs
 witness: curl-core mime::tests::a_pause_holds_until_lifted
 --- old
-        Got::Pause => src.last = Last::Paused(calls.lifts()),
+        Got::Pause => src.last = Last::Paused(calls.keep()),
 --- new
         Got::Pause => {}
+
+=== a pause only the reader keeps is never lifted
+file: crates/curl-core/src/deliver/pause.rs
+witness: curl-core mime::tests::an_unpause_lifts_a_pause_only_the_reader_keeps
+--- old
+    pub(crate) fn keep(&mut self) -> Lifts {
+        self.kept = true;
+--- new
+    pub(crate) fn keep(&mut self) -> Lifts {
+        self.kept = false;

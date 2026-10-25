@@ -120,6 +120,10 @@ impl Calls for Script {
     fn lifts(&self) -> Lifts {
         self.pause.lifts()
     }
+
+    fn keep(&mut self) -> Lifts {
+        self.pause.keep()
+    }
 }
 
 fn bytes(b: &[u8]) -> Content {
@@ -509,6 +513,30 @@ fn a_pause_holds_until_lifted() {
     }
     assert_eq!(r.next_for_test(&mut buf, &mut calls), Got::Bytes(1));
     assert_eq!(buf[0], b'z');
+}
+
+/// A pause asked for in a fill that gave bytes pauses the reader, not
+/// the transfer, and the application's unpause lifts it all the same, as
+/// C's `curl_easy_pause` unpauses a paused reader of a running transfer
+/// (`Curl_creader_is_paused`); the next pause holds until the next
+/// unpause.
+#[test]
+fn an_unpause_lifts_a_pause_only_the_reader_keeps() {
+    let mut r = reader(tree([named("a", callback(None, false))]));
+    let mut calls = Script::new([Answer::Pause, Answer::Data(b"z".to_vec()), Answer::Pause]);
+    let mut buf = [0u8; 1024];
+    let Got::Bytes(head) = r.next_for_test(&mut buf, &mut calls) else {
+        panic!("the headers go before the pause");
+    };
+    assert!(head > 0);
+    assert!(!calls.pause.send_paused(), "the transfer is not paused");
+    calls.pause.apply(PauseRequest::CONT);
+    assert_eq!(r.next_for_test(&mut buf, &mut calls), Got::Bytes(1));
+    assert_eq!(r.next_for_test(&mut buf, &mut calls), Got::Pause);
+    assert_eq!(r.next_for_test(&mut buf, &mut calls), Got::Pause, "held");
+    assert_eq!(calls.rooms.len(), 3, "not asked while paused");
+    calls.pause.apply(PauseRequest::CONT);
+    assert!(matches!(r.next_for_test(&mut buf, &mut calls), Got::Bytes(n) if n > 0));
 }
 
 /// A rewind starts the body over: bytes again, a handler through its
@@ -1091,6 +1119,10 @@ impl Calls for Fed {
     fn lifts(&self) -> Lifts {
         Lifts::default()
     }
+
+    fn keep(&mut self) -> Lifts {
+        Lifts::default()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1422,6 +1454,10 @@ fn a_pause_after_a_full_fill_is_the_next_fill_s() {
 
         fn lifts(&self) -> Lifts {
             self.2.lifts()
+        }
+
+        fn keep(&mut self) -> Lifts {
+            self.2.keep()
         }
     }
     for (room, want) in [

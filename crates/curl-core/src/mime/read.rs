@@ -112,6 +112,8 @@ pub(crate) trait Calls {
     fn read(&mut self, handler: &Handler<dyn ReadHandler>, buf: &mut [u8]) -> Read;
     fn rewind(&mut self, handler: &Handler<dyn Rewind>) -> Result<(), RewindFailed>;
     fn lifts(&self) -> Lifts;
+    /// Keep a pause the handler asked for: the lifts it holds until.
+    fn keep(&mut self) -> Lifts;
 }
 
 /// The handlers called with the transfer's context.
@@ -128,6 +130,10 @@ impl<H: Host> Calls for StepCalls<'_, '_, H> {
 
     fn lifts(&self) -> Lifts {
         self.0.pause().lifts()
+    }
+
+    fn keep(&mut self) -> Lifts {
+        self.0.pause_mut().keep()
     }
 }
 
@@ -703,7 +709,7 @@ fn read_content(
     };
     match got {
         Got::Stop => {}
-        Got::Pause => src.last = Last::Paused(calls.lifts()),
+        Got::Pause => src.last = Last::Paused(calls.keep()),
         Got::Bytes(0) => src.last = Last::End,
         Got::Abort => src.last = Last::Abort,
         Got::Error | Got::Funny(_) => src.last = Last::Error,
@@ -1575,6 +1581,10 @@ impl Calls for NoCalls {
     }
 
     fn lifts(&self) -> Lifts {
+        Lifts::default()
+    }
+
+    fn keep(&mut self) -> Lifts {
         Lifts::default()
     }
 }

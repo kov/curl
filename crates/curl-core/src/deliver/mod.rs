@@ -7,7 +7,7 @@ mod held;
 mod pause;
 
 pub use pause::PauseRequest;
-pub(crate) use pause::{Directions, Lifts, Pause, RecvPause, SendPause};
+pub(crate) use pause::{Directions, Lifts, Pause, RecvPause};
 
 use curl_alloc::TryVec;
 

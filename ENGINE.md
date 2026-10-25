@@ -2579,8 +2579,9 @@ pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree besi
   is kept in each part it passes through, with the transfer's count of lifted handler pauses
   (`Last::Paused(Lifts)`, `lastreadstatus`): a fill that gave bytes before its handler paused
   gives them, and the next read gives the pause without calling the handler. The pause holds
-  while the count is the one it was kept with; the unpause that lifts `SendPause::Asked` moves
-  the count, and every kept pause is then stale and reads as a fine status (`mime_unpause`).
+  while the count is the one it was kept with; an unpause moves the count when it lifts
+  `SendPause::Asked` or a pause a part kept since the last lift, the transfer's send running
+  or not, as C's `curl_easy_pause` unpauses a paused reader (`Curl_creader_is_paused`), and every kept pause is then stale and reads as a fine status (`mime_unpause`).
   No unpause reaches into the reader, so none can miss a part.
 - **Rewind.** Whether a request's reading reached a part since it last started over is kept
   in the part (`Part::reached`, a shared flag the copies a source makes of one part hold), as C

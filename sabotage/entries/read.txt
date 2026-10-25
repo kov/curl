@@ -115,13 +115,13 @@ features: test-util
         let _ = readers;
 
 === a lifted pause of the application's own is told to the readers
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/deliver/pause.rs
 witness: curl-core proto::http::tests::read_trace::an_application_s_pause_is_told_to_no_reader
 features: test-util
 --- old
-    let unpaused = (was.send == SendPause::Asked && slot.pause.send == SendPause::Running)
+        if !req.send && (self.send == SendPause::Asked || self.kept) {
 --- new
-    let unpaused = (was.send != SendPause::Running && slot.pause.send == SendPause::Running)
+        if !req.send && (self.send != SendPause::Running || self.kept) {
 
 === the readers are told of a lift from the source's side first
 file: crates/curl-core/src/upload/mod.rs

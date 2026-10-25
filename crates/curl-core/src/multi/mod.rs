@@ -29,7 +29,7 @@ use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
 use crate::conn::shutdown::{ShutdownSet, WithSet};
 use crate::conn::{AddLimits, Caches};
 use crate::conn::{ConnId, Home};
-use crate::deliver::{Pause, RecvPause, SendPause};
+use crate::deliver::{Pause, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
 use crate::id::{Arena, ArenaPolicy, Key};
@@ -1418,7 +1418,7 @@ fn pause_transfer<H: Host>(
     slot.pause.apply(req);
     // A pause a reader asked for is lifted: each reader hears of it
     // (`Curl_creader_unpause`).
-    let unpaused = (was.send == SendPause::Asked && slot.pause.send == SendPause::Running)
+    let unpaused = (slot.pause.lifts() != was.lifts())
         .then_some(slot.readers)
         .flatten();
     // A direction that goes on measures its speed afresh, and its limit

@@ -36,6 +36,11 @@ pub(crate) struct Pause {
     pub(crate) send: SendPause,
     /// How many times a pause a read handler asked for was lifted.
     lifts: Lifts,
+    /// A reader keeps a pause a read handler asked of it, which may
+    /// outlive the transfer's: a part read after other bytes in the same
+    /// fill pauses the reader, not the transfer (`Curl_creader_is_paused`
+    /// while `Curl_xfer_send_is_paused` is not).
+    kept: bool,
 }
 
 /// A count of the lifts of a transfer's asked-for send pauses: a reader
@@ -44,7 +49,8 @@ pub(crate) struct Pause {
 /// reader to hear of it, so none can miss it. The count wraps: a kept
 /// pause is checked by the next read, and the next asked-for pause comes
 /// from a read, so at most one lift falls between the keeping and the
-/// check. Kept small, as every transfer carries it.
+/// check: a lift is counted only for a pause asked or kept since the
+/// last. Kept small, as every transfer carries it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Lifts(u16);
 
@@ -81,11 +87,14 @@ impl Pause {
             (true, RecvPause::Held) => RecvPause::Held,
             (true, _) => RecvPause::Stopped,
         };
+        // An unpause lifts a pause a reader keeps, whether or not the
+        // transfer's send is paused too (`curl_easy_pause`'s
+        // `Curl_creader_is_paused`): once for each pause kept.
+        if !req.send && (self.send == SendPause::Asked || self.kept) {
+            self.lifts.0 = self.lifts.0.wrapping_add(1);
+            self.kept = false;
+        }
         self.send = match (req.send, self.send) {
-            (false, SendPause::Asked) => {
-                self.lifts.0 = self.lifts.0.wrapping_add(1);
-                SendPause::Running
-            }
             (false, _) => SendPause::Running,
             (true, SendPause::Asked) => SendPause::Asked,
             (true, _) => SendPause::Paused,
@@ -108,6 +117,13 @@ impl Pause {
 
     /// The lifts so far of the pauses read handlers asked for.
     pub(crate) fn lifts(&self) -> Lifts {
+        self.lifts
+    }
+
+    /// A reader keeps a pause a read handler asked for, until the next
+    /// lift: the count it holds until then.
+    pub(crate) fn keep(&mut self) -> Lifts {
+        self.kept = true;
         self.lifts
     }
 
@@ -174,6 +190,23 @@ mod tests {
         assert_eq!((p.send, p.lifts()), (SendPause::Running, Lifts(1)));
         p.apply(PauseRequest::CONT);
         assert_eq!(p.lifts(), Lifts(1));
+    }
+
+    /// A pause a reader keeps is lifted by the next unpause though the
+    /// transfer's send runs, and counted once.
+    #[test]
+    fn an_unpause_lifts_a_kept_pause_once() {
+        let mut p = Pause::default();
+        assert_eq!(p.keep(), Lifts(0));
+        p.apply(PauseRequest::CONT);
+        assert_eq!(p.lifts(), Lifts(1));
+        p.apply(PauseRequest::CONT);
+        assert_eq!(p.lifts(), Lifts(1), "nothing kept, nothing lifted");
+        p.keep();
+        p.apply(PauseRequest::SEND);
+        assert_eq!(p.lifts(), Lifts(1), "a pause lifts nothing");
+        p.apply(PauseRequest::RECV);
+        assert_eq!(p.lifts(), Lifts(2));
     }
 
     #[test]

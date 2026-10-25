@@ -796,28 +796,49 @@ the system's under the HTTP-only programs installed here.
       and features, which grow as steps 48–52 and the later stages add them.
     - **e. Closing the step.** **Done.** The sweep and cargo-mutants on what it changed: no
       mutant missed but one, `Linked::open_key_log`, which a tool test now catches.
-48. **The threaded resolver,** `AsynchDNS` as distributions build it, beside c-ares. **In
-    progress.**
+48. **The threaded resolver,** `AsynchDNS` as distributions build it, beside c-ares. **Done.**
     - **a. The resolver seam.** **Done.** The `Resolver` trait ENGINE.md lays out (`start`,
       `answer`, `wait`, `cancel`, `answered`), lent by the network, in place of `Net::resolve`'s
       answer-at-once: the connect machine waits in a resolving state for an answer that comes
       later, and the cache, the shortcuts and the negative answers stay where they are. The
       system's resolver and the fake network answer through it, the fake one at once or later
       as a test asks.
-    - **b. The threaded resolver.** **In progress:** all but `CURL_DBG_RESOLV_FAIL_IPV6`, the
-      blocking resolve's `await` lines and the thread queue's trace (ENGINE.md §4.8). C's (`lib/vdns/asyn-thrdd.c`, `thrdpool.c`,
-      `thrdqueue.c`): a thread pool per multi (`CURLMOPT_RESOLVE_THREADS_MAX`, threads made as
-      needed and let go when idle), each address family a query of its own, an answer
-      delivered by waking the multi, the resolve's own timer and timeout, the DNS traces, and
-      the debug build's variables.
-    - **c. The build's resolver and its oracle.** **To do.** A cargo feature picks the
-      threaded resolver, as C's configure does: the measurement build keeps today's, checked
-      against the c-ares reference; the threaded build reports `AsynchDNS` and
-      `threaded-resolver` and is checked against `build/c-threaded` (SCOPE.md), with the tests
-      that name it (3026, the pytest DNS cases) on both legs.
-    - **d. Closing the step.** **To do.** The sweep and cargo-mutants on what it changed.
-49. **IDN** through libidn2. **To do.**
-50. **HSTS and alt-svc,** their caches, files and options, without the share (milestone 7). **To do.**
+    - **b. The threaded resolver.** **Done** but for the blocking resolve's `await` lines and
+      the thread queue's trace, which no test reads (ENGINE.md §4.8). C's
+      (`lib/vdns/asyn-thrdd.c`, `thrdpool.c`, `thrdqueue.c`): a thread pool per multi
+      (`CURLMOPT_RESOLVE_THREADS_MAX`, threads made as needed and let go when idle), each
+      address family a query of its own, an answer delivered by waking the multi, the
+      resolve's own timer and timeout, the DNS traces, the debug build's variables
+      (`CURL_DBG_RESOLV_FAIL_IPV6` among them), and no reason given for a failure. C's
+      link-local `AF_UNSPEC` re-query is not ported: reproduced against glibc 2.43, neither
+      query gives a scope.
+    - **c. The build's resolver and its oracle.** **Done.** The `threaded-resolver` feature
+      picks the threaded resolver, as C's configure does; the build then claims `AsynchDNS`
+      (both claim `threadsafe`) and curlinfo `resolv-threaded`. `baseline.py --threaded`
+      builds and measures `build/c-threaded`, `score.py --threaded` scores the leg against it:
+      the same 32 runtests failures as the reference leg, all from before this milestone, and
+      3026 and every non-DoH pytest test_21 case pass; under valgrind no errors, 3026 failing
+      there on both legs (valgrind's guard pages on this machine).
+    - **d. Closing the step.** **Done.** The sweep over the DNS, multi, trace, wait, alloc,
+      tool and report entries, and cargo-mutants over the step's diff, crate by crate: each
+      survivor tested or excluded with its reason in `.cargo/mutants.toml`.
+49. **IDN** through libidn2. **Done.** `crates/curl-idn2`, given to every handle by the shim and
+    the tool (`Libraries::idn`): a host in Unicode is resolved, sent, matched and looked up in
+    `.netrc` by its ASCII form, for the origin, a proxy and a connect-to entry; the URL API
+    converts with `CURLU_PUNYCODE` and `CURLU_PUNY2IDN`; `IDN` is claimed and libidn2 listed.
+    165, 763, 1034, 1035, 1448, 2046 and 2047 pass; the SMTP IDN tests (962–969) wait on
+    stage 6.
+50. **HSTS and alt-svc,** their caches, files and options, without the share (milestone 7). **In
+    progress.**
+    - **a. HSTS.** **Done.** The cache (`hsts::Hsts`, unit1660 ported), read from its files and
+      the application's reader as each transfer starts, an `http` URL switched to `https`, a
+      response's field kept over HTTPS, the cache written to its file and the application's
+      writer as the handle goes, and kept by a copy of the handle; `--hsts`, `CURLOPT_HSTS`,
+      `CURLOPT_HSTS_CTRL` and the read and write functions; `HSTS` claimed. 440, 441, 446,
+      493, 780–783, 1586, 1638, 1862, 1900, 1915, 1922 and 3109 pass.
+    - **b. alt-svc.** **To do.** The cache, `--alt-svc`, `CURLOPT_ALTSVC` and
+      `CURLOPT_ALTSVC_CTRL`; the switch to another origin waits on HTTP/2 and HTTP/3.
+    - **c. Closing the step.** **To do.** The sweep and cargo-mutants on what it changed.
 51. **The pool's `Attached` place,** a connection several transfers lease (ENGINE.md). **To do.**
 52. **HTTP/2** through nghttp2: ALPN offering `h2`, prior knowledge and `h2c` upgrade,
     multiplexing, `PIPEWAIT` and `--parallel-immediate`, a sibling stream's data delivered at

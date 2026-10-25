@@ -1910,9 +1910,14 @@ its `ASYNC_NAME` timer, and the next pass starts one. The debug build's
 `CURL_DBG_RESOLV_FAIL_IPV6`, `hostip_resolv`'s for every resolver, is read as the multi is made:
 a resolve of IPv6 addresses alone then fails before the cache and the shortcuts are asked
 (`Unresolved::DebugFailIpv6`), for the setup and for a bind alike. Not built yet: the blocking
-resolve's `await` lines and the thread queue's own trace; and the re-query of an IPv6 answer with a link-local address but no scope, which
-glibc gives only to an `AF_UNSPEC` query, a workaround to reproduce before it is ported, which
-needs the resolver's addresses to keep their scope first.
+resolve's `await` lines and the thread queue's own trace, which no test reads and whose count
+depends on the threads' timing. Not ported: C's re-query, for `AF_UNSPEC`, of an IPv6 answer
+with a link-local address but no scope (`async_thrdd_item_missing_scope`), a workaround for a
+glibc that gives scopes only to `AF_UNSPEC` queries. Reproduced against glibc 2.43 (a DNS
+server in a network namespace answering `fe80::1`), neither query gives a scope, so the
+re-query gains nothing; the connect fills a link-local address's missing scope from the
+interface, as cf-socket.c does. Only pytest's test_21_16 looks for the re-query's line, and it
+needs a build that overrides DNS, which the threaded oracle is not.
 `DnsCache` is in the multi's `Caches`, or a share's (section 4.6.1): entries by name, in
 any case, and port, each a `TryRc<Answer>` that the connect machine using it shares, recording
 the family asked (`dns_queries`): an answer for one family is no answer for both. A setup

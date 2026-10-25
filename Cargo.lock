@@ -97,6 +97,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-nghttp2"
+version = "0.1.0"
+dependencies = [
+ "curl-alloc",
+]
+
+[[package]]
 name = "curl-openssl"
 version = "0.1.0"
 dependencies = [

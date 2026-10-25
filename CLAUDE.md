@@ -35,6 +35,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-zlib/src/lib.rs`: zlib's inflate, undoing the `deflate` and `gzip` codings.
 - `crates/curl-brotli/src/lib.rs`: brotli's decoder, undoing the `br` coding.
 - `crates/curl-zstd/src/lib.rs`: zstd's decoder, undoing the `zstd` coding.
+- `crates/curl-nghttp2/src/lib.rs` and `src/sys.rs`: nghttp2's HTTP/2 session, its callbacks and
+  the declarations of the functions it calls.
 - `crates/curl-idn2/src/lib.rs`: libidn2, converting host names to and from punycode.
 - `crates/curl-openssl/src/sys.rs`: OpenSSL's initialisation, and the version of the library
   loaded.

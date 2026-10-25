@@ -24,8 +24,8 @@ use super::chain::SetupPoint;
 use super::dns::DnsCache;
 use super::dns::{Answer, Lookup, Names};
 use super::io::{
-    Closer, Connect, Events, Family, Net, Remote, ResolveFailure, Sock, Socket, SocketOption,
-    SocketPoll, UnixPeer,
+    Closer, Connect, Events, Family, Net, Remote, Resolve, ResolveFailure, ResolveId, Sock, Socket,
+    SocketOption, SocketPoll, UnixPeer, Waiter,
 };
 use super::layer::{LayerAnswer, LayerCx, LayerQuery};
 use super::shutdown::ConnSettings;
@@ -56,8 +56,9 @@ pub(crate) struct ConnectMachine {
 
 #[derive(Debug)]
 enum Stage {
-    /// The destination's name is to be resolved.
-    Resolving,
+    /// The destination's name is to be resolved, or its resolve waits
+    /// for the resolver's answer.
+    Resolving(Option<Pending>),
     /// Attempts are made to the addresses it resolved to.
     Racing(Racing),
     /// Connected to the first hop, the handshakes over it are made.
@@ -176,6 +177,10 @@ pub(crate) trait ConnCx: LayerCx {
     /// IPv6 works here, as the multi's probe found (`ipv6works`).
     fn ipv6_works(&self) -> bool;
 
+    /// The transfer the setup's resolves are for, which the multi runs
+    /// again when one is answered.
+    fn waiter(&self) -> Waiter;
+
     /// A socket for `address`: the application's opener's, which may
     /// change the address, or else the network's (`socket_open`).
     fn open_socket(&mut self, address: &mut Remote) -> Opened;
@@ -260,6 +265,10 @@ impl ConnCx for Plain<'_> {
 
     fn ipv6_works(&self) -> bool {
         true
+    }
+
+    fn waiter(&self) -> Waiter {
+        Waiter::NONE
     }
 
     fn open_socket(&mut self, address: &mut Remote) -> Opened {
@@ -512,7 +521,7 @@ impl ConnectMachine {
             number,
             route,
             created,
-            stage: Stage::Resolving,
+            stage: Stage::Resolving(None),
             redials: 0,
             closer,
             settings,
@@ -530,7 +539,7 @@ impl ConnectMachine {
     /// The sockets of the attempts running.
     pub(crate) fn sockets(&self) -> impl Iterator<Item = &dyn Socket> {
         let (running, dialed) = match &self.stage {
-            Stage::Resolving => (&[][..], None),
+            Stage::Resolving(_) => (&[][..], None),
             Stage::Racing(r) => (&r.attempts[..], None),
             Stage::Dialed(d) => (&[][..], Some(d.stream.socket())),
         };
@@ -540,7 +549,7 @@ impl ConnectMachine {
     /// How far it got, as C's filter chain shows it.
     pub(crate) fn reached(&self) -> SetupPoint {
         match &self.stage {
-            Stage::Resolving => SetupPoint::Resolving,
+            Stage::Resolving(_) => SetupPoint::Resolving,
             Stage::Racing(r) => SetupPoint::Racing {
                 started: r.last_start.is_some(),
             },
@@ -575,7 +584,7 @@ impl ConnectMachine {
     /// The addresses the name resolved to, once it has.
     pub(crate) fn answer(&self) -> Option<&TryArc<Answer>> {
         match &self.stage {
-            Stage::Resolving | Stage::Dialed(_) => None,
+            Stage::Resolving(_) | Stage::Dialed(_) => None,
             Stage::Racing(r) => match &r.eyeballs.answer {
                 Addresses::Resolved(answer) => Some(answer),
                 Addresses::Unix => None,
@@ -590,14 +599,14 @@ impl ConnectMachine {
     pub(crate) fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
         match &self.stage {
             Stage::Dialed(d) => d.stream.query(q),
-            Stage::Resolving | Stage::Racing(_) => None,
+            Stage::Resolving(_) | Stage::Racing(_) => None,
         }
     }
 
     pub(crate) fn handshake_pollset(&self, wanted: Events) -> Events {
         match &self.stage {
             Stage::Dialed(d) => d.stream.adjust_pollset(wanted),
-            Stage::Resolving | Stage::Racing(_) => panic!("no handshake is made"),
+            Stage::Resolving(_) | Stage::Racing(_) => panic!("no handshake is made"),
         }
     }
 
@@ -607,7 +616,7 @@ impl ConnectMachine {
     pub(crate) fn partly_made(&self) -> Option<(Remote, Option<SocketAddr>, Instant)> {
         match &self.stage {
             Stage::Dialed(d) => Some((d.remote.clone(), d.stream.local_addr(), d.connected_at)),
-            Stage::Resolving | Stage::Racing(_) => None,
+            Stage::Resolving(_) | Stage::Racing(_) => None,
         }
     }
 
@@ -615,7 +624,7 @@ impl ConnectMachine {
     pub(crate) fn dialed(&mut self) -> &mut Dialed {
         match &mut self.stage {
             Stage::Dialed(d) => d,
-            Stage::Resolving | Stage::Racing(_) => panic!("no handshake is made"),
+            Stage::Resolving(_) | Stage::Racing(_) => panic!("no handshake is made"),
         }
     }
 
@@ -645,7 +654,7 @@ impl ConnectMachine {
             return false;
         }
         self.redials += 1;
-        let Stage::Dialed(d) = std::mem::replace(&mut self.stage, Stage::Resolving) else {
+        let Stage::Dialed(d) = std::mem::replace(&mut self.stage, Stage::Resolving(None)) else {
             panic!("only a dialed setup is redialed");
         };
         let n = self.redials;
@@ -678,7 +687,8 @@ impl ConnectMachine {
         let delay = setup.delay;
         let component = self.route.socket_component();
         let r = match &mut self.stage {
-            Stage::Resolving => {
+            Stage::Resolving(pending) => {
+                let pending = pending.take();
                 let (answer, found) = match self.unix_peer() {
                     // Its one address, made at once (`resolv_unix`).
                     Some(peer) => {
@@ -688,8 +698,39 @@ impl ConnectMachine {
                         (Addresses::Unix, Found::Resolved(Asked::Shortcut))
                     }
                     None => {
-                        let (answer, found) = self.resolve(cx, setup)?;
-                        (Addresses::Resolved(answer), found)
+                        let peer = self.route.destination();
+                        let (name, port) = (peer.name(), peer.port());
+                        let looked = match pending {
+                            None => {
+                                let family = family(self.route.ip, cx);
+                                let shown = peer.shown();
+                                lookup_start((shown, name, port), family, cx, setup, true)?
+                            }
+                            Some(p) => {
+                                let id = p.id;
+                                let mut polled = None;
+                                cx.net().with_resolver(&mut |r| polled = Some(r.answer(id)));
+                                match polled.expect("the network lends its resolver") {
+                                    Some(answer) => {
+                                        let (a, f) = settle(answer, (name, port), p, cx)?;
+                                        Looked::Found(a, f)
+                                    }
+                                    None => Looked::Pending(p),
+                                }
+                            }
+                        };
+                        match looked {
+                            Looked::Found(answer, found) => (Addresses::Resolved(answer), found),
+                            // Nothing until the resolver answers, when the
+                            // multi runs the transfer again.
+                            Looked::Pending(p) => {
+                                self.stage = Stage::Resolving(Some(p));
+                                return Ok(Drove::Connecting(
+                                    self,
+                                    Progress::Waiting { until: None },
+                                ));
+                            }
+                        }
                     }
                 };
                 let eyeballs = Eyeballs::new(answer, self.route.ip);
@@ -1010,18 +1051,6 @@ impl ConnectMachine {
         peer.is_unix().then(|| UnixPeer::of(peer.clone()))
     }
 
-    /// The peer's answer (`hostip_resolv`): what the cache keeps, or what
-    /// the name stands for without asking a resolver, or what the system's
-    /// resolver finds, then kept. That the name does not exist is kept
-    /// too; that the resolver could not tell is not.
-    fn resolve(
-        &self,
-        cx: &mut dyn ConnCx,
-        setup: Setup,
-    ) -> Result<(TryArc<Answer>, Found), ConnectError> {
-        resolve(self.route.destination(), self.route.ip, cx, setup)
-    }
-
     /// The destination's addresses, for a SOCKS proxy that is not to
     /// resolve its name (`Curl_conn_dns_add_addr_resolve`); a resolver
     /// that finds nothing is for the handshake to say.
@@ -1074,7 +1103,12 @@ impl ConnectMachine {
     /// End the setup, closing what it has open.
     pub(crate) fn close(self, net: &mut dyn Net) {
         match self.stage {
-            Stage::Resolving => {}
+            Stage::Resolving(None) => {}
+            // Its answer, if it comes, is not wanted.
+            Stage::Resolving(Some(p)) => {
+                net.with_resolver(&mut |r| r.cancel(p.id));
+                p.done();
+            }
             Stage::Racing(mut r) => r.close_all(net),
             Stage::Dialed(d) => net.close(d.stream.into_socket()),
         }
@@ -1290,15 +1324,18 @@ fn resolve(
     cx: &mut dyn ConnCx,
     setup: Setup,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
-    // Without IPv6 only IPv4 addresses are asked for
-    // (`Curl_resolv_dns_queries`).
-    let ipv6 = cx.ipv6_works();
-    let family = match ip {
-        IpVersion::Any if ipv6 => Family::Any,
+    let family = family(ip, cx);
+    resolve_name((peer.shown(), peer.name(), peer.port()), family, cx, setup)
+}
+
+/// The families a resolve in `ip` asks for: without IPv6 only IPv4's
+/// (`Curl_resolv_dns_queries`).
+fn family(ip: IpVersion, cx: &dyn ConnCx) -> Family {
+    match ip {
+        IpVersion::Any if cx.ipv6_works() => Family::Any,
         IpVersion::Any | IpVersion::V4 => Family::V4,
         IpVersion::V6 => Family::V6,
-    };
-    resolve_name((peer.shown(), peer.name(), peer.port()), family, cx, setup)
+    }
 }
 
 /// The addresses of `family` the host `shown` stands for, as a URL shows
@@ -1315,7 +1352,8 @@ pub(super) fn resolve_name(
 
 /// `resolve_name`, keeping that the name does not exist only if
 /// `keep_negative`, as only the setup's own resolve does
-/// (`Curl_dnscache_add_negative`).
+/// (`Curl_dnscache_add_negative`); a resolver that answers later is
+/// waited for, as C waits for these (`Curl_resolv_blocking`).
 pub(super) fn lookup_name(
     (shown, name, port): (&[u8], &[u8], u16),
     family: Family,
@@ -1323,6 +1361,67 @@ pub(super) fn lookup_name(
     setup: Setup,
     keep_negative: bool,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
+    match lookup_start((shown, name, port), family, cx, setup, keep_negative)? {
+        Looked::Found(answer, found) => Ok((answer, found)),
+        Looked::Pending(pending) => {
+            let id = pending.id;
+            let mut answer = None;
+            cx.net().with_resolver(&mut |r| answer = Some(r.wait(id)));
+            let answer = answer.expect("the network lends its resolver");
+            settle(answer, (name, port), pending, cx)
+        }
+    }
+}
+
+/// Where a lookup stands: its answer, or a resolve the resolver answers
+/// later.
+pub(super) enum Looked {
+    Found(TryArc<Answer>, Found),
+    Pending(Pending),
+}
+
+/// A resolve the resolver answers later, and what its answer is to be.
+#[derive(Debug)]
+pub(super) struct Pending {
+    pub(super) id: ResolveId,
+    family: Family,
+    /// Whether the cache had a stale answer.
+    found: fn(Asked) -> Found,
+    keep_negative: bool,
+    held: Held,
+}
+
+/// A resolve held: one dropped neither answered nor cancelled leaves its
+/// answer in the resolver for good, a bug, which aborts.
+#[derive(Debug)]
+struct Held;
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        assert!(
+            std::thread::panicking(),
+            "a resolve was dropped, neither answered nor cancelled"
+        );
+    }
+}
+
+impl Pending {
+    /// Its answer taken, or the resolve cancelled: let go.
+    fn done(self) -> (Family, fn(Asked) -> Found, bool) {
+        std::mem::forget(self.held);
+        (self.family, self.found, self.keep_negative)
+    }
+}
+
+/// A lookup started: the cache, then the shortcuts, then the resolver,
+/// whose answer may come later (`hostip_resolv_start`).
+pub(super) fn lookup_start(
+    (shown, name, port): (&[u8], &[u8], u16),
+    family: Family,
+    cx: &mut dyn ConnCx,
+    setup: Setup,
+    keep_negative: bool,
+) -> Result<Looked, ConnectError> {
     let now = cx.now();
     let ipv6 = cx.ipv6_works();
     let (wildcard, max_age) = (setup.wildcard, setup.max_age);
@@ -1330,41 +1429,78 @@ pub(super) fn lookup_name(
         .names()
         .section(|c| c.lookup((name, port), family, wildcard, max_age, now))
     {
-        Lookup::Found(answer) => return Ok((answer, Found::Cached)),
+        Lookup::Found(answer) => return Ok(Looked::Found(answer, Found::Cached)),
         Lookup::Negative => return Err(ConnectError::Unresolved(Unresolved::Negative)),
         Lookup::Stale => Found::Stale,
         Lookup::Missing => Found::Resolved,
     };
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
-    let (answer, found) = match shortcut(shown, name).map_err(oom)? {
-        Some(answer) => (answer, found(Asked::Shortcut)),
-        // A resolver is not asked for IPv6 addresses alone without IPv6
-        // (`can_resolve_dns_queries`); nothing is kept of it.
-        None if family == Family::V6 && !ipv6 => {
-            return Err(ConnectError::Unresolved(Unresolved::NoIpv6));
+    if let Some(answer) = shortcut(shown, name).map_err(oom)? {
+        let answer = TryArc::try_new(answer).map_err(oom)?;
+        cx.names()
+            .section(|c| c.put(answer.clone(), port, now, false))
+            .map_err(oom)?;
+        return Ok(Looked::Found(answer, found(Asked::Shortcut)));
+    }
+    // A resolver is not asked for IPv6 addresses alone without IPv6
+    // (`can_resolve_dns_queries`); nothing is kept of it.
+    if family == Family::V6 && !ipv6 {
+        return Err(ConnectError::Unresolved(Unresolved::NoIpv6));
+    }
+    let waiter = cx.waiter();
+    let mut started = None;
+    cx.net()
+        .with_resolver(&mut |r| started = Some(r.start(name, family, waiter)));
+    let pending = |id| Pending {
+        id,
+        family,
+        found,
+        keep_negative,
+        held: Held,
+    };
+    match started.expect("the network lends its resolver") {
+        Ok(Resolve::Pending(id)) => Ok(Looked::Pending(pending(id))),
+        Ok(Resolve::Answer(addrs)) => {
+            let (answer, found) = settle(Ok(addrs), (name, port), pending(ResolveId::FIRST), cx)?;
+            Ok(Looked::Found(answer, found))
         }
-        None => match cx.net().resolve(name, family) {
-            Ok(addrs) => (
-                Answer::of(name, addrs, family).map_err(oom)?,
-                found(Asked::Resolver),
-            ),
-            Err(ResolveFailure::OutOfMemory) => return Err(ConnectError::OutOfMemory),
-            Err(why @ (ResolveFailure::NotFound | ResolveFailure::NoData)) if keep_negative => {
-                let none = Answer::of(name, Vec::new(), family).map_err(oom)?;
-                let none = TryArc::try_new(none).map_err(oom)?;
-                cx.names()
-                    .section(|c| c.put(none, port, now, false))
-                    .map_err(oom)?;
-                return Err(ConnectError::Unresolved(Unresolved::Resolver(why)));
-            }
-            Err(why) => return Err(ConnectError::Unresolved(Unresolved::Resolver(why))),
-        },
+        Err(why) => Err(
+            settle(Err(why), (name, port), pending(ResolveId::FIRST), cx)
+                .expect_err("a failure settles as one"),
+        ),
+    }
+}
+
+/// The resolver's answer for `name` on `port`, as `pending` started it,
+/// kept in the cache; that the name does not exist kept too, if the
+/// lookup keeps negative answers.
+pub(super) fn settle(
+    answer: Result<Vec<IpAddr>, ResolveFailure>,
+    (name, port): (&[u8], u16),
+    pending: Pending,
+    cx: &mut dyn ConnCx,
+) -> Result<(TryArc<Answer>, Found), ConnectError> {
+    let now = cx.now();
+    let oom = |OutOfMemory| ConnectError::OutOfMemory;
+    let (family, found, keep_negative) = pending.done();
+    let answer = match answer {
+        Ok(addrs) => Answer::of(name, addrs, family).map_err(oom)?,
+        Err(ResolveFailure::OutOfMemory) => return Err(ConnectError::OutOfMemory),
+        Err(why @ (ResolveFailure::NotFound | ResolveFailure::NoData)) if keep_negative => {
+            let none = Answer::of(name, Vec::new(), family).map_err(oom)?;
+            let none = TryArc::try_new(none).map_err(oom)?;
+            cx.names()
+                .section(|c| c.put(none, port, now, false))
+                .map_err(oom)?;
+            return Err(ConnectError::Unresolved(Unresolved::Resolver(why)));
+        }
+        Err(why) => return Err(ConnectError::Unresolved(Unresolved::Resolver(why))),
     };
     let answer = TryArc::try_new(answer).map_err(oom)?;
     cx.names()
         .section(|c| c.put(answer.clone(), port, now, false))
         .map_err(oom)?;
-    Ok((answer, found))
+    Ok((answer, found(Asked::Resolver)))
 }
 
 /// The addresses `host`, as the URL names it, stands for without asking
@@ -1542,6 +1678,75 @@ mod tests {
             }
         }
         panic!("no end: {raced:?}");
+    }
+
+    /// A setup to `late.test`, whose answer `late` holds, driven once: its
+    /// resolve waits.
+    fn waiting_for(late: &crate::conn::io::Late) -> (ConnectMachine, FakeNet) {
+        let clock = ManualClock::new().unwrap();
+        let mut net =
+            FakeNet::new(clock.clone()).with_late_name("late.test", &[[127, 0, 0, 1].into()], late);
+        let scheme = Scheme {
+            name: "http",
+            reuse: true,
+        };
+        let peer = Peer::new(scheme, b"late.test".to_vec(), 123, None);
+        let route = Tcp {
+            origin: TryArc::try_new(peer).unwrap(),
+            via: None,
+            ip: IpVersion::Any,
+            proxy: None,
+            tls: None,
+            local: None,
+            delegation: Default::default(),
+        };
+        let m = ConnectMachine::new(
+            ConnNumber(0),
+            route,
+            clock.now(),
+            Closer::System,
+            ConnSettings::DEFAULT,
+        );
+        let setup = Setup {
+            wildcard: false,
+            max_age: Some(Duration::from_secs(60)),
+            delay: Duration::from_millis(200),
+            scope: None,
+            socket: SocketSetup::PLAIN,
+            haproxy: false,
+            layer: None,
+            linger: None,
+        };
+        let mut cx = Plain {
+            net: &mut net,
+            dns: &mut DnsCache::default(),
+            now: clock.now(),
+        };
+        let m = match m.drive(&mut cx, setup) {
+            Ok(Drove::Connecting(m, Progress::Waiting { until: None })) => m,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(net.resolving(), 1);
+        (m, net)
+    }
+
+    /// A setup closed while its resolve waits cancels it.
+    #[test]
+    fn a_closed_setup_cancels_its_resolve() {
+        let late = crate::conn::io::Late::new();
+        let (m, mut net) = waiting_for(&late);
+        m.close(&mut net);
+        assert_eq!(net.resolving(), 0);
+    }
+
+    /// A setup dropped while its resolve waits, neither answered nor
+    /// cancelled, is a bug: its answer would stay in the resolver.
+    #[test]
+    #[should_panic = "neither answered nor cancelled"]
+    fn a_dropped_pending_resolve_is_caught() {
+        let late = crate::conn::io::Late::new();
+        let (m, _net) = waiting_for(&late);
+        drop(m);
     }
 
     /// The attempt that connects wins, and the others are closed.

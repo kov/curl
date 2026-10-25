@@ -6,11 +6,10 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use std::fmt;
 use std::io;
-use std::net::IpAddr;
 use std::time::Duration;
 
 use crate::components::Component;
-use crate::conn::io::{Family, Net, PollFd, ResolveFailure, Sock, Socket, SocketKey, SocketPoll};
+use crate::conn::io::{Net, PollFd, Resolver, Sock, Socket, SocketKey, SocketPoll};
 use crate::conn::layer::LayerCx;
 use crate::conn::shutdown::{Exits, ShutdownSet, WithSet};
 use crate::conn::{Caches, ConnCx, DnsCache, Home, Names, Opened, Pool};
@@ -376,6 +375,10 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         self.step.rest.ipv6_works
     }
 
+    fn waiter(&self) -> crate::conn::io::Waiter {
+        crate::conn::io::Waiter(Some(self.step.me()))
+    }
+
     fn open_socket(&mut self, address: &mut crate::conn::io::Remote) -> Opened {
         let opener = self.step.easy().options().sockets.open.clone();
         match opener {
@@ -430,8 +433,8 @@ impl<H: Host> Net for DriveCx<'_, '_, H> {
         self.step.rest.announcing(me).close(socket);
     }
 
-    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
-        self.step.rest.net.resolve(name, family)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
+        self.step.rest.net.with_resolver(f);
     }
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
@@ -538,8 +541,8 @@ impl Net for CloseLater<'_> {
         self.more.try_push(socket).expect("room was made");
     }
 
-    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
-        self.net.resolve(name, family)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
+        self.net.with_resolver(f);
     }
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
@@ -604,8 +607,8 @@ impl<H: Host> Net for Announcing<'_, H> {
         self.net.close(socket);
     }
 
-    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
-        self.net.resolve(name, family)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
+        self.net.with_resolver(f);
     }
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
@@ -956,8 +959,8 @@ mod tests {
             self.0.close(socket);
         }
 
-        fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
-            self.0.resolve(name, family)
+        fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
+            self.0.with_resolver(f);
         }
 
         fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {

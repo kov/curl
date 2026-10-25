@@ -1829,23 +1829,33 @@ hooks. The closer is not a call-out: it is captured with the connection (§4.6).
 
 ```rust
 pub trait Resolver {
-    fn start(&mut self, host: &Host, port: Port, family: Family, now: Instant) -> Result<Resolve, Error>;
-    fn poll(&mut self, id: ResolveId, now: Instant) -> Result<Option<DnsAnswer>, Error>;
-    fn sockets(&self, out: &mut dyn FnMut(SocketKey, Interest));   // SocketOwner::Resolver
+    fn start(&mut self, name: &[u8], family: Family, waiter: Waiter) -> Result<Resolve, ResolveFailure>;
+    fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>>;
+    fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure>;
     fn cancel(&mut self, id: ResolveId);
+    fn answered(&mut self, each: &mut dyn FnMut(Waiter));
 }
-pub enum Resolve { Answer(DnsAnswer), Pending(ResolveId) }
+pub enum Resolve { Answer(Vec<IpAddr>), Pending(ResolveId) }
 ```
 
-`ResolveId` is a generational key into the resolver's own arena; a stale id fails closed (C's
-`Curl_resolv_has_answers` fails open). The resolvers come in order: the shortcuts (IP literals
-and `localhost`), then getaddrinfo, then c-ares; the resolver-start callback is announced for
-the shortcuts too (655 and 464).
+The network has its resolver, as it has its sockets, lent to a closure (`Net::with_resolver`,
+so that a network a test shares behind a lock lends it too): the system's network the system's
+resolver, the tests' fake network names it answers for, at once or when the test lets them. `ResolveId` names one resolve of the resolver's, never reused, so a stale one fails closed
+(C's `Curl_resolv_has_answers` fails open). `Waiter` is the transfer that started it (C's
+`mid` in each queued item): the multi asks the resolver which have answered each time it runs
+its own work, before the transfers (C's admin handle, `Curl_async_thrdd_multi_process`), and
+runs those again. The resolvers come in order: the shortcuts (IP literals and `localhost`),
+then the resolver; the resolver-start callback is announced for the shortcuts too (655 and
+464).
 
-Built so far: the shortcuts, the system's resolver and the cache. The resolver is not yet the
-trait above: `Net::resolve(name, Family)` asks `getaddrinfo` and waits for its answer, as C's
-synchronous resolver does, so the fake network that stands in for the system's sockets stands
-in for its names too; the trait comes with c-ares, the first resolver that answers later.
+The setup's own resolve waits in `Stage::Resolving`, its `ResolveId` held, its answer asked for each time the
+transfer is run, cancelled as the setup closes; one dropped neither answered nor cancelled
+aborts, as its answer would stay in the resolver. What it finds goes to the cache as before.
+The other resolves wait where they are, as C's do (`Curl_resolv_blocking`): the interface a
+socket binds to, by name, and, until step 48b makes it wait as the setup's own resolve does
+(C's second DNS filter), a SOCKS proxy's destination resolved here. The system's resolver asks `getaddrinfo` and answers at once, as C's
+synchronous resolver and the c-ares-like build do; the threaded resolver (step 48b) answers
+later, from a thread pool, waking the multi.
 `DnsCache` is in the multi's `Caches`, or a share's (section 4.6.1): entries by name, in
 any case, and port, each a `TryRc<Answer>` that the connect machine using it shares, recording
 the family asked (`dns_queries`): an answer for one family is no answer for both. A setup

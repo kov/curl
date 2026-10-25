@@ -797,8 +797,8 @@ the system's under the HTTP-only programs installed here.
     - **e. Closing the step.** **To do.** The sweep and cargo-mutants on what it changed.
 48. **The threaded resolver,** `AsynchDNS` as distributions build it, beside c-ares. **In
     progress.**
-    - **a. The resolver seam.** **In progress.** The `Resolver` trait ENGINE.md lays out
-      (`start`, `poll`, `cancel`, its sockets and its wake), in place of `Net::resolve`'s
+    - **a. The resolver seam.** **Done.** The `Resolver` trait ENGINE.md lays out (`start`,
+      `answer`, `wait`, `cancel`, `answered`), lent by the network, in place of `Net::resolve`'s
       answer-at-once: the connect machine waits in a resolving state for an answer that comes
       later, and the cache, the shortcuts and the negative answers stay where they are. The
       system's resolver and the fake network answer through it, the fake one at once or later

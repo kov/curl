@@ -9,9 +9,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use crate::conn::io::{
-    Conversation, FakeNet, Family, Peer, PollFd, ResolveFailure, Sock, SocketPoll,
-};
+use crate::conn::io::{Conversation, FakeNet, Peer, PollFd, Resolver, Sock, SocketPoll};
 use crate::conn::layer::Linger;
 use crate::time::ManualClock;
 
@@ -131,12 +129,8 @@ impl Net for Wire {
         }
     }
 
-    fn resolve(
-        &mut self,
-        name: &[u8],
-        family: Family,
-    ) -> Result<Vec<std::net::IpAddr>, ResolveFailure> {
-        self.0.lock().unwrap().net.resolve(name, family)
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
+        self.0.lock().unwrap().net.with_resolver(f);
     }
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {

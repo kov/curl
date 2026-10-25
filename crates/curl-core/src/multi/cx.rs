@@ -835,6 +835,15 @@ impl<'a> TransferCx<'a> {
         self.calls.easy(id).map(Easy::try_clone)
     }
 
+    /// As `duplicate`, through `Easy::try_clone_with`.
+    pub fn duplicate_with(
+        &self,
+        id: TransferId,
+        prepare: &mut dyn FnMut(&mut Options) -> Result<(), OutOfMemory>,
+    ) -> Option<Result<Easy, OutOfMemory>> {
+        self.calls.easy(id).map(|e| e.try_clone_with(prepare))
+    }
+
     /// Pause or unpause a transfer, this one among them
     /// (`curl_easy_pause`). Another's held output is replayed before this
     /// returns; this one's, by the replay or step already under way. The
@@ -926,6 +935,15 @@ impl<H: Host> EventCx<'_, H> {
     /// A copy of a transfer's `Easy` (`curl_easy_duphandle`).
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
         self.slots.get(id).map(|s| s.easy.try_clone())
+    }
+
+    /// As `duplicate`, through `Easy::try_clone_with`.
+    pub fn duplicate_with(
+        &self,
+        id: TransferId,
+        prepare: &mut dyn FnMut(&mut Options) -> Result<(), OutOfMemory>,
+    ) -> Option<Result<Easy, OutOfMemory>> {
+        self.slots.get(id).map(|s| s.easy.try_clone_with(prepare))
     }
 
     /// What the application gave with the transfer when it added it.
@@ -1030,6 +1048,15 @@ impl<H: Host> NotifyCx<'_, H> {
 
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
         self.multi.easy(id).map(Easy::try_clone)
+    }
+
+    /// As `duplicate`, through `Easy::try_clone_with`.
+    pub fn duplicate_with(
+        &self,
+        id: TransferId,
+        prepare: &mut dyn FnMut(&mut Options) -> Result<(), OutOfMemory>,
+    ) -> Option<Result<Easy, OutOfMemory>> {
+        self.multi.easy(id).map(|e| e.try_clone_with(prepare))
     }
 
     /// As `Multi::assign`.

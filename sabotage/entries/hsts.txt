@@ -63,3 +63,28 @@ witness: curl-sys-abi handle_tests::a_read_only_hsts_file_is_not_written
                     _ => HstsFile::ReadOnly,
 --- new
                     _ => HstsFile::ReadWrite,
+
+=== a copy's HSTS adapters stay the original's
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::a_copy_s_hsts_reader_is_handed_the_copy
+--- old
+    hsts.read = match c.read {
+        Some(_) => Some(Handler::hsts_reader(Adapter(easy))?),
+--- new
+    hsts.read = match c.read {
+        Some(_) if hsts.read.is_some() => hsts.read.take(),
+        Some(_) => Some(Handler::hsts_reader(Adapter(easy))?),
+
+=== a copy reads its HSTS reader before its adapters are its own
+file: crates/curl-core/src/easy.rs
+witness: curl-sys-abi handle_tests::a_copy_s_hsts_reader_is_handed_the_copy
+--- old
+        prepare(&mut copy.options)?;
+        if let Some(hsts) = self.hsts.as_deref() {
+            copy.hsts = Some(copy.hsts_copy(hsts)?);
+        }
+--- new
+        if let Some(hsts) = self.hsts.as_deref() {
+            copy.hsts = Some(copy.hsts_copy(hsts)?);
+        }
+        prepare(&mut copy.options)?;

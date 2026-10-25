@@ -6237,3 +6237,53 @@ fn a_read_only_hsts_file_is_not_written() {
     }
     std::fs::remove_file(&path).unwrap();
 }
+
+/// The HSTS reader a copy of the handle calls as it is made is handed the
+/// copy, as C's `curl_easy_duphandle` hands it `outcurl`, and so are the
+/// copy's transfers, after the original is gone.
+#[test]
+fn a_copy_s_hsts_reader_is_handed_the_copy() {
+    unsafe extern "C" fn read(
+        easy: *mut CURL,
+        _e: *mut ffi::curl_hstsentry,
+        data: *mut c_void,
+    ) -> ffi::CURLSTScode {
+        // SAFETY: the test's vector, alive through the calls.
+        unsafe { &mut *data.cast::<Vec<usize>>() }.push(easy as usize);
+        ffi::CURLSTS_DONE
+    }
+    let mut seen: Vec<usize> = Vec::new();
+    let c = curl_easy_init();
+    let f: ffi::curl_hstsread_callback = Some(read);
+    assert_eq!(
+        long(c, ffi::CURLOPT_HSTS_CTRL, ffi::CURLHSTS_ENABLE),
+        CURLE_OK
+    );
+    // SAFETY: a function of the option's type.
+    let fp = unsafe { core::mem::transmute::<ffi::curl_hstsread_callback, *mut c_void>(f) };
+    assert_eq!(pointer(c, ffi::CURLOPT_HSTSREADFUNCTION, fp), CURLE_OK);
+    let data: *mut Vec<usize> = &mut seen;
+    assert_eq!(pointer(c, ffi::CURLOPT_HSTSREADDATA, data), CURLE_OK);
+    // SAFETY: a live handle.
+    let d = unsafe { easy::curl_easy_duphandle(c) };
+    assert!(!d.is_null());
+    assert_eq!(seen, [d as usize]);
+    // The copy's transfers call through the copy, the original gone.
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        pointer(d, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(d) }, ffi::CURLE_COULDNT_CONNECT);
+    assert_eq!(seen, [d as usize, d as usize]);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(d) };
+}

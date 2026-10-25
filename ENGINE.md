@@ -2964,7 +2964,9 @@ time is the clock's, or the debug build's `CURL_TIME`. The cache is written as t
 `HstsOptions::file` or the file last read, unless the cache's file is read-only
 (`HstsFile::ReadOnly`, `CURLHSTS_READONLYFILE`, which C never honours: DIVERGENCE.md), then to
 the application's writer (`HstsWriter`). A copy of the handle reads its file and reader into a
-new cache of the same file mode, then takes the entries alive.
+new cache of the same file mode, then takes the entries alive; the shim makes the copy's
+adapters before that read (`Easy::try_clone_with`), so the application's reader is handed the
+copy, as C hands it `outcurl`.
 
 ---
 

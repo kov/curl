@@ -141,7 +141,18 @@ impl Easy {
 
     /// A handle with the same options (`curl_easy_duphandle`).
     pub fn try_clone(&self) -> Result<Easy, OutOfMemory> {
-        Ok(Easy {
+        self.try_clone_with(&mut |_| Ok(()))
+    }
+
+    /// As `try_clone`, `prepare` given the copy's options before the copy
+    /// reads anything through them: its HSTS file and reader are read as
+    /// it is made, so a handler that should be the copy's is made the
+    /// copy's here.
+    pub fn try_clone_with(
+        &self,
+        prepare: &mut dyn FnMut(&mut Options) -> Result<(), OutOfMemory>,
+    ) -> Result<Easy, OutOfMemory> {
+        let mut copy = Easy {
             options: self.options.try_clone()?,
             report: TransferReport::default(),
             meter_titled: false,
@@ -155,11 +166,7 @@ impl Easy {
                 None => None,
             },
             set_cookies: 0,
-            hsts: self
-                .hsts
-                .as_deref()
-                .map(|h| self.hsts_copy(h))
-                .transpose()?,
+            hsts: None,
             share: None,
             share_watch: None,
             suffixes: match &self.suffixes {
@@ -169,13 +176,18 @@ impl Easy {
             },
             libraries: self.libraries.clone(),
             components: self.components.clone(),
-        })
+        };
+        prepare(&mut copy.options)?;
+        if let Some(hsts) = self.hsts.as_deref() {
+            copy.hsts = Some(copy.hsts_copy(hsts)?);
+        }
+        Ok(copy)
     }
 
-    /// The HSTS cache a copy of the handle starts with
+    /// The HSTS cache this copy of a handle starts with
     /// (`curl_easy_duphandle`): its file and the application's reader read
-    /// into a new one, as C reads them, then the entries alive here. What
-    /// fails to be read is passed over, as in C.
+    /// into a new one, as C reads them, then the entries alive in the
+    /// original's `hsts`. What fails to be read is passed over, as in C.
     fn hsts_copy(&self, hsts: &Hsts) -> Result<Box<Hsts>, OutOfMemory> {
         let now = crate::proto::http::hsts::now(SystemClock::new().unix_time());
         let mut copy = try_box(Hsts::default())?;

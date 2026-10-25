@@ -144,27 +144,32 @@ impl Frame {
         }
     }
 
-    /// A copy of a transfer's `Easy`, through the context lent.
+    /// A copy of a transfer's `Easy`, through the context lent, `prepare`
+    /// given its options as `Easy::try_clone_with` does.
     ///
     /// # Safety
     ///
     /// As `options_mut`.
-    pub(crate) unsafe fn duplicate(self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
+    pub(crate) unsafe fn duplicate(
+        self,
+        id: TransferId,
+        prepare: &mut dyn FnMut(&mut Options) -> Result<(), OutOfMemory>,
+    ) -> Option<Result<Easy, OutOfMemory>> {
         match self {
             Frame::Transfer(cx) => {
                 // SAFETY: as the caller guarantees, the adapter that lent
                 // the context does not use it until its callback returns.
-                unsafe { &*cx.as_ptr() }.duplicate(id)
+                unsafe { &*cx.as_ptr() }.duplicate_with(id, prepare)
             }
             Frame::Event(cx) => {
                 // SAFETY: as the caller guarantees, the adapter that lent
                 // the context does not use it until its callback returns.
-                unsafe { &*cx.as_ptr() }.duplicate(id)
+                unsafe { &*cx.as_ptr() }.duplicate_with(id, prepare)
             }
             Frame::Notify(cx) => {
                 // SAFETY: as the caller guarantees, the adapter that lent
                 // the context does not use it until its callback returns.
-                unsafe { &*cx.as_ptr() }.duplicate(id)
+                unsafe { &*cx.as_ptr() }.duplicate_with(id, prepare)
             }
         }
     }

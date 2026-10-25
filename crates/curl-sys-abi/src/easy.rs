@@ -160,6 +160,20 @@ impl ShimEasy {
     /// `easy`'s options were copied with.
     fn boxed(easy: Easy, c: CSide) -> Result<NonNull<ShimEasy>, OutOfMemory> {
         let mut easy = try_box(easy)?;
+        let shim = ShimEasy::homeless(c)?;
+        if let Err(e) = ShimEasy::adapt(shim, easy.options_mut(), None) {
+            // SAFETY: made by `homeless`, used nowhere else.
+            drop(unsafe { Box::from_raw(shim.as_ptr()) });
+            return Err(e);
+        }
+        // SAFETY: just made, and reached only through this pointer.
+        *unsafe { shim.as_ref() }.home.borrow_mut() = Home::Detached(easy);
+        Ok(shim)
+    }
+
+    /// A handle with the C side `c` and no `Easy` yet (`Home::Nowhere`),
+    /// freed by `Box::from_raw` until it has one.
+    fn homeless(c: CSide) -> Result<NonNull<ShimEasy>, OutOfMemory> {
         let shim = try_box(ShimEasy::empty(false, c.ccb, c.set))?;
         if !c.httppost.is_null() {
             shim.posted_or_make()?.chain.set(c.httppost);
@@ -179,12 +193,6 @@ impl ShimEasy {
         me.errbuf.set(c.errbuf);
         *me.post.borrow_mut() = c.post;
         me.post_body.set(c.post_body);
-        if let Err(e) = ShimEasy::adapt(shim, easy.options_mut(), None) {
-            // SAFETY: made above by `Box::leak`, used nowhere else.
-            drop(unsafe { Box::from_raw(shim.as_ptr()) });
-            return Err(e);
-        }
-        *me.home.borrow_mut() = Home::Detached(easy);
         Ok(shim)
     }
 
@@ -594,19 +602,9 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
     let Ok(_entry) = easy.enter(EasyCall::Duphandle) else {
         return ptr::null_mut();
     };
-    let copy = easy.with_easy(|e| match e {
-        EasyRef::Easy(easy) => easy.try_clone(),
-        EasyRef::Frame(frame, id) => {
-            // SAFETY: as in `with_options`.
-            let copy = unsafe { frame.duplicate(id) };
-            copy.expect("an added handle is in its multi")
-        }
-    });
-    let Ok(Ok(copy)) = copy else {
-        return ptr::null_mut();
-    };
     // The copy's adapters are its own, made from its copy of the C-side
-    // settings (`adapt`).
+    // settings (`adapt`) before it reads its HSTS file and reader, so the
+    // application's reader is handed the copy, as C's is.
     let c = CSide {
         ccb: easy.ccb.get(),
         set: easy.set.get(),
@@ -618,10 +616,29 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
         tls: easy.tls.get().map(|c| c.get()),
         hsts: easy.hsts.get().map(|c| c.get()),
     };
-    let dup = match ShimEasy::boxed(copy, c) {
-        Ok(dup) => dup,
-        Err(OutOfMemory) => return ptr::null_mut(),
+    let Ok(dup) = ShimEasy::homeless(c) else {
+        return ptr::null_mut();
     };
+    let mut prepare = |o: &mut Options| ShimEasy::adapt(dup, o, None);
+    let copy = easy.with_easy(|e| match e {
+        EasyRef::Easy(easy) => easy.try_clone_with(&mut prepare),
+        EasyRef::Frame(frame, id) => {
+            // SAFETY: as in `with_options`.
+            let copy = unsafe { frame.duplicate(id, &mut prepare) };
+            copy.expect("an added handle is in its multi")
+        }
+    });
+    let copy = match copy {
+        Ok(Ok(copy)) => try_box(copy).ok(),
+        _ => None,
+    };
+    let Some(copy) = copy else {
+        // SAFETY: made by `homeless`, given no `Easy` and handed to no one.
+        drop(unsafe { Box::from_raw(dup.as_ptr()) });
+        return ptr::null_mut();
+    };
+    // SAFETY: just made, and reached only through this pointer.
+    *unsafe { dup.as_ref() }.home.borrow_mut() = Home::Detached(copy);
     // The copy posts a copy of the tree, its own (`Curl_mime_duppart`).
     if crate::mime::duplicate(easy, dup).is_err() {
         // SAFETY: just made, and handed to no one.

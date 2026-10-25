@@ -245,30 +245,23 @@ pub(crate) fn sync_hsts(
     easy: NonNull<ShimEasy>,
     c: &CHsts,
 ) -> Result<(), OutOfMemory> {
-    let wanted = (c.read.is_some(), c.write.is_some());
-    let had = (
-        options.http.hsts.read.is_some(),
-        options.http.hsts.write.is_some(),
-    );
-    if wanted == had {
+    let none = c.read.is_none() && c.write.is_none();
+    let Some(hsts) = (match options.http.hsts.made_mut() {
+        Some(made) => Some(made),
+        None if none => None,
+        None => Some(options.http.hsts.make_mut()?),
+    }) else {
         return Ok(());
-    }
-    let hsts = options.http.hsts.make_mut()?;
-    hsts.read = match wanted.0 {
-        true => Some(
-            hsts.read
-                .take()
-                .map_or_else(|| Handler::hsts_reader(Adapter(easy)), Ok)?,
-        ),
-        false => None,
     };
-    hsts.write = match wanted.1 {
-        true => Some(
-            hsts.write
-                .take()
-                .map_or_else(|| Handler::hsts_writer(Adapter(easy)), Ok)?,
-        ),
-        false => None,
+    // Made again for `easy`, never kept: a copy's options arrive holding
+    // the original's adapters.
+    hsts.read = match c.read {
+        Some(_) => Some(Handler::hsts_reader(Adapter(easy))?),
+        None => None,
+    };
+    hsts.write = match c.write {
+        Some(_) => Some(Handler::hsts_writer(Adapter(easy))?),
+        None => None,
     };
     Ok(())
 }

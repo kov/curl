@@ -407,8 +407,9 @@ exclude_re = [
     # Without a transfer no count of lifts is there: the one given is
     # already the default, and no handler is called to pause.
     'mime/read\.rs:.*: replace <impl Calls for NoCalls>::lifts -> Lifts with Default::default\(\)$',
-    # A pool section closes connections and never resolves a name.
-    'multi/cx\.rs:.*: replace <impl Net for CloseLater<._>>::resolve -> Result<Vec<IpAddr>, ResolveFailure> with Ok\(vec!\[\]\)$',
+    # A pool section closes connections and never resolves a name: it
+    # lends the network's resolver only to be a whole network.
+    'multi/cx\.rs:.*: replace <impl Net for CloseLater<._>>::with_resolver with \(\)$',
     # A transfer is in `Done` only inside a step, while its run is out of
     # its slot where nothing asks for its lease; the invariant check
     # asserts it never rests there.
@@ -569,4 +570,31 @@ exclude_re = [
     # so a stub context SPNEGO checks is never NTLM's, as in C's stub;
     # Kerberos contexts are not checked.
     'curl-gssapi/src/stub\.rs:.*: replace Ctx::is_ntlm -> bool with false$',
+    # The system's resolver answers as it starts, and the tests' `AtOnce`
+    # too: nothing ever asks either for an answer later, waits for one or
+    # cancels one, which `unreachable!` says.
+    'curl-core/src/conn/io\.rs:.*: replace <impl Resolver for (SystemResolver|AtOnce<F>)>::(answer|wait|cancel) .*$',
+    # No test fails a resolve through `AtOnce`, so what it says of a
+    # failure is never read.
+    'curl-core/src/conn/io\.rs:.*: replace <impl Resolver for AtOnce<F>>::explain .*$',
+    # The fake network's: a transfer told of an answer still held finds
+    # none when it asks, and waits on as before.
+    'curl-core/src/conn/io\.rs:.*: replace && with \|\| in <impl Resolver for FakeNet>::answered$',
+    # std's thread start fails only when the system refuses a thread,
+    # which no test can arrange.
+    'curl-core/src/conn/threaded\.rs:.*: replace -= with (\+=|/=) in ThreadedResolver::start_threads$',
+    # Joining a thread that has ended frees its handle: the thread has
+    # ended either way, and the handles left are joined as the resolver
+    # goes.
+    'curl-core/src/conn/threaded\.rs:.*: (replace ThreadedResolver::reap with \(\)|replace < with > in ThreadedResolver::reap)$',
+    # Reads the process's environment, which a test cannot set for itself
+    # alone; `DebugVars::from_given` holds the reading, and is tested.
+    'curl-core/src/conn/threaded\.rs:.*: replace DebugVars::from_env -> DebugVars with Default::default\(\)$',
+    # Only a socket watched after its REMOVE, which the panic beside it
+    # reports as the bug it is, meets the guard false.
+    'curl-core/src/multi/wait\.rs:.*: replace match guard wake_key == Some\(key\) with true in Multi<H>::poll_watched$',
+    # Decides only whether the tool's exit joins the resolver's threads; a
+    # thread left running ends with the process, and nothing can see it
+    # outlived the exit.
+    'curl-tool/src/operate\.rs:.*: replace quick_exit -> bool with (true|false)$',
 ]

@@ -1,5 +1,5 @@
 {
- "c-commit": "af01ea6963e393dd401df4279838bf7f9ada0df5",
+ "c-commit": "549501dcc73b088374609b81b8dacfa3efbe9976",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -27,10 +27,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2146,
-   "failed": 0,
-   "ok": 2057,
-   "ran": 2057,
+   "considered": 2181,
+   "failed": 1,
+   "ok": 2091,
+   "ran": 2092,
    "skipped": 89
   },
   "curl-version": [
@@ -213,8 +213,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-10-20T13:24:16Z",
-   "started": "2026-10-20T13:22:07Z"
+   "finished": "2026-10-25T03:38:09Z",
+   "started": "2026-10-25T03:36:01Z"
   },
   "protocols": [
    "dict",
@@ -5190,7 +5190,10 @@
     "result": "ok"
    },
    "1275": {
-    "result": "ok"
+    "failed-parts": [
+     "exit"
+    ],
+    "result": "failed"
    },
    "1276": {
     "result": "ok"
@@ -7373,6 +7376,18 @@
    "2095": {
     "result": "ok"
    },
+   "2096": {
+    "result": "ok"
+   },
+   "2097": {
+    "result": "ok"
+   },
+   "2098": {
+    "result": "ok"
+   },
+   "2099": {
+    "result": "ok"
+   },
    "21": {
     "result": "ok"
    },
@@ -7415,6 +7430,12 @@
    "2110": {
     "result": "ok"
    },
+   "2111": {
+    "result": "ok"
+   },
+   "2112": {
+    "result": "ok"
+   },
    "2113": {
     "result": "ok"
    },
@@ -7439,6 +7460,9 @@
     "result": "ok"
    },
    "212": {
+    "result": "ok"
+   },
+   "2120": {
     "result": "ok"
    },
    "213": {
@@ -8377,10 +8401,31 @@
    "3236": {
     "result": "ok"
    },
+   "3237": {
+    "result": "ok"
+   },
    "325": {
     "result": "ok"
    },
    "326": {
+    "result": "ok"
+   },
+   "3260": {
+    "result": "ok"
+   },
+   "3261": {
+    "result": "ok"
+   },
+   "3262": {
+    "result": "ok"
+   },
+   "3263": {
+    "result": "ok"
+   },
+   "3264": {
+    "result": "ok"
+   },
+   "3265": {
     "result": "ok"
    },
    "327": {
@@ -8392,7 +8437,52 @@
    "328": {
     "result": "ok"
    },
+   "3280": {
+    "result": "ok"
+   },
+   "3281": {
+    "result": "ok"
+   },
+   "3282": {
+    "result": "ok"
+   },
+   "3283": {
+    "result": "ok"
+   },
+   "3284": {
+    "result": "ok"
+   },
+   "3285": {
+    "result": "ok"
+   },
+   "3286": {
+    "result": "ok"
+   },
+   "3287": {
+    "result": "ok"
+   },
+   "3288": {
+    "result": "ok"
+   },
+   "3289": {
+    "result": "ok"
+   },
    "329": {
+    "result": "ok"
+   },
+   "3290": {
+    "result": "ok"
+   },
+   "3291": {
+    "result": "ok"
+   },
+   "3292": {
+    "result": "ok"
+   },
+   "3293": {
+    "result": "ok"
+   },
+   "3294": {
     "result": "ok"
    },
    "33": {
@@ -8425,7 +8515,25 @@
    "331": {
     "result": "ok"
    },
+   "3310": {
+    "result": "ok"
+   },
+   "3311": {
+    "result": "ok"
+   },
+   "3312": {
+    "result": "ok"
+   },
+   "3313": {
+    "result": "ok"
+   },
    "332": {
+    "result": "ok"
+   },
+   "3320": {
+    "result": "ok"
+   },
+   "3321": {
     "result": "ok"
    },
    "333": {
@@ -10872,7 +10980,7 @@
    "-n",
    "-j8"
   ],
-  "runtests-exit-status": 0,
+  "runtests-exit-status": 1,
   "system": [
    "* curl 8.23.1-DEV (Linux) ",
    "* libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",

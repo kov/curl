@@ -275,3 +275,27 @@ witness: curl-core proto::http::tests::https_trace::a_tunnel_says_the_protocol_i
 --- new
         Some(chosen) if false => {
             let name = chosen.name();
+
+=== the last progress pass reaches no connection
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls_hands::the_last_progress_pass_reaches_the_connection_s_objects
+--- old
+    pub(crate) fn tls_native(&self) -> Option<TlsNative> {
+        tls_native(self.lease()?)
+    }
+--- new
+    pub(crate) fn tls_native(&self) -> Option<TlsNative> {
+        match self {
+            TransferState::Done(_) => None,
+            state => tls_native(state.lease()?),
+        }
+    }
+
+=== a connection's objects stay lent once it is given back
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls_hands::nothing_of_the_connection_is_lent_once_it_is_given_back
+--- old
+    // more (`Curl_detach_connection`).
+    cx.lent = None;
+--- new
+    // more (`Curl_detach_connection`).

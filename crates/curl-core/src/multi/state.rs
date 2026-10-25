@@ -306,13 +306,11 @@ impl TransferState {
     }
 
     /// The TLS library's objects of the origin's connection the transfer
-    /// holds, while it holds one: not once its request is over, as C's
-    /// `multi_done` lets the connection go.
+    /// holds, while it holds one: through its request's end, its last
+    /// progress pass among it, until `release` lets the connection go, as
+    /// C's `multi_done` detaches it only then.
     pub(crate) fn tls_native(&self) -> Option<TlsNative> {
-        match self {
-            TransferState::Done(_) => None,
-            state => tls_native(state.lease()?),
-        }
+        tls_native(self.lease()?)
     }
 
     /// What the origin's TLS session waits for on the socket, if it
@@ -521,6 +519,9 @@ fn release<H: Host>(
     stream_closed: bool,
     origin: Option<&Origin>,
 ) {
+    // The connection's objects go with its lease: the step lends them no
+    // more (`Curl_detach_connection`).
+    cx.lent = None;
     let finish = Finish {
         premature,
         forbid_reuse: cx.easy().options().limits.reuse.forbid,

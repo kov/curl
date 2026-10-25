@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::conn::io::Events;
-use crate::handler::TlsContextHandler;
+use crate::handler::{ProgressHandler, ProgressNow, ProgressVerdict, TlsContextHandler};
 use crate::libraries::{Libraries, Library, SharedLibraries};
 use crate::multi::TransferId;
 use crate::tls::TlsNative;
@@ -231,4 +231,77 @@ fn a_handshake_paused_for_the_application_waits_for_its_word() {
         Ok(())
     );
     assert_eq!(backend.log().handshakes, 1);
+}
+
+/// A progress handler that notes what the transfer reaches each call.
+struct Watching(Notes);
+
+impl ProgressHandler for Watching {
+    fn progress(&self, cx: &mut TransferCx<'_>, _: ProgressNow) -> ProgressVerdict {
+        self.0.note("progress", cx.tls_native(cx.me()));
+        ProgressVerdict::Continue
+    }
+}
+
+/// The last progress pass, made as the request ends, still reaches the
+/// connection's objects, as C's `multi_done` makes it before it detaches
+/// the connection: a handler asking for them there gets them, not none.
+#[test]
+fn the_last_progress_pass_reaches_the_connection_s_objects() {
+    let (_, libraries) = library(FakeTls::new().unwrap());
+    let [welcome, response] = [WELCOME.to_vec(), fake::records(OK).unwrap()];
+    let talk = Conversation::replies(&[&welcome, &response], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let notes = Notes::default();
+    let e = https(&libraries, |o| {
+        o.progress =
+            crate::options::Progress::Handler(Handler::progress(Watching(notes.clone())).unwrap());
+    });
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let notes = notes.all();
+    let last = notes.last().expect("progress was called");
+    assert!(last.1.is_some(), "{notes:?}");
+    assert_eq!(
+        m.tls_native(id),
+        None,
+        "a transfer over holds no connection"
+    );
+}
+
+/// A debug handler that notes what the transfer reaches as the
+/// connection's fate is traced.
+struct Fated(Notes);
+
+impl crate::handler::DebugHandler for Fated {
+    fn debug(&self, cx: &mut TransferCx<'_>, _: crate::handler::DebugKind, bytes: &[u8]) {
+        if bytes.starts_with(b"Connection #0 to host") {
+            self.0.note("fate", cx.tls_native(cx.me()));
+        }
+    }
+}
+
+/// Once the connection is given back, the transfer reaches none of its
+/// objects: what traces its fate is lent nothing of a connection that
+/// may be gone (`Curl_detach_connection` before `Curl_cpool_return`).
+#[test]
+fn nothing_of_the_connection_is_lent_once_it_is_given_back() {
+    let (_, libraries) = library(FakeTls::new().unwrap());
+    let [welcome, response] = [WELCOME.to_vec(), fake::records(OK).unwrap()];
+    let talk = Conversation::replies(&[&welcome, &response], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let notes = Notes::default();
+    let e = https(&libraries, |o| {
+        o.output.verbose = true;
+        o.callbacks.debug = Some(Handler::debug(Fated(notes.clone())).unwrap());
+    });
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    assert_eq!(notes.all(), [("fate", None)]);
 }

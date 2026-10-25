@@ -767,7 +767,7 @@ Status: **to do**. SCOPE stage 5's first half, with the pieces HTTP-only applica
 a distribution's libcurl. It ends when our library, through `LD_LIBRARY_PATH`, stands in for
 the system's under the HTTP-only programs installed here.
 
-47. **The corpus of real command lines,** as the paragraph above describes. **In progress.**
+47. **The corpus of real command lines,** as the paragraph above describes. **Done.**
     - **a. The collection.** **Done.** The sources of Ubuntu 24.04's packages (through `apt-get
       source`) that depend on, recommend or suggest the `curl` tool or build with it, and of
       every small `golang-`, `node-`, `python-` and `ruby-` package, which keep their upstream
@@ -794,7 +794,8 @@ the system's under the HTTP-only programs installed here.
       same; the 9 left wait on later steps: 7 use options not built yet (`--http2`, step 52;
       FTP's `-Q`, `-l` and `--ftp-create-dirs`, stage 6), and 2 are `-V`'s lists of protocols
       and features, which grow as steps 48–52 and the later stages add them.
-    - **e. Closing the step.** **To do.** The sweep and cargo-mutants on what it changed.
+    - **e. Closing the step.** **Done.** The sweep and cargo-mutants on what it changed: no
+      mutant missed but one, `Linked::open_key_log`, which a tool test now catches.
 48. **The threaded resolver,** `AsynchDNS` as distributions build it, beside c-ares. **In
     progress.**
     - **a. The resolver seam.** **Done.** The `Resolver` trait ENGINE.md lays out (`start`,
@@ -803,7 +804,8 @@ the system's under the HTTP-only programs installed here.
       later, and the cache, the shortcuts and the negative answers stay where they are. The
       system's resolver and the fake network answer through it, the fake one at once or later
       as a test asks.
-    - **b. The threaded resolver.** **To do.** C's (`lib/vdns/asyn-thrdd.c`, `thrdpool.c`,
+    - **b. The threaded resolver.** **In progress:** all but `CURL_DBG_RESOLV_FAIL_IPV6`, the
+      blocking resolve's `await` lines and the thread queue's trace (ENGINE.md §4.8). C's (`lib/vdns/asyn-thrdd.c`, `thrdpool.c`,
       `thrdqueue.c`): a thread pool per multi (`CURLMOPT_RESOLVE_THREADS_MAX`, threads made as
       needed and let go when idle), each address family a query of its own, an answer
       delivered by waking the multi, the resolve's own timer and timeout, the DNS traces, and

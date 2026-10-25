@@ -70,7 +70,10 @@ fn new_multi(line: &CommandLine<'_>) -> Result<Multi, OutOfMemory> {
     };
     let env = Env {
         clock: try_box(SystemClock::new())?,
-        net: try_box(SystemNet)?,
+        net: try_box(
+            SystemNet::for_multi(curl_core::conn::threaded::Threads::MULTI)
+                .map_err(|_| OutOfMemory)?,
+        )?,
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker,
     };

@@ -192,7 +192,7 @@ pub(crate) fn get_over(
 ) -> Got {
     let env = Env {
         clock: try_box(SystemClock::new()).unwrap(),
-        net: try_box(Stutter(SystemNet, plan)).unwrap(),
+        net: try_box(Stutter(SystemNet::default(), plan)).unwrap(),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };

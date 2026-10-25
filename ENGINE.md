@@ -1856,6 +1856,27 @@ socket binds to, by name, and, until step 48b makes it wait as the setup's own r
 (C's second DNS filter), a SOCKS proxy's destination resolved here. The system's resolver asks `getaddrinfo` and answers at once, as C's
 synchronous resolver and the c-ares-like build do; the threaded resolver (step 48b) answers
 later, from a thread pool, waking the multi.
+
+The threaded resolver (`conn/threaded.rs`, `lib/vdns/asyn-thrdd.c` with `thrdpool.c` and
+`thrdqueue.c`) is the build's when curl-core's `threaded-resolver` feature is on, which the shim
+and the tool forward: one build has one resolver, as C's configure makes it. `SystemNet` holds
+it, one per multi as C's queue is: a multi made for an easy handle's transfer keeps at most 2
+threads, idle ones let go after 10 ms; any other at most 20
+(`CURLMOPT_RESOLVE_THREADS_MAX`), after 2 seconds; none are kept when idle. A resolve of both
+families is two queries, IPv6's queued first, each a thread's `getaddrinfo`; its answer is
+both's addresses, IPv6's first, or, with none, a failure that is negative (kept as "the name
+does not exist") only if every query said so. A worker that finishes a query wakes the multi
+through the resolver's own eventfd (C's `wakeup_internal`), which the multi polls, and tells
+the socket callback of, as its own socket while any transfer is alive; the multi drains it and
+takes the answers before running its transfers. A thread that cannot be started leaves its
+query queued, and the next start or pass tries again. Dropping the resolver lets its threads
+go: each ends as its query does, and the multi's cleanup waits for them unless
+`CURLMOPT_QUICK_EXIT` is set.
+
+Built so far (step 48b): the pool, its queries and answers, the eventfd it wakes, and
+`SystemNet` holding it in a build with the feature. The multi's side, polling and announcing the
+eventfd, is not built yet: until it is, such a build's transfer learns of its answer only when
+it is next run.
 `DnsCache` is in the multi's `Caches`, or a share's (section 4.6.1): entries by name, in
 any case, and port, each a `TryRc<Answer>` that the connect machine using it shares, recording
 the family asked (`dns_queries`): an answer for one family is no answer for both. A setup

@@ -481,7 +481,13 @@ impl Easy {
                 };
                 let env = Env {
                     clock: try_box(SystemClock::new()).map_err(oom)?,
-                    net: try_box(SystemNet).map_err(oom)?,
+                    // A multi whose resolver cannot be set up is not made
+                    // (`Curl_multi_handle`'s `goto error`).
+                    net: try_box(
+                        SystemNet::for_multi(crate::conn::threaded::Threads::EASY)
+                            .map_err(|_| ErrorKind::OutOfMemory)?,
+                    )
+                    .map_err(oom)?,
                     arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
                     waker,
                 };

@@ -12,6 +12,10 @@ publish.workspace = true
 debug-hooks = []
 # Test doubles for other crates' tests: the manual clock.
 test-util = []
+# The threaded resolver as the system's (C's `--enable-threaded-resolver`):
+# a pool of threads per multi, in place of the resolver that answers at
+# once.
+threaded-resolver = []
 
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }

@@ -94,6 +94,14 @@ These are not covered by this build:
 
 Each of these needs its own build configuration to be measured.
 
+The threaded resolver has one: a second C oracle in `build/c-threaded`, the reference build's
+configuration with `ENABLE_ARES` off and `ENABLE_THREADED_RESOLVER` on, as distributions build
+libcurl. The rewrite's resolver is a build choice, a cargo feature, as C's configure makes it:
+the suite's measurement build keeps the resolver checked against the c-ares reference above,
+and the library that stands in for a distribution's (milestone 4's last step) uses the threaded
+resolver, checked against `build/c-threaded`. Binding c-ares itself comes later, with the
+`--dns-*` options (milestone 7).
+
 The machine also needs the following for the test servers, which the build does not check:
 
 - httpd with mod_ssl and httpd-devel (for `apxs`);

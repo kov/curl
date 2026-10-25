@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
-use super::io::{Family, Resolve, ResolveFailure, ResolveId, Resolver, Waiter, Waker};
+use super::io::{Family, Queued, Resolve, ResolveFailure, ResolveId, Resolver, Waiter, Waker};
 
 /// How many threads a pool keeps at most, and how long an idle one
 /// waits for work before it ends.
@@ -345,7 +345,11 @@ impl Resolver for ThreadedResolver {
             self.resolving.pop();
             return Err(ResolveFailure::OutOfMemory);
         }
-        Ok(Resolve::Pending(id))
+        Ok(Resolve::Pending(Queued {
+            id,
+            v6: families.contains(&Family::V6),
+            v4: families.contains(&Family::V4),
+        }))
     }
 
     fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
@@ -474,12 +478,16 @@ mod tests {
     #[test]
     fn a_name_resolves_in_a_thread() {
         let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
-        let Ok(Resolve::Pending(id)) = r.start(b"localhost", Family::V4, Waiter::NONE) else {
+        let Ok(Resolve::Pending(Queued { id, .. })) =
+            r.start(b"localhost", Family::V4, Waiter::NONE)
+        else {
             panic!("pending");
         };
         let answer = r.wait(id).unwrap();
         assert!(answer.contains(&IpAddr::from([127, 0, 0, 1])), "{answer:?}");
-        let Ok(Resolve::Pending(id)) = r.start(b"localhost", Family::V4, Waiter::NONE) else {
+        let Ok(Resolve::Pending(Queued { id, .. })) =
+            r.start(b"localhost", Family::V4, Waiter::NONE)
+        else {
             panic!("pending");
         };
         // Told once, then taken.
@@ -502,7 +510,7 @@ mod tests {
             Family::Any,
             Waiter::NONE,
         ) {
-            Ok(Resolve::Pending(id)) => id,
+            Ok(Resolve::Pending(Queued { id, .. })) => id,
             other => panic!("{other:?}"),
         };
         let ids = [
@@ -551,11 +559,15 @@ mod tests {
     #[test]
     fn a_cancelled_resolve_is_never_told() {
         let mut r = ThreadedResolver::new(Threads::EASY).unwrap();
-        let Ok(Resolve::Pending(gone)) = r.start(b"localhost", Family::V4, Waiter::NONE) else {
+        let Ok(Resolve::Pending(Queued { id: gone, .. })) =
+            r.start(b"localhost", Family::V4, Waiter::NONE)
+        else {
             panic!("pending");
         };
         r.cancel(gone);
-        let Ok(Resolve::Pending(kept)) = r.start(b"localhost", Family::V4, Waiter::NONE) else {
+        let Ok(Resolve::Pending(Queued { id: kept, .. })) =
+            r.start(b"localhost", Family::V4, Waiter::NONE)
+        else {
             panic!("pending");
         };
         assert!(r.wait(kept).is_ok());
@@ -573,7 +585,7 @@ mod tests {
         .unwrap();
         let ids: Vec<ResolveId> = (0..6)
             .map(|_| match r.start(b"localhost", Family::V4, Waiter::NONE) {
-                Ok(Resolve::Pending(id)) => id,
+                Ok(Resolve::Pending(Queued { id, .. })) => id,
                 other => panic!("{other:?}"),
             })
             .collect();
@@ -598,7 +610,7 @@ mod tests {
         pool.set_max_threads(NonZeroU32::MIN);
         let ids: Vec<ResolveId> = (0..4)
             .map(|_| match r.start(b"localhost", Family::V4, Waiter::NONE) {
-                Ok(Resolve::Pending(id)) => id,
+                Ok(Resolve::Pending(Queued { id, .. })) => id,
                 other => panic!("{other:?}"),
             })
             .collect();

@@ -24,8 +24,8 @@ use super::chain::SetupPoint;
 use super::dns::DnsCache;
 use super::dns::{Answer, Lookup, Names};
 use super::io::{
-    Closer, Connect, Events, Family, Net, Remote, Resolve, ResolveFailure, ResolveId, Sock, Socket,
-    SocketOption, SocketPoll, UnixPeer, Waiter,
+    Closer, Connect, Events, Family, Net, Queued, Remote, Resolve, ResolveFailure, ResolveId, Sock,
+    Socket, SocketOption, SocketPoll, UnixPeer, Waiter,
 };
 use super::layer::{LayerAnswer, LayerCx, LayerQuery};
 use super::shutdown::ConnSettings;
@@ -80,8 +80,8 @@ pub(crate) struct Dialed {
     /// The addresses raced to reach the proxy, raced again on a redial.
     answer: Addresses,
     /// The destination's addresses, for a SOCKS proxy that is not to
-    /// resolve its name, or why there are none.
-    target: Option<Result<(TryArc<Answer>, Found), Unresolved>>,
+    /// resolve its name, and where they came from; or that there are none.
+    target: Option<Result<(TryArc<Answer>, Came), ()>>,
     /// A SOCKS5 proxy on the way authenticated the user.
     socks5_authenticated: bool,
     /// The handshakes made over it so far.
@@ -137,7 +137,7 @@ impl Dialed {
     }
 
     /// The addresses of the destination, resolved here.
-    pub(crate) fn target(&self) -> Option<&Result<(TryArc<Answer>, Found), Unresolved>> {
+    pub(crate) fn target(&self) -> Option<&Result<(TryArc<Answer>, Came), ()>> {
         self.target.as_ref()
     }
 
@@ -324,12 +324,32 @@ pub(crate) enum Found {
     Resolved(Asked),
 }
 
+/// Where a lookup's answer came from, all a setup keeps of its `Found`
+/// (a byte, where a `Found` would grow the setup's slot).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Came {
+    Cached,
+    Stale,
+    Resolved,
+}
+
+impl From<Found> for Came {
+    fn from(found: Found) -> Came {
+        match found {
+            Found::Cached => Came::Cached,
+            Found::Stale(_) => Came::Stale,
+            Found::Resolved(_) => Came::Resolved,
+        }
+    }
+}
+
 /// What answered a name the cache did not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Asked {
     /// The name is an address, or `localhost`: no resolver was asked.
     Shortcut,
-    Resolver,
+    /// A resolver, which queued its queries as `.0` says, if it did.
+    Resolver(Option<Queued>),
 }
 
 /// What a setup's attempts connect to: the addresses a name resolved to,
@@ -492,8 +512,9 @@ pub(crate) enum ConnectError {
 /// Why a name has no address to try.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Unresolved {
-    /// The resolver said so now.
-    Resolver(ResolveFailure),
+    /// The resolver said so now, having queued its queries as `.1`
+    /// says, if it did.
+    Resolver(ResolveFailure, Option<Queued>),
     /// It said so before, and the cache kept its word.
     Negative,
     /// None of the addresses found, as `.0` says they were, is of the
@@ -1059,7 +1080,7 @@ impl ConnectMachine {
         &self,
         cx: &mut dyn ConnCx,
         setup: Setup,
-    ) -> Result<Option<Result<(TryArc<Answer>, Found), Unresolved>>, ConnectError> {
+    ) -> Result<Option<Result<(TryArc<Answer>, Came), ()>>, ConnectError> {
         let Some(leg) = self.route.socks() else {
             return Ok(None);
         };
@@ -1067,8 +1088,9 @@ impl ConnectMachine {
             return Ok(None);
         }
         match resolve(leg.to, leg.version.ip(self.route.ip), cx, setup) {
-            Ok(found) => Ok(Some(Ok(found))),
-            Err(ConnectError::Unresolved(why)) => Ok(Some(Err(why))),
+            Ok((answer, found)) => Ok(Some(Ok((answer, Came::from(found))))),
+            // The SOCKS handshake says the name failed, whatever the why.
+            Err(ConnectError::Unresolved(_)) => Ok(Some(Err(()))),
             Err(e) => Err(e),
         }
     }
@@ -1388,6 +1410,9 @@ pub(super) struct Pending {
     /// Whether the cache had a stale answer.
     found: fn(Asked) -> Found,
     keep_negative: bool,
+    /// Which families went as a query of their own, IPv6 and IPv4: in
+    /// the padding, where a `Queued` would grow the setup's slot.
+    queried: (bool, bool),
     held: Held,
 }
 
@@ -1410,6 +1435,16 @@ impl Pending {
     fn done(self) -> (Family, fn(Asked) -> Found, bool) {
         std::mem::forget(self.held);
         (self.family, self.found, self.keep_negative)
+    }
+
+    /// How it was queued, if as queries of their own.
+    fn queued(&self) -> Option<Queued> {
+        let (v6, v4) = self.queried;
+        (v6 || v4).then_some(Queued {
+            id: self.id,
+            v6,
+            v4,
+        })
     }
 }
 
@@ -1451,23 +1486,28 @@ pub(super) fn lookup_start(
     let mut started = None;
     cx.net()
         .with_resolver(&mut |r| started = Some(r.start(name, family, waiter)));
-    let pending = |id| Pending {
-        id,
+    let pending = |q: Queued| Pending {
+        id: q.id,
+        queried: (q.v6, q.v4),
         family,
         found,
         keep_negative,
         held: Held,
     };
     match started.expect("the network lends its resolver") {
-        Ok(Resolve::Pending(id)) => Ok(Looked::Pending(pending(id))),
+        Ok(Resolve::Pending(queued)) => Ok(Looked::Pending(pending(queued))),
         Ok(Resolve::Answer(addrs)) => {
-            let (answer, found) = settle(Ok(addrs), (name, port), pending(ResolveId::FIRST), cx)?;
+            let at_once = pending(Queued::once(ResolveId::FIRST));
+            let (answer, found) = settle(Ok(addrs), (name, port), at_once, cx)?;
             Ok(Looked::Found(answer, found))
         }
-        Err(why) => Err(
-            settle(Err(why), (name, port), pending(ResolveId::FIRST), cx)
-                .expect_err("a failure settles as one"),
-        ),
+        Err(why) => Err(settle(
+            Err(why),
+            (name, port),
+            pending(Queued::once(ResolveId::FIRST)),
+            cx,
+        )
+        .expect_err("a failure settles as one")),
     }
 }
 
@@ -1482,6 +1522,7 @@ pub(super) fn settle(
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
     let now = cx.now();
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
+    let queued = pending.queued();
     let (family, found, keep_negative) = pending.done();
     let answer = match answer {
         Ok(addrs) => Answer::of(name, addrs, family).map_err(oom)?,
@@ -1492,15 +1533,15 @@ pub(super) fn settle(
             cx.names()
                 .section(|c| c.put(none, port, now, false))
                 .map_err(oom)?;
-            return Err(ConnectError::Unresolved(Unresolved::Resolver(why)));
+            return Err(ConnectError::Unresolved(Unresolved::Resolver(why, queued)));
         }
-        Err(why) => return Err(ConnectError::Unresolved(Unresolved::Resolver(why))),
+        Err(why) => return Err(ConnectError::Unresolved(Unresolved::Resolver(why, queued))),
     };
     let answer = TryArc::try_new(answer).map_err(oom)?;
     cx.names()
         .section(|c| c.put(answer.clone(), port, now, false))
         .map_err(oom)?;
-    Ok((answer, found(Asked::Resolver)))
+    Ok((answer, found(Asked::Resolver(queued))))
 }
 
 /// The addresses `host`, as the URL names it, stands for without asking

@@ -12,7 +12,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
 use crate::conn::ConnId;
 use crate::conn::chain::{Chain, Head, SetupPoint};
-use crate::conn::io::{Closer, Events, Remote, ResolveFailure, SocketKey};
+use crate::conn::io::{Closer, Events, Queued, Remote, ResolveFailure, SocketKey};
 use crate::conn::layer::{LayerAnswer, LayerCx, LayerQuery};
 use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
@@ -2023,7 +2023,9 @@ fn connect_once<H: Host>(
             if !c.route.destination().is_unix() {
                 trace_lookup(cx, &c.route, Some(found));
                 if let Found::Stale(asked) | Found::Resolved(asked) = found {
-                    trace_resolved(cx, &c.route, Ok(asked));
+                    let answer = c.lease.answer();
+                    let addrs = answer.as_ref().map_or(&[][..], |a| a.addrs());
+                    trace_resolved(cx, &c.route, Ok(asked), addrs);
                 }
             }
             cx.mark(Timer::NameLookup);
@@ -2133,7 +2135,7 @@ fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
 /// The name `route` connects to first, missing from the cache, is not
 /// resolved for IPv6 alone without IPv6 (`can_resolve_dns_queries`).
 fn no_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, proxy: bool) -> ErrorKind {
-    trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver)));
+    trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver(None))));
     let peer = route.destination();
     let (host, port) = (Bytes(peer.name()), peer.port());
     let queries = queries(peer, route.ip, cx.rest.ipv6_works);
@@ -2197,16 +2199,40 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, found: Option<Foun
         Component::Dns,
         format_args!("cache lookup {name}:{port} queries={queries} -> {code} {not}found"),
     );
+    if let Some(
+        Found::Stale(Asked::Resolver(Some(q))) | Found::Resolved(Asked::Resolver(Some(q))),
+    ) = found
+    {
+        // The threaded resolver's queries, IPv6's queued first
+        // (`async_thrdd_query`).
+        let xfer = cx.easy().report().transfer_number().map_or(0, |n| n.get());
+        let id = q.id.get();
+        for (queued, query) in [(q.v6, "AAAA"), (q.v4, "A")] {
+            if queued {
+                trace::of(
+                    cx,
+                    Component::Dns,
+                    format_args!("queueing query [{xfer}/{id}] {query} {name}:{port}"),
+                );
+            }
+        }
+    }
     if found == Some(Found::Cached) {
         trace::info(cx, format_args!("Hostname {name} was found in DNS cache"));
     }
 }
 
 /// The name `route` connects to first was resolved, `asked` what
-/// answered, its answer kept; or the resolver failed. A shortcut answers
-/// at once; the resolver, as the reference build's c-ares does, answers
-/// later (`CURLE_AGAIN`), its polls not traced.
-fn trace_resolved<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, asked: Result<Asked, ()>) {
+/// answered, to `addrs`, its answer kept; or the resolver failed, having
+/// queued what the error says. A shortcut answers at once; the resolver,
+/// as the reference build's c-ares does, answers later (`CURLE_AGAIN`),
+/// its polls not traced.
+fn trace_resolved<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    route: &Tcp,
+    asked: Result<Asked, Option<Queued>>,
+    addrs: &[IpAddr],
+) {
     let peer = route.destination();
     let (name, port, queries) = (
         Bytes(peer.name()),
@@ -2215,7 +2241,7 @@ fn trace_resolved<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, asked: Result<As
     );
     let code = match asked {
         Ok(Asked::Shortcut) => 0,
-        Ok(Asked::Resolver) | Err(()) => crate::error::AGAIN_NUMBER,
+        Ok(Asked::Resolver(_)) | Err(_) => crate::error::AGAIN_NUMBER,
     };
     let dns = Component::Dns;
     trace::of(
@@ -2223,10 +2249,24 @@ fn trace_resolved<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, asked: Result<As
         dns,
         format_args!("[{queries}] hostip_resolv started -> {code}"),
     );
+    // The threaded resolver's answers, each query's addresses of its
+    // family, IPv4's taken first (`async_thrdd_check_done`).
+    if let Ok(Asked::Resolver(Some(q))) | Err(Some(q)) = asked {
+        for (queued, v6) in [(q.v4, false), (q.v6, true)] {
+            if queued {
+                let (addrs, c) = (Family(addrs, v6), if v6 { '6' } else { '4' });
+                trace::of(
+                    cx,
+                    dns,
+                    format_args!("Host {name}:{port} resolved IPv{c}: {addrs}"),
+                );
+            }
+        }
+    }
     if asked.is_err() {
         return;
     }
-    if asked == Ok(Asked::Resolver) {
+    if let Ok(Asked::Resolver(_)) = asked {
         trace::of(
             cx,
             dns,
@@ -2416,14 +2456,14 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
                     return kind;
                 }
                 Unresolved::Negative => trace_lookup(cx, route, None),
-                Unresolved::Resolver(_) => {
-                    trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver)));
-                    trace_resolved(cx, route, Err(()));
+                Unresolved::Resolver(_, queued) => {
+                    trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver(queued))));
+                    trace_resolved(cx, route, Err(queued), &[]);
                 }
                 Unresolved::NoAddress(found) => {
                     trace_lookup(cx, route, Some(found));
                     if let Found::Stale(asked) | Found::Resolved(asked) = found {
-                        trace_resolved(cx, route, Ok(asked));
+                        trace_resolved(cx, route, Ok(asked), &[]);
                     }
                 }
             }
@@ -2437,8 +2477,8 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
             // The reference build's resolver, c-ares, gives its reason
             // (`ares_strerror`), then fails again without it.
             let reason = match why {
-                Unresolved::Resolver(ResolveFailure::NotFound) => Some("Domain name not found"),
-                Unresolved::Resolver(ResolveFailure::NoData) => {
+                Unresolved::Resolver(ResolveFailure::NotFound, _) => Some("Domain name not found"),
+                Unresolved::Resolver(ResolveFailure::NoData, _) => {
                     Some("DNS server returned answer with no data")
                 }
                 _ => None,
@@ -2456,7 +2496,8 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
             };
             // What the resolver said no to is kept as said
             // (`Curl_dnscache_add_negative`).
-            if let Unresolved::Resolver(ResolveFailure::NotFound | ResolveFailure::NoData) = why {
+            if let Unresolved::Resolver(ResolveFailure::NotFound | ResolveFailure::NoData, _) = why
+            {
                 let queries = queries(first, route.ip, cx.rest.ipv6_works);
                 trace::of(
                     cx,

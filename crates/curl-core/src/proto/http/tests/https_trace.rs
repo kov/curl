@@ -467,3 +467,24 @@ fn a_tunnel_through_an_https_proxy_keeps_the_alpn_question() {
         "{got:#?}"
     );
 }
+
+/// A proxy whose TLS agrees to the protocol offered names the tunnel's
+/// protocol by it (`http_proxy_cf_connect`): "CONNECT: 'http/1.1'
+/// negotiated" in place of "no ALPN negotiated".
+#[test]
+fn a_tunnel_says_the_protocol_its_proxy_negotiated() {
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let talk = https_proxy_tunnel(true);
+    let got = through_https_proxy(&libraries, "https://origin.example/", &talk, |_| {});
+    let connect: Vec<&str> = got
+        .iter()
+        .map(String::as_str)
+        .filter(|l| l.starts_with("CONNECT:"))
+        .collect();
+    assert_eq!(connect, ["CONNECT: 'http/1.1' negotiated"], "{got:?}");
+}

@@ -265,3 +265,13 @@ witness: curl-core proto::http::tests::the_queue_time_is_read_from_the_clock_as_
     cx.mark_now(Timer::PostQueue);
 --- new
     cx.mark(Timer::PostQueue);
+
+=== a tunnel says no ALPN was negotiated whatever its proxy's TLS chose
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::https_trace::a_tunnel_says_the_protocol_its_proxy_negotiated
+--- old
+        Some(chosen) => {
+            let name = chosen.name();
+--- new
+        Some(chosen) if false => {
+            let name = chosen.name();

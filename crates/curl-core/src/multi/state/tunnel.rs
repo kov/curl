@@ -86,8 +86,15 @@ pub(super) fn dialed<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tra
     } else {
         Component::HappyEyeballs
     };
-    super::query_alpn(cx, &c.lease, below);
-    trace::info(cx, format_args!("CONNECT: no ALPN negotiated"));
+    // What the proxy's TLS negotiated names the tunnel's protocol; with
+    // none, the proxy type does.
+    match super::query_alpn(cx, &c.lease, below) {
+        Some(chosen) => {
+            let name = chosen.name();
+            trace::info(cx, format_args!("CONNECT: '{name}' negotiated"));
+        }
+        None => trace::info(cx, format_args!("CONNECT: no ALPN negotiated")),
+    }
     match start(&mut c, cx) {
         Ok(tunnel) => {
             c.handshake = Some(tunnel);

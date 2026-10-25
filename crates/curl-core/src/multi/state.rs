@@ -1239,7 +1239,11 @@ pub(super) fn tls_native(lease: &ConnLease) -> Option<TlsNative> {
 /// agreed by ALPN (`Curl_conn_cf_get_alpn_negotiated`): the filter says it
 /// is asked, and the TLS session, if one answers, what it answers; the
 /// others answer none, or pass the question on, saying nothing.
-pub(crate) fn query_alpn<H: Host>(cx: &mut StepCx<'_, H>, lease: &ConnLease, top: Component) {
+pub(crate) fn query_alpn<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    lease: &ConnLease,
+    top: Component,
+) -> Option<crate::tls::Chosen> {
     trace::of(cx, top, format_args!("query ALPN"));
     // An HTTPS proxy's TLS answers only when asked first: a tunnel's
     // filter above it keeps the question (`cf_h1_proxy_query`).
@@ -1249,7 +1253,9 @@ pub(crate) fn query_alpn<H: Host>(cx: &mut StepCx<'_, H>, lease: &ConnLease, top
         let name = chosen.map_or("(nil)", crate::tls::Chosen::name);
         let line = format_args!("query ALPN: returning '{name}'");
         trace::of(cx, filter, line);
+        return chosen;
     }
+    None
 }
 
 /// Replay a transfer's held output, from outside its step.

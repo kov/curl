@@ -501,6 +501,14 @@ impl Request {
                     rx.consume(all);
                     *lease.get().rx_mut() = rx;
                     fed?;
+                    // What the stream came to is read before what the
+                    // reading left to send goes, as C's `cf_h2_recv` asks
+                    // the stream before its egress: a reset the client
+                    // sends then does not undo a response already whole.
+                    let closed = self.stream_recv(cx, lease)?;
+                    if let StreamRecv::Closed = closed {
+                        self.h2_ended(cx)?;
+                    }
                     self.h2_egress(cx, lease)?;
                 }
                 Err(e) => {

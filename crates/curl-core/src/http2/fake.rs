@@ -94,6 +94,8 @@ pub struct FakeSession {
     /// Input not yet a whole frame.
     input: Vec<u8>,
     goaway: bool,
+    /// Streams the client reset, told closed as their RST_STREAM goes.
+    resets: Vec<(i32, u32)>,
 }
 
 impl FakeSession {
@@ -360,6 +362,14 @@ impl Session for FakeSession {
         body: &mut dyn FnMut(StreamId, &mut [u8]) -> BodyRead,
         events: &mut dyn FnMut(Event<'_>) -> Heard,
     ) -> Result<(), FrameError> {
+        // A stream the client reset closes as its RST_STREAM goes, as
+        // nghttp2 tells it.
+        for (id, error) in std::mem::take(&mut self.resets) {
+            events(Event::Closed {
+                stream: StreamId(id),
+                error,
+            });
+        }
         while let Some(frame) = self.queued.pop_front() {
             if !out(&frame) {
                 return Ok(());
@@ -428,8 +438,11 @@ impl Session for FakeSession {
         let id = stream.0;
         self.queued
             .push_back(format!("R {id} {error}\n").into_bytes());
-        if let Some(s) = self.stream(id) {
+        if let Some(s) = self.stream(id)
+            && !s.closed
+        {
             s.closed = true;
+            self.resets.push((id, error));
         }
         Ok(())
     }

@@ -192,6 +192,16 @@ witness: curl-core proto::http::tests::h2::a_stream_s_failure_keeps_the_connecti
 --- new
             && !finish.premature
 
+=== the client's reset undoes a response already whole
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_refusal_mid_upload_is_the_response
+--- old
+                    let closed = self.stream_recv(cx, lease)?;
+                    if let StreamRecv::Closed = closed {
+                        self.h2_ended(cx)?;
+                    }
+--- new
+
 === a stream reads past its receive limit
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_receive_limit_paces_a_stream

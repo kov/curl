@@ -455,6 +455,24 @@ fn a_stream_s_failure_keeps_the_connection() {
     }
 }
 
+/// A refusal that ends the stream while the body still goes is the
+/// response: the body stops by a reset, which does not fail the
+/// response already whole (`on_stream_frame`'s END_STREAM, test 07_43).
+#[test]
+fn a_refusal_mid_upload_is_the_response() {
+    let reply: &[u8] = b"S\nH 1 1\n:status: 413\n\n";
+    let (ran, _) = h2_get(&[reply], "/up", |o| {
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap(),
+        );
+        o.method = Method::Post;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    assert_eq!(ran.easy.report().response_code(), Some(413));
+    let sent = String::from_utf8(ran.request.clone()).unwrap();
+    assert!(sent.contains("R 1 5\n"), "the body stopped by a reset");
+}
+
 /// Under a receive limit, a stream's reads take no more than the limit
 /// allows, and the transfer waits for it (`sendrecv_dl`'s
 /// `rate_limited`, test 02_24).

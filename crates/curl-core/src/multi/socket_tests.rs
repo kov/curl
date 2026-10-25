@@ -413,3 +413,144 @@ fn a_notification_assigns_as_the_multi_does() {
         .unwrap();
     assert_eq!(ev.assigned_in_notify, [Err(UnknownSocket)]);
 }
+
+/// A resolver lent with a wake of its own, as the threaded resolver's,
+/// answering through the fake network's.
+struct Woken<'r>(&'r mut dyn crate::conn::io::Resolver, TryArc<Waker>);
+
+impl crate::conn::io::Resolver for Woken<'_> {
+    fn start(
+        &mut self,
+        name: &[u8],
+        family: crate::conn::io::Family,
+        waiter: crate::conn::io::Waiter,
+    ) -> Result<crate::conn::io::Resolve, crate::conn::io::ResolveFailure> {
+        self.0.start(name, family, waiter)
+    }
+
+    fn answer(
+        &mut self,
+        id: crate::conn::io::ResolveId,
+    ) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
+        self.0.answer(id)
+    }
+
+    fn wait(
+        &mut self,
+        id: crate::conn::io::ResolveId,
+    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
+        self.0.wait(id)
+    }
+
+    fn cancel(&mut self, id: crate::conn::io::ResolveId) {
+        self.0.cancel(id);
+    }
+
+    fn answered(
+        &mut self,
+        each: &mut dyn FnMut(crate::conn::io::Waiter, crate::conn::io::ResolveId),
+    ) {
+        self.0.answered(each);
+    }
+
+    fn waker(&self) -> Option<TryArc<Waker>> {
+        Some(self.1.clone())
+    }
+}
+
+/// The fake network, its resolver woken by `.1`.
+struct Waking(FakeNet, TryArc<Waker>);
+
+impl Net for Waking {
+    fn poll(
+        &mut self,
+        sockets: &mut [SocketPoll<'_>],
+        fds: &mut [PollFd<'_>],
+        timeout: Duration,
+    ) -> std::io::Result<u32> {
+        self.0.poll(sockets, fds, timeout)
+    }
+
+    fn open(
+        &mut self,
+        addr: &crate::conn::io::Remote,
+    ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
+        self.0.open(addr)
+    }
+
+    fn close(&mut self, socket: crate::conn::io::Sock) {
+        self.0.close(socket);
+    }
+
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn crate::conn::io::Resolver)) {
+        let waker = self.1.clone();
+        self.0
+            .with_resolver(&mut |r| f(&mut Woken(r, waker.clone())));
+    }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        self.0.link_local_scope()
+    }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.0.interface_address(name, v6, remote_scope, scope_id)
+    }
+}
+
+/// With a resolver that answers later, the multi listens on its wake
+/// while a transfer is alive, as its own (C's admin handle and
+/// `multi_assess_wakeup`): told to the socket callback as the first
+/// transfer comes alive, before that transfer's sockets, and removed as
+/// the last is done; `multi_wait` counts it among its descriptors.
+#[test]
+fn the_resolver_s_wake_is_listened_on_while_a_transfer_is_alive() {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], 4));
+    let net =
+        FakeNet::new(clock.clone()).with_peer(at, Peer::AcceptsAfter(Duration::from_millis(5)));
+    let waker = TryArc::try_new(Waker::new().unwrap()).unwrap();
+    let wake = std::os::fd::AsRawFd::as_raw_fd(&waker.fd());
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(Waking(net, waker.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+    let mut ev = Sockets::default();
+    let mut keys = Vec::new();
+    m.sockets(&mut ev, |k, _| keys.push(k.get()));
+    assert_eq!(keys, [], "no transfer alive");
+    let id = m
+        .add(Box::new(easy("tcp://127.0.0.1:4/")), (), &mut ev)
+        .unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(
+        ev.calls,
+        [
+            (u32::MAX, wake, SocketWhat::In, None, 0),
+            (id.index(), 1000, Out, None, 0)
+        ]
+    );
+    let mut keys = Vec::new();
+    m.sockets(&mut ev, |k, _| keys.push(k.get()));
+    assert_eq!(keys, [wake, 1000], "the resolver's first");
+    clock.advance(Duration::from_millis(5));
+    m.socket_action(SocketEvent::Socket(SocketKey::new(1000)), &mut ev)
+        .unwrap();
+    assert_eq!(m.counts().running, 0);
+    assert!(
+        ev.calls.contains(&(u32::MAX, wake, Remove, Some(1), 0)),
+        "{:?}",
+        ev.calls
+    );
+    let mut keys = Vec::new();
+    m.sockets(&mut ev, |k, _| keys.push(k.get()));
+    assert_eq!(keys, [], "none alive");
+}

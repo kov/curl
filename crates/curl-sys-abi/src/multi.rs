@@ -1108,8 +1108,8 @@ pub unsafe extern "C" fn curl_multi_fdset(
     let multi = unsafe { multi(m) };
     let mut highest = -1;
     // SAFETY: as above.
-    unsafe { multi.core_mut() }.sockets(&mut ShimEvents::new(multi), |socket, events| {
-        let fd = socket.key().get();
+    unsafe { multi.core_mut() }.sockets(&mut ShimEvents::new(multi), |key, events| {
+        let fd = key.get();
         // One a set cannot hold is left out (`FDSET_SOCK`).
         if usize::try_from(fd).is_ok_and(|fd| fd < libc::FD_SETSIZE) {
             for (wanted, set) in [(Events::IN, read_fd_set), (Events::OUT, write_fd_set)] {
@@ -1155,11 +1155,11 @@ pub unsafe extern "C" fn curl_multi_waitfds(
     };
     let mut need: c_uint = 0;
     // SAFETY: as above.
-    unsafe { multi.core_mut() }.sockets(&mut ShimEvents::new(multi), |socket, events| {
+    unsafe { multi.core_mut() }.sockets(&mut ShimEvents::new(multi), |key, events| {
         // A pollset reads and writes, nothing else.
         let wanted = wait_revents(events);
         if wanted != 0 {
-            need = need.saturating_add(wfds.add(socket.key().get(), wanted));
+            need = need.saturating_add(wfds.add(key.get(), wanted));
         }
     });
     // SAFETY: as the caller guarantees.

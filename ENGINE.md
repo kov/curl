@@ -1873,10 +1873,15 @@ query queued, and the next start or pass tries again. Dropping the resolver lets
 go: each ends as its query does, and the multi's cleanup waits for them unless
 `CURLMOPT_QUICK_EXIT` is set.
 
-Built so far (step 48b): the pool, its queries and answers, the eventfd it wakes, and
-`SystemNet` holding it in a build with the feature. The multi's side, polling and announcing the
-eventfd, is not built yet: until it is, such a build's transfer learns of its answer only when
-it is next run.
+While a transfer is alive (from its first run to its message read, or its removal: C's
+`xfers_really_alive`), the multi listens on the resolver's eventfd, if its resolver lends one:
+the socket callback is told of it, as the multi's own socket, as the first transfer comes alive,
+before that transfer's sockets, and told to remove it as the last is done; `wait` and the fd
+set poll it, and `wait` counts it among the descriptors ready (`multi_assess_wakeup`).
+
+Built so far (step 48b): the pool, its queries and answers, the eventfd it wakes, `SystemNet`
+holding it in a build with the feature, and the multi listening on that eventfd. Not built yet:
+`CURLMOPT_RESOLVE_THREADS_MAX` and `CURLMOPT_QUICK_EXIT`, and the resolver's DNS traces.
 `DnsCache` is in the multi's `Caches`, or a share's (section 4.6.1): entries by name, in
 any case, and port, each a `TryRc<Answer>` that the connect machine using it shares, recording
 the family asked (`dns_queries`): an answer for one family is no answer for both. A setup

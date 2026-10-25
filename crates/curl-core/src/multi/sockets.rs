@@ -18,6 +18,9 @@ use crate::conn::shutdown::ClosingId;
 pub(crate) enum SocketOwner {
     Transfer(TransferId),
     Conn(ClosingId),
+    /// The resolver's wake, which the multi listens on while a transfer
+    /// is alive (C's admin handle and `wakeup_internal`).
+    Resolver,
 }
 
 /// Whom the socket callback is told a socket is for: a transfer, or the

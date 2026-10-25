@@ -196,3 +196,19 @@ witness: curl-core conn::threaded::tests::threads_are_kept_to_the_most_and_end_w
                 if wanted <= state.idle || state.threads >= state.threads_max {
 --- new
                 if wanted <= state.idle {
+
+=== the multi listens on the resolver's wake as the first transfer comes alive
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::socket_tests::the_resolver_s_wake_is_listened_on_while_a_transfer_is_alive
+--- old
+            1 => self.listen_to_resolver(true, events),
+--- new
+            1 => Ok(()),
+
+=== the multi stops listening on the resolver's wake as the last transfer is done
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::socket_tests::the_resolver_s_wake_is_listened_on_while_a_transfer_is_alive
+--- old
+        if self.alive.count == 0 {
+--- new
+        if self.alive.count == u32::MAX {

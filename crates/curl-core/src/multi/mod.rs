@@ -19,6 +19,7 @@ pub(crate) mod timers;
 mod wait;
 
 use std::num::NonZeroU32;
+use std::os::fd::AsRawFd as _;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc};
@@ -277,6 +278,9 @@ pub struct Multi<H: Host = NoHost> {
     /// its transfers run on, kept by the root they reach it through.
     ipv6_works: bool,
     waker: Option<TryArc<Waker>>,
+    /// The transfers alive, and the resolver's wake listened on while
+    /// any is.
+    alive: cx::Alive,
     counts: Tally,
     life: Life,
     /// A transfer was told the library is a debug build.
@@ -294,6 +298,8 @@ impl<H: Host> Multi<H> {
         // As C's multi is made, after its waker (`Curl_multi_handle`).
         let mut net = env.net;
         let ipv6_works = net.probe_ipv6()?;
+        let mut alive = cx::Alive::default();
+        net.with_resolver(&mut |r| alive.waker = r.waker());
         Ok(Multi {
             slots,
             dirty: RowSet::default(),
@@ -311,6 +317,7 @@ impl<H: Host> Multi<H> {
             net,
             ipv6_works,
             waker: env.waker,
+            alive,
             counts: Tally::default(),
             life: Life::Alive,
             #[cfg(feature = "debug-hooks")]
@@ -482,6 +489,19 @@ impl<H: Host> Multi<H> {
             .take()
             .expect("no transfer is out while the multi is called");
         self.counts.removed(run.state.is_completed());
+        // Gone while alive (`multi_done`'s count, `curl_multi_remove_handle`).
+        if run.alive {
+            let mut tell = Telling {
+                alive: &mut self.alive,
+                slots: &mut self.slots,
+                limits: &mut self.limits,
+                notify: &mut self.notify,
+                counts: &self.counts,
+                sockets: &mut self.sockets,
+                life: &mut self.life,
+            };
+            tell.went(ev);
+        }
         self.abandon(id, run, ev);
         // Whatever its state, it is traced as completed.
         let slot = self.slots.get_mut(id).expect("still in the multi");
@@ -565,6 +585,7 @@ impl<H: Host> Multi<H> {
             return;
         }
         let tell = Telling {
+            alive: &mut self.alive,
             slots: &mut self.slots,
             limits: &mut self.limits,
             notify: &mut self.notify,
@@ -621,6 +642,8 @@ impl<H: Host> Multi<H> {
                     match user {
                         SocketOwner::Transfer(id) => self.dirty.insert(id.index()),
                         SocketOwner::Conn(_) => self.shutdowns.mark_dirty(),
+                        // Its answers are taken as the call starts.
+                        SocketOwner::Resolver => {}
                     }
                 }
             }
@@ -822,10 +845,15 @@ impl<H: Host> Multi<H> {
     /// Every socket the transfers wait on, and for what, in id order
     /// (`curl_multi_fdset`, `curl_multi_waitfds`), each transfer's pollset
     /// traced first.
-    pub fn sockets(&mut self, ev: &mut dyn MultiEvents<H>, f: impl FnMut(&dyn Socket, Events)) {
+    pub fn sockets(&mut self, ev: &mut dyn MultiEvents<H>, mut f: impl FnMut(SocketKey, Events)) {
         let now = self.clock.now();
         self.trace_pollsets(now, ev);
-        pollsets(&self.slots, &self.shutdowns, f);
+        // The resolver's wake first, as C's admin handle is the first in
+        // the set it walks.
+        if let Some(waker) = self.alive.waker.as_deref().filter(|_| self.alive.count > 0) {
+            f(SocketKey::new(waker.fd().as_raw_fd()), Events::IN);
+        }
+        pollsets(&self.slots, &self.shutdowns, |s, events| f(s.key(), events));
     }
 
     /// The multi but for the runs out of their slots, for a step or a
@@ -833,6 +861,7 @@ impl<H: Host> Multi<H> {
     fn rest<'a>(&'a mut self, now: Instant, ev: &'a mut dyn MultiEvents<H>) -> EngineRest<'a, H> {
         EngineRest {
             tell: Telling {
+                alive: &mut self.alive,
                 slots: &mut self.slots,
                 limits: &mut self.limits,
                 notify: &mut self.notify,
@@ -898,6 +927,7 @@ impl<H: Host> Multi<H> {
             SocketFor::Transfer(id),
             ev,
             &mut Telling {
+                alive: &mut self.alive,
                 slots: &mut self.slots,
                 limits: &mut self.limits,
                 notify: &mut self.notify,
@@ -1346,6 +1376,7 @@ impl<H: Host> Multi<H> {
         let max_total = self.limits.max_total;
         {
             let tell = Telling {
+                alive: &mut self.alive,
                 slots: &mut self.slots,
                 limits: &mut self.limits,
                 notify: &mut self.notify,
@@ -1363,6 +1394,7 @@ impl<H: Host> Multi<H> {
             self.caches.pool.close_idle(&mut exits, now);
         }
         let mut tell = Telling {
+            alive: &mut self.alive,
             slots: &mut self.slots,
             limits: &mut self.limits,
             notify: &mut self.notify,

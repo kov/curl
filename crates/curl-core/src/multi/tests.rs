@@ -4274,3 +4274,17 @@ fn without_ipv6_only_ipv4_is_resolved() {
     assert_eq!(result, Ok(()));
     assert_eq!(trying(&trace), "  Trying [::1]:5...\n");
 }
+
+/// `CURL_DBG_MAX_TOTAL_CONNECTIONS` is read as C reads it: its leading
+/// digits up to 32 bits, nothing for none or more.
+#[test]
+fn the_debug_limit_on_connections_is_read_as_c_reads_it() {
+    use super::debug_max_total;
+    assert_eq!(debug_max_total(b"1"), Some(1));
+    assert_eq!(debug_max_total(b"25x"), Some(25));
+    assert_eq!(debug_max_total(b"0"), Some(0));
+    assert_eq!(debug_max_total(b"4294967295"), Some(u32::MAX));
+    assert_eq!(debug_max_total(b"4294967296"), None);
+    assert_eq!(debug_max_total(b"x1"), None);
+    assert_eq!(debug_max_total(b""), None);
+}

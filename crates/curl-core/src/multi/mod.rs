@@ -300,6 +300,21 @@ pub struct Multi<H: Host = NoHost> {
     linger: Option<crate::conn::layer::Linger>,
 }
 
+/// The limit `CURL_DBG_MAX_TOTAL_CONNECTIONS` gives: its leading digits,
+/// none past 32 bits or without any (`curlx_str_number` to
+/// `UINT32_MAX`); 0 is no limit.
+#[cfg_attr(not(feature = "debug-hooks"), allow(dead_code))]
+fn debug_max_total(given: &[u8]) -> Option<u32> {
+    let digits = given.iter().take_while(|b| b.is_ascii_digit());
+    let mut n: u32 = 0;
+    let mut any = false;
+    for &d in digits {
+        n = n.checked_mul(10)?.checked_add(u32::from(d - b'0'))?;
+        any = true;
+    }
+    any.then_some(n)
+}
+
 impl<H: Host> Multi<H> {
     pub fn new(env: Env) -> Result<Self, OutOfMemory> {
         let slots = Arena::new(env.arena)?;
@@ -309,6 +324,19 @@ impl<H: Host> Multi<H> {
         let ipv6_works = net.probe_ipv6()?;
         let fail_ipv6 =
             cfg!(feature = "debug-hooks") && curl_os::env::is_set(b"CURL_DBG_RESOLV_FAIL_IPV6");
+        // The debug build's limit on connections, every multi's as it is
+        // made (`CURL_DBG_MAX_TOTAL_CONNECTIONS`).
+        #[cfg_attr(not(feature = "debug-hooks"), allow(unused_mut))]
+        let mut limits = ConnLimits::default();
+        #[cfg(feature = "debug-hooks")]
+        {
+            let mut buf = [0u8; 24];
+            if let Some(given) = curl_os::env::var_into(b"CURL_DBG_MAX_TOTAL_CONNECTIONS", &mut buf)
+                && let Some(max) = debug_max_total(given)
+            {
+                limits.max_total = NonZeroU32::new(max);
+            }
+        }
         let mut alive = cx::Alive::default();
         net.with_resolver(&mut |r| {
             alive.waker = r.waker();
@@ -324,7 +352,7 @@ impl<H: Host> Multi<H> {
             caches,
             tls: None,
             shutdowns: ShutdownSet::default(),
-            limits: ConnLimits::default(),
+            limits,
             pending_after: None,
             sockets: SocketTable::new(),
             clock: env.clock,

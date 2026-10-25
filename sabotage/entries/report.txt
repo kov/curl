@@ -299,3 +299,11 @@ witness: curl-core proto::http::tests::tls_hands::nothing_of_the_connection_is_l
     cx.lent = None;
 --- new
     // more (`Curl_detach_connection`).
+
+=== the debug limit on connections takes a value past 32 bits
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::the_debug_limit_on_connections_is_read_as_c_reads_it
+--- old
+        n = n.checked_mul(10)?.checked_add(u32::from(d - b'0'))?;
+--- new
+        n = n.wrapping_mul(10).wrapping_add(u32::from(d - b'0'));

@@ -157,6 +157,7 @@ fn boolean_options_take_any_nonzero_value() {
             o.http.keep_sending_on_error
         }),
         (ffi::CURLOPT_AUTOREFERER, |o| o.http.auto_referer),
+        (ffi::CURLOPT_PIPEWAIT, |o| o.http.pipewait),
         (ffi::CURLOPT_UNRESTRICTED_AUTH, |o| o.http.unrestricted_auth),
         (ffi::CURLOPT_FILETIME, |o| o.filetime),
         (ffi::CURLOPT_CRLF, |o| o.crlf),

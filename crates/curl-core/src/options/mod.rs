@@ -1502,6 +1502,11 @@ pub struct Http {
     /// A followed redirect sends the URL it came from as its referer
     /// (`CURLOPT_AUTOREFERER`).
     pub auto_referer: bool,
+    /// A transfer waits for a connection being set up to the same host,
+    /// to multiplex over it, rather than make another
+    /// (`CURLOPT_PIPEWAIT`). Without HTTP/2, nothing multiplexes, and it
+    /// changes nothing, as in C built without it.
+    pub pipewait: bool,
     /// What the application said for the first origin goes to any a
     /// redirect leads to (`CURLOPT_UNRESTRICTED_AUTH`).
     pub unrestricted_auth: bool,
@@ -2039,6 +2044,7 @@ impl Http {
             max_redirects: self.max_redirects,
             post_redirect: self.post_redirect,
             auto_referer: self.auto_referer,
+            pipewait: self.pipewait,
             unrestricted_auth: self.unrestricted_auth,
             auth: self.auth,
             cookies: self.cookies.try_clone(Cookies::try_clone)?,

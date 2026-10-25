@@ -706,6 +706,7 @@ fn apply(
             };
         }
         (ffi::CURLOPT_AUTOREFERER, Long(n)) => options.http.auto_referer = n != 0,
+        (ffi::CURLOPT_PIPEWAIT, Long(n)) => options.http.pipewait = n != 0,
         (ffi::CURLOPT_UNRESTRICTED_AUTH, Long(n)) => options.http.unrestricted_auth = n != 0,
         (ffi::CURLOPT_HTTPAUTH, Long(n)) => {
             // The mask as C reads it, an `unsigned long`.

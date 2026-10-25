@@ -53,3 +53,10 @@ witness: curl-sys-abi handle_tests::multi_handles_and_old_socket_calls
         None => core.perform(&mut events).map(|_| ()),
 --- new
         None => Ok(()),
+
+=== CURLOPT_PIPEWAIT is not built in
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::boolean_options_take_any_nonzero_value
+--- old
+        (ffi::CURLOPT_PIPEWAIT, Long(n)) => options.http.pipewait = n != 0,
+--- new

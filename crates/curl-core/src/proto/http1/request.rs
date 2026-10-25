@@ -512,6 +512,10 @@ pub(crate) struct RequestHead<'o> {
     /// The request goes to a proxy that sends it on: it asks to keep the
     /// connection to the proxy (`origin_is_proxy`).
     pub(crate) forwarded: Option<Forwarding<'o>>,
+    /// The request asks to go on in HTTP/2 over clear text, with these
+    /// settings in base64url (`Curl_http2_request_upgrade`): `Upgrade:
+    /// h2c`, `HTTP2-Settings:`, and both named in `Connection:`.
+    pub(crate) upgrade: Option<&'o [u8]>,
     pub(crate) headers: &'o UserHeaders,
 }
 
@@ -742,7 +746,7 @@ fn write_h1(
                 }
             }
             Part::Custom => custom(head, gate, out)?,
-            Part::Connection => connection(head.headers, head.te, out)?,
+            Part::Connection => connection(head.headers, head.te, head.upgrade.is_some(), out)?,
             Part::End => out.put(b"\r\n")?,
             // What no option asks for yet.
             Part::ProxyConnection => {
@@ -800,7 +804,12 @@ fn write_h1(
                     out.line(&[b"Alt-Used: ", used])?;
                 }
             }
-            Part::Upgrade => {}
+            Part::Upgrade => {
+                if let Some(settings) = head.upgrade {
+                    out.line(&[b"Upgrade: h2c"])?;
+                    out.line(&[b"HTTP2-Settings: ", settings])?;
+                }
+            }
         }
     }
     Ok(())
@@ -880,7 +889,12 @@ fn custom(
 /// The application's Connection headers (`http_add_connection_hd`): the
 /// first with a value as the library's, its value trimmed, then the rest as
 /// given.
-fn connection(headers: &UserHeaders, te: bool, out: &mut Out<'_>) -> Result<(), ErrorKind> {
+fn connection(
+    headers: &UserHeaders,
+    te: bool,
+    upgrade: bool,
+    out: &mut Out<'_>,
+) -> Result<(), ErrorKind> {
     let mut given = headers
         .lines
         .items()
@@ -888,19 +902,22 @@ fn connection(headers: &UserHeaders, te: bool, out: &mut Out<'_>) -> Result<(), 
         .filter(|h| h.replaces(b"Connection") && h.value().is_some_and(|v| !v.is_empty()));
     // The application's first, then the library's tokens after it
     // (`http_add_connection_hd`).
-    match (given.next(), te) {
-        (Some(first), true) => {
-            out.line(&[
-                b"Connection: ",
-                first.value().expect("filtered on it"),
-                b", TE",
-            ])?;
-        }
-        (Some(first), false) => {
-            out.line(&[b"Connection: ", first.value().expect("filtered on it")])?;
-        }
-        (None, true) => out.line(&[b"Connection: TE"])?,
-        (None, false) => {}
+    let first = given.next().map(|h| h.value().expect("filtered on it"));
+    let tokens = [
+        first,
+        te.then_some(&b"TE"[..]),
+        upgrade.then_some(&b"Upgrade"[..]),
+        upgrade.then_some(&b"HTTP2-Settings"[..]),
+    ];
+    let mut parts: [&[u8]; 8] = [b""; 8];
+    let mut n = 0;
+    for token in tokens.into_iter().flatten() {
+        parts[n] = if n == 0 { b"Connection: " } else { b", " };
+        parts[n + 1] = token;
+        n += 2;
+    }
+    if n > 0 {
+        out.line(&parts[..n])?;
     }
     for h in given {
         out.line(&[&h.line])?;
@@ -989,6 +1006,7 @@ mod tests {
             cookie: None,
             alt_used: None,
             forwarded: None,
+            upgrade: None,
             headers: &headers,
         };
         let here = peer(b"127.0.0.1");
@@ -1062,6 +1080,7 @@ mod tests {
                 cookie: None,
                 alt_used: None,
                 forwarded: None,
+                upgrade: None,
 
                 headers: &headers,
             };
@@ -1116,6 +1135,7 @@ mod tests {
                 cookie: None,
                 alt_used: None,
                 forwarded: None,
+                upgrade: None,
 
                 headers: &headers,
             };
@@ -1280,6 +1300,46 @@ mod tests {
         );
     }
 
+    /// An upgrade to HTTP/2 names its headers in `Connection:`, after the
+    /// application's first value and `TE` (`http_add_connection_hd`).
+    #[test]
+    fn an_upgrade_is_named_in_connection_after_te() {
+        let headers = UserHeaders::new([&b"Connection: close"[..]]).unwrap();
+        let head = RequestHead {
+            method: b"GET",
+            target: b"/",
+            version: SentIn::Http11,
+            host: b"h",
+            port: None,
+            user_agent: None,
+            referer: None,
+            proxy_authorization: None,
+            authorization: None,
+            signed: None,
+            range: None,
+            content: None,
+            chunked: false,
+            probe: false,
+            accept_encoding: None,
+            te: true,
+            conditional: None,
+            cookie: None,
+            alt_used: None,
+            forwarded: None,
+            upgrade: Some(b"AAMA"),
+            headers: &headers,
+        };
+        let here = peer(b"h");
+        let gate = CredentialGate::new(&here, &here, false);
+        let mut out = Vec::new();
+        render_h1(&head, &gate, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "GET / HTTP/1.1\r\nHost: h\r\nAccept: */*\r\nTE: gzip\r\nUpgrade: h2c\r\nHTTP2-Settings: AAMA\r\n\
+             Connection: close, TE, Upgrade, HTTP2-Settings\r\n\r\n"
+        );
+    }
+
     /// A request a proxy forwards sends the proxy's own lines after the
     /// application's for the origin (test 1528); a Proxy-Connection in
     /// either replaces the library's.
@@ -1308,6 +1368,7 @@ mod tests {
             cookie: None,
             alt_used: None,
             forwarded,
+            upgrade: None,
             headers: &headers,
         };
         let here = peer(b"origin");
@@ -1364,6 +1425,7 @@ mod tests {
             cookie: None,
             alt_used: None,
             forwarded: None,
+            upgrade: None,
             headers: &headers,
         };
         let first = peer(b"127.0.0.1");
@@ -1416,6 +1478,7 @@ mod tests {
                 cookie: None,
                 alt_used: None,
                 forwarded: None,
+                upgrade: None,
 
                 headers: &headers,
             };

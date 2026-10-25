@@ -66,9 +66,9 @@ witness: curl-core proto::http1::request::tests::a_head_is_at_most_a_mebibyte_le
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http1::request::tests::connection_headers_come_last
 --- old
-        out.line(&[b"Connection: ", first.value().expect("filtered on it")])?;
+    let first = given.next().map(|h| h.value().expect("filtered on it"));
 --- new
-        out.line(&[&first.line])?;
+    let first = given.next().map(|h| &h.line[11..]);
 
 === a token matches as a prefix of a longer word
 file: crates/curl-core/src/proto/http1/fields.rs

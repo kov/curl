@@ -405,6 +405,21 @@ impl HeadParser {
         self.line_out(transfer_bytes, sending, conn)
     }
 
+    /// Read a new head, in `sent`, as a request upgraded on a 101 is
+    /// answered again (`Curl_http2_upgrade`'s `header` and `headerline`):
+    /// what the 101's head said goes, what was counted stays.
+    pub(crate) fn restart(&mut self, sent: HttpVersion) {
+        self.exchange.sent = sent;
+        self.phase = Phase::Head;
+        self.line.clear();
+        self.given = false;
+        self.lines = 0;
+        self.status = None;
+        self.meta = Meta::default();
+        self.framing = None;
+        self.refused = false;
+    }
+
     fn push(&mut self, bytes: &[u8]) -> Result<(), HeadError> {
         if self.line.len() + bytes.len() > MAX_LINE {
             return Err(HeadError::LineTooLong);

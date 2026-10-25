@@ -140,9 +140,9 @@ witness: curl-core proto::http::tests::coding::te_asks_for_gzip_when_it_can_be_u
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http::tests::coding::te_asks_for_gzip_when_it_can_be_undone
 --- old
-        (None, true) => out.line(&[b"Connection: TE"])?,
+        te.then_some(&b"TE"[..]),
 --- new
-        (None, true) => {}
+        None,
 
 === te is asked for with no gzip to undo
 file: crates/curl-core/src/proto/http.rs

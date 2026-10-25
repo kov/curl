@@ -1,4 +1,5 @@
-//! Base64 as C's `curlx_base64_decode` reads it.
+//! Base64 as C's `curlx_base64_decode` reads it, and base64url as
+//! `curlx_base64url_encode` writes it.
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
@@ -44,9 +45,42 @@ pub(crate) fn decode(text: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
     Ok(Some(out))
 }
 
+/// `bytes` in base64url without padding, as `curlx_base64url_encode`
+/// writes it.
+pub(crate) fn encode_url(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+    const URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = Vec::new();
+    out.try_reserve_exact((bytes.len() * 4).div_ceil(3))
+        .map_err(|_| OutOfMemory)?;
+    for group in bytes.chunks(3) {
+        let n = group.iter().fold(0u32, |n, &b| n << 8 | u32::from(b)) << (8 * (3 - group.len()));
+        for i in 0..=group.len() {
+            out.try_push(URL[(n >> (18 - 6 * i) & 0x3f) as usize])?;
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// unit1302's base64url cases.
+    #[test]
+    fn base64url_is_written_as_curlx_writes_it() {
+        for (bytes, want) in [
+            (&b"\xff\x01\xfe\x02"[..], &b"_wH-Ag"[..]),
+            (b"\xff\xff\xff\xff", b"_____w"),
+            (b"\x00\xff\x00\xff", b"AP8A_w"),
+            (b"\x00\x00\x00\x00", b"AAAAAA"),
+            (b"\x01", b"AQ"),
+            (b"\x0f", b"Dw"),
+            (b"Man", b"TWFu"),
+            (b"", b""),
+        ] {
+            assert_eq!(encode_url(bytes).unwrap(), want, "{bytes:?}");
+        }
+    }
 
     #[test]
     fn base64_is_decoded_as_curlx_decodes_it() {

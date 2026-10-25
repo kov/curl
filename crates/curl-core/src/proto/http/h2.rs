@@ -156,6 +156,86 @@ impl Request {
         Ok(h2)
     }
 
+    /// The settings a request asks to go on in HTTP/2 with, over a
+    /// connection in clear text, where the application wants HTTP/2 by
+    /// an upgrade and a library speaks it (`H1_HD_UPGRADE`,
+    /// `populate_binsettings`).
+    pub(super) fn upgrade_settings<H: Host>(
+        &self,
+        cx: &mut StepCx<'_, H>,
+        lease: &ConnLease,
+        h2: bool,
+    ) -> Result<Option<Vec<u8>>, ErrorKind> {
+        let wanted = cx.easy().options().http.version;
+        let library = cx.easy().libraries().h2;
+        let Some(library) =
+            library.filter(|_| !h2 && wanted == Wanted::Http2 && !lease.conn().over_tls())
+        else {
+            return Ok(None);
+        };
+        let mut payload = [0u8; 80];
+        match library.settings_payload(&settings(), &mut payload) {
+            Ok(n) if n > 0 => copied(&payload[..n]).map(Some),
+            _ => Err(trace::fail(
+                cx,
+                ErrorKind::FailedInit,
+                format_args!("nghttp2 unexpectedly failed on pack_settings_payload"),
+            )),
+        }
+    }
+
+    /// A 101 took up the request's upgrade: the connection speaks HTTP/2
+    /// from here, the request's response coming on stream 1, the next
+    /// head a new one (`Curl_http2_upgrade`).
+    pub(super) fn upgraded<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+    ) -> Result<(), ErrorKind> {
+        trace::info(cx, format_args!("Received 101, Switching to HTTP/2"));
+        let settings = self.upgrade.take().expect("an upgrade asked for");
+        let library = cx.easy().libraries().h2.expect("asked with a library");
+        let head = self.method == Method::Head;
+        let (conn, stream) = H2Conn::open(library, &[], Some((&settings, head)))?;
+        lease
+            .get()
+            .put_h2(try_box(conn).map_err(|_| ErrorKind::OutOfMemory)?);
+        // The request went whole in HTTP/1.1.
+        self.h2 = Some(H2Stream {
+            id: stream,
+            body_eos: true,
+            ..H2Stream::default()
+        });
+        self.version = SentIn::Http2;
+        self.head
+            .as_mut()
+            .expect("made at DO")
+            .restart(response::HttpVersion::Http2);
+        self.stage = Stage::Head;
+        self.interim = false;
+        Ok(())
+    }
+
+    /// Feed the session what came behind a 101, which is HTTP/2 already.
+    pub(super) fn upgraded_input<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        rest: &[u8],
+    ) -> Result<(), ErrorKind> {
+        if rest.is_empty() {
+            return Ok(());
+        }
+        let n = rest.len();
+        trace::info(
+            cx,
+            format_args!(
+                "Copied HTTP/2 data in stream buffer to connection buffer after upgrade: len={n}"
+            ),
+        );
+        self.h2_feed(cx, lease, rest)
+    }
+
     /// Send what of the request is in `out[sent..end]`, the last of it if
     /// `eos` (`cf_h2_send`): the head opens the stream with its fields,
     /// the body goes into the stream's buffer as far as there is room.

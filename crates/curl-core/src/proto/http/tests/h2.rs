@@ -39,9 +39,9 @@ const RESPONSE: &[u8] = b"S\nH 1 0\n:status: 200\ncontent-length: 5\nx-a: b\n\nD
 /// the write handler; the stream's end ends the transfer.
 #[test]
 fn a_get_goes_as_fields_and_its_response_comes_as_lines() {
-    let (ran, talk) = h2_get(&[RESPONSE], "/x?y", |_| {});
+    let (ran, _) = h2_get(&[RESPONSE], "/x?y", |_| {});
     assert_eq!(ran.result, Ok(()));
-    let sent = String::from_utf8(talk.received()).unwrap();
+    let sent = String::from_utf8(ran.request.clone()).unwrap();
     assert_eq!(
         sent,
         format!(
@@ -98,14 +98,14 @@ fn a_get_goes_as_fields_and_its_response_comes_as_lines() {
 #[test]
 fn a_body_goes_as_data_ending_the_stream() {
     let reply: &[u8] = b"S\nH 1 1\n:status: 201\n\n";
-    let (ran, talk) = h2_get(&[reply], "/up", |o| {
+    let (ran, _) = h2_get(&[reply], "/up", |o| {
         o.upload = crate::options::UploadSource::Bytes(
             curl_alloc::TryArc::try_new(b"abc".to_vec()).unwrap(),
         );
         o.method = Method::Post;
     });
     assert_eq!(ran.result, Ok(()));
-    let sent = String::from_utf8(talk.received()).unwrap();
+    let sent = String::from_utf8(ran.request.clone()).unwrap();
     assert!(
         sent.contains(":method: POST\n") && sent.ends_with("\n\nD 1 3 1\nabc"),
         "{sent}"
@@ -239,7 +239,7 @@ fn alpn_offers_h2_where_a_library_speaks_it() {
 #[test]
 fn an_asked_chunked_body_goes_plain() {
     let reply: &[u8] = b"S\nH 1 1\n:status: 200\n\n";
-    let (ran, talk) = h2_get(&[reply], "/up", |o| {
+    let (ran, _) = h2_get(&[reply], "/up", |o| {
         o.upload = crate::options::UploadSource::Bytes(
             curl_alloc::TryArc::try_new(b"abc".to_vec()).unwrap(),
         );
@@ -248,7 +248,7 @@ fn an_asked_chunked_body_goes_plain() {
             crate::options::UserHeaders::new([&b"Transfer-Encoding: chunked"[..]]).unwrap();
     });
     assert_eq!(ran.result, Ok(()));
-    let sent = String::from_utf8(talk.received()).unwrap();
+    let sent = String::from_utf8(ran.request.clone()).unwrap();
     assert!(sent.ends_with("\n\nD 1 3 1\nabc"), "{sent}");
     assert!(!sent.contains("transfer-encoding"), "{sent}");
     let out = String::from_utf8(ran.seen.of("out").concat()).unwrap();
@@ -260,4 +260,67 @@ fn an_asked_chunked_body_goes_plain() {
         "{:?}",
         ran.seen.text()
     );
+}
+
+/// `--http2` over clear text asks for an upgrade with the client's
+/// settings in base64url, and no `Expect:`; a 101 switches the
+/// connection, its head handed on as an interim one, and the response
+/// comes on stream 1 in HTTP/2, with what followed the 101 read as
+/// HTTP/2 (`Curl_http2_upgrade`).
+#[test]
+fn a_101_switches_an_upgrade_to_http2() {
+    let reply: &[u8] = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: h2c\r\n\r\n\
+                         S\nH 1 0\n:status: 200\ncontent-length: 2\n\nD 1 2 1\nok";
+    let talk = Conversation::new(reply, false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let ran = get_with(&mut m, e, "/u", talk.clone(), |o| {
+        o.http.version = HttpVersion::Http2;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let sent = String::from_utf8(ran.request.clone()).unwrap();
+    assert!(
+        sent.starts_with(&format!(
+            "GET /u HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nUser-Agent: curl/test\r\n\
+             Accept: */*\r\nUpgrade: h2c\r\nHTTP2-Settings: TUNTPTEwMDtJV1M9NjU1MzY7RVA9MDs\r\n\
+             Connection: Upgrade, HTTP2-Settings\r\n\r\n"
+        )),
+        "{sent}"
+    );
+    assert_eq!(
+        ran.seen.of("interim"),
+        [
+            &b"HTTP/1.1 101 Switching Protocols\r\n"[..],
+            b"Upgrade: h2c\r\n",
+            b"\r\n"
+        ]
+    );
+    assert_eq!(
+        ran.seen.of("header"),
+        [&b"HTTP/2 200 \r\n"[..], b"content-length: 2\r\n", b"\r\n"]
+    );
+    assert_eq!(ran.seen.body(), b"ok");
+    let text = ran.seen.text();
+    assert!(
+        text.iter()
+            .any(|l| l == "Received 101, Switching to HTTP/2\n"),
+        "{text:?}"
+    );
+    assert_eq!(ran.easy.report().response_code(), Some(200));
+}
+
+/// A server that does not take the upgrade answers in HTTP/1.1, and the
+/// connection stays HTTP/1.
+#[test]
+fn an_upgrade_not_taken_is_answered_in_http_1() {
+    let talk = Conversation::new(OK, false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        o.http.version = HttpVersion::Http2;
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"ok\n");
 }

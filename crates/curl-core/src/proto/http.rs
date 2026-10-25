@@ -205,6 +205,9 @@ pub(crate) struct Request {
     h2: Option<h2::H2Stream>,
     /// It went on a stream HTTP/2 refused (`state.refused_stream`).
     refused: bool,
+    /// It asks to go on in HTTP/2 over clear text, with these settings
+    /// (`upgr101 == UPGR101_H2`), which a 101 takes up.
+    upgrade: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -443,6 +446,7 @@ impl Request {
             cookie_host: None,
             h2: None,
             refused: false,
+            upgrade: None,
         })
     }
 
@@ -890,6 +894,15 @@ impl Request {
             h2,
         );
         self.h2 = h2.then(h2::H2Stream::default);
+        // Over clear text, HTTP/2 is asked for by an upgrade where the
+        // application wants it so (`H1_HD_UPGRADE`).
+        self.upgrade = self.upgrade_settings(cx, lease, h2)?;
+        let upgrade = self
+            .upgrade
+            .as_deref()
+            .map(crate::base64::encode_url)
+            .transpose()
+            .map_err(|_| ErrorKind::OutOfMemory)?;
         // The proxy the request goes to whole, and what it is given.
         let forwarding = lease
             .conn()
@@ -1141,13 +1154,18 @@ impl Request {
         // comes or the wait runs out (`addexpect`).
         let expects = http.headers.expects_continue();
         let added_expect = content.is_some()
+            && upgrade.is_none()
             && expects.is_none()
             && !self.no_expect
             && self.version == SentIn::Http11
             // Weighed by the client's size, converted or not
             // (`Curl_creader_client_length`).
             && client_size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
-        let announced = content.is_some() && !auth.probe && (expects == Some(true) || added_expect);
+        // An upgrade asks for none (`addexpect`).
+        let announced = content.is_some()
+            && !auth.probe
+            && upgrade.is_none()
+            && (expects == Some(true) || added_expect);
         if let Some(content) = &mut content {
             content.expect = added_expect;
         }
@@ -1239,6 +1257,7 @@ impl Request {
                 .alt_used
                 .as_deref()
                 .filter(|_| !http.headers.replaces(b"Alt-Used")),
+            upgrade: upgrade.as_deref(),
             forwarded: forwarded.then(|| Forwarding {
                 own_headers: (!options.proxy.unified_headers).then_some(&options.proxy.headers),
             }),
@@ -1791,6 +1810,10 @@ impl Request {
                     *lease.get().rx_mut() = rx;
                     deliver::write_resp(cx, all, false, fed);
                     fed?;
+                    // Switched to HTTP/2 by a 101: read on in it.
+                    if self.h2.is_some() {
+                        return self.h2_read_some(cx, lease);
+                    }
                 }
                 Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
                 // A layer that said why it failed, as TLS does, is not
@@ -1859,6 +1882,13 @@ impl Request {
     ) -> Result<(), ErrorKind> {
         while !input.is_empty() {
             match self.stage {
+                Stage::Head if self.h2.is_none() => {
+                    input = self.head_input(cx, lease, input, false)?;
+                    // What follows a 101 that switched is HTTP/2's.
+                    if self.h2.is_some() {
+                        return self.upgraded_input(cx, lease, input);
+                    }
+                }
                 Stage::Head => input = self.head_input(cx, lease, input, false)?,
                 Stage::Body(Body::Length | Body::UntilClose | Body::Stream) => {
                     self.pipeline.body(cx, input)?;
@@ -2105,6 +2135,14 @@ impl Request {
                         &long
                     }
                 };
+                // A 101 to an upgrade to HTTP/2 switches the connection,
+                // its head written first (`http_on_101_upgrade`).
+                let switching = cx.report_mut().response_code() == Some(101);
+                if switching && self.upgrade.is_some() && self.version == SentIn::Http11 {
+                    self.pipeline.header(cx, blank, origin)?;
+                    self.upgraded(cx, lease)?;
+                    return Ok(rest);
+                }
                 self.body_start(cx)?;
                 self.pipeline.header(cx, blank, origin)?;
             }

@@ -915,6 +915,15 @@ impl Conn {
         matches!(&self.route, Route::Tcp(Tcp { proxy: Some(p), .. }) if p.tunnels())
     }
 
+    /// Whether any of it is TLS, the origin's or an HTTPS proxy's
+    /// (`Curl_conn_is_ssl`).
+    pub(crate) fn over_tls(&self) -> bool {
+        match &self.route {
+            Route::Tcp(t) => t.tls.is_some() || t.proxy.as_ref().is_some_and(|p| p.tls().is_some()),
+            Route::Local => false,
+        }
+    }
+
     /// Whether it goes through an HTTP proxy (`http_proxy.peer`).
     pub(crate) fn http_proxy(&self) -> bool {
         matches!(&self.route, Route::Tcp(Tcp { proxy: Some(p), .. }) if p.http())

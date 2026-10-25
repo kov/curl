@@ -1550,8 +1550,18 @@ consumed as delivered, and the trailers once the stream closes. The stream's clo
 response's end, as a connection's end is HTTP/1's (`stream_recv`,
 `http2_handle_stream_close`): a reset fails it, but for a refused stream, made again
 (`REFUSED_STREAM, retrying a fresh connect`); one closed before its head ended fails it too. A
-request over that is done with its stream open resets it (`http2_data_done`). Not yet: the
-`h2c` upgrade, the pool's health check and shutdown through the session, `curl_easy_upkeep`'s
+request over that is done with its stream open resets it (`http2_data_done`).
+
+**Upgrade.** Over clear text, a transfer that wants HTTP/2 by an upgrade
+(`CURL_HTTP_VERSION_2_0`) and has a library asks for one on a connection that speaks HTTP/1
+(`H1_HD_UPGRADE`): `Upgrade: h2c` and `HTTP2-Settings:`, its settings in base64url, both named
+in `Connection:` after `TE`, and no `Expect:`. A 101 to it, its head handed on as an interim
+one, switches the connection: the session is made from the settings the request sent, the
+response comes on stream 1, the head parser reads a new head in HTTP/2 (`HeadParser::restart`),
+and what followed the 101 is fed to the session (`Curl_http2_upgrade`). A server that does not
+take it answers in HTTP/1.1.
+
+Not yet: the pool's health check and shutdown through the session, `curl_easy_upkeep`'s
 PING, a paused stream's window, and the `CF` traces of `--trace-config http/2`.
 
 **Ownership, once multiplexed** (review §2.1, approved). A connection that multiplexes lives

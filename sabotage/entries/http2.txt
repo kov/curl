@@ -112,3 +112,44 @@ witness: curl-core proto::http::tests::h2::an_asked_chunked_body_goes_plain
         if head.version == SentIn::Http2 && h.is(b"Transfer-Encoding") {
 --- new
         if false && h.is(b"Transfer-Encoding") {
+
+=== an upgrade's settings go padded as plain base64
+file: crates/curl-core/src/base64.rs
+witness: curl-core base64::tests::base64url_is_written_as_curlx_writes_it
+--- old
+        for i in 0..=group.len() {
+--- new
+        for i in 0..4 {
+
+=== the upgrade is not named in Connection
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::an_upgrade_is_named_in_connection_after_te
+--- old
+        upgrade.then_some(&b"HTTP2-Settings"[..]),
+--- new
+
+=== an upgrade asks for a 100 too
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h2::a_101_switches_an_upgrade_to_http2
+--- old
+            && upgrade.is_none()
+            && expects.is_none()
+--- new
+            && expects.is_none()
+
+=== a 101 to an upgrade is taken as the final response
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h2::a_101_switches_an_upgrade_to_http2
+--- old
+                if switching && self.upgrade.is_some() && self.version == SentIn::Http11 {
+--- new
+                if false {
+
+=== what follows a 101 is read as HTTP/1
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h2::a_101_switches_an_upgrade_to_http2
+--- old
+                    if self.h2.is_some() {
+                        return self.upgraded_input(cx, lease, input);
+                    }
+--- new

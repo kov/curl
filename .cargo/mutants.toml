@@ -627,4 +627,10 @@ exclude_re = [
     # A write function's CURLSTS_FAIL and CURLSTS_DONE both stop the
     # save; that one fails it goes unsaid as the handle goes, as in C.
     'curl-sys-abi/src/callbacks\.rs:.*: delete match arm ffi::CURLSTS_FAIL in <impl curl_core::hsts::HstsWriter for Adapter>::write$',
+    # The escape branch's own limit check: the check after it fires
+    # whenever it would, so moving it changes no word read (C's has both).
+    'curl-core/src/altsvc\.rs:.*: replace > with (==|>=) in Cursor<.a>::quoted$',
+    # A raw receive's failing errno, which the fake network cannot fail
+    # and a real reset needs SO_LINGER for.
+    'curl-core/src/multi/raw\.rs:.*: replace <impl LayerCx for RawCx<._>>::socket_failed with \(\)$',
 ]

@@ -6347,6 +6347,7 @@ fn a_connect_only_perform_leaves_the_connection_to_the_handle() {
         (3, CURLE_BAD_FUNCTION_ARGUMENT),
         (-1, CURLE_BAD_FUNCTION_ARGUMENT),
         (2, CURLE_OK),
+        (0, CURLE_OK),
     ] {
         assert_eq!(long(c, ffi::CURLOPT_CONNECT_ONLY, n), code, "{n}");
     }

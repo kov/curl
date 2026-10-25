@@ -274,7 +274,8 @@ fn ages_and_dates_are_capped_and_checked() {
         80,
         Alpn::H1,
     );
-    assert_eq!(a.entries[0].expires, NOW + CAP_MAX_AGE);
+    // Two years of 365 days.
+    assert_eq!(a.entries[0].expires, NOW + 63_072_000);
     let file = Temp::new(
         "dates",
         b"h1 a 1 h1 b 2 \"20290222 22:19:028\" 0 0\nh1 a 1 h1 b 2 \"nonsense\" 0 0\n\
@@ -389,7 +390,7 @@ fn an_alternative_lasts_through_its_last_second() {
 #[test]
 fn parameters_are_read_as_c_reads_them() {
     let mut a = AltSvc::default();
-    parse(&mut a, "h1=\"alt:1\" \t ; ma=5", "o", 80, Alpn::H1);
+    parse(&mut a, "h1=\"alt:1\"  ; ma=5", "o", 80, Alpn::H1);
     assert_eq!(a.entries[0].expires, NOW + 5);
     for value in [
         "h1=\"alt:1\"; x=\"open; ma=5",

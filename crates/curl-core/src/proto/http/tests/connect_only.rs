@@ -171,3 +171,44 @@ fn a_handle_that_only_connects_makes_a_new_connection() {
     );
     m.remove(id, &mut NoEvents).unwrap();
 }
+
+/// Over a real socket, a handle's own perform leaves it the connection:
+/// its socket is told, and it sends and receives on it.
+#[test]
+fn a_perform_that_only_connects_leaves_the_handle_its_socket() {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        let mut got = [0u8; 4];
+        peer.read_exact(&mut got).unwrap();
+        peer.write_all(b"pong").unwrap();
+        got
+    });
+    let mut e = Easy::new();
+    let url = format!("http://127.0.0.1:{port}/");
+    e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+    e.options_mut().connect_only = ConnectOnly::Yes;
+    assert_eq!(e.active_socket(), None);
+    e.perform().unwrap();
+    assert!(e.active_socket().is_some());
+    let mut sent = 0;
+    while sent < 4 {
+        match e.send_raw(&b"ping"[sent..]).unwrap() {
+            RawIo::Bytes(n) => sent += n,
+            RawIo::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(5)),
+        }
+    }
+    let mut got = Vec::new();
+    while got.len() < 4 {
+        let mut buf = [0u8; 8];
+        match e.recv_raw(&mut buf).unwrap() {
+            RawIo::Bytes(0) => break,
+            RawIo::Bytes(n) => got.extend_from_slice(&buf[..n]),
+            RawIo::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(5)),
+        }
+    }
+    assert_eq!(got, b"pong");
+    assert_eq!(&server.join().unwrap(), b"ping");
+}

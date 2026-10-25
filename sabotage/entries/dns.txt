@@ -180,3 +180,19 @@ witness: curl-core conn::connect::tests::a_dropped_pending_resolve_is_caught
 --- new
             true,
             "a resolve was dropped, neither answered nor cancelled"
+
+=== a threaded resolve's failure is negative though a query failed otherwise
+file: crates/curl-core/src/conn/threaded.rs
+witness: curl-core conn::threaded::tests::a_failure_is_negative_only_if_every_query_says_so
+--- old
+    match failed.clone().find(|f| !negative(f)) {
+--- new
+    match failed.clone().find(|f| !negative(f) && false) {
+
+=== the threaded resolver starts more threads than the most
+file: crates/curl-core/src/conn/threaded.rs
+witness: curl-core conn::threaded::tests::threads_are_kept_to_the_most_and_end_when_idle
+--- old
+                if wanted <= state.idle || state.threads >= state.threads_max {
+--- new
+                if wanted <= state.idle {

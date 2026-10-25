@@ -20,6 +20,10 @@ pub struct Release {
 /// only what it can do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feature {
+    /// Names are resolved while the transfer goes on, by the threaded
+    /// resolver's pool of threads, which C counts as asynchronous: claimed
+    /// by a build with the `threaded-resolver` feature.
+    AsynchDns,
     /// The `br` content coding is undone by brotli, which the tool and the
     /// C ABI give every handle.
     Brotli,
@@ -48,6 +52,10 @@ pub enum Feature {
     Spnego,
     /// TLS, by OpenSSL, which the tool and the C ABI give every handle.
     Ssl,
+    /// Nothing the library keeps is process-wide: handles may be made, and
+    /// the C ABI initialised, from several threads at once (C's
+    /// `threadsafe`, its global initialisation under a lock).
+    Threadsafe,
     /// Connections over Unix sockets, by path or abstract name.
     UnixSockets,
     /// The `zstd` content coding is undone by zstd, which the tool and the
@@ -59,6 +67,7 @@ impl Feature {
     /// The name `curl -V` lists it under.
     pub fn name(self) -> &'static str {
         match self {
+            Feature::AsynchDns => "AsynchDNS",
             Feature::Brotli => "brotli",
             #[cfg(feature = "debug-hooks")]
             Feature::Debug => "Debug",
@@ -71,15 +80,19 @@ impl Feature {
             Feature::Psl => "PSL",
             Feature::Spnego => "SPNEGO",
             Feature::Ssl => "SSL",
+            Feature::Threadsafe => "threadsafe",
             Feature::UnixSockets => "UnixSockets",
             Feature::Zstd => "zstd",
         }
     }
 }
 
-#[cfg(feature = "debug-hooks")]
+/// Sorted by name, case-insensitively, as C lists them.
 const FEATURES: &[Feature] = &[
+    #[cfg(feature = "threaded-resolver")]
+    Feature::AsynchDns,
     Feature::Brotli,
+    #[cfg(feature = "debug-hooks")]
     Feature::Debug,
     Feature::GssApi,
     Feature::HttpsProxy,
@@ -90,21 +103,7 @@ const FEATURES: &[Feature] = &[
     Feature::Psl,
     Feature::Spnego,
     Feature::Ssl,
-    Feature::UnixSockets,
-    Feature::Zstd,
-];
-#[cfg(not(feature = "debug-hooks"))]
-const FEATURES: &[Feature] = &[
-    Feature::Brotli,
-    Feature::GssApi,
-    Feature::HttpsProxy,
-    Feature::Httpsig,
-    Feature::Ipv6,
-    Feature::Kerberos,
-    Feature::Libz,
-    Feature::Psl,
-    Feature::Spnego,
-    Feature::Ssl,
+    Feature::Threadsafe,
     Feature::UnixSockets,
     Feature::Zstd,
 ];
@@ -244,6 +243,26 @@ mod tests {
         let names: Vec<_> = version().features.iter().map(|f| f.name()).collect();
         assert!(names.contains(&"IPv6"), "{names:?}");
         assert!(names.contains(&"UnixSockets"), "{names:?}");
+    }
+
+    /// Listed in C's order, by name whatever the case.
+    #[test]
+    fn features_are_sorted_as_c_sorts_them() {
+        let names: Vec<_> = version().features.iter().map(|f| f.name()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_by_key(|n| n.to_ascii_lowercase());
+        assert_eq!(names, sorted);
+    }
+
+    /// The threaded resolver is claimed as C claims its own, as
+    /// `AsynchDNS`, which tells runtests the resolver is threaded; the
+    /// resolver that answers as it starts blocks, and is not. Both are
+    /// `threadsafe`, as nothing they keep is process-wide.
+    #[test]
+    fn the_threaded_resolver_is_claimed_as_asynch_dns() {
+        let v = version();
+        assert_eq!(v.claims("AsynchDNS"), cfg!(feature = "threaded-resolver"));
+        assert!(v.claims("threadsafe"));
     }
 
     /// A feature is claimed by its name in any case, as C's tool matches

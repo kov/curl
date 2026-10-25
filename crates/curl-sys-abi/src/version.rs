@@ -80,6 +80,7 @@ const MAX_FEATURES: usize = 64;
 /// A feature's name and bit in `curl_version_info_data`.
 fn c_feature(f: Feature) -> (&'static CStr, c_int) {
     match f {
+        Feature::AsynchDns => (c"AsynchDNS", crate::ffi::CURL_VERSION_ASYNCHDNS),
         Feature::Brotli => (c"brotli", crate::ffi::CURL_VERSION_BROTLI),
         #[cfg(feature = "debug-hooks")]
         Feature::Debug => (c"Debug", crate::ffi::CURL_VERSION_DEBUG),
@@ -93,6 +94,7 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::Psl => (c"PSL", crate::ffi::CURL_VERSION_PSL),
         Feature::Spnego => (c"SPNEGO", crate::ffi::CURL_VERSION_SPNEGO),
         Feature::Ssl => (c"SSL", crate::ffi::CURL_VERSION_SSL),
+        Feature::Threadsafe => (c"threadsafe", crate::ffi::CURL_VERSION_THREADSAFE),
         Feature::UnixSockets => (c"UnixSockets", crate::ffi::CURL_VERSION_UNIX_SOCKETS),
         Feature::Zstd => (c"zstd", crate::ffi::CURL_VERSION_ZSTD),
     }
@@ -295,69 +297,36 @@ mod tests {
             .iter()
             .fold(0, |b, &f| b | c_feature(f).1);
         assert_eq!(info.features, bits);
-        #[cfg(feature = "debug-hooks")]
+        // The resolver is the core's choice; the core's tests pin it.
+        let asynch = version().features.contains(&Feature::AsynchDns);
+        let (listed, listed_bits): (Vec<_>, Vec<_>) = [
+            (asynch, "AsynchDNS", ffi::CURL_VERSION_ASYNCHDNS),
+            (true, "brotli", ffi::CURL_VERSION_BROTLI),
+            (
+                cfg!(feature = "debug-hooks"),
+                "Debug",
+                ffi::CURL_VERSION_DEBUG,
+            ),
+            (true, "GSS-API", ffi::CURL_VERSION_GSSAPI),
+            (true, "HTTPS-proxy", ffi::CURL_VERSION_HTTPS_PROXY),
+            (true, "HTTPSIG", 0),
+            (true, "IPv6", ffi::CURL_VERSION_IPV6),
+            (true, "Kerberos", ffi::CURL_VERSION_KERBEROS5),
+            (true, "libz", ffi::CURL_VERSION_LIBZ),
+            (true, "PSL", ffi::CURL_VERSION_PSL),
+            (true, "SPNEGO", ffi::CURL_VERSION_SPNEGO),
+            (true, "SSL", ffi::CURL_VERSION_SSL),
+            (true, "threadsafe", ffi::CURL_VERSION_THREADSAFE),
+            (true, "UnixSockets", ffi::CURL_VERSION_UNIX_SOCKETS),
+            (true, "zstd", ffi::CURL_VERSION_ZSTD),
+        ]
+        .into_iter()
+        .filter(|&(claimed, _, _)| claimed)
+        .map(|(_, name, bit)| (name, bit))
+        .unzip();
         assert_eq!(
             (names.as_slice(), info.features),
-            (
-                &[
-                    "brotli",
-                    "Debug",
-                    "GSS-API",
-                    "HTTPS-proxy",
-                    "HTTPSIG",
-                    "IPv6",
-                    "Kerberos",
-                    "libz",
-                    "PSL",
-                    "SPNEGO",
-                    "SSL",
-                    "UnixSockets",
-                    "zstd"
-                ][..],
-                ffi::CURL_VERSION_BROTLI
-                    | ffi::CURL_VERSION_DEBUG
-                    | ffi::CURL_VERSION_GSSAPI
-                    | ffi::CURL_VERSION_HTTPS_PROXY
-                    | ffi::CURL_VERSION_IPV6
-                    | ffi::CURL_VERSION_KERBEROS5
-                    | ffi::CURL_VERSION_LIBZ
-                    | ffi::CURL_VERSION_PSL
-                    | ffi::CURL_VERSION_SPNEGO
-                    | ffi::CURL_VERSION_SSL
-                    | ffi::CURL_VERSION_UNIX_SOCKETS
-                    | ffi::CURL_VERSION_ZSTD
-            )
-        );
-        #[cfg(not(feature = "debug-hooks"))]
-        assert_eq!(
-            (names.as_slice(), info.features),
-            (
-                &[
-                    "brotli",
-                    "GSS-API",
-                    "HTTPS-proxy",
-                    "HTTPSIG",
-                    "IPv6",
-                    "Kerberos",
-                    "libz",
-                    "PSL",
-                    "SPNEGO",
-                    "SSL",
-                    "UnixSockets",
-                    "zstd"
-                ][..],
-                ffi::CURL_VERSION_BROTLI
-                    | ffi::CURL_VERSION_GSSAPI
-                    | ffi::CURL_VERSION_HTTPS_PROXY
-                    | ffi::CURL_VERSION_IPV6
-                    | ffi::CURL_VERSION_KERBEROS5
-                    | ffi::CURL_VERSION_LIBZ
-                    | ffi::CURL_VERSION_PSL
-                    | ffi::CURL_VERSION_SPNEGO
-                    | ffi::CURL_VERSION_SSL
-                    | ffi::CURL_VERSION_UNIX_SOCKETS
-                    | ffi::CURL_VERSION_ZSTD
-            )
+            (&listed[..], listed_bits.iter().fold(0, |b, &bit| b | bit))
         );
     }
 }

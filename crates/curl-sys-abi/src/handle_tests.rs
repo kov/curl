@@ -3208,29 +3208,32 @@ fn a_wait_allocates_nothing() {
     // SAFETY: a live multi and handle, and one entry.
     unsafe {
         assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
-        // Connected and the request sent, the transfer waits to read.
+        // Connected and the request sent, the transfer waits to read. The
+        // threaded resolver's wake is the multi's own, listed first while
+        // a transfer is alive, as C's admin handle is.
+        let wake = u32::from(curl_core::version::version().claims("AsynchDNS"));
         let mut peer = None;
         let mut waits = [ffi::curl_waitfd {
             fd: -1,
             events: 0,
             revents: 0,
-        }];
+        }; 2];
         for _ in 0..100 {
             assert_eq!(curl_multi_perform(m, &raw mut running), CURLM_OK);
             assert_eq!(
-                crate::multi::curl_multi_waitfds(m, waits.as_mut_ptr(), 1, &raw mut sockets),
+                crate::multi::curl_multi_waitfds(m, waits.as_mut_ptr(), 2, &raw mut sockets),
                 CURLM_OK
             );
             if peer.is_none() {
                 peer = listener.accept().ok();
             }
-            let reading = waits[0].events == ffi::CURL_WAIT_POLLIN as i16;
-            if sockets == 1 && peer.is_some() && reading {
+            let reading = waits[wake as usize].events == ffi::CURL_WAIT_POLLIN as i16;
+            if sockets == 1 + wake && peer.is_some() && reading {
                 break;
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!((running, sockets), (1, 1), "waiting on its socket");
+        assert_eq!((running, sockets), (1, 1 + wake), "waiting on its socket");
         assert!(peer.is_some());
         (&w).write_all(b"x").unwrap();
         let ((), cost) = measure(|| {

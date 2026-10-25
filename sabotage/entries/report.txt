@@ -246,3 +246,14 @@ witness: curl-core report::certinfo::tests::fields_are_kept_as_label_colon_value
         if len >= MAX_LINE {
 --- new
         if len > MAX_LINE {
+
+=== the resolver that answers as it starts is claimed as asynchronous
+file: crates/curl-core/src/version.rs
+witness: curl-core version::tests::the_threaded_resolver_is_claimed_as_asynch_dns
+--- old
+const FEATURES: &[Feature] = &[
+    #[cfg(feature = "threaded-resolver")]
+    Feature::AsynchDns,
+--- new
+const FEATURES: &[Feature] = &[
+    Feature::AsynchDns,

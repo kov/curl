@@ -202,7 +202,9 @@ impl<H: Host> Multi<H> {
                 found[at].get_or_insert(s);
             }
         });
-        let wake = self.alive.waker.as_deref().filter(|_| self.alive.count > 0);
+        // Watched only while the socket callback was told of it, while a
+        // transfer is alive.
+        let wake = self.alive.waker.as_deref();
         let wake_key = wake.map(|w| SocketKey::new(w.fd().as_raw_fd()));
         let mut wake_fd = None;
         let mut sockets = Vec::new();

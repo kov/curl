@@ -575,15 +575,22 @@ fn the_resolver_s_wake_is_listened_on_while_a_transfer_is_alive() {
 /// `CURLMOPT_QUICK_EXIT`).
 #[test]
 fn the_resolver_s_settings_reach_its_pool() {
-    struct Setting;
+    /// Sets from the first timer callback, and from each notification.
+    struct Setting(bool);
     impl MultiEvents<Tagged> for Setting {
         fn wants_timer(&self) -> bool {
             true
         }
         fn timer(&mut self, cx: &mut EventCx<'_, Tagged>, _: TimerChange) -> Result<(), Abort> {
-            cx.set_resolve_threads_max(NonZeroU32::new(7).unwrap());
-            cx.set_quick_exit(false);
+            if !std::mem::replace(&mut self.0, true) {
+                cx.set_resolve_threads_max(NonZeroU32::new(7).unwrap());
+                cx.set_quick_exit(false);
+            }
             Ok(())
+        }
+        fn notify(&mut self, cx: &mut NotifyCx<'_, Tagged>, _: Notification) {
+            cx.set_resolve_threads_max(NonZeroU32::new(5).unwrap());
+            cx.set_quick_exit(true);
         }
     }
     let threaded = ThreadedResolver::new(Threads::MULTI).unwrap();
@@ -604,9 +611,14 @@ fn the_resolver_s_settings_reach_its_pool() {
     m.set_resolve_threads_max(NonZeroU32::new(3).unwrap());
     m.set_quick_exit(true);
     assert_eq!(pool.settings(), (3, false));
-    m.add(Box::new(easy("tcp://127.0.0.1:4/")), (), &mut Setting)
+    m.set_notify(NotifyKind::EasyDone, true);
+    let mut ev = Setting(false);
+    m.add(Box::new(easy("tcp://127.0.0.1:4/")), (), &mut ev)
         .unwrap();
     assert_eq!(pool.settings(), (7, true), "set inside the timer callback");
+    // No peer listens: the transfer is done as it runs.
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(pool.settings(), (5, false), "set inside the notification");
 }
 
 /// An easy handle's quick exit is its multi's as `curl_easy_perform`
@@ -798,4 +810,37 @@ fn a_transfer_driven_by_events_polls_the_resolver_s_wake() {
     assert_eq!(super::wait::drive_by_events(&mut m, id), Ok(Ok(())));
     let spent = crate::time::Clock::now(&clock).since(start);
     assert_eq!(spent, Duration::from_millis(5), "waited for the connect");
+}
+
+/// `multi_wait` polls the resolver's wake only while a transfer is alive,
+/// and counts it among the descriptors ready, as C's admin handle's
+/// pollset; a transfer waiting on its resolve alone has the wake to wait
+/// on.
+#[test]
+fn a_wait_polls_the_resolver_s_wake_while_a_transfer_is_alive() {
+    use crate::conn::io::Late;
+    let clock = ManualClock::new().unwrap();
+    let late = Late::new();
+    let net =
+        FakeNet::new(clock.clone()).with_late_name("late.test", &[[127, 0, 0, 1].into()], &late);
+    let wake = TryArc::try_new(Waker::new().unwrap()).unwrap();
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(Waking(net, wake.clone(), None)),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+    let mut ev = Sockets::default();
+    wake.wake().unwrap();
+    let wait = |m: &mut Multi<Tagged>, ev: &mut Sockets| {
+        m.wait(&mut [], Duration::ZERO, WaitMode::Wait, ev)
+    };
+    assert_eq!(wait(&mut m, &mut ev), Ok(0), "none alive: not polled");
+    m.add(Box::new(easy("tcp://late.test:4/")), (), &mut ev)
+        .unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(wait(&mut m, &mut ev), Ok(1), "polled, and ready");
+    wake.drain().unwrap();
+    assert_eq!(wait(&mut m, &mut ev), Ok(0), "polled, not ready");
 }

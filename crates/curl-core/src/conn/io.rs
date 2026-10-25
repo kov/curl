@@ -1873,6 +1873,33 @@ mod tests {
 
     use super::*;
 
+    /// A multi's network resolves as the build chooses: with the threaded
+    /// resolver, which lends a wake and gives no reason for a failure;
+    /// else with the system's, which answers as it starts and gives
+    /// c-ares's reason, as the reference build's does.
+    #[test]
+    fn a_multi_s_network_resolves_as_the_build_chooses() {
+        let mut net = SystemNet::for_multi(super::super::threaded::Threads::EASY).unwrap();
+        let mut seen = None;
+        net.with_resolver(&mut |r| {
+            seen = Some((
+                r.waker().is_some(),
+                r.explain(ResolveFailure::NotFound),
+                r.explain(ResolveFailure::NoData),
+                r.explain(ResolveFailure::Again),
+            ));
+        });
+        let threaded = cfg!(feature = "threaded-resolver");
+        let reasons = match threaded {
+            true => (None, None),
+            false => (
+                Some("Domain name not found"),
+                Some("DNS server returned answer with no data"),
+            ),
+        };
+        assert_eq!(seen, Some((threaded, reasons.0, reasons.1, None)));
+    }
+
     /// The system's network resolves names with the system's resolver.
     #[test]
     fn the_system_resolves_names() {

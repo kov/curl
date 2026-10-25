@@ -3025,6 +3025,58 @@ fn the_debug_build_fails_ipv6_resolves_when_asked() {
     );
 }
 
+/// A bind's name is resolved as C's blocking resolve does it: a failure
+/// says the resolver's reason, and is not kept, so the setup's resolve
+/// of the name asks again; an answer the resolver gives later is waited
+/// for (`Curl_resolv_blocking`).
+#[test]
+fn a_bind_s_name_is_resolved_waiting_and_keeping_no_failure() {
+    let (mut m, _clock) = networked();
+    let run = |m: &mut Multi, url: &str, host: &[u8]| {
+        let (mut e, lines) = traced(url);
+        if !host.is_empty() {
+            e.options_mut().sockets.make_mut().unwrap().local.interface =
+                crate::options::Interface::parse(host).unwrap();
+        }
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        perform_and_connect(m);
+        let result = messages(m).last().map(|r| r.1);
+        m.remove(id, &mut NoEvents).unwrap();
+        (result, trace_of(&lines))
+    };
+    let failed = "Could not resolve host: nowhere.test (Domain name not found)\n";
+    let (result, lines) = run(&mut m, "tcp://127.0.0.1:1/", b"host!nowhere.test");
+    assert_eq!(result, Some(Err(ErrorKind::InterfaceFailed)));
+    assert!(lines.iter().any(|l| l == failed), "{lines:?}");
+    let (result, lines) = run(&mut m, "tcp://nowhere.test:80/", b"");
+    assert_eq!(result, Some(Err(ErrorKind::CouldntResolveHost)));
+    assert_eq!(
+        lines.first().map(String::as_str),
+        Some(failed),
+        "asked again"
+    );
+
+    let clock = ManualClock::new().unwrap();
+    let late = crate::conn::io::Late::new();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
+            crate::conn::io::Peer::Accepts,
+        )
+        .with_late_name("latehost", &[[127, 0, 0, 7].into()], &late);
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let (result, lines) = run(&mut m, "tcp://127.0.0.1:1/", b"host!latehost");
+    assert_eq!(result, Some(Ok(())), "{lines:?}");
+    let bound = "Name 'latehost' family 2 resolved to '127.0.0.7' family 2\n";
+    assert!(lines.iter().any(|l| l == bound), "{lines:?}");
+}
+
 /// A resolver that gives no reason, as the threaded one gives none, says
 /// it could not resolve the name as it answers, and the lookup says so
 /// again: the same line twice (`Curl_async_failed`).

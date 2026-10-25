@@ -808,9 +808,11 @@ the system's under the HTTP-only programs installed here.
       needed and let go when idle), each address family a query of its own, an answer
       delivered by waking the multi, the resolve's own timer and timeout, the DNS traces, and
       the debug build's variables.
-    - **c. The build's resolver and its oracle.** **To do.** Which resolver a build uses, what
-      it reports (`AsynchDNS`, `threaded-resolver`), and the C build that is its oracle; the
-      tests that name it (3026, the pytest DNS cases) on both legs.
+    - **c. The build's resolver and its oracle.** **To do.** A cargo feature picks the
+      threaded resolver, as C's configure does: the measurement build keeps today's, checked
+      against the c-ares reference; the threaded build reports `AsynchDNS` and
+      `threaded-resolver` and is checked against `build/c-threaded` (SCOPE.md), with the tests
+      that name it (3026, the pytest DNS cases) on both legs.
     - **d. Closing the step.** **To do.** The sweep and cargo-mutants on what it changed.
 49. **IDN** through libidn2. **To do.**
 50. **HSTS and alt-svc,** their caches, files and options, without the share (milestone 7). **To do.**

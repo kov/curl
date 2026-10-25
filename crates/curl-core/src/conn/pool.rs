@@ -208,6 +208,11 @@ impl ConnLease {
         matches!(self.slot(), ConnSlot::Open(conn) if conn.close)
     }
 
+    /// Whether the connection is up and speaks HTTP/2.
+    pub(crate) fn is_h2(&self) -> bool {
+        matches!(self.slot(), ConnSlot::Open(conn) if conn.is_h2())
+    }
+
     /// The connection, once up, to use.
     pub(crate) fn get(&mut self) -> &mut Conn {
         let id = self.id;
@@ -846,7 +851,9 @@ impl Pool {
             && let Route::Tcp(tcp) = &conn.route
             // One only connected is the handle's, whatever its protocol.
             && (tcp.origin.scheme().reuse || finish.reserve)
-            && !finish.premature
+            // An HTTP/2 connection outlives a stream cut short
+            // (`Curl_conn_is_multiplex`).
+            && (!finish.premature || conn.is_h2())
             // Forbidden its reuse, it is kept all the same for the request
             // Negotiate's handshake makes again on it.
             && (!finish.forbid_reuse || conn.negotiating())

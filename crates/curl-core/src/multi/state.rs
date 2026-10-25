@@ -1535,6 +1535,12 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             // ended, not by the protocol's last word (`multi_done`), which
             // comes first.
             let mut premature = d.premature || is_premature(d.result);
+            // A failure other than its stream's closes an HTTP/2
+            // connection, which outlives a request otherwise
+            // (`multistate_performing`'s `streamclose`).
+            if d.result.is_err_and(|e| e != ErrorKind::Http2Stream) && d.lease.is_h2() {
+                d.lease.get().mark_close();
+            }
             mstate::trace(
                 cx,
                 format_args!(

@@ -96,10 +96,9 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-            && (tcp.origin.scheme().reuse || finish.reserve)
-            && !finish.premature
+            && (!finish.premature || conn.is_h2())
 --- new
-            && (tcp.origin.scheme().reuse || finish.reserve)
+            && (true || conn.is_h2())
 
 === a multi leaves its idle connections open
 file: crates/curl-core/src/multi/mod.rs
@@ -348,12 +347,10 @@ witness: curl-core multi::tests::a_waiting_transfer_runs_out_of_time
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core multi::tests::a_transfer_can_refuse_to_share_its_connection
 --- old
-            && !finish.premature
             // Forbidden its reuse, it is kept all the same for the request
             // Negotiate's handshake makes again on it.
             && (!finish.forbid_reuse || conn.negotiating())
 --- new
-            && !finish.premature
 
 === a transfer wanting a fresh connection reuses one
 file: crates/curl-core/src/conn/pool.rs

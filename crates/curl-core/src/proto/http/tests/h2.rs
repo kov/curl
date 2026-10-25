@@ -430,6 +430,31 @@ fn a_connection_is_reused_only_by_a_transfer_that_speaks_its_version() {
     }
 }
 
+/// A stream's failure leaves its HTTP/2 connection to the next
+/// transfer, as any other failure does not.
+#[test]
+fn a_stream_s_failure_keeps_the_connection() {
+    let second: &[u8] = b"H 3 0\n:status: 200\n\nD 3 2 1\nok";
+    let talk = Conversation::replies(&[b"S\nR 1 2\n", second], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    for (path, result) in [("/1", Err(ErrorKind::Http2Stream)), ("/2", Ok(()))] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let ran = get_with(&mut m, e, path, talk.clone(), |o| {
+            o.http.version = HttpVersion::Http2Prior;
+        });
+        assert_eq!(ran.result, result, "{:?}", ran.seen.text());
+        if path == "/2" {
+            assert_eq!(ran.seen.body(), b"ok");
+            assert!(
+                ran.seen.text().iter().any(|l| l.starts_with("Reusing")),
+                "{:?}",
+                ran.seen.text()
+            );
+        }
+    }
+}
+
 /// Under a receive limit, a stream's reads take no more than the limit
 /// allows, and the transfer waits for it (`sendrecv_dl`'s
 /// `rate_limited`, test 02_24).

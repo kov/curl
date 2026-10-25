@@ -3221,7 +3221,11 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         let kind = trace::fail_with(cx, kind, &[b"Too long hostname (maximum is 65535)"]);
         return TransferState::Init.fail(kind);
     }
-    let target = proto.network(&url, cx.easy().options().address_scope);
+    let target = proto.network(
+        &url,
+        cx.easy().options().address_scope,
+        cx.easy().libraries().idn,
+    );
     let target = match target {
         Ok(Some(target)) => target,
         Ok(None) => {
@@ -3503,6 +3507,13 @@ fn parse_proxy<H: Host>(
             &[b"Unsupported pre-proxy type for '", text, b"'"],
         ));
     }
+    // A name in Unicode is looked up by its ASCII form, as the origin's
+    // (`Curl_peer_from_proxy_url`).
+    let mut parsed = parsed;
+    parsed.peer = parsed
+        .peer
+        .idn(cx.easy().libraries().idn)
+        .map_err(crate::idn::IdnFailure::kind)?;
     // The URL's user and password, else the options' (`proxy_parse`);
     // either goes with the service the options name, which makes
     // credentials alone for a proxy that is not a pre-proxy.
@@ -3707,6 +3718,10 @@ fn connect_to<H: Host>(
     let (kind, reason) = match crate::conn::via(origin, cx.easy().options().connect_to.iter()) {
         Ok(None) => return Ok(None),
         Ok(Some(via)) => {
+            // A name in Unicode is looked up by its ASCII form, as the
+            // origin's (`Curl_peer_from_connect_to`).
+            let via = via.idn(cx.easy().libraries().idn);
+            let via = via.map_err(crate::idn::IdnFailure::kind)?;
             return TryArc::try_new(via)
                 .map(Some)
                 .map_err(|OutOfMemory| ErrorKind::OutOfMemory);

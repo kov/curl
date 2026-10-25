@@ -41,6 +41,7 @@ use std::num::NonZeroU32;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
+use crate::idn::{Idn, IdnFailure};
 use crate::options::{IpVersion, ProxyType};
 use crate::report::ResponseVersion;
 use crate::tls::TlsIdentity;
@@ -538,6 +539,7 @@ impl PartialEq for Destination<'_> {
             scheme: _,
             // Compared as its name, below.
             host: _,
+            ascii: _,
             port,
             zone,
             scope,
@@ -569,6 +571,10 @@ pub(crate) struct Peer {
     scheme: Scheme,
     /// An IPv6 address in brackets (`user_hostname`).
     host: Vec<u8>,
+    /// The name the host is looked up and sent by, when the URL names it
+    /// in Unicode: its ASCII form (C's `hostname`, set apart from
+    /// `user_hostname` by IDN).
+    ascii: Option<Vec<u8>>,
     port: u16,
     zone: Option<Vec<u8>>,
     /// The IPv6 scope: the zone as a number, or the index of the
@@ -609,11 +615,22 @@ impl Peer {
         Peer {
             scheme,
             host,
+            ascii: None,
             port,
             zone,
             scope,
             at: PeerAt::Network,
         }
+    }
+
+    /// The same peer, its host looked up by its ASCII form where the URL
+    /// names it in Unicode and `idn` converts it (`peer_parse_host`); a
+    /// name that does not convert, or converts to nothing, is refused.
+    pub(crate) fn idn(mut self, idn: Option<&dyn Idn>) -> Result<Peer, IdnFailure> {
+        if self.at == PeerAt::Network && !self.ipv6() {
+            self.ascii = crate::idn::lookup_name(idn, &self.host)?;
+        }
+        Ok(self)
     }
 
     /// The Unix socket at `path`, in the abstract namespace if
@@ -624,6 +641,7 @@ impl Peer {
         Peer {
             scheme,
             host: path,
+            ascii: None,
             port,
             zone: None,
             scope: 0,
@@ -661,6 +679,7 @@ impl Peer {
         Peer {
             scheme,
             host,
+            ascii: None,
             port,
             zone: None,
             scope: scope.get(),
@@ -681,6 +700,7 @@ impl Peer {
         Ok(Peer {
             scheme: self.scheme,
             host: copy(&self.host)?,
+            ascii: self.ascii.as_deref().map(copy).transpose()?,
             port: self.port,
             zone: self.zone.as_deref().map(copy).transpose()?,
             scope: self.scope,
@@ -705,16 +725,32 @@ impl Peer {
         &self.host
     }
 
-    /// The host without an IPv6 address's brackets (`hostname`); a Unix
-    /// socket's path as it is.
+    /// The host without an IPv6 address's brackets, and a name the URL
+    /// gives in Unicode in its ASCII form (`hostname`); a Unix socket's
+    /// path as it is.
     pub(crate) fn name(&self) -> &[u8] {
         if self.is_unix() {
             return &self.host;
+        }
+        if let Some(ascii) = &self.ascii {
+            return ascii;
         }
         self.host
             .strip_prefix(b"[")
             .and_then(|h| h.strip_suffix(b"]"))
             .unwrap_or(&self.host)
+    }
+
+    /// The host as a request's `Host:` names it: an IPv6 address in
+    /// brackets, without its zone; any other by its name, in ASCII.
+    pub(crate) fn request_host(&self) -> &[u8] {
+        if self.ipv6() { &self.host } else { self.name() }
+    }
+
+    /// Whether the name is the URL's host converted from Unicode, which a
+    /// request to a proxy then names in its target in place of the URL's.
+    pub(crate) fn converted(&self) -> bool {
+        self.ascii.is_some()
     }
 
     /// Whether the host is an IPv6 address.
@@ -743,6 +779,7 @@ impl PartialEq for Peer {
             scheme,
             // Compared as its name, below.
             host: _,
+            ascii: _,
             port,
             zone,
             scope,

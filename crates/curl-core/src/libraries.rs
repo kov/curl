@@ -12,6 +12,7 @@ use curl_alloc::{OutOfMemory, TryArc};
 
 use crate::coding::Decoders;
 use crate::gss::Gss;
+use crate::idn::Idn;
 use crate::tls::TlsBackend;
 
 /// The libraries a handle uses. A handle without any is given
@@ -32,6 +33,9 @@ pub struct Libraries {
     /// The GSS-API library, if any: without it, Negotiate and SOCKS5's
     /// GSS-API method are not built in, as in a C build without one.
     pub gss: Option<&'static dyn Gss>,
+    /// What converts host names not in ASCII, if anything: without it,
+    /// they are sent as they are, as in a C build without one.
+    pub idn: Option<&'static dyn Idn>,
 }
 
 impl Libraries {
@@ -40,6 +44,7 @@ impl Libraries {
         ed25519: None,
         tls: None,
         gss: None,
+        idn: None,
     };
 }
 
@@ -193,7 +198,7 @@ mod tests {
         };
         let printed = format!("{libraries:?}");
         assert!(
-            printed.ends_with("ed25519: Some(Ed25519), tls: None, gss: None }"),
+            printed.ends_with("ed25519: Some(Ed25519), tls: None, gss: None, idn: None }"),
             "{printed}"
         );
     }

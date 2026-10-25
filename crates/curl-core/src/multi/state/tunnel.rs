@@ -118,7 +118,7 @@ fn start<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Hand
     let port = decimal(u64::from(target.port()), &mut digits);
     let mut authority = Vec::new();
     let made = (|| -> Result<(), OutOfMemory> {
-        authority.try_extend_from_slice(target.shown())?;
+        authority.try_extend_from_slice(target.request_host())?;
         authority.try_push(b':')?;
         authority.try_extend_from_slice(port)
     })();

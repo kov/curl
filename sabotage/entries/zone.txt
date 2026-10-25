@@ -39,11 +39,10 @@ witness: curl-core multi::tests::a_link_local_address_without_a_scope_takes_an_i
 file: crates/curl-core/src/proto/mod.rs
 witness: curl-core multi::tests::the_application_s_scope_overrides_the_zone
 --- old
-    if let Some(scope) = scope {
-        return Ok(Peer::scoped(scheme, host, port, scope));
-    }
+        Some(scope) => Peer::scoped(scheme, host, port, scope),
+        None => {
 --- new
-    let _ = scope;
+        Some(_) | None => {
 
 === a connect-to entry naming only a port drops the origin's scope
 file: crates/curl-core/src/conn/connect_to.rs

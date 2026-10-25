@@ -38,6 +38,9 @@ pub enum Feature {
     HttpsProxy,
     /// HTTP message signatures (RFC 9421), though only with HMAC-SHA256.
     Httpsig,
+    /// Host names in Unicode are looked up by their punycode form, by
+    /// libidn2, which the tool and the C ABI give every handle.
+    Idn,
     /// Connections over IPv6, and its addresses in URLs.
     Ipv6,
     /// Kerberos 5 by GSS-API, as SOCKS5's GSS-API method uses it.
@@ -74,6 +77,7 @@ impl Feature {
             Feature::GssApi => "GSS-API",
             Feature::HttpsProxy => "HTTPS-proxy",
             Feature::Httpsig => "HTTPSIG",
+            Feature::Idn => "IDN",
             Feature::Ipv6 => "IPv6",
             Feature::Kerberos => "Kerberos",
             Feature::Libz => "libz",
@@ -97,6 +101,7 @@ const FEATURES: &[Feature] = &[
     Feature::GssApi,
     Feature::HttpsProxy,
     Feature::Httpsig,
+    Feature::Idn,
     Feature::Ipv6,
     Feature::Kerberos,
     Feature::Libz,

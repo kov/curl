@@ -13,6 +13,7 @@ use crate::date::{HttpDate, OutOfRange};
 use crate::deliver::{self, Expect, Pause, Pipeline, Reach, WriteType};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
+use crate::idn::Idn;
 use crate::libraries::Ed25519;
 use crate::mime::read::MakeError;
 use crate::multi::Host;
@@ -372,7 +373,8 @@ impl Request {
         }
         let scope = cx.easy().options().address_scope;
         let scheme = if secured { HTTPS } else { HTTP };
-        let peer = super::url_peer(scheme, host, port, url, scope)?;
+        let idn = cx.easy().libraries().idn;
+        let peer = super::url_peer((scheme, host, port), url, scope, idn)?;
         let gate = match before.first {
             None => CredentialGate::FIRST,
             Some(first) => {
@@ -424,12 +426,18 @@ impl Request {
     }
 
     /// Send the request whole to a proxy that sends it on: its target is
-    /// `url` without its fragment and credentials, nor its scheme's port
+    /// `url` without its fragment and credentials, nor its scheme's port,
+    /// and with a host it names in Unicode in its ASCII form
     /// (`http_target`).
     pub(crate) fn forward(&mut self, url: &Url) -> Result<(), ErrorKind> {
         let mut url = url.try_clone().map_err(url_error)?;
         for part in [Part::Fragment, Part::User, Part::Password] {
             url.set(part, None, SetOptions::NONE).map_err(url_error)?;
+        }
+        if self.peer.converted() {
+            let host = Some(self.peer.name());
+            url.set(Part::Host, host, SetOptions::NONE)
+                .map_err(url_error)?;
         }
         let get = GetOptions {
             no_default_port: true,
@@ -441,11 +449,17 @@ impl Request {
 
     /// The peer the request connects to: its origin, in the IPv6 scope
     /// `scope` if the application sets one.
-    pub(crate) fn network(&self, url: &Url, scope: Option<NonZeroU32>) -> Result<Peer, ErrorKind> {
+    pub(crate) fn network(
+        &self,
+        url: &Url,
+        scope: Option<NonZeroU32>,
+        idn: Option<&dyn Idn>,
+    ) -> Result<Peer, ErrorKind> {
         let mut host = Vec::new();
         host.try_extend_from_slice(self.peer.shown())
             .map_err(|_| ErrorKind::OutOfMemory)?;
-        super::url_peer(self.peer.scheme(), host, self.peer.port(), url, scope)
+        let (scheme, port) = (self.peer.scheme(), self.peer.port());
+        super::url_peer((scheme, host, port), url, scope, idn)
     }
 
     /// It goes over TLS: its scheme is `https` (C's `PROTOPT_SSL`).
@@ -646,7 +660,7 @@ impl Request {
                 Method::Upload => sigv4::Kind::Put,
             },
             hostname: self.peer.name(),
-            host: self.peer.shown(),
+            host: self.peer.request_host(),
             port: (port != self.default_port()).then_some(port),
             path,
             query,
@@ -692,12 +706,13 @@ impl Request {
         let made = match custom {
             Some(value) if !value.is_empty() => authority.try_extend_from_slice(value),
             given => {
-                // An empty one leaves the host as the URL names it,
-                // without an IPv6 address's brackets.
+                // An empty one leaves the host's name, without an IPv6
+                // address's brackets; else what the library's `Host:`
+                // says.
                 let host = if given.is_some() {
                     self.peer.name()
                 } else {
-                    self.peer.shown()
+                    self.peer.request_host()
                 };
                 with_port(&mut authority, host, port)
             }
@@ -1152,7 +1167,7 @@ impl Request {
                     .unwrap_or(&self.target),
             },
             version: self.version,
-            host: self.peer.shown(),
+            host: self.peer.request_host(),
             port: shown_port,
             user_agent: http.user_agent.as_deref(),
             referer: cx.easy().report().referer(),

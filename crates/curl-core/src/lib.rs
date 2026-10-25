@@ -20,6 +20,7 @@ pub mod gss;
 pub mod handler;
 mod hash;
 pub mod id;
+pub mod idn;
 pub mod libraries;
 pub mod mime;
 pub mod multi;

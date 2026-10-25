@@ -1,0 +1,52 @@
+=== a host in Unicode goes in Host: as the URL has it
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::idn::a_host_in_unicode_is_sent_in_ascii
+--- old
+            host: self.peer.request_host(),
+            port: shown_port,
+--- new
+            host: self.peer.shown(),
+            port: shown_port,
+
+=== a forwarding proxy's target names a host in Unicode as the URL has it
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::idn::a_host_in_unicode_is_sent_in_ascii
+--- old
+        if self.peer.converted() {
+--- new
+        if !self.peer.converted() {
+
+=== a name that converts to nothing is looked up as nothing
+file: crates/curl-core/src/idn.rs
+witness: curl-core idn::tests::a_name_is_looked_up_by_its_ascii_form
+--- old
+    if ascii.is_empty() {
+        return Err(IdnFailure::Malformed);
+    }
+--- new
+
+=== a proxy named in Unicode is looked up as the URL has it
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::idn::a_proxy_and_a_connect_to_host_are_looked_up_in_ascii
+--- old
+        .idn(cx.easy().libraries().idn)
+        .map_err(crate::idn::IdnFailure::kind)?;
+--- new
+        .idn(None)
+        .map_err(crate::idn::IdnFailure::kind)?;
+
+=== a connect-to host named in Unicode is looked up as the entry has it
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::idn::a_proxy_and_a_connect_to_host_are_looked_up_in_ascii
+--- old
+            let via = via.idn(cx.easy().libraries().idn);
+--- new
+            let via = via.idn(None);
+
+=== a CONNECT names a host in Unicode as the URL has it
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::idn::a_tunnel_names_a_host_in_unicode_in_ascii
+--- old
+        authority.try_extend_from_slice(target.request_host())?;
+--- new
+        authority.try_extend_from_slice(target.shown())?;

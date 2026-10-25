@@ -179,7 +179,7 @@ pub unsafe extern "C" fn curl_url_get(
     let Some(what) = part(what) else {
         return ffi::CURLUE_UNKNOWN_PART;
     };
-    let text = match u.with(|u| u.get(what, get_options(flags))) {
+    let text = match u.with(|u| u.get_with(what, get_options(flags), Some(crate::easy::IDN))) {
         Ok(text) => text,
         Err(e) => return url_code(e),
     };

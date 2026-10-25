@@ -1539,7 +1539,16 @@ Built so far: `enum Route { Local, Tcp(Tcp) }`, with `Tcp { origin, via, ip, pro
 `PROTOPT_CONN_REUSE`), the host as the URL names it, the port, the IPv6 zone and its scope (a
 numeric zone as it is, a name as its interface's index by `if_nametoindex`, one naming no
 interface none; `CURLOPT_ADDRESS_SCOPE` replaces the zone on the URL's peer), made once per
-leg and shared by the transfer, as its origin, and the connection it sets up. `via` is the
+leg and shared by the transfer, as its origin, and the connection it sets up. A host the URL,
+a proxy's URL or a connect-to entry names in Unicode keeps its ASCII form beside it (C's
+`hostname` apart from `user_hostname`), which the handle's IDN library makes
+(`Libraries::idn`, libidn2's `idn2_lookup_ul` in `crates/curl-idn2`, non-transitional IDNA
+2008, then 2003's transitional): the name it is resolved, sent (`Host:`, a forwarding proxy's
+target, `CONNECT`), matched, verified and looked up in `.netrc` by; a name that does not
+convert, or converts to nothing, fails the transfer as a malformed URL. Without an IDN
+library the name goes as it is, as from a C build without one. The traces that show a host
+show it as the URL names it. `Url::get_with` converts a host for `CURLU_PUNYCODE` and
+`CURLU_PUNY2IDN` with the library the shim gives it. `via` is the
 peer a connect-to entry names in the origin's place (C's `via_peer`, `conn/connect_to.rs`),
 none when it names the origin itself; the setup resolves and connects to `via` if there is
 one, and the traces name it where C's do. Matching is `Route::serves`: the same origin by

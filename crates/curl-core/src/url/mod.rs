@@ -6,8 +6,9 @@
 //! setting, clearing and appending to single parts, with every flag
 //! `curl_url_set` takes, and getting any part back with every flag of
 //! `curl_url_get`. The IDN conversions (`CURLU_PUNYCODE`,
-//! `CURLU_PUNY2IDN`) need an IDN library, and fail with LacksIdn where
-//! they would convert, as in C's build without one.
+//! `CURLU_PUNY2IDN`) need an IDN library (`Url::get_with`), and fail with
+//! LacksIdn where they would convert without one, as in C's build
+//! without one.
 
 mod encode;
 
@@ -27,6 +28,7 @@ use std::sync::Mutex;
 use curl_alloc::{OutOfMemory, TryArc};
 
 use crate::error::UrlErrorKind;
+use crate::idn::{Idn, IdnFailure};
 use encode::{Query, bad_octets, copy, push};
 
 /// URL text: bytes, valid UTF-8 or not, without a terminating zero.
@@ -142,14 +144,38 @@ impl GetOptions {
         puny2idn: false,
     };
 
-    /// Whether the IDN conversions asked for would convert `host`: with
-    /// no IDN library, an error (`host_decode`, `host_encode`).
-    fn idn(&self, host: &[u8]) -> Result<(), UrlErrorKind> {
-        let ascii = host.is_ascii();
-        if (self.punycode && !ascii) || (self.puny2idn && ascii) {
-            return Err(UrlErrorKind::LacksIdn);
+    /// The host `held` shown as the IDN conversions asked for make it,
+    /// `idn` converting: in punycode if not in ASCII, or decoded from it
+    /// if in ASCII; none where nothing converts. With no IDN library, one
+    /// that would convert is an error (`host_decode`, `host_encode`).
+    fn idn(
+        &self,
+        held: &[u8],
+        host: &[u8],
+        idn: Option<&dyn Idn>,
+    ) -> Result<Option<Bytes>, UrlErrorKind> {
+        let ascii = held.is_ascii();
+        let to_ascii = self.punycode && !ascii;
+        if !to_ascii && !(self.puny2idn && ascii) {
+            return Ok(None);
         }
-        Ok(())
+        let idn = idn.ok_or(UrlErrorKind::LacksIdn)?;
+        let converted = if to_ascii {
+            idn.to_ascii(host).and_then(|a| {
+                if a.is_empty() {
+                    Err(IdnFailure::Malformed)
+                } else {
+                    Ok(a)
+                }
+            })
+        } else {
+            idn.to_unicode(host)
+        };
+        match converted {
+            Ok(converted) => Ok(Some(converted)),
+            Err(IdnFailure::Malformed) => Err(UrlErrorKind::BadHostname),
+            Err(IdnFailure::OutOfMemory) => Err(UrlErrorKind::OutOfMemory),
+        }
     }
 }
 
@@ -825,12 +851,24 @@ impl Url {
         self.host.as_deref()
     }
 
-    /// Part `what`, as `curl_url_get` returns it.
+    /// Part `what`, as `curl_url_get` returns it in a build without an
+    /// IDN library.
     pub fn get(&self, what: Part, opts: GetOptions) -> Result<Bytes, UrlErrorKind> {
+        self.get_with(what, opts, None)
+    }
+
+    /// Part `what`, as `curl_url_get` returns it, its host converted by
+    /// `idn` where the options ask.
+    pub fn get_with(
+        &self,
+        what: Part,
+        opts: GetOptions,
+        idn: Option<&dyn Idn>,
+    ) -> Result<Bytes, UrlErrorKind> {
         let mut opts = opts;
         let mut port_text = [0u8; 5];
         let (part, missing): (Option<&[u8]>, UrlErrorKind) = match what {
-            Part::Url => return self.whole(opts),
+            Part::Url => return self.whole_with(opts, true, idn),
             Part::Scheme => {
                 opts.url_decode = false;
                 if opts.no_guess_scheme && self.scheme.as_ref().is_some_and(|s| s.guessed) {
@@ -896,8 +934,10 @@ impl Url {
                 encode::reencode(&mut enc, &out, query)?;
                 out = enc;
             }
-        } else if what == Part::Host {
-            opts.idn(part)?;
+        } else if what == Part::Host
+            && let Some(converted) = opts.idn(part, &out, idn)?
+        {
+            out = converted;
         }
         Ok(out)
     }
@@ -915,11 +955,6 @@ impl Url {
         }
     }
 
-    /// The whole URL (`urlget_url`).
-    fn whole(&self, opts: GetOptions) -> Result<Bytes, UrlErrorKind> {
-        self.whole_with(opts, true)
-    }
-
     /// The whole URL as `get` reads it back with `get_empty`, without its
     /// user and password: what a report shows of it (`effective_url`).
     pub(crate) fn shown(&self) -> Result<Bytes, UrlErrorKind> {
@@ -927,7 +962,7 @@ impl Url {
             get_empty: true,
             ..GetOptions::NONE
         };
-        self.whole_with(opts, false)
+        self.whole_with(opts, false, None)
     }
 
     /// The application's port in place of the URL's own (`CURLOPT_PORT`).
@@ -935,8 +970,14 @@ impl Url {
         self.port = Some(port.get());
     }
 
-    /// The whole URL, with its user and password if `credentials`.
-    fn whole_with(&self, opts: GetOptions, credentials: bool) -> Result<Bytes, UrlErrorKind> {
+    /// The whole URL, with its user and password if `credentials`, its
+    /// host converted by `idn` where the options ask (`urlget_url`).
+    fn whole_with(
+        &self,
+        opts: GetOptions,
+        credentials: bool,
+        idn: Option<&dyn Idn>,
+    ) -> Result<Bytes, UrlErrorKind> {
         let (user, password) = if credentials {
             (self.user.as_deref(), self.password.as_deref())
         } else {
@@ -1025,8 +1066,7 @@ impl Url {
         } else if opts.url_encode {
             Some(encode::escape(host)?)
         } else {
-            opts.idn(host)?;
-            None
+            opts.idn(host, host, idn)?
         };
         if !opts.no_guess_scheme || !self.scheme.as_ref().is_some_and(|s| s.guessed) {
             push(&mut out, scheme)?;
@@ -1638,6 +1678,26 @@ mod tests {
         assert_eq!(u.get(Part::Host, idn), Err(UrlErrorKind::LacksIdn));
         let copy = u.try_clone().unwrap();
         assert_eq!(copy, u);
+
+        // With one, the host converts either way, in the part and in the
+        // whole URL; a name that does not convert is a bad host name
+        // (`host_decode`, `host_encode`).
+        let fake: Option<&dyn crate::idn::Idn> = Some(&crate::idn::FakeIdn);
+        let u = Url::parse("http://åäö.test/p".as_bytes(), ParseOptions::NONE).unwrap();
+        let got = |what, opts| u.get_with(what, opts, fake).map(|v| show(&v));
+        assert_eq!(got(Part::Host, puny), Ok("xn--4cab6c.test".into()));
+        assert_eq!(got(Part::Url, puny), Ok("http://xn--4cab6c.test/p".into()));
+        assert_eq!(got(Part::Host, idn), Ok("åäö.test".into()), "not ASCII");
+        let u = Url::parse(b"http://xn--4cab6c.test/p", ParseOptions::NONE).unwrap();
+        let got = |what, opts| u.get_with(what, opts, fake).map(|v| show(&v));
+        assert_eq!(got(Part::Host, idn), Ok("åäö.test".into()));
+        assert_eq!(got(Part::Url, idn), Ok("http://åäö.test/p".into()));
+        assert_eq!(got(Part::Host, puny), Ok("xn--4cab6c.test".into()), "ASCII");
+        let u = Url::parse("http://unknown-å.test/".as_bytes(), ParseOptions::NONE).unwrap();
+        assert_eq!(
+            u.get_with(Part::Host, puny, fake),
+            Err(UrlErrorKind::BadHostname)
+        );
 
         // A relative URL resolved against a base read with the flags
         // given: the default port is written into the result.

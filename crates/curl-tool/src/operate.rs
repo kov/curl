@@ -3499,6 +3499,7 @@ impl Linked {
                 ed25519: Some(&curl_openssl::ED25519),
                 tls: Some(Library::Owned(tls)),
                 gss,
+                idn: Some(&curl_idn2::IDN2),
             })
         };
         Ok(Linked {

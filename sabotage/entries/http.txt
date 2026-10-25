@@ -312,9 +312,9 @@ witness: curl-core proto::http::tests::retry_after_reads_seconds_and_dates
 file: crates/curl-core/src/url/mod.rs
 witness: curl-core proto::http::tests::the_report_s_url_has_no_credentials
 --- old
-        self.whole_with(opts, false)
+        self.whole_with(opts, false, None)
 --- new
-        self.whole_with(opts, true)
+        self.whole_with(opts, true, None)
 
 === the line ending a head is assumed to fit in two bytes
 file: crates/curl-core/src/proto/http.rs

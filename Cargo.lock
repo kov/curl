@@ -88,6 +88,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-idn2"
+version = "0.1.0"
+dependencies = [
+ "curl-alloc",
+ "curl-core",
+ "libc",
+]
+
+[[package]]
 name = "curl-openssl"
 version = "0.1.0"
 dependencies = [
@@ -124,6 +133,7 @@ dependencies = [
  "curl-brotli",
  "curl-core",
  "curl-gssapi",
+ "curl-idn2",
  "curl-openssl",
  "curl-psl",
  "curl-zlib",
@@ -141,6 +151,7 @@ dependencies = [
  "curl-brotli",
  "curl-core",
  "curl-gssapi",
+ "curl-idn2",
  "curl-openssl",
  "curl-os",
  "curl-psl",

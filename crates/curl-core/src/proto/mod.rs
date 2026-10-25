@@ -20,6 +20,7 @@ use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Directions, Pause, Pipeline};
 use crate::error::ErrorKind;
 use crate::error::{UrlErrorKind, url_error};
+use crate::idn::{Idn, IdnFailure};
 use crate::multi::Host;
 use crate::multi::state::{AfterRequest, StepCx};
 use crate::netrc::{self, NetrcError};
@@ -35,23 +36,26 @@ use std::ffi::CStr;
 
 /// The peer `url` names, at `host` and `port`: in the IPv6 scope
 /// `scope` if the application sets one (`CURLOPT_ADDRESS_SCOPE`), the
-/// URL's zone then not read, or else in the zone's (`Curl_peer_from_url`).
+/// URL's zone then not read, or else in the zone's; a name in Unicode
+/// looked up by its ASCII form, which `idn` makes (`Curl_peer_from_url`).
 pub(super) fn url_peer(
-    scheme: Scheme,
-    host: Vec<u8>,
-    port: u16,
+    (scheme, host, port): (Scheme, Vec<u8>, u16),
     url: &Url,
     scope: Option<NonZeroU32>,
+    idn: Option<&dyn Idn>,
 ) -> Result<Peer, ErrorKind> {
-    if let Some(scope) = scope {
-        return Ok(Peer::scoped(scheme, host, port, scope));
-    }
-    let zone = match url.get(Part::ZoneId, GetOptions::NONE) {
-        Ok(zone) => Some(zone),
-        Err(UrlErrorKind::NoZoneid) => None,
-        Err(e) => return Err(url_error(e)),
+    let peer = match scope {
+        Some(scope) => Peer::scoped(scheme, host, port, scope),
+        None => {
+            let zone = match url.get(Part::ZoneId, GetOptions::NONE) {
+                Ok(zone) => Some(zone),
+                Err(UrlErrorKind::NoZoneid) => None,
+                Err(e) => return Err(url_error(e)),
+            };
+            Peer::new(scheme, host, port, zone)
+        }
     };
-    Ok(Peer::new(scheme, host, port, zone))
+    peer.idn(idn).map_err(IdnFailure::kind)
 }
 
 /// What a transfer's next request takes from the ones before it.
@@ -272,10 +276,11 @@ impl ProtoState {
         &self,
         url: &Url,
         scope: Option<NonZeroU32>,
+        idn: Option<&dyn Idn>,
     ) -> Result<Option<Peer>, ErrorKind> {
         match *self {
             ProtoState::File(_) => Ok(None),
-            ProtoState::Http(ref r) => Ok(Some(r.network(url, scope)?)),
+            ProtoState::Http(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
             #[cfg(any(test, feature = "test-util"))]
@@ -290,7 +295,7 @@ impl ProtoState {
                     name: "tcp",
                     reuse: true,
                 };
-                Ok(Some(url_peer(scheme, host, port, url, scope)?))
+                Ok(Some(url_peer((scheme, host, port), url, scope, idn)?))
             }
         }
     }
@@ -558,7 +563,7 @@ mod tests {
                 ..ParseOptions::NONE
             };
             let url = Url::parse(url, opts).unwrap();
-            let peer = ProtoState::Tcp.network(&url, None).unwrap().unwrap();
+            let peer = ProtoState::Tcp.network(&url, None, None).unwrap().unwrap();
             peer.zone().map(<[u8]>::to_vec)
         };
         assert_eq!(

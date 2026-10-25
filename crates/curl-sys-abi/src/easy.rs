@@ -478,8 +478,12 @@ const fn libraries_with(
         ed25519: Some(&curl_openssl::ED25519),
         tls: Some(curl_core::libraries::Library::Static(&OPENSSL)),
         gss,
+        idn: Some(IDN),
     }
 }
+
+/// What converts host names, for the handles and the URL API alike.
+pub(crate) const IDN: &dyn curl_core::idn::Idn = &curl_idn2::IDN2;
 
 /// OpenSSL, logging secrets to the root's key log.
 static OPENSSL: curl_openssl::OpenSsl = curl_openssl::OpenSsl::logging_keys_to(

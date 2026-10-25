@@ -31,6 +31,7 @@ curl-os = { path = "../curl-os", features = ["args", "fs"] }
 curl-gssapi = { path = "../curl-gssapi" }
 curl-openssl = { path = "../curl-openssl" }
 curl-psl = { path = "../curl-psl" }
+curl-idn2 = { path = "../curl-idn2" }
 curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }
 curl-zstd = { path = "../curl-zstd" }

@@ -967,10 +967,9 @@ witness: curl-tool options::parse::tests::a_range_is_taken_as_c_takes_it
 file: crates/curl-tool/src/main.rs
 witness: curl-tool tests::names_the_libraries_as_c
 --- old
-        let libraries: [&dyn std::fmt::Display; 6] = [&ssl, &zlib, &brotli, &zstd, &psl, &gss];
+            [&ssl, &zlib, &brotli, &zstd, &idn, &psl, &gss];
 --- new
-        let libraries: [&dyn std::fmt::Display; 5] = [&ssl, &zlib, &brotli, &zstd, &gss];
-        let _ = psl;
+            [&ssl, &zlib, &brotli, &zstd, &idn, &gss, &gss];
 
 === %time{}'s microseconds lose their leading zeros
 file: crates/curl-tool/src/write_out.rs

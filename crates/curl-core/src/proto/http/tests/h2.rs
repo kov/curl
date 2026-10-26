@@ -310,6 +310,30 @@ fn a_101_switches_an_upgrade_to_http2() {
     assert_eq!(ran.easy.report().response_code(), Some(200));
 }
 
+/// A body of unknown size asks for a 100 over HTTP/1.1, but not with an
+/// upgrade (`addexpect`): it goes chunked, unannounced.
+#[test]
+fn an_upgrade_asks_for_no_100() {
+    let talk = Conversation::new(OK, false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let ran = get_with(&mut m, e, "/up", talk.clone(), |o| {
+        o.http.version = HttpVersion::Http2;
+        o.upload = crate::options::UploadSource::Read {
+            handler: Handler::read(super::Stream::new(b"abc")).unwrap(),
+            rewind: None,
+            size: None,
+        };
+        o.method = Method::Post;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let sent = String::from_utf8(ran.request.clone()).unwrap();
+    assert!(sent.contains("Upgrade: h2c\r\n"), "{sent}");
+    assert!(sent.contains("Transfer-Encoding: chunked\r\n"), "{sent}");
+    assert!(!sent.contains("Expect"), "{sent}");
+}
+
 /// A server that does not take the upgrade answers in HTTP/1.1, and the
 /// connection stays HTTP/1.
 #[test]

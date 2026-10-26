@@ -130,7 +130,7 @@ witness: curl-core proto::http1::request::tests::an_upgrade_is_named_in_connecti
 
 === an upgrade asks for a 100 too
 file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::h2::a_101_switches_an_upgrade_to_http2
+witness: curl-core proto::http::tests::h2::an_upgrade_asks_for_no_100
 --- old
             && upgrade.is_none()
             && expects.is_none()

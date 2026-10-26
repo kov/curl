@@ -254,3 +254,14 @@ witness: curl-sys-abi push::tests::the_fields_are_read_by_number_and_by_name
         .find(|line| line.starts_with(name) && line.get(name.len()) == Some(&b':'))
 --- new
         .find(|line| line.starts_with(name))
+
+=== an upload switched off forgets no body was asked for
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::no_body_outlasts_a_method_that_does_not_clear_it
+--- old
+                // body was asked for.
+                set.method = Method::Get;
+--- new
+                // body was asked for.
+                set.method = Method::Get;
+                set.no_body = false;

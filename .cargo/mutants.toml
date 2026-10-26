@@ -646,6 +646,11 @@ exclude_re = [
     # settles; one settles only when lending it ran out of memory, and
     # then serves its transfer alone either way.
     'curl-core/src/conn/pool\.rs:.*: replace match guard settled && !conn\.is_h2\(\) with true in Verdict::of$',
+    # Taking a connection out of its place for a step matters only to a
+    # transfer whose step uses it: a connecting transfer's is never in a
+    # place yet, and a done one's step updates its progress alone, its
+    # release finding the connection in its place.
+    'curl-core/src/multi/state\.rs:.*: delete match arm TransferState::(Connecting\(c\)|Done\(d\)) in TransferState::lease_mut$',
     # The internal trace's Debug names no field.
     'curl-core/src/trace\.rs:.*: replace <impl fmt::Debug for Internal>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
     # `left_ms` says -1 for no time left, never 0.

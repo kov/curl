@@ -8,7 +8,7 @@
 
 #![allow(unsafe_code)]
 
-use core::cell::{Cell, UnsafeCell};
+use core::cell::{Cell, RefCell, UnsafeCell};
 use core::ffi::{c_int, c_long, c_uint, c_ulong, c_void};
 use core::num::NonZeroU32;
 use core::ptr::{self, NonNull};
@@ -22,9 +22,9 @@ use curl_core::easy::Easy;
 use curl_core::error::MultiErrorKind;
 use curl_core::id::ArenaPolicy;
 use curl_core::multi::{
-    Abort, ConnLimits, Env, EventCx, Host, Message, Multi, MultiEvents, Notification, NotifyCx,
-    NotifyKind, PushOffer, Pushed, SocketEvent, SocketFor, SocketWhat, TimerChange, TransferId,
-    UnknownSocket, WaitMode,
+    Abort, ConnLimits, Env, EventCx, EventTable, Host, Message, Multi, MultiEvents, Notification,
+    NotifyCx, NotifyKind, PushOffer, Pushed, SocketEvent, SocketFor, SocketWhat, TimerChange,
+    TransferId, UnknownSocket, WaitMode,
 };
 use curl_core::time::SystemClock;
 
@@ -76,6 +76,10 @@ pub(crate) struct ShimMulti {
     /// socket callback a socket of the multi's own work, a connection
     /// shutting down (C's `multi->admin`).
     admin: ShimEasy,
+    /// What a private multi's callbacks were last told, once
+    /// `curl_easy_perform_ev` drove it: they stay set on it until it is
+    /// freed, as C's `events_socket` does.
+    pub(crate) events: RefCell<Option<EventTable>>,
 }
 
 impl ShimMulti {
@@ -117,6 +121,7 @@ impl ShimMulti {
                 push_data: ptr::null_mut(),
             }),
             admin: ShimEasy::internal(),
+            events: RefCell::new(None),
         })
     }
 
@@ -153,6 +158,10 @@ impl ShimMulti {
         // SAFETY: nothing runs on a multi being freed.
         let core = unsafe { m.core_mut() };
         assert!(core.next_transfer(None).is_none(), "a multi is freed empty");
+        // A perform's callbacks hear its cleanup.
+        if let Some(table) = m.events.borrow_mut().as_mut() {
+            core.close_connections(table);
+        }
         m.magic.store(0, Ordering::Relaxed);
         // SAFETY: as the caller guarantees.
         drop(unsafe { Box::from_raw(multi.as_ptr()) });

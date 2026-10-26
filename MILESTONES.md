@@ -894,11 +894,9 @@ the system's under the HTTP-only programs installed here.
     both legs; the installed programs that link libcurl for HTTP run on ours. **In progress.**
     Every function the system's libcurl exports is exported: the 507 installed programs that
     link it resolve every libcurl symbol against ours, and the system's `curl` and cmake's
-    downloads run on it. Of the pytest suite's HTTP/1.1 cases that pass on C, these still fail on the
-    Rust leg: test_19_05 (the debug-build tool's `CURL_FORBID_REUSE` and the event-driven
-    perform's `socket cb:` lines), and the TLS early data
-    cases 02_32 and 07_70, whose server starts only for a curl claiming HTTP/3 (milestone 5);
-    the FTP cases wait on stage 6.
+    downloads run on it. Of the pytest suite's HTTP/1.1 cases that pass on C, these still fail
+    on the Rust leg: the TLS early data cases 02_32 and 07_70, whose server starts only for a
+    curl claiming HTTP/3 (milestone 5); the FTP cases wait on stage 6.
 
 ## Milestone 5: HTTP/3
 

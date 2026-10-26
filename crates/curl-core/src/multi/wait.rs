@@ -313,7 +313,7 @@ pub fn drive_to_completion<H: Host>(
 /// from a perform on, as C's callbacks stay set on it, so its cleanup's
 /// changes are heard too.
 #[derive(Debug, Default)]
-pub(crate) struct EventTable {
+pub struct EventTable {
     /// How long to wait for a socket, less what was spent since it was
     /// set; `None` for as long as it takes.
     wait: Option<Duration>,
@@ -435,7 +435,7 @@ pub fn drive_by_events<H: Host>(
 
 /// As `drive_by_events`, through `table`, which a multi kept from one
 /// perform to the next watches across them.
-pub(crate) fn drive_by_events_with<H: Host>(
+pub fn drive_by_events_with<H: Host>(
     m: &mut Multi<H>,
     id: TransferId,
     table: &mut EventTable,

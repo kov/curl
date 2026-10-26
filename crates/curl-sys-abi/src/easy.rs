@@ -18,7 +18,9 @@ use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, MultiErrorKind};
 use curl_core::handler::{Handler, WriteHandler};
 use curl_core::multi::raw::RawIo;
-use curl_core::multi::{PauseRequest, TransferId, drive_by_events, drive_to_completion};
+use curl_core::multi::{
+    EventTable, PauseRequest, TransferId, drive_by_events_with, drive_to_completion,
+};
 use curl_core::options::{Callbacks, Options};
 use curl_core::report::TransferReport;
 use curl_core::tls::TlsNative;
@@ -883,8 +885,12 @@ fn perform(easy: &ShimEasy, drive: Drive) -> CURLcode {
         match drive {
             Drive::Waits => drive_to_completion(core, id, &mut ShimEvents::new(m)),
             // A private multi has no callbacks of the application's; the
-            // event table stands in for them.
-            Drive::Events => drive_by_events(core, id),
+            // event table stands in for them, kept with the multi.
+            Drive::Events => {
+                let mut events = m.events.borrow_mut();
+                let table = events.get_or_insert_with(EventTable::default);
+                drive_by_events_with(core, id, table)
+            }
         }
     };
     let result = match outcome {

@@ -1107,8 +1107,7 @@ fn no_string_option_takes_an_over_long_string() {
     let mut row = ptr::null();
     let mut seen = 0;
     loop {
-        // SAFETY: NULL or a row the iteration gave.
-        row = unsafe { crate::easyoption::curl_easy_option_next(row) };
+        row = crate::easyoption::curl_easy_option_next(row);
         // SAFETY: a row of the static table, or NULL at its end.
         let Some(o) = (unsafe { row.as_ref() }) else {
             break;

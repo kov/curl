@@ -633,6 +633,19 @@ exclude_re = [
     # A raw receive's failing errno, which the fake network cannot fail
     # and a real reset needs SO_LINGER for.
     'curl-core/src/multi/raw\.rs:.*: replace <impl LayerCx for RawCx<._>>::socket_failed with \(\)$',
+    # A connection settles in the step that finds what it speaks, and its
+    # transfer steps again in that same pass: a wake one step late still
+    # lets its waiters go in the pass, before any of them runs, as
+    # `a_pipewait_ends_in_the_pass_its_connection_settles` checks.
+    # (The second comparison, the stored verdict's; the column tells it.)
+    'curl-core/src/conn/pool\.rs:\d+:67: replace == with != in Pool::settle$',
+    # An assertion no correct pool reaches: the multi gives back every
+    # share's connection lent to it before its pool goes.
+    'curl-core/src/conn/pool\.rs:.*: replace <impl Drop for Pool>::drop with \(\)$',
+    # A connection found to speak HTTP/2 is attached or lent before it
+    # settles; one settles only when lending it ran out of memory, and
+    # then serves its transfer alone either way.
+    'curl-core/src/conn/pool\.rs:.*: replace match guard settled && !conn\.is_h2\(\) with true in Verdict::of$',
     # The internal trace's Debug names no field.
     'curl-core/src/trace\.rs:.*: replace <impl fmt::Debug for Internal>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
     # `left_ms` says -1 for no time left, never 0.

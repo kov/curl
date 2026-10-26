@@ -1615,3 +1615,65 @@ fn connections_lent_by_two_shares_are_told_apart() {
         assert!(matches!(released, Released::Idle { .. }), "{released:?}");
     }
 }
+
+/// A share's connection lent to a multi, `close` if it is marked to
+/// close, searched for by a transfer that speaks `versions`: what the
+/// search finds.
+fn search_lent(versions: crate::proto::http::Versions, close: bool) -> Found {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let share = crate::share::Share::new().unwrap();
+    let home = Home::Share(share.clone());
+    let mut lease = new(&mut share.pool(), &home, tcp(1), &mut net, now);
+    up(&mut lease, &mut net, now);
+    if let Some(ConnSlot::Open(conn)) = lease.conn.as_mut() {
+        conn.close = close;
+    }
+    let mut multi = Pool::new().unwrap();
+    multi.borrow(&mut lease).unwrap();
+    share.pool().lend(lease.id());
+    let route = tcp(1);
+    let wanted = Wanted {
+        route: &route,
+        auth: Wants::NONE,
+        last: None,
+        versions,
+        multiplex: NonZeroU32::new(100),
+        pipewait: false,
+        lending: Lending::NONE,
+    };
+    let lent = multi.lending(&share, &wanted).unwrap();
+    let wanted = Wanted {
+        lending: lent.lending(),
+        ..wanted
+    };
+    let found = share
+        .pool()
+        .find(&home, wanted, RULES, &mut net, now, &mut Vec::new())
+        .unwrap();
+    let LentBack::Last(back) = multi.release_lent(lease) else {
+        panic!("its one key");
+    };
+    share
+        .pool()
+        .release(&home, back, Finish::default(), UNLIMITED, &mut net, now);
+    found
+}
+
+/// A connection that multiplexes is joined only by a transfer that may
+/// speak HTTP/2 to it, and not once it is marked to close
+/// (`url_match_multiplex_needs`, `url_match_conn`).
+#[test]
+fn a_multiplexed_connection_is_joined_only_as_it_may_be() {
+    use crate::proto::http::Versions;
+    let found = search_lent(Versions::ALL, false);
+    assert!(matches!(found, Found::Lent(_)), "{found:?}");
+    let http_1 = Versions {
+        h1: true,
+        h2: false,
+    };
+    let found = search_lent(http_1, false);
+    assert!(!matches!(found, Found::Lent(_)), "{found:?}");
+    let found = search_lent(Versions::ALL, true);
+    assert!(!matches!(found, Found::Lent(_)), "{found:?}");
+}

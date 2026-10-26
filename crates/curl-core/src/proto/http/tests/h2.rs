@@ -913,6 +913,57 @@ fn a_pipewait_on_a_connection_that_does_not_multiplex_ends_once_known() {
     pipewait_on_http_1(|_| {});
 }
 
+/// The pass in which the first request finds its connection speaks
+/// HTTP/1 is the one that lets the transfer pipewaiting on it go
+/// (`Curl_multi_connchanged` as the connection settles), not a later one.
+#[test]
+fn a_pipewait_ends_in_the_pass_its_connection_settles() {
+    let first = Conversation::new(OK, false).held();
+    let second = Conversation::new(OK, false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let mut ids = Vec::new();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.pipewait = true;
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+    }
+    let mut passes = 0;
+    loop {
+        m.perform(&mut NoEvents).unwrap();
+        passes += 1;
+        if first.received().ends_with(b"\r\n\r\n") {
+            break;
+        }
+        assert!(
+            matches!(
+                m.state_of(ids[1]),
+                crate::multi::state::TransferState::Pending(_)
+            ),
+            "let go before its connection settled"
+        );
+        assert!(passes < 20, "the first never sent");
+    }
+    assert!(
+        !matches!(
+            m.state_of(ids[1]),
+            crate::multi::state::TransferState::Pending(_)
+        ),
+        "still waiting after the pass its connection settled in"
+    );
+    first.allow(1);
+    for id in ids {
+        assert_eq!(
+            drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+            Ok(())
+        );
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+}
+
 /// As a connection of the multi's own, a share's (`CURL_LOCK_DATA_CONNECT`)
 /// is pending until its first request finds what it speaks, and a
 /// transfer that pipewaits on it waits until then.

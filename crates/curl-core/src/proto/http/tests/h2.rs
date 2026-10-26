@@ -693,6 +693,44 @@ fn two_transfers_share_a_connection() {
     );
 }
 
+/// A transfer taken out of the multi with its stream still open resets
+/// the stream, and the reset goes as it is taken out, not with whichever
+/// transfer next steps on the connection (`http2_data_done`): a server
+/// would otherwise go on sending what no one reads.
+#[test]
+fn a_transfer_removed_mid_body_resets_its_stream_at_once() {
+    let talk = Conversation::replies(
+        &[
+            b"S\nH 1 0\n:status: 200\n\nD 1 2 0\naaH 3 0\n:status: 200\n\nD 3 2 0\nbb",
+            WINDOW_SENT,
+        ],
+        false,
+    )
+    .per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut ids = Vec::new();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.version = HttpVersion::Http2Prior;
+        o.callbacks.write = Some(Handler::write(Seen::default()).unwrap());
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        for _ in 0..3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+    }
+    let sent = || String::from_utf8(talk.received()).unwrap();
+    assert!(sent().contains("H 3 1\n"), "both requests sent: {}", sent());
+    assert!(!sent().contains("R 1 "), "{}", sent());
+    m.remove(ids[0], &mut NoEvents).unwrap();
+    assert!(sent().contains("R 1 5\n"), "{}", sent());
+    m.remove(ids[1], &mut NoEvents).unwrap();
+}
+
 /// The transfer done first on a connection another is still on says so,
 /// and leaves the connection to it; the last says it used it alone
 /// (`multi_done_locked`).

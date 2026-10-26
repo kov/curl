@@ -445,6 +445,15 @@ impl ProtoState {
         }
     }
 
+    /// The transfer is done with the connection, before its request was
+    /// over, outside its steps (`Curl_conn_ev_data_done`): an HTTP/2
+    /// stream still open is reset, and that goes out.
+    pub(crate) fn data_done<H: Host>(&mut self, cx: &mut StepCx<'_, H>, lease: &mut ConnLease) {
+        if let ProtoState::Http(r) = self {
+            r.data_done(cx, lease);
+        }
+    }
+
     /// The request's body is to be read again for the next request
     /// (`Curl_creader_will_rewind`).
     pub(crate) fn rewinds_upload(&self) -> bool {

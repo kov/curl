@@ -2486,6 +2486,13 @@ impl Request {
         self.head().meta().close() || self.pipeline.body_closes() || self.closing
     }
 
+    /// As `ProtoState::data_done`.
+    pub(crate) fn data_done<H: Host>(&mut self, cx: &mut StepCx<'_, H>, lease: &mut ConnLease) {
+        if self.h2.is_some() {
+            self.h2_done(cx, lease);
+        }
+    }
+
     /// The request is over (`Curl_http_done`): a line still held is
     /// delivered, whatever came of it; a reply with nothing in it is an
     /// error, unless the request is to be made again; the connection is

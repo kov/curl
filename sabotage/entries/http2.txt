@@ -521,3 +521,11 @@ witness: curl-core proto::http::tests::h2::a_transfer_done_on_a_shared_connectio
     if in_use > 0 {
 --- new
     if in_use > 1 {
+
+=== a transfer taken out of the multi leaves its stream open
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_transfer_removed_mid_body_resets_its_stream_at_once
+--- old
+            proto.data_done(cx, &mut lease);
+--- new
+            let _ = &mut proto;

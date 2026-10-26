@@ -523,33 +523,38 @@ witness: curl-core proto::http::tests::a_connection_is_not_open_until_its_proxy_
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_transfer_removed_mid_connect_leaves_no_connection_to_reuse
 --- old
-        let (lease, origin, past_do, rewinding) = match self {
+        let (mut lease, proto, origin, past_do, rewinding) = match self {
             TransferState::Init
             | TransferState::Pending(_)
             | TransferState::Setup(_)
             | TransferState::Completed(_) => return,
-            TransferState::Connecting(c) => (c.lease, Some(c.route.origin), false, false),
+            TransferState::Connecting(c) => (c.lease, None, Some(c.route.origin), false, false),
             TransferState::ProtoConnect(x) | TransferState::Do(x) => {
                 let rewinding = x.proto.rewinds_upload();
-                (x.lease, x.origin, false, rewinding)
+                (x.lease, Some(x.proto), x.origin, false, rewinding)
             }
             TransferState::Did(x)
             | TransferState::Exchanging(x)
             | TransferState::RateLimiting(x) => {
                 let rewinding = x.proto.rewinds_upload();
-                (x.lease, x.origin, true, rewinding)
+                (x.lease, Some(x.proto), x.origin, true, rewinding)
             }
             TransferState::Done(d) => {
                 let rewinding = d.rewinding();
-                (d.lease, d.origin, true, rewinding)
+                (d.lease, d.proto, d.origin, true, rewinding)
             }
         };
         mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
         upload::trace_reset(cx, rewinding);
+        if let Some(mut proto) = proto {
+            // A key's connection is in its place outside a step.
+            cx.rest.caches.pool.check_out(&mut lease);
+            proto.data_done(cx, &mut lease);
+        }
         release(cx, lease, true, past_do, origin.as_ref());
 --- new
         let mut promoted = false;
-        let (lease, origin, past_do, rewinding) = match self {
+        let (mut lease, proto, origin, past_do, rewinding) = match self {
             TransferState::Init
             | TransferState::Pending(_)
             | TransferState::Setup(_)
@@ -559,25 +564,30 @@ witness: curl-core proto::http::tests::a_transfer_removed_mid_connect_leaves_no_
                 if promoted {
                     c.lease.handshaken();
                 }
-                (c.lease, Some(c.route.origin), false, false)
+                (c.lease, None, Some(c.route.origin), false, false)
             }
             TransferState::ProtoConnect(x) | TransferState::Do(x) => {
                 let rewinding = x.proto.rewinds_upload();
-                (x.lease, x.origin, false, rewinding)
+                (x.lease, Some(x.proto), x.origin, false, rewinding)
             }
             TransferState::Did(x)
             | TransferState::Exchanging(x)
             | TransferState::RateLimiting(x) => {
                 let rewinding = x.proto.rewinds_upload();
-                (x.lease, x.origin, true, rewinding)
+                (x.lease, Some(x.proto), x.origin, true, rewinding)
             }
             TransferState::Done(d) => {
                 let rewinding = d.rewinding();
-                (d.lease, d.origin, true, rewinding)
+                (d.lease, d.proto, d.origin, true, rewinding)
             }
         };
         mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
         upload::trace_reset(cx, rewinding);
+        if let Some(mut proto) = proto {
+            // A key's connection is in its place outside a step.
+            cx.rest.caches.pool.check_out(&mut lease);
+            proto.data_done(cx, &mut lease);
+        }
         release(cx, lease, !promoted, past_do, origin.as_ref());
 
 === the tunnel reads the proxy's answer a byte at a time, as C does

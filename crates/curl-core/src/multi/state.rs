@@ -515,29 +515,34 @@ impl TransferState {
     pub(crate) fn abandon<H: Host>(self, cx: &mut StepCx<'_, H>) {
         // Past its request, the connection is in no known state
         // (`curl_multi_remove_handle`'s `streamclose`).
-        let (lease, origin, past_do, rewinding) = match self {
+        let (mut lease, proto, origin, past_do, rewinding) = match self {
             TransferState::Init
             | TransferState::Pending(_)
             | TransferState::Setup(_)
             | TransferState::Completed(_) => return,
-            TransferState::Connecting(c) => (c.lease, Some(c.route.origin), false, false),
+            TransferState::Connecting(c) => (c.lease, None, Some(c.route.origin), false, false),
             TransferState::ProtoConnect(x) | TransferState::Do(x) => {
                 let rewinding = x.proto.rewinds_upload();
-                (x.lease, x.origin, false, rewinding)
+                (x.lease, Some(x.proto), x.origin, false, rewinding)
             }
             TransferState::Did(x)
             | TransferState::Exchanging(x)
             | TransferState::RateLimiting(x) => {
                 let rewinding = x.proto.rewinds_upload();
-                (x.lease, x.origin, true, rewinding)
+                (x.lease, Some(x.proto), x.origin, true, rewinding)
             }
             TransferState::Done(d) => {
                 let rewinding = d.rewinding();
-                (d.lease, d.origin, true, rewinding)
+                (d.lease, d.proto, d.origin, true, rewinding)
             }
         };
         mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
         upload::trace_reset(cx, rewinding);
+        if let Some(mut proto) = proto {
+            // A key's connection is in its place outside a step.
+            cx.rest.caches.pool.check_out(&mut lease);
+            proto.data_done(cx, &mut lease);
+        }
         release(cx, lease, true, past_do, origin.as_ref());
     }
 }

@@ -896,7 +896,11 @@ the system's under the HTTP-only programs installed here.
     link it resolve every libcurl symbol against ours, and the system's `curl` and cmake's
     downloads run on it. Of the pytest suite's HTTP/1.1 cases that pass on C, these still fail
     on the Rust leg: the TLS early data cases 02_32 and 07_70, whose server starts only for a
-    curl claiming HTTP/3 (milestone 5); the FTP cases wait on stage 6.
+    curl claiming HTTP/3 (milestone 5); the FTP cases wait on stage 6. Of the HTTP/2 cases,
+    02_23a fails: its client asserts that each transfer it aborts while paused had its
+    progress callback see data first, and on ours some transfers get their first data and
+    their pause in other transfers' steps, as the server has run further ahead on the
+    connection than it does with C. Why the server runs further ahead is not yet known.
 
 ## Milestone 5: HTTP/3
 

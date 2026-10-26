@@ -1471,8 +1471,8 @@ depend; a push chain with a buffer between layers would not keep them. `Below` i
 split at the layer being called, ending at the socket, so a TLS layer's BIO reads and writes
 the layer below without aliasing its own state.
 
-`LayerStack` holds the layers that work on the bytes, boxed, behind one pointer, as every
-transfer's state holds its connection inline (§8.2); for TCP, a SOCKS proxy or a tunnel it is
+`LayerStack` holds the layers that work on the bytes, boxed, behind one pointer, so a
+connection stays within C's `connectdata` (§8.2); for TCP, a SOCKS proxy or a tunnel it is
 empty and allocates nothing. Only TLS pushes a layer, and pushing one allocates.
 The stack answers for the stream: `data_pending` is true while a layer holds bytes or the
 stream's `rx` is not empty (bytes that came after a tunnel's or a SOCKS proxy's answer, which
@@ -2328,8 +2328,7 @@ copy of the transfer's cold `TlsOptions`, every field `match_ssl_primary_config`
 (versions, the options bits, the status check, CA file, path and blob, the CRL, the issuer, the
 client certificate and key with their formats and password, the cipher lists, curves,
 signature algorithms, the pinned key), made per leg, shared by the route and the connection,
-so `ConnSlot` and `Slot` keep their sizes (224 and 952 bytes measured with it, under their 232
-and 976 pins, the SOCKS pre-proxy shared to make room). Its `eq` destructures every field: the
+so a route held by a transfer's slot and by its connection stays small. Its `eq` destructures every field: the
 paths, blobs and keys exactly (`Curl_safecmp`), the lists and formats in any case
 (`curl_strequal`), the password in constant time (`Curl_timestrcmp`); ALPN is not compared.
 A transfer that verifies never takes a connection made without (the CVE-2021-22924 class). The
@@ -3479,23 +3478,23 @@ peer gets a protocol error, not an out-of-memory one.
   that what is refused is the library's.
 - Budgets count allocations on the test's thread (`curl_alloc::track::count_allocations`). They
   are set as each scenario lands, at what this design calls for: the first, a plain GET over
-  `FakeNet`, is fixed beside the test (`GET_BUDGET`) at 46, some of these taking more than one: the multi; the easy's URL, user
+  `FakeNet`, is fixed beside the test (`GET_BUDGET`) at 47, some of these taking more than one: the multi; the easy's URL, user
   agent and handlers; the transfer's place in the multi and its slot, boxed so the table's
   empty rows cost little, as C's hold pointers; the URL as fetched and its parts; the URL read
   back once parsed, as C reads it back; the target grown by its query; the protocol's state;
   the peer; the effective URL kept for the report; the answer for the host kept in the DNS
-  cache (its name, its addresses, the answer shared, the cache's table); the list of connect
-  attempts; the socket; the request head; the receive buffer; the head parser's line; the
+  cache (its name, its addresses, the answer shared, the cache's table); the connection, as
+  C's `connectdata`; the list of connect attempts; the socket; the request head; the receive buffer; the head parser's line; the
   header store; and the content type. `Stream`, `Sock`, `Closer::System`, `Home` and an empty
   `LayerStack` allocate nothing, so step 40 leaves the budget as it is.
 - The core's own part of an HTTPS GET is pinned over the fake TLS library
-  (`HTTPS_FAKE_GET_BUDGET`, 55): the plain GET's 46, then the route's `TlsIdentity` (shared with
+  (`HTTPS_FAKE_GET_BUDGET`, 56): the plain GET's 47, then the route's `TlsIdentity` (shared with
   the connection), the handshake under way, the library's session (the fake's one box), its
   layer, the stream's layer stack and its list, the multi's `TlsShared` with the fake's state
   in its box, and the key the connection's sessions are kept by. The same GET is run with each
   allocation refused in turn and alone; its server says goodbye back at once, so the
   connection's shutdown, as the multi goes, finishes in its one try and joins no set.
-  `GET_BUDGET` stays 46: a plain GET makes no TLS group, identity or layer.
+  `GET_BUDGET` stays 47: a plain GET makes no TLS group, identity or layer.
 - Over OpenSSL, `crates/curl-openssl/tests/peer.rs` pins three, as the core cannot depend on
   the binding; OpenSSL's own allocations are libc's, not counted, as C's tracker does not count
   them, and the ALPN list and trace text are on the stack:

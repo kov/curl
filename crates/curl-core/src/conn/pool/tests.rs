@@ -1710,7 +1710,7 @@ fn search_lent(versions: crate::proto::http::Versions, close: bool) -> Found {
     let home = Home::Share(share.clone());
     let mut lease = new(&mut share.pool(), &home, tcp(1), &mut net, now);
     up(&mut lease, &mut net, now);
-    if let Some(ConnSlot::Open(conn)) = lease.conn.as_mut() {
+    if let Some(ConnSlot::Open(conn)) = lease.conn.as_deref_mut() {
         conn.close = close;
     }
     let mut multi = Pool::new().unwrap();

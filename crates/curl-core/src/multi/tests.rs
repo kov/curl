@@ -4157,18 +4157,19 @@ fn connections_are_reused_within_a_scope() {
     }
 }
 
-/// A connection's slot is held inline by the lease, in the transfer's
-/// state, in its slot, which every handle added to a multi pays for: a
-/// field that grows them grows every handle (`a_handle_costs_no_more_than_cs`
-/// in the shim holds the whole). Their sizes, as they are: the socket's
-/// closer, which a connection keeps from the transfer that made it, is a
-/// pointer of them.
+/// A connection is its own allocation, as C's `connectdata` is, held no
+/// larger than C's (656 bytes); a transfer's lease holds a pointer to it.
+/// A transfer's slot is held by every handle added to a multi, which
+/// `a_handle_costs_no_more_than_cs` in the shim holds to C's `Curl_easy`;
+/// the pin here names the field that grows it. The socket's closer, which
+/// a connection keeps from the transfer that made it, is a pointer of
+/// them.
 #[test]
 fn a_connection_s_slot_and_a_transfer_s_stay_their_size() {
     let conn = size_of::<crate::conn::ConnSlot>();
     let slot = size_of::<super::Slot<super::NoHost>>();
-    assert!(conn <= 232, "a connection's slot takes {conn} bytes");
-    assert!(slot <= 976, "a transfer's slot takes {slot} bytes");
+    assert!(conn <= 656, "a connection's slot takes {conn} bytes");
+    assert!(slot <= 768, "a transfer's slot takes {slot} bytes");
 }
 
 /// Turns the PROXY protocol on as the proxy's answer to `CONNECT` comes.

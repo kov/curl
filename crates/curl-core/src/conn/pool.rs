@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use super::chain::SetupPoint;
 use super::connect::{ConnCx, ConnectError, ConnectMachine, Dialed, Drove, Made, Progress, Setup};
@@ -37,7 +37,7 @@ pub(crate) struct ConnLease {
     /// None only as the pool takes it back, and, for a key, while the
     /// connection is in its place: whether the lease is a key, its pool's
     /// place says.
-    conn: Option<ConnSlot>,
+    conn: Option<Box<ConnSlot>>,
     /// The pool it is from, and goes back to.
     home: Home,
 }
@@ -79,7 +79,7 @@ impl ConnLease {
     /// The connection, if the lease has it: a key has it only while its
     /// transfer's step has it out.
     pub(crate) fn holding(&self) -> Option<&ConnSlot> {
-        self.conn.as_ref()
+        self.conn.as_deref()
     }
 
     /// Move the connection's setup on by one event. A connection already
@@ -328,7 +328,7 @@ impl ConnSlot {
 
 impl ConnLease {
     /// The lease taken apart, as only the pool does.
-    fn into_parts(mut self) -> (ConnId, Option<ConnSlot>, Home) {
+    fn into_parts(mut self) -> (ConnId, Option<Box<ConnSlot>>, Home) {
         let conn = self.conn.take();
         let home = std::mem::replace(&mut self.home, Home::Multi);
         let id = self.id;
@@ -539,14 +539,14 @@ pub(crate) enum Connected {
 /// Where a connection of the pool is.
 enum Place {
     /// Kept for another transfer; always open.
-    Idle(ConnSlot),
+    Idle(Box<ConnSlot>),
     /// Leased: its lease has it.
     Leased(Leased),
     /// Kept for the handle whose transfer only connected
     /// (`CURLOPT_CONNECT_ONLY`), which sends and receives on it: never
     /// reused, pruned or closed to make room, but counted toward the
     /// limits (`bits.connect_only`); always open.
-    Reserved(ConnSlot),
+    Reserved(Box<ConnSlot>),
     /// Multiplexing, leased by the transfers attached to it, whose leases
     /// are keys; always open. Its count of them is the connection's
     /// `Use::Leased`.
@@ -596,11 +596,6 @@ struct Seen {
 
 /// What the search found.
 #[derive(Debug)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "returned by the search and taken apart at once, never kept; a box would \
-              allocate on every search"
-)]
 pub(crate) enum Found {
     Lease(ConnLease),
     /// The share's connection `id`, lent to the searching multi, which
@@ -627,13 +622,13 @@ impl Found {
 /// A connection that multiplexes, in its place.
 struct Shared {
     /// None while the step of one of its transfers has it out.
-    slot: Option<ConnSlot>,
+    slot: Option<Box<ConnSlot>>,
     route: Route,
 }
 
 impl Shared {
     fn conn(&self) -> &Conn {
-        match &self.slot {
+        match self.slot.as_deref() {
             Some(ConnSlot::Open(conn)) => conn,
             Some(_) => unreachable!("an attached connection is open"),
             None => panic!("an attached connection is out with a step"),
@@ -641,7 +636,7 @@ impl Shared {
     }
 
     fn conn_mut(&mut self) -> &mut Conn {
-        match &mut self.slot {
+        match self.slot.as_deref_mut() {
             Some(ConnSlot::Open(conn)) => conn,
             Some(_) => unreachable!("an attached connection is open"),
             None => panic!("an attached connection is out with a step"),
@@ -699,20 +694,12 @@ impl LentCandidates {
 }
 
 /// What a connection the search tried came to.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "as `Found`, which it becomes at once"
-)]
 enum Took {
     Lease(ConnLease),
     Lent(ConnId),
 }
 
 /// What `release_lent` gave back.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "taken apart by the release that asked, never kept"
-)]
 pub(crate) enum LentBack {
     /// Others are still on it, this many.
     InUse(NonZeroU32),
@@ -725,7 +712,7 @@ impl Place {
     /// The idle connection, if this is one.
     fn idle(&self) -> Option<&Conn> {
         match self {
-            Place::Idle(slot) => match slot {
+            Place::Idle(slot) => match &**slot {
                 ConnSlot::Open(conn) => Some(conn),
                 _ => unreachable!("an idle connection is open"),
             },
@@ -735,7 +722,7 @@ impl Place {
 
     fn idle_mut(&mut self) -> Option<&mut Conn> {
         match self {
-            Place::Idle(slot) => match slot {
+            Place::Idle(slot) => match &mut **slot {
                 ConnSlot::Open(conn) => Some(conn),
                 _ => unreachable!("an idle connection is open"),
             },
@@ -746,8 +733,10 @@ impl Place {
     /// The connection, if the pool holds it: idle or reserved.
     fn held(&self) -> Option<&Conn> {
         match self {
-            Place::Idle(ConnSlot::Open(conn)) | Place::Reserved(ConnSlot::Open(conn)) => Some(conn),
-            Place::Idle(_) | Place::Reserved(_) => unreachable!("a connection held is open"),
+            Place::Idle(slot) | Place::Reserved(slot) => match &**slot {
+                ConnSlot::Open(conn) => Some(conn),
+                _ => unreachable!("a connection held is open"),
+            },
             Place::Leased(_) | Place::Attached(_) => None,
         }
     }
@@ -910,6 +899,9 @@ impl Pool {
                 ConnSlot::Connecting(ConnectMachine::new(number, tcp, now, closer, settings))
             }
         };
+        // Its own allocation, as C's `connectdata`: a transfer holds a
+        // pointer to it, so a handle pays for no connection it has not.
+        let slot = try_box(slot)?;
         let id = self.conns.reserve()?.fill(Place::Leased(leased));
         self.next_number += 1;
         Ok(Acquired::New(ConnLease {
@@ -1083,7 +1075,7 @@ impl Pool {
                 else {
                     unreachable!("just found idle");
                 };
-                let ConnSlot::Open(conn) = &mut slot else {
+                let ConnSlot::Open(conn) = &mut *slot else {
                     unreachable!("an idle connection is open");
                 };
                 conn.use_ = Use::Leased(NonZeroU32::MIN);
@@ -1287,8 +1279,10 @@ impl Pool {
     /// has it there.
     pub(crate) fn reserved_mut(&mut self, id: ConnId) -> Option<&mut Conn> {
         match self.conns.get_mut(id)? {
-            Place::Reserved(ConnSlot::Open(conn)) => Some(conn),
-            Place::Reserved(_) => unreachable!("a reserved connection is open"),
+            Place::Reserved(slot) => match &mut **slot {
+                ConnSlot::Open(conn) => Some(conn),
+                _ => unreachable!("a reserved connection is open"),
+            },
             Place::Idle(_) | Place::Leased(_) | Place::Attached(_) => None,
         }
     }
@@ -1305,7 +1299,10 @@ impl Pool {
         if !matches!(self.conns.get(id), Some(Place::Reserved(_))) {
             return None;
         }
-        let Some(Place::Reserved(ConnSlot::Open(conn))) = self.conns.remove(id) else {
+        let Some(Place::Reserved(slot)) = self.conns.remove(id) else {
+            unreachable!("checked above");
+        };
+        let ConnSlot::Open(conn) = *slot else {
             unreachable!("a reserved connection is open");
         };
         let number = conn.number;
@@ -1365,7 +1362,7 @@ impl Pool {
                 }
             },
         };
-        if let ConnSlot::Open(conn) = &mut slot
+        if let ConnSlot::Open(conn) = &mut *slot
             && let Route::Tcp(tcp) = &conn.route
             // One only connected is the handle's, whatever its protocol.
             && (tcp.origin.scheme().reuse || finish.reserve)
@@ -1397,7 +1394,7 @@ impl Pool {
             };
         }
         self.conns.remove(id);
-        let number = match slot {
+        let number = match *slot {
             ConnSlot::Connecting(m) => {
                 let number = m.number();
                 m.close(exits.parts().0);
@@ -1428,7 +1425,7 @@ impl Pool {
         let id = lease.id;
         assert!(!self.is_attached(lease), "{id:?} is attached already");
         let slot = lease.conn.take().expect("held until given back");
-        let ConnSlot::Open(conn) = &slot else {
+        let ConnSlot::Open(conn) = &*slot else {
             panic!("{id:?} is not up");
         };
         assert_eq!(conn.use_, Use::Leased(NonZeroU32::MIN), "one lease");
@@ -1456,7 +1453,7 @@ impl Pool {
         let Some(Place::Leased(leased)) = self.conns.get_mut(lease.id) else {
             return false;
         };
-        let conn = lease.conn.as_ref().and_then(ConnSlot::open);
+        let conn = lease.conn.as_deref().and_then(ConnSlot::open);
         let verdict = Verdict::of(conn, settled);
         let single = verdict == Verdict::Single && leased.verdict == Verdict::Pending;
         leased.verdict = verdict;
@@ -1515,7 +1512,7 @@ impl Pool {
     /// One transfer less on the attached connection `id`: the connection,
     /// leased as any by the lease going back, if that was its last, out
     /// of its place.
-    fn detach(&mut self, id: ConnId) -> Option<ConnSlot> {
+    fn detach(&mut self, id: ConnId) -> Option<Box<ConnSlot>> {
         let Some(Place::Attached(shared)) = self.conns.get_mut(id) else {
             panic!("a key to {id:?}, which is not attached");
         };
@@ -1609,12 +1606,12 @@ impl Pool {
         }
         if let Home::Share(_) = lease.home {
             let lent = self.lent_of(lease).expect("a key to a lent connection");
-            return lent.shared.slot.as_ref();
+            return lent.shared.slot.as_deref();
         }
         let Some(Place::Attached(shared)) = self.conns.get(lease.id) else {
             panic!("a key to {:?}, which is not attached", lease.id);
         };
-        shared.slot.as_ref()
+        shared.slot.as_deref()
     }
 
     /// Connections in the pool, busy or idle.
@@ -1932,7 +1929,7 @@ fn close(
     now: Instant,
 ) {
     match conns.remove(id) {
-        Some(Place::Idle(slot)) => match slot {
+        Some(Place::Idle(slot)) => match *slot {
             ConnSlot::Open(conn) => {
                 let left = conns.len();
                 discard(conn, false, evicted == Evicted::Linger, left, exits, now);

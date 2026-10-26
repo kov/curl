@@ -1397,7 +1397,7 @@ fn a_tunnel_through_an_http_2_proxy_shuts_down_in_its_name() {
     m.trace_internally_to(components, Handler::text(written.clone()).unwrap());
     let mut e = Easy::new();
     e.set_libraries(libraries);
-    let ran = get_with(&mut m, e, "/", talk, |o| {
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
         https_proxy(o, b"http://origin.example/p");
         let proxy = o.proxy.make_mut().unwrap();
         proxy.kind = crate::options::ProxyType::Https2;
@@ -1407,6 +1407,32 @@ fn a_tunnel_through_an_http_2_proxy_shuts_down_in_its_name() {
     assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
     let text = String::from_utf8(written.0.lock().unwrap().clone()).unwrap();
     assert!(text.contains("* [H2-PROXY] shut down "), "{text}");
+    // It says GOAWAY as it goes, no stream of the proxy's served.
+    let sent = String::from_utf8(sent(&talk)).unwrap();
+    assert!(sent.ends_with("G 0 0\n"), "{sent}");
+}
+
+/// A tunnel the proxy resets fails the transfer's read, naming who
+/// ended it and how (`h2_handle_tunnel_close`).
+#[test]
+fn a_tunnel_an_http_2_proxy_resets_fails_naming_its_error() {
+    let half = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello";
+    let data = [
+        format!("D 1 {} 0\n", half.len()).as_bytes(),
+        half,
+        b"R 1 8\n",
+    ]
+    .concat();
+    let (_, libraries, replies) = h2_proxy(b"S\nH 1 0\n:status: 200\n\n", &data);
+    let (ran, _) = through_h2_proxy(libraries, &replies, b"http://origin.example/p");
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::RecvError),
+        "{:?}",
+        ran.seen.text()
+    );
+    let said = "HTTP/2 stream 1 reset by server (error 0x8 CANCEL)";
+    assert_eq!(ran.easy.report().failure(), Some(said.as_bytes()));
 }
 
 /// A proxy that speaks HTTP/2 refusing the `CONNECT` fails the transfer

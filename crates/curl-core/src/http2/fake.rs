@@ -21,6 +21,9 @@
 //! - `P\n`: PING.
 //! - `PP <id> <promised>\n` then `name: value\n` per field and `\n`: a
 //!   PUSH_PROMISE on stream `<id>`, which the client cannot have closed.
+//!
+//! A server's line that is no frame: `XW <id>\n`, the next setting of
+//! stream `<id>`'s receive window fails, as nghttp2's fails out of memory.
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
@@ -125,6 +128,8 @@ struct Stream {
     window: i32,
     /// What the client used of its data and did not tell the peer yet.
     consumed: i32,
+    /// The next setting of its receive window fails.
+    window_fails: bool,
 }
 
 /// Each stream's receive window as it opens.
@@ -243,13 +248,15 @@ impl FakeSession {
                 Ok(Some(nl + 1))
             }
             "P" => Ok(Some(nl + 1)),
+            "XW" => {
+                let id = num(1)? as i32;
+                if let Some(s) = self.stream(id) {
+                    s.window_fails = true;
+                }
+                Ok(Some(nl + 1))
+            }
             "U" => {
                 let id = num(1)? as i32;
-                if let Some(s) = self.stream(id)
-                    && s.deferred
-                {
-                    s.deferred = false;
-                }
                 // Stream 0's is the connection's.
                 check(events(Event::WindowUpdate {
                     stream: Some(StreamId(id)).filter(|s| s.0 != 0),
@@ -536,6 +543,13 @@ impl Session for FakeSession {
         let Some(s) = self.open(stream.0) else {
             return Ok(());
         };
+        if std::mem::take(&mut s.window_fails) {
+            return Err(FrameError {
+                code: -901,
+                text: "Out of memory",
+                fatal: true,
+            });
+        }
         s.window = size - STREAM_WINDOW;
         Ok(())
     }

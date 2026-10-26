@@ -604,10 +604,9 @@ impl TransferState {
             TransferState::Did(x)
             | TransferState::Exchanging(x)
             | TransferState::RateLimiting(x) => x.done(Ok(()), true, Reached::Made),
-            TransferState::Done(d) => Done {
-                premature: true,
-                ..d
-            },
+            TransferState::Done(_) => {
+                unreachable!("a request's end is run by the step that reaches it")
+            }
         };
         // C drops what `multi_done` says as the handle leaves: an abort
         // the progress handler asks for has nothing left to stop.

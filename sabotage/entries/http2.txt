@@ -567,3 +567,62 @@ witness: curl-core an_http_2_body_s_frames_allocate_nothing
         let sent = with_session(lease, |h2, lease| {
             std::hint::black_box(vec![0u8; 1]);
             let mut with = Egressing {
+
+=== a stream a GOAWAY with an error refuses is made again
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_stream_refused_by_a_goaway_with_an_error_fails_with_it
+--- old
+                        && let Some(g) = goaway.filter(|g| g.error != H2Error::NO_ERROR)
+--- new
+                        && let Some(g) = goaway.filter(|g| g.error == H2Error::NO_ERROR)
+
+=== a success mid-upload resets the stream
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_success_mid_upload_does_not_reset_the_stream
+--- old
+        if !s.closed && !s.body_eos && !(200..400).contains(&status) {
+--- new
+        if !s.closed && (!s.body_eos || !(200..400).contains(&status)) {
+
+=== a body the application refuses resets its stream with a code of its own
+file: crates/curl-core/src/http2.rs
+witness: curl-core proto::http::tests::h2::a_refused_body_resets_its_stream_as_c_does
+--- old
+    pub const C_CALLBACK_FAILURE: H2Error = H2Error(-902_i32 as u32);
+--- new
+    pub const C_CALLBACK_FAILURE: H2Error = H2Error(902);
+
+=== the trailers' framing counts against their limit
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::h2::tests::trailers_are_held_to_c_s_limits_at_their_edges
+--- old
+        let held = self.lines.len() - Self::FRAMING * self.count;
+--- new
+        let held = self.lines.len() + Self::FRAMING * self.count;
+
+=== a stream closed as its reset goes is not told so
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails
+--- old
+    fn closed_with(&mut self, error: H2Error) {
+        self.closed = true;
+--- new
+    fn closed_with(&mut self, error: H2Error) {
+        return;
+        self.closed = true;
+
+=== a stream closed with an error as its reset goes is not taken as reset
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails
+--- old
+        self.reset |= error != H2Error::NO_ERROR;
+--- new
+        self.reset |= error == H2Error::NO_ERROR;
+
+=== a sibling's window the session could not set leaves its stream open
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails
+--- old
+            if let Some((stream, _, _)) = unset.as_ref().filter(|u| Some(u.0) != own) {
+--- new
+            if let Some((stream, _, _)) = unset.as_ref().filter(|u| Some(u.0) == own) {

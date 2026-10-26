@@ -293,3 +293,15 @@ fn what_is_lent_reaches_the_callbacks_through_the_user_pointer() {
     }
     assert_eq!(heard, [(0, Seen::Settings), (1, Seen::Settings)]);
 }
+
+/// An HTTP/2 error code's text is nghttp2's for it, as C's messages say
+/// it (`nghttp2_http2_strerror`).
+#[test]
+fn an_error_code_s_text_is_nghttp2_s() {
+    assert_eq!(NGHTTP2.error_text(H2Error::CANCEL), "CANCEL");
+    assert_eq!(
+        NGHTTP2.error_text(H2Error::REFUSED_STREAM),
+        "REFUSED_STREAM"
+    );
+    assert_eq!(NGHTTP2.error_text(H2Error(0xff)), "unknown");
+}

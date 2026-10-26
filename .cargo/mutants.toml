@@ -655,4 +655,8 @@ exclude_re = [
     'curl-core/src/trace\.rs:.*: replace <impl fmt::Debug for Internal>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
     # `left_ms` says -1 for no time left, never 0.
     'curl-core/src/conn/shutdown\.rs:.*: replace < with <= in Shutting::run_once$',
+    # Not freeing the session's user data is a leak, which no test without
+    # a leak checker sees: Miri's run of the binding's user-data test
+    # reports it.
+    'curl-nghttp2/src/lib\.rs:.*: replace <impl Drop for UserData>::drop with \(\)$',
 ]

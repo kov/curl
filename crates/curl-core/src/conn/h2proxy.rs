@@ -819,3 +819,6 @@ fn events(recv: bool, send: bool) -> Events {
     }
     events
 }
+
+#[cfg(test)]
+mod tests;

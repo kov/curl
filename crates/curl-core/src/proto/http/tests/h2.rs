@@ -494,6 +494,31 @@ fn an_idle_connection_s_frames_are_read_and_it_is_reused() {
     }
 }
 
+/// A body the application refuses resets its stream with what C resets
+/// it with, nghttp2's callback failure as an unsigned code, which no RFC
+/// defines (`on_data_chunk_recv`'s `NGHTTP2_ERR_CALLBACK_FAILURE`).
+#[test]
+fn a_refused_body_resets_its_stream_as_c_does() {
+    struct Refuses;
+    impl WriteHandler for Refuses {
+        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+            Write::Fail
+        }
+    }
+    let reply: &[u8] = b"S\nH 1 0\n:status: 200\n\nD 1 5 0\nhello";
+    let talk = Conversation::replies(&[reply], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        o.http.version = HttpVersion::Http2Prior;
+        o.callbacks.write = Some(Handler::write(Refuses).unwrap());
+    });
+    assert_eq!(ran.result, Err(ErrorKind::WriteError));
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert!(sent.contains("R 1 4294966394\n"), "{sent}");
+}
+
 /// An idle HTTP/2 connection is looked at once a second at most: a
 /// GOAWAY waiting on it goes unread by a reuse within a second of its
 /// return, whose stream the GOAWAY then refuses, and is read a second on,
@@ -657,6 +682,46 @@ fn a_refusal_mid_upload_is_the_response() {
     assert_eq!(ran.easy.report().response_code(), Some(413));
     let sent = String::from_utf8(ran.request.clone()).unwrap();
     assert!(sent.contains("R 1 5\n"), "the body stopped by a reset");
+}
+
+/// A success that ends the stream while the body still goes does not
+/// stop the body by a reset, as a refusal does (`on_stream_frame`'s
+/// END_STREAM resets only for a status outside 2xx and 3xx).
+#[test]
+fn a_success_mid_upload_does_not_reset_the_stream() {
+    let reply: &[u8] = b"S\nH 1 1\n:status: 201\n\n";
+    let (ran, _) = h2_get(&[reply], "/up", |o| {
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap(),
+        );
+        o.method = Method::Post;
+    });
+    assert_eq!(ran.easy.report().response_code(), Some(201));
+    let sent = String::from_utf8(ran.request.clone()).unwrap();
+    assert!(!sent.contains("R 1 "), "{sent}");
+}
+
+/// A stream a GOAWAY refuses is made again on a new connection, unless
+/// the GOAWAY said an error, which the stream then fails with
+/// (`on_stream_close`'s `goaway_error`).
+#[test]
+fn a_stream_refused_by_a_goaway_with_an_error_fails_with_it() {
+    let (ran, _) = h2_get(&[b"S\nG 0 2\n"], "/", |_| {});
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::Http2Stream),
+        "{:?}",
+        ran.seen.text()
+    );
+    let text = ran.seen.text();
+    assert!(
+        !text.iter().any(|l| l.contains("refused by server")),
+        "{text:?}"
+    );
+    assert!(
+        text.iter().any(|l| l.contains("INTERNAL_ERROR")),
+        "{text:?}"
+    );
 }
 
 /// Under a receive limit, a stream's reads take no more than the limit
@@ -1623,6 +1688,66 @@ impl WriteHandler for PausesOnceAt {
         } else {
             Write::Accepted
         }
+    }
+}
+
+/// A stream whose window the library fails to set in a sibling's step,
+/// as nghttp2 fails out of memory, is reset there with C's code, and its
+/// transfer learns so as the reset goes, failing once it next reads; the
+/// sibling goes on (`cf_h2_update_local_win`'s failure).
+#[test]
+fn a_stream_whose_window_cannot_be_set_in_a_siblings_step_fails() {
+    let talk = Conversation::replies(
+        &[
+            b"S\nH 1 0\n:status: 200\n\n",
+            WINDOW_SENT,
+            b"H 3 0\n:status: 200\n\nXW 1\nD 1 2 0\naaD 1 2 0\nbbD 3 1 1\nc",
+        ],
+        false,
+    )
+    .per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut ids = Vec::new();
+    let a_seen = Seen::default();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.version = HttpVersion::Http2Prior;
+        o.output.verbose = true;
+        let w = if path == "/a" {
+            o.callbacks.debug = Some(Handler::debug(a_seen.clone()).unwrap());
+            Handler::write(PausesOnceAt(2, Arc::default())).unwrap()
+        } else {
+            Handler::write(Seen::default()).unwrap()
+        };
+        o.callbacks.write = Some(w);
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        for _ in 0..3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+    }
+    assert_eq!(
+        drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert!(sent.contains("R 1 4294966394\n"), "{sent}");
+    m.pause(ids[0], crate::deliver::PauseRequest::CONT, &mut NoEvents)
+        .unwrap();
+    let done = drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap();
+    assert_eq!(done, Err(ErrorKind::Http2Stream), "{:?}", a_seen.text());
+    let said = "HTTP/2 stream 1 reset by curl (error 0xfffffc7a unknown)\n";
+    assert!(
+        a_seen.text().iter().any(|l| l == said),
+        "{:?}",
+        a_seen.text()
+    );
+    for id in ids {
+        m.remove(id, &mut NoEvents).unwrap();
     }
 }
 

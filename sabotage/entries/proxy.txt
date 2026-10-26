@@ -644,3 +644,39 @@ features: test-util
         (None, None) if service.is_empty() => None,
 --- new
         (None, None) => None,
+
+=== a tunnel the proxy closes with an error is taken as reset by curl
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core conn::h2proxy::tests::a_tunnel_closed_with_an_error_was_reset
+--- old
+                    self.error = error;
+                    if error != H2Error::NO_ERROR {
+--- new
+                    self.error = error;
+                    if error == H2Error::NO_ERROR {
+
+=== a tunnel the proxy resets ends as if cleanly
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_an_http_2_proxy_resets_fails_naming_its_error
+--- old
+            if self.tunnel.error != H2Error::NO_ERROR {
+--- new
+            if self.tunnel.error == H2Error::NO_ERROR {
+
+=== a tunnel's layer shuts down without saying GOAWAY
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_shuts_down_in_its_name
+--- old
+        if !self.sent_goaway {
+            if let Err(e) = self.session.goaway(H2Error::NO_ERROR, b"shutdown\0") {
+--- new
+        if self.sent_goaway {
+            if let Err(e) = self.session.goaway(H2Error::NO_ERROR, b"shutdown\0") {
+
+=== a proxy's answer is held to a mebibyte per field, not in all
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core conn::h2proxy::tests::a_proxy_s_answer_is_held_to_c_s_limit_at_its_edges
+--- old
+        self.held += name.len() + value.len();
+--- new
+        self.held *= name.len() + value.len();

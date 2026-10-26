@@ -315,3 +315,37 @@ witness: curl-os net::tests::a_udp_socket_moves_one_datagram_a_call
                 Recv::Eof => continue,
 --- new
                 Recv::Eof => return Ok(Recv::Eof),
+
+=== a datagram the kernel did not join is told no segment size
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::segments_sent_are_received_apart_or_joined
+--- old
+                segment: if segment == 0 { len } else { segment },
+--- new
+                segment,
+
+=== a send of segments goes as one datagram
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::segments_sent_are_received_apart_or_joined
+--- old
+        if buf.len() > segment {
+--- new
+        if buf.len() > segment && false {
+
+=== an IPv4 datagram's ECN bits are read from the wrong message
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::segments_sent_are_received_apart_or_joined
+--- old
+            (libc::IPPROTO_IP, libc::IP_TOS)
+--- new
+            (libc::IPPROTO_IP, libc::IP_TTL)
+
+=== a QUIC socket over IPv4 lets its datagrams fragment
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::quic_s_options_are_set_for_the_family
+--- old
+                    libc::IP_MTU_DISCOVER,
+                    libc::IP_PMTUDISC_DO,
+--- new
+                    libc::IP_MTU_DISCOVER,
+                    libc::IP_PMTUDISC_DONT,

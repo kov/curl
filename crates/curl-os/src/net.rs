@@ -75,6 +75,16 @@ pub enum SocketOption {
     /// A bind to an address leaves the port for the connect to choose
     /// (`IP_BIND_ADDRESS_NO_PORT`).
     BindAddressNoPort,
+    /// Each datagram received says its ECN bits: `IP_RECVTOS` over IPv4,
+    /// `IPV6_RECVTCLASS` over IPv6 (`linux_quic_ecn`).
+    ReceiveEcn,
+    /// Datagrams go unfragmented, the path's MTU found
+    /// (`IP_MTU_DISCOVER`, `IPV6_MTU_DISCOVER`: `PMTUDISC_DO`,
+    /// `linux_quic_mtu`).
+    DiscoverMtu,
+    /// Datagrams of one flow may be received joined (`UDP_GRO`,
+    /// `linux_quic_gro`).
+    ReceiveJoined,
 }
 
 impl SocketOption {
@@ -95,6 +105,25 @@ impl SocketOption {
             },
             SocketOption::Priority(p) => (libc::SOL_SOCKET, libc::SO_PRIORITY, p),
             SocketOption::BindAddressNoPort => (libc::IPPROTO_IP, libc::IP_BIND_ADDRESS_NO_PORT, 1),
+            SocketOption::ReceiveEcn => match family {
+                libc::AF_INET => (libc::IPPROTO_IP, libc::IP_RECVTOS, 1),
+                libc::AF_INET6 => (libc::IPPROTO_IPV6, libc::IPV6_RECVTCLASS, 1),
+                _ => return None,
+            },
+            SocketOption::DiscoverMtu => match family {
+                libc::AF_INET => (
+                    libc::IPPROTO_IP,
+                    libc::IP_MTU_DISCOVER,
+                    libc::IP_PMTUDISC_DO,
+                ),
+                libc::AF_INET6 => (
+                    libc::IPPROTO_IPV6,
+                    libc::IPV6_MTU_DISCOVER,
+                    libc::IPV6_PMTUDISC_DO,
+                ),
+                _ => return None,
+            },
+            SocketOption::ReceiveJoined => (libc::IPPROTO_UDP, libc::UDP_GRO, 1),
         })
     }
 }
@@ -104,7 +133,9 @@ impl SocketOption {
 /// as the tool's `sockopt_callback` does.
 pub fn set(fd: BorrowedFd<'_>, option: SocketOption) -> io::Result<()> {
     let family = match option {
-        SocketOption::TypeOfService(_) => family(fd),
+        SocketOption::TypeOfService(_) | SocketOption::ReceiveEcn | SocketOption::DiscoverMtu => {
+            family(fd)
+        }
         _ => libc::AF_UNSPEC,
     };
     let Some((level, name, value)) = option.raw(family) else {
@@ -753,6 +784,151 @@ impl UdpSocket {
         sent(self.0.send(buf))
     }
 
+    /// Send `buf`, which must not be empty, as datagrams of `segment`
+    /// bytes each, the last what is left: one `sendmsg`, the kernel
+    /// cutting it (`UDP_SEGMENT`) if it is longer than one (`do_sendmsg`).
+    /// How many bytes went, or the system's error as it is: what a
+    /// datagram too large, a failed segmentation or a full buffer mean is
+    /// the caller's to say. A signal interrupting it sends again.
+    pub fn send_segments(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
+        assert!(!buf.is_empty(), "a send needs bytes");
+        assert!(segment > 0, "a segment has bytes");
+        let mut iov = libc::iovec {
+            iov_base: buf.as_ptr().cast_mut().cast(),
+            iov_len: buf.len(),
+        };
+        // Room for one control message of a `u16`, aligned for its header.
+        let mut control = [0u64; 4];
+        // SAFETY: all zeroes is a valid `msghdr`.
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_iov = &raw mut iov;
+        msg.msg_iovlen = 1;
+        if buf.len() > segment {
+            let segment = u16::try_from(segment).expect("a datagram's size fits");
+            let data = u32::try_from(size_of::<u16>()).expect("fits");
+            // SAFETY: a size computation, no pointer.
+            let space = unsafe { libc::CMSG_SPACE(data) } as usize;
+            assert!(space <= size_of_val(&control), "the room holds the message");
+            msg.msg_control = control.as_mut_ptr().cast();
+            msg.msg_controllen = space;
+            // SAFETY: the header has room for a control message, set just
+            // above.
+            let cm = unsafe { libc::CMSG_FIRSTHDR(&raw const msg) };
+            assert!(!cm.is_null(), "the room holds the message");
+            // SAFETY: a size computation, no pointer.
+            let len = unsafe { libc::CMSG_LEN(data) } as usize;
+            // SAFETY: `cm` points into `control`, aligned for a header,
+            // with room for its data, and nothing else refers to it.
+            let header = unsafe { &mut *cm };
+            header.cmsg_level = libc::SOL_UDP;
+            header.cmsg_type = libc::UDP_SEGMENT;
+            header.cmsg_len = len;
+            // SAFETY: as above: its data follows its header.
+            let at = unsafe { libc::CMSG_DATA(cm) };
+            // SAFETY: the data's room holds a `u16`, unaligned as it may
+            // be.
+            unsafe { at.cast::<u16>().write_unaligned(segment) };
+        }
+        loop {
+            // SAFETY: the header and what it points at (the bytes, the
+            // vector, the control message) live through the call.
+            let rc = unsafe { libc::sendmsg(self.0.as_raw_fd(), &raw const msg, 0) };
+            match usize::try_from(rc) {
+                Ok(n) => return Ok(n),
+                Err(_) => {
+                    let err = io::Error::last_os_error();
+                    if err.raw_os_error() != Some(libc::EINTR) {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Receive datagrams into `buf`, each into a slot of `slot` bytes of
+    /// it, as many as fit and `out` holds, at most `BATCH`: one
+    /// `recvmmsg` (`recvmmsg_packets`). How many, each told in `out`:
+    /// its length (an empty one too, which the caller passes over), the
+    /// size of each packet the kernel joined into it, its ECN bits and
+    /// whom it came from. The system's error as it is, `EAGAIN` with
+    /// nothing to read; a signal interrupting it, or a datagram too large
+    /// for its slot, receives again, as C does.
+    pub fn recv_batch(
+        &self,
+        buf: &mut [u8],
+        slot: usize,
+        out: &mut [Datagram],
+    ) -> io::Result<usize> {
+        assert!(slot > 0, "a slot has room");
+        let n = out.len().min(buf.len() / slot).min(BATCH);
+        assert!(n > 0, "a receive needs room for a datagram");
+        let int = u32::try_from(size_of::<libc::c_int>()).expect("fits");
+        // SAFETY: a size computation, no pointer.
+        let per = 2 * unsafe { libc::CMSG_SPACE(int) } as usize;
+        // Aligned for the control messages' headers.
+        let mut control = [0u64; BATCH * 6];
+        assert!(
+            per * BATCH <= size_of_val(&control),
+            "the room holds the messages"
+        );
+        // SAFETY: all zeroes is a valid value of each.
+        let mut names: [libc::sockaddr_storage; BATCH] = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        let mut iovs: [libc::iovec; BATCH] = unsafe { std::mem::zeroed() };
+        // SAFETY: as above.
+        let mut hdrs: [libc::mmsghdr; BATCH] = unsafe { std::mem::zeroed() };
+        let base = buf.as_mut_ptr();
+        let control_base = control.as_mut_ptr().cast::<u8>();
+        for i in 0..n {
+            // SAFETY: slot `i` is within `buf`, as `n` slots fit in it.
+            iovs[i].iov_base = unsafe { base.add(i * slot) }.cast();
+            iovs[i].iov_len = slot;
+            let hdr = &mut hdrs[i].msg_hdr;
+            hdr.msg_iov = &raw mut iovs[i];
+            hdr.msg_iovlen = 1;
+            hdr.msg_name = (&raw mut names[i]).cast();
+            hdr.msg_namelen = libc::socklen_t::try_from(size_of::<libc::sockaddr_storage>())
+                .expect("its size fits");
+            // SAFETY: message `i`'s room is within `control`, as checked.
+            hdr.msg_control = unsafe { control_base.add(i * per) }.cast();
+            hdr.msg_controllen = per;
+        }
+        let count = loop {
+            let wanted = libc::c_uint::try_from(n).expect("at most a batch");
+            // SAFETY: `n` headers, each pointing at its slot of `buf`, its
+            // name and its control room, all alive through the call.
+            let rc = unsafe {
+                libc::recvmmsg(
+                    self.0.as_raw_fd(),
+                    hdrs.as_mut_ptr(),
+                    wanted,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            };
+            match usize::try_from(rc) {
+                Ok(count) => break count,
+                Err(_) => {
+                    let err = io::Error::last_os_error();
+                    if !matches!(err.raw_os_error(), Some(libc::EINTR | libc::EMSGSIZE)) {
+                        return Err(err);
+                    }
+                }
+            }
+        };
+        for (i, told) in out.iter_mut().enumerate().take(count) {
+            let len = hdrs[i].msg_len as usize;
+            let (segment, ecn) = control_of(&hdrs[i].msg_hdr, names[i].ss_family);
+            *told = Datagram {
+                len,
+                segment: if segment == 0 { len } else { segment },
+                ecn,
+                from: socket_addr(&names[i]),
+            };
+        }
+        Ok(count)
+    }
+
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.0.local_addr()
     }
@@ -761,6 +937,93 @@ impl UdpSocket {
     /// it, as an application's own closer does.
     pub fn into_raw(self) -> RawFd {
         self.0.into_raw_fd()
+    }
+}
+
+/// The most datagrams one batched receive gets (`MMSG_NUM`, with GRO).
+pub const BATCH: usize = 16;
+
+/// The room a batched receive gives each datagram: 64 packets of 1,500
+/// bytes the kernel may join into one (`MSG_BUF_SIZE`).
+pub const SLOT: usize = 64 * 1500;
+
+/// A datagram a batched receive got.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Datagram {
+    /// Its length, at the start of its slot.
+    pub len: usize,
+    /// The size of each packet the kernel joined into it, its own length
+    /// if it joined none (`UDP_GRO`).
+    pub segment: usize,
+    /// The ECN bits it came with.
+    pub ecn: u8,
+    /// Whom it came from, if the kernel said.
+    pub from: Option<SocketAddr>,
+}
+
+/// The joined packets' size and the ECN bits a received message's control
+/// messages say, each 0 if none does (`vquic_msghdr_get_udp_gro`,
+/// `vquic_msghdr_get_ecn`).
+fn control_of(hdr: &libc::msghdr, family: libc::sa_family_t) -> (usize, u8) {
+    const ECN_MASK: libc::c_int = 0x03;
+    let (mut segment, mut ecn) = (0, 0);
+    // SAFETY: a header the kernel filled, its control room alive.
+    let mut cm = unsafe { libc::CMSG_FIRSTHDR(hdr) };
+    while !cm.is_null() {
+        // SAFETY: a control message within the room, as the kernel wrote it.
+        let header = unsafe { &*cm };
+        let (level, kind, len) = (header.cmsg_level, header.cmsg_type, header.cmsg_len);
+        // SAFETY: as above: its data follows its header.
+        let data = unsafe { libc::CMSG_DATA(cm) };
+        let int = || {
+            // SAFETY: an int's data, as these messages carry.
+            unsafe { data.cast::<libc::c_int>().read_unaligned() }
+        };
+        match (level, kind) {
+            (libc::SOL_UDP, libc::UDP_GRO) if segment == 0 => {
+                segment = usize::try_from(int()).unwrap_or(0);
+            }
+            (libc::IPPROTO_IP, libc::IP_TOS)
+                if family == libc::AF_INET as libc::sa_family_t && len > 0 =>
+            {
+                // SAFETY: the type of service's one byte.
+                ecn = unsafe { data.read() } & ECN_MASK as u8;
+            }
+            (libc::IPPROTO_IPV6, libc::IPV6_TCLASS)
+                if family == libc::AF_INET6 as libc::sa_family_t && len > 0 =>
+            {
+                ecn = (int() & ECN_MASK) as u8;
+            }
+            _ => {}
+        }
+        // SAFETY: the next message after `cm`, or NULL at the room's end.
+        cm = unsafe { libc::CMSG_NXTHDR(hdr, cm) };
+    }
+    (segment, ecn)
+}
+
+/// The address the kernel wrote into `storage`, if of a family of IP's.
+fn socket_addr(storage: &libc::sockaddr_storage) -> Option<SocketAddr> {
+    match libc::c_int::from(storage.ss_family) {
+        libc::AF_INET => {
+            // SAFETY: an IPv4 address the kernel wrote, which the storage,
+            // aligned for any, holds.
+            let sin = unsafe { &*(&raw const *storage).cast::<libc::sockaddr_in>() };
+            let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+            Some(SocketAddr::from((ip, u16::from_be(sin.sin_port))))
+        }
+        libc::AF_INET6 => {
+            // SAFETY: as above, IPv6's.
+            let sin6 = unsafe { &*(&raw const *storage).cast::<libc::sockaddr_in6>() };
+            let ip = std::net::Ipv6Addr::from(sin6.sin6_addr.s6_addr);
+            Some(SocketAddr::V6(std::net::SocketAddrV6::new(
+                ip,
+                u16::from_be(sin6.sin6_port),
+                sin6.sin6_flowinfo,
+                sin6.sin6_scope_id,
+            )))
+        }
+        _ => None,
     }
 }
 
@@ -917,6 +1180,94 @@ mod tests {
         assert_eq!(&small, b"ag");
         assert_eq!(s.recv(&mut buf).unwrap(), Recv::WouldBlock);
         assert!(s.take_error().unwrap().is_none());
+    }
+
+    /// QUIC's socket options are set for the socket's family, as C sets
+    /// them (`cf_udp_setup_quic`).
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri opens TCP sockets only")]
+    fn quic_s_options_are_set_for_the_family() {
+        let v4 = open_udp("127.0.0.1:1".parse().unwrap(), true).unwrap();
+        v4.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let v6 = open_udp("[::1]:1".parse().unwrap(), true).unwrap();
+        v6.bind("[::1]:0".parse().unwrap()).unwrap();
+        for s in [&v4, &v6] {
+            for o in [
+                SocketOption::ReceiveEcn,
+                SocketOption::DiscoverMtu,
+                SocketOption::ReceiveJoined,
+            ] {
+                s.set(o).unwrap();
+            }
+            assert_eq!(option(s.fd(), libc::IPPROTO_UDP, libc::UDP_GRO), 1);
+        }
+        assert_eq!(option(v4.fd(), libc::IPPROTO_IP, libc::IP_RECVTOS), 1);
+        assert_eq!(
+            option(v4.fd(), libc::IPPROTO_IP, libc::IP_MTU_DISCOVER),
+            libc::IP_PMTUDISC_DO
+        );
+        assert_eq!(
+            option(v6.fd(), libc::IPPROTO_IPV6, libc::IPV6_RECVTCLASS),
+            1
+        );
+        assert_eq!(
+            option(v6.fd(), libc::IPPROTO_IPV6, libc::IPV6_MTU_DISCOVER),
+            libc::IPV6_PMTUDISC_DO
+        );
+    }
+
+    /// One send of segments is that many datagrams, the last what is
+    /// left; a receiver that takes them joined gets them as one, told the
+    /// segments' size; each is told its ECN bits and its sender.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri opens TCP sockets only")]
+    fn segments_sent_are_received_apart_or_joined() {
+        let r = open_udp("127.0.0.1:1".parse().unwrap(), true).unwrap();
+        r.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        r.set(SocketOption::ReceiveEcn).unwrap();
+        let at = r.local_addr().unwrap();
+        let s = open_udp(at, true).unwrap();
+        s.set(SocketOption::TypeOfService(2)).unwrap();
+        assert_eq!(s.connect(at).unwrap(), Connect::Done);
+        let from = Some(s.local_addr().unwrap());
+        let bytes: Vec<u8> = (0..250u8).collect();
+        assert_eq!(s.send_segments(&bytes, 100).unwrap(), 250);
+        let mut buf = vec![0u8; 4 * 128];
+        let mut out = [Datagram::default(); 4];
+        let mut fds = [PollFd::new(r.fd(), Events::IN)];
+        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+        let n = r.recv_batch(&mut buf, 128, &mut out).unwrap();
+        assert_eq!(n, 3);
+        for (i, len) in [100, 100, 50].into_iter().enumerate() {
+            let d = Datagram {
+                len,
+                segment: len,
+                ecn: 2,
+                from,
+            };
+            assert_eq!(out[i], d);
+            let sent = &bytes[i * 100..i * 100 + len];
+            assert_eq!(&buf[i * 128..i * 128 + len], sent);
+        }
+        let err = r.recv_batch(&mut buf, 128, &mut out).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+
+        r.set(SocketOption::ReceiveJoined).unwrap();
+        assert_eq!(s.send_segments(&bytes, 100).unwrap(), 250);
+        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+        let mut big = vec![0u8; SLOT];
+        let mut one = [Datagram::default(); 1];
+        assert_eq!(r.recv_batch(&mut big, SLOT, &mut one).unwrap(), 1);
+        let joined = Datagram {
+            len: 250,
+            segment: 100,
+            ecn: 2,
+            from,
+        };
+        assert_eq!(one[0], joined);
+        assert_eq!(&big[..250], &bytes[..]);
+        // One segment's worth goes as it is, with no segmenting asked.
+        assert_eq!(s.send_segments(&bytes[..100], 100).unwrap(), 100);
     }
 
     /// IPv6 works here, as `connects_over_ipv4_and_ipv6` needs.

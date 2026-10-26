@@ -14,8 +14,8 @@ use crate::handler::{Handler, SocketCloser};
 use crate::time::Instant;
 
 pub use curl_os::net::{
-    AF_INET, AF_INET6, Connect, InterfaceAddress, Ipv6Scope, Protocol, Recv, Sent, SocketOption,
-    TcpSocket, UdpSocket, adopt, adopt_udp, ipv6_scope, open, open_udp,
+    AF_INET, AF_INET6, BATCH, Connect, Datagram, InterfaceAddress, Ipv6Scope, Protocol, Recv, SLOT,
+    Sent, SocketOption, TcpSocket, UdpSocket, adopt, adopt_udp, ipv6_scope, open, open_udp,
 };
 pub use curl_os::poll::{Events, PollFd};
 pub use curl_os::resolve::{Failure as ResolveFailure, Family};
@@ -169,6 +169,21 @@ pub trait Socket: fmt::Debug + Send {
 
     /// Send from `buf`, which is not empty.
     fn send(&self, buf: &[u8]) -> io::Result<Sent>;
+
+    /// Send `buf`, which is not empty, as datagrams of `segment` bytes in
+    /// one call, as a UDP socket does (`UdpSocket::send_segments`); a
+    /// socket of another kind cannot.
+    fn send_segments(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
+        let _ = (buf, segment);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// Receive datagrams into slots of `buf`, as a UDP socket does
+    /// (`UdpSocket::recv_batch`); a socket of another kind cannot.
+    fn recv_batch(&self, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> io::Result<usize> {
+        let _ = (buf, slot, out);
+        Err(io::ErrorKind::Unsupported.into())
+    }
 
     /// Let go of the descriptor without closing it, for the application's
     /// closer to close: its number.
@@ -574,6 +589,14 @@ impl Socket for curl_os::net::UdpSocket {
 
     fn send(&self, buf: &[u8]) -> io::Result<Sent> {
         curl_os::net::UdpSocket::send(self, buf)
+    }
+
+    fn send_segments(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
+        curl_os::net::UdpSocket::send_segments(self, buf, segment)
+    }
+
+    fn recv_batch(&self, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> io::Result<usize> {
+        curl_os::net::UdpSocket::recv_batch(self, buf, slot, out)
     }
 
     fn release(self: Box<Self>) -> SocketKey {

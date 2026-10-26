@@ -33,6 +33,7 @@ import os
 import pathlib
 import re
 import shutil
+import struct
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -47,11 +48,12 @@ SONAME = "libcurl-d.so.4"
 # Overlay entries of build/c that are not linked into build/rust: replaced
 # by the Rust build, written by a run, or belonging to the C leg only.
 NOT_LINKED = {"baseline", "pytest-venv", "src/curl", "src/curlinfo",
+              "tests/libtest/libtests",
               "tests/log", "tests/.cache", "tests/second-hsts.txt"}
 UNIT_PROGRAMS = {"tests/unit", "tests/tunit"}
 UNIT_RUNNERS = {"unit", "tunit"}
 # Directories rebuilt entry by entry rather than linked whole.
-DESCEND = {"src", "lib", "tests"}
+DESCEND = {"src", "lib", "tests", "tests/libtest"}
 
 
 @dataclass(frozen=True)
@@ -133,9 +135,61 @@ def assemble(leg, lib, tool):
                "c": next(c_build.glob("lib/libcurl-d.so.*.*.*")),
                "stub": None}[lib] or build_stub(leg)
     shutil.copy2(library, leg.build / "lib" / SONAME)
+    # The C programs find the leg's library whatever their environment:
+    # pytest runs a client with only the variables a test names, so the
+    # C build's lib in their RUNPATH would load the C library.
+    libtests = leg.build / "tests/libtest/libtests"
+    shutil.copy2(c_build / "tests/libtest/libtests", libtests)
+    own_runpath(libtests, c_build / "lib", "$ORIGIN/../../lib")
     tools = {"rust": leg.cargo_out, "c": c_build / "src"}[tool]
     for name in ("curl", "curlinfo"):
         shutil.copy2(tools / name, leg.build / "src" / name)
+        if tool == "c":
+            own_runpath(leg.build / "src" / name, c_build / "lib",
+                        "$ORIGIN/../lib")
+
+
+def own_runpath(binary, c_lib, ours):
+    """
+    Point `binary`'s RUNPATH entry `c_lib` at `ours` instead, in place.
+
+    The new string is no longer than the old, so it is written over it in
+    the dynamic string table and padded with NULs.
+    """
+    data = bytearray(binary.read_bytes())
+    check(data[:4] == b"\x7fELF" and data[4] == 2 and data[5] == 1,
+          f"{binary} is not a little-endian ELF64 file")
+    shoff, = struct.unpack_from("<Q", data, 0x28)
+    shentsize, shnum = struct.unpack_from("<HH", data, 0x3A)
+
+    def section(i):
+        # sh_type, sh_offset, sh_size, sh_link
+        base = shoff + i * shentsize
+        kind, = struct.unpack_from("<I", data, base + 4)
+        offset, size = struct.unpack_from("<QQ", data, base + 24)
+        link, = struct.unpack_from("<I", data, base + 40)
+        return kind, offset, size, link
+
+    dynamic = [section(i) for i in range(shnum) if section(i)[0] == 6]
+    check(len(dynamic) == 1, f"{binary} has no dynamic section")
+    _, offset, size, link = dynamic[0]
+    strtab = section(link)[1]
+    found = 0
+    for at in range(offset, offset + size, 16):
+        tag, value = struct.unpack_from("<qQ", data, at)
+        if tag not in (15, 29):  # DT_RPATH, DT_RUNPATH
+            continue
+        start = strtab + value
+        end = data.index(0, start)
+        old = data[start:end].decode()
+        new = ":".join(ours if part == str(c_lib) else part
+                       for part in old.split(":"))
+        check(new != old, f"{binary}'s RUNPATH {old} names no {c_lib}")
+        check(len(new) <= len(old), f"{new} is longer than {old}")
+        data[start:end] = new.encode().ljust(end - start, b"\0")
+        found += 1
+    check(found == 1, f"{binary} has {found} RUNPATH entries, not 1")
+    binary.write_bytes(data)
 
 
 def environment(leg):
@@ -160,23 +214,29 @@ def check_loading(leg, tool):
     """
     Fail unless the test programs and tool load the library in the leg.
 
-    The C test programs carry a RUNPATH to the C build's lib, so a mistake
-    in the environment would silently test the C library. As a positive
-    control, the same check without the environment must find the C
-    library.
+    The C test programs carry a RUNPATH to the C build's lib, which the
+    leg's copies have pointed at the leg's own: pytest runs a client with
+    only the variables a test names, so they must load the leg's library
+    without the environment too. As a positive control, the C build's own
+    libtests without it must find the C library.
     """
     ours = (leg.build / "lib" / SONAME).resolve()
     libtests = leg.build / "tests/libtest/libtests"
-    check(resolved_libcurl(libtests, environment(leg)) == ours,
-          f"{libtests} does not load {ours}")
-    c_lib = resolved_libcurl(libtests, {k: v for k, v in os.environ.items()
-                                        if k != "LD_LIBRARY_PATH"})
+    bare = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
+    for env in (environment(leg), bare):
+        check(resolved_libcurl(libtests, env) == ours,
+              f"{libtests} does not load {ours}")
+    c_lib = resolved_libcurl(leg.oracle.build / "tests/libtest/libtests",
+                             bare)
     check(c_lib is not None and c_lib.is_relative_to(leg.oracle.build),
-          f"without LD_LIBRARY_PATH libtests loads {c_lib}, not "
+          f"the C build's libtests loads {c_lib}, not "
           f"{leg.oracle.build}'s")
     curl = resolved_libcurl(leg.build / "src/curl", environment(leg))
     if tool == "c":
         check(curl == ours, f"src/curl loads {curl}, not {ours}")
+        curl = resolved_libcurl(leg.build / "src/curl", bare)
+        check(curl == ours, f"src/curl without the environment loads "
+              f"{curl}, not {ours}")
     else:
         check(curl is None, f"the Rust tool loads {curl}")
 

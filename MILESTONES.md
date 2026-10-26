@@ -918,6 +918,30 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
       cannot time a server's GOAWAY that closely.
     - The `--trace-config http/2` lines (`CURL_TRC_CF` of `cf-h2`).
     - A push on a share's connection is taken, as C takes it.
+56. **A connection behind a pointer, budgets against C's.** The lease holds its connection's
+    slot boxed, one allocation per connection as C's `connectdata`; a handle is held to C's
+    3,081 bytes and a connection to C's 656 (DESIGN.md, "A size budget is measured against
+    C's equivalent"), and the facts the pool's multiplex verdict reads move onto `Conn`.
+57. **One lifecycle for a connection's pieces, multiplexing not tied to HTTP/2.** A `Part` trait
+    (setup, pollset, pending bytes, liveness, goodbye, queries, upkeep) over every piece of a
+    connection, refined by `Layer` (a byte stream) and `Mux` (streams); the connection runs its
+    lifecycle top to bottom, with no special case for the session. The multiplexer is an enum
+    of `H2` (and later `H3`) implementing `Mux`, asked in place of `is_h2()`; one h1/h2/h3
+    version set on the request, as C's `http_neg`; the request's stream as a `Wire` with its
+    close state; `Http3` in the public `Version`. ENGINE §4.4 first, then HTTP/2 moved onto it
+    with every test passing, before any QUIC code.
+58. **A connection's setup as a value.** `Connecting` holds a `conn::Setup`, which the transfer
+    owns and steps, its context given at each step as C's filters get `data`; two can run at
+    once (HTTP/3's race, FTP's data connection). A pollset grows past its inline sockets.
+59. **Datagrams.** UDP sockets in `curl-os`; the socket's kind and purpose told to the opener
+    and configurer callbacks, as C tells them; a `DatagramIo` seam beside `Layer`, made to admit
+    CONNECT-UDP later; `Transport::Quic` and a route that says how it dials (TCP, QUIC, a race).
+60. **QUIC's TLS.** `TlsBackend::quic_session`, from the same identity, CA cache, keylog and
+    context hook as a stream session; the QUIC transport parameters kept with a session's
+    ticket. `curl-ngtcp2` borrows the native `SSL*` through `TlsNative` and does not depend on
+    `curl-openssl`.
+
+Then ngtcp2 and nghttp3, HTTP/3 over them, the race, alt-svc to h3 and the HTTP/3 proxy.
 
 ## Milestone 6: the other protocols
 
@@ -925,7 +949,12 @@ Status: **to do**. SCOPE stage 6, in groups, each through the test servers `runt
 starts: FTP and FTPS (the data connection a second chain beside the control connection's);
 IMAP, POP3 and SMTP with STARTTLS; SCP and SFTP through libssh, the SSH library distributions
 build with, with a C oracle built against it; then LDAP, MQTT, WebSocket, DICT, Gopher,
-RTSP, SMB, TELNET and TFTP. NTLM stays out of scope (SCOPE.md).
+RTSP, SMB, TELNET and TFTP. NTLM stays out of scope (SCOPE.md). It opens with the protocol
+phases C's table has: connect and connecting, doing and do-more with their pollsets,
+per-connection protocol state, a disconnect hook before the goodbye, the scheme table generated
+with its flags, auth out of `proto/http1`. WebSocket's step lends a write callback a send handle
+on its own connection, a typed exception to ENGINE's decision 9, as C allows `curl_ws_send`
+there.
 
 ## Milestone 7: shared state
 

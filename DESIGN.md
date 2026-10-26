@@ -21,7 +21,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-gssapi` | MIT krb5's GSS-API, behind `curl_core::gss::Gss`; with `debug-hooks`, the debug build's stub for the tests (`CURL_STUB_GSS_CREDS`). | in `sys.rs` |
 
 Code that must talk to C or to the OS gets its own crate, never a module of `curl-core`:
-- one crate per bound C library (OpenSSL, nghttp2, ngtcp2, libssh2, c-ares and the rest);
+- one crate per bound C library (OpenSSL, nghttp2, ngtcp2, libssh, c-ares and the rest);
 - one crate for sockets, polling and other OS interfaces (`curl-os`, over `libc`), with Linux
   first and other platforms behind the same API. It exposes safe functions; `curl-core` adapts
   them to its own traits;
@@ -252,6 +252,12 @@ Two sets of budgets check this:
   its thread makes and fails above the budget, so a regression fails the build rather than a
   benchmark. Budgets are set as each scenario lands, at what the design calls for, not at what
   the code happens to do.
+- **A size budget is measured against C's equivalent, like for like.** A handle added to a
+  multi holds no more than C's (`Curl_easy` and its URL: 3,081 bytes, libtest 751's shape), and
+  a connection no more than C's `connectdata` (656 bytes). A handle holds its connection behind
+  a pointer, as C's does. When a fact does not fit, first check whether the budget is paying
+  for something C allocates apart; making room by moving a fact away from its owner is not a
+  fix.
 
 Memory the application frees with `curl_free` comes from the application's allocator: the
 `curl_global_init_mem` callbacks when set, `malloc` otherwise. Everything internal uses the

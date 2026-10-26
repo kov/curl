@@ -3731,8 +3731,17 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     // lets it (`url_set_conn_scheme`).
     let redirected = run.course.followed();
     let refused = !cx.easy().options().schemes.permit(&scheme, redirected);
-    // C reads a `.netrc` before it checks the protocol; an HTTP request
-    // reads it as it is made, any other URL here.
+    let follow: &[u8] = if redirected { b" (in redirect)" } else { b"" };
+    // A scheme libcurl does not know is refused first, as the URL is
+    // read (`Curl_peer_from_url`).
+    if !ProtoState::knows(&scheme) {
+        let kind = ErrorKind::UnsupportedProtocol;
+        let why = [&b"Protocol \""[..], &scheme, b"\" not supported", follow];
+        return TransferState::Init.fail(trace::fail_with(cx, kind, &why));
+    }
+    // C reads a `.netrc` before it checks the protocol is built and
+    // allowed; an HTTP request reads it as it is made, any other URL
+    // here.
     let http = match &*scheme {
         b"http" => true,
         b"https" => cx.easy().libraries().tls.is_some(),
@@ -3756,15 +3765,10 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     let proto = match started {
         Ok(Some(proto)) => proto,
         Ok(None) => {
-            // A scheme libcurl knows is one this build leaves out.
-            let why: &[u8] = if url::is_known_scheme(&scheme) {
-                b"\" is disabled"
-            } else {
-                b"\" not supported"
-            };
-            let follow: &[u8] = if redirected { b" (in redirect)" } else { b"" };
-            let kind = ErrorKind::UnsupportedProtocol;
-            let kind = trace::fail_with(cx, kind, &[b"Protocol \"", &scheme, why, follow]);
+            // A scheme libcurl knows that this build leaves out, or that
+            // the options do not allow (`url_set_conn_scheme`).
+            let why = [&b"Protocol \""[..], &scheme, b"\" is disabled", follow];
+            let kind = trace::fail_with(cx, ErrorKind::UnsupportedProtocol, &why);
             return TransferState::Init.fail(kind);
         }
         Err(e) => return TransferState::Init.fail(e),

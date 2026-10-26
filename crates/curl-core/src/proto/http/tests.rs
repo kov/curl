@@ -2628,7 +2628,9 @@ fn a_netrc_entry_names_an_ipv6_host_without_brackets() {
 /// (`parseurlandfillconn`, before `url_set_conn_scheme`): a required one
 /// that is missing fails a URL of a protocol the build lacks, and of
 /// `file:`, as it fails HTTP's; an entry not found is said before the
-/// protocol is refused, and of `file:`'s empty host.
+/// protocol is refused, and of `file:`'s empty host. A scheme libcurl
+/// does not know at all is refused first, as the URL is read
+/// (`Curl_peer_from_url`).
 #[test]
 fn a_netrc_file_is_read_before_the_protocol_is_checked() {
     use crate::options::NetrcMode;
@@ -2638,6 +2640,7 @@ fn a_netrc_file_is_read_before_the_protocol_is_checked() {
     let name = String::from_utf8_lossy(&file).into_owned();
     let missing = [&file[..], b".missing"].concat();
     let ftp = format!("ftp://127.0.0.1:{PORT}/a");
+    let unknown = format!("qttp://127.0.0.1:{PORT}/a");
     let local = format!("file://{name}");
     let not_found =
         |host: &str| format!("Could not find host {host} in the {name} file; using defaults\n");
@@ -2664,6 +2667,13 @@ fn a_netrc_file_is_read_before_the_protocol_is_checked() {
             not_found("127.0.0.1"),
         ),
         (&local, NetrcMode::Optional, &file, Ok(()), not_found("")),
+        (
+            &unknown,
+            NetrcMode::Required,
+            &missing,
+            Err(ErrorKind::UnsupportedProtocol),
+            "Protocol \"qttp\" not supported\n".to_string(),
+        ),
     ] {
         let (mut m, talk, _) = server(&[OK], false);
         let ran = get(&mut m, "/a", talk.clone(), |o| {
@@ -2675,7 +2685,7 @@ fn a_netrc_file_is_read_before_the_protocol_is_checked() {
         let text = ran.seen.text();
         let at = text.iter().position(|l| *l == said);
         assert!(at.is_some(), "{url} {mode:?}: {text:?}");
-        if result == Err(ErrorKind::UnsupportedProtocol) {
+        if result == Err(ErrorKind::UnsupportedProtocol) && url == &ftp {
             let refused = text
                 .iter()
                 .position(|l| l.starts_with("Protocol \"ftp\" is disabled"));

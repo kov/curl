@@ -1478,3 +1478,11 @@ witness: curl-core proto::http::tests::a_named_first_line_is_read_as_a_200
 --- new
             HeadParser::with_aliases(exchange, &crate::options::Lines::NONE)
                 .map_err(|_| ErrorKind::OutOfMemory)?;
+
+=== an unknown scheme is refused only after the .netrc is read
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_netrc_file_is_read_before_the_protocol_is_checked
+--- old
+    if !ProtoState::knows(&scheme) {
+--- new
+    if false && !ProtoState::knows(&scheme) {

@@ -31,9 +31,9 @@ witness: curl-core trace::tests::ends_lines_as_c
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core easy::tests::a_failure_says_why
 --- old
-            let why: &[u8] = if url::is_known_scheme(&scheme) {
+            let why = [&b"Protocol \""[..], &scheme, b"\" is disabled", follow];
 --- new
-            let why: &[u8] = if !url::is_known_scheme(&scheme) {
+            let why = [&b"Protocol \""[..], &scheme, b"\" not supported", follow];
 
 === every transfer warns of the debug build
 file: crates/curl-core/src/multi/mod.rs

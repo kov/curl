@@ -233,7 +233,22 @@ pub(crate) fn netrc_before_protocol<H: Host>(
     with_netrc(credentials, bare, cx).map(drop)
 }
 
+/// The tests' own schemes, which `ProtoState::start` knows beside
+/// libcurl's.
+#[cfg(any(test, feature = "test-util"))]
+const TEST_SCHEMES: [&[u8]; 4] = [b"null", b"stall", b"script", b"tcp"];
+
 impl ProtoState {
+    /// Whether `scheme`, lowercase, is one libcurl knows, whether this
+    /// build has it or not (`Curl_get_scheme`): the tests' own too.
+    pub(crate) fn knows(scheme: &[u8]) -> bool {
+        #[cfg(any(test, feature = "test-util"))]
+        if TEST_SCHEMES.contains(&scheme) {
+            return true;
+        }
+        crate::url::is_known_scheme(scheme)
+    }
+
     /// The protocol for `scheme`, lowercase, if this build has one, set up
     /// for `url`: what C's protocols do in their `setup_connection`, and
     /// `file:`'s connect, which opens the file before a connection is

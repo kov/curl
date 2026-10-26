@@ -608,3 +608,19 @@ witness: curl-core conn::pool::tests::a_network_change_retires_the_connections_m
         self.stale_below = self.next_number;
         return;
         let mut cursor = None;
+
+=== an idle HTTP/2 connection is looked at on every reuse
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::an_idle_connection_s_health_is_looked_at_once_a_second
+--- old
+        && whole_ms(now.since(conn.created)).saturating_sub(checked_ms.into()) < 1000
+--- new
+        && whole_ms(now.since(conn.created)).saturating_sub(checked_ms.into()) < 0
+
+=== an idle HTTP/2 connection is let alone a second and more
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::an_idle_connection_s_health_is_looked_at_once_a_second
+--- old
+        && whole_ms(now.since(conn.created)).saturating_sub(checked_ms.into()) < 1000
+--- new
+        && whole_ms(now.since(conn.created)).saturating_sub(checked_ms.into()) <= 1000

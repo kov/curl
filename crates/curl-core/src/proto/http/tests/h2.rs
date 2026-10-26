@@ -494,6 +494,55 @@ fn an_idle_connection_s_frames_are_read_and_it_is_reused() {
     }
 }
 
+/// An idle HTTP/2 connection is looked at once a second at most: a
+/// GOAWAY waiting on it goes unread by a reuse within a second of its
+/// return, whose stream the GOAWAY then refuses, and is read a second on,
+/// when the connection is let go and a new one made
+/// (`Curl_cpool_conn_seems_healthy`'s `lastchecked_ms`).
+#[test]
+fn an_idle_connection_s_health_is_looked_at_once_a_second() {
+    for (after_ms, reused) in [(999, true), (1000, false)] {
+        let mut first = RESPONSE.to_vec();
+        for _ in 0..600 {
+            first.extend_from_slice(b"P\n");
+        }
+        first.extend_from_slice(b"G 1 0\n");
+        let second: &[u8] = b"S\nH 1 0\n:status: 200\n\nD 1 2 1\nok";
+        let talk = Conversation::replies(&[&first], false).per_send();
+        let fresh = Conversation::replies(&[second], false).per_send();
+        let clock = ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone())
+            .with_conversation(at, fresh.clone());
+        let env = Env {
+            clock: Box::new(clock.clone()),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m = Multi::new(env).unwrap();
+        for (path, body, talk) in [("/1", &b"hello"[..], &talk), ("/2", b"ok", &fresh)] {
+            let mut e = Easy::new();
+            e.set_libraries(with_h2());
+            let ran = get_with(&mut m, e, path, talk.clone(), |o| {
+                o.http.version = HttpVersion::Http2Prior;
+                // The first read leaves the frames behind the response.
+                o.limits.buffer_size = crate::options::BufferSize::clamped(1024);
+            });
+            assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+            assert_eq!(ran.seen.body(), body);
+            if path == "/2" {
+                let text = ran.seen.text();
+                let was = text.iter().any(|l| l.starts_with("Reusing existing"));
+                assert_eq!(was, reused, "{after_ms} ms: {text:?}");
+            }
+            clock.advance(std::time::Duration::from_millis(after_ms));
+        }
+    }
+}
+
 /// An HTTP/2 connection that shuts down says GOAWAY first, no stream of
 /// the server's served (`cf_h2_shutdown`).
 #[test]

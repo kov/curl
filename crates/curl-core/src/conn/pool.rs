@@ -1040,7 +1040,7 @@ impl Pool {
         let Some(conn) = self.conns.get_mut(id).and_then(Place::idle_mut) else {
             return Ok(None);
         };
-        let Use::Idle { since } = conn.use_ else {
+        let Use::Idle { since, .. } = conn.use_ else {
             unreachable!("an idle connection is idle");
         };
         if conn.number.get() < self.stale_below
@@ -1378,7 +1378,10 @@ impl Pool {
             && !conn.close
         {
             assert_eq!(conn.use_, Use::Leased(NonZeroU32::MIN), "one lease");
-            conn.use_ = Use::Idle { since: now };
+            conn.use_ = Use::Idle {
+                since: now,
+                checked_ms: ms_since_made(conn, now),
+            };
             conn.served = true;
             let number = conn.number;
             *self.conns.get_mut(id).expect("checked above") = match finish.reserve {
@@ -1743,7 +1746,7 @@ fn over_limit(
             continue;
         };
         if let Some(Conn {
-            use_: Use::Idle { since },
+            use_: Use::Idle { since, .. },
             ..
         }) = place.idle()
         {
@@ -1865,7 +1868,7 @@ fn oldest_idle(
         cursor = Some(id);
         if let Some(place) = conns.get(id)
             && let Some(Conn {
-                use_: Use::Idle { since },
+                use_: Use::Idle { since, .. },
                 ..
             }) = place.idle()
             && which(place)
@@ -1892,7 +1895,7 @@ fn prune(
     while let Some(id) = conns.next_after(cursor) {
         cursor = Some(id);
         if let Some(conn) = conns.get_mut(id).and_then(Place::idle_mut)
-            && let Use::Idle { since } = conn.use_
+            && let Use::Idle { since, .. } = conn.use_
             && (conn.number.get() < stale_below || health(conn, since, rules, now).is_err())
         {
             close(conns, id, Evicted::Linger, exits, now);
@@ -1969,6 +1972,34 @@ fn health(
     {
         return Err(None);
     }
+    // A multiplexed one is looked at once a second at most, healthy
+    // meanwhile; an HTTP/1 one's input is polled at every reuse
+    // (`Curl_cpool_conn_seems_healthy`), each in whole milliseconds since
+    // the connection was made, as C counts them.
+    if let Use::Idle { checked_ms, .. } = conn.use_
+        && conn.is_h2()
+        && whole_ms(now.since(conn.created)).saturating_sub(checked_ms.into()) < 1000
+    {
+        return Ok(());
+    }
+    let healthy = alive(conn, now);
+    let made_ms = ms_since_made(conn, now);
+    if healthy.is_ok()
+        && let Use::Idle { checked_ms, .. } = &mut conn.use_
+    {
+        *checked_ms = made_ms;
+    }
+    healthy
+}
+
+/// The whole milliseconds from `conn`'s making to `now`, as C keeps its
+/// times of use; `u32::MAX` past its range.
+fn ms_since_made(conn: &Conn, now: Instant) -> u32 {
+    u32::try_from(whole_ms(now.since(conn.created))).unwrap_or(u32::MAX)
+}
+
+/// Whether `conn`'s socket is alive and has no input it should not.
+fn alive(conn: &mut Conn, now: Instant) -> Result<(), Option<PoolNote>> {
     let Transport::Tcp(stream) = &mut conn.transport else {
         return Ok(());
     };

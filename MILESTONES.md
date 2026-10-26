@@ -864,8 +864,7 @@ the system's under the HTTP-only programs installed here.
         receive window follows its transfer's pause and receive limit. Server push: **done**;
         a pushed response is a transfer of its own, offered to the application with the
         promise's fields (`CURLMOPT_PUSHFUNCTION`, `curl_pushheader_bynum` and `_byname`).
-        pytest 09_02 passes. Not built (step 55): the pool's once-a-second limit on checking a
-        multiplexed connection (`lastchecked_ms`).
+        pytest 09_02 passes.
       - **4. TLS early data.** **Done.** A resumed TLS 1.3 session that allows it takes the
         first bytes sent as early data, the handshake put off until then; `--tls-earlydata`,
         `CURLSSLOPT_EARLYDATA`, `CURLINFO_EARLYDATA_SENT_T`, `%{tls_earlydata}`. pytest 08_08
@@ -910,11 +909,13 @@ the system's under the HTTP-only programs installed here.
 Status: **to do**. SCOPE stage 5's second half: QUIC through ngtcp2 and nghttp3, the HTTP/3
 proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
 
-55. **What HTTP/2 left unbuilt,** each with a test that runs on the C leg too:
+55. **What HTTP/2 left unbuilt,** each with a test, run on the C leg too where the C leg can
+    show it:
     - `curl_easy_upkeep` sends a PING on an HTTP/2 connection past its upkeep interval
       (`CURLOPT_UPKEEP_INTERVAL_MS`, `Curl_cpool_upkeep`, `http2_conn_upkeep`).
     - The pool checks a multiplexed connection's health at most once a second
-      (`lastchecked_ms`).
+      (`lastchecked_ms`). **Done**, pinned against the fake at 999 and 1000 ms: the C leg
+      cannot time a server's GOAWAY that closely.
     - The `--trace-config http/2` lines (`CURL_TRC_CF` of `cf-h2`).
     - A push on a share's connection is taken, as C takes it.
 

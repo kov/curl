@@ -1123,8 +1123,11 @@ enum Use {
     /// Leased this many times: once, or by each transfer on a connection
     /// that multiplexes.
     Leased(NonZeroU32),
-    /// Leased by no one since this time (C's `lastused`).
-    Idle { since: Instant },
+    /// Leased by no one since this time (C's `lastused`), its health
+    /// last found good this many whole milliseconds after it was made
+    /// (C's `lastchecked_ms`), as it was returned at first. Past `u32`'s
+    /// range it is looked at every time.
+    Idle { since: Instant, checked_ms: u32 },
 }
 
 #[cfg(test)]

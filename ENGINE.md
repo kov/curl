@@ -1666,8 +1666,12 @@ connection not attached yet is attached then. The promised stream is routed to i
 within the read, so the frames that follow the promise go to it as a sibling's. Refused, the
 stream is cancelled; failed (`CURL_PUSH_ERROROUT`), the parent fails too.
 
-**Not built** (MILESTONES step 55): `curl_easy_upkeep`'s PING (it does nothing); the pool's
-once-a-second limit on checking a multiplexed connection's health (`lastchecked_ms`); the `--trace-config http/2` lines; and a push on a share's connection, which is
+An idle multiplexed connection's health is looked at once a second at most, healthy meanwhile,
+where an idle HTTP/1 one's input is polled at every reuse (`Curl_cpool_conn_seems_healthy`): its
+`Use::Idle` keeps when it was last found healthy as C does, in whole milliseconds since it was
+made (`lastchecked_ms`), set as it is returned.
+
+**Not built** (MILESTONES step 55): `curl_easy_upkeep`'s PING (it does nothing); the `--trace-config http/2` lines; and a push on a share's connection, which is
 refused where C takes it, as a share's connections are lent, never attached.
 
 ### 4.5 Route and reuse

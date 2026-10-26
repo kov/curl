@@ -740,6 +740,49 @@ fn transfers_on_a_share_share_its_connection() {
     assert_eq!(share.pool().len(), 0, "closed as the last is done");
 }
 
+/// A multi dropped with two transfers under way on a share's connection
+/// lent to it gives the connection back to the share as the last of them
+/// is taken out (`curl_multi_cleanup`): the share's pool leases nothing
+/// after, and the connection, forbidden its reuse, is closed.
+#[test]
+fn a_multi_dropped_gives_a_share_s_lent_connection_back() {
+    use crate::share::{Kind, Share};
+    let share = Share::new().unwrap();
+    share.keep(Kind::Connections).unwrap();
+    // Neither stream ends.
+    let talk =
+        Conversation::replies(&[b"S\nH 1 0\n:status: 200\n\n", WINDOW_SENT], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut seen = Vec::new();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let s = Seen::default();
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.output.verbose = true;
+        o.http.version = HttpVersion::Http2Prior;
+        o.limits.reuse.forbid = true;
+        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        e.set_share(Some(share.clone()));
+        m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        seen.push(s);
+        for _ in 0..3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+    }
+    let text = seen[1].text();
+    assert!(
+        text.iter().any(|l| l == "Multiplexed connection found\n"),
+        "{text:?}"
+    );
+    assert_eq!(share.pool().leased(), 1, "lent, its place leased");
+    drop(m);
+    assert_eq!(share.pool().leased(), 0);
+    assert_eq!(share.pool().len(), 0, "closed, forbidden its reuse");
+}
+
 /// A connection with as many streams on it as the server's
 /// MAX_CONCURRENT_STREAMS takes no more: the second transfer makes a
 /// connection of its own (`url_match_multiplex_limits`), saying so as C

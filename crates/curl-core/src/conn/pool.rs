@@ -355,6 +355,17 @@ impl ConnLease {
     }
 }
 
+impl Drop for Pool {
+    /// A share's connection lent to a multi goes back with the last of
+    /// its keys, which the multi gives back before its pool goes.
+    fn drop(&mut self) {
+        assert!(
+            std::thread::panicking() || self.lent.is_empty(),
+            "a pool dropped with a share's connection lent to it"
+        );
+    }
+}
+
 impl Drop for ConnLease {
     fn drop(&mut self) {
         assert!(
@@ -1520,11 +1531,12 @@ impl Pool {
     /// transfer the server pushes on it: one more user, found by no search
     /// (`Curl_multi_add_perform`'s `Curl_attach_connection`). A connection
     /// of the multi's own not attached yet is from now, and stays out with
-    /// the step; a share's is never attached, and is not pushed on.
+    /// the step; a share's is not pushed on, as push is offered on the
+    /// multi's own alone.
     pub(crate) fn pushed(&mut self, lease: &mut ConnLease) -> ConnLease {
         assert!(
             !matches!(lease.home, Home::Share(_)),
-            "a share's connection not lent is not pushed on"
+            "a share's connection is not pushed on"
         );
         if !self.is_attached(lease) {
             self.attach(lease);

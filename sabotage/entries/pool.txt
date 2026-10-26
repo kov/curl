@@ -527,3 +527,11 @@ witness: curl-core proto::http::tests::h2::a_pipewait_on_a_share_s_connection_en
             home @ Home::Share(share) => share.pool().settle(home, lease, settled),
 --- new
             Home::Share(_) => false,
+
+=== a key to a lent connection goes to the share without the multi's pool
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_multi_dropped_gives_a_share_s_lent_connection_back
+--- old
+            let back = cx.rest.caches.pool.release_lent(lease);
+--- new
+            let back = pool::LentBack::Last(lease);

@@ -1613,8 +1613,9 @@ Each stream's receive window is the one its transfer asks for (`cf_h2_update_loc
 most once its head is in, what a receive limit allows under one, none while its output is
 paused or failed, so that the server holds back what would only be buffered. It is asked for
 as each piece of the response is written to the transfer, in whichever transfer's step the
-session read it, and again as the transfer next reads, where a pause or an unpause made since,
-from its handlers or from outside, takes effect; a window grown tells the peer by how much. C
+session read it, which is where a pause takes effect, and again as the transfer next reads,
+which is where an unpause does (a paused transfer does not read); a window grown tells the
+peer by how much. C
 asks again inside `curl_easy_pause` as well, sending the update before it returns; here an
 unpause marks the transfer to run, and the update goes out in that run, as the connection may
 be out with another transfer's step when the pause is asked for.

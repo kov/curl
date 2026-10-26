@@ -1202,3 +1202,73 @@ fn a_paused_streams_window_closes_until_it_is_unpaused() {
     assert_eq!(&w.0.lock().unwrap()[1..], b"aabb");
     m.remove(id, &mut NoEvents).unwrap();
 }
+
+/// Pauses once, at its `n`th write, and takes every other.
+#[derive(Clone)]
+struct PausesOnceAt(u32, Arc<Mutex<u32>>);
+
+impl WriteHandler for PausesOnceAt {
+    fn write(&self, _: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> Write {
+        let mut n = self.1.lock().unwrap();
+        *n += 1;
+        if *n == self.0 {
+            Write::Pause
+        } else {
+            Write::Accepted
+        }
+    }
+}
+
+/// A stream paused by a delivery in a sibling's step has its window
+/// closed there, nothing told the peer, and reopened as its own transfer
+/// runs once unpaused.
+#[test]
+fn a_stream_paused_in_a_siblings_step_reopens_its_window_in_its_own() {
+    let talk = Conversation::replies(
+        &[
+            b"S\nH 1 0\n:status: 200\n\n",
+            WINDOW_SENT,
+            // b's own update is not sent: its stream ends in what it reads.
+            b"H 3 0\n:status: 200\n\nD 1 2 0\naaD 1 2 0\nbbD 3 1 1\nc",
+            b"D 1 1 1\nd",
+        ],
+        false,
+    )
+    .per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut ids = Vec::new();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.version = HttpVersion::Http2Prior;
+        let w = if path == "/a" {
+            Handler::write(PausesOnceAt(2, Arc::default())).unwrap()
+        } else {
+            Handler::write(Seen::default()).unwrap()
+        };
+        o.callbacks.write = Some(w);
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        for _ in 0..3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+    }
+    assert_eq!(
+        drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert_eq!(sent.matches("U 1 ").count(), 1, "{sent}");
+    m.pause(ids[0], crate::deliver::PauseRequest::CONT, &mut NoEvents)
+        .unwrap();
+    let done = drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap();
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert_eq!(done, Ok(()), "{sent}");
+    assert!(sent.ends_with("U 1 10485760\n"), "{sent}");
+    for id in ids {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+}

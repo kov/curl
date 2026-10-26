@@ -354,3 +354,15 @@ witness: curl-core proto::http::tests::h2::a_paused_streams_window_closes_until_
             let wanted = wanted_window(cx, false);
 --- new
             let wanted = wanted_window(cx, true);
+
+=== a stream paused in a sibling's step keeps its window open
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_stream_paused_in_a_siblings_step_reopens_its_window_in_its_own
+--- old
+                let wanted = wanted_window(cx, self.stream().failed.is_some());
+                pushed(
+                    after
+--- new
+                let wanted = STREAM_WINDOW_MAX;
+                pushed(
+                    after

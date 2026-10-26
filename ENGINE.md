@@ -445,8 +445,8 @@ from the socket, where the engine reads what is there.
 `SETUP` traces cf-setup.c's lines as the transfer's step meets the points C passes: `added` as
 a new connection's setup starts, `happy eyeballing to origin|proxy H:P` as the race starts,
 `added SOCKS filter to H:P`, `added HTTP proxy tunnel filter` and `added HAPROXY filter` as each
-handshake starts, `retrying connect, N. time` as a 407 redials, and `removing connected setup
-filter` and `destroy` as the connection is up. `HTTP-PROXY` and `HAPROXY`, setup filters too,
+handshake starts, `retrying connect` with the try's number as a 407 redials, and `removing
+connected setup filter` and `destroy` as the connection is up. `HTTP-PROXY` and `HAPROXY`, setup filters too,
 trace their removal and `destroy` with it, and the tunnel's two filters (`HTTP-PROXY`,
 `H1-PROXY`) their `destroy` as a redial discards them.
 Not traced: the `HAPPY-EYEBALLS` and `DNS` filters' removal and destruction (below), and the
@@ -2617,7 +2617,7 @@ body's first write, tuned for its size if known, and takes the body's bytes as c
 content decoding); the send bucket starts over at the body's first read and takes the body's
 bytes as sent, framing included. A read is cut to the receive tokens and stops when they are
 spent; a read of the upload likewise, and one send carries at most a second's worth of body
-(`xfer_send`). file:// is not limited (DIVERGENCE.md).
+(`xfer_send`). A `file:` transfer is not limited (DIVERGENCE.md).
 
 ### 5.4 Send side
 

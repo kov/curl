@@ -60,12 +60,12 @@ yet meet.
    a port of a program that does not exist. A new leg (`start_leg`, as at a follow) keeps `started_op` and resets
    `started_single`, pinned by the two-anchor test.
 5. **The multi, in five commits.**
-   - **5a. conn: add a networkless connection pool.** **Done.** `conn/`: `Pool`, `ConnLease`,
+   - **5a — conn: add a networkless connection pool.** **Done.** `conn/`: `Pool`, `ConnLease`,
      `ConnNumber`, `Route::LOCAL`. C attaches a connection to a `file:` transfer too, numbered
      in the pool ("Connection #N") and closed at done, since the scheme forbids reuse. Tests:
      numbers count from 0 and are never reused; a released local connection is closed, or
      terminated after a premature end; a dropped lease is caught in debug builds.
-   - **5b. multi: add Easy and the transfer state machine with a null protocol.** **Done.**
+   - **5b — multi: add Easy and the transfer state machine with a null protocol.** **Done.**
      `Easy` and `Options` (the URL and the two limits), `Multi`, `Host`/`NoHost`, `Slot`, `Run`,
      the dirty `RowSet`, `Counts`, `TransferState` with the variants a networkless transfer
      reaches (`Init`, `Exchanging`, `Done`, `Completed`), the test-only `null:` (completes at
@@ -79,7 +79,7 @@ yet meet.
      more until empty, and tells the timer nothing); `running` counting transfers not yet run;
      a timed-out transfer failing with OPERATION_TIMEDOUT. `drive_to_completion` waits for
      step 6's `wait`. `TransferReport` comes with step 7.
-   - **5c. multi: add the event contexts and notifications.** **Done.** `EventCx` for the
+   - **5c — multi: add the event contexts and notifications.** **Done.** `EventCx` for the
      timer callback and `NotifyCx` for `notify`, each with the calls api.c allows there that
      exist so far (`info_read`, `counts`, `set_notify`, `options`, `options_mut`, `duplicate`;
      `NotifyCx` adds `add`, `remove`, `timeout`); `Notification`, `NotifyKind`, and
@@ -89,14 +89,14 @@ yet meet.
      callback getting nothing, `add` and `remove` from a notification, `info_read` from the
      timer callback. `EngineRest`, `TransferCx` and the handler traits come with step 7, whose
      callbacks are the first to need them.
-   - **5d. multi: check the invariants.** **Done.** The counts behind a `Tally` with one method
+   - **5d — multi: check the invariants.** **Done.** The counts behind a `Tally` with one method
      per event; `multi/check.rs` recounting and cross-checking every table after each `add`,
      `remove`, `perform` and `socket_action` in the debug build; a proptest property test of
      random adds, removes, passes, clock moves, reads, notification switches, timer aborts and
      removals from inside notifications against a model of what the application sees. It
      found that a transfer refused inside `add` counts as added, as in C; C's leaked running
      count for it is recorded as a deliberate difference.
-   - **5e. multi: survive allocation failure.** **Done.** `track::fail_after` and
+   - **5e — multi: survive allocation failure.** **Done.** `track::fail_after` and
      `track::live_tracked` in curl-alloc; `tests/torture.rs`, which runs 20 completing, failing
      and timing-out transfers through add, both passes, a timeout, reads and removes once for
      each of its 113 allocations, refusing that one and every later one: the arena's growth

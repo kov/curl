@@ -120,7 +120,7 @@ mod tests {
             assert_eq!(curl_easy_ssls_export(null, None, null), CURLE_NOT_BUILT_IN);
             let p = ptr::null();
             assert_eq!(
-                curl_easy_ssls_import(null, p, p, 0, p, 0),
+                curl_easy_ssls_import(null, ptr::null(), p, 0, p, 0),
                 CURLE_NOT_BUILT_IN
             );
         }

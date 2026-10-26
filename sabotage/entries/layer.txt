@@ -59,10 +59,10 @@ witness: curl-core proto::http::tests::an_idle_connection_a_layer_finds_dead_is_
             Some((_, layers)) => Below { layers, ..self }.alive(cx),
 
 === bytes read past a tunnel's answer wait behind the socket
-file: crates/curl-core/src/conn/mod.rs
+file: crates/curl-core/src/conn/mux.rs
 witness: curl-core proto::http::tests::bytes_after_a_tunnel_s_answer_are_read_first
 --- old
-        if let Some(n) = std::num::NonZeroUsize::new(stream.received().len()) {
+        if let Some(n) = std::num::NonZeroUsize::new(self.stream.received().len()) {
 --- new
         if let Some(n) = None::<std::num::NonZeroUsize> {
 
@@ -83,20 +83,20 @@ witness: curl-core conn::layer::tests::urgent_data_is_dead_and_any_other_input_p
         Ok(r) if r.intersects(dead) && !r.contains(Events::IN) => Alive::Dead,
 
 === a layer keeping the defaults hides what the layers below hold
-file: crates/curl-core/src/conn/layer.rs
+file: crates/curl-core/src/conn/part.rs
 witness: curl-core conn::layer::tests::a_layer_s_defaults_ask_below
 --- old
-    fn data_pending(&self, below: Below<'_>) -> bool {
+    fn data_pending(&self, below: B) -> bool {
         below.data_pending()
     }
 --- new
-    fn data_pending(&self, below: Below<'_>) -> bool {
+    fn data_pending(&self, below: B) -> bool {
         let _ = below;
         false
     }
 
 === a layer keeping the defaults waits for nothing
-file: crates/curl-core/src/conn/layer.rs
+file: crates/curl-core/src/conn/part.rs
 witness: curl-core conn::layer::tests::a_layer_s_defaults_ask_below
 --- old
     fn adjust_pollset(&self, wanted: Events) -> Events {

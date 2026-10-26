@@ -15,6 +15,8 @@ mod dns;
 pub(crate) mod h2proxy;
 pub mod io;
 pub(crate) mod layer;
+pub(crate) mod mux;
+pub(crate) mod part;
 pub(crate) mod pool;
 pub(crate) mod proxy;
 pub(crate) mod shutdown;
@@ -847,9 +849,10 @@ pub(crate) struct Conn {
     /// HTTP Negotiate's context with the origin, and what the connection
     /// is bound to by it; made the first time a request negotiates.
     negotiate: Option<Box<crate::proto::http::negotiate::Negotiate>>,
-    /// The HTTP/2 session over it, once its first request found HTTP/2
-    /// agreed on (`cf-h2`): it speaks nothing else from then on.
-    h2: Option<Box<crate::proto::http2::H2Conn>>,
+    /// The session it multiplexes over, once its first request found a
+    /// version that does agreed on (`cf-h2`): it speaks nothing else from
+    /// then on.
+    session: Option<mux::Session>,
 }
 
 impl Conn {
@@ -861,56 +864,83 @@ impl Conn {
         }
     }
 
-    /// Whether it speaks HTTP/2 (`Curl_conn_http_version` 20).
-    pub(crate) fn is_h2(&self) -> bool {
-        self.h2.is_some()
+    /// Whether it multiplexes: a session speaks for it
+    /// (`Curl_conn_is_multiplex`).
+    pub(crate) fn multiplexes(&self) -> bool {
+        self.session.is_some()
+    }
+
+    /// The session it multiplexes over, if it does.
+    pub(crate) fn session(&self) -> Option<&mux::Session> {
+        self.session.as_ref()
     }
 
     /// Its HTTP/2 session, if it speaks HTTP/2.
     pub(crate) fn h2(&self) -> Option<&crate::proto::http2::H2Conn> {
-        self.h2.as_deref()
+        self.session.as_ref().map(|mux::Session::H2(h2)| &**h2)
     }
 
     /// Its HTTP/2 session, taken out for a step to drive beside the
     /// connection, which it is put back on after (`put_h2`).
     pub(crate) fn take_h2(&mut self) -> Option<Box<crate::proto::http2::H2Conn>> {
-        self.h2.take()
-    }
-
-    /// What an idle HTTP/2 connection has to read, read by its session,
-    /// which a frame for no stream leaves alive: whether it still is, its
-    /// session neither failed, told to go away nor done
-    /// (`http2_connisalive`, `should_close_session`).
-    pub(crate) fn h2_stray_input(&mut self, cx: &mut dyn LayerCx) -> bool {
-        use crate::http2::{Event, Heard};
-        let Some(mut h2) = self.h2.take() else {
-            return false;
-        };
-        let alive = match self.recv(cx, 16 * 1024) {
-            Ok(Recv::WouldBlock) => true,
-            Ok(Recv::Eof) | Err(_) => false,
-            Ok(Recv::Data(_)) => {
-                let mut rx = std::mem::take(self.rx_mut());
-                let mut goaway = false;
-                let read = h2.session().recv(rx.filled(), &mut |event| {
-                    goaway |= matches!(event, Event::GoAway { .. });
-                    Heard::Fine
-                });
-                let all = rx.filled().len();
-                rx.consume(all);
-                *self.rx_mut() = rx;
-                let wants = h2.session().wants();
-                read.is_ok() && !goaway && (wants.read || wants.write)
-            }
-        };
-        self.h2 = Some(h2);
-        alive
+        self.session.take().map(|mux::Session::H2(h2)| h2)
     }
 
     /// Put an HTTP/2 session on it, a new one or one taken out.
     pub(crate) fn put_h2(&mut self, h2: Box<crate::proto::http2::H2Conn>) {
-        assert!(self.h2.is_none(), "one session per connection");
-        self.h2 = Some(h2);
+        assert!(self.session.is_none(), "one session per connection");
+        self.session = Some(mux::Session::H2(h2));
+    }
+
+    /// What its session works over: its stream. A connection without a
+    /// network has none.
+    pub(crate) fn carrier(&mut self) -> mux::Carrier<'_> {
+        self.split().1.expect("a local connection moves no bytes")
+    }
+
+    /// Its session, and what it works over, borrowed apart.
+    fn split(&mut self) -> (&mut Option<mux::Session>, Option<mux::Carrier<'_>>) {
+        let socket = self.socket_component();
+        let Conn {
+            transport,
+            close,
+            session,
+            ..
+        } = self;
+        let carrier = match transport {
+            Transport::Tcp(stream) => Some(mux::Carrier {
+                stream,
+                socket,
+                close,
+            }),
+            Transport::Local => None,
+        };
+        (session, carrier)
+    }
+
+    /// Whether it seems usable, asked of its pieces from the top: its
+    /// session, which reads what the peer sent it, else its layers and
+    /// socket, for which input waiting is input pending
+    /// (`Curl_conn_is_alive`).
+    pub(crate) fn alive(&mut self, cx: &mut dyn LayerCx) -> layer::Alive {
+        use part::{Lower as _, Part as _};
+        match self.split() {
+            (_, None) => layer::Alive::Alive {
+                input_pending: false,
+            },
+            (Some(session), Some(carrier)) => session.is_alive(cx, carrier),
+            (None, Some(carrier)) => carrier.alive(cx),
+        }
+    }
+
+    /// Say goodbye from the top as it shuts down: its session's, which
+    /// goes as the connection takes it, never waited on; its layers' are
+    /// the stream's (`cf_h2_shutdown`).
+    pub(crate) fn goodbye(&mut self, cx: &mut dyn LayerCx) {
+        use part::Part as _;
+        if let (Some(session), Some(carrier)) = self.split() {
+            let _done = session.shutdown(cx, carrier);
+        }
     }
 
     /// The filter at the top of its chain once it is up, which a question
@@ -1077,25 +1107,14 @@ impl Conn {
     /// The socket's receive is traced, and its failure said, as it
     /// reaches the socket, below any layer (`cf_socket_recv`).
     pub(crate) fn recv(&mut self, cx: &mut dyn LayerCx, max: usize) -> Result<Recv, RecvFailed> {
-        let component = self.socket_component();
-        let stream = self.stream();
-        if let Some(n) = std::num::NonZeroUsize::new(stream.received().len()) {
-            return Ok(Recv::Data(n));
-        }
-        let got = stream.recv(cx, max, Some(component));
-        if let Ok(Recv::Eof) = got {
-            // Shut down by the server, not reused (`multi_done`).
-            self.close = true;
-        }
-        got
+        self.carrier().recv(cx, max)
     }
 
     /// Send from `bytes`, which is not empty, what the network takes now:
     /// the socket's send traced, and its failure said, as it reaches the
     /// socket, below any layer (`cf_socket_send`).
     pub(crate) fn send(&mut self, cx: &mut dyn LayerCx, bytes: &[u8]) -> std::io::Result<Sent> {
-        let component = self.socket_component();
-        self.stream().send(cx, bytes, Some(component))
+        self.carrier().send(cx, bytes)
     }
 
     /// Whether bytes wait where a poll of its socket cannot see them, so

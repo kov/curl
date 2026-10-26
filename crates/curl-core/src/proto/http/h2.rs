@@ -576,7 +576,7 @@ impl Request {
                 closes: Vec::new(),
                 oom: false,
             };
-            let sent = h2.egress(&mut with, lease.get());
+            let sent = h2.egress(&mut with, &mut lease.get().carrier());
             (sent, with.closes, with.oom)
         });
         let (sent, closes, oom) = sent;
@@ -758,7 +758,7 @@ impl Request {
         // unpaused since (`stream_recv`'s `cf_h2_update_local_win`).
         if self.stream().failed.is_none()
             && let Some(id) = self.stream().id
-            && lease.conn().is_h2()
+            && lease.conn().h2().is_some()
         {
             let wanted = wanted_window(cx, false);
             if let Err(e) = with_session(lease, |h2, _| h2.window_to(id, wanted)) {
@@ -1418,7 +1418,7 @@ impl Request {
         let id = stream.id;
         let open = !stream.closed;
         stream.closed = true;
-        if !lease.conn().is_h2() {
+        if lease.conn().h2().is_none() {
             return;
         }
         let Some(id) = id else {

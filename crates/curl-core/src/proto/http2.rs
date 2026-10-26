@@ -9,9 +9,9 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use crate::conn::Conn;
-use crate::conn::io::Sent;
-use crate::conn::layer::LayerCx;
+use crate::conn::io::{Recv, Sent};
+use crate::conn::layer::{Alive, Handshake, LayerCx, Lower as _, Part as ConnPart};
+use crate::conn::mux::Carrier;
 use crate::error::ErrorKind;
 use crate::error::UrlErrorKind;
 use crate::http2::{
@@ -187,6 +187,10 @@ impl H2Conn {
         self.session.max_concurrent()
     }
 
+    pub(crate) fn version(&self) -> crate::report::ResponseVersion {
+        crate::report::ResponseVersion::Http2
+    }
+
     /// Stream `stream` is transfer `to`'s, from its opening on.
     pub(crate) fn route(&mut self, stream: StreamId, to: TransferId) -> Result<(), OutOfMemory> {
         debug_assert!(self.route_of(stream).is_none(), "{stream:?} routed twice");
@@ -282,10 +286,10 @@ impl H2Conn {
     pub(crate) fn egress(
         &mut self,
         with: &mut dyn Egress,
-        conn: &mut Conn,
+        io: &mut Carrier<'_>,
     ) -> Result<bool, EgressFailed> {
         loop {
-            if !self.flush(with.layer_cx(), conn)? {
+            if !self.flush(with.layer_cx(), io)? {
                 return Ok(false);
             }
             let H2Conn {
@@ -321,30 +325,11 @@ impl H2Conn {
         }
     }
 
-    /// Say goodbye as the connection shuts down, once, and send what the
-    /// connection takes of it now (`cf_h2_shutdown`): a peer that closed
-    /// hears nothing.
-    pub(crate) fn goodbye(&mut self, cx: &mut dyn LayerCx, conn: &mut Conn) {
-        if self.closed || self.sent_goaway {
-            return;
-        }
-        self.sent_goaway = true;
-        if self
-            .session
-            .goaway(H2Error::NO_ERROR, b"shutdown\0")
-            .is_ok()
-        {
-            let sent = self.egress(&mut Bare(cx), conn);
-            // What does not go now goes with the connection.
-            drop(sent);
-        }
-    }
-
     /// Send what the session's output holds, as far as the connection
     /// takes it: whether all of it went.
-    fn flush(&mut self, cx: &mut dyn LayerCx, conn: &mut Conn) -> Result<bool, EgressFailed> {
+    fn flush(&mut self, cx: &mut dyn LayerCx, io: &mut Carrier<'_>) -> Result<bool, EgressFailed> {
         while self.sent < self.out.len() {
-            match conn.send(cx, &self.out[self.sent..]) {
+            match io.send(cx, &self.out[self.sent..]) {
                 Ok(Sent::Bytes(n)) => self.sent += n.get(),
                 Ok(_) => return Ok(false),
                 Err(_) => return Err(EgressFailed::Send),
@@ -353,6 +338,71 @@ impl H2Conn {
         self.out.clear();
         self.sent = 0;
         Ok(true)
+    }
+}
+
+impl<'a> ConnPart<Carrier<'a>> for H2Conn {
+    /// What an idle connection has to read, read by the session, which a
+    /// frame for no stream leaves alive: whether it still is, its session
+    /// neither failed, told to go away nor done (`http2_connisalive`,
+    /// `should_close_session`).
+    fn is_alive(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'a>) -> Alive {
+        use crate::http2::{Event, Heard};
+        let below_alive = below.reborrow().alive(cx);
+        if below_alive
+            != (Alive::Alive {
+                input_pending: true,
+            })
+        {
+            return below_alive;
+        }
+        let alive = match below.recv(cx, 16 * 1024) {
+            Ok(Recv::WouldBlock) => true,
+            Ok(Recv::Eof) | Err(_) => false,
+            Ok(Recv::Data(_)) => {
+                let mut rx = std::mem::take(below.rx_mut());
+                let mut goaway = false;
+                let read = self.session.recv(rx.filled(), &mut |event| {
+                    goaway |= matches!(event, Event::GoAway { .. });
+                    Heard::Fine
+                });
+                let all = rx.filled().len();
+                rx.consume(all);
+                *below.rx_mut() = rx;
+                let wants = self.session.wants();
+                read.is_ok() && !goaway && (wants.read || wants.write)
+            }
+        };
+        if alive {
+            Alive::Alive {
+                input_pending: false,
+            }
+        } else {
+            Alive::Dead
+        }
+    }
+
+    /// Say goodbye as the connection shuts down, once, and send what the
+    /// connection takes of it now (`cf_h2_shutdown`): a peer that closed
+    /// hears nothing. What does not go now goes with the connection.
+    fn shutdown(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        mut below: Carrier<'a>,
+    ) -> Result<Handshake, ErrorKind> {
+        if self.closed || self.sent_goaway {
+            return Ok(Handshake::Done);
+        }
+        self.sent_goaway = true;
+        if self
+            .session
+            .goaway(H2Error::NO_ERROR, b"shutdown\0")
+            .is_ok()
+        {
+            let sent = self.egress(&mut Bare(cx), &mut below);
+            drop(sent);
+        }
+        Ok(Handshake::Done)
     }
 }
 

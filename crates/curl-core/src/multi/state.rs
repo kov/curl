@@ -636,7 +636,7 @@ fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done
     // A failure other than its stream's closes an HTTP/2 connection,
     // which outlives a request otherwise (`multistate_performing`'s
     // `streamclose`).
-    if d.result.is_err_and(|e| e != ErrorKind::Http2Stream) && d.lease.is_h2() {
+    if d.result.is_err_and(|e| e != ErrorKind::Http2Stream) && d.lease.multiplexes() {
         d.lease.get().mark_close();
     }
     mstate::trace(
@@ -728,7 +728,7 @@ fn release<H: Host>(
     }
     let home = lease.home().clone();
     let closes = lease.closes() || stream_closed;
-    let multiplex = u8::from(lease.is_h2());
+    let multiplex = u8::from(lease.multiplexes());
     let released = match home {
         // A share's lease, lent to the multi: the last key gives it back to
         // the share's pool. Each is a use of the share's pool, as C
@@ -1675,7 +1675,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         let lease = &mut x.lease;
         if matches!(lease.home(), Home::Multi)
             && !cx.rest.caches.pool.is_attached(lease)
-            && lease.is_h2()
+            && lease.multiplexes()
         {
             cx.rest.caches.pool.attach(lease);
             // One waiting to multiplex may join it now
@@ -1688,7 +1688,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         // says so, unlocked as C sets the connection's field.
         if let Home::Share(share) = lease.home()
             && !cx.rest.caches.pool.is_attached(lease)
-            && lease.is_h2()
+            && lease.multiplexes()
         {
             let share = share.clone();
             // Out of room to lend it, it serves its transfer alone.

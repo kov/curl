@@ -11,7 +11,7 @@ use std::num::NonZeroUsize;
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::io::{Events, Recv, Sent};
-use super::layer::{Alive, Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery};
+use super::layer::{Alive, Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Part};
 use crate::components::Component;
 use crate::error::ErrorKind;
 use crate::http2::{
@@ -608,92 +608,7 @@ impl H2Proxy {
     }
 }
 
-impl Layer for H2Proxy {
-    /// The tunnel's DATA as they come, the stream's window opened by as
-    /// much as is read (`cf_h2_proxy_recv`).
-    fn recv(
-        &mut self,
-        cx: &mut dyn LayerCx,
-        mut below: Below<'_>,
-        buf: &mut [u8],
-    ) -> io::Result<Recv> {
-        if self.tunnel.state != TunnelState::Established {
-            return Err(self.failed(ErrorKind::RecvError));
-        }
-        if self.tunnel.held().is_empty()
-            && let Err(e) = self.ingress(cx, below.reborrow())
-        {
-            return Err(self.failed(e.kind()));
-        }
-        let got = match NonZeroUsize::new(buf.len().min(self.tunnel.held().len())) {
-            Some(n) => {
-                let held = &self.tunnel.recv[self.tunnel.read..];
-                buf[..n.get()].copy_from_slice(&held[..n.get()]);
-                self.tunnel.read += n.get();
-                let stream = self
-                    .tunnel
-                    .stream
-                    .expect("an established tunnel has its stream");
-                if self.session.consume(stream, n.get()).is_err() {
-                    return Err(self.failed(ErrorKind::RecvError));
-                }
-                Ok(Recv::Data(n))
-            }
-            None => self.nothing_held(cx),
-        };
-        if let Err(e) = self.egress(cx, below) {
-            return Err(self.failed(e.kind()));
-        }
-        got
-    }
-
-    /// The layer above's bytes held for the stream's DATA, as much as is
-    /// room for, and as much of them sent as the session and the layers
-    /// below take (`cf_h2_proxy_send`).
-    fn send(
-        &mut self,
-        cx: &mut dyn LayerCx,
-        mut below: Below<'_>,
-        bytes: &[u8],
-    ) -> io::Result<Sent> {
-        if self.tunnel.state != TunnelState::Established || self.tunnel.closed {
-            return Err(self.failed(ErrorKind::SendError));
-        }
-        let n = bytes
-            .len()
-            .min(SEND_MAX - self.tunnel.send.len().min(SEND_MAX));
-        if self.tunnel.send.try_extend_from_slice(&bytes[..n]).is_err() {
-            return Err(self.failed(ErrorKind::OutOfMemory));
-        }
-        let stream = self
-            .tunnel
-            .stream
-            .expect("an established tunnel has its stream");
-        if !self.tunnel.send.is_empty()
-            && let Err(e) = self.session.resume(stream)
-            && e.fatal
-        {
-            return Err(self.failed(ErrorKind::SendError));
-        }
-        if let Err(e) = self.ingress(cx, below.reborrow()) {
-            return Err(self.failed(e.kind()));
-        }
-        if let Err(e) = self.egress(cx, below) {
-            return Err(self.failed(e.kind()));
-        }
-        if self.over() {
-            if self.tunnel.closed {
-                return Err(self.failed(ErrorKind::SendError));
-            }
-            cx.of(
-                Component::H2Proxy,
-                format_args!("[0] send: nothing to do in this session"),
-            );
-            return Err(self.failed(ErrorKind::Http2));
-        }
-        Ok(NonZeroUsize::new(n).map_or(Sent::WouldBlock, Sent::Bytes))
-    }
-
+impl Part<Below<'_>> for H2Proxy {
     /// What the transfer waits for, as the windows the proxy left say: to
     /// read for a window that is shut, to write while there is room and
     /// something to send (`cf_h2_proxy_adjust_pollset`).
@@ -806,6 +721,93 @@ impl Layer for H2Proxy {
             LayerQuery::Tunnel => Some(LayerAnswer::Tunnel(Component::H2Proxy)),
             _ => None,
         }
+    }
+}
+
+impl Layer for H2Proxy {
+    /// The tunnel's DATA as they come, the stream's window opened by as
+    /// much as is read (`cf_h2_proxy_recv`).
+    fn recv(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        mut below: Below<'_>,
+        buf: &mut [u8],
+    ) -> io::Result<Recv> {
+        if self.tunnel.state != TunnelState::Established {
+            return Err(self.failed(ErrorKind::RecvError));
+        }
+        if self.tunnel.held().is_empty()
+            && let Err(e) = self.ingress(cx, below.reborrow())
+        {
+            return Err(self.failed(e.kind()));
+        }
+        let got = match NonZeroUsize::new(buf.len().min(self.tunnel.held().len())) {
+            Some(n) => {
+                let held = &self.tunnel.recv[self.tunnel.read..];
+                buf[..n.get()].copy_from_slice(&held[..n.get()]);
+                self.tunnel.read += n.get();
+                let stream = self
+                    .tunnel
+                    .stream
+                    .expect("an established tunnel has its stream");
+                if self.session.consume(stream, n.get()).is_err() {
+                    return Err(self.failed(ErrorKind::RecvError));
+                }
+                Ok(Recv::Data(n))
+            }
+            None => self.nothing_held(cx),
+        };
+        if let Err(e) = self.egress(cx, below) {
+            return Err(self.failed(e.kind()));
+        }
+        got
+    }
+
+    /// The layer above's bytes held for the stream's DATA, as much as is
+    /// room for, and as much of them sent as the session and the layers
+    /// below take (`cf_h2_proxy_send`).
+    fn send(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        mut below: Below<'_>,
+        bytes: &[u8],
+    ) -> io::Result<Sent> {
+        if self.tunnel.state != TunnelState::Established || self.tunnel.closed {
+            return Err(self.failed(ErrorKind::SendError));
+        }
+        let n = bytes
+            .len()
+            .min(SEND_MAX - self.tunnel.send.len().min(SEND_MAX));
+        if self.tunnel.send.try_extend_from_slice(&bytes[..n]).is_err() {
+            return Err(self.failed(ErrorKind::OutOfMemory));
+        }
+        let stream = self
+            .tunnel
+            .stream
+            .expect("an established tunnel has its stream");
+        if !self.tunnel.send.is_empty()
+            && let Err(e) = self.session.resume(stream)
+            && e.fatal
+        {
+            return Err(self.failed(ErrorKind::SendError));
+        }
+        if let Err(e) = self.ingress(cx, below.reborrow()) {
+            return Err(self.failed(e.kind()));
+        }
+        if let Err(e) = self.egress(cx, below) {
+            return Err(self.failed(e.kind()));
+        }
+        if self.over() {
+            if self.tunnel.closed {
+                return Err(self.failed(ErrorKind::SendError));
+            }
+            cx.of(
+                Component::H2Proxy,
+                format_args!("[0] send: nothing to do in this session"),
+            );
+            return Err(self.failed(ErrorKind::Http2));
+        }
+        Ok(NonZeroUsize::new(n).map_or(Sent::WouldBlock, Sent::Bytes))
     }
 }
 

@@ -95,6 +95,16 @@ pub(crate) struct Versions {
 
 impl Versions {
     pub(crate) const ALL: Versions = Versions { h1: true, h2: true };
+
+    /// Whether a connection that speaks `version` may serve the request.
+    pub(crate) fn allows(self, version: crate::report::ResponseVersion) -> bool {
+        use crate::report::ResponseVersion::*;
+        match version {
+            Http10 | Http11 => self.h1,
+            Http2 => self.h2,
+            Http3 => false,
+        }
+    }
 }
 
 /// What a final response's challenges offered and led to, its code, and
@@ -988,7 +998,7 @@ impl Request {
         // On a connection's first request, which finds what it speaks
         // (`http_check_new_conn`).
         let h2 = if reused {
-            lease.conn().is_h2()
+            lease.conn().h2().is_some()
         } else {
             self.check_new_conn(cx, lease)?
         };
@@ -1819,7 +1829,9 @@ impl Request {
         // is to send (`KEEP_RECV` and `KEEP_SEND` both off).
         if self.sending() {
             self.send(cx, lease, true)?;
-        } else if self.h2.as_ref().is_some_and(h2::H2Stream::out_pending) && lease.conn().is_h2() {
+        } else if self.h2.as_ref().is_some_and(h2::H2Stream::out_pending)
+            && lease.conn().h2().is_some()
+        {
             self.h2_egress(cx, lease)?;
         }
         Ok(if matches!(self.stage, Stage::Done) && !self.sending() {

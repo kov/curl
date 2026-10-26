@@ -12,7 +12,7 @@ use std::num::NonZeroUsize;
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use super::io::{Events, Recv, Sent};
-use super::layer::{Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery};
+use super::layer::{Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Part};
 use crate::components::Component;
 use crate::error::ErrorKind;
 use crate::tls::{SessionPeer, TlsIo, TlsSession, TlsWait};
@@ -156,7 +156,7 @@ impl fmt::Debug for TlsLayer {
     }
 }
 
-impl Layer for TlsLayer {
+impl Part<Below<'_>> for TlsLayer {
     /// A handshake the session puts off is done as far as the connection
     /// goes: it goes on as the connection is used.
     fn connect(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind> {
@@ -175,6 +175,76 @@ impl Layer for TlsLayer {
         Ok(shaken)
     }
 
+    /// What the session waits for replaces what the transfer wants
+    /// (`Curl_ssl_adjust_pollset`'s `set_out_only` and `set_in_only`).
+    fn adjust_pollset(&self, wanted: Events) -> Events {
+        match self.session.waits() {
+            TlsWait::Nothing => wanted,
+            TlsWait::Recv => Events::IN,
+            TlsWait::Send => Events::OUT,
+        }
+    }
+
+    /// What the session waits for, said as C's filter says it.
+    fn pollset_said(&self) -> Option<Events> {
+        match self.session.waits() {
+            TlsWait::Nothing => None,
+            TlsWait::Recv => Some(Events::IN),
+            TlsWait::Send => Some(Events::OUT),
+        }
+    }
+
+    /// The bytes received before the layer, those the session holds
+    /// (`SSL_pending`), or those below (`ssl_cf_data_pending`).
+    fn data_pending(&self, below: Below<'_>) -> bool {
+        !self.early.is_empty() || self.session.pending() || below.data_pending()
+    }
+
+    fn filter(&self) -> Option<Component> {
+        Some(self.filter)
+    }
+
+    fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind> {
+        let (session, mut io) = self.parts(cx, below);
+        let r = session.shutdown(&mut io);
+        let (code, done) = match &r {
+            Ok(done) => (0, u8::from(*done == Handshake::Done)),
+            Err(kind) => (kind.number(), 0),
+        };
+        cx.of(
+            self.filter,
+            format_args!("cf_shutdown -> {code}, done={done}"),
+        );
+        r
+    }
+
+    fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
+        let origin = self.filter == Component::Ssl;
+        match q {
+            LayerQuery::TlsNative if origin => self.session.native().map(LayerAnswer::TlsNative),
+            LayerQuery::TlsNative => None,
+            LayerQuery::Alpn => Some(LayerAnswer::Alpn(self.session.chosen(), self.filter)),
+            LayerQuery::TlsWaits if origin => Some(LayerAnswer::TlsWaits(self.session.waits())),
+            LayerQuery::ProxyTlsWaits if !origin => {
+                Some(LayerAnswer::TlsWaits(self.session.waits()))
+            }
+            LayerQuery::TlsWaits | LayerQuery::ProxyTlsWaits => None,
+            LayerQuery::TlsDeferred if origin => match self.deferral {
+                Deferral::Awaiting { .. } | Deferral::Going { .. } => {
+                    Some(LayerAnswer::TlsDeferred)
+                }
+                Deferral::None | Deferral::Skipping { .. } | Deferral::Failed(_) => None,
+            },
+            LayerQuery::TlsDeferred | LayerQuery::Tunnel => None,
+            LayerQuery::Failure => match self.deferral {
+                Deferral::Failed(kind) => Some(LayerAnswer::Failure(kind)),
+                _ => None,
+            },
+        }
+    }
+}
+
+impl Layer for TlsLayer {
     /// A handshake put off goes on with no early data (`ssl_cf_recv`).
     fn recv(
         &mut self,
@@ -243,49 +313,6 @@ impl Layer for TlsLayer {
         }
     }
 
-    /// What the session waits for replaces what the transfer wants
-    /// (`Curl_ssl_adjust_pollset`'s `set_out_only` and `set_in_only`).
-    fn adjust_pollset(&self, wanted: Events) -> Events {
-        match self.session.waits() {
-            TlsWait::Nothing => wanted,
-            TlsWait::Recv => Events::IN,
-            TlsWait::Send => Events::OUT,
-        }
-    }
-
-    /// What the session waits for, said as C's filter says it.
-    fn pollset_said(&self) -> Option<Events> {
-        match self.session.waits() {
-            TlsWait::Nothing => None,
-            TlsWait::Recv => Some(Events::IN),
-            TlsWait::Send => Some(Events::OUT),
-        }
-    }
-
-    /// The bytes received before the layer, those the session holds
-    /// (`SSL_pending`), or those below (`ssl_cf_data_pending`).
-    fn data_pending(&self, below: Below<'_>) -> bool {
-        !self.early.is_empty() || self.session.pending() || below.data_pending()
-    }
-
-    fn filter(&self) -> Option<Component> {
-        Some(self.filter)
-    }
-
-    fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind> {
-        let (session, mut io) = self.parts(cx, below);
-        let r = session.shutdown(&mut io);
-        let (code, done) = match &r {
-            Ok(done) => (0, u8::from(*done == Handshake::Done)),
-            Err(kind) => (kind.number(), 0),
-        };
-        cx.of(
-            self.filter,
-            format_args!("cf_shutdown -> {code}, done={done}"),
-        );
-        r
-    }
-
     /// The session's objects, once its library made them, the origin's
     /// alone: an HTTPS proxy's layer passes the question down, as C's
     /// answers only for the origin (`ssl_cf_query`). Either answers what
@@ -297,31 +324,6 @@ impl Layer for TlsLayer {
         notes: &mut dyn crate::tls::BindingNotes,
     ) -> Option<Result<Option<Vec<u8>>, ErrorKind>> {
         (self.filter == Component::Ssl).then(|| self.session.channel_binding(notes))
-    }
-
-    fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
-        let origin = self.filter == Component::Ssl;
-        match q {
-            LayerQuery::TlsNative if origin => self.session.native().map(LayerAnswer::TlsNative),
-            LayerQuery::TlsNative => None,
-            LayerQuery::Alpn => Some(LayerAnswer::Alpn(self.session.chosen(), self.filter)),
-            LayerQuery::TlsWaits if origin => Some(LayerAnswer::TlsWaits(self.session.waits())),
-            LayerQuery::ProxyTlsWaits if !origin => {
-                Some(LayerAnswer::TlsWaits(self.session.waits()))
-            }
-            LayerQuery::TlsWaits | LayerQuery::ProxyTlsWaits => None,
-            LayerQuery::TlsDeferred if origin => match self.deferral {
-                Deferral::Awaiting { .. } | Deferral::Going { .. } => {
-                    Some(LayerAnswer::TlsDeferred)
-                }
-                Deferral::None | Deferral::Skipping { .. } | Deferral::Failed(_) => None,
-            },
-            LayerQuery::TlsDeferred | LayerQuery::Tunnel => None,
-            LayerQuery::Failure => match self.deferral {
-                Deferral::Failed(kind) => Some(LayerAnswer::Failure(kind)),
-                _ => None,
-            },
-        }
     }
 }
 

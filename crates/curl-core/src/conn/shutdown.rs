@@ -128,11 +128,8 @@ impl Shutting {
             }
             return Tried::Done;
         }
-        // HTTP/2 says goodbye first (`cf_h2_shutdown`).
-        if let Some(mut h2) = self.conn.take_h2() {
-            h2.goodbye(&mut cx, &mut self.conn);
-            self.conn.put_h2(h2);
-        }
+        // A session says goodbye first (`cf_h2_shutdown`).
+        self.conn.goodbye(&mut cx);
         let Transport::Tcp(stream) = &mut self.conn.transport else {
             return Tried::Done;
         };

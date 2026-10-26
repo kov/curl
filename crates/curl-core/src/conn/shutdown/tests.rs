@@ -21,6 +21,21 @@ struct Logged {
     log: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
 
+impl crate::conn::layer::Part<crate::conn::layer::Below<'_>> for Logged {
+    fn shutdown(
+        &mut self,
+        _: &mut dyn crate::conn::layer::LayerCx,
+        _: crate::conn::layer::Below<'_>,
+    ) -> Result<Handshake, crate::error::ErrorKind> {
+        self.log.lock().unwrap().push(self.name);
+        if std::mem::replace(&mut self.waited, true) {
+            Ok(Handshake::Done)
+        } else {
+            Ok(Handshake::Waiting)
+        }
+    }
+}
+
 impl crate::conn::layer::Layer for Logged {
     fn recv(
         &mut self,
@@ -38,19 +53,6 @@ impl crate::conn::layer::Layer for Logged {
         bytes: &[u8],
     ) -> std::io::Result<crate::conn::io::Sent> {
         below.send(cx, bytes)
-    }
-
-    fn shutdown(
-        &mut self,
-        _: &mut dyn crate::conn::layer::LayerCx,
-        _: crate::conn::layer::Below<'_>,
-    ) -> Result<Handshake, crate::error::ErrorKind> {
-        self.log.lock().unwrap().push(self.name);
-        if std::mem::replace(&mut self.waited, true) {
-            Ok(Handshake::Done)
-        } else {
-            Ok(Handshake::Waiting)
-        }
     }
 }
 

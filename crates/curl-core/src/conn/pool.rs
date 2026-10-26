@@ -15,6 +15,7 @@ use super::connect::{ConnCx, ConnectError, ConnectMachine, Dialed, Drove, Made, 
 use super::dns::Answer;
 use super::io::{Closer, Events, Socket, SocketKey};
 use super::layer::{Alive, LayerAnswer, LayerQuery, Silent};
+use super::mux::Mux as _;
 use super::shutdown::{ConnSettings, Exits, discard};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, TransferNumber, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
@@ -227,9 +228,9 @@ impl ConnLease {
         matches!(self.slot(), ConnSlot::Open(conn) if conn.close)
     }
 
-    /// Whether the connection is up and speaks HTTP/2.
-    pub(crate) fn is_h2(&self) -> bool {
-        matches!(self.slot(), ConnSlot::Open(conn) if conn.is_h2())
+    /// Whether the connection is up and multiplexes.
+    pub(crate) fn multiplexes(&self) -> bool {
+        matches!(self.slot(), ConnSlot::Open(conn) if conn.multiplexes())
     }
 
     /// The connection, once up, to use.
@@ -579,7 +580,7 @@ impl Verdict {
     /// A connection's, `settled` if its transfer found what it speaks.
     fn of(conn: Option<&Conn>, settled: bool) -> Verdict {
         match conn {
-            Some(conn) if settled && !conn.is_h2() => Verdict::Single,
+            Some(conn) if settled && !conn.multiplexes() => Verdict::Single,
             _ => Verdict::Pending,
         }
     }
@@ -893,7 +894,7 @@ impl Pool {
                 close: false,
                 settings,
                 negotiate: None,
-                h2: None,
+                session: None,
             }),
             Route::Tcp(tcp) => {
                 ConnSlot::Connecting(ConnectMachine::new(number, tcp, now, closer, settings))
@@ -1041,10 +1042,9 @@ impl Pool {
         {
             return Ok(None);
         }
-        let speaks = if conn.is_h2() {
-            wanted.versions.h2
-        } else {
-            wanted.versions.h1
+        let speaks = match conn.session() {
+            Some(session) => wanted.versions.allows(session.version()),
+            None => wanted.versions.h1,
         };
         if !speaks {
             return Ok(None);
@@ -1368,7 +1368,7 @@ impl Pool {
             && (tcp.origin.scheme().reuse || finish.reserve)
             // An HTTP/2 connection outlives a stream cut short
             // (`Curl_conn_is_multiplex`).
-            && (!finish.premature || conn.is_h2())
+            && (!finish.premature || conn.multiplexes())
             // Forbidden its reuse, it is kept all the same for the request
             // Negotiate's handshake makes again on it.
             && (!finish.forbid_reuse || conn.negotiating())
@@ -1650,13 +1650,16 @@ fn join_verdict(conn: &Conn, wanted: &Wanted<'_>) -> JoinVerdict {
     let Some(max) = wanted.multiplex else {
         return JoinVerdict::Seen;
     };
-    if !conn.serves_auth(&wanted.auth) || !wanted.versions.h2 {
+    let Some(session) = conn.session() else {
+        unreachable!("a connection that multiplexes has a session");
+    };
+    if !conn.serves_auth(&wanted.auth) || !wanted.versions.allows(session.version()) {
         return JoinVerdict::Seen;
     }
     let Use::Leased(users) = conn.use_ else {
         unreachable!("a connection that multiplexes is leased");
     };
-    let peer_max = conn.h2().map_or(u32::MAX, |h2| h2.max_concurrent());
+    let peer_max = session.max_concurrent();
     if users >= max || users.get() >= peer_max {
         return JoinVerdict::Full {
             number: conn.number,
@@ -1974,7 +1977,7 @@ fn health(
     // (`Curl_cpool_conn_seems_healthy`), each in whole milliseconds since
     // the connection was made, as C counts them.
     if let Use::Idle { checked_ms, .. } = conn.use_
-        && conn.is_h2()
+        && conn.multiplexes()
         && whole_ms(now.since(conn.created)).saturating_sub(checked_ms.into()) < 1000
     {
         return Ok(());
@@ -1995,27 +1998,14 @@ fn ms_since_made(conn: &Conn, now: Instant) -> u32 {
     u32::try_from(whole_ms(now.since(conn.created))).unwrap_or(u32::MAX)
 }
 
-/// Whether `conn`'s socket is alive and has no input it should not.
+/// Whether `conn` is alive and has no input it should not: input waiting
+/// is unhealthy on an idle HTTP/1 connection; a session reads its peer's
+/// frames (`http2_connisalive`).
 fn alive(conn: &mut Conn, now: Instant) -> Result<(), Option<PoolNote>> {
-    let Transport::Tcp(stream) = &mut conn.transport else {
-        return Ok(());
-    };
-    // Input waiting is unhealthy too, on an idle HTTP/1 connection; on
-    // an HTTP/2 one it is the peer's frames, which its session reads
-    // (`http2_connisalive`).
-    match stream.is_alive(&mut Silent(now)) {
+    match conn.alive(&mut Silent(now)) {
         Alive::Alive {
             input_pending: false,
         } => Ok(()),
-        Alive::Alive {
-            input_pending: true,
-        } if conn.is_h2() => {
-            if conn.h2_stray_input(&mut Silent(now)) {
-                Ok(())
-            } else {
-                Err(None)
-            }
-        }
         Alive::Alive {
             input_pending: true,
         }

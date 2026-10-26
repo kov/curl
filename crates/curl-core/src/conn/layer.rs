@@ -14,6 +14,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use super::io::{Events, Recv, Sent, Socket, SocketPoll, poll_together};
+pub(crate) use super::part::{Lower, Part};
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::time::Instant;
@@ -193,70 +194,17 @@ impl LayerCx for Silent {
     fn info(&mut self, _: fmt::Arguments<'_>) {}
 }
 
-/// A layer that works on a connection's bytes (C's `Curl_cftype`). Its
-/// `destroy` is `Drop`; its `cntrl` codes are methods of their own.
-pub(crate) trait Layer: Send + fmt::Debug {
-    /// Move its handshake on: TLS's, which may take more than one pass.
-    /// A layer that has none is connected at once.
-    fn connect(
-        &mut self,
-        _cx: &mut dyn LayerCx,
-        _below: Below<'_>,
-    ) -> Result<Handshake, ErrorKind> {
-        Ok(Handshake::Done)
-    }
-
+/// A layer that works on a connection's bytes (C's `Curl_cftype`): what
+/// every piece of a connection answers of its life (`Part`), over the
+/// layers below it, and the bytes both ways. Its `destroy` is `Drop`; its
+/// `cntrl` codes are methods of their own.
+pub(crate) trait Layer: for<'a> Part<Below<'a>> + Send + fmt::Debug {
     /// Read into `buf`, which is not empty, at most its length, from
     /// what it holds or from below.
     fn recv(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, buf: &mut [u8]) -> io::Result<Recv>;
 
     /// Send from `bytes`, which is not empty, through the layers below.
     fn send(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, bytes: &[u8]) -> io::Result<Sent>;
-
-    /// What the transfer is to wait for on the socket, given what it
-    /// wants (TLS wants to write while it reads).
-    fn adjust_pollset(&self, wanted: Events) -> Events {
-        wanted
-    }
-
-    /// Whether it, or a layer below, holds bytes a poll of the socket
-    /// cannot see.
-    fn data_pending(&self, below: Below<'_>) -> bool {
-        below.data_pending()
-    }
-
-    /// Whether the connection seems usable, asking below.
-    fn is_alive(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Alive {
-        below.alive(cx)
-    }
-
-    /// The filter it is, that its lines are traced as; none for a layer
-    /// C has no filter for.
-    fn filter(&self) -> Option<Component> {
-        None
-    }
-
-    /// What it puts in a pollset that C's filter says as it does
-    /// (`Curl_ssl_adjust_pollset`'s line); nothing, for most.
-    fn pollset_said(&self) -> Option<Events> {
-        None
-    }
-
-    /// Move its shutdown on: say goodbye to the peer, which may take
-    /// more than one pass (TLS's close_notify).
-    fn shutdown(
-        &mut self,
-        _cx: &mut dyn LayerCx,
-        _below: Below<'_>,
-    ) -> Result<Handshake, ErrorKind> {
-        Ok(Handshake::Done)
-    }
-
-    /// Answer a question asked of the connection, if it can; the layers
-    /// below are asked if it does not.
-    fn query(&self, _q: LayerQuery) -> Option<LayerAnswer> {
-        None
-    }
 
     /// The channel binding of the origin's TLS, if this layer is it:
     /// what its session binds with, or why it cannot (`Curl_conn_is_ssl`,
@@ -383,6 +331,16 @@ impl Below<'_> {
     }
 }
 
+impl Lower for Below<'_> {
+    fn data_pending(self) -> bool {
+        Below::data_pending(self)
+    }
+
+    fn alive(self, cx: &mut dyn LayerCx) -> Alive {
+        Below::alive(self, cx)
+    }
+}
+
 /// What a poll of the socket for input says of the connection: a failed
 /// poll, an error, a hang-up, urgent data or a bad descriptor is dead;
 /// nothing at all is alive; anything else is input pending
@@ -402,15 +360,11 @@ fn alive_of(revents: io::Result<Events>) -> Alive {
 }
 
 /// A stream's layers that work on its bytes, bottom first. Empty, it
-/// allocates nothing; it is held by one pointer, as every transfer's
-/// state holds a connection's inline and the first layer, TLS's, is
-/// rare.
+/// allocates nothing; it is held by one pointer, as the first layer,
+/// TLS's, is rare.
 #[derive(Debug, Default)]
 pub(crate) struct LayerStack {
-    #[expect(
-        clippy::box_collection,
-        reason = "one pointer in every transfer's state"
-    )]
+    #[expect(clippy::box_collection, reason = "one pointer in every connection")]
     layers: Option<Box<Vec<Box<dyn Layer>>>>,
 }
 
@@ -591,15 +545,7 @@ impl Lingering {
 }
 
 #[cfg(any(test, feature = "test-util"))]
-impl Layer for Lingering {
-    fn recv(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, buf: &mut [u8]) -> io::Result<Recv> {
-        below.recv(cx, buf)
-    }
-
-    fn send(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, bytes: &[u8]) -> io::Result<Sent> {
-        below.send(cx, bytes)
-    }
-
+impl Part<Below<'_>> for Lingering {
     fn adjust_pollset(&self, wanted: Events) -> Events {
         if self.shutting {
             wanted | Events::IN
@@ -625,6 +571,17 @@ impl Layer for Lingering {
     }
 }
 
+#[cfg(any(test, feature = "test-util"))]
+impl Layer for Lingering {
+    fn recv(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, buf: &mut [u8]) -> io::Result<Recv> {
+        below.recv(cx, buf)
+    }
+
+    fn send(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, bytes: &[u8]) -> io::Result<Sent> {
+        below.send(cx, bytes)
+    }
+}
+
 /// Layers for the tests of what the stack asks of its layers.
 #[cfg(test)]
 pub(crate) mod testing {
@@ -637,6 +594,12 @@ pub(crate) mod testing {
 
     pub(crate) fn wants_out() -> Box<dyn Layer> {
         try_box(WantsOut).unwrap()
+    }
+
+    impl Part<Below<'_>> for WantsOut {
+        fn adjust_pollset(&self, wanted: Events) -> Events {
+            wanted | Events::OUT
+        }
     }
 
     impl Layer for WantsOut {
@@ -657,10 +620,6 @@ pub(crate) mod testing {
         ) -> io::Result<Sent> {
             below.send(cx, bytes)
         }
-
-        fn adjust_pollset(&self, wanted: Events) -> Events {
-            wanted | Events::OUT
-        }
     }
 
     /// Makes the letters it passes upper case, both ways.
@@ -670,6 +629,8 @@ pub(crate) mod testing {
     pub(crate) fn upper() -> Box<dyn Layer> {
         try_box(Upper).unwrap()
     }
+
+    impl Part<Below<'_>> for Upper {}
 
     impl Layer for Upper {
         fn recv(
@@ -710,6 +671,12 @@ pub(crate) mod testing {
         try_box(Holdback::default()).unwrap()
     }
 
+    impl Part<Below<'_>> for Holdback {
+        fn data_pending(&self, below: Below<'_>) -> bool {
+            !self.held.is_empty() || below.data_pending()
+        }
+    }
+
     impl Layer for Holdback {
         fn recv(
             &mut self,
@@ -740,10 +707,6 @@ pub(crate) mod testing {
         ) -> io::Result<Sent> {
             below.send(cx, bytes)
         }
-
-        fn data_pending(&self, below: Below<'_>) -> bool {
-            !self.held.is_empty() || below.data_pending()
-        }
     }
 
     /// A `Holdback` holding `bytes` already.
@@ -760,6 +723,12 @@ pub(crate) mod testing {
 
     pub(crate) fn dying() -> Box<dyn Layer> {
         try_box(Dying).unwrap()
+    }
+
+    impl Part<Below<'_>> for Dying {
+        fn is_alive(&mut self, _: &mut dyn LayerCx, _: Below<'_>) -> Alive {
+            Alive::Dead
+        }
     }
 
     impl Layer for Dying {
@@ -779,10 +748,6 @@ pub(crate) mod testing {
             bytes: &[u8],
         ) -> io::Result<Sent> {
             below.send(cx, bytes)
-        }
-
-        fn is_alive(&mut self, _: &mut dyn LayerCx, _: Below<'_>) -> Alive {
-            Alive::Dead
         }
     }
 }

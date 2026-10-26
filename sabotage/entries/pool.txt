@@ -97,9 +97,9 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-            && (!finish.premature || conn.is_h2())
+            && (!finish.premature || conn.multiplexes())
 --- new
-            && (true || conn.is_h2())
+            && (true || conn.multiplexes())
 
 === a multi leaves its idle connections open
 file: crates/curl-core/src/multi/mod.rs
@@ -577,9 +577,9 @@ witness: curl-core conn::pool::tests::a_multiplexed_connection_is_joined_only_as
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_multiplexed_connection_is_joined_only_as_it_may_be
 --- old
-    if !conn.serves_auth(&wanted.auth) || !wanted.versions.h2 {
+    if !conn.serves_auth(&wanted.auth) || !wanted.versions.allows(session.version()) {
 --- new
-    if !conn.serves_auth(&wanted.auth) && !wanted.versions.h2 {
+    if !conn.serves_auth(&wanted.auth) && !wanted.versions.allows(session.version()) {
 
 === a connection made before the network changed is reused
 file: crates/curl-core/src/conn/pool.rs

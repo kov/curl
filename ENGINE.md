@@ -222,7 +222,9 @@ curl-core/src/
     buf.rs                   RecvBuf
     io.rs                    Net, Socket, SystemNet, FakeNet (test-util)
     stream.rs                Stream: a socket, its layers and its receive buffer
+    part.rs                  Part, Lower: what every piece of a connection answers of its life
     layer.rs                 Layer, Below, LayerStack, LayerCx; the tests' layers
+    mux.rs                   Session, Mux, Carrier: the session a connection multiplexes over
     tls.rs                   TlsLayer: the layer over a TLS library's session
     shutdown.rs, shutdown/   ShutdownSet, ConnSettings: connections saying goodbye
     chain.rs                 Chain: C's filter chain rendered for the trace from how
@@ -1437,16 +1439,18 @@ socket before its connect.
 ### 4.3 Established layers
 
 ```rust
-pub(crate) trait Layer: Send + Debug {           // conn/layer.rs; C's Curl_cftype
-    fn connect(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind>;
+pub(crate) trait Part<B: Lower> {                  // conn/part.rs; C's Curl_cftype, less the bytes
+    fn connect(&mut self, cx: &mut dyn LayerCx, below: B) -> Result<Handshake, ErrorKind>;
+    fn adjust_pollset(&self, wanted: Events) -> Events;      // TLS wants OUT while reading
+    fn data_pending(&self, below: B) -> bool;                 // bytes a poll cannot see
+    fn is_alive(&mut self, cx: &mut dyn LayerCx, below: B) -> Alive;
+    fn shutdown(&mut self, cx: &mut dyn LayerCx, below: B) -> Result<Handshake, ErrorKind>;
+    fn query(&self, q: LayerQuery) -> Option<LayerAnswer>;    // TLS's objects, ALPN, waits
+}
+pub(crate) trait Layer: for<'a> Part<Below<'a>> + Send + Debug {   // conn/layer.rs
     fn recv(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, buf: &mut [u8])
         -> io::Result<Recv>;
     fn send(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, bytes: &[u8]) -> io::Result<Sent>;
-    fn adjust_pollset(&self, wanted: Events) -> Events;      // TLS wants OUT while reading
-    fn data_pending(&self, below: Below<'_>) -> bool;         // bytes a poll cannot see
-    fn is_alive(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Alive;
-    fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind>;
-    fn query(&self, q: LayerQuery) -> Option<LayerAnswer>;    // TLS's objects, ALPN, waits
 }
 pub enum Handshake { Done, Waiting }                         // public: a TLS session returns it
 pub(crate) enum Alive { Dead, Alive { input_pending: bool } }
@@ -1459,6 +1463,14 @@ pub(crate) trait LayerCx {
     fn socket_failed(&mut self, e: &io::Error) {}                // state.os_errno
 }
 ```
+
+Every piece of a connection is a `Part`, over what lies below it (`Lower`): its setup, what it
+waits on, what it holds unseen, whether the connection seems usable, its goodbye, and the
+questions asked of the connection, each passed below by a piece that keeps the default. The
+pieces are the layers over a stream, which `Layer` refines with the bytes both ways, and the
+session that multiplexes over the stream (§4.4, `conn::mux`), whose `Part` is over the stream
+(`Carrier`). The connection asks its pieces from the top: the session, then the layers, so its
+health check and its goodbye have no case for any one version.
 
 Layers form a **pull chain**, as C's filters do (cfilters.h:217–232, cfilters.c:186–222): a
 read asks the top layer for at most the caller's length, and each layer reads from the one
@@ -1542,9 +1554,14 @@ into the session for (consuming, resetting, resuming, windows) is gathered as th
 done once it returns, in scratch kept on the request's stream between reads, so a body's frames
 allocate nothing.
 
-The session lives on the `Conn` (`proto::http2::H2Conn`, with the bytes it gave that the
-connection has not taken), beside its layer stack, not as a `Layer`: a `Layer` moves one byte
-stream, and the session moves many. It is made by the connection's first request, which finds
+The session lives on the `Conn` as its `conn::mux::Session` (`Session::H2`, a
+`proto::http2::H2Conn` with the bytes it gave that the connection has not taken), above its
+layer stack, not as a `Layer`: a `Layer` moves one byte stream, and the session moves many. It is
+a `Part` over the stream (`Carrier`: the stream, its socket's trace and the connection's mark to
+close), so the connection's health check and goodbye ask it first with no case for its version,
+and a `Mux`, which answers what the pool asks of any session: the version it speaks and the
+peer's limit on streams. The pool and the engine ask `Conn::multiplexes`, never a version; the
+HTTP code reaches `H2Conn` by matching. It is made by the connection's first request, which finds
 what the connection speaks (`http_check_new_conn`): HTTP/2 if TLS's ALPN agreed on `h2`, which
 is offered first where the handle has an HTTP/2 library and its version allows it
 (`alpn_get_spec`), or by prior knowledge with nothing between; the connection then speaks
@@ -1585,10 +1602,10 @@ and what followed the 101 is fed to the session (`Curl_http2_upgrade`). A server
 take it answers in HTTP/1.1.
 
 **The connection's life.** An idle HTTP/2 connection with input waiting is not dead as an HTTP/1
-one is: the pool's health check has the session read the frames (a SETTINGS or PING), and it is
-alive unless the session failed, a GOAWAY came or the session wants nothing more
-(`http2_connisalive`). A connection that shuts down says GOAWAY first, with C's debug data
-(`cf_h2_shutdown`). A GOAWAY read marks the connection closing, so no search joins it, and wakes
+one is: the session's `is_alive` reads the frames (a SETTINGS or PING), and it is alive unless the
+session failed, a GOAWAY came or the session wants nothing more (`http2_connisalive`). A
+connection that shuts down has the session say GOAWAY first, with C's debug data, through its
+`shutdown`, which never waits (`cf_h2_shutdown`). A GOAWAY read marks the connection closing, so no search joins it, and wakes
 every other transfer on it; so do the connection's end and its failure. A failure other than a
 stream's own closes the connection after the request (`streamclose`).
 

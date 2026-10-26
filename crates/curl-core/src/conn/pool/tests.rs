@@ -117,6 +117,17 @@ fn up(lease: &mut ConnLease, net: &mut FakeNet, now: Instant) {
     assert!(matches!(established, Connected::Established { .. }));
 }
 
+/// The connection `lease` holds, up, made to speak HTTP/2 over the fake
+/// library, as its first request finds it does.
+fn speaks_h2(lease: &mut ConnLease) {
+    let (h2, _) =
+        crate::proto::http2::H2Conn::open(&crate::http2::fake::FakeH2, &[], None).unwrap();
+    let Some(ConnSlot::Open(conn)) = lease.conn.as_deref_mut() else {
+        panic!("not up");
+    };
+    conn.put_h2(Box::new(h2));
+}
+
 /// The connection `id` names, if it is still in the pool and idle.
 fn idle_conn(pool: &Pool, id: ConnId) -> Option<&Conn> {
     pool.conns.get(id)?.idle()
@@ -1590,6 +1601,7 @@ fn a_share_s_connection_lent_to_a_multi_is_that_multi_s() {
     let home = Home::Share(share.clone());
     let mut lease = new(&mut share.pool(), &home, tcp(1), &mut net, now);
     up(&mut lease, &mut net, now);
+    speaks_h2(&mut lease);
     let in_share = lease.id();
     let (mut mine, theirs) = (Pool::new().unwrap(), Pool::new().unwrap());
     mine.borrow(&mut lease).unwrap();
@@ -1710,6 +1722,7 @@ fn search_lent(versions: crate::proto::http::Versions, close: bool) -> Found {
     let home = Home::Share(share.clone());
     let mut lease = new(&mut share.pool(), &home, tcp(1), &mut net, now);
     up(&mut lease, &mut net, now);
+    speaks_h2(&mut lease);
     if let Some(ConnSlot::Open(conn)) = lease.conn.as_deref_mut() {
         conn.close = close;
     }

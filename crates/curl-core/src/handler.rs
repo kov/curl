@@ -223,6 +223,19 @@ pub trait SocketConfigurer: Send + Sync {
     fn configure(&self, cx: &mut TransferCx<'_>, socket: SocketToSet<'_>) -> Configured;
 }
 
+/// Told of the connection a request is about to be made over, once
+/// connected and before anything of the request is made
+/// (`CURLOPT_PREREQFUNCTION`): its ends, those of the connection the
+/// transfer last used, none if it used none. An abort fails the
+/// transfer with AbortedByCallback.
+pub trait PrereqHandler: Send + Sync {
+    fn prereq(
+        &self,
+        cx: &mut TransferCx<'_>,
+        ends: Option<&crate::report::Ends>,
+    ) -> Result<(), crate::multi::Abort>;
+}
+
 /// A socket as a `SocketConfigurer` is given it: its number, and the
 /// options it may set.
 #[derive(Clone, Copy)]
@@ -307,6 +320,12 @@ impl Handler<dyn SocketConfigurer> {
     pub fn socket_configurer(
         handler: impl SocketConfigurer + 'static,
     ) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn PrereqHandler> {
+    pub fn prereq(handler: impl PrereqHandler + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
     }
 }

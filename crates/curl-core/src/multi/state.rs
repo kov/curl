@@ -115,6 +115,24 @@ impl Run {
     }
 }
 
+/// The application's pre-request handler told of the connection a
+/// request is about to be made over: an abort fails the transfer
+/// (`multistate_do`'s `fprereq`).
+fn prereq<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+    let options = cx.easy().options();
+    let Some(handler) = options.sockets.prereq.clone() else {
+        return Ok(());
+    };
+    let ends = cx.easy().report().primary().cloned();
+    match handler.prereq(&mut TransferCx::new(cx), ends.as_ref()) {
+        Ok(()) => Ok(()),
+        Err(super::Abort) => {
+            let why = format_args!("operation aborted by pre-request callback");
+            Err(trace::fail(cx, ErrorKind::AbortedByCallback, why))
+        }
+    }
+}
+
 /// What the requests followed so far change for the next, two flags in
 /// one byte: `Run`'s byte-sized fields fill their word, and a handle
 /// costs no more than C's.
@@ -1681,8 +1699,16 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             (next, Wake::Again)
         }
         TransferState::Connecting(c) => connecting(run, c, cx),
-        // No protocol connects over its connection yet.
-        TransferState::ProtoConnect(x) => (TransferState::Do(x), Wake::Again),
+        // No protocol connects over its connection yet. The application
+        // hears of the connection first, and may stop the request before
+        // it is made (`multistate_do`); one only connecting too.
+        TransferState::ProtoConnect(x) => match prereq(cx) {
+            Ok(()) => (TransferState::Do(x), Wake::Again),
+            Err(kind) => (
+                TransferState::Done(x.done(Err(kind), false, Reached::Unmade)),
+                Wake::Again,
+            ),
+        },
         // One that only connects is done once it has (`multistate_do`).
         TransferState::Do(x) if !cx.easy().options().connect_only.requests() => (
             TransferState::Done(x.done(Ok(()), false, Reached::Unmade)),

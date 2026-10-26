@@ -1438,6 +1438,13 @@ fn apply(
             socket_hooks(me, options, |c| c.close = f)?;
         }
         (ffi::CURLOPT_CLOSESOCKETDATA, Ptr(p)) => socket_hooks(me, options, |c| c.close_data = p)?,
+        (ffi::CURLOPT_PREREQFUNCTION, Ptr(p)) => {
+            // SAFETY: the application passes a function of the option's
+            // type, or NULL.
+            let f = unsafe { function(p) };
+            socket_hooks(me, options, |c| c.prereq = f)?;
+        }
+        (ffi::CURLOPT_PREREQDATA, Ptr(p)) => socket_hooks(me, options, |c| c.prereq_data = p)?,
         (ffi::CURLOPT_SSL_CTX_FUNCTION, Ptr(p)) => {
             // SAFETY: the application passes a function of the option's
             // type, or NULL.

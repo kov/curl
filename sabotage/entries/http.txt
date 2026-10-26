@@ -1450,3 +1450,22 @@ witness: curl-core proto::http::tests::a_redirect_goes_only_where_the_option_let
 --- new
                     if *reload {
                         run.course.follow();
+
+=== the pre-request handler is never told
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_pre_request_handler_hears_of_each_request_s_connection
+--- old
+        TransferState::ProtoConnect(x) => match prereq(cx) {
+--- new
+        TransferState::ProtoConnect(x) => match Ok::<(), ErrorKind>(()) {
+
+=== the pre-request handler's abort is not heeded
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_pre_request_handler_hears_of_each_request_s_connection
+--- old
+        Err(super::Abort) => {
+            let why = format_args!("operation aborted by pre-request callback");
+--- new
+        Err(super::Abort) if true => Ok(()),
+        Err(super::Abort) => {
+            let why = format_args!("operation aborted by pre-request callback");

@@ -674,7 +674,7 @@ pub trait ReadHandler   { fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]
 pub trait DebugHandler  { fn debug(&self, cx: &mut TransferCx<'_>, k: DebugKind, data: &[u8]); }
 pub trait ProgressHandler { fn progress(&self, cx: &mut TransferCx<'_>, p: ProgressNow) -> ProgressVerdict; }
 pub trait TextSink      { fn write(&self, text: &[u8]); }  // CURLOPT_STDERR; None is the process's
-pub trait PrereqHandler { fn prereq(&self, cx: &mut TransferCx<'_>, p: &PrereqInfo) -> Result<(), Abort>; }
+pub trait PrereqHandler { fn prereq(&self, cx: &mut TransferCx<'_>, ends: Option<&Ends>) -> Result<(), Abort>; }
 pub trait Rewind        { fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed>; }
 pub struct Handler<T: ?Sized>(TryArc<Box<T>>);    // Clone shares it; Handler::write(h) etc. box one
 pub trait MultiEvents<H: Host> {

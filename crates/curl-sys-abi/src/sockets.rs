@@ -1,6 +1,8 @@
 //! The application's socket functions behind the core's socket handlers
 //! (`CURLOPT_OPENSOCKETFUNCTION`, `CURLOPT_SOCKOPTFUNCTION`,
-//! `CURLOPT_CLOSESOCKETFUNCTION` and their data, `lib/cf-socket.c`).
+//! `CURLOPT_CLOSESOCKETFUNCTION` and their data, `lib/cf-socket.c`), and
+//! its pre-request function, told of the connection a request goes over
+//! (`CURLOPT_PREREQFUNCTION`).
 //!
 //! The opener and the configurer read the function and data the
 //! application set at the moment they call, through the handle, as the
@@ -19,16 +21,18 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use curl_alloc::{OutOfMemory, try_box};
 use curl_core::conn::io::{Remote, Socket, SocketKey};
 use curl_core::handler::{
-    Configured, Handler, SocketCloser, SocketConfigurer, SocketOpener, SocketToSet,
+    Configured, Handler, PrereqHandler, SocketCloser, SocketConfigurer, SocketOpener, SocketToSet,
 };
-use curl_core::multi::TransferCx;
+use curl_core::multi::{Abort, TransferCx};
 use curl_core::options::Options;
+use curl_core::report::Ends;
 
 use crate::callbacks::Adapter;
 use crate::easy::ShimEasy;
 use crate::ffi::{
     self, CURL_SOCKET_BAD, CURL_SOCKOPT_ALREADY_CONNECTED, CURL_SOCKOPT_OK, CURLSOCKTYPE_IPCXN,
-    curl_closesocket_callback, curl_opensocket_callback, curl_sockopt_callback,
+    curl_closesocket_callback, curl_opensocket_callback, curl_prereq_callback,
+    curl_sockopt_callback,
 };
 
 /// The application's socket functions and data, as setopt left them.
@@ -40,6 +44,8 @@ pub(crate) struct CSockets {
     pub(crate) sockopt_data: *mut c_void,
     pub(crate) close: curl_closesocket_callback,
     pub(crate) close_data: *mut c_void,
+    pub(crate) prereq: curl_prereq_callback,
+    pub(crate) prereq_data: *mut c_void,
 }
 
 impl CSockets {
@@ -51,6 +57,8 @@ impl CSockets {
         sockopt_data: core::ptr::null_mut(),
         close: None,
         close_data: core::ptr::null_mut(),
+        prereq: None,
+        prereq_data: core::ptr::null_mut(),
     };
 }
 
@@ -62,7 +70,7 @@ pub(crate) fn sync(
     easy: NonNull<ShimEasy>,
     c: &CSockets,
 ) -> Result<(), OutOfMemory> {
-    let none = c.open.is_none() && c.sockopt.is_none() && c.close.is_none();
+    let none = c.open.is_none() && c.sockopt.is_none() && c.close.is_none() && c.prereq.is_none();
     let Some(sockets) = (match options.sockets.made_mut() {
         Some(made) => Some(made),
         None if none => None,
@@ -85,9 +93,14 @@ pub(crate) fn sync(
         })?),
         None => None,
     };
+    let prereq = match c.prereq {
+        Some(_) => Some(Handler::prereq(Adapter(easy))?),
+        None => None,
+    };
     sockets.open = open;
     sockets.configure = configure;
     sockets.close = close;
+    sockets.prereq = prereq;
     Ok(())
 }
 
@@ -276,6 +289,94 @@ impl SocketConfigurer for Adapter {
     }
 }
 
+impl PrereqHandler for Adapter {
+    /// The ends as C hands them (`info.primary`): each address as text,
+    /// cut to what C's buffer holds, a Unix socket's path for its peer
+    /// and nothing for its local end; a port of 0 where there is none.
+    /// Anything but `CURL_PREREQFUNC_OK` aborts.
+    fn prereq(&self, cx: &mut TransferCx<'_>, ends: Option<&Ends>) -> Result<(), Abort> {
+        let c = self.sockets();
+        let Some(f) = c.prereq else {
+            return Ok(());
+        };
+        let (mut remote, mut local) = (IpText::new(), IpText::new());
+        let (mut remote_port, mut local_port) = (0, 0);
+        if let Some(ends) = ends {
+            match &ends.remote {
+                Remote::Inet(to) => {
+                    remote.ip(to.ip());
+                    remote_port = c_int::from(to.port());
+                }
+                unix => remote.bytes(unix.unix_path().unwrap_or_default()),
+            }
+            if let (Remote::Inet(_), Some(from)) = (&ends.remote, ends.local) {
+                local.ip(from.ip());
+                local_port = c_int::from(from.port());
+            }
+        }
+        let (remote, local) = (remote.as_mut_ptr(), local.as_mut_ptr());
+        // SAFETY: the application's function takes its data, the two
+        // addresses as C strings, which live through the call, and the
+        // ports.
+        let answer = self.call(cx, || unsafe {
+            f(c.prereq_data, remote, local, remote_port, local_port)
+        });
+        match answer {
+            ffi::CURL_PREREQFUNC_OK => Ok(()),
+            _ => Err(Abort),
+        }
+    }
+}
+
+/// An address as C keeps it for its callbacks: text cut to
+/// `MAX_IPADR_LEN` with its NUL, on the stack.
+struct IpText {
+    buf: [u8; IpText::MAX],
+    len: usize,
+}
+
+impl IpText {
+    /// `MAX_IPADR_LEN`: the longest IPv6 text and its NUL.
+    const MAX: usize = "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255".len() + 1;
+
+    fn new() -> IpText {
+        IpText {
+            buf: [0; IpText::MAX],
+            len: 0,
+        }
+    }
+
+    fn ip(&mut self, ip: std::net::IpAddr) {
+        use std::fmt::Write as _;
+        // Within the buffer, as every address's text is.
+        write!(self, "{ip}").expect("an address fits");
+    }
+
+    /// `bytes`, cut short to fit, as C's `msnprintf` cuts them.
+    fn bytes(&mut self, bytes: &[u8]) {
+        let n = bytes.len().min(IpText::MAX - 1);
+        self.buf[..n].copy_from_slice(&bytes[..n]);
+        self.len = n;
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut core::ffi::c_char {
+        self.buf[self.len] = 0;
+        self.buf.as_mut_ptr().cast()
+    }
+}
+
+impl std::fmt::Write for IpText {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let end = self.len + s.len();
+        if end >= IpText::MAX {
+            return Err(std::fmt::Error);
+        }
+        self.buf[self.len..end].copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
 impl Adapter {
     fn sockets(&self) -> CSockets {
         self.easy().sockets()
@@ -306,6 +407,29 @@ impl SocketCloser for CCloser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pre-request function is handed each address as C keeps it:
+    /// the longest IPv6 text whole, a Unix path cut to fit, each ended.
+    #[test]
+    fn an_address_is_handed_to_the_pre_request_function_as_c_keeps_it() {
+        let read = |t: &mut IpText| {
+            // SAFETY: the pointer is to the text, which it ends.
+            unsafe { core::ffi::CStr::from_ptr(t.as_mut_ptr()) }
+                .to_bytes()
+                .to_vec()
+        };
+        let mut t = IpText::new();
+        assert_eq!(read(&mut t), b"");
+        let longest = "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255";
+        t.ip(longest.parse().unwrap());
+        assert_eq!(read(&mut t), b"ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff");
+        let mut t = IpText::new();
+        t.ip("::ffff:255.255.255.255".parse().unwrap());
+        assert_eq!(read(&mut t), b"::ffff:255.255.255.255");
+        let mut t = IpText::new();
+        t.bytes(&[b'p'; 100]);
+        assert_eq!(read(&mut t), [b'p'; 45]);
+    }
 
     /// An opener is handed a Unix socket's address as C hands it
     /// (`Curl_unix2addr`): no protocol, the path and its terminator, or a

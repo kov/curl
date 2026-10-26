@@ -13,8 +13,8 @@ use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::time::Duration;
 
 use crate::handler::{
-    DebugHandler, Handler, HeaderHandler, LentBytes, LineSource, ProgressHandler, ReadHandler,
-    Rewind, SocketCloser, SocketConfigurer, SocketOpener, TextSink, TlsContextHandler,
+    DebugHandler, Handler, HeaderHandler, LentBytes, LineSource, PrereqHandler, ProgressHandler,
+    ReadHandler, Rewind, SocketCloser, SocketConfigurer, SocketOpener, TextSink, TlsContextHandler,
     TrailerHandler, WriteHandler,
 };
 use crate::mime::MimeSource;
@@ -658,6 +658,9 @@ pub struct Sockets {
     pub open: Option<Handler<dyn SocketOpener>>,
     pub configure: Option<Handler<dyn SocketConfigurer>>,
     pub close: Option<Handler<dyn SocketCloser>>,
+    /// Told of each request's connection before the request is made;
+    /// kept here with the socket hooks, as few transfers set it.
+    pub prereq: Option<Handler<dyn PrereqHandler>>,
 }
 
 /// A Unix socket by its path, or by its name in the abstract namespace.
@@ -749,6 +752,7 @@ impl Sockets {
             unix: self.unix.as_ref().map(UnixSocket::try_clone).transpose()?,
             open: self.open.clone(),
             configure: self.configure.clone(),
+            prereq: self.prereq.clone(),
             close: self.close.clone(),
         })
     }
@@ -885,6 +889,7 @@ impl ColdGroup for Sockets {
         open: None,
         configure: None,
         close: None,
+        prereq: None,
     };
 }
 

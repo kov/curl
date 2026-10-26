@@ -1994,6 +1994,59 @@ fn a_redirect_is_followed_on_the_kept_connection() {
     assert!(ignoring.is_some() && ignoring < issued, "{text:?}");
 }
 
+/// Told of each request's connection before it is made, its peer's
+/// port among its ends.
+#[derive(Default)]
+struct Prereq {
+    ports: Mutex<Vec<Option<u16>>>,
+    abort: bool,
+}
+
+impl crate::handler::PrereqHandler for Arc<Prereq> {
+    fn prereq(
+        &self,
+        _cx: &mut TransferCx<'_>,
+        ends: Option<&crate::report::Ends>,
+    ) -> Result<(), crate::multi::Abort> {
+        let port = ends.and_then(|e| e.remote.inet()).map(|a| a.port());
+        self.ports.lock().unwrap().push(port);
+        match self.abort {
+            true => Err(crate::multi::Abort),
+            false => Ok(()),
+        }
+    }
+}
+
+/// The pre-request handler hears of the connection before each request,
+/// a redirect's too, and may stop the request before anything of it is
+/// sent (`CURLOPT_PREREQFUNCTION`).
+#[test]
+fn a_pre_request_handler_hears_of_each_request_s_connection() {
+    let (mut m, talk, _) = server(&[&moved("/b", false), OK], false);
+    let told = Arc::new(Prereq::default());
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.http.follow = Follow::All;
+        let hook = Handler::prereq(told.clone()).unwrap();
+        o.sockets.make_mut().unwrap().prereq = Some(hook);
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(*told.ports.lock().unwrap(), [Some(PORT), Some(PORT)]);
+    let (mut m, talk, _) = server(&[OK], false);
+    let told = Arc::new(Prereq {
+        abort: true,
+        ..Prereq::default()
+    });
+    let ran = get(&mut m, "/a", talk.clone(), |o| {
+        let hook = Handler::prereq(told.clone()).unwrap();
+        o.sockets.make_mut().unwrap().prereq = Some(hook);
+    });
+    assert_eq!(ran.result, Err(ErrorKind::AbortedByCallback));
+    assert_eq!(talk.received(), b"", "nothing of the request is sent");
+    let text = ran.seen.text();
+    let why = "operation aborted by pre-request callback\n".to_string();
+    assert!(text.contains(&why), "{text:?}");
+}
+
 /// A redirect past the limit is not followed: where it would have led
 /// is kept, and the transfer fails.
 #[test]

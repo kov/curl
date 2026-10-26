@@ -284,3 +284,11 @@ witness: curl-sys-abi handle_tests::no_string_option_takes_an_over_long_string
         }
 --- new
         (ffi::CURLOPT_COOKIELIST, Ptr(_)) => {}
+
+=== a refused URL is reported as no URL
+file: crates/curl-core/src/report.rs
+witness: curl-sys-abi handle_tests::a_refused_url_is_reported_without_its_credentials
+--- old
+            Err(e) => ShownUrl::Unreadable(crate::error::url_error(e)),
+--- new
+            Err(_) => ShownUrl::Unset,

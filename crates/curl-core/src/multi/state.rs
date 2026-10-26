@@ -3189,11 +3189,24 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
     let options = cx.easy().options();
     match parse_url(options.url().expect("checked above"), options) {
         Ok(url) => Ok(url),
-        Err(UrlRefused::Rejected(e)) => Err(trace::fail(
-            cx,
-            url_error(e),
-            format_args!("URL rejected: {e}"),
-        )),
+        Err(UrlRefused::Rejected(e)) => {
+            // Reported as C's `state.url` holds it, the text given.
+            let (given, path_as_is) = (
+                options.url().expect("checked above"),
+                options.url_rules.path_as_is,
+            );
+            let mut kept = Vec::new();
+            kept.try_extend_from_slice(given)
+                .map_err(|_| ErrorKind::OutOfMemory)?;
+            cx.report_mut()
+                .set_url_given(&kept, path_as_is)
+                .map_err(|_| ErrorKind::OutOfMemory)?;
+            Err(trace::fail(
+                cx,
+                url_error(e),
+                format_args!("URL rejected: {e}"),
+            ))
+        }
         Err(UrlRefused::Failed(kind)) => Err(kind),
     }
 }

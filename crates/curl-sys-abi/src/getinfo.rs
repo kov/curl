@@ -37,6 +37,8 @@ enum Value {
     Socket(ffi::curl_socket_t),
     /// No answer, for this reason.
     Failed(CURLcode),
+    /// No string, NULL written, for this reason (`effective_url`).
+    Withheld(CURLcode),
 }
 
 /// An answer in the type its info's number names.
@@ -272,11 +274,16 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         ffi::CURLINFO_XFER_ID => Value::Off(r.transfer_number().map_or(-1, |n| off(n.get()))),
         ffi::CURLINFO_PRIVATE => Value::Ptr(easy.set.get().private),
         // Empty before any transfer.
-        ffi::CURLINFO_EFFECTIVE_URL => string(kept(
-            easy,
-            |i| &mut i.effective_url,
-            r.url().unwrap_or_default(),
-        )),
+        // Never the URL given unfiltered: one that does not read back is
+        // withheld, its error said (`effective_url`).
+        ffi::CURLINFO_EFFECTIVE_URL => match r.url_failure() {
+            Some(kind) => Value::Withheld(crate::error_codes::easy_code(kind)),
+            None => string(kept(
+                easy,
+                |i| &mut i.effective_url,
+                r.url().unwrap_or_default(),
+            )),
+        },
         // None when no response gave one.
         ffi::CURLINFO_CONTENT_TYPE => match r.content_type() {
             Some(media) => string(kept(easy, |i| &mut i.content_type, media)),
@@ -515,6 +522,12 @@ pub unsafe extern "C" fn curl_easy_getinfo(
         Value::List(p) if kind == ffi::CURLINFO_SLIST => Typed::List(p),
         Value::Struct(p) if kind == ffi::CURLINFO_PTR => Typed::Ptr(p),
         Value::Socket(s) if kind == ffi::CURLINFO_SOCKET => Typed::Socket(s),
+        Value::Withheld(code) if kind == ffi::CURLINFO_STRING => {
+            // SAFETY: the application points at a string pointer, the
+            // info's type.
+            unsafe { Typed::Str(ptr::null_mut()).write(out) };
+            return code;
+        }
         Value::Failed(_) => unreachable!("returned above"),
         _ => unreachable!("info {} answered in the wrong type", info.0 as c_int),
     };

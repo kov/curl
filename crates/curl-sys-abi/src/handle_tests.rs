@@ -1969,6 +1969,39 @@ fn ids_are_told_apart_as_c_tells_them() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// The URL a refused transfer reports is the one given, read back as
+/// C's `effective_url` reads it: without its credentials whatever its
+/// scheme, and withheld, NULL and the parse's error, when it does not
+/// read back at all (lib1990).
+#[test]
+fn a_refused_url_is_reported_without_its_credentials() {
+    let c = curl_easy_init();
+    let effective = |c| {
+        let mut url: *const c_char = c"untouched".as_ptr();
+        // SAFETY: a live handle, and a string pointer for the info.
+        let code = unsafe { curl_easy_getinfo(c, ffi::CURLINFO_EFFECTIVE_URL, &mut url) };
+        // SAFETY: getinfo gives NULL or a string that lives while the
+        // handle does.
+        let text = (!url.is_null()).then(|| unsafe { CStr::from_ptr(url) }.to_owned());
+        (code, text)
+    };
+    let set = |c, url: &CStr| pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    assert_eq!(set(c, c"http://user:secret@[invalid/"), CURLE_OK);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_URL_MALFORMAT);
+    assert_eq!(effective(c), (ffi::CURLE_URL_MALFORMAT, None));
+    assert_eq!(set(c, c"nosuch://user:secret@example.com/x"), CURLE_OK);
+    // SAFETY: a live handle.
+    let performed = unsafe { curl_easy_perform(c) };
+    assert_eq!(performed, ffi::CURLE_UNSUPPORTED_PROTOCOL);
+    assert_eq!(
+        effective(c),
+        (CURLE_OK, Some(c"nosuch://example.com/x".to_owned()))
+    );
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// Every info a file transfer answers, against the report it reads.
 #[test]
 fn infos_answer_from_the_report() {

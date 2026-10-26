@@ -17,7 +17,7 @@ use crate::time::Instant;
 use curl_alloc::OutOfMemory;
 
 use crate::conn::{ConnNumber, ProxyError, TransferNumber};
-use crate::error::UrlErrorKind;
+use crate::error::{ErrorKind, UrlErrorKind};
 use crate::options::{AuthMethods, Method};
 use crate::url::Url;
 use crate::version::Protocol;
@@ -70,6 +70,17 @@ impl ResponseVersion {
     }
 }
 
+/// The URL a transfer reports, as C's `effective_url` reads `state.url`
+/// back: none before one is given; its text without credentials; or,
+/// for one given that cannot be read back, the error reading it gives.
+#[derive(Debug, Default)]
+enum ShownUrl {
+    #[default]
+    Unset,
+    Shown(Vec<u8>),
+    Unreadable(ErrorKind),
+}
+
 /// One transfer's report. The default is that of a transfer never run.
 #[derive(Debug, Default)]
 pub struct TransferReport {
@@ -88,7 +99,7 @@ pub struct TransferReport {
     /// again, at most six hours (`info.retry_after`).
     retry_after: Option<Duration>,
     /// The URL the transfer used, without its credentials, as text.
-    url: Option<Vec<u8>>,
+    url: ShownUrl,
     used_proxy: bool,
     /// Where the last response's `Location:` points, resolved, when it
     /// was not followed (`info.wouldredirect`).
@@ -461,7 +472,19 @@ impl TransferReport {
     /// The URL the transfer used, its credentials taken out
     /// (`CURLINFO_EFFECTIVE_URL`).
     pub fn url(&self) -> Option<&[u8]> {
-        self.url.as_deref()
+        match &self.url {
+            ShownUrl::Shown(text) => Some(text),
+            ShownUrl::Unset | ShownUrl::Unreadable(_) => None,
+        }
+    }
+
+    /// Why the URL given cannot be reported, if it cannot: it does not
+    /// read back as a URL (`effective_url`'s `Curl_uc_to_curlcode`).
+    pub fn url_failure(&self) -> Option<ErrorKind> {
+        match self.url {
+            ShownUrl::Unreadable(kind) => Some(kind),
+            ShownUrl::Unset | ShownUrl::Shown(_) => None,
+        }
     }
 
     /// Keep `url`'s text without its credentials. The transfer's start
@@ -473,7 +496,30 @@ impl TransferReport {
             Err(UrlErrorKind::OutOfMemory) => return Err(OutOfMemory),
             Err(e) => unreachable!("a URL that read back with credentials fails without: {e:?}"),
         };
-        self.url = Some(text);
+        self.url = ShownUrl::Shown(text);
+        Ok(())
+    }
+
+    /// Keep the URL `given`, which the transfer refused, as C's
+    /// `effective_url` reads it back: parsed whatever its scheme, then
+    /// without its credentials; one that does not parse is reported as
+    /// its error.
+    pub(crate) fn set_url_given(
+        &mut self,
+        given: &[u8],
+        path_as_is: bool,
+    ) -> Result<(), OutOfMemory> {
+        let opts = crate::url::ParseOptions {
+            non_support_scheme: true,
+            path_as_is,
+            ..crate::url::ParseOptions::NONE
+        };
+        let read = Url::parse(given, opts).and_then(|url| url.shown());
+        self.url = match read {
+            Ok(text) => ShownUrl::Shown(text),
+            Err(UrlErrorKind::OutOfMemory) => return Err(OutOfMemory),
+            Err(e) => ShownUrl::Unreadable(crate::error::url_error(e)),
+        };
         Ok(())
     }
 

@@ -29,7 +29,9 @@ use std::fmt::Write as _;
 
 use curl_alloc::OutOfMemory;
 
-use super::{BodyRead, Event, FrameError, Heard, Http2, Session, Setting, StreamId, Wants};
+use super::{
+    BodyRead, Event, FrameError, H2Error, Heard, Http2, Session, Setting, StreamId, Wants,
+};
 
 /// The fake library.
 #[derive(Debug, Default)]
@@ -40,8 +42,8 @@ impl Http2 for FakeH2 {
         Ok(Box::new(FakeSession::default()))
     }
 
-    fn error_text(&self, code: u32) -> &'static str {
-        match code {
+    fn error_text(&self, code: H2Error) -> &'static str {
+        match code.0 {
             0 => "NO_ERROR",
             1 => "PROTOCOL_ERROR",
             2 => "INTERNAL_ERROR",
@@ -139,7 +141,7 @@ pub struct FakeSession {
     input: Vec<u8>,
     goaway: bool,
     /// Streams the client reset, told closed as their RST_STREAM goes.
-    resets: Vec<(i32, u32)>,
+    resets: Vec<(i32, H2Error)>,
     /// The server's limit on streams open at once, as its `S <n>` said.
     max_concurrent: Option<u32>,
 }
@@ -176,7 +178,7 @@ impl FakeSession {
             s.closed = true;
             return events(Event::Closed {
                 stream: StreamId(id),
-                error: 0,
+                error: H2Error::NO_ERROR,
             });
         }
         Heard::Fine
@@ -248,8 +250,9 @@ impl FakeSession {
                 {
                     s.deferred = false;
                 }
+                // Stream 0's is the connection's.
                 check(events(Event::WindowUpdate {
-                    stream: StreamId(id),
+                    stream: Some(StreamId(id)).filter(|s| s.0 != 0),
                 }))?;
                 Ok(Some(nl + 1))
             }
@@ -334,7 +337,7 @@ impl FakeSession {
                 let code = num(2)? as u32;
                 check(events(Event::Reset {
                     stream: StreamId(id),
-                    error: code,
+                    error: H2Error(code),
                 }))?;
                 if let Some(s) = self.stream(id)
                     && !s.closed
@@ -342,7 +345,7 @@ impl FakeSession {
                     s.closed = true;
                     check(events(Event::Closed {
                         stream: StreamId(id),
-                        error: code,
+                        error: H2Error(code),
                     }))?;
                 }
                 Ok(Some(nl + 1))
@@ -353,7 +356,7 @@ impl FakeSession {
                 self.goaway = true;
                 check(events(Event::GoAway {
                     last_stream: StreamId(last),
-                    error: code,
+                    error: H2Error(code),
                 }))?;
                 let refused: Vec<i32> = self
                     .streams
@@ -365,7 +368,7 @@ impl FakeSession {
                     self.stream(id).unwrap().closed = true;
                     check(events(Event::Closed {
                         stream: StreamId(id),
-                        error: super::code::REFUSED_STREAM,
+                        error: super::H2Error::REFUSED_STREAM,
                     }))?;
                 }
                 Ok(Some(nl + 1))
@@ -396,7 +399,7 @@ impl Session for FakeSession {
         let id = self.next;
         let mut frame = format!("H {id} {}\n", u8::from(!body)).into_bytes();
         // A weight not the default goes with the head, as PRIORITY does.
-        if weight != super::code::DEFAULT_WEIGHT {
+        if weight != super::DEFAULT_WEIGHT {
             frame.extend_from_slice(format!("weight: {weight}\n").as_bytes());
         }
         for (name, value) in fields {
@@ -486,7 +489,7 @@ impl Session for FakeSession {
                         s.closed = true;
                         events(Event::Closed {
                             stream: StreamId(id),
-                            error: 2,
+                            error: H2Error::INTERNAL_ERROR,
                         });
                         break;
                     }
@@ -572,7 +575,7 @@ impl Session for FakeSession {
         Ok(())
     }
 
-    fn reset(&mut self, stream: StreamId, error: u32) -> Result<(), FrameError> {
+    fn reset(&mut self, stream: StreamId, error: H2Error) -> Result<(), FrameError> {
         let id = stream.0;
         self.queued
             .push_back(format!("R {id} {error}\n").into_bytes());
@@ -585,7 +588,7 @@ impl Session for FakeSession {
         Ok(())
     }
 
-    fn goaway(&mut self, error: u32, _: &[u8]) -> Result<(), FrameError> {
+    fn goaway(&mut self, error: H2Error, _: &[u8]) -> Result<(), FrameError> {
         self.queued.push_back(format!("G 0 {error}\n").into_bytes());
         self.goaway = true;
         Ok(())

@@ -30,11 +30,11 @@ fn own(e: Event<'_>) -> Seen {
         Event::HeadersDone { stream, end_stream } => Seen::HeadersDone(stream.0, end_stream),
         Event::Data { stream, bytes } => Seen::Data(stream.0, bytes.to_vec()),
         Event::DataEnd { stream } => Seen::DataEnd(stream.0),
-        Event::Closed { stream, error } => Seen::Closed(stream.0, error),
+        Event::Closed { stream, error } => Seen::Closed(stream.0, error.0),
         Event::Settings => Seen::Settings,
         Event::WindowUpdate { .. } => Seen::WindowUpdate,
-        Event::GoAway { last_stream, error } => Seen::GoAway(last_stream.0, error),
-        Event::Reset { stream, error } => Seen::Reset(stream.0, error),
+        Event::GoAway { last_stream, error } => Seen::GoAway(last_stream.0, error.0),
+        Event::Reset { stream, error } => Seen::Reset(stream.0, error.0),
         Event::PushField {
             stream,
             name,
@@ -147,8 +147,8 @@ fn resets_goaways_and_garbage() {
     ];
     client.submit_request(&fields, false, 16).unwrap();
     pump(&mut client, &mut server, &mut Vec::new(), &mut Vec::new());
-    server.reset(StreamId(1), 8).unwrap();
-    server.goaway(0, b"").unwrap();
+    server.reset(StreamId(1), H2Error::CANCEL).unwrap();
+    server.goaway(H2Error::NO_ERROR, b"").unwrap();
     let mut seen = Vec::new();
     pump(&mut server, &mut client, &mut Vec::new(), &mut seen);
     assert!(seen.contains(&Seen::Reset(1, 8)), "{seen:?}");

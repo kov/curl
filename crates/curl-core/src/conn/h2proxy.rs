@@ -14,7 +14,9 @@ use super::io::{Events, Recv, Sent};
 use super::layer::{Alive, Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery};
 use crate::components::Component;
 use crate::error::ErrorKind;
-use crate::http2::{BodyRead, Event, FrameError, Heard, Http2, Session, Setting, StreamId, code};
+use crate::http2::{
+    BodyRead, DEFAULT_WEIGHT, Event, FrameError, H2Error, Heard, Http2, Session, Setting, StreamId,
+};
 
 /// What the session reads and writes at a time (`PROXY_H2_CHUNK_SIZE`).
 const CHUNK: usize = 16 * 1024;
@@ -101,7 +103,7 @@ struct Tunnel {
     send: Vec<u8>,
     closed: bool,
     /// The code it closed with, and whether the proxy reset it.
-    error: u32,
+    error: H2Error,
     reset: bool,
 }
 
@@ -116,7 +118,7 @@ impl Tunnel {
             read: 0,
             send: Vec::new(),
             closed: false,
-            error: 0,
+            error: H2Error::NO_ERROR,
             reset: false,
         }
     }
@@ -188,7 +190,7 @@ impl Tunnel {
                 if !ours(stream) {
                     return Ok(Heard::Failed);
                 }
-                if error != 0 {
+                if error != H2Error::NO_ERROR {
                     self.reset = true;
                 }
                 Heard::Fine
@@ -197,15 +199,17 @@ impl Tunnel {
                 if ours(stream) {
                     self.closed = true;
                     self.error = error;
-                    if error != 0 {
+                    if error != H2Error::NO_ERROR {
                         self.reset = true;
                     }
                 }
                 Heard::Fine
             }
-            // Stream 0's update is the connection's.
-            Event::WindowUpdate { ref stream } if stream.0 == 0 => Heard::Fine,
-            Event::DataEnd { ref stream } | Event::WindowUpdate { ref stream } => {
+            Event::WindowUpdate { stream: None } => Heard::Fine,
+            Event::DataEnd { ref stream }
+            | Event::WindowUpdate {
+                stream: Some(ref stream),
+            } => {
                 if ours(stream) {
                     Heard::Fine
                 } else {
@@ -322,9 +326,7 @@ impl H2Proxy {
     /// `CONNECT` before is forgotten (`tunnel_stream_reset`).
     pub(crate) fn submit(&mut self, fields: &[(&[u8], &[u8])]) -> Result<StreamId, FrameError> {
         self.tunnel = Tunnel::new();
-        let stream = self
-            .session
-            .submit_request(fields, true, code::DEFAULT_WEIGHT)?;
+        let stream = self.session.submit_request(fields, true, DEFAULT_WEIGHT)?;
         self.tunnel.stream = Some(stream);
         self.tunnel.state = TunnelState::Connect;
         Ok(stream)
@@ -578,7 +580,7 @@ impl H2Proxy {
     fn nothing_held(&mut self, cx: &mut dyn LayerCx) -> io::Result<Recv> {
         let stream = self.tunnel.stream.map_or(-1, |s| s.0);
         if self.tunnel.closed {
-            if self.tunnel.error != 0 {
+            if self.tunnel.error != H2Error::NO_ERROR {
                 let by = if self.tunnel.reset { "server" } else { "curl" };
                 let error = self.tunnel.error;
                 cx.fails(
@@ -776,7 +778,7 @@ impl Layer for H2Proxy {
             return Ok(Handshake::Done);
         }
         if !self.sent_goaway {
-            if let Err(e) = self.session.goaway(0, b"shutdown\0") {
+            if let Err(e) = self.session.goaway(H2Error::NO_ERROR, b"shutdown\0") {
                 return Err(cx.fails(
                     ErrorKind::SendError,
                     format_args!("nghttp2_submit_goaway() failed: {}({})", e.text, e.code),

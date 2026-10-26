@@ -14,7 +14,9 @@ use crate::conn::io::Sent;
 use crate::conn::layer::LayerCx;
 use crate::error::ErrorKind;
 use crate::error::UrlErrorKind;
-use crate::http2::{BodyRead, Event, FrameError, Heard, Http2, Session, Setting, StreamId};
+use crate::http2::{
+    BodyRead, Event, FrameError, H2Error, Heard, Http2, Session, Setting, StreamId,
+};
 use crate::multi::TransferId;
 use crate::url::{GetOptions, ParseOptions, Part, Url};
 
@@ -93,7 +95,7 @@ impl std::fmt::Debug for H2Conn {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GoAway {
     pub(crate) last: StreamId,
-    pub(crate) error: u32,
+    pub(crate) error: H2Error,
 }
 
 /// The session could not be set up (`cf_h2_ctx_open`'s failures).
@@ -327,7 +329,11 @@ impl H2Conn {
             return;
         }
         self.sent_goaway = true;
-        if self.session.goaway(0, b"shutdown\0").is_ok() {
+        if self
+            .session
+            .goaway(H2Error::NO_ERROR, b"shutdown\0")
+            .is_ok()
+        {
             let sent = self.egress(&mut Bare(cx), conn);
             // What does not go now goes with the connection.
             drop(sent);

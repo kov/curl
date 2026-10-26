@@ -17,7 +17,7 @@ use core::ptr::{self, NonNull};
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use curl_core::http2::Http2;
-pub use curl_core::http2::{BodyRead, Event, FrameError, Heard, Setting, StreamId, Wants};
+pub use curl_core::http2::{BodyRead, Event, FrameError, H2Error, Heard, Setting, StreamId, Wants};
 
 /// The library, as the handles are given it.
 pub static NGHTTP2: Nghttp2 = Nghttp2;
@@ -32,8 +32,8 @@ impl Http2 for Nghttp2 {
         Ok(try_box(session)?)
     }
 
-    fn error_text(&self, code: u32) -> &'static str {
-        http2_error_text(code)
+    fn error_text(&self, code: H2Error) -> &'static str {
+        http2_error_text(code.0)
     }
 
     fn settings_payload(&self, settings: &[Setting], out: &mut [u8]) -> Result<usize, FrameError> {
@@ -451,15 +451,15 @@ impl curl_core::http2::Session for Session {
         check_h2(unsafe { sys::nghttp2_session_resume_data(self.raw.as_ptr(), stream.0) })
     }
 
-    fn reset(&mut self, stream: StreamId, code: u32) -> Result<(), FrameError> {
+    fn reset(&mut self, stream: StreamId, code: H2Error) -> Result<(), FrameError> {
         // SAFETY: the session.
-        check_h2(unsafe { sys::nghttp2_submit_rst_stream(self.raw.as_ptr(), 0, stream.0, code) })
+        check_h2(unsafe { sys::nghttp2_submit_rst_stream(self.raw.as_ptr(), 0, stream.0, code.0) })
     }
 
-    fn goaway(&mut self, code: u32, debug: &[u8]) -> Result<(), FrameError> {
+    fn goaway(&mut self, code: H2Error, debug: &[u8]) -> Result<(), FrameError> {
         // SAFETY: the session, and the debug data, which it copies.
         check_h2(unsafe {
-            sys::nghttp2_submit_goaway(self.raw.as_ptr(), 0, 0, code, debug.as_ptr(), debug.len())
+            sys::nghttp2_submit_goaway(self.raw.as_ptr(), 0, 0, code.0, debug.as_ptr(), debug.len())
         })
     }
 
@@ -652,13 +652,16 @@ unsafe extern "C" fn on_frame_recv(
             Event::DataEnd { stream }
         }
         sys::NGHTTP2_SETTINGS if hd.flags & sys::NGHTTP2_FLAG_ACK == 0 => Event::Settings,
-        sys::NGHTTP2_WINDOW_UPDATE => Event::WindowUpdate { stream },
+        // Stream 0's is the connection's.
+        sys::NGHTTP2_WINDOW_UPDATE => Event::WindowUpdate {
+            stream: Some(stream).filter(|s| s.0 != 0),
+        },
         sys::NGHTTP2_GOAWAY => {
             // SAFETY: a GOAWAY frame, as its header says.
             let g = unsafe { frame.goaway };
             Event::GoAway {
                 last_stream: StreamId(g.last_stream_id),
-                error: g.error_code,
+                error: H2Error(g.error_code),
             }
         }
         sys::NGHTTP2_RST_STREAM => {
@@ -666,7 +669,7 @@ unsafe extern "C" fn on_frame_recv(
             let r = unsafe { frame.rst_stream };
             Event::Reset {
                 stream,
-                error: r.error_code,
+                error: H2Error(r.error_code),
             }
         }
         sys::NGHTTP2_PUSH_PROMISE => {
@@ -766,7 +769,7 @@ unsafe extern "C" fn on_close(
             user,
             Event::Closed {
                 stream: StreamId(stream),
-                error,
+                error: H2Error(error),
             },
         )
     }

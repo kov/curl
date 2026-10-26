@@ -228,9 +228,9 @@ witness: curl-core proto::http::tests::h2::the_settings_say_the_multi_s_streams
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_stream_asks_its_weight
 --- old
-                .map_or(code::DEFAULT_WEIGHT, std::num::NonZeroU16::get);
+                .map_or(DEFAULT_WEIGHT, std::num::NonZeroU16::get);
 --- new
-                .map_or(code::DEFAULT_WEIGHT, |_| code::DEFAULT_WEIGHT);
+                .map_or(DEFAULT_WEIGHT, |_| DEFAULT_WEIGHT);
 
 === what the session reads for a sibling's stream goes to the stepping transfer
 file: crates/curl-core/src/proto/http/h2.rs
@@ -407,7 +407,7 @@ witness: curl-core proto::http::tests::h2::a_failed_push_fails_its_parent
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_refused_push_cancels_its_stream
 --- old
-            Offered::Denied => after.resets.try_push((promised, code::CANCEL)),
+            Offered::Denied => after.resets.try_push((promised, H2Error::CANCEL)),
 --- new
             Offered::Denied => Ok(()),
 
@@ -455,9 +455,9 @@ witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_ope
 file: crates/curl-core/src/conn/h2proxy.rs
 witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_opens_its_window_as_it_is_read
 --- old
-            Event::WindowUpdate { ref stream } if stream.0 == 0 => Heard::Fine,
+            Event::WindowUpdate { stream: None } => Heard::Fine,
 --- new
-            Event::WindowUpdate { ref stream } if stream.0 == 0 => Heard::Failed,
+            Event::WindowUpdate { stream: None } => Heard::Failed,
 
 === a 407 from an HTTP/2 proxy asks again
 file: crates/curl-core/src/multi/state/h2tunnel.rs

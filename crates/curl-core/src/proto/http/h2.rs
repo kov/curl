@@ -13,7 +13,7 @@ use curl_alloc::try_box;
 use super::*;
 use crate::conn::RecvFailed;
 use crate::conn::layer::LayerCx;
-use crate::http2::{BodyRead, Event, Heard, StreamId, code};
+use crate::http2::{BodyRead, DEFAULT_WEIGHT, Event, H2Error, Heard, StreamId};
 use crate::multi::PushFields;
 use crate::multi::push::Full;
 use crate::multi::state::{Offered, start_pushed};
@@ -79,7 +79,7 @@ pub(super) struct H2Stream {
     /// is a reset (`reset`), by the server if it said so
     /// (`reset_by_server`).
     closed: bool,
-    error: u32,
+    error: H2Error,
     reset: bool,
     reset_by_server: bool,
     /// The response's status, while its head is read.
@@ -128,10 +128,10 @@ impl H2Stream {
     }
 
     /// The session closed the stream as it sent, with `error`.
-    fn closed_with(&mut self, error: u32) {
+    fn closed_with(&mut self, error: H2Error) {
         self.closed = true;
         self.error = error;
-        self.reset |= error != 0;
+        self.reset |= error != H2Error::NO_ERROR;
     }
 }
 
@@ -142,7 +142,7 @@ struct After {
     /// Body bytes of each stream used: their windows open.
     consumed: Vec<(StreamId, usize)>,
     /// Streams to reset, with their codes.
-    resets: Vec<(StreamId, u32)>,
+    resets: Vec<(StreamId, H2Error)>,
     /// Streams whose bodies have more to give.
     resumes: Vec<StreamId>,
     /// Streams promised and taken, each a new transfer's from here.
@@ -220,7 +220,7 @@ fn window_failed<H: Host>(
 struct Egressing<'a, 'c, H: Host> {
     cx: &'a mut StepCx<'c, H>,
     stream: &'a mut H2Stream,
-    closes: Vec<(StreamId, u32)>,
+    closes: Vec<(StreamId, H2Error)>,
     oom: bool,
 }
 
@@ -272,7 +272,7 @@ fn with_session<R>(lease: &mut ConnLease, f: impl FnOnce(&mut H2Conn, &mut ConnL
 }
 
 /// The text of an HTTP/2 error code, as the library has it.
-fn error_text<H: Host>(cx: &StepCx<'_, H>, code: u32) -> &'static str {
+fn error_text<H: Host>(cx: &StepCx<'_, H>, code: H2Error) -> &'static str {
     cx.easy()
         .libraries()
         .h2
@@ -454,7 +454,7 @@ impl Request {
                 .options()
                 .http
                 .stream_weight
-                .map_or(code::DEFAULT_WEIGHT, std::num::NonZeroU16::get);
+                .map_or(DEFAULT_WEIGHT, std::num::NonZeroU16::get);
             let me = cx.me;
             let id = with_session(lease, |h2, _| {
                 let id = h2
@@ -622,7 +622,7 @@ impl Request {
     pub(crate) fn h1_required(&self) -> bool {
         self.h2
             .as_ref()
-            .is_some_and(|s| s.reset && s.error == code::HTTP_1_1_REQUIRED)
+            .is_some_and(|s| s.reset && s.error == H2Error::HTTP_1_1_REQUIRED)
     }
 
     fn stream(&mut self) -> &mut H2Stream {
@@ -803,7 +803,7 @@ impl Request {
         let id = stream.id.map_or(0, |id| id.0);
         if stream.reset {
             let error = stream.error;
-            if error == code::REFUSED_STREAM {
+            if error == H2Error::REFUSED_STREAM {
                 trace::info(
                     cx,
                     format_args!(
@@ -823,7 +823,7 @@ impl Request {
                 "curl"
             };
             let text = error_text(cx, error);
-            let kind = if error != 0 {
+            let kind = if error != H2Error::NO_ERROR {
                 ErrorKind::Http2Stream
             } else if bytecount > 0 {
                 ErrorKind::PartialFile
@@ -909,17 +909,12 @@ impl Request {
                 self.h2_event(cx, lease, event, prior, &mut after)
             });
             // The streams promised and taken are their transfers' from
-            // here, as C sets their user data in `push_promise`.
+            // here, as C sets their user data in `push_promise`. Unlike
+            // nghttp2's, the table can be refused memory.
             for &(stream, to) in &after.routed {
-                if h2.route(stream, to).is_err() {
-                    return Err(crate::http2::FrameError {
-                        code: -901,
-                        text: "Out of memory",
-                        fatal: true,
-                    });
-                }
+                h2.route(stream, to)?;
             }
-            read
+            Ok(read)
         });
         let goaway = after.goaway;
         let unset = with_session(lease, |h2, _| {
@@ -949,7 +944,7 @@ impl Request {
             // A sibling's window the session could not set ends its stream,
             // which its transfer finds failed when it next reads.
             if let Some((stream, _, _)) = unset.as_ref().filter(|u| Some(u.0) != own) {
-                let _reset = h2.session().reset(*stream, 0xffff_fc7a);
+                let _reset = h2.session().reset(*stream, H2Error::C_CALLBACK_FAILURE);
             }
             unset
         });
@@ -965,6 +960,7 @@ impl Request {
             lease.get().mark_close();
             self.wake_others(cx, lease);
         }
+        let fed = fed.map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
         if let Err(e) = fed {
             let n = e.code;
             let text = e.text;
@@ -1051,7 +1047,10 @@ impl Request {
             }
             Event::Data { stream, bytes } if ours(stream) => {
                 if !self.stream().body_started {
-                    after.resets.try_push((stream, code::PROTOCOL_ERROR)).ok();
+                    after
+                        .resets
+                        .try_push((stream, H2Error::PROTOCOL_ERROR))
+                        .ok();
                 }
                 if self.stream().failed.is_none() {
                     let written = self.input(cx, lease, bytes);
@@ -1059,7 +1058,10 @@ impl Request {
                     if let Err(e) = written {
                         self.stream().failed = Some(e);
                         // `NGHTTP2_ERR_CALLBACK_FAILURE`, as C resets it.
-                        after.resets.try_push((stream, 0xffff_fc7a)).ok();
+                        after
+                            .resets
+                            .try_push((stream, H2Error::C_CALLBACK_FAILURE))
+                            .ok();
                     }
                 }
                 let wanted = wanted_window(cx, self.stream().failed.is_some());
@@ -1076,7 +1078,9 @@ impl Request {
                 self.stream_end(stream, after);
                 Heard::Fine
             }
-            Event::WindowUpdate { stream } if ours(stream) => {
+            Event::WindowUpdate {
+                stream: Some(stream),
+            } if ours(stream) => {
                 let s = self.stream();
                 if s.taken < s.sendbuf.len() {
                     return pushed(after.resumes.try_push(stream));
@@ -1092,7 +1096,7 @@ impl Request {
                 self.h2_promised(cx, lease, promised, after)
             }
             Event::Reset { stream, error } if ours(stream) => {
-                if error != 0 {
+                if error != H2Error::NO_ERROR {
                     self.stream().reset_by_server = true;
                 }
                 Heard::Fine
@@ -1101,13 +1105,13 @@ impl Request {
                 let s = self.stream();
                 s.closed = true;
                 s.error = error;
-                if error != 0 {
+                if error != H2Error::NO_ERROR {
                     s.reset = true;
                     // A stream a GOAWAY refused fails with the GOAWAY's
                     // error, if it had one.
                     let goaway = after.goaway.or(goaway);
-                    if error == code::REFUSED_STREAM
-                        && let Some(g) = goaway.filter(|g| g.error != 0)
+                    if error == H2Error::REFUSED_STREAM
+                        && let Some(g) = goaway.filter(|g| g.error != H2Error::NO_ERROR)
                     {
                         s.error = g.error;
                     }
@@ -1157,7 +1161,10 @@ impl Request {
             match self.serves_authority(value) {
                 Ok(true) => {}
                 Ok(false) => {
-                    after.resets.try_push((stream, code::PROTOCOL_ERROR)).ok();
+                    after
+                        .resets
+                        .try_push((stream, H2Error::PROTOCOL_ERROR))
+                        .ok();
                     return Heard::Failed;
                 }
                 Err(OutOfMemory) => return Heard::Failed,
@@ -1214,11 +1221,11 @@ impl Request {
         };
         let pushed = match offered {
             Offered::Added(to) => after.routed.try_push((promised, to)),
-            Offered::Denied => after.resets.try_push((promised, code::CANCEL)),
+            Offered::Denied => after.resets.try_push((promised, H2Error::CANCEL)),
             Offered::Failed => {
                 let s = self.stream();
                 s.failed = s.failed.or(Some(ErrorKind::RecvError));
-                after.resets.try_push((promised, code::CANCEL))
+                after.resets.try_push((promised, H2Error::CANCEL))
             }
         };
         match pushed {
@@ -1359,7 +1366,7 @@ impl Request {
         let s = self.stream();
         let status = s.status.unwrap_or(0);
         if !s.closed && !s.body_eos && !(200..400).contains(&status) {
-            after.resets.try_push((stream, code::STREAM_CLOSED)).ok();
+            after.resets.try_push((stream, H2Error::STREAM_CLOSED)).ok();
             s.closed = true;
         }
     }
@@ -1381,7 +1388,7 @@ impl Request {
         );
         let s = self.stream();
         if let Some(id) = s.id {
-            after.resets.try_push((id, code::STREAM_CLOSED)).ok();
+            after.resets.try_push((id, H2Error::STREAM_CLOSED)).ok();
         }
         s.closed = true;
         s.reset = true;
@@ -1422,7 +1429,9 @@ impl Request {
         if !open {
             return;
         }
-        let _reset = with_session(lease, |h2, _| h2.session().reset(id, code::STREAM_CLOSED));
+        let _reset = with_session(lease, |h2, _| {
+            h2.session().reset(id, H2Error::STREAM_CLOSED)
+        });
         // What goes is what can now; a failure is the connection's.
         if self.h2_egress(cx, lease).is_err() {
             lease.get().mark_close();

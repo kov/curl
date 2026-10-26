@@ -30,17 +30,20 @@ pub enum Event<'a> {
     Data { stream: StreamId, bytes: &'a [u8] },
     /// A DATA frame of `stream` ended it.
     DataEnd { stream: StreamId },
-    /// The peer opened room for more of `stream`'s body (`WINDOW_UPDATE`);
-    /// stream 0 is the connection's.
-    WindowUpdate { stream: StreamId },
-    /// `stream` closed, with this error code (0: none).
-    Closed { stream: StreamId, error: u32 },
+    /// The peer opened room for more of `stream`'s body, or of the
+    /// connection's if none (`WINDOW_UPDATE`).
+    WindowUpdate { stream: Option<StreamId> },
+    /// `stream` closed, with this error code (`NO_ERROR`: none).
+    Closed { stream: StreamId, error: H2Error },
     /// The peer's settings arrived.
     Settings,
     /// The peer is going away: streams past `last_stream` are not served.
-    GoAway { last_stream: StreamId, error: u32 },
+    GoAway {
+        last_stream: StreamId,
+        error: H2Error,
+    },
     /// The peer reset `stream` with this error code.
-    Reset { stream: StreamId, error: u32 },
+    Reset { stream: StreamId, error: H2Error },
     /// A field of a PUSH_PROMISE the peer sent on `stream`.
     PushField {
         stream: StreamId,
@@ -67,7 +70,7 @@ impl Event<'_> {
             | Event::Reset { stream, .. }
             | Event::PushField { stream, .. }
             | Event::Promised { stream, .. } => Some(stream),
-            Event::WindowUpdate { stream } => Some(stream).filter(|s| s.0 != 0),
+            Event::WindowUpdate { stream } => stream,
             Event::Settings | Event::GoAway { .. } => None,
         }
     }
@@ -129,7 +132,7 @@ pub trait Http2: fmt::Debug + Send + Sync {
     fn client(&self) -> Result<Box<dyn Session>, OutOfMemory>;
 
     /// The text for an HTTP/2 error code (`nghttp2_http2_strerror`).
-    fn error_text(&self, code: u32) -> &'static str;
+    fn error_text(&self, code: H2Error) -> &'static str;
 
     /// `settings` as the payload of a SETTINGS frame, the `HTTP2-Settings`
     /// an upgrade sends (`nghttp2_pack_settings_payload`), into `out`: its
@@ -207,11 +210,11 @@ pub trait Session: fmt::Debug + Send {
     fn resume(&mut self, stream: StreamId) -> Result<(), FrameError>;
 
     /// Reset `stream` with `error`.
-    fn reset(&mut self, stream: StreamId, error: u32) -> Result<(), FrameError>;
+    fn reset(&mut self, stream: StreamId, error: H2Error) -> Result<(), FrameError>;
 
     /// Say goodbye with `error` and `debug` data, no stream of the
     /// peer's having been served.
-    fn goaway(&mut self, error: u32, debug: &[u8]) -> Result<(), FrameError>;
+    fn goaway(&mut self, error: H2Error, debug: &[u8]) -> Result<(), FrameError>;
 
     /// Send a PING.
     fn ping(&mut self) -> Result<(), FrameError>;
@@ -224,18 +227,40 @@ pub trait Session: fmt::Debug + Send {
     fn max_concurrent(&self) -> u32;
 }
 
-/// HTTP/2's error codes curl uses.
-pub mod code {
-    pub const NO_ERROR: u32 = 0;
-    pub const PROTOCOL_ERROR: u32 = 1;
-    pub const INTERNAL_ERROR: u32 = 2;
-    pub const STREAM_CLOSED: u32 = 5;
-    pub const REFUSED_STREAM: u32 = 7;
-    pub const CANCEL: u32 = 8;
-    pub const HTTP_1_1_REQUIRED: u32 = 0xd;
-    /// The weight of a stream that asks for none (`NGHTTP2_DEFAULT_WEIGHT`).
-    pub const DEFAULT_WEIGHT: u16 = 16;
+/// An HTTP/2 error code, as RST_STREAM and GOAWAY carry it (RFC 9113,
+/// section 7); none by default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct H2Error(pub u32);
+
+impl H2Error {
+    pub const NO_ERROR: H2Error = H2Error(0);
+    pub const PROTOCOL_ERROR: H2Error = H2Error(1);
+    pub const INTERNAL_ERROR: H2Error = H2Error(2);
+    pub const STREAM_CLOSED: H2Error = H2Error(5);
+    pub const REFUSED_STREAM: H2Error = H2Error(7);
+    pub const CANCEL: H2Error = H2Error(8);
+    pub const HTTP_1_1_REQUIRED: H2Error = H2Error(0xd);
+    /// What C resets a stream with where its write fails or a window
+    /// cannot be set: nghttp2's `NGHTTP2_ERR_CALLBACK_FAILURE`, -902, as
+    /// an unsigned code, which no RFC defines. Copied as C sends it.
+    pub const C_CALLBACK_FAILURE: H2Error = H2Error(-902_i32 as u32);
 }
+
+/// The code's number, as C's messages print it.
+impl fmt::Display for H2Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::LowerHex for H2Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
+/// The weight of a stream that asks for none (`NGHTTP2_DEFAULT_WEIGHT`).
+pub const DEFAULT_WEIGHT: u16 = 16;
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod fake;

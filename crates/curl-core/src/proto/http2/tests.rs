@@ -92,3 +92,44 @@ fn methods_targets_and_authorities_are_read_as_c_reads_them() {
         Err(ErrorKind::BadFunctionArgument)
     );
 }
+
+/// A target in absolute form, as a request to a proxy sends it, gives
+/// the scheme, the authority (a port the scheme's own left out) and the
+/// path with its query; the Host field does not go (`start_req`,
+/// `Curl_http_req_make2`). One too long to be a URL is refused.
+#[test]
+fn an_absolute_target_names_the_scheme_authority_and_path() {
+    let head = "GET http://example.com:8080/a/../b?q=1 HTTP/1.1\r\n\
+                Host: proxied.example\r\n\
+                Accept: */*\r\n\
+                \r\n";
+    assert_eq!(
+        pairs(head, None).unwrap(),
+        owned(&[
+            (":method", "GET"),
+            (":scheme", "http"),
+            (":authority", "example.com:8080"),
+            (":path", "/a/../b?q=1"),
+            ("accept", "*/*"),
+        ])
+    );
+    let head = "GET http://example.com:80/x HTTP/1.1\r\nHost: h\r\n\r\n";
+    let got = pairs(head, None).unwrap();
+    assert_eq!(got[2], owned(&[(":authority", "example.com")])[0]);
+    // Not a URL: the target is the path, the authority Host's.
+    let head = "GET example.com HTTP/1.1\r\nHost: h\r\n\r\n";
+    let got = pairs(head, None).unwrap();
+    assert_eq!(
+        got[1..4],
+        owned(&[
+            (":scheme", "https"),
+            (":authority", "h"),
+            (":path", "example.com")
+        ])
+    );
+    let long = format!(
+        "GET http://e/{} HTTP/1.1\r\nHost: h\r\n\r\n",
+        "x".repeat(8 * 1024)
+    );
+    assert_eq!(pairs(&long, None), Err(ErrorKind::UrlMalformat));
+}

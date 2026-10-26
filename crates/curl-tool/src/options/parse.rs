@@ -570,7 +570,12 @@ pub(crate) fn has_tls() -> bool {
 /// Whether the library claims SPNEGO, which `--negotiate` and
 /// `--proxy-negotiate` need (`feature_spnego`).
 pub(crate) fn claims_spnego() -> bool {
-    version().claims("SPNEGO")
+    claims("SPNEGO")
+}
+
+/// Whether the library claims the feature `name` (`feature_*`).
+pub(crate) fn claims(name: &str) -> bool {
+    version().claims(name)
 }
 
 /// A U+2000 to U+203F punctuation mark, such as a typographic dash or
@@ -1447,8 +1452,8 @@ mod tests {
         assert_eq!(on(&["x", "-vvvv", "--no-verbose"]), (false, false, none));
     }
 
-    /// `--proxy` makes the proxy HTTP; `--proxy1.0` and the SOCKS options
-    /// name their own kind.
+    /// `--proxy` makes the proxy HTTP; `--proxy1.0`, the SOCKS options and
+    /// `--proxy-http2` name their own kind.
     #[test]
     fn reads_the_proxy_kind() {
         use curl_core::options::ProxyType;
@@ -1474,6 +1479,13 @@ mod tests {
             proxy(&["x", "--socks5", "p", "-x", "q"]),
             (Some(&b"q"[..]), ProxyType::Http)
         );
+        // `--proxy-http2` asks for HTTP/2 of an HTTPS proxy, which a
+        // later `--proxy` keeps; its negation is HTTPS.
+        let h2 = (Some(&b"p"[..]), ProxyType::Https2);
+        assert_eq!(proxy(&["x", "--proxy-http2", "-x", "p"]), h2);
+        assert_eq!(proxy(&["x", "-x", "p", "--proxy-http2"]), h2);
+        let off = proxy(&["x", "-x", "p", "--proxy-http2", "--no-proxy-http2"]);
+        assert_eq!(off, (Some(&b"p"[..]), ProxyType::Https));
     }
 
     /// Each authentication option adds its method, or takes it away.

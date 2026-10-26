@@ -1180,6 +1180,17 @@ pub(crate) fn apply<'a>(
         Opt::PathAsIs => line.current().path_as_is = value.toggle(),
         Opt::ProxyUser => line.current().proxy_user = Some(Cow::Borrowed(value.text())),
         Opt::ProxyAnyauth => line.current().proxy_anyauth = value.toggle(),
+        Opt::ProxyHttp2 => {
+            // Refused even to turn off, as C's check has no toggle.
+            if !super::parse::claims("HTTPS-proxy") || !super::parse::claims("HTTP2") {
+                return Err(ParamError::LibcurlDoesntSupport);
+            }
+            line.current().proxy_kind = if value.toggle() {
+                ProxyType::Https2
+            } else {
+                ProxyType::Https
+            };
+        }
         Opt::ProxyBasic => line.current().proxy_basic = value.toggle(),
         Opt::ProxyDigest => line.current().proxy_digest = value.toggle(),
         Opt::Socks5Basic => line.current().socks5_basic = value.toggle(),
@@ -1798,7 +1809,6 @@ pub(crate) fn apply<'a>(
         | Opt::MailRcpt
         | Opt::MailRcptAllowfails
         | Opt::Ntlm
-        | Opt::ProxyHttp2
         | Opt::ProxyHttp3
         | Opt::ProxyNtlm
         | Opt::Pubkey

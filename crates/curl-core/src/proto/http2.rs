@@ -13,8 +13,10 @@ use crate::conn::Conn;
 use crate::conn::io::Sent;
 use crate::conn::layer::LayerCx;
 use crate::error::ErrorKind;
+use crate::error::UrlErrorKind;
 use crate::http2::{BodyRead, Event, FrameError, Heard, Http2, Session, Setting, StreamId};
 use crate::multi::TransferId;
+use crate::url::{GetOptions, ParseOptions, Part, Url};
 
 /// A stream's receive window, as the client opens it
 /// (`H2_STREAM_WINDOW_SIZE_INITIAL`).
@@ -437,22 +439,41 @@ pub(crate) fn fields_of(
     let mut fields = Fields::default();
     fields.add(b":method", method, false).map_err(oom)?;
     let connect = method == b"CONNECT";
+    // The target in absolute form, as a request to a proxy sends it,
+    // gives the scheme, authority and path (`start_req`).
+    let url: Option<TargetUrl> = match target {
+        b"*" => None,
+        _ if connect || target[0] == b'/' => None,
+        _ if target.len() >= MOST_TARGET => return Err(ErrorKind::UrlMalformat),
+        _ if !crate::url::is_absolute(target) => None,
+        _ => Some(TargetUrl::of(target)?),
+    };
     if !connect {
+        let scheme = url
+            .as_ref()
+            .and_then(|u| u.scheme.as_deref())
+            .unwrap_or(scheme);
         fields.add(b":scheme", scheme, false).map_err(oom)?;
     }
-    let authority = if connect {
-        Some(target)
-    } else {
+    let host = || {
         headers
             .iter()
             .find(|(n, _)| n.eq_ignore_ascii_case(b"Host"))
             .map(|(_, v)| *v)
     };
+    let authority = match &url {
+        _ if connect => Some(target),
+        Some(TargetUrl {
+            authority: Some(a), ..
+        }) => Some(&a[..]),
+        _ => host(),
+    };
     if let Some(authority) = authority {
         fields.add(b":authority", authority, false).map_err(oom)?;
     }
     if !connect {
-        fields.add(b":path", target, false).map_err(oom)?;
+        let path = url.as_ref().map_or(target, |u| &u.path[..]);
+        fields.add(b":path", path, false).map_err(oom)?;
     }
     for (name, value) in headers {
         if name.eq_ignore_ascii_case(b"TE") {
@@ -464,6 +485,73 @@ pub(crate) fn fields_of(
         }
     }
     Ok(fields)
+}
+
+/// The longest target taken as a URL (`H1_MAX_URL_LEN`).
+const MOST_TARGET: usize = 8 * 1024;
+
+/// What a request's target in absolute form names (`Curl_http_req_make2`):
+/// its scheme, its host with any port not the scheme's own, and its path
+/// with any query.
+struct TargetUrl {
+    scheme: Option<Vec<u8>>,
+    authority: Option<Vec<u8>>,
+    path: Vec<u8>,
+}
+
+impl TargetUrl {
+    fn of(target: &[u8]) -> Result<TargetUrl, ErrorKind> {
+        let failed = |e| match e {
+            UrlErrorKind::OutOfMemory => ErrorKind::OutOfMemory,
+            _ => ErrorKind::UrlMalformat,
+        };
+        let opts = ParseOptions {
+            non_support_scheme: true,
+            path_as_is: true,
+            allow_space: true,
+            ..ParseOptions::NONE
+        };
+        let url = Url::parse(target, opts).map_err(failed)?;
+        let part = |what, opts| match url.get(what, opts) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(
+                UrlErrorKind::NoScheme
+                | UrlErrorKind::NoHost
+                | UrlErrorKind::NoPort
+                | UrlErrorKind::NoQuery,
+            ) => Ok(None),
+            Err(e) => Err(failed(e)),
+        };
+        let scheme = part(Part::Scheme, GetOptions::NONE)?;
+        let no_default = GetOptions {
+            no_default_port: true,
+            ..GetOptions::NONE
+        };
+        let authority = match part(Part::Host, GetOptions::NONE)? {
+            Some(mut host) => {
+                if let Some(port) = part(Part::Port, no_default)? {
+                    host.try_push(b':')
+                        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+                    host.try_extend_from_slice(&port)
+                        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+                }
+                Some(host)
+            }
+            None => None,
+        };
+        let mut path = part(Part::Path, GetOptions::NONE)?.unwrap_or_default();
+        if let Some(query) = part(Part::Query, GetOptions::NONE)? {
+            path.try_push(b'?')
+                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+            path.try_extend_from_slice(&query)
+                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        }
+        Ok(TargetUrl {
+            scheme,
+            authority,
+            path,
+        })
+    }
 }
 
 /// A line without its CRLF or LF.

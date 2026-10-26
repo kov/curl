@@ -14,7 +14,7 @@ use crate::conn::tls::TlsLayer;
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::options::HttpVersion;
-use crate::options::{SslOptions, TlsMaxVersion, TlsMinVersion, TlsOptions};
+use crate::options::{ProxyType, SslOptions, TlsMaxVersion, TlsMinVersion, TlsOptions};
 use crate::tls::{Alpn, Handshake as Shake, SessionPeer, TlsPeer, TlsShared};
 use crate::trace;
 
@@ -82,8 +82,18 @@ pub(super) fn start<H: Host>(
     let version = options.http.version;
     let versions = c.proto.http_versions(options);
     let h2 = versions.h2 && cx.easy().libraries().h2.is_some();
-    let alpn = match (options.tls.options.alpn, side, version) {
+    // An HTTPS proxy asked for in HTTP/2 is offered it, by ALPN whatever
+    // the transfer says of ALPN (`cf_ssl_proxy_create`); for the requests
+    // it sends on alone, as a tunnel through it is HTTP/1.1's yet.
+    let proxy_h2 = side == TlsSide::Proxy
+        && cx.easy().libraries().h2.is_some()
+        && c.route
+            .proxy
+            .as_ref()
+            .is_some_and(|p| p.kind == ProxyType::Https2 && p.forward);
+    let alpn = match (options.tls.options.alpn || proxy_h2, side, version) {
         (false, ..) => Alpn::None,
+        (true, TlsSide::Proxy, _) if proxy_h2 => Alpn::H2Http11,
         (true, TlsSide::Proxy, _) => Alpn::Http11,
         (true, TlsSide::Origin, HttpVersion::Http10) => Alpn::Http10,
         (true, TlsSide::Origin, _) if h2 && !versions.h1 => Alpn::H2,

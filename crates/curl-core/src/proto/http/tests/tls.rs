@@ -1233,3 +1233,36 @@ fn a_handshake_put_off_that_fails_fails_the_transfer_with_its_error() {
     let got = get_tls(&mut m, &libraries, "/", second, set);
     assert_eq!(got.result, Err(ErrorKind::SslConnectError));
 }
+
+/// Plain HTTP through an HTTPS proxy asked for in HTTP/2 offers the
+/// proxy HTTP/2 by ALPN, ALPN on or off; agreed, the request goes to the
+/// proxy over HTTP/2, its URL's scheme, authority and path the stream's
+/// fields (`cf_ssl_proxy_create`, `Curl_http2_switch`, `start_req`).
+#[test]
+fn http_through_an_http_2_proxy_goes_as_its_streams_fields() {
+    static FAKE: crate::http2::fake::FakeH2 = crate::http2::fake::FakeH2;
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        h2: Some(&FAKE),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let response =
+        fake::records(b"S\nH 1 0\n:status: 200\ncontent-length: 3\n\nD 1 3 1\nok\n").unwrap();
+    let talk = Conversation::replies(&[WELCOME, &response], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        https_proxy(o, b"http://origin.example/p?q");
+        o.proxy.make_mut().unwrap().kind = crate::options::ProxyType::Https2;
+        o.tls.options.make_mut().unwrap().alpn = false;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"ok\n");
+    assert_eq!(backend.log().alpn, Some(crate::tls::Alpn::H2Http11));
+    let sent = String::from_utf8(sent(&talk)).unwrap();
+    let fields = "H 1 1\n:method: GET\n:scheme: http\n:authority: origin.example\n:path: /p?q\n";
+    assert!(sent.contains(fields), "{sent}");
+}

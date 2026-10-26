@@ -2407,7 +2407,11 @@ TLS, the origin's layer's `Below` being the proxy's layer; `[SSL-PROXY][TCP]` fo
 forwarded to the proxy, whose SETUP line C words `added SSL filter for origin`. The race does
 not apply to the proxy's handshake. The two sides are `TlsSide`, the layer's filter
 (`Component::SslProxy`) telling its session it is the proxy's (`TlsIo::for_proxy`): it offers
-`http/1.1` by ALPN (`cf_ssl_proxy_create`), names the peer's certificate `Proxy certificate:`,
+`http/1.1` by ALPN (`cf_ssl_proxy_create`), and `h2,http/1.1` to a proxy asked for in HTTP/2
+(`CURLPROXY_HTTPS2`, `--proxy-http2`), ALPN on or off, whose requests it sends on then go in
+HTTP/2, their absolute-form target the stream's scheme, authority and path (`start_req`); a
+tunnel through it is HTTP/1.1's yet, so it is offered HTTP/2 only for those. It names the
+peer's certificate `Proxy certificate:`,
 keeps its verification apart (`Report::proxy_verify_result`), answers neither the TLS library's
 objects nor the waits of the origin's layer, and does not mark `TIMER_APPCONNECT`.
 

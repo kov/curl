@@ -693,6 +693,40 @@ fn two_transfers_share_a_connection() {
     );
 }
 
+/// The transfer done first on a connection another is still on says so,
+/// and leaves the connection to it; the last says it used it alone
+/// (`multi_done_locked`).
+#[test]
+fn a_transfer_done_on_a_shared_connection_says_it_is_still_in_use() {
+    let ([(a, sa), (b, sb)], _) = h2_pair_of(
+        &[&[b"S\nH 1 0\n:status: 200\n\n", WINDOW_SENT, SECOND]],
+        false,
+        |_| {},
+        |_, _| {},
+        |e| {
+            let components = crate::components::Components::new().unwrap();
+            components.configure(b"multi");
+            e.set_components(Some(components));
+        },
+    );
+    assert_eq!((a, b), (Ok(()), Ok(())));
+    let said = |s: &Seen, line: &str| s.text().iter().any(|l| l.ends_with(line));
+    let still = "] Connection still in use 1, no more multi_done now!\n";
+    // The second is driven to its end first, the first still on.
+    assert!(
+        said(&sb, "] multi_done_locked, in use=1\n"),
+        "{:#?}",
+        sb.text()
+    );
+    assert!(said(&sb, still), "{:#?}", sb.text());
+    assert!(
+        said(&sa, "] multi_done_locked, in use=0\n"),
+        "{:#?}",
+        sa.text()
+    );
+    assert!(!sa.text().iter().any(|l| l.contains("still in use")));
+}
+
 /// Transfers of one multi whose handles share connections
 /// (`CURL_LOCK_DATA_CONNECT`) multiplex on one as the multi's own do: the
 /// share's connection, found to speak HTTP/2, takes the second transfer

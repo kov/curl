@@ -504,3 +504,20 @@ witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_shu
         Some(Component::H2Proxy)
 --- new
         None
+
+=== a transfer done on a shared connection counts no one else on it
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_transfer_done_on_a_shared_connection_says_it_is_still_in_use
+--- old
+        Released::InUse(n) => n.get(),
+        _ => 0,
+--- new
+        _ => 0,
+
+=== one other transfer on a connection is not said to still use it
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_transfer_done_on_a_shared_connection_says_it_is_still_in_use
+--- old
+    if in_use > 0 {
+--- new
+    if in_use > 1 {

@@ -3173,13 +3173,17 @@ first. A handle has one once the application turns it on (`Easy::enable_alt_svc`
 the HSTS cache share one box, made the first time either is turned on (`HostCaches`), which
 keeps a handle that turns on neither within its byte budget. The file is read as it is named,
 not as transfers start. As each leg picks its peer, an origin no connect-to entry sends
-elsewhere, over `https` (or any URL with the debug build's `CURL_ALTSVC_HTTP`), and not made in
-HTTP/1.0, is looked up by its ASCII name and port as an HTTP/1 origin, for an alternative of a
-version the control allows and the build speaks, which is HTTP/1 alone until HTTP/2 (step 52).
-One on another host or port is the peer, as a connect-to entry's is: traced "Alt-svc connecting
-from ...", and named by the request's `Alt-Used:` unless the application sends its own. An
-`Alt-Svc:` field from a response over HTTPS, or HTTP with `CURL_ALTSVC_HTTP`, is parsed as C
-parses it, the cache taken out of the handle meanwhile so that what parsing says is traced as
+elsewhere, over `https` (or any URL with the debug build's `CURL_ALTSVC_HTTP`), is looked up
+by its ASCII name and port as C's `url_set_conn_peer` does, from the request's negotiation
+(`Request::negotiation`, C's `http_negotiation`): as an HTTP/2 origin first, where HTTP/2 is
+wanted, a library speaks it and not by prior knowledge, then as an HTTP/1 origin unless only
+HTTP/1.0 is; for an alternative of a version the request and the control allow (by default
+every one the build speaks: HTTP/1 and HTTP/2) and a library speaks. One on another host or
+port is the peer, as a connect-to entry's is: traced "Alt-svc connecting from ...", and named
+by the request's `Alt-Used:` unless the application sends its own; one in another version than
+the one looked up switches the request to that version alone. An `Alt-Svc:` field from a
+response over HTTPS, or HTTP with `CURL_ALTSVC_HTTP`, is parsed as C parses it, as alternatives
+of the origin in the version the response came in, the cache taken out of the handle meanwhile so that what parsing says is traced as
 it is said. The cache is written as the handle goes (`Easy::save_alt_svc`, the shim's cleanup
 and the tool's handle), to `AltSvcOptions::file` or the file last read, unless read-only. A copy
 of the handle has an empty cache of the same control, which reads the file named; C's copy

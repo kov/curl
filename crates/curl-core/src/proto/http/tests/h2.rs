@@ -181,6 +181,66 @@ fn without_a_library_http_1_is_spoken() {
     assert_eq!(ran.request, request_of("/"));
 }
 
+/// An origin whose alternative is in HTTP/2 is reached by it in HTTP/2:
+/// one looked up from HTTP/1 switches the request to HTTP/2 alone, ALPN
+/// offering `h2` only; one from HTTP/2, looked up first, leaves what the
+/// request offers as it was. What the response says comes in HTTP/2, and
+/// is kept as an alternative of the origin's HTTP/2 (`url_set_conn_peer`,
+/// `http_header_a`).
+#[test]
+fn an_alternative_in_http_2_is_reached_in_http_2() {
+    use crate::libraries::Library;
+    use crate::tls::Alpn;
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    static FAKE: FakeH2 = FakeH2;
+    for (src, offer) in [("h1", Alpn::H2), ("h2", Alpn::H2Http11)] {
+        let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+        let libraries = SharedLibraries::new(Libraries {
+            tls: Some(Library::Static(backend)),
+            h2: Some(&FAKE as &dyn crate::http2::Http2),
+            ..Libraries::NONE
+        })
+        .unwrap();
+        let file =
+            std::env::temp_dir().join(format!("curl-core-alt-{src}-h2-{}", std::process::id()));
+        let mut entries =
+            format!("{src} 127.0.0.1 1 h2 127.0.0.1 {PORT} \"20991231 00:00:00\" 0 0\n");
+        if src == "h2" {
+            // HTTP/2's is looked up first: HTTP/1's, which leads nowhere,
+            // is passed over.
+            entries += "h1 127.0.0.1 1 h2 nowhere.example 2 \"20991231 00:00:00\" 0 0\n";
+        }
+        std::fs::write(&file, entries).unwrap();
+        let said = b"S\nH 1 0\n:status: 200\ncontent-length: 5\n\
+            alt-svc: h2=\"next.example:443\"; ma=60\n\nD 1 5 1\nhello";
+        let response = fake::records(said).unwrap();
+        let talk = Conversation::replies(&[WELCOME, &response], false).per_send();
+        let mut m = serving(Peer::Accepts, &[&talk]);
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        e.add_alt_svc_file(Some(file.as_os_str().as_encoded_bytes()))
+            .unwrap();
+        let mut ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+            o.set_url(Some(b"https://127.0.0.1:1/")).unwrap();
+        });
+        assert_eq!(ran.result, Ok(()), "{src}: {:?}", ran.seen.text());
+        assert_eq!(ran.seen.body(), b"hello");
+        assert_eq!(backend.log().alpn, Some(offer), "{src}");
+        let text = ran.seen.text();
+        let connecting =
+            format!("Alt-svc connecting from [{src}]127.0.0.1:1 to [h2]127.0.0.1:{PORT}\n");
+        assert!(text.contains(&connecting), "{text:?}");
+        assert!(text.iter().any(|l| l == "using HTTP/2\n"), "{text:?}");
+        ran.easy.save_alt_svc().unwrap();
+        let kept = std::fs::read_to_string(&file).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        assert!(
+            kept.contains("\nh2 127.0.0.1 1 h2 next.example 443 "),
+            "{kept}"
+        );
+    }
+}
+
 /// Over TLS with an HTTP/2 library, ALPN offers `h2` first, which the
 /// fake's peer takes, and the connection speaks HTTP/2; `h2` alone by
 /// prior knowledge. Without one, or with HTTP/1 asked for, HTTP/1 is

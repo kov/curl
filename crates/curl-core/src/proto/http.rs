@@ -221,9 +221,30 @@ pub(crate) struct Request {
     /// (`upgr101 == UPGR101_H2`), which a 101 takes up; until its answer
     /// (`bits.upgrade_in_progress`).
     upgrade: Option<Vec<u8>>,
-    /// A request before it was told HTTP/1.1 is required: it speaks
-    /// HTTP/1 only.
+    /// A request before it was told HTTP/1.1 is required, or an
+    /// alternative service switched it to HTTP/1: it speaks HTTP/1 only.
     h1_only: bool,
+    /// An alternative service switched it to HTTP/2: it speaks HTTP/2
+    /// only (`neg->wanted = neg->allowed = CURL_HTTP_V2x`).
+    h2_only: bool,
+}
+
+/// What a request may speak, as C negotiates it (`http_negotiation`):
+/// the versions wanted and allowed, HTTP/2 by prior knowledge, and
+/// HTTP/1.0 alone.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Negotiation {
+    pub(crate) wanted: crate::altsvc::Versions,
+    pub(crate) allowed: crate::altsvc::Versions,
+    pub(crate) prior: bool,
+    pub(crate) only_10: bool,
+}
+
+impl Negotiation {
+    /// The sets as C's bits say them (`CURL_HTTP_V1x` and the rest).
+    pub(crate) fn bits(set: crate::altsvc::Versions) -> u8 {
+        u8::from(set.h1) | u8::from(set.h2) << 1 | u8::from(set.h3) << 2
+    }
 }
 
 #[derive(Debug)]
@@ -361,11 +382,36 @@ impl Request {
                 h1: true,
                 h2: false,
             }
+        } else if self.h2_only {
+            Versions {
+                h1: false,
+                h2: true,
+            }
         } else {
             Versions {
                 h1: wanted.h1(),
                 h2: wanted.h2(),
             }
+        }
+    }
+
+    /// What the request may speak as C negotiates it for `wanted`
+    /// (`Curl_http_neg_init`, and what a request after it was changed
+    /// to): with no version asked for, HTTP/3 is allowed though not
+    /// wanted.
+    pub(crate) fn negotiation(&self, wanted: HttpVersion) -> Negotiation {
+        let versions = self.versions(wanted);
+        let set = crate::altsvc::Versions {
+            h1: versions.h1,
+            h2: versions.h2,
+            h3: false,
+        };
+        let open = wanted == HttpVersion::Any && !self.h1_only && !self.h2_only;
+        Negotiation {
+            wanted: set,
+            allowed: crate::altsvc::Versions { h3: open, ..set },
+            prior: wanted == HttpVersion::Http2Prior && !self.h1_only,
+            only_10: wanted == HttpVersion::Http10 && !self.h1_only && !self.h2_only,
         }
     }
 
@@ -487,6 +533,7 @@ impl Request {
             refused: false,
             upgrade: None,
             h1_only: before.http.h1_only,
+            h2_only: false,
         })
     }
 
@@ -514,7 +561,20 @@ impl Request {
 
     /// The connection goes to `via`, an alternative service of the
     /// origin's, which the request names (`H1_HD_ALT_USED`).
-    pub(crate) fn alt_used(&mut self, via: &Peer) -> Result<(), OutOfMemory> {
+    /// An alternative service sends the request to `via`, switching it
+    /// to `speaks` where it names another version than the one looked up
+    /// (`url_set_conn_peer`).
+    pub(crate) fn alt_used(
+        &mut self,
+        via: &Peer,
+        speaks: Option<crate::altsvc::Alpn>,
+    ) -> Result<(), OutOfMemory> {
+        match speaks {
+            Some(crate::altsvc::Alpn::H1) => (self.h1_only, self.h2_only) = (true, false),
+            Some(crate::altsvc::Alpn::H2) => (self.h1_only, self.h2_only) = (false, true),
+            // No HTTP/3 is looked up.
+            Some(crate::altsvc::Alpn::H3) | None => {}
+        }
         let mut used = Vec::new();
         let mut digits = [0u8; 20];
         for part in [
@@ -1987,6 +2047,14 @@ impl Request {
             proxy_taken: proxy == Some(negotiate::State::Recv),
         };
         let head = head.as_mut().expect("made at DO");
+        // The version the response came in, for its `Alt-Svc:`
+        // (`httpversion`): only a status line changes it, which comes in
+        // a feed before any header line.
+        let over = match head.last_version() {
+            Some(response::HttpVersion::Http2) => crate::altsvc::Alpn::H2,
+            Some(response::HttpVersion::Http3) => crate::altsvc::Alpn::H3,
+            _ => crate::altsvc::Alpn::H1,
+        };
         // Only a status line changes it, so for a header line it is what
         // it was before.
         let bodyless = head.meta().bodyless();
@@ -2132,7 +2200,7 @@ impl Request {
         if line.kind == LineKind::Header
             && let Some(value) = strip_name(line.bytes, b"Alt-Svc:")
         {
-            alt_svc::from_field(cx, peer, value, peer.scheme() == HTTPS)?;
+            alt_svc::from_field(cx, peer, over, value, peer.scheme() == HTTPS)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         // What reading its transfer codings did, traced before the line, as

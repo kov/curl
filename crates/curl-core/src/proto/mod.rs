@@ -335,9 +335,13 @@ impl ProtoState {
 
     /// The connection goes to `via`, an alternative service of the
     /// origin's: the request says so (`Alt-Used:`).
-    pub(crate) fn alt_used(&mut self, via: &Peer) -> Result<(), curl_alloc::OutOfMemory> {
+    pub(crate) fn alt_used(
+        &mut self,
+        via: &Peer,
+        speaks: Option<crate::altsvc::Alpn>,
+    ) -> Result<(), curl_alloc::OutOfMemory> {
         match *self {
-            ProtoState::Http(ref mut r) => r.alt_used(via),
+            ProtoState::Http(ref mut r) => r.alt_used(via, speaks),
             // Only HTTP's requests have alternatives.
             _ => Ok(()),
         }
@@ -562,6 +566,15 @@ impl ProtoState {
     }
 
     /// The HTTP versions the request may speak; any, for another protocol.
+    /// What an HTTP request may speak, as C negotiates it; none for
+    /// another protocol.
+    pub(crate) fn negotiation(&self, options: &Options) -> Option<http::Negotiation> {
+        match self {
+            ProtoState::Http(r) => Some(r.negotiation(options.http.version)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn http_versions(&self, options: &Options) -> http::Versions {
         match self {
             ProtoState::Http(r) => r.versions(options.http.version),

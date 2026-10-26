@@ -3822,19 +3822,23 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         Err(e) => return TransferState::Init.fail(e),
     };
     let over_unix = unix.is_some();
-    let mut alt_used = false;
+    let mut alt_used = None;
     let via = match unix {
         Some(peer) => Some(peer),
         None => match connect_to(cx, &origin) {
             Ok(Some(via)) => Some(via),
             // No connect-to entry: an alternative service, then.
-            Ok(None) => match alt_svc(cx, &origin, &scheme) {
-                Ok(via) => {
-                    alt_used = via.is_some();
-                    via
+            Ok(None) => {
+                let neg = proto.negotiation(cx.easy().options());
+                match alt_svc(cx, &origin, &scheme, neg) {
+                    Ok(Some(AltPeer { via, speaks })) => {
+                        alt_used = Some(speaks);
+                        Some(via)
+                    }
+                    Ok(None) => None,
+                    Err(e) => return TransferState::Init.fail(e),
                 }
-                Err(e) => return TransferState::Init.fail(e),
-            },
+            }
             Err(e) => return TransferState::Init.fail(e),
         },
     };
@@ -3850,9 +3854,9 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     // A request a proxy sends on names the whole URL, and the connection
     // is the proxy's (`origin_is_proxy`).
     let mut proto = proto;
-    if alt_used {
+    if let Some(speaks) = alt_used {
         let via = via.as_deref().expect("an alternative is the peer");
-        if let Err(OutOfMemory) = proto.alt_used(via) {
+        if let Err(OutOfMemory) = proto.alt_used(via, speaks) {
             return TransferState::Init.fail(ErrorKind::OutOfMemory);
         }
     }
@@ -4308,38 +4312,71 @@ fn connect_to<H: Host>(
     Err(trace::fail_for(cx, kind, reason))
 }
 
+/// An alternative service a connection goes to: the peer, and the
+/// version it switches the request to, if another than the one looked up.
+struct AltPeer {
+    via: TryArc<Peer>,
+    speaks: Option<crate::altsvc::Alpn>,
+}
+
 /// The peer an alternative service sends a connection for `origin` to, if
 /// the cache is on and knows one other than the origin itself, for an
-/// `https` URL, or any in a debug build told `CURL_ALTSVC_HTTP`
-/// (`url_set_conn_peer`). Only HTTP/1 alternatives are taken, which is
-/// all this build speaks, and none for a request made in HTTP/1.0.
+/// `https` URL, or any in a debug build told `CURL_ALTSVC_HTTP`, and the
+/// version it switches the request to, where it names another than the
+/// one looked up (`url_set_conn_peer`). HTTP/2's alternative is looked
+/// for first, then HTTP/1's, as the request wants them and the cache
+/// allows; no HTTP/3 is spoken here. One for the same host and port would
+/// only change the version C prefers, which here is none to change.
 fn alt_svc<H: Host>(
     cx: &mut StepCx<'_, H>,
     origin: &Peer,
     scheme: &[u8],
-) -> Result<Option<TryArc<Peer>>, ErrorKind> {
-    let Some(alt_svc) = cx.easy().alt_svc() else {
+    neg: Option<crate::proto::http::Negotiation>,
+) -> Result<Option<AltPeer>, ErrorKind> {
+    use crate::altsvc::{Alpn, Versions};
+    use crate::proto::http::Negotiation;
+    let (Some(alt_svc), Some(neg)) = (cx.easy().alt_svc(), neg) else {
         return Ok(None);
     };
+    let ctrl = alt_svc.ctrl().versions;
     let secured = scheme == b"https";
     #[cfg(feature = "debug-hooks")]
     let secured = secured || curl_os::env::is_set(b"CURL_ALTSVC_HTTP");
-    if !secured || cx.easy().options().http.version == crate::options::HttpVersion::Http10 {
+    if !secured {
         return Ok(None);
     }
-    let allowed = crate::altsvc::Versions {
-        h1: alt_svc.ctrl().versions.h1,
-        h2: false,
+    let (wanted, allowed) = (
+        Negotiation::bits(neg.wanted),
+        Negotiation::bits(neg.allowed),
+    );
+    trace::debug_info(
+        cx,
+        format_args!("Alt-svc check wanted={wanted:x}, allowed={allowed:x}"),
+    );
+    let h2 = cx.easy().libraries().h2.is_some();
+    let allowed = Versions {
+        h1: neg.allowed.h1 && ctrl.h1,
+        h2: neg.allowed.h2 && h2 && ctrl.h2,
         h3: false,
     };
+    let host = Bytes(origin.name());
+    trace::debug_info(cx, format_args!("check Alt-Svc for host '{host}'"));
     let now = crate::date::cache_now(cx.unix_time());
     let alt_svc = cx.easy_mut().alt_svc_mut().expect("on, as above");
-    let src = crate::altsvc::Alpn::H1;
-    let Some(found) = alt_svc.lookup((origin.name(), origin.port(), src), allowed, now) else {
-        return Ok(None);
+    let mut sources = [
+        (neg.wanted.h2 && h2 && !neg.prior).then_some(Alpn::H2),
+        (neg.wanted.h1 && !neg.only_10).then_some(Alpn::H1),
+    ]
+    .into_iter()
+    .flatten();
+    let (src, found) = loop {
+        let Some(src) = sources.next() else {
+            return Ok(None);
+        };
+        if let Some(found) = alt_svc.lookup((origin.name(), origin.port(), src), allowed, now) {
+            break (src, found);
+        }
     };
-    // The same host and port by another version would change only the
-    // version wanted, and there is none other.
     if found.same {
         return Ok(None);
     }
@@ -4371,7 +4408,9 @@ fn alt_svc<H: Host>(
             via.port()
         ),
     );
-    TryArc::try_new(via).map(Some).map_err(oom)
+    let speaks = (src != dst_alpn).then_some(dst_alpn);
+    let via = TryArc::try_new(via).map_err(oom)?;
+    Ok(Some(AltPeer { via, speaks }))
 }
 
 /// A connection for the transfer making `proto`, and the trace of what

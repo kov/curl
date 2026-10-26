@@ -13,10 +13,12 @@ use crate::trace;
 /// Keep what a response's `Alt-Svc:` field, `value` as it follows the
 /// name, says of `origin`, if the cache is on and the transfer is over
 /// HTTPS (`secured`), or the debug build is told to take it over HTTP
-/// (`CURL_ALTSVC_HTTP`). The response is HTTP/1's, as every one is here.
+/// (`CURL_ALTSVC_HTTP`): its alternatives are to the origin in `over`,
+/// the version the response came in.
 pub(crate) fn from_field<H: Host>(
     cx: &mut StepCx<'_, H>,
     origin: &Peer,
+    over: Alpn,
     value: &[u8],
     secured: bool,
 ) -> Result<(), ErrorKind> {
@@ -33,7 +35,7 @@ pub(crate) fn from_field<H: Host>(
     // as it is said: the debug handler may use the handle.
     let on = cx.easy_mut().alt_svc_mut().expect("on, as above");
     let mut alt_svc = std::mem::take(on);
-    let origin = (origin.name(), origin.port(), Alpn::H1);
+    let origin = (origin.name(), origin.port(), over);
     let parsed = alt_svc.parse(value, origin, now, &mut |args| trace::info(cx, args));
     *cx.easy_mut().alt_svc_mut().expect("on still") = alt_svc;
     parsed.map_err(|_| ErrorKind::OutOfMemory)

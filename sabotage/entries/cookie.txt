@@ -24,7 +24,7 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
         if line.kind == LineKind::Header
             && let Some(value) = strip_name(line.bytes, b"Alt-Svc:")
         {
-            alt_svc::from_field(cx, peer, value, peer.scheme() == HTTPS)?;
+            alt_svc::from_field(cx, peer, over, value, peer.scheme() == HTTPS)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         // What reading its transfer codings did, traced before the line, as
@@ -46,7 +46,7 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
         if line.kind == LineKind::Header
             && let Some(value) = strip_name(line.bytes, b"Alt-Svc:")
         {
-            alt_svc::from_field(cx, peer, value, peer.scheme() == HTTPS)?;
+            alt_svc::from_field(cx, peer, over, value, peer.scheme() == HTTPS)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         // What reading its transfer codings did, traced before the line, as

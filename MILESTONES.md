@@ -837,11 +837,11 @@ the system's under the HTTP-only programs installed here.
       `CURLOPT_HSTS_CTRL` and the read and write functions; `HSTS` claimed. 440, 441, 446,
       493, 780–783, 1586, 1638, 1862, 1900, 1915, 1922 and 3109 pass.
     - **b. alt-svc.** **Done.** The cache (`altsvc::AltSvc`, unit1654 and unit1669 ported),
-      read from its file as it is named, an origin connected to by its HTTP/1 alternative
-      with `Alt-Used:`, a response's field kept over HTTPS, the cache written as the handle
-      goes; `--alt-svc`, `CURLOPT_ALTSVC` and `CURLOPT_ALTSVC_CTRL`; `alt-svc` claimed. 355,
-      356, 412, 413, 437, 438, 1713, 1908 and 1997 pass; 358 and 359, alternatives in HTTP/2,
-      wait on step 52.
+      read from its file as it is named, an origin connected to by its HTTP/1 or HTTP/2
+      alternative with `Alt-Used:`, the request switched to the alternative's version, a
+      response's field kept over HTTPS as an alternative of the version it came in, the cache
+      written as the handle goes; `--alt-svc`, `CURLOPT_ALTSVC` and `CURLOPT_ALTSVC_CTRL`;
+      `alt-svc` claimed. 355, 356, 358, 359, 412, 413, 437, 438, 1713, 1908 and 1997 pass.
     - **c. Closing the step.** **Done.** The sweep over the HSTS and alt-svc entries, and
       cargo-mutants over the step's diff: each survivor tested or excluded with its reason.
 51. **The pool's `Attached` place,** a connection several transfers lease (ENGINE.md §4.4).

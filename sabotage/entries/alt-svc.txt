@@ -2,17 +2,17 @@
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_where_c_takes_one
 --- old
-    if !secured || cx.easy().options().http.version == crate::options::HttpVersion::Http10 {
+        (neg.wanted.h1 && !neg.only_10).then_some(Alpn::H1),
 --- new
-    if !secured {
+        neg.wanted.h1.then_some(Alpn::H1),
 
 === an HTTP/1 alternative is taken though the application allows none
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_where_c_takes_one
 --- old
-        h1: alt_svc.ctrl().versions.h1,
+        h1: neg.allowed.h1 && ctrl.h1,
 --- new
-        h1: true,
+        h1: neg.allowed.h1,
 
 === an alternative is taken for a plain http URL
 file: crates/curl-core/src/multi/state.rs
@@ -28,10 +28,10 @@ witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_whe
 --- old
             Ok(Some(via)) => Some(via),
             // No connect-to entry: an alternative service, then.
-            Ok(None) => match alt_svc(cx, &origin, &scheme) {
+            Ok(None) => {
 --- new
             // No connect-to entry: an alternative service, then.
-            Ok(_) => match alt_svc(cx, &origin, &scheme) {
+            Ok(_) => {
 
 === a field over plain HTTP is kept
 file: crates/curl-core/src/proto/http/alt_svc.rs
@@ -153,3 +153,39 @@ witness: curl-core altsvc::tests::an_origin_named_by_a_dot_alone_keeps_nothing
                 if made {
 --- new
                 if made || dst_port > 0 {
+
+=== an alternative in HTTP/2 is passed over
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::an_alternative_in_http_2_is_reached_in_http_2
+--- old
+        (neg.wanted.h2 && h2 && !neg.prior).then_some(Alpn::H2),
+--- new
+        None,
+
+=== the version an alternative switches to is not taken up
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h2::an_alternative_in_http_2_is_reached_in_http_2
+--- old
+            Some(crate::altsvc::Alpn::H2) => (self.h1_only, self.h2_only) = (false, true),
+--- new
+            Some(crate::altsvc::Alpn::H2) => {}
+
+=== a response's Alt-Svc is kept as HTTP/1's whatever it came in
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h2::an_alternative_in_http_2_is_reached_in_http_2
+--- old
+            Some(response::HttpVersion::Http2) => crate::altsvc::Alpn::H2,
+--- new
+            Some(response::HttpVersion::Http2) => crate::altsvc::Alpn::H1,
+
+=== the cache allows no HTTP/2 alternative unless told to
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core proto::http::tests::h2::an_alternative_in_http_2_is_reached_in_http_2
+--- old
+            h1: true,
+            h2: true,
+            h3: false,
+--- new
+            h1: true,
+            h2: false,
+            h3: false,

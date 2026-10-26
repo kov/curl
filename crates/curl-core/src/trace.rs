@@ -53,6 +53,8 @@ pub(crate) fn debug_only(line: &[u8]) -> bool {
         b"cr_exp100_read, ",
         b"sendrecv_dl",
         b"Curl_sendrecv() -> ",
+        b"Alt-svc check wanted=",
+        b"check Alt-Svc for host ",
     ]
     .iter()
     .any(|p| line.starts_with(p))

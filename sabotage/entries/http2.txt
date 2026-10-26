@@ -556,3 +556,14 @@ witness: curl-core an_http_2_body_s_frames_allocate_nothing
         let mut after = std::mem::take(&mut self.stream().after);
 --- new
         let mut after = After::default();
+
+=== each send to an HTTP/2 connection allocates
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core an_http_2_body_s_frames_allocate_nothing
+--- old
+        let sent = with_session(lease, |h2, lease| {
+            let mut with = Egressing {
+--- new
+        let sent = with_session(lease, |h2, lease| {
+            std::hint::black_box(vec![0u8; 1]);
+            let mut with = Egressing {

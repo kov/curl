@@ -2904,7 +2904,7 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   `CURLOPT_UNRESTRICTED_AUTH`: a new emit site cannot skip the gate.
 - **One rendered request for every version.** HTTP/2 makes its request as C does, rendered in
   HTTP/1's form, traced as sent, and read back into the stream's fields (`fields_of`, C's
-  `Curl_h1_req_parse_read`, §4.4); HTTP/3 is to read it back the same way, as C's does.
+  `Curl_h1_req_parse_read`, §4.4); HTTP/3 is to read it back the same way, as C's does (`cf-ngtcp2.c`'s `h3_stream_open`).
 - `Expect: 100-continue`, asked for or added (`addexpect`), holds the body back: it is not
   read behind the head. Once the head has drained, the request is `Sending::HeadSent` until
   the body is next asked for, in a later pass, as C's readers are asked before the send buffer

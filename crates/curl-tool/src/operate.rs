@@ -2388,16 +2388,11 @@ fn proxy_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, claims: Claims) -> Resu
         }
         Ok(())
     })?;
-    // The debug test build suppresses them on request as well, as C's
-    // library does.
-    let suppress = op.suppress_connect_headers
-        || (cfg!(feature = "debug-hooks")
-            && curl_os::env::is_set(b"CURL_DBG_SUPPRESS_CONNECT_HDS"));
     s.long(
         "CURLOPT_SUPPRESS_CONNECT_HEADERS",
         i64::from(op.suppress_connect_headers),
         |o| {
-            if suppress {
+            if op.suppress_connect_headers {
                 o.proxy.make_mut().map_err(oom)?.suppress_connect_headers = true;
             }
             Ok(())

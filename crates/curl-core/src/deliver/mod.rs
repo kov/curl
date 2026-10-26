@@ -432,7 +432,12 @@ impl Pipeline {
     ) -> Result<(), ErrorKind> {
         if kind.origin() != Some(HeaderOrigin::Connect) {
             self.accountant.response_started(cx);
-        } else if cx.easy().options().proxy.suppress_connect_headers {
+        } else if cx.easy().options().proxy.suppress_connect_headers
+            || (cfg!(feature = "debug-hooks")
+                && curl_os::env::is_set(b"CURL_DBG_SUPPRESS_CONNECT_HDS"))
+        {
+            // The debug test build suppresses them on request as well, as
+            // C's `cw_download_write` does, whatever the application set.
             return Ok(());
         }
         let result = self.onward(cx, kind, line);

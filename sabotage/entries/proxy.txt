@@ -193,9 +193,9 @@ witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core proto::http::tests::suppressed_connect_headers_are_kept_and_not_delivered
 --- old
-        } else if cx.easy().options().proxy.suppress_connect_headers {
+        } else if cx.easy().options().proxy.suppress_connect_headers
 --- new
-        } else if false {
+        } else if false
 
 === a 407 from a host reached without a forwarding proxy sets the proxy's challenge
 file: crates/curl-core/src/proto/http1/framing.rs

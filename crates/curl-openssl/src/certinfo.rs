@@ -11,7 +11,7 @@ use core::ptr::{self, NonNull};
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::error::ErrorKind;
 use curl_core::report::{CertInfo, MAX_CERTS};
-use curl_core::tls::TlsIo;
+use curl_core::tls::TlsCx;
 use openssl_sys::{EVP_PKEY, SSL, X509};
 
 use crate::ffi;
@@ -20,7 +20,7 @@ use crate::x509::MemBio;
 /// Report the peer's chain, if the transfer asked for it. A chain that
 /// cannot be had, or is longer than C allows, fails the handshake; one
 /// that cannot be kept fails it as out of memory, nothing reported.
-pub(crate) fn report(ssl: NonNull<SSL>, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+pub(crate) fn report(ssl: NonNull<SSL>, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
     if !io.wants_certinfo() {
         return Ok(());
     }
@@ -116,7 +116,7 @@ fn certificate(
     i: usize,
     x: NonNull<X509>,
     mem: &mut MemBio,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), OutOfMemory> {
     let x = x.as_ptr();
     // SAFETY: the certificate; its names are its own.

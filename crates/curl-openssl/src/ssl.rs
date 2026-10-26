@@ -17,8 +17,9 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, CaDefaults, Chosen, Deferred, Handshake, KeyLog, SharedKeyLog, TlsBackend, TlsIdentity,
-    TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
+    Alpn, CaDefaults, Chosen, Deferred, Handshake, HandshakeCheck, KeyLog, QuicTls, SharedKeyLog,
+    TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared,
+    TlsTicket, TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX, SSL_SESSION};
@@ -79,10 +80,61 @@ impl TlsBackend for OpenSsl {
         // A library this build does not work with is one it does not
         // have: what the shim and the tool name is checked at their init.
         crate::sys::ready().map_err(|_| ErrorKind::SslConnectError)?;
+        let session = self.new_session(identity, peer, alpn, shared, false)?;
+        Ok(try_box(session).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
+    }
+
+    /// A QUIC connection's session, its context and SSL made at once
+    /// (`Curl_ossl_ctx_init` with QUIC's transport).
+    fn quic_session(
+        &self,
+        identity: &TryArc<TlsIdentity>,
+        peer: &TlsPeer<'_>,
+        shared: &TlsShared,
+        cx: &mut TlsCx<'_>,
+    ) -> Result<Box<dyn QuicTls>, ErrorKind> {
+        crate::sys::ready().map_err(|_| ErrorKind::QuicConnectError)?;
+        let mut session = self.new_session(identity, peer, Alpn::H3, shared, true)?;
+        session.make(cx)?;
+        // The BIO is never read or written: the QUIC library carries the
+        // records. It carries what the callbacks reach, as a stream
+        // session's does.
+        session.attach_bio()?;
+        Ok(try_box(QuicSession(session)).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
+    }
+
+    fn ca_defaults(&self) -> CaDefaults {
+        CaDefaults {
+            file: ca::CA_BUNDLE,
+            path: ca::CA_PATH,
+        }
+    }
+
+    /// The engines of the library, made ready first, which loads its
+    /// built-in ones; none for a library this build does not work with.
+    fn engines(&self) -> Result<Vec<Vec<u8>>, OutOfMemory> {
+        match crate::sys::ready() {
+            Ok(()) => crate::engine::ids(),
+            Err(_) => Ok(Vec::new()),
+        }
+    }
+}
+
+impl OpenSsl {
+    /// A session for one connection to `peer`, over QUIC if `quic`,
+    /// nothing of the library's made yet.
+    fn new_session(
+        &self,
+        identity: &TryArc<TlsIdentity>,
+        peer: &TlsPeer<'_>,
+        alpn: Alpn,
+        shared: &TlsShared,
+        quic: bool,
+    ) -> Result<Session, ErrorKind> {
         let mut host = Vec::new();
         host.try_extend_from_slice(peer.name)
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-        let session = Session {
+        Ok(Session {
             ssl: None,
             ctx: None,
             password: None,
@@ -101,27 +153,13 @@ impl TlsBackend for OpenSsl {
             shut: false,
             keylog: self.keylog.clone(),
             reused: false,
-            early_data: peer.early_data,
+            // QUIC's early data is the QUIC library's to send.
+            early_data: peer.early_data && !quic,
             deferred: None,
             early: Early::None,
-        };
-        Ok(try_box(session).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
-    }
-
-    fn ca_defaults(&self) -> CaDefaults {
-        CaDefaults {
-            file: ca::CA_BUNDLE,
-            path: ca::CA_PATH,
-        }
-    }
-
-    /// The engines of the library, made ready first, which loads its
-    /// built-in ones; none for a library this build does not work with.
-    fn engines(&self) -> Result<Vec<Vec<u8>>, OutOfMemory> {
-        match crate::sys::ready() {
-            Ok(()) => crate::engine::ids(),
-            Err(_) => Ok(Vec::new()),
-        }
+            quic,
+            resumed: None,
+        })
     }
 }
 
@@ -220,6 +258,13 @@ struct Session {
     /// allows (`ssl_connection_deferred`).
     deferred: Option<Deferred>,
     early: Early,
+    /// A QUIC connection's: the QUIC library carries its records, and
+    /// TLS 1.3 is the least it speaks (`TRNSPRT_QUIC`).
+    quic: bool,
+    /// A QUIC connection's session the cache kept, which it resumes:
+    /// kept here for the early data it allows, as TLS 1.3's are taken
+    /// from the cache to serve one connection.
+    resumed: Option<TlsTicket>,
 }
 
 /// The library's major error codes C tells apart.
@@ -295,13 +340,14 @@ impl Session {
         let ctx = self.ctx.as_ref().expect("made at the first step").0;
         let identity = &self.identity;
         let shared = self.shared.as_ref();
-        let mut setup = |io: &mut TlsIo<'_>| x509::setup_store(ctx, identity, shared, io);
+        let mut setup = |cx: &mut TlsCx<'_>| x509::setup_store(ctx, identity, shared, cx);
         let mut slot = Slot {
-            io,
+            io: bio::Reach::Stream(io),
             flags: &mut self.flags,
             below: Below::Ok,
             store: &mut setup,
             keylog: self.keylog.as_deref(),
+            quic_params: None,
         };
         let r = bio::call(ssl, &mut slot, op);
         (r, slot.below)
@@ -311,8 +357,39 @@ impl Session {
         self.ssl.as_ref().expect("made at the first step").0
     }
 
-    /// Make the context and the SSL as C does (`ossl_connect_step1`).
+    /// Make the context and the SSL, reading and writing through the
+    /// layers below, as C does (`ossl_connect_step1`).
     fn step1(&mut self, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+        self.make(io)?;
+        self.attach_bio()?;
+        if let Some(offer) = self.alpn.offer().filter(|_| self.deferred.is_none()) {
+            io.info(format_args!("ALPN: curl offers {offer}"));
+        }
+        Ok(())
+    }
+
+    /// Give the SSL a BIO of this crate's, which reads and writes through
+    /// the layers below a stream session and carries what the callbacks
+    /// reach (`ossl_bio_cf_method_create`).
+    fn attach_bio(&mut self) -> Result<(), ErrorKind> {
+        let ssl = self.ssl();
+        let method = Method::new().ok_or(ErrorKind::OutOfMemory)?;
+        let bio = method.bio().ok_or(ErrorKind::OutOfMemory)?;
+        self.method = Some(method);
+        // The SSL takes a reference to the BIO for each of its ends, the
+        // second taken here, and frees them with itself.
+        // SAFETY: a BIO just made.
+        unsafe { ffi::BIO_up_ref(bio.as_ptr()) };
+        // SAFETY: the SSL, and a reference to the BIO it now owns.
+        unsafe { ffi::SSL_set0_rbio(ssl.as_ptr(), bio.as_ptr()) };
+        // SAFETY: as above, the other reference.
+        unsafe { ffi::SSL_set0_wbio(ssl.as_ptr(), bio.as_ptr()) };
+        Ok(())
+    }
+
+    /// Make the context and the SSL as C does (`Curl_ossl_ctx_init`): for
+    /// a stream, or for QUIC.
+    fn make(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         // SAFETY: asks the library whether it is seeded.
         if unsafe { openssl_sys::RAND_status() } == 0 {
             return Err(io.fail(
@@ -335,8 +412,31 @@ impl Session {
         }
         // Not verified until the peer is checked (`!X509_V_OK`).
         io.verified(1);
-        // SAFETY: the library's static client method.
-        let method = unsafe { openssl_sys::TLS_client_method() };
+        // QUIC speaks TLS 1.3 at least, which the transfer may not cap
+        // lower (`ossl_init_method`).
+        if self.quic
+            && !matches!(
+                options.max_version,
+                TlsMaxVersion::None | TlsMaxVersion::Default | TlsMaxVersion::Tls1_3
+            )
+        {
+            return Err(io.fail(
+                ErrorKind::SslConnectError,
+                format_args!("QUIC needs at least TLS version 1.3"),
+            ));
+        }
+        let min_version = if self.quic {
+            TlsMinVersion::Tls1_3
+        } else {
+            options.min_version
+        };
+        let method = if self.quic {
+            // SAFETY: the library's static method.
+            unsafe { openssl_sys::TLS_method() }
+        } else {
+            // SAFETY: the library's static client method.
+            unsafe { openssl_sys::TLS_client_method() }
+        };
         // A context of that method, owned by `Ctx` below.
         let ctx = self.crypto.new_ctx(method);
         let Some(ctx) = NonNull::new(ctx) else {
@@ -348,7 +448,8 @@ impl Session {
             ));
         };
         self.ctx = Some(Ctx(ctx));
-        if io.debugs() {
+        // QUIC's records are not TLS's, which the trace reads.
+        if io.debugs() && !self.quic {
             // SAFETY: the context, and a callback of the library's
             // signature, which reaches only the BIO's slot.
             unsafe { ffi::SSL_CTX_set_msg_callback(ctx.as_ptr(), Some(bio::trace)) };
@@ -362,7 +463,7 @@ impl Session {
         // Any TLS version as the floor allows no SSL version (OpenSSL 3
         // has no SSLv2 to turn off).
         ctx_options |= openssl_sys::SSL_OP_NO_SSLv3;
-        let min = match options.min_version {
+        let min = match min_version {
             TlsMinVersion::Tls1 | TlsMinVersion::Tls1_0 => 0x301,
             TlsMinVersion::Tls1_1 => 0x302,
             TlsMinVersion::Tls1_2 => 0x303,
@@ -401,7 +502,7 @@ impl Session {
         // SAFETY: as above (`SSL_CTX_set_mode`).
         unsafe { openssl_sys::SSL_CTX_ctrl(c, ffi::SSL_CTRL_MODE, mode, ptr::null_mut()) };
         if let Some(ciphers) = &options.ciphers
-            && options.min_version != TlsMinVersion::Tls1_3
+            && min_version != TlsMinVersion::Tls1_3
         {
             let c = c_string(ciphers)?;
             // SAFETY: the context and a C string alive for the call.
@@ -548,7 +649,13 @@ impl Session {
             if let Some(t) = taken.as_ref().filter(|t| !t.data.is_empty()) {
                 self.resume(ssl, t, io);
             }
-            io.return_session(taken);
+            if self.quic && self.reused {
+                // Kept for the early data it allows; a TLS 1.3 session
+                // given back would be dropped.
+                self.resumed = taken;
+            } else {
+                io.return_session(taken);
+            }
         }
         // Put off, only what the session resumed agreed is offered
         // (`Curl_alpn_restrict_to`).
@@ -565,21 +672,6 @@ impl Session {
                     format_args!("Error setting ALPN"),
                 ));
             }
-        }
-        // The BIO, read and written through the layers below.
-        let method = Method::new().ok_or(ErrorKind::OutOfMemory)?;
-        let bio = method.bio().ok_or(ErrorKind::OutOfMemory)?;
-        self.method = Some(method);
-        // The SSL takes a reference to the BIO for each of its ends, the
-        // second taken here, and frees them with itself.
-        // SAFETY: a BIO just made.
-        unsafe { ffi::BIO_up_ref(bio.as_ptr()) };
-        // SAFETY: the SSL, and a reference to the BIO it now owns.
-        unsafe { ffi::SSL_set0_rbio(ssl.as_ptr(), bio.as_ptr()) };
-        // SAFETY: as above, the other reference.
-        unsafe { ffi::SSL_set0_wbio(ssl.as_ptr(), bio.as_ptr()) };
-        if let Some(offer) = self.alpn.offer().filter(|_| self.deferred.is_none()) {
-            io.info(format_args!("ALPN: curl offers {offer}"));
         }
         Ok(())
     }
@@ -708,39 +800,10 @@ impl Session {
         Err(kind)
     }
 
-    /// `Curl_ossl_report_handshake`: the version, cipher, group and the
-    /// peer's signature type.
-    fn report_handshake(&self, io: &mut TlsIo<'_>) {
-        let ssl = self.ssl();
-        let mut nid: c_int = 0;
-        let s = ssl.as_ptr();
-        // SAFETY: the SSL, its handshake done; the texts are the
-        // library's, static or alive while the SSL is, which `&self`
-        // outlives this function.
-        unsafe { ffi::SSL_get_peer_signature_type_nid(s, &mut nid) };
-        // SAFETY: as above.
-        let version = unsafe { openssl_sys::SSL_get_version(s) };
-        // SAFETY: as above.
-        let version = unsafe { c_text(version) };
-        // SAFETY: as above.
-        let cipher = unsafe { openssl_sys::SSL_get_current_cipher(s) };
-        // SAFETY: as above; a null cipher has a null name.
-        let cipher = unsafe { openssl_sys::SSL_CIPHER_get_name(cipher) };
-        // SAFETY: as above.
-        let cipher = unsafe { c_text(cipher) };
-        // SAFETY: as above.
-        let group = unsafe { group_name(ssl) };
-        // SAFETY: a function of no state, for any number.
-        let signature = unsafe { openssl_sys::OBJ_nid2sn(nid) };
-        // SAFETY: the library's static text, or null.
-        let signature = unsafe { c_text(signature) };
-        io.info(format_args!(
-            "SSL connection using {} / {} / {} / {}",
-            Text(version.unwrap_or(b"(null)")),
-            Text(cipher.unwrap_or(b"(null)")),
-            Text(group.unwrap_or(b"[blank]")),
-            Text(signature.unwrap_or(b"(null)"))
-        ));
+    fn report_handshake(&self, io: &mut TlsCx<'_>) {
+        // SAFETY: the session's SSL, alive while it is; called once its
+        // handshake is done.
+        unsafe { report_handshake(self.ssl(), io) };
     }
 
     /// The name the peer chose of the ALPN offer, empty if none; the
@@ -759,7 +822,7 @@ impl Session {
     }
 
     /// What the peer chose of the ALPN offer (`Curl_alpn_set_negotiated`).
-    fn negotiated(&self, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+    fn negotiated(&self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let chosen = self.selected();
         // Asked of the peer again, put off, it must agree to it again.
         if let Some(d) = self.deferred {
@@ -800,6 +863,42 @@ impl Session {
     }
 }
 
+/// `Curl_ossl_report_handshake`: the version, cipher, group and the
+/// peer's signature type.
+///
+/// # Safety
+/// `ssl` is a session's SSL, its handshake done, alive for the call.
+unsafe fn report_handshake(ssl: NonNull<SSL>, io: &mut TlsCx<'_>) {
+    let mut nid: c_int = 0;
+    let s = ssl.as_ptr();
+    // SAFETY: as the caller says; the texts are the library's, static or
+    // alive while the SSL is, which outlives this function.
+    unsafe { ffi::SSL_get_peer_signature_type_nid(s, &mut nid) };
+    // SAFETY: as above.
+    let version = unsafe { openssl_sys::SSL_get_version(s) };
+    // SAFETY: as above.
+    let version = unsafe { c_text(version) };
+    // SAFETY: as above.
+    let cipher = unsafe { openssl_sys::SSL_get_current_cipher(s) };
+    // SAFETY: as above; a null cipher has a null name.
+    let cipher = unsafe { openssl_sys::SSL_CIPHER_get_name(cipher) };
+    // SAFETY: as above.
+    let cipher = unsafe { c_text(cipher) };
+    // SAFETY: as above.
+    let group = unsafe { group_name(ssl) };
+    // SAFETY: a function of no state, for any number.
+    let signature = unsafe { openssl_sys::OBJ_nid2sn(nid) };
+    // SAFETY: the library's static text, or null.
+    let signature = unsafe { c_text(signature) };
+    io.info(format_args!(
+        "SSL connection using {} / {} / {} / {}",
+        Text(version.unwrap_or(b"(null)")),
+        Text(cipher.unwrap_or(b"(null)")),
+        Text(group.unwrap_or(b"[blank]")),
+        Text(signature.unwrap_or(b"(null)"))
+    ));
+}
+
 /// The most early data a handshake holds to send (`CURL_SSL_EARLY_MAX`).
 const EARLY_MOST: usize = 64 * 1024;
 
@@ -807,7 +906,7 @@ impl Session {
     /// Put the handshake off for early data, resuming a session that
     /// allows `most` bytes of it and agreed `chosen` by ALPN, if the
     /// transfer offers it (`Curl_on_session_reuse`).
-    fn defer(&mut self, most: usize, chosen: Chosen, io: &mut TlsIo<'_>) {
+    fn defer(&mut self, most: usize, chosen: Chosen, io: &mut TlsCx<'_>) {
         if most == 0 {
             io.trace(format_args!("SSL session does not allow earlydata"));
         } else if !self.alpn.offers(chosen) {
@@ -926,7 +1025,7 @@ impl Session {
 
     /// Resume `ticket` on `ssl`, if the library takes it and, for a peer
     /// to verify, its connection was verified (`ossl_apply_session`).
-    fn resume(&mut self, ssl: NonNull<SSL>, ticket: &TlsTicket, io: &mut TlsIo<'_>) {
+    fn resume(&mut self, ssl: NonNull<SSL>, ticket: &TlsTicket, io: &mut TlsCx<'_>) {
         let mut der = ticket.data.as_ptr();
         let len = c_long::try_from(ticket.data.len()).unwrap_or(c_long::MAX);
         // SAFETY: `len` bytes at `der`, the ticket's; the session made is
@@ -988,7 +1087,7 @@ impl Session {
 pub(crate) unsafe fn ticket_of(
     ssl: *mut SSL,
     session: *mut SSL_SESSION,
-    io: &TlsIo<'_>,
+    io: &TlsCx<'_>,
 ) -> Result<TlsTicket, OutOfMemory> {
     // SAFETY: as the caller says; no pointer, so only the length.
     let len = unsafe { openssl_sys::i2d_SSL_SESSION(session, ptr::null_mut()) };
@@ -1329,6 +1428,108 @@ impl TlsSession for Session {
     }
 }
 
+/// One QUIC connection's OpenSSL: a session whose records the QUIC
+/// library carries, driving its handshake through the SSL the session
+/// hands it (`cf-ngtcp2`'s `curl_tls_ctx`).
+struct QuicSession(Session);
+
+impl QuicTls for QuicSession {
+    fn native(&self) -> TlsNative {
+        self.0.native().expect("made as the session is")
+    }
+
+    fn resumed(&self) -> Option<&TlsTicket> {
+        self.0.resumed.as_ref()
+    }
+
+    fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+        let s = &mut self.0;
+        if !s.flags.store_ready {
+            let ctx = s.ctx.as_ref().expect("made as the session is").0;
+            x509::setup_store(ctx, &s.identity, s.shared.as_ref(), cx)?;
+            s.flags.store_ready = true;
+            // Not needed past the store, as for a stream session.
+            s.shared = None;
+        }
+        Ok(())
+    }
+
+    fn drive(
+        &mut self,
+        cx: &mut TlsCx<'_>,
+        params: &mut dyn FnMut() -> Option<Vec<u8>>,
+        call: &mut dyn FnMut(&mut dyn HandshakeCheck),
+    ) {
+        let s = &mut self.0;
+        let ssl = s.ssl();
+        let ctx = s.ctx.as_ref().expect("made as the session is").0;
+        let identity = &s.identity;
+        let shared = s.shared.as_ref();
+        let mut setup = |cx: &mut TlsCx<'_>| x509::setup_store(ctx, identity, shared, cx);
+        let mut slot = Slot {
+            io: bio::Reach::Quic(cx),
+            flags: &mut s.flags,
+            below: Below::Ok,
+            store: &mut setup,
+            keylog: s.keylog.as_deref(),
+            quic_params: Some(params),
+        };
+        let mut check = Check {
+            ssl,
+            identity,
+            host: &s.host,
+            kind: s.kind,
+            reused: s.reused,
+        };
+        bio::call(ssl, &mut slot, |_| call(&mut check));
+    }
+}
+
+/// A QUIC session's check once its handshake is done, which reaches the
+/// transfer through the slot of the call under way.
+struct Check<'s> {
+    ssl: NonNull<SSL>,
+    identity: &'s TlsIdentity,
+    host: &'s [u8],
+    kind: TlsPeerKind,
+    reused: bool,
+}
+
+impl HandshakeCheck for Check<'_> {
+    /// The handshake reported, then the peer checked as a stream
+    /// session's is, the peer's sessions forgotten if it fails
+    /// (`cb_ngtcp2_handshake_completed`).
+    fn handshake_done(&mut self) -> Result<(), ErrorKind> {
+        let Check {
+            ssl,
+            identity,
+            host,
+            kind,
+            reused,
+        } = *self;
+        // SAFETY: the session's SSL, alive while the check is.
+        let finished = unsafe { openssl_sys::SSL_is_init_finished(ssl.as_ptr()) };
+        assert_eq!(
+            finished, 1,
+            "the QUIC library says a handshake is done once it is"
+        );
+        let check = |cx: &mut TlsCx<'_>| {
+            // SAFETY: the session's SSL, its handshake done.
+            unsafe { report_handshake(ssl, cx) };
+            match x509::check_peer(ssl, identity, host, kind, reused, cx) {
+                Ok(_) => Ok(()),
+                Err(kind) => {
+                    cx.forget_sessions();
+                    Err(kind)
+                }
+            }
+        };
+        // SAFETY: a `Check` lives only inside `drive`'s call, whose slot
+        // is the SSL's BIO's while it runs, on this thread.
+        unsafe { bio::with_cx(ssl, check) }
+    }
+}
+
 impl Session {
     /// One try at the goodbye (`ossl_shutdown`, sending close_notify):
     /// the peer's close_notify read first if it came, and nothing sent to
@@ -1527,4 +1728,89 @@ impl Session {
             }
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
+
+    use curl_core::options::{ColdGroup as _, TlsOptions};
+    use curl_core::tls::Notes;
+
+    use super::*;
+
+    fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TryArc<TlsIdentity> {
+        let mut id = TlsIdentity {
+            verify_peer: true,
+            verify_host: true,
+            options: TlsOptions::NONE,
+            ca_defaults: CaDefaults::default(),
+        };
+        change(&mut id);
+        TryArc::try_new(id).unwrap()
+    }
+
+    const PEER: TlsPeer<'static> = TlsPeer {
+        name: b"localhost",
+        port: 443,
+        kind: TlsPeerKind::Name,
+        early_data: false,
+    };
+
+    /// QUIC's session, made at once from the identity: TLS 1.3 the least
+    /// it speaks whatever the transfer's floor (`ossl_init_method`), and
+    /// a cap below it refused as C refuses it.
+    #[test]
+    fn a_quic_session_speaks_tls_1_3_at_least() {
+        let floor = identity(|i| i.options.min_version = TlsMinVersion::Tls1_0);
+        let mut notes = Notes::default();
+        let made = TlsCx::testing(&floor, b"localhost", &mut notes, |shared, cx| {
+            OPENSSL.quic_session(&floor, &PEER, shared, cx)
+        });
+        let session = made.unwrap();
+        let ssl = session.native().session().unwrap().cast::<SSL>();
+        // SAFETY: the session's SSL, alive while it is; the command
+        // (`SSL_get_min_proto_version`) takes no pointer.
+        let min = unsafe {
+            openssl_sys::SSL_ctrl(
+                ssl.as_ptr(),
+                SSL_CTRL_GET_MIN_PROTO_VERSION,
+                0,
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(min, 0x304);
+        assert!(session.resumed().is_none());
+        drop(session);
+
+        let capped = identity(|i| i.options.max_version = TlsMaxVersion::Tls1_2);
+        let mut notes = Notes::default();
+        let made = TlsCx::testing(&capped, b"localhost", &mut notes, |shared, cx| {
+            OPENSSL.quic_session(&capped, &PEER, shared, cx)
+        });
+        assert_eq!(made.err(), Some(ErrorKind::SslConnectError));
+        assert_eq!(
+            notes.0,
+            ["fail: SslConnectError: QUIC needs at least TLS version 1.3"]
+        );
+    }
+
+    /// The check a QUIC session's `drive` hands its call is for a
+    /// handshake that is done: asked before, the QUIC library is wrong,
+    /// and it says so rather than read what the SSL has not made.
+    #[test]
+    #[should_panic = "the QUIC library says a handshake is done once it is"]
+    fn a_quic_session_s_check_needs_its_handshake_done() {
+        let id = identity(|_| {});
+        let mut notes = Notes::default();
+        TlsCx::testing(&id, b"localhost", &mut notes, |shared, cx| {
+            let mut session = OPENSSL.quic_session(&id, &PEER, shared, cx).unwrap();
+            session.drive(cx, &mut || None, &mut |check| {
+                assert!(check.handshake_done().is_err());
+            });
+        });
+    }
+
+    /// `SSL_CTRL_GET_MIN_PROTO_VERSION` (`ssl.h`).
+    const SSL_CTRL_GET_MIN_PROTO_VERSION: c_int = 130;
 }

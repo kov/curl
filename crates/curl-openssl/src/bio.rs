@@ -19,7 +19,7 @@ use core::ptr::{self, NonNull};
 
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
-use curl_core::tls::{KeyLog, TlsIo, TlsWay};
+use curl_core::tls::{KeyLog, TlsCx, TlsIo, TlsWay};
 use openssl_sys::{BIO, BIO_METHOD, SSL, SSL_SESSION};
 
 use crate::ffi;
@@ -49,18 +49,48 @@ pub(crate) enum Below {
     Store(ErrorKind),
 }
 
-/// Sets the trust store up, at the first read, with the call's `TlsIo`.
-pub(crate) type StoreSetup<'s> = &'s mut dyn FnMut(&mut TlsIo<'_>) -> Result<(), ErrorKind>;
+/// Sets the trust store up, at the first read, with the call's `TlsCx`.
+pub(crate) type StoreSetup<'s> = &'s mut dyn FnMut(&mut TlsCx<'_>) -> Result<(), ErrorKind>;
+
+/// What the callbacks of one call into the library reach of the
+/// transfer: over a stream, its `TlsIo`, which the BIO reads and writes
+/// through; for QUIC, whose library carries the records and never
+/// reaches the BIO, the transfer alone.
+pub(crate) enum Reach<'s, 'a> {
+    Stream(&'s mut TlsIo<'a>),
+    Quic(&'s mut TlsCx<'a>),
+}
+
+impl<'a> Reach<'_, 'a> {
+    pub(crate) fn cx(&mut self) -> &mut TlsCx<'a> {
+        match self {
+            Reach::Stream(io) => io,
+            Reach::Quic(cx) => cx,
+        }
+    }
+
+    /// The stream the BIO reads and writes through: a QUIC session's
+    /// SSL hands its records to the QUIC library, never to its BIO.
+    fn stream(&mut self) -> &mut TlsIo<'a> {
+        match self {
+            Reach::Stream(io) => io,
+            Reach::Quic(_) => unreachable!("a QUIC session's BIO carries no records"),
+        }
+    }
+}
 
 /// What the BIO's callbacks reach during one call into the library.
 pub(crate) struct Slot<'s, 'a> {
-    pub(crate) io: &'s mut TlsIo<'a>,
+    pub(crate) io: Reach<'s, 'a>,
     pub(crate) flags: &'s mut Flags,
     pub(crate) below: Below,
     /// Sets the trust store up, unless `flags.store_ready`.
     pub(crate) store: StoreSetup<'s>,
     /// Where the secrets the library tells of are logged, if anywhere.
     pub(crate) keylog: Option<&'s KeyLog>,
+    /// A QUIC session's: the transport parameters a session the peer
+    /// gives is kept with, encoded, if the QUIC library has them.
+    pub(crate) quic_params: Option<&'s mut dyn FnMut() -> Option<Vec<u8>>>,
 }
 
 /// The BIO method (`ossl_bio_cf_method_create`), one per session, as C
@@ -165,6 +195,17 @@ unsafe fn slot_of_ssl<'r>(ssl: *const SSL) -> Option<&'r mut Slot<'r, 'r>> {
     unsafe { slot_of(bio) }
 }
 
+/// Run `f` with the transfer the call under way on `ssl` reaches.
+///
+/// # Safety
+/// Only during `call` on `ssl`, on its thread, and not from inside one of
+/// this module's callbacks: the slot is then live and unused.
+pub(crate) unsafe fn with_cx<R>(ssl: NonNull<SSL>, f: impl FnOnce(&mut TlsCx<'_>) -> R) -> R {
+    // SAFETY: as the caller says.
+    let slot = unsafe { slot_of_ssl(ssl.as_ptr()) }.expect("called during a call into the library");
+    f(slot.io.cx())
+}
+
 /// The library tells of a secret, a line of the key log's
 /// (`ossl_keylog_callback`).
 pub(crate) unsafe extern "C" fn keylog_line(ssl: *const SSL, line: *const c_char) {
@@ -189,15 +230,21 @@ pub(crate) unsafe extern "C" fn new_session(ssl: *mut SSL, session: *mut SSL_SES
     let Some(slot) = (unsafe { slot_of_ssl(ssl) }) else {
         return 0;
     };
-    if !slot.io.caches_sessions() {
+    if !slot.io.cx().caches_sessions() {
         return 0;
     }
     // SAFETY: the SSL and the session the library calls back with, alive
     // for the callback.
-    let ticket = unsafe { crate::ssl::ticket_of(ssl, session, slot.io) };
+    let ticket = unsafe { crate::ssl::ticket_of(ssl, session, slot.io.cx()) };
     // Out of memory, the session is not kept, as C goes on without it.
     if let Ok(ticket) = ticket {
-        slot.io.keep_session(ticket);
+        // A QUIC session's goes with its connection's transport
+        // parameters, if they encode (`quic_ossl_new_session_cb`).
+        let ticket = match slot.quic_params.as_mut().and_then(|params| params()) {
+            Some(params) => ticket.with_quic_params(params),
+            None => ticket,
+        };
+        slot.io.cx().keep_session(ticket);
     }
     0
 }
@@ -220,14 +267,14 @@ unsafe extern "C" fn out_write(bio: *mut BIO, buf: *const c_char, blen: c_int) -
     let got = if bytes.is_empty() {
         Ok(Sent::WouldBlock)
     } else {
-        slot.io.send(bytes)
+        slot.io.stream().send(bytes)
     };
     let (code, n) = match &got {
         Ok(Sent::Bytes(n)) => (0, n.get()),
         Ok(Sent::WouldBlock) => (AGAIN, 0),
         Err(_) => (ErrorKind::SendError.number(), 0),
     };
-    slot.io.trace(format_args!(
+    slot.io.cx().trace(format_args!(
         "ossl_bio_cf_out_write(len={blen}) -> {code}, {n}"
     ));
     // SAFETY: `bio` is the library's.
@@ -271,7 +318,7 @@ unsafe extern "C" fn in_read(bio: *mut BIO, buf: *mut c_char, blen: c_int) -> c_
     } else {
         // SAFETY: the library hands `blen` bytes of room at `buf`.
         let room = unsafe { core::slice::from_raw_parts_mut(buf.cast::<u8>(), len) };
-        slot.io.recv(room)
+        slot.io.stream().recv(room)
     };
     let (code, n) = match &got {
         Ok(Recv::Data(n)) => (0, n.get()),
@@ -279,7 +326,7 @@ unsafe extern "C" fn in_read(bio: *mut BIO, buf: *mut c_char, blen: c_int) -> c_
         Ok(Recv::WouldBlock) => (AGAIN, 0),
         Err(_) => (ErrorKind::RecvError.number(), 0),
     };
-    slot.io.trace(format_args!(
+    slot.io.cx().trace(format_args!(
         "ossl_bio_cf_in_read(len={blen}) -> {code}, {n}"
     ));
     // SAFETY: `bio` is the library's.
@@ -308,7 +355,7 @@ unsafe extern "C" fn in_read(bio: *mut BIO, buf: *mut c_char, blen: c_int) -> c_
         }
     };
     if !slot.flags.store_ready {
-        if let Err(kind) = (slot.store)(slot.io) {
+        if let Err(kind) = (slot.store)(slot.io.cx()) {
             // SAFETY: as above.
             unsafe { openssl_sys::BIO_clear_retry_flags(bio) };
             slot.below = Below::Store(kind);
@@ -386,7 +433,7 @@ pub(crate) unsafe extern "C" fn trace(
     let Some(slot) = (unsafe { slot_of(bio) }) else {
         return;
     };
-    if !slot.io.debugs() || !(direction == 0 || direction == 1) {
+    if !slot.io.cx().debugs() || !(direction == 0 || direction == 1) {
         return;
     }
     let bytes = if len == 0 || buf.is_null() {
@@ -429,9 +476,9 @@ pub(crate) unsafe extern "C" fn trace(
         };
         let dir = if direction == 1 { "OUT" } else { "IN" };
         let version = text::Version(version);
-        slot.io.info(format_args!(
+        slot.io.cx().info(format_args!(
             "{version} ({dir}), {record}, {name} ({msg_type}):"
         ));
     }
-    slot.io.record(way, bytes);
+    slot.io.cx().record(way, bytes);
 }

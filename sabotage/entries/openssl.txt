@@ -416,3 +416,34 @@ witness: curl-openssl a_session_keeps_its_key_log_past_its_owner
             keylog: self.keylog.clone(),
 --- new
             keylog: None,
+
+=== a QUIC session speaks the transfer's floor below TLS 1.3
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl ssl::tests::a_quic_session_speaks_tls_1_3_at_least
+--- old
+        let min_version = if self.quic {
+            TlsMinVersion::Tls1_3
+--- new
+        let min_version = if self.quic && false {
+            TlsMinVersion::Tls1_3
+
+=== a QUIC session takes a cap below TLS 1.3
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl ssl::tests::a_quic_session_speaks_tls_1_3_at_least
+--- old
+        if self.quic
+            && !matches!(
+--- new
+        if self.quic
+            && false
+            && !matches!(
+
+=== a QUIC session's check reads an SSL whose handshake is not done
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl ssl::tests::a_quic_session_s_check_needs_its_handshake_done
+--- old
+        assert_eq!(
+            finished, 1,
+--- new
+        assert_ne!(
+            finished, 1,

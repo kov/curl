@@ -4,7 +4,10 @@
 //! library implements. The library makes a session for each connection
 //! (`TlsBackend`), and the core drives it as a layer over the
 //! connection's stream (`TlsSession`), handing it the layers below to
-//! read and write through (`TlsIo`). The core names no library's types.
+//! read and write through (`TlsIo`). A QUIC connection's session
+//! (`QuicTls`) is driven by the QUIC library instead, which carries its
+//! records; it reaches only the transfer (`TlsCx`). The core names no
+//! library's types.
 
 use std::any::Any;
 use std::ffi::c_void;
@@ -57,6 +60,25 @@ pub trait TlsBackend: Send + Sync {
         alpn: Alpn,
         shared: &TlsShared,
     ) -> Result<Box<dyn TlsSession>, ErrorKind>;
+
+    /// A session for one QUIC connection to `peer`, offering HTTP/3 by
+    /// ALPN (C's `Curl_vquic_tls_init`): made at once, its context and
+    /// its library's session object, which `QuicTls::native` hands the
+    /// QUIC library; a session the cache kept for the peer is resumed.
+    /// A library that cannot carry QUIC has none.
+    fn quic_session(
+        &self,
+        identity: &TryArc<TlsIdentity>,
+        peer: &TlsPeer<'_>,
+        shared: &TlsShared,
+        cx: &mut TlsCx<'_>,
+    ) -> Result<Box<dyn QuicTls>, ErrorKind> {
+        let _ = (identity, peer, shared);
+        Err(cx.fail(
+            ErrorKind::QuicConnectError,
+            format_args!("the TLS library has no QUIC"),
+        ))
+    }
 
     /// Where it finds the certificates to trust when a transfer names
     /// none, as its build found them.
@@ -205,6 +227,48 @@ pub trait TlsSession: Send {
     /// certificate, or none where the peer showed no certificate or its
     /// signature names no digest. What it has to say goes to `notes`.
     fn channel_binding(&self, notes: &mut dyn BindingNotes) -> Result<Option<Vec<u8>>, ErrorKind>;
+}
+
+/// One QUIC connection's TLS (C's `curl_tls_ctx` under its QUIC filter):
+/// the library's session, which the QUIC library drives, handing it the
+/// handshake's bytes and taking its records' keys. The core's part is to
+/// run each call into the QUIC library inside `drive`, so the session's
+/// own callbacks reach the transfer, and to check the peer when the QUIC
+/// library says the handshake is done.
+pub trait QuicTls: Send {
+    /// The library's own objects, its session among them, for the QUIC
+    /// library to drive.
+    fn native(&self) -> TlsNative;
+
+    /// The session the cache kept that this one resumes, if any: what
+    /// early data on the connection is sent under.
+    fn resumed(&self) -> Option<&TlsTicket>;
+
+    /// Get ready for the peer's first bytes: the trust store set up, if
+    /// it is not (`Curl_vquic_tls_before_recv`).
+    fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind>;
+
+    /// Run `call`, a call into the QUIC library that may move the
+    /// session on, with the session's callbacks reaching `cx`. `call` is
+    /// given the session's check, which the QUIC library's word that the
+    /// handshake is done runs, inside its callback, so nothing of the
+    /// peer's is taken before it is checked. A session the peer gives
+    /// during the call is kept with the transport parameters `params`
+    /// encodes, if it encodes any.
+    fn drive(
+        &mut self,
+        cx: &mut TlsCx<'_>,
+        params: &mut dyn FnMut() -> Option<Vec<u8>>,
+        call: &mut dyn FnMut(&mut dyn HandshakeCheck),
+    );
+}
+
+/// A QUIC session's work once the QUIC library says its handshake is
+/// done (`cb_ngtcp2_handshake_completed`): the handshake reported, and
+/// the peer's certificate checked as a stream session's is, the peer's
+/// sessions forgotten if it fails (`Curl_vquic_tls_verify_peer`).
+pub trait HandshakeCheck {
+    fn handshake_done(&mut self) -> Result<(), ErrorKind>;
 }
 
 /// What a session says as it makes a channel binding: a line of the
@@ -424,15 +488,38 @@ impl<'a> TlsPeer<'a> {
 
 /// What a TLS session reaches while it works, for the one call it is
 /// given to: the layers below it, down to the socket, and the transfer
-/// it works for. The bytes the connection received before the session
-/// was made, after a proxy's answer, are read first.
+/// it works for (`TlsCx`, which it derefs to). The bytes the connection
+/// received before the session was made, after a proxy's answer, are
+/// read first.
 pub struct TlsIo<'a> {
     below: Below<'a>,
-    cx: &'a mut dyn LayerCx,
     early: &'a mut Vec<u8>,
+    cx: TlsCx<'a>,
+}
+
+/// What a TLS session reaches of the transfer it works for, for the one
+/// call it is given to: its trace, its failure, its cache of sessions
+/// and its application's hooks. A QUIC connection's TLS, whose records
+/// the QUIC library carries, reaches only this.
+pub struct TlsCx<'a> {
+    cx: &'a mut dyn LayerCx,
     component: Component,
     /// Who the connection's sessions are kept for.
     peer: &'a SessionPeer,
+}
+
+impl<'a> std::ops::Deref for TlsIo<'a> {
+    type Target = TlsCx<'a>;
+
+    fn deref(&self) -> &TlsCx<'a> {
+        &self.cx
+    }
+}
+
+impl<'a> std::ops::DerefMut for TlsIo<'a> {
+    fn deref_mut(&mut self) -> &mut TlsCx<'a> {
+        &mut self.cx
+    }
 }
 
 impl TlsIo<'_> {
@@ -446,16 +533,27 @@ impl TlsIo<'_> {
             self.early.drain(..n.get());
             return Ok(Recv::Data(n));
         }
-        self.below.reborrow().recv(self.cx, buf)
+        self.below.reborrow().recv(self.cx.cx, buf)
     }
 
     /// Send from `bytes`, which is not empty, through the layers below,
     /// whose socket traces the send and says why it failed (`Send
     /// failure:`).
     pub fn send(&mut self, bytes: &[u8]) -> io::Result<Sent> {
-        self.below.reborrow().send(self.cx, bytes)
+        self.below.reborrow().send(self.cx.cx, bytes)
     }
 
+    /// The connection below seems usable: the peer has not closed it
+    /// (`is_alive` of the filter below).
+    pub fn peer_alive(&mut self) -> bool {
+        matches!(
+            self.below.reborrow().alive(self.cx.cx),
+            crate::conn::layer::Alive::Alive { .. }
+        )
+    }
+}
+
+impl TlsCx<'_> {
     /// The transfer fails with `kind`, for the reason `why` (`failf`):
     /// kept if it is the first, and traced; `kind` back.
     pub fn fail(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
@@ -628,15 +726,6 @@ impl TlsIo<'_> {
             cache.remove_all(peer, &mut |line| cx.of(Component::Ssls, line));
         });
     }
-
-    /// The connection below seems usable: the peer has not closed it
-    /// (`is_alive` of the filter below).
-    pub fn peer_alive(&mut self) -> bool {
-        matches!(
-            self.below.reborrow().alive(self.cx),
-            crate::conn::layer::Alive::Alive { .. }
-        )
-    }
 }
 
 impl<'a> TlsIo<'a> {
@@ -649,8 +738,74 @@ impl<'a> TlsIo<'a> {
     ) -> TlsIo<'a> {
         TlsIo {
             below,
-            cx,
             early,
+            cx: TlsCx::new(cx, component, peer),
+        }
+    }
+}
+
+/// What a test's TLS context says: each line traced, as `info: ...`,
+/// `trace: ...` or `fail: <kind>: ...`.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug, Default)]
+pub struct Notes(pub Vec<String>);
+
+#[cfg(any(test, feature = "test-util"))]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test's notes, which may allocate as they like"
+)]
+impl LayerCx for Notes {
+    fn now(&self) -> Instant {
+        crate::time::Clock::now(&crate::time::ManualClock::new().expect("a clock"))
+    }
+
+    fn of(&mut self, _: Component, line: fmt::Arguments<'_>) {
+        self.0.push(format!("trace: {line}"));
+    }
+
+    fn info(&mut self, line: fmt::Arguments<'_>) {
+        self.0.push(format!("info: {line}"));
+    }
+
+    fn fails(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
+        self.0.push(format!("fail: {kind:?}: {why}"));
+        kind
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl TlsCx<'_> {
+    /// Run `f` with what a multi keeps for a library and a context for
+    /// a QUIC session to `host`'s port 443 made with `identity`, which
+    /// keeps no sessions and notes what it is told in `notes`, for the
+    /// tests of a library's sessions.
+    pub fn testing<R>(
+        identity: &TryArc<TlsIdentity>,
+        host: &[u8],
+        notes: &mut Notes,
+        f: impl FnOnce(&TlsShared, &mut TlsCx<'_>) -> R,
+    ) -> R {
+        let mut name = Vec::new();
+        name.try_extend_from_slice(host).expect("memory for a test");
+        let origin = Peer::new(crate::proto::http::HTTPS, name, 443, None);
+        let peer = SessionPeer::new(identity, &origin, None, &"test", crate::conn::Dial::Quic)
+            .expect("memory for a test");
+        let shared = TlsShared::new().expect("memory for a test");
+        let mut cx = TlsCx::new(notes, Component::Ssl, &peer);
+        f(&shared, &mut cx)
+    }
+}
+
+impl<'a> TlsCx<'a> {
+    pub(crate) fn new(
+        cx: &'a mut dyn LayerCx,
+        component: Component,
+        peer: &'a SessionPeer,
+    ) -> TlsCx<'a> {
+        TlsCx {
+            cx,
             component,
             peer,
         }

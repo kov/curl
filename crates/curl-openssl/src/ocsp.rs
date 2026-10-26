@@ -10,7 +10,7 @@ use core::ffi::{c_char, c_int, c_long};
 use core::ptr::{self, NonNull};
 
 use curl_core::error::ErrorKind;
-use curl_core::tls::TlsIo;
+use curl_core::tls::TlsCx;
 use openssl_sys::{SSL, SSL_CTX, X509};
 
 use crate::x509::{Text, c_text};
@@ -50,9 +50,9 @@ unsafe fn named(f: unsafe extern "C" fn(c_long) -> *const c_char, code: c_int) -
 pub(crate) fn check(
     ssl: NonNull<SSL>,
     ctx: NonNull<SSL_CTX>,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
-    let fail = |io: &mut TlsIo<'_>, why: core::fmt::Arguments<'_>| {
+    let fail = |io: &mut TlsCx<'_>, why: core::fmt::Arguments<'_>| {
         io.fail(ErrorKind::SslInvalidcertstatus, why)
     };
     let s = ssl.as_ptr();
@@ -81,9 +81,9 @@ fn response(
     rsp: NonNull<openssl_sys::OCSP_RESPONSE>,
     s: *mut SSL,
     ctx: NonNull<SSL_CTX>,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
-    let fail = |io: &mut TlsIo<'_>, why: core::fmt::Arguments<'_>| {
+    let fail = |io: &mut TlsCx<'_>, why: core::fmt::Arguments<'_>| {
         io.fail(ErrorKind::SslInvalidcertstatus, why)
     };
     // SAFETY: the response.
@@ -113,9 +113,9 @@ fn basic(
     br: NonNull<openssl_sys::OCSP_BASICRESP>,
     s: *mut SSL,
     ctx: NonNull<SSL_CTX>,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
-    let fail = |io: &mut TlsIo<'_>, why: core::fmt::Arguments<'_>| {
+    let fail = |io: &mut TlsCx<'_>, why: core::fmt::Arguments<'_>| {
         io.fail(ErrorKind::SslInvalidcertstatus, why)
     };
     // SAFETY: the SSL; the chain is its own, alive while it is.

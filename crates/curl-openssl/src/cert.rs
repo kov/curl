@@ -12,7 +12,7 @@ use core::ptr::{self, NonNull};
 
 use curl_core::error::ErrorKind;
 use curl_core::options::TlsOptions;
-use curl_core::tls::TlsIo;
+use curl_core::tls::TlsCx;
 use openssl_sys::{EVP_PKEY, SSL_CTX, X509};
 
 use crate::engine::{Crypto, Wanted};
@@ -274,7 +274,7 @@ fn pkcs12_load(
     blob: Option<&[u8]>,
     file: Option<&[u8]>,
     password: Option<&Vec<u8>>,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     let shown = Text(file.unwrap_or(b"(null)"));
     let bio = match blob {
@@ -360,7 +360,7 @@ fn pkcs12_use(
     x509: *mut X509,
     ca: *mut openssl_sys::stack_st_X509,
     shown: Text<'_>,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     let c = ctx.as_ptr();
     // SAFETY: the context, which takes its own reference.
@@ -429,7 +429,7 @@ fn from_crypto(
     file: Option<&[u8]>,
     password: Option<&Vec<u8>>,
     crypto: &mut Crypto,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     let engine = kind == FileType::Engine;
     let what = match wanted {
@@ -492,7 +492,7 @@ pub(crate) fn client_cert(
     options: &TlsOptions,
     password: Option<&Vec<u8>>,
     crypto: &mut Crypto,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     let cert_file = options.cert.as_deref();
     let cert_blob = options.cert_blob.as_deref();
@@ -659,7 +659,7 @@ pub(crate) fn client_cert(
 
 /// The key set matches the certificate set, whatever the key's method, as
 /// C's build for OpenSSL 3 checks it.
-fn check_private_key(ctx: NonNull<SSL_CTX>, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+fn check_private_key(ctx: NonNull<SSL_CTX>, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
     let c = ctx.as_ptr();
     // SAFETY: the context; an SSL made of it to read what it holds,
     // freed below.

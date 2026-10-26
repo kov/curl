@@ -12,7 +12,7 @@ use core::ptr::{self, NonNull};
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::error::ErrorKind;
-use curl_core::tls::TlsIo;
+use curl_core::tls::TlsCx;
 use openssl_sys::{ENGINE, EVP_PKEY, OSSL_LIB_CTX, OSSL_PROVIDER, SSL_CTX, SSL_METHOD, X509};
 
 use crate::x509::{ErrText, Text, c_string};
@@ -150,7 +150,7 @@ unsafe impl Send for Crypto {}
 impl Crypto {
     /// The engine or provider `name` names (`ossl_set_engine`): 66 for an
     /// engine that will not start, 53 for neither, each said as C says it.
-    pub(crate) fn select(name: &[u8], io: &mut TlsIo<'_>) -> Result<Crypto, ErrorKind> {
+    pub(crate) fn select(name: &[u8], io: &mut TlsCx<'_>) -> Result<Crypto, ErrorKind> {
         let id = c_string(name)?;
         // SAFETY: a C string; the engine, if any, is this one's to free.
         let engine = unsafe { ENGINE_by_id(id.as_ptr().cast()) };
@@ -174,7 +174,7 @@ impl Crypto {
 
     /// The provider `name:properties` names, no engine looked for
     /// (`ossl_set_provider`, as a PKCS#11 URI's key reaches it).
-    pub(crate) fn select_provider(given: &[u8], io: &mut TlsIo<'_>) -> Result<Crypto, ErrorKind> {
+    pub(crate) fn select_provider(given: &[u8], io: &mut TlsCx<'_>) -> Result<Crypto, ErrorKind> {
         Crypto::provider(given, io)
     }
 
@@ -190,7 +190,7 @@ impl Crypto {
 
     /// The provider `name:properties` names, loaded into a library
     /// context of its own with the base provider (`ossl_set_provider`).
-    fn provider(given: &[u8], io: &mut TlsIo<'_>) -> Result<Crypto, ErrorKind> {
+    fn provider(given: &[u8], io: &mut TlsCx<'_>) -> Result<Crypto, ErrorKind> {
         let (name, propq) = match given.iter().position(|&b| b == b':') {
             Some(at) => (&given[..at], Some(&given[at + 1..])),
             None => (given, None),
@@ -241,7 +241,7 @@ impl Crypto {
 
     /// Make the engine, if one was selected, the default for every
     /// algorithm (`ossl_set_engine_default`), 54 if it cannot be.
-    pub(crate) fn set_default(&self, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+    pub(crate) fn set_default(&self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let Some(engine) = self.engine else {
             return Ok(());
         };
@@ -304,11 +304,11 @@ impl Crypto {
         ctx: NonNull<SSL_CTX>,
         uri: &[u8],
         wanted: Wanted,
-        io: &mut TlsIo<'_>,
+        io: &mut TlsCx<'_>,
     ) -> Result<(), ErrorKind> {
         let libctx = self.libctx.expect("a provider loaded").as_ptr();
         let uri = c_string(uri)?;
-        let fail = |io: &mut TlsIo<'_>, what: core::fmt::Arguments<'_>| {
+        let fail = |io: &mut TlsCx<'_>, what: core::fmt::Arguments<'_>| {
             io.fail(ErrorKind::SslCertproblem, what)
         };
         // A certificate is fetched with no properties and no way to ask
@@ -425,10 +425,10 @@ impl Crypto {
         &self,
         ctx: NonNull<SSL_CTX>,
         file: &[u8],
-        io: &mut TlsIo<'_>,
+        io: &mut TlsCx<'_>,
     ) -> Result<(), ErrorKind> {
         let e = self.engine.expect("an engine started").as_ptr();
-        let fail = |io: &mut TlsIo<'_>, what: core::fmt::Arguments<'_>| {
+        let fail = |io: &mut TlsCx<'_>, what: core::fmt::Arguments<'_>| {
             io.fail(ErrorKind::SslCertproblem, what)
         };
         let cmd = c"LOAD_CERT_CTRL";
@@ -500,10 +500,10 @@ impl Crypto {
         ctx: NonNull<SSL_CTX>,
         file: Option<&[u8]>,
         password: Option<&Vec<u8>>,
-        io: &mut TlsIo<'_>,
+        io: &mut TlsCx<'_>,
     ) -> Result<(), ErrorKind> {
         let e = self.engine.expect("an engine started").as_ptr();
-        let fail = |io: &mut TlsIo<'_>, what: core::fmt::Arguments<'_>| {
+        let fail = |io: &mut TlsCx<'_>, what: core::fmt::Arguments<'_>| {
             io.fail(ErrorKind::SslCertproblem, what)
         };
         let id = file.map(c_string).transpose()?;

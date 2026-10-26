@@ -33,6 +33,10 @@ pub struct TlsTicket {
     pub alpn: Option<Chosen>,
     /// The early data it allows, in bytes.
     pub earlydata_max: usize,
+    /// A QUIC session's: the transport parameters its connection had,
+    /// encoded, which early data on a connection resuming it is sent
+    /// under (`quic_tp`); empty for TCP's.
+    pub quic_params: Vec<u8>,
     /// When it is no longer good, in seconds since 1970; 0 or less for
     /// none known.
     valid_until: i64,
@@ -53,7 +57,17 @@ impl TlsTicket {
             version,
             alpn,
             earlydata_max,
+            quic_params: Vec::new(),
             valid_until,
+        }
+    }
+
+    /// The same, a QUIC session's, kept with its connection's transport
+    /// parameters `params`, encoded.
+    pub fn with_quic_params(self, params: Vec<u8>) -> TlsTicket {
+        TlsTicket {
+            quic_params: params,
+            ..self
         }
     }
 
@@ -68,6 +82,7 @@ impl fmt::Debug for TlsTicket {
             .field("len", &self.data.len())
             .field("version", &self.version)
             .field("alpn", &self.alpn)
+            .field("quic_params", &self.quic_params.len())
             .field("valid_until", &self.valid_until)
             .finish_non_exhaustive()
     }

@@ -9,7 +9,7 @@ use std::io::Read as _;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use super::TlsIo;
+use super::TlsCx;
 use crate::error::ErrorKind;
 use crate::hash::{Hash as _, Sha256};
 
@@ -30,7 +30,7 @@ enum Said<'a> {
 /// The peer's key `spki` is the one `pinned` names, as `Curl_pin_peer_pubkey`
 /// decides: the lines it says on the way through `io`. A key that is not
 /// is `SslPinnedpubkeynotmatch`, which the library says why for.
-pub fn pin_peer_pubkey(io: &mut TlsIo<'_>, pinned: &[u8], spki: &[u8]) -> Result<(), ErrorKind> {
+pub fn pin_peer_pubkey(io: &mut TlsCx<'_>, pinned: &[u8], spki: &[u8]) -> Result<(), ErrorKind> {
     let matched = matches(pinned, spki, &mut |said| match said {
         Said::Hash(hash) => io.info(format_args!(" public key hash: sha256//{}", Text(hash))),
         Said::Matches => io.debug_info(format_args!("public key hash matches pinned value")),

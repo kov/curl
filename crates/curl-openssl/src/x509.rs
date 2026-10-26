@@ -13,7 +13,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::error::ErrorKind;
 use curl_core::options::SslOptions;
-use curl_core::tls::{TlsIdentity, TlsIo, TlsPeerKind, TlsShared};
+use curl_core::tls::{TlsCx, TlsIdentity, TlsPeerKind, TlsShared};
 use openssl_sys::{BIO, SSL, SSL_CTX, X509, X509_STORE};
 
 use crate::cache::{self, StoreCache};
@@ -188,7 +188,7 @@ pub(crate) fn setup_store(
     ctx: NonNull<SSL_CTX>,
     identity: &TryArc<TlsIdentity>,
     shared: Option<&TlsShared>,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     let shared = shared.filter(|_| cache::cacheable(identity));
     let now = io.now();
@@ -224,7 +224,7 @@ pub(crate) fn setup_store(
 fn populate_store(
     ctx: NonNull<SSL_CTX>,
     identity: &TlsIdentity,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     io.trace(format_args!("configuring OpenSSL's x509 trust store"));
     // SAFETY: the session's context, alive while it is.
@@ -282,7 +282,7 @@ fn populate_store(
 fn load_trust_anchors(
     store: NonNull<X509_STORE>,
     identity: &TlsIdentity,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     let options = &identity.options;
     let mut empty = true;
@@ -433,7 +433,7 @@ fn name_line(name: *const openssl_sys::X509_NAME, bio: &mut MemBio) -> Result<()
 /// The lines about the peer's certificate (`ossl_infof_cert`), for a
 /// verbose transfer only: a name too long to print fails only one that
 /// prints it, as in C.
-fn info_cert(cert: &Cert, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+fn info_cert(cert: &Cert, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
     if !io.verbose() {
         return Ok(());
     }
@@ -482,7 +482,7 @@ pub(crate) unsafe fn c_text<'a>(p: *const c_char) -> Option<&'a [u8]> {
 
 /// A line for each certificate of the chain (`infof_certstack`): the
 /// verified one if it verified, else the one the peer sent.
-fn info_chain(ssl: NonNull<SSL>, io: &mut TlsIo<'_>) {
+fn info_chain(ssl: NonNull<SSL>, io: &mut TlsCx<'_>) {
     if !io.verbose() {
         return;
     }
@@ -566,7 +566,7 @@ fn verify_host(
     cert: &Cert,
     host: &[u8],
     kind: TlsPeerKind,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     let mut v4 = [0u8; 4];
     let mut v6 = [0u8; 16];
@@ -699,7 +699,7 @@ fn common_name(
     cert: &Cert,
     host: &[u8],
     kind: TlsPeerKind,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<(), ErrorKind> {
     // SAFETY: the certificate's subject, its own.
     let name = unsafe { openssl_sys::X509_get_subject_name(cert.as_ptr()) };
@@ -793,7 +793,7 @@ pub(crate) fn check_peer(
     host: &[u8],
     kind: TlsPeerKind,
     reused: bool,
-    io: &mut TlsIo<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<c_long, ErrorKind> {
     // A resumed session's chain is not sent again.
     if !reused {
@@ -866,7 +866,7 @@ pub(crate) fn check_peer(
 /// The peer's certificate was issued by the one the transfer names
 /// (`ossl_check_issuer`): 83 if it cannot be read or did not, said only
 /// when the peer is verified.
-fn check_issuer(cert: &Cert, identity: &TlsIdentity, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+fn check_issuer(cert: &Cert, identity: &TlsIdentity, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
     let o = &identity.options;
     let verify = identity.verify_peer || identity.verify_host;
     let shown = Text(o.issuer_cert.as_deref().unwrap_or(b"(null)"));
@@ -904,7 +904,7 @@ fn check_issuer(cert: &Cert, identity: &TlsIdentity, io: &mut TlsIo<'_>) -> Resu
     } else {
         return Ok(());
     };
-    let unsaid = |io: &mut TlsIo<'_>, why: fmt::Arguments<'_>| {
+    let unsaid = |io: &mut TlsCx<'_>, why: fmt::Arguments<'_>| {
         if verify {
             io.fail(ErrorKind::SslIssuerError, why);
         }

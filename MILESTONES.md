@@ -763,7 +763,7 @@ shrink the C the library depends on.
 
 ## Milestone 4: HTTP/2, and the rest of what an HTTP client links libcurl for
 
-Status: **to do**. SCOPE stage 5's first half, with the pieces HTTP-only applications expect of
+Status: **done**. SCOPE stage 5's first half, with the pieces HTTP-only applications expect of
 a distribution's libcurl. It ends when our library, through `LD_LIBRARY_PATH`, stands in for
 the system's under the HTTP-only programs installed here.
 

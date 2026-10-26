@@ -91,3 +91,26 @@ features: debug-hooks
     pub verbose: bool,
     pub pad: [[u64; 16]; 3],
 }
+
+=== a pushed handle traces no component its parent traces
+file: crates/curl-core/src/easy.rs
+witness: curl-core easy::tests::a_pushed_handle_takes_its_parent_s_libraries_and_share
+--- old
+            components: self.components.clone(),
+            share: self.share.clone(),
+            share_watch: self.share_watch.clone(),
+            ..Easy::default()
+--- new
+            share: self.share.clone(),
+            share_watch: self.share_watch.clone(),
+            ..Easy::default()
+
+=== a pushed handle uses no share
+file: crates/curl-core/src/easy.rs
+witness: curl-core easy::tests::a_pushed_handle_takes_its_parent_s_libraries_and_share
+--- old
+            share: self.share.clone(),
+            share_watch: self.share_watch.clone(),
+            ..Easy::default()
+--- new
+            ..Easy::default()

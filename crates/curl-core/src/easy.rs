@@ -924,6 +924,30 @@ mod tests {
     use crate::url::{ParseOptions, Url};
     use crate::version::Protocol;
 
+    /// A pushed transfer's handle takes its parent's libraries, trace
+    /// components, share and the share's watch, the very ones and not
+    /// copies (`h2_duphandle`).
+    #[test]
+    fn a_pushed_handle_takes_its_parent_s_libraries_and_share() {
+        let mut e = Easy::new();
+        e.set_libraries(SharedLibraries::new(crate::libraries::Libraries::NONE).unwrap());
+        e.set_components(Some(crate::components::Components::new().unwrap()));
+        let share = crate::share::Share::new().unwrap();
+        let told = crate::share::Told::new(&share);
+        e.set_share_watched(share.clone(), told.handler());
+        let pushed = e.pushed();
+        assert!(std::ptr::eq(&*pushed.libraries, &*e.libraries));
+        let components = pushed.components().expect("the parent's components");
+        components.configure(b"multi");
+        assert!(
+            e.components()
+                .unwrap()
+                .traces(crate::components::Component::Multi)
+        );
+        assert!(pushed.share().is_some_and(|s| s.is(&share)));
+        assert!(pushed.share_watch().is_some());
+    }
+
     /// A directory of its own for a test, removed after it.
     struct Scratch(PathBuf);
 

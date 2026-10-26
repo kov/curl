@@ -1573,36 +1573,41 @@ in its pool place, `Attached { slot, users }`; an attached lease is a key, the `
 stream. A step moves the `Conn` out of the place for its duration and back after, a third
 owned value decision 9 allows; the place says it is out meanwhile, and a lookup that finds it
 out is a bug. What the session reads for another transfer's stream is delivered at once, in
-the order C delivers it: input hands back `(TransferId, event)`, and the engine delivers each
-sibling's bytes by moving that sibling's `Run` out in turn, as the unpause replay does (§5.3),
-the stepping transfer's own connection out with it. A paused sibling's bytes wait in its
+the order C delivers it, by moving that sibling's `Run` out in turn, as the unpause replay does
+(§5.3), the stepping transfer's own connection out with it. A paused sibling's bytes wait in its
 pipeline's paused output, as C's client writer holds them. A pause or an unpause aimed at a
 sibling while the connection is out with another transfer is kept and told to the session as
 the connection goes back, before any other work, so the WINDOW_UPDATE goes out where C's
 does. The last lease given back decides the connection's fate as `multi_done_locked` does; a
 GOAWAY or a connection error ends every stream on it.
 
-What building it found it needs, beyond the above (not built yet):
+How it is built. A connection of the multi's own becomes `Attached` at the end of the step in
+which its first request found it speaks HTTP/2 (the protocol's step cannot reach the pool): its
+slot moves into the place, and the lease becomes a key; whether a lease is a key, its place
+alone says (`Pool::is_attached`). A share's pool keeps a connection leased one transfer at a
+time, as its place is behind the share's lock. Each step checks the connection out of its place
+and back in after (`Pool::check_out`, `check_in`), and a lease given back outside a step checks
+it out to be given back. What reads a lease's connection outside a step (the pollsets,
+`tls_native`, `CURLINFO_ACTIVESOCKET`) reads it through the pool (`Pool::slot_of`); one out with
+another transfer's step waits on nothing of its own.
 
-- A connection becomes `Attached` as it is given back to its place after the step in which its
-  first request found it speaks HTTP/2 (the pool cannot be reached from the protocol's step):
-  the lease's slot moves into the place and the lease becomes a key. Only the multi's own pool
-  attaches; a share's keeps a connection leased one transfer at a time, as its place is behind
-  the share's lock and the pollsets below borrow the connection's socket.
-- Everything that reads a lease's connection outside a step reads an attached one in its place:
-  the pollsets (`TransferState::pollset`, `pollsets`, the traces) take the multi's pool beside
-  the transfers; `tls_native` for a sibling likewise.
-- `find` attaches a transfer to an `Attached` connection that serves its route, speaks a
-  version it may, is not closing nor told GOAWAY, with the multi multiplexing
-  (`CURLMOPT_PIPELINING`) and fewer users than the server's `SETTINGS_MAX_CONCURRENT_STREAMS`;
-  the session's binding then reports that setting.
-- The session's stream ids map to their transfers (`H2Conn`'s routes, set as a request opens
-  its stream and let go as it is done); a sibling's body read by another's egress is deferred
-  until the sibling's step resumes it.
-- `PIPEWAIT` (which the tool sets for `--parallel`): a transfer finding a connection to its
-  route still being set up, or not yet known to multiplex, waits in PENDING
-  (`url_match_multiplex_needs`, `seen_pending_conn`), and each change to a connection's
-  multiplexing lets the waiting ones look again.
+The search joins an `Attached` connection (`Pool::join_if`) that serves the transfer's route and
+credentials, if the transfer may speak HTTP/2 and the multi multiplexes (`CURLMOPT_PIPELINING`),
+the connection is not closing (a GOAWAY marks it so), and it has fewer transfers on it than
+both the multi's `CURLMOPT_MAX_CONCURRENT_STREAMS` and the server's
+`SETTINGS_MAX_CONCURRENT_STREAMS` (`Session::max_concurrent`), with C's lines for each
+(`url_match_multiplex_limits`). The session's streams map to their transfers (`H2Conn`'s routes,
+set as a request opens its stream and let go as it is done). What the session reads for a
+sibling's stream goes to it as it is read, by moving the sibling's `Run` out
+(`StepCx::with_sibling`); a sibling's body is read from its own buffer as the session frames it,
+and the streams the session closes as it sends are told once it is done. A GOAWAY, the
+connection's end or its failure wakes every other transfer on it.
+
+Not built yet: `PIPEWAIT` (which the tool sets for `--parallel`), where a transfer finding a
+connection to its route still being set up, or not yet known to multiplex, waits in PENDING
+(`url_match_multiplex_needs`, `seen_pending_conn`) and each change to a connection's
+multiplexing lets the waiting ones look again; a pause or unpause aimed at a sibling, and its
+stream's window; server push.
 
 ### 4.5 Route and reuse
 

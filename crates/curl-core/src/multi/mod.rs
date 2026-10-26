@@ -27,7 +27,7 @@ use curl_alloc::{OutOfMemory, TryArc};
 
 use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
 use crate::conn::shutdown::{ShutdownSet, WithSet};
-use crate::conn::{AddLimits, Caches};
+use crate::conn::{AddLimits, Caches, Pool};
 use crate::conn::{ConnId, Home};
 use crate::deliver::{Pause, RecvPause};
 use crate::easy::Easy;
@@ -868,7 +868,7 @@ impl<H: Host> Multi<H> {
             .run
             .as_ref()
             .expect("no transfer is out while the multi is called");
-        let said = run.pollset_trace(slot.pause);
+        let said = run.pollset_trace(slot.pause, &self.caches.pool);
         self.trace_pollset(id, now, said, ev);
     }
 
@@ -959,7 +959,7 @@ impl<H: Host> Multi<H> {
     /// The TLS library's objects of the origin's connection a transfer
     /// holds, while it holds one (`CURLINFO_TLS_SSL_PTR`).
     pub fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
-        tls_native_in(&self.slots, id)
+        tls_native_in(&self.slots, Some(&self.caches.pool), id)
     }
 
     fn run_of(&self, id: TransferId) -> &Run {
@@ -983,7 +983,12 @@ impl<H: Host> Multi<H> {
         if let Some(waker) = self.alive.waker.as_deref().filter(|_| self.alive.count > 0) {
             f(SocketKey::new(waker.fd().as_raw_fd()), Events::IN);
         }
-        pollsets(&self.slots, &self.shutdowns, |s, events| f(s.key(), events));
+        pollsets(
+            &self.slots,
+            &self.caches.pool,
+            &self.shutdowns,
+            |s, events| f(s.key(), events),
+        );
     }
 
     /// Fail every resolve of IPv6 addresses alone, as the debug build's
@@ -1042,7 +1047,7 @@ impl<H: Host> Multi<H> {
                 .run
                 .as_ref()
                 .expect("no transfer is out while the multi is called");
-            run.state.pollset(slot.pause).wants()
+            run.state.pollset(slot.pause, &self.caches.pool).wants()
         });
         self.tell_wants(id, wants, ev)
     }
@@ -1315,6 +1320,7 @@ impl<H: Host> Multi<H> {
             notify: &mut self.notify,
             counts: self.counts.get(),
             sockets: &mut self.sockets,
+            pool: Some(&self.caches.pool),
         };
         ev.timer(&mut cx, change).map_err(|Abort| {
             self.life = Life::Dead;
@@ -1328,6 +1334,7 @@ impl<H: Host> Multi<H> {
 /// first: the one computation behind waits, `fdset` and `waitfds`.
 fn pollsets<'a, H: Host>(
     slots: &'a Slots<H>,
+    pool: &'a Pool,
     set: &'a ShutdownSet,
     mut f: impl FnMut(&'a dyn Socket, Events),
 ) {
@@ -1339,7 +1346,7 @@ fn pollsets<'a, H: Host>(
             .run
             .as_ref()
             .expect("no transfer is out while the multi is called");
-        for (socket, events) in run.state.pollset(slot.pause).iter() {
+        for (socket, events) in run.state.pollset(slot.pause, pool).iter() {
             f(socket, events);
         }
     }
@@ -1485,8 +1492,12 @@ fn pause_transfer<H: Host>(
 
 /// The TLS library's objects of the connection transfer `id`, whose run
 /// is in its slot, holds.
-fn tls_native_in<H: Host>(slots: &Slots<H>, id: TransferId) -> Option<TlsNative> {
-    slots.get(id)?.run.as_ref()?.state.tls_native()
+fn tls_native_in<H: Host>(
+    slots: &Slots<H>,
+    pool: Option<&Pool>,
+    id: TransferId,
+) -> Option<TlsNative> {
+    slots.get(id)?.run.as_ref()?.state.tls_native(pool)
 }
 
 /// Put transfer `id`'s run back in its slot, and judge a pause its own

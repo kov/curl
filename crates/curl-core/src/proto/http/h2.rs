@@ -12,6 +12,7 @@ use curl_alloc::try_box;
 
 use super::*;
 use crate::conn::RecvFailed;
+use crate::conn::layer::LayerCx;
 use crate::http2::{BodyRead, Event, Heard, StreamId, code};
 use crate::options::HttpVersion as Wanted;
 use crate::proto::http2::{EgressFailed, GoAway, H2Conn, SEND_MAX, fields_of, settings};
@@ -62,6 +63,27 @@ impl H2Stream {
     pub(super) fn body_eos(&self) -> bool {
         self.body_eos
     }
+
+    /// The session takes what of the body the buffer holds, as much as
+    /// `room` has (`req_body_read_callback`).
+    fn body_read(&mut self, room: &mut [u8]) -> BodyRead {
+        let n = (self.sendbuf.len() - self.taken).min(room.len());
+        room[..n].copy_from_slice(&self.sendbuf[self.taken..self.taken + n]);
+        self.taken += n;
+        let empty = self.taken == self.sendbuf.len();
+        match (n, empty && self.body_eos) {
+            (_, true) => BodyRead::Last(n),
+            (0, false) => BodyRead::Later,
+            (n, false) => BodyRead::Bytes(n),
+        }
+    }
+
+    /// The session closed the stream as it sent, with `error`.
+    fn closed_with(&mut self, error: u32) {
+        self.closed = true;
+        self.error = error;
+        self.reset |= error != 0;
+    }
 }
 
 /// What the session's reading left to do on it, once it is free to:
@@ -72,10 +94,55 @@ struct After {
     consumed: Vec<(StreamId, usize)>,
     /// Streams to reset, with their codes.
     resets: Vec<(StreamId, u32)>,
-    /// The stream's body has more to give.
-    resume: bool,
+    /// Streams whose bodies have more to give.
+    resumes: Vec<StreamId>,
     /// The peer said GOAWAY.
     goaway: Option<GoAway>,
+}
+
+/// What the session sends with, for a request's step: the stepping
+/// stream's body, and a sibling's, read from its own buffer as C reads
+/// the stream's (`req_body_read_callback`); the streams closed as it
+/// sends, told after.
+struct Egressing<'a, 'c, H: Host> {
+    cx: &'a mut StepCx<'c, H>,
+    stream: &'a mut H2Stream,
+    routes: Vec<(StreamId, crate::multi::TransferId)>,
+    closes: Vec<(StreamId, u32)>,
+    oom: bool,
+}
+
+impl<H: Host> crate::proto::http2::Egress for Egressing<'_, '_, H> {
+    fn layer_cx(&mut self) -> &mut dyn LayerCx {
+        &mut *self.cx
+    }
+
+    fn body(&mut self, s: StreamId, room: &mut [u8]) -> BodyRead {
+        if Some(s) == self.stream.id {
+            return self.stream.body_read(room);
+        }
+        let me = self.cx.me;
+        match self.routes.iter().find(|r| r.0 == s) {
+            Some(&(_, to)) if to != me => self
+                .cx
+                .with_sibling(to, |_, req| match req.h2.as_mut() {
+                    Some(sib) if sib.id == Some(s) => sib.body_read(room),
+                    _ => BodyRead::Failed,
+                })
+                .unwrap_or(BodyRead::Failed),
+            _ => BodyRead::Failed,
+        }
+    }
+
+    fn event(&mut self, event: Event<'_>) -> Heard {
+        if let Event::Closed { stream, error } = event
+            && self.closes.try_push((stream, error)).is_err()
+        {
+            self.oom = true;
+            return Heard::Failed;
+        }
+        Heard::Fine
+    }
 }
 
 /// Run `f` with the connection's session taken off it, the lease free
@@ -196,7 +263,11 @@ impl Request {
         let settings = self.upgrade.take().expect("an upgrade asked for");
         let library = cx.easy().libraries().h2.expect("asked with a library");
         let head = self.method == Method::Head;
-        let (conn, stream) = H2Conn::open(library, &[], Some((&settings, head)))?;
+        let (mut conn, stream) = H2Conn::open(library, &[], Some((&settings, head)))?;
+        if let Some(stream) = stream {
+            conn.route(stream, cx.me)
+                .map_err(|_| ErrorKind::OutOfMemory)?;
+        }
         lease
             .get()
             .put_h2(try_box(conn).map_err(|_| ErrorKind::OutOfMemory)?);
@@ -266,10 +337,15 @@ impl Request {
                 .http
                 .stream_weight
                 .map_or(code::DEFAULT_WEIGHT, std::num::NonZeroU16::get);
+            let me = cx.me;
             let id = with_session(lease, |h2, _| {
-                h2.session().submit_request(&pairs, body, weight)
-            })
-            .map_err(|_| ErrorKind::SendError)?;
+                let id = h2
+                    .session()
+                    .submit_request(&pairs, body, weight)
+                    .map_err(|_| ErrorKind::SendError)?;
+                h2.route(id, me).map_err(|_| ErrorKind::OutOfMemory)?;
+                Ok::<_, ErrorKind>(id)
+            })?;
             self.stream().id = Some(id);
             if cx.easy().options().output.verbose {
                 let url = cx.easy().report().url().map(copied).transpose()?;
@@ -373,51 +449,39 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
+        let me = cx.me;
         let stream = self.h2.as_mut().expect("a request over HTTP/2");
-        let H2Stream {
-            id,
-            sendbuf,
-            taken,
-            body_eos,
-            closed,
-            error,
-            reset,
-            ..
-        } = stream;
-        let id = *id;
         let sent = with_session(lease, |h2, lease| {
-            h2.egress(
-                cx,
-                lease.get(),
-                &mut |s, room| {
-                    if Some(s) != id {
-                        return BodyRead::Failed;
-                    }
-                    let n = (sendbuf.len() - *taken).min(room.len());
-                    room[..n].copy_from_slice(&sendbuf[*taken..*taken + n]);
-                    *taken += n;
-                    let empty = *taken == sendbuf.len();
-                    match (n, empty && *body_eos) {
-                        (_, true) => BodyRead::Last(n),
-                        (0, false) => BodyRead::Later,
-                        (n, false) => BodyRead::Bytes(n),
-                    }
-                },
-                &mut |event| {
-                    if let Event::Closed {
-                        stream: s,
-                        error: e,
-                    } = event
-                        && Some(s) == id
-                    {
-                        *closed = true;
-                        *error = e;
-                        *reset |= e != 0;
-                    }
-                    Heard::Fine
-                },
-            )
+            let Ok(routes) = h2.routes_copied() else {
+                return (Err(EgressFailed::OutOfMemory), Vec::new(), false);
+            };
+            let mut with = Egressing {
+                cx: &mut *cx,
+                stream,
+                routes,
+                closes: Vec::new(),
+                oom: false,
+            };
+            let sent = h2.egress(&mut with, lease.get());
+            (sent, with.closes, with.oom)
         });
+        let (sent, closes, oom) = sent;
+        for (s, e) in closes {
+            if Some(s) == self.stream().id {
+                self.stream().closed_with(e);
+            } else if let Some(to) = lease.conn().h2().and_then(|h2| h2.route_of(s))
+                && to != me
+            {
+                cx.with_sibling(to, |_, req| {
+                    if let Some(sib) = req.h2.as_mut().filter(|sib| sib.id == Some(s)) {
+                        sib.closed_with(e);
+                    }
+                });
+            }
+        }
+        if oom {
+            return Err(ErrorKind::OutOfMemory);
+        }
         match sent {
             Ok(all) => {
                 self.stream().out_pending = !all;
@@ -497,10 +561,11 @@ impl Request {
                     });
                 }
                 Ok(Recv::Eof) => {
-                    // The peer closed the connection: the stream ends
+                    // The peer closed the connection: the streams end
                     // with it, whole or not (`h2_progress_ingress`).
                     with_session(lease, |h2, _| h2.set_closed());
                     lease.get().mark_close();
+                    self.wake_others(cx, lease);
                 }
                 Ok(Recv::Data(_)) => {
                     let mut rx = std::mem::take(lease.get().rx_mut());
@@ -520,6 +585,9 @@ impl Request {
                     self.h2_egress(cx, lease)?;
                 }
                 Err(e) => {
+                    // The connection failed under every stream on it.
+                    lease.get().mark_close();
+                    self.wake_others(cx, lease);
                     let kind = match e {
                         RecvFailed::OutOfMemory => return Err(ErrorKind::OutOfMemory),
                         RecvFailed::Os(_) if cx.easy().report().reasons() > said => {
@@ -675,13 +743,45 @@ impl Request {
     ) -> Result<(), ErrorKind> {
         let mut after = After::default();
         let prior = lease.conn().h2().and_then(H2Conn::goaway);
+        let me = cx.me;
+        let own = self.stream().id;
         let fed = with_session(lease, |h2, lease| {
+            let Ok(routes) = h2.routes_copied() else {
+                return Err(crate::http2::FrameError {
+                    code: -901,
+                    text: "Out of memory",
+                    fatal: true,
+                });
+            };
             h2.session().recv(bytes, &mut |event| {
+                // What is read for a sibling's stream is handed to it at
+                // once, as C's callbacks write to that stream's transfer.
+                if let Some(s) = event.stream()
+                    && Some(s) != own
+                    && let Some(&(_, to)) = routes.iter().find(|r| r.0 == s)
+                    && to != me
+                {
+                    let consumed = match event {
+                        Event::Data { stream, bytes } => Some((stream, bytes.len())),
+                        _ => None,
+                    };
+                    let after = &mut after;
+                    return match cx
+                        .with_sibling(to, |bcx, req| req.h2_event(bcx, lease, event, prior, after))
+                    {
+                        Some(heard) => heard,
+                        None => match consumed {
+                            Some(c) => match after.consumed.try_push(c) {
+                                Ok(()) => Heard::Fine,
+                                Err(_) => Heard::Failed,
+                            },
+                            None => Heard::Fine,
+                        },
+                    };
+                }
                 self.h2_event(cx, lease, event, prior, &mut after)
             })
         });
-        let id = self.stream().id;
-        let resume = after.resume && id.is_some();
         let goaway = after.goaway;
         with_session(lease, |h2, _| {
             if let Some(goaway) = goaway {
@@ -694,13 +794,15 @@ impl Request {
             for &(stream, code) in &after.resets {
                 let _reset = h2.session().reset(stream, code);
             }
-            if resume && let Some(id) = id {
-                let _resumed = h2.session().resume(id);
+            for &stream in &after.resumes {
+                let _resumed = h2.session().resume(stream);
             }
         });
         if goaway.is_some() {
-            // No new request goes on it (`Curl_multi_connchanged`).
+            // No new request goes on it (`Curl_multi_connchanged`), and
+            // each stream on it learns so.
             lease.get().mark_close();
+            self.wake_others(cx, lease);
         }
         if let Err(e) = fed {
             let n = e.code;
@@ -810,7 +912,7 @@ impl Request {
             Event::WindowUpdate { stream } if ours(stream) => {
                 let s = self.stream();
                 if s.taken < s.sendbuf.len() {
-                    after.resume = true;
+                    return pushed(after.resumes.try_push(stream));
                 }
                 Heard::Fine
             }
@@ -850,6 +952,17 @@ impl Request {
                 Heard::Fine
             }
             _ => Heard::Fine,
+        }
+    }
+
+    /// Step every other transfer with a stream on the connection: what
+    /// they share changed, a GOAWAY or the connection's end.
+    fn wake_others<H: Host>(&self, cx: &mut StepCx<'_, H>, lease: &ConnLease) {
+        let me = cx.me;
+        if let Some(h2) = lease.conn().h2() {
+            for to in h2.others(me) {
+                cx.wake(to);
+            }
         }
     }
 
@@ -909,11 +1022,18 @@ impl Request {
     /// reset, and that goes out.
     pub(super) fn h2_done<H: Host>(&mut self, cx: &mut StepCx<'_, H>, lease: &mut ConnLease) {
         let stream = self.stream();
-        let Some(id) = stream.id.filter(|_| !stream.closed) else {
-            return;
-        };
+        let id = stream.id;
+        let open = !stream.closed;
         stream.closed = true;
         if !lease.conn().is_h2() {
+            return;
+        }
+        let Some(id) = id else {
+            return;
+        };
+        // The stream is no transfer's from here.
+        with_session(lease, |h2, _| h2.unroute(id));
+        if !open {
             return;
         }
         let _reset = with_session(lease, |h2, _| h2.session().reset(id, code::STREAM_CLOSED));

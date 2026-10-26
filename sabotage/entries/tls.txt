@@ -231,7 +231,7 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls_hands::the_context_handler_and_the_handlers_reach_the_library_s_objects
 features: test-util
 --- old
-    cx.lent = run.state.tls_native();
+    cx.lent = run.state.tls_native(Some(&cx.rest.caches.pool));
     let wake = step_lent(run, cx);
 --- new
     cx.lent = None;

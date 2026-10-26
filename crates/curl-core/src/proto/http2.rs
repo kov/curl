@@ -3,9 +3,9 @@
 //! connection to take them, and the request's head turned into fields
 //! (`Curl_h1_req_parse_read`, `Curl_http_req_to_h2`).
 //!
-//! A connection that speaks HTTP/2 serves one request at a time for now,
-//! as an HTTP/1 one does: the request's stream lives with the request
-//! (`proto::http`), the session with the connection.
+//! A request's stream lives with the request (`proto::http`), the session
+//! with the connection, which knows each open stream's transfer: what it
+//! reads for another transfer's stream is delivered to that one.
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
@@ -14,6 +14,7 @@ use crate::conn::io::Sent;
 use crate::conn::layer::LayerCx;
 use crate::error::ErrorKind;
 use crate::http2::{BodyRead, Event, FrameError, Heard, Http2, Session, Setting, StreamId};
+use crate::multi::TransferId;
 
 /// A stream's receive window, as the client opens it
 /// (`H2_STREAM_WINDOW_SIZE_INITIAL`).
@@ -44,6 +45,9 @@ pub(crate) struct H2Conn {
     closed: bool,
     /// The client said GOAWAY, as the connection shuts down.
     sent_goaway: bool,
+    /// Each open stream's transfer, as its request opened it, until the
+    /// request is over (C's stream user data).
+    routes: Vec<(StreamId, TransferId)>,
 }
 
 impl std::fmt::Debug for H2Conn {
@@ -66,6 +70,32 @@ pub(crate) struct GoAway {
 /// The session could not be set up (`cf_h2_ctx_open`'s failures).
 fn failed(_: FrameError) -> ErrorKind {
     ErrorKind::Http2
+}
+
+/// What sending on the session needs of its caller: the connection's
+/// context to send in, each stream's body as the session frames it, and
+/// what the session tells of streams as it sends (`h2_progress_egress`).
+pub(crate) trait Egress {
+    fn layer_cx(&mut self) -> &mut dyn LayerCx;
+    fn body(&mut self, stream: StreamId, room: &mut [u8]) -> BodyRead;
+    fn event(&mut self, event: Event<'_>) -> Heard;
+}
+
+/// Sending with no body to frame and nothing to hear, as a goodbye.
+struct Bare<'a>(&'a mut dyn LayerCx);
+
+impl Egress for Bare<'_> {
+    fn layer_cx(&mut self) -> &mut dyn LayerCx {
+        self.0
+    }
+
+    fn body(&mut self, _: StreamId, _: &mut [u8]) -> BodyRead {
+        BodyRead::Failed
+    }
+
+    fn event(&mut self, _: Event<'_>) -> Heard {
+        Heard::Fine
+    }
 }
 
 /// Why sending failed.
@@ -109,6 +139,7 @@ impl H2Conn {
                 goaway: None,
                 closed: false,
                 sent_goaway: false,
+                routes: Vec::new(),
             },
             stream,
         ))
@@ -116,6 +147,45 @@ impl H2Conn {
 
     pub(crate) fn session(&mut self) -> &mut dyn Session {
         &mut *self.session
+    }
+
+    /// The peer's limit on streams open at once.
+    pub(crate) fn max_concurrent(&self) -> u32 {
+        self.session.max_concurrent()
+    }
+
+    /// Stream `stream` is transfer `to`'s, from its opening on.
+    pub(crate) fn route(&mut self, stream: StreamId, to: TransferId) -> Result<(), OutOfMemory> {
+        debug_assert!(self.route_of(stream).is_none(), "{stream:?} routed twice");
+        self.routes.try_push((stream, to))
+    }
+
+    /// Stream `stream` is no transfer's any more: its request is over.
+    pub(crate) fn unroute(&mut self, stream: StreamId) {
+        self.routes.retain(|&(s, _)| s != stream);
+    }
+
+    /// The transfer stream `stream` is for, while its request runs.
+    pub(crate) fn route_of(&self, stream: StreamId) -> Option<TransferId> {
+        self.routes
+            .iter()
+            .find(|&&(s, _)| s == stream)
+            .map(|&(_, to)| to)
+    }
+
+    /// The transfers of the streams open, but `but`'s.
+    pub(crate) fn others(&self, but: TransferId) -> impl Iterator<Item = TransferId> + '_ {
+        self.routes
+            .iter()
+            .map(|&(_, to)| to)
+            .filter(move |&to| to != but)
+    }
+
+    /// Each open stream's transfer, copied.
+    pub(crate) fn routes_copied(&self) -> Result<Vec<(StreamId, TransferId)>, OutOfMemory> {
+        let mut routes = Vec::new();
+        routes.try_extend_from_slice(&self.routes)?;
+        Ok(routes)
     }
 
     pub(crate) fn goaway(&self) -> Option<GoAway> {
@@ -135,22 +205,21 @@ impl H2Conn {
         self.closed = true;
     }
 
-    /// Ask the session for what it wants sent, reading bodies with `body`
-    /// and telling closes with `events`, and send what the connection
-    /// takes (`h2_progress_egress`): whether all of it went.
+    /// Ask the session for what it wants sent, reading bodies and telling
+    /// what it says of streams through `with`, and send what the
+    /// connection takes (`h2_progress_egress`): whether all of it went.
     pub(crate) fn egress(
         &mut self,
-        cx: &mut dyn LayerCx,
+        with: &mut dyn Egress,
         conn: &mut Conn,
-        body: &mut dyn FnMut(StreamId, &mut [u8]) -> BodyRead,
-        events: &mut dyn FnMut(Event<'_>) -> Heard,
     ) -> Result<bool, EgressFailed> {
         loop {
-            if !self.flush(cx, conn)? {
+            if !self.flush(with.layer_cx(), conn)? {
                 return Ok(false);
             }
             let H2Conn { session, out, .. } = self;
             let mut oom = false;
+            let with = std::cell::RefCell::new(&mut *with);
             session
                 .send(
                     &mut |bytes| {
@@ -160,8 +229,8 @@ impl H2Conn {
                         }
                         out.len() < OUT_MAX
                     },
-                    body,
-                    events,
+                    &mut |stream, room| with.borrow_mut().body(stream, room),
+                    &mut |event| with.borrow_mut().event(event),
                 )
                 .map_err(EgressFailed::Session)?;
             if oom {
@@ -182,7 +251,7 @@ impl H2Conn {
         }
         self.sent_goaway = true;
         if self.session.goaway(0, b"shutdown\0").is_ok() {
-            let sent = self.egress(cx, conn, &mut |_, _| BodyRead::Failed, &mut |_| Heard::Fine);
+            let sent = self.egress(&mut Bare(cx), conn);
             // What does not go now goes with the connection.
             drop(sent);
         }

@@ -2,9 +2,9 @@
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::an_exchange_waits_for_what_its_layers_want
 --- old
-                let events = x.lease.adjust_pollset(x.proto.interest(pause));
+                    let events = slot.adjust_pollset(x.proto.interest(pause));
 --- new
-                let events = x.proto.interest(pause);
+                    let events = x.proto.interest(pause);
 
 === a transfer that waits for nothing has its layers add to its wait
 file: crates/curl-core/src/conn/pool.rs

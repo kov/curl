@@ -402,12 +402,10 @@ impl curl_core::http2::Session for Session {
         let write = unsafe { sys::nghttp2_session_want_write(self.raw.as_ptr()) } != 0;
         Wants { read, write }
     }
-}
 
-impl Session {
     /// The peer's limit on streams open at once
     /// (`NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS`).
-    pub fn max_concurrent(&self) -> u32 {
+    fn max_concurrent(&self) -> u32 {
         // SAFETY: the session.
         unsafe {
             sys::nghttp2_session_get_remote_settings(

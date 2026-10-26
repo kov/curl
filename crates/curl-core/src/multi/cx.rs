@@ -777,6 +777,7 @@ pub(super) fn tell<H: Host>(
             notify: &mut *t.notify,
             counts: t.counts.get(),
             sockets: &mut *t.sockets,
+            pool: None,
         };
         if let Err(Abort) = events.socket(&mut cx, who, change.key, change.what, assigned) {
             *t.life = Life::Dead;
@@ -880,6 +881,9 @@ pub struct EventCx<'a, H: Host> {
     pub(super) counts: Counts,
     pub(super) sockets: &'a mut SocketTable<H::Socket>,
     pub(super) alive: &'a Alive,
+    /// The multi's pool, where a connection that multiplexes is; none
+    /// within a step, which has the pool apart.
+    pub(super) pool: Option<&'a Pool>,
 }
 
 impl<H: Host> EventCx<'_, H> {
@@ -925,7 +929,7 @@ impl<H: Host> EventCx<'_, H> {
 
     /// As `Multi::tls_native`.
     pub fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
-        super::tls_native_in(self.slots, id)
+        super::tls_native_in(self.slots, self.pool, id)
     }
 
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {

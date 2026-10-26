@@ -26,13 +26,13 @@ witness: curl-core proto::http::tests::connect_only::a_handle_that_only_connects
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_reserved_connection_is_its_handle_s_alone
 --- old
-            Place::Leased(_) | Place::Reserved(_) => None,
+            Place::Leased(_) | Place::Reserved(_) | Place::Attached(_) => None,
         }
     }
 
     fn idle_mut(&mut self) -> Option<&mut Conn> {
 --- new
-            Place::Leased(_) => None,
+            Place::Leased(_) | Place::Attached(_) => None,
             Place::Reserved(slot) => match slot {
                 ConnSlot::Open(conn) => Some(conn),
                 _ => unreachable!("a reserved connection is open"),

@@ -25,11 +25,18 @@ use crate::time::Instant;
 /// A transfer's hold on a connection, and the connection, being set up or
 /// up. Only the pool makes one, and only `Pool::release` takes one back,
 /// that pool being the one `home` names; dropping one is a bug, and aborts.
+///
+/// A lease on a connection that multiplexes is a key: the connection
+/// lives in its pool place, shared by the transfers attached to it, and
+/// is out with a lease only for the step of the transfer holding it
+/// (`Pool::check_out`, `Pool::check_in`).
 #[must_use]
 #[derive(Debug)]
 pub(crate) struct ConnLease {
     id: ConnId,
-    /// None only as the pool takes it back.
+    /// None only as the pool takes it back, and, for a key, while the
+    /// connection is in its place: whether the lease is a key, its pool's
+    /// place says.
     conn: Option<ConnSlot>,
     /// The pool it is from, and goes back to.
     home: Home,
@@ -61,6 +68,18 @@ impl ConnLease {
     /// had last, and what the tests tell leases apart by.
     pub(crate) fn id(&self) -> ConnId {
         self.id
+    }
+
+    /// The connection, as the lease holds it: always, but for a key's
+    /// outside its transfer's step.
+    pub(crate) fn held(&self) -> &ConnSlot {
+        self.slot()
+    }
+
+    /// The connection, if the lease has it: a key has it only while its
+    /// transfer's step has it out.
+    pub(crate) fn holding(&self) -> Option<&ConnSlot> {
+        self.conn.as_ref()
     }
 
     /// Move the connection's setup on by one event. A connection already
@@ -234,7 +253,30 @@ impl ConnLease {
     /// The connection's sockets: its attempts' while it is set up, none
     /// without a network.
     pub(crate) fn sockets(&self) -> impl Iterator<Item = &dyn Socket> {
-        let (setup, open) = match self.slot() {
+        self.slot().sockets()
+    }
+
+    /// What the connection's layers answer `q` (`ConnSlot::query`).
+    pub(crate) fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
+        self.slot().query(q)
+    }
+
+    pub(crate) fn number(&self) -> ConnNumber {
+        match self.slot() {
+            ConnSlot::Connecting(m) => m.number(),
+            ConnSlot::Open(conn) => conn.number,
+            ConnSlot::Failed(number) => *number,
+        }
+    }
+}
+
+/// What can be read of a connection wherever it is, with its lease or in
+/// its place: what a transfer waits on it for, outside its step.
+impl ConnSlot {
+    /// The connection's sockets: its attempts' while it is set up, none
+    /// without a network.
+    pub(crate) fn sockets(&self) -> impl Iterator<Item = &dyn Socket> {
+        let (setup, open) = match self {
             ConnSlot::Connecting(m) => (Some(m), None),
             ConnSlot::Open(Conn {
                 transport: Transport::Tcp(stream),
@@ -253,7 +295,7 @@ impl ConnLease {
     /// is not asked about, as its layers' sockets would then be ready
     /// forever (`Curl_conn_adjust_pollset`).
     pub(crate) fn adjust_pollset(&self, wanted: Events) -> Events {
-        match self.slot() {
+        match self {
             ConnSlot::Open(Conn {
                 transport: Transport::Tcp(stream),
                 ..
@@ -265,7 +307,7 @@ impl ConnLease {
     /// What the connection's layers answer `q`, the topmost that does,
     /// while it is set up and once it is up.
     pub(crate) fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
-        match self.slot() {
+        match self {
             ConnSlot::Connecting(m) => m.query(q),
             ConnSlot::Open(Conn {
                 transport: Transport::Tcp(stream),
@@ -275,19 +317,19 @@ impl ConnLease {
         }
     }
 
-    pub(crate) fn number(&self) -> ConnNumber {
-        match self.slot() {
-            ConnSlot::Connecting(m) => m.number(),
-            ConnSlot::Open(conn) => conn.number,
-            ConnSlot::Failed(number) => *number,
+    /// The connection, once up.
+    pub(crate) fn open(&self) -> Option<&Conn> {
+        match self {
+            ConnSlot::Open(conn) => Some(conn),
+            ConnSlot::Connecting(_) | ConnSlot::Failed(_) => None,
         }
     }
 }
 
 impl ConnLease {
     /// The lease taken apart, as only the pool does.
-    fn into_parts(mut self) -> (ConnId, ConnSlot, Home) {
-        let conn = self.conn.take().expect("held until given back");
+    fn into_parts(mut self) -> (ConnId, Option<ConnSlot>, Home) {
+        let conn = self.conn.take();
         let home = std::mem::replace(&mut self.home, Home::Multi);
         let id = self.id;
         // Taken apart, not dropped: it held nothing more.
@@ -301,11 +343,15 @@ impl ConnLease {
     }
 
     fn slot(&self) -> &ConnSlot {
-        self.conn.as_ref().expect("held until given back")
+        self.conn
+            .as_ref()
+            .expect("held until given back, and out of its place")
     }
 
     fn slot_mut(&mut self) -> &mut ConnSlot {
-        self.conn.as_mut().expect("held until given back")
+        self.conn
+            .as_mut()
+            .expect("held until given back, and out of its place")
     }
 }
 
@@ -333,6 +379,10 @@ pub(crate) struct Wanted<'w> {
     /// The HTTP versions the transfer may speak: a connection that speaks
     /// another is passed over (`url_match_http_version`).
     pub(crate) versions: crate::proto::http::Versions,
+    /// The transfer may share a connection that multiplexes, with at most
+    /// this many transfers on it (`xfer_may_multiplex`,
+    /// `Curl_multi_max_concurrent_streams`).
+    pub(crate) multiplex: Option<NonZeroU32>,
 }
 
 /// How long the transfer looking for a connection lets one be idle, and
@@ -377,6 +427,8 @@ pub(crate) enum Released {
     Closed(ConnNumber),
     /// Closed at once: the transfer ended prematurely.
     Terminated(ConnNumber),
+    /// Kept for the transfers still attached to it, this many.
+    InUse(NonZeroU32),
 }
 
 /// The pool had more connections than it keeps when one went idle, and
@@ -426,6 +478,16 @@ pub(crate) enum PoolNote {
     IdleTooLong { idle_ms: u64, max_ms: u64 },
     /// A match not healthy (`url_match_conn`).
     Dead(ConnNumber),
+    /// A connection that multiplexes, and serves the transfer, has as many
+    /// on it as the multi lets it, or as its server takes if `peer`
+    /// (`url_match_multiplex_limits`).
+    Full {
+        number: ConnNumber,
+        users: u32,
+        peer: bool,
+    },
+    /// A connection that multiplexes was joined.
+    Multiplexed,
     /// A connection closed, gracefully.
     Closed(ConnNumber),
 }
@@ -461,11 +523,40 @@ enum Place {
     /// reused, pruned or closed to make room, but counted toward the
     /// limits (`bits.connect_only`); always open.
     Reserved(ConnSlot),
+    /// Multiplexing, leased by the transfers attached to it, whose leases
+    /// are keys; always open. Its count of them is the connection's
+    /// `Use::Leased`.
+    Attached(Shared),
 }
 
 /// What the pool knows of a connection leased: enough to count it.
 struct Leased {
     route: Route,
+}
+
+/// A connection that multiplexes, in its place.
+struct Shared {
+    /// None while the step of one of its transfers has it out.
+    slot: Option<ConnSlot>,
+    route: Route,
+}
+
+impl Shared {
+    fn conn(&self) -> &Conn {
+        match &self.slot {
+            Some(ConnSlot::Open(conn)) => conn,
+            Some(_) => unreachable!("an attached connection is open"),
+            None => panic!("an attached connection is out with a step"),
+        }
+    }
+
+    fn conn_mut(&mut self) -> &mut Conn {
+        match &mut self.slot {
+            Some(ConnSlot::Open(conn)) => conn,
+            Some(_) => unreachable!("an attached connection is open"),
+            None => panic!("an attached connection is out with a step"),
+        }
+    }
 }
 
 impl Place {
@@ -476,7 +567,7 @@ impl Place {
                 ConnSlot::Open(conn) => Some(conn),
                 _ => unreachable!("an idle connection is open"),
             },
-            Place::Leased(_) | Place::Reserved(_) => None,
+            Place::Leased(_) | Place::Reserved(_) | Place::Attached(_) => None,
         }
     }
 
@@ -486,7 +577,7 @@ impl Place {
                 ConnSlot::Open(conn) => Some(conn),
                 _ => unreachable!("an idle connection is open"),
             },
-            Place::Leased(_) | Place::Reserved(_) => None,
+            Place::Leased(_) | Place::Reserved(_) | Place::Attached(_) => None,
         }
     }
 
@@ -495,7 +586,7 @@ impl Place {
         match self {
             Place::Idle(ConnSlot::Open(conn)) | Place::Reserved(ConnSlot::Open(conn)) => Some(conn),
             Place::Idle(_) | Place::Reserved(_) => unreachable!("a connection held is open"),
-            Place::Leased(_) => None,
+            Place::Leased(_) | Place::Attached(_) => None,
         }
     }
 
@@ -506,8 +597,12 @@ impl Place {
             Place::Leased(Leased {
                 route: Route::Tcp(tcp),
                 ..
+            })
+            | Place::Attached(Shared {
+                route: Route::Tcp(tcp),
+                ..
             }) => Some(tcp.destination()),
-            Place::Leased(_) => None,
+            Place::Leased(_) | Place::Attached(_) => None,
         }
     }
 }
@@ -572,6 +667,7 @@ impl Pool {
                     auth: Wants::NONE,
                     last: None,
                     versions: crate::proto::http::Versions::ALL,
+                    multiplex: None,
                 },
                 rules,
                 exits,
@@ -703,6 +799,9 @@ impl Pool {
         now: Instant,
         notes: &mut Vec<PoolNote>,
     ) -> Result<Option<ConnLease>, OutOfMemory> {
+        if let Some(Place::Attached(_)) = self.conns.get(id) {
+            return self.join_if(id, here, wanted, notes);
+        }
         let Some(conn) = self.conns.get_mut(id).and_then(Place::idle_mut) else {
             return Ok(None);
         };
@@ -766,6 +865,46 @@ impl Pool {
         Ok(None)
     }
 
+    /// A key to the attached connection `id`, from `here`, if the transfer
+    /// may share it and it takes one more (`url_match_multiplex_needs`,
+    /// `url_match_multiplex_limits`).
+    fn join_if(
+        &mut self,
+        id: ConnId,
+        here: &Home,
+        wanted: &Wanted<'_>,
+        notes: &mut Vec<PoolNote>,
+    ) -> Result<Option<ConnLease>, OutOfMemory> {
+        let Some(Place::Attached(shared)) = self.conns.get(id) else {
+            unreachable!("just found attached");
+        };
+        let conn = shared.conn();
+        let Some(max) = wanted.multiplex else {
+            return Ok(None);
+        };
+        if conn.close
+            || !conn.serves(wanted.route)
+            || !conn.serves_auth(&wanted.auth)
+            || !wanted.versions.h2
+        {
+            return Ok(None);
+        }
+        let Use::Leased(users) = conn.use_ else {
+            unreachable!("an attached connection is leased");
+        };
+        let peer_max = conn.h2().map_or(u32::MAX, |h2| h2.max_concurrent());
+        if users >= max || users.get() >= peer_max {
+            notes.try_push(PoolNote::Full {
+                number: conn.number,
+                users: users.get(),
+                peer: users < max,
+            })?;
+            return Ok(None);
+        }
+        notes.try_push(PoolNote::Multiplexed)?;
+        Ok(Some(self.join_attached(id, here)))
+    }
+
     /// Discard every connection no one leases (`Curl_cpool_destroy`):
     /// each shut down once, and kept by the multi's set behind `exits`
     /// if that does not finish; one reserved for its handle is closed at
@@ -779,7 +918,7 @@ impl Pool {
                 Some(Place::Reserved(_)) => {
                     self.close_reserved(id, exits, now);
                 }
-                Some(Place::Leased(_)) | None => {}
+                Some(Place::Leased(_) | Place::Attached(_)) | None => {}
             }
         }
     }
@@ -790,7 +929,7 @@ impl Pool {
         match self.conns.get_mut(id)? {
             Place::Reserved(ConnSlot::Open(conn)) => Some(conn),
             Place::Reserved(_) => unreachable!("a reserved connection is open"),
-            Place::Idle(_) | Place::Leased(_) => None,
+            Place::Idle(_) | Place::Leased(_) | Place::Attached(_) => None,
         }
     }
 
@@ -838,15 +977,34 @@ impl Pool {
         exits: &mut dyn Exits,
         now: Instant,
     ) -> Released {
-        let (id, mut slot, home) = lease.into_parts();
+        let (id, slot, home) = lease.into_parts();
         assert!(
             home.is(here),
             "a lease on {id:?} from {home:?} given back to {here:?}"
         );
-        assert!(
-            matches!(self.conns.get(id), Some(Place::Leased(_))),
-            "a lease on {id:?}, which the pool no longer has"
-        );
+        let mut slot = match slot {
+            Some(slot) => {
+                assert!(
+                    matches!(self.conns.get(id), Some(Place::Leased(_))),
+                    "a lease on {id:?}, which the pool no longer has"
+                );
+                slot
+            }
+            // A key: the connection is in its place. Another's still
+            // there, it stays (`CONN_INUSE`); the last decides its fate.
+            None => match self.detach(id) {
+                Some(slot) => slot,
+                None => {
+                    let Some(Place::Attached(shared)) = self.conns.get(id) else {
+                        unreachable!("just detached from");
+                    };
+                    let Use::Leased(in_use) = shared.conn().use_ else {
+                        unreachable!("an attached connection is leased");
+                    };
+                    return Released::InUse(in_use);
+                }
+            },
+        };
         if let ConnSlot::Open(conn) = &mut slot
             && let Route::Tcp(tcp) = &conn.route
             // One only connected is the handle's, whatever its protocol.
@@ -899,6 +1057,132 @@ impl Pool {
         }
     }
 
+    /// Make the connection `lease` holds, up and leased by it alone, one
+    /// that multiplexes: it goes to its place, and the lease becomes a
+    /// key to it, as C attaches a transfer to a connection others may
+    /// join.
+    pub(crate) fn attach(&mut self, lease: &mut ConnLease) {
+        let id = lease.id;
+        assert!(!self.is_attached(lease), "{id:?} is attached already");
+        let slot = lease.conn.take().expect("held until given back");
+        let ConnSlot::Open(conn) = &slot else {
+            panic!("{id:?} is not up");
+        };
+        assert_eq!(conn.use_, Use::Leased(NonZeroU32::MIN), "one lease");
+        let route = conn.route.clone();
+        let place = self.conns.get_mut(id).expect("leased from this pool");
+        assert!(matches!(place, Place::Leased(_)), "{id:?} is not leased");
+        *place = Place::Attached(Shared {
+            slot: Some(slot),
+            route,
+        });
+    }
+
+    /// Whether `lease` is a key to a connection in its place here, one
+    /// that multiplexes: only the multi's own pool has them.
+    pub(crate) fn is_attached(&self, lease: &ConnLease) -> bool {
+        matches!(lease.home, Home::Multi)
+            && matches!(self.conns.get(lease.id), Some(Place::Attached(_)))
+    }
+
+    /// A key to the connection `id`, attached, for one more transfer, from
+    /// `here`, the pool this is: the connection out with the key, for the
+    /// joining transfer's step.
+    fn join_attached(&mut self, id: ConnId, here: &Home) -> ConnLease {
+        let Some(Place::Attached(shared)) = self.conns.get_mut(id) else {
+            panic!("{id:?} is not attached");
+        };
+        let conn = shared.conn_mut();
+        let Use::Leased(n) = conn.use_ else {
+            unreachable!("an attached connection is leased");
+        };
+        conn.use_ = Use::Leased(n.checked_add(1).expect("a count of transfers fits"));
+        // Another's request is on it: the joining one reuses it.
+        conn.served = true;
+        // Out with the step that joined it.
+        ConnLease {
+            id,
+            conn: shared.slot.take(),
+            home: here.clone(),
+        }
+    }
+
+    /// One transfer less on the attached connection `id`: the connection,
+    /// leased as any by the lease going back, if that was its last, out
+    /// of its place.
+    fn detach(&mut self, id: ConnId) -> Option<ConnSlot> {
+        let Some(Place::Attached(shared)) = self.conns.get_mut(id) else {
+            panic!("a key to {id:?}, which is not attached");
+        };
+        let conn = shared.conn_mut();
+        let Use::Leased(n) = conn.use_ else {
+            unreachable!("an attached connection is leased");
+        };
+        if let Some(fewer) = NonZeroU32::new(n.get() - 1) {
+            conn.use_ = Use::Leased(fewer);
+            return None;
+        }
+        let Some(Place::Attached(shared)) = self.conns.replace_with(id, |place| {
+            let Place::Attached(shared) = &place else {
+                unreachable!("just found attached");
+            };
+            let leased = Leased {
+                route: shared.route.clone(),
+            };
+            (Place::Leased(leased), place)
+        }) else {
+            unreachable!("just found attached");
+        };
+        shared.slot
+    }
+
+    /// Take the connection a key names out of its place, for its
+    /// transfer's step or its release, unless it has it out already; a
+    /// lease that holds its connection holds it already. Another step
+    /// having it out is a bug.
+    pub(crate) fn check_out(&mut self, lease: &mut ConnLease) {
+        if lease.conn.is_some() || !self.is_attached(lease) {
+            return;
+        }
+        let id = lease.id;
+        let Some(Place::Attached(shared)) = self.conns.get_mut(id) else {
+            panic!("a key to {id:?}, which is not attached");
+        };
+        lease.conn = Some(shared.slot.take().expect("out with another step"));
+    }
+
+    /// Put the connection a key's step had out back in its place, if it
+    /// had it out.
+    pub(crate) fn check_in(&mut self, lease: &mut ConnLease) {
+        if !self.is_attached(lease) {
+            return;
+        }
+        let id = lease.id;
+        // Given back outside a step, as an abandoned transfer's is, a key
+        // has nothing out.
+        let Some(slot) = lease.conn.take() else {
+            return;
+        };
+        let Some(Place::Attached(shared)) = self.conns.get_mut(id) else {
+            panic!("a key to {id:?}, which is not attached");
+        };
+        assert!(shared.slot.is_none(), "{id:?} is in its place already");
+        shared.slot = Some(slot);
+    }
+
+    /// The connection a lease names, wherever it is: with the lease, or,
+    /// for a key, in its place; none while another transfer's step has it
+    /// out, as a sibling the stepping transfer delivers to asks.
+    pub(crate) fn slot_of<'a>(&'a self, lease: &'a ConnLease) -> Option<&'a ConnSlot> {
+        if let Some(slot) = &lease.conn {
+            return Some(slot);
+        }
+        let Some(Place::Attached(shared)) = self.conns.get(lease.id) else {
+            panic!("a key to {:?}, which is not attached", lease.id);
+        };
+        shared.slot.as_ref()
+    }
+
     /// Connections in the pool, busy or idle.
     pub(crate) fn len(&self) -> u32 {
         self.conns.len()
@@ -911,7 +1195,10 @@ impl Pool {
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
             cursor = Some(id);
-            leased += usize::from(matches!(self.conns.get(id), Some(Place::Leased(_))));
+            leased += usize::from(matches!(
+                self.conns.get(id),
+                Some(Place::Leased(_) | Place::Attached(_))
+            ));
         }
         leased
     }
@@ -1153,6 +1440,7 @@ fn close(
         },
         Some(Place::Leased(_)) => panic!("{id:?} is leased"),
         Some(Place::Reserved(_)) => panic!("{id:?} is reserved"),
+        Some(Place::Attached(_)) => panic!("{id:?} is attached"),
         None => unreachable!("closing {id:?}, which the pool no longer has"),
     }
 }

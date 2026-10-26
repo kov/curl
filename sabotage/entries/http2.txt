@@ -43,9 +43,9 @@ witness: curl-core proto::http::tests::h2::a_get_goes_as_fields_and_its_response
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_body_goes_as_data_ending_the_stream
 --- old
-                        (_, true) => BodyRead::Last(n),
+            (_, true) => BodyRead::Last(n),
 --- new
-                        (_, true) => BodyRead::Bytes(n),
+            (_, true) => BodyRead::Bytes(n),
 
 === a reset stream is taken as whole
 file: crates/curl-core/src/proto/http/h2.rs
@@ -231,3 +231,50 @@ witness: curl-core proto::http::tests::h2::a_stream_asks_its_weight
                 .map_or(code::DEFAULT_WEIGHT, std::num::NonZeroU16::get);
 --- new
                 .map_or(code::DEFAULT_WEIGHT, |_| code::DEFAULT_WEIGHT);
+
+=== what the session reads for a sibling's stream goes to the stepping transfer
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::two_transfers_share_a_connection
+--- old
+                    && let Some(&(_, to)) = routes.iter().find(|r| r.0 == s)
+                    && to != me
+                {
+                    let consumed
+--- new
+                    && let Some(&(_, to)) = routes.iter().find(|r| r.0 == s)
+                    && to == me
+                {
+                    let consumed
+
+=== a transfer joining a connection makes it a session of its own
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::two_transfers_share_a_connection
+--- old
+        conn.served = true;
+        // Out with the step that joined it.
+--- new
+        // Out with the step that joined it.
+
+=== a transfer joins a connection past the multi's limit on streams
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::a_connection_at_the_multis_limit_takes_no_more
+--- old
+        if users >= max || users.get() >= peer_max {
+--- new
+        if users.get() >= peer_max {
+
+=== a transfer joins a connection past the server's limit on streams
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::a_connection_at_the_servers_limit_takes_no_more
+--- old
+        if users >= max || users.get() >= peer_max {
+--- new
+        if users >= max {
+
+=== a transfer joins a connection in a multi that does not multiplex
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_multi_that_does_not_multiplex_shares_no_connection
+--- old
+        (cx.rest.tell.limits.multiplex && versions.h2).then_some(cx.rest.tell.limits.max_streams);
+--- new
+        versions.h2.then_some(cx.rest.tell.limits.max_streams);

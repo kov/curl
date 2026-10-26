@@ -280,16 +280,14 @@ witness: curl-core proto::http::tests::https_trace::a_tunnel_says_the_protocol_i
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls_hands::the_last_progress_pass_reaches_the_connection_s_objects
 --- old
-    pub(crate) fn tls_native(&self) -> Option<TlsNative> {
-        tls_native(self.lease()?)
-    }
+    pub(crate) fn tls_native(&self, pool: Option<&Pool>) -> Option<TlsNative> {
+        let lease = self.lease()?;
 --- new
-    pub(crate) fn tls_native(&self) -> Option<TlsNative> {
-        match self {
-            TransferState::Done(_) => None,
-            state => tls_native(state.lease()?),
+    pub(crate) fn tls_native(&self, pool: Option<&Pool>) -> Option<TlsNative> {
+        if let TransferState::Done(_) = self {
+            return None;
         }
-    }
+        let lease = self.lease()?;
 
 === a connection's objects stay lent once it is given back
 file: crates/curl-core/src/multi/state.rs

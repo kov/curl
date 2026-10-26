@@ -4,7 +4,8 @@
 //!
 //! The client sends, and the server is written as, these frames:
 //!
-//! - `S\n`: SETTINGS; the client's with its settings, `S MCS=100;...\n`.
+//! - `S\n`: SETTINGS; the client's with its settings, `S MCS=100;...\n`,
+//!   the server's with its limit on streams open at once, `S <n>\n`.
 //! - `H <id> <end>\n` then `name: value\n` per field and `\n`: a header
 //!   block; `<end>` is 1 if it ends the stream.
 //! - `D <id> <len> <end>\n` then `<len>` bytes: DATA.
@@ -96,6 +97,8 @@ pub struct FakeSession {
     goaway: bool,
     /// Streams the client reset, told closed as their RST_STREAM goes.
     resets: Vec<(i32, u32)>,
+    /// The server's limit on streams open at once, as its `S <n>` said.
+    max_concurrent: Option<u32>,
 }
 
 impl FakeSession {
@@ -165,6 +168,9 @@ impl FakeSession {
         };
         match words[0] {
             "S" => {
+                if words.len() > 1 {
+                    self.max_concurrent = Some(u32::try_from(num(1)?).map_err(|_| bad)?);
+                }
                 check(events(Event::Settings))?;
                 Ok(Some(nl + 1))
             }
@@ -462,6 +468,10 @@ impl Session for FakeSession {
     fn ping(&mut self) -> Result<(), FrameError> {
         self.queued.push_back(b"P\n".to_vec());
         Ok(())
+    }
+
+    fn max_concurrent(&self) -> u32 {
+        self.max_concurrent.unwrap_or(u32::MAX)
     }
 
     fn wants(&self) -> Wants {

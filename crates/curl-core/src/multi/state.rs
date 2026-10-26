@@ -17,9 +17,10 @@ use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
 use crate::conn::shutdown::ConnSettings;
 use crate::conn::{
-    Acquired, Answer, Asked, BadEntry, BadVia, ConnLease, ConnectError, Connected, Finish, Found,
-    Full, Home, Limit, ListEntry, Made, Peer, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute,
-    Released, ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry, queries,
+    Acquired, Answer, Asked, BadEntry, BadVia, Conn, ConnLease, ConnSlot, ConnectError, Connected,
+    Finish, Found, Full, Home, Limit, ListEntry, Made, Peer, Pool, PoolNote, PreProxy, Progress,
+    ProxyCreds, ProxyRoute, Released, ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason,
+    parse_entry, queries,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -309,44 +310,68 @@ impl TransferState {
     /// holds, while it holds one: through its request's end, its last
     /// progress pass among it, until `release` lets the connection go, as
     /// C's `multi_done` detaches it only then.
-    pub(crate) fn tls_native(&self) -> Option<TlsNative> {
-        tls_native(self.lease()?)
+    /// A key's connection is reached through `pool`; without it, or
+    /// while another transfer's step has it out, it has none.
+    pub(crate) fn tls_native(&self, pool: Option<&Pool>) -> Option<TlsNative> {
+        let lease = self.lease()?;
+        let slot = match pool {
+            Some(pool) => pool.slot_of(lease)?,
+            // Without the pool, a key in its place cannot be reached.
+            None => lease.holding()?,
+        };
+        native_of(slot)
+    }
+
+    /// The connection the transfer holds, wherever it is, if it is not
+    /// out with another transfer's step.
+    fn slot<'a>(&'a self, pool: &'a Pool) -> Option<&'a ConnSlot> {
+        pool.slot_of(self.lease()?)
     }
 
     /// What the origin's TLS session waits for on the socket, if it
     /// waits.
-    fn tls_waits(&self) -> Option<TlsWait> {
-        self.waits(LayerQuery::TlsWaits)
+    fn tls_waits(&self, pool: &Pool) -> Option<TlsWait> {
+        self.waits(LayerQuery::TlsWaits, pool)
     }
 
     /// What an HTTPS proxy's TLS session waits for on the socket, if it
     /// waits, and whether the tunnel through it is made, whose filter,
     /// connected, asks it again (`cf_h1_proxy_adjust_pollset`).
-    fn proxy_tls_waits(&self) -> Option<(TlsWait, bool)> {
-        let waits = self.waits(LayerQuery::ProxyTlsWaits)?;
+    fn proxy_tls_waits(&self, pool: &Pool) -> Option<(TlsWait, bool)> {
+        let waits = self.waits(LayerQuery::ProxyTlsWaits, pool)?;
         let tunneled = match self {
             TransferState::Connecting(c) => {
                 matches!(c.lease.reached(), Some(SetupPoint::Dialed(m)) if m.has(Made::TUNNEL))
             }
             state => state
-                .lease()
-                .is_some_and(|l| l.is_up() && l.conn().tunnels()),
+                .slot(pool)
+                .and_then(ConnSlot::open)
+                .is_some_and(Conn::tunnels),
         };
         Some((waits, tunneled))
     }
 
     /// What the TLS session `q` asks of waits for, if it waits.
-    fn waits(&self, q: LayerQuery) -> Option<TlsWait> {
-        let lease = match self {
+    fn waits(&self, q: LayerQuery, pool: &Pool) -> Option<TlsWait> {
+        let slot = match self {
             TransferState::Done(_) => None,
-            state => state.lease(),
+            state => state.slot(pool),
         }?;
-        match lease.query(q)? {
+        match slot.query(q)? {
             LayerAnswer::TlsWaits(TlsWait::Nothing) => None,
             LayerAnswer::TlsWaits(waits) => Some(waits),
             LayerAnswer::TlsNative(_) | LayerAnswer::Alpn(..) => {
                 unreachable!("an answer of another question")
             }
+        }
+    }
+
+    /// The lease the transfer holds, if it holds one.
+    fn lease_mut(&mut self) -> Option<&mut ConnLease> {
+        match self {
+            TransferState::Connecting(c) => Some(&mut c.lease),
+            TransferState::Done(d) => Some(&mut d.lease),
+            _ => self.attached_mut().map(|a| &mut a.lease),
         }
     }
 
@@ -522,6 +547,10 @@ fn release<H: Host>(
     // The connection's objects go with its lease: the step lends them no
     // more (`Curl_detach_connection`).
     cx.lent = None;
+    // A key given back outside its step, as an abandoned transfer's is,
+    // has its connection out to say what became of it.
+    let mut lease = lease;
+    cx.rest.caches.pool.check_out(&mut lease);
     let finish = Finish {
         premature,
         forbid_reuse: cx.easy().options().limits.reuse.forbid,
@@ -539,18 +568,30 @@ fn release<H: Host>(
     }
     let home = lease.home().clone();
     let closes = lease.closes() || stream_closed;
+    let multiplex = u8::from(lease.is_h2());
     let released = cx.rest.pool_section(cx.me, &home, |pool, exits, here| {
+        let mut lease = lease;
+        pool.check_in(&mut lease);
         pool.release(here, lease, finish, limit, exits, now)
     });
-    // No connection carries more than one transfer.
-    mstate::trace(cx, format_args!("multi_done_locked, in use=0"));
+    let in_use = match released {
+        Released::InUse(n) => n.get(),
+        _ => 0,
+    };
+    mstate::trace(cx, format_args!("multi_done_locked, in use={in_use}"));
+    if in_use > 0 {
+        mstate::trace(
+            cx,
+            format_args!("Connection still in use {in_use}, no more multi_done now!"),
+        );
+    }
     if let Released::Closed(n) | Released::Terminated(n) = &released {
         // A connection to no host, a file's, has an empty name.
         let (host, port) = origin.map_or((Bytes(b""), 0), |o| (Bytes(o.name()), o.port()));
         mstate::trace(
             cx,
             format_args!(
-                "multi_done, terminating conn {n} to {host}:{port}, forbid={}, close={}, premature={}, conn_multiplex=0",
+                "multi_done, terminating conn {n} to {host}:{port}, forbid={}, close={}, premature={}, conn_multiplex={multiplex}",
                 u8::from(finish.forbid_reuse),
                 u8::from(closes),
                 u8::from(finish.premature)
@@ -581,6 +622,7 @@ fn release<H: Host>(
         }
         Released::Closed(n) => trace::info(cx, format_args!("shutting down connection {n}")),
         Released::Terminated(n) => trace::info(cx, format_args!("closing connection {n}")),
+        Released::InUse(_) => {}
     }
     // Room, perhaps, for one waiting (`multi_done`).
     schedule_pending(&mut cx.rest);
@@ -597,7 +639,7 @@ impl TransferState {
     /// leaves only the pause's, which the protocol applies. The
     /// connection's layers adjust what an exchange waits for, if it waits
     /// for anything (`Curl_conn_adjust_pollset`).
-    pub(crate) fn pollset(&self, pause: Pause) -> Pollset<'_> {
+    pub(crate) fn pollset<'a>(&'a self, pause: Pause, pool: &'a Pool) -> Pollset<'a> {
         let mut set = Pollset::new();
         match self {
             TransferState::Connecting(c) if pause.recv == RecvPause::Running => {
@@ -613,9 +655,13 @@ impl TransferState {
                 }
             }
             TransferState::Exchanging(x) => {
-                let events = x.lease.adjust_pollset(x.proto.interest(pause));
-                for s in x.lease.sockets() {
-                    set.add(s, events);
+                // A connection another transfer's step has out waits for
+                // nothing of this one's until it is back.
+                if let Some(slot) = pool.slot_of(&x.lease) {
+                    let events = slot.adjust_pollset(x.proto.interest(pause));
+                    for s in slot.sockets() {
+                        set.add(s, events);
+                    }
                 }
             }
             _ => {}
@@ -648,8 +694,9 @@ impl Run {
     pub(crate) fn pollset_trace(
         &self,
         pause: Pause,
+        pool: &Pool,
     ) -> PollsetTrace<impl Iterator<Item = (Instant, TimerKind)> + Clone + use<>> {
-        let wants = self.state.pollset(pause).wants();
+        let wants = self.state.pollset(pause, pool).wants();
         let setup = match &self.state {
             TransferState::Connecting(c) => Some((
                 matches!(c.lease.reached(), Some(SetupPoint::Dialed(_))),
@@ -661,8 +708,8 @@ impl Run {
         PollsetTrace {
             wants,
             setup,
-            tls: self.state.tls_waits(),
-            proxy_tls: self.state.proxy_tls_waits(),
+            tls: self.state.tls_waits(pool),
+            proxy_tls: self.state.proxy_tls_waits(pool),
             timers: self.deadlines.in_order(),
             paused: (pause.send_paused(), pause.recv != RecvPause::Running),
         }
@@ -1016,6 +1063,43 @@ impl<'a, H: Host> StepCx<'a, H> {
 }
 
 impl<H: Host> StepCx<'_, H> {
+    /// Run `f` with transfer `id`'s step context and its HTTP request, its
+    /// run out of its slot meanwhile, as the stepping transfer hands it
+    /// what the connection they share did for it (ENGINE.md 4.4); the
+    /// connection's TLS objects, the same, are lent to it, and it is
+    /// stepped again in the pass. None if it is gone or makes no HTTP
+    /// request.
+    pub(crate) fn with_sibling<R>(
+        &mut self,
+        id: TransferId,
+        f: impl FnOnce(&mut StepCx<'_, H>, &mut crate::proto::http::Request) -> R,
+    ) -> Option<R> {
+        let slot = self.rest.tell.slots.get_mut(id)?;
+        // Only the stepping transfer's run is out while a connection is
+        // read or written.
+        let mut run = slot.run.take().expect("a sibling's run is in its slot");
+        let lent = self.lent;
+        let r = match run.state.attached_mut().map(|x| &mut x.proto) {
+            Some(ProtoState::Http(req)) => {
+                let mut cx = StepCx::new(id, self.rest.reborrow());
+                cx.lent = lent;
+                Some(f(&mut cx, req))
+            }
+            _ => None,
+        };
+        super::put_back(self.rest.tell.slots, self.rest.dirty, id, run);
+        self.rest.dirty.insert(id.index());
+        r
+    }
+
+    /// Step transfer `id` again in the pass: something it waits on, a
+    /// connection it shares, changed.
+    pub(crate) fn wake(&mut self, id: TransferId) {
+        if self.rest.tell.slots.get(id).is_some() {
+            self.rest.dirty.insert(id.index());
+        }
+    }
+
     pub(crate) fn easy(&self) -> &Easy {
         &self
             .rest
@@ -1228,13 +1312,21 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
             return self.lent;
         }
         let slot = self.rest.tell.slots.get(id)?;
-        slot.run.as_ref()?.state.tls_native()
+        slot.run
+            .as_ref()?
+            .state
+            .tls_native(Some(&self.rest.caches.pool))
     }
 }
 
 /// The TLS library's objects of the origin's connection `lease` holds.
 pub(super) fn tls_native(lease: &ConnLease) -> Option<TlsNative> {
-    match lease.query(LayerQuery::TlsNative)? {
+    native_of(lease.held())
+}
+
+/// The TLS library's objects of the origin's connection `slot`.
+fn native_of(slot: &ConnSlot) -> Option<TlsNative> {
+    match slot.query(LayerQuery::TlsNative)? {
         LayerAnswer::TlsNative(native) => Some(native),
         LayerAnswer::Alpn(..) | LayerAnswer::TlsWaits(_) => {
             unreachable!("an answer of another question")
@@ -1267,7 +1359,7 @@ pub(crate) fn query_alpn<H: Host>(
 
 /// Replay a transfer's held output, from outside its step.
 pub(crate) fn flush<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
-    cx.lent = run.state.tls_native();
+    cx.lent = run.state.tls_native(Some(&cx.rest.caches.pool));
     let flushed = match run.state.pipeline_mut() {
         Some(p) => p.flush(cx),
         None => Ok(()),
@@ -1285,12 +1377,33 @@ fn starts<H: Host>(cx: &StepCx<'_, H>) -> Starts {
         .expect("a running transfer has started")
 }
 
-/// Run one step of `run`, the TLS objects of the connection it holds
-/// lent to its handlers meanwhile.
+/// Run one step of `run`, the connection it holds out of its place for
+/// the step if it multiplexes, and its TLS objects lent to its handlers
+/// meanwhile. A connection found to speak HTTP/2 in the step, the
+/// multi's own and let multiplex, becomes one that does (ENGINE.md 4.4).
 pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
-    cx.lent = run.state.tls_native();
+    if let Some(lease) = run.state.lease_mut() {
+        cx.rest.caches.pool.check_out(lease);
+    }
+    cx.lent = run.state.tls_native(Some(&cx.rest.caches.pool));
     let wake = step_lent(run, cx);
     cx.lent = None;
+    // A connection of the multi's own found to speak HTTP/2 goes to its
+    // place, for others to join as the search lets them
+    // (`conn->bits.multiplex`).
+    if let Some(x) = run.state.attached_mut() {
+        let lease = &mut x.lease;
+        if matches!(lease.home(), Home::Multi)
+            && !cx.rest.caches.pool.is_attached(lease)
+            && lease.is_h2()
+        {
+            cx.rest.caches.pool.attach(lease);
+            return wake;
+        }
+    }
+    if let Some(lease) = run.state.lease_mut() {
+        cx.rest.caches.pool.check_in(lease);
+    }
     wake
 }
 
@@ -3933,6 +4046,10 @@ fn acquire<H: Host>(
     };
     let last = cx.easy().last_conn.map(|l| l.id);
     let versions = proto.http_versions(cx.easy().options());
+    // A transfer that may speak HTTP/2 shares a connection that
+    // multiplexes, as the multi lets it (`xfer_may_multiplex`).
+    let multiplex =
+        (cx.rest.tell.limits.multiplex && versions.h2).then_some(cx.rest.tell.limits.max_streams);
     let found = if pool::searches(&route, rules) {
         cx.rest.pool_search(cx.me, &home, |pool, exits, here| {
             pool.find(
@@ -3942,6 +4059,7 @@ fn acquire<H: Host>(
                     auth: wants,
                     last,
                     versions,
+                    multiplex,
                 },
                 rules,
                 exits,
@@ -4004,6 +4122,20 @@ fn acquire<H: Host>(
                 );
             }
             PoolNote::Closed(n) => trace::info(cx, format_args!("shutting down connection {n}")),
+            // The server's limit is said with no space before "reached",
+            // as C says it.
+            PoolNote::Full {
+                number,
+                users,
+                peer,
+            } => trace::info(
+                cx,
+                format_args!(
+                    "connection {number}{}reached MAX_CONCURRENT_STREAMS({users}), skip",
+                    if peer { "" } else { " " }
+                ),
+            ),
+            PoolNote::Multiplexed => trace::info(cx, format_args!("Multiplexed connection found")),
         }
     }
     Ok(acquired)

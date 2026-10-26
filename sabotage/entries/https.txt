@@ -131,7 +131,7 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::https_trace::the_connect_calls_and_the_tls_filter_s_wait_are_traced
 features: test-util
 --- old
-            tls: self.state.tls_waits(),
+            tls: self.state.tls_waits(pool),
 --- new
             tls: None,
 

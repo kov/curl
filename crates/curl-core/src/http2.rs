@@ -43,6 +43,22 @@ pub enum Event<'a> {
     Reset { stream: StreamId, error: u32 },
 }
 
+impl Event<'_> {
+    /// The stream the event is of; none for the connection's own.
+    pub fn stream(&self) -> Option<StreamId> {
+        match *self {
+            Event::Header { stream, .. }
+            | Event::HeadersDone { stream, .. }
+            | Event::Data { stream, .. }
+            | Event::DataEnd { stream }
+            | Event::Closed { stream, .. }
+            | Event::Reset { stream, .. } => Some(stream),
+            Event::WindowUpdate { stream } => Some(stream).filter(|s| s.0 != 0),
+            Event::Settings | Event::GoAway { .. } => None,
+        }
+    }
+}
+
 /// What the caller made of an event: a failure stops the session's
 /// reading, and the read fails (`NGHTTP2_ERR_CALLBACK_FAILURE`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,6 +184,10 @@ pub trait Session: fmt::Debug + Send {
 
     /// What the session wants.
     fn wants(&self) -> Wants;
+
+    /// The peer's limit on streams open at once, as its settings say
+    /// (`SETTINGS_MAX_CONCURRENT_STREAMS`); none said, no limit.
+    fn max_concurrent(&self) -> u32;
 }
 
 /// HTTP/2's error codes curl uses.

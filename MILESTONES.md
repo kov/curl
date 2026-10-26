@@ -845,7 +845,7 @@ the system's under the HTTP-only programs installed here.
     - **c. Closing the step.** **Done.** The sweep over the HSTS and alt-svc entries, and
       cargo-mutants over the step's diff: each survivor tested or excluded with its reason.
 51. **The pool's `Attached` place,** a connection several transfers lease (ENGINE.md §4.4).
-    **To do**, after 52a: its only user is HTTP/2's multiplexing.
+    **Done**, with 52b, its only user.
 52. **HTTP/2** through nghttp2, in stages (ENGINE.md §4.4). **In progress.**
     - **a. One stream per connection.** **Done.** The session on the connection, beside its
       layers (`crates/curl-nghttp2` behind `http2::Http2`, a fake for the core's tests); ALPN
@@ -861,9 +861,17 @@ the system's under the HTTP-only programs installed here.
       pass; of pytest's HTTP/2 cases, those of one transfer at a time. Not built: a paused
       stream's window (one stream stops reading instead), `curl_easy_upkeep`'s PING, and the
       `--trace-config http/2` lines.
-    - **b. Multiplexing,** with 51: streams of several transfers on one connection, a
-      sibling's data delivered at once, `PIPEWAIT` and `--parallel-immediate`, server push,
-      TLS early data (2404, 2407; pytest's parallel HTTP/2 cases). **To do.**
+    - **b. Multiplexing,** with 51, in parts. **In progress.**
+      - **1. Sharing a connection.** **Done.** A transfer joins the multi's HTTP/2 connection
+        to its origin within the multi's and the server's limits on streams, each stream's
+        data delivered to its transfer as it is read, a sibling's body sent from its own
+        buffer. 2404 passes.
+      - **2. `PIPEWAIT`** and `--parallel-immediate`: a transfer waits for a connection being
+        set up to its origin to say whether it multiplexes (2407; pytest's parallel HTTP/2
+        cases). **To do.**
+      - **3. A paused stream's window,** its sibling's window kept; server push
+        (`CURLMOPT_PUSHFUNCTION`). **To do.**
+      - **4. TLS early data** (pytest 02_32, 07_70, 08_08). **To do.**
     - **c. HTTP/2 to an HTTPS proxy** (`--proxy-http2`, `CURLPROXY_HTTPS2`): a request sent
       on through it, and a tunnel as a stream (`cf-h2-proxy.c`); pytest test_10, test_13 and
       test_40's HTTP/2 proxy cases. **To do.**

@@ -568,3 +568,172 @@ fn a_stream_asks_its_weight() {
         "{sent}"
     );
 }
+
+/// A transfer's outcome, and what it saw.
+type Outcome = (Result<(), ErrorKind>, Seen);
+
+/// Two transfers to one origin, set up on one multi, the second added
+/// once the first is under way, `set` making each's options, the second
+/// driven to its end first: each's outcome and what it saw, and what the server read on each connection,
+/// the connections answering each send with the next of their replies,
+/// `talks` in turn.
+fn h2_pair(
+    talks: &[&[&[u8]]],
+    multi: impl FnOnce(&mut Multi),
+    set: impl Fn(usize, &mut Options),
+) -> ([Outcome; 2], Vec<String>) {
+    let talks: Vec<Conversation> = talks
+        .iter()
+        .map(|r| Conversation::replies(r, false).per_send())
+        .collect();
+    let mut m = serving(Peer::Accepts, &talks.iter().collect::<Vec<_>>());
+    multi(&mut m);
+    let mut ids = Vec::new();
+    let mut seen = Vec::new();
+    for (i, path) in ["/a", "/b"].into_iter().enumerate() {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let s = Seen::default();
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.output.verbose = true;
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.user_agent = Some(b"curl/test".to_vec());
+        o.http.version = HttpVersion::Http2Prior;
+        o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
+        o.callbacks.header = Some(Handler::header(s.clone()).unwrap());
+        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        set(i, o);
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        seen.push(s);
+        // The first is under way before the second looks for a
+        // connection.
+        for _ in 0..3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+    }
+    let b = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
+    let a = drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap();
+    for id in ids {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+    let mut seen = seen.into_iter();
+    let sent = talks
+        .iter()
+        .map(|t| String::from_utf8(t.received()).unwrap())
+        .collect();
+    ([(a, seen.next().unwrap()), (b, seen.next().unwrap())], sent)
+}
+
+/// The second of two replies on a connection that answers both
+/// transfers' streams, the first's response coming first.
+const SECOND: &[u8] = b"H 3 0\n:status: 201\n\nD 3 2 0\nb1D 1 2 1\naaD 3 1 1\nc";
+
+/// A second transfer to the origin joins the first's HTTP/2 connection,
+/// on a stream of its own: what the session reads for either stream goes
+/// to its own transfer, as it is read, whichever transfer read it
+/// (`on_data_chunk_recv`).
+#[test]
+fn two_transfers_share_a_connection() {
+    let ([(a, sa), (b, sb)], sent) = h2_pair(
+        &[&[b"S\nH 1 0\n:status: 200\n\n", SECOND]],
+        |_| {},
+        |_, _| {},
+    );
+    let sent = &sent[0];
+    assert_eq!(
+        (a, b),
+        (Ok(()), Ok(())),
+        "{:#?}\n{:#?}\n{sent}",
+        sa.text(),
+        sb.text()
+    );
+    let sent = sent.clone();
+    assert!(
+        sent.contains("H 1 1\n") && sent.contains("H 3 1\n"),
+        "{sent}"
+    );
+    assert_eq!(sa.body(), b"aa");
+    assert_eq!(sb.body(), b"b1c");
+    assert_eq!(sb.of("header")[0], b"HTTP/2 201 \r\n");
+    let text = sb.text();
+    assert!(
+        text.iter().any(|l| l == "Multiplexed connection found\n"),
+        "{text:?}"
+    );
+}
+
+/// A connection with as many streams on it as the server's
+/// MAX_CONCURRENT_STREAMS takes no more: the second transfer makes a
+/// connection of its own (`url_match_multiplex_limits`), saying so as C
+/// says it, with no space before "reached".
+#[test]
+fn a_connection_at_the_servers_limit_takes_no_more() {
+    let ([(a, sa), (b, sb)], sent) = h2_pair(
+        &[
+            &[b"S 1\nH 1 0\n:status: 200\n\n"],
+            &[b"S\nH 1 0\n:status: 200\n\nD 1 2 1\nbb"],
+        ],
+        |_| {},
+        |_, _| {},
+    );
+    // The first's stream never ends: it is on its connection throughout.
+    assert_eq!(
+        (a, b),
+        (Err(ErrorKind::OperationTimedout), Ok(())),
+        "{:#?}\n{:#?}\n{sent:#?}",
+        sa.text(),
+        sb.text()
+    );
+    assert_eq!(sb.body(), b"bb");
+    let text = sb.text();
+    assert!(
+        text.iter()
+            .any(|l| l == "connection #0reached MAX_CONCURRENT_STREAMS(1), skip\n"),
+        "{text:?}"
+    );
+}
+
+/// A multi that does not multiplex has each transfer make its own
+/// connection, HTTP/2 or not (`CURLMOPT_PIPELINING` off).
+#[test]
+fn a_multi_that_does_not_multiplex_shares_no_connection() {
+    let ([(a, _), (b, sb)], _) = h2_pair(
+        &[
+            &[b"S\nH 1 0\n:status: 200\n\n"],
+            &[b"S\nH 1 0\n:status: 200\n\nD 1 2 1\nbb"],
+        ],
+        |m| m.conn_limits_mut().multiplex = false,
+        |_, _| {},
+    );
+    // The first's stream never ends: it is on its connection throughout.
+    assert_eq!((a, b), (Err(ErrorKind::OperationTimedout), Ok(())));
+    assert_eq!(sb.body(), b"bb");
+    let text = sb.text();
+    assert!(text.iter().any(|l| l.contains("Trying")), "{text:?}");
+    assert!(!text.iter().any(|l| l.contains("Multiplexed")), "{text:?}");
+}
+
+/// A connection with as many transfers on it as the multi's
+/// `CURLMOPT_MAX_CONCURRENT_STREAMS` takes no more, whatever the server's
+/// limit.
+#[test]
+fn a_connection_at_the_multis_limit_takes_no_more() {
+    let ([(a, _), (b, sb)], _) = h2_pair(
+        &[
+            &[b"S\nH 1 0\n:status: 200\n\n"],
+            &[b"S\nH 1 0\n:status: 200\n\nD 1 2 1\nbb"],
+        ],
+        |m| m.conn_limits_mut().max_streams = std::num::NonZeroU32::new(1).unwrap(),
+        |_, _| {},
+    );
+    assert_eq!((a, b), (Err(ErrorKind::OperationTimedout), Ok(())));
+    assert_eq!(sb.body(), b"bb");
+    let text = sb.text();
+    assert!(
+        text.iter()
+            .any(|l| l == "connection #0 reached MAX_CONCURRENT_STREAMS(1), skip\n"),
+        "{text:?}"
+    );
+}

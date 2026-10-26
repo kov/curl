@@ -172,7 +172,8 @@ impl<H: Host> Multi<H> {
     pub fn active_socket(&mut self, id: TransferId) -> Option<Option<SocketKey>> {
         let slot = self.slots.get_mut(id)?;
         if let Some(lease) = slot.run.as_ref().and_then(|r| r.state.lease()) {
-            return Some(lease.sockets().next().map(|s| s.key()));
+            let slot = self.caches.pool.slot_of(lease);
+            return Some(slot.and_then(|s| s.sockets().next()).map(|s| s.key()));
         }
         Some(in_pool(
             Some(&mut self.caches.pool),

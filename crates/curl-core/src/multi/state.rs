@@ -89,9 +89,8 @@ pub(crate) struct Run {
     /// The method, which a redirect may have turned into a GET
     /// (`state.httpreq`).
     method: Method,
-    /// `Options::port` still applies: no redirect led to an absolute URL
-    /// (`state.allow_port`).
-    allow_port: bool,
+    /// What the requests followed so far change for the next.
+    course: Course,
     /// What HTTP's next request takes from the ones before it, kept for
     /// HTTP and not read here.
     http: Inherited,
@@ -109,10 +108,42 @@ impl Run {
             retries: 0,
             first: None,
             method: Method::Get,
-            allow_port: true,
+            course: Course::START,
             http: Inherited::default(),
             alive: false,
         }
+    }
+}
+
+/// What the requests followed so far change for the next, two flags in
+/// one byte: `Run`'s byte-sized fields fill their word, and a handle
+/// costs no more than C's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Course(u8);
+
+impl Course {
+    /// `Options::port` no longer applies: a redirect led to an absolute
+    /// URL (`state.allow_port` cleared).
+    const PORT_DROPPED: u8 = 1;
+    /// A `Location:` was followed, so each request from here on is
+    /// limited to the redirect protocols (`state.this_is_a_follow`).
+    const FOLLOWED: u8 = 2;
+    const START: Course = Course(0);
+
+    fn allows_port(self) -> bool {
+        self.0 & Course::PORT_DROPPED == 0
+    }
+
+    fn drop_port(&mut self) {
+        self.0 |= Course::PORT_DROPPED;
+    }
+
+    fn followed(self) -> bool {
+        self.0 & Course::FOLLOWED != 0
+    }
+
+    fn follow(&mut self) {
+        self.0 |= Course::FOLLOWED;
     }
 }
 
@@ -129,8 +160,15 @@ pub(crate) enum AfterRequest {
     /// one having died (C's `FOLLOW_RETRY`).
     Retry,
     /// The response's `Location:`, as the server gave it, is followed
-    /// (C's `FOLLOW_REDIR`); `code` is the response's.
-    Follow { location: Vec<u8>, code: u16 },
+    /// (C's `FOLLOW_REDIR`); `code` is the response's. A `reload` asks
+    /// for the same URL again, to answer a challenge or drop `Expect:`:
+    /// counted as a redirect, as C counts it, but no redirect for what
+    /// the next request may reach (`this_is_a_follow`).
+    Follow {
+        location: Vec<u8>,
+        code: u16,
+        reload: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -1900,7 +1938,18 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 (AfterRequest::Retry, Ok(()) | Err(ErrorKind::SendError), Some(proto)) => {
                     Some(retry_leg(run, cx, proto))
                 }
-                (AfterRequest::Follow { location, code }, Ok(()), Some(proto)) => {
+                (
+                    AfterRequest::Follow {
+                        location,
+                        code,
+                        reload,
+                    },
+                    Ok(()),
+                    Some(proto),
+                ) => {
+                    if !reload {
+                        run.course.follow();
+                    }
                     Some(follow_leg(run, cx, proto, location, *code))
                 }
                 _ => None,
@@ -3166,7 +3215,7 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
     run.retries = 0;
     run.first = None;
     run.method = cx.easy().options().method;
-    run.allow_port = true;
+    run.course = Course::START;
     run.http = Inherited::default();
     let options = cx.easy().options();
     let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);
@@ -3346,7 +3395,12 @@ fn request_url<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> Result<Url, ErrorKind>
 /// The application's port set over `url`'s, unless a redirect took it
 /// away (`Curl_peer_from_url`'s `port_override`).
 fn apply_port<H: Host>(url: &mut Url, run: &Run, cx: &StepCx<'_, H>) {
-    if let Some(port) = cx.easy().options().port.filter(|_| run.allow_port) {
+    if let Some(port) = cx
+        .easy()
+        .options()
+        .port
+        .filter(|_| run.course.allows_port())
+    {
         url.set_port(port);
     }
 }
@@ -3409,7 +3463,7 @@ fn follow_leg<H: Host>(
     // An absolute URL is reached on its own port, unless the code asks
     // for credentials.
     if !matches!(code, 401 | 407) && url::is_absolute(location) {
-        run.allow_port = false;
+        run.course.drop_port();
     }
     let text = match url.get(Part::Url, GetOptions::NONE) {
         Ok(text) => text,
@@ -3636,7 +3690,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     cx.report_mut().set_protocol(Protocol::of_scheme(&scheme));
     // A URL, and a redirect the more so, goes only where the application
     // lets it (`url_set_conn_scheme`).
-    let redirected = cx.report_mut().redirects() > 0;
+    let redirected = run.course.followed();
     let refused = !cx.easy().options().schemes.permit(&scheme, redirected);
     // C reads a `.netrc` before it checks the protocol; an HTTP request
     // reads it as it is made, any other URL here.

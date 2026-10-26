@@ -611,6 +611,7 @@ impl Request {
             return Ok(Ended::Then(AfterRequest::Follow {
                 location,
                 code: 417,
+                reload: true,
             }));
         }
         // A 401 or 407 whose challenge the request can answer has it made
@@ -641,7 +642,11 @@ impl Request {
                 location
                     .try_extend_from_slice(url)
                     .map_err(|_| ErrorKind::OutOfMemory)?;
-                return Ok(Ended::Then(AfterRequest::Follow { location, code }));
+                return Ok(Ended::Then(AfterRequest::Follow {
+                    location,
+                    code,
+                    reload: true,
+                }));
             }
         }
         if let Some((location, code)) = self.follow() {
@@ -651,6 +656,7 @@ impl Request {
             return Ok(Ended::Then(AfterRequest::Follow {
                 location: copy,
                 code,
+                reload: false,
             }));
         }
         Ok(match self.location() {

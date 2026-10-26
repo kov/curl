@@ -2240,6 +2240,22 @@ fn a_401_is_answered_with_a_method_it_offers() {
     }
 }
 
+/// A 401 answered asks for the same URL again: counted as a redirect,
+/// but not held to the redirect protocols, which only a `Location:`
+/// followed brings in (`this_is_a_follow`).
+#[test]
+fn a_401_answered_is_no_redirect_for_the_protocols() {
+    let (mut m, talk, _) = server(&[CHALLENGE, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::ANY);
+        o.schemes.make_mut().unwrap().redirect = Protocols::of(&["https"]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"ok\n");
+    assert_eq!(ran.easy.report().redirects(), 1);
+}
+
 /// The method a 401 chose is kept for the handle's next transfer, and
 /// used at once, while it is among those wanted.
 #[test]

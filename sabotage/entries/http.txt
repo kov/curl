@@ -877,15 +877,15 @@ witness: curl-core proto::http::tests::a_shared_url_is_read_as_each_transfer_sta
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::the_application_s_port_holds_until_an_absolute_redirect
 --- old
-    if let Some(port) = cx.easy().options().port.filter(|_| run.allow_port) {
+        .filter(|_| run.course.allows_port())
 --- new
-    if let Some(port) = cx.easy().options().port.filter(|_| false) {
+        .filter(|_| false)
 
 === the application's port holds past an absolute redirect
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::the_application_s_port_holds_until_an_absolute_redirect
 --- old
-        run.allow_port = false;
+        run.course.drop_port();
 --- new
 
 === a host name over 65535 bytes is looked up
@@ -1430,3 +1430,23 @@ witness: curl-core proto::http::tests::a_netrc_file_is_read_before_the_protocol_
     if (refused || !http)
 --- new
     if false && (refused || !http)
+
+=== an answered challenge is held to the redirect protocols
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_401_answered_is_no_redirect_for_the_protocols
+--- old
+                    if !reload {
+                        run.course.follow();
+--- new
+                    if !reload || *reload {
+                        run.course.follow();
+
+=== a followed Location is not held to the redirect protocols
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_redirect_goes_only_where_the_option_lets_it
+--- old
+                    if !reload {
+                        run.course.follow();
+--- new
+                    if *reload {
+                        run.course.follow();

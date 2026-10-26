@@ -108,9 +108,20 @@ impl Made {
     /// An HTTPS proxy's TLS, which stays as a layer below what follows
     /// (`[SSL-PROXY][TCP]`).
     pub(crate) const PROXY_TLS: Made = Made(16);
+    /// The tunnel is a stream of an HTTP/2 session with the proxy
+    /// (`[H2-PROXY]`), made with `TUNNEL`.
+    pub(crate) const H2_TUNNEL: Made = Made(32);
 
     pub(crate) fn has(self, which: Made) -> bool {
         self.0 & which.0 != 0
+    }
+}
+
+impl std::ops::BitOr for Made {
+    type Output = Made;
+
+    fn bitor(self, other: Made) -> Made {
+        Made(self.0 | other.0)
     }
 }
 

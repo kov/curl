@@ -225,7 +225,7 @@ fn error_text<H: Host>(cx: &StepCx<'_, H>, code: u32) -> &'static str {
 
 /// A `:status` read as C reads it (`Curl_http_decode_status`): three
 /// digits, the first not 0.
-fn decode_status(value: &[u8]) -> Option<u16> {
+pub(crate) fn decode_status(value: &[u8]) -> Option<u16> {
     match value {
         [a @ b'1'..=b'9', b @ b'0'..=b'9', c @ b'0'..=b'9'] => {
             Some(u16::from(a - b'0') * 100 + u16::from(b - b'0') * 10 + u16::from(c - b'0'))

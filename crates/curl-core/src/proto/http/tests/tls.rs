@@ -1266,3 +1266,127 @@ fn http_through_an_http_2_proxy_goes_as_its_streams_fields() {
     let fields = "H 1 1\n:method: GET\n:scheme: http\n:authority: origin.example\n:path: /p?q\n";
     assert!(sent.contains(fields), "{sent}");
 }
+
+/// A server of an HTTPS proxy that agrees to HTTP/2, answering the
+/// `CONNECT` with `answer` and, if it agrees, what goes through the
+/// tunnel with `then`; with the handle's libraries and a log of its TLS.
+fn h2_proxy(answer: &[u8], then: &[u8]) -> (&'static FakeTls, SharedLibraries, Vec<Vec<u8>>) {
+    static FAKE: crate::http2::fake::FakeH2 = crate::http2::fake::FakeH2;
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        h2: Some(&FAKE),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let mut replies = vec![WELCOME.to_vec(), fake::records(answer).unwrap()];
+    if !then.is_empty() {
+        replies.push(fake::records(then).unwrap());
+    }
+    (backend, libraries, replies)
+}
+
+/// A GET of `url` through an HTTPS proxy asked for in HTTP/2, tunneling,
+/// whose server says `replies`.
+fn through_h2_proxy(
+    libraries: SharedLibraries,
+    replies: &[Vec<u8>],
+    url: &[u8],
+) -> (Ran, Conversation) {
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let talk = Conversation::replies(&replies, false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        https_proxy(o, url);
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.kind = crate::options::ProxyType::Https2;
+        proxy.tunnel = true;
+    });
+    (ran, talk)
+}
+
+/// A tunnel through an HTTPS proxy that agreed to HTTP/2 is a stream of a
+/// session with it (`cf-h2-proxy.c`): the `CONNECT` goes as the stream's
+/// fields, no `Host` and no `Proxy-Connection`; the proxy's answer is
+/// traced as C traces it, and the origin's request and response, in
+/// HTTP/1.1 whatever the proxy speaks, go as the stream's DATA.
+#[test]
+fn a_tunnel_through_an_http_2_proxy_is_a_stream() {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
+    let data = [format!("D 1 {} 0\n", response.len()).as_bytes(), response].concat();
+    let (backend, libraries, replies) = h2_proxy(b"S\nH 1 0\n:status: 200\nvia: x\n\n", &data);
+    let (ran, talk) = through_h2_proxy(libraries, &replies, b"http://origin.example/p");
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"ok\n");
+    assert_eq!(backend.log().alpn, Some(crate::tls::Alpn::H2Http11));
+    let sent = String::from_utf8(sent(&talk)).unwrap();
+    let connect =
+        "H 1 0\n:method: CONNECT\n:authority: origin.example:80\nuser-agent: curl/test\n\n";
+    assert!(sent.contains(connect), "{sent}");
+    let request =
+        "GET /p HTTP/1.1\r\nHost: origin.example\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\r\n";
+    let framed = format!("D 1 {} 0\n{request}", request.len());
+    assert!(sent.contains(&framed), "{sent}");
+    let text = ran.seen.text();
+    let from = text
+        .iter()
+        .position(|l| l == "CONNECT: 'h2' negotiated\n")
+        .unwrap_or_else(|| panic!("{text:?}"));
+    assert_eq!(
+        text[from + 1..from + 7],
+        [
+            "Establishing HTTP/2 proxy tunnel to origin.example:80\n",
+            "CONNECT Response Status 200\n",
+            "Response Headers (1 total):\n",
+            "  via: x\n",
+            "CONNECT tunnel established, response 200\n",
+            "CONNECT phase completed for HTTP/2 proxy\n",
+        ]
+    );
+    assert!(text.iter().any(|l| l == "using HTTP/1.x\n"), "{text:?}");
+}
+
+/// A proxy that speaks HTTP/2 refusing the `CONNECT` fails the transfer
+/// as one that could not connect, with no message of its own, and a 407's
+/// challenge does not ask again, as only Negotiate's would
+/// (`Curl_http_proxy_inspect_tunnel_response`).
+#[test]
+fn a_refused_tunnel_through_an_http_2_proxy_fails_to_connect() {
+    let answer = b"S\nH 1 0\n:status: 407\nproxy-authenticate: Basic realm=\"x\"\n\n";
+    let (_, libraries, replies) = h2_proxy(answer, b"");
+    let (ran, talk) = through_h2_proxy(libraries, &replies, b"http://origin.example/p");
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::CouldntConnect),
+        "{:?}",
+        ran.seen.text()
+    );
+    let text = ran.seen.text();
+    assert!(
+        text.iter().any(|l| l == "CONNECT Response Status 407\n"),
+        "{text:?}"
+    );
+    let sent = String::from_utf8(sent(&talk)).unwrap();
+    assert_eq!(sent.matches(":method: CONNECT").count(), 1, "{sent}");
+    assert_eq!(ran.easy.report().failure(), None, "no message");
+}
+
+/// What the layer above reads of the tunnel's DATA is used of its
+/// stream's window, which the proxy is told of as the session sees fit
+/// (`cf_h2_proxy_recv`'s `nghttp2_session_consume`): a body larger than
+/// half the window opens it again.
+#[test]
+fn a_tunnel_through_an_http_2_proxy_opens_its_window_as_it_is_read() {
+    let body = vec![b'x'; 40_000];
+    let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+    let response = [head.as_bytes(), &body].concat();
+    let data = [format!("D 1 {} 0\n", response.len()).as_bytes(), &response].concat();
+    let (_, libraries, replies) = h2_proxy(b"S\nU 0\nH 1 0\n:status: 200\n\n", &data);
+    let (ran, talk) = through_h2_proxy(libraries, &replies, b"http://origin.example/p");
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), body);
+    let sent = String::from_utf8(sent(&talk)).unwrap();
+    assert!(sent.contains("\nU 1 "), "{sent}");
+}

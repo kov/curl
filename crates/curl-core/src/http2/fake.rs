@@ -14,7 +14,10 @@
 //! - `U <id>\n`: WINDOW_UPDATE; the client's says by how much,
 //!   `U <id> <n>\n`. Each stream's receive window starts at 64 KiB, and
 //!   the server is not held to it; as with nghttp2, a closed stream's
-//!   window is no one's, and an update queued for it is not sent.
+//!   window is no one's, and an update queued for it is not sent. What
+//!   the client says it used of a stream's data goes as an update once it
+//!   comes to half the stream's window, as nghttp2 sends it without
+//!   automatic updates; a window shut to nothing gets none.
 //! - `P\n`: PING.
 //! - `PP <id> <promised>\n` then `name: value\n` per field and `\n`: a
 //!   PUSH_PROMISE on stream `<id>`, which the client cannot have closed.
@@ -118,6 +121,8 @@ struct Stream {
     closed: bool,
     /// Its receive window, less 64 KiB, its start.
     window: i32,
+    /// What the client used of its data and did not tell the peer yet.
+    consumed: i32,
 }
 
 /// Each stream's receive window as it opens.
@@ -502,7 +507,17 @@ impl Session for FakeSession {
         Ok(())
     }
 
-    fn consume(&mut self, _: StreamId, _: usize) -> Result<(), FrameError> {
+    fn consume(&mut self, stream: StreamId, n: usize) -> Result<(), FrameError> {
+        let id = stream.0;
+        let Some(s) = self.open(id) else {
+            return Ok(());
+        };
+        s.consumed += i32::try_from(n).expect("a read fits a window");
+        let window = s.window + STREAM_WINDOW;
+        if window > 0 && s.consumed >= window / 2 {
+            let by = std::mem::take(&mut s.consumed);
+            self.queued.push_back(format!("U {id} {by}\n").into_bytes());
+        }
         Ok(())
     }
 
@@ -519,6 +534,18 @@ impl Session for FakeSession {
             .iter()
             .find(|(i, s)| *i == stream.0 && !s.closed)
             .map_or(-1, |(_, s)| s.window + STREAM_WINDOW)
+    }
+
+    /// The fake keeps no send windows: the peer always has room.
+    fn remote_window(&self) -> i32 {
+        i32::MAX
+    }
+
+    fn stream_remote_window(&self, stream: StreamId) -> i32 {
+        self.streams
+            .iter()
+            .find(|(i, s)| *i == stream.0 && !s.closed)
+            .map_or(-1, |_| i32::MAX)
     }
 
     fn submit_window_update(&mut self, stream: StreamId, by: i32) -> Result<(), FrameError> {

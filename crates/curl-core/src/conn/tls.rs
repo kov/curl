@@ -294,7 +294,7 @@ impl Layer for TlsLayer {
                 }
                 Deferral::None | Deferral::Skipping { .. } | Deferral::Failed(_) => None,
             },
-            LayerQuery::TlsDeferred => None,
+            LayerQuery::TlsDeferred | LayerQuery::Tunnel => None,
             LayerQuery::Failure => match self.deferral {
                 Deferral::Failed(kind) => Some(LayerAnswer::Failure(kind)),
                 _ => None,

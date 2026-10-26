@@ -50,6 +50,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 pub(crate) mod alt_svc;
 pub(crate) mod cookies;
 mod h2;
+pub(crate) use h2::decode_status;
 pub(crate) mod hsts;
 pub(crate) mod httpsig;
 pub(crate) mod negotiate;

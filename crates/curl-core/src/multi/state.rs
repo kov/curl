@@ -30,6 +30,7 @@ use crate::progress::rate::{RateLimits, Verdict, Way};
 use crate::progress::{self, Speedometer};
 use crate::share::Kind;
 
+mod h2tunnel;
 mod haproxy;
 mod https;
 mod socks;
@@ -201,6 +202,9 @@ enum Handshake {
     Socks(socks::Socks),
     /// An HTTP proxy's tunnel, with `CONNECT`.
     Connect(tunnel::Tunnel),
+    /// An HTTPS proxy's tunnel, with `CONNECT` as a stream of an HTTP/2
+    /// session with it, which becomes the tunnel's layer.
+    H2Connect(Box<crate::conn::h2proxy::H2Proxy>),
     /// The PROXY protocol's line, once the connection is up.
     Haproxy(haproxy::Preface),
     /// The origin's or an HTTPS proxy's TLS, whose state is the layer on
@@ -214,6 +218,7 @@ impl Handshake {
         match self {
             Handshake::Socks(_) => Component::Socks,
             Handshake::Connect(_) => Component::HttpProxy,
+            Handshake::H2Connect(_) => Component::H2Proxy,
             Handshake::Haproxy(_) => Component::Haproxy,
             Handshake::Tls(side) => side.filter(),
         }
@@ -227,6 +232,7 @@ impl Handshake {
         match self {
             Handshake::Socks(s) => lease.handshake_pollset(s.interest()),
             Handshake::Connect(t) => lease.handshake_pollset(t.interest()),
+            Handshake::H2Connect(p) => lease.handshake_pollset(p.connect_interest()),
             Handshake::Haproxy(p) => lease.handshake_pollset(p.interest()),
             Handshake::Tls(_) => lease.handshake_pollset(Events::NONE),
         }
@@ -374,6 +380,7 @@ impl TransferState {
             LayerAnswer::TlsNative(_)
             | LayerAnswer::Alpn(..)
             | LayerAnswer::TlsDeferred
+            | LayerAnswer::Tunnel(_)
             | LayerAnswer::Failure(_) => {
                 unreachable!("an answer of another question")
             }
@@ -1443,6 +1450,7 @@ fn native_of(slot: &ConnSlot) -> Option<TlsNative> {
         LayerAnswer::Alpn(..)
         | LayerAnswer::TlsWaits(_)
         | LayerAnswer::TlsDeferred
+        | LayerAnswer::Tunnel(_)
         | LayerAnswer::Failure(_) => {
             unreachable!("an answer of another question")
         }
@@ -2033,7 +2041,7 @@ fn connecting<H: Host>(
         };
         let kind = match c.handshake.as_deref() {
             _ if let Some(failed) = gss_read => failed,
-            Some(Handshake::Connect(_)) => trace::fail(
+            Some(Handshake::Connect(_) | Handshake::H2Connect(_)) => trace::fail(
                 cx,
                 kind,
                 format_args!("Proxy CONNECT aborted due to timeout"),
@@ -2255,6 +2263,7 @@ fn connect_once<H: Host>(
     match c.handshake.as_deref() {
         Some(Handshake::Socks(_)) => return socks::step(c, cx),
         Some(Handshake::Connect(_)) => return tunnel::step(c, cx),
+        Some(Handshake::H2Connect(_)) => return h2tunnel::step(c, cx),
         Some(Handshake::Haproxy(_)) => return haproxy::step(c, cx),
         Some(&Handshake::Tls(side)) => return tls::step(c, cx, side),
         None => {}
@@ -2758,7 +2767,14 @@ fn up<H: Host>(
     cx.report_mut().set_primary(Ends { remote, local });
     // The setup filters go once the chain is connected
     // (`Curl_conn_remove_setup_filters`).
-    let connected = Chain::connected(&c.route, head_of(&c), preface);
+    let tunnel = c
+        .lease
+        .query(LayerQuery::Tunnel)
+        .map_or(Component::H1Proxy, |a| match a {
+            LayerAnswer::Tunnel(filter) => filter,
+            _ => unreachable!("an answer of another question"),
+        });
+    let connected = Chain::connected(&c.route, head_of(&c), preface, tunnel);
     mstate::trace(cx, format_args!("connected {connected}"));
     for filter in connected.going() {
         trace::of(cx, filter, format_args!("removing connected setup filter"));

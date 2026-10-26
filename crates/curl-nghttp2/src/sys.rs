@@ -292,6 +292,11 @@ unsafe extern "C" {
         session: *mut nghttp2_session,
         stream_id: i32,
     ) -> i32;
+    pub(crate) fn nghttp2_session_get_remote_window_size(session: *mut nghttp2_session) -> i32;
+    pub(crate) fn nghttp2_session_get_stream_remote_window_size(
+        session: *mut nghttp2_session,
+        stream_id: i32,
+    ) -> i32;
     pub(crate) fn nghttp2_submit_window_update(
         session: *mut nghttp2_session,
         flags: u8,

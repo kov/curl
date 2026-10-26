@@ -58,6 +58,13 @@ impl Stream {
         self.layers.connect(self.socket.socket(), cx, traced)
     }
 
+    /// Its layers over its socket, for a handshake that reads and writes
+    /// past what was received and not used; the socket's sends and
+    /// receives traced as `traced`, if given.
+    pub(crate) fn below(&mut self, traced: Option<Component>) -> super::layer::Below<'_> {
+        self.layers.over(self.socket.socket(), traced)
+    }
+
     pub(crate) fn socket(&self) -> &dyn Socket {
         self.socket.socket()
     }

@@ -26,6 +26,7 @@ use crate::proto::http1::fields::{self, MAX_HEADERS};
 use crate::proto::http1::framing::Note as HeadNote;
 use crate::proto::http1::request::{CredentialGate, decimal};
 use crate::proto::http1::tunnel::{Answer, AnswerError, Applied, ConnectRequest, Read};
+use crate::tls::Chosen;
 use crate::trace;
 
 /// The most one read takes.
@@ -87,15 +88,36 @@ pub(super) fn dialed<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tra
         Component::HappyEyeballs
     };
     // What the proxy's TLS negotiated names the tunnel's protocol; with
-    // none, the proxy type does.
-    match super::query_alpn(cx, &c.lease, below) {
+    // none, the proxy type does: HTTP/2 for an HTTPS proxy asked for in
+    // it.
+    let h2 = match super::query_alpn(cx, &c.lease, below) {
         Some(chosen) => {
             let name = chosen.name();
             trace::info(cx, format_args!("CONNECT: '{name}' negotiated"));
+            chosen == Chosen::H2
         }
-        None => trace::info(cx, format_args!("CONNECT: no ALPN negotiated")),
+        None => {
+            trace::info(cx, format_args!("CONNECT: no ALPN negotiated"));
+            c.route
+                .proxy
+                .as_ref()
+                .is_some_and(|p| p.kind == ProxyType::Https2)
+        }
+    };
+    if h2 && cx.easy().libraries().h2.is_none() {
+        let failed = trace::fail(
+            cx,
+            ErrorKind::CouldntConnect,
+            format_args!("CONNECT: negotiated ALPN 'h2' not supported"),
+        );
+        return (TransferState::Connecting(c).fail(failed), Wake::Again);
     }
-    match start(&mut c, cx) {
+    let started = if h2 {
+        super::h2tunnel::start(&mut c, cx)
+    } else {
+        start(&mut c, cx)
+    };
+    match started {
         Ok(tunnel) => {
             c.handshake = Some(tunnel);
             (TransferState::Connecting(c), Wake::Again)
@@ -105,7 +127,7 @@ pub(super) fn dialed<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tra
 }
 
 /// The proxy and what it is given, as the route has them.
-fn proxy(route: &Tcp) -> (&Peer, Option<Secret<'_>>, bool) {
+pub(super) fn proxy(route: &Tcp) -> (&Peer, Option<Secret<'_>>, bool) {
     let proxy = route.proxy.as_ref().expect("a tunnel goes through a proxy");
     let secret = proxy.creds.as_deref().map(crate::conn::ProxyCreds::secret);
     (&proxy.peer, secret, proxy.kind == ProxyType::Http10)
@@ -114,6 +136,30 @@ fn proxy(route: &Tcp) -> (&Peer, Option<Secret<'_>>, bool) {
 /// A `CONNECT` made (`start_CONNECT`), with the proxy's credentials as
 /// far as they go.
 fn start<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshake>, ErrorKind> {
+    let (request, authorized) = connect_head(c, cx, false)?;
+    let tunnel = Tunnel {
+        request,
+        sent: 0,
+        answer: Answer::new(),
+        challenges: Challenges::default(),
+        authorized,
+        closed: false,
+        head_bytes: 0,
+        counted: 0,
+    };
+    try_box(Handshake::Connect(tunnel)).map_err(oom)
+}
+
+/// The `CONNECT`'s head, as HTTP/1 writes it, and whether it carries
+/// `Proxy-Authorization` (`Curl_http_proxy_create_tunnel_request`). For a
+/// proxy that speaks HTTP/2, `h2`, the head is what its stream's fields
+/// are made of, which leave out the `Host` and `Proxy-Connection` C adds
+/// for HTTP/1 alone.
+pub(super) fn connect_head<H: Host>(
+    c: &mut Connecting,
+    cx: &mut StepCx<'_, H>,
+    h2: bool,
+) -> Result<(Vec<u8>, bool), ErrorKind> {
     // Each `CONNECT` reads the application's header lists as they are
     // now.
     let options = cx.easy_mut().options_mut();
@@ -173,7 +219,11 @@ fn start<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Hand
             &[b"Proxy auth using ", name, b" with user '", user, b"'"],
         );
     }
-    trace::info_with(cx, &[b"Establishing HTTP proxy tunnel to ", &authority]);
+    let version: &[u8] = if h2 { b"HTTP/2" } else { b"HTTP" };
+    trace::info_with(
+        cx,
+        &[b"Establishing ", version, b" proxy tunnel to ", &authority],
+    );
     let mut out = Vec::new();
     let options = cx.easy().options();
     let trusted = match &c.proto {
@@ -189,17 +239,7 @@ fn start<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Hand
         trusted,
     };
     connect.render(&mut out).map_err(oom)?;
-    let tunnel = Tunnel {
-        request: out,
-        sent: 0,
-        answer: Answer::new(),
-        challenges: Challenges::default(),
-        authorized: output.header.is_some(),
-        closed: false,
-        head_bytes: 0,
-        counted: 0,
-    };
-    try_box(Handshake::Connect(tunnel)).map_err(oom)
+    Ok((out, output.header.is_some()))
 }
 
 /// Move the handshake on as far as its socket lets it.
@@ -469,7 +509,7 @@ fn negotiate<H: Host>(
 }
 
 /// What the proxy is asked, for its challenges.
-fn proxy_asked<H: Host>(c: &Connecting, cx: &StepCx<'_, H>) -> PeerAsked {
+pub(super) fn proxy_asked<H: Host>(c: &Connecting, cx: &StepCx<'_, H>) -> PeerAsked {
     let (peer, secret, _) = proxy(&c.route);
     cx.easy()
         .auth

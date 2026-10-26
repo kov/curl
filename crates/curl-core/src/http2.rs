@@ -187,6 +187,14 @@ pub trait Session: fmt::Debug + Send {
     /// (`nghttp2_session_get_stream_effective_local_window_size`).
     fn stream_window(&self, stream: StreamId) -> i32;
 
+    /// What the peer lets the client send on the connection, all streams
+    /// together (`nghttp2_session_get_remote_window_size`).
+    fn remote_window(&self) -> i32;
+
+    /// What the peer lets the client send on `stream`
+    /// (`nghttp2_session_get_stream_remote_window_size`).
+    fn stream_remote_window(&self, stream: StreamId) -> i32;
+
     /// Tell the peer it may send `increment` more on `stream`
     /// (`nghttp2_submit_window_update`).
     fn submit_window_update(&mut self, stream: StreamId, increment: i32) -> Result<(), FrameError>;

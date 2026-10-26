@@ -444,3 +444,55 @@ witness: curl-core proto::http::tests::tls::http_through_an_http_2_proxy_goes_as
     let alpn = match (options.tls.options.alpn || proxy_h2, side, version) {
 --- new
     let alpn = match (options.tls.options.alpn, side, version) {
+
+=== a tunnel through an HTTP/2 proxy is HTTP/1.1's
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_is_a_stream
+--- old
+            chosen == Chosen::H2
+--- new
+            false
+
+=== the tunnel's DATA read are not used of its window
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_opens_its_window_as_it_is_read
+--- old
+                if self.session.consume(stream, n.get()).is_err() {
+--- new
+                if self.session.consume(stream, 0).is_err() {
+
+=== the connection's window update fails the tunnel's session
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_opens_its_window_as_it_is_read
+--- old
+            Event::WindowUpdate { ref stream } if stream.0 == 0 => Heard::Fine,
+--- new
+            Event::WindowUpdate { ref stream } if stream.0 == 0 => Heard::Failed,
+
+=== a 407 from an HTTP/2 proxy asks again
+file: crates/curl-core/src/multi/state/h2tunnel.rs
+witness: curl-core proto::http::tests::tls::a_refused_tunnel_through_an_http_2_proxy_fails_to_connect
+--- old
+    let Some(gss) = cx.easy().libraries().gss else {
+        return Ok(false);
+    };
+--- new
+    let Some(gss) = cx.easy().libraries().gss else {
+        return Ok(true);
+    };
+
+=== an HTTP/2 proxy's refusal is taken for its agreement
+file: crates/curl-core/src/multi/state/h2tunnel.rs
+witness: curl-core proto::http::tests::tls::a_refused_tunnel_through_an_http_2_proxy_fails_to_connect
+--- old
+    if status / 100 != 2 {
+--- new
+    if status / 100 == 5 {
+
+=== the HTTP/2 tunnel's answer is not traced
+file: crates/curl-core/src/multi/state/h2tunnel.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_is_a_stream
+--- old
+    for (name, value) in &answer.fields {
+--- new
+    for (name, value) in &answer.fields[..0] {

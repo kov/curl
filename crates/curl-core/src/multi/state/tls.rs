@@ -83,14 +83,13 @@ pub(super) fn start<H: Host>(
     let versions = c.proto.http_versions(options);
     let h2 = versions.h2 && cx.easy().libraries().h2.is_some();
     // An HTTPS proxy asked for in HTTP/2 is offered it, by ALPN whatever
-    // the transfer says of ALPN (`cf_ssl_proxy_create`); for the requests
-    // it sends on alone, as a tunnel through it is HTTP/1.1's yet.
+    // the transfer says of ALPN (`cf_ssl_proxy_create`).
     let proxy_h2 = side == TlsSide::Proxy
         && cx.easy().libraries().h2.is_some()
         && c.route
             .proxy
             .as_ref()
-            .is_some_and(|p| p.kind == ProxyType::Https2 && p.forward);
+            .is_some_and(|p| p.kind == ProxyType::Https2);
     let alpn = match (options.tls.options.alpn || proxy_h2, side, version) {
         (false, ..) => Alpn::None,
         (true, TlsSide::Proxy, _) if proxy_h2 => Alpn::H2Http11,

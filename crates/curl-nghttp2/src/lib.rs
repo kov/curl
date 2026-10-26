@@ -387,6 +387,16 @@ impl curl_core::http2::Session for Session {
         }
     }
 
+    fn remote_window(&self) -> i32 {
+        // SAFETY: the session.
+        unsafe { sys::nghttp2_session_get_remote_window_size(self.raw.as_ptr()) }
+    }
+
+    fn stream_remote_window(&self, stream: StreamId) -> i32 {
+        // SAFETY: the session; a stream it does not know answers -1.
+        unsafe { sys::nghttp2_session_get_stream_remote_window_size(self.raw.as_ptr(), stream.0) }
+    }
+
     fn submit_window_update(&mut self, stream: StreamId, increment: i32) -> Result<(), FrameError> {
         // SAFETY: the session.
         check_h2(unsafe {

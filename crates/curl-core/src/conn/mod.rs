@@ -12,6 +12,7 @@ pub(crate) mod chain;
 mod connect;
 mod connect_to;
 mod dns;
+pub(crate) mod h2proxy;
 pub mod io;
 pub(crate) mod layer;
 pub(crate) mod pool;
@@ -916,10 +917,20 @@ impl Conn {
     /// of it is asked of first (`conn->cfilter[FIRSTSOCKET]`).
     pub(crate) fn top(&self) -> crate::components::Component {
         match &self.route {
-            Route::Tcp(route) => chain::Chain::connected(route, chain::Head::default(), false)
-                .reduced()
-                .top()
-                .expect("a connection has a socket"),
+            Route::Tcp(route) => {
+                let tunnel = match &self.transport {
+                    Transport::Tcp(stream) => stream.query(layer::LayerQuery::Tunnel),
+                    Transport::Local => None,
+                };
+                let tunnel = match tunnel {
+                    Some(layer::LayerAnswer::Tunnel(filter)) => filter,
+                    _ => crate::components::Component::H1Proxy,
+                };
+                chain::Chain::connected(route, chain::Head::default(), false, tunnel)
+                    .reduced()
+                    .top()
+                    .expect("a connection has a socket")
+            }
             Route::Local => crate::components::Component::Tcp,
         }
     }

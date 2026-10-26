@@ -63,7 +63,8 @@ impl Chain {
     /// SOCKS, HTTP-PROXY or HAPROXY filter, added but not connected. A
     /// handshake's filter is there once it is under way or made. The
     /// HTTP proxy's tunnel shows its H1-PROXY filter once `installed`, as
-    /// C installs it in the tunnel filter's first connect. An HTTPS
+    /// C installs it in the tunnel filter's first connect, or H2-PROXY for
+    /// a tunnel that is a stream of an HTTP/2 session. An HTTPS
     /// proxy's TLS under way below a tunnel has the tunnel's filter added
     /// with it, as C adds both at once (`cf_setup_add_http_proxy`), its
     /// H1-PROXY not yet installed.
@@ -92,24 +93,34 @@ impl Chain {
         let added = |which: Made, filter: Component| made.has(which) || under_way == Some(filter);
         let tunnels = route.proxy.as_ref().is_some_and(|p| p.tunnels());
         let proxy_tls_first = tunnels && under_way == Some(Component::SslProxy);
+        let h2 = made.has(Made::H2_TUNNEL) || under_way == Some(Component::H2Proxy);
         let added = Handshakes {
             socks: added(Made::SOCKS, Component::Socks),
             proxy_tls: added(Made::PROXY_TLS, Component::SslProxy),
-            tunnel: added(Made::TUNNEL, Component::HttpProxy) || proxy_tls_first,
+            tunnel: added(Made::TUNNEL, Component::HttpProxy)
+                || proxy_tls_first
+                || under_way == Some(Component::H2Proxy),
             preface: added(Made::PREFACE, Component::Haproxy),
             tls: added(Made::TLS, Component::Ssl),
         };
         let connected = |filter| match filter {
             Component::Socks => made.has(Made::SOCKS),
             Component::SslProxy => made.has(Made::PROXY_TLS),
-            Component::HttpProxy | Component::H1Proxy => made.has(Made::TUNNEL),
+            Component::HttpProxy | Component::H1Proxy | Component::H2Proxy => {
+                made.has(Made::TUNNEL)
+            }
             Component::Haproxy => made.has(Made::PREFACE),
             Component::Ssl => made.has(Made::TLS),
             Component::HappyEyeballs | Component::Tcp | Component::Unix => true,
             _ => false,
         };
-        let installed = (installed && !proxy_tls_first) || made.has(Made::TUNNEL);
-        Chain::dialed(route, head, added, installed, connected)
+        let installed = (installed && !proxy_tls_first) || made.has(Made::TUNNEL) || h2;
+        let tunnel = if h2 {
+            Component::H2Proxy
+        } else {
+            Component::H1Proxy
+        };
+        Chain::dialed(route, head, added, (installed, tunnel), connected)
     }
 
     /// The DNS filters over the name the setup connects to first, the
@@ -125,8 +136,9 @@ impl Chain {
     }
 
     /// The chain of a setup over `route` once it is connected, every
-    /// filter connected; `haproxy` if the PROXY line was sent.
-    pub(crate) fn connected(route: &Tcp, head: Head, haproxy: bool) -> Chain {
+    /// filter connected; `haproxy` if the PROXY line was sent, `tunnel`
+    /// the filter of a tunnel through the proxy, H1-PROXY or H2-PROXY.
+    pub(crate) fn connected(route: &Tcp, head: Head, haproxy: bool, tunnel: Component) -> Chain {
         let added = Handshakes {
             socks: route.socks().is_some(),
             proxy_tls: route.proxy_tls().is_some(),
@@ -134,15 +146,16 @@ impl Chain {
             preface: haproxy,
             tls: route.tls.is_some(),
         };
-        Chain::dialed(route, head, added, true, |_| true)
+        Chain::dialed(route, head, added, (true, tunnel), |_| true)
     }
 
-    /// The chain over a first hop connected, with the handshakes `added`.
+    /// The chain over a first hop connected, with the handshakes `added`,
+    /// the tunnel's filter shown if it is installed.
     fn dialed(
         route: &Tcp,
         head: Head,
         added: Handshakes,
-        installed: bool,
+        (installed, tunnel_filter): (bool, Component),
         connected: impl Fn(Component) -> bool,
     ) -> Chain {
         let mut chain = Chain::new();
@@ -177,7 +190,7 @@ impl Chain {
         if added.tunnel {
             push(Component::HttpProxy);
             if installed {
-                push(Component::H1Proxy);
+                push(tunnel_filter);
             }
         }
         if added.proxy_tls && tunnels {

@@ -60,6 +60,9 @@ pub(crate) enum LayerQuery {
     /// What a layer's send or receive failed with, where it names the
     /// transfer's error: a handshake put off failing as it goes on.
     Failure,
+    /// The filter of the tunnel through a proxy, when a layer is it:
+    /// `H2-PROXY`'s, a stream of an HTTP/2 session.
+    Tunnel,
 }
 
 /// What a layer answers a `LayerQuery`.
@@ -72,6 +75,7 @@ pub(crate) enum LayerAnswer {
     TlsWaits(crate::tls::TlsWait),
     TlsDeferred,
     Failure(ErrorKind),
+    Tunnel(Component),
 }
 
 /// What a layer reaches while it works: the time, and the trace of the

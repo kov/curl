@@ -1376,7 +1376,8 @@ socket before its connect.
   (`cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]`,
   `connected [0][DNS][SETUP][HAPPY-EYEBALLS][TCP]`, `reduced to [0][TCP]`), allocating nothing. The handshakes made and the stream's layers
   are C's reduced chain: `[TCP]`, `[SOCKS][TCP]`, `[H1-PROXY][TCP]`, `[H1-PROXY][SOCKS][TCP]` behind
-  a pre-proxy. For a SOCKS5 proxy that is not to resolve the name, C adds a second DNS filter
+  a pre-proxy, and `[H2-PROXY][SSL-PROXY][TCP]` for a tunnel through a proxy that speaks
+  HTTP/2. For a SOCKS5 proxy that is not to resolve the name, C adds a second DNS filter
   for the destination, which the rendered chain shows as `[!DNS][!DNS]` (`--socks5`, and a
   SOCKS5 pre-proxy; `--socks5-hostname` has one).
 - **Socket open order** is the attempt's, in C's sequence (`cf_socket_open`, `do_connect`):
@@ -2408,12 +2409,28 @@ forwarded to the proxy, whose SETUP line C words `added SSL filter for origin`. 
 not apply to the proxy's handshake. The two sides are `TlsSide`, the layer's filter
 (`Component::SslProxy`) telling its session it is the proxy's (`TlsIo::for_proxy`): it offers
 `http/1.1` by ALPN (`cf_ssl_proxy_create`), and `h2,http/1.1` to a proxy asked for in HTTP/2
-(`CURLPROXY_HTTPS2`, `--proxy-http2`), ALPN on or off, whose requests it sends on then go in
-HTTP/2, their absolute-form target the stream's scheme, authority and path (`start_req`); a
-tunnel through it is HTTP/1.1's yet, so it is offered HTTP/2 only for those. It names the
-peer's certificate `Proxy certificate:`,
-keeps its verification apart (`Report::proxy_verify_result`), answers neither the TLS library's
+(`CURLPROXY_HTTPS2`, `--proxy-http2`), ALPN on or off. The requests such a proxy agreed to
+HTTP/2 for are sent on in HTTP/2, their absolute-form target the stream's scheme, authority and
+path (`start_req`); a tunnel through it is the HTTP/2 tunnel below. It names the peer's
+certificate `Proxy certificate:`, keeps its verification apart (`Report::proxy_verify_result`), answers neither the TLS library's
 objects nor the waits of the origin's layer, and does not mark `TIMER_APPCONNECT`.
+
+**The HTTP/2 tunnel** (`cf-h2-proxy.c`) is the tunnel through an HTTPS proxy whose TLS agreed to
+`h2`, or agreed to nothing for a proxy asked for in HTTP/2 (`http_proxy_cf_connect`):
+`[SSL][H2-PROXY][SSL-PROXY][TCP]`. `conn/h2proxy.rs`'s `H2Proxy` is the session with the proxy,
+its buffers and its one stream, the `CONNECT`. The setup's `Handshake::H2Connect` holds it while
+the `CONNECT` goes, its fields made of the head the HTTP/1.1 tunnel would send (`Host` and
+`Proxy-Connection` left out, as `fields_of` leaves them), and reads and writes it over the
+stream's layers; once the proxy's 2xx is in, the same box is pushed as the layer the tunnel's
+bytes pass through, its stream's DATA, with whatever it read past the answer. The answer is
+traced as C traces it (`CONNECT Response Status`, each field, `CONNECT tunnel established`,
+`CONNECT phase completed for HTTP/2 proxy`) and is neither delivered nor counted as the HTTP/1.1
+tunnel's is. A refusal fails the transfer as `CouldntConnect` with no message; a 407 asks again
+only for a Negotiate challenge taken, as only Negotiate sets C's `newurl`. The layer opens the
+stream's window by what the layer above reads (`nghttp2_session_consume`), waits to read when
+the proxy's window for it is shut, answers `LayerQuery::Tunnel` with its filter for the chain,
+and says GOAWAY as it shuts down. What is inside the tunnel speaks what the origin agrees: the
+proxy's ALPN is not the origin's (`query_alpn` passes over the SSL-PROXY answer).
 
 **Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the
 multi's `ShutdownSet` until the peer's goodbye or the connection's 2 s. OpenSSL's is

@@ -879,8 +879,8 @@ the system's under the HTTP-only programs installed here.
         that claims HTTP/3, so they wait on milestone 5.
     - **c. HTTP/2 to an HTTPS proxy** (`--proxy-http2`, `CURLPROXY_HTTPS2`): a request sent
       on through it, and a tunnel as a stream (`cf-h2-proxy.c`); pytest test_10, test_13 and
-      test_40's HTTP/2 proxy cases. **In progress.** A request sent on through it goes in
-      HTTP/2 (test_10_02, 10_14 and 40_02b pass); the tunnel as a stream is to do.
+      test_40's HTTP/2 proxy cases. **Done**: test_10, test_13 and test_40 pass whole on the
+      Rust leg.
 53. **`CURLOPT_CONNECT_ONLY`** with the pool's `Reserved` place (3231, 3232, 3234). **Done**,
     ahead of 51 and 52, as it needs neither: a transfer that only connects is done once
     connected, its connection reserved for the handle in its pool; `curl_easy_send`,

@@ -1405,12 +1405,14 @@ socket before its connect.
   for the destination, which the rendered chain shows as `[!DNS][!DNS]` (`--socks5`, and a
   SOCKS5 pre-proxy; `--socks5-hostname` has one).
 - **Socket open order** is the attempt's, in C's sequence (`cf_socket_open`, `do_connect`):
-  the OPENSOCKET callback, which may change the address, or `Net::open`, a non-blocking socket;
-  the "Trying" trace; TCP_NODELAY (on by default, url.c:410, cf-socket.c:1322), and keepalive
-  with its idle time, interval and count only while it is on; the SOCKOPT callback
+  the OPENSOCKET callback, which may change the address, or `Net::open`, a non-blocking socket
+  of the `SocketKind` the route's `Dial` needs (a stream, or a UDP socket for QUIC); the
+  "Trying" trace; on a TCP socket alone, TCP_NODELAY (on by default, url.c:410,
+  cf-socket.c:1322), and keepalive with its idle time, interval and count only while it is
+  on; the SOCKOPT callback
   (`AlreadyConnected` wins the attempt as it opens, with no connect to check; any other failure
   closes the socket and is AbortedByCallback); non-blocking, for a socket the application
-  opened; `cf_socket_open() -> 0`; TCP_FASTOPEN_CONNECT; the connect and the local address.
+  opened; `cf_socket_open() -> 0`; TCP_FASTOPEN_CONNECT, on TCP's; the connect and the local address.
   `Socket::set`, `set_nonblocking` and `connect` are each one system call. A socket that does
   not open, or closes as it is set, is traced as C traces it, with neither address known or the
   local one not, and the setup's failure is the last attempt's kind (`ConnectError::Failed`).

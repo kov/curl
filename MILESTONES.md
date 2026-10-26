@@ -933,9 +933,12 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
     `multiplexes()`. The request's one h1/h2/h3 version set, its stream as a `Wire` with its close
     state, and `Http3` in the public `Version` come with HTTP/3's request (step 61), where a third
     version gives them their shape.
-58. **Datagrams.** UDP sockets in `curl-os`; the socket's kind told to `Net::open`, the opener
-    and the configurer, as C tells them (`SOCK_DGRAM`, `CURLSOCKTYPE_IPCXN`); a route that says
-    how it dials (TCP or QUIC), compared as any of its fields.
+58. **Datagrams.** **Done.** UDP sockets in `curl-os`; the socket's `SocketKind` told to
+    `Net::open` and the application's opener, which C hands `SOCK_DGRAM` and `IPPROTO_UDP` (its
+    configurer is told `CURLSOCKTYPE_IPCXN` for either, as C's is); a route's `Dial` (TCP or
+    QUIC), compared as any of its fields, picks the kind. TCP's options are set on TCP's
+    sockets alone, and QUIC's traces as `UDP`. The QUIC socket's own options (ECN, path MTU,
+    don't-fragment, GRO) come with the QUIC connection (step 61).
 59. **QUIC's TLS.** `TlsBackend::quic_session`, from the same identity, CA cache, keylog and
     context hook as a stream session, its peer verified as a stream session's is; the QUIC
     transport parameters kept with a session's ticket. `curl-ngtcp2` borrows the native `SSL*`

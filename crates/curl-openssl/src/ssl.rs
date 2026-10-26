@@ -17,7 +17,7 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, CaDefaults, Chosen, Deferred, Handshake, HandshakeCheck, KeyLog, QuicTls, SharedKeyLog,
+    Alpn, CaDefaults, Chosen, Deferred, DriveCall, Handshake, KeyLog, QuicTls, SharedKeyLog,
     TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared,
     TlsTicket, TlsWait,
 };
@@ -1458,7 +1458,7 @@ impl QuicTls for QuicSession {
         &mut self,
         cx: &mut TlsCx<'_>,
         params: &mut dyn FnMut() -> Option<Vec<u8>>,
-        call: &mut dyn FnMut(&mut dyn HandshakeCheck),
+        call: &mut dyn FnMut(&mut dyn DriveCall),
     ) {
         let s = &mut self.0;
         let ssl = s.ssl();
@@ -1485,8 +1485,9 @@ impl QuicTls for QuicSession {
     }
 }
 
-/// A QUIC session's check once its handshake is done, which reaches the
-/// transfer through the slot of the call under way.
+/// What a QUIC library's callbacks reach during a call: the transfer, and
+/// the session's check once its handshake is done, both through the slot
+/// of the call under way.
 struct Check<'s> {
     ssl: NonNull<SSL>,
     identity: &'s TlsIdentity,
@@ -1495,7 +1496,7 @@ struct Check<'s> {
     reused: bool,
 }
 
-impl HandshakeCheck for Check<'_> {
+impl DriveCall for Check<'_> {
     /// The handshake reported, then the peer checked as a stream
     /// session's is, the peer's sessions forgotten if it fails
     /// (`cb_ngtcp2_handshake_completed`).
@@ -1527,6 +1528,12 @@ impl HandshakeCheck for Check<'_> {
         // SAFETY: a `Check` lives only inside `drive`'s call, whose slot
         // is the SSL's BIO's while it runs, on this thread.
         unsafe { bio::with_cx(ssl, check) }
+    }
+
+    fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>)) {
+        // SAFETY: as above: inside `drive`'s call, not inside one of
+        // this crate's callbacks, which the QUIC library's never are.
+        unsafe { bio::with_cx(self.ssl, f) }
     }
 }
 

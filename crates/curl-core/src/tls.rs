@@ -250,25 +250,31 @@ pub trait QuicTls: Send {
 
     /// Run `call`, a call into the QUIC library that may move the
     /// session on, with the session's callbacks reaching `cx`. `call` is
-    /// given the session's check, which the QUIC library's word that the
-    /// handshake is done runs, inside its callback, so nothing of the
-    /// peer's is taken before it is checked. A session the peer gives
-    /// during the call is kept with the transport parameters `params`
-    /// encodes, if it encodes any.
+    /// given what the QUIC library's own callbacks reach during it: the
+    /// transfer, and the session's check, which the QUIC library's word
+    /// that the handshake is done runs, inside its callback, so nothing
+    /// of the peer's is taken before it is checked. A session the peer
+    /// gives during the call is kept with the transport parameters
+    /// `params` encodes, if it encodes any.
     fn drive(
         &mut self,
         cx: &mut TlsCx<'_>,
         params: &mut dyn FnMut() -> Option<Vec<u8>>,
-        call: &mut dyn FnMut(&mut dyn HandshakeCheck),
+        call: &mut dyn FnMut(&mut dyn DriveCall),
     );
 }
 
-/// A QUIC session's work once the QUIC library says its handshake is
-/// done (`cb_ngtcp2_handshake_completed`): the handshake reported, and
-/// the peer's certificate checked as a stream session's is, the peer's
-/// sessions forgotten if it fails (`Curl_vquic_tls_verify_peer`).
-pub trait HandshakeCheck {
+/// What a QUIC library's callbacks reach during a call `QuicTls::drive`
+/// runs. Neither method may be called from inside the other.
+pub trait DriveCall {
+    /// The QUIC library says the handshake is done
+    /// (`cb_ngtcp2_handshake_completed`): the handshake reported, and the
+    /// peer's certificate checked as a stream session's is, the peer's
+    /// sessions forgotten if it fails (`Curl_vquic_tls_verify_peer`).
     fn handshake_done(&mut self) -> Result<(), ErrorKind>;
+
+    /// Run `f` with the transfer the call reaches.
+    fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>));
 }
 
 /// What a session says as it makes a channel binding: a line of the

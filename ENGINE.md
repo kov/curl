@@ -623,9 +623,6 @@ pub(crate) struct Run {              // created at add, dropped at removal
 }
 ```
 
-Planned with the step that needs it: an internal owner for transfers the engine makes itself
-(`Owner::Internal`, with server push).
-
 A row holds its slot boxed: a slot is most of a kilobyte, and a table starts with C's sixteen
 rows, which C's limits on a transfer's memory count as pointers (libtest 500).
 
@@ -779,8 +776,9 @@ and starts the next leg. The fifth retry of a transfer fails it with SendError.
 - **`enter_completed` is the one exit hook for the report**: the times a jump to the end skipped
   and the total (`mstate_enter_completed`, `Curl_pgrsCompleted`); the step that enters
   `Completed` clears the deadlines and queues the message and EASY_DONE.
-- Planned: **server push and `add_perform`** enter `Exchanging` through a typed constructor,
-  `TransferState::pushed(lease, proto)`.
+- **A pushed transfer starts in `Exchanging`** (`start_pushed`), given its lease and its
+  request on the promised stream, owned by what the application's `MultiEvents::push` gave
+  (§4.4).
 
 ### 3.2 Per-request substates
 

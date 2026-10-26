@@ -3022,7 +3022,7 @@ fn the_multi_s_callbacks_run_with_their_frames() {
         assert_eq!((limits.max_host, limits.max_total), (n(2), n(3)));
         assert_eq!(
             curl_multi_setopt(m, ffi::CURLMOPT_PUSHDATA, ptr::null_mut::<c_void>()),
-            ffi::CURLM_UNKNOWN_OPTION
+            CURLM_OK
         );
         // Multiplexing on or off, and the streams a server may open: none,
         // or more than an int holds, is 100; the dropped pipelining

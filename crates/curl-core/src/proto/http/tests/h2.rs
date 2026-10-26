@@ -1313,9 +1313,12 @@ impl crate::multi::MultiEvents<crate::multi::NoHost> for Pushes {
 
     fn push(
         &mut self,
-        offer: &crate::multi::PushOffer<'_, crate::multi::NoHost>,
+        cx: &mut crate::multi::EventCx<'_, crate::multi::NoHost>,
+        offer: &crate::multi::PushOffer<'_>,
         mut easy: Box<Easy>,
     ) -> crate::multi::Pushed<crate::multi::NoHost> {
+        // The parent is reached through the context.
+        assert!(cx.info(offer.parent).is_some_and(|r| r.url().is_some()));
         let fields = (0..offer.fields.len())
             .map(|n| offer.fields.get(n).unwrap().to_vec())
             .collect();

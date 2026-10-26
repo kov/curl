@@ -18,12 +18,13 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 use curl_core::conn::io::{Events, Net, PollFd, SocketKey, SystemNet, Waker};
+use curl_core::easy::Easy;
 use curl_core::error::MultiErrorKind;
 use curl_core::id::ArenaPolicy;
 use curl_core::multi::{
     Abort, ConnLimits, Env, EventCx, Host, Message, Multi, MultiEvents, Notification, NotifyCx,
-    NotifyKind, SocketEvent, SocketFor, SocketWhat, TimerChange, TransferId, UnknownSocket,
-    WaitMode,
+    NotifyKind, PushOffer, Pushed, SocketEvent, SocketFor, SocketWhat, TimerChange, TransferId,
+    UnknownSocket, WaitMode,
 };
 use curl_core::time::SystemClock;
 
@@ -60,6 +61,8 @@ struct MultiCallbacks {
     timer_data: *mut c_void,
     notify: curl_notify_callback,
     notify_data: *mut c_void,
+    push: ffi::curl_push_callback,
+    push_data: *mut c_void,
 }
 
 pub(crate) struct ShimMulti {
@@ -110,6 +113,8 @@ impl ShimMulti {
                 timer_data: ptr::null_mut(),
                 notify: None,
                 notify_data: ptr::null_mut(),
+                push: None,
+                push_data: ptr::null_mut(),
             }),
             admin: ShimEasy::internal(),
         })
@@ -271,6 +276,70 @@ impl MultiEvents<CHost> for ShimEvents<'_> {
 
     fn wants_timer(&self) -> bool {
         self.multi.cb.get().timer.is_some()
+    }
+
+    fn wants_push(&self) -> bool {
+        self.multi.cb.get().push.is_some()
+    }
+
+    /// The application's push function is handed a handle made for the
+    /// push and the promise's fields (`push_promise`); its verdict decides
+    /// the handle's fate, which the library cleans up unless it is taken.
+    fn push(
+        &mut self,
+        cx: &mut EventCx<'_, CHost>,
+        offer: &PushOffer<'_>,
+        easy: Box<Easy>,
+    ) -> Pushed<CHost> {
+        let cb = self.multi.cb.get();
+        let Some(f) = cb.push else {
+            return Pushed::Denied;
+        };
+        let Some(&parent) = cx.owner(offer.parent) else {
+            return Pushed::Denied;
+        };
+        let Ok(headers) = crate::push::Headers::of(offer.fields) else {
+            return Pushed::Denied;
+        };
+        // SAFETY: a transfer's owner is its live handle.
+        let Ok(child) = ShimEasy::pushed(unsafe { parent.as_ref() }, easy) else {
+            return Pushed::Denied;
+        };
+        let frame = Frame::Event(NonNull::from(cx).cast());
+        // `cx` is not used again until `lend` returns.
+        let rc = self.multi.stack.lend(frame, || {
+            // SAFETY: the application's push function takes the handles,
+            // the fields, live for the call, and its data.
+            unsafe {
+                f(
+                    parent.as_ptr().cast(),
+                    child.as_ptr().cast(),
+                    headers.len(),
+                    headers.as_c(),
+                    cb.push_data,
+                )
+            }
+        });
+        if rc == ffi::CURL_PUSH_OK {
+            // SAFETY: made above, live until the multi or a cleanup has it.
+            let easy = unsafe { child.as_ref() }.detach();
+            return Pushed::Accepted { easy, owner: child };
+        }
+        // SAFETY: made above, and handed to no one.
+        unsafe { easy::curl_easy_cleanup(child.as_ptr().cast()) };
+        if rc == ffi::CURL_PUSH_ERROROUT {
+            Pushed::Failed
+        } else {
+            Pushed::Denied
+        }
+    }
+
+    fn unpushed(&mut self, easy: Box<Easy>, owner: NonNull<ShimEasy>) {
+        // SAFETY: made by `push`, handed to no one else.
+        let child = unsafe { owner.as_ref() };
+        child.return_home(easy);
+        // SAFETY: as above.
+        unsafe { easy::curl_easy_cleanup(owner.as_ptr().cast()) };
     }
 
     fn socket(
@@ -1046,6 +1115,9 @@ pub unsafe extern "C" fn curl_multi_setopt(
         // SAFETY: as above.
         ffi::CURLMOPT_NOTIFYFUNCTION => cb.notify = unsafe { function(p) },
         ffi::CURLMOPT_NOTIFYDATA => cb.notify_data = p,
+        // SAFETY: as above.
+        ffi::CURLMOPT_PUSHFUNCTION => cb.push = unsafe { function(p) },
+        ffi::CURLMOPT_PUSHDATA => cb.push_data = p,
         // The connection limits and the rest come with connections.
         _ => return CURLM_UNKNOWN_OPTION,
     }

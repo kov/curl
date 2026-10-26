@@ -118,9 +118,15 @@ pub trait MultiEvents<H: Host> {
     /// A server offers to push a response beside one of a transfer's
     /// (`CURLMOPT_PUSHFUNCTION`): `easy` is made for it, its URL set, for
     /// the application to set more of and take, or refuse. Called inside
-    /// the parent's step, as the offer is read.
-    fn push(&mut self, offer: &PushOffer<'_, H>, easy: Box<Easy>) -> Pushed<H> {
-        let _ = (offer, easy);
+    /// the parent's step, as the offer is read; `cx` reaches the parent and
+    /// the rest of the multi as a socket callback's does.
+    fn push(
+        &mut self,
+        cx: &mut EventCx<'_, H>,
+        offer: &PushOffer<'_>,
+        easy: Box<Easy>,
+    ) -> Pushed<H> {
+        let _ = (cx, offer, easy);
         Pushed::Denied
     }
 

@@ -1,18 +1,14 @@
 //! The entry points of what this build leaves out, as C's build without
-//! them has them: WebSockets (`CURL_DISABLE_WEBSOCKETS`), the headers of
-//! a server push, which only a push callback is given and none is
-//! called, and the export of TLS sessions (`USE_SSLS_EXPORT`). A program
-//! linked against a libcurl with them loads, and is told they are not
-//! built in.
+//! them has them: WebSockets (`CURL_DISABLE_WEBSOCKETS`) and the export
+//! of TLS sessions (`USE_SSLS_EXPORT`). A program linked against a
+//! libcurl with them loads, and is told they are not built in.
 
 #![allow(unsafe_code)]
 
 use core::ffi::{c_char, c_uint, c_void};
 use core::ptr;
 
-use crate::ffi::{
-    self, CURL, CURLE_NOT_BUILT_IN, CURLcode, curl_off_t, curl_pushheaders, curl_ws_frame,
-};
+use crate::ffi::{self, CURL, CURLE_NOT_BUILT_IN, CURLcode, curl_off_t, curl_ws_frame};
 
 /// # Safety
 ///
@@ -71,30 +67,6 @@ const _: ffi::proto::curl_ws_meta = curl_ws_meta;
 ///
 /// Any arguments: none is read.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn curl_pushheader_bynum(
-    _h: *mut curl_pushheaders,
-    _num: usize,
-) -> *mut c_char {
-    ptr::null_mut()
-}
-const _: ffi::proto::curl_pushheader_bynum = curl_pushheader_bynum;
-
-/// # Safety
-///
-/// Any arguments: none is read.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn curl_pushheader_byname(
-    _h: *mut curl_pushheaders,
-    _name: *const c_char,
-) -> *mut c_char {
-    ptr::null_mut()
-}
-const _: ffi::proto::curl_pushheader_byname = curl_pushheader_byname;
-
-/// # Safety
-///
-/// Any arguments: none is read.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_easy_ssls_export(
     _curl: *mut CURL,
     _export: Option<ffi::curl_ssls_export_cb>,
@@ -145,8 +117,6 @@ mod tests {
             );
             assert_eq!(curl_ws_start_frame(null, 0, 0), CURLE_NOT_BUILT_IN);
             assert!(curl_ws_meta(null).is_null());
-            assert!(curl_pushheader_bynum(null.cast(), 0).is_null());
-            assert!(curl_pushheader_byname(null.cast(), c"x".as_ptr()).is_null());
             assert_eq!(curl_easy_ssls_export(null, None, null), CURLE_NOT_BUILT_IN);
             let p = ptr::null();
             assert_eq!(

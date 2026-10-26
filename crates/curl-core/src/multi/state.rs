@@ -48,7 +48,7 @@ use crate::upload::{self, Readers};
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
 use crate::version::Protocol;
 
-use super::cx::{DriveCx, EngineRest, TransferCalls, TransferCx};
+use super::cx::{DriveCx, EngineRest, EventCx, TransferCalls, TransferCx};
 use super::mstate::{self, MState};
 use super::sched::RowSet;
 use super::sockets::{Pollset, Wants};
@@ -1124,20 +1124,22 @@ impl<H: Host> StepCx<'_, H> {
         if *self.rest.tell.life == Life::Dead {
             return Offered::Denied;
         }
-        let me = self.me;
-        let parent_owner = &self
-            .rest
-            .tell
-            .slots
-            .get(me)
-            .expect("the stepping transfer")
-            .owner;
         let offer = PushOffer {
-            parent: me,
-            parent_owner,
+            parent: self.me,
             fields,
         };
-        let (easy, owner) = match self.rest.events.push(&offer, easy) {
+        let t = &mut self.rest.tell;
+        let mut ecx = EventCx {
+            alive: &*t.alive,
+            slots: &mut *t.slots,
+            limits: &mut *t.limits,
+            notify: &mut *t.notify,
+            counts: t.counts.get(),
+            sockets: &mut *t.sockets,
+            // The pool is the step's, apart from the multi meanwhile.
+            pool: None,
+        };
+        let (easy, owner) = match self.rest.events.push(&mut ecx, &offer, easy) {
             Pushed::Accepted { easy, owner } => (easy, owner),
             Pushed::Denied => return Offered::Denied,
             Pushed::Failed => return Offered::Failed,

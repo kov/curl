@@ -240,3 +240,11 @@ features: debug-hooks
     Ok(options.proxy.make_mut()?.tls.options.make_mut()?)
 --- new
     Ok(options.tls.options.make_mut()?)
+
+=== a push field is found by a prefix of its name
+file: crates/curl-sys-abi/src/push.rs
+witness: curl-sys-abi push::tests::the_fields_are_read_by_number_and_by_name
+--- old
+        .find(|line| line.starts_with(name) && line.get(name.len()) == Some(&b':'))
+--- new
+        .find(|line| line.starts_with(name))

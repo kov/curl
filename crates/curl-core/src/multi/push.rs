@@ -67,9 +67,8 @@ pub(crate) enum Full {
 
 /// A response a server offers to push, in answer to a request it imagines
 /// beside one of `parent`'s.
-pub struct PushOffer<'a, H: Host> {
+pub struct PushOffer<'a> {
     pub parent: TransferId,
-    pub parent_owner: &'a H::Transfer,
     pub fields: &'a PushFields,
 }
 

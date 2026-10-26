@@ -868,8 +868,10 @@ the system's under the HTTP-only programs installed here.
       - **2. `PIPEWAIT`** and `--parallel-immediate`: a transfer waits for a connection being
         set up to its origin to say whether it multiplexes. **Done.** 2405 and 2407 pass.
       - **3. A paused stream's window,** its sibling's window kept: **done**; each stream's
-        receive window follows its transfer's pause and receive limit. Server push
-        (`CURLMOPT_PUSHFUNCTION`): **to do.**
+        receive window follows its transfer's pause and receive limit. Server push: **done**;
+        a pushed response is a transfer of its own, offered to the application with the
+        promise's fields (`CURLMOPT_PUSHFUNCTION`, `curl_pushheader_bynum` and `_byname`).
+        pytest 09_02 passes.
       - **4. TLS early data** (pytest 02_32, 07_70, 08_08). **To do.**
     - **c. HTTP/2 to an HTTPS proxy** (`--proxy-http2`, `CURLPROXY_HTTPS2`): a request sent
       on through it, and a tunnel as a stream (`cf-h2-proxy.c`); pytest test_10, test_13 and

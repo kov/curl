@@ -208,6 +208,59 @@ impl ShimEasy {
     /// or drops the adapter of the option it sets. `write` is the
     /// handle's own write adapter, which a reset keeps so that it
     /// allocates nothing; without one, one is made.
+    /// A handle for a response a server pushes beside `parent`'s request
+    /// (`h2_duphandle`): `easy`, which the core made, in a home of its own,
+    /// with the parent's write, header, debug and progress functions and
+    /// their data, and the parent's share; its handlers, and the share's
+    /// lock calls, are its own.
+    pub(crate) fn pushed(
+        parent: &ShimEasy,
+        mut easy: Box<Easy>,
+    ) -> Result<NonNull<ShimEasy>, OutOfMemory> {
+        let from = parent.ccb.get();
+        let ccb = CCallbacks {
+            write: from.write,
+            write_data: from.write_data,
+            header: from.header,
+            header_data: from.header_data,
+            debug: from.debug,
+            debug_data: from.debug_data,
+            xferinfo: from.xferinfo,
+            progress: from.progress,
+            progress_data: from.progress_data,
+            ..CCallbacks::new()
+        };
+        let set = CSettings {
+            no_progress: parent.set.get().no_progress,
+            ..CSettings::new()
+        };
+        let child = ShimEasy::homeless(CSide {
+            ccb,
+            set,
+            ..CSide::new()
+        })?;
+        if ShimEasy::adapt(child, easy.options_mut(), None).is_err() {
+            // SAFETY: made by `homeless`, given no `Easy` and handed to no
+            // one.
+            drop(unsafe { Box::from_raw(child.as_ptr()) });
+            return Err(OutOfMemory);
+        }
+        // SAFETY: just made, and reached only through this pointer.
+        let shim = unsafe { child.as_ref() };
+        *shim.home.borrow_mut() = Home::Detached(easy);
+        // Linked to the parent's share as C links it
+        // (`Curl_share_easy_link`).
+        if let Some(share) = parent.share.get() {
+            // SAFETY: the parent's share, live while the parent holds it.
+            if unsafe { crate::share::set(shim, share.as_ptr().cast()) }.is_err() {
+                // SAFETY: just made, and handed to no one.
+                unsafe { curl_easy_cleanup(child.as_ptr().cast()) };
+                return Err(OutOfMemory);
+            }
+        }
+        Ok(child)
+    }
+
     fn adapt(
         me: NonNull<ShimEasy>,
         options: &mut Options,

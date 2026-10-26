@@ -130,9 +130,47 @@ type BodySource = dyn FnMut(StreamId, &mut [u8]) -> BodyRead;
 /// A client session (`nghttp2_session`).
 pub struct Session {
     raw: NonNull<sys::nghttp2_session>,
-    /// Where the callbacks find what is lent; boxed, so its address is
-    /// the session's user data for its life.
-    lent: Box<Lent>,
+    /// Where the callbacks find what is lent, the session's user data
+    /// for its life.
+    lent: UserData,
+}
+
+/// A `Lent` owned through one raw pointer alone (made by `Box::leak`,
+/// freed as this goes), so that the copy a session holds as its user
+/// data and every write here come from one origin.
+struct UserData(NonNull<Lent>);
+
+impl UserData {
+    fn new() -> Result<UserData, OutOfMemory> {
+        let lent = try_box(Lent {
+            events: None,
+            body: None,
+        })?;
+        Ok(UserData(NonNull::from(Box::leak(lent))))
+    }
+
+    /// The pointer a session's callbacks are given.
+    fn user(&self) -> *mut c_void {
+        self.0.as_ptr().cast::<c_void>()
+    }
+
+    /// What the callbacks reach, to lend or take back between calls into
+    /// the session.
+    fn get(&mut self) -> &mut Lent {
+        // SAFETY: made by `Box::leak` in `new`, alive until `drop`; no
+        // callback runs between calls into the session, and `&mut self`
+        // keeps every other access out.
+        unsafe { self.0.as_mut() }
+    }
+}
+
+impl Drop for UserData {
+    fn drop(&mut self) {
+        // SAFETY: made by `Box::leak` in `new`, freed once, here; a
+        // session that held it is gone first, its field dropped before
+        // this one.
+        drop(unsafe { Box::from_raw(self.0.as_ptr()) });
+    }
 }
 
 // SAFETY: the session is used by one thread at a time, through `&mut`;
@@ -154,16 +192,19 @@ enum End {
 }
 
 impl Session {
+    /// What the callbacks reach, to lend or take back between calls into
+    /// the session.
+    fn lent(&mut self) -> &mut Lent {
+        self.lent.get()
+    }
+
     /// A client session, with C's options.
     pub fn client() -> Result<Session, SessionError> {
         Session::new(End::Client)
     }
 
     fn new(end: End) -> Result<Session, SessionError> {
-        let lent = try_box(Lent {
-            events: None,
-            body: None,
-        })?;
+        let lent = UserData::new()?;
         let mut callbacks = ptr::null_mut();
         // SAFETY: an out pointer to fill.
         check(unsafe { sys::nghttp2_session_callbacks_new(&mut callbacks) })?;
@@ -202,7 +243,7 @@ impl Session {
             sys::nghttp2_option_set_no_rfc9113_leading_and_trailing_ws_validation(option.0, 1)
         };
         let mut raw = ptr::null_mut();
-        let user = ptr::from_ref::<Lent>(&lent).cast_mut().cast::<c_void>();
+        let user = lent.user();
         let made = match end {
             // SAFETY: the callbacks and option made above, which the
             // session copies; the user data outlives the session.
@@ -313,7 +354,7 @@ impl curl_core::http2::Session for Session {
         let events: *mut (dyn FnMut(Event<'_>) -> Heard + '_) = events;
         // SAFETY: lent for the call only; taken back below, before
         // `events` goes out of scope.
-        self.lent.events = Some(unsafe {
+        self.lent().events = Some(unsafe {
             core::mem::transmute::<*mut (dyn FnMut(Event<'_>) -> Heard + '_), *mut EventSink>(
                 events,
             )
@@ -322,7 +363,7 @@ impl curl_core::http2::Session for Session {
         let n = unsafe {
             sys::nghttp2_session_mem_recv2(self.raw.as_ptr(), bytes.as_ptr(), bytes.len())
         };
-        self.lent.events = None;
+        self.lent().events = None;
         usize::try_from(n).map_err(|_| error(c_int::try_from(n).unwrap_or(sys::NGHTTP2_ERR_NOMEM)))
     }
 
@@ -334,7 +375,7 @@ impl curl_core::http2::Session for Session {
     ) -> Result<(), FrameError> {
         let body: *mut (dyn FnMut(StreamId, &mut [u8]) -> BodyRead + '_) = body;
         // SAFETY: lent for the call only, taken back below.
-        self.lent.body = Some(unsafe {
+        self.lent().body = Some(unsafe {
             core::mem::transmute::<
                 *mut (dyn FnMut(StreamId, &mut [u8]) -> BodyRead + '_),
                 *mut BodySource,
@@ -342,7 +383,7 @@ impl curl_core::http2::Session for Session {
         });
         let events: *mut (dyn FnMut(Event<'_>) -> Heard + '_) = events;
         // SAFETY: as above.
-        self.lent.events = Some(unsafe {
+        self.lent().events = Some(unsafe {
             core::mem::transmute::<*mut (dyn FnMut(Event<'_>) -> Heard + '_), *mut EventSink>(
                 events,
             )
@@ -363,8 +404,9 @@ impl curl_core::http2::Session for Session {
                 break Ok(());
             }
         };
-        self.lent.body = None;
-        self.lent.events = None;
+        let lent = self.lent();
+        lent.body = None;
+        lent.events = None;
         r
     }
 
@@ -764,7 +806,9 @@ unsafe extern "C" fn read_body(
         // SAFETY: the flags the library lends.
         unsafe { *data_flags |= sys::NGHTTP2_DATA_FLAG_EOF };
     }
-    n.min(length) as sys::nghttp2_ssize
+    // The source writes into the room it is given, no more.
+    assert!(n <= length, "a body read of {n} bytes into {length}");
+    n as sys::nghttp2_ssize
 }
 
 #[cfg(test)]

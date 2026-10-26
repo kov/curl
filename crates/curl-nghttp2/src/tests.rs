@@ -234,3 +234,62 @@ fn a_streams_window_is_set_and_grown() {
     pump(&mut client, &mut server, &mut Vec::new(), &mut seen);
     assert!(seen.contains(&Seen::WindowUpdate), "{seen:?}");
 }
+
+/// What is lent between calls reaches the callbacks through the pointer
+/// the session was given, written through the owner after that pointer
+/// was handed out, as each call lends anew; no session is made, so Miri
+/// can check the borrows.
+#[test]
+fn what_is_lent_reaches_the_callbacks_through_the_user_pointer() {
+    let mut lent = UserData::new().unwrap();
+    let user = lent.user();
+    let mut heard = Vec::new();
+    for round in 0..2 {
+        let mut events = |e: Event<'_>| {
+            heard.push((round, own(e)));
+            Heard::Fine
+        };
+        let events: *mut (dyn FnMut(Event<'_>) -> Heard + '_) = &mut events;
+        // SAFETY: lent for the calls below only, taken back after.
+        lent.get().events = Some(unsafe {
+            core::mem::transmute::<*mut (dyn FnMut(Event<'_>) -> Heard + '_), *mut EventSink>(
+                events,
+            )
+        });
+        let mut body = |_: StreamId, room: &mut [u8]| {
+            room[..2].copy_from_slice(b"ok");
+            BodyRead::Last(2)
+        };
+        let body: *mut (dyn FnMut(StreamId, &mut [u8]) -> BodyRead + '_) = &mut body;
+        // SAFETY: as above.
+        lent.get().body = Some(unsafe {
+            core::mem::transmute::<
+                *mut (dyn FnMut(StreamId, &mut [u8]) -> BodyRead + '_),
+                *mut BodySource,
+            >(body)
+        });
+        // SAFETY: the user pointer, its events lent.
+        assert_eq!(unsafe { tell(user, Event::Settings) }, 0);
+        let mut buf = [0u8; 8];
+        let mut flags = 0u32;
+        // SAFETY: the user pointer, its body lent; a buffer of its
+        // length and flags to set. The session and source go unread.
+        let n = unsafe {
+            read_body(
+                ptr::null_mut(),
+                1,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut flags,
+                ptr::null_mut(),
+                user,
+            )
+        };
+        assert_eq!((n, &buf[..2]), (2, &b"ok"[..]));
+        assert_ne!(flags & sys::NGHTTP2_DATA_FLAG_EOF, 0);
+        let taken = lent.get();
+        taken.events = None;
+        taken.body = None;
+    }
+    assert_eq!(heard, [(0, Seen::Settings), (1, Seen::Settings)]);
+}

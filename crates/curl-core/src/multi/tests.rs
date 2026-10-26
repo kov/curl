@@ -3111,6 +3111,56 @@ fn a_failure_without_a_reason_is_said_twice() {
     );
 }
 
+/// A name under `.onion` is never resolved, in any case and with the
+/// root's dot (`hostip_resolv`, RFC 7686); `.onion` alone is looked up.
+#[test]
+fn an_onion_name_is_never_resolved() {
+    let (mut m, _clock) = networked();
+    let mut run = |url: &str| {
+        let (e, lines) = traced(url);
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        perform_and_connect(&mut m);
+        let result = messages(&mut m).last().map(|r| r.1);
+        m.remove(id, &mut NoEvents).unwrap();
+        (result, trace_of(&lines))
+    };
+    let failed = Some(Err(ErrorKind::CouldntResolveHost));
+    for (url, host) in [
+        ("tcp://red.onion:1/", "red.onion"),
+        ("tcp://T.ONION.:1/", "T.ONION."),
+    ] {
+        let (result, lines) = run(url);
+        assert_eq!(result, failed);
+        assert_eq!(
+            lines[..3],
+            [
+                "Not resolving .onion address (RFC 7686)\n".to_string(),
+                format!("Could not resolve: {host}:1\n"),
+                format!("Could not resolve: {host}\n"),
+            ]
+        );
+    }
+    let (_, lines) = run("tcp://.onion:1/");
+    assert_eq!(
+        lines[0],
+        "Could not resolve host: .onion (Domain name not found)\n"
+    );
+    // A proxy's name is the proxy's failure.
+    let ran = through_proxies(
+        "http://v4.test:1/",
+        "http://p.onion:3128",
+        None,
+        false,
+        None,
+    );
+    assert_eq!(ran.0, Err(ErrorKind::CouldntResolveProxy));
+    let names = [
+        "Could not resolve: p.onion:3128\n",
+        "Could not resolve: p.onion\n",
+    ];
+    assert_eq!(ran.1, names);
+}
+
 /// A name neither the cache nor the shortcuts know is asked of the
 /// resolver; that it does not exist is kept, for the family asked, and
 /// told from the cache after (`fetch_entry`, `Curl_async_failed`).

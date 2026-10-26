@@ -400,3 +400,41 @@ witness: curl-core multi::tests::a_resolve_start_is_announced_unless_the_cache_a
                 Err(crate::conn::ConnectError::Aborted)
 --- new
                 Ok(())
+
+=== an onion name is resolved
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::an_onion_name_is_never_resolved
+--- old
+    if is_onion(name) {
+--- new
+    if false && is_onion(name) {
+
+=== the root's dot hides an onion name
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::an_onion_name_is_never_resolved
+--- old
+    ends(b".onion") || ends(b".onion.")
+--- new
+    ends(b".onion")
+
+=== .onion alone is refused
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::an_onion_name_is_never_resolved
+--- old
+        name.len() >= 7
+--- new
+        name.len() >= 6
+
+=== an onion proxy fails as the origin would
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::an_onion_name_is_never_resolved
+--- old
+                        Some(_) => ErrorKind::CouldntResolveProxy,
+                        None => ErrorKind::CouldntResolveHost,
+                    };
+                    let why = format_args!("Not resolving .onion address (RFC 7686)");
+--- new
+                        Some(_) => ErrorKind::CouldntResolveHost,
+                        None => ErrorKind::CouldntResolveHost,
+                    };
+                    let why = format_args!("Not resolving .onion address (RFC 7686)");

@@ -2936,6 +2936,18 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
                     trace::info(cx, format_args!("Could not resolve: {path}"));
                     return kind;
                 }
+                Unresolved::Onion => {
+                    let (onion, port) = (Bytes(first.name()), first.port());
+                    let kind = match proxy {
+                        Some(_) => ErrorKind::CouldntResolveProxy,
+                        None => ErrorKind::CouldntResolveHost,
+                    };
+                    let why = format_args!("Not resolving .onion address (RFC 7686)");
+                    let kind = trace::fail(cx, kind, why);
+                    trace::info(cx, format_args!("Could not resolve: {onion}:{port}"));
+                    trace::info(cx, format_args!("Could not resolve: {onion}"));
+                    return kind;
+                }
                 Unresolved::Negative => trace_lookup(cx, route, None),
                 Unresolved::Resolver { queued, .. } => {
                     trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver(queued))));

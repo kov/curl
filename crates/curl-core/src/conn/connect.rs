@@ -566,6 +566,8 @@ pub(crate) enum Unresolved {
     /// A Unix socket's path is too long for its address
     /// (`Curl_unix2addr`'s `CURLE_TOO_LARGE`).
     UnixPathTooLong,
+    /// The name is under `.onion`, which is never resolved (RFC 7686).
+    Onion,
 }
 
 impl ConnectMachine {
@@ -1498,6 +1500,9 @@ pub(super) fn lookup_start(
     setup: Setup,
     keep_negative: bool,
 ) -> Result<Looked, ConnectError> {
+    if is_onion(name) {
+        return Err(ConnectError::Unresolved(Unresolved::Onion));
+    }
     if family == Family::V6 && cx.fails_ipv6_resolves() {
         return Err(ConnectError::Unresolved(Unresolved::DebugFailIpv6));
     }
@@ -1616,6 +1621,18 @@ fn shortcut(host: &[u8], name: &[u8]) -> Result<Option<Answer>, OutOfMemory> {
         return Ok(None);
     }
     Answer::new(name, addrs).map(Some)
+}
+
+/// A name under `.onion`, with or without the root's dot, in any case,
+/// which is never resolved (`hostip_resolv`, RFC 7686): `.onion` alone,
+/// shorter than C looks, is not.
+fn is_onion(name: &[u8]) -> bool {
+    let ends = |tld: &[u8]| {
+        name.len() >= 7
+            && name.len() >= tld.len()
+            && name[name.len() - tld.len()..].eq_ignore_ascii_case(tld)
+    };
+    ends(b".onion") || ends(b".onion.")
 }
 
 /// `localhost`, or a name under it, with or without the root's dot, in

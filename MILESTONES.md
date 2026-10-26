@@ -790,7 +790,8 @@ the system's under the HTTP-only programs installed here.
       lists, and 2 a required `.netrc` that is missing, which C fails before it looks at the
       protocol (d).
     - **d. The differences closed.** **Done.** A `.netrc` is read before the protocol is
-      checked, as C reads it, for every scheme. 1402 of the 1411 distinct invocations behave the
+      checked, as C reads it, for every scheme libcurl knows; one it does not know is refused
+      first. 1402 of the 1411 distinct invocations behave the
       same; the 9 left wait on later steps: 7 use options not built yet (`--http2`, step 52;
       FTP's `-Q`, `-l` and `--ftp-create-dirs`, stage 6), and 2 are `-V`'s lists of protocols
       and features, which grow as steps 48–52 and the later stages add them.
@@ -846,7 +847,7 @@ the system's under the HTTP-only programs installed here.
       cargo-mutants over the step's diff: each survivor tested or excluded with its reason.
 51. **The pool's `Attached` place,** a connection several transfers lease (ENGINE.md §4.4).
     **Done**, with 52b, its only user.
-52. **HTTP/2** through nghttp2, in stages (ENGINE.md §4.4). **In progress.**
+52. **HTTP/2** through nghttp2, in stages (ENGINE.md §4.4). **Done.**
     - **a. One stream per connection.** **Done.** The session on the connection, beside its
       layers (`crates/curl-nghttp2` behind `http2::Http2`, a fake for the core's tests); ALPN
       offering `h2` by the versions a request may speak, prior knowledge, and the `h2c`
@@ -890,17 +891,25 @@ the system's under the HTTP-only programs installed here.
     `curl_easy_recv`, `CURLINFO_ACTIVESOCKET` and `CURLINFO_LASTSOCKET`; the connection closed as
     the handle leaves the application's multi or performs again. 556, 696, 3231, 3232 and 3234
     pass.
-54. **Closing the milestone.** The `tests/http` pytest suite's HTTP/1.1 and HTTP/2 cases on
-    both legs; the installed programs that link libcurl for HTTP run on ours. **In progress.**
-    Every function the system's libcurl exports is exported: the 507 installed programs that
-    link it resolve every libcurl symbol against ours, and the system's `curl` and cmake's
-    downloads run on it. Of the pytest suite's HTTP/1.1 cases that pass on C, these still fail
-    on the Rust leg: the TLS early data cases 02_32 and 07_70, whose server starts only for a
-    curl claiming HTTP/3 (milestone 5); the FTP cases wait on stage 6. Of the HTTP/2 cases,
-    02_23a fails: its client asserts that each transfer it aborts while paused had its
-    progress callback see data first, and on ours some transfers get their first data and
-    their pause in other transfers' steps, as the server has run further ahead on the
-    connection than it does with C. Why the server runs further ahead is not yet known.
+54. **Closing the milestone.** **Done.** The `tests/http` pytest suite's HTTP/1.1 and HTTP/2
+    cases on both legs; the installed programs that link libcurl for HTTP run on ours. Every
+    function the system's libcurl exports is exported: the 507 installed programs that link it
+    resolve every libcurl symbol against ours, and the system's `curl` and cmake's downloads run
+    on it. The score at the close: runtests 1311 of the 1311 C passes but five, pytest 618 of the
+    650 C passes run. What still fails waits on later work:
+    - runtests 96 and 558, the memory tracker's dump, which names C's source files: the
+      tracker's report is the debug build's, cross-milestone.
+    - runtests 1013 and 1014, `curl-config`'s protocol and feature lists against `curl -V`'s:
+      the C build's lists, which ours reach as milestones 5 and 6 build the rest.
+    - runtests 1521, every option set and read: the options of later milestones.
+    - runtests 1919, `CURLOPT_SASL_AUTHZID`, refused until SASL is built (milestone 6).
+    - pytest 02_32 and 07_70, TLS early data against nghttpx, which their fixture starts only
+      for a curl that claims HTTP/3 (milestone 5).
+    - pytest test_30, vsftpd: FTP (milestone 6).
+
+    With C's library under our tool, the C unit programs pass and the failures are the core's,
+    which the tool drives; with a stub library, the programs that link libcurl fail, as a check
+    that the library arm measures the library.
 
 ## Milestone 5: HTTP/3
 

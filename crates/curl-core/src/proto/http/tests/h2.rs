@@ -944,3 +944,53 @@ fn a_single_use_connection_ends_a_pipewait_over_another_set_up() {
         m.remove(id, &mut NoEvents).unwrap();
     }
 }
+
+/// Two transfers on one connection between performs: the multi's checks
+/// count each as a lease on it, and both end once the server answers.
+#[test]
+fn two_transfers_stay_on_a_connection_between_performs() {
+    let talk = Conversation::replies(&[b"S\nH 1 0\n:status: 200\n\n", SECOND], false)
+        .per_send()
+        .held();
+    talk.allow(1);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut ids = Vec::new();
+    let mut seen = Vec::new();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let s = Seen::default();
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.version = HttpVersion::Http2Prior;
+        o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        seen.push(s);
+        for _ in 0..3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+    }
+    // Both are on it, the second's request sent, its answer held.
+    assert_eq!(m.perform(&mut NoEvents).unwrap(), 2);
+    assert!(
+        String::from_utf8(talk.received())
+            .unwrap()
+            .contains("H 3 1\n")
+    );
+    talk.allow(2);
+    for &id in &ids {
+        assert_eq!(
+            drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+            Ok(())
+        );
+    }
+    assert_eq!(
+        (seen[0].body(), seen[1].body()),
+        (b"aa".to_vec(), b"b1c".to_vec())
+    );
+    for id in ids {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+}

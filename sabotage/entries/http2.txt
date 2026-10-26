@@ -323,3 +323,10 @@ witness: curl-core proto::http::tests::h2::a_pipewait_on_a_refused_upgrade_ends_
             }
 --- new
 
+=== the multi's check counts a shared connection as one lease
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::two_transfers_stay_on_a_connection_between_performs
+--- old
+                    Use::Leased(n) => n.get() as usize,
+--- new
+                    Use::Leased(_) => 1,

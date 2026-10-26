@@ -1324,17 +1324,22 @@ impl Pool {
         self.conns.len()
     }
 
-    /// Connections leased: every one not idle.
+    /// Leases out, between steps: one for each connection leased, and
+    /// one for each transfer on a connection attached.
     #[cfg(debug_assertions)]
     pub(crate) fn leased(&self) -> usize {
         let mut leased = 0;
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
             cursor = Some(id);
-            leased += usize::from(matches!(
-                self.conns.get(id),
-                Some(Place::Leased(_) | Place::Attached(_))
-            ));
+            leased += match self.conns.get(id) {
+                Some(Place::Leased(_)) => 1,
+                Some(Place::Attached(shared)) => match shared.conn().use_ {
+                    Use::Leased(n) => n.get() as usize,
+                    Use::Idle { .. } => unreachable!("an attached connection is leased"),
+                },
+                _ => 0,
+            };
         }
         leased
     }

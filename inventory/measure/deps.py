@@ -8,8 +8,11 @@ HTTP/3 early-data tests in tests/http only exercise early data with the
 newer one. ngtcp2 is built against the system OpenSSL at the version
 curl's CI pins in .github/workflows/http3-linux.yml.
 
+Its static archives are built position-independent, as the rewrite's
+curl-ngtcp2 links them into its executables, which are.
+
 Everything goes under build/deps and is rebuilt only when a pinned version
-changes. Run directly, or through `baseline.py --run`.
+or the way it is built changes. Run directly, or through `baseline.py --run`.
 """
 
 import os
@@ -41,8 +44,9 @@ def sh(args, cwd):
 def build():
     """Build what is missing; return the environment CMake needs."""
     version = pinned("NGTCP2_VERSION")
+    built = f"{version} pic"
     stamp = NGTCP2 / ".version"
-    if not (stamp.exists() and stamp.read_text().strip() == version):
+    if not (stamp.exists() and stamp.read_text().strip() == built):
         src = DEPS / "src" / f"ngtcp2-{version}"
         if not src.exists():
             src.parent.mkdir(parents=True, exist_ok=True)
@@ -51,10 +55,14 @@ def build():
                cwd=src.parent)
         sh(["autoreconf", "-fi"], cwd=src)
         sh(["./configure", "--disable-dependency-tracking",
-            f"--prefix={NGTCP2}", "--enable-lib-only", "--with-openssl"],
+            f"--prefix={NGTCP2}", "--enable-lib-only", "--with-openssl",
+            "--with-pic"],
            cwd=src)
+        # Without dependency tracking, objects an earlier configure built
+        # would be kept.
+        sh(["make", "clean"], cwd=src)
         sh(["make", f"-j{os.cpu_count()}", "install"], cwd=src)
-        stamp.write_text(version + "\n")
+        stamp.write_text(built + "\n")
     pc = subprocess.run(["pkg-config", "--modversion", "libngtcp2"],
                         env={**os.environ,
                              "PKG_CONFIG_PATH": f"{NGTCP2}/lib/pkgconfig"},

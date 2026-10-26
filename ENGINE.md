@@ -253,8 +253,8 @@ curl-core/src/
   untrusted.rs, test_cell.rs input for the never-panics properties; a Cell for handlers (tests)
 ```
 
-Planned, not built: `conn/mux.rs`; a `Resolver` for names the cache and the shortcuts do not
-answer; and `DebugNet`.
+Planned, not built: a `Resolver` for names the cache and the shortcuts do not answer; and
+`DebugNet`.
 
 ### 2.3 Ids and the arena
 
@@ -1242,8 +1242,9 @@ One `Stream` type, owned by `Dialed` and then by the `Conn` it becomes, gives on
 than the room it had is an error from the socket, `InvalidData`, not an assertion), `send`
 writes through them; `Conn::recv` adds that bytes received and not used, which only a
 handshake's read past its answer leaves (D11), are given first without asking the socket, and
-that the end of input marks the connection `close`. A connection's multiplexing (`Session`,
-`Mux`, §4.4) comes with stage 5, and until then `Use::Leased(n)` is asserted to be 1.
+that the end of input marks the connection `close`. A connection that multiplexes (§4.4) is
+leased by several transfers at once: `Use::Leased(n)` counts them, one more for each that joins
+it and each pushed transfer.
 `Stream` does not rule out a second stream on one `Conn`, which FTP's data connection needs.
 
 Protocols without a network (`file:`, C's PROTOPT_NONETWORK) lease a `Conn` with
@@ -1526,51 +1527,53 @@ the protocol its peer chose of the offer, and `LayerQuery::TlsWaits` with what i
 waits for, which the pollset's trace says. The key log is not on `LayerCx`: the shim's
 root and the tool own it and hand it to the backend.
 
-### 4.4 Multiplexing
-
-Milestone 4, steps 52 and 51, as review M3 §2.1, §2.3 and §2.4 decide it, in two stages: HTTP/2
-with one stream per connection first, a connection leased by one transfer at a time as an HTTP/1
-one is (built); then the `Attached` place and multiplexing (planned).
+### 4.4 HTTP/2 and multiplexing
 
 **The session.** HTTP/2 is spoken by a session a binding crate makes (nghttp2,
 `crates/curl-nghttp2`), behind the core's `http2::Http2` and `http2::Session`, as TLS is behind
-`TlsSession`, with a fake for the tests (`http2::fake`, frames as lines): the core feeds it the
-connection's bytes and takes the bytes it wants sent; it hands back events per stream (headers,
-data, end, window, close, reset) and per connection (settings, goaway). An event the caller
-cannot take fails the session's reading, as C's callbacks return `NGHTTP2_ERR_CALLBACK_FAILURE`;
-what C's callbacks call back into the session for (consuming, resetting, resuming) is done once
-the read returns. The session lives on the `Conn` (`proto::http2::H2Conn`, with the bytes it
-gave that the connection has not taken), beside its layer stack, not as a `Layer`: a `Layer`
-moves one byte stream, and the session moves many (review §2.3, option two). It is made by the
-connection's first request, which finds what the connection speaks (`http_check_new_conn`):
-HTTP/2 if TLS's ALPN agreed on `h2`, which is offered first where the handle has an HTTP/2
-library and its version allows it (`alpn_get_spec`), or by prior knowledge with nothing between;
-the connection then speaks HTTP/2 for good. A step takes the session off the connection for the
-call that drives it and puts it back after (`with_session`), so the lease is free beside it. The connection-wide operations ask the session
-first: the pool's health check lets it consume pending frames (an idle HTTP/2 connection with
-a SETTINGS or PING to read is healthy, so the input-pending rule is HTTP/1's alone), its
-shutdown sends GOAWAY, and `curl_easy_upkeep` sends PING past the interval. The pool checks a
-multiplexed connection at most once a second (`lastchecked_ms`).
+`TlsSession`, with a fake for the tests (`http2::fake`, frames as lines). The seam is a binding's,
+not a library-agnostic API: the binding's own failure numbers cross it only inside `FrameError`,
+for C's messages; error codes on the wire are `H2Error`, and a window update names its stream or
+none for the connection's. The core feeds the session the connection's bytes and takes the
+bytes it wants sent; it hands back events per stream (headers, data, end, window, close, reset)
+and per connection (settings, goaway). An event the caller cannot take fails the session's
+reading, as C's callbacks return `NGHTTP2_ERR_CALLBACK_FAILURE`; what C's callbacks call back
+into the session for (consuming, resetting, resuming, windows) is gathered as the read runs and
+done once it returns, in scratch kept on the request's stream between reads, so a body's frames
+allocate nothing.
 
-**The head.** A response head reaches the HTTP head parser as C hands it on: the status as
+The session lives on the `Conn` (`proto::http2::H2Conn`, with the bytes it gave that the
+connection has not taken), beside its layer stack, not as a `Layer`: a `Layer` moves one byte
+stream, and the session moves many. It is made by the connection's first request, which finds
+what the connection speaks (`http_check_new_conn`): HTTP/2 if TLS's ALPN agreed on `h2`, which
+is offered first where the handle has an HTTP/2 library and its version allows it
+(`alpn_get_spec`), or by prior knowledge with nothing between; the connection then speaks
+HTTP/2 for good. A step takes the session off the connection for the call that drives it and
+puts it back after (`with_session`), so the lease is free beside it.
+
+**The request and the response.** A request is made as C makes it: its head rendered in
+HTTP/1's form with `HTTP/2` in its request line and traced as sent, then read back into the
+stream's fields (`proto::http2::fields_of`, C's `Curl_h1_req_parse_read` and
+`Curl_http_req_to_h2`): `:method`, `:scheme`, `:authority` from `Host:` and `:path` first, names
+in lowercase, the connection's own headers left out, `TE` only as `trailers`. Neither chunked
+framing nor an added `Expect:` goes over HTTP/2. The body goes into the stream's buffer, at most
+64 KiB, which the session frames as the peer's window lets it; the body's end with no bytes left
+goes as an empty send (`req_flush`).
+
+A response head reaches the HTTP head parser as C hands it on: the status as
 `HTTP/2 <code> \r\n` and each field as `name: value\r\n`, through one entry that takes a whole
 line (`HeadParser::line`, C's `http_rw_hd`), with no folding, no hold of a last line, no line
-limit and no HTTP/0.9 decision; `feed` stays HTTP/1's assembler in front of it (review §2.4).
-The per-line work (cookies, file time, codings, Negotiate, the header store) is `head_input`'s
-for either. A request is made as C makes it, its head rendered in HTTP/1's form with `HTTP/2`
-in its request line and traced as sent; as it is sent, the head is read back into the stream's
-fields (`proto::http2::fields_of`, C's `Curl_h1_req_parse_read` and `Curl_http_req_to_h2`):
-`:method`, `:scheme`, `:authority` from `Host:` and `:path` first, names in lowercase, the
-connection's own headers left out, `TE` only as `trailers`. Neither chunked framing nor an
-added `Expect:` goes over HTTP/2. The body goes into the stream's buffer, at most 64 KiB, which
-the session frames as the peer's window lets it; the body's end with no bytes left goes as an
-empty send (`req_flush`). What the session reads for the stream is handed on as it reads it,
-as C's callbacks write it: the head a line at a time, the body as the connection's would be,
-consumed as delivered, and the trailers once the stream closes. The stream's close is the
-response's end, as a connection's end is HTTP/1's (`stream_recv`,
+limit and no HTTP/0.9 decision; `feed` stays HTTP/1's assembler in front of it. The per-line
+work (cookies, file time, codings, Negotiate, alt-svc, the header store) is `head_input`'s for
+either. What the session reads for the stream is handed on as it reads it, as C's callbacks write
+it: the head a line at a time, the body as the connection's would be, consumed as delivered, and
+the trailers, held to C's limits (5,000 fields, 1 MiB), once the stream closes. The stream's
+close is the response's end, as a connection's end is HTTP/1's (`stream_recv`,
 `http2_handle_stream_close`): a reset fails it, but for a refused stream, made again
-(`REFUSED_STREAM, retrying a fresh connect`); one closed before its head ended fails it too. A
-request over that is done with its stream open resets it (`http2_data_done`).
+(`REFUSED_STREAM, retrying a fresh connect`), and HTTP_1_1_REQUIRED, made again in HTTP/1.1; one
+closed before its head ended fails it too. A request over with its stream open resets it
+(`http2_data_done`), in the request's `done`, which a transfer taken out of the multi reaches as
+any other through `multi_done`.
 
 **Upgrade.** Over clear text, a transfer that wants HTTP/2 by an upgrade
 (`CURL_HTTP_VERSION_2_0`) and has a library asks for one on a connection that speaks HTTP/1
@@ -1582,69 +1585,71 @@ and what followed the 101 is fed to the session (`Curl_http2_upgrade`). A server
 take it answers in HTTP/1.1.
 
 **The connection's life.** An idle HTTP/2 connection with input waiting is not dead as an HTTP/1
-one is: the pool's health check has the session read the frames, and it is alive unless the
-session failed, a GOAWAY came or the session wants nothing more (`http2_connisalive`). A
-connection that shuts down says GOAWAY first, with C's debug data (`cf_h2_shutdown`). Not
-yet: `curl_easy_upkeep`'s PING, and the `CF` traces of `--trace-config http/2`.
+one is: the pool's health check has the session read the frames (a SETTINGS or PING), and it is
+alive unless the session failed, a GOAWAY came or the session wants nothing more
+(`http2_connisalive`). A connection that shuts down says GOAWAY first, with C's debug data
+(`cf_h2_shutdown`). A GOAWAY read marks the connection closing, so no search joins it, and wakes
+every other transfer on it; so do the connection's end and its failure. A failure other than a
+stream's own closes the connection after the request (`streamclose`).
 
-**Ownership, once multiplexed** (review §2.1, approved). A connection that multiplexes lives
-in its pool place, `Attached { slot, users }`; an attached lease is a key, the `ConnId` and the
-stream. A step moves the `Conn` out of the place for its duration and back after, a third
-owned value decision 9 allows; the place says it is out meanwhile, and a lookup that finds it
-out is a bug. What the session reads for another transfer's stream is delivered at once, in
-the order C delivers it, by moving that sibling's `Run` out in turn, as the unpause replay does
-(§5.3), the stepping transfer's own connection out with it. A paused sibling's bytes wait in its
-pipeline's paused output, as C's client writer holds them. The last lease given back decides the connection's fate as `multi_done_locked` does; a
-GOAWAY or a connection error ends every stream on it.
+**Ownership.** A connection that multiplexes lives in its pool place, `Attached { slot, users }`;
+an attached lease is a key, the `ConnId` and the stream, and `Use::Leased(n)` counts the
+transfers on it. A step moves the `Conn` out of the place for its duration and back after, a
+third owned value decision 9 allows; the place says it is out meanwhile, and a lookup that finds
+it out is a bug. Each step checks the connection out of its place and back in after
+(`Pool::check_out`, `check_in`), and a lease given back outside a step checks it out to be given
+back. What reads a lease's connection outside a step (the pollsets, `tls_native`,
+`CURLINFO_ACTIVESOCKET`) reads it through the pool (`Pool::slot_of`); one out with another
+transfer's step waits on nothing of its own. The last lease given back decides the connection's
+fate as `multi_done_locked` does.
 
-How it is built. A connection of the multi's own becomes `Attached` at the end of the step in
-which its first request found it speaks HTTP/2 (the protocol's step cannot reach the pool): its
-slot moves into the place, and the lease becomes a key; whether a lease is a key, its place
-alone says (`Pool::is_attached`). A share's connection found to speak HTTP/2 is lent to the
-multi instead (`Pool::borrow`): its slot moves into the multi's pool, out of the share's lock,
-and its leases stay the share's, keys the multi's pool finds it by (the share and its id there).
-Its place in the share's pool stays leased, with its number and against its limits, marked lent
-(`Pool::lend`, unlocked as C sets `attached_multi`). A search of the share's pool judges a lent connection by what the searching
-multi's pool says of it (`Pool::lending`, computed before the share's lock is taken, in the
-share's order): one lent to another multi is seen and passed over (`url_match_multi`). Every key
-given back is one use of the share's pool, as `Curl_cpool_return` locks for each; the last gives
-the share its lease back (`Pool::release_lent`), to be released as any. Each step checks the connection out of its place
-and back in after (`Pool::check_out`, `check_in`), and a lease given back outside a step checks
-it out to be given back. What reads a lease's connection outside a step (the pollsets,
-`tls_native`, `CURLINFO_ACTIVESOCKET`) reads it through the pool (`Pool::slot_of`); one out with
-another transfer's step waits on nothing of its own.
+A connection of the multi's own becomes `Attached` at the end of the step in which its first
+request found it speaks HTTP/2 (the protocol's step cannot reach the pool): its slot moves into
+the place, and the lease becomes a key; whether a lease is a key, its place alone says
+(`Pool::is_attached`). A share's connection found to speak HTTP/2 is lent to the multi instead
+(`Pool::borrow`): its slot moves into the multi's pool, out of the share's lock, and its leases
+stay the share's, keys the multi's pool finds it by (the share and its id there). Its place in
+the share's pool stays leased, with its number and against its limits, marked lent
+(`Pool::lend`, unlocked as C sets `attached_multi`). A search of the share's pool judges a lent
+connection by what the searching multi's pool says of it (`Pool::lending`, computed before the
+share's lock is taken, in the share's order): one lent to another multi is seen and passed over
+(`url_match_multi`). Every key given back is one use of the share's pool, as `Curl_cpool_return`
+locks for each; the last gives the share its lease back (`Pool::release_lent`), to be released
+as any.
 
-The search joins an `Attached` connection (`Pool::join_if`) that serves the transfer's route and
-credentials, if the transfer may speak HTTP/2 and the multi multiplexes (`CURLMOPT_PIPELINING`),
-the connection is not closing (a GOAWAY marks it so), and it has fewer transfers on it than
+**Joining and streams.** The search joins an `Attached` connection (`Pool::join_if`) that serves
+the transfer's route and credentials, if the transfer may speak HTTP/2 and the multi multiplexes
+(`CURLMOPT_PIPELINING`), the connection is not closing, and it has fewer transfers on it than
 both the multi's `CURLMOPT_MAX_CONCURRENT_STREAMS` and the server's
 `SETTINGS_MAX_CONCURRENT_STREAMS` (`Session::max_concurrent`), with C's lines for each
 (`url_match_multiplex_limits`). The session's streams map to their transfers (`H2Conn`'s routes,
-set as a request opens its stream and let go as it is done). What the session reads for a
-sibling's stream goes to it as it is read, by moving the sibling's `Run` out
-(`StepCx::with_sibling`); a sibling's body is read from its own buffer as the session frames it,
-and the streams the session closes as it sends are told once it is done. A GOAWAY, the
-connection's end or its failure wakes every other transfer on it.
+set as a request opens its stream and let go as it is done); the session's events and body reads
+come with the transfer their stream is routed to, looked up as they come. What the session reads
+for a sibling's stream goes to it as it is read, in the order C delivers it, by moving that
+sibling's `Run` out (`StepCx::with_sibling`), as the unpause replay does (§5.3); the sibling is
+marked to run, not stepped in the same pass. A paused sibling's bytes wait in its pipeline's
+paused output, as C's client writer holds them. A sibling's body is read from its own buffer as
+the session frames it, and the streams the session closes as it sends are told once it is done.
 
-A leased connection's place keeps a verdict for others' searches, written only at the end of
-its lease's step (in a share's pool unlocked, as C reads `bits.multiplex`): pending while it is set up or its first request has not found what it speaks
-(an `h2c` upgrade unanswered counts as not found), single-use once it speaks HTTP/1. A transfer that may
-multiplex and finds a pending one says so ("not open enough"), and with `CURLOPT_PIPEWAIT`
-(which the tool sets for `--parallel` unless `--parallel-immediate`) waits in PENDING for it,
-unless a single-use one to the route, with no multiplexing one, says the server does not
-multiplex (`url_match_result`). A connection attached, or found single-use, lets one waiting
-transfer look again, and each one that then gets a connection lets the next.
+A leased connection's place keeps a verdict for others' searches, written only at the end of its
+lease's step (in a share's pool unlocked, as C reads `bits.multiplex`): pending while it is set
+up or its first request has not found what it speaks (an `h2c` upgrade unanswered counts as not
+found), single-use once it speaks HTTP/1. A transfer that may multiplex and finds a pending one
+says so ("not open enough"), and with `CURLOPT_PIPEWAIT` (which the tool sets for `--parallel`
+unless `--parallel-immediate`) waits in PENDING for it, unless a single-use one to the route,
+with no multiplexing one, says the server does not multiplex (`url_match_result`). A connection
+attached, or found single-use, lets one waiting transfer look again, and each one that then gets
+a connection lets the next.
 
-Each stream's receive window is the one its transfer asks for (`cf_h2_update_local_win`): the
-most once its head is in, what a receive limit allows under one, none while its output is
-paused or failed, so that the server holds back what would only be buffered. It is asked for
-as each piece of the response is written to the transfer, in whichever transfer's step the
-session read it, which is where a pause takes effect, and again as the transfer next reads,
-which is where an unpause does (a paused transfer does not read); a window grown tells the
-peer by how much. C
-asks again inside `curl_easy_pause` as well, sending the update before it returns; here an
-unpause marks the transfer to run, and the update goes out in that run, as the connection may
-be out with another transfer's step when the pause is asked for.
+**Windows.** Each stream's receive window is the one its transfer asks for
+(`cf_h2_update_local_win`): the most once its head is in, what a receive limit allows under one,
+none while its output is paused or failed, so that the server holds back what would only be
+buffered. It is asked for as each piece of the response is written to the transfer, in whichever
+transfer's step the session read it, which is where a pause takes effect, and again as the
+transfer next reads, which is where an unpause does (a paused transfer does not read); a window
+grown tells the peer by how much. C asks again inside `curl_easy_pause` as well, sending the
+update before it returns; here an unpause marks the transfer to run, and the update goes out in
+that run, as the connection may be out with another transfer's step when the pause is asked for.
 
 **Server push.** The client says it takes pushes (`SETTINGS_ENABLE_PUSH`) when the application's
 events do (`MultiEvents::wants_push`). A PUSH_PROMISE's fields come to the request whose stream
@@ -1659,8 +1664,11 @@ as `with_sibling` lends one, with a request on the promised stream waiting for i
 key to the parent's connection, one more user found by no search (`Pool::pushed`); a
 connection not attached yet is attached then. The promised stream is routed to it at once,
 within the read, so the frames that follow the promise go to it as a sibling's. Refused, the
-stream is cancelled; failed (`CURL_PUSH_ERROROUT`), the parent fails too. A share's
-connections are never attached, so a push on one is refused.
+stream is cancelled; failed (`CURL_PUSH_ERROROUT`), the parent fails too.
+
+**Not built** (MILESTONES step 55): `curl_easy_upkeep`'s PING (it does nothing); the pool's
+once-a-second limit on checking a multiplexed connection's health (`lastchecked_ms`); the `--trace-config http/2` lines; and a push on a share's connection, which is
+refused where C takes it, as a share's connections are lent, never attached.
 
 ### 4.5 Route and reuse
 
@@ -2894,9 +2902,9 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   `UserHeaders::host(SameOrigin)`, and Authorization and Cookie lines only through
   `UserHeaders::sendable(Option<Trusted>)`, where `Trusted` is the same origin or
   `CURLOPT_UNRESTRICTED_AUTH`: a new emit site cannot skip the gate.
-- **One typed request for every version.** h2 and h3 (stage 5) encode the same `RequestHead`;
-  C's render-to-HTTP/1-then-reparse (`Curl_h1_req_parse_read`) has no counterpart, and the H1
-  request parser survives only as test support (unit 2603).
+- **One rendered request for every version.** HTTP/2 makes its request as C does, rendered in
+  HTTP/1's form, traced as sent, and read back into the stream's fields (`fields_of`, C's
+  `Curl_h1_req_parse_read`, §4.4); HTTP/3 is to read it back the same way, as C's does.
 - `Expect: 100-continue`, asked for or added (`addexpect`), holds the body back: it is not
   read behind the head. Once the head has drained, the request is `Sending::HeadSent` until
   the body is next asked for, in a later pass, as C's readers are asked before the send buffer

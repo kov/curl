@@ -743,20 +743,12 @@ diff what they accept, warn about and refuse. It is also the evidence for a diff
 (DIVERGENCE.md): whether anyone relies on the C behaviour.
 
 Later, with the protocol that needs it: the scheme facts (family, PROTOPT flags, default port)
-generated from `gen/schemes.py` rather than copied by hand, by stage 4 at the latest; resting
-connect and DO states and connection-scoped protocol state, with the first stage-6 protocol or
-STARTTLS; the request renderer writing each part through a field sink, when HTTP/2 starts;
-HTTP/2 delivering a sibling stream's data to its transfer at once, as C does, rather than
-buffering it per stream; FTP's data connection as a second chain beside the control
-connection's, and its FTP_ACCEPT and SERVER_RESPONSE timers traced; `CURLOPT_CONNECT_ONLY`
-with the pool's `Reserved` place (3231, 3232, 3234); the pool's `Attached` place for a
-connection several transfers lease, before stage 5; with it and HTTP/2, `CURLOPT_PIPEWAIT`:
-with `-Z`, C's transfers to one host wait for a connection that may multiplex ("Found pending
-candidate for reuse and CURLOPT_PIPEWAIT is set") where the engine opens connections side by
-side, `--parallel-immediate` does nothing yet, and C lets one waiting transfer retry per
-perform where the engine lets several; ALPN offering `h2`, and TLS early data, with HTTP/2;
-`curl_easy_ssls_import` and `export` (`SSLS-EXPORT`, 1678) with stage 7's shared state;
-`curl_multi_assign` from a transfer's own handler, if the corpus shows it used.
+generated from `gen/schemes.py` rather than copied by hand; resting connect and DO states and
+connection-scoped protocol state, with the first stage-6 protocol or STARTTLS; FTP's data
+connection as a second chain beside the control connection's, and its FTP_ACCEPT and
+SERVER_RESPONSE timers traced; `curl_easy_ssls_import` and `export` (`SSLS-EXPORT`, 1678) with
+stage 7's shared state; `curl_multi_assign` from a transfer's own handler, if the corpus shows
+it used.
 
 After the port, as an addition: a rustls backend behind the same `curl_core::tls` traits, to
 shrink the C the library depends on.
@@ -859,7 +851,7 @@ the system's under the HTTP-only programs installed here.
       health check, saying GOAWAY as it shuts down; `--http2`, `--http2-prior-knowledge`,
       `CURLOPT_STREAM_WEIGHT`, `CURLMOPT_PIPELINING`, `CURLMOPT_MAX_CONCURRENT_STREAMS`;
       `HTTP2` claimed and nghttp2 listed. 471, 1700, 1702, 1704, 1800, 2400–2403 and 2406
-      pass; of pytest's HTTP/2 cases, those of one transfer at a time. Not built:
+      pass; of pytest's HTTP/2 cases, those of one transfer at a time. Not built (step 55):
       `curl_easy_upkeep`'s PING, and the `--trace-config http/2` lines.
     - **b. Multiplexing,** with 51, in parts. **Done.**
       - **1. Sharing a connection.** **Done.** A transfer joins the multi's HTTP/2 connection
@@ -872,7 +864,8 @@ the system's under the HTTP-only programs installed here.
         receive window follows its transfer's pause and receive limit. Server push: **done**;
         a pushed response is a transfer of its own, offered to the application with the
         promise's fields (`CURLMOPT_PUSHFUNCTION`, `curl_pushheader_bynum` and `_byname`).
-        pytest 09_02 passes.
+        pytest 09_02 passes. Not built (step 55): the pool's once-a-second limit on checking a
+        multiplexed connection (`lastchecked_ms`).
       - **4. TLS early data.** **Done.** A resumed TLS 1.3 session that allows it takes the
         first bytes sent as early data, the handshake put off until then; `--tls-earlydata`,
         `CURLSSLOPT_EARLYDATA`, `CURLINFO_EARLYDATA_SENT_T`, `%{tls_earlydata}`. pytest 08_08
@@ -884,7 +877,8 @@ the system's under the HTTP-only programs installed here.
       Rust leg.
     - **d. A share's connections multiplexed:** a connection the share's pool keeps serves
       several transfers of one multi at once, as the multi's own do. **Done**: lent to the multi
-      while it multiplexes, the share's lock taken as C takes it.
+      while it multiplexes, the share's lock taken as C takes it. Not built (step 55): a push on
+      a share's connection, refused where C takes it.
 53. **`CURLOPT_CONNECT_ONLY`** with the pool's `Reserved` place (3231, 3232, 3234). **Done**,
     ahead of 51 and 52, as it needs neither: a transfer that only connects is done once
     connected, its connection reserved for the handle in its pool; `curl_easy_send`,
@@ -915,6 +909,14 @@ the system's under the HTTP-only programs installed here.
 
 Status: **to do**. SCOPE stage 5's second half: QUIC through ngtcp2 and nghttp3, the HTTP/3
 proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
+
+55. **What HTTP/2 left unbuilt,** each with a test that runs on the C leg too:
+    - `curl_easy_upkeep` sends a PING on an HTTP/2 connection past its upkeep interval
+      (`CURLOPT_UPKEEP_INTERVAL_MS`, `Curl_cpool_upkeep`, `http2_conn_upkeep`).
+    - The pool checks a multiplexed connection's health at most once a second
+      (`lastchecked_ms`).
+    - The `--trace-config http/2` lines (`CURL_TRC_CF` of `cf-h2`).
+    - A push on a share's connection is taken, as C takes it.
 
 ## Milestone 6: the other protocols
 

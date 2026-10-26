@@ -1218,8 +1218,12 @@ fn apply(
         (ffi::CURLOPT_COOKIESESSION, Long(n)) => {
             options.http.cookies.make_mut()?.new_session = n != 0
         }
-        // On the jar alone, which `jar_option` reaches.
-        (ffi::CURLOPT_COOKIELIST, Ptr(_)) => {}
+        // On the jar alone, which `jar_option` reaches; a line longer
+        // than C takes, which no keyword is, refused first (`cookielist`).
+        (ffi::CURLOPT_COOKIELIST, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            unsafe { string(p) }?;
+        }
         (ffi::CURLOPT_USERAGENT, Ptr(p)) => {
             // SAFETY: as above.
             options.http.user_agent = unsafe { owned(p) }?;
@@ -1317,9 +1321,13 @@ fn apply(
             room.set(c);
         }
         // On the handle's cache and its files, which `hsts_option`
-        // reaches.
-        (ffi::CURLOPT_HSTS | ffi::CURLOPT_ALTSVC, Ptr(_))
-        | (ffi::CURLOPT_HSTS_CTRL | ffi::CURLOPT_ALTSVC_CTRL, Long(_)) => {}
+        // reaches; a name longer than C takes refused first
+        // (`Curl_setstropt`).
+        (ffi::CURLOPT_HSTS | ffi::CURLOPT_ALTSVC, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            unsafe { string(p) }?;
+        }
+        (ffi::CURLOPT_HSTS_CTRL | ffi::CURLOPT_ALTSVC_CTRL, Long(_)) => {}
         (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
             // SAFETY: the application passes a function of the option's
             // type, or NULL.

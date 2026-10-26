@@ -273,3 +273,14 @@ witness: curl-sys-abi handle_tests::infos_answer_from_the_report
         Protocol::File => c"file",
 --- new
         Protocol::File => c"http",
+
+=== CURLOPT_COOKIELIST takes a line longer than C takes
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::no_string_option_takes_an_over_long_string
+--- old
+        (ffi::CURLOPT_COOKIELIST, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            unsafe { string(p) }?;
+        }
+--- new
+        (ffi::CURLOPT_COOKIELIST, Ptr(_)) => {}

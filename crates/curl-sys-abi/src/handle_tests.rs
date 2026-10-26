@@ -1096,6 +1096,56 @@ fn http_options_reach_the_request() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// Every string option refuses a string longer than C takes, or is not
+/// built: none takes it (lib1911). The four lib1911 lets pass are left
+/// out here too.
+#[test]
+fn no_string_option_takes_an_over_long_string() {
+    let c = curl_easy_init();
+    let mut long = vec![b'A'; 8_000_001];
+    long.push(0);
+    let mut row = ptr::null();
+    let mut seen = 0;
+    loop {
+        // SAFETY: NULL or a row the iteration gave.
+        row = unsafe { crate::easyoption::curl_easy_option_next(row) };
+        // SAFETY: a row of the static table, or NULL at its end.
+        let Some(o) = (unsafe { row.as_ref() }) else {
+            break;
+        };
+        if o.r#type != ffi::CURLOT_STRING {
+            continue;
+        }
+        // SAFETY: the table's names are static C strings.
+        let name = unsafe { CStr::from_ptr(o.name) };
+        if [
+            c"PROXY_TLSAUTH_TYPE",
+            c"TLSAUTH_TYPE",
+            c"RANDOM_FILE",
+            c"EGDSOCKET",
+        ]
+        .contains(&name)
+        {
+            continue;
+        }
+        seen += 1;
+        let code = pointer(c, o.id, long.as_mut_ptr());
+        assert!(
+            [
+                CURLE_BAD_FUNCTION_ARGUMENT,
+                ffi::CURLE_UNKNOWN_OPTION,
+                ffi::CURLE_NOT_BUILT_IN,
+                ffi::CURLE_UNSUPPORTED_PROTOCOL,
+            ]
+            .contains(&code),
+            "{name:?} took it: {code:?}"
+        );
+    }
+    assert!(seen > 50, "only {seen} string options");
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 #[test]
 fn the_method_follows_nobody_and_upload_as_in_c() {
     let c = curl_easy_init();

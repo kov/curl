@@ -144,7 +144,8 @@ def assemble(leg, lib, tool):
     tools = {"rust": leg.cargo_out, "c": c_build / "src"}[tool]
     for name in ("curl", "curlinfo"):
         shutil.copy2(tools / name, leg.build / "src" / name)
-        if tool == "c":
+        # C's curlinfo links no libcurl, so has no RUNPATH to it.
+        if tool == "c" and needs_libcurl(leg.build / "src" / name):
             own_runpath(leg.build / "src" / name, c_build / "lib",
                         "$ORIGIN/../lib")
 
@@ -197,11 +198,16 @@ def environment(leg):
     return {**os.environ, "LD_LIBRARY_PATH": str(leg.build / "lib")}
 
 
-def resolved_libcurl(binary, env):
-    """Return the file `binary` loads for SONAME under `env`, or None."""
+def needs_libcurl(binary):
+    """Whether `binary` names SONAME among the libraries it needs."""
     needed = subprocess.run(["readelf", "-d", str(binary)], check=True,
                             capture_output=True, text=True).stdout
-    if f"[{SONAME}]" not in needed:
+    return f"[{SONAME}]" in needed
+
+
+def resolved_libcurl(binary, env):
+    """Return the file `binary` loads for SONAME under `env`, or None."""
+    if not needs_libcurl(binary):
         return None
     ldd = subprocess.run(["ldd", str(binary)], env=env, check=True,
                          capture_output=True, text=True).stdout

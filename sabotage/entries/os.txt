@@ -299,3 +299,19 @@ witness: curl-os net::tests::an_interrupted_call_reads_as_c_reads_it
         Some(libc::EINPROGRESS | libc::EAGAIN) => Ok(Connect::InProgress),
 --- new
         Some(libc::EINPROGRESS | libc::EAGAIN | libc::EINTR) => Ok(Connect::InProgress),
+
+=== a UDP socket is opened as a stream
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::a_udp_socket_moves_one_datagram_a_call
+--- old
+    let mut kind = libc::SOCK_DGRAM | libc::SOCK_CLOEXEC;
+--- new
+    let mut kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+
+=== an empty datagram reads as the end of a UDP socket
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::a_udp_socket_moves_one_datagram_a_call
+--- old
+                Recv::Eof => continue,
+--- new
+                Recv::Eof => return Ok(Recv::Eof),

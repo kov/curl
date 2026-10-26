@@ -1,13 +1,14 @@
-//! Nonblocking TCP sockets (`lib/cf-socket.c`). Opening, setting and
-//! connecting are system calls of their own, in C's order; everything
+//! Nonblocking TCP and UDP sockets (`lib/cf-socket.c`). Opening, setting
+//! and connecting are system calls of their own, in C's order; everything
 //! after goes through a std `TcpStream`, which already sends with
-//! `MSG_NOSIGNAL`. A receive or send a signal interrupts would block, as
-//! C reads `EINTR` there; a connect it interrupts failed.
+//! `MSG_NOSIGNAL`, or a std `UdpSocket`, one datagram a call. A receive or
+//! send a signal interrupts would block, as C reads `EINTR` there; a
+//! connect it interrupts failed.
 
 #![allow(unsafe_code)]
 
 use std::io::{self, Read as _, Write as _};
-use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, UdpSocket as StdUdpSocket};
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::os::fd::{AsFd, AsRawFd as _, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
@@ -174,6 +175,41 @@ pub fn open(addr: SocketAddr, protocol: Protocol, nonblocking: bool) -> io::Resu
     Ok(TcpSocket(TcpStream::from(unsafe {
         OwnedFd::from_raw_fd(fd)
     })))
+}
+
+/// Open a close-on-exec UDP socket of `addr`'s family, nonblocking if
+/// `nonblocking`, as QUIC's are (`SOCK_DGRAM`, `IPPROTO_UDP`): not
+/// connected yet.
+pub fn open_udp(addr: SocketAddr, nonblocking: bool) -> io::Result<UdpSocket> {
+    let family = match addr {
+        SocketAddr::V4(_) => libc::AF_INET,
+        SocketAddr::V6(_) => libc::AF_INET6,
+    };
+    let mut kind = libc::SOCK_DGRAM | libc::SOCK_CLOEXEC;
+    if nonblocking {
+        kind |= libc::SOCK_NONBLOCK;
+    }
+    // SAFETY: `socket` takes no pointers; a negative result is an error.
+    let fd = unsafe { libc::socket(family, kind, libc::IPPROTO_UDP) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` was just opened and is owned by nothing else.
+    Ok(UdpSocket(StdUdpSocket::from(unsafe {
+        OwnedFd::from_raw_fd(fd)
+    })))
+}
+
+/// The UDP socket `fd`, which an application opened and gives up: closing
+/// the `UdpSocket` closes it.
+///
+/// # Safety
+///
+/// `fd` is an open datagram socket descriptor that nothing else owns or
+/// closes while the `UdpSocket` lives.
+pub unsafe fn adopt_udp(fd: RawFd) -> UdpSocket {
+    // SAFETY: as the caller guarantees.
+    UdpSocket(StdUdpSocket::from(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
 /// Open a close-on-exec Unix stream socket (`AF_UNIX`), nonblocking if
@@ -494,6 +530,77 @@ pub fn interface_address(
     found
 }
 
+/// Bind the local end of the socket `fd` to `addr`, before it connects.
+fn bind_fd(fd: BorrowedFd<'_>, addr: SocketAddr) -> io::Result<()> {
+    let storage = SockAddr::from(addr);
+    // SAFETY: `storage` holds a sockaddr of `addr`'s family, valid for
+    // the length given, and lives through the call; the socket is open.
+    let rc = unsafe {
+        libc::bind(
+            fd.as_raw_fd(),
+            (&raw const storage.raw).cast::<libc::sockaddr>(),
+            storage.len,
+        )
+    };
+    checked(rc)?;
+    Ok(())
+}
+
+/// Bind the socket `fd` to the network interface named `name`, which must
+/// not hold a zero byte and be shorter than 255 bytes (`SO_BINDTODEVICE`).
+fn bind_fd_to_device(fd: BorrowedFd<'_>, name: &[u8]) -> io::Result<()> {
+    let mut c_name = [0u8; 256];
+    if name.contains(&0) || name.len() >= c_name.len() - 1 {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    c_name[..name.len()].copy_from_slice(name);
+    // With its terminator, as C gives it.
+    let len = libc::socklen_t::try_from(name.len() + 1).expect("a short name's length fits");
+    // SAFETY: `c_name` holds the name and a zero after it, `len` bytes
+    // of it, and lives through the call; the socket is open.
+    let rc = unsafe {
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_BINDTODEVICE,
+            c_name.as_ptr().cast(),
+            len,
+        )
+    };
+    checked(rc)?;
+    Ok(())
+}
+
+/// Make the socket `fd` nonblocking, as `curlx_nonblock` does (`F_SETFL`).
+fn set_fd_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
+    let fd = fd.as_raw_fd();
+    // SAFETY: `fcntl` with `F_GETFL` takes no pointer; `fd` is open.
+    let flags = checked(unsafe { libc::fcntl(fd, libc::F_GETFL) })?;
+    // SAFETY: as above, with `F_SETFL` and an int.
+    checked(unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) })?;
+    Ok(())
+}
+
+/// Start connecting the socket `fd` to `addr`; the socket is nonblocking,
+/// so a connect not decided at once goes on in the background. A
+/// datagram socket's is decided at once.
+fn connect_fd(fd: BorrowedFd<'_>, addr: SocketAddr) -> io::Result<Connect> {
+    let mut storage = SockAddr::from(addr);
+    // SAFETY: `storage` holds a sockaddr of `addr`'s family, valid for
+    // the length given, and lives through the call; the socket is open.
+    let rc = unsafe {
+        libc::connect(
+            fd.as_raw_fd(),
+            (&raw mut storage.raw).cast::<libc::sockaddr>(),
+            storage.len,
+        )
+    };
+    if rc == 0 {
+        return Ok(Connect::Done);
+    }
+    connect_failed(io::Error::last_os_error())
+}
+
 impl TcpSocket {
     pub fn fd(&self) -> BorrowedFd<'_> {
         self.0.as_fd()
@@ -501,43 +608,13 @@ impl TcpSocket {
 
     /// Bind its local end to `addr`, before it connects.
     pub fn bind(&self, addr: SocketAddr) -> io::Result<()> {
-        let storage = SockAddr::from(addr);
-        // SAFETY: `storage` holds a sockaddr of `addr`'s family, valid for
-        // the length given, and lives through the call; the socket is open.
-        let rc = unsafe {
-            libc::bind(
-                self.fd().as_raw_fd(),
-                (&raw const storage.raw).cast::<libc::sockaddr>(),
-                storage.len,
-            )
-        };
-        checked(rc)?;
-        Ok(())
+        bind_fd(self.fd(), addr)
     }
 
     /// Bind it to the network interface named `name`, which must not hold
     /// a zero byte and be shorter than 255 bytes (`SO_BINDTODEVICE`).
     pub fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
-        let mut c_name = [0u8; 256];
-        if name.contains(&0) || name.len() >= c_name.len() - 1 {
-            return Err(io::Error::from_raw_os_error(libc::EINVAL));
-        }
-        c_name[..name.len()].copy_from_slice(name);
-        // With its terminator, as C gives it.
-        let len = libc::socklen_t::try_from(name.len() + 1).expect("a short name's length fits");
-        // SAFETY: `c_name` holds the name and a zero after it, `len` bytes
-        // of it, and lives through the call; the socket is open.
-        let rc = unsafe {
-            libc::setsockopt(
-                self.fd().as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_BINDTODEVICE,
-                c_name.as_ptr().cast(),
-                len,
-            )
-        };
-        checked(rc)?;
-        Ok(())
+        bind_fd_to_device(self.fd(), name)
     }
 
     /// Set `option` on it, as [`set`] does.
@@ -547,31 +624,13 @@ impl TcpSocket {
 
     /// Make it nonblocking, as `curlx_nonblock` does (`F_SETFL`).
     pub fn set_nonblocking(&self) -> io::Result<()> {
-        let fd = self.fd().as_raw_fd();
-        // SAFETY: `fcntl` with `F_GETFL` takes no pointer; `fd` is open.
-        let flags = checked(unsafe { libc::fcntl(fd, libc::F_GETFL) })?;
-        // SAFETY: as above, with `F_SETFL` and an int.
-        checked(unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) })?;
-        Ok(())
+        set_fd_nonblocking(self.fd())
     }
 
     /// Start connecting it to `addr`; the socket is nonblocking, so a
     /// connect not decided at once goes on in the background.
     pub fn connect(&self, addr: SocketAddr) -> io::Result<Connect> {
-        let mut storage = SockAddr::from(addr);
-        // SAFETY: `storage` holds a sockaddr of `addr`'s family, valid for
-        // the length given, and lives through the call; the socket is open.
-        let rc = unsafe {
-            libc::connect(
-                self.fd().as_raw_fd(),
-                (&raw mut storage.raw).cast::<libc::sockaddr>(),
-                storage.len,
-            )
-        };
-        if rc == 0 {
-            return Ok(Connect::Done);
-        }
-        connect_failed(io::Error::last_os_error())
+        connect_fd(self.fd(), addr)
     }
 
     /// Start connecting it, a Unix socket, to the one at `path`, or of
@@ -632,6 +691,76 @@ impl TcpSocket {
 
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.0.peer_addr()
+    }
+}
+
+/// A UDP socket: opened, then connected to its one peer, each receive
+/// and send one datagram.
+#[derive(Debug)]
+pub struct UdpSocket(StdUdpSocket);
+
+impl UdpSocket {
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+
+    /// Bind its local end to `addr`, before it connects.
+    pub fn bind(&self, addr: SocketAddr) -> io::Result<()> {
+        bind_fd(self.fd(), addr)
+    }
+
+    /// Bind it to the network interface named `name` (`SO_BINDTODEVICE`).
+    pub fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
+        bind_fd_to_device(self.fd(), name)
+    }
+
+    /// Set `option` on it, as [`set`] does.
+    pub fn set(&self, option: SocketOption) -> io::Result<()> {
+        set(self.fd(), option)
+    }
+
+    /// Make it nonblocking (`F_SETFL`).
+    pub fn set_nonblocking(&self) -> io::Result<()> {
+        set_fd_nonblocking(self.fd())
+    }
+
+    /// Connect it to `addr`, its one peer: decided at once.
+    pub fn connect(&self, addr: SocketAddr) -> io::Result<Connect> {
+        connect_fd(self.fd(), addr)
+    }
+
+    /// The error the kernel holds for it (`SO_ERROR`).
+    pub fn take_error(&self) -> io::Result<Option<io::Error>> {
+        self.0.take_error()
+    }
+
+    /// Receive one datagram into `buf`, which must not be empty: as much
+    /// of it as fits. An empty datagram, which no peer of ours sends, is
+    /// passed over for the next.
+    pub fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
+        assert!(!buf.is_empty(), "a receive needs room");
+        loop {
+            match received(self.0.recv(buf))? {
+                Recv::Eof => continue,
+                got => return Ok(got),
+            }
+        }
+    }
+
+    /// Send `buf`, which must not be empty, as one datagram.
+    pub fn send(&self, buf: &[u8]) -> io::Result<Sent> {
+        assert!(!buf.is_empty(), "a send needs bytes");
+        sent(self.0.send(buf))
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.0.local_addr()
+    }
+
+    /// Let go of the descriptor without closing it: the caller closes
+    /// it, as an application's own closer does.
+    pub fn into_raw(self) -> RawFd {
+        self.0.into_raw_fd()
     }
 }
 
@@ -698,14 +827,14 @@ mod tests {
     }
 
     /// The int value of option `name` at `level` on `s`.
-    fn option(s: &TcpSocket, level: libc::c_int, name: libc::c_int) -> libc::c_int {
+    fn option(s: BorrowedFd<'_>, level: libc::c_int, name: libc::c_int) -> libc::c_int {
         let mut value: libc::c_int = -1;
         let mut len = libc::socklen_t::try_from(size_of::<libc::c_int>()).unwrap();
         // SAFETY: `value` is an int of the length given, and both live
         // through the call; `s` is open.
         let rc = unsafe {
             libc::getsockopt(
-                s.fd().as_raw_fd(),
+                s.as_raw_fd(),
                 level,
                 name,
                 (&raw mut value).cast(),
@@ -739,6 +868,55 @@ mod tests {
         assert_eq!(from, s.local_addr().unwrap());
         assert_eq!(s.peer_addr().unwrap(), listener.local_addr().unwrap());
         (s, peer)
+    }
+
+    /// A UDP socket connects at once to its one peer, and each send and
+    /// receive is one datagram, as QUIC's sockets are; with nothing to
+    /// read, a receive would block, and the socket is nonblocking.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri opens TCP sockets only")]
+    fn a_udp_socket_moves_one_datagram_a_call() {
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let at = peer.local_addr().unwrap();
+        let s = open_udp(at, true).unwrap();
+        assert_eq!(
+            option(s.fd(), libc::SOL_SOCKET, libc::SO_TYPE),
+            libc::SOCK_DGRAM
+        );
+        assert_eq!(s.connect(at).unwrap(), Connect::Done);
+        let mut buf = [0u8; 64];
+        assert_eq!(s.recv(&mut buf).unwrap(), Recv::WouldBlock);
+        assert_eq!(
+            s.send(b"one").unwrap(),
+            Sent::Bytes(NonZeroUsize::new(3).unwrap())
+        );
+        assert_eq!(
+            s.send(b"two!").unwrap(),
+            Sent::Bytes(NonZeroUsize::new(4).unwrap())
+        );
+        let (n, from) = peer.recv_from(&mut buf).unwrap();
+        assert_eq!((&buf[..n], from), (&b"one"[..], s.local_addr().unwrap()));
+        let (n, _) = peer.recv_from(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"two!");
+        peer.send_to(b"", from).unwrap();
+        peer.send_to(b"back", from).unwrap();
+        peer.send_to(b"again", from).unwrap();
+        let mut fds = [PollFd::new(s.fd(), Events::IN)];
+        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+        assert_eq!(
+            s.recv(&mut buf).unwrap(),
+            Recv::Data(NonZeroUsize::new(4).unwrap())
+        );
+        assert_eq!(&buf[..4], b"back");
+        // A datagram larger than the room is cut to it, the rest lost.
+        let mut small = [0u8; 2];
+        assert_eq!(
+            s.recv(&mut small).unwrap(),
+            Recv::Data(NonZeroUsize::new(2).unwrap())
+        );
+        assert_eq!(&small, b"ag");
+        assert_eq!(s.recv(&mut buf).unwrap(), Recv::WouldBlock);
+        assert!(s.take_error().unwrap().is_none());
     }
 
     /// IPv6 works here, as `connects_over_ipv4_and_ipv6` needs.
@@ -823,7 +1001,11 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let s = open(addr, Protocol::Tcp, true).unwrap();
         let tcp = libc::IPPROTO_TCP;
-        assert_eq!(option(&s, tcp, libc::TCP_NODELAY), 0, "Nagle on until set");
+        assert_eq!(
+            option(s.fd(), tcp, libc::TCP_NODELAY),
+            0,
+            "Nagle on until set"
+        );
         for o in [
             SocketOption::NoDelay,
             SocketOption::KeepAlive,
@@ -835,29 +1017,33 @@ mod tests {
         ] {
             s.set(o).unwrap();
         }
-        assert_eq!(option(&s, tcp, libc::TCP_NODELAY), 1);
-        assert_eq!(option(&s, libc::SOL_SOCKET, libc::SO_KEEPALIVE), 1);
-        assert_eq!(option(&s, tcp, libc::TCP_KEEPIDLE), 30);
-        assert_eq!(option(&s, tcp, libc::TCP_KEEPINTVL), 20);
-        assert_eq!(option(&s, tcp, libc::TCP_KEEPCNT), 4);
-        assert_eq!(option(&s, libc::SOL_SOCKET, libc::SO_PRIORITY), 3);
-        assert_eq!(option(&s, tcp, libc::TCP_FASTOPEN_CONNECT), 1);
+        assert_eq!(option(s.fd(), tcp, libc::TCP_NODELAY), 1);
+        assert_eq!(option(s.fd(), libc::SOL_SOCKET, libc::SO_KEEPALIVE), 1);
+        assert_eq!(option(s.fd(), tcp, libc::TCP_KEEPIDLE), 30);
+        assert_eq!(option(s.fd(), tcp, libc::TCP_KEEPINTVL), 20);
+        assert_eq!(option(s.fd(), tcp, libc::TCP_KEEPCNT), 4);
+        assert_eq!(option(s.fd(), libc::SOL_SOCKET, libc::SO_PRIORITY), 3);
+        assert_eq!(option(s.fd(), tcp, libc::TCP_FASTOPEN_CONNECT), 1);
         // One the kernel refuses is an error, as C's `setsockopt` call
         // sees it: an idle time is at least a second.
         let refused = s.set(SocketOption::KeepIdle(0)).unwrap_err();
         assert_eq!(refused.raw_os_error(), Some(libc::EINVAL));
-        assert_eq!(option(&s, tcp, libc::TCP_KEEPIDLE), 30, "left as it was");
+        assert_eq!(
+            option(s.fd(), tcp, libc::TCP_KEEPIDLE),
+            30,
+            "left as it was"
+        );
         // The type of service needs the socket's family, which it has once
         // bound: a connect binds it.
         s.connect(addr).unwrap();
         s.set(SocketOption::TypeOfService(32)).unwrap();
-        assert_eq!(option(&s, libc::IPPROTO_IP, libc::IP_TOS), 32);
+        assert_eq!(option(s.fd(), libc::IPPROTO_IP, libc::IP_TOS), 32);
         if let Ok(v6) = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)) {
             let at = v6.local_addr().unwrap();
             let s = open(at, Protocol::Tcp, true).unwrap();
             s.connect(at).unwrap();
             s.set(SocketOption::TypeOfService(32)).unwrap();
-            assert_eq!(option(&s, libc::IPPROTO_IPV6, libc::IPV6_TCLASS), 32);
+            assert_eq!(option(s.fd(), libc::IPPROTO_IPV6, libc::IPV6_TCLASS), 32);
         }
     }
 
@@ -882,7 +1068,7 @@ mod tests {
         let fd_flags = unsafe { libc::fcntl(s.fd().as_raw_fd(), libc::F_GETFD) };
         assert_ne!(fd_flags & libc::FD_CLOEXEC, 0);
         assert_eq!(
-            option(&s, libc::SOL_SOCKET, libc::SO_PROTOCOL),
+            option(s.fd(), libc::SOL_SOCKET, libc::SO_PROTOCOL),
             libc::IPPROTO_TCP
         );
     }
@@ -918,7 +1104,7 @@ mod tests {
         let addr = SocketAddr::from(([127, 0, 0, 1], 1));
         match open(addr, Protocol::Mptcp, true) {
             Ok(s) => assert_eq!(
-                option(&s, libc::SOL_SOCKET, libc::SO_PROTOCOL),
+                option(s.fd(), libc::SOL_SOCKET, libc::SO_PROTOCOL),
                 libc::IPPROTO_MPTCP
             ),
             // A kernel without it says so.

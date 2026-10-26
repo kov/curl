@@ -17,8 +17,8 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, CaDefaults, Chosen, Handshake, KeyLog, SharedKeyLog, TlsBackend, TlsIdentity, TlsIo,
-    TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
+    Alpn, CaDefaults, Chosen, Deferred, Handshake, KeyLog, SharedKeyLog, TlsBackend, TlsIdentity,
+    TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX, SSL_SESSION};
@@ -101,6 +101,9 @@ impl TlsBackend for OpenSsl {
             shut: false,
             keylog: self.keylog.clone(),
             reused: false,
+            early_data: peer.early_data,
+            deferred: None,
+            early: Early::None,
         };
         Ok(try_box(session).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
     }
@@ -151,6 +154,19 @@ impl Drop for Ssl {
     }
 }
 
+/// Where a handshake put off for early data is (`earlydata_state`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Early {
+    /// None put off, or it waits for its early data.
+    None,
+    /// Writing it, this much written.
+    Sending(usize),
+    /// Written, the handshake going on.
+    Sent,
+    /// The handshake is done, the peer taking the early data or not.
+    Over { accepted: bool },
+}
+
 /// How far a session's handshake has come (`connecting_state`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
@@ -198,6 +214,12 @@ struct Session {
     /// The handshake resumes a session the cache kept
     /// (`reused_session`).
     reused: bool,
+    /// The transfer may send early data.
+    early_data: bool,
+    /// The handshake is put off for early data, as the session resumed
+    /// allows (`ssl_connection_deferred`).
+    deferred: Option<Deferred>,
+    early: Early,
 }
 
 /// The library's major error codes C tells apart.
@@ -528,7 +550,12 @@ impl Session {
             }
             io.return_session(taken);
         }
-        let wire = self.alpn.wire();
+        // Put off, only what the session resumed agreed is offered
+        // (`Curl_alpn_restrict_to`).
+        let wire = match self.deferred {
+            Some(d) => d.alpn.wire(),
+            None => self.alpn.wire(),
+        };
         if !wire.is_empty() {
             let len = u32::try_from(wire.len()).expect("a short list");
             // SAFETY: the SSL, and the list, which the library copies.
@@ -551,7 +578,7 @@ impl Session {
         unsafe { ffi::SSL_set0_rbio(ssl.as_ptr(), bio.as_ptr()) };
         // SAFETY: as above, the other reference.
         unsafe { ffi::SSL_set0_wbio(ssl.as_ptr(), bio.as_ptr()) };
-        if let Some(offer) = self.alpn.offer() {
+        if let Some(offer) = self.alpn.offer().filter(|_| self.deferred.is_none()) {
             io.info(format_args!("ALPN: curl offers {offer}"));
         }
         Ok(())
@@ -734,6 +761,29 @@ impl Session {
     /// What the peer chose of the ALPN offer (`Curl_alpn_set_negotiated`).
     fn negotiated(&self, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
         let chosen = self.selected();
+        // Asked of the peer again, put off, it must agree to it again.
+        if let Some(d) = self.deferred {
+            let asked = d.alpn.name();
+            if chosen.is_empty() {
+                return Err(io.fail(
+                    ErrorKind::SslConnectError,
+                    format_args!(
+                        "ALPN: asked for '{asked}' from previous session, but server did not confirm it. Refusing to continue."
+                    ),
+                ));
+            }
+            if chosen != asked.as_bytes() {
+                return Err(io.fail(
+                    ErrorKind::SslConnectError,
+                    format_args!(
+                        "ALPN: asked for '{asked}' from previous session, but server selected '{}'. Refusing to continue.",
+                        Text(chosen)
+                    ),
+                ));
+            }
+            io.info(format_args!("ALPN: server confirmed to use '{asked}'"));
+            return Ok(());
+        }
         if chosen.is_empty() {
             io.info(format_args!(
                 "ALPN: server did not agree on a protocol. Uses default."
@@ -750,7 +800,130 @@ impl Session {
     }
 }
 
+/// The most early data a handshake holds to send (`CURL_SSL_EARLY_MAX`).
+const EARLY_MOST: usize = 64 * 1024;
+
 impl Session {
+    /// Put the handshake off for early data, resuming a session that
+    /// allows `most` bytes of it and agreed `chosen` by ALPN, if the
+    /// transfer offers it (`Curl_on_session_reuse`).
+    fn defer(&mut self, most: usize, chosen: Chosen, io: &mut TlsIo<'_>) {
+        if most == 0 {
+            io.trace(format_args!("SSL session does not allow earlydata"));
+        } else if !self.alpn.offers(chosen) {
+            io.trace(format_args!(
+                "SSL session has different ALPN, no early data"
+            ));
+        } else {
+            let name = chosen.name();
+            io.info(format_args!(
+                "SSL session allows {most} bytes of early data, reusing ALPN '{name}'"
+            ));
+            self.deferred = Some(Deferred {
+                most: most.min(EARLY_MOST),
+                alpn: chosen,
+            });
+            io.info(format_args!(
+                "ALPN: deferred handshake for early data using '{name}'."
+            ));
+        }
+    }
+
+    /// Write `early` as early data, from `sent` on
+    /// (`ossl_send_earlydata`): done, or waiting with what went kept.
+    fn write_early(
+        &mut self,
+        io: &mut TlsIo<'_>,
+        early: &[u8],
+        mut sent: usize,
+    ) -> Result<Handshake, ErrorKind> {
+        while sent < early.len() {
+            let mut written = 0usize;
+            let rest = &early[sent..];
+            let (from, len) = (rest.as_ptr(), rest.len());
+            // SAFETY: the SSL, `len` bytes at `from`, the caller's, and
+            // the count the library writes.
+            let (rc, below) = self.call(io, |ssl| unsafe {
+                openssl_sys::SSL_write_early_data(ssl, from.cast(), len, &mut written)
+            });
+            io.trace(format_args!(
+                "SSL_write_early_data(len={len}) -> {rc}, {written}"
+            ));
+            if rc <= 0 {
+                self.early = Early::Sending(sent);
+                // SAFETY: the SSL and what its call returned.
+                let err = unsafe { openssl_sys::SSL_get_error(self.ssl().as_ptr(), rc) };
+                let errno = errno_of(below);
+                return match err {
+                    openssl_sys::SSL_ERROR_WANT_READ => {
+                        self.waits = TlsWait::Recv;
+                        Ok(Handshake::Waiting)
+                    }
+                    openssl_sys::SSL_ERROR_WANT_WRITE => {
+                        self.waits = TlsWait::Send;
+                        Ok(Handshake::Waiting)
+                    }
+                    openssl_sys::SSL_ERROR_SYSCALL if below == Below::Again => {
+                        Ok(Handshake::Waiting)
+                    }
+                    openssl_sys::SSL_ERROR_SYSCALL => {
+                        // SAFETY: the thread's error queue, its earliest
+                        // taken.
+                        let e = unsafe { openssl_sys::ERR_get_error() };
+                        Err(if e != 0 {
+                            let e = ErrText::of(e);
+                            io.fail(
+                                ErrorKind::SendError,
+                                format_args!(
+                                    "OpenSSL SSL_write:early_data: {}, errno {errno}",
+                                    e.versioned()
+                                ),
+                            )
+                        } else if errno != 0 {
+                            let why = ErrorText::of_code(errno);
+                            io.fail(
+                                ErrorKind::SendError,
+                                format_args!(
+                                    "OpenSSL SSL_write:early_data: {}, errno {errno}",
+                                    Text(why.as_bytes())
+                                ),
+                            )
+                        } else {
+                            io.fail(
+                                ErrorKind::SendError,
+                                format_args!(
+                                    "OpenSSL SSL_write:early_data: {}, errno {errno}",
+                                    text::ssl_error(err)
+                                ),
+                            )
+                        })
+                    }
+                    openssl_sys::SSL_ERROR_SSL => {
+                        let e = ErrText::last();
+                        Err(io.fail(
+                            ErrorKind::SendError,
+                            format_args!("SSL_write_early_data() error: {e}"),
+                        ))
+                    }
+                    _ => Err(io.fail(
+                        ErrorKind::SendError,
+                        format_args!(
+                            "OpenSSL SSL_write_early_data: {}, errno {errno}",
+                            text::ssl_error(err)
+                        ),
+                    )),
+                };
+            }
+            sent += written;
+        }
+        io.info(format_args!(
+            "SSL sending {} bytes of early data",
+            early.len()
+        ));
+        self.early = Early::Sent;
+        Ok(Handshake::Done)
+    }
+
     /// Resume `ticket` on `ssl`, if the library takes it and, for a peer
     /// to verify, its connection was verified (`ossl_apply_session`).
     fn resume(&mut self, ssl: NonNull<SSL>, ticket: &TlsTicket, io: &mut TlsIo<'_>) {
@@ -786,6 +959,17 @@ impl Session {
                 io.info(format_args!("SSL reusing session with ALPN '{alpn}'"));
                 self.reused = true;
                 io.info(format_args!("SSL verify result: {verified:x}"));
+                // SAFETY: the session, alive until freed below.
+                let allows = unsafe { openssl_sys::SSL_SESSION_get_max_early_data(session) };
+                // SAFETY: the SSL.
+                let version = unsafe { openssl_sys::SSL_version(s) };
+                if let Some(chosen) = ticket.alpn
+                    && self.early_data
+                    && allows > 0
+                    && version == openssl_sys::TLS1_3_VERSION
+                {
+                    self.defer(ticket.earlydata_max, chosen, io);
+                }
             }
         }
         // SAFETY: the session made above, the SSL holding its own
@@ -907,6 +1091,10 @@ impl TlsSession for Session {
         }
         if self.step == Step::Handshake {
             io.trace(format_args!("ossl_connect, step2"));
+            // Put off, it waits for its early data.
+            if self.deferred.is_some() && self.early == Early::None {
+                return Ok(Handshake::Done);
+            }
             match self.step2(io)? {
                 Handshake::Waiting => return Ok(Handshake::Waiting),
                 Handshake::Done => self.step = Step::Check,
@@ -925,6 +1113,13 @@ impl TlsSession for Session {
             // The sessions kept for the peer go with it.
             io.forget_sessions();
             return Err(kind);
+        }
+        if self.early == Early::Sent {
+            // SAFETY: the SSL, its handshake done.
+            let status = unsafe { ffi::SSL_get_early_data_status(self.ssl().as_ptr()) };
+            self.early = Early::Over {
+                accepted: status == ffi::SSL_EARLY_DATA_ACCEPTED,
+            };
         }
         self.step = Step::Done;
         io.trace(format_args!("ossl_connect, done"));
@@ -1078,10 +1273,40 @@ impl TlsSession for Session {
         self.flags.input_pending
     }
 
-    /// What the peer chose, which is none before the handshake chose it.
+    /// What the peer chose, which is none before the handshake chose it,
+    /// but for one put off: what the session resumed chose.
     fn chosen(&self) -> Option<Chosen> {
         self.ssl.as_ref()?;
-        Chosen::named(self.selected())
+        match self.deferred {
+            Some(d) if self.step != Step::Done => Some(d.alpn),
+            _ => Chosen::named(self.selected()),
+        }
+    }
+
+    fn deferred(&self) -> Option<Deferred> {
+        self.deferred.filter(|_| self.early == Early::None)
+    }
+
+    fn handshake_early(
+        &mut self,
+        io: &mut TlsIo<'_>,
+        early: &[u8],
+    ) -> Result<Handshake, ErrorKind> {
+        assert!(self.deferred.is_some(), "a handshake put off");
+        self.waits = TlsWait::Nothing;
+        if self.early == Early::None {
+            self.early = Early::Sending(0);
+        }
+        if let Early::Sending(sent) = self.early
+            && self.write_early(io, early, sent)? == Handshake::Waiting
+        {
+            return Ok(Handshake::Waiting);
+        }
+        self.handshake(io)
+    }
+
+    fn early_accepted(&self) -> bool {
+        self.early == (Early::Over { accepted: true })
     }
 
     /// The `SSL_CTX`, and the `SSL` once made, as C hands them out.

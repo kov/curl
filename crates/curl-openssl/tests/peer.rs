@@ -416,6 +416,8 @@ struct Got {
     chain: Option<Vec<Vec<Vec<u8>>>>,
     /// What OpenSSL made of the peer's certificate (`CURLINFO_SSL_VERIFYRESULT`).
     verify: i64,
+    /// The bytes sent as early data (`CURLINFO_EARLYDATA_SENT_T`).
+    early: i64,
 }
 
 /// A GET of `/` at `host` on `at`'s port, through the system's network,
@@ -466,7 +468,7 @@ fn get_in(
     ssl: bool,
 ) -> Got {
     let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
-    let (result, failure, chain, verify) = {
+    let (result, failure, chain, verify, early) = {
         let mut easy = Easy::new();
         easy.set_libraries(SharedLibraries::of_static(&LIBRARIES));
         if ssl {
@@ -487,7 +489,14 @@ fn get_in(
         let easy = m.remove(id, &mut NoEvents).unwrap().easy;
         let failure = track::untracked(|| easy.report().failure().unwrap_or_default().to_vec());
         let chain = track::untracked(|| easy.report().certinfo().map(|c| c.certs().to_vec()));
-        (result, failure, chain, easy.report().verify_result())
+        let report = easy.report();
+        (
+            result,
+            failure,
+            chain,
+            report.verify_result(),
+            report.earlydata_sent(),
+        )
     };
     let seen = track::untracked(|| std::mem::take(&mut *seen.lock().unwrap()));
     Got {
@@ -496,6 +505,7 @@ fn get_in(
         seen,
         chain,
         verify,
+        early,
     }
 }
 
@@ -807,6 +817,7 @@ fn a_handle_s_own_multi_keeps_its_store_between_performs() {
             seen,
             chain: None,
             verify: 0,
+            early: 0,
         })
     };
     assert_eq!(perform(), 1);

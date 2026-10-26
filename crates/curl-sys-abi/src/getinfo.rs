@@ -377,6 +377,7 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         ffi::CURLINFO_STARTTRANSFER_TIME_T => Value::Off(micros(t.starttransfer())),
         ffi::CURLINFO_REDIRECT_TIME_T => Value::Off(micros(t.redirect())),
         ffi::CURLINFO_QUEUE_TIME_T => Value::Off(micros(t.queue())),
+        ffi::CURLINFO_EARLYDATA_SENT_T => Value::Off(r.earlydata_sent()),
         ffi::CURLINFO_HEADER_SIZE => {
             Value::Long(c_long::try_from(sizes.header()).unwrap_or(c_long::MAX))
         }

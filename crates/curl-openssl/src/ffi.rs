@@ -79,6 +79,7 @@ unsafe extern "C" {
     pub(crate) fn GENERAL_NAMES_free(names: *mut c_void);
     pub(crate) fn SSL_set0_rbio(s: *mut SSL, rbio: *mut BIO);
     pub(crate) fn SSL_set0_wbio(s: *mut SSL, wbio: *mut BIO);
+    pub(crate) fn SSL_get_early_data_status(s: *const SSL) -> c_int;
     pub(crate) fn BIO_up_ref(bio: *mut BIO) -> c_int;
     pub(crate) fn BIO_free(bio: *mut BIO) -> c_int;
     pub(crate) fn SSL_get_peer_signature_type_nid(s: *const SSL, nid: *mut c_int) -> c_int;
@@ -124,6 +125,7 @@ pub(crate) const BIO_CLOSE_FP_READ: c_long = 0x01 | 0x02;
 /// The `SSL_CTX_ctrl` commands of `SSL_CTX_clear_chain_certs` and
 /// `SSL_CTX_add0_chain_cert` (`ssl.h`).
 pub(crate) const SSL_CTRL_CHAIN: c_int = 88;
+pub(crate) const SSL_EARLY_DATA_ACCEPTED: c_int = 2;
 pub(crate) const SSL_CTRL_CHAIN_CERT: c_int = 89;
 
 /// `ERR_LIB_PEM`, and the reason C clears after a chain's last

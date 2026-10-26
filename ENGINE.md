@@ -2337,6 +2337,25 @@ keeps it in the multi's cache through its internal handle (not built, MILESTONES
 `curl_easy_ssls_import` and `export` answer `CURLE_NOT_BUILT_IN`, as a C build without
 `USE_SSLS_EXPORT`, and `SSLS-EXPORT` is not reported.
 
+**Early data** (TLS 1.3's 0-RTT, `CURLSSLOPT_EARLYDATA`, `--tls-earlydata`). A transfer that
+asks and makes requests (`TlsPeer::early_data`, not `bits.connect_only`) has OpenSSL put its
+handshake off when it resumes a TLS 1.3 session that allows early data and agreed by ALPN to a
+protocol the transfer offers (`Curl_on_session_reuse`): only that protocol is offered, and the
+session answers it as agreed (`TlsSession::chosen`) until the peer agrees again or the handshake
+fails (`Curl_alpn_set_negotiated`'s confirmation). The handshake says it is done
+(`TlsSession::deferred`), so the connection is set up and the protocol starts; the TLS layer
+holds the deferral (`conn::tls::Deferral`, `ssl_cf_connect_deferred`). The first send gives it
+its early data, as much of the bytes as the session allows (at most 64 KiB), which OpenSSL writes
+before going on (`TlsSession::handshake_early`); a receive first lets it go on with none. Until
+it is over each send and receive waits on it. Taken by the peer, the sends after skip the bytes
+that went early, which their caller sends again as it always does after a send that waited
+(asserted); refused, they are all sent. Over, the origin's layer tells the transfer
+(`LayerCx::early_done`), which times its TLS then rather than as the connection is set up and
+keeps the count, negative if refused (`CURLINFO_EARLYDATA_SENT_T`, `%{tls_earlydata}`; the
+handle's, kept as transfers start over and cleared by a reset). A handshake put off that fails
+fails every use of the connection after with its own error, which the transfer fails with in
+place of the send's or receive's (`LayerQuery::Failure`).
+
 **The key log** (`tls/keylog.rs`, keylog.c): the file `SSLKEYLOGFILE` names, opened to append
 by the shim's first global init (also `curl_easy_init`'s, for a program that made none) and
 closed by its last cleanup, and opened by the tool as it starts: each owns one `KeyLog`, the

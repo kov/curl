@@ -6,7 +6,7 @@ use super::*;
 use crate::conn::io::Events;
 use crate::conn::io::{Recv, Sent};
 use crate::libraries::{Libraries, Library, SharedLibraries};
-use crate::tls::fake::{self, FINISHED, FakeTls, HELLO, WELCOME};
+use crate::tls::fake::{self, CLOSE, FINISHED, FakeTls, HELLO, WELCOME};
 use crate::tls::{Handshake, TlsPeerKind, fake::FakeLog};
 use curl_alloc::TryArc;
 use std::io;
@@ -1098,4 +1098,138 @@ fn a_share_keeping_sessions_serves_them_across_multis() {
         1,
         "each multi its own, none kept between"
     );
+}
+
+/// Two transfers on fresh connections by a library whose tickets allow
+/// `most` bytes of early data, the second's server answering `second`,
+/// each transfer asking for early data if `asks`: the second's run.
+fn early_pair(most: usize, second: &[&[u8]], asks: bool) -> (Ran, Conversation) {
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::early(most).unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let first = answering(1).remove(0);
+    let second = Conversation::replies(second, false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let set = |o: &mut Options| {
+        o.limits.reuse.fresh = true;
+        if asks {
+            o.tls.options.make_mut().unwrap().ssl_options = crate::options::SslOptions::EARLYDATA;
+        }
+    };
+    let got = get_tls(&mut m, &libraries, "/", first, set);
+    assert_eq!(got.result, Ok(()));
+    assert_eq!(
+        got.easy.report().earlydata_sent(),
+        0,
+        "the first resumes none"
+    );
+    let got = get_tls(&mut m, &libraries, "/", second.clone(), set);
+    assert_eq!(got.result, Ok(()));
+    assert_eq!(backend.log().resumed, 1);
+    (got, second)
+}
+
+/// The request a transfer of `early_pair` sends.
+fn early_get() -> Vec<u8> {
+    format!(
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\r\n"
+    )
+    .into_bytes()
+}
+
+/// Resuming a session that allows early data, a transfer that asks puts
+/// its handshake off until its request, which goes in it, after the
+/// hello: the server taking it, it is not sent again, and the transfer
+/// counts it and times its TLS as the handshake ends
+/// (`ssl_cf_connect_deferred`).
+#[test]
+fn a_request_goes_as_early_data_where_the_server_takes_it() {
+    let [_, response] = served(OK);
+    let (got, talk) = early_pair(16384, &[fake::EARLY_OK, &response], true);
+    let get = early_get();
+    let n = get.len();
+    let wire = sent(&talk);
+    let want = [HELLO, &get, FINISHED, CLOSE].concat();
+    assert_eq!(
+        String::from_utf8_lossy(&wire),
+        String::from_utf8_lossy(&want)
+    );
+    assert_eq!(got.easy.report().earlydata_sent(), n as i64);
+    let accepted = format!("Server accepted {n} bytes of TLS early data.");
+    assert!(said(&got, &accepted), "{:?}", got.seen.text());
+}
+
+/// The transfer's verbose output has the line `line`.
+fn said(got: &Ran, line: &str) -> bool {
+    got.seen.text().iter().any(|l| l.trim_end() == line)
+}
+
+/// The server refusing the early data, the request is sent again after
+/// the handshake, and counted as refused.
+#[test]
+fn early_data_the_server_refuses_is_sent_again() {
+    let [welcome, response] = served(OK);
+    let (got, talk) = early_pair(16384, &[&welcome, b"", &response], true);
+    let get = early_get();
+    let n = get.len() as i64;
+    let wire = sent(&talk);
+    let want = [HELLO, &get, FINISHED, &get, CLOSE].concat();
+    assert_eq!(
+        String::from_utf8_lossy(&wire),
+        String::from_utf8_lossy(&want)
+    );
+    assert_eq!(got.easy.report().earlydata_sent(), -n);
+    assert!(said(&got, "Server rejected TLS early data."));
+}
+
+/// No more goes early than the session allows; the rest follows the
+/// handshake.
+#[test]
+fn early_data_is_cut_at_what_the_session_allows() {
+    let [_, response] = served(OK);
+    let (got, talk) = early_pair(10, &[fake::EARLY_OK, &response], true);
+    let get = early_get();
+    let want = [HELLO, &get[..10], FINISHED, &get[10..], CLOSE].concat();
+    assert_eq!(
+        String::from_utf8_lossy(&sent(&talk)),
+        String::from_utf8_lossy(&want)
+    );
+    assert_eq!(got.easy.report().earlydata_sent(), 10);
+}
+
+/// A transfer that does not ask sends none, its handshake not put off.
+#[test]
+fn without_asking_no_early_data_goes() {
+    let (got, talk) = early_pair(16384, &[WELCOME, &fake::records(OK).unwrap()], false);
+    let want = [HELLO, FINISHED, &early_get(), CLOSE].concat();
+    assert_eq!(
+        String::from_utf8_lossy(&sent(&talk)),
+        String::from_utf8_lossy(&want)
+    );
+    assert_eq!(got.easy.report().earlydata_sent(), 0);
+}
+
+/// A handshake put off that fails as the request lets it go on fails the
+/// transfer with the handshake's error, not the send's.
+#[test]
+fn a_handshake_put_off_that_fails_fails_the_transfer_with_its_error() {
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::early(16384).unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let first = answering(1).remove(0);
+    let second = Conversation::replies(&[b"FAKETLS GOODBYE\r\n\r\n"], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let set = |o: &mut Options| {
+        o.limits.reuse.fresh = true;
+        o.tls.options.make_mut().unwrap().ssl_options = crate::options::SslOptions::EARLYDATA;
+    };
+    assert_eq!(get_tls(&mut m, &libraries, "/", first, set).result, Ok(()));
+    let got = get_tls(&mut m, &libraries, "/", second, set);
+    assert_eq!(got.result, Err(ErrorKind::SslConnectError));
 }

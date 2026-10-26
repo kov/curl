@@ -33,6 +33,14 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "a_session_keeps_its_key_log_past_its_owner",
         a_session_keeps_its_key_log_past_its_owner,
     ),
+    (
+        "a_resumed_session_sends_the_request_as_early_data",
+        a_resumed_session_sends_the_request_as_early_data,
+    ),
+    (
+        "early_data_a_server_refuses_is_sent_again",
+        early_data_a_server_refuses_is_sent_again,
+    ),
 ];
 
 /// A server's TLS, as `serve_configured` makes it.
@@ -71,6 +79,129 @@ fn serve_each(acceptors: Vec<SslAcceptor>) -> (SocketAddr, JoinHandle<()>) {
         }
     });
     (at, server)
+}
+
+/// A server's TLS taking `most` bytes of early data and agreeing to
+/// HTTP/1.1 by ALPN, so that its tickets allow early data.
+fn early_acceptor(certs: &Certs, most: u32) -> SslAcceptor {
+    acceptor(certs, |a| {
+        a.set_max_early_data(most).unwrap();
+        a.set_alpn_select_callback(|_, offer| {
+            openssl::ssl::select_next_proto(b"\x08http/1.1", offer)
+                .ok_or(openssl::ssl::AlpnError::NOACK)
+        });
+    })
+}
+
+/// As `serve_each`, each connection's early data read first: what each
+/// was sent early, and after its handshake.
+type EarlySeen = Vec<(Vec<u8>, Vec<u8>)>;
+type EarlyServer = JoinHandle<EarlySeen>;
+
+fn serve_early(acceptors: Vec<SslAcceptor>) -> (SocketAddr, EarlyServer) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        for acceptor in acceptors {
+            let (tcp, _) = listener.accept().unwrap();
+            let ssl = openssl::ssl::Ssl::new(acceptor.context()).unwrap();
+            let mut tls = openssl::ssl::SslStream::new(ssl, tcp).unwrap();
+            let mut early = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                match tls.read_early_data(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => early.extend_from_slice(&buf[..n]),
+                    Err(e) => panic!("the server's early read: {e}"),
+                }
+            }
+            tls.accept().unwrap();
+            let mut late = Vec::new();
+            while ![&early[..], &late[..]]
+                .concat()
+                .windows(4)
+                .any(|w| w == b"\r\n\r\n")
+            {
+                match tls.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => late.extend_from_slice(&buf[..n]),
+                }
+            }
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", BODY.len());
+            let _ = tls.write_all(head.as_bytes());
+            let _ = tls.write_all(BODY);
+            let _ = tls.shutdown();
+            seen.push((early, late));
+        }
+        seen
+    });
+    (at, server)
+}
+
+/// Two GETs asking for early data, on connections of their own, the
+/// second to a server made by `second`: the server's, and the GETs'.
+fn early_pair(second: impl FnOnce(&SslAcceptor, &Certs) -> SslAcceptor) -> (EarlySeen, Got, Got) {
+    let certs = certs("early", "localhost", &["localhost"]);
+    let a = early_acceptor(&certs, 16384);
+    let b = second(&a, &certs);
+    let (at, server) = serve_early(vec![a, b]);
+    let mut m = multi(try_box(SystemClock::new()).unwrap());
+    let set = |o: &mut Options| {
+        trusting(&certs)(o);
+        o.limits.reuse.fresh = true;
+        o.tls.options.make_mut().unwrap().ssl_options = SslOptions::EARLYDATA;
+    };
+    let one = get_in(&mut m, "https", "localhost", at, set, false);
+    let two = get_in(&mut m, "https", "localhost", at, set, false);
+    let seen = server.join().unwrap();
+    assert_eq!(one.result, Ok(()), "{:#?}", one.seen.lines);
+    assert_eq!(two.result, Ok(()), "{:#?}", two.seen.lines);
+    assert_eq!(two.seen.body, BODY);
+    assert_eq!(one.early, 0, "the first resumes nothing");
+    (seen, one, two)
+}
+
+/// A session that allows early data, resumed, has the handshake put off
+/// until the request, which goes in it; the server taking it, it is not
+/// sent again (`ossl_send_earlydata`, `ssl_cf_connect_deferred`).
+fn a_resumed_session_sends_the_request_as_early_data() {
+    let (seen, _, two) = early_pair(|a, _| a.clone());
+    let (early, late) = &seen[1];
+    let n = early.len();
+    assert!(early.starts_with(b"GET / HTTP/1.1\r\n"), "{early:?}");
+    assert!(late.is_empty(), "{late:?}");
+    assert_eq!(two.early, n as i64);
+    for line in [
+        "SSL session allows 16384 bytes of early data, reusing ALPN 'http/1.1'".to_owned(),
+        "ALPN: deferred handshake for early data using 'http/1.1'.".to_owned(),
+        format!("SSL sending {n} bytes of early data"),
+        "ALPN: server confirmed to use 'http/1.1'".to_owned(),
+        format!("Server accepted {n} bytes of TLS early data."),
+    ] {
+        assert!(said(&two, &line), "no {line:?} in {:#?}", two.seen.lines);
+    }
+    assert!(
+        !two.seen
+            .lines
+            .iter()
+            .any(|l| l.starts_with("ALPN: curl offers"))
+    );
+}
+
+/// A server that cannot resume the session refuses the early data: the
+/// request goes again after the handshake.
+fn early_data_a_server_refuses_is_sent_again() {
+    let (seen, _, two) = early_pair(|_, certs| early_acceptor(certs, 16384));
+    let (early, late) = &seen[1];
+    assert!(early.is_empty(), "{early:?}");
+    assert!(late.starts_with(b"GET / HTTP/1.1\r\n"), "{late:?}");
+    assert!(two.early < 0, "{}", two.early);
+    assert!(
+        said(&two, "Server rejected TLS early data."),
+        "{:#?}",
+        two.seen.lines
+    );
 }
 
 fn resumed(got: &Got) -> bool {

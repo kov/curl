@@ -131,7 +131,7 @@ pub struct TransferReport {
     /// The methods the proxy's challenges offered (`info.proxyauthavail`).
     proxy_auth_offered: AuthMethods,
     /// The status a proxy answered `CONNECT` with (`info.httpproxycode`).
-    connect_code: Option<u16>,
+    connect_code: Option<std::num::NonZeroU16>,
     /// What a SOCKS proxy's handshake failed at (`info.pxcode`).
     proxy_error: Option<ProxyError>,
     /// The method the last request authenticated with to the proxy, or
@@ -149,6 +149,10 @@ pub struct TransferReport {
     verify_result: i64,
     /// The same of an HTTPS proxy's (`set.proxy_ssl.certverifyresult`).
     proxy_verify_result: i64,
+    /// The bytes the last handshake with early data sent as it, negative
+    /// if the server refused them: the handle's, kept as transfers start
+    /// over (`progress.earlydata_sent`). At most a session's 64 KiB.
+    earlydata_sent: i32,
 }
 
 impl TransferReport {
@@ -165,6 +169,7 @@ impl TransferReport {
             headers: HeaderStore::after(&self.headers),
             verify_result: self.verify_result,
             proxy_verify_result: self.proxy_verify_result,
+            earlydata_sent: self.earlydata_sent,
             transfer: self.transfer,
             ..TransferReport::default()
         }
@@ -179,6 +184,7 @@ impl TransferReport {
             os_errno: self.os_errno,
             verify_result: 0,
             proxy_verify_result: 0,
+            earlydata_sent: 0,
             ..self.cleared()
         }
     }
@@ -293,6 +299,16 @@ impl TransferReport {
         self.proxy_verify_result = result;
     }
 
+    /// The bytes sent as TLS early data, negative if the server refused
+    /// them (`CURLINFO_EARLYDATA_SENT_T`).
+    pub fn earlydata_sent(&self) -> i64 {
+        i64::from(self.earlydata_sent)
+    }
+
+    pub(crate) fn set_earlydata_sent(&mut self, sent: i64) {
+        self.earlydata_sent = i32::try_from(sent).expect("at most what a session allows");
+    }
+
     pub fn certinfo(&self) -> Option<&CertInfo> {
         self.certinfo.as_deref()
     }
@@ -360,11 +376,12 @@ impl TransferReport {
     /// The status a proxy last answered `CONNECT` with
     /// (`CURLINFO_HTTP_CONNECTCODE`).
     pub fn connect_code(&self) -> Option<u16> {
-        self.connect_code
+        self.connect_code.map(std::num::NonZeroU16::get)
     }
 
+    /// A code of 0 reads as none, as in C, whose 0 is none.
     pub(crate) fn set_connect_code(&mut self, code: u16) {
-        self.connect_code = Some(code);
+        self.connect_code = std::num::NonZeroU16::new(code);
     }
 
     /// What a SOCKS proxy's handshake failed at

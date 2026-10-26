@@ -14,7 +14,12 @@
 //! A session allocates nothing past its own box, so what a test counts
 //! is the library's. A library made `ticketing` resumes a session the
 //! transfer's cache holds, and gives one to keep as its handshake ends,
-//! each a ticket of TLS 1.3 good for two hours. A session says its
+//! each a ticket of TLS 1.3 good for two hours. A library made `early`
+//! gives tickets that allow early data: a session that resumes one, for
+//! a transfer that asks, puts its handshake off until its first bytes,
+//! which go as records after its hello; the server's flight is
+//! `FAKETLS EARLYOK` in place of the welcome where it takes them. A
+//! session says its
 //! verification of the peer gave its number, counting from 1. A record a send cannot put on the wire whole is
 //! kept and sent before anything else: a read that must send first
 //! waits to write.
@@ -38,6 +43,8 @@ use crate::error::ErrorKind;
 pub const HELLO: &[u8] = b"FAKETLS HELLO\r\n\r\n";
 /// The server's answer to it.
 pub const WELCOME: &[u8] = b"FAKETLS WELCOME\r\n\r\n";
+/// The same, taking the early data sent after the hello.
+pub const EARLY_OK: &[u8] = b"FAKETLS EARLYOK\r\n\r\n";
 /// The client's last flight, which the handshake ends with.
 pub const FINISHED: &[u8] = b"FAKETLS FINISHED\n";
 /// Either side's goodbye (close_notify).
@@ -68,6 +75,8 @@ pub struct FakeTls {
     agree: bool,
     /// Each session resumes a ticket kept and gives one to keep.
     tickets: bool,
+    /// The early data the tickets given allow.
+    early: usize,
     /// What each session binds a channel with.
     binding: FakeBinding,
 }
@@ -190,7 +199,19 @@ impl FakeTls {
             pause: false,
             agree: false,
             tickets: false,
+            early: 0,
             binding: FakeBinding::None,
+        })
+    }
+
+    /// The same, ticketing and agreeing, each ticket given allowing
+    /// `most` bytes of early data.
+    pub fn early(most: usize) -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            tickets: true,
+            agree: true,
+            early: most,
+            ..FakeTls::new()?
         })
     }
 
@@ -278,6 +299,13 @@ impl TlsBackend for FakeTls {
             made: false,
             pause: self.pause,
             tickets: self.tickets,
+            early: self.early,
+            early_data: peer.early_data,
+            alpn,
+            deferred: None,
+            going: false,
+            early_taken: 0,
+            accepted: false,
             binding: self.binding,
             agreed: match alpn {
                 Alpn::None => None,
@@ -308,6 +336,8 @@ impl TlsBackend for FakeTls {
 enum Stage {
     /// Sending its hello, this much sent.
     Hello(usize),
+    /// Sending its early data, this much of it put in records.
+    Early(usize),
     /// Reading the server's welcome, this much read.
     Welcome(usize),
     /// Sending its finished line, this much sent.
@@ -332,6 +362,18 @@ struct FakeSession {
     pause: bool,
     /// It resumes a ticket kept and gives one to keep.
     tickets: bool,
+    /// The early data the ticket it gives allows.
+    early: usize,
+    /// The transfer may send early data.
+    early_data: bool,
+    /// What it offered by ALPN.
+    alpn: Alpn,
+    /// Its handshake is put off for early data, and goes on once given
+    /// it; how much of it the server took is said by its flight.
+    deferred: Option<crate::tls::Deferred>,
+    going: bool,
+    early_taken: usize,
+    accepted: bool,
     /// What it binds a channel with.
     binding: FakeBinding,
     /// What its peer agrees to by ALPN, once the handshake is over.
@@ -466,20 +508,102 @@ fn rot13(bytes: &mut [u8]) {
 
 impl TlsSession for FakeSession {
     fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
-        let failed = |_: io::Error| ErrorKind::SslConnectError;
         if !self.made {
             if io.configures_context() {
                 io.configure_context(TlsNative::new(NonNull::from(&self.out).cast(), None))?;
             }
             if self.tickets && io.caches_sessions() {
                 let taken = io.take_session();
-                if taken.as_ref().is_some_and(|t| t.data == TICKET) {
+                if let Some(t) = taken.as_ref().filter(|t| t.data == TICKET) {
                     self.log().resumed += 1;
+                    if let Some(alpn) = t.alpn.filter(|&a| self.alpn.offers(a))
+                        && t.earlydata_max > 0
+                        && self.early_data
+                    {
+                        self.deferred = Some(crate::tls::Deferred {
+                            most: t.earlydata_max,
+                            alpn,
+                        });
+                    }
                 }
                 io.return_session(taken);
             }
             self.made = true;
         }
+        if self.deferred.is_some() && !self.going {
+            return Ok(Handshake::Done);
+        }
+        self.shake(io, &[])
+    }
+
+    fn deferred(&self) -> Option<crate::tls::Deferred> {
+        self.deferred.filter(|_| !self.going)
+    }
+
+    fn handshake_early(
+        &mut self,
+        io: &mut TlsIo<'_>,
+        early: &[u8],
+    ) -> Result<Handshake, ErrorKind> {
+        assert!(self.deferred.is_some(), "a handshake put off");
+        self.going = true;
+        self.shake(io, early)
+    }
+
+    fn early_accepted(&self) -> bool {
+        self.accepted
+    }
+
+    fn recv(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv> {
+        self.recv_open(io, buf)
+    }
+
+    fn send(&mut self, io: &mut TlsIo<'_>, bytes: &[u8]) -> io::Result<Sent> {
+        self.send_open(io, bytes)
+    }
+
+    fn shutdown(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+        self.goodbye(io)
+    }
+
+    fn chosen(&self) -> Option<Chosen> {
+        let before = matches!(
+            self.stage,
+            Stage::Hello(_) | Stage::Early(_) | Stage::Welcome(_)
+        );
+        match self.deferred {
+            Some(d) if before => Some(d.alpn),
+            _ => self.agreed.filter(|_| !before),
+        }
+    }
+
+    /// Only once the handshake is over, as before it the peer showed no
+    /// certificate.
+    fn channel_binding(
+        &self,
+        notes: &mut dyn crate::tls::BindingNotes,
+    ) -> Result<Option<Vec<u8>>, ErrorKind> {
+        self.binding_of(notes)
+    }
+
+    fn waits(&self) -> TlsWait {
+        self.waits
+    }
+
+    fn pending(&self) -> bool {
+        !self.plain.is_empty()
+    }
+
+    fn native(&self) -> Option<TlsNative> {
+        let session = self.made.then(|| NonNull::from(&self.body).cast());
+        Some(TlsNative::new(NonNull::from(&self.out).cast(), session))
+    }
+}
+
+impl FakeSession {
+    /// The handshake, `early` sent after the hello where it was put off.
+    fn shake(&mut self, io: &mut TlsIo<'_>, early: &[u8]) -> Result<Handshake, ErrorKind> {
+        let failed = |_: io::Error| ErrorKind::SslConnectError;
         loop {
             match self.stage {
                 Stage::Hello(mut sent) => {
@@ -489,7 +613,24 @@ impl TlsSession for FakeSession {
                         self.waits = TlsWait::Send;
                         return Ok(Handshake::Waiting);
                     }
-                    self.stage = Stage::Welcome(0);
+                    self.stage = match self.deferred {
+                        Some(_) => Stage::Early(0),
+                        None => Stage::Welcome(0),
+                    };
+                }
+                Stage::Early(taken) => {
+                    if let Flushed::Blocked = self.flush(io).map_err(failed)? {
+                        self.waits = TlsWait::Send;
+                        return Ok(Handshake::Waiting);
+                    }
+                    if taken == early.len() {
+                        self.early_taken = taken;
+                        self.stage = Stage::Welcome(0);
+                        continue;
+                    }
+                    let n = (early.len() - taken).min(RECORD);
+                    self.put_record(&early[taken..taken + n]);
+                    self.stage = Stage::Early(taken + n);
                 }
                 Stage::Welcome(read) => {
                     // The flight is read as one record of its length.
@@ -498,9 +639,13 @@ impl TlsSession for FakeSession {
                     match got {
                         Recv::Data(n) => {
                             let to = read + n.get();
-                            if buf[read..to] != WELCOME[read..to] {
+                            let flight = &buf[read..to];
+                            let welcome = flight == &WELCOME[read..to];
+                            let took = self.deferred.is_some() && flight == &EARLY_OK[read..to];
+                            if !welcome && !took {
                                 return Err(ErrorKind::SslConnectError);
                             }
+                            self.accepted |= took && !welcome;
                             if to == WELCOME.len() {
                                 io.verified(self.number as i64);
                             }
@@ -538,7 +683,9 @@ impl TlsSession for FakeSession {
                             .try_extend_from_slice(TICKET)
                             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
                         let until = io.unix_time() + 7200;
-                        io.keep_session(TlsTicket::new(ticket, TLS1_3, self.agreed, 0, until));
+                        let early = self.early;
+                        let alpn = self.agreed;
+                        io.keep_session(TlsTicket::new(ticket, TLS1_3, alpn, early, until));
                     }
                     return Ok(Handshake::Done);
                 }
@@ -547,7 +694,18 @@ impl TlsSession for FakeSession {
         }
     }
 
-    fn recv(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv> {
+    /// A record of `bytes`, at most a record's, kept to send.
+    fn put_record(&mut self, bytes: &[u8]) {
+        let n = bytes.len();
+        assert!((1..=RECORD).contains(&n), "a record's bytes");
+        self.out[..HEADER].copy_from_slice(&format_header(n));
+        self.out[HEADER..HEADER + n].copy_from_slice(bytes);
+        rot13(&mut self.out[HEADER..HEADER + n]);
+        self.out_len = HEADER + n;
+        self.out_sent = 0;
+    }
+
+    fn recv_open(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv> {
         {
             let mut log = self.log();
             if log.asked_len < ASKED {
@@ -584,19 +742,14 @@ impl TlsSession for FakeSession {
         }
     }
 
-    fn send(&mut self, io: &mut TlsIo<'_>, bytes: &[u8]) -> io::Result<Sent> {
+    fn send_open(&mut self, io: &mut TlsIo<'_>, bytes: &[u8]) -> io::Result<Sent> {
         assert_eq!(self.stage, Stage::Open, "sent once the handshake is done");
         if let Flushed::Blocked = self.flush(io)? {
             self.waits = TlsWait::Send;
             return Ok(Sent::WouldBlock);
         }
         let n = NonZeroUsize::new(bytes.len().min(RECORD)).expect("a send needs bytes");
-        let header = format_header(n.get());
-        self.out[..HEADER].copy_from_slice(&header);
-        self.out[HEADER..HEADER + n.get()].copy_from_slice(&bytes[..n.get()]);
-        rot13(&mut self.out[HEADER..HEADER + n.get()]);
-        self.out_len = HEADER + n.get();
-        self.out_sent = 0;
+        self.put_record(&bytes[..n.get()]);
         // Taken whole: what the wire does not take now goes first next.
         self.waits = match self.flush(io)? {
             Flushed::Done => TlsWait::Nothing,
@@ -605,11 +758,11 @@ impl TlsSession for FakeSession {
         Ok(Sent::Bytes(n))
     }
 
-    fn shutdown(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    fn goodbye(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
         loop {
             match self.stage {
                 // No goodbye before the handshake is done.
-                Stage::Hello(_) | Stage::Welcome(_) | Stage::Finished(_) => {
+                Stage::Hello(_) | Stage::Early(_) | Stage::Welcome(_) | Stage::Finished(_) => {
                     return Ok(Handshake::Done);
                 }
                 // A goodbye is said back to the peer's too.
@@ -648,18 +801,14 @@ impl TlsSession for FakeSession {
         }
     }
 
-    fn chosen(&self) -> Option<Chosen> {
-        self.agreed
-            .filter(|_| !matches!(self.stage, Stage::Hello(_) | Stage::Welcome(_)))
-    }
-
-    /// Only once the handshake is over, as before it the peer showed no
-    /// certificate.
-    fn channel_binding(
+    fn binding_of(
         &self,
         notes: &mut dyn crate::tls::BindingNotes,
     ) -> Result<Option<Vec<u8>>, ErrorKind> {
-        if matches!(self.stage, Stage::Hello(_) | Stage::Welcome(_)) {
+        if matches!(
+            self.stage,
+            Stage::Hello(_) | Stage::Early(_) | Stage::Welcome(_)
+        ) {
             return Ok(None);
         }
         match self.binding {
@@ -686,19 +835,6 @@ impl TlsSession for FakeSession {
                 format_args!("certificate signature algorithm not recognized"),
             )),
         }
-    }
-
-    fn waits(&self) -> TlsWait {
-        self.waits
-    }
-
-    fn pending(&self) -> bool {
-        !self.plain.is_empty()
-    }
-
-    fn native(&self) -> Option<TlsNative> {
-        let session = self.made.then(|| NonNull::from(&self.body).cast());
-        Some(TlsNative::new(NonNull::from(&self.out).cast(), session))
     }
 }
 

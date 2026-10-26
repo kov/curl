@@ -14,7 +14,7 @@ use crate::conn::tls::TlsLayer;
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::options::HttpVersion;
-use crate::options::{TlsMaxVersion, TlsMinVersion, TlsOptions};
+use crate::options::{SslOptions, TlsMaxVersion, TlsMinVersion, TlsOptions};
 use crate::tls::{Alpn, Handshake as Shake, SessionPeer, TlsPeer, TlsShared};
 use crate::trace;
 
@@ -90,6 +90,11 @@ pub(super) fn start<H: Host>(
         (true, TlsSide::Origin, _) if h2 => Alpn::H2Http11,
         (true, TlsSide::Origin, _) => Alpn::Http11,
     };
+    // Early data, where the transfer asks for it and makes requests
+    // (`conn_cfg->earlydata`, `bits.connect_only`).
+    let early_data = identity.options.ssl_options.contains(SslOptions::EARLYDATA)
+        && !options.connect_only.reserves();
+    let peer_of = |early| TlsPeer::of(peer, early);
     // What the library keeps across the multi's connections, made with
     // its first session.
     let shared = match &mut *cx.rest.tls {
@@ -104,7 +109,7 @@ pub(super) fn start<H: Host>(
             }
         },
     };
-    let session = match backend.session(identity, &TlsPeer::of(peer), alpn, shared) {
+    let session = match backend.session(identity, &peer_of(early_data), alpn, shared) {
         Ok(session) => session,
         Err(kind) => return (TransferState::Connecting(c).fail(kind), Wake::Again),
     };

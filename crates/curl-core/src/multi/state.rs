@@ -371,7 +371,10 @@ impl TransferState {
         match slot.query(q)? {
             LayerAnswer::TlsWaits(TlsWait::Nothing) => None,
             LayerAnswer::TlsWaits(waits) => Some(waits),
-            LayerAnswer::TlsNative(_) | LayerAnswer::Alpn(..) => {
+            LayerAnswer::TlsNative(_)
+            | LayerAnswer::Alpn(..)
+            | LayerAnswer::TlsDeferred
+            | LayerAnswer::Failure(_) => {
                 unreachable!("an answer of another question")
             }
         }
@@ -930,6 +933,13 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
         asked.then(|| self.report_mut())
     }
 
+    fn early_done(&mut self, sent: i64) {
+        self.report_mut().set_earlydata_sent(sent);
+        let now = self.now();
+        let marked = self.report_mut().timings_mut().mark(Timer::AppConnect, now);
+        mstate::marked(self, Timer::AppConnect, marked);
+    }
+
     fn tls_verified(&mut self, filter: Component, result: i64) {
         if filter == Component::SslProxy {
             self.report_mut().set_proxy_verify_result(result);
@@ -1430,7 +1440,10 @@ pub(super) fn tls_native(lease: &ConnLease) -> Option<TlsNative> {
 fn native_of(slot: &ConnSlot) -> Option<TlsNative> {
     match slot.query(LayerQuery::TlsNative)? {
         LayerAnswer::TlsNative(native) => Some(native),
-        LayerAnswer::Alpn(..) | LayerAnswer::TlsWaits(_) => {
+        LayerAnswer::Alpn(..)
+        | LayerAnswer::TlsWaits(_)
+        | LayerAnswer::TlsDeferred
+        | LayerAnswer::Failure(_) => {
             unreachable!("an answer of another question")
         }
     }
@@ -1583,7 +1596,11 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             TransferState::Done(x.done(Ok(()), false, Reached::Unmade)),
             Wake::Again,
         ),
-        TransferState::Do(mut x) => match x.proto.do_it(cx, &mut x.lease) {
+        TransferState::Do(mut x) => match x
+            .proto
+            .do_it(cx, &mut x.lease)
+            .map_err(|e| layer_failed(&x.lease, e))
+        {
             Ok(DoStep::More) => {
                 within_do = true;
                 (TransferState::Do(x), Wake::Again)
@@ -1662,7 +1679,10 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             }
         }
         TransferState::Exchanging(mut x) => {
-            let stepped = x.proto.step(cx, &mut x.lease);
+            let stepped = x
+                .proto
+                .step(cx, &mut x.lease)
+                .map_err(|e| layer_failed(&x.lease, e));
             if let Err(e) = stepped {
                 sendrecv_failed(cx, e);
             }
@@ -1884,6 +1904,16 @@ fn timers_cleared<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
 
 /// A pass over the transfer's connection failed with `kind`
 /// (`Curl_sendrecv`'s `DEBUGF`).
+/// What a send or receive that failed with `e` failed with: a layer's
+/// own error, where it named one, as a handshake put off for early data
+/// fails with the handshake's (`ssl_cf_send`, `ssl_cf_recv`).
+fn layer_failed(lease: &ConnLease, e: ErrorKind) -> ErrorKind {
+    match (e, lease.query(LayerQuery::Failure)) {
+        (ErrorKind::SendError | ErrorKind::RecvError, Some(LayerAnswer::Failure(kind))) => kind,
+        _ => e,
+    }
+}
+
 fn sendrecv_failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind) {
     let code = kind.number();
     trace::debug_info(cx, format_args!("Curl_sendrecv() -> {code}"));
@@ -2703,8 +2733,10 @@ fn up<H: Host>(
     https::call_ended(c.https, cx, Ok(true));
     chain_connect_ended(cx, Ok(true));
     // Its TLS is up now, and its socket was when it connected
-    // (`Curl_pgrsTime` for `TIMER_APPCONNECT` as the SSL filter connects).
-    if c.route.tls.is_some() {
+    // (`Curl_pgrsTime` for `TIMER_APPCONNECT` as the SSL filter connects),
+    // unless its handshake is put off for early data, which times it as
+    // it ends (`early_done`).
+    if c.route.tls.is_some() && c.lease.query(LayerQuery::TlsDeferred).is_none() {
         let now = cx.now();
         let marked = cx.report_mut().timings_mut().mark(Timer::AppConnect, now);
         mstate::marked(cx, Timer::AppConnect, marked);

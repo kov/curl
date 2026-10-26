@@ -162,9 +162,36 @@ pub trait TlsSession: Send {
     fn pending(&self) -> bool;
 
     /// What the peer chose of the ALPN offer, once the handshake is over
-    /// and if it chose (`connssl->negotiated.alpn`).
+    /// and if it chose (`connssl->negotiated.alpn`); while a handshake is
+    /// put off, what the session it resumes chose.
     fn chosen(&self) -> Option<Chosen> {
         None
+    }
+
+    /// The handshake was put off to send early data in it, as `handshake`
+    /// said it was done (`ssl_connection_deferred`): it waits for the
+    /// first bytes sent, as many as it allows going early.
+    fn deferred(&self) -> Option<Deferred> {
+        None
+    }
+
+    /// Move a handshake put off on, `early`, at most as many as
+    /// `deferred` allowed and perhaps none, sent first as early data
+    /// (`ossl_send_earlydata`): as `handshake`, given the same bytes each
+    /// call until it is done.
+    fn handshake_early(
+        &mut self,
+        io: &mut TlsIo<'_>,
+        early: &[u8],
+    ) -> Result<Handshake, ErrorKind> {
+        let _ = early;
+        self.handshake(io)
+    }
+
+    /// The peer took the early data, once the handshake that sent it is
+    /// done (`SSL_EARLY_DATA_ACCEPTED`).
+    fn early_accepted(&self) -> bool {
+        false
     }
 
     /// The library's own objects for the session, once it made them.
@@ -260,6 +287,15 @@ impl Alpn {
         }
     }
 
+    /// The offer includes `chosen` (`Curl_alpn_contains_proto`).
+    pub fn offers(self, chosen: Chosen) -> bool {
+        match chosen {
+            Chosen::H2 => matches!(self, Alpn::H2Http11 | Alpn::H2),
+            Chosen::Http11 => matches!(self, Alpn::Http11 | Alpn::Http10 | Alpn::H2Http11),
+            Chosen::Http10 => self == Alpn::Http10,
+        }
+    }
+
     /// The offer as C traces it (`ALPN: curl offers ...`), if any.
     pub fn offer(self) -> Option<&'static str> {
         match self {
@@ -293,6 +329,16 @@ impl Chosen {
         }
     }
 
+    /// It alone, as ALPN puts an offer on the wire
+    /// (`Curl_alpn_restrict_to`).
+    pub fn wire(self) -> &'static [u8] {
+        match self {
+            Chosen::Http11 => b"\x08http/1.1",
+            Chosen::Http10 => b"\x08http/1.0",
+            Chosen::H2 => b"\x02h2",
+        }
+    }
+
     /// Its ALPN name.
     pub fn name(self) -> &'static str {
         match self {
@@ -321,6 +367,22 @@ pub struct TlsPeer<'a> {
     pub name: &'a [u8],
     pub port: u16,
     pub kind: TlsPeerKind,
+    /// The handshake may be put off to send early data, resuming a
+    /// session that allows it: the transfer asked for it
+    /// (`CURLSSLOPT_EARLYDATA`) and makes its requests on the connection
+    /// (not `bits.connect_only`).
+    pub early_data: bool,
+}
+
+/// A handshake a session put off to send early data in it (TLS 1.3's
+/// 0-RTT), resuming a session that allows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Deferred {
+    /// The most bytes that may go early.
+    pub most: usize,
+    /// What the resumed session's connection agreed by ALPN, which the
+    /// transfer goes on in and the peer must agree to again.
+    pub alpn: Chosen,
 }
 
 /// What a TLS peer's name is: an address names no server (no SNI).
@@ -332,7 +394,7 @@ pub enum TlsPeerKind {
 }
 
 impl<'a> TlsPeer<'a> {
-    pub(crate) fn of(peer: &'a Peer) -> TlsPeer<'a> {
+    pub(crate) fn of(peer: &'a Peer, early_data: bool) -> TlsPeer<'a> {
         let name = peer.name();
         let kind = if peer.ipv6() {
             TlsPeerKind::Ipv6
@@ -345,6 +407,7 @@ impl<'a> TlsPeer<'a> {
             name,
             port: peer.port(),
             kind,
+            early_data,
         }
     }
 }

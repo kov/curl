@@ -2151,6 +2151,7 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
     let mut bits = 0;
     for (on, bit, name) in [
         (tls.allow_beast, options::SslOptions::ALLOW_BEAST, 1),
+        (tls.earlydata, options::SslOptions::EARLYDATA, 1 << 6),
         (tls.no_revoke, options::SslOptions::NO_REVOKE, 1 << 1),
         (
             tls.revoke_best_effort,

@@ -110,7 +110,7 @@ witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_fol
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls::an_https_get_goes_through_its_tls_layer
 --- old
-    if c.route.tls.is_some() {
+    if c.route.tls.is_some() && c.lease.query(LayerQuery::TlsDeferred).is_none() {
         let now = cx.now();
 --- new
     if false {
@@ -151,6 +151,7 @@ witness: curl-core an_https_get_stays_within_its_allocation_budget
             early,
             peer,
             filter,
+            deferral: Deferral::None,
         })?)
 --- new
         let spare = try_box(0u8)?;
@@ -160,6 +161,7 @@ witness: curl-core an_https_get_stays_within_its_allocation_budget
             early,
             peer,
             filter,
+            deferral: Deferral::None,
         })?)
 
 === a TLS identity compares the CA file as set, so naming the default differs from keeping it
@@ -306,3 +308,45 @@ witness: curl-tool the_key_log_is_opened_at_start
         self.keylog.open();
 --- new
         let _ = &self.keylog;
+
+=== early data the server took is sent again
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core proto::http::tests::tls::a_request_goes_as_early_data_where_the_server_takes_it
+--- old
+                    *deferral = match n {
+                        0 => Deferral::None,
+--- new
+                    *deferral = match n {
+                        _ => Deferral::None,
+
+=== more goes early than the session allows
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core proto::http::tests::tls::early_data_is_cut_at_what_the_session_allows
+--- old
+            let n = bytes.len().min(most);
+--- new
+            let n = bytes.len();
+
+=== refused early data is counted as taken
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core proto::http::tests::tls::early_data_the_server_refuses_is_sent_again
+--- old
+                        cx.early_done(-sent);
+--- new
+                        cx.early_done(sent);
+
+=== a handshake put off says no error of its own
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core proto::http::tests::tls::a_handshake_put_off_that_fails_fails_the_transfer_with_its_error
+--- old
+                Deferral::Failed(kind) => Some(LayerAnswer::Failure(kind)),
+--- new
+                Deferral::Failed(_) => None,
+
+=== a send that failed in a layer is the send's failure
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::a_handshake_put_off_that_fails_fails_the_transfer_with_its_error
+--- old
+        (ErrorKind::SendError | ErrorKind::RecvError, Some(LayerAnswer::Failure(kind))) => kind,
+--- new
+        (ErrorKind::RecvError, Some(LayerAnswer::Failure(kind))) => kind,

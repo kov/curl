@@ -102,11 +102,13 @@ witness: curl-sys-abi handle_tests::the_os_errno_is_the_last_socket_failure_s
             os_errno: self.os_errno,
             verify_result: 0,
             proxy_verify_result: 0,
+            earlydata_sent: 0,
             ..self.cleared()
         }
 --- new
         TransferReport {
             verify_result: 0,
             proxy_verify_result: 0,
+            earlydata_sent: 0,
             ..self.cleared()
         }

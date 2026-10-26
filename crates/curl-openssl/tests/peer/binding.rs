@@ -162,6 +162,7 @@ fn bound(tag: &str, cert: X509, key: PKey<Private>) -> (Option<Vec<u8>>, Got) {
         seen,
         chain: None,
         verify: 0,
+        early: 0,
     };
     (steps.pop().unwrap(), got)
 }

@@ -860,7 +860,7 @@ the system's under the HTTP-only programs installed here.
       `HTTP2` claimed and nghttp2 listed. 471, 1700, 1702, 1704, 1800, 2400–2403 and 2406
       pass; of pytest's HTTP/2 cases, those of one transfer at a time. Not built:
       `curl_easy_upkeep`'s PING, and the `--trace-config http/2` lines.
-    - **b. Multiplexing,** with 51, in parts. **In progress.**
+    - **b. Multiplexing,** with 51, in parts. **Done.**
       - **1. Sharing a connection.** **Done.** A transfer joins the multi's HTTP/2 connection
         to its origin within the multi's and the server's limits on streams, each stream's
         data delivered to its transfer as it is read, a sibling's body sent from its own
@@ -872,7 +872,11 @@ the system's under the HTTP-only programs installed here.
         a pushed response is a transfer of its own, offered to the application with the
         promise's fields (`CURLMOPT_PUSHFUNCTION`, `curl_pushheader_bynum` and `_byname`).
         pytest 09_02 passes.
-      - **4. TLS early data** (pytest 02_32, 07_70, 08_08). **To do.**
+      - **4. TLS early data.** **Done.** A resumed TLS 1.3 session that allows it takes the
+        first bytes sent as early data, the handshake put off until then; `--tls-earlydata`,
+        `CURLSSLOPT_EARLYDATA`, `CURLINFO_EARLYDATA_SENT_T`, `%{tls_earlydata}`. pytest 08_08
+        passes; 02_32 and 07_70 run against nghttpx, which their fixture starts only for a curl
+        that claims HTTP/3, so they wait on milestone 5.
     - **c. HTTP/2 to an HTTPS proxy** (`--proxy-http2`, `CURLPROXY_HTTPS2`): a request sent
       on through it, and a tunnel as a stream (`cf-h2-proxy.c`); pytest test_10, test_13 and
       test_40's HTTP/2 proxy cases. **To do.**
@@ -889,7 +893,8 @@ the system's under the HTTP-only programs installed here.
     downloads run on it. Of the pytest suite's HTTP/1.1 cases that pass on C, these still fail on the
     Rust leg: test_19_03 and 05 (C traces the shutdown through its internal
     handle, which its debug build makes verbose under `CURL_DEBUG`), and the TLS early data
-    cases (02_32, 07_70, 08_08), which wait on step 52b; the FTP cases wait on stage 6.
+    cases 02_32 and 07_70, whose server starts only for a curl claiming HTTP/3 (milestone 5);
+    the FTP cases wait on stage 6.
 
 ## Milestone 5: HTTP/3
 

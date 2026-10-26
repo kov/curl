@@ -54,6 +54,12 @@ pub(crate) enum LayerQuery {
     TlsWaits,
     /// What an HTTPS proxy's TLS session waits for, likewise.
     ProxyTlsWaits,
+    /// The origin's TLS handshake is put off for early data
+    /// (`ssl_connection_deferred`).
+    TlsDeferred,
+    /// What a layer's send or receive failed with, where it names the
+    /// transfer's error: a handshake put off failing as it goes on.
+    Failure,
 }
 
 /// What a layer answers a `LayerQuery`.
@@ -64,6 +70,8 @@ pub(crate) enum LayerAnswer {
     /// so: the origin's or an HTTPS proxy's.
     Alpn(Option<crate::tls::Chosen>, Component),
     TlsWaits(crate::tls::TlsWait),
+    TlsDeferred,
+    Failure(ErrorKind),
 }
 
 /// What a layer reaches while it works: the time, and the trace of the
@@ -82,6 +90,13 @@ pub(crate) trait LayerCx {
     /// receive; the transfer keeps its number (`state.os_errno`). Work
     /// done for no transfer keeps nothing.
     fn socket_failed(&mut self, _e: &io::Error) {}
+
+    /// The origin's TLS handshake, put off for early data, is done
+    /// (`ssl_cf_connect_deferred`): `sent` bytes went early, negative if
+    /// the peer refused them. The transfer times its TLS as done now and
+    /// keeps the count (`Curl_pgrsEarlyData`). Work done for no transfer
+    /// keeps nothing.
+    fn early_done(&mut self, _sent: i64) {}
 
     /// The transfer fails with `kind`, for the reason `why` (`failf`):
     /// kept if it is the first given, and traced. Work done for no

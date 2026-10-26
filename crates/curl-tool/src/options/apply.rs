@@ -141,6 +141,8 @@ pub(crate) struct Tls<'a> {
     pub(crate) native_ca: bool,
     /// `--ssl-allow-beast`.
     pub(crate) allow_beast: bool,
+    /// `--tls-earlydata`.
+    pub(crate) earlydata: bool,
     /// `--ssl-no-revoke`, `--ssl-revoke-best-effort`,
     /// `--ssl-auto-client-cert`: bits only Schannel acts on.
     pub(crate) no_revoke: bool,
@@ -1260,6 +1262,7 @@ pub(crate) fn apply<'a>(
         }
         Opt::CaNative => line.current().tls.native_ca = value.toggle(),
         Opt::SslAllowBeast => line.current().tls.allow_beast = value.toggle(),
+        Opt::TlsEarlydata => line.current().tls.earlydata = value.toggle(),
         Opt::CertStatus => line.current().tls.cert_status = value.toggle(),
         Opt::Sessionid => line.current().tls.no_sessionid = !value.toggle(),
         Opt::SslNoRevoke => line.current().tls.no_revoke = value.toggle(),
@@ -1808,7 +1811,6 @@ pub(crate) fn apply<'a>(
         | Opt::TelnetOption
         | Opt::TftpBlksize
         | Opt::TftpNoOptions
-        | Opt::TlsEarlydata
         | Opt::UploadFlags
         | Opt::UseAscii => line.not_implemented(spec, "--"),
     }

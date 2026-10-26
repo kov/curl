@@ -452,24 +452,34 @@ impl AltSvc {
             let Ok(date) = HttpDate::of(e.expires) else {
                 continue;
             };
-            let mut line = crate::text::Text::<{ 2 * MAX_HOST_LEN + 80 }>::new();
-            let src = Host(&e.src.host);
-            let dst = Host(&e.dst.host);
-            use fmt::Write as _;
             let mut stamp = crate::text::Text::<24>::new();
             date.write_hsts(&mut stamp).expect("a date fits");
-            let written = writeln!(
-                line,
-                "{} {src} {} {} {dst} {} \"{}\" {} 0",
-                e.src.alpn.name(),
-                e.src.port,
-                e.dst.alpn.name(),
-                e.dst.port,
-                crate::trace::Bytes(stamp.bytes()),
-                u8::from(e.persist),
-            );
-            written.expect("a line fits");
-            out.try_extend_from_slice(line.bytes())?;
+            let decimal = crate::proto::http1::request::decimal;
+            let (mut src_digits, mut dst_digits) = ([0u8; 20], [0u8; 20]);
+            let src_port = decimal(u64::from(e.src.port), &mut src_digits);
+            let dst_port = decimal(u64::from(e.dst.port), &mut dst_digits);
+            let persist: &[u8] = if e.persist { b"1" } else { b"0" };
+            // The hosts as the cache holds them, byte for byte, as C
+            // writes them.
+            for part in [e.src.alpn.name().as_bytes(), b" "] {
+                out.try_extend_from_slice(part)?;
+            }
+            push_host(&mut out, &e.src.host)?;
+            for part in [b" ", src_port, b" ", e.dst.alpn.name().as_bytes(), b" "] {
+                out.try_extend_from_slice(part)?;
+            }
+            push_host(&mut out, &e.dst.host)?;
+            for part in [
+                b" ",
+                dst_port,
+                b" \"",
+                stamp.bytes(),
+                b"\" ",
+                persist,
+                b" 0\n",
+            ] {
+                out.try_extend_from_slice(part)?;
+            }
         }
         Ok(out)
     }
@@ -485,21 +495,21 @@ impl AltSvc {
     }
 }
 
-/// A host as a file writes it: an IPv6 address in brackets.
-struct Host<'a>(&'a [u8]);
-
-impl fmt::Display for Host<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let v6 = std::str::from_utf8(self.0)
-            .ok()
-            .is_some_and(|s| s.parse::<std::net::Ipv6Addr>().is_ok());
-        let host = crate::trace::Bytes(self.0);
-        if v6 {
-            write!(f, "[{host}]")
-        } else {
-            write!(f, "{host}")
-        }
+/// Append a host as a file writes it: an IPv6 address in brackets, any
+/// other byte for byte.
+fn push_host(out: &mut Vec<u8>, host: &[u8]) -> Result<(), OutOfMemory> {
+    let v6 = std::str::from_utf8(host)
+        .ok()
+        .is_some_and(|s| s.parse::<std::net::Ipv6Addr>().is_ok());
+    let parts: [&[u8]; 3] = if v6 {
+        [b"[", host, b"]"]
+    } else {
+        [b"", host, b""]
+    };
+    for part in parts {
+        out.try_extend_from_slice(part)?;
     }
+    Ok(())
 }
 
 /// The alternative's quoted `host:port`, or `:port` for the origin's own

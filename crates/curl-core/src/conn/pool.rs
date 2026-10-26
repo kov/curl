@@ -386,6 +386,9 @@ pub(crate) struct Wanted<'w> {
     /// The transfer would rather wait for a connection being set up to
     /// say it multiplexes than make its own (`CURLOPT_PIPEWAIT`).
     pub(crate) pipewait: bool,
+    /// For a share's pool: what the searching multi has of the share's
+    /// connections lent to it.
+    pub(crate) lending: Lending<'w>,
 }
 
 /// How long the transfer looking for a connection lets one be idle, and
@@ -545,6 +548,9 @@ struct Leased {
     route: Route,
     number: ConnNumber,
     verdict: Verdict,
+    /// A share's connection found to multiplex, lent to a multi while it
+    /// does: the multi it is lent to has it among those lent to it.
+    lent: bool,
 }
 
 /// Whether a leased connection may yet take more transfers, as its
@@ -559,14 +565,11 @@ pub(crate) enum Verdict {
 }
 
 impl Verdict {
-    /// A connection's, as it is leased from `here`, `settled` if its
-    /// transfer found what it speaks: a share's never multiplexes, so
-    /// none waits for one.
-    fn of(here: &Home, conn: Option<&Conn>, settled: bool) -> Verdict {
-        match (here, conn) {
-            (Home::Share(_), _) => Verdict::Single,
-            (Home::Multi, Some(conn)) if settled && !conn.is_h2() => Verdict::Single,
-            (Home::Multi, _) => Verdict::Pending,
+    /// A connection's, `settled` if its transfer found what it speaks.
+    fn of(conn: Option<&Conn>, settled: bool) -> Verdict {
+        match conn {
+            Some(conn) if settled && !conn.is_h2() => Verdict::Single,
+            _ => Verdict::Pending,
         }
     }
 }
@@ -589,6 +592,9 @@ struct Seen {
 )]
 pub(crate) enum Found {
     Lease(ConnLease),
+    /// The share's connection `id`, lent to the searching multi, which
+    /// takes the transfer: the multi's pool has it.
+    Lent(ConnId),
     /// Nothing to use, nor to wait for.
     Nothing,
     /// Nothing to use yet, but a connection being set up may take the
@@ -602,7 +608,7 @@ impl Found {
     pub(crate) fn lease(self) -> Option<ConnLease> {
         match self {
             Found::Lease(lease) => Some(lease),
-            Found::Nothing | Found::Wait => None,
+            Found::Lent(_) | Found::Nothing | Found::Wait => None,
         }
     }
 }
@@ -630,6 +636,78 @@ impl Shared {
             None => panic!("an attached connection is out with a step"),
         }
     }
+}
+
+/// A share's connection that multiplexes for the multi, kept by the
+/// multi's pool while it does; its keys are the share's leases, naming
+/// it by its place there, which says it is lent.
+struct Lent {
+    shared: Shared,
+    share: Share,
+    id: ConnId,
+}
+
+/// What a connection that multiplexes would make of a transfer looking
+/// for one (`url_match_multiplex_needs`, `url_match_multiplex_limits`).
+#[derive(Clone, Copy, Debug)]
+enum JoinVerdict {
+    /// Closing, or to another route: not seen.
+    Passed,
+    /// Seen, but it cannot take the transfer.
+    Seen,
+    /// Seen, with as many transfers on it as it takes.
+    Full {
+        number: ConnNumber,
+        users: u32,
+        peer: bool,
+    },
+    Join,
+}
+
+/// What the multi searching a share's pool has of the share's
+/// connections lent to it: what each would make of the transfer, by its
+/// place in the share's pool.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Lending<'w> {
+    lent: &'w [(ConnId, JoinVerdict)],
+}
+
+impl Lending<'_> {
+    pub(crate) const NONE: Lending<'static> = Lending { lent: &[] };
+}
+
+/// The multi's side of a search of a share's pool, `Pool::lending`.
+pub(crate) struct LentCandidates {
+    lent: Vec<(ConnId, JoinVerdict)>,
+}
+
+impl LentCandidates {
+    pub(crate) fn lending(&self) -> Lending<'_> {
+        Lending { lent: &self.lent }
+    }
+}
+
+/// What a connection the search tried came to.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "as `Found`, which it becomes at once"
+)]
+enum Took {
+    Lease(ConnLease),
+    Lent(ConnId),
+}
+
+/// What `release_lent` gave back.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "taken apart by the release that asked, never kept"
+)]
+pub(crate) enum LentBack {
+    /// Others are still on it, this many.
+    InUse(NonZeroU32),
+    /// The last is done: the share's lease, for the share's pool to take
+    /// back.
+    Last(ConnLease),
 }
 
 impl Place {
@@ -684,6 +762,8 @@ impl Place {
 /// where those leased were.
 pub(crate) struct Pool {
     conns: Arena<Place, ConnSlot>,
+    /// A multi's: the share's connections lent to it.
+    lent: Vec<Lent>,
     next_number: u64,
     /// When the search last pruned dead connections (`last_cleanup`).
     last_prune: Option<Instant>,
@@ -696,6 +776,7 @@ impl Pool {
     pub(crate) fn new() -> Result<Pool, OutOfMemory> {
         Ok(Pool {
             conns: Arena::new(ArenaPolicy::DOUBLING)?,
+            lent: Vec::new(),
             next_number: 0,
             last_prune: None,
             next_transfer: 0,
@@ -743,6 +824,7 @@ impl Pool {
                         versions: crate::proto::http::Versions::ALL,
                         multiplex: None,
                         pipewait: false,
+                        lending: Lending::NONE,
                     },
                     rules,
                     exits,
@@ -788,7 +870,8 @@ impl Pool {
         let leased = Leased {
             route: route.clone(),
             number,
-            verdict: Verdict::of(here, None, false),
+            verdict: Verdict::of(None, false),
+            lent: false,
         };
         let slot = match route {
             Route::Local => ConnSlot::Open(Conn {
@@ -846,11 +929,15 @@ impl Pool {
         // The transfer's last connection first, then the others in the
         // table's order (`Curl_cpool_find`).
         let mut seen = Seen::default();
+        let found = |took| match took {
+            Took::Lease(lease) => Found::Lease(lease),
+            Took::Lent(id) => Found::Lent(id),
+        };
         if let Some(last) = wanted.last
-            && let Some(lease) =
+            && let Some(took) =
                 self.take(last, here, &wanted, rules, exits, now, notes, &mut seen)?
         {
-            return Ok(Found::Lease(lease));
+            return Ok(found(took));
         }
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
@@ -858,10 +945,8 @@ impl Pool {
             if Some(id) == wanted.last {
                 continue;
             }
-            if let Some(lease) =
-                self.take(id, here, &wanted, rules, exits, now, notes, &mut seen)?
-            {
-                return Ok(Found::Lease(lease));
+            if let Some(took) = self.take(id, here, &wanted, rules, exits, now, notes, &mut seen)? {
+                return Ok(found(took));
             }
         }
         // A connection that takes one request at a time, with none seen
@@ -895,9 +980,32 @@ impl Pool {
         now: Instant,
         notes: &mut Vec<PoolNote>,
         seen: &mut Seen,
-    ) -> Result<Option<ConnLease>, OutOfMemory> {
+    ) -> Result<Option<Took>, OutOfMemory> {
         match self.conns.get(id) {
-            Some(Place::Attached(_)) => return self.join_if(id, here, wanted, notes, seen),
+            Some(Place::Attached(_)) => {
+                return Ok(self
+                    .join_if(id, here, wanted, notes, seen)?
+                    .map(Took::Lease));
+            }
+            // Lent to the searching multi, it takes the transfer as its
+            // pool says; lent to another, it is seen and passed over
+            // (`url_match_multi`).
+            Some(Place::Leased(Leased {
+                lent: true, route, ..
+            })) => {
+                let verdict = wanted.lending.lent.iter().find(|(lent, _)| *lent == id);
+                return match verdict {
+                    Some(&(_, verdict)) => {
+                        Ok(judged(verdict, notes, seen)?.then_some(Took::Lent(id)))
+                    }
+                    None => {
+                        if route.serves(wanted.route) {
+                            seen.multiplex = true;
+                        }
+                        Ok(None)
+                    }
+                };
+            }
             Some(Place::Leased(leased)) => {
                 if leased.route.serves(wanted.route) {
                     match leased.verdict {
@@ -947,7 +1055,8 @@ impl Pool {
                     route: conn.route.clone(),
                     number: conn.number,
                     // An idle one carried a request, which found it.
-                    verdict: Verdict::of(here, Some(conn), true),
+                    verdict: Verdict::of(Some(conn), true),
+                    lent: false,
                 };
                 let Some(Place::Idle(mut slot)) = self
                     .conns
@@ -959,11 +1068,11 @@ impl Pool {
                     unreachable!("an idle connection is open");
                 };
                 conn.use_ = Use::Leased(NonZeroU32::MIN);
-                return Ok(Some(ConnLease {
+                return Ok(Some(Took::Lease(ConnLease {
                     id,
                     conn: Some(slot),
                     home: here.clone(),
-                }));
+                })));
             }
             Err(sick) => {
                 if let Some(why) = sick {
@@ -993,31 +1102,130 @@ impl Pool {
         let Some(Place::Attached(shared)) = self.conns.get(id) else {
             unreachable!("just found attached");
         };
-        let conn = shared.conn();
-        if conn.close || !conn.serves(wanted.route) {
+        if !judged(join_verdict(shared.conn(), wanted), notes, seen)? {
             return Ok(None);
         }
-        seen.multiplex = true;
-        let Some(max) = wanted.multiplex else {
-            return Ok(None);
-        };
-        if !conn.serves_auth(&wanted.auth) || !wanted.versions.h2 {
-            return Ok(None);
-        }
-        let Use::Leased(users) = conn.use_ else {
-            unreachable!("an attached connection is leased");
-        };
-        let peer_max = conn.h2().map_or(u32::MAX, |h2| h2.max_concurrent());
-        if users >= max || users.get() >= peer_max {
-            notes.try_push(PoolNote::Full {
-                number: conn.number,
-                users: users.get(),
-                peer: users < max,
-            })?;
-            return Ok(None);
-        }
-        notes.try_push(PoolNote::Multiplexed)?;
         Ok(Some(self.join_attached(id, here)))
+    }
+
+    /// What each of `share`'s connections lent to this multi would make
+    /// of the transfer `wanted` describes, for the search of the share's
+    /// pool to judge them by in its order.
+    pub(crate) fn lending(
+        &self,
+        share: &Share,
+        wanted: &Wanted<'_>,
+    ) -> Result<LentCandidates, OutOfMemory> {
+        let mut lent = Vec::new();
+        for l in self.lent.iter().filter(|l| l.share.is(share)) {
+            lent.try_push((l.id, join_verdict(l.shared.conn(), wanted)))?;
+        }
+        Ok(LentCandidates { lent })
+    }
+
+    /// A key to `share`'s connection `id`, lent to this multi, for one
+    /// more transfer, the search of the share's pool having found it takes
+    /// the transfer.
+    pub(crate) fn join_lent(&mut self, share: &Share, id: ConnId) -> ConnLease {
+        let l = self.lent_mut(share, id).expect("found lent");
+        let conn = l.shared.conn_mut();
+        let Use::Leased(n) = conn.use_ else {
+            unreachable!("a lent connection is leased");
+        };
+        conn.use_ = Use::Leased(n.checked_add(1).expect("a count of transfers fits"));
+        conn.served = true;
+        ConnLease {
+            id,
+            conn: l.shared.slot.take(),
+            home: Home::Share(share.clone()),
+        }
+    }
+
+    /// The connection `share`'s `id` names, if it is lent here.
+    fn lent_mut(&mut self, share: &Share, id: ConnId) -> Option<&mut Lent> {
+        self.lent
+            .iter_mut()
+            .find(|l| l.id == id && l.share.is(share))
+    }
+
+    /// The lent connection `lease`, a share's, is a key to, if it is one.
+    fn lent_of(&self, lease: &ConnLease) -> Option<&Lent> {
+        self.lent_at(lease).map(|at| &self.lent[at])
+    }
+
+    /// Where among those lent here the connection `lease` is a key to is.
+    fn lent_at(&self, lease: &ConnLease) -> Option<usize> {
+        let Home::Share(share) = &lease.home else {
+            return None;
+        };
+        self.lent
+            .iter()
+            .position(|l| l.id == lease.id && l.share.is(share))
+    }
+
+    /// The share's connection `lease` holds, up and leased by it alone,
+    /// found to multiplex: kept here while it does, the lease a key to it
+    /// from now on, naming it as before. Its place in the share's pool is
+    /// to say it is lent (`Pool::lend`).
+    pub(crate) fn borrow(&mut self, lease: &mut ConnLease) -> Result<(), OutOfMemory> {
+        let Home::Share(share) = &lease.home else {
+            panic!("{:?} is not a share's", lease.id);
+        };
+        let ConnSlot::Open(conn) = lease.slot() else {
+            panic!("{:?} is not up", lease.id);
+        };
+        assert_eq!(conn.use_, Use::Leased(NonZeroU32::MIN), "one lease");
+        let route = conn.route.clone();
+        let share = share.clone();
+        self.lent.try_reserve(1)?;
+        let slot = lease.conn.take().expect("held until given back");
+        // Room made first: the slot is not lost to a refusal.
+        let pushed = self.lent.try_push(Lent {
+            shared: Shared {
+                slot: Some(slot),
+                route,
+            },
+            share,
+            id: lease.id,
+        });
+        pushed.expect("room was made");
+        Ok(())
+    }
+
+    /// The connection `id`, leased from this share's pool, is lent to a
+    /// multi: transfers of that multi alone join it.
+    pub(crate) fn lend(&mut self, id: ConnId) {
+        let Some(Place::Leased(leased)) = self.conns.get_mut(id) else {
+            panic!("{id:?} is not leased");
+        };
+        assert!(!leased.lent, "{id:?} is lent already");
+        leased.lent = true;
+    }
+
+    /// A key to a share's connection lent here given back: one transfer
+    /// less on it, and if it was the last, the connection leased as any
+    /// by the lease the share's pool takes back, out of its place here.
+    /// A lease not lent here is the share's to take back as it is.
+    pub(crate) fn release_lent(&mut self, lease: ConnLease) -> LentBack {
+        let Some(at) = self.lent_at(&lease) else {
+            return LentBack::Last(lease);
+        };
+        let (id, slot, home) = lease.into_parts();
+        assert!(slot.is_none(), "a key's connection is in its place");
+        let conn = self.lent[at].shared.conn_mut();
+        let Use::Leased(n) = conn.use_ else {
+            unreachable!("a lent connection is leased");
+        };
+        if let Some(fewer) = NonZeroU32::new(n.get() - 1) {
+            conn.use_ = Use::Leased(fewer);
+            return LentBack::InUse(fewer);
+        }
+        let l = self.lent.swap_remove(at);
+        LentBack::Last(ConnLease {
+            id,
+            conn: l.shared.slot,
+            home,
+        })
     }
 
     /// Discard every connection no one leases (`Curl_cpool_destroy`):
@@ -1198,25 +1406,48 @@ impl Pool {
     /// transfer having found what it speaks if `settled`. Whether it was
     /// found to, just now: a transfer waiting for it to multiplex waits
     /// no more (`Curl_multi_connchanged`).
-    pub(crate) fn settle(&mut self, lease: &ConnLease, settled: bool) -> bool {
-        if !matches!(lease.home, Home::Multi) {
-            return false;
-        }
+    /// The lease must be from `here`, the pool this is.
+    pub(crate) fn settle(&mut self, here: &Home, lease: &ConnLease, settled: bool) -> bool {
+        assert!(
+            lease.home.is(here),
+            "{:?} settled in another pool",
+            lease.id
+        );
         let Some(Place::Leased(leased)) = self.conns.get_mut(lease.id) else {
             return false;
         };
         let conn = lease.conn.as_ref().and_then(ConnSlot::open);
-        let verdict = Verdict::of(&lease.home, conn, settled);
+        let verdict = Verdict::of(conn, settled);
         let single = verdict == Verdict::Single && leased.verdict == Verdict::Pending;
         leased.verdict = verdict;
         single
     }
 
     /// Whether `lease` is a key to a connection in its place here, one
-    /// that multiplexes: only the multi's own pool has them.
+    /// that multiplexes: only the multi's own pool has them, its own and
+    /// those lent to it.
     pub(crate) fn is_attached(&self, lease: &ConnLease) -> bool {
-        matches!(lease.home, Home::Multi)
-            && matches!(self.conns.get(lease.id), Some(Place::Attached(_)))
+        match lease.home {
+            Home::Multi => matches!(self.conns.get(lease.id), Some(Place::Attached(_))),
+            Home::Share(_) => self.lent_of(lease).is_some(),
+        }
+    }
+
+    /// The place a key's connection is in here, its own or a lent one.
+    fn shared_mut(&mut self, lease: &ConnLease) -> &mut Shared {
+        let id = lease.id;
+        match &lease.home {
+            Home::Share(share) => {
+                &mut self
+                    .lent_mut(share, id)
+                    .expect("a key to a lent connection")
+                    .shared
+            }
+            Home::Multi => match self.conns.get_mut(id) {
+                Some(Place::Attached(shared)) => shared,
+                _ => panic!("a key to {id:?}, which is not attached"),
+            },
+        }
     }
 
     /// A key to the connection `id`, attached, for one more transfer, from
@@ -1264,6 +1495,7 @@ impl Pool {
                 route: shared.route.clone(),
                 number: shared.conn().number,
                 verdict: Verdict::Pending,
+                lent: false,
             };
             (Place::Leased(leased), place)
         }) else {
@@ -1280,11 +1512,8 @@ impl Pool {
         if lease.conn.is_some() || !self.is_attached(lease) {
             return;
         }
-        let id = lease.id;
-        let Some(Place::Attached(shared)) = self.conns.get_mut(id) else {
-            panic!("a key to {id:?}, which is not attached");
-        };
-        lease.conn = Some(shared.slot.take().expect("out with another step"));
+        let slot = self.shared_mut(lease).slot.take();
+        lease.conn = Some(slot.expect("out with another step"));
     }
 
     /// A key to the connection `lease` has out in its step, for a
@@ -1294,8 +1523,8 @@ impl Pool {
     /// the step; a share's is never attached, and is not pushed on.
     pub(crate) fn pushed(&mut self, lease: &mut ConnLease) -> ConnLease {
         assert!(
-            matches!(lease.home, Home::Multi),
-            "a share's connection is not pushed on"
+            !matches!(lease.home, Home::Share(_)),
+            "a share's connection not lent is not pushed on"
         );
         if !self.is_attached(lease) {
             self.attach(lease);
@@ -1325,9 +1554,7 @@ impl Pool {
         let Some(slot) = lease.conn.take() else {
             return;
         };
-        let Some(Place::Attached(shared)) = self.conns.get_mut(id) else {
-            panic!("a key to {id:?}, which is not attached");
-        };
+        let shared = self.shared_mut(lease);
         assert!(shared.slot.is_none(), "{id:?} is in its place already");
         shared.slot = Some(slot);
     }
@@ -1338,6 +1565,10 @@ impl Pool {
     pub(crate) fn slot_of<'a>(&'a self, lease: &'a ConnLease) -> Option<&'a ConnSlot> {
         if let Some(slot) = &lease.conn {
             return Some(slot);
+        }
+        if let Home::Share(_) = lease.home {
+            let lent = self.lent_of(lease).expect("a key to a lent connection");
+            return lent.shared.slot.as_ref();
         }
         let Some(Place::Attached(shared)) = self.conns.get(lease.id) else {
             panic!("a key to {:?}, which is not attached", lease.id);
@@ -1368,6 +1599,67 @@ impl Pool {
             };
         }
         leased
+    }
+}
+
+/// What the connection `conn`, which multiplexes, makes of the transfer
+/// `wanted` describes (`url_match_multiplex_needs`,
+/// `url_match_multiplex_limits`).
+fn join_verdict(conn: &Conn, wanted: &Wanted<'_>) -> JoinVerdict {
+    if conn.close || !conn.serves(wanted.route) {
+        return JoinVerdict::Passed;
+    }
+    let Some(max) = wanted.multiplex else {
+        return JoinVerdict::Seen;
+    };
+    if !conn.serves_auth(&wanted.auth) || !wanted.versions.h2 {
+        return JoinVerdict::Seen;
+    }
+    let Use::Leased(users) = conn.use_ else {
+        unreachable!("a connection that multiplexes is leased");
+    };
+    let peer_max = conn.h2().map_or(u32::MAX, |h2| h2.max_concurrent());
+    if users >= max || users.get() >= peer_max {
+        return JoinVerdict::Full {
+            number: conn.number,
+            users: users.get(),
+            peer: users < max,
+        };
+    }
+    JoinVerdict::Join
+}
+
+/// Whether the transfer joins a connection that made `verdict` of it,
+/// what the search saw of it in `seen` and its notes said.
+fn judged(
+    verdict: JoinVerdict,
+    notes: &mut Vec<PoolNote>,
+    seen: &mut Seen,
+) -> Result<bool, OutOfMemory> {
+    match verdict {
+        JoinVerdict::Passed => Ok(false),
+        JoinVerdict::Seen => {
+            seen.multiplex = true;
+            Ok(false)
+        }
+        JoinVerdict::Full {
+            number,
+            users,
+            peer,
+        } => {
+            seen.multiplex = true;
+            notes.try_push(PoolNote::Full {
+                number,
+                users,
+                peer,
+            })?;
+            Ok(false)
+        }
+        JoinVerdict::Join => {
+            seen.multiplex = true;
+            notes.try_push(PoolNote::Multiplexed)?;
+            Ok(true)
+        }
     }
 }
 

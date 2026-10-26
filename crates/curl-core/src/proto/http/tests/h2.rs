@@ -593,6 +593,17 @@ fn h2_pair_added(
     multi: impl FnOnce(&mut Multi),
     set: impl Fn(usize, &mut Options),
 ) -> ([Outcome; 2], Vec<String>) {
+    h2_pair_of(talks, together, multi, set, |_| {})
+}
+
+/// As `h2_pair_added`, `handle` making each handle's own settings.
+fn h2_pair_of(
+    talks: &[&[&[u8]]],
+    together: bool,
+    multi: impl FnOnce(&mut Multi),
+    set: impl Fn(usize, &mut Options),
+    handle: impl Fn(&mut Easy),
+) -> ([Outcome; 2], Vec<String>) {
     let talks: Vec<Conversation> = talks
         .iter()
         .map(|r| Conversation::replies(r, false).per_send())
@@ -616,6 +627,7 @@ fn h2_pair_added(
         o.callbacks.header = Some(Handler::header(s.clone()).unwrap());
         o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
         set(i, o);
+        handle(&mut e);
         ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
         seen.push(s);
         // The first is under way before the second looks for a
@@ -679,6 +691,53 @@ fn two_transfers_share_a_connection() {
         text.iter().any(|l| l == "Multiplexed connection found\n"),
         "{text:?}"
     );
+}
+
+/// Transfers of one multi whose handles share connections
+/// (`CURL_LOCK_DATA_CONNECT`) multiplex on one as the multi's own do: the
+/// share's connection, found to speak HTTP/2, takes the second transfer
+/// on a stream of its own (`url_match_multiplex_needs`, the connection
+/// the share's while the multi has it, `attached_multi`). Each transfer
+/// uses the share's pool as C locks it: as it joins, searches and is
+/// done, and the first as it adds the connection (`Curl_cpool_return`
+/// locks for a transfer done with one others are still on).
+#[test]
+fn transfers_on_a_share_share_its_connection() {
+    use crate::share::{Kind, Share, Told};
+    let share = Share::new().unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let told = Told::new(&share);
+    let ([(a, sa), (b, sb)], sent) = h2_pair_of(
+        &[&[b"S\nH 1 0\n:status: 200\n\n", WINDOW_SENT, SECOND]],
+        false,
+        |_| {},
+        // Not kept once both are done: no connection outlives the
+        // multi's network in the share.
+        |_, o| o.limits.reuse.forbid = true,
+        |e| e.set_share_watched(share.clone(), told.handler()),
+    );
+    assert_eq!(sent.len(), 1, "one connection: {sent:#?}");
+    let sent = &sent[0];
+    assert_eq!(
+        (a, b),
+        (Ok(()), Ok(())),
+        "{:#?}\n{:#?}\n{sent}",
+        sa.text(),
+        sb.text()
+    );
+    assert!(
+        sent.contains("H 1 1\n") && sent.contains("H 3 1\n"),
+        "{sent}"
+    );
+    assert_eq!(sa.body(), b"aa");
+    assert_eq!(sb.body(), b"b1c");
+    let text = sb.text();
+    assert!(
+        text.iter().any(|l| l == "Multiplexed connection found\n"),
+        "{text:?}"
+    );
+    assert_eq!(told.uses(), [Kind::Connections; 7]);
+    assert_eq!(share.pool().len(), 0, "closed as the last is done");
 }
 
 /// A connection with as many streams on it as the server's
@@ -808,6 +867,25 @@ fn a_transfer_that_does_not_pipewait_makes_its_own_connection() {
 /// the first transfer to end (`seen_single_use_conn`).
 #[test]
 fn a_pipewait_on_a_connection_that_does_not_multiplex_ends_once_known() {
+    pipewait_on_http_1(|_| {});
+}
+
+/// As a connection of the multi's own, a share's (`CURL_LOCK_DATA_CONNECT`)
+/// is pending until its first request finds what it speaks, and a
+/// transfer that pipewaits on it waits until then.
+#[test]
+fn a_pipewait_on_a_share_s_connection_ends_once_known() {
+    use crate::share::{Kind, Share};
+    let share = Share::new().unwrap();
+    share.keep(Kind::Connections).unwrap();
+    pipewait_on_http_1(|e| e.set_share(Some(share.clone())));
+}
+
+/// Two transfers that pipewait, `handle` making each handle's own
+/// settings, to an origin whose connections take one request at a time,
+/// the first's answer held: the second waits for the first's connection
+/// to say what it speaks, then makes its own.
+fn pipewait_on_http_1(handle: impl Fn(&mut Easy)) {
     let first = Conversation::new(OK, false).held();
     let second = Conversation::new(OK, false);
     let mut m = serving(Peer::Accepts, &[&first, &second]);
@@ -825,6 +903,7 @@ fn a_pipewait_on_a_connection_that_does_not_multiplex_ends_once_known() {
         o.http.pipewait = true;
         o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
         o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        handle(&mut e);
         ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
         seen.push(s);
     }

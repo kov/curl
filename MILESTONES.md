@@ -881,6 +881,9 @@ the system's under the HTTP-only programs installed here.
       on through it, and a tunnel as a stream (`cf-h2-proxy.c`); pytest test_10, test_13 and
       test_40's HTTP/2 proxy cases. **Done**: test_10, test_13 and test_40 pass whole on the
       Rust leg.
+    - **d. A share's connections multiplexed:** a connection the share's pool keeps serves
+      several transfers of one multi at once, as the multi's own do. **Done**: lent to the multi
+      while it multiplexes, the share's lock taken as C takes it.
 53. **`CURLOPT_CONNECT_ONLY`** with the pool's `Reserved` place (3231, 3232, 3234). **Done**,
     ahead of 51 and 52, as it needs neither: a transfer that only connects is done once
     connected, its connection reserved for the handle in its pool; `curl_easy_send`,

@@ -488,6 +488,42 @@ witness: curl-core conn::pool::tests::a_search_tries_the_transfer_s_last_connect
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_redirect_goes_over_the_transfer_s_own_connection
 --- old
-                    last,
+            last,
 --- new
-                    last: None,
+            last: None,
+
+=== a share's HTTP/2 connection is not lent to the multi it multiplexes in
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::transfers_on_a_share_share_its_connection
+--- old
+                share.pool().lend(lease.id());
+--- new
+                let _ = lease;
+
+=== a share's connection lent to a multi is judged as one leased
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_share_s_connection_lent_to_a_multi_is_that_multi_s
+--- old
+                lent: true, route, ..
+--- new
+                lent: false, route, ..
+
+=== a lent connection goes back to its share while others are on it
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_share_s_connection_lent_to_a_multi_is_that_multi_s
+--- old
+        if let Some(fewer) = NonZeroU32::new(n.get() - 1) {
+            conn.use_ = Use::Leased(fewer);
+            return LentBack::InUse(fewer);
+--- new
+        if let Some(fewer) = NonZeroU32::new(n.get() - 1).filter(|_| false) {
+            conn.use_ = Use::Leased(fewer);
+            return LentBack::InUse(fewer);
+
+=== a share's connection never says it takes one request at a time
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_pipewait_on_a_share_s_connection_ends_once_known
+--- old
+            home @ Home::Share(share) => share.pool().settle(home, lease, settled),
+--- new
+            Home::Share(_) => false,

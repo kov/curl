@@ -259,17 +259,17 @@ witness: curl-core proto::http::tests::h2::two_transfers_share_a_connection
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core proto::http::tests::h2::a_connection_at_the_multis_limit_takes_no_more
 --- old
-        if users >= max || users.get() >= peer_max {
+    if users >= max || users.get() >= peer_max {
 --- new
-        if users.get() >= peer_max {
+    if users.get() >= peer_max {
 
 === a transfer joins a connection past the server's limit on streams
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core proto::http::tests::h2::a_connection_at_the_servers_limit_takes_no_more
 --- old
-        if users >= max || users.get() >= peer_max {
+    if users >= max || users.get() >= peer_max {
 --- new
-        if users >= max {
+    if users >= max {
 
 === a transfer joins a connection in a multi that does not multiplex
 file: crates/curl-core/src/multi/state.rs

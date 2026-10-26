@@ -1579,8 +1579,15 @@ GOAWAY or a connection error ends every stream on it.
 How it is built. A connection of the multi's own becomes `Attached` at the end of the step in
 which its first request found it speaks HTTP/2 (the protocol's step cannot reach the pool): its
 slot moves into the place, and the lease becomes a key; whether a lease is a key, its place
-alone says (`Pool::is_attached`). A share's pool keeps a connection leased one transfer at a
-time, as its place is behind the share's lock. Each step checks the connection out of its place
+alone says (`Pool::is_attached`). A share's connection found to speak HTTP/2 is lent to the
+multi instead (`Pool::borrow`): its slot moves into the multi's pool, out of the share's lock,
+and its leases stay the share's, keys the multi's pool finds it by (the share and its id there).
+Its place in the share's pool stays leased, with its number and against its limits, marked lent
+(`Pool::lend`, unlocked as C sets `attached_multi`). A search of the share's pool judges a lent connection by what the searching
+multi's pool says of it (`Pool::lending`, computed before the share's lock is taken, in the
+share's order): one lent to another multi is seen and passed over (`url_match_multi`). Every key
+given back is one use of the share's pool, as `Curl_cpool_return` locks for each; the last gives
+the share its lease back (`Pool::release_lent`), to be released as any. Each step checks the connection out of its place
 and back in after (`Pool::check_out`, `check_in`), and a lease given back outside a step checks
 it out to be given back. What reads a lease's connection outside a step (the pollsets,
 `tls_native`, `CURLINFO_ACTIVESOCKET`) reads it through the pool (`Pool::slot_of`); one out with
@@ -1599,9 +1606,8 @@ and the streams the session closes as it sends are told once it is done. A GOAWA
 connection's end or its failure wakes every other transfer on it.
 
 A leased connection's place keeps a verdict for others' searches, written only at the end of
-its lease's step: pending while it is set up or its first request has not found what it speaks
-(an `h2c` upgrade unanswered counts as not found), single-use once it speaks HTTP/1. A share's
-connections are single-use from the start, as its pool never attaches. A transfer that may
+its lease's step (in a share's pool unlocked, as C reads `bits.multiplex`): pending while it is set up or its first request has not found what it speaks
+(an `h2c` upgrade unanswered counts as not found), single-use once it speaks HTTP/1. A transfer that may
 multiplex and finds a pending one says so ("not open enough"), and with `CURLOPT_PIPEWAIT`
 (which the tool sets for `--parallel` unless `--parallel-immediate`) waits in PENDING for it,
 unless a single-use one to the route, with no multiplexing one, says the server does not

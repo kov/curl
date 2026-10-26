@@ -728,6 +728,7 @@ fn a_search_tries_the_transfer_s_last_connection_first() {
             versions: crate::proto::http::Versions::ALL,
             multiplex: None,
             pipewait: false,
+            lending: super::Lending::NONE,
         };
         let mut notes = Vec::new();
         pool.find(&Home::Multi, wanted, RULES, net, now, &mut notes)
@@ -1491,4 +1492,77 @@ fn a_reserved_connection_is_its_handle_s_alone() {
     assert_eq!(net.open_sockets(), 1);
     pool.close_idle(&mut net, now);
     assert_eq!((pool.len(), net.open_sockets()), (0, 0));
+}
+
+/// A share's connection lent to one multi takes that multi's transfers
+/// alone: another multi's search sees it and passes it over
+/// (`url_match_multi`), and the last of the first's keys given back
+/// gives the share its lease back, for its pool to keep it idle.
+#[test]
+fn a_share_s_connection_lent_to_a_multi_is_that_multi_s() {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let share = crate::share::Share::new().unwrap();
+    let home = Home::Share(share.clone());
+    let mut lease = new(&mut share.pool(), &home, tcp(1), &mut net, now);
+    up(&mut lease, &mut net, now);
+    let in_share = lease.id();
+    let (mut mine, theirs) = (Pool::new().unwrap(), Pool::new().unwrap());
+    mine.borrow(&mut lease).unwrap();
+    share.pool().lend(in_share);
+    let route = tcp(1);
+    let wanted = Wanted {
+        route: &route,
+        auth: Wants::NONE,
+        last: None,
+        versions: crate::proto::http::Versions::ALL,
+        multiplex: NonZeroU32::new(100),
+        pipewait: false,
+        lending: Lending::NONE,
+    };
+    let search = |multi: &Pool, net: &mut FakeNet| {
+        let lent = multi.lending(&share, &wanted).unwrap();
+        let wanted = Wanted {
+            lending: lent.lending(),
+            ..wanted
+        };
+        let mut notes = Vec::new();
+        let found = share
+            .pool()
+            .find(&home, wanted, RULES, net, now, &mut notes)
+            .unwrap();
+        (found, notes)
+    };
+    let (found, notes) = search(&theirs, &mut net);
+    assert!(matches!(found, Found::Nothing), "{found:?}");
+    assert_eq!(notes, []);
+    let (found, notes) = search(&mine, &mut net);
+    let Found::Lent(id) = found else {
+        panic!("{found:?}");
+    };
+    assert_eq!(notes, [PoolNote::Multiplexed]);
+    let mut joined = mine.join_lent(&share, id);
+    assert_eq!(joined.id(), in_share);
+    // Out with its step, then back in its place.
+    mine.check_in(&mut joined);
+    let LentBack::InUse(n) = mine.release_lent(joined) else {
+        panic!("the first is on it still");
+    };
+    assert_eq!(n.get(), 1);
+    let LentBack::Last(back) = mine.release_lent(lease) else {
+        panic!("the last");
+    };
+    assert_eq!(back.id(), in_share);
+    let released = share
+        .pool()
+        .release(&home, back, Finish::default(), UNLIMITED, &mut net, now);
+    assert!(matches!(released, Released::Idle { .. }), "{released:?}");
+    // Idle, it is anyone's again.
+    let (found, _) = search(&theirs, &mut net);
+    let Found::Lease(lease) = found else {
+        panic!("{found:?}");
+    };
+    share
+        .pool()
+        .release(&home, lease, Finish::default(), UNLIMITED, &mut net, now);
 }

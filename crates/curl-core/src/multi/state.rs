@@ -590,11 +590,28 @@ fn release<H: Host>(
     let home = lease.home().clone();
     let closes = lease.closes() || stream_closed;
     let multiplex = u8::from(lease.is_h2());
-    let released = cx.rest.pool_section(cx.me, &home, |pool, exits, here| {
-        let mut lease = lease;
-        pool.check_in(&mut lease);
-        pool.release(here, lease, finish, limit, exits, now)
-    });
+    let released = match home {
+        // A share's lease, lent to the multi: the last key gives it back to
+        // the share's pool. Each is a use of the share's pool, as C
+        // returns any under its lock (`Curl_cpool_return`).
+        Home::Share(_) => {
+            let mut lease = lease;
+            cx.rest.caches.pool.check_in(&mut lease);
+            let back = cx.rest.caches.pool.release_lent(lease);
+            cx.rest
+                .pool_section(cx.me, &home, |pool, exits, here| match back {
+                    pool::LentBack::InUse(n) => Released::InUse(n),
+                    pool::LentBack::Last(lease) => {
+                        pool.release(here, lease, finish, limit, exits, now)
+                    }
+                })
+        }
+        Home::Multi => cx.rest.pool_section(cx.me, &home, |pool, exits, here| {
+            let mut lease = lease;
+            pool.check_in(&mut lease);
+            pool.release(here, lease, finish, limit, exits, now)
+        }),
+    };
     let in_use = match released {
         Released::InUse(n) => n.get(),
         _ => 0,
@@ -1526,11 +1543,35 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             schedule_pending(&mut cx.rest);
             return wake;
         }
+        // A share's is lent to the multi, whose transfers alone join it
+        // while it does (`attached_multi`): its place in the share's pool
+        // says so, unlocked as C sets the connection's field.
+        if let Home::Share(share) = lease.home()
+            && !cx.rest.caches.pool.is_attached(lease)
+            && lease.is_h2()
+        {
+            let share = share.clone();
+            // Out of room to lend it, it serves its transfer alone.
+            if cx.rest.caches.pool.borrow(lease).is_ok() {
+                share.pool().lend(lease.id());
+                schedule_pending(&mut cx.rest);
+                return wake;
+            }
+        }
     }
     let settled = run.state.attached().is_some_and(|x| x.proto.settled_conn());
     if let Some(lease) = run.state.lease_mut() {
-        cx.rest.caches.pool.check_in(lease);
-        if cx.rest.caches.pool.settle(lease, settled) {
+        let pool = &mut cx.rest.caches.pool;
+        let attached = pool.is_attached(lease);
+        pool.check_in(lease);
+        // A share's says what it is in the share's pool, unlocked as C
+        // reads `bits.multiplex`; a key, lent or the multi's, says nothing.
+        let single = match lease.home() {
+            _ if attached => false,
+            Home::Multi => pool.settle(&Home::Multi, lease, settled),
+            home @ Home::Share(share) => share.pool().settle(home, lease, settled),
+        };
+        if single {
             // One waiting for it to multiplex makes its own now.
             schedule_pending(&mut cx.rest);
         }
@@ -4260,28 +4301,39 @@ fn acquire<H: Host>(
         .then_some(cx.rest.tell.limits.max_streams);
     let pipewait = cx.easy().options().http.pipewait;
     let found = if pool::searches(&route, rules) {
+        let wanted = pool::Wanted {
+            route: &route,
+            auth: wants,
+            last,
+            versions,
+            multiplex,
+            pipewait,
+            lending: pool::Lending::NONE,
+        };
+        // A share's connections lent to the multi are judged as the
+        // multi's own, in the share's order.
+        let lent = match &home {
+            Home::Share(share) => Some(cx.rest.caches.pool.lending(share, &wanted)?),
+            _ => None,
+        };
+        let wanted = pool::Wanted {
+            lending: lent.as_ref().map_or(pool::Lending::NONE, |l| l.lending()),
+            ..wanted
+        };
         cx.rest.pool_search(cx.me, &home, |pool, exits, here| {
-            pool.find(
-                here,
-                pool::Wanted {
-                    route: &route,
-                    auth: wants,
-                    last,
-                    versions,
-                    multiplex,
-                    pipewait,
-                },
-                rules,
-                exits,
-                now,
-                &mut notes,
-            )
+            pool.find(here, wanted, rules, exits, now, &mut notes)
         })?
     } else {
         pool::Found::Nothing
     };
     let acquired = match found {
         pool::Found::Lease(lease) => Acquired::Reused(lease),
+        pool::Found::Lent(id) => {
+            let Home::Share(share) = &home else {
+                unreachable!("only a share lends");
+            };
+            Acquired::Reused(cx.rest.caches.pool.join_lent(share, id))
+        }
         pool::Found::Wait => Acquired::Wait(pool::WaitReason::Multiplex),
         pool::Found::Nothing => {
             // The connection closes its sockets as the transfer making it

@@ -211,6 +211,10 @@ pub(crate) trait ConnCx: LayerCx {
     /// (`Curl_reset_fail`): what an attempt said is not why the transfer
     /// fails.
     fn reset_fail(&mut self);
+
+    /// Tell the application a resolve starts, if it asked to hear of
+    /// it: it may stop it (`Curl_resolv_announce_start`).
+    fn announce_resolve(&mut self) -> Result<(), ConnectError>;
 }
 
 /// A socket opened for an attempt, or why none was, and whether the
@@ -304,6 +308,10 @@ impl ConnCx for Plain<'_> {
     fn fail(&mut self, _: std::fmt::Arguments<'_>) {}
 
     fn reset_fail(&mut self) {}
+
+    fn announce_resolve(&mut self) -> Result<(), ConnectError> {
+        Ok(())
+    }
 }
 
 /// What a drive needs beyond its context: the settings of the transfer
@@ -528,6 +536,8 @@ pub(crate) enum ConnectError {
         #[cfg_attr(not(test), expect(dead_code, reason = "read by the tests"))] io::Error,
         ErrorKind,
     ),
+    /// The application stopped a resolve as it started.
+    Aborted,
     /// Memory ran out: no failure of the peer's.
     OutOfMemory,
 }
@@ -1505,6 +1515,8 @@ pub(super) fn lookup_start(
     };
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
     if let Some(answer) = shortcut(shown, name).map_err(oom)? {
+        // Told though no resolver is asked, as C tells it.
+        cx.announce_resolve()?;
         let answer = TryArc::try_new(answer).map_err(oom)?;
         cx.names()
             .section(|c| c.put(answer.clone(), port, now, false))
@@ -1516,6 +1528,7 @@ pub(super) fn lookup_start(
     if family == Family::V6 && !ipv6 {
         return Err(ConnectError::Unresolved(Unresolved::NoIpv6));
     }
+    cx.announce_resolve()?;
     let waiter = cx.waiter();
     let mut started = None;
     cx.net()

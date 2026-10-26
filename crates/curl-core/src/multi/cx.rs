@@ -426,6 +426,22 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
     fn reset_fail(&mut self) {
         crate::trace::reset_fail(self.step);
     }
+
+    fn announce_resolve(&mut self) -> Result<(), crate::conn::ConnectError> {
+        let Some(handler) = self.step.easy().options().sockets.resolve_start.clone() else {
+            return Ok(());
+        };
+        let dns = crate::components::Component::Dns;
+        let say = |step: &mut StepCx<'_, H>, line| crate::trace::of(step, dns, line);
+        say(self.step, format_args!("announcing resolve to application"));
+        match handler.resolve_starts(&mut TransferCx::new(&mut *self.step)) {
+            Ok(()) => Ok(()),
+            Err(Abort) => {
+                say(self.step, format_args!("application aborted resolve"));
+                Err(crate::conn::ConnectError::Aborted)
+            }
+        }
+    }
 }
 
 impl<H: Host> Net for DriveCx<'_, '_, H> {

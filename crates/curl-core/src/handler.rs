@@ -236,6 +236,14 @@ pub trait PrereqHandler: Send + Sync {
     ) -> Result<(), crate::multi::Abort>;
 }
 
+/// Told as each resolve of a name starts, an address or `localhost`
+/// answered without a resolver included, but not one the cache answers
+/// (`CURLOPT_RESOLVER_START_FUNCTION`). An abort fails the transfer
+/// with AbortedByCallback.
+pub trait ResolveStartHandler: Send + Sync {
+    fn resolve_starts(&self, cx: &mut TransferCx<'_>) -> Result<(), crate::multi::Abort>;
+}
+
 /// A socket as a `SocketConfigurer` is given it: its number, and the
 /// options it may set.
 #[derive(Clone, Copy)]
@@ -326,6 +334,12 @@ impl Handler<dyn SocketConfigurer> {
 
 impl Handler<dyn PrereqHandler> {
     pub fn prereq(handler: impl PrereqHandler + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn ResolveStartHandler> {
+    pub fn resolve_start(handler: impl ResolveStartHandler + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
     }
 }

@@ -1,5 +1,6 @@
 use super::*;
 use curl_alloc::TryArc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::conn::io::{Events, FakeNet, Net, PollFd, Waker};
@@ -3198,6 +3199,71 @@ fn answers_may_be_kept_for_ever() {
     run(&mut m, "tcp://127.0.0.1:4/");
     let again = run(&mut m, "tcp://localhost:1/");
     assert_eq!(again[0], "Hostname localhost was found in DNS cache\n");
+}
+
+/// Counts the resolves it hears start, and stops them if `abort`.
+struct ResolveStarts {
+    told: AtomicU32,
+    abort: bool,
+}
+
+impl crate::handler::ResolveStartHandler for Arc<ResolveStarts> {
+    fn resolve_starts(&self, _: &mut TransferCx<'_>) -> Result<(), Abort> {
+        self.told.fetch_add(1, Ordering::Relaxed);
+        match self.abort {
+            true => Err(Abort),
+            false => Ok(()),
+        }
+    }
+}
+
+/// The resolver-start handler hears of each resolve that starts, a name
+/// the resolver is asked for or one answered without it, but not of one
+/// the cache answers; stopped, the transfer fails as aborted
+/// (`CURLOPT_RESOLVER_START_FUNCTION`).
+#[test]
+fn a_resolve_start_is_announced_unless_the_cache_answers() {
+    let (mut m, _clock) = networked();
+    let run = |m: &mut Multi, url: &str, hook: &Arc<ResolveStarts>| {
+        let (mut e, _lines) = traced(url);
+        let handler = crate::handler::Handler::resolve_start(hook.clone()).unwrap();
+        e.options_mut().sockets.make_mut().unwrap().resolve_start = Some(handler);
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        m.wait(
+            &mut [],
+            Duration::from_secs(1),
+            WaitMode::Wait,
+            &mut NoEvents,
+        )
+        .unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        let result = messages(m).last().unwrap().1;
+        m.remove(id, &mut NoEvents).unwrap();
+        result
+    };
+    let stop = Arc::new(ResolveStarts {
+        told: AtomicU32::new(0),
+        abort: true,
+    });
+    assert_eq!(
+        run(&mut m, "tcp://v4.test:1/", &stop),
+        Err(ErrorKind::AbortedByCallback)
+    );
+    assert_eq!(stop.told.load(Ordering::Relaxed), 1);
+    let go = Arc::new(ResolveStarts {
+        told: AtomicU32::new(0),
+        abort: false,
+    });
+    assert_eq!(run(&mut m, "tcp://v4.test:1/", &go), Ok(()));
+    assert_eq!(run(&mut m, "tcp://localhost:1/", &go), Ok(()));
+    assert_eq!(
+        go.told.load(Ordering::Relaxed),
+        2,
+        "a resolve and a shortcut"
+    );
+    assert_eq!(run(&mut m, "tcp://v4.test:1/", &go), Ok(()));
+    assert_eq!(go.told.load(Ordering::Relaxed), 2, "the cache answers");
 }
 
 /// A network change forgets the names resolved and the connections

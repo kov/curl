@@ -290,6 +290,9 @@ fn resolve_host(
         Err(ConnectError::Unresolved(Unresolved::Negative)) => None,
         Err(ConnectError::Unresolved(_)) => Some(Found::Resolved(Asked::Resolver(None))),
         Err(ConnectError::OutOfMemory) => return Err(BindFailed::OutOfMemory),
+        Err(ConnectError::Aborted) => {
+            return Err(BindFailed::Failed(ErrorKind::AbortedByCallback));
+        }
         Err(ConnectError::Failed(..)) => unreachable!("a resolve makes no attempt"),
     };
     match found {

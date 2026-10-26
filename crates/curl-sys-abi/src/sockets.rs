@@ -2,7 +2,8 @@
 //! (`CURLOPT_OPENSOCKETFUNCTION`, `CURLOPT_SOCKOPTFUNCTION`,
 //! `CURLOPT_CLOSESOCKETFUNCTION` and their data, `lib/cf-socket.c`), and
 //! its pre-request function, told of the connection a request goes over
-//! (`CURLOPT_PREREQFUNCTION`).
+//! (`CURLOPT_PREREQFUNCTION`), and its resolver-start function, told as a
+//! resolve starts (`CURLOPT_RESOLVER_START_FUNCTION`).
 //!
 //! The opener and the configurer read the function and data the
 //! application set at the moment they call, through the handle, as the
@@ -21,7 +22,8 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use curl_alloc::{OutOfMemory, try_box};
 use curl_core::conn::io::{Remote, Socket, SocketKey};
 use curl_core::handler::{
-    Configured, Handler, PrereqHandler, SocketCloser, SocketConfigurer, SocketOpener, SocketToSet,
+    Configured, Handler, PrereqHandler, ResolveStartHandler, SocketCloser, SocketConfigurer,
+    SocketOpener, SocketToSet,
 };
 use curl_core::multi::{Abort, TransferCx};
 use curl_core::options::Options;
@@ -32,7 +34,7 @@ use crate::easy::ShimEasy;
 use crate::ffi::{
     self, CURL_SOCKET_BAD, CURL_SOCKOPT_ALREADY_CONNECTED, CURL_SOCKOPT_OK, CURLSOCKTYPE_IPCXN,
     curl_closesocket_callback, curl_opensocket_callback, curl_prereq_callback,
-    curl_sockopt_callback,
+    curl_resolver_start_callback, curl_sockopt_callback,
 };
 
 /// The application's socket functions and data, as setopt left them.
@@ -46,6 +48,8 @@ pub(crate) struct CSockets {
     pub(crate) close_data: *mut c_void,
     pub(crate) prereq: curl_prereq_callback,
     pub(crate) prereq_data: *mut c_void,
+    pub(crate) resolver_start: curl_resolver_start_callback,
+    pub(crate) resolver_start_data: *mut c_void,
 }
 
 impl CSockets {
@@ -59,6 +63,8 @@ impl CSockets {
         close_data: core::ptr::null_mut(),
         prereq: None,
         prereq_data: core::ptr::null_mut(),
+        resolver_start: None,
+        resolver_start_data: core::ptr::null_mut(),
     };
 }
 
@@ -70,7 +76,11 @@ pub(crate) fn sync(
     easy: NonNull<ShimEasy>,
     c: &CSockets,
 ) -> Result<(), OutOfMemory> {
-    let none = c.open.is_none() && c.sockopt.is_none() && c.close.is_none() && c.prereq.is_none();
+    let none = c.open.is_none()
+        && c.sockopt.is_none()
+        && c.close.is_none()
+        && c.prereq.is_none()
+        && c.resolver_start.is_none();
     let Some(sockets) = (match options.sockets.made_mut() {
         Some(made) => Some(made),
         None if none => None,
@@ -101,6 +111,10 @@ pub(crate) fn sync(
     sockets.configure = configure;
     sockets.close = close;
     sockets.prereq = prereq;
+    sockets.resolve_start = match c.resolver_start {
+        Some(_) => Some(Handler::resolve_start(Adapter(easy))?),
+        None => None,
+    };
     Ok(())
 }
 
@@ -323,6 +337,24 @@ impl PrereqHandler for Adapter {
         });
         match answer {
             ffi::CURL_PREREQFUNC_OK => Ok(()),
+            _ => Err(Abort),
+        }
+    }
+}
+
+impl ResolveStartHandler for Adapter {
+    /// No resolver state is handed over, as C's threaded resolver hands
+    /// none; anything but 0 aborts.
+    fn resolve_starts(&self, cx: &mut TransferCx<'_>) -> Result<(), Abort> {
+        let c = self.sockets();
+        let Some(f) = c.resolver_start else {
+            return Ok(());
+        };
+        let null = core::ptr::null_mut();
+        // SAFETY: the application's function takes the resolver's state
+        // and a reserved pointer, both NULL here, and its data.
+        match self.call(cx, || unsafe { f(null, null, c.resolver_start_data) }) {
+            0 => Ok(()),
             _ => Err(Abort),
         }
     }

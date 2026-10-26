@@ -2918,6 +2918,7 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
     let proxy = route.proxy.as_ref().map(ProxyRoute::first_peer);
     let failure = match e {
         ConnectError::OutOfMemory => return ErrorKind::OutOfMemory,
+        ConnectError::Aborted => return ErrorKind::AbortedByCallback,
         ConnectError::Unresolved(why) => {
             match why {
                 Unresolved::NoIpv6 => return no_ipv6(cx, route, proxy.is_some()),

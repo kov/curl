@@ -374,3 +374,29 @@ features: debug-hooks
     let now = cx.now();
 --- new
     let now = cx.now();
+
+=== a shortcut answers without the resolve announced
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_resolve_start_is_announced_unless_the_cache_answers
+--- old
+        // Told though no resolver is asked, as C tells it.
+        cx.announce_resolve()?;
+--- new
+        // Told though no resolver is asked, as C tells it.
+
+=== the resolver starts without the resolve announced
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_resolve_start_is_announced_unless_the_cache_answers
+--- old
+    cx.announce_resolve()?;
+    let waiter = cx.waiter();
+--- new
+    let waiter = cx.waiter();
+
+=== a resolve the application stopped goes on
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::tests::a_resolve_start_is_announced_unless_the_cache_answers
+--- old
+                Err(crate::conn::ConnectError::Aborted)
+--- new
+                Ok(())

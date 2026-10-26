@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use crate::handler::{
     DebugHandler, Handler, HeaderHandler, LentBytes, LineSource, PrereqHandler, ProgressHandler,
-    ReadHandler, Rewind, SocketCloser, SocketConfigurer, SocketOpener, TextSink, TlsContextHandler,
-    TrailerHandler, WriteHandler,
+    ReadHandler, ResolveStartHandler, Rewind, SocketCloser, SocketConfigurer, SocketOpener,
+    TextSink, TlsContextHandler, TrailerHandler, WriteHandler,
 };
 use crate::mime::MimeSource;
 use crate::mime::read::Escape;
@@ -664,6 +664,8 @@ pub struct Sockets {
     /// Told of each request's connection before the request is made;
     /// kept here with the socket hooks, as few transfers set it.
     pub prereq: Option<Handler<dyn PrereqHandler>>,
+    /// Told as each resolve for a connection starts; as rare.
+    pub resolve_start: Option<Handler<dyn ResolveStartHandler>>,
 }
 
 /// A Unix socket by its path, or by its name in the abstract namespace.
@@ -756,6 +758,7 @@ impl Sockets {
             open: self.open.clone(),
             configure: self.configure.clone(),
             prereq: self.prereq.clone(),
+            resolve_start: self.resolve_start.clone(),
             close: self.close.clone(),
         })
     }
@@ -893,6 +896,7 @@ impl ColdGroup for Sockets {
         configure: None,
         close: None,
         prereq: None,
+        resolve_start: None,
     };
 }
 

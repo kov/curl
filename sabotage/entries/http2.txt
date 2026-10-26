@@ -529,3 +529,29 @@ witness: curl-core proto::http::tests::h2::a_transfer_removed_mid_body_resets_it
             proto.data_done(cx, &mut lease);
 --- new
             let _ = &mut proto;
+
+=== trailers are kept past C's count
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::trailers_past_c_s_limits_fail_the_stream
+--- old
+        if self.count >= Self::MAX_COUNT || room < name.len() || room - name.len() < value.len() {
+--- new
+        if room < name.len() || room - name.len() < value.len() {
+
+=== trailers are kept past C's bytes
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::trailers_past_c_s_limits_fail_the_stream
+--- old
+        if self.count >= Self::MAX_COUNT || room < name.len() || room - name.len() < value.len() {
+--- new
+        if self.count >= Self::MAX_COUNT {
+
+=== an HTTP/2 proxy's answer is kept past C's bytes
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::an_http_2_proxy_s_answer_is_held_to_c_s_limit
+--- old
+        if room < name.len() || room - name.len() < value.len() {
+            return Err(OutOfMemory);
+--- new
+        if room < name.len() {
+            return Err(OutOfMemory);

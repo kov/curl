@@ -47,11 +47,42 @@ pub(crate) enum TunnelState {
 }
 
 /// The proxy's final answer to the `CONNECT`: its status, and its fields
-/// but the pseudo-headers.
+/// but the pseudo-headers, held to C's limit (`Curl_http_resp_make`'s
+/// `dynhds` of `DYN_HTTP_REQUEST` bytes of names and values).
 #[derive(Debug, Default)]
 pub(crate) struct Answer {
     pub(crate) status: u16,
     pub(crate) fields: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The bytes of the fields' names and values.
+    held: usize,
+}
+
+impl Answer {
+    const MAX_BYTES: usize = 1024 * 1024;
+
+    fn new(status: u16) -> Answer {
+        Answer {
+            status,
+            fields: Vec::new(),
+            held: 0,
+        }
+    }
+
+    /// Keep a field, unless it is past the limit, which C's
+    /// `Curl_dynhds_add` says as it says memory ran out.
+    fn add(&mut self, name: &[u8], value: &[u8]) -> Result<(), OutOfMemory> {
+        let room = Self::MAX_BYTES - self.held;
+        if room < name.len() || room - name.len() < value.len() {
+            return Err(OutOfMemory);
+        }
+        let mut n = Vec::new();
+        n.try_extend_from_slice(name)?;
+        let mut v = Vec::new();
+        v.try_extend_from_slice(value)?;
+        self.fields.try_push((n, v))?;
+        self.held += name.len() + value.len();
+        Ok(())
+    }
 }
 
 /// The `CONNECT`'s stream (`tunnel_stream`).
@@ -117,21 +148,18 @@ impl Tunnel {
                     let Some(status) = crate::proto::http::decode_status(value) else {
                         return Ok(Heard::Failed);
                     };
-                    self.answer = Some(Answer {
-                        status,
-                        fields: Vec::new(),
-                    });
+                    self.answer = Some(Answer::new(status));
                     return Ok(Heard::Fine);
                 }
                 let Some(answer) = &mut self.answer else {
                     return Ok(Heard::Failed);
                 };
-                let mut n = Vec::new();
-                n.try_extend_from_slice(name)?;
-                let mut v = Vec::new();
-                v.try_extend_from_slice(value)?;
-                answer.fields.try_push((n, v))?;
-                Heard::Fine
+                // A field past the limit fails the read, as C's callback
+                // fails it.
+                match answer.add(name, value) {
+                    Ok(()) => Heard::Fine,
+                    Err(OutOfMemory) => Heard::Failed,
+                }
             }
             Event::HeadersDone { ref stream, .. } => {
                 if !ours(stream) {

@@ -158,6 +158,58 @@ fn trailers_come_as_the_stream_closes() {
     assert_eq!(ran.seen.of("trailer"), [b"x-t: 1\r\n"]);
 }
 
+/// Trailers are held to C's limits as each arrives: 5000 fields, and a
+/// MiB of names and values; one past either fails the stream as memory
+/// running out would (`Curl_dynhds_add`, `cf_h2_header_error`). Within
+/// them, what is held still meets the response's size limit as it is
+/// handed on.
+#[test]
+fn trailers_past_c_s_limits_fail_the_stream() {
+    let reply = |trailers: &[u8]| {
+        let mut r = b"S\nH 1 0\n:status: 200\n\nD 1 2 0\nokH 1 1\n".to_vec();
+        r.extend_from_slice(trailers);
+        r.extend_from_slice(b"\n");
+        r
+    };
+    let many = |n: usize| {
+        (0..n)
+            .flat_map(|i| format!("x-{i}: 1\n").into_bytes())
+            .collect()
+    };
+    let wide = |n: usize| {
+        let mut t = b"x: ".to_vec();
+        t.extend(std::iter::repeat_n(b'v', n));
+        t.push(b'\n');
+        t
+    };
+    let held = "Error receiving HTTP2 header: 27(Out of memory)\n";
+    let large = "Too large response headers: 1048595 > 307200\n";
+    // A MiB less the name's one byte is a value that fills it.
+    let fills = 1024 * 1024 - 1;
+    for (trailers, said) in [
+        (many(5000), None),
+        (many(5001), Some(held)),
+        (wide(fills), Some(large)),
+        (wide(fills + 1), Some(held)),
+    ] {
+        let (ran, _) = h2_get(&[&reply(&trailers)], "/", |_| {});
+        let text = ran.seen.text();
+        let n = trailers.len();
+        match said {
+            None => assert_eq!(ran.result, Ok(()), "{n} bytes"),
+            Some(said) => {
+                assert!(ran.result.is_err(), "{n} bytes");
+                assert!(text.iter().any(|l| l == said), "{n} bytes");
+            }
+        }
+        assert_eq!(
+            text.iter().any(|l| l == held),
+            said == Some(held),
+            "{n} bytes"
+        );
+    }
+}
+
 /// A server that closes the connection with the stream open cuts the
 /// response short.
 #[test]

@@ -1348,6 +1348,30 @@ fn a_tunnel_through_an_http_2_proxy_is_a_stream() {
     assert!(text.iter().any(|l| l == "using HTTP/1.x\n"), "{text:?}");
 }
 
+/// The proxy's answer is held to C's limit as each field arrives: a MiB
+/// of names and values; a field past it fails the session's read, and
+/// no tunnel is made (`Curl_http_resp_make`'s `dynhds`).
+#[test]
+fn an_http_2_proxy_s_answer_is_held_to_c_s_limit() {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
+    let data = [format!("D 1 {} 0\n", response.len()).as_bytes(), response].concat();
+    // A MiB less the name's one byte is a value that fills it.
+    let fills = 1024 * 1024 - 1;
+    for (value, made) in [(fills, true), (fills + 1, false)] {
+        let mut answer = b"S\nH 1 0\n:status: 200\nx: ".to_vec();
+        answer.extend(std::iter::repeat_n(b'v', value));
+        answer.extend_from_slice(b"\n\n");
+        let (_, libraries, replies) = h2_proxy(&answer, &data);
+        let (ran, _) = through_h2_proxy(libraries, &replies, b"http://origin.example/p");
+        let text = ran.seen.text();
+        let established = text
+            .iter()
+            .any(|l| l == "CONNECT tunnel established, response 200\n");
+        assert_eq!(established, made, "{value}");
+        assert_eq!(ran.result.is_ok(), made, "{value}: {:?}", ran.result);
+    }
+}
+
 /// The tunnel's layer shuts down in its filter's name, `H2-PROXY`, on
 /// the multi's internal trace, as the connection closes after its
 /// transfer (C's `[H2-PROXY] shut down successfully`).

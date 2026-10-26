@@ -28,6 +28,43 @@ use crate::url::ParseOptions;
 /// (`MAX_ACC`).
 const MAX_FIELDS: usize = 60000;
 
+/// The response's trailers as lines, and how many, held to C's limits
+/// (`resp_trailers`, a `dynhds` of at most `MAX_HTTP_RESP_HEADER_COUNT`
+/// fields and `DYN_HTTP_REQUEST` bytes of names and values).
+#[derive(Debug, Default)]
+struct Trailers {
+    lines: Vec<u8>,
+    count: usize,
+}
+
+impl Trailers {
+    const MAX_COUNT: usize = 5000;
+    const MAX_BYTES: usize = 1024 * 1024;
+    /// What a line adds beside its name and value: `: ` and CRLF.
+    const FRAMING: usize = 4;
+
+    /// Keep a trailer, unless it is past the limits, which C's
+    /// `Curl_dynhds_add` says as it says memory ran out.
+    fn add(&mut self, name: &[u8], value: &[u8]) -> Result<(), OutOfMemory> {
+        let held = self.lines.len() - Self::FRAMING * self.count;
+        let room = Self::MAX_BYTES - held;
+        if self.count >= Self::MAX_COUNT || room < name.len() || room - name.len() < value.len() {
+            return Err(OutOfMemory);
+        }
+        let start = self.lines.len();
+        let added = [name, b": ", value, b"\r\n"]
+            .iter()
+            .try_for_each(|part| self.lines.try_extend_from_slice(part));
+        if added.is_err() {
+            // Nothing of a line half kept stays.
+            self.lines.truncate(start);
+            return Err(OutOfMemory);
+        }
+        self.count += 1;
+        Ok(())
+    }
+}
+
 /// A request's stream, and what came of it (`h2_stream_ctx`).
 #[derive(Debug, Default)]
 pub(super) struct H2Stream {
@@ -51,7 +88,7 @@ pub(super) struct H2Stream {
     /// follows is body, and a header block after it the trailers.
     body_started: bool,
     /// The trailers, as lines (`resp_trailers`).
-    trailers: Vec<u8>,
+    trailers: Trailers,
     /// Writing the response failed (`xfer_result`): nothing more is
     /// written.
     failed: Option<ErrorKind>,
@@ -795,7 +832,7 @@ impl Request {
             ));
         }
         let trailers = std::mem::take(&mut stream.trailers);
-        for line in trailers.split_inclusive(|&b| b == b'\n') {
+        for line in trailers.lines.split_inclusive(|&b| b == b'\n') {
             trace::bytes(cx, DebugKind::HeaderIn, line);
             self.pipeline.header(cx, line, HeaderOrigin::Trailer)?;
             let head = self.head.as_mut().expect("made at DO");
@@ -950,14 +987,12 @@ impl Request {
             } if ours(stream) => {
                 let s = self.stream();
                 if s.body_started {
-                    // A trailer, kept until the stream closes.
-                    let t = &mut s.trailers;
-                    return pushed(
-                        t.try_extend_from_slice(name)
-                            .and_then(|()| t.try_extend_from_slice(b": "))
-                            .and_then(|()| t.try_extend_from_slice(value))
-                            .and_then(|()| t.try_extend_from_slice(b"\r\n")),
-                    );
+                    // A trailer, kept until the stream closes; one past
+                    // C's limits fails the stream as memory would.
+                    return match s.trailers.add(name, value) {
+                        Ok(()) => Heard::Fine,
+                        Err(OutOfMemory) => self.header_error(cx, ErrorKind::OutOfMemory, after),
+                    };
                 }
                 let mut line = Vec::new();
                 let made = if name == b":status" {

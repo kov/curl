@@ -17,9 +17,9 @@
 # mutants with `--test-package curl-core --test-package curl-openssl
 # --features curl-core/test-util,curl-core/debug-hooks`, as the TLS layer's
 # context is the OpenSSL backend's to use, and curl-openssl's with
-# `--test-package curl-openssl --test-package curl-sys-abi --features
-# curl-sys-abi/debug-hooks`, as an application's verify callback waits
-# only through the C ABI.)
+# `--test-package curl-openssl --test-package curl-sys-abi`, as an
+# application's verify callback waits only through the C ABI; cargo
+# refuses curl-sys-abi's features for a curl-openssl run.)
 # (The copy is made in `TMPDIR`: where `/tmp` is a small tmpfs it fills, and
 # its memory is the machine's. The worktree must hold no build output of its
 # own, such as a sabotage sweep's `build/target`: it is copied too, without
@@ -633,4 +633,13 @@ exclude_re = [
     # A raw receive's failing errno, which the fake network cannot fail
     # and a real reset needs SO_LINGER for.
     'curl-core/src/multi/raw\.rs:.*: replace <impl LayerCx for RawCx<._>>::socket_failed with \(\)$',
+    # The internal trace's Debug names no field.
+    'curl-core/src/trace\.rs:.*: replace <impl fmt::Debug for Internal>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
+    # `left_ms` says -1 for no time left, never 0.
+    'curl-core/src/conn/shutdown\.rs:.*: replace < with <= in Shutting::run_once$',
+    # The socket callback hears a transfer's socket change before its TLS
+    # handshake is done, or as the socket closes, never while a session
+    # is up; the objects come from `tls_native_in`, as `Multi::tls_native`'s
+    # do, which `proto/http/tests/tls_hands.rs` checks.
+    'curl-core/src/multi/cx\.rs:.*: replace <impl TransferCalls for EventCalls<._, ._, H>>::tls_native -> Option<TlsNative> with None$',
 ]

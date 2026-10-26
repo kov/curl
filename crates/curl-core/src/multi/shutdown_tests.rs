@@ -773,6 +773,79 @@ fn a_handle_s_own_multi_says_its_cleanup_s_removes() {
     );
 }
 
+/// Asked to, a multi traces its internal handle's work (as C's debug
+/// build does under `CURL_DEBUG`), to standard error.
+#[test]
+fn a_multi_traces_internally_when_asked() {
+    let (mut m, _wire, _clock) = lingering(Linger::UntilPeer);
+    assert!(m.shutdowns.internal().is_none());
+    m.trace_internally(crate::components::Components::new().unwrap());
+    assert!(m.shutdowns.internal().is_some());
+}
+
+/// Work done for no transfer is verbose only while the internal trace is
+/// on, and says its `infof` lines there, as C's internal handle does.
+#[test]
+fn work_for_no_transfer_is_said_only_on_the_internal_trace() {
+    use crate::conn::layer::LayerCx;
+    use crate::time::Clock;
+    let now = ManualClock::new().unwrap().now();
+    let mut silent = crate::trace::InternalCx { now, trace: None };
+    assert!(!silent.verbose());
+    silent.info(format_args!("lost"));
+    let written = Written::default();
+    let trace = crate::trace::Internal::to(
+        crate::components::Components::new().unwrap(),
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
+    let mut said = crate::trace::InternalCx {
+        now,
+        trace: Some(&trace),
+    };
+    assert!(said.verbose());
+    said.info(format_args!("said"));
+    assert_eq!(written.lines(), ["* said"]);
+}
+
+/// What a transfer's debug handler reaches as it hears the socket
+/// callback's lines, outside the transfer's step: its options, and
+/// whether it could pause it.
+#[derive(Clone, Default)]
+struct Reached(Arc<Mutex<Vec<(bool, bool)>>>);
+
+impl crate::handler::DebugHandler for Reached {
+    fn debug(&self, cx: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
+        if kind == crate::handler::DebugKind::Text && data.starts_with(b"socket cb:") {
+            let me = cx.me();
+            let options = cx.options_mut(me).is_some();
+            let paused = cx.pause(me, crate::deliver::PauseRequest::SEND).is_ok();
+            self.0.lock().unwrap().push((options, paused));
+        }
+    }
+}
+
+/// A transfer's handlers, called as the event drive's socket callback
+/// traces on it, reach its options, but cannot pause it, as only its
+/// step may.
+#[test]
+fn a_handler_hearing_the_socket_callback_reaches_its_transfer() {
+    let talk = tls_talk();
+    let (mut m, _wire, tls) = over_tls(&talk);
+    let mut e = closing_tls(tls);
+    let reached = Reached::default();
+    e.options_mut().output.verbose = true;
+    e.options_mut().callbacks.debug =
+        Some(crate::handler::Handler::debug(reached.clone()).unwrap());
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    assert_eq!(super::drive_by_events(&mut m, id), Ok(Ok(())));
+    let reached = reached.0.lock().unwrap().clone();
+    assert!(!reached.is_empty());
+    assert!(
+        reached.iter().all(|&(options, paused)| options && !paused),
+        "{reached:?}"
+    );
+}
+
 /// A multi with no internal trace says nothing of a shutdown, its
 /// transfer's own lines apart.
 #[test]

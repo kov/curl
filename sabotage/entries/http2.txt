@@ -496,3 +496,11 @@ witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_is_
     for (name, value) in &answer.fields {
 --- new
     for (name, value) in &answer.fields[..0] {
+
+=== the tunnel's layer shuts down in no filter's name
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core proto::http::tests::tls::a_tunnel_through_an_http_2_proxy_shuts_down_in_its_name
+--- old
+        Some(Component::H2Proxy)
+--- new
+        None

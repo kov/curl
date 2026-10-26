@@ -1348,6 +1348,43 @@ fn a_tunnel_through_an_http_2_proxy_is_a_stream() {
     assert!(text.iter().any(|l| l == "using HTTP/1.x\n"), "{text:?}");
 }
 
+/// The tunnel's layer shuts down in its filter's name, `H2-PROXY`, on
+/// the multi's internal trace, as the connection closes after its
+/// transfer (C's `[H2-PROXY] shut down successfully`).
+#[test]
+fn a_tunnel_through_an_http_2_proxy_shuts_down_in_its_name() {
+    use crate::components::{Component, Components, Level};
+    #[derive(Clone, Default)]
+    struct Written(Arc<Mutex<Vec<u8>>>);
+    impl crate::handler::TextSink for Written {
+        fn write(&self, text: &[u8]) {
+            self.0.lock().unwrap().extend_from_slice(text);
+        }
+    }
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
+    let data = [format!("D 1 {} 0\n", response.len()).as_bytes(), response].concat();
+    let (_, libraries, replies) = h2_proxy(b"S\nH 1 0\n:status: 200\n\n", &data);
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let talk = Conversation::replies(&replies, false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let components = Components::new().unwrap();
+    components.set(Component::H2Proxy, Level::Info);
+    let written = Written::default();
+    m.trace_internally_to(components, Handler::text(written.clone()).unwrap());
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        https_proxy(o, b"http://origin.example/p");
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.kind = crate::options::ProxyType::Https2;
+        proxy.tunnel = true;
+        o.limits.reuse.forbid = true;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let text = String::from_utf8(written.0.lock().unwrap().clone()).unwrap();
+    assert!(text.contains("* [H2-PROXY] shut down "), "{text}");
+}
+
 /// A proxy that speaks HTTP/2 refusing the `CONNECT` fails the transfer
 /// as one that could not connect, with no message of its own, and a 407's
 /// challenge does not ask again, as only Negotiate's would

@@ -286,3 +286,11 @@ witness: curl-core multi::shutdown_tests::a_handle_s_own_multi_says_its_cleanup_
                     t.info(format_args!("call curl_multi_socket_action(socket {fd})"));
 --- new
                     let _ = (t, fd);
+
+=== a handler outside its transfer's step may pause it
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::shutdown_tests::a_handler_hearing_the_socket_callback_reaches_its_transfer
+--- old
+        Err(ErrorKind::BadFunctionArgument)
+--- new
+        Ok(())

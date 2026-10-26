@@ -1465,3 +1465,11 @@ witness: curl-tool tests::the_threaded_resolver_is_reported_as_the_library_has_i
         "resolv-threaded" => (name, threaded),
 --- new
         "resolv-threaded" => (name, !threaded),
+
+=== the operations after more outputs than URLs run
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operations_after_more_outputs_than_urls_run_nothing
+--- old
+                    self.stranded = true;
+--- new
+                    self.stranded = false;

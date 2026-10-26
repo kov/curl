@@ -807,6 +807,25 @@ fn checks_urls_as_it_reaches_them() {
     );
 }
 
+/// An operation with more output options than URLs leaves C's walk on
+/// its last node, which has none: each operation after it warns and
+/// runs nothing, and the run ends with the transfers' result (test 760).
+#[test]
+fn operations_after_more_outputs_than_urls_run_nothing() {
+    let s = Scratch::new("stranded");
+    s.write("f", b"x");
+    let (f, gone) = (s.url("f"), s.url("gone"));
+    let args = [
+        "-o", "a", "-o", "b", &gone, "--next", "-o", "c", &f, "--next", &f,
+    ];
+    let r = curl(&s, &args);
+    assert_eq!(r.code, 37);
+    assert!(!s.exists("c"), "the operation after is not run");
+    let warning = "Warning: Got more output options than URLs\n";
+    assert_eq!(r.stderr.matches(warning).count(), 3, "{:?}", r.stderr);
+    assert_eq!(r.stdout, b"", "nor the one after it");
+}
+
 /// `--trace-ascii` dumps the data to the trace file.
 #[test]
 fn traces_to_a_file() {

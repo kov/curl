@@ -280,6 +280,10 @@ struct Transfers<'a, 'l> {
     first: bool,
     /// A transfer is ready.
     ready: bool,
+    /// An operation had more output options than URLs: C's walk stays on
+    /// its last node, which has no URL, so each operation after it warns
+    /// and makes nothing (`create_single`'s `state->urlnode`).
+    stranded: bool,
     walk: Option<Walk<'l>>,
 }
 
@@ -322,6 +326,7 @@ impl<'a, 'l> Transfers<'a, 'l> {
             urlnum: 0,
             first: true,
             ready: false,
+            stranded: false,
             walk: None,
         }
     }
@@ -374,6 +379,11 @@ impl<'a, 'l> Transfers<'a, 'l> {
                     msgs.help(&[b"(2) no URL specified"]);
                     return Err(Err(ErrorKind::FailedInit));
                 }
+                if self.stranded {
+                    msgs.warn(&[b"Got more output options than URLs"]);
+                    self.op += 1;
+                    continue;
+                }
                 self.first = true;
             }
             let at = self.node.map_or(0, |n| n + 1);
@@ -381,6 +391,7 @@ impl<'a, 'l> Transfers<'a, 'l> {
             let Some((node, Some(url))) = next else {
                 if next.is_some() {
                     msgs.warn(&[b"Got more output options than URLs"]);
+                    self.stranded = true;
                 }
                 self.op += 1;
                 self.node = None;

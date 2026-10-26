@@ -808,28 +808,30 @@ fn work_for_no_transfer_is_said_only_on_the_internal_trace() {
 }
 
 /// What a transfer's debug handler reaches as it hears the socket
-/// callback's lines, outside the transfer's step: its options, and
-/// whether it could pause it.
+/// callback's lines, outside the transfer's step: its options, its TLS
+/// library's objects, and whether it could pause it.
 #[derive(Clone, Default)]
-struct Reached(Arc<Mutex<Vec<(bool, bool)>>>);
+struct Reached(Arc<Mutex<Vec<(bool, bool, bool)>>>);
 
 impl crate::handler::DebugHandler for Reached {
     fn debug(&self, cx: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
         if kind == crate::handler::DebugKind::Text && data.starts_with(b"socket cb:") {
             let me = cx.me();
             let options = cx.options_mut(me).is_some();
+            let native = cx.tls_native(me).is_some();
             let paused = cx.pause(me, crate::deliver::PauseRequest::SEND).is_ok();
-            self.0.lock().unwrap().push((options, paused));
+            self.0.lock().unwrap().push((options, native, paused));
         }
     }
 }
 
 /// A transfer's handlers, called as the event drive's socket callback
-/// traces on it, reach its options, but cannot pause it, as only its
-/// step may.
+/// traces on it, reach its options and, once its handshake is done, its
+/// TLS library's objects, but cannot pause it, as only its step may.
 #[test]
 fn a_handler_hearing_the_socket_callback_reaches_its_transfer() {
-    let talk = tls_talk();
+    // Answered late, so it waits to read with its session up.
+    let talk = tls_talk().late_replies();
     let (mut m, _wire, tls) = over_tls(&talk);
     let mut e = closing_tls(tls);
     let reached = Reached::default();
@@ -841,9 +843,12 @@ fn a_handler_hearing_the_socket_callback_reaches_its_transfer() {
     let reached = reached.0.lock().unwrap().clone();
     assert!(!reached.is_empty());
     assert!(
-        reached.iter().all(|&(options, paused)| options && !paused),
+        reached
+            .iter()
+            .all(|&(options, _, paused)| options && !paused),
         "{reached:?}"
     );
+    assert!(reached.iter().any(|&(_, native, _)| native), "{reached:?}");
 }
 
 /// A multi with no internal trace says nothing of a shutdown, its
@@ -1240,4 +1245,46 @@ fn the_graceful_time_is_read_as_c_reads_it() {
             String::from_utf8_lossy(none)
         );
     }
+}
+
+/// The socket callback, told of each socket, and what the transfer's
+/// TLS objects were then.
+#[derive(Default)]
+struct NativeSeen(Vec<(SocketWhat, bool)>);
+
+impl MultiEvents<NoHost> for NativeSeen {
+    fn socket(
+        &mut self,
+        cx: &mut EventCx<'_, NoHost>,
+        who: SocketFor,
+        _: SocketKey,
+        what: SocketWhat,
+        _: Option<()>,
+    ) -> Result<(), Abort> {
+        if let SocketFor::Transfer(id) = who {
+            self.0.push((what, cx.tls_native(id).is_some()));
+        }
+        Ok(())
+    }
+
+    fn wants_sockets(&self) -> bool {
+        true
+    }
+}
+
+/// The socket callback reaches a transfer's TLS objects while the
+/// transfer holds its connection: as it is told the socket goes, the
+/// transfer done and its connection kept (`CURLINFO_TLS_SSL_PTR` from the
+/// callback).
+#[test]
+fn the_socket_callback_reaches_a_transfer_s_tls_objects() {
+    let talk = tls_talk().late_replies();
+    let (mut m, _wire, tls) = over_tls(&talk);
+    let mut e = closing_tls(tls);
+    e.options_mut().limits.reuse.forbid = false;
+    let mut ev = NativeSeen::default();
+    let id = m.add(e, (), &mut ev).unwrap();
+    by_events(&mut m, id, 1000, &mut ev);
+    m.remove(id, &mut ev).unwrap();
+    assert!(ev.0.iter().any(|&(_, native)| native), "{:?}", ev.0);
 }

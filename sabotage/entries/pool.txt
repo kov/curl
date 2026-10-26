@@ -535,3 +535,29 @@ witness: curl-core proto::http::tests::h2::a_multi_dropped_gives_a_share_s_lent_
             let back = cx.rest.caches.pool.release_lent(lease);
 --- new
             let back = pool::LentBack::Last(lease);
+
+=== a key finds a lent connection by its number alone
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::connections_lent_by_two_shares_are_told_apart
+--- old
+            .position(|l| l.id == lease.id && l.share.is(share))
+--- new
+            .position(|l| l.id == lease.id || l.share.is(share))
+
+=== a lent connection is joined by its number alone
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::connections_lent_by_two_shares_are_told_apart
+--- old
+            .find(|l| l.id == id && l.share.is(share))
+--- new
+            .find(|l| l.id == id || l.share.is(share))
+
+=== a lease holding its connection says it holds none
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core multi::shutdown_tests::the_socket_callback_reaches_a_transfer_s_tls_objects
+--- old
+    pub(crate) fn holding(&self) -> Option<&ConnSlot> {
+        self.conn.as_ref()
+--- new
+    pub(crate) fn holding(&self) -> Option<&ConnSlot> {
+        None

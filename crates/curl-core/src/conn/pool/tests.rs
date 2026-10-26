@@ -1566,3 +1566,52 @@ fn a_share_s_connection_lent_to_a_multi_is_that_multi_s() {
         .pool()
         .release(&home, lease, Finish::default(), UNLIMITED, &mut net, now);
 }
+
+/// Two shares number their connections alike: a multi holding one of
+/// each tells them apart by share and number together, so a key goes to
+/// its own share's connection and each comes back with its own.
+#[test]
+fn connections_lent_by_two_shares_are_told_apart() {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let (one, two) = (
+        crate::share::Share::new().unwrap(),
+        crate::share::Share::new().unwrap(),
+    );
+    let (home_one, home_two) = (Home::Share(one.clone()), Home::Share(two.clone()));
+    let mut lease_one = new(&mut one.pool(), &home_one, tcp(1), &mut net, now);
+    up(&mut lease_one, &mut net, now);
+    let mut lease_two = new(&mut two.pool(), &home_two, tcp(4), &mut net, now);
+    up(&mut lease_two, &mut net, now);
+    assert_eq!(lease_one.id(), lease_two.id(), "numbered alike");
+    let (sock_one, sock_two) = (socket(&lease_one), socket(&lease_two));
+    assert_ne!(sock_one, sock_two);
+    let mut multi = Pool::new().unwrap();
+    // The second share's lent first, so a match on the number alone
+    // finds it for the first's.
+    multi.borrow(&mut lease_two).unwrap();
+    two.pool().lend(lease_two.id());
+    multi.borrow(&mut lease_one).unwrap();
+    one.pool().lend(lease_one.id());
+    let mut joined = multi.join_lent(&one, lease_one.id());
+    multi.check_in(&mut joined);
+    let LentBack::InUse(n) = multi.release_lent(joined) else {
+        panic!("the first share's own lease is on it still");
+    };
+    assert_eq!(n.get(), 1);
+    let LentBack::Last(back_one) = multi.release_lent(lease_one) else {
+        panic!("the first share's last key");
+    };
+    assert_eq!(socket(&back_one), sock_one);
+    let LentBack::Last(back_two) = multi.release_lent(lease_two) else {
+        panic!("the second share's last key");
+    };
+    assert_eq!(socket(&back_two), sock_two);
+    for (share, home, back) in [(&one, &home_one, back_one), (&two, &home_two, back_two)] {
+        let released =
+            share
+                .pool()
+                .release(home, back, Finish::default(), UNLIMITED, &mut net, now);
+        assert!(matches!(released, Released::Idle { .. }), "{released:?}");
+    }
+}

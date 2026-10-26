@@ -637,9 +637,4 @@ exclude_re = [
     'curl-core/src/trace\.rs:.*: replace <impl fmt::Debug for Internal>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
     # `left_ms` says -1 for no time left, never 0.
     'curl-core/src/conn/shutdown\.rs:.*: replace < with <= in Shutting::run_once$',
-    # The socket callback hears a transfer's socket change before its TLS
-    # handshake is done, or as the socket closes, never while a session
-    # is up; the objects come from `tls_native_in`, as `Multi::tls_native`'s
-    # do, which `proto/http/tests/tls_hands.rs` checks.
-    'curl-core/src/multi/cx\.rs:.*: replace <impl TransferCalls for EventCalls<._, ._, H>>::tls_native -> Option<TlsNative> with None$',
 ]

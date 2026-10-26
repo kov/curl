@@ -9,7 +9,8 @@ witness, and puts the file back, whatever happens. Verdicts:
 
   RED       the witness failed (named), the suite hung, the witness was
             killed at the memory cap, the test binary aborted (a panic
-            that cannot unwind), or the build refused the change outside
+            that cannot unwind) or crashed (unsafe code reading what
+            the fault left unmade), or the build refused the change outside
             the replaced text: caught
   BROKEN    the replacement itself does not compile, or the witness ran
             no test: the entry checks nothing
@@ -120,6 +121,10 @@ def run(e, timeout):
     # before it reports the witness.
     if proc.returncode != 0 and re.search(r"\(signal: 6, SIGABRT", out):
         return "aborted", out
+    # A fault that lets unsafe code read what is not there crashes the
+    # test binary before it reports the witness.
+    if proc.returncode != 0 and re.search(r"\(signal: 11, SIGSEGV", out):
+        return "crashed", out
     return ("passed" if proc.returncode == 0 else "failed"), out
 
 
@@ -180,6 +185,8 @@ def main():
             result = "RED       the witness ran out of memory"
         elif verdict == "aborted":
             result = "RED       the witness aborted"
+        elif verdict == "crashed":
+            result = "RED       the witness crashed"
         elif verdict == "failed" and "could not compile" in out:
             if build_error_inside(out, e, start, end):
                 result, holes = "BROKEN    the replacement does not compile", holes + 1

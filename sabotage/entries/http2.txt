@@ -220,9 +220,9 @@ witness: curl-core proto::http::tests::h2::a_receive_limit_paces_a_stream
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::the_settings_say_the_multi_s_streams
 --- old
-            let (conn, _) = H2Conn::open(library, &settings(cx.max_streams()), None)?;
+                H2Conn::open(library, &settings(cx.max_streams(), cx.wants_push()), None)?;
 --- new
-            let (conn, _) = H2Conn::open(library, &settings(100), None)?;
+                H2Conn::open(library, &settings(100, cx.wants_push()), None)?;
 
 === a stream asks the default weight whatever the application set
 file: crates/curl-core/src/proto/http/h2.rs
@@ -236,12 +236,12 @@ witness: curl-core proto::http::tests::h2::a_stream_asks_its_weight
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::two_transfers_share_a_connection
 --- old
-                    && let Some(&(_, to)) = routes.iter().find(|r| r.0 == s)
+                    && let Some(&(_, to)) = routes.iter().chain(&after.routed).find(|r| r.0 == s)
                     && to != me
                 {
                     let consumed
 --- new
-                    && let Some(&(_, to)) = routes.iter().find(|r| r.0 == s)
+                    && let Some(&(_, to)) = routes.iter().chain(&after.routed).find(|r| r.0 == s)
                     && to == me
                 {
                     let consumed
@@ -366,3 +366,57 @@ witness: curl-core proto::http::tests::h2::a_stream_paused_in_a_siblings_step_re
                 let wanted = STREAM_WINDOW_MAX;
                 pushed(
                     after
+
+=== a taken push's stream is not routed to its transfer as it is read
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_pushed_response_becomes_a_transfer_of_its_own
+--- old
+                    && let Some(&(_, to)) = routes.iter().chain(&after.routed).find(|r| r.0 == s)
+                    && to != me
+                {
+                    let consumed = match event {
+--- new
+                    && let Some(&(_, to)) = routes.iter().chain(&[]).find(|r| r.0 == s)
+                    && to != me
+                {
+                    let consumed = match event {
+
+=== the client says it takes no pushes though the application does
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http::tests::h2::a_pushed_response_becomes_a_transfer_of_its_own
+--- old
+        Setting::EnablePush(push),
+--- new
+        Setting::EnablePush(false),
+
+=== a promise for another authority is kept
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_promise_for_another_authority_fails_the_read
+--- old
+        Ok(check.as_bytes().eq_ignore_ascii_case(value)
+--- new
+        Ok(true || check.as_bytes().eq_ignore_ascii_case(value)
+
+=== a promise of another origin is offered
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_promise_of_another_origin_is_refused_unoffered
+--- old
+        Ok(same.then_some(url))
+--- new
+        Ok(Some(url))
+
+=== a push the application fails leaves its parent going
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_failed_push_fails_its_parent
+--- old
+                s.failed = s.failed.or(Some(ErrorKind::RecvError));
+--- new
+                s.failed = s.failed;
+
+=== a refused push's stream is not cancelled
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_refused_push_cancels_its_stream
+--- old
+            Offered::Denied => after.resets.try_push((promised, code::CANCEL)),
+--- new
+            Offered::Denied => Ok(()),

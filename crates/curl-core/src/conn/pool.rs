@@ -1287,6 +1287,32 @@ impl Pool {
         lease.conn = Some(shared.slot.take().expect("out with another step"));
     }
 
+    /// A key to the connection `lease` has out in its step, for a
+    /// transfer the server pushes on it: one more user, found by no search
+    /// (`Curl_multi_add_perform`'s `Curl_attach_connection`). A connection
+    /// of the multi's own not attached yet is from now, and stays out with
+    /// the step; a share's is never attached, and is not pushed on.
+    pub(crate) fn pushed(&mut self, lease: &mut ConnLease) -> ConnLease {
+        assert!(
+            matches!(lease.home, Home::Multi),
+            "a share's connection is not pushed on"
+        );
+        if !self.is_attached(lease) {
+            self.attach(lease);
+            self.check_out(lease);
+        }
+        let conn = lease.get();
+        let Use::Leased(n) = conn.use_ else {
+            unreachable!("an attached connection is leased");
+        };
+        conn.use_ = Use::Leased(n.checked_add(1).expect("a count of transfers fits"));
+        ConnLease {
+            id: lease.id,
+            conn: None,
+            home: lease.home.clone(),
+        }
+    }
+
     /// Put the connection a key's step had out back in its place, if it
     /// had it out.
     pub(crate) fn check_in(&mut self, lease: &mut ConnLease) {

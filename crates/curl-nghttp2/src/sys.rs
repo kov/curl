@@ -57,6 +57,17 @@ pub(crate) struct nghttp2_frame_hd {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+pub(crate) struct nghttp2_push_promise {
+    pub(crate) hd: nghttp2_frame_hd,
+    pub(crate) padlen: usize,
+    pub(crate) nva: *mut nghttp2_nv,
+    pub(crate) nvlen: usize,
+    pub(crate) promised_stream_id: i32,
+    pub(crate) reserved: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub(crate) struct nghttp2_rst_stream {
     pub(crate) hd: nghttp2_frame_hd,
     pub(crate) error_code: u32,
@@ -79,6 +90,7 @@ pub(crate) struct nghttp2_goaway {
 #[repr(C)]
 pub(crate) union nghttp2_frame {
     pub(crate) hd: nghttp2_frame_hd,
+    pub(crate) push_promise: nghttp2_push_promise,
     pub(crate) rst_stream: nghttp2_rst_stream,
     pub(crate) goaway: nghttp2_goaway,
     _size: [u64; 16],
@@ -123,6 +135,7 @@ pub(crate) const NGHTTP2_NV_FLAG_NONE: u8 = 0;
 pub(crate) const NGHTTP2_DATA: u8 = 0;
 pub(crate) const NGHTTP2_HEADERS: u8 = 0x01;
 pub(crate) const NGHTTP2_RST_STREAM: u8 = 0x03;
+pub(crate) const NGHTTP2_PUSH_PROMISE: u8 = 0x05;
 pub(crate) const NGHTTP2_SETTINGS: u8 = 0x04;
 pub(crate) const NGHTTP2_GOAWAY: u8 = 0x07;
 pub(crate) const NGHTTP2_WINDOW_UPDATE: u8 = 0x08;
@@ -221,6 +234,15 @@ unsafe extern "C" {
         nvlen: usize,
         data_prd: *const nghttp2_data_provider2,
     ) -> c_int;
+    #[cfg(test)]
+    pub(crate) fn nghttp2_submit_push_promise(
+        session: *mut nghttp2_session,
+        flags: u8,
+        stream_id: i32,
+        nva: *const nghttp2_nv,
+        nvlen: usize,
+        promised_stream_user_data: *mut c_void,
+    ) -> i32;
     pub(crate) fn nghttp2_submit_rst_stream(
         session: *mut nghttp2_session,
         flags: u8,

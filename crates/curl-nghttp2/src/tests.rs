@@ -15,6 +15,8 @@ enum Seen {
     WindowUpdate,
     GoAway(i32, u32),
     Reset(i32, u32),
+    PushField(i32, String, String),
+    Promised(i32, i32),
 }
 
 fn own(e: Event<'_>) -> Seen {
@@ -33,6 +35,12 @@ fn own(e: Event<'_>) -> Seen {
         Event::WindowUpdate { .. } => Seen::WindowUpdate,
         Event::GoAway { last_stream, error } => Seen::GoAway(last_stream.0, error),
         Event::Reset { stream, error } => Seen::Reset(stream.0, error),
+        Event::PushField {
+            stream,
+            name,
+            value,
+        } => Seen::PushField(stream.0, s(name), s(value)),
+        Event::Promised { stream, promised } => Seen::Promised(stream.0, promised.0),
     }
 }
 
@@ -152,4 +160,77 @@ fn resets_goaways_and_garbage() {
     assert_eq!(client.max_concurrent(), 7);
     assert_eq!(http2_error_text(8), "CANCEL");
     assert!(!version().is_empty());
+}
+
+/// A server's PUSH_PROMISE reaches a client that takes pushes as its
+/// fields, on the stream it is beside, then the promise of its stream.
+#[test]
+fn a_push_promise_is_told_as_its_fields_then_the_promise() {
+    let mut client = Session::client().unwrap();
+    let mut server = Session::server().unwrap();
+    client
+        .submit_settings(&[Setting::EnablePush(true)])
+        .unwrap();
+    server.submit_settings(&[]).unwrap();
+    let fields: [(&[u8], &[u8]); 4] = [
+        (b":method", b"GET"),
+        (b":scheme", b"https"),
+        (b":authority", b"x"),
+        (b":path", b"/"),
+    ];
+    client.submit_request(&fields, false, 16).unwrap();
+    pump(&mut client, &mut server, &mut Vec::new(), &mut Vec::new());
+    let promise: [(&[u8], &[u8]); 4] = [
+        (b":method", b"GET"),
+        (b":scheme", b"https"),
+        (b":authority", b"x"),
+        (b":path", b"/pushed"),
+    ];
+    let promised = server.submit_push_promise(StreamId(1), &promise).unwrap();
+    assert_eq!(promised, StreamId(2));
+    let mut seen = Vec::new();
+    pump(&mut server, &mut client, &mut Vec::new(), &mut seen);
+    let push: Vec<&Seen> = seen
+        .iter()
+        .filter(|e| matches!(e, Seen::PushField(..) | Seen::Promised(..)))
+        .collect();
+    assert_eq!(
+        push,
+        [
+            &Seen::PushField(1, ":method".into(), "GET".into()),
+            &Seen::PushField(1, ":scheme".into(), "https".into()),
+            &Seen::PushField(1, ":authority".into(), "x".into()),
+            &Seen::PushField(1, ":path".into(), "/pushed".into()),
+            &Seen::Promised(1, 2),
+        ]
+    );
+}
+
+/// A stream's receive window is set as asked and read back; one grown is
+/// told to the peer by the update submitted with it, the calls C makes.
+#[test]
+fn a_streams_window_is_set_and_grown() {
+    let mut client = Session::client().unwrap();
+    let mut server = Session::server().unwrap();
+    client.submit_settings(&[]).unwrap();
+    server.submit_settings(&[]).unwrap();
+    let fields: [(&[u8], &[u8]); 4] = [
+        (b":method", b"GET"),
+        (b":scheme", b"https"),
+        (b":authority", b"x"),
+        (b":path", b"/"),
+    ];
+    let stream = client.submit_request(&fields, false, 16).unwrap();
+    pump(&mut client, &mut server, &mut Vec::new(), &mut Vec::new());
+    assert_eq!(client.stream_window(stream), 65535);
+    client.set_stream_window(stream, 0).unwrap();
+    assert_eq!(client.stream_window(stream), 0);
+    client.set_stream_window(stream, 1 << 20).unwrap();
+    // Nothing received to make up for, the update grows the window by as
+    // much again, as nghttp2 documents it.
+    client.submit_window_update(stream, 1 << 20).unwrap();
+    assert_eq!(client.stream_window(stream), 2 << 20);
+    let mut seen = Vec::new();
+    pump(&mut client, &mut server, &mut Vec::new(), &mut seen);
+    assert!(seen.contains(&Seen::WindowUpdate), "{seen:?}");
 }

@@ -852,6 +852,14 @@ pub(crate) struct Conn {
 }
 
 impl Conn {
+    /// Who its requests are for; none without a network.
+    pub(crate) fn origin(&self) -> Option<&TryArc<Peer>> {
+        match &self.route {
+            Route::Tcp(tcp) => Some(&tcp.origin),
+            Route::Local => None,
+        }
+    }
+
     /// Whether it speaks HTTP/2 (`Curl_conn_http_version` 20).
     pub(crate) fn is_h2(&self) -> bool {
         self.h2.is_some()

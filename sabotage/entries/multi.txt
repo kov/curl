@@ -288,29 +288,29 @@ witness: curl-core multi::props::random_calls_keep_the_multi_consistent
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core add_perform_remove_survives_every_allocation_failing
 --- old
-        let slot = curl_alloc::try_box_or_back(Slot {
-            owner,
-            easy,
-            pause: Pause::default(),
-            judge_pause: false,
-            speedometer: Speedometer::default(),
-            rate: RateLimits::default(),
-            run: Some(run),
-            mstate: mstate::MState::Init,
-            readers: None,
-        });
+    let slot = curl_alloc::try_box_or_back(Slot {
+        owner,
+        easy,
+        pause: Pause::default(),
+        judge_pause: false,
+        speedometer: Speedometer::default(),
+        rate: RateLimits::default(),
+        run: Some(Run::new()),
+        mstate: mstate::MState::Init,
+        readers: None,
+    });
 --- new
-        let slot = Ok::<Box<Slot<H>>, Slot<H>>(Box::new(Slot {
-            owner,
-            easy,
-            pause: Pause::default(),
-            judge_pause: false,
-            speedometer: Speedometer::default(),
-            rate: RateLimits::default(),
-            run: Some(run),
-            mstate: mstate::MState::Init,
-            readers: None,
-        }));
+    let slot = Ok::<Box<Slot<H>>, Slot<H>>(Box::new(Slot {
+        owner,
+        easy,
+        pause: Pause::default(),
+        judge_pause: false,
+        speedometer: Speedometer::default(),
+        rate: RateLimits::default(),
+        run: Some(Run::new()),
+        mstate: mstate::MState::Init,
+        readers: None,
+    }));
 
 === notifications get less room than a pass can queue
 file: crates/curl-core/src/multi/notify.rs
@@ -639,9 +639,9 @@ witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_afte
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
-        let number = match easy.share().filter(|s| s.keeps(Kind::Connections)) {
+    let number = match easy.share().filter(|s| s.keeps(Kind::Connections)) {
 --- new
-        let number = match easy.share().filter(|_| false) {
+    let number = match easy.share().filter(|_| false) {
 
 === a transfer's number is forgotten as it starts
 file: crates/curl-core/src/report.rs
@@ -738,9 +738,9 @@ witness: curl-core multi::tests::a_transfer_let_out_of_pending_is_in_connect_at_
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::transfers_are_numbered_as_c_numbers_them
 --- old
-        let mid = id.index() + u32::from(self.slots.reserved() == 0);
+    let mid = cx.me.index() + u32::from(cx.rest.tell.slots.reserved() == 0);
 --- new
-        let mid = id.index() + 1;
+    let mid = cx.me.index() + 1;
 
 === socket_action runs no transfer whose resolve was answered
 file: crates/curl-core/src/multi/mod.rs

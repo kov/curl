@@ -12,6 +12,7 @@ mod check;
 mod cx;
 pub(crate) mod mstate;
 mod notify;
+pub(crate) mod push;
 pub mod raw;
 mod sched;
 mod sockets;
@@ -44,6 +45,7 @@ pub use crate::deliver::PauseRequest;
 use cx::{Announcing, EngineRest, Telling};
 pub use cx::{EventCx, NotifyCx, TransferCx};
 pub use notify::{Notification, NotifyKind};
+pub use push::{PushFields, PushOffer, Pushed};
 pub use sched::{Census, Counts};
 pub use sockets::{SocketFor, SocketWhat, UnknownSocket};
 pub use timers::TimerChange;
@@ -111,6 +113,28 @@ pub trait MultiEvents<H: Host> {
     /// what it announced, as C without a timer callback.
     fn wants_timer(&self) -> bool {
         false
+    }
+
+    /// A server offers to push a response beside one of a transfer's
+    /// (`CURLMOPT_PUSHFUNCTION`): `easy` is made for it, its URL set, for
+    /// the application to set more of and take, or refuse. Called inside
+    /// the parent's step, as the offer is read.
+    fn push(&mut self, offer: &PushOffer<'_, H>, easy: Box<Easy>) -> Pushed<H> {
+        let _ = (offer, easy);
+        Pushed::Denied
+    }
+
+    /// Whether `push` is wanted: without it, servers are told not to push
+    /// (`SETTINGS_ENABLE_PUSH`).
+    fn wants_push(&self) -> bool {
+        false
+    }
+
+    /// A push `push` took could not be added after all, the multi short
+    /// of memory: what was made for it is the host's to dispose of, as C
+    /// closes the handle (`discard_newhandle`).
+    fn unpushed(&mut self, easy: Box<Easy>, owner: H::Transfer) {
+        let _ = (easy, owner);
     }
 
     /// Watch socket `s` for `what` for `who`, or stop
@@ -481,47 +505,20 @@ impl<H: Host> Multi<H> {
         // private multi goes.
         let mut easy = easy;
         easy.private = None;
-        let Ok(vacancy) = self.slots.reserve() else {
-            return refuse(MultiErrorKind::OutOfMemory, easy);
-        };
-        let rows = vacancy.rows();
-        if self.timers.reserve(rows).is_err()
-            || self.dirty.reserve(rows).is_err()
-            || self.notify.reserve(rows).is_err()
-        {
-            return refuse(MultiErrorKind::OutOfMemory, easy);
-        }
-        let run = Run::new();
-        let slot = curl_alloc::try_box_or_back(Slot {
-            owner,
+        let id = insert(
+            Rows {
+                slots: &mut self.slots,
+                timers: &mut self.timers,
+                dirty: &mut self.dirty,
+                notify: &mut self.notify,
+            },
+            &mut self.counts,
+            &mut self.caches.pool,
             easy,
-            pause: Pause::default(),
-            judge_pause: false,
-            speedometer: Speedometer::default(),
-            rate: RateLimits::default(),
-            run: Some(run),
-            mstate: mstate::MState::Init,
-            readers: None,
-        });
-        let slot = match slot {
-            Ok(slot) => slot,
-            Err(slot) => return refuse(MultiErrorKind::OutOfMemory, slot.easy),
-        };
-        let id = vacancy.fill(slot);
-        self.counts.added();
-        // A transfer joins the pool, the share's if the share keeps
-        // connections, under its lock, and is numbered by it
-        // (`Curl_cpool_xfer_init`).
-        let easy = &self.slots.get(id).expect("just added").easy;
-        let number = match easy.share().filter(|s| s.keeps(Kind::Connections)) {
-            Some(share) => {
-                let watch = easy.share_watch();
-                watched(watch, share, Kind::Connections, || share.pool().join())
-            }
-            None => self.caches.pool.join(),
-        };
+            owner,
+        )
+        .map_err(|(refused, _)| refused)?;
         let easy = &mut self.slots.get_mut(id).expect("just added").easy;
-        easy.report_mut().set_transfer(number);
         // A connection the handle used itself, its last transfer having
         // only connected, is closed as its own multi runs it again
         // (`easy_perform`).
@@ -560,20 +557,8 @@ impl<H: Host> Multi<H> {
     /// `curl_multi_remove_handle`), as C numbers its transfers: its
     /// internal handle first, and counted.
     fn trace_membership(&mut self, id: TransferId, what: &str, ev: &mut dyn MultiEvents<H>) {
-        let Counts {
-            running, current, ..
-        } = self.counts.get();
-        let total = current + 1;
-        // C's internal handle holds mid 0. A table that keeps its first
-        // row for it (the C ABI's) numbers its rows as C does; one that
-        // does not starts a row lower.
-        let mid = id.index() + u32::from(self.slots.reserved() == 0);
         let now = self.clock.now();
-        let mut cx = StepCx::new(id, self.rest(now, ev));
-        mstate::trace(
-            &mut cx,
-            format_args!("{what} multi, mid={mid}, running={running}, total={total}"),
-        );
+        trace_membership(&mut StepCx::new(id, self.rest(now, ev)), what);
     }
 
     /// Take a transfer out, completed or not, and give its `Easy` back
@@ -605,7 +590,7 @@ impl<H: Host> Multi<H> {
                 slots: &mut self.slots,
                 limits: &mut self.limits,
                 notify: &mut self.notify,
-                counts: &self.counts,
+                counts: &mut self.counts,
                 sockets: &mut self.sockets,
                 life: &mut self.life,
             };
@@ -708,7 +693,7 @@ impl<H: Host> Multi<H> {
             slots: &mut self.slots,
             limits: &mut self.limits,
             notify: &mut self.notify,
-            counts: &self.counts,
+            counts: &mut self.counts,
             sockets: &mut self.sockets,
             life: &mut self.life,
         };
@@ -1008,7 +993,7 @@ impl<H: Host> Multi<H> {
                 slots: &mut self.slots,
                 limits: &mut self.limits,
                 notify: &mut self.notify,
-                counts: &self.counts,
+                counts: &mut self.counts,
                 sockets: &mut self.sockets,
                 life: &mut self.life,
             },
@@ -1020,6 +1005,7 @@ impl<H: Host> Multi<H> {
             ipv6_works: self.ipv6_works,
             fail_ipv6: self.fail_ipv6,
             dirty: &mut self.dirty,
+            timers: &mut self.timers,
             events: ev,
             now,
             clock: &*self.clock,
@@ -1075,7 +1061,7 @@ impl<H: Host> Multi<H> {
                 slots: &mut self.slots,
                 limits: &mut self.limits,
                 notify: &mut self.notify,
-                counts: &self.counts,
+                counts: &mut self.counts,
                 sockets: &mut self.sockets,
                 life: &mut self.life,
             },
@@ -1421,6 +1407,90 @@ fn run_in<H: Host>(slots: &Slots<H>, id: TransferId) -> &Run {
         .expect("no transfer is out while the multi is called")
 }
 
+/// That the transfer `cx` is for came or goes, as C numbers its
+/// transfers: its internal handle first, and counted.
+fn trace_membership<H: Host>(cx: &mut StepCx<'_, H>, what: &str) {
+    let Counts {
+        running, current, ..
+    } = cx.rest.tell.counts.get();
+    let total = current + 1;
+    // C's internal handle holds mid 0. A table that keeps its first row for
+    // it (the C ABI's) numbers its rows as C does; one that does not starts
+    // a row lower.
+    let mid = cx.me.index() + u32::from(cx.rest.tell.slots.reserved() == 0);
+    mstate::trace(
+        cx,
+        format_args!("{what} multi, mid={mid}, running={running}, total={total}"),
+    );
+}
+
+/// What a transfer takes a row of.
+struct Rows<'a, H: Host> {
+    slots: &'a mut Slots<H>,
+    timers: &'a mut TimerQueue<Transfer>,
+    dirty: &'a mut RowSet,
+    notify: &'a mut NotifyQueue,
+}
+
+/// Give `easy` a slot, owned by `owner`, with a run of its own to come,
+/// and number it as its pool does: the part of an add a step can make
+/// too, for a transfer the server pushes. Refused, both come back.
+fn insert<H: Host>(
+    rows: Rows<'_, H>,
+    counts: &mut Tally,
+    pool: &mut Pool,
+    easy: Box<Easy>,
+    owner: H::Transfer,
+) -> Result<TransferId, (AddError, H::Transfer)> {
+    let refuse = |kind, easy, owner| Err((AddError { kind, easy }, owner));
+    let Ok(vacancy) = rows.slots.reserve() else {
+        return refuse(MultiErrorKind::OutOfMemory, easy, owner);
+    };
+    let n = vacancy.rows();
+    if rows.timers.reserve(n).is_err()
+        || rows.dirty.reserve(n).is_err()
+        || rows.notify.reserve(n).is_err()
+    {
+        return refuse(MultiErrorKind::OutOfMemory, easy, owner);
+    }
+    let slot = curl_alloc::try_box_or_back(Slot {
+        owner,
+        easy,
+        pause: Pause::default(),
+        judge_pause: false,
+        speedometer: Speedometer::default(),
+        rate: RateLimits::default(),
+        run: Some(Run::new()),
+        mstate: mstate::MState::Init,
+        readers: None,
+    });
+    let slot = match slot {
+        Ok(slot) => slot,
+        Err(Slot { easy, owner, .. }) => return refuse(MultiErrorKind::OutOfMemory, easy, owner),
+    };
+    let id = vacancy.fill(slot);
+    counts.added();
+    number(rows.slots, pool, id);
+    Ok(id)
+}
+
+/// Number a transfer just added, as its pool does.
+fn number<H: Host>(slots: &mut Slots<H>, pool: &mut Pool, id: TransferId) {
+    // A transfer joins the pool, the share's if the share keeps
+    // connections, under its lock, and is numbered by it
+    // (`Curl_cpool_xfer_init`).
+    let easy = &slots.get(id).expect("just added").easy;
+    let number = match easy.share().filter(|s| s.keeps(Kind::Connections)) {
+        Some(share) => {
+            let watch = easy.share_watch();
+            watched(watch, share, Kind::Connections, || share.pool().join())
+        }
+        None => pool.join(),
+    };
+    let easy = &mut slots.get_mut(id).expect("just added").easy;
+    easy.report_mut().set_transfer(number);
+}
+
 /// Pause or unpause transfer `id` (the core of `curl_easy_pause`). An
 /// unpause of held output replays it at once if the transfer's run is in
 /// its slot; if it is out (the transfer is being stepped, or replayed
@@ -1531,7 +1601,7 @@ impl<H: Host> Multi<H> {
                 slots: &mut self.slots,
                 limits: &mut self.limits,
                 notify: &mut self.notify,
-                counts: &self.counts,
+                counts: &mut self.counts,
                 sockets: &mut self.sockets,
                 life: &mut self.life,
             };
@@ -1549,7 +1619,7 @@ impl<H: Host> Multi<H> {
             slots: &mut self.slots,
             limits: &mut self.limits,
             notify: &mut self.notify,
-            counts: &self.counts,
+            counts: &mut self.counts,
             sockets: &mut self.sockets,
             life: &mut self.life,
         };

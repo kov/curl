@@ -85,12 +85,12 @@ witness: curl-core conn::pool::tests::a_search_prunes_once_a_second
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
-                watched(watch, share, Kind::Connections, || share.pool().join())
+            watched(watch, share, Kind::Connections, || share.pool().join())
 --- new
-                {
-                    drop(watch);
-                    share.pool().join()
-                }
+            {
+                drop(watch);
+                share.pool().join()
+            }
 
 === a connection cut short is kept
 file: crates/curl-core/src/conn/pool.rs

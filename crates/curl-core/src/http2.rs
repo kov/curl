@@ -41,6 +41,18 @@ pub enum Event<'a> {
     GoAway { last_stream: StreamId, error: u32 },
     /// The peer reset `stream` with this error code.
     Reset { stream: StreamId, error: u32 },
+    /// A field of a PUSH_PROMISE the peer sent on `stream`.
+    PushField {
+        stream: StreamId,
+        name: &'a [u8],
+        value: &'a [u8],
+    },
+    /// The peer promised to push `promised`, in answer to a request it
+    /// imagines on `stream`, its fields told before.
+    Promised {
+        stream: StreamId,
+        promised: StreamId,
+    },
 }
 
 impl Event<'_> {
@@ -52,7 +64,9 @@ impl Event<'_> {
             | Event::Data { stream, .. }
             | Event::DataEnd { stream }
             | Event::Closed { stream, .. }
-            | Event::Reset { stream, .. } => Some(stream),
+            | Event::Reset { stream, .. }
+            | Event::PushField { stream, .. }
+            | Event::Promised { stream, .. } => Some(stream),
             Event::WindowUpdate { stream } => Some(stream).filter(|s| s.0 != 0),
             Event::Settings | Event::GoAway { .. } => None,
         }

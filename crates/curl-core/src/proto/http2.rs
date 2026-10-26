@@ -327,13 +327,13 @@ impl H2Conn {
 }
 
 /// The settings a client sends (`populate_settings`), letting the server
-/// open `max_streams` at once: no server push, as no application asks
-/// for it.
-pub(crate) fn settings(max_streams: u32) -> [Setting; 3] {
+/// open `max_streams` at once, and push responses if the application
+/// takes them.
+pub(crate) fn settings(max_streams: u32, push: bool) -> [Setting; 3] {
     [
         Setting::MaxConcurrentStreams(max_streams),
         Setting::InitialWindowSize(STREAM_WINDOW),
-        Setting::EnablePush(false),
+        Setting::EnablePush(push),
     ]
 }
 

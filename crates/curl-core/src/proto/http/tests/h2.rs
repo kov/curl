@@ -5,6 +5,7 @@
 use super::*;
 use crate::http2::fake::FakeH2;
 use crate::libraries::{Libraries, SharedLibraries};
+use crate::multi::TransferId;
 use crate::options::HttpVersion;
 
 /// Libraries with the fake HTTP/2 library.
@@ -1271,4 +1272,198 @@ fn a_stream_paused_in_a_siblings_step_reopens_its_window_in_its_own() {
     for id in ids {
         m.remove(id, &mut NoEvents).unwrap();
     }
+}
+
+/// What a test's application does with a push.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    Take,
+    Deny,
+    Fail,
+}
+
+/// A push offered: its fields, and the URL its handle was given.
+type Offer = (Vec<Vec<u8>>, Option<Vec<u8>>);
+
+/// Each transfer's result, by id.
+type Results = Vec<(TransferId, Result<(), ErrorKind>)>;
+
+/// An application that takes pushes, or not, keeping what it was offered
+/// and writing what it takes to `seen`.
+struct Pushes {
+    answer: Answer,
+    offers: Vec<Offer>,
+    seen: Seen,
+}
+
+impl Pushes {
+    fn answering(answer: Answer) -> Pushes {
+        Pushes {
+            answer,
+            offers: Vec::new(),
+            seen: Seen::default(),
+        }
+    }
+}
+
+impl crate::multi::MultiEvents<crate::multi::NoHost> for Pushes {
+    fn wants_push(&self) -> bool {
+        true
+    }
+
+    fn push(
+        &mut self,
+        offer: &crate::multi::PushOffer<'_, crate::multi::NoHost>,
+        mut easy: Box<Easy>,
+    ) -> crate::multi::Pushed<crate::multi::NoHost> {
+        let fields = (0..offer.fields.len())
+            .map(|n| offer.fields.get(n).unwrap().to_vec())
+            .collect();
+        self.offers
+            .push((fields, easy.report().url().map(<[u8]>::to_vec)));
+        match self.answer {
+            Answer::Take => {
+                easy.options_mut().callbacks.write =
+                    Some(Handler::write(self.seen.clone()).unwrap());
+                crate::multi::Pushed::Accepted { easy, owner: () }
+            }
+            Answer::Deny => crate::multi::Pushed::Denied,
+            Answer::Fail => crate::multi::Pushed::Failed,
+        }
+    }
+}
+
+/// A response with a promise of `/pushed` on stream 2, at `authority`
+/// over `scheme`, the pushed response's body `abc`, then the request's.
+fn promising(scheme: &str, authority: &str) -> Vec<u8> {
+    format!(
+        "S\nH 1 0\n:status: 200\n\nPP 1 2\n:method: GET\n:scheme: {scheme}\n\
+         :authority: {authority}\n:path: /pushed\n\nH 2 0\n:status: 200\n\n\
+         D 2 3 1\nabcD 1 2 1\nok"
+    )
+    .into_bytes()
+}
+
+/// Run a GET whose response promises `reply`'s push, the application
+/// answering it with `ev`: each transfer's result, by id, and what went
+/// on the wire.
+fn pushed_get(
+    reply: &[u8],
+    ev: &mut dyn crate::multi::MultiEvents<crate::multi::NoHost>,
+) -> (Results, String) {
+    let talk = Conversation::replies(&[reply, WINDOW_SENT], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let o = e.options_mut();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.http.version = HttpVersion::Http2Prior;
+    o.callbacks.write = Some(Handler::write(Seen::default()).unwrap());
+    let id = m.add(Box::new(e), (), ev).unwrap();
+    let mut done = Vec::new();
+    for _ in 0..20 {
+        m.perform(ev).unwrap();
+        while let Some(msg) = m.info_read() {
+            done.push((msg.id, msg.result));
+        }
+    }
+    let mut ids: Vec<TransferId> =
+        std::iter::successors(m.next_transfer(None), |&t| m.next_transfer(Some(t))).collect();
+    ids.retain(|&t| t != id);
+    done.sort_by_key(|&(t, _)| t != id);
+    for t in std::iter::once(id).chain(ids) {
+        m.remove(t, ev).unwrap();
+    }
+    (done, String::from_utf8(talk.received()).unwrap())
+}
+
+/// A response the server promises is offered to the application with the
+/// promise's fields and its URL set, and once taken is a transfer of the
+/// multi's, on the same connection, its response written where the
+/// application said; the client says it takes pushes
+/// (`SETTINGS_ENABLE_PUSH`).
+#[test]
+fn a_pushed_response_becomes_a_transfer_of_its_own() {
+    let mut ev = Pushes::answering(Answer::Take);
+    let reply = promising("http", &format!("127.0.0.1:{PORT}"));
+    let (done, sent) = pushed_get(&reply, &mut ev);
+    assert_eq!(done.len(), 2, "{done:?}\n{sent}");
+    assert!(done.iter().all(|(_, r)| r.is_ok()), "{done:?}\n{sent}");
+    assert!(sent.starts_with("S MCS=100;IWS=65536;EP=1;\n"), "{sent}");
+    assert!(!sent.contains("R 2 "), "{sent}");
+    let fields: Vec<&[u8]> = ev.offers[0].0.iter().map(Vec::as_slice).collect();
+    assert_eq!(
+        fields,
+        [
+            &b":method:GET"[..],
+            b":scheme:http",
+            format!(":authority:127.0.0.1:{PORT}").as_bytes(),
+            b":path:/pushed",
+        ]
+    );
+    let url = format!("http://127.0.0.1:{PORT}/pushed");
+    assert_eq!(ev.offers[0].1.as_deref(), Some(url.as_bytes()));
+    assert_eq!(ev.seen.body(), b"abc");
+}
+
+/// A push the application refuses is cancelled, and the request goes on.
+#[test]
+fn a_refused_push_cancels_its_stream() {
+    let mut ev = Pushes::answering(Answer::Deny);
+    let reply = promising("http", &format!("127.0.0.1:{PORT}"));
+    let (done, sent) = pushed_get(&reply, &mut ev);
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0].1, Ok(()), "{sent}");
+    assert!(sent.contains("R 2 8\n"), "{sent}");
+    assert_eq!(ev.offers.len(), 1);
+}
+
+/// A push the application fails fails its parent (`CURL_PUSH_ERROROUT`).
+#[test]
+fn a_failed_push_fails_its_parent() {
+    let mut ev = Pushes::answering(Answer::Fail);
+    let reply = promising("http", &format!("127.0.0.1:{PORT}"));
+    let (done, sent) = pushed_get(&reply, &mut ev);
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0].1, Err(ErrorKind::RecvError), "{sent}");
+}
+
+/// Without an application that takes pushes, the client says so, and a
+/// push the server sends anyway is cancelled.
+#[test]
+fn without_a_push_handler_a_push_is_cancelled() {
+    let reply = promising("http", &format!("127.0.0.1:{PORT}"));
+    let (done, sent) = pushed_get(&reply, &mut NoEvents);
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0].1, Ok(()), "{sent}");
+    assert!(sent.starts_with("S MCS=100;IWS=65536;EP=0;\n"), "{sent}");
+    assert!(sent.contains("R 2 8\n"), "{sent}");
+}
+
+/// A promise naming another authority than the request's resets the
+/// request's stream and fails the read (RFC 9113 §8.4), unoffered.
+#[test]
+fn a_promise_for_another_authority_fails_the_read() {
+    let mut ev = Pushes::answering(Answer::Take);
+    let reply = promising("http", "elsewhere.example");
+    let (done, sent) = pushed_get(&reply, &mut ev);
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0].1, Err(ErrorKind::RecvError), "{sent}");
+    assert!(sent.contains("R 1 1\n"), "{sent}");
+    assert!(ev.offers.is_empty());
+}
+
+/// A promise of another origin than the request's, here by its scheme,
+/// is refused unoffered (`set_transfer_url`).
+#[test]
+fn a_promise_of_another_origin_is_refused_unoffered() {
+    let mut ev = Pushes::answering(Answer::Take);
+    let reply = promising("https", &format!("127.0.0.1:{PORT}"));
+    let (done, sent) = pushed_get(&reply, &mut ev);
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0].1, Ok(()), "{sent}");
+    assert!(sent.contains("R 2 8\n"), "{sent}");
+    assert!(ev.offers.is_empty());
 }

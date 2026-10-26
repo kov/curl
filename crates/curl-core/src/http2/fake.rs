@@ -16,6 +16,8 @@
 //!   the server is not held to it; as with nghttp2, a closed stream's
 //!   window is no one's, and an update queued for it is not sent.
 //! - `P\n`: PING.
+//! - `PP <id> <promised>\n` then `name: value\n` per field and `\n`: a
+//!   PUSH_PROMISE on stream `<id>`, which the client cannot have closed.
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
@@ -72,6 +74,34 @@ fn settings_text(settings: &[Setting]) -> String {
         .unwrap();
     }
     text
+}
+
+/// A block of fields, ending at an empty line: the fields, and how far
+/// the block goes; none until it is whole.
+fn block(rest: &[u8]) -> Option<(Vec<&[u8]>, usize)> {
+    let mut fields = Vec::new();
+    let mut at = 0;
+    loop {
+        let e = rest[at..].iter().position(|&b| b == b'\n')?;
+        let field = &rest[at..at + e];
+        at += e + 1;
+        if field.is_empty() {
+            return Some((fields, at));
+        }
+        fields.push(field);
+    }
+}
+
+/// A field's name and value; a pseudo-header's name starts with its colon.
+fn split_field(field: &[u8]) -> Option<(&[u8], &[u8])> {
+    let colon = field.iter().position(|&b| b == b':')?;
+    let colon = if colon == 0 {
+        1 + field[1..].iter().position(|&b| b == b':')?
+    } else {
+        colon
+    };
+    let value = &field[colon + 1..];
+    Some((&field[..colon], value.strip_prefix(b" ").unwrap_or(value)))
 }
 
 /// A stream's state, as the client sees it.
@@ -210,37 +240,45 @@ impl FakeSession {
                 }))?;
                 Ok(Some(nl + 1))
             }
+            "PP" => {
+                let id = num(1)? as i32;
+                let promised = num(2)? as i32;
+                let Some((fields, at)) = block(&input[nl + 1..]) else {
+                    return Ok(None);
+                };
+                for field in fields {
+                    let (name, value) = split_field(field).ok_or(bad)?;
+                    check(events(Event::PushField {
+                        stream: StreamId(id),
+                        name,
+                        value,
+                    }))?;
+                }
+                // The client sends nothing on a pushed stream.
+                self.streams.push((
+                    promised,
+                    Stream {
+                        local_end: true,
+                        ..Stream::default()
+                    },
+                ));
+                check(events(Event::Promised {
+                    stream: StreamId(id),
+                    promised: StreamId(promised),
+                }))?;
+                Ok(Some(nl + 1 + at))
+            }
             "H" => {
                 let id = num(1)? as i32;
                 let end = num(2)? == 1;
-                // The block ends at an empty line.
-                let rest = &input[nl + 1..];
-                let mut fields = Vec::new();
-                let mut at = 0;
-                loop {
-                    let Some(e) = rest[at..].iter().position(|&b| b == b'\n') else {
-                        return Ok(None);
-                    };
-                    let field = &rest[at..at + e];
-                    at += e + 1;
-                    if field.is_empty() {
-                        break;
-                    }
-                    fields.push(field);
-                }
+                let Some((fields, at)) = block(&input[nl + 1..]) else {
+                    return Ok(None);
+                };
                 for field in fields {
-                    let colon = field.iter().position(|&b| b == b':').ok_or(bad)?;
-                    // A pseudo-header's name starts with its colon.
-                    let colon = if colon == 0 {
-                        1 + field[1..].iter().position(|&b| b == b':').ok_or(bad)?
-                    } else {
-                        colon
-                    };
-                    let value = &field[colon + 1..];
-                    let value = value.strip_prefix(b" ").unwrap_or(value);
+                    let (name, value) = split_field(field).ok_or(bad)?;
                     check(events(Event::Header {
                         stream: StreamId(id),
-                        name: &field[..colon],
+                        name,
                         value,
                     }))?;
                 }

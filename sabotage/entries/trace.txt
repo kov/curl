@@ -291,9 +291,9 @@ witness: curl-core proto::http::tests::multi_trace::a_redirect_starts_over_from_
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core proto::http::tests::multi_trace::a_request_is_traced_through_c_s_states
 --- old
-        let total = current + 1;
+    let total = current + 1;
 --- new
-        let total = current;
+    let total = current;
 
 === a receive that got data is traced as one that would block
 file: crates/curl-core/src/conn/layer.rs

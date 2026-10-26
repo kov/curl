@@ -170,6 +170,27 @@ impl Easy {
         &mut self.report
     }
 
+    /// A handle for a response the server pushes in answer to one of this
+    /// handle's requests (`h2_duphandle`): this one's libraries and share,
+    /// its stream's weight, and where its output, its headers, its trace
+    /// and its progress go; nothing else.
+    pub(crate) fn pushed(&self) -> Easy {
+        let mut pushed = Easy {
+            libraries: self.libraries.clone(),
+            components: self.components.clone(),
+            share: self.share.clone(),
+            share_watch: self.share_watch.clone(),
+            ..Easy::default()
+        };
+        let (to, from) = (&mut pushed.options, &self.options);
+        to.http.stream_weight = from.http.stream_weight;
+        to.callbacks.write = from.callbacks.write.clone();
+        to.callbacks.header = from.callbacks.header.clone();
+        to.callbacks.debug = from.callbacks.debug.clone();
+        to.progress = from.progress.clone();
+        pushed
+    }
+
     /// A handle with the same options (`curl_easy_duphandle`).
     pub fn try_clone(&self) -> Result<Easy, OutOfMemory> {
         self.try_clone_with(&mut |_| Ok(()))

@@ -14,11 +14,15 @@ use super::*;
 use crate::conn::RecvFailed;
 use crate::conn::layer::LayerCx;
 use crate::http2::{BodyRead, Event, Heard, StreamId, code};
+use crate::multi::PushFields;
+use crate::multi::push::Full;
+use crate::multi::state::{Offered, start_pushed};
 use crate::options::HttpVersion as Wanted;
 use crate::proto::http2::{
     EgressFailed, GoAway, H2Conn, SEND_MAX, STREAM_WINDOW_MAX, WindowFailed, fields_of, settings,
 };
 use crate::tls::Chosen;
+use crate::url::ParseOptions;
 
 /// The most a request's fields may add up to before C warns of them
 /// (`MAX_ACC`).
@@ -53,6 +57,9 @@ pub(super) struct H2Stream {
     failed: Option<ErrorKind>,
     /// What the session holds to send waits for the connection.
     out_pending: bool,
+    /// The fields of a PUSH_PROMISE on it, until the promise is whole
+    /// (`push_headers`).
+    promise: PushFields,
 }
 
 impl H2Stream {
@@ -98,6 +105,8 @@ struct After {
     resets: Vec<(StreamId, u32)>,
     /// Streams whose bodies have more to give.
     resumes: Vec<StreamId>,
+    /// Streams promised and taken, each a new transfer's from here.
+    routed: Vec<(StreamId, crate::multi::TransferId)>,
     /// The receive window each stream's transfer asks for, as it took
     /// what came.
     windows: Vec<(StreamId, i32)>,
@@ -261,7 +270,8 @@ impl Request {
             Some(_) => prior,
         };
         if let Some(library) = library.filter(|_| h2) {
-            let (conn, _) = H2Conn::open(library, &settings(cx.max_streams()), None)?;
+            let (conn, _) =
+                H2Conn::open(library, &settings(cx.max_streams(), cx.wants_push()), None)?;
             lease
                 .get()
                 .put_h2(try_box(conn).map_err(|_| ErrorKind::OutOfMemory)?);
@@ -293,7 +303,7 @@ impl Request {
             return Ok(None);
         };
         let mut payload = [0u8; 80];
-        match library.settings_payload(&settings(cx.max_streams()), &mut payload) {
+        match library.settings_payload(&settings(cx.max_streams(), cx.wants_push()), &mut payload) {
             Ok(n) if n > 0 => copied(&payload[..n]).map(Some),
             _ => Err(trace::fail(
                 cx,
@@ -821,12 +831,12 @@ impl Request {
                     fatal: true,
                 });
             };
-            h2.session().recv(bytes, &mut |event| {
+            let read = h2.session().recv(bytes, &mut |event| {
                 // What is read for a sibling's stream is handed to it at
                 // once, as C's callbacks write to that stream's transfer.
                 if let Some(s) = event.stream()
                     && Some(s) != own
-                    && let Some(&(_, to)) = routes.iter().find(|r| r.0 == s)
+                    && let Some(&(_, to)) = routes.iter().chain(&after.routed).find(|r| r.0 == s)
                     && to != me
                 {
                     let consumed = match event {
@@ -848,7 +858,19 @@ impl Request {
                     };
                 }
                 self.h2_event(cx, lease, event, prior, &mut after)
-            })
+            });
+            // The streams promised and taken are their transfers' from
+            // here, as C sets their user data in `push_promise`.
+            for &(stream, to) in &after.routed {
+                if h2.route(stream, to).is_err() {
+                    return Err(crate::http2::FrameError {
+                        code: -901,
+                        text: "Out of memory",
+                        fatal: true,
+                    });
+                }
+            }
+            read
         });
         let goaway = after.goaway;
         let unset = with_session(lease, |h2, _| {
@@ -1012,6 +1034,14 @@ impl Request {
                 }
                 Heard::Fine
             }
+            Event::PushField {
+                stream,
+                name,
+                value,
+            } if ours(stream) => self.push_field(cx, stream, name, value, after),
+            Event::Promised { stream, promised } if ours(stream) => {
+                self.h2_promised(cx, lease, promised, after)
+            }
             Event::Reset { stream, error } if ours(stream) => {
                 if error != 0 {
                     self.stream().reset_by_server = true;
@@ -1060,6 +1090,217 @@ impl Request {
                 cx.wake(to);
             }
         }
+    }
+
+    /// A field of a PUSH_PROMISE on the stream, kept for the promise
+    /// (`on_header`): one naming an authority other than the request's
+    /// resets the stream and fails the read, as RFC 9113 makes it a
+    /// stream error; past the most there may be, the read fails too.
+    fn push_field<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        stream: StreamId,
+        name: &[u8],
+        value: &[u8],
+        after: &mut After,
+    ) -> Heard {
+        if name == b":authority" {
+            match self.serves_authority(value) {
+                Ok(true) => {}
+                Ok(false) => {
+                    after.resets.try_push((stream, code::PROTOCOL_ERROR)).ok();
+                    return Heard::Failed;
+                }
+                Err(OutOfMemory) => return Heard::Failed,
+            }
+        }
+        match self.stream().promise.push(name, value) {
+            Ok(()) => Heard::Fine,
+            Err(full) => {
+                if full == Full::TooMany {
+                    trace::fail(
+                        cx,
+                        ErrorKind::RecvError,
+                        format_args!("Too many PUSH_PROMISE headers"),
+                    );
+                }
+                self.stream().promise = PushFields::default();
+                Heard::Failed
+            }
+        }
+    }
+
+    /// Whether a promise's `:authority` is the request's origin's: its
+    /// host and port, or its host alone at its scheme's port.
+    fn serves_authority(&self, value: &[u8]) -> Result<bool, OutOfMemory> {
+        let peer = &self.peer;
+        let name = peer.name();
+        let check = curl_alloc::try_format(format_args!(
+            "{}:{}",
+            String::from_utf8_lossy(name),
+            peer.port()
+        ))?;
+        let default = if peer.scheme() == HTTPS { 443 } else { 80 };
+        Ok(check.as_bytes().eq_ignore_ascii_case(value)
+            || (peer.port() == default && name.eq_ignore_ascii_case(value)))
+    }
+
+    /// The server promised a response on `promised` (`push_promise`):
+    /// offered to the application, it is a new transfer's once taken;
+    /// refused, the stream is cancelled, and the application may fail the
+    /// request with it.
+    fn h2_promised<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        promised: StreamId,
+        after: &mut After,
+    ) -> Heard {
+        let fields = std::mem::take(&mut self.stream().promise);
+        // A share's connections are not attached, so none is pushed on.
+        let offered = if cx.wants_push() && matches!(lease.home(), crate::conn::Home::Multi) {
+            self.offer(cx, lease, promised, &fields)
+        } else {
+            Offered::Denied
+        };
+        let pushed = match offered {
+            Offered::Added(to) => after.routed.try_push((promised, to)),
+            Offered::Denied => after.resets.try_push((promised, code::CANCEL)),
+            Offered::Failed => {
+                let s = self.stream();
+                s.failed = s.failed.or(Some(ErrorKind::RecvError));
+                after.resets.try_push((promised, code::CANCEL))
+            }
+        };
+        match pushed {
+            Ok(()) => Heard::Fine,
+            Err(OutOfMemory) => Heard::Failed,
+        }
+    }
+
+    /// Make the pushed transfer's handle and offer it: one whose URL is
+    /// not the request's origin's is refused unasked (`set_transfer_url`).
+    fn offer<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        promised: StreamId,
+        fields: &PushFields,
+    ) -> Offered {
+        let Ok(Some(url)) = self.pushed_url(fields) else {
+            return Offered::Denied;
+        };
+        let Ok(mut easy) = try_box(cx.easy().pushed()) else {
+            return Offered::Denied;
+        };
+        if easy.report_mut().set_url(&url).is_err() {
+            return Offered::Denied;
+        }
+        cx.offer_push(fields, easy, |pcx, run| {
+            let request = Request::pushed(&url, pcx, promised)?;
+            let request = try_box(request).map_err(|_| ErrorKind::OutOfMemory)?;
+            let origin = lease.conn().origin().cloned();
+            let key = pcx.pushed_lease(lease);
+            let proto = crate::proto::ProtoState::Http(request);
+            start_pushed(run, pcx, &url, (key, origin), proto)
+        })
+    }
+
+    /// The URL a promise names by its scheme, authority and path, if it is
+    /// one and of the request's origin (`set_transfer_url`,
+    /// `Curl_url_same_origin`).
+    fn pushed_url(&self, fields: &PushFields) -> Result<Option<Url>, OutOfMemory> {
+        let (Some(scheme), Some(authority)) =
+            (fields.by_name(b":scheme"), fields.by_name(b":authority"))
+        else {
+            return Ok(None);
+        };
+        let path = fields.by_name(b":path").unwrap_or(b"/");
+        let mut text = Vec::new();
+        text.try_extend_from_slice(scheme)?;
+        text.try_extend_from_slice(b"://")?;
+        text.try_extend_from_slice(authority)?;
+        text.try_extend_from_slice(path)?;
+        let opts = ParseOptions {
+            disallow_user: true,
+            path_as_is: true,
+            ..ParseOptions::NONE
+        };
+        let Ok(url) = Url::parse(&text, opts) else {
+            return Ok(None);
+        };
+        let port = GetOptions {
+            default_port: true,
+            ..GetOptions::NONE
+        };
+        let same = url
+            .get(Part::Scheme, GetOptions::NONE)
+            .is_ok_and(|s| s.eq_ignore_ascii_case(self.peer.scheme().name.as_bytes()))
+            && url
+                .get(Part::Host, GetOptions::NONE)
+                .is_ok_and(|h| h.eq_ignore_ascii_case(self.peer.shown()))
+            && url.get(Part::Port, port).is_ok_and(|p| {
+                std::str::from_utf8(&p).ok().and_then(|p| p.parse().ok()) == Some(self.peer.port())
+            });
+        Ok(same.then_some(url))
+    }
+
+    /// The request a server imagines for a response it pushes on
+    /// `promised`, as the pushed transfer's own: a GET of `url` gone in
+    /// HTTP/2, the response's head to come (`http2_data_setup`, with the
+    /// size to come unknown).
+    pub(crate) fn pushed<H: Host>(
+        url: &Url,
+        cx: &mut StepCx<'_, H>,
+        promised: StreamId,
+    ) -> Result<Request, ErrorKind> {
+        let scheme = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;
+        let secured = scheme.eq_ignore_ascii_case(b"https");
+        let inherited = Inherited::default();
+        let before = Before {
+            first: None,
+            method: Method::Get,
+            http: &inherited,
+        };
+        let mut request = Request::new(url, secured, before, cx)?;
+        let options = cx.easy().options();
+        let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);
+        cx.easy_mut().auth.start(want, proxy_want);
+        let peer = &request.peer;
+        let auth = cx
+            .easy()
+            .auth
+            .asked((None, peer), (None, peer), false, true);
+        let options = cx.easy().options();
+        let http = &options.http;
+        let exchange = Exchange {
+            sent: response::HttpVersion::Http2,
+            reused: true,
+            allow_09: http.allow_09,
+            asked: Asked {
+                head: false,
+                ignore_length: http.ignore_content_length,
+                max_filesize: options.flow.max_filesize,
+                decode_codings: http.transfer_encoding,
+                raw_codings: http.raw,
+                fail_on_error: http.fail_on_error,
+                resume_from: None,
+                follow: http.follow != Follow::No,
+                auth,
+                http_proxy: false,
+                time_condition: None,
+                forwarded: false,
+            },
+        };
+        request.head = Some(HeadParser::new(exchange));
+        request.version = SentIn::Http2;
+        request.h2 = Some(H2Stream {
+            id: Some(promised),
+            body_eos: true,
+            ..H2Stream::default()
+        });
+        request.stage = Stage::Head;
+        Ok(request)
     }
 
     /// A frame ended the stream (`on_stream_frame`'s END_STREAM): one

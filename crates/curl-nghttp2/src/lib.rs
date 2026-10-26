@@ -482,6 +482,40 @@ impl Session {
             sys::nghttp2_submit_response2(self.raw.as_ptr(), stream.0, nva.as_ptr(), nva.len(), prd)
         })
     }
+
+    /// Promise a push of `fields` beside `stream`: the stream promised.
+    fn submit_push_promise(
+        &mut self,
+        stream: StreamId,
+        fields: &[(&[u8], &[u8])],
+    ) -> Result<StreamId, FrameError> {
+        let nva: Vec<sys::nghttp2_nv> = fields
+            .iter()
+            .map(|&(name, value)| sys::nghttp2_nv {
+                name: name.as_ptr().cast_mut(),
+                value: value.as_ptr().cast_mut(),
+                namelen: name.len(),
+                valuelen: value.len(),
+                flags: sys::NGHTTP2_NV_FLAG_NONE,
+            })
+            .collect();
+        // SAFETY: the session, and the fields, which it copies.
+        let id = unsafe {
+            sys::nghttp2_submit_push_promise(
+                self.raw.as_ptr(),
+                0,
+                stream.0,
+                nva.as_ptr(),
+                nva.len(),
+                ptr::null_mut(),
+            )
+        };
+        if id < 0 {
+            Err(error(id))
+        } else {
+            Ok(StreamId(id))
+        }
+    }
 }
 
 impl Drop for Session {
@@ -583,6 +617,14 @@ unsafe extern "C" fn on_frame_recv(
                 error: r.error_code,
             }
         }
+        sys::NGHTTP2_PUSH_PROMISE => {
+            // SAFETY: a PUSH_PROMISE frame, as its header says.
+            let p = unsafe { frame.push_promise };
+            Event::Promised {
+                stream,
+                promised: StreamId(p.promised_stream_id),
+            }
+        }
         _ => return 0,
     };
     // SAFETY: the session's user data.
@@ -606,22 +648,28 @@ unsafe extern "C" fn on_header(
     // SAFETY: the frame the library read, valid for the call.
     let frame = unsafe { &*frame };
     // SAFETY: every frame starts with its header.
-    let stream = StreamId(unsafe { frame.hd }.stream_id);
+    let hd = unsafe { frame.hd };
+    let stream = StreamId(hd.stream_id);
     // SAFETY: the field's bytes, valid for the call.
     let name = unsafe { core::slice::from_raw_parts(name, namelen) };
     // SAFETY: as above.
     let value = unsafe { core::slice::from_raw_parts(value, valuelen) };
+    // A PUSH_PROMISE's fields are of the request it promises an answer to.
+    let event = if hd.r#type == sys::NGHTTP2_PUSH_PROMISE {
+        Event::PushField {
+            stream,
+            name,
+            value,
+        }
+    } else {
+        Event::Header {
+            stream,
+            name,
+            value,
+        }
+    };
     // SAFETY: the session's user data.
-    unsafe {
-        tell(
-            user,
-            Event::Header {
-                stream,
-                name,
-                value,
-            },
-        )
-    }
+    unsafe { tell(user, event) }
 }
 
 /// # Safety

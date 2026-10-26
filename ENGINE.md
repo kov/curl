@@ -1620,7 +1620,21 @@ asks again inside `curl_easy_pause` as well, sending the update before it return
 unpause marks the transfer to run, and the update goes out in that run, as the connection may
 be out with another transfer's step when the pause is asked for.
 
-Not built yet: server push.
+**Server push.** The client says it takes pushes (`SETTINGS_ENABLE_PUSH`) when the application's
+events do (`MultiEvents::wants_push`). A PUSH_PROMISE's fields come to the request whose stream
+it is beside, which keeps them as C does (`name:value`, at most 1,280) and fails the read on one
+naming another authority (`on_header`). On the promise, the request makes the pushed transfer's
+`Easy` as `h2_duphandle` does (`Easy::pushed`: libraries, share, weight, the write, header,
+debug and progress handlers), sets its URL from the pseudo-fields, refusing one of another
+origin unasked, and offers it with the fields (`MultiEvents::push`). Taken, the transfer is
+added from inside the step (the add's part that a step can make, `insert`; the engine's parts
+carry the timer rows and the counts for it): its run starts in PERFORMING in its own context,
+as `with_sibling` lends one, with a request on the promised stream waiting for its head and a
+key to the parent's connection, one more user found by no search (`Pool::pushed`); a
+connection not attached yet is attached then. The promised stream is routed to it at once,
+within the read, so the frames that follow the promise go to it as a sibling's. Refused, the
+stream is cancelled; failed (`CURL_PUSH_ERROROUT`), the parent fails too. A share's
+connections are never attached, so a push on one is refused.
 
 ### 4.5 Route and reuse
 

@@ -53,11 +53,22 @@ use super::mstate::{self, MState};
 use super::sched::RowSet;
 use super::sockets::{Pollset, Wants};
 use super::timers::{Deadlines, Phase, TimeLeft, TimerKind, wait_ms};
-use super::{Census, Host, Slots, TransferId};
+use super::{Census, Host, Life, PushFields, PushOffer, Pushed, Rows, Slots, TransferId};
 use tls::TlsSide;
 
 /// The longest host name a URL may name (`MAX_URL_LEN`).
 const MAX_HOST: usize = 0xffff;
+
+/// What came of a push offered to the application.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Offered {
+    /// Taken: this transfer has it.
+    Added(TransferId),
+    /// Refused (`CURL_PUSH_DENY`), or taken but not added.
+    Denied,
+    /// Refused, the parent to fail (`CURL_PUSH_ERROROUT`).
+    Failed,
+}
 
 /// A transfer from `add` to `remove`.
 #[derive(Debug)]
@@ -224,7 +235,7 @@ impl Handshake {
 
 /// Who the request is for (C's `conn->origin`), shared with the
 /// connection's route.
-type Origin = TryArc<Peer>;
+pub(crate) type Origin = TryArc<Peer>;
 
 /// A request holding its connection.
 #[derive(Debug)]
@@ -1090,6 +1101,95 @@ impl<H: Host> StepCx<'_, H> {
         super::put_back(self.rest.tell.slots, self.rest.dirty, id, run);
         self.rest.dirty.insert(id.index());
         r
+    }
+
+    /// Whether the application takes the responses servers push
+    /// (`push_cb`).
+    pub(crate) fn wants_push(&self) -> bool {
+        self.rest.events.wants_push()
+    }
+
+    /// Offer the application a response the server promised beside the
+    /// stepping transfer's request (`push_promise`): `easy`, made for it,
+    /// its URL set. Taken, it is a transfer of the multi's from now, its
+    /// run begun by `start` in its own context, as
+    /// `Curl_multi_add_perform` takes it to PERFORMING at once.
+    pub(crate) fn offer_push(
+        &mut self,
+        fields: &PushFields,
+        easy: Box<Easy>,
+        start: impl FnOnce(&mut StepCx<'_, H>, &mut Run) -> Result<(), ErrorKind>,
+    ) -> Offered {
+        // A multi a callback stopped takes nothing more.
+        if *self.rest.tell.life == Life::Dead {
+            return Offered::Denied;
+        }
+        let me = self.me;
+        let parent_owner = &self
+            .rest
+            .tell
+            .slots
+            .get(me)
+            .expect("the stepping transfer")
+            .owner;
+        let offer = PushOffer {
+            parent: me,
+            parent_owner,
+            fields,
+        };
+        let (easy, owner) = match self.rest.events.push(&offer, easy) {
+            Pushed::Accepted { easy, owner } => (easy, owner),
+            Pushed::Denied => return Offered::Denied,
+            Pushed::Failed => return Offered::Failed,
+        };
+        let rest = &mut self.rest;
+        let rows = Rows {
+            slots: &mut *rest.tell.slots,
+            timers: &mut *rest.timers,
+            dirty: &mut *rest.dirty,
+            notify: &mut *rest.tell.notify,
+        };
+        let inserted = super::insert(
+            rows,
+            &mut *rest.tell.counts,
+            &mut rest.caches.pool,
+            easy,
+            owner,
+        );
+        let id = match inserted {
+            Ok(id) => id,
+            Err((refused, owner)) => {
+                rest.events.unpushed(refused.easy, owner);
+                return Offered::Denied;
+            }
+        };
+        rest.dirty.insert(id.index());
+        let slot = rest.tell.slots.get(id).expect("just added");
+        rest.events.added(id, &slot.owner);
+        let slot = rest.tell.slots.get_mut(id).expect("just added");
+        let mut run = slot.run.take().expect("a new run in its slot");
+        let lent = self.lent;
+        let mut cx = StepCx::new(id, self.rest.reborrow());
+        // On the stepping transfer's connection.
+        cx.lent = lent;
+        super::trace_membership(&mut cx, "added to");
+        let started = start(&mut cx, &mut run);
+        // One that could not begin fails as it next runs, and its stream
+        // is refused.
+        if let Err(kind) = started {
+            fail_pushed(&mut run, kind);
+        }
+        super::put_back(self.rest.tell.slots, self.rest.dirty, id, run);
+        match started {
+            Ok(()) => Offered::Added(id),
+            Err(_) => Offered::Denied,
+        }
+    }
+
+    /// A key to the connection the stepping transfer's `lease` has out,
+    /// for a transfer the server pushes on it.
+    pub(crate) fn pushed_lease(&mut self, lease: &mut ConnLease) -> ConnLease {
+        self.rest.caches.pool.pushed(lease)
     }
 
     /// Step transfer `id` again in the pass: something it waits on, a
@@ -2898,6 +2998,51 @@ fn is_premature(result: Result<(), ErrorKind>) -> bool {
         result,
         Err(ErrorKind::AbortedByCallback | ErrorKind::ReadError | ErrorKind::WriteError)
     )
+}
+
+/// Begin the run of a transfer a server pushes, for `url`, its request
+/// `proto` waiting for the response on the stream promised, on the
+/// connection to `origin` that `lease` is a key to: alive, timed from
+/// now, in PERFORMING at once (`Curl_multi_add_perform`,
+/// `Curl_init_transfer`).
+pub(crate) fn start_pushed<H: Host>(
+    run: &mut Run,
+    cx: &mut StepCx<'_, H>,
+    url: &Url,
+    (lease, origin): (ConnLease, Option<Origin>),
+    proto: ProtoState,
+) -> Result<(), ErrorKind> {
+    let whole = url.get(Part::Url, GetOptions::NONE).map_err(url_error);
+    run.state = TransferState::Exchanging(Attached {
+        lease,
+        proto,
+        origin,
+    });
+    run.url = whole?;
+    run.method = Method::Get;
+    run.alive = true;
+    // A socket callback's abort is the multi's death, which fails this
+    // transfer with the rest; nothing more is for the push to do.
+    match cx.rest.tell.came_alive(&mut *cx.rest.events) {
+        Ok(()) | Err(super::Abort) => {}
+    }
+    let limits = cx.easy().options().limits;
+    run.deadlines = Deadlines::new(limits.total, limits.connect);
+    let now = cx.rest.now;
+    cx.report_mut().restart(now);
+    *cx.speedometer_mut() = Speedometer::default();
+    cx.mark(Timer::StartOp);
+    cx.report_mut()
+        .set_url(url)
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    mstate::enter(cx, MState::Performing);
+    Ok(())
+}
+
+/// A pushed transfer that could not begin fails as it next runs.
+pub(crate) fn fail_pushed(run: &mut Run, kind: ErrorKind) {
+    let state = std::mem::replace(&mut run.state, TransferState::Init);
+    run.state = state.fail(kind);
 }
 
 /// C's pretransfer, once per transfer: the option's URL parsed for the

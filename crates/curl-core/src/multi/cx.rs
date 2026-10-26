@@ -30,9 +30,10 @@ use super::notify::{NotifyKind, NotifyQueue};
 use super::sched::{RowSet, Tally};
 use super::sockets::{Change, SocketFor, SocketOwner, SocketTable, SocketWhat, UnknownSocket};
 use super::state::StepCx;
+use super::timers::TimerQueue;
 use super::{
     Abort, AddError, Census, ConnLimits, Counts, Host, Life, Message, Multi, MultiEvents, Removed,
-    Slots, TransferId, census_of, read_message,
+    Slots, Transfer, TransferId, census_of, read_message,
 };
 
 /// The multi minus the transfer being stepped, whose `Run` is out of its
@@ -54,6 +55,9 @@ pub(crate) struct EngineRest<'a, H: Host> {
     /// Resolves of IPv6 addresses alone fail, as the debug build asks.
     pub(crate) fail_ipv6: bool,
     pub(super) dirty: &'a mut RowSet,
+    /// The transfers' timers: a step reserves a row of them for a transfer
+    /// it adds.
+    pub(super) timers: &'a mut TimerQueue<Transfer>,
     /// What the multi was driven with: the socket callback hears of a
     /// socket closing.
     pub(super) events: &'a mut dyn MultiEvents<H>,
@@ -80,6 +84,7 @@ impl<H: Host> EngineRest<'_, H> {
             ipv6_works: self.ipv6_works,
             fail_ipv6: self.fail_ipv6,
             dirty: &mut *self.dirty,
+            timers: &mut *self.timers,
             events: &mut *self.events,
             now: self.now,
             clock: self.clock,
@@ -660,7 +665,7 @@ pub(crate) struct Telling<'a, H: Host> {
     /// `Multi::conn_limits_mut`.
     pub(super) limits: &'a mut ConnLimits,
     pub(super) notify: &'a mut NotifyQueue,
-    pub(super) counts: &'a Tally,
+    pub(super) counts: &'a mut Tally,
     pub(super) sockets: &'a mut SocketTable<H::Socket>,
     pub(super) life: &'a mut Life,
 }
@@ -672,7 +677,7 @@ impl<H: Host> Telling<'_, H> {
             slots: &mut *self.slots,
             limits: &mut *self.limits,
             notify: &mut *self.notify,
-            counts: self.counts,
+            counts: &mut *self.counts,
             sockets: &mut *self.sockets,
             life: &mut *self.life,
             alive: &mut *self.alive,

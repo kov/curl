@@ -292,3 +292,14 @@ witness: curl-sys-abi handle_tests::a_refused_url_is_reported_without_its_creden
             Err(e) => ShownUrl::Unreadable(crate::error::url_error(e)),
 --- new
             Err(_) => ShownUrl::Unset,
+
+=== a reported URL keeps the spaces getinfo's reading back refuses
+file: crates/curl-core/src/report.rs
+witness: curl-sys-abi handle_tests::a_refused_url_is_reported_without_its_credentials
+--- old
+            ShownUrl::Shown(text) => match Url::parse(text, getinfo_parse(path_as_is)) {
+                Ok(_) => None,
+                Err(e) => Some(crate::error::url_error(e)),
+            },
+--- new
+            ShownUrl::Shown(_) => None,

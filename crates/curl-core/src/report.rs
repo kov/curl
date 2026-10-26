@@ -81,6 +81,15 @@ enum ShownUrl {
     Unreadable(ErrorKind),
 }
 
+/// How C's getinfo parses the URL it reports (`effective_url`).
+fn getinfo_parse(path_as_is: bool) -> crate::url::ParseOptions {
+    crate::url::ParseOptions {
+        non_support_scheme: true,
+        path_as_is,
+        ..crate::url::ParseOptions::NONE
+    }
+}
+
 /// One transfer's report. The default is that of a transfer never run.
 #[derive(Debug, Default)]
 pub struct TransferReport {
@@ -478,12 +487,19 @@ impl TransferReport {
         }
     }
 
-    /// Why the URL given cannot be reported, if it cannot: it does not
-    /// read back as a URL (`effective_url`'s `Curl_uc_to_curlcode`).
-    pub fn url_failure(&self) -> Option<ErrorKind> {
-        match self.url {
-            ShownUrl::Unreadable(kind) => Some(kind),
-            ShownUrl::Unset | ShownUrl::Shown(_) => None,
+    /// Why the URL cannot be reported, if it cannot: it does not read
+    /// back as getinfo reads it, whatever its scheme, `path_as_is` as
+    /// the handle has it, but with no space a URL handle of the
+    /// application's allowed (`effective_url`'s `Curl_uc_to_curlcode`).
+    /// Read back as it is asked for, as C does.
+    pub fn url_failure(&self, path_as_is: bool) -> Option<ErrorKind> {
+        match &self.url {
+            ShownUrl::Unreadable(kind) => Some(*kind),
+            ShownUrl::Unset => None,
+            ShownUrl::Shown(text) => match Url::parse(text, getinfo_parse(path_as_is)) {
+                Ok(_) => None,
+                Err(e) => Some(crate::error::url_error(e)),
+            },
         }
     }
 
@@ -509,12 +525,7 @@ impl TransferReport {
         given: &[u8],
         path_as_is: bool,
     ) -> Result<(), OutOfMemory> {
-        let opts = crate::url::ParseOptions {
-            non_support_scheme: true,
-            path_as_is,
-            ..crate::url::ParseOptions::NONE
-        };
-        let read = Url::parse(given, opts).and_then(|url| url.shown());
+        let read = Url::parse(given, getinfo_parse(path_as_is)).and_then(|url| url.shown());
         self.url = match read {
             Ok(text) => ShownUrl::Shown(text),
             Err(UrlErrorKind::OutOfMemory) => return Err(OutOfMemory),

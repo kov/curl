@@ -472,9 +472,9 @@ witness: curl-core proto::http::tests::a_request_is_retried_five_times_at_most
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_request_over_a_reused_connection_that_died_is_made_again
 --- old
-    let url = match parse_url(&run.url, cx.easy().options()) {
+    let url = match parse_url(&run.url, cx.easy().options(), true) {
 --- new
-    let url = match parse_url(cx.easy().report().url().unwrap_or_default(), cx.easy().options()) {
+    let url = match parse_url(cx.easy().report().url().unwrap_or_default(), cx.easy().options(), true) {
 
 === a retried request's headers are the first request's
 file: crates/curl-core/src/multi/state.rs

@@ -3187,7 +3187,7 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
         return copy.map_err(url_error);
     }
     let options = cx.easy().options();
-    match parse_url(options.url().expect("checked above"), options) {
+    match parse_url(options.url().expect("checked above"), options, false) {
         Ok(url) => Ok(url),
         Err(UrlRefused::Rejected(e)) => {
             // Reported as C's `state.url` holds it, the text given.
@@ -3334,7 +3334,7 @@ fn exchanged<H: Host>(
 /// The URL of the request just made, as it was parsed for it (C's
 /// `state.uh`).
 fn request_url<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> Result<Url, ErrorKind> {
-    let mut url = match parse_url(&run.url, cx.easy().options()) {
+    let mut url = match parse_url(&run.url, cx.easy().options(), true) {
         Ok(url) => url,
         Err(UrlRefused::Rejected(e)) => return Err(url_error(e)),
         Err(UrlRefused::Failed(kind)) => return Err(kind),
@@ -3434,7 +3434,7 @@ fn follow_leg<H: Host>(
         return TransferState::Init.fail(e);
     }
     // Parsed again for its leg, as every request's URL is.
-    let url = match parse_url(&text, cx.easy().options()) {
+    let url = match parse_url(&text, cx.easy().options(), true) {
         Ok(url) => url,
         Err(UrlRefused::Rejected(e)) => {
             let why = format_args!("URL rejected: {e}");
@@ -3452,7 +3452,7 @@ fn retry_leg<H: Host>(
     cx: &mut StepCx<'_, H>,
     proto: &mut ProtoState,
 ) -> TransferState {
-    let url = match parse_url(&run.url, cx.easy().options()) {
+    let url = match parse_url(&run.url, cx.easy().options(), true) {
         Ok(url) => url,
         Err(UrlRefused::Rejected(e)) => {
             let kind = url_error(e);
@@ -4440,13 +4440,17 @@ enum UrlRefused {
 }
 
 /// A request's URL, parsed by the options' rules, given the default
-/// scheme where it has none (`parseurlandfillconn`).
-fn parse_url(url: &[u8], options: &Options) -> Result<Url, UrlRefused> {
+/// scheme where it has none (`parseurlandfillconn`). The transfer's
+/// `own` URL, read back from one parsed already, keeps any space the
+/// application's URL handle allowed, as C goes on from that handle
+/// (`state.uh`, `follow_parse_url`'s `CURLU_ALLOW_SPACE`).
+fn parse_url(url: &[u8], options: &Options, own: bool) -> Result<Url, UrlRefused> {
     let parse = ParseOptions {
         guess_scheme: true,
         non_support_scheme: true,
         disallow_user: options.url_rules.disallow_user,
         path_as_is: options.url_rules.path_as_is,
+        allow_space: own,
         ..ParseOptions::NONE
     };
     let Some(default) = options.default_protocol() else {
@@ -4486,7 +4490,7 @@ mod tests {
         options
             .set_default_protocol(default.map(str::as_bytes))
             .unwrap();
-        let url = parse_url(url.as_bytes(), &options).map_err(|e| match e {
+        let url = parse_url(url.as_bytes(), &options, false).map_err(|e| match e {
             UrlRefused::Rejected(e) => url_error(e),
             UrlRefused::Failed(kind) => kind,
         })?;

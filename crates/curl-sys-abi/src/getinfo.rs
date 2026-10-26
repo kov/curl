@@ -257,7 +257,8 @@ fn list_of<'a>(lines: impl Iterator<Item = &'a Vec<u8>>) -> Value {
 }
 
 /// What `info` asks of the transfer, or none for one not known.
-fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
+/// `path_as_is` is the handle's, for the effective URL's reading back.
+fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO, path_as_is: bool) -> Option<Value> {
     #[cfg(feature = "debug-hooks")]
     {
         use curl_core::report::debug_info;
@@ -276,7 +277,7 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         // Empty before any transfer.
         // Never the URL given unfiltered: one that does not read back is
         // withheld, its error said (`effective_url`).
-        ffi::CURLINFO_EFFECTIVE_URL => match r.url_failure() {
+        ffi::CURLINFO_EFFECTIVE_URL => match r.url_failure(path_as_is) {
             Some(kind) => Value::Withheld(crate::error_codes::easy_code(kind)),
             None => string(kept(
                 easy,
@@ -501,7 +502,12 @@ pub unsafe extern "C" fn curl_easy_getinfo(
     } else if info == ffi::CURLINFO_TLS_SSL_PTR || info == ffi::CURLINFO_TLS_SESSION {
         crate::tls::session_info(easy, info).map(|tsi| Some(Value::Struct(tsi.cast())))
     } else {
-        easy.with_report(|r| value(easy, r, info))
+        let path_as_is = if info == ffi::CURLINFO_EFFECTIVE_URL {
+            easy.with_options(|o| o.url_rules.path_as_is)
+        } else {
+            Ok(false)
+        };
+        path_as_is.and_then(|p| easy.with_report(|r| value(easy, r, info, p)))
     };
     let Ok(v) = v else {
         return CURLE_RECURSIVE_API_CALL;

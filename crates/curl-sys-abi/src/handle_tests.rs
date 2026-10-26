@@ -1998,8 +1998,28 @@ fn a_refused_url_is_reported_without_its_credentials() {
         effective(c),
         (CURLE_OK, Some(c"nosuch://example.com/x".to_owned()))
     );
+    // A URL handle may allow spaces; getinfo's reading back does not.
+    let u = crate::url::curl_url();
+    let spaced = c"http://127.0.0.1:1/ /with/ space";
+    // SAFETY: a live URL handle and a C string.
+    let set_u = unsafe {
+        crate::url::curl_url_set(
+            u,
+            ffi::CURLUPART_URL,
+            spaced.as_ptr(),
+            ffi::CURLU_ALLOW_SPACE as _,
+        )
+    };
+    assert_eq!(set_u, ffi::CURLUE_OK);
+    assert_eq!(pointer(c, ffi::CURLOPT_CURLU, u), CURLE_OK);
+    // SAFETY: a live handle.
+    let performed = unsafe { curl_easy_perform(c) };
+    assert_eq!(performed, ffi::CURLE_COULDNT_CONNECT);
+    assert_eq!(effective(c), (ffi::CURLE_URL_MALFORMAT, None));
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
+    // SAFETY: a live URL handle the easy handle no longer uses.
+    unsafe { crate::url::curl_url_cleanup(u) };
 }
 
 /// Every info a file transfer answers, against the report it reads.

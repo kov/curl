@@ -105,6 +105,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-ngtcp2"
+version = "0.1.0"
+dependencies = [
+ "curl-alloc",
+ "curl-core",
+ "curl-openssl",
+ "curl-os",
+ "libc",
+ "openssl",
+]
+
+[[package]]
 name = "curl-openssl"
 version = "0.1.0"
 dependencies = [

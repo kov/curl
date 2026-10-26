@@ -22,6 +22,7 @@ pub mod handler;
 mod hash;
 pub mod hsts;
 pub mod http2;
+pub mod http3;
 pub mod id;
 pub mod idn;
 pub mod libraries;

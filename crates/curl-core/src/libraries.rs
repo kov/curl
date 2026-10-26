@@ -13,6 +13,7 @@ use curl_alloc::{OutOfMemory, TryArc};
 use crate::coding::Decoders;
 use crate::gss::Gss;
 use crate::http2::Http2;
+use crate::http3::Http3;
 use crate::idn::Idn;
 use crate::tls::TlsBackend;
 
@@ -40,6 +41,9 @@ pub struct Libraries {
     /// The HTTP/2 library, if any: without it, HTTP/2 is not built in, as
     /// in a C build without nghttp2.
     pub h2: Option<&'static dyn Http2>,
+    /// The HTTP/3 library, if any: without it, HTTP/3 is not built in, as
+    /// in a C build without ngtcp2.
+    pub h3: Option<&'static dyn Http3>,
 }
 
 impl Libraries {
@@ -50,6 +54,7 @@ impl Libraries {
         gss: None,
         idn: None,
         h2: None,
+        h3: None,
     };
 }
 
@@ -203,8 +208,9 @@ mod tests {
         };
         let printed = format!("{libraries:?}");
         assert!(
-            printed
-                .ends_with("ed25519: Some(Ed25519), tls: None, gss: None, idn: None, h2: None }"),
+            printed.ends_with(
+                "ed25519: Some(Ed25519), tls: None, gss: None, idn: None, h2: None, h3: None }"
+            ),
             "{printed}"
         );
     }

@@ -3543,6 +3543,7 @@ impl Linked {
                 gss,
                 idn: Some(&curl_idn2::IDN2),
                 h2: Some(&curl_nghttp2::NGHTTP2),
+                h3: None,
             })
         };
         Ok(Linked {

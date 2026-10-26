@@ -1,0 +1,63 @@
+=== a QUIC handshake's peer is taken unchecked
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 a_get_over_http3_is_answered
+--- old
+    let checked = unsafe { &mut *lent.call }.handshake_done();
+--- new
+    let checked: Result<(), ErrorKind> = { let _ = lent; Ok(()) };
+
+=== HTTP/3 is set up at the wrong keys and never runs
+file: crates/curl-ngtcp2/src/sys.rs
+witness: curl-ngtcp2 a_get_over_http3_is_answered
+--- old
+pub(crate) const NGTCP2_ENCRYPTION_LEVEL_1RTT: c_int = 2;
+--- new
+pub(crate) const NGTCP2_ENCRYPTION_LEVEL_1RTT: c_int = 3;
+
+=== an HTTP/3 response's status is told as a field
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 a_get_over_http3_is_answered
+--- old
+        status: token == sys::NGHTTP3_QPACK_TOKEN__STATUS,
+--- new
+        status: token != sys::NGHTTP3_QPACK_TOKEN__STATUS,
+
+=== a request body is held past C's ten chunks
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 tests::an_acknowledged_chunk_goes_and_room_comes_back
+--- old
+                if self.chunks.len() == BODY_HELD / CHUNK {
+--- new
+                if self.chunks.len() == BODY_HELD / CHUNK + 1 {
+
+=== a chunk part acknowledged is freed
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 tests::an_acknowledged_chunk_goes_and_room_comes_back
+--- old
+            if self.acked == CHUNK {
+--- new
+            if self.acked > 0 {
+
+=== request body handed twice
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 tests::a_body_hands_what_it_holds_once_and_keeps_it_in_place
+--- old
+        let mut skip = self.acked + self.in_flight;
+--- new
+        let mut skip = self.acked;
+
+=== an acknowledgement frees body never handed
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 tests::an_acknowledged_chunk_goes_and_room_comes_back
+--- old
+        let mut n = n.min(self.in_flight);
+--- new
+        let mut n = n.min(self.buffered());
+
+=== a QUIC peer that fails its check completes the handshake
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 an_untrusted_peer_fails_the_handshake_as_it_completes
+--- old
+    if checked.is_err() || heard == Heard::Failed {
+--- new
+    if heard == Heard::Failed {

@@ -1,0 +1,24 @@
+[package]
+name = "curl-ngtcp2"
+description = "HTTP/3 over QUIC for the curl rewrite, from ngtcp2 and nghttp3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "ngtcp2"
+
+[dependencies]
+curl-alloc = { path = "../curl-alloc" }
+curl-core = { path = "../curl-core" }
+curl-os = { path = "../curl-os" }
+libc = "0.2"
+
+[dev-dependencies]
+curl-core = { path = "../curl-core", features = ["test-util"] }
+# The TLS session a connection is handed, and its library linked.
+curl-openssl = { path = "../curl-openssl" }
+# The certificates the server the tests start shows.
+openssl = "0.10.81"
+
+[lints]
+workspace = true

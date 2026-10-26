@@ -1693,6 +1693,36 @@ made (`lastchecked_ms`), set as it is returned.
 **Not built** (MILESTONES step 55): `curl_easy_upkeep`'s PING (it does nothing); the `--trace-config http/2` lines; and a push on a share's connection, which is
 refused where C takes it, as a share's connections are lent, never attached.
 
+### 4.4.1 HTTP/3
+
+**The libraries.** QUIC and HTTP/3 are spoken by a binding crate (ngtcp2, its OpenSSL crypto and
+nghttp3, `crates/curl-ngtcp2`) behind the core's `http3::Http3` and `http3::Connection`, shaped
+as `http2`'s seam is: library-shaped, the libraries' failures crossing only inside `QuicError`
+(which library, which call, its code and text) for C's messages. ngtcp2 is linked statically
+from the copy `inventory/measure/deps.py` builds, the version the C oracle uses. The connection
+is made over a TLS session already made (`TlsBackend::quic_session`, a `QuicTls`), which it owns
+and frees first, as C frees its TLS before ngtcp2; ngtcp2's crypto finds the connection through
+the `SSL`'s application data. The core feeds it one datagram at a time and asks it for one packet
+at a time; batching, GSO and the socket are the core's.
+
+**Callbacks.** Each call that may move the handshake on (reading a packet, writing one, its
+timers) runs inside the session's `QuicTls::drive`, which lends the libraries' callbacks a
+`DriveCall`: the transfer's `TlsCx`, and the check the handshake's end runs inside ngtcp2's
+callback, so nothing of the peer's is read before it is checked. The callbacks reach the
+connection's state by one raw pointer and hold no reference to it across a call into either
+library, as ngtcp2's reading of stream data calls nghttp3, which calls back in turn. What passes
+between the two libraries (stream data read, acknowledged, closed, reset, unblocked; framing
+consumed; the connection's window as body data arrives) the binding does inside the callback as
+C does; what C's filter traces or decides is told to the caller as an `http3::Event`, with the
+transfer. Where C's callbacks act on the connection for the caller (a stream's receive window,
+`cf_ngtcp2_upd_rx_win`), the caller does it once the call returns, which changes nothing on the
+wire before the connection next writes.
+
+**Request bodies.** nghttp3 points at a body's bytes until the peer acknowledges them, so the
+binding holds them: chunks of 64 KiB whose room is reserved as each is made, so that what is
+added never moves what was handed; at most ten, as C's `sendbuf`; a chunk goes once all of it is
+acknowledged. A cancelled stream's body stays until ngtcp2 closes the stream.
+
 ### 4.5 Route and reuse
 
 ```rust

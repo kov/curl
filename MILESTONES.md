@@ -939,12 +939,13 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
     QUIC), compared as any of its fields, picks the kind. TCP's options are set on TCP's
     sockets alone, and QUIC's traces as `UDP`. The QUIC socket's own options (ECN, path MTU,
     don't-fragment, GRO) come with the QUIC connection (step 61).
-59. **QUIC's TLS.** `TlsBackend::quic_session`, from the same identity, CA cache, keylog and
+59. **QUIC's TLS.** **Done.** `TlsBackend::quic_session`, from the same identity, CA cache, keylog and
     context hook as a stream session, its peer verified as a stream session's is; the QUIC
     transport parameters kept with a session's ticket. `curl-ngtcp2` borrows the native `SSL*`
     through `TlsNative` and does not depend on `curl-openssl`.
-60. **The QUIC and HTTP/3 libraries.** `curl-ngtcp2`: ngtcp2, its OpenSSL crypto and nghttp3,
-    behind the core's `http3` seam as nghttp2 is behind `http2`, with a fake for the tests.
+60. **The QUIC and HTTP/3 libraries.** **Done.** `curl-ngtcp2`: ngtcp2, its OpenSSL crypto and
+    nghttp3, behind the core's `http3` seam as nghttp2 is behind `http2`; a GET against caddy
+    over it. The seam's fake comes with its first user, step 61.
 61. **HTTP/3 requests.** `--http3-only` (`CURL_HTTP_VERSION_3ONLY`): the setup dials QUIC, the
     connection's session is `Session::H3`, requests go on its streams and multiplex as HTTP/2's
     do, with C's trace; the build claims `HTTP3`. Each address the setup tries over QUIC is a

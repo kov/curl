@@ -246,3 +246,22 @@ features: test-util
                 && d.result != Err(ErrorKind::AbortedByCallback)
 --- new
             if d.result != Err(ErrorKind::AbortedByCallback)
+
+=== a transfer removed mid-response hears nothing of its progress
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::a_transfer_removed_mid_response_hears_its_progress_once_more
+--- old
+        if proto.is_some() {
+            match progress::finish(cx, false) {
+--- new
+        if false {
+            match progress::finish(cx, false) {
+
+=== a transfer removed hears its progress with its TLS objects out of reach
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::a_transfer_removed_mid_response_hears_its_progress_once_more
+--- old
+        cx.lent = self.tls_native(Some(&cx.rest.caches.pool));
+        // Past its request, the connection is in no known state
+--- new
+        // Past its request, the connection is in no known state

@@ -569,6 +569,9 @@ impl TransferState {
     /// Take the transfer out of the multi before it completed: give back
     /// its connection, as a premature end (`curl_multi_remove_handle`).
     pub(crate) fn abandon<H: Host>(self, cx: &mut StepCx<'_, H>) {
+        // Its connection's TLS objects are the handlers' to reach while it
+        // goes, as C's transfer still holds its connection in `multi_done`.
+        cx.lent = self.tls_native(Some(&cx.rest.caches.pool));
         // Past its request, the connection is in no known state
         // (`curl_multi_remove_handle`'s `streamclose`).
         let (mut lease, proto, origin, past_do, rewinding) = match self {
@@ -594,6 +597,16 @@ impl TransferState {
         };
         mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
         upload::trace_reset(cx, rewinding);
+        // A last progress pass for one past connecting, as `multi_done`
+        // gives it before the stream is let go. An abort the handler asks
+        // for has nothing left to stop: C drops `multi_done`'s result as
+        // the handle leaves.
+        if proto.is_some() {
+            match progress::finish(cx, false) {
+                Ok(()) | Err(ErrorKind::AbortedByCallback) => {}
+                Err(other) => unreachable!("a progress pass fails only by its handler: {other:?}"),
+            }
+        }
         if let Some(mut proto) = proto {
             // A key's connection is in its place outside a step.
             cx.rest.caches.pool.check_out(&mut lease);
@@ -1173,7 +1186,8 @@ impl<H: Host> StepCx<'_, H> {
     /// run out of its slot meanwhile, as the stepping transfer hands it
     /// what the connection they share did for it (ENGINE.md 4.4); the
     /// connection's TLS objects, the same, are lent to it, and it is
-    /// stepped again in the pass. None if it is gone or makes no HTTP
+    /// marked dirty, to run when its turn next comes, as C marks it
+    /// (`Curl_multi_mark_dirty`). None if it is gone or makes no HTTP
     /// request.
     pub(crate) fn with_sibling<R>(
         &mut self,

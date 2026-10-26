@@ -792,7 +792,8 @@ and starts the next leg. The fifth retry of a transfer fails it with SendError.
   holding a lease, from `Connecting` on, goes through `Done { result: Err(..), premature: true
   }`. `TransferState::fail(self, err)` picks the route from the variant, and a transfer already
   in `Done` or `Completed` keeps its result, as `multi_done` runs once. `abandon` is `remove`'s
-  premature end.
+  premature end: past connecting, a last progress pass (`Curl_pgrsDone`) with the connection's
+  TLS objects lent, then the stream let go.
 - **`enter_completed` is the one exit hook for the report**: the times a jump to the end skipped
   and the total (`mstate_enter_completed`, `Curl_pgrsCompleted`); the step that enters
   `Completed` clears the deadlines and queues the message and EASY_DONE.

@@ -546,6 +546,16 @@ witness: curl-core proto::http::tests::a_transfer_removed_mid_connect_leaves_no_
         };
         mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
         upload::trace_reset(cx, rewinding);
+        // A last progress pass for one past connecting, as `multi_done`
+        // gives it before the stream is let go. An abort the handler asks
+        // for has nothing left to stop: C drops `multi_done`'s result as
+        // the handle leaves.
+        if proto.is_some() {
+            match progress::finish(cx, false) {
+                Ok(()) | Err(ErrorKind::AbortedByCallback) => {}
+                Err(other) => unreachable!("a progress pass fails only by its handler: {other:?}"),
+            }
+        }
         if let Some(mut proto) = proto {
             // A key's connection is in its place outside a step.
             cx.rest.caches.pool.check_out(&mut lease);
@@ -583,6 +593,16 @@ witness: curl-core proto::http::tests::a_transfer_removed_mid_connect_leaves_no_
         };
         mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
         upload::trace_reset(cx, rewinding);
+        // A last progress pass for one past connecting, as `multi_done`
+        // gives it before the stream is let go. An abort the handler asks
+        // for has nothing left to stop: C drops `multi_done`'s result as
+        // the handle leaves.
+        if proto.is_some() {
+            match progress::finish(cx, false) {
+                Ok(()) | Err(ErrorKind::AbortedByCallback) => {}
+                Err(other) => unreachable!("a progress pass fails only by its handler: {other:?}"),
+            }
+        }
         if let Some(mut proto) = proto {
             // A key's connection is in its place outside a step.
             cx.rest.caches.pool.check_out(&mut lease);

@@ -1427,3 +1427,49 @@ fn a_tunnel_through_an_http_2_proxy_opens_its_window_as_it_is_read() {
     let sent = String::from_utf8(sent(&talk)).unwrap();
     assert!(sent.contains("\nU 1 "), "{sent}");
 }
+
+/// What the progress handler saw on each call: the bytes downloaded, and
+/// whether the connection's TLS objects were within reach.
+#[derive(Clone, Default)]
+struct ProgressSeen(std::sync::Arc<std::sync::Mutex<Vec<(u64, bool)>>>);
+
+impl crate::handler::ProgressHandler for ProgressSeen {
+    fn progress(
+        &self,
+        cx: &mut crate::multi::TransferCx<'_>,
+        now: crate::handler::ProgressNow,
+    ) -> crate::handler::ProgressVerdict {
+        let tls = cx.tls_native(cx.me()).is_some();
+        self.0.lock().unwrap().push((now.downloaded, tls));
+        crate::handler::ProgressVerdict::Continue
+    }
+}
+
+/// A transfer taken out mid-response has a last progress pass as it
+/// goes, its bytes counted and its connection's TLS objects still within
+/// the handler's reach, as C's `curl_multi_remove_handle` gives one in
+/// `multi_done`, its connection still attached (`Curl_pgrsDone`).
+#[test]
+fn a_transfer_removed_mid_response_hears_its_progress_once_more() {
+    let (_backend, libraries) = tls();
+    let half = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello";
+    let talk = Conversation::replies(&[WELCOME, &fake::records(half).unwrap()], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = https_handle(&libraries);
+    let seen = ProgressSeen::default();
+    e.options_mut().progress =
+        crate::options::Progress::Handler(Handler::progress(seen.clone()).unwrap());
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    for _ in 0..50 {
+        if seen.0.lock().unwrap().iter().any(|&(down, _)| down == 5) {
+            break;
+        }
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let before = seen.0.lock().unwrap().len();
+    assert!(before > 0, "the response's start was read");
+    m.remove(id, &mut NoEvents).unwrap();
+    let calls = seen.0.lock().unwrap().clone();
+    assert_eq!(calls.len(), before + 1, "{calls:?}");
+    assert_eq!(calls.last(), Some(&(5, true)), "{calls:?}");
+}

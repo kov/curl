@@ -161,6 +161,18 @@ impl Shutting {
         (!events.is_empty()).then(|| (stream.socket(), events))
     }
 
+    /// Its pollset said on `trace`, as C's chain says it when the admin
+    /// handle asks it (`Curl_conn_adjust_pollset`).
+    fn say_pollset(&self, now: Instant, trace: &Internal) {
+        if let Transport::Tcp(stream) = &self.conn.transport {
+            let mut cx = InternalCx {
+                now,
+                trace: Some(trace),
+            };
+            stream.say_shutdown_pollset(self.shut, &mut cx);
+        }
+    }
+
     /// The peer it goes to, for the limits on connections to one host.
     fn destination(&self) -> Option<&Peer> {
         match &self.conn.route {
@@ -418,6 +430,25 @@ impl ShutdownSet {
             .pollset()
             .map(|(s, events)| (s.key(), events));
         Some((entry.id, wants))
+    }
+
+    /// Connection `id`'s pollset said on the internal trace, as C asks
+    /// its chain to tell the socket callback (`cshutdn_update_ev`).
+    pub(crate) fn say_pollset_of(&self, id: ClosingId, now: Instant) {
+        if let (Some(t), Some(e)) = (&self.trace, self.conns.iter().find(|e| e.id == id)) {
+            e.shutting.say_pollset(now, t);
+        }
+    }
+
+    /// Each connection's pollset said on the internal trace, oldest
+    /// first, as C's admin handle asks each chain as a wait or `fdset`
+    /// collects them (`Curl_cshutdn_add_pollfds`, `Curl_cshutdn_setfds`).
+    pub(crate) fn say_pollsets(&self, now: Instant) {
+        if let Some(t) = &self.trace {
+            for e in &self.conns {
+                e.shutting.say_pollset(now, t);
+            }
+        }
     }
 
     /// Each connection's socket and what it waits on, oldest first.

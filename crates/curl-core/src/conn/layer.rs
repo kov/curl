@@ -236,6 +236,12 @@ pub(crate) trait Layer: Send + fmt::Debug {
         None
     }
 
+    /// What it puts in a pollset that C's filter says as it does
+    /// (`Curl_ssl_adjust_pollset`'s line); nothing, for most.
+    fn pollset_said(&self) -> Option<Events> {
+        None
+    }
+
     /// Move its shutdown on: say goodbye to the peer, which may take
     /// more than one pass (TLS's close_notify).
     fn shutdown(
@@ -536,6 +542,21 @@ impl LayerStack {
             .rev()
             .skip(shut)
             .fold(Events::NONE, |wanted, layer| layer.adjust_pollset(wanted))
+    }
+
+    /// Say, as `shutdown_pollset` asks them, what the layers not shut
+    /// down yet put in for socket `fd`, as C's filters trace it.
+    pub(crate) fn say_shutdown_pollset(&self, shut: usize, fd: i32, cx: &mut dyn LayerCx) {
+        for layer in self.layers.iter().flat_map(|l| l.iter()).rev().skip(shut) {
+            if let (Some(events), Some(filter)) = (layer.pollset_said(), layer.filter()) {
+                let way = if events.contains(Events::OUT) {
+                    "POLLOUT"
+                } else {
+                    "POLLIN"
+                };
+                cx.of(filter, format_args!("adjust_pollset, {way} fd={fd}"));
+            }
+        }
     }
 }
 

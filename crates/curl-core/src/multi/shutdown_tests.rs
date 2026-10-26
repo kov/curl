@@ -658,10 +658,11 @@ impl Written {
 
 /// The multi's internal trace, on as C's debug build makes its internal
 /// handle verbose under `CURL_DEBUG`, says the shutdown as C's does: a
-/// goodbye left waiting for the peer's joins the set; each pass of the
-/// set tries it; once the peer says it back, the connection closes, its
-/// socket goes and a transfer waiting for room may look (pytest
-/// test_19_04's lines, the TLS library's own apart).
+/// goodbye left waiting for the peer's joins the set; each perform and
+/// each pass of the set is said, and each pollset asked for; once the
+/// peer says it back, the connection closes, its socket goes and a
+/// transfer waiting for room may look (pytest test_19_04's lines, the
+/// TLS library's own apart).
 #[test]
 fn the_internal_trace_says_a_shutdown_as_c_does() {
     use crate::components::{Component, Components, Level};
@@ -679,17 +680,28 @@ fn the_internal_trace_says_a_shutdown_as_c_does() {
     let mut ev = Rec::default();
     let id = m.add(closing_tls(tls), (), &mut ev).unwrap();
     by_perform(&mut m, id, &mut ev);
+    // Its pollset asked for, as `curl_multi_fdset` asks.
+    m.sockets(&mut ev, |_, _| ());
     talk.allow(3);
     m.perform(&mut ev).unwrap();
     assert_eq!(m.shutdowns.len(), 0);
     assert_eq!(
         written.lines(),
         [
+            "* [MULTI] multi_perform(running=1)",
+            "* [MULTI] multi_perform(running=1)",
             "* [MULTI] shutdown start on connection",
             "* [SSL] cf_shutdown -> 0, done=0",
             "* [SSL] shut down not done yet",
             "* [MULTI] [SHUTDOWN] shutdown, done=0",
             "* [MULTI] [SHUTDOWN] added #0 to shutdowns, now 1 conns in shutdown",
+            // Its chain asked as the socket callback is told of it.
+            "* [SSL] adjust_pollset, POLLIN fd=1000",
+            // The pollsets, the internal handle's first, then each
+            // closing chain's.
+            "* [MULTI] pollset[], timeouts=0, paused 0/0 (r/w)",
+            "* [SSL] adjust_pollset, POLLIN fd=1000",
+            "* [MULTI] multi_perform(running=0)",
             "* [MULTI] [SHUTDOWN] perform on 1 connections",
             "* [SSL] cf_shutdown -> 0, done=1",
             "* [SSL] shut down successfully",
@@ -704,7 +716,8 @@ fn the_internal_trace_says_a_shutdown_as_c_does() {
 /// A handle's own multi driven by events keeps its callbacks as it
 /// goes: a connection still closing then is closed in its cleanup, and
 /// the callback says its socket's REMOVE on the internal trace, as C's
-/// `curl_easy_perform_ev` says it on the internal handle (test_19_05).
+/// `curl_easy_perform_ev` says it on the internal handle (test_19_05);
+/// the cleanup is said as C's `curl_multi_cleanup` says it, once.
 #[test]
 fn a_handle_s_own_multi_says_its_cleanup_s_removes() {
     use crate::components::{Component, Components, Level};
@@ -730,14 +743,33 @@ fn a_handle_s_own_multi_says_its_cleanup_s_removes() {
     });
     assert_eq!(wire.closed(), [1000]);
     let lines = written.lines();
+    let from = lines
+        .iter()
+        .position(|l| l.contains("[CPOOL]"))
+        .unwrap_or_else(|| panic!("{lines:#?}"));
     assert_eq!(
-        lines[lines.len() - 3..],
+        lines[from..],
         [
+            "* [MULTI] [CPOOL] destroy, 0 connections",
+            "* [MULTI] [SHUTDOWN] destroy, 1 connections, timeout=0ms",
+            "* [MULTI] [SHUTDOWN] shutdown all",
+            "* [MULTI] [SHUTDOWN] perform on 1 connections",
+            "* [MULTI] [SHUTDOWN] shutdown, done=0",
+            "* [MULTI] [SHUTDOWN] shutdown finished, best effort done",
+            "* [MULTI] [SHUTDOWN] force closing connection #0",
             "* [MULTI] Curl_multi_will_close fd=1000",
             "* socket cb: socket 1000 REMOVED",
             "* [MULTI] [SHUTDOWN] trigger multi connchanged",
+            "* [MULTI] multi_cleanup, closing admin handle, done",
         ],
         "{lines:#?}"
+    );
+    assert_eq!(
+        lines[..2],
+        [
+            "* call curl_multi_socket_action(socket 1000)",
+            "* call curl_multi_socket_action(socket 1000)",
+        ]
     );
 }
 

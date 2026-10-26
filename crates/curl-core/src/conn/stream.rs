@@ -169,6 +169,12 @@ impl Stream {
         self.layers.shutdown_pollset(shut)
     }
 
+    /// Say what its layers put in that pollset, as C's filters do.
+    pub(crate) fn say_shutdown_pollset(&self, shut: usize, cx: &mut dyn LayerCx) {
+        let fd = self.socket().key().get();
+        self.layers.say_shutdown_pollset(shut, fd, cx);
+    }
+
     /// Read and drop up to 1 KB of what the peer sent, before a clean
     /// close, whatever the read says, as C does (`cf_socket_shutdown`).
     pub(crate) fn drain(&self) {

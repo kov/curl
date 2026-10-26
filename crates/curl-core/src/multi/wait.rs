@@ -467,6 +467,11 @@ pub fn drive_by_events_with<H: Host>(
             ready.reverse();
             let mut acted = Ok(0);
             for key in ready {
+                // Said "randomly" on the internal handle, as C says it.
+                if let Some(t) = &table.internal {
+                    let fd = key.get();
+                    t.info(format_args!("call curl_multi_socket_action(socket {fd})"));
+                }
                 acted = m.socket_action(SocketEvent::Socket(key), table);
             }
             // A timer not set again counts down by the time spent.

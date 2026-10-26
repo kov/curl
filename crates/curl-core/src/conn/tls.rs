@@ -253,6 +253,15 @@ impl Layer for TlsLayer {
         }
     }
 
+    /// What the session waits for, said as C's filter says it.
+    fn pollset_said(&self) -> Option<Events> {
+        match self.session.waits() {
+            TlsWait::Nothing => None,
+            TlsWait::Recv => Some(Events::IN),
+            TlsWait::Send => Some(Events::OUT),
+        }
+    }
+
     /// The bytes received before the layer, those the session holds
     /// (`SSL_pending`), or those below (`ssl_cf_data_pending`).
     fn data_pending(&self, below: Below<'_>) -> bool {

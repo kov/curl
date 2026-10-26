@@ -373,7 +373,16 @@ first transfer added (the process's, every handle's), its lines written to stand
 work done for no transfer runs with `InternalCx`, which traces there when the trace is on and
 nowhere when it is off. It carries the shutdowns (`ShutdownSet`, `discard`): C's `[SHUTDOWN]`
 lines, the start of each shutdown, each layer's `shut down …` in its filter's name, the TLS
-layer's own lines, and a closed socket's `Curl_multi_will_close`.
+layer's own lines, and a closed socket's `Curl_multi_will_close`. It says what C says on the
+internal handle besides: `multi_perform(running=N)` as each perform starts; the handle's own
+pollset first as pollsets are collected (`wait`, `sockets`), `pollset[], timeouts=K` with the
+set's deadline its one timer, or the resolver's wake after `adding wakeup` while that is
+listened on, then each closing chain's (`Layer::pollset_said`, TLS's `adjust_pollset` line),
+asked again as the socket callback hears of a connection joining; the event drive's `call
+curl_multi_socket_action(socket N)`; and the cleanup, once (`close_connections`, the drop after
+it finding nothing): `[CPOOL] destroy, N connections` first, `multi_cleanup, closing admin
+handle, done` last. Not said: C's `[TIMER]` lines and the share's own pool's `[SHARE] [CPOOL]
+destroy`, as the share has no internal trace.
 
 `WRITE` follows a response through C's writer chain, which the pipeline (`deliver/`) stands
 for: each write at the chain's start (`client_write`, `xfer_write_resp`), the transfer and

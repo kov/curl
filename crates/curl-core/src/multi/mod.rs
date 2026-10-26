@@ -338,6 +338,10 @@ pub struct Multi<H: Host = NoHost> {
     /// The multi is one handle's own, which `perform` runs it in (C's
     /// `multi_easy`).
     handle_own: bool,
+    /// Its connections were closed for good (`curl_multi_cleanup`): the
+    /// drop after the application's cleanup has nothing left to close,
+    /// and says nothing.
+    closed: bool,
     /// The transfers alive, and the resolver's wake listened on while
     /// any is.
     alive: cx::Alive,
@@ -417,6 +421,7 @@ impl<H: Host> Multi<H> {
             fail_ipv6,
             waker: env.waker,
             handle_own: false,
+            closed: false,
             alive,
             counts: Tally::default(),
             life: Life::Alive,
@@ -687,6 +692,9 @@ impl<H: Host> Multi<H> {
 
     fn perform_unchecked(&mut self, ev: &mut dyn MultiEvents<H>) -> Result<u32, MultiErrorKind> {
         let now = self.clock.now();
+        // On the internal handle, always among those C's perform runs.
+        let running = self.counts.get().running;
+        self.say(format_args!("multi_perform(running={running})"));
         self.take_answers();
         // The connections shutting down first, as C's internal handle is
         // the first it runs.
@@ -903,6 +911,21 @@ impl<H: Host> Multi<H> {
     /// order, as `multi_wait`, `curl_multi_fdset` and `curl_multi_waitfds`
     /// make them: the last of them, if any.
     fn trace_pollsets(&mut self, now: Instant, ev: &mut dyn MultiEvents<H>) -> Option<TransferId> {
+        // The internal handle's first, as C's is the first in the set: the
+        // resolver's wake while it is listened on, and the set's deadline
+        // its one timer.
+        let timers = usize::from(self.shutdowns.deadline().is_some());
+        match self.alive.waker.as_deref().filter(|_| self.alive.count > 0) {
+            Some(w) => {
+                let alive = self.alive.count;
+                self.say(format_args!("adding wakeup, {alive} xfers really alive"));
+                let fd = w.fd().as_raw_fd();
+                self.say(format_args!("pollset[fd={fd} IN], timeouts={timers}"));
+            }
+            None => self.say(format_args!(
+                "pollset[], timeouts={timers}, paused 0/0 (r/w)"
+            )),
+        }
         let mut last = None;
         let mut cursor = None;
         while let Some(id) = self.slots.next_after(cursor) {
@@ -912,6 +935,8 @@ impl<H: Host> Multi<H> {
                 last = Some(id);
             }
         }
+        // Then the connections shutting down, each chain asked.
+        self.shutdowns.say_pollsets(now);
         last
     }
 
@@ -1635,6 +1660,30 @@ impl<H: Host> Multi<H> {
     /// milliseconds), and what is left is closed. The socket callback in
     /// `ev` hears of each socket that closes, as the multi's own.
     pub fn close_connections(&mut self, ev: &mut dyn MultiEvents<H>) {
+        if self.closed {
+            assert!(
+                self.caches.pool.len() == 0 && self.shutdowns.is_empty(),
+                "a multi whose connections were closed made more"
+            );
+            return;
+        }
+        self.closed = true;
+        let n = self.caches.pool.len();
+        self.say(format_args!("[CPOOL] destroy, {n} connections"));
+        self.terminate_connections(ev);
+        self.say(format_args!("multi_cleanup, closing admin handle, done"));
+    }
+
+    /// A line of the multi's internal trace, in `MULTI`'s name.
+    fn say(&self, line: std::fmt::Arguments<'_>) {
+        if let Some(t) = self.shutdowns.internal() {
+            t.of(crate::components::Component::Multi, line);
+        }
+    }
+
+    /// Close every connection, through the set (`Curl_cpool_destroy`,
+    /// `Curl_cshutdn_destroy`).
+    fn terminate_connections(&mut self, ev: &mut dyn MultiEvents<H>) {
         let now = self.clock.now();
         let max_total = self.limits.max_total;
         {
@@ -1665,7 +1714,13 @@ impl<H: Host> Multi<H> {
             sockets: &mut self.sockets,
             life: &mut self.life,
         };
-        cx::announce_closing(&mut self.shutdowns, &mut *self.net, &mut tell, &mut *ev);
+        cx::announce_closing(
+            &mut self.shutdowns,
+            &mut *self.net,
+            &mut tell,
+            &mut *ev,
+            now,
+        );
         if self.shutdowns.is_empty() {
             return;
         }

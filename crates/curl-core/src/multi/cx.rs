@@ -219,6 +219,7 @@ impl<H: Host> EngineRest<'_, H> {
             &mut *self.net,
             &mut self.tell,
             &mut *self.events,
+            self.now,
         );
     }
 
@@ -257,11 +258,13 @@ pub(super) fn announce_closing<H: Host>(
     net: &mut dyn Net,
     tell: &mut Telling<'_, H>,
     events: &mut dyn MultiEvents<H>,
+    now: Instant,
 ) {
     while let Some((id, wants)) = set.next_unannounced() {
         if !events.wants_sockets() {
             continue;
         }
+        set.say_pollset_of(id, now);
         let mut changes = Vec::new();
         let owner = SocketOwner::Conn(id);
         let told = tell

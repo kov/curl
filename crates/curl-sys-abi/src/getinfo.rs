@@ -3,7 +3,8 @@
 
 #![allow(unsafe_code)]
 
-use core::ffi::{c_char, c_int, c_long, c_void};
+use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+use core::ptr;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -134,6 +135,17 @@ fn proto_bit(p: Protocol) -> c_long {
         Protocol::File => ffi::CURLPROTO_FILE,
         Protocol::Http => ffi::CURLPROTO_HTTP,
         Protocol::Https => ffi::CURLPROTO_HTTPS,
+    }
+}
+
+/// The name of `p`'s scheme, as C's scheme table spells it
+/// (`Curl_scheme_http`'s `name`): one string for the process, as the
+/// application may compare its address.
+fn scheme_name(p: Protocol) -> &'static CStr {
+    match p {
+        Protocol::File => c"file",
+        Protocol::Http => c"http",
+        Protocol::Https => c"https",
     }
 }
 
@@ -358,6 +370,12 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         ffi::CURLINFO_CONDITION_UNMET => Value::Long(r.condition_unmet().into()),
         ffi::CURLINFO_FILETIME_T => Value::Off(r.filetime().unwrap_or(-1)),
         ffi::CURLINFO_PROTOCOL => Value::Long(r.protocol().map_or(0, proto_bit)),
+        ffi::CURLINFO_SCHEME => Value::Ptr(
+            r.protocol()
+                .map_or(ptr::null(), |p| scheme_name(p).as_ptr())
+                .cast_mut()
+                .cast(),
+        ),
         // The build's, whatever the transfer set.
         ffi::CURLINFO_CAINFO => Value::Ptr(crate::version::ca_defaults().0.cast_mut().cast()),
         ffi::CURLINFO_CAPATH => Value::Ptr(crate::version::ca_defaults().1.cast_mut().cast()),

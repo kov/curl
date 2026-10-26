@@ -265,3 +265,11 @@ witness: curl-sys-abi handle_tests::no_body_outlasts_a_method_that_does_not_clea
                 // body was asked for.
                 set.method = Method::Get;
                 set.no_body = false;
+
+=== CURLINFO_SCHEME names another scheme
+file: crates/curl-sys-abi/src/getinfo.rs
+witness: curl-sys-abi handle_tests::infos_answer_from_the_report
+--- old
+        Protocol::File => c"file",
+--- new
+        Protocol::File => c"http",

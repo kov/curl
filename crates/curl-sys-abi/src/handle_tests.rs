@@ -1931,6 +1931,7 @@ fn infos_answer_from_the_report() {
     // SAFETY: getinfo gives a string that lives while the handle does.
     assert_eq!(unsafe { CStr::from_ptr(before) }, c"");
     assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_FILETIME_T), -1);
+    assert!(info::<*const c_char>(c, ffi::CURLINFO_SCHEME).is_null());
     // Never added to a multi, nor connected.
     assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_XFER_ID), -1);
     assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_CONN_ID), -1);
@@ -2034,6 +2035,12 @@ fn infos_answer_from_the_report() {
         info::<c_long>(c, ffi::CURLINFO_PROTOCOL),
         ffi::CURLPROTO_FILE
     );
+    // The scheme's name, one string for every handle, as C's tool
+    // compares its address (`proto_token`).
+    let scheme = info::<*const c_char>(c, ffi::CURLINFO_SCHEME);
+    // SAFETY: getinfo gives a string that lives as long as the process.
+    assert_eq!(unsafe { CStr::from_ptr(scheme) }, c"file");
+    assert_eq!(info::<*const c_char>(c, ffi::CURLINFO_SCHEME), scheme);
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_RESPONSE_CODE), 0);
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_HTTP_VERSION), 0);
     assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_RETRY_AFTER), 0);

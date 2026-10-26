@@ -74,6 +74,11 @@ struct Route {
     window: i32,
 }
 
+/// The transfer `stream` is routed to, if any.
+fn transfer_of(routes: &[Route], stream: StreamId) -> Option<TransferId> {
+    routes.iter().find(|r| r.stream == stream).map(|r| r.to)
+}
+
 impl std::fmt::Debug for H2Conn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H2Conn")
@@ -101,7 +106,9 @@ fn failed(_: FrameError) -> ErrorKind {
 /// what the session tells of streams as it sends (`h2_progress_egress`).
 pub(crate) trait Egress {
     fn layer_cx(&mut self) -> &mut dyn LayerCx;
-    fn body(&mut self, stream: StreamId, room: &mut [u8]) -> BodyRead;
+    /// Read `stream`'s body into `room`; `to` is the transfer the
+    /// stream is routed to, if any.
+    fn body(&mut self, stream: StreamId, to: Option<TransferId>, room: &mut [u8]) -> BodyRead;
     fn event(&mut self, event: Event<'_>) -> Heard;
 }
 
@@ -113,7 +120,7 @@ impl Egress for Bare<'_> {
         self.0
     }
 
-    fn body(&mut self, _: StreamId, _: &mut [u8]) -> BodyRead {
+    fn body(&mut self, _: StreamId, _: Option<TransferId>, _: &mut [u8]) -> BodyRead {
         BodyRead::Failed
     }
 
@@ -209,13 +216,20 @@ impl H2Conn {
             .filter(move |&to| to != but)
     }
 
-    /// Each open stream's transfer, copied.
-    pub(crate) fn routes_copied(&self) -> Result<Vec<(StreamId, TransferId)>, OutOfMemory> {
-        let mut routes = Vec::new();
-        for r in &self.routes {
-            routes.try_push((r.stream, r.to))?;
-        }
-        Ok(routes)
+    /// Feed the session what the connection read, `events` hearing
+    /// each event with the transfer its stream is routed to, if any.
+    pub(crate) fn recv(
+        &mut self,
+        bytes: &[u8],
+        events: &mut dyn FnMut(Event<'_>, Option<TransferId>) -> Heard,
+    ) -> Result<usize, FrameError> {
+        let H2Conn {
+            session, routes, ..
+        } = self;
+        session.recv(bytes, &mut |event| {
+            let to = event.stream().and_then(|s| transfer_of(routes, s));
+            events(event, to)
+        })
     }
 
     /// Ask for `stream`'s receive window to be `wanted`, as its transfer
@@ -272,7 +286,12 @@ impl H2Conn {
             if !self.flush(with.layer_cx(), conn)? {
                 return Ok(false);
             }
-            let H2Conn { session, out, .. } = self;
+            let H2Conn {
+                session,
+                out,
+                routes,
+                ..
+            } = self;
             let mut oom = false;
             let with = std::cell::RefCell::new(&mut *with);
             session
@@ -284,7 +303,10 @@ impl H2Conn {
                         }
                         out.len() < OUT_MAX
                     },
-                    &mut |stream, room| with.borrow_mut().body(stream, room),
+                    &mut |stream, room| {
+                        with.borrow_mut()
+                            .body(stream, transfer_of(routes, stream), room)
+                    },
                     &mut |event| with.borrow_mut().event(event),
                 )
                 .map_err(EgressFailed::Session)?;

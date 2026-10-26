@@ -213,7 +213,15 @@ impl FakeSession {
             return Ok(None);
         };
         let line = std::str::from_utf8(&input[..nl]).map_err(|_| bad)?;
-        let words: Vec<&str> = line.split(' ').collect();
+        // The line's first words, on the stack: a frame read allocates
+        // nothing of the fake's own, so that a budget counts the core's.
+        let mut words = [""; 8];
+        let mut count = 0;
+        for (slot, word) in words.iter_mut().zip(line.split(' ')) {
+            *slot = word;
+            count += 1;
+        }
+        let words = &words[..count];
         let num = |i: usize| -> Result<i64, FrameError> {
             words.get(i).and_then(|w| w.parse().ok()).ok_or(bad)
         };

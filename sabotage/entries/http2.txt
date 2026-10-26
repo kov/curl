@@ -236,15 +236,11 @@ witness: curl-core proto::http::tests::h2::a_stream_asks_its_weight
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::two_transfers_share_a_connection
 --- old
-                    && let Some(&(_, to)) = routes.iter().chain(&after.routed).find(|r| r.0 == s)
+                        routed.or_else(|| after.routed.iter().find(|r| r.0 == s).map(|&(_, to)| to))
                     && to != me
-                {
-                    let consumed
 --- new
-                    && let Some(&(_, to)) = routes.iter().chain(&after.routed).find(|r| r.0 == s)
+                        routed.or_else(|| after.routed.iter().find(|r| r.0 == s).map(|&(_, to)| to))
                     && to == me
-                {
-                    let consumed
 
 === a transfer joining a connection makes it a session of its own
 file: crates/curl-core/src/conn/pool.rs
@@ -371,15 +367,9 @@ witness: curl-core proto::http::tests::h2::a_stream_paused_in_a_siblings_step_re
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_pushed_response_becomes_a_transfer_of_its_own
 --- old
-                    && let Some(&(_, to)) = routes.iter().chain(&after.routed).find(|r| r.0 == s)
-                    && to != me
-                {
-                    let consumed = match event {
+                        routed.or_else(|| after.routed.iter().find(|r| r.0 == s).map(|&(_, to)| to))
 --- new
-                    && let Some(&(_, to)) = routes.iter().chain(&[]).find(|r| r.0 == s)
-                    && to != me
-                {
-                    let consumed = match event {
+                        routed
 
 === the client says it takes no pushes though the application does
 file: crates/curl-core/src/proto/http2.rs
@@ -558,3 +548,11 @@ witness: curl-core proto::http::tests::tls::an_http_2_proxy_s_answer_is_held_to_
 --- new
         if room < name.len() {
             return Err(OutOfMemory);
+
+=== a read's leftover work is gathered afresh each read
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core an_http_2_body_s_frames_allocate_nothing
+--- old
+        let mut after = std::mem::take(&mut self.stream().after);
+--- new
+        let mut after = After::default();

@@ -90,6 +90,10 @@ fn main() {
             an_https_get_stays_within_its_allocation_budget,
         ),
         (
+            "an_http_2_body_s_frames_allocate_nothing",
+            an_http_2_body_s_frames_allocate_nothing,
+        ),
+        (
             "a_share_s_connection_survives_every_allocation_failing",
             a_share_s_connection_survives_every_allocation_failing,
         ),
@@ -897,6 +901,80 @@ fn a_get_stays_within_its_allocation_budget() {
         n <= GET_BUDGET,
         "a plain GET made {n} allocations, over its {GET_BUDGET}"
     );
+}
+
+/// A GET by HTTP/2's prior knowledge from a server whose response's
+/// body of `frames` DATA frames of 16 KiB, then its end, comes as the
+/// fake HTTP/2 library frames it.
+fn h2_get_scenario(frames: usize) -> (Result<Got, OutOfMemory>, u64) {
+    static FAKE: curl_core::http2::fake::FakeH2 = curl_core::http2::fake::FakeH2;
+    let (clock, net, talk, libraries) = track::untracked(|| {
+        let chunk = vec![b'x'; 16 * 1024];
+        let mut reply = format!(
+            "S\nH 1 0\n:status: 200\ncontent-length: {}\n\n",
+            frames * chunk.len()
+        )
+        .into_bytes();
+        for i in 0..frames {
+            let end = u8::from(i + 1 == frames);
+            reply.extend_from_slice(format!("D 1 {} {end}\n", chunk.len()).as_bytes());
+            reply.extend_from_slice(&chunk);
+        }
+        let clock = ManualClock::new().expect("a clock");
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 80));
+        let talk = Conversation::replies(&[&reply], false).per_send();
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        let libraries = SharedLibraries::new(Libraries {
+            h2: Some(&FAKE as &dyn curl_core::http2::Http2),
+            ..Libraries::NONE
+        })
+        .expect("memory");
+        (clock, net, talk, libraries)
+    });
+    let wire = Wire {
+        libraries,
+        sent: h2_request_sent,
+    };
+    let prior = |o: &mut Options| {
+        o.http.version = curl_core::options::HttpVersion::Http2Prior;
+        Ok(())
+    };
+    track::count_allocations(|| get_over(clock, net, &talk, (URL, H2_REQUEST), prior, wire))
+}
+
+/// The settings and the request's HEADERS, as the fake HTTP/2 library
+/// frames them.
+const H2_REQUEST: &[u8] = b"S MCS=100;IWS=65536;EP=0;\nH 1 1\n:method: GET\n:scheme: http\n\
+    :authority: 127.0.0.1\n:path: /1?q\nuser-agent: curl/test\naccept: */*\n\n";
+
+/// What the server of an HTTP/2 GET was sent, up to the end of the
+/// request's HEADERS: the window updates after depend on the reads.
+fn h2_request_sent(wire: &[u8]) -> Vec<u8> {
+    let end = wire
+        .windows(2)
+        .position(|w| w == b"\n\n")
+        .map_or(wire.len(), |at| at + 2);
+    wire[..end].to_vec()
+}
+
+/// The body's DATA frames, read over many reads, allocate nothing of
+/// their own: a 1 MiB body in 64 frames costs what one frame does
+/// (DESIGN.md, no allocation per chunk on the data path).
+fn an_http_2_body_s_frames_allocate_nothing() {
+    let (one, n1) = h2_get_scenario(1);
+    let (many, n64) = h2_get_scenario(64);
+    let (one, many) = (
+        one.expect("nothing refused"),
+        many.expect("nothing refused"),
+    );
+    assert_eq!((one.result, one.body), (Ok(()), 16 * 1024));
+    assert_eq!((many.result, many.body), (Ok(()), 64 * 16 * 1024));
+    track::untracked(|| {
+        eprintln!("budget: an HTTP/2 GET made {n1} allocations, {n64} for 64 frames")
+    });
+    assert_eq!(n64, n1, "64 frames made {n64} allocations, one {n1}");
 }
 
 /// One fake network for a multi and the share whose connections it

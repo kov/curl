@@ -89,6 +89,9 @@ pub(super) struct H2Stream {
     body_started: bool,
     /// The trailers, as lines (`resp_trailers`).
     trailers: Trailers,
+    /// What reading for the request leaves the session to do, kept
+    /// between reads for its room: emptied after each.
+    after: After,
     /// Writing the response failed (`xfer_result`): nothing more is
     /// written.
     failed: Option<ErrorKind>,
@@ -134,7 +137,7 @@ impl H2Stream {
 
 /// What the session's reading left to do on it, once it is free to:
 /// C calls into the session from its callbacks.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct After {
     /// Body bytes of each stream used: their windows open.
     consumed: Vec<(StreamId, usize)>,
@@ -149,6 +152,18 @@ struct After {
     windows: Vec<(StreamId, i32)>,
     /// The peer said GOAWAY.
     goaway: Option<GoAway>,
+}
+
+impl After {
+    /// Empty, its room kept for the next read.
+    fn clear(&mut self) {
+        self.consumed.clear();
+        self.resets.clear();
+        self.resumes.clear();
+        self.routed.clear();
+        self.windows.clear();
+        self.goaway = None;
+    }
 }
 
 /// The receive window a transfer's stream asks for: none while its
@@ -205,7 +220,6 @@ fn window_failed<H: Host>(
 struct Egressing<'a, 'c, H: Host> {
     cx: &'a mut StepCx<'c, H>,
     stream: &'a mut H2Stream,
-    routes: Vec<(StreamId, crate::multi::TransferId)>,
     closes: Vec<(StreamId, u32)>,
     oom: bool,
 }
@@ -215,13 +229,18 @@ impl<H: Host> crate::proto::http2::Egress for Egressing<'_, '_, H> {
         &mut *self.cx
     }
 
-    fn body(&mut self, s: StreamId, room: &mut [u8]) -> BodyRead {
+    fn body(
+        &mut self,
+        s: StreamId,
+        to: Option<crate::multi::TransferId>,
+        room: &mut [u8],
+    ) -> BodyRead {
         if Some(s) == self.stream.id {
             return self.stream.body_read(room);
         }
         let me = self.cx.me;
-        match self.routes.iter().find(|r| r.0 == s) {
-            Some(&(_, to)) if to != me => self
+        match to {
+            Some(to) if to != me => self
                 .cx
                 .with_sibling(to, |_, req| match req.h2.as_mut() {
                     Some(sib) if sib.id == Some(s) => sib.body_read(room),
@@ -551,13 +570,9 @@ impl Request {
         let me = cx.me;
         let stream = self.h2.as_mut().expect("a request over HTTP/2");
         let sent = with_session(lease, |h2, lease| {
-            let Ok(routes) = h2.routes_copied() else {
-                return (Err(EgressFailed::OutOfMemory), Vec::new(), false);
-            };
             let mut with = Egressing {
                 cx: &mut *cx,
                 stream,
-                routes,
                 closes: Vec::new(),
                 oom: false,
             };
@@ -856,24 +871,21 @@ impl Request {
         lease: &mut ConnLease,
         bytes: &[u8],
     ) -> Result<(), ErrorKind> {
-        let mut after = After::default();
+        // Taken out while the read runs, which allocates nothing, and put
+        // back emptied after, its room kept.
+        let mut after = std::mem::take(&mut self.stream().after);
         let prior = lease.conn().h2().and_then(H2Conn::goaway);
         let me = cx.me;
         let own = self.stream().id;
         let fed = with_session(lease, |h2, lease| {
-            let Ok(routes) = h2.routes_copied() else {
-                return Err(crate::http2::FrameError {
-                    code: -901,
-                    text: "Out of memory",
-                    fatal: true,
-                });
-            };
-            let read = h2.session().recv(bytes, &mut |event| {
+            let read = h2.recv(bytes, &mut |event, routed| {
                 // What is read for a sibling's stream is handed to it at
-                // once, as C's callbacks write to that stream's transfer.
+                // once, as C's callbacks write to that stream's transfer;
+                // a stream promised in this read is routed by `after`.
                 if let Some(s) = event.stream()
                     && Some(s) != own
-                    && let Some(&(_, to)) = routes.iter().chain(&after.routed).find(|r| r.0 == s)
+                    && let Some(to) =
+                        routed.or_else(|| after.routed.iter().find(|r| r.0 == s).map(|&(_, to)| to))
                     && to != me
                 {
                     let consumed = match event {
@@ -941,6 +953,8 @@ impl Request {
             }
             unset
         });
+        after.clear();
+        self.stream().after = after;
         if let Some((stream, wanted, e)) = unset.filter(|u| Some(u.0) == own) {
             let kind = window_failed(cx, stream, wanted, e);
             self.stream().failed = Some(kind);

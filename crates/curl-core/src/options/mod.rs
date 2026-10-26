@@ -373,6 +373,9 @@ impl Options {
     /// C walks them each time it builds a request or a `CONNECT`.
     pub(crate) fn reread_headers(&mut self) -> Result<(), OutOfMemory> {
         self.http.headers.refill()?;
+        if let Some(custom) = self.http.custom.made_mut() {
+            custom.aliases_200.refill()?;
+        }
         match self.proxy.made_mut() {
             Some(proxy) => proxy.headers.refill(),
             None => Ok(()),
@@ -1611,7 +1614,8 @@ impl HstsOptions {
     }
 }
 
-/// The parts of a request the application writes itself, which few do.
+/// The parts of a request the application writes itself, and of a
+/// response it takes, which few do.
 #[derive(Debug)]
 pub struct Custom {
     /// `CURLOPT_REFERER`.
@@ -1623,6 +1627,10 @@ pub struct Custom {
     /// or of the whole URL to a proxy; nothing else reads it
     /// (`CURLOPT_REQUEST_TARGET`).
     pub target: Option<Vec<u8>>,
+    /// First lines of a response taken as `HTTP/1.0 200`, each matched
+    /// as a prefix in any case (`CURLOPT_HTTP200ALIASES`), beside
+    /// `HTTP/` itself.
+    pub aliases_200: Lines,
 }
 
 impl ColdGroup for Custom {
@@ -1631,6 +1639,7 @@ impl ColdGroup for Custom {
         referer: None,
         method: None,
         target: None,
+        aliases_200: Lines::NONE,
     };
 }
 
@@ -1640,6 +1649,7 @@ impl Custom {
             referer: self.referer.as_deref().map(copy).transpose()?,
             method: self.method.as_deref().map(copy).transpose()?,
             target: self.target.as_deref().map(copy).transpose()?,
+            aliases_200: self.aliases_200.try_clone()?,
         })
     }
 }

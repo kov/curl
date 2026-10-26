@@ -1417,7 +1417,10 @@ impl Request {
             left: NonZeroUsize::new(head_len).expect("a head is never empty"),
             then,
         };
-        self.head = Some(HeadParser::new(exchange));
+        let aliases = &cx.easy().options().http.custom.aliases_200;
+        let head =
+            HeadParser::with_aliases(exchange, aliases).map_err(|_| ErrorKind::OutOfMemory)?;
+        self.head = Some(head);
         // A body held for a 100 is not read behind the head, but C asks
         // its readers for it, the 100's wait among them, so its send limit
         // starts now.

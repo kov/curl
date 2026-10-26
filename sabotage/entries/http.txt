@@ -1469,3 +1469,12 @@ witness: curl-core proto::http::tests::a_pre_request_handler_hears_of_each_reque
         Err(super::Abort) if true => Ok(()),
         Err(super::Abort) => {
             let why = format_args!("operation aborted by pre-request callback");
+
+=== a request's response is read without the application's 200 aliases
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_named_first_line_is_read_as_a_200
+--- old
+            HeadParser::with_aliases(exchange, aliases).map_err(|_| ErrorKind::OutOfMemory)?;
+--- new
+            HeadParser::with_aliases(exchange, &crate::options::Lines::NONE)
+                .map_err(|_| ErrorKind::OutOfMemory)?;

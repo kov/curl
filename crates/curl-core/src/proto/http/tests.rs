@@ -2047,6 +2047,21 @@ fn a_pre_request_handler_hears_of_each_request_s_connection() {
     assert!(text.contains(&why), "{text:?}");
 }
 
+/// A response whose first line the application named as a 200's is read
+/// as one (`CURLOPT_HTTP200ALIASES`).
+#[test]
+fn a_named_first_line_is_read_as_a_200() {
+    let icy: &[u8] = b"ICY 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
+    let (mut m, talk, _) = server(&[icy], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        let custom = o.http.custom.make_mut().unwrap();
+        custom.aliases_200.set([&b"ICY"[..]]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"ok\n");
+    assert_eq!(ran.easy.report().response_code(), Some(200));
+}
+
 /// A redirect past the limit is not followed: where it would have led
 /// is kept, and the transfer fails.
 #[test]

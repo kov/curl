@@ -57,7 +57,11 @@ fn parse_sending(
     sending: Unsent,
     transfer_bytes: &mut u64,
 ) -> Outcome {
-    let mut p = HeadParser::new(exchange);
+    run(HeadParser::new(exchange), chunks, sending, transfer_bytes)
+}
+
+/// Feed `chunks` to `p` in turn, as `parse_sending`.
+fn run(mut p: HeadParser, chunks: &[&[u8]], sending: Unsent, transfer_bytes: &mut u64) -> Outcome {
     let mut out = Outcome {
         lines: Vec::new(),
         notes: Vec::new(),
@@ -257,6 +261,52 @@ fn a_reply_without_a_status_line_is_http_0_9() {
         p.feed(b"HTT", &mut 0, Unsent::default(), Default::default()),
         Ok((3, None))
     ));
+}
+
+/// A first line starting as an alias does, in any case, is a status
+/// line read as `HTTP/1.0 200`; `HTTP/` stays one, and anything else is
+/// no HTTP (`CURLOPT_HTTP200ALIASES`, `checkhttpprefix`).
+#[test]
+fn an_alias_is_a_200_in_http_1_0() {
+    let mut aliases = crate::options::Lines::NONE;
+    aliases.set([&b"ICY 200"[..], b"SHOUT"]).unwrap();
+    let with = |reply: &[u8]| {
+        let make = || HeadParser::with_aliases(PLAIN, &aliases).unwrap();
+        let whole = run(make(), &[reply], Unsent::default(), &mut 0);
+        let bytes: Vec<&[u8]> = reply.chunks(1).collect();
+        let byte = run(make(), &bytes, Unsent::default(), &mut 0);
+        assert_eq!(byte, whole, "byte by byte");
+        whole
+    };
+    let got = with(b"icy 200 OK\r\nA: b\r\n\r\nbody");
+    let kinds: Vec<LineKind> = got.lines.iter().map(|(k, _)| *k).collect();
+    assert_eq!(
+        kinds,
+        [
+            status(HttpVersion::Http10, 200),
+            LineKind::Header,
+            LineKind::End { interim: false },
+        ]
+    );
+    assert_eq!((got.body, got.error), (b"body".to_vec(), None));
+    // Matched as far as the alias goes, or the line: `SHOUT` is matched by
+    // `SHOUTcast 404`, and the code the line says is not read.
+    assert_eq!(
+        with(b"SHOUTcast 404 No\r\n\r\n").lines[0].0,
+        status(HttpVersion::Http10, 200)
+    );
+    assert_eq!(
+        with(b"HTTP/1.1 204 No\r\n\r\n").lines[0].0,
+        status(HttpVersion::Http11, 204)
+    );
+    assert_eq!(
+        with(b"ICY 404\r\n\r\n").error,
+        Some(HeadError::Http09NotAllowed)
+    );
+    assert_eq!(
+        outcome(b"ICY 200 OK\r\n\r\n", PLAIN).error,
+        Some(HeadError::Http09NotAllowed)
+    );
 }
 
 /// An interim response's head is followed by the next response's.

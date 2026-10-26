@@ -223,6 +223,8 @@ pub(crate) struct HeadParser {
     framing: Option<Framing>,
     /// The last header line was refused for what it said.
     refused: bool,
+    /// First lines taken as `HTTP/1.0 200`, beside `HTTP/`.
+    aliases: Vec<Vec<u8>>,
 }
 
 impl HeadParser {
@@ -244,7 +246,23 @@ impl HeadParser {
             meta: Meta::default(),
             framing: None,
             refused: false,
+            aliases: Vec::new(),
         }
+    }
+
+    /// As `new`, a first line starting with one of `aliases` also taken
+    /// as `HTTP/1.0 200` (`CURLOPT_HTTP200ALIASES`).
+    pub(crate) fn with_aliases(
+        exchange: Exchange,
+        aliases: &crate::options::Lines,
+    ) -> Result<HeadParser, OutOfMemory> {
+        let mut parser = HeadParser::new(exchange);
+        for alias in aliases.iter() {
+            let mut owned = Vec::new();
+            owned.try_extend_from_slice(alias)?;
+            parser.aliases.try_push(owned)?;
+        }
+        Ok(parser)
     }
 
     /// What the heads said so far.
@@ -442,11 +460,15 @@ impl HeadParser {
         self.unfolding = true;
     }
 
-    /// Whether the start of a first line can be a status line
-    /// (`checkhttpprefix`).
+    /// Whether the start of a first line can be a status line: it
+    /// starts as `HTTP/` or an alias does, as far as either goes, in any
+    /// case (`checkhttpprefix`). Under five bytes, it may yet not be.
     fn looks(&self, line: &[u8]) -> Looks {
-        let n = line.len().min(5);
-        if !line[..n].eq_ignore_ascii_case(&b"HTTP/"[..n]) {
+        let starts = |prefix: &[u8]| {
+            let n = line.len().min(prefix.len());
+            line[..n].eq_ignore_ascii_case(&prefix[..n])
+        };
+        if !starts(b"HTTP/") && !self.aliases.iter().any(|a| starts(a)) {
             Looks::No
         } else if line.len() >= 5 {
             Looks::Yes

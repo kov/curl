@@ -1255,6 +1255,17 @@ fn apply(
             Some(source) => options.connect_to.set_source(source)?,
             None => options.connect_to.set([])?,
         },
+        (ffi::CURLOPT_HTTP200ALIASES, Ptr(p)) => match slist(p)? {
+            Some(source) => {
+                let custom = options.http.custom.make_mut()?;
+                custom.aliases_200.set_source(source)?;
+            }
+            None => {
+                if let Some(custom) = options.http.custom.made_mut() {
+                    custom.aliases_200.set([])?;
+                }
+            }
+        },
         (ffi::CURLOPT_RESOLVE, Ptr(p)) => match slist(p)? {
             Some(source) => options.resolve.set_source(source)?,
             None => options.resolve.set([])?,

@@ -165,6 +165,18 @@ pub trait Session: fmt::Debug + Send {
         events: &mut dyn FnMut(Event<'_>) -> Heard,
     ) -> Result<(), FrameError>;
 
+    /// Set `stream`'s receive window to `size`, which may tell the peer
+    /// if it grows (`nghttp2_session_set_local_window_size`).
+    fn set_stream_window(&mut self, stream: StreamId, size: i32) -> Result<(), FrameError>;
+
+    /// `stream`'s receive window as the session keeps it
+    /// (`nghttp2_session_get_stream_effective_local_window_size`).
+    fn stream_window(&self, stream: StreamId) -> i32;
+
+    /// Tell the peer it may send `increment` more on `stream`
+    /// (`nghttp2_submit_window_update`).
+    fn submit_window_update(&mut self, stream: StreamId, increment: i32) -> Result<(), FrameError>;
+
     /// The caller has used `n` bytes of `stream`'s data: its window opens
     /// by as much.
     fn consume(&mut self, stream: StreamId, n: usize) -> Result<(), FrameError>;

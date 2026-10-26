@@ -640,6 +640,10 @@ fn h2_pair_added(
 
 /// The second of two replies on a connection that answers both
 /// transfers' streams, the first's response coming first.
+/// Nothing, in reply to the WINDOW_UPDATE a stream's head draws as its
+/// window grows to the most (`cf_h2_update_local_win`).
+const WINDOW_SENT: &[u8] = b"";
+
 const SECOND: &[u8] = b"H 3 0\n:status: 201\n\nD 3 2 0\nb1D 1 2 1\naaD 3 1 1\nc";
 
 /// A second transfer to the origin joins the first's HTTP/2 connection,
@@ -649,7 +653,7 @@ const SECOND: &[u8] = b"H 3 0\n:status: 201\n\nD 3 2 0\nb1D 1 2 1\naaD 3 1 1\nc"
 #[test]
 fn two_transfers_share_a_connection() {
     let ([(a, sa), (b, sb)], sent) = h2_pair(
-        &[&[b"S\nH 1 0\n:status: 200\n\n", SECOND]],
+        &[&[b"S\nH 1 0\n:status: 200\n\n", WINDOW_SENT, SECOND]],
         |_| {},
         |_, _| {},
     );
@@ -757,7 +761,7 @@ fn a_connection_at_the_multis_limit_takes_no_more() {
 #[test]
 fn a_transfer_that_pipewaits_joins_the_connection_being_set_up() {
     let ([(a, sa), (b, sb)], sent) = h2_pair_added(
-        &[&[b"S\nH 1 0\n:status: 200\n\n", SECOND]],
+        &[&[b"S\nH 1 0\n:status: 200\n\n", WINDOW_SENT, SECOND]],
         true,
         |_| {},
         |_, o| o.http.pipewait = true,
@@ -949,10 +953,10 @@ fn a_single_use_connection_ends_a_pipewait_over_another_set_up() {
 /// count each as a lease on it, and both end once the server answers.
 #[test]
 fn two_transfers_stay_on_a_connection_between_performs() {
-    let talk = Conversation::replies(&[b"S\nH 1 0\n:status: 200\n\n", SECOND], false)
+    let talk = Conversation::replies(&[b"S\nH 1 0\n:status: 200\n\n", WINDOW_SENT, SECOND], false)
         .per_send()
         .held();
-    talk.allow(1);
+    talk.allow(2);
     let mut m = serving(Peer::Accepts, &[&talk]);
     let mut ids = Vec::new();
     let mut seen = Vec::new();
@@ -979,7 +983,7 @@ fn two_transfers_stay_on_a_connection_between_performs() {
             .unwrap()
             .contains("H 3 1\n")
     );
-    talk.allow(2);
+    talk.allow(3);
     for &id in &ids {
         assert_eq!(
             drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
@@ -1018,7 +1022,7 @@ impl crate::handler::ProgressHandler for MostDownloaded {
 fn a_body_read_by_a_sibling_is_told_to_its_progress_handler() {
     let most = [MostDownloaded::default(), MostDownloaded::default()];
     let ([(a, _), (b, _)], _) = h2_pair(
-        &[&[b"S\nH 1 0\n:status: 200\n\n", SECOND]],
+        &[&[b"S\nH 1 0\n:status: 200\n\n", WINDOW_SENT, SECOND]],
         |_| {},
         |i, o| {
             o.progress =
@@ -1054,6 +1058,7 @@ fn a_transfer_paused_by_a_siblings_delivery_is_told_its_progress() {
     let talk = Conversation::replies(
         &[
             b"S\nH 1 0\n:status: 200\n\n",
+            WINDOW_SENT,
             b"H 3 0\n:status: 200\n\nD 1 2 0\naaD 1 2 0\nbbD 3 1 1\nc",
         ],
         false,
@@ -1135,5 +1140,65 @@ fn a_step_reads_a_buffer_of_the_connection_at_most() {
         Ok(())
     );
     assert_eq!(s.body().len(), 3000);
+    m.remove(id, &mut NoEvents).unwrap();
+}
+
+/// Pauses at the first piece of the body, and takes what comes after.
+#[derive(Clone, Default)]
+struct PausesFirst(Arc<Mutex<Vec<u8>>>);
+
+impl WriteHandler for PausesFirst {
+    fn write(&self, _: &mut crate::multi::TransferCx<'_>, bytes: &[u8]) -> Write {
+        let mut got = self.0.lock().unwrap();
+        if got.is_empty() {
+            got.push(0);
+            return Write::Pause;
+        }
+        got.extend_from_slice(bytes);
+        Write::Accepted
+    }
+}
+
+/// A stream's receive window grows to the most once its head is in, is
+/// closed while its transfer's output is paused, so that the server holds
+/// back what would only be buffered, and opens again as it is unpaused,
+/// the peer told by how much (`cf_h2_update_local_win`,
+/// `http2_data_pause`).
+#[test]
+fn a_paused_streams_window_closes_until_it_is_unpaused() {
+    let talk = Conversation::replies(
+        &[
+            b"S\nH 1 0\n:status: 200\n\nD 1 2 0\naa",
+            WINDOW_SENT,
+            b"D 1 2 1\nbb",
+        ],
+        false,
+    )
+    .per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let w = PausesFirst::default();
+    let o = e.options_mut();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.http.version = HttpVersion::Http2Prior;
+    o.callbacks.write = Some(Handler::write(w.clone()).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert!(sent.ends_with("\n\nU 1 10420224\n"), "{sent}");
+    m.pause(id, crate::deliver::PauseRequest::CONT, &mut NoEvents)
+        .unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert!(sent.ends_with("\n\nU 1 10420224\nU 1 10485760\n"), "{sent}");
+    assert_eq!(&w.0.lock().unwrap()[1..], b"aabb");
     m.remove(id, &mut NoEvents).unwrap();
 }

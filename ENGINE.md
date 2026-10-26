@@ -1565,8 +1565,7 @@ take it answers in HTTP/1.1.
 one is: the pool's health check has the session read the frames, and it is alive unless the
 session failed, a GOAWAY came or the session wants nothing more (`http2_connisalive`). A
 connection that shuts down says GOAWAY first, with C's debug data (`cf_h2_shutdown`). Not
-yet: `curl_easy_upkeep`'s PING, a paused stream's window, and the `CF` traces of
-`--trace-config http/2`.
+yet: `curl_easy_upkeep`'s PING, and the `CF` traces of `--trace-config http/2`.
 
 **Ownership, once multiplexed** (review §2.1, approved). A connection that multiplexes lives
 in its pool place, `Attached { slot, users }`; an attached lease is a key, the `ConnId` and the
@@ -1575,10 +1574,7 @@ owned value decision 9 allows; the place says it is out meanwhile, and a lookup 
 out is a bug. What the session reads for another transfer's stream is delivered at once, in
 the order C delivers it, by moving that sibling's `Run` out in turn, as the unpause replay does
 (§5.3), the stepping transfer's own connection out with it. A paused sibling's bytes wait in its
-pipeline's paused output, as C's client writer holds them. A pause or an unpause aimed at a
-sibling while the connection is out with another transfer is kept and told to the session as
-the connection goes back, before any other work, so the WINDOW_UPDATE goes out where C's
-does. The last lease given back decides the connection's fate as `multi_done_locked` does; a
+pipeline's paused output, as C's client writer holds them. The last lease given back decides the connection's fate as `multi_done_locked` does; a
 GOAWAY or a connection error ends every stream on it.
 
 How it is built. A connection of the multi's own becomes `Attached` at the end of the step in
@@ -1613,7 +1609,17 @@ unless a single-use one to the route, with no multiplexing one, says the server 
 multiplex (`url_match_result`). A connection attached, or found single-use, lets one waiting
 transfer look again, and each one that then gets a connection lets the next.
 
-Not built yet: a pause or unpause aimed at a sibling, and its stream's window; server push.
+Each stream's receive window is the one its transfer asks for (`cf_h2_update_local_win`): the
+most once its head is in, what a receive limit allows under one, none while its output is
+paused or failed, so that the server holds back what would only be buffered. It is asked for
+as each piece of the response is written to the transfer, in whichever transfer's step the
+session read it, and again as the transfer next reads, where a pause or an unpause made since,
+from its handlers or from outside, takes effect; a window grown tells the peer by how much. C
+asks again inside `curl_easy_pause` as well, sending the update before it returns; here an
+unpause marks the transfer to run, and the update goes out in that run, as the connection may
+be out with another transfer's step when the pause is asked for.
+
+Not built yet: server push.
 
 ### 4.5 Route and reuse
 

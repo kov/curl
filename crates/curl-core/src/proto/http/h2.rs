@@ -15,7 +15,9 @@ use crate::conn::RecvFailed;
 use crate::conn::layer::LayerCx;
 use crate::http2::{BodyRead, Event, Heard, StreamId, code};
 use crate::options::HttpVersion as Wanted;
-use crate::proto::http2::{EgressFailed, GoAway, H2Conn, SEND_MAX, fields_of, settings};
+use crate::proto::http2::{
+    EgressFailed, GoAway, H2Conn, SEND_MAX, STREAM_WINDOW_MAX, WindowFailed, fields_of, settings,
+};
 use crate::tls::Chosen;
 
 /// The most a request's fields may add up to before C warns of them
@@ -96,8 +98,58 @@ struct After {
     resets: Vec<(StreamId, u32)>,
     /// Streams whose bodies have more to give.
     resumes: Vec<StreamId>,
+    /// The receive window each stream's transfer asks for, as it took
+    /// what came.
+    windows: Vec<(StreamId, i32)>,
     /// The peer said GOAWAY.
     goaway: Option<GoAway>,
+}
+
+/// The receive window a transfer's stream asks for: none while its
+/// output is failed or paused, what a rate limit allows under one, the
+/// most otherwise (`cf_h2_get_desired_local_win`, `cf_h2_update_local_win`).
+/// A paused way's allowance is none, as C's blocked limit's is.
+fn wanted_window<H: Host>(cx: &mut StepCx<'_, H>, failed: bool) -> i32 {
+    if failed {
+        return 0;
+    }
+    match cx.rate_allowance(Way::Recv) {
+        Some(..=0) => 0,
+        Some(avail) => i32::try_from(avail).map_or(STREAM_WINDOW_MAX, |a| a.min(STREAM_WINDOW_MAX)),
+        None => STREAM_WINDOW_MAX,
+    }
+}
+
+/// A window the session could not set fails the transfer as C's does.
+fn window_failed<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    stream: StreamId,
+    wanted: i32,
+    failed: WindowFailed,
+) -> ErrorKind {
+    let id = stream.0;
+    let kind = ErrorKind::Http2;
+    match failed {
+        WindowFailed::Set { grows: true, e } => {
+            let (code, text) = (e.code, e.text);
+            let why = format_args!(
+                "[{id}] nghttp2 set_local_window_size({wanted}) failed: {text}({code})"
+            );
+            trace::fail(cx, kind, why)
+        }
+        WindowFailed::Set { grows: false, e } => {
+            let (code, text) = (e.code, e.text);
+            let why = format_args!(
+                "[{id}] nghttp2_session_set_local_window_size() failed: {text}({code})"
+            );
+            trace::fail(cx, kind, why)
+        }
+        WindowFailed::Update(e) => {
+            let (code, text) = (e.code, e.text);
+            let why = format_args!("[{id}] nghttp2_submit_window_update() failed: {text}({code})");
+            trace::fail(cx, kind, why)
+        }
+    }
 }
 
 /// What the session sends with, for a request's step: the stepping
@@ -640,6 +692,18 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<StreamRecv, ErrorKind> {
+        // The window as the transfer asks now: it may have been paused or
+        // unpaused since (`stream_recv`'s `cf_h2_update_local_win`).
+        if self.stream().failed.is_none()
+            && let Some(id) = self.stream().id
+            && lease.conn().is_h2()
+        {
+            let wanted = wanted_window(cx, false);
+            if let Err(e) = with_session(lease, |h2, _| h2.window_to(id, wanted)) {
+                let kind = window_failed(cx, id, wanted, e);
+                self.stream().failed = Some(kind);
+            }
+        }
         let stream = self.stream();
         if let Some(e) = stream.failed {
             return Err(e);
@@ -787,9 +851,19 @@ impl Request {
             })
         });
         let goaway = after.goaway;
-        with_session(lease, |h2, _| {
+        let unset = with_session(lease, |h2, _| {
             if let Some(goaway) = goaway {
                 h2.set_goaway(goaway);
+            }
+            // Each window as its transfer asks, before what it took is
+            // consumed, as C's write does before `on_data_chunk_recv`
+            // consumes.
+            let mut unset = None;
+            for &(stream, wanted) in &after.windows {
+                if let Err(e) = h2.window_to(stream, wanted) {
+                    unset = Some((stream, wanted, e));
+                    break;
+                }
             }
             for &(stream, n) in &after.consumed {
                 // Only a fatal failure matters, and consuming has none.
@@ -801,7 +875,17 @@ impl Request {
             for &stream in &after.resumes {
                 let _resumed = h2.session().resume(stream);
             }
+            // A sibling's window the session could not set ends its stream,
+            // which its transfer finds failed when it next reads.
+            if let Some((stream, _, _)) = unset.as_ref().filter(|u| Some(u.0) != own) {
+                let _reset = h2.session().reset(*stream, 0xffff_fc7a);
+            }
+            unset
         });
+        if let Some((stream, wanted, e)) = unset.filter(|u| Some(u.0) == own) {
+            let kind = window_failed(cx, stream, wanted, e);
+            self.stream().failed = Some(kind);
+        }
         if goaway.is_some() {
             // No new request goes on it (`Curl_multi_connchanged`), and
             // each stream on it learns so.
@@ -889,8 +973,10 @@ impl Request {
                 }
                 if end_stream {
                     self.stream_end(stream, after);
+                    return Heard::Fine;
                 }
-                Heard::Fine
+                let wanted = wanted_window(cx, self.stream().failed.is_some());
+                pushed(after.windows.try_push((stream, wanted)))
             }
             Event::Data { stream, bytes } if ours(stream) => {
                 if !self.stream().body_started {
@@ -905,7 +991,13 @@ impl Request {
                         after.resets.try_push((stream, 0xffff_fc7a)).ok();
                     }
                 }
-                pushed(after.consumed.try_push((stream, bytes.len())))
+                let wanted = wanted_window(cx, self.stream().failed.is_some());
+                pushed(
+                    after
+                        .windows
+                        .try_push((stream, wanted))
+                        .and_then(|()| after.consumed.try_push((stream, bytes.len()))),
+                )
             }
             // Nobody reads it: consumed as it comes.
             Event::Data { stream, bytes } => pushed(after.consumed.try_push((stream, bytes.len()))),

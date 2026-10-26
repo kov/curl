@@ -20,9 +20,13 @@ use crate::multi::TransferId;
 /// (`H2_STREAM_WINDOW_SIZE_INITIAL`).
 pub(crate) const STREAM_WINDOW: u32 = 64 * 1024;
 
+/// A stream's receive window once its transfer takes what it is sent,
+/// and no rate limit holds it (`H2_STREAM_WINDOW_SIZE_MAX`).
+pub(crate) const STREAM_WINDOW_MAX: i32 = 10 * 1024 * 1024;
+
 /// The connection's receive window: as large as it goes, the streams'
 /// own windows doing the flow control (`HTTP2_HUGE_WINDOW_SIZE`).
-const CONNECTION_WINDOW: i32 = 100 * 10 * 1024 * 1024;
+const CONNECTION_WINDOW: i32 = 100 * STREAM_WINDOW_MAX;
 
 /// The most the session's output may hold before it is sent on
 /// (`H2_NW_SEND_CHUNKS` of `H2_CHUNK_SIZE`).
@@ -47,7 +51,25 @@ pub(crate) struct H2Conn {
     sent_goaway: bool,
     /// Each open stream's transfer, as its request opened it, until the
     /// request is over (C's stream user data).
-    routes: Vec<(StreamId, TransferId)>,
+    routes: Vec<Route>,
+}
+
+/// Which call setting a stream's window failed, and how.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum WindowFailed {
+    /// Setting its size, growing it or not.
+    Set { grows: bool, e: FrameError },
+    /// Telling the peer it grew.
+    Update(FrameError),
+}
+
+/// An open stream, as its transfer has it.
+#[derive(Clone, Copy, Debug)]
+struct Route {
+    stream: StreamId,
+    to: TransferId,
+    /// The receive window last asked for it (`local_window_size`).
+    window: i32,
 }
 
 impl std::fmt::Debug for H2Conn {
@@ -157,35 +179,66 @@ impl H2Conn {
     /// Stream `stream` is transfer `to`'s, from its opening on.
     pub(crate) fn route(&mut self, stream: StreamId, to: TransferId) -> Result<(), OutOfMemory> {
         debug_assert!(self.route_of(stream).is_none(), "{stream:?} routed twice");
-        self.routes.try_push((stream, to))
+        self.routes.try_push(Route {
+            stream,
+            to,
+            window: STREAM_WINDOW as i32,
+        })
     }
 
     /// Stream `stream` is no transfer's any more: its request is over.
     pub(crate) fn unroute(&mut self, stream: StreamId) {
-        self.routes.retain(|&(s, _)| s != stream);
+        self.routes.retain(|r| r.stream != stream);
     }
 
     /// The transfer stream `stream` is for, while its request runs.
     pub(crate) fn route_of(&self, stream: StreamId) -> Option<TransferId> {
         self.routes
             .iter()
-            .find(|&&(s, _)| s == stream)
-            .map(|&(_, to)| to)
+            .find(|r| r.stream == stream)
+            .map(|r| r.to)
     }
 
     /// The transfers of the streams open, but `but`'s.
     pub(crate) fn others(&self, but: TransferId) -> impl Iterator<Item = TransferId> + '_ {
         self.routes
             .iter()
-            .map(|&(_, to)| to)
+            .map(|r| r.to)
             .filter(move |&to| to != but)
     }
 
     /// Each open stream's transfer, copied.
     pub(crate) fn routes_copied(&self) -> Result<Vec<(StreamId, TransferId)>, OutOfMemory> {
         let mut routes = Vec::new();
-        routes.try_extend_from_slice(&self.routes)?;
+        for r in &self.routes {
+            routes.try_push((r.stream, r.to))?;
+        }
         Ok(routes)
+    }
+
+    /// Ask for `stream`'s receive window to be `wanted`, as its transfer
+    /// can take: none while its output is paused, so that the server
+    /// holds back what it would only buffer (`cf_h2_update_local_win`).
+    /// Growing it, the peer is told by how much, as C tells it.
+    pub(crate) fn window_to(&mut self, stream: StreamId, wanted: i32) -> Result<(), WindowFailed> {
+        let Some(route) = self.routes.iter_mut().find(|r| r.stream == stream) else {
+            return Ok(());
+        };
+        if route.window == wanted {
+            return Ok(());
+        }
+        let now = self.session.stream_window(stream);
+        let grows = wanted > now;
+        self.session
+            .set_stream_window(stream, wanted)
+            .map_err(|e| WindowFailed::Set { grows, e })?;
+        if grows {
+            self.session
+                .submit_window_update(stream, wanted - now)
+                .map_err(WindowFailed::Update)?;
+        }
+        route.window = wanted;
+        Ok(())
     }
 
     pub(crate) fn goaway(&self) -> Option<GoAway> {

@@ -858,9 +858,8 @@ the system's under the HTTP-only programs installed here.
       health check, saying GOAWAY as it shuts down; `--http2`, `--http2-prior-knowledge`,
       `CURLOPT_STREAM_WEIGHT`, `CURLMOPT_PIPELINING`, `CURLMOPT_MAX_CONCURRENT_STREAMS`;
       `HTTP2` claimed and nghttp2 listed. 471, 1700, 1702, 1704, 1800, 2400–2403 and 2406
-      pass; of pytest's HTTP/2 cases, those of one transfer at a time. Not built: a paused
-      stream's window (one stream stops reading instead), `curl_easy_upkeep`'s PING, and the
-      `--trace-config http/2` lines.
+      pass; of pytest's HTTP/2 cases, those of one transfer at a time. Not built:
+      `curl_easy_upkeep`'s PING, and the `--trace-config http/2` lines.
     - **b. Multiplexing,** with 51, in parts. **In progress.**
       - **1. Sharing a connection.** **Done.** A transfer joins the multi's HTTP/2 connection
         to its origin within the multi's and the server's limits on streams, each stream's
@@ -868,8 +867,9 @@ the system's under the HTTP-only programs installed here.
         buffer. 2404 passes.
       - **2. `PIPEWAIT`** and `--parallel-immediate`: a transfer waits for a connection being
         set up to its origin to say whether it multiplexes. **Done.** 2405 and 2407 pass.
-      - **3. A paused stream's window,** its sibling's window kept; server push
-        (`CURLMOPT_PUSHFUNCTION`). **To do.**
+      - **3. A paused stream's window,** its sibling's window kept: **done**; each stream's
+        receive window follows its transfer's pause and receive limit. Server push
+        (`CURLMOPT_PUSHFUNCTION`): **to do.**
       - **4. TLS early data** (pytest 02_32, 07_70, 08_08). **To do.**
     - **c. HTTP/2 to an HTTPS proxy** (`--proxy-http2`, `CURLPROXY_HTTPS2`): a request sent
       on through it, and a tunnel as a stream (`cf-h2-proxy.c`); pytest test_10, test_13 and

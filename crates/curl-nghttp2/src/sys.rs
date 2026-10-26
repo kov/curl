@@ -266,6 +266,16 @@ unsafe extern "C" {
         stream_id: i32,
         window_size: i32,
     ) -> c_int;
+    pub(crate) fn nghttp2_session_get_stream_effective_local_window_size(
+        session: *mut nghttp2_session,
+        stream_id: i32,
+    ) -> i32;
+    pub(crate) fn nghttp2_submit_window_update(
+        session: *mut nghttp2_session,
+        flags: u8,
+        stream_id: i32,
+        window_size_increment: i32,
+    ) -> c_int;
     pub(crate) fn nghttp2_session_upgrade2(
         session: *mut nghttp2_session,
         settings_payload: *const u8,

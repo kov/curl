@@ -11,7 +11,10 @@
 //! - `D <id> <len> <end>\n` then `<len>` bytes: DATA.
 //! - `R <id> <code>\n`: RST_STREAM.
 //! - `G <last> <code>\n`: GOAWAY.
-//! - `U <id>\n`: WINDOW_UPDATE.
+//! - `U <id>\n`: WINDOW_UPDATE; the client's says by how much,
+//!   `U <id> <n>\n`. Each stream's receive window starts at 64 KiB, and
+//!   the server is not held to it; as with nghttp2, a closed stream's
+//!   window is no one's, and an update queued for it is not sent.
 //! - `P\n`: PING.
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
@@ -83,7 +86,12 @@ struct Stream {
     /// It has a body to read.
     body: bool,
     closed: bool,
+    /// Its receive window, less 64 KiB, its start.
+    window: i32,
 }
+
+/// Each stream's receive window as it opens.
+const STREAM_WINDOW: i32 = 64 * 1024;
 
 /// A fake session.
 #[derive(Debug, Default)]
@@ -107,6 +115,21 @@ impl FakeSession {
             .iter_mut()
             .find(|(i, _)| *i == id)
             .map(|(_, s)| s)
+    }
+
+    /// `id`, while it is open.
+    fn open(&mut self, id: i32) -> Option<&mut Stream> {
+        self.stream(id).filter(|s| !s.closed)
+    }
+
+    /// Whether `frame` is a WINDOW_UPDATE for a stream since closed.
+    fn stale_update(&mut self, frame: &[u8]) -> bool {
+        let Some(rest) = frame.strip_prefix(b"U ") else {
+            return false;
+        };
+        let id = rest.split(|&b| b == b' ').next().unwrap_or_default();
+        let id: i32 = std::str::from_utf8(id).unwrap().parse().unwrap();
+        id != 0 && self.open(id).is_none()
     }
 
     /// Close `id` if both its sides are done, telling `events`.
@@ -383,6 +406,9 @@ impl Session for FakeSession {
             });
         }
         while let Some(frame) = self.queued.pop_front() {
+            if self.stale_update(&frame) {
+                continue;
+            }
             if !out(&frame) {
                 return Ok(());
             }
@@ -428,6 +454,9 @@ impl Session for FakeSession {
             }
         }
         while let Some(frame) = self.queued.pop_front() {
+            if self.stale_update(&frame) {
+                continue;
+            }
             if !out(&frame) {
                 return Ok(());
             }
@@ -436,6 +465,30 @@ impl Session for FakeSession {
     }
 
     fn consume(&mut self, _: StreamId, _: usize) -> Result<(), FrameError> {
+        Ok(())
+    }
+
+    fn set_stream_window(&mut self, stream: StreamId, size: i32) -> Result<(), FrameError> {
+        let Some(s) = self.open(stream.0) else {
+            return Ok(());
+        };
+        s.window = size - STREAM_WINDOW;
+        Ok(())
+    }
+
+    fn stream_window(&self, stream: StreamId) -> i32 {
+        self.streams
+            .iter()
+            .find(|(i, s)| *i == stream.0 && !s.closed)
+            .map_or(-1, |(_, s)| s.window + STREAM_WINDOW)
+    }
+
+    fn submit_window_update(&mut self, stream: StreamId, by: i32) -> Result<(), FrameError> {
+        let id = stream.0;
+        if self.open(id).is_none() {
+            return Ok(());
+        }
+        self.queued.push_back(format!("U {id} {by}\n").into_bytes());
         Ok(())
     }
 

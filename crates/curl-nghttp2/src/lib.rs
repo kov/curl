@@ -373,6 +373,27 @@ impl curl_core::http2::Session for Session {
         check_h2(unsafe { sys::nghttp2_session_consume(self.raw.as_ptr(), stream.0, n) })
     }
 
+    fn set_stream_window(&mut self, stream: StreamId, size: i32) -> Result<(), FrameError> {
+        // SAFETY: the session.
+        check_h2(unsafe {
+            sys::nghttp2_session_set_local_window_size(self.raw.as_ptr(), 0, stream.0, size)
+        })
+    }
+
+    fn stream_window(&self, stream: StreamId) -> i32 {
+        // SAFETY: the session.
+        unsafe {
+            sys::nghttp2_session_get_stream_effective_local_window_size(self.raw.as_ptr(), stream.0)
+        }
+    }
+
+    fn submit_window_update(&mut self, stream: StreamId, increment: i32) -> Result<(), FrameError> {
+        // SAFETY: the session.
+        check_h2(unsafe {
+            sys::nghttp2_submit_window_update(self.raw.as_ptr(), 0, stream.0, increment)
+        })
+    }
+
     fn resume(&mut self, stream: StreamId) -> Result<(), FrameError> {
         // SAFETY: the session.
         check_h2(unsafe { sys::nghttp2_session_resume_data(self.raw.as_ptr(), stream.0) })

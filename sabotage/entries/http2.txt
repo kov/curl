@@ -338,3 +338,19 @@ witness: curl-core proto::http::tests::h2::a_step_reads_a_buffer_of_the_connecti
             if reads == MAX_READS || taken >= cx.easy().options().limits.buffer_size.get() {
 --- new
             if reads == MAX_READS {
+
+=== a paused stream keeps its window open
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_paused_streams_window_closes_until_it_is_unpaused
+--- old
+        Some(..=0) => 0,
+--- new
+        Some(..=0) => STREAM_WINDOW_MAX,
+
+=== an unpaused stream's window is not reopened as it next reads
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_paused_streams_window_closes_until_it_is_unpaused
+--- old
+            let wanted = wanted_window(cx, false);
+--- new
+            let wanted = wanted_window(cx, true);

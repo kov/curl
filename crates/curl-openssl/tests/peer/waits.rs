@@ -144,8 +144,12 @@ impl Net for Stutter {
     ) -> io::Result<u32> {
         self.0.poll(sockets, fds, timeout)
     }
-    fn open(&mut self, addr: &Remote) -> io::Result<Box<dyn Socket>> {
-        let inner = self.0.open(addr)?;
+    fn open(
+        &mut self,
+        addr: &Remote,
+        kind: curl_core::conn::io::SocketKind,
+    ) -> io::Result<Box<dyn Socket>> {
+        let inner = self.0.open(addr, kind)?;
         let socket = StutterSocket {
             inner,
             stutter: self.1.stutter,

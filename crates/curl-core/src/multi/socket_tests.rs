@@ -99,8 +99,9 @@ impl Net for Counting {
     fn open(
         &mut self,
         addr: &crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
     ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
-        self.0.open(addr)
+        self.0.open(addr, kind)
     }
 
     fn close(&mut self, socket: crate::conn::io::Sock) {
@@ -488,8 +489,9 @@ impl Net for Waking {
     fn open(
         &mut self,
         addr: &crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
     ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
-        self.0.open(addr)
+        self.0.open(addr, kind)
     }
 
     fn close(&mut self, socket: crate::conn::io::Sock) {
@@ -713,8 +715,9 @@ impl Net for Stalling {
     fn open(
         &mut self,
         addr: &crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
     ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
-        self.0.lock().unwrap().open(addr)
+        self.0.lock().unwrap().open(addr, kind)
     }
 
     fn close(&mut self, socket: crate::conn::io::Sock) {

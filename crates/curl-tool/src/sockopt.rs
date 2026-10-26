@@ -6,7 +6,7 @@
 use std::io;
 
 use curl_alloc::try_box;
-use curl_core::conn::io::{Protocol, Remote, Socket, SocketOption};
+use curl_core::conn::io::{Protocol, Remote, Socket, SocketKind, SocketOption};
 use curl_core::handler::{Configured, SocketConfigurer, SocketOpener, SocketToSet};
 use curl_core::multi::TransferCx;
 
@@ -17,10 +17,18 @@ use crate::msgs::Messages;
 pub(crate) struct Mptcp;
 
 impl SocketOpener for Mptcp {
-    fn open(&self, _: &mut TransferCx<'_>, address: &mut Remote) -> io::Result<Box<dyn Socket>> {
+    fn open(
+        &self,
+        _: &mut TransferCx<'_>,
+        address: &mut Remote,
+        kind: SocketKind,
+    ) -> io::Result<Box<dyn Socket>> {
         // As the opener is asked for one: neither connected nor
         // nonblocking yet. A Unix socket speaks no TCP to make
-        // Multipath.
+        // Multipath, nor a socket for datagrams.
+        if kind == SocketKind::Datagram {
+            return curl_core::conn::io::open_kind(address, kind, false);
+        }
         let socket = curl_core::conn::io::open_remote(address, Protocol::Mptcp, false)?;
         Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?)
     }

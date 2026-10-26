@@ -108,9 +108,9 @@ witness: curl-core proto::http::tests::tcp_trace::a_configurer_failing_a_socket_
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::tcp_trace::an_opener_may_change_the_address
 --- old
-        let opened = cx.open_socket(&mut remote);
+        let opened = cx.open_socket(&mut remote, kind);
 --- new
-        let opened = cx.open_socket(&mut remote.clone());
+        let opened = cx.open_socket(&mut remote.clone(), kind);
 
 === keepalive's times and count are set with keepalive off
 file: crates/curl-core/src/conn/connect.rs

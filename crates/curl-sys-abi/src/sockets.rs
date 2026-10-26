@@ -20,7 +20,7 @@ use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use curl_alloc::{OutOfMemory, try_box};
-use curl_core::conn::io::{Remote, Socket, SocketKey};
+use curl_core::conn::io::{Remote, Socket, SocketKey, SocketKind};
 use curl_core::handler::{
     Configured, Handler, PrereqHandler, ResolveStartHandler, SocketCloser, SocketConfigurer,
     SocketOpener, SocketToSet,
@@ -132,9 +132,10 @@ struct SockaddrEx {
 const _: () = assert!(core::mem::offset_of!(SockaddrEx, addr) == 16);
 
 impl SockaddrEx {
-    /// A TCP stream to `to`, as C asks the opener for one: close-on-exec,
-    /// never nonblocking (`cf_socket_open`).
-    fn tcp(to: SocketAddr) -> SockaddrEx {
+    /// A socket of `kind` to `to`, as C asks the opener for one: a TCP
+    /// stream or a UDP socket, close-on-exec, never nonblocking
+    /// (`cf_socket_open`, `Curl_sock_assign_addr`).
+    fn inet(to: SocketAddr, kind: SocketKind) -> SockaddrEx {
         // SAFETY: all-zero bytes are a valid `sockaddr_storage`.
         let mut addr: libc::sockaddr_storage = unsafe { core::mem::zeroed() };
         let (family, len) = match to {
@@ -167,10 +168,14 @@ impl SockaddrEx {
                 (libc::AF_INET6, size_of::<libc::sockaddr_in6>())
             }
         };
+        let (socktype, protocol) = match kind {
+            SocketKind::Stream => (libc::SOCK_STREAM, libc::IPPROTO_TCP),
+            SocketKind::Datagram => (libc::SOCK_DGRAM, libc::IPPROTO_UDP),
+        };
         SockaddrEx {
             family,
-            socktype: libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
-            protocol: libc::IPPROTO_TCP,
+            socktype: socktype | libc::SOCK_CLOEXEC,
+            protocol,
             addrlen: c_uint::try_from(len).expect("an address's size fits"),
             addr,
         }
@@ -240,20 +245,20 @@ impl SocketOpener for Adapter {
     /// The descriptor the application's opener returns, owned from then
     /// on, and the address it may have changed; `CURL_SOCKET_BAD` with
     /// the error number it left (`socket_open`).
-    fn open(&self, cx: &mut TransferCx<'_>, address: &mut Remote) -> io::Result<Box<dyn Socket>> {
+    fn open(
+        &self,
+        cx: &mut TransferCx<'_>,
+        address: &mut Remote,
+        kind: SocketKind,
+    ) -> io::Result<Box<dyn Socket>> {
         let c = self.sockets();
         let Some(f) = c.open else {
             // Cleared since the transfer started: the system opens it,
             // as C does once its function is NULL.
-            let socket = curl_core::conn::io::open_remote(
-                address,
-                curl_core::conn::io::Protocol::Tcp,
-                false,
-            )?;
-            return Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?);
+            return curl_core::conn::io::open_kind(address, kind, false);
         };
         let mut ex = match address {
-            Remote::Inet(to) => SockaddrEx::tcp(*to),
+            Remote::Inet(to) => SockaddrEx::inet(*to, kind),
             Remote::Unix(to) => SockaddrEx::unix(to.path(), to.is_abstract()),
         };
         let fd = self.call(cx, || {
@@ -273,13 +278,24 @@ impl SocketOpener for Adapter {
         }
         // SAFETY: the opener hands the descriptor over, open, as its
         // contract says; nothing else closes it.
-        let socket = unsafe { curl_core::conn::io::adopt(fd) };
+        let socket: Box<dyn Socket> = match kind {
+            SocketKind::Stream => {
+                // SAFETY: as above.
+                try_box(unsafe { curl_core::conn::io::adopt(fd) })
+                    .map_err(|_| io::ErrorKind::OutOfMemory)?
+            }
+            SocketKind::Datagram => {
+                // SAFETY: as above.
+                try_box(unsafe { curl_core::conn::io::adopt_udp(fd) })
+                    .map_err(|_| io::ErrorKind::OutOfMemory)?
+            }
+        };
         // A Unix socket's address is not read back: it is connected to
         // as the options name it.
         if let (Remote::Inet(to), Some(changed)) = (&mut *address, ex.read()) {
             *to = changed;
         }
-        Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?)
+        Ok(socket)
     }
 }
 
@@ -461,6 +477,32 @@ mod tests {
         let mut t = IpText::new();
         t.bytes(&[b'p'; 100]);
         assert_eq!(read(&mut t), [b'p'; 45]);
+    }
+
+    /// An opener is asked for a TCP stream or, for QUIC, a UDP socket, as
+    /// C asks (`Curl_sock_assign_addr` by the transport).
+    #[test]
+    fn an_opener_is_asked_for_the_socket_the_transport_needs() {
+        let to: SocketAddr = "127.0.0.1:443".parse().unwrap();
+        let stream = SockaddrEx::inet(to, SocketKind::Stream);
+        assert_eq!(
+            (stream.family, stream.socktype, stream.protocol),
+            (
+                libc::AF_INET,
+                libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                libc::IPPROTO_TCP
+            )
+        );
+        let dgram = SockaddrEx::inet(to, SocketKind::Datagram);
+        assert_eq!(
+            (dgram.family, dgram.socktype, dgram.protocol),
+            (
+                libc::AF_INET,
+                libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
+                libc::IPPROTO_UDP
+            )
+        );
+        assert_eq!(dgram.read(), Some(to));
     }
 
     /// An opener is handed a Unix socket's address as C hands it

@@ -15,11 +15,21 @@ use crate::time::Instant;
 
 pub use curl_os::net::{
     AF_INET, AF_INET6, Connect, InterfaceAddress, Ipv6Scope, Protocol, Recv, Sent, SocketOption,
-    TcpSocket, adopt, ipv6_scope, open,
+    TcpSocket, UdpSocket, adopt, adopt_udp, ipv6_scope, open, open_udp,
 };
 pub use curl_os::poll::{Events, PollFd};
 pub use curl_os::resolve::{Failure as ResolveFailure, Family};
 pub use curl_os::wake::Waker;
+
+/// What a socket carries: a stream (TCP's, or a Unix socket's), or
+/// datagrams (UDP's, for QUIC), as C opens them `SOCK_STREAM` or
+/// `SOCK_DGRAM` by the connection's transport.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SocketKind {
+    #[default]
+    Stream,
+    Datagram,
+}
 
 /// A socket's number, as C hands it to the application (`curl_socket_t`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -431,9 +441,9 @@ pub trait Net {
         timeout: Duration,
     ) -> io::Result<u32>;
 
-    /// Open a nonblocking stream socket for `addr`'s family, TCP or Unix,
-    /// not connected yet.
-    fn open(&mut self, addr: &Remote) -> io::Result<Box<dyn Socket>>;
+    /// Open a nonblocking socket of `kind` for `addr`'s family: a stream,
+    /// TCP or Unix, or a UDP socket for datagrams; not connected yet.
+    fn open(&mut self, addr: &Remote, kind: SocketKind) -> io::Result<Box<dyn Socket>>;
 
     /// Close a socket the network opened, through its closer.
     fn close(&mut self, socket: Sock);
@@ -517,6 +527,82 @@ impl Socket for curl_os::net::TcpSocket {
     }
 }
 
+impl Socket for curl_os::net::UdpSocket {
+    fn key(&self) -> SocketKey {
+        SocketKey(self.fd().as_raw_fd())
+    }
+
+    fn readiness(&self) -> Readiness<'_> {
+        Readiness::Poll(self.fd())
+    }
+
+    fn take_error(&self) -> io::Result<Option<io::Error>> {
+        curl_os::net::UdpSocket::take_error(self)
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        curl_os::net::UdpSocket::local_addr(self)
+    }
+
+    fn set(&self, option: SocketOption) -> io::Result<()> {
+        curl_os::net::UdpSocket::set(self, option)
+    }
+
+    fn set_nonblocking(&self) -> io::Result<()> {
+        curl_os::net::UdpSocket::set_nonblocking(self)
+    }
+
+    fn bind(&self, addr: SocketAddr) -> io::Result<()> {
+        curl_os::net::UdpSocket::bind(self, addr)
+    }
+
+    fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
+        curl_os::net::UdpSocket::bind_to_device(self, name)
+    }
+
+    /// A Unix socket carries no datagrams of QUIC's: no route asks.
+    fn connect(&self, addr: &Remote) -> io::Result<Connect> {
+        match addr {
+            Remote::Inet(a) => curl_os::net::UdpSocket::connect(self, *a),
+            Remote::Unix(_) => Err(io::Error::from(io::ErrorKind::InvalidInput)),
+        }
+    }
+
+    fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
+        curl_os::net::UdpSocket::recv(self, buf)
+    }
+
+    fn send(&self, buf: &[u8]) -> io::Result<Sent> {
+        curl_os::net::UdpSocket::send(self, buf)
+    }
+
+    fn release(self: Box<Self>) -> SocketKey {
+        SocketKey(self.into_raw())
+    }
+}
+
+/// A close-on-exec socket of `kind` for `addr`, nonblocking if
+/// `nonblocking`, as the system opens one when the application has no
+/// opener: a stream speaking TCP, or a UDP socket for datagrams. A Unix
+/// socket is a stream.
+pub fn open_kind(
+    addr: &Remote,
+    kind: SocketKind,
+    nonblocking: bool,
+) -> io::Result<Box<dyn Socket>> {
+    let oom = |_| io::Error::from(io::ErrorKind::OutOfMemory);
+    match (addr, kind) {
+        (Remote::Inet(a), SocketKind::Datagram) => {
+            try_box(curl_os::net::open_udp(*a, nonblocking)?)
+                .map_err(oom)
+                .map(|s| s as Box<dyn Socket>)
+        }
+        _ => try_box(open_remote(addr, Protocol::Tcp, nonblocking)?)
+            .map_err(oom)
+            .map(|s| s as Box<dyn Socket>),
+    }
+}
+
 /// A close-on-exec stream socket for `addr`'s family, speaking `protocol`
 /// over TCP's, nonblocking if `nonblocking`: not connected yet. A Unix
 /// socket speaks no protocol of TCP's (`CURL_SOCKET`'s, protocol 0).
@@ -565,9 +651,8 @@ impl Net for SystemNet {
         poll_together(sockets, fds, timeout)
     }
 
-    fn open(&mut self, addr: &Remote) -> io::Result<Box<dyn Socket>> {
-        let socket = open_remote(addr, Protocol::Tcp, true)?;
-        Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?)
+    fn open(&mut self, addr: &Remote, kind: SocketKind) -> io::Result<Box<dyn Socket>> {
+        open_kind(addr, kind, true)
     }
 
     fn close(&mut self, socket: Sock) {
@@ -1025,6 +1110,8 @@ pub struct FakeNet {
     /// Whether its resolver gives no reason for a failure, as the
     /// threaded resolver gives none, rather than c-ares's.
     no_reasons: bool,
+    /// How many of the sockets it opened were for datagrams.
+    datagrams: u32,
 }
 
 /// The gate of a fake name answered late: its resolves wait until the
@@ -1111,6 +1198,7 @@ impl FakeNet {
             interfaces: Vec::new(),
             binding: None,
             no_reasons: false,
+            datagrams: 0,
         }
     }
 
@@ -1322,6 +1410,10 @@ impl FakeNet {
     }
 
     /// How many fake sockets are open.
+    pub fn datagram_sockets(&self) -> u32 {
+        self.datagrams
+    }
+
     pub fn open_sockets(&self) -> usize {
         self.open.iter().filter(|s| s.is_some()).count()
     }
@@ -1364,7 +1456,12 @@ impl Net for FakeNet {
     /// A socket to the peer at `addr`, if there is one, whose next
     /// conversation it has; to an address without one, its connect is
     /// refused at once.
-    fn open(&mut self, addr: &Remote) -> io::Result<Box<dyn Socket>> {
+    /// A socket for datagrams is counted, and carries its conversation as
+    /// a stream's does, each send and receive a datagram's bytes.
+    fn open(&mut self, addr: &Remote, kind: SocketKind) -> io::Result<Box<dyn Socket>> {
+        if kind == SocketKind::Datagram {
+            self.datagrams += 1;
+        }
         let peer = self.peers.iter().find(|(a, _)| a == addr).map(|&(_, p)| p);
         let wire = match self.conversations.iter().position(|(a, _)| a == addr) {
             Some(at) if peer.is_some() => self.conversations.remove(at).1,
@@ -1821,8 +1918,8 @@ impl Net for SharedNet {
         self.0.lock().unwrap().poll(sockets, fds, timeout)
     }
 
-    fn open(&mut self, addr: &Remote) -> io::Result<Box<dyn Socket>> {
-        self.0.lock().unwrap().open(addr)
+    fn open(&mut self, addr: &Remote, kind: SocketKind) -> io::Result<Box<dyn Socket>> {
+        self.0.lock().unwrap().open(addr, kind)
     }
 
     fn close(&mut self, socket: Sock) {
@@ -1860,7 +1957,9 @@ impl Net for SharedNet {
 #[cfg(test)]
 pub(crate) fn dial(net: &mut dyn Net, at: SocketAddr) -> Box<dyn Socket> {
     let at = Remote::Inet(at);
-    let socket = net.open(&at).expect("a test's socket opens");
+    let socket = net
+        .open(&at, SocketKind::Stream)
+        .expect("a test's socket opens");
     socket.connect(&at).expect("a test's connect starts");
     socket
 }
@@ -2026,13 +2125,13 @@ mod tests {
             .with_peer(at(1), Peer::Accepts)
             .with_peer(at(2), Peer::Refuses)
             .with_peer(at(3), Peer::Silent);
-        let nobody = net.open(&Remote::Inet(at(9))).unwrap();
+        let nobody = net.open(&Remote::Inet(at(9)), SocketKind::Stream).unwrap();
         let err = nobody.connect(&Remote::Inet(at(9))).unwrap_err();
         assert_eq!(err.raw_os_error(), Some(111), "no peer: refused at once");
         let unbound = SocketAddr::from(([0, 0, 0, 0], 0));
         assert_eq!(nobody.local_addr().unwrap(), unbound, "never bound");
         net.close(Sock::new(nobody, Closer::System));
-        let a = net.open(&Remote::Inet(at(1))).unwrap();
+        let a = net.open(&Remote::Inet(at(1)), SocketKind::Stream).unwrap();
         assert_eq!(a.local_addr().unwrap(), unbound, "bound as it connects");
         assert_eq!(
             a.connect(&Remote::Inet(at(1))).unwrap(),
@@ -2086,7 +2185,7 @@ mod tests {
         let at = SocketAddr::from(([127, 0, 0, 1], 1));
         let talk = Conversation::new(b"", false);
         let mut net = FakeNet::new(clock).with_conversation(at, talk.clone());
-        let refused = net.open(&Remote::Inet(at)).unwrap();
+        let refused = net.open(&Remote::Inet(at), SocketKind::Stream).unwrap();
         assert!(refused.connect(&Remote::Inet(at)).is_err(), "no peer yet");
         net.close(Sock::new(refused, Closer::System));
         let mut net = net.with_peer(at, Peer::Accepts);
@@ -2131,7 +2230,7 @@ mod tests {
         let clock = crate::time::ManualClock::new().unwrap();
         let at = SocketAddr::from(([127, 0, 0, 1], 1));
         let mut net = FakeNet::new(clock).with_peer(at, Peer::Accepts);
-        let s = net.open(&Remote::Inet(at)).unwrap();
+        let s = net.open(&Remote::Inet(at), SocketKind::Stream).unwrap();
         s.set(SocketOption::NoDelay).unwrap();
         s.set(SocketOption::KeepIdle(5)).unwrap();
         assert_eq!(

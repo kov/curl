@@ -3934,6 +3934,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         local,
         // Compared for any protocol, as C compares it (`url_match_auth`).
         delegation: cx.easy().options().login.delegation,
+        dial: crate::conn::Dial::Tcp,
     };
     setup(cx, Plan { proto, route })
 }

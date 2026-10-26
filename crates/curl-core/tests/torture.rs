@@ -995,8 +995,9 @@ impl Net for SharedNet {
     fn open(
         &mut self,
         addr: &curl_core::conn::io::Remote,
+        kind: curl_core::conn::io::SocketKind,
     ) -> std::io::Result<Box<dyn curl_core::conn::io::Socket>> {
-        self.0.lock().unwrap().open(addr)
+        self.0.lock().unwrap().open(addr, kind)
     }
 
     fn close(&mut self, socket: curl_core::conn::io::Sock) {

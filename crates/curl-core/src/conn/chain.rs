@@ -318,6 +318,7 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
+            dial: crate::conn::Dial::Tcp,
         };
         let shown = |made, under_way| {
             Chain::of(

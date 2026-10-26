@@ -25,7 +25,7 @@ use super::dns::DnsCache;
 use super::dns::{Answer, Lookup, Names};
 use super::io::{
     Closer, Connect, Events, Family, Net, Queued, Remote, Resolve, ResolveFailure, ResolveId, Sock,
-    Socket, SocketOption, SocketPoll, UnixPeer, Waiter,
+    Socket, SocketKind, SocketOption, SocketPoll, UnixPeer, Waiter,
 };
 use super::layer::{LayerAnswer, LayerCx, LayerQuery};
 use super::shutdown::ConnSettings;
@@ -198,7 +198,7 @@ pub(crate) trait ConnCx: LayerCx {
 
     /// A socket for `address`: the application's opener's, which may
     /// change the address, or else the network's (`socket_open`).
-    fn open_socket(&mut self, address: &mut Remote) -> Opened;
+    fn open_socket(&mut self, address: &mut Remote, kind: SocketKind) -> Opened;
 
     /// The socket set by the application's configurer, if it has one,
     /// before it connects.
@@ -294,9 +294,9 @@ impl ConnCx for Plain<'_> {
         Waiter::NONE
     }
 
-    fn open_socket(&mut self, address: &mut Remote) -> Opened {
+    fn open_socket(&mut self, address: &mut Remote, kind: SocketKind) -> Opened {
         Opened {
-            socket: self.net.open(address),
+            socket: self.net.open(address, kind),
             by_application: false,
         }
     }
@@ -891,7 +891,11 @@ impl ConnectMachine {
                 "determined scope_id={scope} for link-local address from local interface"
             ));
         }
-        let opened = cx.open_socket(&mut remote);
+        let kind = match self.route.dial {
+            super::Dial::Tcp => SocketKind::Stream,
+            super::Dial::Quic => SocketKind::Datagram,
+        };
+        let opened = cx.open_socket(&mut remote, kind);
         let socket = match opened.socket {
             Ok(socket) => socket,
             Err(error) if !opened.by_application && error.kind() == io::ErrorKind::OutOfMemory => {
@@ -1717,6 +1721,7 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
+            dial: crate::conn::Dial::Tcp,
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),
@@ -1815,6 +1820,7 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
+            dial: crate::conn::Dial::Tcp,
         };
         let m = ConnectMachine::new(
             ConnNumber(0),
@@ -1844,6 +1850,71 @@ mod tests {
         };
         assert_eq!(net.resolving(), 1);
         (m, net)
+    }
+
+    /// A route that dials QUIC opens a socket for datagrams for each
+    /// attempt, and one over TCP a stream (`cf_socket_open` by the
+    /// transport).
+    #[test]
+    fn a_route_over_quic_opens_a_socket_for_datagrams() {
+        for (dial, datagrams) in [(crate::conn::Dial::Tcp, 0), (crate::conn::Dial::Quic, 1)] {
+            let clock = ManualClock::new().unwrap();
+            let at: IpAddr = [127, 0, 0, 1].into();
+            let mut net = FakeNet::new(clock.clone())
+                .with_name("quic.test", &[at])
+                .with_peer(SocketAddr::new(at, 443), FakePeer::Silent);
+            let scheme = Scheme {
+                name: "https",
+                reuse: true,
+            };
+            let peer = Peer::new(scheme, b"quic.test".to_vec(), 443, None);
+            let route = Tcp {
+                origin: TryArc::try_new(peer).unwrap(),
+                via: None,
+                ip: IpVersion::Any,
+                proxy: None,
+                tls: None,
+                local: None,
+                delegation: Default::default(),
+                dial,
+            };
+            let mut m = ConnectMachine::new(
+                ConnNumber(0),
+                route,
+                clock.now(),
+                Closer::System,
+                ConnSettings::DEFAULT,
+            );
+            let setup = Setup {
+                wildcard: false,
+                max_age: Some(Duration::from_secs(60)),
+                delay: Duration::from_millis(200),
+                scope: None,
+                socket: SocketSetup::PLAIN,
+                haproxy: false,
+                layer: None,
+                linger: None,
+            };
+            let mut dns = DnsCache::default();
+            for _ in 0..10 {
+                let mut cx = Plain {
+                    net: &mut net,
+                    dns: &mut dns,
+                    now: clock.now(),
+                };
+                match m.drive(&mut cx, setup) {
+                    Ok(Drove::Connecting(next, Progress::Trying { .. })) => {
+                        m = next;
+                        break;
+                    }
+                    Ok(Drove::Connecting(next, _)) => m = next,
+                    other => panic!("{other:?}"),
+                }
+            }
+            assert_eq!(net.open_sockets(), 1, "{dial:?}");
+            assert_eq!(net.datagram_sockets(), datagrams, "{dial:?}");
+            m.close(&mut net);
+        }
     }
 
     /// A setup closed while its resolve waits cancels it.
@@ -1886,6 +1957,7 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
+            dial: crate::conn::Dial::Tcp,
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),

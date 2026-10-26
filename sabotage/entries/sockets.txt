@@ -171,3 +171,11 @@ witness: curl-sys-abi tls_tests::the_ssl_ctx_function_s_code_fails_the_transfer
 --- new
     let kind = ErrorKind::ALL.iter().find(|&&k| easy_code(k) == code);
     Err(kind.map_or(ErrorKind::AbortedByCallback, |_| ErrorKind::AbortedByCallback))
+
+=== an opener is asked for a stream for QUIC
+file: crates/curl-sys-abi/src/sockets.rs
+witness: curl-sys-abi sockets::tests::an_opener_is_asked_for_the_socket_the_transport_needs
+--- old
+            SocketKind::Datagram => (libc::SOCK_DGRAM, libc::IPPROTO_UDP),
+--- new
+            SocketKind::Datagram => (libc::SOCK_STREAM, libc::IPPROTO_UDP),

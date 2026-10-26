@@ -167,6 +167,7 @@ impl Route {
                     tls,
                     local,
                     delegation,
+                    dial,
                 } = have;
                 let Tcp {
                     origin: want_origin,
@@ -176,9 +177,11 @@ impl Route {
                     tls: want_tls,
                     local: want_local,
                     delegation: want_delegation,
+                    dial: want_dial,
                 } = want;
                 **origin == **want_origin
                     && delegation == want_delegation
+                    && dial == want_dial
                     // C compares the detours without their schemes
                     // (`Curl_peer_same_destination`); each has its
                     // origin's.
@@ -245,6 +248,24 @@ pub(crate) struct Tcp {
     /// (`conn->gssapi_delegation`): a transfer reusing it must ask the
     /// same (`url_match_auth`).
     pub(crate) delegation: crate::options::Delegation,
+    /// How the connection to its first hop is made: a TCP stream, or QUIC
+    /// over UDP (C's `transport_wanted`). A connection serves only a
+    /// transfer that dials as it did.
+    pub(crate) dial: Dial,
+}
+
+/// How a route's connection is dialed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Dial {
+    /// A TCP stream, or a Unix socket's (`TRNSPRT_TCP`, `TRNSPRT_UNIX`).
+    #[default]
+    Tcp,
+    /// QUIC over UDP (`TRNSPRT_QUIC`).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "a route dials QUIC once HTTP/3 is asked for")
+    )]
+    Quic,
 }
 
 impl Tcp {
@@ -1188,10 +1209,34 @@ mod tests {
                 tls: None,
                 local: None,
                 delegation: Default::default(),
+                dial: crate::conn::Dial::Tcp,
             })
         };
         assert!(over(b"/tmp/s").serves(&over(b"/tmp/s")));
         assert!(!over(b"/tmp/s").serves(&over(b"/tmp/t")));
+    }
+
+    /// A connection dialed over QUIC serves only a transfer that dials
+    /// QUIC, and one over TCP only one over TCP, the same origin
+    /// otherwise (`url_match_conn`'s `transport` check).
+    #[test]
+    fn a_connection_serves_only_a_transfer_that_dials_as_it_did() {
+        let dialed = |dial| {
+            Route::Tcp(Tcp {
+                origin: TryArc::try_new(peer(b"o.example", 443, None)).unwrap(),
+                via: None,
+                ip: IpVersion::Any,
+                proxy: None,
+                tls: None,
+                local: None,
+                delegation: Default::default(),
+                dial,
+            })
+        };
+        assert!(dialed(Dial::Quic).serves(&dialed(Dial::Quic)));
+        assert!(dialed(Dial::Tcp).serves(&dialed(Dial::Tcp)));
+        assert!(!dialed(Dial::Quic).serves(&dialed(Dial::Tcp)));
+        assert!(!dialed(Dial::Tcp).serves(&dialed(Dial::Quic)));
     }
 
     /// Peers are the same as `Curl_peer_equal` finds them: the host in
@@ -1280,6 +1325,7 @@ mod tests {
                 tls: None,
                 local: None,
                 delegation: Default::default(),
+                dial: crate::conn::Dial::Tcp,
             })
         };
         let have = tcp(
@@ -1370,6 +1416,7 @@ mod tests {
                 tls: tls.map(|t| TlsIdentity::of(t, Default::default()).unwrap()),
                 local: None,
                 delegation: Default::default(),
+                dial: crate::conn::Dial::Tcp,
             })
         };
         let verified = Tls::default();
@@ -1423,6 +1470,7 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
+            dial: crate::conn::Dial::Tcp,
         })
     }
 
@@ -1447,6 +1495,7 @@ mod tests {
                 tls: None,
                 local: local.binds().then(|| TryArc::try_new(local).unwrap()),
                 delegation: Default::default(),
+                dial: crate::conn::Dial::Tcp,
             })
         };
         let plain = bound("", 0, 0);
@@ -1480,6 +1529,7 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
+            dial: crate::conn::Dial::Tcp,
         });
         let route = via_proxy(b"proxy.example", None, true);
         assert!(route.serves(&via_proxy(b"PROXY.example", None, true)));

@@ -363,6 +363,7 @@ impl crate::handler::SocketOpener for Hooks {
         &self,
         _: &mut TransferCx<'_>,
         address: &mut Remote,
+        kind: crate::conn::io::SocketKind,
     ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
         if let Some(errno) = self.fail {
             return Err(std::io::Error::from_raw_os_error(errno));
@@ -370,7 +371,7 @@ impl crate::handler::SocketOpener for Hooks {
         if let Some(to) = self.to {
             *address = Remote::Inet(to);
         }
-        let socket = crate::conn::io::Net::open(&mut *self.net.lock().unwrap(), address)?;
+        let socket = crate::conn::io::Net::open(&mut *self.net.lock().unwrap(), address, kind)?;
         if self.dial {
             socket.connect(address)?;
         }
@@ -446,8 +447,9 @@ fn hooked(peer: Peer, hooks: impl FnOnce(&mut Hooks)) -> Hooked {
             &self,
             cx: &mut TransferCx<'_>,
             a: &mut Remote,
+            kind: crate::conn::io::SocketKind,
         ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
-            self.0.open(cx, a)
+            self.0.open(cx, a, kind)
         }
     }
     impl crate::handler::SocketConfigurer for Shared {
@@ -638,12 +640,13 @@ fn told_by_two_attempts(v6: Option<Peer>, refused: &'static [bool]) -> (Ran, Vec
             &self,
             _: &mut TransferCx<'_>,
             address: &mut Remote,
+            kind: crate::conn::io::SocketKind,
         ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
             let v6 = address.inet().is_some_and(|a| a.is_ipv6());
             if self.1[usize::from(v6)] {
                 return Err(std::io::Error::from_raw_os_error(0));
             }
-            crate::conn::io::Net::open(&mut *self.0.lock().unwrap(), address)
+            crate::conn::io::Net::open(&mut *self.0.lock().unwrap(), address, kind)
         }
     }
     #[derive(Clone, Default)]

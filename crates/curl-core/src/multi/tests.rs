@@ -866,6 +866,7 @@ impl Net for BrokenNet {
     fn open(
         &mut self,
         _: &crate::conn::io::Remote,
+        _kind: crate::conn::io::SocketKind,
     ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
         Err(std::io::Error::from_raw_os_error(9))
     }
@@ -1460,8 +1461,9 @@ impl Net for Patient {
     fn open(
         &mut self,
         addr: &crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
     ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
-        let socket = self.net.open(addr)?;
+        let socket = self.net.open(addr, kind)?;
         self.opened.push(socket.key());
         Ok(socket)
     }
@@ -2138,8 +2140,9 @@ impl Net for Closes {
     fn open(
         &mut self,
         addr: &crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
     ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
-        self.0.open(addr)
+        self.0.open(addr, kind)
     }
 
     fn close(&mut self, socket: crate::conn::io::Sock) {
@@ -2183,8 +2186,9 @@ impl Net for OneNet {
     fn open(
         &mut self,
         addr: &crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
     ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
-        self.0.lock().unwrap().open(addr)
+        self.0.lock().unwrap().open(addr, kind)
     }
 
     fn close(&mut self, socket: crate::conn::io::Sock) {
@@ -4304,8 +4308,9 @@ impl Net for Probed {
     fn open(
         &mut self,
         addr: &crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
     ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
-        self.0.open(addr)
+        self.0.open(addr, kind)
     }
 
     fn close(&mut self, socket: crate::conn::io::Sock) {

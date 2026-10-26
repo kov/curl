@@ -632,3 +632,19 @@ witness: curl-core a_get_survives_every_allocation_failing
         let slot = try_box(slot)?;
 --- new
         let slot = Box::new(slot);
+
+=== a connection over QUIC serves a transfer over TCP
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::a_connection_serves_only_a_transfer_that_dials_as_it_did
+--- old
+                    && dial == want_dial
+--- new
+                    && (dial == want_dial || true)
+
+=== a route over QUIC opens a stream socket
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::a_route_over_quic_opens_a_socket_for_datagrams
+--- old
+            super::Dial::Quic => SocketKind::Datagram,
+--- new
+            super::Dial::Quic => SocketKind::Stream,

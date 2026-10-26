@@ -205,15 +205,16 @@ pub trait HeaderHandler: Send + Sync {
 }
 
 /// Opens the sockets a transfer connects over, in place of the system
-/// (`CURLOPT_OPENSOCKETFUNCTION`): a stream socket for `address`'s
-/// family, TCP or Unix, not connected yet, which is made nonblocking once
-/// set. It may change `address`, which is then the one connected to. An
+/// (`CURLOPT_OPENSOCKETFUNCTION`): a socket of `kind` for `address`'s
+/// family, a stream (TCP or Unix) or a UDP socket for QUIC's datagrams,
+/// not connected yet, which is made nonblocking once set. It may change `address`, which is then the one connected to. An
 /// error fails the attempt, as a socket the system could not open does.
 pub trait SocketOpener: Send + Sync {
     fn open(
         &self,
         cx: &mut TransferCx<'_>,
         address: &mut crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
     ) -> io::Result<Box<dyn Socket>>;
 }
 

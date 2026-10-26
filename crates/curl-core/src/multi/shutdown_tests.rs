@@ -116,8 +116,12 @@ impl Net for Wire {
         self.0.lock().unwrap().net.poll(sockets, fds, timeout)
     }
 
-    fn open(&mut self, addr: &crate::conn::io::Remote) -> std::io::Result<Box<dyn Socket>> {
-        self.0.lock().unwrap().net.open(addr)
+    fn open(
+        &mut self,
+        addr: &crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
+    ) -> std::io::Result<Box<dyn Socket>> {
+        self.0.lock().unwrap().net.open(addr, kind)
     }
 
     fn close(&mut self, socket: Sock) {

@@ -397,15 +397,19 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         crate::conn::io::Waiter(Some(self.step.me()))
     }
 
-    fn open_socket(&mut self, address: &mut crate::conn::io::Remote) -> Opened {
+    fn open_socket(
+        &mut self,
+        address: &mut crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
+    ) -> Opened {
         let opener = self.step.easy().options().sockets.open.clone();
         match opener {
             Some(opener) => Opened {
-                socket: opener.open(&mut TransferCx::new(&mut *self.step), address),
+                socket: opener.open(&mut TransferCx::new(&mut *self.step), address, kind),
                 by_application: true,
             },
             None => Opened {
-                socket: self.step.rest.net.open(address),
+                socket: self.step.rest.net.open(address, kind),
                 by_application: false,
             },
         }
@@ -454,8 +458,12 @@ impl<H: Host> Net for DriveCx<'_, '_, H> {
         self.step.rest.net.poll(sockets, fds, timeout)
     }
 
-    fn open(&mut self, addr: &crate::conn::io::Remote) -> io::Result<Box<dyn Socket>> {
-        self.step.rest.net.open(addr)
+    fn open(
+        &mut self,
+        addr: &crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
+    ) -> io::Result<Box<dyn Socket>> {
+        self.step.rest.net.open(addr, kind)
     }
 
     /// The socket is closed for the transfer: said, then announced as it
@@ -558,8 +566,12 @@ impl Net for CloseLater<'_> {
         self.net.poll(sockets, fds, timeout)
     }
 
-    fn open(&mut self, addr: &crate::conn::io::Remote) -> io::Result<Box<dyn Socket>> {
-        self.net.open(addr)
+    fn open(
+        &mut self,
+        addr: &crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
+    ) -> io::Result<Box<dyn Socket>> {
+        self.net.open(addr, kind)
     }
 
     fn close(&mut self, socket: Sock) {
@@ -632,8 +644,12 @@ impl<H: Host> Net for Announcing<'_, H> {
         self.net.poll(sockets, fds, timeout)
     }
 
-    fn open(&mut self, addr: &crate::conn::io::Remote) -> io::Result<Box<dyn Socket>> {
-        self.net.open(addr)
+    fn open(
+        &mut self,
+        addr: &crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
+    ) -> io::Result<Box<dyn Socket>> {
+        self.net.open(addr, kind)
     }
 
     fn close(&mut self, socket: Sock) {
@@ -1169,8 +1185,12 @@ mod tests {
             self.0.poll(sockets, fds, timeout)
         }
 
-        fn open(&mut self, addr: &crate::conn::io::Remote) -> io::Result<Box<dyn Socket>> {
-            self.0.open(addr)
+        fn open(
+            &mut self,
+            addr: &crate::conn::io::Remote,
+            kind: crate::conn::io::SocketKind,
+        ) -> io::Result<Box<dyn Socket>> {
+            self.0.open(addr, kind)
         }
 
         fn close(&mut self, socket: Sock) {
@@ -1202,7 +1222,13 @@ mod tests {
         let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
         let mut net = FakeNet::new(ManualClock::new().unwrap()).with_peer(at, Peer::Accepts);
         let socks = (0..n)
-            .map(|_| Sock::new(net.open(&Remote::Inet(at)).unwrap(), Closer::System))
+            .map(|_| {
+                Sock::new(
+                    net.open(&Remote::Inet(at), crate::conn::io::SocketKind::Stream)
+                        .unwrap(),
+                    Closer::System,
+                )
+            })
             .collect();
         (Recording(net, Vec::new()), socks)
     }

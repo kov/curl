@@ -142,8 +142,11 @@ def assemble(leg, lib, tool):
     shutil.copy2(c_build / "tests/libtest/libtests", libtests)
     own_runpath(libtests, c_build / "lib", "$ORIGIN/../../lib")
     tools = {"rust": leg.cargo_out, "c": c_build / "src"}[tool]
-    for name in ("curl", "curlinfo"):
-        shutil.copy2(tools / name, leg.build / "src" / name)
+    # curlinfo reports the build's features, which runtests runs tests
+    # for: always ours, as every arm has a Rust part under test and a
+    # test of a feature it lacks says nothing of the C part.
+    for name, built in (("curl", tools), ("curlinfo", leg.cargo_out)):
+        shutil.copy2(built / name, leg.build / "src" / name)
         # C's curlinfo links no libcurl, so has no RUNPATH to it.
         if tool == "c" and needs_libcurl(leg.build / "src" / name):
             own_runpath(leg.build / "src" / name, c_build / "lib",

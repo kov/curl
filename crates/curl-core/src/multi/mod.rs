@@ -344,6 +344,11 @@ pub struct Multi<H: Host = NoHost> {
     /// A transfer was told the library is a debug build.
     #[cfg(feature = "debug-hooks")]
     warned: bool,
+    /// The debug build's `CURL_DEBUG` was set as the multi was made: its
+    /// internal trace is on, with the components of the first transfer
+    /// added, the process's.
+    #[cfg(feature = "debug-hooks")]
+    traces_internally: bool,
     /// The tests' layer each connection set up from here is given.
     #[cfg(any(test, feature = "test-util"))]
     linger: Option<crate::conn::layer::Linger>,
@@ -415,9 +420,31 @@ impl<H: Host> Multi<H> {
             life: Life::Alive,
             #[cfg(feature = "debug-hooks")]
             warned: false,
+            // C's internal handle is verbose under it (`Curl_multi_handle`).
+            #[cfg(feature = "debug-hooks")]
+            traces_internally: curl_os::env::is_set(b"CURL_DEBUG"),
             #[cfg(any(test, feature = "test-util"))]
             linger: None,
         })
+    }
+
+    /// Trace the work done for no transfer on standard error, `components`
+    /// saying which lines, as C's debug build traces its internal handle
+    /// under `CURL_DEBUG`.
+    pub fn trace_internally(&mut self, components: crate::components::Components) {
+        self.shutdowns
+            .trace_internally(crate::trace::Internal::new(components));
+    }
+
+    /// As `trace_internally`, to `sink`.
+    #[cfg(test)]
+    pub(crate) fn trace_internally_to(
+        &mut self,
+        components: crate::components::Components,
+        sink: crate::handler::Handler<dyn crate::handler::TextSink>,
+    ) {
+        self.shutdowns
+            .trace_internally(crate::trace::Internal::to(components, sink));
     }
 
     /// Keep the TLS sessions of `peers` peers, as many as C's
@@ -511,6 +538,13 @@ impl<H: Host> Multi<H> {
         // private multi goes.
         let mut easy = easy;
         easy.private = None;
+        #[cfg(feature = "debug-hooks")]
+        if self.traces_internally
+            && self.shutdowns.internal().is_none()
+            && let Some(components) = easy.components()
+        {
+            self.trace_internally(components.clone());
+        }
         let id = insert(
             Rows {
                 slots: &mut self.slots,
@@ -1635,19 +1669,47 @@ impl<H: Host> Multi<H> {
         }
         let limit = graceful_shutdown();
         let mut net = Announcing::multi(&mut *self.net, tell, ev);
+        let say = |set: &ShutdownSet, line: std::fmt::Arguments<'_>| {
+            if let Some(t) = set.internal() {
+                t.of(crate::components::Component::Multi, line);
+            }
+        };
+        let (n, ms) = (self.shutdowns.len(), limit.as_millis());
+        say(
+            &self.shutdowns,
+            format_args!("[SHUTDOWN] destroy, {n} connections, timeout={ms}ms"),
+        );
+        say(&self.shutdowns, format_args!("[SHUTDOWN] shutdown all"));
         // `cshutdn_terminate_all`: a pass, then a wait for its sockets,
         // until all are done or the time is spent.
         loop {
             self.shutdowns.perform(&mut net, self.clock.now());
             if self.shutdowns.is_empty() {
+                say(
+                    &self.shutdowns,
+                    format_args!("[SHUTDOWN] shutdown finished cleanly"),
+                );
                 break;
             }
             let spent = self.clock.now().since(now);
             if spent >= limit {
+                let why = if limit.is_zero() {
+                    "best effort done"
+                } else {
+                    "timeout"
+                };
+                say(
+                    &self.shutdowns,
+                    format_args!("[SHUTDOWN] shutdown finished, {why}"),
+                );
                 break;
             }
             let wait = (limit - spent).min(Duration::from_secs(1));
             if wait_for(&self.shutdowns, &mut net, wait).is_err() {
+                say(
+                    &self.shutdowns,
+                    format_args!("[SHUTDOWN] shutdown finished, aborted"),
+                );
                 break;
             }
         }

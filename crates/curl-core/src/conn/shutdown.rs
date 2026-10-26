@@ -8,8 +8,9 @@
 //! (`cpool_discard_conn`): an aborted transfer's is closed at once, as a
 //! shutdown would tell the server the transfer succeeded; any other gets
 //! one try, and is closed if that finishes, or else kept here, until its
-//! layers are done or its time runs out. Nothing here is traced: C's
-//! `[SHUTDOWN]` lines are on its internal handle.
+//! layers are done or its time runs out. What happens here is traced on
+//! the multi's internal trace, as C's `[SHUTDOWN]` lines are on its
+//! internal handle.
 
 use std::num::NonZeroU32;
 use std::time::Duration;
@@ -17,9 +18,11 @@ use std::time::Duration;
 use curl_alloc::TryVec as _;
 
 use super::io::{Events, Net, Socket, SocketKey};
-use super::layer::{Handshake, Silent};
+use super::layer::Handshake;
 use super::{Conn, Peer, Route, Transport};
+use crate::components::Component;
 use crate::time::Instant;
+use crate::trace::{Internal, InternalCx};
 
 /// What a connection keeps of its creating transfer's settings for the
 /// time after it, as C's internal handle copies the last caller's
@@ -49,6 +52,11 @@ pub(crate) struct Shutting {
     /// When the shutdown started, in whole milliseconds after the
     /// connection was created (C's `shutdown.start_ms`).
     started_ms: u64,
+    /// It was tried once at least: its start was said.
+    tried: bool,
+    /// A try finished it, its layers done, failed or out of time
+    /// (`bits.shutdown_filters`): its close is no forced one.
+    finished: bool,
 }
 
 /// What one try of a shutdown came to.
@@ -68,6 +76,8 @@ impl Shutting {
             conn,
             shut: 0,
             started_ms,
+            tried: false,
+            finished: false,
         }
     }
 
@@ -86,20 +96,47 @@ impl Shutting {
     /// time, it is done; else each layer from the top that is not shut
     /// down yet, then the socket's own, which reads and drops up to 1 KB
     /// so the kernel answers the peer's last bytes with no reset
-    /// (`cf_socket_shutdown`). A layer that fails ends it.
-    pub(crate) fn try_once(&mut self, now: Instant) -> Tried {
-        if self.left_ms(now) < 0 {
+    /// (`cf_socket_shutdown`). A layer that fails ends it. Said on
+    /// `trace` as C's internal handle says it (`Curl_cshutdn_try_once`).
+    pub(crate) fn try_once(&mut self, now: Instant, trace: Option<&Internal>) -> Tried {
+        let tried = self.run_once(now, trace);
+        if tried == Tried::Done {
+            self.finished = true;
+        }
+        if let Some(t) = trace {
+            let done = u8::from(tried == Tried::Done);
+            t.of(
+                Component::Multi,
+                format_args!("[SHUTDOWN] shutdown, done={done}"),
+            );
+        }
+        tried
+    }
+
+    fn run_once(&mut self, now: Instant, trace: Option<&Internal>) -> Tried {
+        let mut cx = InternalCx { now, trace };
+        if !std::mem::replace(&mut self.tried, true) {
+            if let Some(t) = trace {
+                t.of(
+                    Component::Multi,
+                    format_args!("shutdown start on connection"),
+                );
+            }
+        } else if self.left_ms(now) < 0 {
+            if let Some(t) = trace {
+                t.info(format_args!("shutdown timeout"));
+            }
             return Tried::Done;
         }
         // HTTP/2 says goodbye first (`cf_h2_shutdown`).
         if let Some(mut h2) = self.conn.take_h2() {
-            h2.goodbye(&mut Silent(now), &mut self.conn);
+            h2.goodbye(&mut cx, &mut self.conn);
             self.conn.put_h2(h2);
         }
         let Transport::Tcp(stream) = &mut self.conn.transport else {
             return Tried::Done;
         };
-        match stream.shutdown(&mut Silent(now), &mut self.shut) {
+        match stream.shutdown(&mut cx, &mut self.shut) {
             Ok(Handshake::Waiting) => Tried::Waiting,
             Ok(Handshake::Done) | Err(_) => Tried::Done,
         }
@@ -107,9 +144,10 @@ impl Shutting {
 
     /// Close it at once, whatever its layers were doing
     /// (`Curl_cshutdn_terminate`): only the socket closes, nothing more
-    /// is read from it.
-    pub(crate) fn close(self, net: &mut dyn Net) {
-        close_now(self.conn, net);
+    /// is read from it. Said on `trace`, and, `in_multi`, that a transfer
+    /// waiting for room may find some.
+    pub(crate) fn close(self, net: &mut dyn Net, trace: Option<&Internal>, in_multi: bool) {
+        terminate(self.conn, self.finished, net, trace, in_multi);
     }
 
     /// What it waits on while it shuts down: what its layers not shut down
@@ -132,12 +170,43 @@ impl Shutting {
     }
 }
 
-/// Close an established connection without a shutdown: an aborted
-/// transfer's, or one out of a closing set.
-pub(crate) fn close_now(conn: Conn, net: &mut dyn Net) {
+/// Close `conn` (`Curl_cshutdn_terminate`), said on `trace`: forced unless
+/// its shutdown `finished`, its socket's close, and, `in_multi`, that a
+/// transfer waiting for room may find some.
+fn terminate(
+    conn: Conn,
+    finished: bool,
+    net: &mut dyn Net,
+    trace: Option<&Internal>,
+    in_multi: bool,
+) {
+    if let Some(t) = trace {
+        let force = if finished { "" } else { "force " };
+        let n = conn.number.get();
+        t.of(
+            Component::Multi,
+            format_args!("[SHUTDOWN] {force}closing connection #{n}"),
+        );
+    }
     match conn.transport {
         Transport::Local => {}
-        Transport::Tcp(stream) => net.close(stream.into_socket()),
+        Transport::Tcp(stream) => {
+            let socket = stream.into_socket();
+            if let Some(t) = trace {
+                let fd = socket.key().get();
+                t.of(
+                    Component::Multi,
+                    format_args!("Curl_multi_will_close fd={fd}"),
+                );
+            }
+            net.close(socket);
+        }
+    }
+    if in_multi && let Some(t) = trace {
+        t.of(
+            Component::Multi,
+            format_args!("[SHUTDOWN] trigger multi connchanged"),
+        );
     }
 }
 
@@ -173,6 +242,8 @@ pub(crate) struct ShutdownSet {
     /// A connection of it closed: a transfer waiting for room may find
     /// some (`Curl_multi_connchanged`).
     changed: bool,
+    /// The multi's internal trace, if it has one.
+    trace: Option<Internal>,
 }
 
 /// How many connections a multi lets shut down at once, `pool` being the
@@ -189,6 +260,16 @@ pub(crate) fn max_shutdowns(max_total: Option<NonZeroU32>, pool: u32) -> usize {
 }
 
 impl ShutdownSet {
+    /// Trace what happens here on `trace` from now on.
+    pub(crate) fn trace_internally(&mut self, trace: Internal) {
+        self.trace = Some(trace);
+    }
+
+    /// The multi's internal trace, if it has one.
+    pub(crate) fn internal(&self) -> Option<&Internal> {
+        self.trace.as_ref()
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.conns.len()
     }
@@ -201,11 +282,15 @@ impl ShutdownSet {
     /// here (`Curl_cshutdn_add`). With no room for it, it is closed.
     pub(crate) fn add(&mut self, shutting: Shutting, max: usize, net: &mut dyn Net) {
         if max <= self.conns.len() {
+            self.say(format_args!(
+                "[SHUTDOWN] discarding oldest shutdown connection due to shutdown limit of {max}"
+            ));
             self.close_oldest(None, 1, net);
         }
+        let n = shutting.conn.number.get();
         if self.conns.try_reserve(1).is_err() {
-            // C closes it ("adding failed").
-            shutting.close(net);
+            self.say(format_args!("[SHUTDOWN] adding failed, discarding #{n}"));
+            shutting.close(net, self.trace.as_ref(), true);
             self.changed = true;
             return;
         }
@@ -218,6 +303,17 @@ impl ShutdownSet {
                 announced: false,
             })
             .expect("room was made");
+        let now = self.conns.len();
+        self.say(format_args!(
+            "[SHUTDOWN] added #{n} to shutdowns, now {now} conns in shutdown"
+        ));
+    }
+
+    /// A line of the set's on its trace.
+    fn say(&self, line: std::fmt::Arguments<'_>) {
+        if let Some(t) = &self.trace {
+            t.of(Component::Multi, line);
+        }
     }
 
     /// Close up to `n` of the oldest, of those to `to` if given
@@ -257,10 +353,16 @@ impl ShutdownSet {
     /// done, and arm the set's deadline at the earliest time left of the
     /// others.
     pub(crate) fn perform(&mut self, net: &mut dyn Net, now: Instant) {
+        if self.conns.is_empty() {
+            return;
+        }
+        let n = self.conns.len();
+        self.say(format_args!("[SHUTDOWN] perform on {n} connections"));
         let mut next_ms: i64 = 0;
         let mut i = 0;
         while i < self.conns.len() {
-            if self.conns[i].shutting.try_once(now) == Tried::Done {
+            let trace = self.trace.as_ref();
+            if self.conns[i].shutting.try_once(now, trace) == Tried::Done {
                 let entry = self.conns.remove(i);
                 self.closed(entry, net);
                 continue;
@@ -288,7 +390,7 @@ impl ShutdownSet {
 
     /// Close `entry`, which has left the set.
     fn closed(&mut self, entry: Entry, net: &mut dyn Net) {
-        entry.shutting.close(net);
+        entry.shutting.close(net, self.trace.as_ref(), true);
         self.changed = true;
     }
 
@@ -297,6 +399,10 @@ impl ShutdownSet {
     pub(crate) fn close_one(&mut self, id: ClosingId, net: &mut dyn Net) {
         if let Some(i) = self.conns.iter().position(|e| e.id == id) {
             let entry = self.conns.remove(i);
+            let n = entry.shutting.conn.number.get();
+            self.say(format_args!(
+                "[SHUTDOWN] update events failed, discarding #{n}"
+            ));
             self.closed(entry, net);
         }
     }
@@ -426,13 +532,17 @@ pub(crate) fn discard(
     now: Instant,
 ) {
     let (net, linger) = exits.parts();
+    // Said on the multi's internal trace, as C says it on its internal
+    // handle; a connection a multi closes lets one waiting for room look.
+    let trace = linger.as_ref().and_then(|l| l.set.internal().cloned());
+    let in_multi = linger.is_some();
+    let mut shutting = Shutting::start(conn, now);
     if aborted {
-        close_now(conn, net);
+        shutting.close(net, trace.as_ref(), in_multi);
         return;
     }
-    let mut shutting = Shutting::start(conn, now);
-    if shutting.try_once(now) == Tried::Done {
-        shutting.close(net);
+    if shutting.try_once(now, trace.as_ref()) == Tried::Done {
+        shutting.close(net, trace.as_ref(), in_multi);
         return;
     }
     match linger.filter(|_| may_linger) {
@@ -440,7 +550,7 @@ pub(crate) fn discard(
             let max = max_shutdowns(l.max_total, l.multi_pool.unwrap_or(pool));
             l.set.add(shutting, max, net);
         }
-        None => shutting.close(net),
+        None => shutting.close(net, trace.as_ref(), in_multi),
     }
 }
 

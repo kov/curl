@@ -83,7 +83,7 @@ fn layers_shut_down_from_the_top_one_at_a_time() {
             .push(curl_alloc::try_box(layer).unwrap())
             .unwrap();
     }
-    let mut cx = Silent(clock.now());
+    let mut cx = crate::conn::layer::Silent(clock.now());
     let mut shut = 0;
     let mut tries = Vec::new();
     for _ in 0..3 {

@@ -29,9 +29,9 @@ witness: curl-core conn::pool::tests::a_dropped_lease_is_caught
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-        Transport::Tcp(stream) => net.close(stream.into_socket()),
+            net.close(socket);
 --- new
-        Transport::Tcp(stream) => std::mem::forget(stream),
+            std::mem::forget(socket);
 
 === a setup given back keeps its attempt's socket open
 file: crates/curl-core/src/conn/pool.rs
@@ -463,10 +463,10 @@ file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core conn::pool::tests::a_clean_close_drains_the_socket_first
 --- old
     if aborted {
-        close_now(conn, net);
+        shutting.close(net, trace.as_ref(), in_multi);
 --- new
     if false {
-        close_now(conn, net);
+        shutting.close(net, trace.as_ref(), in_multi);
 
 === an idle connection the pool closes is not drained
 file: crates/curl-core/src/conn/pool.rs

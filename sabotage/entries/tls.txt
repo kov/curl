@@ -78,9 +78,9 @@ witness: curl-core proto::http::tests::tls::a_read_asks_the_session_for_the_tran
 file: crates/curl-core/src/conn/tls.rs
 witness: curl-core multi::shutdown_tests::a_tls_connection_says_goodbye_as_it_closes
 --- old
-        session.shutdown(&mut io)
+        let r = session.shutdown(&mut io);
 --- new
-        Ok(Handshake::Done)
+        let r: Result<Handshake, ErrorKind> = Ok(Handshake::Done);
 
 === https is built in without a TLS library
 file: crates/curl-core/src/proto/mod.rs

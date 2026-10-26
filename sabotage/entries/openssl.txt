@@ -308,12 +308,12 @@ file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-openssl an_aborted_transfer_s_connection_says_no_goodbye
 --- old
     if aborted {
-        close_now(conn, net);
+        shutting.close(net, trace.as_ref(), in_multi);
         return;
     }
 --- new
     if false && aborted {
-        close_now(conn, net);
+        shutting.close(net, trace.as_ref(), in_multi);
         return;
     }
 

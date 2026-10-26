@@ -733,6 +733,10 @@ impl Layer for H2Proxy {
         }
     }
 
+    fn filter(&self) -> Option<Component> {
+        Some(Component::H2Proxy)
+    }
+
     /// Say GOAWAY, once, and move the session on until it is done
     /// (`cf_h2_proxy_shutdown`).
     fn shutdown(

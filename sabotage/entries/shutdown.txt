@@ -5,10 +5,10 @@ file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::an_aborted_transfer_s_connection_closes_at_once
 --- old
     if aborted {
-        close_now(conn, net);
+        shutting.close(net, trace.as_ref(), in_multi);
 --- new
     if false {
-        close_now(conn, net);
+        shutting.close(net, trace.as_ref(), in_multi);
 
 === a connection whose shutdown waits is closed instead of kept
 file: crates/curl-core/src/conn/shutdown.rs
@@ -152,11 +152,14 @@ witness: curl-core multi::shutdown_tests::cleanup_closes_every_connection_throug
 file: crates/curl-core/src/conn/layer.rs
 witness: curl-core conn::shutdown::tests::layers_shut_down_from_the_top_one_at_a_time
 --- old
-            if top[0].shutdown(cx, below)? == Handshake::Waiting {
-                return Ok(Handshake::Waiting);
-            }
+                Ok(Handshake::Waiting) => {
+                    said(cx, format_args!("shut down not done yet"));
+                    return Ok(Handshake::Waiting);
+                }
 --- new
-            let _ = top[0].shutdown(cx, below)?;
+                Ok(Handshake::Waiting) => {
+                    said(cx, format_args!("shut down not done yet"));
+                }
 
 === the socket function hears a closing connection's socket with no handle
 file: crates/curl-sys-abi/src/multi.rs
@@ -180,3 +183,35 @@ witness: curl-core multi::shutdown_tests::room_for_a_host_closes_that_host_s_clo
             let goes = to.is_none_or(|to| {
 --- new
             let goes = true || to.is_none_or(|to| {
+
+=== a connection joining the shutdown set is not said
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::the_internal_trace_says_a_shutdown_as_c_does
+--- old
+            "[SHUTDOWN] added #{n} to shutdowns, now {now} conns in shutdown"
+--- new
+            "[SHUTDOWN] added #{n} to shutdowns"
+
+=== every close of a shutdown is a forced one
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::the_internal_trace_says_a_shutdown_as_c_does
+--- old
+        let force = if finished { "" } else { "force " };
+--- new
+        let force = if finished || true { "force " } else { "" };
+
+=== a layer's shutdown is not said in its filter's name
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core multi::shutdown_tests::the_internal_trace_says_a_shutdown_as_c_does
+--- old
+            let filter = top[0].filter();
+--- new
+            let filter: Option<Component> = None;
+
+=== the shutdown's layers run with no internal trace
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::the_internal_trace_says_a_shutdown_as_c_does
+--- old
+        let mut cx = InternalCx { now, trace };
+--- new
+        let mut cx = InternalCx { now, trace: None };

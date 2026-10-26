@@ -362,8 +362,18 @@ debug build's `CURL_DEBUG` after it); the tool owns one, set by `--trace-config`
 past the first of `-vv`. A component's line is traced when the transfer is verbose and the
 component is on, after `[NAME] `. With `LIB-IDS` on, every line but a failure's reason starts with `[T-C] ` (`x` for
 a number the transfer has none of), and so does what `trace::bytes` (`Curl_debug`) gives the
-debug handler, when it fits a trace line. Not traced: what C traces on the multi's internal handle,
-verbose only under `CURL_DEBUG`, and the source line number C's debug build adds to a state change.
+debug handler, when it fits a trace line. Not traced: the source line number C's debug build adds
+to a state change.
+
+What C traces on the multi's internal handle (`multi->admin`), verbose only in its debug build
+under `CURL_DEBUG`, goes to the multi's internal trace (`trace::Internal`): on in the
+`debug-hooks` build when `CURL_DEBUG` is set as the multi is made, with the components of the
+first transfer added (the process's, every handle's), its lines written to standard error after
+`* ` (and `[x-x] ` with `LIB-IDS`), as a verbose handle with no debug function writes them. The
+work done for no transfer runs with `InternalCx`, which traces there when the trace is on and
+nowhere when it is off. It carries the shutdowns (`ShutdownSet`, `discard`): C's `[SHUTDOWN]`
+lines, the start of each shutdown, each layer's `shut down …` in its filter's name, the TLS
+layer's own lines, and a closed socket's `Curl_multi_will_close`.
 
 `WRITE` follows a response through C's writer chain, which the pipeline (`deliver/`) stands
 for: each write at the chain's start (`client_write`, `xfer_write_resp`), the transfer and
@@ -387,7 +397,8 @@ handshake under way and the route, as no filter object exists to name itself: `c
 again as it adds a filter and as it starts over), `connected [0][…]` and `reduced to [0][…]` as
 the connection is up, and `failed to connect [0][…]` before `connect failed -> N`, for a failed
 race and a failed handshake alike; `Curl_multi_will_close fd=N` as a drive closes a socket
-(`DriveCx`), which a socket a connection keeps is not, as C closes it on its internal handle.
+(`DriveCx`), which a socket a connection keeps is not: C closes it on its internal handle, which
+says it on the internal trace.
 A transfer's pollset is traced wherever C makes one (`Curl_multi_pollset`): `pollset[…],
 timeouts=N` (`paused S/R (r/w)` for an empty one), for each transfer the multi works on (neither
 completed nor PENDING) as `wait` and `sockets` (`curl_multi_fdset`, `curl_multi_waitfds`)
@@ -503,7 +514,7 @@ traces the origin's, its part of a pollset said once, and twice once a tunnel th
 (the tunnel's filter asks it again); a tunnel's filter keeps the ALPN question it is asked, so
 the proxy's layer answers only when it is the top. The tunnel's answer is read through it a
 byte at a time, as C's `recv_CONNECT_resp` reads, each read the socket's. C's `[SHUTDOWN]` lines and a
-shutdown's TLS lines are its internal handle's, so not traced (§4.6).
+shutdown's TLS lines are its internal handle's, so on the internal trace (§4.6).
 
 `READ` traces a request's body as C's client readers read it: the reader set as the request is
 built (`add buf reader`, `add fread reader`) and each read of it, by the reader C would have, a
@@ -1806,7 +1817,7 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   handle's own multi takes `CURLOPT_MAXCONNECTS`), or with none set twice the transfers in the
   multi, closing then only a connection idle for a second. Over it, the idle connection
   longest unused is closed, and the transfer traces "Connection pool is full, closing the
-  oldest of N/M"; its close traces nowhere, as C's goes to the internal handle. `Evicted` is
+  oldest of N/M"; its close goes to the internal trace, as C's goes to the internal handle. `Evicted` is
   the released connection closed so. The limit is the multi's, not the pool's, so that the
   application's callbacks can set it while the pool is in use. A connection's use is one fact,
   `Use::{Leased(n), Idle { since }}`.
@@ -1874,8 +1885,9 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   total=0/1 (xfer/conn)`) and no socket callback made; the callback hears `remove` when the
   set closes it, through the internal `CURL *` (`SocketFor::Multi`, §7.5), at the latest at
   the multi's cleanup (758's sequence). A share's connection joining the set is announced
-  once the share's lock is let go, where C announces it under the lock. Nothing of it is traced: C's `[SHUTDOWN]` lines and the shutdown's TLS
-  lines are on its internal handle. A kept-alive TLS connection sends its close_notify from
+  once the share's lock is let go, where C announces it under the lock. It is traced on the
+  multi's internal trace, as C's `[SHUTDOWN]` lines and the shutdown's TLS lines are on its
+  internal handle. A kept-alive TLS connection sends its close_notify from
   the cleanup's pass, as the reference does. Plain TCP never waits in the set: C's TCP shutdown
   finishes in one call (cf-socket.c:1094–1114). A transfer arms SHUTDOWN itself only for a TLS
   or FTP shutdown it makes on its own connection (vtls.c:1572; ftp.c:562, through

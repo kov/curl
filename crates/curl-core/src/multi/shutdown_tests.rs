@@ -636,6 +636,95 @@ fn a_tls_goodbye_waits_in_the_set_for_the_peer_s() {
     assert_eq!(wire.closed(), [1000]);
 }
 
+/// The text written to it.
+#[derive(Clone, Default)]
+struct Written(Arc<Mutex<Vec<u8>>>);
+
+impl crate::handler::TextSink for Written {
+    fn write(&self, text: &[u8]) {
+        self.0.lock().unwrap().extend_from_slice(text);
+    }
+}
+
+impl Written {
+    fn lines(&self) -> Vec<String> {
+        String::from_utf8(self.0.lock().unwrap().clone())
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// The multi's internal trace, on as C's debug build makes its internal
+/// handle verbose under `CURL_DEBUG`, says the shutdown as C's does: a
+/// goodbye left waiting for the peer's joins the set; each pass of the
+/// set tries it; once the peer says it back, the connection closes, its
+/// socket goes and a transfer waiting for room may look (pytest
+/// test_19_04's lines, the TLS library's own apart).
+#[test]
+fn the_internal_trace_says_a_shutdown_as_c_does() {
+    use crate::components::{Component, Components, Level};
+    let talk = tls_talk().held();
+    talk.allow(2);
+    let (mut m, _wire, tls) = over_tls(&talk);
+    let components = Components::new().unwrap();
+    components.set(Component::Multi, Level::Info);
+    components.set(Component::Ssl, Level::Info);
+    let written = Written::default();
+    m.trace_internally_to(
+        components,
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
+    let mut ev = Rec::default();
+    let id = m.add(closing_tls(tls), (), &mut ev).unwrap();
+    by_perform(&mut m, id, &mut ev);
+    talk.allow(3);
+    m.perform(&mut ev).unwrap();
+    assert_eq!(m.shutdowns.len(), 0);
+    assert_eq!(
+        written.lines(),
+        [
+            "* [MULTI] shutdown start on connection",
+            "* [SSL] cf_shutdown -> 0, done=0",
+            "* [SSL] shut down not done yet",
+            "* [MULTI] [SHUTDOWN] shutdown, done=0",
+            "* [MULTI] [SHUTDOWN] added #0 to shutdowns, now 1 conns in shutdown",
+            "* [MULTI] [SHUTDOWN] perform on 1 connections",
+            "* [SSL] cf_shutdown -> 0, done=1",
+            "* [SSL] shut down successfully",
+            "* [MULTI] [SHUTDOWN] shutdown, done=1",
+            "* [MULTI] [SHUTDOWN] closing connection #0",
+            "* [MULTI] Curl_multi_will_close fd=1000",
+            "* [MULTI] [SHUTDOWN] trigger multi connchanged",
+        ]
+    );
+}
+
+/// A multi with no internal trace says nothing of a shutdown, its
+/// transfer's own lines apart.
+#[test]
+fn a_multi_without_its_internal_trace_says_no_shutdown() {
+    let talk = tls_talk();
+    let (mut m, _wire, tls) = over_tls(&talk);
+    let mut ev = Rec::default();
+    let mut e = closing_tls(tls);
+    let written = Written::default();
+    e.options_mut().output.verbose = true;
+    e.options_mut().callbacks.stderr =
+        Some(crate::handler::Handler::text(written.clone()).unwrap());
+    let id = m.add(e, (), &mut ev).unwrap();
+    by_perform(&mut m, id, &mut ev);
+    let lines = written.lines();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("shutting down connection #0")),
+        "{lines:#?}"
+    );
+    assert!(!lines.iter().any(|l| l.contains("SHUTDOWN")), "{lines:#?}");
+}
+
 /// A transfer taken out before its end says no goodbye: its connection
 /// is closed at once (`cpool_discard_conn`), so the server cannot take
 /// the end for a complete one.

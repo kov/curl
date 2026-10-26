@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use crate::components::Component;
+use crate::components::{Component, Components};
 use crate::conn::io::Sent;
 use crate::conn::{ConnNumber, TransferNumber};
 use crate::error::{AGAIN_NUMBER, ErrorKind};
@@ -125,6 +125,107 @@ pub(crate) fn of_with<H: Host>(cx: &mut StepCx<'_, H>, component: Component, par
     }
     end_line(&mut line);
     text(cx, line.bytes());
+}
+
+/// The trace of work done for no transfer, C's internal handle's
+/// (`multi->admin`): its lines, a component's when that is on, to standard
+/// error after `* `, as a verbose handle with no debug function writes
+/// them, and with no numbers when the ids are on. C's debug build makes
+/// that handle verbose under `CURL_DEBUG`; the components are the
+/// process's, every handle's.
+#[derive(Clone)]
+pub(crate) struct Internal {
+    components: Components,
+    /// Where its lines go instead of standard error, for the tests.
+    sink: Option<crate::handler::Handler<dyn crate::handler::TextSink>>,
+}
+
+impl fmt::Debug for Internal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Internal").finish_non_exhaustive()
+    }
+}
+
+impl Internal {
+    pub(crate) fn new(components: Components) -> Internal {
+        Internal {
+            components,
+            sink: None,
+        }
+    }
+
+    /// One whose lines go to `sink`.
+    #[cfg(test)]
+    pub(crate) fn to(
+        components: Components,
+        sink: crate::handler::Handler<dyn crate::handler::TextSink>,
+    ) -> Internal {
+        Internal {
+            components,
+            sink: Some(sink),
+        }
+    }
+
+    pub(crate) fn traces(&self, component: Component) -> bool {
+        self.components.traces(component)
+    }
+
+    /// A line of no component's (`infof`).
+    pub(crate) fn info(&self, args: fmt::Arguments<'_>) {
+        self.write(None, args);
+    }
+
+    /// A line of `component`'s, if it is on (`CURL_TRC_M`,
+    /// `CURL_TRC_CF`).
+    pub(crate) fn of(&self, component: Component, args: fmt::Arguments<'_>) {
+        if self.traces(component) {
+            self.write(Some(component), args);
+        }
+    }
+
+    fn write(&self, component: Option<Component>, args: fmt::Arguments<'_>) {
+        let mut line = Text::<LINE_MAX>::new();
+        if self.traces(Component::Ids) {
+            line.push_fmt(format_args!("[{}-{}] ", Ids(None), Ids(None)));
+        }
+        if let Some(component) = component {
+            line.push_fmt(format_args!("[{}] ", component.name()));
+        }
+        line.push_fmt(args);
+        end_line(&mut line);
+        progress::to_stderr(self.sink.as_ref(), b"* ");
+        progress::to_stderr(self.sink.as_ref(), line.bytes());
+    }
+}
+
+/// The context of work done for no transfer: traced on the internal
+/// handle's trace, if there is one, and kept nowhere.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct InternalCx<'a> {
+    pub(crate) now: crate::time::Instant,
+    pub(crate) trace: Option<&'a Internal>,
+}
+
+impl crate::conn::layer::LayerCx for InternalCx<'_> {
+    fn now(&self) -> crate::time::Instant {
+        self.now
+    }
+
+    fn of(&mut self, component: Component, line: fmt::Arguments<'_>) {
+        if let Some(trace) = self.trace {
+            trace.of(component, line);
+        }
+    }
+
+    fn info(&mut self, line: fmt::Arguments<'_>) {
+        if let Some(trace) = self.trace {
+            trace.info(line);
+        }
+    }
+
+    fn verbose(&self) -> bool {
+        self.trace.is_some()
+    }
 }
 
 /// A result as C's trace lines print a `CURLcode` (`-> %d`).

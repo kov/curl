@@ -259,9 +259,22 @@ impl Layer for TlsLayer {
         !self.early.is_empty() || self.session.pending() || below.data_pending()
     }
 
+    fn filter(&self) -> Option<Component> {
+        Some(self.filter)
+    }
+
     fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind> {
         let (session, mut io) = self.parts(cx, below);
-        session.shutdown(&mut io)
+        let r = session.shutdown(&mut io);
+        let (code, done) = match &r {
+            Ok(done) => (0, u8::from(*done == Handshake::Done)),
+            Err(kind) => (kind.number(), 0),
+        };
+        cx.of(
+            self.filter,
+            format_args!("cf_shutdown -> {code}, done={done}"),
+        );
+        r
     }
 
     /// The session's objects, once its library made them, the origin's

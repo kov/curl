@@ -230,9 +230,14 @@ pub(crate) trait Layer: Send + fmt::Debug {
         below.alive(cx)
     }
 
+    /// The filter it is, that its lines are traced as; none for a layer
+    /// C has no filter for.
+    fn filter(&self) -> Option<Component> {
+        None
+    }
+
     /// Move its shutdown on: say goodbye to the peer, which may take
-    /// more than one pass (TLS's close_notify). Only a test's layer has
-    /// one yet.
+    /// more than one pass (TLS's close_notify).
     fn shutdown(
         &mut self,
         _cx: &mut dyn LayerCx,
@@ -497,8 +502,24 @@ impl LayerStack {
                 socket,
                 traced: None,
             };
-            if top[0].shutdown(cx, below)? == Handshake::Waiting {
-                return Ok(Handshake::Waiting);
+            // Each layer's end said in its name (`Curl_cshutdn_try_once_idx`).
+            let filter = top[0].filter();
+            let said = |cx: &mut dyn LayerCx, line: fmt::Arguments<'_>| {
+                if let Some(filter) = filter {
+                    cx.of(filter, line);
+                }
+            };
+            match top[0].shutdown(cx, below) {
+                Ok(Handshake::Waiting) => {
+                    said(cx, format_args!("shut down not done yet"));
+                    return Ok(Handshake::Waiting);
+                }
+                Ok(Handshake::Done) => said(cx, format_args!("shut down successfully")),
+                Err(kind) => {
+                    let code = kind.number();
+                    said(cx, format_args!("shut down failed with {code}"));
+                    return Err(kind);
+                }
             }
             *shut += 1;
         }

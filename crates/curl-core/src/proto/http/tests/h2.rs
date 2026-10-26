@@ -725,7 +725,8 @@ fn a_stream_refused_by_a_goaway_with_an_error_fails_with_it() {
 }
 
 /// Under a receive limit, a stream's reads take no more than the limit
-/// allows, and the transfer waits for it (`sendrecv_dl`'s
+/// allows, each second's bytes delivered in it, and the transfer waits
+/// for it (`sendrecv_dl`'s
 /// `rate_limited`, test 02_24).
 #[test]
 fn a_receive_limit_paces_a_stream() {
@@ -752,17 +753,46 @@ fn a_receive_limit_paces_a_stream() {
     let start = clock.now();
     let mut e = Easy::new();
     e.set_libraries(with_h2());
+    let delivered = DeliveredBy {
+        clock: clock.clone(),
+        start,
+        seen: Arc::default(),
+    };
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.http.version = HttpVersion::Http2Prior;
         o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(20000);
+        o.callbacks.write = Some(Handler::write(delivered.clone()).unwrap());
     });
     assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
-    assert_eq!(ran.seen.body().len(), 60000);
+    // Each second's reads take no more than its allowance: what one read
+    // past the limit took would come at once, the rate's wait after it.
+    let seen = delivered.seen.lock().unwrap().clone();
+    assert_eq!(seen.last().map(|s| s.1), Some(60000));
+    for &(at, total) in &seen {
+        assert!(total as u64 <= 20000 * (at.as_secs() + 1), "{seen:?}");
+    }
     assert!(
         clock.now().since(start) >= std::time::Duration::from_secs(2),
         "{:?}",
         clock.now().since(start)
     );
+}
+
+/// How much of the body was delivered by when, from `start`.
+#[derive(Clone)]
+struct DeliveredBy {
+    clock: ManualClock,
+    start: crate::time::Instant,
+    seen: Arc<Mutex<Vec<(std::time::Duration, usize)>>>,
+}
+
+impl WriteHandler for DeliveredBy {
+    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        let mut seen = self.seen.lock().unwrap();
+        let total = seen.last().map_or(0, |s| s.1) + body.len();
+        seen.push((self.clock.now().since(self.start), total));
+        Write::Accepted
+    }
 }
 
 /// The client's SETTINGS let the server open as many streams as the

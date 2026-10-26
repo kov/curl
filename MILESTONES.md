@@ -947,7 +947,10 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
     behind the core's `http3` seam as nghttp2 is behind `http2`, with a fake for the tests.
 61. **HTTP/3 requests.** `--http3-only` (`CURL_HTTP_VERSION_3ONLY`): the setup dials QUIC, the
     connection's session is `Session::H3`, requests go on its streams and multiplex as HTTP/2's
-    do, with C's trace; the build claims `HTTP3`. The request's version set gains h3 (C's
+    do, with C's trace; the build claims `HTTP3`. Each address the setup tries over QUIC is a
+    whole QUIC connection, won when its handshake is done and its peer checked, not when its UDP
+    socket connects (`cf-ip-happy.c`'s transport table makes each attempt `Curl_cf_quic_create`);
+    the losers are closed with their connections. The request's version set gains h3 (C's
     `http_neg`), its stream becomes a `Wire`, and the public `Version` gains `Http3` and
     `Http3Only`.
 62. **The race.** `--http3` (`CURL_HTTP_VERSION_3`): a connection's setup as a value

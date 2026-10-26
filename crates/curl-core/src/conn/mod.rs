@@ -261,10 +261,6 @@ pub(crate) enum Dial {
     #[default]
     Tcp,
     /// QUIC over UDP (`TRNSPRT_QUIC`).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a route dials QUIC once HTTP/3 is asked for")
-    )]
     Quic,
 }
 
@@ -287,10 +283,12 @@ impl Tcp {
     }
 
     /// What the socket's filter traces as: `UNIX` for a Unix socket's
-    /// (`Curl_cft_unix`), else `TCP`.
+    /// (`Curl_cft_unix`), `UDP` for QUIC's (`Curl_cft_udp`), else `TCP`.
     pub(crate) fn socket_component(&self) -> crate::components::Component {
         if self.destination().is_unix() {
             crate::components::Component::Unix
+        } else if self.dial == Dial::Quic {
+            crate::components::Component::Udp
         } else {
             crate::components::Component::Tcp
         }
@@ -1237,6 +1235,11 @@ mod tests {
         assert!(dialed(Dial::Tcp).serves(&dialed(Dial::Tcp)));
         assert!(!dialed(Dial::Quic).serves(&dialed(Dial::Tcp)));
         assert!(!dialed(Dial::Tcp).serves(&dialed(Dial::Quic)));
+        // Its socket's lines are traced as C's UDP filter's.
+        let Route::Tcp(quic) = dialed(Dial::Quic) else {
+            unreachable!()
+        };
+        assert_eq!(quic.socket_component(), crate::components::Component::Udp);
     }
 
     /// Peers are the same as `Curl_peer_equal` finds them: the host in

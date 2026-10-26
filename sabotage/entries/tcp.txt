@@ -175,3 +175,11 @@ witness: curl-core report::tests::a_reason_let_go_is_replaced_by_the_next
         self.reasons_cleared = self.reasons;
 --- new
         self.failure = None;
+
+=== QUIC's UDP socket is set as a TCP one
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::a_route_over_quic_opens_a_socket_for_datagrams
+--- old
+        let tcp = matches!(remote, Remote::Inet(_)) && kind == SocketKind::Stream;
+--- new
+        let tcp = matches!(remote, Remote::Inet(_));

@@ -33,10 +33,10 @@ witness: curl-core proto::http::tests::unix_trace::a_proxy_is_not_gone_through_o
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::unix_trace::a_unix_socket_is_connected_in_place_of_the_host
 --- old
-        if !unix {
+        if tcp {
             set_up(cx, &*socket, setup.socket);
 --- new
-        if !unix || unix {
+        if tcp || matches!(remote, Remote::Unix(_)) {
             set_up(cx, &*socket, setup.socket);
 
 === a path filling the address is connected to

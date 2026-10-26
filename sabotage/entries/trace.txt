@@ -644,3 +644,11 @@ witness: curl-core proto::http::tests::traced_bytes_with_the_ids_keep_a_zero_byt
         prefixed.push_clipped(bytes);
 --- new
         prefixed.push_clipped(bytes.split(|&b| b == 0).next().unwrap_or_default());
+
+=== QUIC's socket is traced as TCP's
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::a_connection_serves_only_a_transfer_that_dials_as_it_did
+--- old
+        } else if self.dial == Dial::Quic {
+--- new
+        } else if self.dial == Dial::Quic && false {

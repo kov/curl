@@ -910,9 +910,10 @@ impl ConnectMachine {
         };
         trace_trying(cx, &remote);
         let fd = socket.key().get();
-        // Only TCP's are set (`is_tcp`).
-        let unix = matches!(remote, Remote::Unix(_));
-        if !unix {
+        // Only TCP's are set (`is_tcp`): neither a Unix socket nor
+        // QUIC's UDP one.
+        let tcp = matches!(remote, Remote::Inet(_)) && kind == SocketKind::Stream;
+        if tcp {
             set_up(cx, &*socket, setup.socket);
         }
         let connected = match cx.configure_socket(&*socket) {
@@ -963,7 +964,7 @@ impl ConnectMachine {
             let i = r.attempts.len() - 1;
             return self.won(cx, setup, i, now);
         }
-        if !unix && setup.socket.fastopen && socket.set(SocketOption::FastOpenConnect).is_err() {
+        if tcp && setup.socket.fastopen && socket.set(SocketOption::FastOpenConnect).is_err() {
             cx.of(
                 Component::Tcp,
                 format_args!("Failed to enable TCP Fast Open on fd {fd}"),
@@ -1853,16 +1854,18 @@ mod tests {
     }
 
     /// A route that dials QUIC opens a socket for datagrams for each
-    /// attempt, and one over TCP a stream (`cf_socket_open` by the
-    /// transport).
+    /// attempt, and one over TCP a stream; TCP's options are set on a
+    /// stream alone (`cf_socket_open`'s `is_tcp`).
     #[test]
     fn a_route_over_quic_opens_a_socket_for_datagrams() {
         for (dial, datagrams) in [(crate::conn::Dial::Tcp, 0), (crate::conn::Dial::Quic, 1)] {
             let clock = ManualClock::new().unwrap();
             let at: IpAddr = [127, 0, 0, 1].into();
+            let wire = crate::conn::io::Conversation::new(b"", false);
             let mut net = FakeNet::new(clock.clone())
                 .with_name("quic.test", &[at])
-                .with_peer(SocketAddr::new(at, 443), FakePeer::Silent);
+                .with_peer(SocketAddr::new(at, 443), FakePeer::Silent)
+                .with_conversation(SocketAddr::new(at, 443), wire.clone());
             let scheme = Scheme {
                 name: "https",
                 reuse: true,
@@ -1890,7 +1893,14 @@ mod tests {
                 max_age: Some(Duration::from_secs(60)),
                 delay: Duration::from_millis(200),
                 scope: None,
-                socket: SocketSetup::PLAIN,
+                socket: SocketSetup {
+                    nodelay: true,
+                    keepalive: KeepAlive {
+                        on: true,
+                        ..KeepAlive::DEFAULT
+                    },
+                    fastopen: true,
+                },
                 haproxy: false,
                 layer: None,
                 linger: None,
@@ -1913,6 +1923,15 @@ mod tests {
             }
             assert_eq!(net.open_sockets(), 1, "{dial:?}");
             assert_eq!(net.datagram_sockets(), datagrams, "{dial:?}");
+            let tcp = wire.options();
+            match dial {
+                crate::conn::Dial::Tcp => {
+                    assert!(tcp.contains(&SocketOption::NoDelay), "{tcp:?}");
+                    assert!(tcp.contains(&SocketOption::KeepAlive), "{tcp:?}");
+                    assert!(tcp.contains(&SocketOption::FastOpenConnect), "{tcp:?}");
+                }
+                crate::conn::Dial::Quic => assert_eq!(tcp, []),
+            }
             m.close(&mut net);
         }
     }

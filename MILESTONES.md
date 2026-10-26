@@ -918,10 +918,12 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
       cannot time a server's GOAWAY that closely.
     - The `--trace-config http/2` lines (`CURL_TRC_CF` of `cf-h2`).
     - A push on a share's connection is taken, as C takes it.
-56. **A connection behind a pointer, budgets against C's.** The lease holds its connection's
-    slot boxed, one allocation per connection as C's `connectdata`; a handle is held to C's
-    3,081 bytes and a connection to C's 656 (DESIGN.md, "A size budget is measured against
-    C's equivalent"), and the facts the pool's multiplex verdict reads move onto `Conn`.
+56. **A connection behind a pointer, budgets against C's.** **Done.** The lease holds its
+    connection's slot boxed, one allocation per connection as C's `connectdata`; a handle is
+    held to C's 3,081 bytes (2,856 measured) and a connection to C's 656 (232) (DESIGN.md, "A
+    size budget is measured against C's equivalent"). The facts the pool's multiplex verdict
+    reads stay with the request, their one owner: whether its head was made and an `h2c`
+    upgrade is unanswered.
 57. **One lifecycle for a connection's pieces, multiplexing not tied to HTTP/2.** A `Part` trait
     (setup, pollset, pending bytes, liveness, goodbye, queries, upkeep) over every piece of a
     connection, refined by `Layer` (a byte stream) and `Mux` (streams); the connection runs its

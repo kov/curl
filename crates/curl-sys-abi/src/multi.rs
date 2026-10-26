@@ -1069,6 +1069,25 @@ pub unsafe extern "C" fn curl_multi_setopt(
         };
         return set_limit(limits, option, n);
     }
+    if option == ffi::CURLMOPT_NETWORK_CHANGED {
+        // SAFETY: the application passes a long, the option's type.
+        let mut bits = unsafe { args.next_arg::<c_long>() };
+        // Every bit was once 1, so 1 is all of them.
+        if bits & ffi::CURLMNWC_CLEAR_ALL != 0 {
+            bits = ffi::CURLMNWC_CLEAR_DNS | ffi::CURLMNWC_CLEAR_CONNS;
+        }
+        let names = bits & ffi::CURLMNWC_CLEAR_DNS != 0;
+        let connections = bits & ffi::CURLMNWC_CLEAR_CONNS != 0;
+        let Ok(core) = Core::of(multi, entry.reach) else {
+            return CURLM_RECURSIVE_API_CALL;
+        };
+        let mut ev = ShimEvents::new(multi);
+        match core {
+            Core::Direct(core) => core.network_changed(names, connections, &mut ev),
+            Core::Notify(cx) => cx.network_changed(names, connections, &mut ev),
+        }
+        return CURLM_OK;
+    }
     // Options of HTTP/1 pipelining C has dropped: taken, and nothing done.
     if matches!(
         option,

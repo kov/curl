@@ -750,3 +750,39 @@ witness: curl-core multi::tests::a_late_answer_is_waited_for
         let mut now = self.clock.now();
 --- new
         let mut now = self.clock.now();
+
+=== a network change keeps the names resolved
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_network_change_forgets_what_it_is_asked_to
+--- old
+        if names {
+            self.caches.dns = crate::conn::DnsCache::default();
+        }
+--- new
+        let _ = names;
+
+=== a network change forgets the names when only the connections are asked
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_network_change_forgets_what_it_is_asked_to
+--- old
+        if names {
+            self.caches.dns = crate::conn::DnsCache::default();
+        }
+--- new
+        if names || connections {
+            self.caches.dns = crate::conn::DnsCache::default();
+        }
+
+=== a network change keeps the connections
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_network_change_forgets_what_it_is_asked_to
+--- old
+        if !connections {
+            return;
+        }
+        let now = self.clock.now();
+--- new
+        if !connections || names || !names {
+            return;
+        }
+        let now = self.clock.now();

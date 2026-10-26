@@ -61,9 +61,10 @@ witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_finished_connection_is_kept_for_an_equal_route
 --- old
-        if !conn.serves(wanted.route) || !conn.serves_auth(&wanted.auth) {
+            || !conn.serves(wanted.route)
+            || !conn.serves_auth(&wanted.auth)
 --- new
-        if !conn.serves_auth(&wanted.auth) {
+            || !conn.serves_auth(&wanted.auth)
 
 === an idle connection is reused without its health checked
 file: crates/curl-core/src/conn/pool.rs
@@ -579,3 +580,31 @@ witness: curl-core conn::pool::tests::a_multiplexed_connection_is_joined_only_as
     if !conn.serves_auth(&wanted.auth) || !wanted.versions.h2 {
 --- new
     if !conn.serves_auth(&wanted.auth) && !wanted.versions.h2 {
+
+=== a connection made before the network changed is reused
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_network_change_retires_the_connections_made_before
+--- old
+        if conn.number.get() < self.stale_below
+            || !conn.serves(wanted.route)
+--- new
+        if !conn.serves(wanted.route)
+
+=== the prune keeps a connection made before the network changed
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_network_change_retires_the_connections_made_before
+--- old
+            && (conn.number.get() < stale_below || health(conn, since, rules, now).is_err())
+--- new
+            && health(conn, since, rules, now).is_err()
+
+=== a network change leaves the idle connections open
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_network_change_retires_the_connections_made_before
+--- old
+        self.stale_below = self.next_number;
+        let mut cursor = None;
+--- new
+        self.stale_below = self.next_number;
+        return;
+        let mut cursor = None;

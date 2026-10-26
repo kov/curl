@@ -776,6 +776,10 @@ pub(crate) struct Pool {
     /// A multi's: the share's connections lent to it.
     lent: Vec<Lent>,
     next_number: u64,
+    /// Connections numbered below this were made before the network last
+    /// changed (`CURLMNWC_CLEAR_CONNS`): none is reused, and the prune
+    /// closes each once it is idle, as C marks every one `no_reuse`.
+    stale_below: u64,
     /// When the search last pruned dead connections (`last_cleanup`).
     last_prune: Option<Instant>,
     /// The number the next transfer to join the pool is given
@@ -789,6 +793,7 @@ impl Pool {
             conns: Arena::new(ArenaPolicy::DOUBLING)?,
             lent: Vec::new(),
             next_number: 0,
+            stale_below: 0,
             last_prune: None,
             next_transfer: 0,
         })
@@ -935,7 +940,7 @@ impl Pool {
             .is_none_or(|at| now.since(at) >= Duration::from_secs(1))
         {
             self.last_prune = Some(now);
-            prune(&mut self.conns, rules, exits, now);
+            prune(&mut self.conns, self.stale_below, rules, exits, now);
         }
         // The transfer's last connection first, then the others in the
         // table's order (`Curl_cpool_find`).
@@ -1038,7 +1043,10 @@ impl Pool {
         let Use::Idle { since } = conn.use_ else {
             unreachable!("an idle connection is idle");
         };
-        if !conn.serves(wanted.route) || !conn.serves_auth(&wanted.auth) {
+        if conn.number.get() < self.stale_below
+            || !conn.serves(wanted.route)
+            || !conn.serves_auth(&wanted.auth)
+        {
             return Ok(None);
         }
         let speaks = if conn.is_h2() {
@@ -1113,6 +1121,10 @@ impl Pool {
         let Some(Place::Attached(shared)) = self.conns.get(id) else {
             unreachable!("just found attached");
         };
+        // Not looked at, as C's `url_match_connect_config` comes first.
+        if shared.conn().number.get() < self.stale_below {
+            return Ok(None);
+        }
         if !judged(join_verdict(shared.conn(), wanted), notes, seen)? {
             return Ok(None);
         }
@@ -1237,6 +1249,20 @@ impl Pool {
             conn: l.shared.slot,
             home,
         })
+    }
+
+    /// The network changed (`Curl_cpool_nw_changed`): no connection
+    /// made before is reused, and each no transfer uses is closed now,
+    /// as C closes those it can; one reserved for its handle stays.
+    pub(crate) fn network_changed(&mut self, exits: &mut dyn Exits, now: Instant) {
+        self.stale_below = self.next_number;
+        let mut cursor = None;
+        while let Some(id) = self.conns.next_after(cursor) {
+            cursor = Some(id);
+            if let Some(Place::Idle(_)) = self.conns.get(id) {
+                close(&mut self.conns, id, Evicted::Linger, exits, now);
+            }
+        }
     }
 
     /// Discard every connection no one leases (`Curl_cpool_destroy`):
@@ -1857,6 +1883,7 @@ fn oldest_idle(
 /// prune traces to its internal handle (`cpool_prune_dead`).
 fn prune(
     conns: &mut Arena<Place, ConnSlot>,
+    stale_below: u64,
     rules: ReuseRules,
     exits: &mut dyn Exits,
     now: Instant,
@@ -1866,7 +1893,7 @@ fn prune(
         cursor = Some(id);
         if let Some(conn) = conns.get_mut(id).and_then(Place::idle_mut)
             && let Use::Idle { since } = conn.use_
-            && health(conn, since, rules, now).is_err()
+            && (conn.number.get() < stale_below || health(conn, since, rules, now).is_err())
         {
             close(conns, id, Evicted::Linger, exits, now);
         }

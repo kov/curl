@@ -702,6 +702,90 @@ fn a_finished_connection_is_kept_for_an_equal_route() {
     ));
 }
 
+/// Once the network changes (`Curl_cpool_nw_changed`), no connection
+/// made before is reused: an idle one is closed at once, one in use is
+/// left to its transfer and closed by the next prune once it is idle,
+/// and one made after is reused as any.
+#[test]
+fn a_network_change_retires_the_connections_made_before() {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let mut pool = Pool::new().unwrap();
+    let mut idle = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
+    up(&mut idle, &mut net, now);
+    let mut busy = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
+    up(&mut busy, &mut net, now);
+    pool.release(
+        &Home::Multi,
+        idle,
+        Finish::default(),
+        UNLIMITED,
+        &mut net,
+        now,
+    );
+    assert_eq!((pool.len(), net.open_sockets()), (2, 2));
+    pool.network_changed(&mut net, now);
+    assert_eq!(
+        (pool.len(), net.open_sockets()),
+        (1, 1),
+        "the idle one closed"
+    );
+    pool.release(
+        &Home::Multi,
+        busy,
+        Finish::default(),
+        UNLIMITED,
+        &mut net,
+        now,
+    );
+    let acquire = |pool: &mut Pool, net: &mut FakeNet, now| {
+        let mut notes = Vec::new();
+        pool.acquire(
+            &Home::Multi,
+            tcp(1),
+            RULES,
+            AddLimits::default(),
+            net,
+            now,
+            &mut notes,
+        )
+        .unwrap()
+    };
+    let Acquired::New(mut fresh) = acquire(&mut pool, &mut net, now) else {
+        panic!("the one made before is not reused");
+    };
+    assert_eq!(pool.len(), 2, "kept idle until the next prune");
+    up(&mut fresh, &mut net, now);
+    pool.release(
+        &Home::Multi,
+        fresh,
+        Finish::default(),
+        UNLIMITED,
+        &mut net,
+        now,
+    );
+    clock.advance(Duration::from_secs(1));
+    let later = clock.now();
+    let Acquired::Reused(fresh) = acquire(&mut pool, &mut net, later) else {
+        panic!("the one made after is reused");
+    };
+    assert_eq!(fresh.conn().number, ConnNumber(2));
+    assert_eq!(
+        (pool.len(), net.open_sockets()),
+        (1, 1),
+        "the prune closed the other"
+    );
+    pool.release(
+        &Home::Multi,
+        fresh,
+        Finish::default(),
+        UNLIMITED,
+        &mut net,
+        later,
+    );
+    pool.close_idle(&mut net, later);
+}
+
 /// A search tries the transfer's last connection before the others, so a
 /// transfer sticks to its connection (`Curl_cpool_find`), and an id that
 /// no longer names an idle connection finds nothing, the search going on

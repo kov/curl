@@ -1674,6 +1674,42 @@ impl<H: Host> Multi<H> {
         self.say(format_args!("multi_cleanup, closing admin handle, done"));
     }
 
+    /// The network changed (`CURLMOPT_NETWORK_CHANGED`): forget the
+    /// names resolved if `names`, and if `connections`, reuse no
+    /// connection made before and close each no transfer uses
+    /// (`Curl_dnscache_clear`, `Curl_cpool_nw_changed`). The socket
+    /// callback in `ev` hears of each socket that closes or waits to.
+    pub fn network_changed(&mut self, names: bool, connections: bool, ev: &mut dyn MultiEvents<H>) {
+        if names {
+            self.caches.dns = crate::conn::DnsCache::default();
+        }
+        if !connections {
+            return;
+        }
+        let now = self.clock.now();
+        let max_total = self.limits.max_total;
+        let mut tell = Telling {
+            alive: &mut self.alive,
+            slots: &mut self.slots,
+            limits: &mut self.limits,
+            notify: &mut self.notify,
+            counts: &mut self.counts,
+            sockets: &mut self.sockets,
+            life: &mut self.life,
+        };
+        {
+            let mut net = Announcing::multi(&mut *self.net, tell.reborrow(), &mut *ev);
+            let mut exits = WithSet {
+                net: &mut net,
+                set: &mut self.shutdowns,
+                max_total,
+                multi_pool: None,
+            };
+            self.caches.pool.network_changed(&mut exits, now);
+        }
+        cx::announce_closing(&mut self.shutdowns, &mut *self.net, &mut tell, ev, now);
+    }
+
     /// A line of the multi's internal trace, in `MULTI`'s name.
     fn say(&self, line: std::fmt::Arguments<'_>) {
         if let Some(t) = self.shutdowns.internal() {

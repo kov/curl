@@ -1073,6 +1073,11 @@ impl<H: Host> NotifyCx<'_, H> {
         self.multi.conn_limits_mut()
     }
 
+    /// As `Multi::network_changed`.
+    pub fn network_changed(&mut self, names: bool, connections: bool, ev: &mut dyn MultiEvents<H>) {
+        self.multi.network_changed(names, connections, ev);
+    }
+
     pub fn options(&self, id: TransferId) -> Option<&Options> {
         self.multi.easy(id).map(Easy::options)
     }

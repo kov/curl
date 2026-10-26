@@ -3200,6 +3200,40 @@ fn answers_may_be_kept_for_ever() {
     assert_eq!(again[0], "Hostname localhost was found in DNS cache\n");
 }
 
+/// A network change forgets the names resolved and the connections
+/// made, each as it is asked to (`CURLMOPT_NETWORK_CHANGED`).
+#[test]
+fn a_network_change_forgets_what_it_is_asked_to() {
+    let (mut m, _clock) = networked();
+    let run = |m: &mut Multi| {
+        let (e, lines) = traced("tcp://localhost:1/");
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        m.wait(
+            &mut [],
+            Duration::from_secs(1),
+            WaitMode::Wait,
+            &mut NoEvents,
+        )
+        .unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(messages(m).last().unwrap().1, Ok(()));
+        m.remove(id, &mut NoEvents).unwrap();
+        trace_of(&lines)
+    };
+    let resolved = "Host localhost:1 was resolved.\n";
+    let cached = "Hostname localhost was found in DNS cache\n";
+    assert_eq!(run(&mut m)[0], resolved);
+    m.network_changed(false, true, &mut NoEvents);
+    let lines = run(&mut m);
+    assert_eq!(lines[0], cached, "the names are kept, the connection not");
+    // The names forgotten alone; the connection, reused as it would be,
+    // then forgotten so that the name is looked up.
+    m.network_changed(true, false, &mut NoEvents);
+    m.network_changed(false, true, &mut NoEvents);
+    assert_eq!(run(&mut m)[0], resolved, "the names are forgotten");
+}
+
 /// An entry the list cannot be read with fails the transfer, and the list
 /// is read again by the next.
 #[test]

@@ -15,7 +15,7 @@ use std::fmt;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use super::{Chosen, TlsIdentity};
-use crate::conn::Peer;
+use crate::conn::{Dial, Peer};
 use crate::hash::{Hash as _, Sha256};
 use crate::options::{TlsMaxVersion, TlsMinVersion, TlsOptions};
 
@@ -94,14 +94,16 @@ pub struct SessionPeer {
 impl SessionPeer {
     /// The peer `origin` reached through `via` (a connect-to's), whose
     /// connection's TLS is made with `identity` by the library `tls_id`
-    /// names.
+    /// names, over a connection dialed as `dial` says: a QUIC session's
+    /// ticket never resumes a TCP one's handshake, nor the other way.
     pub(crate) fn new(
         identity: &TryArc<TlsIdentity>,
         origin: &Peer,
         via: Option<&Peer>,
         tls_id: &dyn fmt::Display,
+        dial: Dial,
     ) -> Result<SessionPeer, OutOfMemory> {
-        let key = peer_key(identity, origin, via, tls_id)?;
+        let key = peer_key(identity, origin, via, tls_id, dial)?;
         Ok(SessionPeer {
             key,
             identity: identity.clone(),
@@ -115,7 +117,7 @@ impl SessionPeer {
         let tls = crate::options::Tls::default();
         let identity = TlsIdentity::of(&tls, super::CaDefaults::default()).unwrap();
         let origin = Peer::new(crate::proto::http::HTTPS, b"localhost".to_vec(), 443, None);
-        SessionPeer::new(&identity, &origin, None, &"FakeTLS/1").unwrap()
+        SessionPeer::new(&identity, &origin, None, &"FakeTLS/1", Dial::Tcp).unwrap()
     }
 
     /// The key, as the trace shows it.
@@ -564,12 +566,13 @@ fn peer_key(
     origin: &Peer,
     via: Option<&Peer>,
     tls_id: &dyn fmt::Display,
+    dial: Dial,
 ) -> Result<Vec<u8>, OutOfMemory> {
     let mut count = Count(0);
-    write_key(&mut count, identity, origin, via, tls_id);
+    write_key(&mut count, identity, origin, via, tls_id, dial);
     let mut fill = Fill(Vec::new());
     fill.0.try_reserve_exact(count.0)?;
-    write_key(&mut fill, identity, origin, via, tls_id);
+    write_key(&mut fill, identity, origin, via, tls_id, dial);
     debug_assert_eq!(fill.0.len(), count.0, "written as counted");
     Ok(fill.0)
 }
@@ -580,6 +583,7 @@ fn write_key(
     origin: &Peer,
     via: Option<&Peer>,
     tls_id: &dyn fmt::Display,
+    dial: Dial,
 ) {
     use fmt::Write as _;
     let w = |out: &mut dyn Sink, args: fmt::Arguments<'_>| {
@@ -622,6 +626,10 @@ fn write_key(
     w(out, format_args!("{}:", origin.scheme().name));
     out.bytes(origin.name());
     w(out, format_args!(":{}:KEY-V3", origin.port()));
+    // TCP's adds nothing (`ssl_peer_key_add_transport`).
+    if dial == Dial::Quic {
+        out.bytes(b":QUIC");
+    }
     if !identity.verify_peer {
         out.bytes(b":NO-VRFY-PEER");
     }

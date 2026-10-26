@@ -32,7 +32,7 @@ fn origin(host: &str, port: u16) -> Peer {
 
 fn peer(change: impl FnOnce(&mut TlsIdentity)) -> SessionPeer {
     let o = origin("localhost", 18443);
-    SessionPeer::new(&identity(change), &o, None, &"OpenSSL/3.5.9").unwrap()
+    SessionPeer::new(&identity(change), &o, None, &"OpenSSL/3.5.9", Dial::Tcp).unwrap()
 }
 
 fn key(p: &SessionPeer) -> &str {
@@ -61,7 +61,7 @@ fn a_key_is_c_s_for_the_same_settings() {
     let id = identity(|i| i.verify_host = false);
     let o = origin("localhost", 18443);
     let via = origin("127.0.0.1", 9);
-    let p = SessionPeer::new(&id, &o, Some(&via), &"OpenSSL/3.5.9").unwrap();
+    let p = SessionPeer::new(&id, &o, Some(&via), &"OpenSSL/3.5.9", Dial::Tcp).unwrap();
     assert_eq!(
         key(&p),
         format!(
@@ -70,8 +70,28 @@ fn a_key_is_c_s_for_the_same_settings() {
         )
     );
     // Verified, the connect-to's peer is not.
-    let p = SessionPeer::new(&identity(|_| {}), &o, Some(&via), &"OpenSSL/3.5.9").unwrap();
+    let p = SessionPeer::new(
+        &identity(|_| {}),
+        &o,
+        Some(&via),
+        &"OpenSSL/3.5.9",
+        Dial::Tcp,
+    )
+    .unwrap();
     assert_eq!(key(&p), key(&peer(|_| {})));
+}
+
+/// A session over QUIC is kept apart from one over TCP to the same
+/// peer: its key names the transport after the port
+/// (`ssl_peer_key_add_transport`).
+#[test]
+fn a_quic_session_s_key_names_its_transport() {
+    let o = origin("localhost", 18443);
+    let p = SessionPeer::new(&identity(|_| {}), &o, None, &"OpenSSL/3.5.9", Dial::Quic).unwrap();
+    assert_eq!(
+        key(&p),
+        format!("https:localhost:18443:KEY-V3:QUIC:TLSVER-6-0:CA-58:{CA}:IMPL-13:OpenSSL/3.5.9:G")
+    );
 }
 
 /// Every setting C's key holds is in it, each text after its length, a
@@ -287,7 +307,7 @@ fn a_new_peer_takes_the_least_recently_used_slot() {
     let mut trace = |_: fmt::Arguments<'_>| {};
     let at = |port| {
         let o = origin("localhost", port);
-        SessionPeer::new(&identity(|_| {}), &o, None, &"OpenSSL/3.5.9").unwrap()
+        SessionPeer::new(&identity(|_| {}), &o, None, &"OpenSSL/3.5.9", Dial::Tcp).unwrap()
     };
     let (a, b, c, d) = (at(1), at(2), at(3), at(4));
     for p in [&a, &b, &c] {
@@ -321,7 +341,7 @@ fn a_session_serves_only_its_client() {
             i.options.cert = cert.map(|c| c.as_bytes().to_vec());
             i.options.key_password = password.map(|p| p.as_bytes().to_vec());
         });
-        let mut p = SessionPeer::new(&id, &o, None, &"X").unwrap();
+        let mut p = SessionPeer::new(&id, &o, None, &"X", Dial::Tcp).unwrap();
         // The same key for all, so the client alone tells them apart.
         p.key = b"same".to_vec();
         p
@@ -344,7 +364,7 @@ fn a_session_serves_only_its_client() {
     );
     let o = origin("localhost", 1);
     let blob = identity(|i| i.options.cert_blob = Some(b"blob".to_vec()));
-    let blob = SessionPeer::new(&blob, &o, None, &"X").unwrap();
+    let blob = SessionPeer::new(&blob, &o, None, &"X", Dial::Tcp).unwrap();
     cache
         .put(&blob, ticket(0x303, 0), 1000, &mut trace)
         .unwrap();

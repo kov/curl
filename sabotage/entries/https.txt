@@ -145,3 +145,11 @@ features: test-util
 --- new
     if ended.is_ok() {
         trace::of(
+
+=== an HTTP/3 offer takes HTTP/2 for its choice
+file: crates/curl-core/src/tls.rs
+witness: curl-core tls::tests::an_alpn_offer_is_put_as_c_puts_it
+--- old
+            Chosen::H2 => matches!(self, Alpn::H2Http11 | Alpn::H2),
+--- new
+            Chosen::H2 => matches!(self, Alpn::H2Http11 | Alpn::H2 | Alpn::H3),

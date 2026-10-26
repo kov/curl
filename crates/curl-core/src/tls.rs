@@ -273,6 +273,9 @@ pub enum Alpn {
     H2Http11,
     /// HTTP/2 only.
     H2,
+    /// HTTP/3, over QUIC, offered as C's ngtcp2 filter offers it, with
+    /// its last draft's name (`ALPN_SPEC_H3`).
+    H3,
 }
 
 impl Alpn {
@@ -284,6 +287,7 @@ impl Alpn {
             Alpn::Http10 => b"\x08http/1.0\x08http/1.1",
             Alpn::H2Http11 => b"\x02h2\x08http/1.1",
             Alpn::H2 => b"\x02h2",
+            Alpn::H3 => b"\x02h3\x05h3-29",
         }
     }
 
@@ -293,6 +297,7 @@ impl Alpn {
             Chosen::H2 => matches!(self, Alpn::H2Http11 | Alpn::H2),
             Chosen::Http11 => matches!(self, Alpn::Http11 | Alpn::Http10 | Alpn::H2Http11),
             Chosen::Http10 => self == Alpn::Http10,
+            Chosen::H3 => self == Alpn::H3,
         }
     }
 
@@ -304,6 +309,7 @@ impl Alpn {
             Alpn::Http10 => Some("http/1.0,http/1.1"),
             Alpn::H2Http11 => Some("h2,http/1.1"),
             Alpn::H2 => Some("h2"),
+            Alpn::H3 => Some("h3,h3-29"),
         }
     }
 }
@@ -315,6 +321,7 @@ pub enum Chosen {
     Http11,
     Http10,
     H2,
+    H3,
 }
 
 impl Chosen {
@@ -325,6 +332,7 @@ impl Chosen {
             b"http/1.1" => Some(Chosen::Http11),
             b"http/1.0" => Some(Chosen::Http10),
             b"h2" => Some(Chosen::H2),
+            b"h3" => Some(Chosen::H3),
             _ => None,
         }
     }
@@ -336,6 +344,7 @@ impl Chosen {
             Chosen::Http11 => b"\x08http/1.1",
             Chosen::Http10 => b"\x08http/1.0",
             Chosen::H2 => b"\x02h2",
+            Chosen::H3 => b"\x02h3",
         }
     }
 
@@ -345,6 +354,7 @@ impl Chosen {
             Chosen::Http11 => "http/1.1",
             Chosen::Http10 => "http/1.0",
             Chosen::H2 => "h2",
+            Chosen::H3 => "h3",
         }
     }
 }

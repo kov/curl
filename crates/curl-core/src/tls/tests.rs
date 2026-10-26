@@ -223,4 +223,12 @@ fn an_alpn_offer_is_put_as_c_puts_it() {
     assert_eq!(Alpn::Http11.offer(), Some("http/1.1"));
     assert_eq!(Alpn::Http10.wire(), b"\x08http/1.0\x08http/1.1");
     assert_eq!(Alpn::Http10.offer(), Some("http/1.0,http/1.1"));
+    // QUIC's, as C's ngtcp2 filter offers it: HTTP/3 alone, by both
+    // names, and only `h3` taken as its choice.
+    assert_eq!(Alpn::H3.wire(), b"\x02h3\x05h3-29");
+    assert!(Alpn::H3.offers(Chosen::H3));
+    assert!(!Alpn::H3.offers(Chosen::H2));
+    assert!(!Alpn::H2Http11.offers(Chosen::H3));
+    assert_eq!(Chosen::named(b"h3"), Some(Chosen::H3));
+    assert_eq!(Chosen::H3.wire(), b"\x02h3");
 }

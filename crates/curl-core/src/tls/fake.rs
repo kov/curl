@@ -312,6 +312,7 @@ impl TlsBackend for FakeTls {
                 Alpn::Http11 => Some(Chosen::Http11),
                 Alpn::Http10 => Some(Chosen::Http10),
                 Alpn::H2Http11 | Alpn::H2 => Some(Chosen::H2),
+                Alpn::H3 => Some(Chosen::H3),
             }
             .filter(|_| self.agree),
             stage: Stage::Hello(0),

@@ -9,8 +9,8 @@ use curl_alloc::{OutOfMemory, try_box};
 
 use super::{Connecting, Handshake, StepCx, TransferState, Wake};
 use crate::components::Component;
-use crate::conn::Made;
 use crate::conn::tls::TlsLayer;
+use crate::conn::{Dial, Made};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::options::HttpVersion;
@@ -123,8 +123,8 @@ pub(super) fn start<H: Host>(
         Err(kind) => return (TransferState::Connecting(c).fail(kind), Wake::Again),
     };
     // Who its sessions are kept for: the peer, through a connect-to's
-    // peer if any (`cf_ssl_peer_init`).
-    let kept_for = match SessionPeer::new(identity, peer, via, backend.id()) {
+    // peer if any (`cf_ssl_peer_init`), over TCP.
+    let kept_for = match SessionPeer::new(identity, peer, via, backend.id(), Dial::Tcp) {
         Ok(p) => p,
         Err(OutOfMemory) => {
             return (

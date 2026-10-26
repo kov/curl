@@ -121,3 +121,13 @@ witness: curl-openssl the_key_log_has_each_connection_s_secrets
         log.write_line(unsafe { CStr::from_ptr(line) }.to_bytes());
 --- new
         let _ = (log, line);
+
+=== a QUIC session's ticket is kept for a TCP handshake
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::a_quic_session_s_key_names_its_transport
+--- old
+    if dial == Dial::Quic {
+        out.bytes(b":QUIC");
+--- new
+    if dial == Dial::Quic && false {
+        out.bytes(b":QUIC");

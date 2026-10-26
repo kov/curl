@@ -217,7 +217,8 @@ pub(crate) struct Request {
     /// It went on a stream HTTP/2 refused (`state.refused_stream`).
     refused: bool,
     /// It asks to go on in HTTP/2 over clear text, with these settings
-    /// (`upgr101 == UPGR101_H2`), which a 101 takes up.
+    /// (`upgr101 == UPGR101_H2`), which a 101 takes up; until its answer
+    /// (`bits.upgrade_in_progress`).
     upgrade: Option<Vec<u8>>,
     /// A request before it was told HTTP/1.1 is required: it speaks
     /// HTTP/1 only.
@@ -365,6 +366,13 @@ impl Request {
                 h2: wanted.h2(),
             }
         }
+    }
+
+    /// Whether the request has found what its connection speaks, short
+    /// of an upgrade not yet answered: made at DO, which finds it, and
+    /// no upgrade pending (`url_match_fully_connected`).
+    pub(crate) fn settled_conn(&self) -> bool {
+        self.head.is_some() && self.upgrade.is_none()
     }
 
     /// It went on a stream HTTP/2 refused, which may be made again: said
@@ -2187,6 +2195,11 @@ impl Request {
         }
         if let LineKind::End { interim } = kind {
             let code = cx.report_mut().response_code().unwrap_or(0);
+            if !interim {
+                // The upgrade was not taken: the connection speaks HTTP/1
+                // on.
+                self.upgrade = None;
+            }
             // A 101 that ended the head is final, but C leaves it before it
             // looks at what the response says of authentication
             // (`http_on_101_upgrade`).

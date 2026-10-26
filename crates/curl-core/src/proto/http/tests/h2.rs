@@ -582,6 +582,16 @@ fn h2_pair(
     multi: impl FnOnce(&mut Multi),
     set: impl Fn(usize, &mut Options),
 ) -> ([Outcome; 2], Vec<String>) {
+    h2_pair_added(talks, false, multi, set)
+}
+
+/// As `h2_pair`, both added before either runs if `together`.
+fn h2_pair_added(
+    talks: &[&[&[u8]]],
+    together: bool,
+    multi: impl FnOnce(&mut Multi),
+    set: impl Fn(usize, &mut Options),
+) -> ([Outcome; 2], Vec<String>) {
     let talks: Vec<Conversation> = talks
         .iter()
         .map(|r| Conversation::replies(r, false).per_send())
@@ -610,7 +620,9 @@ fn h2_pair(
         // The first is under way before the second looks for a
         // connection.
         for _ in 0..3 {
-            m.perform(&mut NoEvents).unwrap();
+            if !together {
+                m.perform(&mut NoEvents).unwrap();
+            }
         }
     }
     let b = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
@@ -736,4 +748,199 @@ fn a_connection_at_the_multis_limit_takes_no_more() {
             .any(|l| l == "connection #0 reached MAX_CONCURRENT_STREAMS(1), skip\n"),
         "{text:?}"
     );
+}
+
+/// With `CURLOPT_PIPEWAIT`, a transfer finding a connection to its origin
+/// still being set up waits for it to say whether it multiplexes, and
+/// joins it once it does, with C's lines (`url_match_result`): the
+/// server sees one connection.
+#[test]
+fn a_transfer_that_pipewaits_joins_the_connection_being_set_up() {
+    let ([(a, sa), (b, sb)], sent) = h2_pair_added(
+        &[&[b"S\nH 1 0\n:status: 200\n\n", SECOND]],
+        true,
+        |_| {},
+        |_, o| o.http.pipewait = true,
+    );
+    assert_eq!((a, b), (Ok(()), Ok(())), "{:#?}\n{sent:#?}", sb.text());
+    assert_eq!((sa.body(), sb.body()), (b"aa".to_vec(), b"b1c".to_vec()));
+    let text = sb.text();
+    assert_eq!(
+        text[..4],
+        [
+            "Connection #0 is not open enough, cannot reuse\n",
+            "Found pending candidate for reuse and CURLOPT_PIPEWAIT is set\n",
+            "Waiting on connection to negotiate possible multiplexing.\n",
+            "Multiplexed connection found\n",
+        ],
+        "{text:#?}"
+    );
+}
+
+/// Without `CURLOPT_PIPEWAIT`, a transfer finding a connection to its
+/// origin still being set up says so, and makes its own.
+#[test]
+fn a_transfer_that_does_not_pipewait_makes_its_own_connection() {
+    let ([(a, sa), (b, sb)], _) = h2_pair_added(
+        &[
+            &[b"S\nH 1 0\n:status: 200\n\nD 1 2 1\naa"],
+            &[b"S\nH 1 0\n:status: 200\n\nD 1 2 1\nbb"],
+        ],
+        true,
+        |_| {},
+        |_, _| {},
+    );
+    assert_eq!((a, b), (Ok(()), Ok(())));
+    assert_eq!((sa.body(), sb.body()), (b"aa".to_vec(), b"bb".to_vec()));
+    let text = sb.text();
+    assert_eq!(text[0], "Connection #0 is not open enough, cannot reuse\n");
+    assert!(text.iter().any(|l| l.contains("Trying")), "{text:#?}");
+    assert!(!text.iter().any(|l| l.contains("Waiting")), "{text:#?}");
+}
+
+/// A transfer that pipewaits on a connection that turns out to take one
+/// request at a time makes its own once it is known, without waiting for
+/// the first transfer to end (`seen_single_use_conn`).
+#[test]
+fn a_pipewait_on_a_connection_that_does_not_multiplex_ends_once_known() {
+    let first = Conversation::new(OK, false).held();
+    let second = Conversation::new(OK, false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let mut ids = Vec::new();
+    let mut seen = Vec::new();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let s = Seen::default();
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.output.verbose = true;
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.pipewait = true;
+        o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
+        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        seen.push(s);
+    }
+    let b = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
+    assert_eq!(b, Ok(()));
+    assert!(first.received().ends_with(b"\r\n\r\n"), "the first sent");
+    let text = seen[1].text();
+    assert_eq!(
+        text[..3],
+        [
+            "Connection #0 is not open enough, cannot reuse\n",
+            "Found pending candidate for reuse and CURLOPT_PIPEWAIT is set\n",
+            "Waiting on connection to negotiate possible multiplexing.\n",
+        ],
+        "{text:#?}"
+    );
+    assert!(text.iter().any(|l| l.contains("Trying")), "{text:#?}");
+    assert_eq!(seen[1].body(), b"ok\n");
+    first.allow(1);
+    let a = drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap();
+    assert_eq!(a, Ok(()));
+    for id in ids {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+}
+
+/// A connection whose upgrade to HTTP/2 the server answers in HTTP/1.1
+/// is known not to multiplex from that answer on: a transfer that
+/// pipewaits on it makes its own then, while the first's body still
+/// comes (`bits.upgrade_in_progress`).
+#[test]
+fn a_pipewait_on_a_refused_upgrade_ends_with_its_answer() {
+    let first = Conversation::new(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab", false);
+    let second = Conversation::new(OK, false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let mut ids = Vec::new();
+    let mut seen = Vec::new();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let s = Seen::default();
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.output.verbose = true;
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.version = HttpVersion::Http2;
+        o.http.pipewait = true;
+        o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
+        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        seen.push(s);
+    }
+    let b = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
+    let text = seen[1].text();
+    assert_eq!(b, Ok(()), "{text:#?}");
+    assert!(
+        String::from_utf8(first.received())
+            .unwrap()
+            .contains("Upgrade: h2c"),
+        "the first asked to upgrade"
+    );
+    assert_eq!(
+        text[2], "Waiting on connection to negotiate possible multiplexing.\n",
+        "{text:#?}"
+    );
+    assert!(text.iter().any(|l| l.contains("Trying")), "{text:#?}");
+    assert_eq!(seen[1].body(), b"ok\n");
+    assert_eq!(seen[0].body(), b"ab", "the first's body still comes");
+    for id in ids {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+}
+
+/// A connection to the origin that takes one request at a time, and none
+/// seen that takes more, says the server does not multiplex: a transfer
+/// that pipewaits makes its own then, though another is still being set
+/// up (`url_match_result`).
+#[test]
+fn a_single_use_connection_ends_a_pipewait_over_another_set_up() {
+    let first = Conversation::new(OK, false).held();
+    let mut m = serving(
+        Peer::Accepts,
+        &[
+            &first,
+            &Conversation::new(OK, false),
+            &Conversation::new(OK, false),
+        ],
+    );
+    let mut ids = Vec::new();
+    let mut seen = Vec::new();
+    for path in ["/a", "/b", "/c"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let s = Seen::default();
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.output.verbose = true;
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.pipewait = true;
+        o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
+        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        seen.push(s);
+    }
+    let c = drive_to_completion(&mut m, ids[2], &mut NoEvents).unwrap();
+    let text = seen[2].text();
+    assert_eq!(c, Ok(()), "{text:#?}");
+    let waits = text.iter().filter(|l| l.starts_with("Waiting on")).count();
+    assert_eq!(waits, 1, "{text:#?}");
+    assert!(
+        text.iter()
+            .any(|l| l == "Connection #1 is not open enough, cannot reuse\n"),
+        "{text:#?}"
+    );
+    first.allow(1);
+    for id in ids {
+        drive_to_completion(&mut m, id, &mut NoEvents)
+            .unwrap()
+            .unwrap();
+        m.remove(id, &mut NoEvents).unwrap();
+    }
 }

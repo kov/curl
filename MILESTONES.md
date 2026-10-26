@@ -867,8 +867,7 @@ the system's under the HTTP-only programs installed here.
         data delivered to its transfer as it is read, a sibling's body sent from its own
         buffer. 2404 passes.
       - **2. `PIPEWAIT`** and `--parallel-immediate`: a transfer waits for a connection being
-        set up to its origin to say whether it multiplexes (2407; pytest's parallel HTTP/2
-        cases). **To do.**
+        set up to its origin to say whether it multiplexes. **Done.** 2405 and 2407 pass.
       - **3. A paused stream's window,** its sibling's window kept; server push
         (`CURLMOPT_PUSHFUNCTION`). **To do.**
       - **4. TLS early data** (pytest 02_32, 07_70, 08_08). **To do.**

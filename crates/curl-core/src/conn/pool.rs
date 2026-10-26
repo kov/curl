@@ -383,6 +383,9 @@ pub(crate) struct Wanted<'w> {
     /// this many transfers on it (`xfer_may_multiplex`,
     /// `Curl_multi_max_concurrent_streams`).
     pub(crate) multiplex: Option<NonZeroU32>,
+    /// The transfer would rather wait for a connection being set up to
+    /// say it multiplexes than make its own (`CURLOPT_PIPEWAIT`).
+    pub(crate) pipewait: bool,
 }
 
 /// How long the transfer looking for a connection lets one be idle, and
@@ -457,6 +460,8 @@ pub(crate) enum WaitReason {
     HostLimit,
     /// As many in all as allowed: this many.
     TotalLimit(NonZeroU32),
+    /// A connection being set up may take it (`CURLOPT_PIPEWAIT`).
+    Multiplex,
 }
 
 /// A connection for a transfer.
@@ -488,6 +493,11 @@ pub(crate) enum PoolNote {
     },
     /// A connection that multiplexes was joined.
     Multiplexed,
+    /// A connection that serves the transfer, which may multiplex, is
+    /// not up, or not known to multiplex (`url_match_fully_connected`).
+    NotOpenEnough(ConnNumber),
+    /// The transfer waits for such a one (`url_match_result`).
+    PendingCandidate,
     /// A connection closed, gracefully.
     Closed(ConnNumber),
 }
@@ -529,9 +539,72 @@ enum Place {
     Attached(Shared),
 }
 
-/// What the pool knows of a connection leased: enough to count it.
+/// What the pool knows of a connection leased: enough to count it, and
+/// to tell a transfer that may multiplex whether to wait for it.
 struct Leased {
     route: Route,
+    number: ConnNumber,
+    verdict: Verdict,
+}
+
+/// Whether a leased connection may yet take more transfers, as its
+/// lease's step last left it (`url_match_fully_connected`,
+/// `url_match_multiplex_needs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    /// Being set up, or not yet known to speak HTTP/2 or not.
+    Pending,
+    /// Up, and takes one request at a time.
+    Single,
+}
+
+impl Verdict {
+    /// A connection's, as it is leased from `here`, `settled` if its
+    /// transfer found what it speaks: a share's never multiplexes, so
+    /// none waits for one.
+    fn of(here: &Home, conn: Option<&Conn>, settled: bool) -> Verdict {
+        match (here, conn) {
+            (Home::Share(_), _) => Verdict::Single,
+            (Home::Multi, Some(conn)) if settled && !conn.is_h2() => Verdict::Single,
+            (Home::Multi, _) => Verdict::Pending,
+        }
+    }
+}
+
+/// What the search saw of the connections to the transfer's route that
+/// it could not use (`url_conn_match`'s `seen_*`).
+#[derive(Clone, Copy, Debug, Default)]
+struct Seen {
+    pending: bool,
+    single: bool,
+    multiplex: bool,
+}
+
+/// What the search found.
+#[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "returned by the search and taken apart at once, never kept; a box would \
+              allocate on every search"
+)]
+pub(crate) enum Found {
+    Lease(ConnLease),
+    /// Nothing to use, nor to wait for.
+    Nothing,
+    /// Nothing to use yet, but a connection being set up may take the
+    /// transfer once it is known to multiplex (`wait_pipe`).
+    Wait,
+}
+
+#[cfg(test)]
+impl Found {
+    /// The lease found, if one was.
+    pub(crate) fn lease(self) -> Option<ConnLease> {
+        match self {
+            Found::Lease(lease) => Some(lease),
+            Found::Nothing | Found::Wait => None,
+        }
+    }
 }
 
 /// A connection that multiplexes, in its place.
@@ -660,20 +733,23 @@ impl Pool {
         notes: &mut Vec<PoolNote>,
     ) -> Result<Acquired, OutOfMemory> {
         if searches(&route, rules)
-            && let Some(lease) = self.find(
-                here,
-                Wanted {
-                    route: &route,
-                    auth: Wants::NONE,
-                    last: None,
-                    versions: crate::proto::http::Versions::ALL,
-                    multiplex: None,
-                },
-                rules,
-                exits,
-                now,
-                notes,
-            )?
+            && let Some(lease) = self
+                .find(
+                    here,
+                    Wanted {
+                        route: &route,
+                        auth: Wants::NONE,
+                        last: None,
+                        versions: crate::proto::http::Versions::ALL,
+                        multiplex: None,
+                        pipewait: false,
+                    },
+                    rules,
+                    exits,
+                    now,
+                    notes,
+                )?
+                .lease()
         {
             return Ok(Acquired::Reused(lease));
         }
@@ -711,6 +787,8 @@ impl Pool {
         let number = ConnNumber(self.next_number);
         let leased = Leased {
             route: route.clone(),
+            number,
+            verdict: Verdict::of(here, None, false),
         };
         let slot = match route {
             Route::Local => ConnSlot::Open(Conn {
@@ -757,7 +835,7 @@ impl Pool {
         exits: &mut dyn Exits,
         now: Instant,
         notes: &mut Vec<PoolNote>,
-    ) -> Result<Option<ConnLease>, OutOfMemory> {
+    ) -> Result<Found, OutOfMemory> {
         if self
             .last_prune
             .is_none_or(|at| now.since(at) >= Duration::from_secs(1))
@@ -767,10 +845,12 @@ impl Pool {
         }
         // The transfer's last connection first, then the others in the
         // table's order (`Curl_cpool_find`).
+        let mut seen = Seen::default();
         if let Some(last) = wanted.last
-            && let Some(lease) = self.take(last, here, &wanted, rules, exits, now, notes)?
+            && let Some(lease) =
+                self.take(last, here, &wanted, rules, exits, now, notes, &mut seen)?
         {
-            return Ok(Some(lease));
+            return Ok(Found::Lease(lease));
         }
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
@@ -778,17 +858,33 @@ impl Pool {
             if Some(id) == wanted.last {
                 continue;
             }
-            if let Some(lease) = self.take(id, here, &wanted, rules, exits, now, notes)? {
-                return Ok(Some(lease));
+            if let Some(lease) =
+                self.take(id, here, &wanted, rules, exits, now, notes, &mut seen)?
+            {
+                return Ok(Found::Lease(lease));
             }
         }
-        Ok(None)
+        // A connection that takes one request at a time, with none seen
+        // that takes more, says the server does not multiplex: none is
+        // waited for (`url_match_result`).
+        if seen.single && !seen.multiplex {
+            return Ok(Found::Nothing);
+        }
+        if seen.pending && wanted.pipewait {
+            notes.try_push(PoolNote::PendingCandidate)?;
+            return Ok(Found::Wait);
+        }
+        Ok(Found::Nothing)
     }
 
     /// The connection `id`, leased from `here` if it is idle, matches
     /// `wanted` and is young and healthy enough; one too old or not
     /// healthy is closed, and its notes said.
-    #[expect(clippy::too_many_arguments, reason = "what `find` takes, and the id")]
+    /// A leased one that serves the transfer is told in `seen`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "what `find` takes, the id, and what it saw"
+    )]
     fn take(
         &mut self,
         id: ConnId,
@@ -798,9 +894,24 @@ impl Pool {
         exits: &mut dyn Exits,
         now: Instant,
         notes: &mut Vec<PoolNote>,
+        seen: &mut Seen,
     ) -> Result<Option<ConnLease>, OutOfMemory> {
-        if let Some(Place::Attached(_)) = self.conns.get(id) {
-            return self.join_if(id, here, wanted, notes);
+        match self.conns.get(id) {
+            Some(Place::Attached(_)) => return self.join_if(id, here, wanted, notes, seen),
+            Some(Place::Leased(leased)) => {
+                if leased.route.serves(wanted.route) {
+                    match leased.verdict {
+                        Verdict::Pending if wanted.multiplex.is_some() => {
+                            seen.pending = true;
+                            notes.try_push(PoolNote::NotOpenEnough(leased.number))?;
+                        }
+                        Verdict::Pending => {}
+                        Verdict::Single => seen.single = true,
+                    }
+                }
+                return Ok(None);
+            }
+            _ => {}
         }
         let Some(conn) = self.conns.get_mut(id).and_then(Place::idle_mut) else {
             return Ok(None);
@@ -834,6 +945,9 @@ impl Pool {
             Ok(()) => {
                 let leased = Leased {
                     route: conn.route.clone(),
+                    number: conn.number,
+                    // An idle one carried a request, which found it.
+                    verdict: Verdict::of(here, Some(conn), true),
                 };
                 let Some(Place::Idle(mut slot)) = self
                     .conns
@@ -874,19 +988,20 @@ impl Pool {
         here: &Home,
         wanted: &Wanted<'_>,
         notes: &mut Vec<PoolNote>,
+        seen: &mut Seen,
     ) -> Result<Option<ConnLease>, OutOfMemory> {
         let Some(Place::Attached(shared)) = self.conns.get(id) else {
             unreachable!("just found attached");
         };
         let conn = shared.conn();
+        if conn.close || !conn.serves(wanted.route) {
+            return Ok(None);
+        }
+        seen.multiplex = true;
         let Some(max) = wanted.multiplex else {
             return Ok(None);
         };
-        if conn.close
-            || !conn.serves(wanted.route)
-            || !conn.serves_auth(&wanted.auth)
-            || !wanted.versions.h2
-        {
+        if !conn.serves_auth(&wanted.auth) || !wanted.versions.h2 {
             return Ok(None);
         }
         let Use::Leased(users) = conn.use_ else {
@@ -1078,6 +1193,25 @@ impl Pool {
         });
     }
 
+    /// Keep what a lease's step left its connection as, for others'
+    /// searches: whether it is up and takes one request at a time, its
+    /// transfer having found what it speaks if `settled`. Whether it was
+    /// found to, just now: a transfer waiting for it to multiplex waits
+    /// no more (`Curl_multi_connchanged`).
+    pub(crate) fn settle(&mut self, lease: &ConnLease, settled: bool) -> bool {
+        if !matches!(lease.home, Home::Multi) {
+            return false;
+        }
+        let Some(Place::Leased(leased)) = self.conns.get_mut(lease.id) else {
+            return false;
+        };
+        let conn = lease.conn.as_ref().and_then(ConnSlot::open);
+        let verdict = Verdict::of(&lease.home, conn, settled);
+        let single = verdict == Verdict::Single && leased.verdict == Verdict::Pending;
+        leased.verdict = verdict;
+        single
+    }
+
     /// Whether `lease` is a key to a connection in its place here, one
     /// that multiplexes: only the multi's own pool has them.
     pub(crate) fn is_attached(&self, lease: &ConnLease) -> bool {
@@ -1128,6 +1262,8 @@ impl Pool {
             };
             let leased = Leased {
                 route: shared.route.clone(),
+                number: shared.conn().number,
+                verdict: Verdict::Pending,
             };
             (Place::Leased(leased), place)
         }) else {

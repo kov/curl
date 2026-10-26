@@ -1398,11 +1398,19 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             && lease.is_h2()
         {
             cx.rest.caches.pool.attach(lease);
+            // One waiting to multiplex may join it now
+            // (`Curl_conn_set_multiplex`).
+            schedule_pending(&mut cx.rest);
             return wake;
         }
     }
+    let settled = run.state.attached().is_some_and(|x| x.proto.settled_conn());
     if let Some(lease) = run.state.lease_mut() {
         cx.rest.caches.pool.check_in(lease);
+        if cx.rest.caches.pool.settle(lease, settled) {
+            // One waiting for it to multiplex makes its own now.
+            schedule_pending(&mut cx.rest);
+        }
     }
     wake
 }
@@ -3826,6 +3834,10 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
                     cx,
                     format_args!("No connections available, total of {max} reached."),
                 ),
+                WaitReason::Multiplex => trace::info(
+                    cx,
+                    format_args!("Waiting on connection to negotiate possible multiplexing."),
+                ),
             }
             mstate::enter(cx, MState::Pending);
             return TransferState::Pending(plan);
@@ -4046,10 +4058,12 @@ fn acquire<H: Host>(
     };
     let last = cx.easy().last_conn.map(|l| l.id);
     let versions = proto.http_versions(cx.easy().options());
-    // A transfer that may speak HTTP/2 shares a connection that
+    // An HTTP transfer that may speak HTTP/2 shares a connection that
     // multiplexes, as the multi lets it (`xfer_may_multiplex`).
-    let multiplex =
-        (cx.rest.tell.limits.multiplex && versions.h2).then_some(cx.rest.tell.limits.max_streams);
+    let http = matches!(proto, ProtoState::Http(_));
+    let multiplex = (cx.rest.tell.limits.multiplex && http && versions.h2)
+        .then_some(cx.rest.tell.limits.max_streams);
+    let pipewait = cx.easy().options().http.pipewait;
     let found = if pool::searches(&route, rules) {
         cx.rest.pool_search(cx.me, &home, |pool, exits, here| {
             pool.find(
@@ -4060,6 +4074,7 @@ fn acquire<H: Host>(
                     last,
                     versions,
                     multiplex,
+                    pipewait,
                 },
                 rules,
                 exits,
@@ -4068,11 +4083,12 @@ fn acquire<H: Host>(
             )
         })?
     } else {
-        None
+        pool::Found::Nothing
     };
     let acquired = match found {
-        Some(lease) => Acquired::Reused(lease),
-        None => {
+        pool::Found::Lease(lease) => Acquired::Reused(lease),
+        pool::Found::Wait => Acquired::Wait(pool::WaitReason::Multiplex),
+        pool::Found::Nothing => {
             // The connection closes its sockets as the transfer making it
             // says, whoever closes them (url.c's `fclosesocket`).
             let closer = match &cx.easy().options().sockets.close {
@@ -4136,6 +4152,14 @@ fn acquire<H: Host>(
                 ),
             ),
             PoolNote::Multiplexed => trace::info(cx, format_args!("Multiplexed connection found")),
+            PoolNote::NotOpenEnough(n) => trace::info(
+                cx,
+                format_args!("Connection {n} is not open enough, cannot reuse"),
+            ),
+            PoolNote::PendingCandidate => trace::info(
+                cx,
+                format_args!("Found pending candidate for reuse and CURLOPT_PIPEWAIT is set"),
+            ),
         }
     }
     Ok(acquired)

@@ -727,10 +727,12 @@ fn a_search_tries_the_transfer_s_last_connection_first() {
             last,
             versions: crate::proto::http::Versions::ALL,
             multiplex: None,
+            pipewait: false,
         };
         let mut notes = Vec::new();
         pool.find(&Home::Multi, wanted, RULES, net, now, &mut notes)
             .unwrap()
+            .lease()
             .expect("an idle match")
     };
     for lease in leases {

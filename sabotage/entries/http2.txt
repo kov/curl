@@ -275,6 +275,51 @@ witness: curl-core proto::http::tests::h2::a_connection_at_the_servers_limit_tak
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h2::a_multi_that_does_not_multiplex_shares_no_connection
 --- old
-        (cx.rest.tell.limits.multiplex && versions.h2).then_some(cx.rest.tell.limits.max_streams);
+    let multiplex = (cx.rest.tell.limits.multiplex && http && versions.h2)
 --- new
-        versions.h2.then_some(cx.rest.tell.limits.max_streams);
+    let multiplex = (http && versions.h2)
+
+=== a transfer that pipewaits never waits
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::a_transfer_that_pipewaits_joins_the_connection_being_set_up
+--- old
+        if seen.pending && wanted.pipewait {
+--- new
+        if false && seen.pending && wanted.pipewait {
+
+=== a transfer waits on, after one to its origin is found not to multiplex
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::a_single_use_connection_ends_a_pipewait_over_another_set_up
+--- old
+        if seen.single && !seen.multiplex {
+--- new
+        if false && seen.single && !seen.multiplex {
+
+=== a connection found not to multiplex leaves its waiters waiting
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::a_pipewait_on_a_connection_that_does_not_multiplex_ends_once_known
+--- old
+        let single = verdict == Verdict::Single && leased.verdict == Verdict::Pending;
+--- new
+        let single = false;
+
+=== a connection that multiplexes leaves its waiters waiting
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_transfer_that_pipewaits_joins_the_connection_being_set_up
+--- old
+            // One waiting to multiplex may join it now
+            // (`Curl_conn_set_multiplex`).
+            schedule_pending(&mut cx.rest);
+--- new
+
+=== a refused upgrade leaves its connection pending
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h2::a_pipewait_on_a_refused_upgrade_ends_with_its_answer
+--- old
+            if !interim {
+                // The upgrade was not taken: the connection speaks HTTP/1
+                // on.
+                self.upgrade = None;
+            }
+--- new
+

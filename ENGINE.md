@@ -1603,11 +1603,17 @@ sibling's stream goes to it as it is read, by moving the sibling's `Run` out
 and the streams the session closes as it sends are told once it is done. A GOAWAY, the
 connection's end or its failure wakes every other transfer on it.
 
-Not built yet: `PIPEWAIT` (which the tool sets for `--parallel`), where a transfer finding a
-connection to its route still being set up, or not yet known to multiplex, waits in PENDING
-(`url_match_multiplex_needs`, `seen_pending_conn`) and each change to a connection's
-multiplexing lets the waiting ones look again; a pause or unpause aimed at a sibling, and its
-stream's window; server push.
+A leased connection's place keeps a verdict for others' searches, written only at the end of
+its lease's step: pending while it is set up or its first request has not found what it speaks
+(an `h2c` upgrade unanswered counts as not found), single-use once it speaks HTTP/1. A share's
+connections are single-use from the start, as its pool never attaches. A transfer that may
+multiplex and finds a pending one says so ("not open enough"), and with `CURLOPT_PIPEWAIT`
+(which the tool sets for `--parallel` unless `--parallel-immediate`) waits in PENDING for it,
+unless a single-use one to the route, with no multiplexing one, says the server does not
+multiplex (`url_match_result`). A connection attached, or found single-use, lets one waiting
+transfer look again, and each one that then gets a connection lets the next.
+
+Not built yet: a pause or unpause aimed at a sibling, and its stream's window; server push.
 
 ### 4.5 Route and reuse
 

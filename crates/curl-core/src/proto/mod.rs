@@ -545,6 +545,15 @@ impl ProtoState {
         }
     }
 
+    /// Whether the transfer has found what its connection speaks: a
+    /// protocol that is not HTTP's never multiplexes.
+    pub(crate) fn settled_conn(&self) -> bool {
+        match self {
+            ProtoState::Http(r) => r.settled_conn(),
+            _ => true,
+        }
+    }
+
     /// An HTTP/2 stream said HTTP/1.1 is required
     /// (`Curl_h2_http_1_1_error`).
     pub(crate) fn h1_required(&self) -> bool {

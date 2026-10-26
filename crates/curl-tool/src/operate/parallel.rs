@@ -271,6 +271,15 @@ impl<'a, 'l> Parallel<'_, 'a, 'l> {
                 Err(Pre::Failed(e)) => return Err(e),
                 Err(Pre::Unopened) => return Err(ErrorKind::ReadError),
             }
+            // Connecting at once is not waiting to multiplex
+            // (`add_parallel_transfers`).
+            let pipewait = !self.run.global.parallel_immediate;
+            Setopt::new(easy, None)
+                .unwritten("C sets it with `curl_easy_setopt` as it adds", |o| {
+                    o.http.pipewait = pipewait;
+                    Ok(())
+                })
+                .expect("setting a flag cannot fail");
             let oom = |_| ErrorKind::OutOfMemory;
             let gauged = Handler::progress(Gauged(entry.counted.gauge.clone())).map_err(oom)?;
             // It lets a `-T .` upload waiting for its input go on.

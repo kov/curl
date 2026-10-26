@@ -838,6 +838,16 @@ impl PerTransfer<'_, '_> {
                 {
                     return self.fail(run, &easy, ErrorKind::OutOfMemory);
                 }
+                // The debug build forbids reuse when asked.
+                #[cfg(feature = "debug-hooks")]
+                if curl_os::env::is_set(b"CURL_FORBID_REUSE") {
+                    Setopt::new(&mut easy, None)
+                        .unwritten("C's debug build sets it with `curl_easy_setopt`", |o| {
+                            o.limits.reuse.forbid = true;
+                            Ok(())
+                        })
+                        .expect("setting a flag cannot fail");
+                }
                 // The debug build runs a copy, which needs the share set
                 // again, and lets the original go as `curl_easy_cleanup`
                 // does.

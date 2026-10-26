@@ -701,6 +701,46 @@ fn the_internal_trace_says_a_shutdown_as_c_does() {
     );
 }
 
+/// A handle's own multi driven by events keeps its callbacks as it
+/// goes: a connection still closing then is closed in its cleanup, and
+/// the callback says its socket's REMOVE on the internal trace, as C's
+/// `curl_easy_perform_ev` says it on the internal handle (test_19_05).
+#[test]
+fn a_handle_s_own_multi_says_its_cleanup_s_removes() {
+    use crate::components::{Component, Components, Level};
+    let (mut m, wire, _clock) = lingering(Linger::UntilPeer);
+    let components = Components::new().unwrap();
+    components.set(Component::Multi, Level::Info);
+    let written = Written::default();
+    m.trace_internally_to(
+        components,
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
+    let id = m.add(closing(1), (), &mut NoEvents).unwrap();
+    let mut table = super::EventTable::default();
+    assert_eq!(
+        super::drive_by_events_with(&mut m, id, &mut table),
+        Ok(Ok(()))
+    );
+    m.remove(id, &mut NoEvents).unwrap();
+    assert_eq!(m.shutdowns.len(), 1, "still closing");
+    drop(crate::easy::Private {
+        multi: m,
+        events: Some(table),
+    });
+    assert_eq!(wire.closed(), [1000]);
+    let lines = written.lines();
+    assert_eq!(
+        lines[lines.len() - 3..],
+        [
+            "* [MULTI] Curl_multi_will_close fd=1000",
+            "* socket cb: socket 1000 REMOVED",
+            "* [MULTI] [SHUTDOWN] trigger multi connchanged",
+        ],
+        "{lines:#?}"
+    );
+}
+
 /// A multi with no internal trace says nothing of a shutdown, its
 /// transfer's own lines apart.
 #[test]

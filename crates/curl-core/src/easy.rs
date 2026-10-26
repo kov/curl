@@ -17,7 +17,8 @@ use crate::handler::Handler;
 use crate::hsts::{Hsts, LoadError as CacheLoadError};
 use crate::id::ArenaPolicy;
 use crate::libraries::{Libraries, SharedLibraries};
-use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
+use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode};
+use crate::multi::{EventTable, drive_by_events_with};
 use crate::options::{Lines, Options};
 use crate::proto::http1::auth::Auth;
 use crate::report::TransferReport;
@@ -45,7 +46,7 @@ pub struct Easy {
     pub(crate) wildcard_resolve: bool,
     /// The multi `perform` runs the handle in, kept with its connections
     /// from one to the next; `Multi::add` drops it.
-    pub(crate) private: Option<Private>,
+    pub(crate) private: Option<Box<Private>>,
     /// Authenticating with the origin, from one transfer to the next.
     pub(crate) auth: Auth,
     /// The cookie jar, once the options or the application turn it on
@@ -121,11 +122,25 @@ enum SuffixList {
 }
 
 /// A handle's own multi (C's `multi_easy`).
-pub(crate) struct Private(pub(crate) Box<Multi>);
+pub(crate) struct Private {
+    pub(crate) multi: Multi,
+    /// What the multi last told the callbacks of a perform driven by
+    /// events, which stay set on it until it goes, as C's do: its
+    /// cleanup's changes are heard there.
+    pub(crate) events: Option<EventTable>,
+}
 
 impl fmt::Debug for Private {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Private")
+    }
+}
+
+impl Drop for Private {
+    fn drop(&mut self) {
+        if let Some(table) = &mut self.events {
+            self.multi.close_connections(table);
+        }
     }
 }
 
@@ -733,7 +748,7 @@ impl Easy {
     /// handle's own multi, made the first time with the system's clock
     /// and network.
     pub fn perform(&mut self) -> Result<(), Error> {
-        self.perform_by(Drive::Waits)
+        self.perform_by(false)
     }
 
     /// Run the transfer to its end as `perform` does, driven through
@@ -741,12 +756,12 @@ impl Easy {
     /// callbacks (the debug build's `curl_easy_perform_ev`).
     #[cfg(feature = "debug-hooks")]
     pub fn perform_ev(&mut self) -> Result<(), Error> {
-        self.perform_by(Drive::Events)
+        self.perform_by(true)
     }
 
-    fn perform_by(&mut self, drive: Drive) -> Result<(), Error> {
-        let mut multi = match self.private.take() {
-            Some(Private(multi)) => multi,
+    fn perform_by(&mut self, by_events: bool) -> Result<(), Error> {
+        let mut private = match self.private.take() {
+            Some(private) => private,
             None => {
                 // A waker, as every C multi has one (`Curl_wakeup_init`),
                 // watched as a perform's multi waits; without the
@@ -767,15 +782,25 @@ impl Easy {
                     arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
                     waker,
                 };
-                let mut multi = try_box(Multi::new(env).map_err(oom)?).map_err(oom)?;
+                let mut multi = Multi::new(env).map_err(oom)?;
                 // As few TLS peers as C's `multi_easy` keeps.
                 multi.keep_tls_sessions_of(crate::tls::SessionCache::PERFORM_PEERS);
                 multi.make_handle_own();
-                multi
+                try_box(Private {
+                    multi,
+                    events: None,
+                })
+                .map_err(oom)?
             }
         };
-        let result = self.perform_in(&mut multi, drive);
-        self.private = Some(Private(multi));
+        let Private { multi, events } = &mut *private;
+        let result = if by_events {
+            let table = events.get_or_insert_with(EventTable::default);
+            self.perform_in(multi, Drive::Events(table))
+        } else {
+            self.perform_in(multi, Drive::Waits)
+        };
+        self.private = Some(private);
         result
     }
 
@@ -818,14 +843,13 @@ fn oom(_: OutOfMemory) -> ErrorKind {
 }
 
 /// How a perform drives its multi.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Drive {
+#[derive(Debug)]
+pub(crate) enum Drive<'t> {
     /// Waiting on the multi's sockets, then running it (`easy_transfer`).
     Waits,
-    /// Through `socket_action`, by what it tells its callbacks
-    /// (`easy_events`).
-    #[cfg_attr(not(feature = "debug-hooks"), expect(dead_code))]
-    Events,
+    /// Through `socket_action`, by what it tells its callbacks, watching
+    /// what the table holds (`easy_events`).
+    Events(&'t mut EventTable),
 }
 
 /// Add `easy` to `multi`, drive it to its end as `drive` says, and take it
@@ -841,7 +865,9 @@ fn run_to_end(
     };
     let result = match drive {
         Drive::Waits => wait_to_end(multi),
-        Drive::Events => drive_by_events(multi, id).unwrap_or_else(|e| Err(multi_error(e))),
+        Drive::Events(table) => {
+            drive_by_events_with(multi, id, table).unwrap_or_else(|e| Err(multi_error(e)))
+        }
     };
     let removed = multi.remove(id, &mut NoEvents).expect("added above");
     (result, removed.easy)
@@ -1149,7 +1175,7 @@ mod tests {
         std::fs::write(s.0.join("f"), b"x").unwrap();
         let (mut e, _) = easy(&s.url("f"));
         e.perform().unwrap();
-        let Some(Private(multi)) = &e.private else {
+        let Some(Private { multi, .. }) = e.private.as_deref() else {
             panic!("the multi is kept");
         };
         assert!(multi.waker().is_some());

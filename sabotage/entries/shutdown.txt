@@ -215,3 +215,27 @@ witness: curl-core multi::shutdown_tests::the_internal_trace_says_a_shutdown_as_
         let mut cx = InternalCx { now, trace };
 --- new
         let mut cx = InternalCx { now, trace: None };
+
+=== a handle's own multi goes without its callbacks hearing the cleanup
+file: crates/curl-core/src/easy.rs
+witness: curl-core multi::shutdown_tests::a_handle_s_own_multi_says_its_cleanup_s_removes
+--- old
+            self.multi.close_connections(table);
+--- new
+            let _ = table;
+
+=== the event table says the multi's sockets on no trace
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core multi::shutdown_tests::a_handle_s_own_multi_says_its_cleanup_s_removes
+--- old
+    table.internal = m.shutdowns.internal().cloned();
+--- new
+    table.internal = None;
+
+=== the event table says a transfer's sockets on no trace
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core proto::http::tests::wait_trace::a_transfer_run_by_events_is_traced_as_c
+--- old
+                crate::trace::info_outside(&mut super::cx::EventCalls { cx, me }, line);
+--- new
+                let _ = (cx, me, line);

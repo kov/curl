@@ -232,7 +232,7 @@ impl Easy {
     pub fn recv_raw(&mut self, buf: &mut [u8]) -> Result<RawIo, ErrorKind> {
         match self.private.take() {
             Some(mut private) => {
-                let got = private.0.recv_raw_for(self, buf);
+                let got = private.multi.recv_raw_for(self, buf);
                 self.private = Some(private);
                 got
             }
@@ -247,7 +247,7 @@ impl Easy {
     pub fn send_raw(&mut self, bytes: &[u8]) -> Result<RawIo, ErrorKind> {
         match self.private.take() {
             Some(mut private) => {
-                let sent = private.0.send_raw_for(self, bytes);
+                let sent = private.multi.send_raw_for(self, bytes);
                 self.private = Some(private);
                 sent
             }
@@ -262,7 +262,7 @@ impl Easy {
     pub fn active_socket(&mut self) -> Option<SocketKey> {
         match self.private.take() {
             Some(mut private) => {
-                let socket = private.0.active_socket_for(self);
+                let socket = private.multi.active_socket_for(self);
                 self.private = Some(private);
                 socket
             }

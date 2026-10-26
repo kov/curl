@@ -42,6 +42,7 @@ use crate::tls::{TlsNative, TlsShared};
 use crate::upload::Readers;
 
 pub use crate::deliver::PauseRequest;
+pub(crate) use cx::TransferCalls;
 use cx::{Announcing, EngineRest, Telling};
 pub use cx::{EventCx, NotifyCx, TransferCx};
 pub use notify::{Notification, NotifyKind};
@@ -49,6 +50,7 @@ pub use push::{PushFields, PushOffer, Pushed};
 pub use sched::{Census, Counts};
 pub use sockets::{SocketFor, SocketWhat, UnknownSocket};
 pub use timers::TimerChange;
+pub(crate) use wait::{EventTable, drive_by_events_with};
 pub use wait::{WaitMode, drive_by_events, drive_to_completion};
 
 use notify::NotifyQueue;

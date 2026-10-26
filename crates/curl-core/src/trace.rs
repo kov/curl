@@ -127,6 +127,32 @@ pub(crate) fn of_with<H: Host>(cx: &mut StepCx<'_, H>, component: Component, par
     text(cx, line.bytes());
 }
 
+/// A line of transfer `calls.me()`'s trace outside its step (`infof` on
+/// a handle a callback of the multi was given): after its ids, through
+/// its debug handler, or without one to its standard error.
+pub(crate) fn info_outside(calls: &mut dyn crate::multi::TransferCalls, args: fmt::Arguments<'_>) {
+    let Some(easy) = calls.easy(calls.me()) else {
+        return;
+    };
+    let options = easy.options();
+    if !options.output.verbose {
+        return;
+    }
+    let mut line = Text::<LINE_MAX>::new();
+    push_ids_of(easy, &mut line);
+    line.push_fmt(args);
+    end_line(&mut line);
+    let handler = options.callbacks.debug.clone();
+    let sink = options.callbacks.stderr.clone();
+    match handler {
+        Some(handler) => handler.debug(&mut TransferCx::new(calls), DebugKind::Text, line.bytes()),
+        None => {
+            progress::to_stderr(sink.as_ref(), b"* ");
+            progress::to_stderr(sink.as_ref(), line.bytes());
+        }
+    }
+}
+
 /// The trace of work done for no transfer, C's internal handle's
 /// (`multi->admin`): its lines, a component's when that is on, to standard
 /// error after `* `, as a verbose handle with no debug function writes
@@ -249,7 +275,10 @@ fn start_line<H: Host>(cx: &StepCx<'_, H>) -> Text<LINE_MAX> {
 }
 
 fn push_ids<H: Host, const N: usize>(cx: &StepCx<'_, H>, line: &mut Text<N>) {
-    let easy = cx.easy();
+    push_ids_of(cx.easy(), line);
+}
+
+fn push_ids_of<const N: usize>(easy: &crate::easy::Easy, line: &mut Text<N>) {
     if !easy.components().is_some_and(|c| c.traces(Component::Ids)) {
         return;
     }

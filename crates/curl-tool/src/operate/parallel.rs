@@ -293,6 +293,16 @@ impl<'a, 'l> Parallel<'_, 'a, 'l> {
                     Ok(())
                 })
                 .expect("setting a handler cannot fail");
+            // The debug build forbids reuse when asked.
+            #[cfg(feature = "debug-hooks")]
+            if curl_os::env::is_set(b"CURL_FORBID_REUSE") {
+                Setopt::new(easy, None)
+                    .unwritten("C's debug build sets it with `curl_easy_setopt`", |o| {
+                        o.limits.reuse.forbid = true;
+                        Ok(())
+                    })
+                    .expect("setting a flag cannot fail");
+            }
             // The handle goes to the multi; what is left behind is a
             // handle of no options, whose drop saves nothing.
             let boxed = match try_box_or_back(std::mem::take(&mut **easy)) {

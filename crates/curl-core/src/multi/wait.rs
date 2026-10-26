@@ -309,10 +309,11 @@ pub fn drive_to_completion<H: Host>(
 }
 
 /// What `drive_by_events` watches: what the multi last told its timer and
-/// socket callbacks (C's `struct events`, kept for one call rather than
-/// for the process).
+/// socket callbacks (C's `struct events`). A handle's own multi keeps one
+/// from a perform on, as C's callbacks stay set on it, so its cleanup's
+/// changes are heard too.
 #[derive(Debug, Default)]
-struct EventTable {
+pub(crate) struct EventTable {
     /// How long to wait for a socket, less what was spent since it was
     /// set; `None` for as long as it takes.
     wait: Option<Duration>,
@@ -320,6 +321,9 @@ struct EventTable {
     bumped: bool,
     /// The sockets to watch and for what, the newest last.
     sockets: Vec<(SocketKey, Events)>,
+    /// The multi's internal trace, which says a change to its own
+    /// sockets, as C's callback traces on the handle it is given.
+    internal: Option<crate::trace::Internal>,
 }
 
 impl<H: Host> MultiEvents<H> for EventTable {
@@ -338,13 +342,38 @@ impl<H: Host> MultiEvents<H> for EventTable {
 
     fn socket(
         &mut self,
-        _: &mut EventCx<'_, H>,
-        _: super::SocketFor,
+        cx: &mut EventCx<'_, H>,
+        who: super::SocketFor,
         s: SocketKey,
         what: SocketWhat,
         _: Option<H::Socket>,
     ) -> Result<(), Abort> {
-        self.note(s, what)
+        let change = self.note(s, what)?;
+        let fd = s.get();
+        let as_ = match what {
+            SocketWhat::In => "IN",
+            SocketWhat::Out => "OUT",
+            SocketWhat::InOut => "INOUT",
+            SocketWhat::Remove => "",
+        };
+        let line = match change {
+            Change::Removed => format_args!("socket cb: socket {fd} REMOVED"),
+            Change::Updated => format_args!("socket cb: socket {fd} UPDATED as {as_}"),
+            Change::Added => format_args!("socket cb: socket {fd} ADDED as {as_}"),
+        };
+        // Said on the trace of the socket's owner: the transfer's, or the
+        // multi's internal one (`events_socket`'s `infof(easy)`).
+        match who {
+            super::SocketFor::Transfer(me) => {
+                crate::trace::info_outside(&mut super::cx::EventCalls { cx, me }, line);
+            }
+            super::SocketFor::Multi => {
+                if let Some(t) = &self.internal {
+                    t.info(line);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn wants_sockets(&self) -> bool {
@@ -352,9 +381,17 @@ impl<H: Host> MultiEvents<H> for EventTable {
     }
 }
 
+/// What a socket callback changed in the table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Change {
+    Added,
+    Updated,
+    Removed,
+}
+
 impl EventTable {
     /// Watch `s` for `what`, or stop (`events_socket`).
-    fn note(&mut self, s: SocketKey, what: SocketWhat) -> Result<(), Abort> {
+    fn note(&mut self, s: SocketKey, what: SocketWhat) -> Result<Change, Abort> {
         let events = match what {
             SocketWhat::In => Events::IN,
             SocketWhat::Out => Events::OUT,
@@ -364,8 +401,12 @@ impl EventTable {
         match self.sockets.iter().position(|&(k, _)| k == s) {
             Some(at) if what == SocketWhat::Remove => {
                 self.sockets.remove(at);
+                Ok(Change::Removed)
             }
-            Some(at) => self.sockets[at].1 = events,
+            Some(at) => {
+                self.sockets[at].1 = events;
+                Ok(Change::Updated)
+            }
             None => {
                 assert!(
                     what != SocketWhat::Remove,
@@ -374,9 +415,9 @@ impl EventTable {
                 // A table that cannot grow fails the call, as C's
                 // callback does.
                 self.sockets.try_push((s, events)).map_err(|_| Abort)?;
+                Ok(Change::Added)
             }
         }
-        Ok(())
     }
 }
 
@@ -389,7 +430,18 @@ pub fn drive_by_events<H: Host>(
     m: &mut Multi<H>,
     id: TransferId,
 ) -> Result<Result<(), ErrorKind>, MultiErrorKind> {
-    let mut table = EventTable::default();
+    drive_by_events_with(m, id, &mut EventTable::default())
+}
+
+/// As `drive_by_events`, through `table`, which a multi kept from one
+/// perform to the next watches across them.
+pub(crate) fn drive_by_events_with<H: Host>(
+    m: &mut Multi<H>,
+    id: TransferId,
+    table: &mut EventTable,
+) -> Result<Result<(), ErrorKind>, MultiErrorKind> {
+    // The multi's internal trace, there once a transfer was added.
+    table.internal = m.shutdowns.internal().cloned();
     loop {
         // Checked on every round, as a callback may take it out.
         if m.slots.get(id).is_none() {
@@ -408,14 +460,14 @@ pub fn drive_by_events<H: Host>(
             // nothing is due. C sets 0 here, and polls without waiting
             // until a socket is ready when nothing was ever due.
             table.wait = None;
-            m.socket_action(SocketEvent::Timeout, &mut table)
+            m.socket_action(SocketEvent::Timeout, table)
         } else {
             // The newest first, as C's list keeps them; C keeps the last
             // call's result.
             ready.reverse();
             let mut acted = Ok(0);
             for key in ready {
-                acted = m.socket_action(SocketEvent::Socket(key), &mut table);
+                acted = m.socket_action(SocketEvent::Socket(key), table);
             }
             // A timer not set again counts down by the time spent.
             if !table.bumped

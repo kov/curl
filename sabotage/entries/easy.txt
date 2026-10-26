@@ -4,7 +4,7 @@
 file: crates/curl-core/src/easy.rs
 witness: curl-core easy::tests::performs_a_file_url_on_its_own
 --- old
-        self.private = Some(Private(multi));
+        self.private = Some(private);
 --- new
 
 === an added handle keeps its own multi

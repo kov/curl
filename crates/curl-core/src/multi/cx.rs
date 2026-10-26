@@ -877,6 +877,43 @@ pub(crate) trait TransferCalls {
     fn tls_native(&self, id: TransferId) -> Option<TlsNative>;
 }
 
+/// Transfer `me`'s handlers as one of the multi's callbacks calls them,
+/// outside its step (`infof` on the handle a socket callback was given):
+/// they reach the transfers as the callback does, and pause none, as only
+/// a step does that.
+pub(crate) struct EventCalls<'c, 'a, H: Host> {
+    pub(crate) cx: &'c mut EventCx<'a, H>,
+    pub(crate) me: TransferId,
+}
+
+impl<H: Host> TransferCalls for EventCalls<'_, '_, H> {
+    fn me(&self) -> TransferId {
+        self.me
+    }
+
+    fn census(&self) -> Census {
+        self.cx.census()
+    }
+
+    fn easy(&self, id: TransferId) -> Option<&Easy> {
+        self.cx.slots.get(id).map(|s| &*s.easy)
+    }
+
+    fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
+        self.cx.slots.get_mut(id).map(|s| &mut *s.easy)
+    }
+
+    fn pause(&mut self, _: TransferId, _: PauseRequest) -> Result<(), ErrorKind> {
+        Err(ErrorKind::BadFunctionArgument)
+    }
+
+    fn fail(&mut self, _: &[u8]) {}
+
+    fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
+        self.cx.tls_native(id)
+    }
+}
+
 /// The multi as the timer callback sees it: only the calls api.c lets
 /// recurse into a running multi call.
 pub struct EventCx<'a, H: Host> {

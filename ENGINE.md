@@ -3279,7 +3279,12 @@ freed.
   were told, sockets by key; the multi polls them by resolving each key to the socket a
   transfer waits on (`poll_watched`), never from its own list, so an announcement missed
   stalls the transfer instead of passing unseen. `Easy::perform_ev` and the tool's
-  `--test-event` use the same driver.
+  `--test-event` use the same driver (`drive_by_events_with`), its table kept with the handle's
+  own multi (`Private`), as C's callbacks stay set on it: the multi's cleanup closes its
+  connections through it. Each change the table hears is traced as C's `events_socket` says it,
+  `socket cb: socket N ADDED as IN|OUT|INOUT`, `UPDATED as …` or `REMOVED`: on the transfer's
+  trace for its socket (`trace::info_outside`, through `EventCalls`, outside its step), on the
+  multi's internal trace for the multi's own.
 - `curl_multi_add_handle` of an easy with a private multi drops that multi; already added →
   ADDED_ALREADY; the core names the new transfer to the host (`MultiEvents::added`) before the
   timer callback hears of it, so the shim attaches the handle first and a setopt from that

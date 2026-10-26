@@ -184,7 +184,9 @@ impl crate::multi::MultiEvents<crate::multi::NoHost> for Watching {
 
 /// Run by its events, a transfer is traced as each dirty one runs, and its
 /// pollset as event handling assesses it: after each run, the last one
-/// done, and once more as it is taken out.
+/// done, and once more as it is taken out; each change the socket
+/// callback hears follows its pollset, as C's `curl_easy_perform_ev`
+/// says it.
 #[test]
 fn a_transfer_run_by_events_is_traced_as_c() {
     let talk = Conversation::replies(&[OK], false);
@@ -211,6 +213,7 @@ fn a_transfer_run_by_events_is_traced_as_c() {
                 || l.contains(" multi, mid=")
                 || l.starts_with("[TCP] adjust_pollset")
                 || l.contains(" gives multi timeout ")
+                || l.starts_with("socket cb:")
         })
         .collect();
     assert_eq!(
@@ -220,8 +223,10 @@ fn a_transfer_run_by_events_is_traced_as_c() {
             [MULTI] [INIT] multi_run_dirty
             [TCP] adjust_pollset, !connected, POLLOUT fd=1000
             [MULTI] [CONNECTING] pollset[fd=1000 OUT], timeouts=0
+            socket cb: socket 1000 ADDED as OUT
             [MULTI] [CONNECTING] multi_run_dirty
             [MULTI] [MSGSENT] pollset[], timeouts=0, paused 0/0 (r/w)
+            socket cb: socket 1000 REMOVED
             [MULTI] [COMPLETED] pollset[], timeouts=0, paused 0/0 (r/w)
             [MULTI] [COMPLETED] removed from multi, mid=1, running=0, total=1"
         )

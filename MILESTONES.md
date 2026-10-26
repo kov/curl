@@ -924,26 +924,37 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
     size budget is measured against C's equivalent"). The facts the pool's multiplex verdict
     reads stay with the request, their one owner: whether its head was made and an `h2c`
     upgrade is unanswered.
-57. **One lifecycle for a connection's pieces, multiplexing not tied to HTTP/2.** A `Part` trait
-    (setup, pollset, pending bytes, liveness, goodbye, queries, upkeep) over every piece of a
-    connection, refined by `Layer` (a byte stream) and `Mux` (streams); the connection runs its
-    lifecycle top to bottom, with no special case for the session. The multiplexer is an enum
-    of `H2` (and later `H3`) implementing `Mux`, asked in place of `is_h2()`; one h1/h2/h3
-    version set on the request, as C's `http_neg`; the request's stream as a `Wire` with its
-    close state; `Http3` in the public `Version`. ENGINE §4.4 first, then HTTP/2 moved onto it
-    with every test passing, before any QUIC code.
-58. **A connection's setup as a value.** `Connecting` holds a `conn::Setup`, which the transfer
-    owns and steps, its context given at each step as C's filters get `data`; two can run at
-    once (HTTP/3's race, FTP's data connection). A pollset grows past its inline sockets.
-59. **Datagrams.** UDP sockets in `curl-os`; the socket's kind and purpose told to the opener
-    and configurer callbacks, as C tells them; a `DatagramIo` seam beside `Layer`, made to admit
-    CONNECT-UDP later; `Transport::Quic` and a route that says how it dials (TCP, QUIC, a race).
-60. **QUIC's TLS.** `TlsBackend::quic_session`, from the same identity, CA cache, keylog and
-    context hook as a stream session; the QUIC transport parameters kept with a session's
-    ticket. `curl-ngtcp2` borrows the native `SSL*` through `TlsNative` and does not depend on
-    `curl-openssl`.
-
-Then ngtcp2 and nghttp3, HTTP/3 over them, the race, alt-svc to h3 and the HTTP/3 proxy.
+57. **One lifecycle for a connection's pieces, multiplexing not tied to HTTP/2.** **Done.**
+    `conn::part::Part` (setup, pollset, pending bytes, liveness, goodbye, queries) over every
+    piece of a connection, refined by `Layer` (a byte stream); the session a connection
+    multiplexes over is `conn::mux::Session`, an enum implementing `Part` over the stream and
+    `Mux` (its version, the peer's limit on streams). The connection's health check and goodbye
+    ask the session first with no case for its version, and the pool and engine ask
+    `multiplexes()`. The request's one h1/h2/h3 version set, its stream as a `Wire` with its close
+    state, and `Http3` in the public `Version` come with HTTP/3's request (step 61), where a third
+    version gives them their shape.
+58. **Datagrams.** UDP sockets in `curl-os`; the socket's kind told to `Net::open`, the opener
+    and the configurer, as C tells them (`SOCK_DGRAM`, `CURLSOCKTYPE_IPCXN`); a route that says
+    how it dials (TCP or QUIC), compared as any of its fields.
+59. **QUIC's TLS.** `TlsBackend::quic_session`, from the same identity, CA cache, keylog and
+    context hook as a stream session, its peer verified as a stream session's is; the QUIC
+    transport parameters kept with a session's ticket. `curl-ngtcp2` borrows the native `SSL*`
+    through `TlsNative` and does not depend on `curl-openssl`.
+60. **The QUIC and HTTP/3 libraries.** `curl-ngtcp2`: ngtcp2, its OpenSSL crypto and nghttp3,
+    behind the core's `http3` seam as nghttp2 is behind `http2`, with a fake for the tests.
+61. **HTTP/3 requests.** `--http3-only` (`CURL_HTTP_VERSION_3ONLY`): the setup dials QUIC, the
+    connection's session is `Session::H3`, requests go on its streams and multiplex as HTTP/2's
+    do, with C's trace; the build claims `HTTP3`. The request's version set gains h3 (C's
+    `http_neg`), its stream becomes a `Wire`, and the public `Version` gains `Http3` and
+    `Http3Only`.
+62. **The race.** `--http3` (`CURL_HTTP_VERSION_3`): a connection's setup as a value
+    (`conn::Setup`), which the transfer owns and steps, its context given at each step as C's
+    filters get `data`; the HTTPS connect filter races an HTTP/3 setup against an HTTP/2-or-1
+    one, as `cf-https-connect.c` does, with its soft and hard timeouts. A pollset grows past
+    its inline sockets.
+63. **Alt-svc to h3**, and HTTP/3's early data (0-RTT), its transport parameters kept with the
+    session's ticket.
+64. **The HTTP/3 proxy** (`--proxy-http3`, CONNECT-UDP; pytest test_60).
 
 ## Milestone 6: the other protocols
 

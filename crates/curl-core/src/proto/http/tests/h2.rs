@@ -464,7 +464,8 @@ fn an_upgrade_not_taken_is_answered_in_http_1() {
 
 /// An idle HTTP/2 connection with frames to read is not taken for dead
 /// as an HTTP/1 one with input waiting is: its session reads them, and
-/// the next transfer reuses it (`http2_connisalive`).
+/// the next transfer, a second later, when its health is looked at again,
+/// reuses it (`http2_connisalive`).
 #[test]
 fn an_idle_connection_s_frames_are_read_and_it_is_reused() {
     let mut first = RESPONSE.to_vec();
@@ -473,7 +474,18 @@ fn an_idle_connection_s_frames_are_read_and_it_is_reused() {
     }
     let second: &[u8] = b"H 3 0\n:status: 200\n\nD 3 2 1\nok";
     let talk = Conversation::replies(&[&first, second], false).per_send();
-    let mut m = serving(Peer::Accepts, &[&talk]);
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
     for (path, body) in [("/1", &b"hello"[..]), ("/2", b"ok")] {
         let mut e = Easy::new();
         e.set_libraries(with_h2());
@@ -491,6 +503,7 @@ fn an_idle_connection_s_frames_are_read_and_it_is_reused() {
                 "{text:?}"
             );
         }
+        clock.advance(std::time::Duration::from_millis(1000));
     }
 }
 

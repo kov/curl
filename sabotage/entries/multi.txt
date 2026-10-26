@@ -402,16 +402,17 @@ witness: curl-core multi::tests::a_paused_transfer_does_not_connect
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::removing_a_connecting_transfer_closes_its_socket
 --- old
-        release(cx, lease, true, past_do, origin.as_ref());
+    release(cx, d.lease, premature, stream_closed, d.origin.as_ref());
 --- new
-        let _ = (origin, past_do);
-        let home = lease.home().clone();
-        let now = cx.rest.now;
-        let finish = Finish { premature: true, forbid_reuse: false };
-        let limit = Limit { max: None, attached: 0 };
-        let _released = cx.rest.pool_section(cx.me, &home, |pool, net, here| {
-            pool.release(here, lease, finish, limit, net, now)
-        });
+    let _ = stream_closed;
+    let lease = d.lease;
+    let home = lease.home().clone();
+    let now = cx.rest.now;
+    let finish = Finish { premature, forbid_reuse: false, reserve: false };
+    let limit = Limit { max: None, attached: 0 };
+    let _released = cx.rest.pool_section(cx.me, &home, |pool, net, here| {
+        pool.release(here, lease, finish, limit, net, now)
+    });
 
 === a pause of receiving blocks a request that moves no bytes yet
 file: crates/curl-core/src/deliver/pause.rs

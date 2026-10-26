@@ -523,92 +523,23 @@ witness: curl-core proto::http::tests::a_connection_is_not_open_until_its_proxy_
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_transfer_removed_mid_connect_leaves_no_connection_to_reuse
 --- old
-        let (mut lease, proto, origin, past_do, rewinding) = match self {
-            TransferState::Init
-            | TransferState::Pending(_)
-            | TransferState::Setup(_)
-            | TransferState::Completed(_) => return,
-            TransferState::Connecting(c) => (c.lease, None, Some(c.route.origin), false, false),
-            TransferState::ProtoConnect(x) | TransferState::Do(x) => {
-                let rewinding = x.proto.rewinds_upload();
-                (x.lease, Some(x.proto), x.origin, false, rewinding)
-            }
-            TransferState::Did(x)
-            | TransferState::Exchanging(x)
-            | TransferState::RateLimiting(x) => {
-                let rewinding = x.proto.rewinds_upload();
-                (x.lease, Some(x.proto), x.origin, true, rewinding)
-            }
-            TransferState::Done(d) => {
-                let rewinding = d.rewinding();
-                (d.lease, d.proto, d.origin, true, rewinding)
-            }
-        };
-        mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
-        upload::trace_reset(cx, rewinding);
-        // A last progress pass for one past connecting, as `multi_done`
-        // gives it before the stream is let go. An abort the handler asks
-        // for has nothing left to stop: C drops `multi_done`'s result as
-        // the handle leaves.
-        if proto.is_some() {
-            match progress::finish(cx, false) {
-                Ok(()) | Err(ErrorKind::AbortedByCallback) => {}
-                Err(other) => unreachable!("a progress pass fails only by its handler: {other:?}"),
-            }
-        }
-        if let Some(mut proto) = proto {
-            // A key's connection is in its place outside a step.
-            cx.rest.caches.pool.check_out(&mut lease);
-            proto.data_done(cx, &mut lease);
-        }
-        release(cx, lease, true, past_do, origin.as_ref());
+            TransferState::Connecting(c) => Done {
+                lease: c.lease,
+                proto: None,
+                result: Ok(()),
+                premature: true,
 --- new
-        let mut promoted = false;
-        let (mut lease, proto, origin, past_do, rewinding) = match self {
-            TransferState::Init
-            | TransferState::Pending(_)
-            | TransferState::Setup(_)
-            | TransferState::Completed(_) => return,
-            TransferState::Connecting(mut c) => {
-                promoted = c.handshake.is_some();
-                if promoted {
-                    c.lease.handshaken();
-                }
-                (c.lease, None, Some(c.route.origin), false, false)
-            }
-            TransferState::ProtoConnect(x) | TransferState::Do(x) => {
-                let rewinding = x.proto.rewinds_upload();
-                (x.lease, Some(x.proto), x.origin, false, rewinding)
-            }
-            TransferState::Did(x)
-            | TransferState::Exchanging(x)
-            | TransferState::RateLimiting(x) => {
-                let rewinding = x.proto.rewinds_upload();
-                (x.lease, Some(x.proto), x.origin, true, rewinding)
-            }
-            TransferState::Done(d) => {
-                let rewinding = d.rewinding();
-                (d.lease, d.proto, d.origin, true, rewinding)
-            }
-        };
-        mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
-        upload::trace_reset(cx, rewinding);
-        // A last progress pass for one past connecting, as `multi_done`
-        // gives it before the stream is let go. An abort the handler asks
-        // for has nothing left to stop: C drops `multi_done`'s result as
-        // the handle leaves.
-        if proto.is_some() {
-            match progress::finish(cx, false) {
-                Ok(()) | Err(ErrorKind::AbortedByCallback) => {}
-                Err(other) => unreachable!("a progress pass fails only by its handler: {other:?}"),
-            }
-        }
-        if let Some(mut proto) = proto {
-            // A key's connection is in its place outside a step.
-            cx.rest.caches.pool.check_out(&mut lease);
-            proto.data_done(cx, &mut lease);
-        }
-        release(cx, lease, !promoted, past_do, origin.as_ref());
+            TransferState::Connecting(mut c) => Done {
+                premature: {
+                    let promoted = c.handshake.is_some();
+                    if promoted {
+                        c.lease.handshaken();
+                    }
+                    !promoted
+                },
+                lease: c.lease,
+                proto: None,
+                result: Ok(()),
 
 === the tunnel reads the proxy's answer a byte at a time, as C does
 file: crates/curl-core/src/multi/state/tunnel.rs

@@ -29,9 +29,9 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::read_trace::a_body_sent_again_is_kept_and_rewound
 features: test-util
 --- old
-                upload::trace_reset(cx, d.rewinding());
+        upload::trace_reset(cx, d.rewinding());
 --- new
-                upload::trace_reset(cx, false);
+        upload::trace_reset(cx, false);
 
 === a 417 while sending does not keep the body to rewind
 file: crates/curl-core/src/proto/http.rs

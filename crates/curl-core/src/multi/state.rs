@@ -100,6 +100,15 @@ pub(crate) struct Run {
 }
 
 impl Run {
+    /// Take the transfer out of the multi before it completed
+    /// (`TransferState::abandon`).
+    pub(crate) fn abandon<H: Host>(self, cx: &mut StepCx<'_, H>) {
+        let Run {
+            state, mut http, ..
+        } = self;
+        state.abandon(cx, &mut http);
+    }
+
     pub(crate) fn new() -> Run {
         Run {
             state: TransferState::Init,
@@ -566,53 +575,110 @@ impl TransferState {
         })
     }
 
-    /// Take the transfer out of the multi before it completed: give back
-    /// its connection, as a premature end (`curl_multi_remove_handle`).
-    pub(crate) fn abandon<H: Host>(self, cx: &mut StepCx<'_, H>) {
+    /// Take the transfer out of the multi before it completed: its
+    /// request ends as a premature one, as `curl_multi_remove_handle`
+    /// ends it, its status the transfer's, which no failure has set.
+    pub(crate) fn abandon<H: Host>(self, cx: &mut StepCx<'_, H>, http: &mut Inherited) {
         // Its connection's TLS objects are the handlers' to reach while it
         // goes, as C's transfer still holds its connection in `multi_done`.
         cx.lent = self.tls_native(Some(&cx.rest.caches.pool));
-        // Past its request, the connection is in no known state
-        // (`curl_multi_remove_handle`'s `streamclose`).
-        let (mut lease, proto, origin, past_do, rewinding) = match self {
+        let done = match self {
             TransferState::Init
             | TransferState::Pending(_)
             | TransferState::Setup(_)
             | TransferState::Completed(_) => return,
-            TransferState::Connecting(c) => (c.lease, None, Some(c.route.origin), false, false),
+            TransferState::Connecting(c) => Done {
+                lease: c.lease,
+                proto: None,
+                result: Ok(()),
+                premature: true,
+                reached: Reached::Unmade,
+                origin: Some(c.route.origin),
+                next: AfterRequest::Complete,
+            },
             TransferState::ProtoConnect(x) | TransferState::Do(x) => {
-                let rewinding = x.proto.rewinds_upload();
-                (x.lease, Some(x.proto), x.origin, false, rewinding)
+                x.done(Ok(()), true, Reached::Unmade)
             }
+            // Past its request, the connection is in no known state
+            // (`curl_multi_remove_handle`'s `streamclose`).
             TransferState::Did(x)
             | TransferState::Exchanging(x)
-            | TransferState::RateLimiting(x) => {
-                let rewinding = x.proto.rewinds_upload();
-                (x.lease, Some(x.proto), x.origin, true, rewinding)
-            }
-            TransferState::Done(d) => {
-                let rewinding = d.rewinding();
-                (d.lease, d.proto, d.origin, true, rewinding)
-            }
+            | TransferState::RateLimiting(x) => x.done(Ok(()), true, Reached::Made),
+            TransferState::Done(d) => Done {
+                premature: true,
+                ..d
+            },
         };
-        mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
-        upload::trace_reset(cx, rewinding);
-        // A last progress pass for one past connecting, as `multi_done`
-        // gives it before the stream is let go. An abort the handler asks
-        // for has nothing left to stop: C drops `multi_done`'s result as
-        // the handle leaves.
-        if proto.is_some() {
-            match progress::finish(cx, false) {
-                Ok(()) | Err(ErrorKind::AbortedByCallback) => {}
-                Err(other) => unreachable!("a progress pass fails only by its handler: {other:?}"),
-            }
-        }
-        if let Some(mut proto) = proto {
-            // A key's connection is in its place outside a step.
-            cx.rest.caches.pool.check_out(&mut lease);
-            proto.data_done(cx, &mut lease);
-        }
-        release(cx, lease, true, past_do, origin.as_ref());
+        // C drops what `multi_done` says as the handle leaves: an abort
+        // the progress handler asks for has nothing left to stop.
+        let _ended = multi_done(cx, http, done);
+    }
+}
+
+/// What a request's end left: its protocol, how it ended and what comes
+/// next.
+struct RequestEnd {
+    proto: Option<ProtoState>,
+    result: Result<(), ErrorKind>,
+    reached: Reached,
+    next: AfterRequest,
+}
+
+/// The request is over, whole, failed or taken out of the multi
+/// (`multi_done`): the protocol says its last, the progress its last,
+/// the output and the request end, and the connection goes back.
+fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done) -> RequestEnd {
+    // A key's connection is in its place outside a step, as a removed
+    // transfer's is.
+    cx.rest.caches.pool.check_out(&mut d.lease);
+    // Whether the request was cut short is decided by how it ended, not
+    // by the protocol's last word, which comes first.
+    let mut premature = d.premature || is_premature(d.result);
+    // A failure other than its stream's closes an HTTP/2 connection,
+    // which outlives a request otherwise (`multistate_performing`'s
+    // `streamclose`).
+    if d.result.is_err_and(|e| e != ErrorKind::Http2Stream) && d.lease.is_h2() {
+        d.lease.get().mark_close();
+    }
+    mstate::trace(
+        cx,
+        format_args!(
+            "multi_done: status: {} prem: {} done: 0",
+            trace::Code(d.result),
+            u8::from(premature)
+        ),
+    );
+    if let Some(proto) = d.proto.as_mut() {
+        d.result = proto.done(cx, &mut d.lease, d.result, premature, &d.next, http);
+    }
+    // A last progress pass, unless the transfer never connected (C's
+    // `mstate > MSTATE_CONNECTING`) or a callback aborted already: a
+    // failed connect draws no meter and calls no handler.
+    if d.proto.is_some()
+        && d.result != Err(ErrorKind::AbortedByCallback)
+        && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
+        && d.result.is_ok()
+    {
+        d.result = Err(e);
+        premature |= is_premature(d.result);
+    }
+    crate::deliver::Pipeline::done(cx);
+    let max_age = cx.easy().options().limits.reuse.dns_max_age;
+    let now = cx.rest.now;
+    let kept = cx.rest.kept(cx.me, Kind::Names);
+    let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
+    names.section(|dns| dns.prune(now, max_age));
+    let stream_closed = d.premature && d.reached != Reached::Unmade;
+    // The request is over (`Curl_req_done`), unless it failed.
+    if d.result.is_ok() {
+        upload::trace_reset(cx, d.rewinding());
+    }
+    release(cx, d.lease, premature, stream_closed, d.origin.as_ref());
+    RequestEnd {
+        proto: d.proto,
+        result: d.result,
+        reached: d.reached,
+        next: d.next,
     }
 }
 
@@ -1911,59 +1977,8 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 }
             }
         }
-        TransferState::Done(mut d) => {
-            // Whether the request was cut short is decided by how it
-            // ended, not by the protocol's last word (`multi_done`), which
-            // comes first.
-            let mut premature = d.premature || is_premature(d.result);
-            // A failure other than its stream's closes an HTTP/2
-            // connection, which outlives a request otherwise
-            // (`multistate_performing`'s `streamclose`).
-            if d.result.is_err_and(|e| e != ErrorKind::Http2Stream) && d.lease.is_h2() {
-                d.lease.get().mark_close();
-            }
-            mstate::trace(
-                cx,
-                format_args!(
-                    "multi_done: status: {} prem: {} done: 0",
-                    trace::Code(d.result),
-                    u8::from(premature)
-                ),
-            );
-            if let Some(proto) = d.proto.as_mut() {
-                d.result = proto.done(
-                    cx,
-                    &mut d.lease,
-                    d.result,
-                    premature,
-                    &d.next,
-                    &mut run.http,
-                );
-            }
-            // A last progress pass, unless the transfer never connected
-            // (C's `mstate > MSTATE_CONNECTING`) or a callback aborted
-            // already: a failed connect draws no meter and calls no
-            // handler.
-            if d.proto.is_some()
-                && d.result != Err(ErrorKind::AbortedByCallback)
-                && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
-                && d.result.is_ok()
-            {
-                d.result = Err(e);
-                premature |= is_premature(d.result);
-            }
-            crate::deliver::Pipeline::done(cx);
-            let max_age = cx.easy().options().limits.reuse.dns_max_age;
-            let now = cx.rest.now;
-            let kept = cx.rest.kept(cx.me, Kind::Names);
-            let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
-            names.section(|dns| dns.prune(now, max_age));
-            let stream_closed = d.premature && d.reached != Reached::Unmade;
-            // The request is over (`Curl_req_done`), unless it failed.
-            if d.result.is_ok() {
-                upload::trace_reset(cx, d.rewinding());
-            }
-            release(cx, d.lease, premature, stream_closed, d.origin.as_ref());
+        TransferState::Done(d) => {
+            let mut d = multi_done(cx, &mut run.http, d);
             // Held output went with the request; a pause the application
             // asked for stays.
             let pause = cx.pause_mut();

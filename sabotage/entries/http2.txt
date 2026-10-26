@@ -523,12 +523,15 @@ witness: curl-core proto::http::tests::h2::a_transfer_done_on_a_shared_connectio
     if in_use > 1 {
 
 === a transfer taken out of the multi leaves its stream open
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::h2::a_transfer_removed_mid_body_resets_its_stream_at_once
 --- old
-            proto.data_done(cx, &mut lease);
+        // A stream still open goes (`http2_data_done`).
+        if self.h2.is_some() {
+            self.h2_done(cx, lease);
+        }
 --- new
-            let _ = &mut proto;
+        // A stream still open goes (`http2_data_done`).
 
 === trailers are kept past C's count
 file: crates/curl-core/src/proto/http/h2.rs

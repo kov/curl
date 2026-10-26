@@ -48,9 +48,9 @@ witness: curl-core multi::tests::connections_are_numbered_in_their_traces
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::stale_answers_are_dropped
 --- old
-            names.section(|dns| dns.prune(now, max_age));
+    names.section(|dns| dns.prune(now, max_age));
 --- new
-            names.section(|_| drop((now, max_age)));
+    names.section(|_| drop((now, max_age)));
 
 === a resolve list is read by every transfer
 file: crates/curl-core/src/multi/state.rs
@@ -118,11 +118,11 @@ witness: curl-core multi::tests::answers_may_be_kept_for_ever
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::answers_may_be_kept_for_ever
 --- old
-            let max_age = cx.easy().options().limits.reuse.dns_max_age;
-            let now = cx.rest.now;
+    let max_age = cx.easy().options().limits.reuse.dns_max_age;
+    let now = cx.rest.now;
 --- new
-            let max_age = Some(std::time::Duration::from_secs(60));
-            let now = cx.rest.now;
+    let max_age = Some(std::time::Duration::from_secs(60));
+    let now = cx.rest.now;
 
 === a resolve list set while one is read is read by the next transfer
 file: crates/curl-core/src/multi/state.rs

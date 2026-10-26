@@ -1148,7 +1148,7 @@ impl<H: Host> Multi<H> {
     fn abandon(&mut self, id: TransferId, run: Run, ev: &mut dyn MultiEvents<H>) {
         let now = self.clock.now();
         let mut cx = StepCx::new(id, self.rest(now, ev));
-        run.state.abandon(&mut cx);
+        run.abandon(&mut cx);
     }
 
     /// Step one transfer until it waits (`multi_runsingle`).

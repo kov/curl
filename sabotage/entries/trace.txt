@@ -257,9 +257,9 @@ witness: curl-core proto::http::tests::multi_trace::a_failed_response_closes_its
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::multi_trace::a_failed_response_closes_its_connection_in_performing
 --- old
-            let stream_closed = d.premature && d.reached != Reached::Unmade;
+    let stream_closed = d.premature && d.reached != Reached::Unmade;
 --- new
-            let stream_closed = false;
+    let stream_closed = false;
 
 === the times a failure skipped are taken before COMPLETED
 file: crates/curl-core/src/multi/state.rs

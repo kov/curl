@@ -107,26 +107,26 @@ witness: curl-core progress::tests::an_abort_fails_the_transfer_with_no_last_cal
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core progress::tests::an_abort_fails_the_transfer_with_no_last_call
 --- old
-                && d.result != Err(ErrorKind::AbortedByCallback)
-                && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
+        && d.result != Err(ErrorKind::AbortedByCallback)
+        && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
 --- new
-                && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
+        && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
 
 === the last progress call's abort is ignored
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core progress::tests::an_abort_after_the_request_fails_the_transfer
 --- old
-                d.result = Err(e);
+        d.result = Err(e);
 --- new
-                drop(e);
+        drop(e);
 
 === a transfer cut short draws its meter at the end
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core progress::tests::a_transfer_cut_short_ends_the_meter_without_drawing_it
 --- old
-                && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
+        && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
 --- new
-                && let Err(e) = progress::finish(cx, true)
+        && let Err(e) = progress::finish(cx, true)
 
 === the meter's titles are written every run
 file: crates/curl-core/src/progress/mod.rs
@@ -225,9 +225,9 @@ witness: curl-core progress::tests::the_meter_estimates_only_with_a_speed
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::file::tests::a_file_draws_its_meter_once
 --- old
-                && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
+        && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
 --- new
-                && let Err(e) = progress::finish(cx, d.reached != Reached::Unmade)
+        && let Err(e) = progress::finish(cx, d.reached != Reached::Unmade)
 
 === the pass after a request without an exchange counts it as done
 file: crates/curl-core/src/multi/state.rs
@@ -242,26 +242,27 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_transfer_that_never_connects_shows_no_progress
 features: test-util
 --- old
-            if d.proto.is_some()
-                && d.result != Err(ErrorKind::AbortedByCallback)
+    if d.proto.is_some()
+        && d.result != Err(ErrorKind::AbortedByCallback)
 --- new
-            if d.result != Err(ErrorKind::AbortedByCallback)
+    if d.result != Err(ErrorKind::AbortedByCallback)
 
 === a transfer removed mid-response hears nothing of its progress
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls::a_transfer_removed_mid_response_hears_its_progress_once_more
 --- old
-        if proto.is_some() {
-            match progress::finish(cx, false) {
+    if d.proto.is_some()
+        && d.result != Err(ErrorKind::AbortedByCallback)
 --- new
-        if false {
-            match progress::finish(cx, false) {
+    if d.proto.is_some()
+        && !d.premature
+        && d.result != Err(ErrorKind::AbortedByCallback)
 
 === a transfer removed hears its progress with its TLS objects out of reach
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls::a_transfer_removed_mid_response_hears_its_progress_once_more
 --- old
         cx.lent = self.tls_native(Some(&cx.rest.caches.pool));
-        // Past its request, the connection is in no known state
+        let done = match self {
 --- new
-        // Past its request, the connection is in no known state
+        let done = match self {

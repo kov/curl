@@ -330,3 +330,11 @@ witness: curl-core proto::http::tests::h2::two_transfers_stay_on_a_connection_be
                     Use::Leased(n) => n.get() as usize,
 --- new
                     Use::Leased(_) => 1,
+
+=== a step reads the connection on past a buffer's worth
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_step_reads_a_buffer_of_the_connection_at_most
+--- old
+            if reads == MAX_READS || taken >= cx.easy().options().limits.buffer_size.get() {
+--- new
+            if reads == MAX_READS {

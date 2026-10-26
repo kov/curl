@@ -518,13 +518,16 @@ impl Request {
     /// `read_some` over HTTP/2: what the stream has, then what the
     /// connection has, read and handed on as the session reads it, until
     /// the stream is over, a read would block or the step has read its
-    /// most (`cf_h2_recv`).
+    /// most: a buffer's worth of the connection, whichever streams it
+    /// carried, so that each transfer on it reads in its own steps as C's
+    /// do (`cf_h2_recv`, `h2_progress_ingress`'s `data_max_bytes`).
     pub(super) fn h2_read_some<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<Read, ErrorKind> {
         let mut reads = 0;
+        let mut taken = 0;
         loop {
             if matches!(self.stage, Stage::Done) || cx.pause().recv_paused() {
                 return Ok(Read::Waits);
@@ -533,7 +536,7 @@ impl Request {
                 self.h2_ended(cx)?;
                 continue;
             }
-            if reads == MAX_READS {
+            if reads == MAX_READS || taken >= cx.easy().options().limits.buffer_size.get() {
                 return Ok(Read::Stopped);
             }
             // Under a receive limit, no more than it allows; once spent,
@@ -567,7 +570,8 @@ impl Request {
                     lease.get().mark_close();
                     self.wake_others(cx, lease);
                 }
-                Ok(Recv::Data(_)) => {
+                Ok(Recv::Data(n)) => {
+                    taken += n.get();
                     let mut rx = std::mem::take(lease.get().rx_mut());
                     let fed = self.h2_feed(cx, lease, rx.filled());
                     let all = rx.filled().len();

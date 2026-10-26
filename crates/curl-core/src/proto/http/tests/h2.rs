@@ -994,3 +994,146 @@ fn two_transfers_stay_on_a_connection_between_performs() {
         m.remove(id, &mut NoEvents).unwrap();
     }
 }
+
+/// The most a transfer's progress handler was told it downloaded.
+#[derive(Clone, Default)]
+struct MostDownloaded(Arc<Mutex<u64>>);
+
+impl crate::handler::ProgressHandler for MostDownloaded {
+    fn progress(
+        &self,
+        _: &mut crate::multi::TransferCx<'_>,
+        now: crate::handler::ProgressNow,
+    ) -> crate::handler::ProgressVerdict {
+        let mut most = self.0.lock().unwrap();
+        *most = (*most).max(now.downloaded);
+        crate::handler::ProgressVerdict::Continue
+    }
+}
+
+/// A transfer whose body another's step read is told of it by its
+/// progress handler, as each transfer's progress is updated as it runs
+/// (`multi_runsingle`'s `Curl_pgrsUpdate`).
+#[test]
+fn a_body_read_by_a_sibling_is_told_to_its_progress_handler() {
+    let most = [MostDownloaded::default(), MostDownloaded::default()];
+    let ([(a, _), (b, _)], _) = h2_pair(
+        &[&[b"S\nH 1 0\n:status: 200\n\n", SECOND]],
+        |_| {},
+        |i, o| {
+            o.progress =
+                crate::options::Progress::Handler(Handler::progress(most[i].clone()).unwrap());
+        },
+    );
+    assert_eq!((a, b), (Ok(()), Ok(())));
+    let seen = |i: usize| *most[i].0.lock().unwrap();
+    assert_eq!((seen(0), seen(1)), (2, 3));
+}
+
+/// Takes the first piece of the body, and pauses at the next.
+#[derive(Clone, Default)]
+struct PausesSecond(Arc<Mutex<u32>>);
+
+impl WriteHandler for PausesSecond {
+    fn write(&self, _: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> Write {
+        let mut n = self.0.lock().unwrap();
+        *n += 1;
+        if *n == 1 {
+            Write::Accepted
+        } else {
+            Write::Pause
+        }
+    }
+}
+
+/// A transfer that pauses as a sibling's step delivers its body is still
+/// told of what it took by its progress handler, as C updates a paused
+/// transfer's progress as it runs (`multi_runsingle`).
+#[test]
+fn a_transfer_paused_by_a_siblings_delivery_is_told_its_progress() {
+    let talk = Conversation::replies(
+        &[
+            b"S\nH 1 0\n:status: 200\n\n",
+            b"H 3 0\n:status: 200\n\nD 1 2 0\naaD 1 2 0\nbbD 3 1 1\nc",
+        ],
+        false,
+    )
+    .per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let most = MostDownloaded::default();
+    let mut ids = Vec::new();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.version = HttpVersion::Http2Prior;
+        if path == "/a" {
+            o.callbacks.write = Some(Handler::write(PausesSecond::default()).unwrap());
+            o.progress =
+                crate::options::Progress::Handler(Handler::progress(most.clone()).unwrap());
+        } else {
+            o.callbacks.write = Some(Handler::write(Seen::default()).unwrap());
+        }
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        for _ in 0..3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+    }
+    assert_eq!(
+        drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    for _ in 0..3 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(*most.0.lock().unwrap() >= 2, "{}", *most.0.lock().unwrap());
+    for id in ids {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+}
+
+/// A step reads at most a buffer's worth of the connection, as C's
+/// `h2_progress_ingress` reads no more than the receive it serves: the
+/// rest waits for the transfer's next run, so that a transfer on a
+/// shared connection does not take all its siblings' input in its step.
+#[test]
+fn a_step_reads_a_buffer_of_the_connection_at_most() {
+    let mut reply = b"S\nH 1 0\n:status: 200\ncontent-length: 3000\n\n".to_vec();
+    for last in [0, 0, 1] {
+        reply.extend_from_slice(format!("D 1 1000 {last}\n").as_bytes());
+        reply.extend_from_slice(&[b'x'; 1000]);
+    }
+    let talk = Conversation::replies(&[&reply], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let s = Seen::default();
+    let o = e.options_mut();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.limits.buffer_size = crate::options::BufferSize::clamped(1024);
+    o.http.version = HttpVersion::Http2Prior;
+    o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    // The run that reads the first of the body reads no more than a
+    // buffer of the connection.
+    let mut first = 0;
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+        first = s.body().len();
+        if first > 0 {
+            break;
+        }
+    }
+    assert!(first > 0 && first < 1024, "{first} bytes in the first run");
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    assert_eq!(s.body().len(), 3000);
+    m.remove(id, &mut NoEvents).unwrap();
+}

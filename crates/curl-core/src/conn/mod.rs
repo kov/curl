@@ -1101,7 +1101,8 @@ pub(crate) enum RecvFailed {
 /// Whether a connection is leased.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Use {
-    /// Leased this many times; once, as no connection is shared yet.
+    /// Leased this many times: once, or by each transfer on a connection
+    /// that multiplexes.
     Leased(NonZeroU32),
     /// Leased by no one since this time (C's `lastused`).
     Idle { since: Instant },

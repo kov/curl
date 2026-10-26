@@ -272,6 +272,13 @@ not a difference: it is tracked in `MILESTONES.md`.
   the oldest. Pinned by `tls_options_are_kept_as_c_keeps_them`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+- **An `Alt-Svc:` field from an origin named by a dot alone is passed over.** For
+  `http://./`, `Curl_altsvc_parse` (`lib/altsvc.c`) returns `CURLE_OUT_OF_MEMORY` when
+  `altsvc_createid` refuses the source host, empty once its trailing dot is gone, and the
+  transfer fails with 27 although no allocation failed. Here the alternative is not kept and
+  the response is read on. Pinned by `an_origin_named_by_a_dot_alone_keeps_nothing`
+  (`crates/curl-core/src/altsvc/tests.rs`).
+
 ## Undefined behaviour in C, defined here
 
 - **A blob option's bytes are copied, `CURL_BLOB_NOCOPY` or not.** C keeps the application's

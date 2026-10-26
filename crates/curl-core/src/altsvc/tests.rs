@@ -384,6 +384,16 @@ fn an_alternative_lasts_through_its_last_second() {
     assert!(a.lookup((b"o", 80, Alpn::H1), ALL, NOW + 11).is_none());
 }
 
+/// An origin whose host is a dot alone keeps nothing and says nothing,
+/// and the reading goes on; C fails the transfer for memory there.
+#[test]
+fn an_origin_named_by_a_dot_alone_keeps_nothing() {
+    let mut a = AltSvc::default();
+    let said = parse(&mut a, "h1=\"alt:1\", h2=\"alt:2\"", ".", 80, Alpn::H1);
+    assert!(a.is_empty());
+    assert!(said.is_empty(), "{said:?}");
+}
+
 /// Blanks of any number, spaces or tabs, may come before a parameter's
 /// `;`; a quoted parameter that does not end, or ends in a backslash,
 /// ends the parameters, and an escaped quote does not end it.

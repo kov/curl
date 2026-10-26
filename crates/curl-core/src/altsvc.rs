@@ -386,16 +386,15 @@ impl AltSvc {
                     expires,
                     persist,
                 )?;
-                // C fails an origin whose host is a dot alone as it fails
-                // for memory.
-                if !made {
-                    return Err(OutOfMemory);
+                // An origin whose host is a dot alone keeps nothing; C
+                // fails the transfer for memory there (DIVERGENCE.md).
+                if made {
+                    let shown = crate::trace::Bytes(dst_host);
+                    say(format_args!(
+                        "Added alt-svc: {shown}:{dst_port} over {}",
+                        dst_alpn.name()
+                    ));
                 }
-                let shown = crate::trace::Bytes(dst_host);
-                say(format_args!(
-                    "Added alt-svc: {shown}:{dst_port} over {}",
-                    dst_alpn.name()
-                ));
             }
             if !c.single(b',') {
                 break;

@@ -145,3 +145,11 @@ witness: curl-core altsvc::tests::ages_and_dates_are_capped_and_checked
                 max_age = n.min(CAP_MAX_AGE);
 --- new
                 max_age = n;
+
+=== an origin named by a dot alone is said to be added
+file: crates/curl-core/src/altsvc.rs
+witness: curl-core altsvc::tests::an_origin_named_by_a_dot_alone_keeps_nothing
+--- old
+                if made {
+--- new
+                if made || dst_port > 0 {

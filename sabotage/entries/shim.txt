@@ -3,9 +3,15 @@
 file: crates/curl-sys-abi/src/setopt/mod.rs
 witness: curl-sys-abi handle_tests::the_post_options_combine_as_in_c
 --- old
-            options.method = if n != 0 { Method::Post } else { Method::Get };
+                set.no_body = false;
+            } else {
+                set.method = Method::Get;
+            }
 --- new
-            options.method = Method::Post;
+                set.no_body = false;
+            } else {
+                set.method = Method::Post;
+            }
 
 === a larger POSTFIELDSIZE keeps the copy
 file: crates/curl-sys-abi/src/setopt/mod.rs

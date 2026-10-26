@@ -128,6 +128,12 @@ pub(crate) struct CSettings {
     /// `CURLOPT_TIMEVALUE_LARGE`.
     pub(crate) time_value: i64,
     pub(crate) private: *mut c_void,
+    /// C's request method and `CURLOPT_NOBODY` (`set.method`,
+    /// `set.opt_no_body`), kept apart as C keeps them: a setopt that sets
+    /// one leaves the other where C's does, and no body wins as the
+    /// request is made (`Curl_http_method`).
+    pub(crate) method: Method,
+    pub(crate) no_body: bool,
 }
 
 impl CSettings {
@@ -140,6 +146,17 @@ impl CSettings {
             time_condition: 0,
             time_value: 0,
             private: ptr::null_mut(),
+            method: Method::Get,
+            no_body: false,
+        }
+    }
+
+    /// The method the core is to use, of C's two values.
+    pub(crate) fn method(&self) -> Method {
+        if self.no_body {
+            Method::Head
+        } else {
+            self.method
         }
     }
 }

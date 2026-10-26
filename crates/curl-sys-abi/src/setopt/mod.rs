@@ -589,15 +589,23 @@ fn apply(
             callbacks::sync_progress(options, me, set, ccb)?;
         }
         (ffi::CURLOPT_NOBODY, Long(n)) => {
-            if n != 0 {
-                options.method = Method::Head;
-            } else if options.method == Method::Head {
-                options.method = Method::Get;
+            set.no_body = n != 0;
+            if set.no_body {
+                set.method = Method::Head;
+            } else if set.method == Method::Head {
+                set.method = Method::Get;
             }
+            options.method = set.method();
             callbacks::sync_upload(options, me, set)?;
         }
         (ffi::CURLOPT_POST, Long(n)) => {
-            options.method = if n != 0 { Method::Post } else { Method::Get };
+            if n != 0 {
+                set.method = Method::Post;
+                set.no_body = false;
+            } else {
+                set.method = Method::Get;
+            }
+            options.method = set.method();
             // SAFETY: the handle is alive while its options are set.
             unsafe { me.as_ref() }.post_body.set(PostBody::Own);
             callbacks::sync_upload(options, me, set)?;
@@ -615,7 +623,9 @@ fn apply(
             let shim = unsafe { me.as_ref() };
             shim.post_body.set(PostBody::Mime);
             crate::mime::forget_post_state(shim);
-            options.method = Method::Post;
+            set.method = Method::Post;
+            set.no_body = false;
+            options.method = set.method();
             callbacks::sync_upload(options, me, set)?;
         }
         (ffi::CURLOPT_HTTPPOST, Ptr(p)) => {
@@ -625,7 +635,9 @@ fn apply(
             crate::mime::forget_post_state(shim);
             shim.posted_or_make()?.chain.set(p.cast());
             shim.post_body.set(PostBody::Form);
-            options.method = Method::Post;
+            set.method = Method::Post;
+            set.no_body = false;
+            options.method = set.method();
             callbacks::sync_upload(options, me, set)?;
         }
         (ffi::CURLOPT_MIME_OPTIONS, Long(n)) => {
@@ -638,7 +650,9 @@ fn apply(
         }
         (ffi::CURLOPT_HTTPGET, Long(n)) => {
             if n != 0 {
-                options.method = Method::Get;
+                set.method = Method::Get;
+                set.no_body = false;
+                options.method = set.method();
                 callbacks::sync_upload(options, me, set)?;
             }
         }
@@ -648,7 +662,9 @@ fn apply(
             let shim = unsafe { me.as_ref() };
             shim.post.borrow_mut().fields = fields;
             shim.post_body.set(PostBody::Own);
-            options.method = Method::Post;
+            // A body to post leaves no body asked for as it was.
+            set.method = Method::Post;
+            options.method = set.method();
             callbacks::sync_upload(options, me, set)?;
         }
         (ffi::CURLOPT_COPYPOSTFIELDS, Ptr(p)) => {
@@ -660,13 +676,22 @@ fn apply(
             let copied = unsafe { copy_post_fields(p, size) }?;
             shim.post.borrow_mut().fields = copied;
             shim.post_body.set(PostBody::Own);
-            options.method = Method::Post;
+            set.method = Method::Post;
+            options.method = set.method();
             callbacks::sync_upload(options, me, set)?;
         }
         (ffi::CURLOPT_POSTFIELDSIZE, Long(n)) => post_fields_size(options, me, set, wide(n))?,
         (ffi::CURLOPT_POSTFIELDSIZE_LARGE, Off(n)) => post_fields_size(options, me, set, n)?,
         (ffi::CURLOPT_UPLOAD | ffi::CURLOPT_PUT, Long(n)) => {
-            options.method = if n != 0 { Method::Upload } else { Method::Get };
+            if n != 0 {
+                set.method = Method::Upload;
+                set.no_body = false;
+            } else {
+                // The opposite of an upload is a GET, or HEAD still if no
+                // body was asked for.
+                set.method = Method::Get;
+            }
+            options.method = set.method();
             callbacks::sync_upload(options, me, set)?;
         }
         (ffi::CURLOPT_PATH_AS_IS, Long(n)) => options.url_rules.path_as_is = n != 0,

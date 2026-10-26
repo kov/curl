@@ -1145,6 +1145,35 @@ fn the_method_follows_nobody_and_upload_as_in_c() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// No body is a value of its own, as C's `opt_no_body`: a setopt that
+/// sets a method without saying so leaves it, and it makes the request a
+/// HEAD whatever that method is; one that says so clears it. C's tool
+/// sets `CURLOPT_UPLOAD` to 0 after `CURLOPT_NOBODY` for every transfer.
+#[test]
+fn no_body_outlasts_a_method_that_does_not_clear_it() {
+    let c = curl_easy_init();
+    let method = |c| options(c, |o| o.method);
+    assert_eq!(long(c, ffi::CURLOPT_NOBODY, 1), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_UPLOAD, 0), CURLE_OK);
+    assert_eq!(method(c), Method::Head, "curl -I");
+    let fields = c"a=b";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_POSTFIELDS, fields.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(method(c), Method::Head);
+    // Without it again, the request is the method set meanwhile.
+    assert_eq!(long(c, ffi::CURLOPT_NOBODY, 0), CURLE_OK);
+    assert_eq!(method(c), Method::Post);
+    for clears in [ffi::CURLOPT_POST, ffi::CURLOPT_HTTPGET, ffi::CURLOPT_UPLOAD] {
+        assert_eq!(long(c, ffi::CURLOPT_NOBODY, 1), CURLE_OK);
+        assert_eq!(long(c, clears, 1), CURLE_OK);
+        assert_ne!(method(c), Method::Head, "{clears:?}");
+    }
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// The POST options combine as setopt.c and `Curl_pretransfer` combine
 /// them: the fields, copied or not, sized or up to their zero byte, kept
 /// across other methods; without them the read function.

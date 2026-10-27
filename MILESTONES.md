@@ -906,8 +906,10 @@ the system's under the HTTP-only programs installed here.
 
 ## Milestone 5: HTTP/3
 
-Status: **to do**. SCOPE stage 5's second half: QUIC through ngtcp2 and nghttp3, the HTTP/3
-proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
+Status: **done**; `--http3`'s race through an HTTP proxy moved to milestone 6. SCOPE stage 5's
+second half: QUIC through ngtcp2 and nghttp3, the HTTP/3 proxy, Happy Eyeballs across QUIC and
+TCP, and alt-svc upgrading to h3. Measured 2026-10-27 on the Rust leg: pytest 789 pass, none
+fail; 25 errors are vsftpd's (milestone 6).
 
 55. **What HTTP/2 left unbuilt,** each with a test, run on the C leg too where the C leg can
     show it:

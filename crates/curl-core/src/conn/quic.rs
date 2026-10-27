@@ -136,6 +136,10 @@ impl LayerCx for Lone<'_> {
         self.cx.of(component, line);
     }
 
+    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
+        self.cx.of_with(component, parts);
+    }
+
     fn info(&mut self, line: std::fmt::Arguments<'_>) {
         self.cx.info(line);
     }
@@ -237,6 +241,10 @@ impl LayerCx for Over<'_> {
 
     fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
         self.cx.of(component, line);
+    }
+
+    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
+        self.cx.of_with(component, parts);
     }
 
     fn info(&mut self, line: std::fmt::Arguments<'_>) {
@@ -1753,6 +1761,10 @@ mod tests {
         }
         fn of(&mut self, _: Component, line: std::fmt::Arguments<'_>) {
             self.lines.push(line.to_string());
+        }
+        fn of_with(&mut self, _: Component, parts: &[&[u8]]) {
+            self.lines
+                .push(String::from_utf8(parts.concat()).expect("a test's line is text"));
         }
         fn info(&mut self, line: std::fmt::Arguments<'_>) {
             self.lines.push(format!("* {line}"));

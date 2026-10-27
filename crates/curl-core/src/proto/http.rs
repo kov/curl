@@ -3042,11 +3042,15 @@ fn copied(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 
 /// Why the head is refused, said as C says it.
 fn head_failed<H: Host>(cx: &mut StepCx<'_, H>, e: &HeadError) -> ErrorKind {
-    if e.says() {
-        trace::fail(cx, e.kind(), format_args!("{e}"))
-    } else {
-        e.kind()
+    if !e.says() {
+        return e.kind();
     }
+    if let HeadError::Framing(framing) = e
+        && let Some(parts) = framing.naming()
+    {
+        return trace::fail_with(cx, e.kind(), &parts);
+    }
+    trace::fail(cx, e.kind(), format_args!("{e}"))
 }
 
 /// The version a request goes in, `wanted` the application's: its

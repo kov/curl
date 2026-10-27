@@ -313,6 +313,8 @@ impl LayerCx for Plain<'_> {
 
     fn of(&mut self, _: crate::components::Component, _: std::fmt::Arguments<'_>) {}
 
+    fn of_with(&mut self, _: crate::components::Component, _: &[&[u8]]) {}
+
     fn info(&mut self, _: std::fmt::Arguments<'_>) {}
 }
 

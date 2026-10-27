@@ -48,6 +48,8 @@ impl LayerCx for RawCx<'_> {
 
     fn of(&mut self, _: Component, _: fmt::Arguments<'_>) {}
 
+    fn of_with(&mut self, _: Component, _: &[&[u8]]) {}
+
     fn info(&mut self, _: fmt::Arguments<'_>) {}
 
     fn socket_failed(&mut self, e: &std::io::Error) {

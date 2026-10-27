@@ -389,9 +389,9 @@ witness: curl-core proto::http::tests::h2::a_pushed_response_becomes_a_transfer_
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_promise_for_another_authority_fails_the_read
 --- old
-        Ok(check.as_bytes().eq_ignore_ascii_case(value)
+        Ok(check.eq_ignore_ascii_case(value)
 --- new
-        Ok(true || check.as_bytes().eq_ignore_ascii_case(value)
+        Ok(true || check.eq_ignore_ascii_case(value)
 
 === a promise of another origin is offered
 file: crates/curl-core/src/proto/http/h2.rs

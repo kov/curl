@@ -16,8 +16,8 @@ use crate::error::AGAIN_NUMBER;
 use crate::http3::{Event, H3Error, Heard, StreamId};
 use crate::proto::http2::fields_of;
 use crate::proto::http3::H3Conn;
+use crate::text::Text;
 use crate::tls::TlsNative;
-use curl_alloc::Lossy;
 
 /// The most a stream's receive window opens to
 /// (`H3_STREAM_WINDOW_SIZE_MAX`).
@@ -173,6 +173,10 @@ impl<H: Host> LayerCx for H3Step<'_, '_, H> {
 
     fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
         LayerCx::of(&mut *self.cx, component, line);
+    }
+
+    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
+        LayerCx::of_with(&mut *self.cx, component, parts);
     }
 
     fn info(&mut self, line: std::fmt::Arguments<'_>) {
@@ -732,16 +736,16 @@ impl Request {
                 if made.is_ok() {
                     self.h3_head_line(cx, lease, &line);
                 }
-                let shown = Lossy(&line);
-                trace::of(cx, h3, format_args!("[{id}] status: {shown}"));
+                let id = Text::<24>::clipped(format_args!("[{id}] ")).0;
+                trace::of_with(cx, h3, &[id.bytes(), b"status: ", &line]);
                 match made {
                     Ok(()) => Heard::Fine,
                     Err(OutOfMemory) => Heard::Failed,
                 }
             }
             Event::Header { name, value, .. } => {
-                let (n, v) = (Lossy(name), Lossy(value));
-                trace::of(cx, h3, format_args!("[{id}] header: {n}: {v}"));
+                let id = Text::<24>::clipped(format_args!("[{id}] ")).0;
+                trace::of_with(cx, h3, &[id.bytes(), b"header: ", name, b": ", value]);
                 let mut line = Vec::new();
                 let made = line
                     .try_extend_from_slice(name)

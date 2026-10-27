@@ -196,25 +196,28 @@ pub(crate) enum FramingError {
     OutOfMemory,
 }
 
-/// Bytes shown as text, what is not UTF-8 as U+FFFD, without
-/// allocating.
-pub(crate) struct Lossy<'b>(pub(crate) &'b [u8]);
-
-impl fmt::Display for Lossy<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for chunk in self.0.utf8_chunks() {
-            f.write_str(chunk.valid())?;
-            if !chunk.invalid().is_empty() {
-                f.write_str("\u{FFFD}")?;
+impl FramingError {
+    /// The reason of one that names a coding the peer sent, in three
+    /// parts, the coding's bytes as they are between the others, as C's
+    /// `failf` with `%s` writes them; `None` for one that names none.
+    pub(crate) fn naming(&self) -> Option<[&[u8]; 3]> {
+        match self {
+            FramingError::Unsolicited(n) => {
+                Some([b"Unsolicited Transfer-Encoding (", n, b") found"])
             }
+            FramingError::ListedAfterChunked(n) => {
+                Some([b"A Transfer-Encoding (", n, b") was listed after chunked"])
+            }
+            _ => None,
         }
-        Ok(())
     }
 }
 
 impl fmt::Display for FramingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = |n| Lossy(n);
+        // Shown lossily here, where text is needed; the failure is said
+        // with the coding's bytes (`naming`).
+        let name = |n| curl_alloc::Lossy(n);
         match self {
             FramingError::BadLength => f.write_str("Invalid Content-Length: value"),
             FramingError::FileTooLarge => f.write_str("Maximum file size exceeded"),

@@ -4,7 +4,7 @@
 //! connection, the proxy's answer read and traced, and the connection,
 //! once the proxy agrees, the layer the tunnel's bytes pass through.
 
-use curl_alloc::{Lossy, OutOfMemory, TryVec as _, try_box};
+use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use super::{Connecting, Handshake, StepCx, TransferState, Wake};
 use crate::components::Component;
@@ -14,6 +14,7 @@ use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::proto::http1::auth::Side;
 use crate::proto::http2::{connect_udp_fields, fields_of};
+use crate::text::Text;
 use crate::trace;
 
 const H3P: Component = Component::H3Proxy;
@@ -43,8 +44,13 @@ fn connect<H: Host>(
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
     let target = c.route.target();
-    let (host, port) = (Lossy(target.request_host()), target.port());
-    trace::of(cx, H3P, format_args!("[0] CONNECT start for {host}:{port}"));
+    let port = Text::<8>::clipped(format_args!(":{}", target.port())).0;
+    let parts = [
+        &b"[0] CONNECT start for "[..],
+        target.request_host(),
+        port.bytes(),
+    ];
+    trace::of_with(cx, H3P, &parts);
     let head = super::tunnel::connect_head(c, cx, b"HTTP/3")?;
     let fields = match &head.udp {
         Some(udp) => connect_udp_fields(

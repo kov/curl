@@ -4,7 +4,7 @@
 //! challenges, and what it leads to: the tunnel, another `CONNECT` over
 //! the same connection or a new one, or the transfer's failure.
 
-use curl_alloc::{Lossy, OutOfMemory, TryVec as _, try_box};
+use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use super::{Connecting, Handshake, StepCx, TransferState, Wake};
 use crate::components::Component;
@@ -26,6 +26,7 @@ use crate::proto::http1::fields::{self, MAX_HEADERS};
 use crate::proto::http1::framing::Note as HeadNote;
 use crate::proto::http1::request::{CredentialGate, decimal};
 use crate::proto::http1::tunnel::{Answer, AnswerError, Applied, ConnectRequest, Read, UdpTarget};
+use crate::text::Text;
 use crate::tls::Chosen;
 use crate::trace;
 
@@ -171,15 +172,15 @@ pub(super) fn udp_answer<H: Host>(
             format_args!("CONNECT-UDP tunnel established, response {status}"),
         ),
         Some(v) => {
-            let v = Lossy(v);
-            return Err(trace::fail(
-                cx,
-                ErrorKind::CouldntConnect,
-                format_args!(
-                    "Failed to establish CONNECT-UDP tunnel, response {status}, \
-                     unsupported capsule-protocol value '{v}'"
-                ),
-            ));
+            let status = Text::<8>::clipped(format_args!("{status}")).0;
+            let why = [
+                &b"Failed to establish CONNECT-UDP tunnel, response "[..],
+                status.bytes(),
+                b", unsupported capsule-protocol value '",
+                v,
+                b"'",
+            ];
+            return Err(trace::fail_with(cx, ErrorKind::CouldntConnect, &why));
         }
         None => trace::info(
             cx,

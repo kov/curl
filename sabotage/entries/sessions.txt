@@ -80,11 +80,11 @@ witness: curl-core proto::http::tests::tls::a_share_keeping_sessions_serves_them
 features: test-util
 --- old
             for line in &held.lines {
-                trace::of(self, Component::Ssls, format_args!("{line}"));
+                trace::of_with(self, Component::Ssls, &[line]);
             }
 --- new
             for line in held.lines.iter().take(0) {
-                trace::of(self, Component::Ssls, format_args!("{line}"));
+                trace::of_with(self, Component::Ssls, &[line]);
             }
 
 === a resumed session reports a chain it was not sent

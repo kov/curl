@@ -2416,19 +2416,11 @@ fn raw_lines_with(ran: &Ran, needle: &[u8]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// Whether `line` ends in `shown` as `from_utf8_lossy` shows it, and a
-/// newline.
-fn ends_lossy(line: &[u8], shown: &[u8]) -> bool {
-    let mut want = String::from_utf8_lossy(shown).into_owned().into_bytes();
-    want.push(b'\n');
-    line.ends_with(&want)
-}
-
-/// A response header whose value is not UTF-8 (obs-text) is traced with
-/// each invalid run shown as U+FFFD, as `from_utf8_lossy` showed it, and
-/// handed to the application as its bytes.
+/// A response header whose value is not UTF-8 (obs-text) is traced as
+/// its bytes, as C's `%s` writes them (`cb_h3_recv_header`), and handed
+/// to the application as its bytes.
 #[test]
-fn an_http3_header_not_utf8_is_traced_lossily() {
+fn an_http3_header_not_utf8_is_traced_as_its_bytes() {
     let script = get_script(b"123456789");
     script.lock().unwrap().on_read[1].insert(
         1,
@@ -2445,11 +2437,10 @@ fn an_http3_header_not_utf8_is_traced_lossily() {
     let traced = raw_lines_with(&ran, b"header: x-obs: ");
     assert_eq!(traced.len(), 1, "{traced:?}");
     assert!(
-        ends_lossy(&traced[0], b"[HTTP/3] [0] header: x-obs: caf\xe9 \xff\xfe!"),
+        traced[0].ends_with(b"[HTTP/3] [0] header: x-obs: caf\xe9 \xff\xfe!\n"),
         "{:?}",
-        String::from_utf8_lossy(&traced[0])
+        traced[0]
     );
-    assert!(traced[0].ends_with("caf\u{FFFD} \u{FFFD}\u{FFFD}!\n".as_bytes()));
     assert!(
         ran.seen
             .of("header")
@@ -2458,9 +2449,10 @@ fn an_http3_header_not_utf8_is_traced_lossily() {
 }
 
 /// The same through an HTTP/3 proxy: its answer's header that is not
-/// UTF-8 is traced as `from_utf8_lossy` showed it.
+/// UTF-8 is traced as its bytes (`cb_h3_recv_header` in
+/// `cf-ngtcp2-proxy.c`).
 #[test]
-fn an_http3_proxy_header_not_utf8_is_traced_lossily() {
+fn an_http3_proxy_header_not_utf8_is_traced_as_its_bytes() {
     let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n".to_vec();
     let script = tunnel_script(b"200", vec![Told::Data(0, response)]);
     script.lock().unwrap().on_read[1][1] = Told::Header {
@@ -2475,9 +2467,57 @@ fn an_http3_proxy_header_not_utf8_is_traced_lossily() {
     let traced = raw_lines_with(&ran, b"[0] header: via: ");
     assert_eq!(traced.len(), 1, "{traced:?}");
     assert!(
-        ends_lossy(&traced[0], b"[H3-PROXY] [0] header: via: h3\xc3proxy"),
+        traced[0].ends_with(b"[H3-PROXY] [0] header: via: h3\xc3proxy\n"),
         "{:?}",
-        String::from_utf8_lossy(&traced[0])
+        traced[0]
     );
-    assert!(traced[0].ends_with("via: h3\u{FFFD}proxy\n".as_bytes()));
+}
+
+/// A capsule protocol the proxy names that is not UTF-8 is said as its
+/// bytes in the tunnel's failure, as C's `failf` with `%s` says it.
+#[test]
+fn an_http3_proxy_s_capsule_protocol_not_utf8_fails_as_its_bytes() {
+    let proxy = udp_tunnel_script(b"?\xff");
+    let h3 = FakeHttp3::new(proxy.clone());
+    h3.then.lock().unwrap().push_back(Script::new());
+    let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    let e = tracing_with(tls, h3);
+    let mut m = quic_server(&[b"server flight", b"connect answer"]);
+    let ran = h3_through_h3_proxy(&mut m, e);
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    let why = b"Failed to establish CONNECT-UDP tunnel, response 200, \
+        unsupported capsule-protocol value '?\xff'";
+    let mut line = why.to_vec();
+    line.push(b'\n');
+    assert!(
+        raw_lines_with(&ran, b"unsupported capsule-protocol")
+            .iter()
+            .any(|l| l.ends_with(&line)),
+        "traced as its bytes"
+    );
+}
+
+/// The HTTP/3 proxy's `CONNECT` names a host that is not UTF-8 as its
+/// bytes in the tunnel's trace (`cf-ngtcp2-proxy.c`'s "CONNECT start").
+#[test]
+fn an_http3_proxy_connect_names_its_host_as_its_bytes() {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n".to_vec();
+    let script = tunnel_script(b"200", vec![Told::Data(0, response)]);
+    let mut m = quic_server(&[b"server flight", b"connect answer", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(b"http://caf\xe9.example/p")).unwrap();
+        o.ip_version = IpVersion::Any;
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
+        proxy.kind = crate::options::ProxyType::Https3;
+        proxy.tunnel = true;
+    });
+    let traced = raw_lines_with(&ran, b"CONNECT start for ");
+    assert_eq!(traced.len(), 1, "{:?} {traced:?}", ran.result);
+    assert!(
+        traced[0].ends_with(b"[H3-PROXY] [0] CONNECT start for caf\xe9.example:80\n"),
+        "{:?}",
+        traced[0]
+    );
 }

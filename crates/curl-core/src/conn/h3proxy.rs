@@ -9,7 +9,7 @@
 use std::io;
 use std::num::NonZeroUsize;
 
-use curl_alloc::{Lossy, OutOfMemory, TryVec as _};
+use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::buf::HeldBytes;
 use super::h2proxy::Answer;
@@ -19,6 +19,7 @@ use super::quic::{Quic, QuicCx, QuicIo, RECV_ROOM};
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::http3::{Event, H3Error, Heard, StreamId};
+use crate::text::Text;
 use crate::time::Instant;
 
 /// How much of the tunnel's DATA is held for the layer above, which its
@@ -170,8 +171,8 @@ impl Tunnel {
                 let Some(answer) = &mut self.answer else {
                     return Heard::Failed;
                 };
-                let (id, n, v) = (stream.0, Lossy(name), Lossy(value));
-                cx.of(H3P, format_args!("[{id}] header: {n}: {v}"));
+                let id = Text::<24>::clipped(format_args!("[{}] ", stream.0)).0;
+                cx.of_with(H3P, &[id.bytes(), b"header: ", name, b": ", value]);
                 match answer.add(name, value) {
                     Ok(()) => Heard::Fine,
                     Err(OutOfMemory) => Heard::Failed,
@@ -327,6 +328,10 @@ impl LayerCx for Tunnelled<'_> {
         self.cx.of(component, line);
     }
 
+    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
+        self.cx.of_with(component, parts);
+    }
+
     fn info(&mut self, line: std::fmt::Arguments<'_>) {
         self.cx.info(line);
     }
@@ -477,11 +482,8 @@ impl H3Proxy {
         let id = stream.0;
         cx.of(H3P, format_args!("[{id}] opened bidi stream"));
         if verbose {
-            let url = Lossy(url);
-            cx.of(
-                H3P,
-                format_args!("[H3-PROXY] [{id}] OPENED stream for {url}"),
-            );
+            let id = Text::<24>::clipped(format_args!("[H3-PROXY] [{id}] ")).0;
+            cx.of_with(H3P, &[id.bytes(), b"OPENED stream for ", url]);
         }
         Ok(())
     }

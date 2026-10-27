@@ -200,18 +200,33 @@ impl Internal {
 
     /// A line of no component's (`infof`).
     pub(crate) fn info(&self, args: fmt::Arguments<'_>) {
-        self.write(None, args);
+        self.write(None, |line| {
+            line.push_fmt(args);
+        });
     }
 
     /// A line of `component`'s, if it is on (`CURL_TRC_M`,
     /// `CURL_TRC_CF`).
     pub(crate) fn of(&self, component: Component, args: fmt::Arguments<'_>) {
         if self.traces(component) {
-            self.write(Some(component), args);
+            self.write(Some(component), |line| {
+                line.push_fmt(args);
+            });
         }
     }
 
-    fn write(&self, component: Option<Component>, args: fmt::Arguments<'_>) {
+    /// `of` with a line made of `parts`, which need not be text.
+    pub(crate) fn of_with(&self, component: Component, parts: &[&[u8]]) {
+        if self.traces(component) {
+            self.write(Some(component), |line| {
+                for part in parts {
+                    line.push_clipped(part);
+                }
+            });
+        }
+    }
+
+    fn write(&self, component: Option<Component>, said: impl FnOnce(&mut Text<LINE_MAX>)) {
         let mut line = Text::<LINE_MAX>::new();
         if self.traces(Component::Ids) {
             line.push_fmt(format_args!("[{}-{}] ", Ids(None), Ids(None)));
@@ -219,7 +234,7 @@ impl Internal {
         if let Some(component) = component {
             line.push_fmt(format_args!("[{}] ", component.name()));
         }
-        line.push_fmt(args);
+        said(&mut line);
         end_line(&mut line);
         progress::to_stderr(self.sink.as_ref(), b"* ");
         progress::to_stderr(self.sink.as_ref(), line.bytes());
@@ -242,6 +257,12 @@ impl crate::conn::layer::LayerCx for InternalCx<'_> {
     fn of(&mut self, component: Component, line: fmt::Arguments<'_>) {
         if let Some(trace) = self.trace {
             trace.of(component, line);
+        }
+    }
+
+    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
+        if let Some(trace) = self.trace {
+            trace.of_with(component, parts);
         }
     }
 

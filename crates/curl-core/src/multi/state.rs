@@ -1297,6 +1297,10 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
         trace::of(self, component, line);
     }
 
+    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
+        trace::of_with(self, component, parts);
+    }
+
     fn info(&mut self, line: std::fmt::Arguments<'_>) {
         trace::info(self, line);
     }
@@ -1392,7 +1396,7 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
                 f(cache, &mut held);
             });
             for line in &held.lines {
-                trace::of(self, Component::Ssls, format_args!("{line}"));
+                trace::of_with(self, Component::Ssls, &[line]);
             }
             if let Some((kind, why)) = held.failure {
                 trace::fail(self, kind, format_args!("{why}"));
@@ -1414,7 +1418,7 @@ struct HeldSays {
     unix: i64,
     /// The transfer traces the cache's lines (`ssls`).
     traces: bool,
-    lines: Vec<String>,
+    lines: Vec<Vec<u8>>,
     failure: Option<(ErrorKind, String)>,
 }
 
@@ -1430,6 +1434,20 @@ impl LayerCx for HeldSays {
         {
             // Without memory to hold it, the line is not said, as a line
             // too long for the trace is cut.
+            let _ = self.lines.try_push(line.into_bytes());
+        }
+    }
+
+    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
+        if !self.traces || component != Component::Ssls {
+            return;
+        }
+        let mut line = Vec::new();
+        let made = parts
+            .iter()
+            .try_for_each(|part| line.try_extend_from_slice(part));
+        // As for `of`, a line there is no memory for is not said.
+        if made.is_ok() {
             let _ = self.lines.try_push(line);
         }
     }

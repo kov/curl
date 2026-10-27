@@ -249,6 +249,24 @@ impl WriteHandler for PausesOnce {
     }
 }
 
+/// A transfer coding the peer names that is not UTF-8 is said as its
+/// bytes in the failure, as C's `failf` with `%s` says it.
+#[test]
+fn an_unsolicited_coding_not_utf8_fails_as_its_bytes() {
+    let reply = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: caf\xff\r\n\r\nok";
+    let (mut m, talk, _clock) = server(&[reply], false);
+    let ran = get(&mut m, "/", talk, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::BadContentEncoding));
+    let why = b"Unsolicited Transfer-Encoding (caf\xff) found";
+    assert_eq!(ran.easy.report().failure(), Some(&why[..]));
+    let mut line = why.to_vec();
+    line.push(b'\n');
+    assert!(
+        ran.seen.of("text").iter().any(|l| l.ends_with(&line)),
+        "traced as its bytes"
+    );
+}
+
 /// A body whose last piece is paused is held, not lost: the transfer is
 /// not over until it is delivered (`multi.c`, test 1540's rule).
 #[test]

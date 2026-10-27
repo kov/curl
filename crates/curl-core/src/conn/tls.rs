@@ -483,6 +483,7 @@ mod tests {
             crate::time::Clock::now(&ManualClock::new().unwrap())
         }
         fn of(&mut self, _: Component, _: fmt::Arguments<'_>) {}
+        fn of_with(&mut self, _: Component, _: &[&[u8]]) {}
         fn info(&mut self, _: fmt::Arguments<'_>) {}
         fn early_done(&mut self, sent: i64) {
             assert_eq!(self.0.replace(sent), None, "told once");

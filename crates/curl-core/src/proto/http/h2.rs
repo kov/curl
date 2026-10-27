@@ -8,7 +8,7 @@
 //! to the transfer: the head a line at a time, `HTTP/2 200 \r\n` first,
 //! the body as it comes, and the trailers once the stream closes.
 
-use curl_alloc::{Lossy, try_box};
+use curl_alloc::try_box;
 
 use super::*;
 use crate::components::Component;
@@ -23,6 +23,7 @@ use crate::proto::http2::{
     EgressFailed, GoAway, H2Conn, SEND_MAX, STREAM_WINDOW_MAX, WindowFailed, fields_of, settings,
     trace_frame, trace_settings,
 };
+use crate::text::Text;
 use crate::tls::Chosen;
 use crate::url::ParseOptions;
 
@@ -1632,9 +1633,13 @@ impl Request {
     fn serves_authority(&self, value: &[u8]) -> Result<bool, OutOfMemory> {
         let peer = &self.peer;
         let name = peer.name();
-        let check = curl_alloc::try_format(format_args!("{}:{}", Lossy(name), peer.port()))?;
+        // Built as C's `"%s:%d"` builds it: the name's bytes as they are.
+        let port = Text::<8>::clipped(format_args!(":{}", peer.port())).0;
+        let mut check = Vec::new();
+        check.try_extend_from_slice(name)?;
+        check.try_extend_from_slice(port.bytes())?;
         let default = if peer.scheme() == HTTPS { 443 } else { 80 };
-        Ok(check.as_bytes().eq_ignore_ascii_case(value)
+        Ok(check.eq_ignore_ascii_case(value)
             || (peer.port() == default && name.eq_ignore_ascii_case(value)))
     }
 

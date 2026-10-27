@@ -377,6 +377,10 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
         LayerCx::of(&mut *self.step, component, line);
     }
 
+    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
+        LayerCx::of_with(&mut *self.step, component, parts);
+    }
+
     fn info(&mut self, line: fmt::Arguments<'_>) {
         LayerCx::info(&mut *self.step, line);
     }

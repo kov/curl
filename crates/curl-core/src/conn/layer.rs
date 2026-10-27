@@ -88,6 +88,11 @@ pub(crate) trait LayerCx {
     /// Trace a line of `component`'s, if it is.
     fn of(&mut self, component: Component, line: fmt::Arguments<'_>);
 
+    /// `of` with a line made of `parts`, which need not be text: bytes
+    /// of the peer's or the application's, traced as they are, as C's
+    /// `%s` writes them.
+    fn of_with(&mut self, component: Component, parts: &[&[u8]]);
+
     /// A line of the transfer's verbose output (`infof`).
     fn info(&mut self, line: fmt::Arguments<'_>);
 
@@ -203,6 +208,8 @@ impl LayerCx for Silent {
     }
 
     fn of(&mut self, _: Component, _: fmt::Arguments<'_>) {}
+
+    fn of_with(&mut self, _: Component, _: &[&[u8]]) {}
 
     fn info(&mut self, _: fmt::Arguments<'_>) {}
 }

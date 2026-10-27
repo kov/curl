@@ -6,7 +6,6 @@ use std::fmt;
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::fields::{self, BadLine};
-use super::framing::Lossy;
 use super::response::{self, HeadError};
 use crate::error::ErrorKind;
 
@@ -118,7 +117,12 @@ impl fmt::Display for Reason<'_> {
             ChunkError::TooLongHex => write!(f, "chunk hex-length longer than {MAX_HEX}"),
             ChunkError::NotHex(b) => write!(f, "chunk hex-length char not a hex digit: 0x{b:x}"),
             ChunkError::BadSize(hex, len) => {
-                write!(f, "invalid chunk size: '{}'", Lossy(&hex[..*len]))
+                // Hex digits alone are taken into it, so it is ASCII.
+                write!(
+                    f,
+                    "invalid chunk size: '{}'",
+                    curl_alloc::Lossy(&hex[..*len])
+                )
             }
             ChunkError::BadTrailer(bad) => bad.fmt(f),
             ChunkError::TrailerLimit(e) => e.fmt(f),

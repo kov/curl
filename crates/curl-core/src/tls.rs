@@ -784,6 +784,11 @@ impl LayerCx for Notes {
         self.0.push(format!("trace: {line}"));
     }
 
+    fn of_with(&mut self, _: Component, parts: &[&[u8]]) {
+        let line = String::from_utf8(parts.concat()).expect("a test's line is text");
+        self.0.push(format!("trace: {line}"));
+    }
+
     fn info(&mut self, line: fmt::Arguments<'_>) {
         self.0.push(format!("info: {line}"));
     }

@@ -546,6 +546,67 @@ pub(crate) fn fields_of(
     Ok(fields)
 }
 
+/// The fields of a CONNECT-UDP to a proxy that speaks HTTP/2 (RFC 9298's
+/// extended `CONNECT`; `http_proxy_create_CONNECTUDP`,
+/// `Curl_http_req_to_h2`): the proxy's `scheme` and `authority` and the
+/// `path` naming the target, then what `head` holds after its request
+/// line, the proxy's authorization first if `authorized`, then the
+/// protocol asked for and the capsules it is to carry, then the rest.
+pub(crate) fn connect_udp_fields(
+    head: &[u8],
+    authorized: bool,
+    scheme: &[u8],
+    authority: &[u8],
+    path: &[u8],
+) -> Result<Fields, ErrorKind> {
+    let oom = |OutOfMemory| ErrorKind::OutOfMemory;
+    let mut fields = Fields::default();
+    fields.add(b":method", b"CONNECT", false).map_err(oom)?;
+    fields.add(b":scheme", scheme, false).map_err(oom)?;
+    fields.add(b":authority", authority, false).map_err(oom)?;
+    fields.add(b":path", path, false).map_err(oom)?;
+    let mut lines = head
+        .split_inclusive(|&b| b == b'\n')
+        .map(trim_line)
+        .skip(1)
+        .take_while(|l| !l.is_empty());
+    if authorized && let Some(line) = lines.next() {
+        add_line(&mut fields, line)?;
+    }
+    fields
+        .add(b":protocol", b"connect-udp", false)
+        .map_err(oom)?;
+    fields.add(b"capsule-protocol", b"?1", false).map_err(oom)?;
+    for line in lines {
+        add_line(&mut fields, line)?;
+    }
+    Ok(fields)
+}
+
+/// A header `line` of an HTTP/1 head added as a field, but those HTTP/2
+/// has no use for, `TE` only as `trailers`.
+fn add_line(fields: &mut Fields, line: &[u8]) -> Result<(), ErrorKind> {
+    let oom = |OutOfMemory| ErrorKind::OutOfMemory;
+    let colon = match line.iter().position(|&b| b == b':') {
+        Some(0) | None => return Err(ErrorKind::BadFunctionArgument),
+        Some(c) => c,
+    };
+    let (name, value) = (&line[..colon], &line[colon + 1..]);
+    let blanks = value
+        .iter()
+        .take_while(|&&b| b == b' ' || b == b'\t')
+        .count();
+    let value = &value[blanks..];
+    if name.eq_ignore_ascii_case(b"TE") {
+        if has_token(value, b"trailers") {
+            fields.add(name, b"trailers", true).map_err(oom)?;
+        }
+    } else if !NOT_FIELDS.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        fields.add(name, value, true).map_err(oom)?;
+    }
+    Ok(())
+}
+
 /// The longest target taken as a URL (`H1_MAX_URL_LEN`).
 const MOST_TARGET: usize = 8 * 1024;
 

@@ -998,8 +998,7 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
 64. **The HTTP/3 proxy** (`--proxy-http3`, CONNECT-UDP; pytest test_60). Always built, with no
     switch: C's is experimental and off unless built with `USE_PROXY_HTTP3`, but for its code's
     youth, not its standards (RFC 9297, 9298), and the reference build has it on. With it, HTTP/3
-    through an HTTP proxy goes over its CONNECT-UDP: `--http3-only` dials QUIC to the proxy
-    until then, and `--http3` runs no race through one.
+    through an HTTP proxy goes over its CONNECT-UDP.
     - (a) **Done.** The tunnel over QUIC to the proxy (CONNECT on a stream of it), the race's
       attempt as C's H3-PROXY filter is, its chain and trace C's, a refusal the attempt's
       failure. test_60's cases with an HTTP/1.1 or HTTP/2 origin pass (01, 02, 06–11, 14, 16,
@@ -1009,9 +1008,13 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
     - (b) **Done.** The datagram seam: a QUIC connection with no socket sends and receives each
       datagram through the layers below (`QuicIo::send_below`, `recv_below`), as C's does
       through `cf->next`.
-    - (c) Capsules (`capsule.c`, `cf-capsule.c`) and CONNECT-UDP over HTTP/1.1 and HTTP/2
-      proxies: test_60 01 and 02 for an HTTP/3 origin over them, 03.
+    - (c) **Done.** Capsules (`capsule.c`, `cf-capsule.c`) and CONNECT-UDP over HTTP/1.1 and
+      HTTP/2 proxies, for `--http3-only`: test_60 01 h3 over h1 and h2, 02 h3 over h1, 03 pass,
+      their chains C's. An HTTP/3 origin through the HTTP/3 proxy is refused until (d).
     - (d) CONNECT-UDP over the HTTP/3 proxy, QUIC in QUIC: 01 and 02 h3 over h3, 05, 13, 18.
+    - (e) The race through an HTTP proxy for `--http3`: C weighs HTTP/3 there as anywhere
+      (`cf_hc_may_h3` refuses only SOCKS), its attempt over CONNECT-UDP beside one over
+      CONNECT, two tunnels to the proxy at once; ours makes the one over CONNECT.
 
 ## Milestone 6: the other protocols
 

@@ -12,6 +12,11 @@ pub(crate) struct RecvBuf {
 }
 
 impl RecvBuf {
+    /// Holding `bytes`, received elsewhere and not used yet.
+    pub(crate) fn holding(bytes: Vec<u8>) -> RecvBuf {
+        RecvBuf { bytes }
+    }
+
     /// What is waiting to be used.
     pub(crate) fn filled(&self) -> &[u8] {
         &self.bytes

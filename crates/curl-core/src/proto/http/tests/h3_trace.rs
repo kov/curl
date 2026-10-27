@@ -1733,8 +1733,8 @@ fn a_tcp_first_failing_last_still_names_the_failure() {
 
 /// A transfer in HTTP/3 or older through a proxy makes one attempt, over
 /// TCP: through a SOCKS proxy, HTTP/3 may not be spoken, which is said
-/// as HTTP/3 is weighed (`cf_hc_may_h3`); through an HTTP proxy's tunnel,
-/// not yet made over CONNECT-UDP, it is not weighed.
+/// as HTTP/3 is weighed (`cf_hc_may_h3`); through an HTTP proxy's tunnel
+/// HTTP/3 goes over CONNECT-UDP only alone, and no race is run yet.
 #[test]
 fn http3_through_a_proxy_goes_over_tcp_alone() {
     let cases = [
@@ -2123,4 +2123,112 @@ fn a_tunnel_an_http3_proxy_closes_fails_the_read() {
         ran.seen.text()
     );
     assert_eq!(lines(&ran, &["[H3-PROXY] [0] CLOSED"]).len(), 1);
+}
+
+/// The proxy a CONNECT-UDP goes through, at `127.0.0.1`.
+const UDP_PROXY_PORT: u16 = 3128;
+
+/// `payload` as a capsule of a datagram (RFC 9297), as a proxy sends it
+/// through a CONNECT-UDP tunnel.
+fn capsule(payload: &[u8]) -> Vec<u8> {
+    let (head, len) = crate::conn::capsule::header(payload.len());
+    let mut c = head[..len].to_vec();
+    c.extend_from_slice(payload);
+    c
+}
+
+/// HTTP/3 alone through an HTTP proxy goes over its CONNECT-UDP
+/// (`http_proxy_create_CONNECTUDP`): the race's attempt is the proxy's,
+/// in TCP; the request asks the proxy at the path naming the origin to
+/// switch protocols; once it has, the origin's QUIC connection is made
+/// over capsules on the tunnel, the chain C's (`[HTTP/3][CAPSULE]` over
+/// the tunnel's filters), and the GET goes over it. C's build against
+/// h2o, `test_60_01[h3_over_h1_proxytunnel]`, but for the proxy's TLS.
+#[test]
+fn http3_through_an_http_proxy_goes_over_connect_udp() {
+    let script = get_script(b"123456789");
+    let head = b"HTTP/1.1 101 Switching Protocols\r\nCapsule-Protocol: ?1\r\n\r\n".to_vec();
+    let flight = capsule(b"server flight");
+    let response = capsule(b"response");
+    // The tunnel's request, then each datagram of the client's flight,
+    // then the GET's.
+    let talk = Conversation::replies(&[&head, &[], &flight, &response], false).per_send();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], UDP_PROXY_PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"123456789");
+    let request = format!(
+        "GET http://127.0.0.1:{UDP_PROXY_PORT}/.well-known/masque/udp/localhost/{PORT}/ HTTP/1.1\r\n\
+         Host: 127.0.0.1:{UDP_PROXY_PORT}\r\n\
+         User-Agent: curl/test\r\n\
+         Proxy-Connection: Keep-Alive\r\n\
+         Connection: Upgrade\r\n\
+         Upgrade: connect-udp\r\n\
+         Capsule-Protocol: ?1\r\n\r\n"
+    );
+    let sent = talk.received();
+    assert_eq!(
+        String::from_utf8_lossy(&sent[..request.len()]),
+        request,
+        "{:?}",
+        String::from_utf8_lossy(&sent)
+    );
+    // The client's flight and its GET follow, each datagram a capsule.
+    let mut capsules = capsule(&[1; 1200]);
+    capsules.extend(capsule(&[2; 1200]));
+    capsules.extend(capsule(&[3; 75]));
+    assert_eq!(sent[request.len()..], capsules);
+    let got = lines(
+        &ran,
+        &[
+            "Establishing",
+            "CONNECT-UDP",
+            "[SETUP] added",
+            "[MULTI] [CONNECTING] cf_setup_connect",
+            "[MULTI] [CONNECTING] connected [",
+            "[MULTI] [CONNECTING] reduced",
+            "[HTTP/3] handshake complete",
+            "using HTTP",
+        ],
+    );
+    let mut got = got;
+    got.dedup();
+    // The fake proxy answers at once, so the chain is not traced while
+    // the answer is awaited.
+    let want = expect(&format!(
+        "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] added HTTP proxy tunnel filter
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]
+        CONNECT-UDP: no ALPN negotiated
+        Establishing HTTP proxy UDP tunnel to localhost:{PORT}
+        CONNECT-UDP phase completed for HTTP proxy
+        CONNECT-UDP tunnel established, response 101
+        [SETUP] added QUIC filter for origin
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP/3][!CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
+        [HTTP/3] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
+        [MULTI] [CONNECTING] connected [0][DNS][DNS][HTTPS-CONNECT][SETUP][HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
+        [MULTI] [CONNECTING] reduced to [0][HTTP/3][CAPSULE][H1-PROXY][TCP]
+        using HTTP/3"
+    ));
+    assert_eq!(got, want);
 }

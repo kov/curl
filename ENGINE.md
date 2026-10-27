@@ -566,9 +566,10 @@ failed. A race given up, failed, timed out or its transfer removed, goes into `D
 lease, and `multi_done` closes its attempt out of the lease as the lease's own is closed, and
 lets the race's answer go once. The plan's route keeps the first's dial; what is traced of a
 socket or a chain is read from the setup the lease holds, or from the connection the winner
-made. Through a proxy the race is not run yet: C makes the HTTP/3 attempt over the proxy's
-CONNECT-UDP (step 64). Through an HTTP/3 proxy's tunnel the race's attempt is the QUIC
-connection to the proxy (§ the HTTP/3 tunnel).
+made. Through an HTTP proxy HTTP/3 alone goes over the proxy's CONNECT-UDP (§ the CONNECT-UDP
+tunnel); a race through one, C's HTTP/3 attempt over CONNECT-UDP beside its other over CONNECT,
+is not run yet. Through an HTTP/3 proxy's tunnel the race's attempt is the QUIC connection to
+the proxy (§ the HTTP/3 tunnel).
 
 `READ` traces a request's body as C's client readers read it: the reader set as the request is
 built (`add buf reader`, `add fread reader`) and each read of it, by the reader C would have, a
@@ -1795,10 +1796,13 @@ uses it later, the library is never handed a time before one it had. A fatal err
 connection, its close packet sent at once. The transfer reaches all of this through `QuicCx`,
 and the socket through `QuicIo`, asked for at each call: the socket stays in the connection while
 the library's events reach the transfers. A connection whose datagrams go through a proxy's
-CONNECT-UDP tunnel has no socket (`QuicIo::socket` is none): each datagram goes to the layers
-below on its own, a run cut at its segment size and only a whole datagram sent (`vquic_cf_send`),
-and comes back one per receive into 64 KiB of the room, at most 1000 a pass
-(`progress_ingress(sub-filters)`).
+CONNECT-UDP tunnel is made layered, a fact it keeps: each datagram goes to the stream's layers
+on its own (`QuicIo::send_below`), a run cut at its segment size and only a whole datagram sent
+(`vquic_cf_send`), and comes back one per receive into 64 KiB of the room, at most 1000 a pass
+(`recv_below`, `progress_ingress(sub-filters)`); what the layers hold from before is flushed as
+each egress starts (`flush_below`), as C flushes its filters before it drives them. The
+contexts that reach the layers give these: the request's step through the connection's carrier,
+and the setup's `Over` with `quic::Path::Layers`.
 
 **A request's stream.** `proto/http/h3.rs` is C's `h3_stream_ctx` and `cf_ngtcp2_send` and
 `_recv`, in their order: each call reads what came first, sends after, and sets the timer, the
@@ -2664,8 +2668,28 @@ attempt failing in C: the setup fails as a race with no address left does, `Fail
 over proxy …` and `CouldntConnect`. A read once the stream is gone fails (`RecvError`). The
 library's timer is asked for through `LayerCx::quic_due`, which a layer below the transfer's
 reaches as the transfer's own QUIC connection does. Requests not tunnelled go to such a proxy over
-TCP, as C sends them (`Curl_http_proxy_transport`). An HTTP/3 origin through any proxy needs
-CONNECT-UDP, step 64's later parts.
+TCP, as C sends them (`Curl_http_proxy_transport`). An HTTP/3 origin through an HTTP/3 proxy,
+QUIC in QUIC, is step 64(d)'s: until then it is refused.
+
+**The CONNECT-UDP tunnel** (RFC 9297, 9298; `http_proxy_create_CONNECTUDP`, `cf-capsule.c`) is
+how HTTP/3 goes through an HTTP proxy: `Tcp::tunnels_udp`, a route dialed for QUIC whose first
+hop is the proxy in TCP. The race is the proxy's, in TCP; the tunnel's request asks the proxy
+itself, at `/.well-known/masque/udp/<host>/<port>/` (an IPv6 address's colons as `%3A`), to carry
+datagrams: over HTTP/1.1 a `GET` to upgrade to `connect-udp` (`ConnectRequest::udp`), answered
+by a 101 or a 2xx; over HTTP/2 an extended `CONNECT` (`proto::http2::connect_udp_fields`: the
+proxy's scheme and authority, the path, its authorization, `:protocol`, `capsule-protocol`, then
+the application's headers, no `Host`, `User-Agent` or `Proxy-Connection`), whose 2xx must name
+no capsule protocol but `?1`. The lines are C's, `CONNECT-UDP` for `CONNECT`. Once through, the
+setup's next handshake is `Due::Quic` in place of the origin's TLS (`multi/state/quictunnel.rs`):
+`conn/capsule.rs`'s `CapsuleLayer` goes on the stream, seeded with what the proxy sent after its
+answer, each datagram a capsule both ways (the codec C's `capsule.c`, a bad capsule failing the
+read as C says it; at most four 16 KiB chunks held to read, a capsule taken whole to send, `OUT`
+asked for while some waits); the origin's `Quic` is made layered over the stream's ends
+(`ConnectMachine::tunnel_quic`) and held by `Handshake::Quic`, its connect driven over the
+layers; done, it rides in `Dialed` (`put_quic`, `Made::QUIC`) and becomes the connection's HTTP/3
+session as the setup ends. The chain is C's: `[HTTP/3][CAPSULE]` on top of the tunnel's filters,
+the capsule filter connected at once, HAPPY-EYEBALLS going with the setup's others,
+`[HTTP/3][CAPSULE][H1-PROXY][TCP]` once reduced.
 
 **Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the
 multi's `ShutdownSet` until the peer's goodbye or the connection's 2 s. OpenSSL's is

@@ -120,6 +120,9 @@ impl Made {
     /// The tunnel is a stream of a QUIC connection to an HTTP/3 proxy
     /// (`[H3-PROXY]`), made with `TUNNEL`.
     pub(crate) const H3_TUNNEL: Made = Made(64);
+    /// The origin's QUIC connection through a CONNECT-UDP tunnel
+    /// (`[HTTP/3][CAPSULE]`), in place of its TLS.
+    pub(crate) const QUIC: Made = Made(128);
 
     pub(crate) fn has(self, which: Made) -> bool {
         self.0 & which.0 != 0
@@ -162,9 +165,17 @@ impl Dialed {
     }
 
     /// The QUIC connection to an HTTP/3 proxy, for the tunnel's
-    /// `CONNECT` to take.
+    /// `CONNECT` to take; or the origin's, made through a CONNECT-UDP
+    /// tunnel, for the connection's session.
     pub(crate) fn take_quic(&mut self) -> Option<Box<Quic>> {
         self.quic.take()
+    }
+
+    /// The origin's QUIC connection, its handshake made through the
+    /// tunnel, held for the connection it is the session of.
+    pub(crate) fn put_quic(&mut self, quic: Box<Quic>) {
+        assert!(self.quic.is_none(), "one QUIC connection is held");
+        self.quic = Some(quic);
     }
 
     /// The proxy's address, and the connection's end here.
@@ -755,6 +766,20 @@ impl ConnectMachine {
         }
     }
 
+    /// The origin's QUIC connection, to be made through the tunnel the
+    /// dialed connection carries, over the ends of that connection
+    /// (`Curl_cf_quic_insert_after`).
+    pub(crate) fn tunnel_quic(&self, cx: &mut dyn ConnCx) -> Result<Box<Quic>, ErrorKind> {
+        let Stage::Dialed(d) = &self.stage else {
+            panic!("a tunnel goes over a dialed connection");
+        };
+        assert!(self.route.tunnels_udp(), "a CONNECT-UDP tunnel");
+        let none = SocketAddr::from(([0, 0, 0, 0], 0));
+        let remote = d.remote.inet().unwrap_or(none);
+        let local = d.stream.local_addr().unwrap_or(none);
+        self.make_quic(cx, local, remote)
+    }
+
     /// The addresses the name resolved to, once it has.
     pub(crate) fn answer(&self) -> Option<&TryArc<Answer>> {
         match &self.stage {
@@ -1194,7 +1219,7 @@ impl ConnectMachine {
         let started = made.and_then(|mut quic| {
             let mut over = crate::conn::quic::Over {
                 cx: &mut *cx,
-                socket: socket.socket(),
+                path: crate::conn::quic::Path::Socket(socket.socket()),
             };
             let done = quic.start(&mut over)?;
             Ok((quic, done))
@@ -1341,8 +1366,16 @@ impl ConnectMachine {
                 return Err(failed(cx, kind));
             }
         };
-        let mut quic =
-            Quic::new(conn, kept_for, remote, making.clock.clone(), component).map_err(oom)?;
+        let layered = self.route.tunnels_udp();
+        let mut quic = Quic::new(
+            conn,
+            kept_for,
+            remote,
+            making.clock.clone(),
+            component,
+            layered,
+        )
+        .map_err(oom)?;
         if let Some(ticket) = early {
             match quic.early_data(cx, &ticket) {
                 Ok(()) => {}
@@ -1607,7 +1640,7 @@ impl Racing {
             if let Some(quic) = a.quic.as_mut() {
                 let mut over = crate::conn::quic::Over {
                     cx: &mut *cx,
-                    socket,
+                    path: crate::conn::quic::Path::Socket(socket),
                 };
                 match quic.connect(&mut over) {
                     Ok(true) => return Checked::Won(i),

@@ -38,6 +38,7 @@ fn renders_connect_as_c() {
         user_agent: Some(b""),
         headers: &UserHeaders::default(),
         trusted: CredentialGate::FIRST.trusted(),
+        udp: None,
     };
     request.render(&mut out).unwrap();
     assert_eq!(
@@ -54,6 +55,7 @@ fn renders_connect_as_c() {
         user_agent: Some(b"curl/test"),
         headers: &UserHeaders::default(),
         trusted: CredentialGate::FIRST.trusted(),
+        udp: None,
     };
     request.render(&mut out).unwrap();
     assert_eq!(
@@ -89,6 +91,7 @@ fn the_proxy_s_lines_replace_the_library_s_and_follow() {
         user_agent: Some(b"curl/test"),
         headers: &headers,
         trusted,
+        udp: None,
     };
     let mut out = Vec::new();
     request(CredentialGate::FIRST.trusted())

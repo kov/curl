@@ -34,6 +34,7 @@ mod h2tunnel;
 mod h3tunnel;
 mod haproxy;
 mod https;
+mod quictunnel;
 mod socks;
 mod tls;
 mod tunnel;
@@ -306,6 +307,9 @@ enum Handshake {
     /// An HTTP/3 proxy's tunnel, with `CONNECT` as a stream of the QUIC
     /// connection the race made to it, which becomes the tunnel's layer.
     H3Connect(Box<crate::conn::h3proxy::H3Proxy>),
+    /// The origin's QUIC connection through a CONNECT-UDP tunnel, over
+    /// the capsule layer, which becomes the connection's HTTP/3 session.
+    Quic(Box<crate::conn::quic::Quic>),
     /// The PROXY protocol's line, once the connection is up.
     Haproxy(haproxy::Preface),
     /// The origin's or an HTTPS proxy's TLS, whose state is the layer on
@@ -321,6 +325,7 @@ impl Handshake {
             Handshake::Connect(_) => Component::HttpProxy,
             Handshake::H2Connect(_) => Component::H2Proxy,
             Handshake::H3Connect(_) => Component::H3Proxy,
+            Handshake::Quic(_) => Component::Http3,
             Handshake::Haproxy(_) => Component::Haproxy,
             Handshake::Tls(side) => side.filter(),
         }
@@ -336,6 +341,7 @@ impl Handshake {
             Handshake::Connect(t) => lease.handshake_pollset(t.interest()),
             Handshake::H2Connect(p) => lease.handshake_pollset(p.connect_interest()),
             Handshake::H3Connect(p) => lease.handshake_pollset(p.connect_interest()),
+            Handshake::Quic(q) => lease.handshake_pollset(q.wants()),
             Handshake::Haproxy(p) => lease.handshake_pollset(p.interest()),
             Handshake::Tls(_) => lease.handshake_pollset(Events::NONE),
         }
@@ -2438,7 +2444,13 @@ fn connecting<H: Host>(
                     format_args!("Proxy CONNECT aborted due to timeout"),
                 )
             }
-            Some(Handshake::Socks(_) | Handshake::Haproxy(_) | Handshake::Tls(_)) | None => {
+            Some(
+                Handshake::Socks(_)
+                | Handshake::Haproxy(_)
+                | Handshake::Tls(_)
+                | Handshake::Quic(_),
+            )
+            | None => {
                 // Named for the name, while it is not resolved yet.
                 let what = match c.lease.reached() {
                     Some(SetupPoint::Resolving) => "Resolving",
@@ -2697,6 +2709,15 @@ fn enter_setup<H: Host>(
             );
             side.filter()
         }
+        // The capsule filter goes in with it, below.
+        Due::Quic => {
+            trace::of(
+                cx,
+                Component::Setup,
+                format_args!("added QUIC filter for origin"),
+            );
+            Component::Http3
+        }
     };
     // The tunnel's filter installs its HTTP/1.1 one as it first connects.
     entry(cx, chain(reached, Some(filter), false));
@@ -2715,6 +2736,7 @@ fn connect_once<H: Host>(
         Some(Handshake::Connect(_)) => return tunnel::step(c, cx),
         Some(Handshake::H2Connect(_)) => return h2tunnel::step(c, cx),
         Some(Handshake::H3Connect(_)) => return h3tunnel::step(c, cx),
+        Some(Handshake::Quic(_)) => return quictunnel::step(c, cx),
         Some(Handshake::Haproxy(_)) => return haproxy::step(c, cx),
         Some(&Handshake::Tls(side)) => return tls::step(c, cx, side),
         None => {}
@@ -2999,10 +3021,29 @@ fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Transf
         Some(Due::Tunnel) => return tunnel::dialed(c, cx),
         Some(Due::Preface) => return haproxy::start(c, cx),
         Some(Due::Tls(side)) => return tls::start(c, cx, side),
+        Some(Due::Quic) => return quictunnel::start(c, cx),
         None => {}
     }
+    // The origin's QUIC connection made through the tunnel is the
+    // connection's session.
+    let h3 = match c.lease.dialed().take_quic() {
+        Some(quic) => match curl_alloc::try_box(crate::proto::http3::H3Conn::new(quic)) {
+            Ok(h3) => Some(h3),
+            Err(OutOfMemory) => {
+                return (
+                    TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
+                    Wake::Again,
+                );
+            }
+        },
+        None => None,
+    };
     let preface = c.lease.sends_preface();
-    match c.lease.handshaken() {
+    let up_at = c.lease.handshaken();
+    if let Some(h3) = h3 {
+        c.lease.get().put_h3(h3);
+    }
+    match up_at {
         Connected::Established {
             remote, local, at, ..
         } => up(c, cx, remote, local, at, preface),
@@ -3017,6 +3058,8 @@ enum Due {
     Tunnel,
     Preface,
     Tls(TlsSide),
+    /// The origin's QUIC connection, through a CONNECT-UDP tunnel.
+    Quic,
 }
 
 /// The handshake to make next over a connection that made `made`, in
@@ -3042,6 +3085,11 @@ fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
     // filter, the last but for none.
     if proxy_tls {
         return Some(Due::Tls(TlsSide::Proxy));
+    }
+    // Through a CONNECT-UDP tunnel, the origin's TLS is its QUIC
+    // connection's.
+    if c.route.tunnels_udp() {
+        return (!made.has(Made::QUIC)).then_some(Due::Quic);
     }
     if c.route.tls.is_some() && !made.has(Made::TLS) {
         return Some(Due::Tls(TlsSide::Origin));
@@ -4479,11 +4527,13 @@ fn may_http3<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, secured: bool) -> Res
 
 /// Whether the HTTPS connect filter of a setup over `route` may make an
 /// attempt in HTTP/3: with a QUIC library, where HTTP/3 may be spoken;
-/// not yet through a proxy's tunnel, which C makes over HTTP/3's
-/// CONNECT-UDP.
-fn may_quic<H: Host>(cx: &StepCx<'_, H>, route: &Tcp) -> bool {
+/// through a proxy, over its CONNECT-UDP, only as the one attempt of a
+/// transfer `h3_only`.
+fn may_quic<H: Host>(cx: &StepCx<'_, H>, route: &Tcp, h3_only: bool) -> bool {
+    // Through a proxy, HTTP/3 is no attempt of a race yet: it is spoken
+    // there only alone.
     cx.easy().libraries().h3.is_some()
-        && route.proxy.is_none()
+        && (route.proxy.is_none() || h3_only)
         && quic_refused(route, true).is_none()
 }
 
@@ -4502,6 +4552,13 @@ fn quic_refused(route: &Tcp, secured: bool) -> Option<(ErrorKind, &'static str)>
         (
             ErrorKind::UrlMalformat,
             "HTTP/3 is not supported over a SOCKS proxy",
+        )
+    } else if route.proxy_over_quic() {
+        // CONNECT-UDP over an HTTP/3 proxy is step 64(d)'s: until then
+        // the transfer fails rather than speak another version.
+        (
+            ErrorKind::QuicConnectError,
+            "HTTP/3 through an HTTP/3 proxy is not supported yet",
         )
     } else {
         return None;

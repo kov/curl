@@ -288,17 +288,45 @@ impl<H: Host> QuicCx for H3Step<'_, '_, H> {
 }
 
 impl<H: Host> QuicIo for H3Step<'_, '_, H> {
-    fn socket(&self) -> Option<&dyn crate::conn::io::Socket> {
-        Some(
-            self.lease
-                .conn()
-                .stream_socket()
-                .expect("a QUIC connection over its socket"),
-        )
+    fn socket(&self) -> &dyn crate::conn::io::Socket {
+        self.lease
+            .conn()
+            .stream_socket()
+            .expect("a QUIC connection over its socket")
+    }
+
+    fn send_below(&mut self, datagram: &[u8]) -> Result<crate::conn::io::Sent, ErrorKind> {
+        let sent = self
+            .lease
+            .get()
+            .carrier()
+            .layers()
+            .send(&mut *self.cx, datagram);
+        sent.map_err(|_| self.below_failed(ErrorKind::SendError))
+    }
+
+    fn recv_below(&mut self, buf: &mut [u8]) -> Result<crate::conn::io::Recv, ErrorKind> {
+        let got = self.lease.get().carrier().layers().recv(&mut *self.cx, buf);
+        got.map_err(|_| self.below_failed(ErrorKind::RecvError))
+    }
+
+    fn flush_below(&mut self) -> Result<(), ErrorKind> {
+        let flushed = self.lease.get().carrier().layers().flush(&mut *self.cx);
+        flushed
+            .map(|_| ())
+            .map_err(|_| self.below_failed(ErrorKind::SendError))
     }
 }
 
 impl<H: Host> H3Step<'_, '_, H> {
+    /// A layer's own failure, if one failed of its own; else `kind`.
+    fn below_failed(&self, kind: ErrorKind) -> ErrorKind {
+        match self.lease.query(crate::conn::layer::LayerQuery::Failure) {
+            Some(crate::conn::layer::LayerAnswer::Failure(own)) => own,
+            _ => kind,
+        }
+    }
+
     /// The receive windows the library's reading opened, opened on the
     /// connection now that its call returned (`cf_ngtcp2_upd_rx_win`'s
     /// `ngtcp2_conn_extend_max_stream_offset`).

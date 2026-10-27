@@ -15,7 +15,7 @@ use crate::multi::Host;
 use crate::proto::http::negotiate;
 use crate::proto::http1::auth::{self, Challenges, HeardNote, Side};
 use crate::proto::http1::framing::Note as HeadNote;
-use crate::proto::http2::fields_of;
+use crate::proto::http2::{connect_udp_fields, fields_of};
 use crate::trace;
 
 /// The session made with the proxy and its `CONNECT` sent on it
@@ -43,8 +43,17 @@ fn connect<H: Host>(
     c: &mut Connecting,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
-    let (head, _) = super::tunnel::connect_head(c, cx, b"HTTP/2")?;
-    let fields = fields_of(&head, None, b"https")?;
+    let head = super::tunnel::connect_head(c, cx, b"HTTP/2")?;
+    let fields = match &head.udp {
+        Some(udp) => connect_udp_fields(
+            &head.head,
+            head.authorized,
+            udp.scheme,
+            &udp.authority,
+            &udp.path,
+        )?,
+        None => fields_of(&head.head, None, b"https")?,
+    };
     let pairs = fields.pairs().map_err(oom)?;
     if proxy.submit(&pairs).is_err() {
         return Err(trace::fail(
@@ -127,7 +136,8 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
     let p = proxy(&mut c.handshake);
     let answer = p.answer().expect("the answer is whole");
     let status = answer.status;
-    trace::info(cx, format_args!("CONNECT Response Status {status}"));
+    let what = super::tunnel::method_name(&c.route);
+    trace::info(cx, format_args!("{what} Response Status {status}"));
     let total = answer.fields.len();
     trace::info(cx, format_args!("Response Headers ({total} total):"));
     for (name, value) in &answer.fields {
@@ -155,13 +165,57 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
         return Ok(Ran::Again);
     }
     if status / 100 != 2 {
+        if c.route.tunnels_udp() {
+            trace::fail(
+                cx,
+                ErrorKind::CouldntConnect,
+                format_args!("Failed to establish CONNECT-UDP tunnel, response {status}"),
+            );
+        }
         proxy(&mut c.handshake).set_state(TunnelState::Failed);
         return Err(ErrorKind::CouldntConnect);
     }
-    trace::info(
-        cx,
-        format_args!("CONNECT tunnel established, response {status}"),
-    );
+    if c.route.tunnels_udp() {
+        // The datagrams go as capsules (RFC 9297): a proxy may leave the
+        // header out, but not ask for another protocol.
+        let p = proxy(&mut c.handshake);
+        let answer = p.answer().expect("the answer is whole");
+        let capsules = answer
+            .fields
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(b"capsule-protocol"))
+            .map(|(_, v)| v);
+        match capsules {
+            Some(v) if v[..] == b"?1"[..] => trace::info(
+                cx,
+                format_args!("CONNECT-UDP tunnel established, response {status}"),
+            ),
+            Some(v) => {
+                let v = String::from_utf8_lossy(v).into_owned();
+                p.set_state(TunnelState::Failed);
+                return Err(trace::fail(
+                    cx,
+                    ErrorKind::CouldntConnect,
+                    format_args!(
+                        "Failed to establish CONNECT-UDP tunnel, response {status}, \
+                         unsupported capsule-protocol value '{v}'"
+                    ),
+                ));
+            }
+            None => trace::info(
+                cx,
+                format_args!(
+                    "CONNECT-UDP tunnel established, response {status} \
+                     but no capsule-protocol header found"
+                ),
+            ),
+        }
+    } else {
+        trace::info(
+            cx,
+            format_args!("CONNECT tunnel established, response {status}"),
+        );
+    }
     let mut p = take(c);
     p.set_state(TunnelState::Established);
     let stream = p.stream().map_or(-1, |s| s.0);
@@ -170,7 +224,7 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
         Component::H2Proxy,
         format_args!("[{stream}] new tunnel state 'established'"),
     );
-    trace::info(cx, format_args!("CONNECT phase completed for HTTP/2 proxy"));
+    trace::info(cx, format_args!("{what} phase completed for HTTP/2 proxy"));
     cx.easy_mut().auth.side(Side::Proxy).finish();
     c.lease
         .dialed()

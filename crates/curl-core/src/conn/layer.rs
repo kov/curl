@@ -219,6 +219,13 @@ pub(crate) trait Layer: for<'a> Part<Below<'a>> + Send + fmt::Debug {
     /// Send from `bytes`, which is not empty, through the layers below.
     fn send(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, bytes: &[u8]) -> io::Result<Sent>;
 
+    /// Send what it holds that was taken to send, and what the layers
+    /// below hold, as far as they take it (`CF_CTRL_FLUSH`): whether all
+    /// of it went.
+    fn flush(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> io::Result<bool> {
+        below.flush(cx)
+    }
+
     /// The channel binding of the origin's TLS, if this layer is it:
     /// what its session binds with, or why it cannot (`Curl_conn_is_ssl`,
     /// which passes over an HTTPS proxy's, then `get_channel_binding`).
@@ -324,6 +331,15 @@ impl Below<'_> {
                 }
                 sent
             }
+        }
+    }
+
+    /// Send what the layers hold to send (`Curl_conn_flush`): whether
+    /// all of it went. The socket holds nothing.
+    pub(crate) fn flush(self, cx: &mut dyn LayerCx) -> io::Result<bool> {
+        match self.layers.split_last_mut() {
+            Some((top, layers)) => top.flush(cx, Below { layers, ..self }),
+            None => Ok(true),
         }
     }
 

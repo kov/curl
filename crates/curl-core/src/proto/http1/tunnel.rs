@@ -34,6 +34,21 @@ pub(crate) struct ConnectRequest<'a> {
     pub(crate) headers: &'a UserHeaders,
     /// Its Authorization and Cookie may go (`Curl_auth_allowed_to_host`).
     pub(crate) trusted: Option<Trusted>,
+    /// A CONNECT-UDP's, which asks the proxy at `authority` to upgrade
+    /// (RFC 9298), not a `CONNECT`.
+    pub(crate) udp: Option<UdpTarget<'a>>,
+}
+
+/// Where a CONNECT-UDP asks the proxy to send datagrams: the proxy's
+/// scheme, and the path naming the target (`http_proxy_create_CONNECTUDP`).
+/// To a proxy that speaks HTTP/2, `h2`, the head is only what goes with
+/// the stream's fields: the proxy's authorization and the application's
+/// lines.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UdpTarget<'a> {
+    pub(crate) scheme: &'a [u8],
+    pub(crate) path: &'a [u8],
+    pub(crate) h2: bool,
 }
 
 impl ConnectRequest<'_> {
@@ -47,8 +62,20 @@ impl ConnectRequest<'_> {
             out.try_extend_from_slice(b"\r\n")
         };
         let theirs = |name: &[u8]| self.headers.replaces(name);
-        line(&[b"CONNECT ", self.authority, b" HTTP/", version])?;
-        if !theirs(b"Host") {
+        let h1 = !self.udp.is_some_and(|u| u.h2);
+        match self.udp {
+            Some(udp) => line(&[
+                b"GET ",
+                udp.scheme,
+                b"://",
+                self.authority,
+                udp.path,
+                b" HTTP/",
+                version,
+            ])?,
+            None => line(&[b"CONNECT ", self.authority, b" HTTP/", version])?,
+        }
+        if h1 && !theirs(b"Host") {
             line(&[b"Host: ", self.authority])?;
         }
         if let Some((method, value)) = self.proxy_authorization {
@@ -56,12 +83,17 @@ impl ConnectRequest<'_> {
         }
         if let Some(ua) = self
             .user_agent
-            .filter(|ua| !ua.is_empty() && !theirs(b"User-Agent"))
+            .filter(|ua| h1 && !ua.is_empty() && !theirs(b"User-Agent"))
         {
             line(&[b"User-Agent: ", ua])?;
         }
-        if !theirs(b"Proxy-Connection") {
+        if h1 && !theirs(b"Proxy-Connection") {
             line(&[b"Proxy-Connection: Keep-Alive"])?;
+        }
+        if h1 && self.udp.is_some() {
+            line(&[b"Connection: Upgrade"])?;
+            line(&[b"Upgrade: connect-udp"])?;
+            line(&[b"Capsule-Protocol: ?1"])?;
         }
         for (name, value) in self.headers.for_connect(self.trusted) {
             line(&[name, b": ", value])?;

@@ -133,3 +133,57 @@ fn an_absolute_target_names_the_scheme_authority_and_path() {
     );
     assert_eq!(pairs(&long, None), Err(ErrorKind::UrlMalformat));
 }
+
+/// A CONNECT-UDP's fields: the proxy's scheme and authority and the
+/// target's path, the proxy's authorization next if it has one, then the
+/// protocol and the capsules asked for, then the application's headers,
+/// those HTTP/2 has no use for left out (`http_proxy_create_CONNECTUDP`,
+/// `Curl_http_req_to_h2`).
+#[test]
+fn a_connect_udp_s_fields_put_its_protocol_after_authorization() {
+    let fields = |head: &str, authorized| {
+        let path = b"/.well-known/masque/udp/o/443/";
+        let made = connect_udp_fields(head.as_bytes(), authorized, b"https", b"p:3128", path);
+        let made = made.unwrap();
+        let pairs = made.pairs().unwrap();
+        pairs
+            .into_iter()
+            .map(|(n, v)| {
+                (
+                    String::from_utf8_lossy(n).into_owned(),
+                    String::from_utf8_lossy(v).into_owned(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let pseudo = [
+        (":method", "CONNECT"),
+        (":scheme", "https"),
+        (":authority", "p:3128"),
+        (":path", "/.well-known/masque/udp/o/443/"),
+    ];
+    let head = "CONNECT p:3128 HTTP/2\r\nProxy-Authorization: Basic eA==\r\n\
+                X-Mine: 1\r\nConnection: x\r\n\r\n";
+    let want = [
+        &pseudo[..],
+        &[
+            ("proxy-authorization", "Basic eA=="),
+            (":protocol", "connect-udp"),
+            ("capsule-protocol", "?1"),
+            ("x-mine", "1"),
+        ],
+    ]
+    .concat();
+    assert_eq!(fields(head, true), owned(&want));
+    let head = "CONNECT p:3128 HTTP/2\r\nX-Mine: 1\r\n\r\n";
+    let want = [
+        &pseudo[..],
+        &[
+            (":protocol", "connect-udp"),
+            ("capsule-protocol", "?1"),
+            ("x-mine", "1"),
+        ],
+    ]
+    .concat();
+    assert_eq!(fields(head, false), owned(&want));
+}

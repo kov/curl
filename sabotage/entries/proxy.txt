@@ -276,9 +276,9 @@ witness: curl-core proto::http1::tunnel::tests::the_proxy_s_lines_replace_the_li
 file: crates/curl-core/src/proto/http1/tunnel.rs
 witness: curl-core proto::http1::tunnel::tests::the_proxy_s_lines_replace_the_library_s_and_follow
 --- old
-        if !theirs(b"Host") {
+        if h1 && !theirs(b"Host") {
 --- new
-        if true {
+        if h1 {
 
 === a CONNECT sends a line with something after its semicolon
 file: crates/curl-core/src/proto/http1/request.rs
@@ -601,12 +601,12 @@ witness: curl-core proto::http::tests::tls::http_through_an_https_proxy_goes_ove
     if proxy_tls {
         return Some(Due::Tls(TlsSide::Proxy));
     }
-    if c.route.tls.is_some()
+    // Through a CONNECT-UDP tunnel
 --- new
     if proxy_tls && tunnels {
         return Some(Due::Tls(TlsSide::Proxy));
     }
-    if c.route.tls.is_some()
+    // Through a CONNECT-UDP tunnel
 
 === a tunnel's answer is read past its end through an HTTPS proxy's TLS
 file: crates/curl-core/src/multi/state/tunnel.rs
@@ -680,3 +680,55 @@ witness: curl-core conn::h2proxy::tests::a_proxy_s_answer_is_held_to_c_s_limit_a
         self.held += name.len() + value.len();
 --- new
         self.held *= name.len() + value.len();
+
+=== a CONNECT-UDP answered by switching protocols fails
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_an_http_proxy_goes_over_connect_udp
+--- old
+    if code / 100 == 2 || (udp && code == 101) {
+--- new
+    if code / 100 == 2 {
+
+=== an IPv6 target's colons go unescaped in a CONNECT-UDP's path
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core multi::state::tunnel::tests::a_connect_udp_names_its_target_in_its_path
+--- old
+            b':' => path.try_extend_from_slice(b"%3A")?,
+--- new
+            b':' => path.try_push(b':')?,
+
+=== an HTTP/2 proxy asked to carry another protocol's capsules is taken
+file: crates/curl-core/src/multi/state/h2tunnel.rs
+witness: curl-core proto::http::tests::tls::http3_through_an_http_2_proxy_asks_for_connect_udp
+--- old
+            Some(v) if v[..] == b"?1"[..] => trace::info(
+--- new
+            Some(_) => trace::info(
+
+=== a CONNECT-UDP to an HTTP/2 proxy carries HTTP/1's user agent
+file: crates/curl-core/src/proto/http1/tunnel.rs
+witness: curl-core proto::http::tests::tls::http3_through_an_http_2_proxy_asks_for_connect_udp
+--- old
+            .filter(|ua| h1 && !ua.is_empty() && !theirs(b"User-Agent"))
+--- new
+            .filter(|ua| !ua.is_empty() && !theirs(b"User-Agent"))
+
+=== a CONNECT-UDP's protocol goes before the proxy's authorization
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http2::tests::a_connect_udp_s_fields_put_its_protocol_after_authorization
+--- old
+    if authorized && let Some(line) = lines.next() {
+        add_line(&mut fields, line)?;
+    }
+    fields
+        .add(b":protocol", b"connect-udp", false)
+        .map_err(oom)?;
+    fields.add(b"capsule-protocol", b"?1", false).map_err(oom)?;
+--- new
+    fields
+        .add(b":protocol", b"connect-udp", false)
+        .map_err(oom)?;
+    fields.add(b"capsule-protocol", b"?1", false).map_err(oom)?;
+    if authorized && let Some(line) = lines.next() {
+        add_line(&mut fields, line)?;
+    }

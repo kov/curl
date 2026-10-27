@@ -16,8 +16,10 @@ use super::dns::Answer;
 use super::io::{Closer, Events, Socket, SocketKey};
 use super::layer::{Alive, LayerAnswer, LayerQuery, Silent};
 use super::mux::Mux as _;
+use super::quic::Quic;
 use super::shutdown::{ConnSettings, Exits, discard};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, TransferNumber, Transport, Use};
+use crate::error::ErrorKind;
 use crate::id::{Arena, ArenaPolicy};
 use crate::proto::http::negotiate::Wants;
 use crate::share::Share;
@@ -169,6 +171,16 @@ impl ConnLease {
         match self.slot() {
             ConnSlot::Connecting(machine) => machine.partly_made(),
             ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
+        }
+    }
+
+    /// The origin's QUIC connection, made for the CONNECT-UDP tunnel the
+    /// connection being set up carries.
+    pub(crate) fn tunnel_quic(&mut self, cx: &mut dyn ConnCx) -> Result<Box<Quic>, ErrorKind> {
+        let id = self.id;
+        match self.slot_mut() {
+            ConnSlot::Connecting(machine) => machine.tunnel_quic(cx),
+            _ => panic!("{id:?} is not setting up"),
         }
     }
 

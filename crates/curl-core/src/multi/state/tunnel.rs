@@ -25,7 +25,7 @@ use crate::proto::http1::auth::{
 use crate::proto::http1::fields::{self, MAX_HEADERS};
 use crate::proto::http1::framing::Note as HeadNote;
 use crate::proto::http1::request::{CredentialGate, decimal};
-use crate::proto::http1::tunnel::{Answer, AnswerError, Applied, ConnectRequest, Read};
+use crate::proto::http1::tunnel::{Answer, AnswerError, Applied, ConnectRequest, Read, UdpTarget};
 use crate::tls::Chosen;
 use crate::trace;
 
@@ -101,14 +101,15 @@ pub(super) fn dialed<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tra
     // What the proxy's TLS negotiated names the tunnel's protocol; with
     // none, the proxy type does: HTTP/2 for an HTTPS proxy asked for in
     // it.
+    let what = method_name(&c.route);
     let h2 = match super::query_alpn(cx, &c.lease, below) {
         Some(chosen) => {
             let name = chosen.name();
-            trace::info(cx, format_args!("CONNECT: '{name}' negotiated"));
+            trace::info(cx, format_args!("{what}: '{name}' negotiated"));
             chosen == Chosen::H2
         }
         None => {
-            trace::info(cx, format_args!("CONNECT: no ALPN negotiated"));
+            trace::info(cx, format_args!("{what}: no ALPN negotiated"));
             c.route
                 .proxy
                 .as_ref()
@@ -137,6 +138,16 @@ pub(super) fn dialed<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tra
     }
 }
 
+/// What the tunnel's request is called in C's lines: `CONNECT`, or
+/// `CONNECT-UDP` for a tunnel QUIC's datagrams go through.
+pub(super) fn method_name(route: &Tcp) -> &'static str {
+    if route.tunnels_udp() {
+        "CONNECT-UDP"
+    } else {
+        "CONNECT"
+    }
+}
+
 /// The proxy and what it is given, as the route has them.
 pub(super) fn proxy(route: &Tcp) -> (&Peer, Option<Secret<'_>>, bool) {
     let proxy = route.proxy.as_ref().expect("a tunnel goes through a proxy");
@@ -147,7 +158,11 @@ pub(super) fn proxy(route: &Tcp) -> (&Peer, Option<Secret<'_>>, bool) {
 /// A `CONNECT` made (`start_CONNECT`), with the proxy's credentials as
 /// far as they go.
 fn start<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshake>, ErrorKind> {
-    let (request, authorized) = connect_head(c, cx, b"HTTP")?;
+    let ConnectHead {
+        head: request,
+        authorized,
+        ..
+    } = connect_head(c, cx, b"HTTP")?;
     let tunnel = Tunnel {
         request,
         sent: 0,
@@ -170,7 +185,7 @@ pub(super) fn connect_head<H: Host>(
     c: &mut Connecting,
     cx: &mut StepCx<'_, H>,
     version: &[u8],
-) -> Result<(Vec<u8>, bool), ErrorKind> {
+) -> Result<ConnectHead, ErrorKind> {
     // Each `CONNECT` reads the application's header lists as they are
     // now.
     let options = cx.easy_mut().options_mut();
@@ -188,11 +203,22 @@ pub(super) fn connect_head<H: Host>(
     })();
     made.map_err(oom)?;
     let (peer, secret, http10) = proxy(&c.route);
+    // A CONNECT-UDP asks the proxy itself, at the path naming the target
+    // (`http_proxy_create_CONNECTUDP`); over HTTP/1, with `GET`.
+    let udp = c.route.tunnels_udp();
+    let h1 = version == b"HTTP";
+    let mut proxy_authority = Vec::new();
+    let mut path = Vec::new();
+    if udp {
+        udp_target(peer, target, &mut proxy_authority, &mut path).map_err(oom)?;
+    }
+    let uri = if udp { &proxy_authority } else { &authority };
+    let method: &[u8] = if udp && h1 { b"GET" } else { b"CONNECT" };
     let request = AuthRequest {
         side: Side::Proxy,
         origin: peer,
-        method: b"CONNECT",
-        uri: &authority,
+        method,
+        uri,
         get_or_head: true,
         // Nothing the application set for an origin goes to a proxy.
         trusted: None,
@@ -230,9 +256,17 @@ pub(super) fn connect_head<H: Host>(
             &[b"Proxy auth using ", name, b" with user '", user, b"'"],
         );
     }
+    let kind: &[u8] = if udp { b"UDP " } else { b"" };
     trace::info_with(
         cx,
-        &[b"Establishing ", version, b" proxy tunnel to ", &authority],
+        &[
+            b"Establishing ",
+            version,
+            b" proxy ",
+            kind,
+            b"tunnel to ",
+            &authority,
+        ],
     );
     let mut out = Vec::new();
     let options = cx.easy().options();
@@ -240,8 +274,18 @@ pub(super) fn connect_head<H: Host>(
         ProtoState::Http(request) => request.trusted(),
         _ => CredentialGate::FIRST.trusted(),
     };
+    let scheme: &'static [u8] = if c.route.proxy_tls().is_some() {
+        b"https"
+    } else {
+        b"http"
+    };
     let connect = ConnectRequest {
-        authority: &authority,
+        authority: uri,
+        udp: udp.then_some(UdpTarget {
+            scheme,
+            path: &path,
+            h2: !h1,
+        }),
         http10,
         proxy_authorization: output.header.as_ref().map(|(m, v)| (m.name(), &v[..])),
         user_agent: options.http.user_agent.as_deref(),
@@ -249,7 +293,59 @@ pub(super) fn connect_head<H: Host>(
         trusted,
     };
     connect.render(&mut out).map_err(oom)?;
-    Ok((out, output.header.is_some()))
+    Ok(ConnectHead {
+        head: out,
+        authorized: output.header.is_some(),
+        udp: udp.then_some(UdpAsk {
+            scheme,
+            authority: proxy_authority,
+            path,
+        }),
+    })
+}
+
+/// A tunnel's request, as [`connect_head`] makes it.
+pub(super) struct ConnectHead {
+    /// The head, as HTTP/1 writes it.
+    pub(super) head: Vec<u8>,
+    /// It carries `Proxy-Authorization`.
+    pub(super) authorized: bool,
+    /// A CONNECT-UDP's target, which a proxy that speaks HTTP/2 is given
+    /// as the stream's fields.
+    pub(super) udp: Option<UdpAsk>,
+}
+
+/// Where a CONNECT-UDP asks: the proxy's scheme and authority, and the
+/// path naming the target.
+pub(super) struct UdpAsk {
+    pub(super) scheme: &'static [u8],
+    pub(super) authority: Vec<u8>,
+    pub(super) path: Vec<u8>,
+}
+
+/// A CONNECT-UDP's authority, the proxy's, and its path naming the
+/// target, an IPv6 address's colons escaped (RFC 9298's template:
+/// `/.well-known/masque/udp/{host}/{port}/`).
+fn udp_target(
+    proxy: &Peer,
+    target: &Peer,
+    authority: &mut Vec<u8>,
+    path: &mut Vec<u8>,
+) -> Result<(), OutOfMemory> {
+    let mut digits = [0; 20];
+    authority.try_extend_from_slice(proxy.request_host())?;
+    authority.try_push(b':')?;
+    authority.try_extend_from_slice(decimal(u64::from(proxy.port()), &mut digits))?;
+    path.try_extend_from_slice(b"/.well-known/masque/udp/")?;
+    for &b in target.name() {
+        match b {
+            b':' => path.try_extend_from_slice(b"%3A")?,
+            b => path.try_push(b)?,
+        }
+    }
+    path.try_push(b'/')?;
+    path.try_extend_from_slice(decimal(u64::from(target.port()), &mut digits))?;
+    path.try_push(b'/')
 }
 
 /// Move the handshake on as far as its socket lets it.
@@ -535,12 +631,15 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
         trace::info(cx, format_args!("chunk reading DONE"));
     }
     let code = t.answer.code().unwrap_or(0);
-    if code / 100 == 2 {
-        trace::info(cx, format_args!("CONNECT phase completed for HTTP proxy"));
+    // A CONNECT-UDP is answered by switching protocols (RFC 9298).
+    let udp = c.route.tunnels_udp();
+    let what = method_name(&c.route);
+    if code / 100 == 2 || (udp && code == 101) {
+        trace::info(cx, format_args!("{what} phase completed for HTTP proxy"));
         cx.easy_mut().auth.side(Side::Proxy).finish();
         trace::info(
             cx,
-            format_args!("CONNECT tunnel established, response {code}"),
+            format_args!("{what} tunnel established, response {code}"),
         );
         c.lease
             .proxied(Made::TUNNEL, || cx.easy().options().proxy.haproxy);
@@ -579,7 +678,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
         return Err(trace::fail(
             cx,
             ErrorKind::CouldntConnect,
-            format_args!("CONNECT tunnel failed, response {code}"),
+            format_args!("{what} tunnel failed, response {code}"),
         ));
     }
     if closes {
@@ -617,4 +716,51 @@ fn refused<H: Host>(cx: &mut StepCx<'_, H>, e: AnswerError) -> ErrorKind {
 
 fn oom(_: OutOfMemory) -> ErrorKind {
     ErrorKind::OutOfMemory
+}
+
+#[cfg(test)]
+mod tests {
+    use super::udp_target;
+    use crate::conn::Peer;
+
+    fn target(proxy: &[u8], origin: &[u8]) -> (String, String) {
+        let http = crate::conn::Scheme {
+            name: "http",
+            reuse: true,
+        };
+        let peer = |host: &[u8], port| Peer::new(http, host.to_vec(), port, None);
+        let (mut authority, mut path) = (Vec::new(), Vec::new());
+        udp_target(
+            &peer(proxy, 3128),
+            &peer(origin, 443),
+            &mut authority,
+            &mut path,
+        )
+        .unwrap();
+        (
+            String::from_utf8(authority).unwrap(),
+            String::from_utf8(path).unwrap(),
+        )
+    }
+
+    /// A CONNECT-UDP asks the proxy, by its authority, at the path naming
+    /// the target, an IPv6 address unbracketed and its colons escaped
+    /// (RFC 9298's template; `http_proxy_create_CONNECTUDP`).
+    #[test]
+    fn a_connect_udp_names_its_target_in_its_path() {
+        assert_eq!(
+            target(b"proxy.example", b"origin.example"),
+            (
+                "proxy.example:3128".to_owned(),
+                "/.well-known/masque/udp/origin.example/443/".to_owned()
+            )
+        );
+        assert_eq!(
+            target(b"[::1]", b"[2001:db8::1]"),
+            (
+                "[::1]:3128".to_owned(),
+                "/.well-known/masque/udp/2001%3Adb8%3A%3A1/443/".to_owned()
+            )
+        );
+    }
 }

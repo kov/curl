@@ -44,7 +44,8 @@ pub(crate) struct Chain {
     filters: [(Component, bool); MOST],
     len: usize,
     /// The HAPPY-EYEBALLS filter stays until the chain connects, its
-    /// attempt an HTTP/3 proxy's tunnel's, and traces its going.
+    /// attempt an HTTP/3 proxy's tunnel's or one a CONNECT-UDP tunnel goes
+    /// over, and traces its going.
     eyeballs_stay: bool,
 }
 
@@ -117,7 +118,10 @@ impl Chain {
                 || under_way == Some(Component::H2Proxy),
             preface: added(Made::PREFACE, Component::Haproxy),
             tls: added(Made::TLS, Component::Ssl),
+            quic: added(Made::QUIC, Component::Http3),
         };
+        // The capsule filter connects at once, its tunnel up.
+        let capsules = installed || made.has(Made::QUIC);
         let connected = |filter| match filter {
             Component::Socks => made.has(Made::SOCKS),
             Component::SslProxy => made.has(Made::PROXY_TLS),
@@ -126,6 +130,8 @@ impl Chain {
             }
             Component::Haproxy => made.has(Made::PREFACE),
             Component::Ssl => made.has(Made::TLS),
+            Component::Http3 => made.has(Made::QUIC),
+            Component::Capsule => capsules,
             Component::HappyEyeballs | Component::Tcp | Component::Udp | Component::Unix => true,
             _ => false,
         };
@@ -160,6 +166,7 @@ impl Chain {
             tunnel: route.proxy.as_ref().is_some_and(|p| p.tunnels()),
             preface: haproxy,
             tls: route.tls.is_some(),
+            quic: route.tunnels_udp(),
         };
         Chain::dialed(route, head, added, (true, tunnel), |_| true)
     }
@@ -199,6 +206,14 @@ impl Chain {
         // (`CF_SETUP_CNNCT_HTTP_PROXY`).
         let h3_proxy = route.proxy_over_quic();
         let quic = route.dial == crate::conn::Dial::Quic && !h3_proxy;
+        // Through a CONNECT-UDP tunnel, the origin's QUIC filter is the
+        // last the setup adds, over the capsules the tunnel carries
+        // (`Curl_cf_quic_insert_after`); the race is the proxy's, in TCP.
+        let tunnels_udp = route.tunnels_udp();
+        if added.quic && tunnels_udp {
+            push(Component::Http3);
+            push(Component::Capsule);
+        }
         if added.tls && !quic {
             push(Component::Ssl);
         }
@@ -221,13 +236,13 @@ impl Chain {
             push(Component::Socks);
         }
         push(Component::HappyEyeballs);
-        if quic {
+        if quic && !tunnels_udp {
             push(Component::Http3);
         } else if h3_proxy {
             push(Component::H3Proxy);
         }
         push(route.socket_component());
-        chain.eyeballs_stay = h3_proxy;
+        chain.eyeballs_stay = h3_proxy || tunnels_udp;
         chain
     }
 
@@ -287,6 +302,8 @@ struct Handshakes {
     tunnel: bool,
     preface: bool,
     tls: bool,
+    /// The origin's QUIC filter, over a CONNECT-UDP tunnel.
+    quic: bool,
 }
 
 /// A filter that is only there while the chain connects (`CF_TYPE_SETUP`).
@@ -459,5 +476,79 @@ mod tests {
         let going: Vec<_> = up.going().collect();
         assert_eq!(going, [Component::Setup, Component::HappyEyeballs]);
         assert_eq!(up.reduced().to_string(), "[0][H3-PROXY][UDP]");
+    }
+
+    /// Through an HTTP proxy's CONNECT-UDP, the race is the proxy's, in
+    /// TCP; the origin's QUIC filter, over the capsule filter, is the
+    /// last the setup adds, on top, the capsule filter connected at once;
+    /// connected, HAPPY-EYEBALLS goes with the setup's others and both
+    /// stay (`Curl_cf_quic_insert_after`).
+    #[test]
+    fn http3_through_connect_udp_is_over_the_tunnel_s_filters() {
+        let scheme = Scheme {
+            name: "https",
+            reuse: true,
+        };
+        let peer =
+            |name: &[u8], port| TryArc::try_new(Peer::new(scheme, name.to_vec(), port, None));
+        let proxy = crate::conn::ProxyRoute::new(
+            crate::options::ProxyType::Http,
+            peer(b"p.test", 3128).unwrap(),
+            None,
+            false,
+            false,
+        );
+        let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
+        let route = Tcp {
+            origin: peer(b"o.test", 443).unwrap(),
+            via: None,
+            ip: IpVersion::Any,
+            proxy: Some(proxy),
+            tls: Some(tls),
+            local: None,
+            delegation: Default::default(),
+            dial: crate::conn::Dial::Quic,
+        };
+        assert!(route.tunnels_udp());
+        let shown = |made, under_way, installed| {
+            Chain::of(
+                &route,
+                Head::default(),
+                SetupPoint::Dialed(made),
+                under_way,
+                installed,
+            )
+            .to_string()
+        };
+        assert_eq!(
+            shown(Made::default(), Some(Component::HttpProxy), false),
+            "[0][!DNS][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]"
+        );
+        assert_eq!(
+            shown(Made::TUNNEL, Some(Component::Http3), false),
+            "[0][!DNS][!SETUP][!HTTP/3][!CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]"
+        );
+        assert_eq!(
+            shown(Made::TUNNEL, Some(Component::Http3), true),
+            "[0][!DNS][!SETUP][!HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]"
+        );
+        let up = Chain::connected(&route, Head::default(), false, Component::H1Proxy);
+        assert_eq!(
+            up.to_string(),
+            "[0][DNS][SETUP][HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]"
+        );
+        let going: Vec<_> = up.going().collect();
+        assert_eq!(
+            going,
+            [
+                Component::Setup,
+                Component::HttpProxy,
+                Component::HappyEyeballs
+            ]
+        );
+        assert_eq!(
+            up.reduced().to_string(),
+            "[0][HTTP/3][CAPSULE][H1-PROXY][TCP]"
+        );
     }
 }

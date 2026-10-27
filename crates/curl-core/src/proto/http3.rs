@@ -6,7 +6,7 @@ use crate::conn::layer::{Alive, Handshake, LayerCx};
 use crate::conn::layer::{LayerAnswer, LayerQuery};
 use crate::conn::mux::{Carrier, Routes};
 use crate::conn::part::{Lower as _, Part};
-use crate::conn::quic::{Lone, Over, Quic};
+use crate::conn::quic::{Lone, Over, Path, Quic};
 use crate::error::ErrorKind;
 use crate::http3::StreamId;
 use crate::proto::http::StreamSend;
@@ -88,7 +88,7 @@ impl<'a> Part<Carrier<'a>> for H3Conn {
                 let mut lone = Lone { cx };
                 let mut over = Over {
                     cx: &mut lone,
-                    socket: below.socket(),
+                    path: Path::Layers(below.layers()),
                 };
                 if self.quic.read_pending(&mut over) {
                     Alive::Alive {
@@ -107,12 +107,12 @@ impl<'a> Part<Carrier<'a>> for H3Conn {
     fn shutdown(
         &mut self,
         cx: &mut dyn LayerCx,
-        below: Carrier<'a>,
+        mut below: Carrier<'a>,
     ) -> Result<Handshake, ErrorKind> {
         let mut lone = Lone { cx };
         let mut over = Over {
             cx: &mut lone,
-            socket: below.socket(),
+            path: Path::Layers(below.layers()),
         };
         Ok(match self.quic.close(&mut over) {
             true => Handshake::Done,

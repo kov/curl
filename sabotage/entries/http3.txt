@@ -552,9 +552,9 @@ witness: curl-core conn::chain::tests::an_http3_proxy_s_tunnel_is_the_race_s_att
 file: crates/curl-core/src/conn/chain.rs
 witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection
 --- old
-        chain.eyeballs_stay = h3_proxy;
+        chain.eyeballs_stay = h3_proxy || tunnels_udp;
 --- new
-        chain.eyeballs_stay = false;
+        chain.eyeballs_stay = tunnels_udp;
 
 === a run through a tunnel goes in one send
 file: crates/curl-core/src/conn/quic.rs
@@ -576,11 +576,11 @@ witness: curl-core conn::quic::tests::a_tunnel_s_short_send_fails_and_a_blocked_
 --- new
                 Ok(Sent::Bytes(n)) => sent += n.get(),
 
-=== a connection without a socket sends on it all the same
+=== a layered connection sends on its socket all the same
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::a_tunnel_takes_a_datagram_at_a_time
 --- old
-        if cx.socket().is_none() {
+        if self.state.layered {
             return self.send_through(cx, len, gso);
         }
 --- new
@@ -601,3 +601,23 @@ witness: curl-core conn::quic::tests::a_tunnel_gives_a_datagram_at_a_time
 --- old
             self.state.first_byte_at.get_or_insert(now);
 --- new
+
+=== a tunnelled QUIC connection leaves the capsules held below unsent
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_tunnel_takes_a_datagram_at_a_time
+--- old
+        if self.state.layered {
+            cx.flush_below()?;
+        }
+--- new
+        if self.state.layered {
+            let _ = cx;
+        }
+
+=== the capsules that came with the proxy's answer are dropped
+file: crates/curl-core/src/conn/capsule.rs
+witness: curl-core conn::capsule::tests::what_came_with_the_answer_is_read_first
+--- old
+            rx: RecvBuf::holding(received),
+--- new
+            rx: RecvBuf::holding({ drop(received); Vec::new() }),

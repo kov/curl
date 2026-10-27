@@ -8,6 +8,7 @@
 
 mod bind;
 mod buf;
+pub(crate) mod capsule;
 pub(crate) mod chain;
 mod connect;
 mod connect_to;
@@ -292,6 +293,14 @@ impl Tcp {
             Some(proxy) if proxy.tunnels() => proxy.over_quic(),
             _ => self.dial == Dial::Quic,
         }
+    }
+
+    /// The origin is spoken to over QUIC through a tunnel an HTTP proxy
+    /// opens over TCP, CONNECT-UDP's: its QUIC connection's datagrams go
+    /// through the stream's layers (`tunnel_transport` is QUIC's, the
+    /// first hop's TCP).
+    pub(crate) fn tunnels_udp(&self) -> bool {
+        self.dial == Dial::Quic && !self.first_hop_quic()
     }
 
     /// The route's tunnel is a stream of a QUIC connection to an HTTP/3

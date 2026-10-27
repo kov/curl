@@ -1348,6 +1348,95 @@ fn a_tunnel_through_an_http_2_proxy_is_a_stream() {
     assert!(text.iter().any(|l| l == "using HTTP/1.x\n"), "{text:?}");
 }
 
+/// HTTP/3 alone through an HTTPS proxy that speaks HTTP/2 asks it for a
+/// CONNECT-UDP, an extended `CONNECT` (RFC 9298, 8441): the proxy's
+/// scheme and authority, the path naming the origin, the protocol and
+/// the capsules asked for, and no `user-agent` (`http_proxy_create_CONNECTUDP`).
+/// A 2xx makes the tunnel, said as C says it whether the proxy names the
+/// capsule protocol or not; one naming another fails it
+/// (`Curl_http_proxy_inspect_tunnel_response`).
+#[test]
+fn http3_through_an_http_2_proxy_asks_for_connect_udp() {
+    static FAKE: crate::http2::fake::FakeH2 = crate::http2::fake::FakeH2;
+    let cases: [(&str, &str, bool); 3] = [
+        (
+            "capsule-protocol: ?1\n",
+            "CONNECT-UDP tunnel established, response 200",
+            true,
+        ),
+        (
+            "",
+            "CONNECT-UDP tunnel established, response 200 but no capsule-protocol header found",
+            true,
+        ),
+        (
+            "capsule-protocol: ?0\n",
+            "Failed to establish CONNECT-UDP tunnel, response 200, unsupported \
+             capsule-protocol value '?0'",
+            false,
+        ),
+    ];
+    for (field, said, made) in cases {
+        let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+        let script = crate::http3::fake::Script::new();
+        script.lock().unwrap().out.extend([vec![1; 1200], vec![]]);
+        let h3: &'static crate::http3::fake::FakeHttp3 =
+            Box::leak(Box::new(crate::http3::fake::FakeHttp3::new(script)));
+        let libraries = SharedLibraries::new(Libraries {
+            tls: Some(Library::Static(backend)),
+            h2: Some(&FAKE),
+            h3: Some(h3),
+            ..Libraries::NONE
+        })
+        .unwrap();
+        let answer = format!("S\nH 1 0\n:status: 200\n{field}\n");
+        let replies = [WELCOME.to_vec(), fake::records(answer.as_bytes()).unwrap()];
+        let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+        let talk = Conversation::replies(&replies, false).per_send();
+        let mut m = serving(Peer::Accepts, &[&talk]);
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+            https_proxy(o, b"https://origin.example/p");
+            o.http.version = crate::options::HttpVersion::Http3Only;
+            o.proxy.make_mut().unwrap().kind = crate::options::ProxyType::Https2;
+            o.limits.total = crate::time::TimeLimit::from_millis(500);
+        });
+        let raw = sent(&talk);
+        let sent = String::from_utf8_lossy(&raw).into_owned();
+        let connect = format!(
+            "H 1 0\n:method: CONNECT\n:scheme: https\n:authority: 127.0.0.1:{PORT}\n\
+             :path: /.well-known/masque/udp/origin.example/443/\n:protocol: connect-udp\n\
+             capsule-protocol: ?1\n\n"
+        );
+        assert!(sent.contains(&connect), "{field}: {sent}");
+        let text = ran.seen.text();
+        assert!(
+            text.iter().any(|l| l.trim_end() == said),
+            "{field}: {text:#?}"
+        );
+        assert_eq!(
+            text.iter()
+                .any(|l| l == "CONNECT-UDP phase completed for HTTP/2 proxy\n"),
+            made,
+            "{field}: {text:#?}"
+        );
+        if made {
+            // The origin's first datagram goes through it as a capsule.
+            let (head, len) = crate::conn::capsule::header(1200);
+            let mut capsule = head[..len].to_vec();
+            capsule.extend([1; 1200]);
+            let data = [format!("D 1 {} 0\n", capsule.len()).into_bytes(), capsule].concat();
+            assert!(
+                raw.windows(data.len()).any(|w| w == data),
+                "{field}: {sent}"
+            );
+        } else {
+            assert_eq!(ran.result, Err(ErrorKind::CouldntConnect), "{field}");
+        }
+    }
+}
+
 /// The proxy's answer is held to C's limit as each field arrives: a MiB
 /// of names and values; a field past it fails the session's read, and
 /// no tunnel is made (`Curl_http_resp_make`'s `dynhds`).

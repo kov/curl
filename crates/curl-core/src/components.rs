@@ -52,6 +52,11 @@ pub enum Component {
     Socks,
     Http3,
     HttpsConnect,
+    /// The filter a CONNECT-UDP tunnel's capsules are made and read in
+    /// (`Curl_cft_capsule`): one C's tracer does not list, so no
+    /// configuration names it, and it traces nothing. It is last, past
+    /// `ALL`.
+    Capsule,
 }
 
 /// The groups a configuration can name at once (C's `TRC_CT_*`): `all`
@@ -137,6 +142,7 @@ impl Component {
             Component::Socks => "SOCKS",
             Component::Http3 => "HTTP/3",
             Component::HttpsConnect => "HTTPS-CONNECT",
+            Component::Capsule => "CAPSULE",
         }
     }
 
@@ -163,7 +169,8 @@ impl Component {
             | Component::Setup
             | Component::Http2
             | Component::Http3
-            | Component::HttpsConnect => Category::Protocol,
+            | Component::HttpsConnect
+            | Component::Capsule => Category::Protocol,
             Component::SslProxy
             | Component::H1Proxy
             | Component::H2Proxy
@@ -250,6 +257,9 @@ impl Components {
     }
 
     pub fn level(&self, component: Component) -> Level {
+        if component == Component::Capsule {
+            return Level::None;
+        }
         match self.levels().0[component.index()].load(Ordering::Relaxed) {
             true => Level::Info,
             false => Level::None,
@@ -262,6 +272,9 @@ impl Components {
     }
 
     pub fn set(&self, component: Component, level: Level) {
+        if component == Component::Capsule {
+            return;
+        }
         self.levels().0[component.index()].store(level == Level::Info, Ordering::Relaxed);
     }
 

@@ -91,10 +91,11 @@ pub(crate) struct Carrier<'a> {
 }
 
 impl Carrier<'_> {
-    /// The connection's socket, which QUIC's session sends and reads
-    /// through itself.
-    pub(crate) fn socket(&self) -> &dyn super::io::Socket {
-        self.stream.socket()
+    /// The stream's layers over its socket, which a QUIC connection
+    /// layered over a tunnel sends its datagrams through, the socket's
+    /// sends and receives traced.
+    pub(crate) fn layers(&mut self) -> super::layer::Below<'_> {
+        self.stream.below(Some(self.socket))
     }
 
     /// The same, for one call that leaves it to the caller after.

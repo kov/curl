@@ -81,3 +81,29 @@ witness: curl-core proto::http::tests::setup_trace::a_redial_starts_the_chain_ov
             format_args!("retrying connect, {n}. time"),
 --- new
             format_args!("retrying connect"),
+
+=== the capsule filter waits for the QUIC handshake above it
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core conn::chain::tests::http3_through_connect_udp_is_over_the_tunnel_s_filters
+--- old
+        let capsules = installed || made.has(Made::QUIC);
+--- new
+        let capsules = made.has(Made::QUIC);
+
+=== a QUIC connection through CONNECT-UDP is the race's attempt
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core conn::chain::tests::http3_through_connect_udp_is_over_the_tunnel_s_filters
+--- old
+        if quic && !tunnels_udp {
+            push(Component::Http3);
+--- new
+        if quic {
+            push(Component::Http3);
+
+=== the HAPPY-EYEBALLS filter goes untraced once a CONNECT-UDP tunnel is up
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core conn::chain::tests::http3_through_connect_udp_is_over_the_tunnel_s_filters
+--- old
+        chain.eyeballs_stay = h3_proxy || tunnels_udp;
+--- new
+        chain.eyeballs_stay = h3_proxy;

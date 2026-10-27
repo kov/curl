@@ -48,7 +48,7 @@ fn connect<H: Host>(
         target.port(),
     );
     trace::of(cx, H3P, format_args!("[0] CONNECT start for {host}:{port}"));
-    let (head, _) = super::tunnel::connect_head(c, cx, b"HTTP/3")?;
+    let head = super::tunnel::connect_head(c, cx, b"HTTP/3")?.head;
     let fields = fields_of(&head, None, b"https")?;
     let pairs = fields.pairs().map_err(oom)?;
     let url = cx.easy().report().url().map(copied).transpose()?;

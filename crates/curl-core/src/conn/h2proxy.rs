@@ -10,6 +10,7 @@ use std::num::NonZeroUsize;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
+use super::buf::HeldBytes;
 use super::io::{Events, Recv, Sent};
 use super::layer::{Alive, Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Part};
 use crate::components::Component;
@@ -104,9 +105,8 @@ struct Tunnel {
     answer: Option<Answer>,
     /// The answer read is final, not an interim 1xx.
     final_answer: bool,
-    /// Its DATA, not read by the layer above yet: `recv[read..]`.
-    recv: Vec<u8>,
-    read: usize,
+    /// Its DATA, not read by the layer above yet.
+    recv: HeldBytes,
     /// The layer above's bytes, not framed yet.
     send: Vec<u8>,
     closed: bool,
@@ -122,8 +122,7 @@ impl Tunnel {
             state: TunnelState::Init,
             answer: None,
             final_answer: false,
-            recv: Vec::new(),
-            read: 0,
+            recv: HeldBytes::default(),
             send: Vec::new(),
             closed: false,
             error: H2Error::NO_ERROR,
@@ -132,7 +131,18 @@ impl Tunnel {
     }
 
     fn held(&self) -> &[u8] {
-        &self.recv[self.read..]
+        self.recv.held()
+    }
+
+    /// Take as much of what is held as `buf` has room for into it.
+    fn take(&mut self, buf: &mut [u8]) -> usize {
+        self.recv.take(buf)
+    }
+
+    /// The bytes stored to hold what is held.
+    #[cfg(test)]
+    fn stored(&self) -> usize {
+        self.recv.stored()
     }
 
     /// What it makes of an event of the session (`proxy_h2_on_header`,
@@ -187,11 +197,7 @@ impl Tunnel {
                 if !ours(stream) {
                     return Ok(Heard::Failed);
                 }
-                if self.read == self.recv.len() {
-                    self.recv.clear();
-                    self.read = 0;
-                }
-                self.recv.try_extend_from_slice(bytes)?;
+                self.recv.push(bytes)?;
                 Heard::Fine
             }
             Event::Reset { ref stream, error } => {
@@ -751,11 +757,8 @@ impl Layer for H2Proxy {
         {
             return Err(self.failed(e.kind()));
         }
-        let got = match NonZeroUsize::new(buf.len().min(self.tunnel.held().len())) {
+        let got = match NonZeroUsize::new(self.tunnel.take(buf)) {
             Some(n) => {
-                let held = &self.tunnel.recv[self.tunnel.read..];
-                buf[..n.get()].copy_from_slice(&held[..n.get()]);
-                self.tunnel.read += n.get();
                 let stream = self
                     .tunnel
                     .stream

@@ -11,6 +11,7 @@ use std::num::NonZeroUsize;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
+use super::buf::HeldBytes;
 use super::h2proxy::Answer;
 use super::io::{Events, Recv, Sent, Socket};
 use super::layer::{Alive, Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Part};
@@ -60,9 +61,8 @@ struct Tunnel {
     status: u16,
     /// The answer read is final, not an interim 1xx.
     final_answer: bool,
-    /// Its DATA, not read by the layer above yet: `recv[read..]`.
-    recv: Vec<u8>,
-    read: usize,
+    /// Its DATA, not read by the layer above yet.
+    recv: HeldBytes,
     /// The DATA received in all (`rx_total`), and the receive window's
     /// offsets (`rx_offset`, `rx_offset_max`).
     rx_total: u64,
@@ -88,8 +88,7 @@ impl Tunnel {
             answer: None,
             status: 0,
             final_answer: false,
-            recv: Vec::new(),
-            read: 0,
+            recv: HeldBytes::default(),
             rx_total: 0,
             rx_offset: 0,
             rx_offset_max: STREAM_WINDOW_INITIAL,
@@ -102,7 +101,18 @@ impl Tunnel {
     }
 
     fn held(&self) -> &[u8] {
-        &self.recv[self.read..]
+        self.recv.held()
+    }
+
+    /// Take as much of what is held as `buf` has room for into it.
+    fn take(&mut self, buf: &mut [u8]) -> usize {
+        self.recv.take(buf)
+    }
+
+    /// The bytes stored to hold what is held.
+    #[cfg(test)]
+    fn stored(&self) -> usize {
+        self.recv.stored()
     }
 
     /// The stream's id as traced: -1 once it is gone.
@@ -193,11 +203,7 @@ impl Tunnel {
                     H3P,
                     format_args!("[cb_h3_proxy_recv_data] [{id}] DATA len={len}, total={total}"),
                 );
-                if self.read == self.recv.len() {
-                    self.recv.clear();
-                    self.read = 0;
-                }
-                if self.recv.try_extend_from_slice(bytes).is_err() {
+                if self.recv.push(bytes).is_err() {
                     return Heard::Failed;
                 }
                 self.rx_offset += len as u64;
@@ -593,10 +599,8 @@ impl H3Proxy {
     /// Take what is held for the layer above into `buf`, its window
     /// opened again.
     fn take_held(&mut self, cx: &mut dyn LayerCx, buf: &mut [u8]) -> usize {
-        let n = buf.len().min(self.tunnel.held().len());
+        let n = self.tunnel.take(buf);
         if n > 0 {
-            buf[..n].copy_from_slice(&self.tunnel.held()[..n]);
-            self.tunnel.read += n;
             self.tunnel.update_window(cx);
             let extend = std::mem::take(&mut self.tunnel.extend);
             if extend > 0
@@ -808,3 +812,6 @@ impl Layer for H3Proxy {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

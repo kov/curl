@@ -673,3 +673,11 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is
             let udp = if self.udp { "-UDP" } else { "" };
 --- new
             let udp = "";
+
+=== an HTTP/3 tunnel's DATA read is kept until all held is read
+file: crates/curl-core/src/conn/buf.rs
+witness: curl-core conn::h3proxy::tests::what_the_tunnel_read_is_let_go_of_while_more_comes
+--- old
+        if self.taken > 0 && (self.taken >= held || more.len() > room) {
+--- new
+        if self.taken > 0 && (held == 0 || room == usize::MAX) {

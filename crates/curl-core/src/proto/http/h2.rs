@@ -430,7 +430,11 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
         let top = lease.conn().top();
-        let alpn = crate::multi::state::query_alpn(cx, lease, top);
+        let alpn = crate::multi::state::query_alpn(
+            cx,
+            lease.query(crate::conn::layer::LayerQuery::Alpn),
+            top,
+        );
         if alpn == Some(Chosen::H3) {
             // Its session came with its handshake.
             trace::info(cx, format_args!("using HTTP/3"));

@@ -5,16 +5,17 @@
 //! layer goes on top of the connection's stream and is connected there;
 //! the bytes after go through it, the origin's through the proxy's.
 
-use curl_alloc::{OutOfMemory, try_box};
+use curl_alloc::{OutOfMemory, TryArc, try_box};
 
-use super::{Connecting, Handshake, StepCx, TransferState, Wake};
+use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
 use crate::components::Component;
+use crate::conn::layer::LayerQuery;
 use crate::conn::tls::TlsLayer;
-use crate::conn::{Dial, Made};
+use crate::conn::{Dial, Made, Peer, Stream};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::options::{ProxyType, SslOptions, TlsMaxVersion, TlsMinVersion, TlsOptions};
-use crate::tls::{Alpn, Handshake as Shake, SessionPeer, TlsPeer, TlsShared};
+use crate::tls::{Alpn, Handshake as Shake, SessionPeer, TlsIdentity, TlsPeer, TlsShared};
 use crate::trace;
 
 /// Whose TLS a handshake makes: the origin's (C's `SSL` filter) or an
@@ -44,31 +45,24 @@ impl TlsSide {
 }
 
 /// The handshakes before it are made: the session is made and its layer
-/// put on the stream, taking the bytes the stream received and did not
-/// use, which follow a proxy's answer. An HTTPS proxy's is offered
-/// HTTP/1.1 by ALPN unless ALPN is off, whatever the transfer's version
+/// put on the stream (`put_on`). An HTTPS proxy's is offered HTTP/1.1 by
+/// ALPN unless ALPN is off, whatever the transfer's version
 /// (`cf_ssl_proxy_create`), and is the proxy's peer, its sessions kept
 /// for the proxy.
 pub(super) fn start<H: Host>(
-    mut c: Connecting,
+    s: &mut SetupMut<'_>,
+    lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
     side: TlsSide,
-) -> (TransferState, Wake) {
-    // Held apart from the handle, as the multi's state is borrowed too.
-    let libraries = cx.easy().shared_libraries();
-    let backend = libraries
-        .tls
-        .as_deref()
-        .expect("a route has TLS only with a TLS library");
-    let options = cx.easy().options();
+) -> Result<Wake, Failure> {
     let (identity, peer, via) = match side {
         TlsSide::Origin => (
-            c.route.tls.as_ref().expect("a TLS route"),
-            &*c.route.origin,
-            c.route.via.as_deref(),
+            lent.route.tls.as_ref().expect("a TLS route"),
+            &*lent.route.origin,
+            lent.route.via.as_deref(),
         ),
         TlsSide::Proxy => {
-            let proxy = c.route.proxy.as_ref().expect("an HTTPS proxy");
+            let proxy = lent.route.proxy.as_ref().expect("an HTTPS proxy");
             (
                 proxy.tls().expect("an HTTPS proxy's TLS"),
                 &*proxy.peer,
@@ -78,20 +72,21 @@ pub(super) fn start<H: Host>(
     };
     // HTTP/2 is offered only where a library speaks it, and the request
     // may.
-    let only_10 = c.proto.negotiation().is_some_and(|n| n.only_10);
-    let versions = c.proto.http_versions();
+    let only_10 = lent.proto.negotiation().is_some_and(|n| n.only_10);
+    let versions = lent.proto.http_versions();
     let h2 = versions.h2 && cx.easy().libraries().h2.is_some();
     // An HTTPS proxy asked for in HTTP/2 is offered it, by ALPN whatever
     // the transfer says of ALPN (`cf_ssl_proxy_create`).
     let proxy_h2 = side == TlsSide::Proxy
         && cx.easy().libraries().h2.is_some()
-        && c.route
+        && lent
+            .route
             .proxy
             .as_ref()
             .is_some_and(|p| p.kind == ProxyType::Https2);
     // HTTP/1.0 alone is offered as `http/1.0` and `http/1.1`
     // (`alpn_get_spec`).
-    let alpn = match (options.tls.options.alpn || proxy_h2, side) {
+    let alpn = match (cx.easy().options().tls.options.alpn || proxy_h2, side) {
         (false, _) => Alpn::None,
         (true, TlsSide::Proxy) if proxy_h2 => Alpn::H2Http11,
         (true, TlsSide::Proxy) => Alpn::Http11,
@@ -100,11 +95,57 @@ pub(super) fn start<H: Host>(
         (true, TlsSide::Origin) if h2 => Alpn::H2Http11,
         (true, TlsSide::Origin) => Alpn::Http11,
     };
+    let to = TlsFor {
+        side,
+        identity,
+        peer,
+        via,
+        alpn,
+    };
+    put_on(s.machine.dialed().stream(), &to, cx)?;
+    match try_box(Handshake::Tls(side)) {
+        Ok(h) => {
+            *s.handshake = Some(h);
+            Ok(Wake::Again)
+        }
+        Err(OutOfMemory) => Err(Failure::Transfer(ErrorKind::OutOfMemory)),
+    }
+}
+
+/// Whom a TLS session is made for: its side, the settings it is made
+/// with, its peer (through a connect-to's, `via`) and what ALPN offers.
+pub(super) struct TlsFor<'a> {
+    pub(super) side: TlsSide,
+    pub(super) identity: &'a TryArc<TlsIdentity>,
+    pub(super) peer: &'a Peer,
+    pub(super) via: Option<&'a Peer>,
+    pub(super) alpn: Alpn,
+}
+
+/// A session for `to` is made and its layer put on `stream`, taking the
+/// bytes the stream received and did not use, which follow a proxy's
+/// answer: over a connection being set up, or one open, upgraded.
+pub(super) fn put_on<H: Host>(
+    stream: &mut Stream,
+    to: &TlsFor<'_>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<(), Failure> {
+    // Held apart from the handle, as the multi's state is borrowed too.
+    let libraries = cx.easy().shared_libraries();
+    let backend = libraries
+        .tls
+        .as_deref()
+        .expect("a route has TLS only with a TLS library");
+    let options = cx.easy().options();
     // Early data, where the transfer asks for it and makes requests
     // (`conn_cfg->earlydata`, `bits.connect_only`).
-    let early_data = identity.options.ssl_options.contains(SslOptions::EARLYDATA)
+    let early_data = to
+        .identity
+        .options
+        .ssl_options
+        .contains(SslOptions::EARLYDATA)
         && !options.connect_only.reserves();
-    let peer_of = |early| TlsPeer::of(peer, early);
+    let peer_of = |early| TlsPeer::of(to.peer, early);
     // What the library keeps across the multi's connections, made with
     // its first session.
     let shared = match &mut *cx.rest.tls {
@@ -112,63 +153,68 @@ pub(super) fn start<H: Host>(
         none => match TlsShared::new() {
             Ok(made) => none.insert(made),
             Err(OutOfMemory) => {
-                return (
-                    TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
-                    Wake::Again,
-                );
+                return Err(Failure::Transfer(ErrorKind::OutOfMemory));
             }
         },
     };
-    let session = match backend.session(identity, &peer_of(early_data), alpn, shared) {
+    let session = match backend.session(to.identity, &peer_of(early_data), to.alpn, shared) {
         Ok(session) => session,
-        Err(kind) => return super::attempt_failed(c, cx, kind),
+        Err(kind) => return Err(Failure::Attempt(kind)),
     };
     // Who its sessions are kept for: the peer, through a connect-to's
     // peer if any (`cf_ssl_peer_init`), over TCP.
-    let kept_for = match SessionPeer::new(identity, peer, via, backend.id(), Dial::Tcp) {
+    let kept_for = match SessionPeer::new(to.identity, to.peer, to.via, backend.id(), Dial::Tcp) {
         Ok(p) => p,
         Err(OutOfMemory) => {
-            return (
-                TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
-                Wake::Again,
-            );
+            return Err(Failure::Transfer(ErrorKind::OutOfMemory));
         }
     };
-    let filter = side.filter();
-    let stream = c.lease.setting_up().dialed().stream();
-    let pushed = stream
+    let filter = to.side.filter();
+    stream
         .push_over_received(|early| TlsLayer::boxed(session, early, kept_for, filter))
-        .and_then(|()| try_box(Handshake::Tls(side)));
-    match pushed {
-        Ok(h) => {
-            c.setup.handshake = Some(h);
-            (TransferState::Connecting(c), Wake::Again)
+        .map_err(|OutOfMemory| Failure::Transfer(ErrorKind::OutOfMemory))
+}
+
+/// Move the handshake on, as far as the socket lets it (`shake`).
+pub(super) fn step<H: Host>(
+    s: &mut SetupMut<'_>,
+    lent: &mut Lent<'_>,
+    cx: &mut StepCx<'_, H>,
+    side: TlsSide,
+) -> Result<Wake, Failure> {
+    let traced = Some(s.machine.route().socket_component());
+    let identity = match side {
+        TlsSide::Origin => lent.route.tls.as_ref(),
+        TlsSide::Proxy => lent.route.proxy_tls(),
+    };
+    let options = &identity.expect("a TLS stage's settings").options;
+    match shake(s.machine.dialed().stream(), side, options, traced, cx) {
+        Ok(Shake::Done) => {
+            s.machine.dialed().mark_made(side.made());
+            *s.handshake = None;
+            Ok(Wake::Again)
         }
-        Err(OutOfMemory) => (
-            TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
-            Wake::Again,
-        ),
+        Ok(Shake::Waiting) => Ok(Wake::Idle),
+        Err(kind) => Err(Failure::Attempt(kind)),
     }
 }
 
-/// Move the handshake on, as far as the socket lets it, each call traced
-/// as the TLS filter traces its connect (`ssl_cf_connect`); the versions
-/// allowed are checked first (`ssl_prefs_check`).
-pub(super) fn step<H: Host>(
-    mut c: Connecting,
-    cx: &mut StepCx<'_, H>,
+/// Move the TLS handshake of `side` on over `stream`, as far as the
+/// socket lets it, each call traced as the TLS filter traces its connect
+/// (`ssl_cf_connect`); the versions `options` allow are checked first
+/// (`ssl_prefs_check`). The session's objects are lent to the transfer
+/// as they are made. The socket's bytes are traced as `traced`'s.
+pub(super) fn shake<H: Host>(
+    stream: &mut Stream,
     side: TlsSide,
-) -> (TransferState, Wake) {
+    options: &TlsOptions,
+    traced: Option<Component>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Shake, ErrorKind> {
     let ssl = side.filter();
     trace::of(cx, ssl, format_args!("cf_connect()"));
-    let traced = Some(c.socket_component());
-    let identity = match side {
-        TlsSide::Origin => c.route.tls.as_ref(),
-        TlsSide::Proxy => c.route.proxy_tls(),
-    };
-    let checked = prefs_check(cx, &identity.expect("a TLS stage's settings").options);
-    let shaken = match checked {
-        Ok(()) => c.lease.setting_up().dialed().stream().connect(cx, traced),
+    let shaken = match prefs_check(cx, options) {
+        Ok(()) => stream.connect(cx, traced),
         Err(kind) => Err(kind),
     };
     let (code, done) = match shaken {
@@ -178,16 +224,8 @@ pub(super) fn step<H: Host>(
     };
     trace::of(cx, ssl, format_args!("cf_connect() -> {code}, done={done}"));
     // The session may have made its objects.
-    cx.lend(super::tls_native(&c.lease));
-    match shaken {
-        Ok(Shake::Done) => {
-            c.lease.setting_up().dialed().mark_made(side.made());
-            c.setup.handshake = None;
-            (TransferState::Connecting(c), Wake::Again)
-        }
-        Ok(Shake::Waiting) => (TransferState::Connecting(c), Wake::Idle),
-        Err(kind) => super::attempt_failed(c, cx, kind),
-    }
+    cx.lend(super::native_of(stream.query(LayerQuery::TlsNative)));
+    shaken
 }
 
 /// The newest version the filter's `options` allow is not older than

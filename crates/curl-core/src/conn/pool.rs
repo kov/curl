@@ -69,12 +69,6 @@ impl ConnLease {
         self.id
     }
 
-    /// The connection, as the lease holds it: always, but for a key's
-    /// outside its transfer's step.
-    pub(crate) fn held(&self) -> &ConnSlot {
-        self.slot()
-    }
-
     /// The connection, if the lease has it: a key has it only while its
     /// transfer's step has it out.
     pub(crate) fn holding(&self) -> Option<&ConnSlot> {

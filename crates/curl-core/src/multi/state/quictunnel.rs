@@ -7,7 +7,7 @@
 
 use curl_alloc::{OutOfMemory, try_box};
 
-use super::{Connecting, Handshake, StepCx, TransferState, Wake};
+use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
 use crate::conn::Made;
 use crate::conn::capsule::CapsuleLayer;
 use crate::conn::quic::{Over, Path};
@@ -17,62 +17,64 @@ use crate::multi::cx::DriveCx;
 
 /// The tunnel is up: the capsule layer and the origin's QUIC connection
 /// go over it.
-pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    let stream = c.lease.setting_up().dialed().stream();
+pub(super) fn start<H: Host>(
+    s: &mut SetupMut<'_>,
+    _: &mut Lent<'_>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Wake, Failure> {
+    let stream = s.machine.dialed().stream();
     let pushed = stream.push_over_received(|received| {
         try_box(CapsuleLayer::holding(received)).map(|l| l as Box<dyn crate::conn::layer::Layer>)
     });
     if let Err(OutOfMemory) = pushed {
-        return (
-            TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
-            Wake::Again,
-        );
+        return Err(Failure::Transfer(ErrorKind::OutOfMemory));
     }
-    let made = c.lease.setting_up().tunnel_quic(&mut DriveCx {
+    let made = s.machine.tunnel_quic(&mut DriveCx {
         step: cx,
         kept: None,
         deadlines: None,
     });
     let quic = match made {
         Ok(quic) => quic,
-        Err(kind) => return super::attempt_failed(c, cx, kind),
+        Err(kind) => return Err(Failure::Attempt(kind)),
     };
     match try_box(Handshake::Quic(quic)) {
         Ok(h) => {
-            c.setup.handshake = Some(h);
-            (TransferState::Connecting(c), Wake::Again)
+            *s.handshake = Some(h);
+            Ok(Wake::Again)
         }
-        Err(OutOfMemory) => (
-            TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
-            Wake::Again,
-        ),
+        Err(OutOfMemory) => Err(Failure::Transfer(ErrorKind::OutOfMemory)),
     }
 }
 
 /// Move the handshake on, its datagrams through the tunnel's layers.
-pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    let Some(Handshake::Quic(quic)) = c.setup.handshake.as_deref_mut() else {
+pub(super) fn step<H: Host>(
+    s: &mut SetupMut<'_>,
+    lent: &mut Lent<'_>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Wake, Failure> {
+    let Some(Handshake::Quic(quic)) = s.handshake.as_deref_mut() else {
         unreachable!("the origin's QUIC handshake is under way");
     };
     // The tunnel's bytes are the socket's, traced as C's socket filter
     // traces them.
-    let traced = Some(c.route.socket_component());
-    let stream = c.lease.setting_up().dialed().stream();
+    let traced = Some(lent.route.socket_component());
+    let stream = s.machine.dialed().stream();
     let mut over = Over {
         cx,
         path: Path::Layers(stream.below(traced)),
     };
     match quic.connect(&mut over) {
-        Ok(false) => (TransferState::Connecting(c), Wake::Idle),
+        Ok(false) => Ok(Wake::Idle),
         Ok(true) => {
-            let Some(Handshake::Quic(quic)) = c.setup.handshake.take().map(|h| *h) else {
+            let Some(Handshake::Quic(quic)) = s.handshake.take().map(|h| *h) else {
                 unreachable!("the origin's QUIC handshake was under way");
             };
-            let dialed = c.lease.setting_up().dialed();
+            let dialed = s.machine.dialed();
             dialed.put_quic(quic);
             dialed.mark_made(Made::QUIC);
-            (TransferState::Connecting(c), Wake::Again)
+            Ok(Wake::Again)
         }
-        Err(kind) => super::attempt_failed(c, cx, kind),
+        Err(kind) => Err(Failure::Attempt(kind)),
     }
 }

@@ -1437,9 +1437,15 @@ socket before its connect.
   nothing made. The PROXY line goes over `Dialed` before the connection is `Open`, so no `Open`
   connection exists with it unsent, and a transfer taken out mid-setup gives back a
   connection that is not open, which closes. The transfer drives each handshake, its I/O over
-  the `Dialed` stream; the drivers take the transfer's `Connecting` for its route, its
-  pipeline (the CONNECT answer's lines) and its lease (a redial), so another stream (FTP's data
-  connection) needs them split from it first (open, with FTP).
+  the `Dialed` stream. A driver takes the setup it works on (`SetupMut`: the machine and the
+  handshake under way, borrowed from wherever they are kept) and what the transfer lends it
+  (`Lent`: the route, the request, for the ALPN offered and the pipeline a `CONNECT`'s answer
+  goes through, and the connection's Negotiate with its proxy, which stays the connection's
+  as C's `proxyneg` is the `connectdata`'s). It returns whether to go on at once or wait, or
+  how it failed: its attempt alone, which a race outlives, or the transfer, as running out of
+  memory does; the caller, not the driver, decides what a failed attempt does to a race. TLS
+  is made and moved on over a `Stream` (`tls::put_on`, `tls::shake`), so that an open
+  connection can be upgraded by the same code.
 - **C's filter chain is rendered, not built.** The setup filters (SETUP, DNS, HAPPY-EYEBALLS,
   HTTP-PROXY, HAPROXY) exist in C only until the chain connects and are then removed
   (`Curl_conn_remove_setup_filters`, cfilters.c:434–450); here the typed machine stands for

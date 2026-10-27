@@ -515,10 +515,10 @@ file: crates/curl-core/src/multi/state/h3tunnel.rs
 witness: curl-core proto::http::tests::h3_trace::a_tunnel_an_http3_proxy_refuses_fails_the_attempt
 --- old
             let failed = crate::conn::ConnectError::Failed(None, kind);
-            let kind = super::connect_failed(cx, &c.route, failed);
-            super::attempt_failed(c, cx, kind)
+            let kind = super::connect_failed(cx, lent.route, failed);
+            Err(Failure::Attempt(kind))
 --- new
-            (TransferState::Connecting(c).fail(kind), Wake::Again)
+            Err(Failure::Transfer(kind))
 
 === a non-2xx answer to an HTTP/3 CONNECT opens the tunnel
 file: crates/curl-core/src/multi/state/h3tunnel.rs

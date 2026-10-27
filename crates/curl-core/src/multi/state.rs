@@ -275,6 +275,72 @@ struct Setup {
     handshake: Option<Box<Handshake>>,
 }
 
+/// One setup's state, borrowed from where it is kept: the first
+/// attempt's machine is in the lease's slot, its handshake on
+/// `Connecting`. What a handshake's driver works on.
+struct SetupMut<'a> {
+    machine: &'a mut ConnectMachine,
+    handshake: &'a mut Option<Box<Handshake>>,
+}
+
+/// What the transfer lends a handshake's driver: the route it plans, its
+/// request (the ALPN offered, the pipeline a `CONNECT`'s answer goes
+/// through) and the connection's Negotiate with its proxy.
+struct Lent<'a> {
+    route: &'a Tcp,
+    proto: &'a mut ProtoState,
+    negotiate: &'a mut Option<Box<crate::proto::http::negotiate::Negotiate>>,
+}
+
+/// How a handshake failed: its attempt alone, which a race outlives, or
+/// the transfer, as running out of memory does.
+#[derive(Clone, Copy, Debug)]
+enum Failure {
+    Attempt(ErrorKind),
+    Transfer(ErrorKind),
+}
+
+impl Connecting {
+    /// The setup in the lease and what the transfer lends it, borrowed
+    /// apart.
+    fn shaking(&mut self) -> (SetupMut<'_>, Lent<'_>) {
+        let Connecting {
+            lease,
+            proto,
+            route,
+            setup,
+            negotiate,
+            ..
+        } = self;
+        (
+            SetupMut {
+                machine: lease.setting_up(),
+                handshake: &mut setup.handshake,
+            },
+            Lent {
+                route,
+                proto,
+                negotiate,
+            },
+        )
+    }
+
+    /// The transfer goes on as a driver of its setup's handshake says.
+    fn shook<H: Host>(
+        self,
+        shook: Result<Wake, Failure>,
+        cx: &mut StepCx<'_, H>,
+    ) -> (TransferState, Wake) {
+        match shook {
+            Ok(wake) => (TransferState::Connecting(self), wake),
+            Err(Failure::Transfer(kind)) => {
+                (TransferState::Connecting(self).fail(kind), Wake::Again)
+            }
+            Err(Failure::Attempt(kind)) => attempt_failed(self, cx, kind),
+        }
+    }
+}
+
 /// The race of an HTTP/3 attempt against an HTTP/2-or-1 one over TCP, as
 /// C's HTTPS connect filter runs its two ballers, either first. The first
 /// is the lease's setup until the second starts; then the QUIC attempt is
@@ -457,7 +523,7 @@ impl TransferState {
             // Without the pool, a key in its place cannot be reached.
             None => lease.holding()?,
         };
-        native_of(slot)
+        native_of(slot.query(LayerQuery::TlsNative))
     }
 
     /// The connection the transfer holds, wherever it is, if it is not
@@ -1919,14 +1985,10 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
     }
 }
 
-/// The TLS library's objects of the origin's connection `lease` holds.
-pub(super) fn tls_native(lease: &ConnLease) -> Option<TlsNative> {
-    native_of(lease.held())
-}
-
-/// The TLS library's objects of the origin's connection `slot`.
-fn native_of(slot: &ConnSlot) -> Option<TlsNative> {
-    match slot.query(LayerQuery::TlsNative)? {
+/// The TLS library's objects of the origin's connection, as its layers
+/// answered `LayerQuery::TlsNative`.
+pub(super) fn native_of(answer: Option<LayerAnswer>) -> Option<TlsNative> {
+    match answer? {
         LayerAnswer::TlsNative(native) => Some(native),
         LayerAnswer::Alpn(..)
         | LayerAnswer::TlsWaits(_)
@@ -1938,19 +2000,20 @@ fn native_of(slot: &ConnSlot) -> Option<TlsNative> {
     }
 }
 
-/// Ask the connection `lease` holds, from its filter `top`, what was
-/// agreed by ALPN (`Curl_conn_cf_get_alpn_negotiated`): the filter says it
-/// is asked, and the TLS session, if one answers, what it answers; the
-/// others answer none, or pass the question on, saying nothing.
+/// Ask a connection, from its filter `top`, what was agreed by ALPN
+/// (`Curl_conn_cf_get_alpn_negotiated`), its layers having answered
+/// `LayerQuery::Alpn` with `answer`: the filter says it is asked, and the
+/// TLS session, if one answers, what it answers; the others answer none,
+/// or pass the question on, saying nothing.
 pub(crate) fn query_alpn<H: Host>(
     cx: &mut StepCx<'_, H>,
-    lease: &ConnLease,
+    answer: Option<LayerAnswer>,
     top: Component,
 ) -> Option<crate::tls::Chosen> {
     trace::of(cx, top, format_args!("query ALPN"));
     // An HTTPS proxy's TLS answers only when asked first: a tunnel's
     // filter above it keeps the question (`cf_h1_proxy_query`).
-    if let Some(LayerAnswer::Alpn(chosen, filter)) = lease.query(LayerQuery::Alpn)
+    if let Some(LayerAnswer::Alpn(chosen, filter)) = answer
         && (filter != Component::SslProxy || top == Component::SslProxy)
     {
         // QUIC's filter answers saying nothing (`cf_ngtcp2_query`).
@@ -2512,7 +2575,7 @@ fn connecting<H: Host>(
         // C reads SOCKS5's GSS-API messages blocking, until its own check
         // of the time left fails the read.
         let gss_read = match c.setup.handshake.as_deref() {
-            Some(Handshake::Socks(_)) => socks::timed_out(&mut c, cx),
+            Some(Handshake::Socks(_)) => socks::timed_out(&mut c.shaking().0, cx),
             _ => None,
         };
         let kind = match c.setup.handshake.as_deref() {
@@ -2823,15 +2886,23 @@ fn connect_once<H: Host>(
     mut c: Connecting,
     cx: &mut StepCx<'_, H>,
 ) -> (TransferState, Wake) {
-    match c.setup.handshake.as_deref() {
-        Some(Handshake::Socks(_)) => return socks::step(c, cx),
-        Some(Handshake::Connect(_)) => return tunnel::step(c, cx),
-        Some(Handshake::H2Connect(_)) => return h2tunnel::step(c, cx),
-        Some(Handshake::H3Connect(_)) => return h3tunnel::step(c, cx),
-        Some(Handshake::Quic(_)) => return quictunnel::step(c, cx),
-        Some(Handshake::Haproxy(_)) => return haproxy::step(c, cx),
-        Some(&Handshake::Tls(side)) => return tls::step(c, cx, side),
-        None => {}
+    if let Some(h) = c.setup.handshake.as_deref() {
+        let under_way = match h {
+            Handshake::Socks(_) => socks::step,
+            Handshake::Connect(_) => tunnel::step,
+            Handshake::H2Connect(_) => h2tunnel::step,
+            Handshake::H3Connect(_) => h3tunnel::step,
+            Handshake::Quic(_) => quictunnel::step,
+            Handshake::Haproxy(_) => haproxy::step,
+            &Handshake::Tls(side) => {
+                let (mut s, mut t) = c.shaking();
+                let shook = tls::step(&mut s, &mut t, cx, side);
+                return c.shook(shook, cx);
+            }
+        };
+        let (mut s, mut t) = c.shaking();
+        let shook = under_way(&mut s, &mut t, cx);
+        return c.shook(shook, cx);
     }
     if let Some(SetupPoint::Dialed(_)) = c.lease.setup().map(ConnectMachine::reached) {
         return handshake_next(c, cx);
@@ -3111,13 +3182,17 @@ fn drive_aside<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>
 /// none left, the connection is open.
 fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     let made = c.lease.setting_up().dialed().made();
-    match handshake_due(&c, made) {
-        Some(Due::Socks(version)) => return socks::dialed(c, cx, version),
-        Some(Due::Tunnel) => return tunnel::dialed(c, cx),
-        Some(Due::Preface) => return haproxy::start(c, cx),
-        Some(Due::Tls(side)) => return tls::start(c, cx, side),
-        Some(Due::Quic) => return quictunnel::start(c, cx),
-        None => {}
+    if let Some(due) = handshake_due(&c, made) {
+        let (mut s, mut t) = c.shaking();
+        let (s, t) = (&mut s, &mut t);
+        let started = match due {
+            Due::Socks(version) => socks::dialed(s, t, cx, version),
+            Due::Tunnel => tunnel::dialed(s, t, cx),
+            Due::Preface => haproxy::start(s, t, cx),
+            Due::Tls(side) => tls::start(s, t, cx, side),
+            Due::Quic => quictunnel::start(s, t, cx),
+        };
+        return c.shook(started, cx);
     }
     // The origin's QUIC connection made through the tunnel is the
     // connection's session.
@@ -3507,7 +3582,7 @@ fn up<H: Host>(
     if c.https.is_some() {
         // The winner's chain is asked whether HTTP/2 was agreed
         // (`baller_connected`), from its SETUP filter.
-        query_alpn(cx, &c.lease, Component::Setup);
+        query_alpn(cx, c.lease.query(LayerQuery::Alpn), Component::Setup);
     }
     https::call_ended(c.https, cx, Ok(true));
     chain_connect_ended(cx, Ok(true));

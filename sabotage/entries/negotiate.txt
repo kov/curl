@@ -76,11 +76,11 @@ witness: curl-core proto::http::tests::negotiate::a_tunnel_redialed_keeps_negoti
 features: test-util
 --- old
         trace::info(cx, format_args!("Connect me again please"));
-        c.setup.handshake = None;
+        *s.handshake = None;
 --- new
         trace::info(cx, format_args!("Connect me again please"));
-        c.setup.handshake = None;
-        c.negotiate = None;
+        *s.handshake = None;
+        *lent.negotiate = None;
 
 === a tunnel's Negotiate is not handed to the connection it set up
 file: crates/curl-core/src/multi/state.rs

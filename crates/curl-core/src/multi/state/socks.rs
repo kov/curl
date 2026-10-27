@@ -5,7 +5,7 @@
 
 use curl_alloc::try_box;
 
-use super::{Connecting, Handshake, Ip, StepCx, TransferState, Wake, report_resolved};
+use super::{Failure, Handshake, Ip, Lent, SetupMut, StepCx, Wake, report_resolved};
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::socks::{
     Creds, Dest, Failed, GssError, GssLine, GssMethod, Handshake as Exchange, Resolved, SocksError,
@@ -46,31 +46,33 @@ fn socks(handshake: &mut Option<Box<Handshake>>) -> &mut Exchange {
 /// Connected to the proxy: the handshake's first request is made, for
 /// the destination, its name resolved here if `version` has it so.
 pub(super) fn dialed<H: Host>(
-    mut c: Connecting,
+    s: &mut SetupMut<'_>,
+    lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
     version: Version,
-) -> (TransferState, Wake) {
-    match start(&mut c, cx, version) {
+) -> Result<Wake, Failure> {
+    match start(s, lent, cx, version) {
         Ok(handshake) => {
-            c.setup.handshake = Some(handshake);
-            (TransferState::Connecting(c), Wake::Again)
+            *s.handshake = Some(handshake);
+            Ok(Wake::Again)
         }
-        Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
+        Err(kind) => Err(Failure::Transfer(kind)),
     }
 }
 
 fn start<H: Host>(
-    c: &mut Connecting,
+    s: &mut SetupMut<'_>,
+    lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
     version: Version,
 ) -> Result<Box<Handshake>, ErrorKind> {
     let ip = cx.easy().options().ip_version;
-    let found = match c.lease.setting_up().dialed().target() {
+    let found = match s.machine.dialed().target() {
         None => None,
         Some(Ok((answer, found))) => Some(Ok((answer.clone(), *found))),
         Some(Err(_)) => Some(Err(())),
     };
-    let leg = c.route.socks().expect("through a SOCKS proxy");
+    let leg = lent.route.socks().expect("through a SOCKS proxy");
     let target = leg.to;
     let resolved = match found {
         None => Resolved::Remote,
@@ -112,20 +114,28 @@ fn start<H: Host>(
 }
 
 /// Move the handshake on as far as its socket lets it.
-pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    match run(&mut c, cx) {
-        Ok(false) => (TransferState::Connecting(c), Wake::Idle),
-        Ok(true) => opened(c, cx),
-        Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
+pub(super) fn step<H: Host>(
+    s: &mut SetupMut<'_>,
+    lent: &mut Lent<'_>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Wake, Failure> {
+    match run(s, lent, cx) {
+        Ok(false) => Ok(Wake::Idle),
+        Ok(true) => opened(s, lent, cx),
+        Err(kind) => Err(Failure::Transfer(kind)),
     }
 }
 
 /// Send and read until the socket blocks, or the proxy connected to the
 /// destination (`socks_flush`, `socks_recv`).
-fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
+fn run<H: Host>(
+    s: &mut SetupMut<'_>,
+    lent: &mut Lent<'_>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<bool, ErrorKind> {
     loop {
-        let h = socks(&mut c.setup.handshake);
-        let dialed = c.lease.setting_up().dialed().stream();
+        let h = socks(s.handshake);
+        let dialed = s.machine.dialed().stream();
         if !h.to_send().is_empty() {
             match dialed.send(cx, h.to_send(), None) {
                 Ok(Sent::Bytes(n)) => h.sent(n.get()),
@@ -149,7 +159,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, Erro
             Ok(Took::Read(n)) => {
                 dialed.consume(n);
                 if h.gss_starts() {
-                    let leg = c.route.socks().expect("through a SOCKS proxy");
+                    let leg = lent.route.socks().expect("through a SOCKS proxy");
                     h.start_gss(leg.at.name(), &mut |line| say(cx, line))
                         .map_err(|e| refused(cx, &e))?;
                 }
@@ -187,9 +197,12 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, Erro
 /// The time to connect ran out: if a GSS-API message was awaited, the
 /// read of it failed, as C's blocking read fails it once no time is left
 /// (`Curl_blockread_all`), and the method with it.
-pub(super) fn timed_out<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Option<ErrorKind> {
-    let received = c.lease.setting_up().dialed().stream().received().len();
-    let e = socks(&mut c.setup.handshake).gss_recv_failed(received)?;
+pub(super) fn timed_out<H: Host>(
+    s: &mut SetupMut<'_>,
+    cx: &mut StepCx<'_, H>,
+) -> Option<ErrorKind> {
+    let received = s.machine.dialed().stream().received().len();
+    let e = socks(s.handshake).gss_recv_failed(received)?;
     Some(refused(cx, &e))
 }
 
@@ -197,19 +210,22 @@ pub(super) fn timed_out<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> 
 /// (`socks_proxy_cf_connect`), and the connection kept for transfers
 /// that insist on the user being authenticated if it was: the next
 /// handshake follows.
-fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    let authenticated = socks(&mut c.setup.handshake).authenticated();
+fn opened<H: Host>(
+    s: &mut SetupMut<'_>,
+    lent: &mut Lent<'_>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Wake, Failure> {
+    let authenticated = socks(s.handshake).authenticated();
     if authenticated {
-        c.lease.setting_up().dialed().socks5_authenticated();
+        s.machine.dialed().socks5_authenticated();
     }
-    c.lease
-        .setting_up()
+    s.machine
         .proxied(Made::SOCKS, || cx.easy().options().proxy.haproxy);
-    let (remote, local) = c.lease.setting_up().dialed().ends();
+    let (remote, local) = s.machine.dialed().ends();
     let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
-    let proxy = c.route.proxy.as_ref().expect("dialed through a proxy");
+    let proxy = lent.route.proxy.as_ref().expect("dialed through a proxy");
     let to = proxy
-        .socks(c.route.target())
+        .socks(lent.route.target())
         .expect("through a SOCKS proxy")
         .to;
     let mut line = trace::Line::new();
@@ -222,8 +238,8 @@ fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState,
     line.raw(remote.shown_ip().bytes());
     line.text(format_args!(" port {})", remote.port()));
     trace::info_with(cx, &[line.bytes()]);
-    c.setup.handshake = None;
-    (TransferState::Connecting(c), Wake::Again)
+    *s.handshake = None;
+    Ok(Wake::Again)
 }
 
 /// The handshake failed, as the proxy's error (`CURLE_PROXY`).

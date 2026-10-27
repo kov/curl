@@ -11,7 +11,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use curl_alloc::try_box;
 
-use super::{Connecting, Handshake, StepCx, TransferState, Wake};
+use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
 use crate::conn::Made;
 use crate::conn::io::{Events, Remote, Sent};
 use crate::error::ErrorKind;
@@ -96,42 +96,46 @@ fn line(
 /// The handshakes before it are made: the line is made, for the dialed
 /// connection's socket to the first hop, saying the client the transfer
 /// names if it does.
-pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    let (remote, local) = c.lease.setting_up().dialed().ends();
+pub(super) fn start<H: Host>(
+    s: &mut SetupMut<'_>,
+    _: &mut Lent<'_>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Wake, Failure> {
+    let (remote, local) = s.machine.dialed().ends();
     let client = cx.easy().options().proxy.haproxy_client_ip.as_deref();
     let preface = line(&remote, local, client)
         .and_then(|line| try_box(Handshake::Haproxy(Preface { line, sent: 0 })));
     match preface {
         Ok(h) => {
-            c.setup.handshake = Some(h);
-            (TransferState::Connecting(c), Wake::Again)
+            *s.handshake = Some(h);
+            Ok(Wake::Again)
         }
-        Err(_) => (
-            TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
-            Wake::Again,
-        ),
+        Err(_) => Err(Failure::Transfer(ErrorKind::OutOfMemory)),
     }
 }
 
 /// Send the line as far as the socket takes it, then the connection is
 /// up (`cf_haproxy_connect`).
-pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    let component = c.socket_component();
-    let p = match c.setup.handshake.as_deref_mut() {
+pub(super) fn step<H: Host>(
+    s: &mut SetupMut<'_>,
+    _: &mut Lent<'_>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Wake, Failure> {
+    let component = s.machine.route().socket_component();
+    let p = match s.handshake.as_deref_mut() {
         Some(Handshake::Haproxy(p)) => p,
         _ => unreachable!("the PROXY line is being sent"),
     };
     while p.sent < p.line.len() {
-        let sent = c
-            .lease
-            .setting_up()
+        let sent = s
+            .machine
             .dialed()
             .stream()
             .send(cx, &p.line[p.sent..], None);
         trace::sent(cx, component, p.line.len() - p.sent, &sent);
         match sent {
             Ok(Sent::Bytes(n)) => p.sent += n.get(),
-            Ok(Sent::WouldBlock) => return (TransferState::Connecting(c), Wake::Idle),
+            Ok(Sent::WouldBlock) => return Ok(Wake::Idle),
             Err(e) => {
                 let why = curl_os::error::ErrorText::of(&e);
                 let kind = trace::fail_with(
@@ -139,11 +143,11 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
                     ErrorKind::SendError,
                     &[b"Send failure: ", why.as_bytes()],
                 );
-                return (TransferState::Connecting(c).fail(kind), Wake::Again);
+                return Err(Failure::Transfer(kind));
             }
         }
     }
-    c.lease.setting_up().dialed().mark_made(Made::PREFACE);
-    c.setup.handshake = None;
-    (TransferState::Connecting(c), Wake::Again)
+    s.machine.dialed().mark_made(Made::PREFACE);
+    *s.handshake = None;
+    Ok(Wake::Again)
 }

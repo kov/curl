@@ -426,9 +426,9 @@ witness: curl-core proto::http::tests::a_proxy_closing_on_the_credentials_is_con
 file: crates/curl-core/src/multi/state/tunnel.rs
 witness: curl-core proto::http::tests::a_proxy_closing_after_a_wait_aborts_the_tunnel
 --- old
-            tunnel(&mut c.setup.handshake).authorized = false;
+            tunnel(s.handshake).authorized = false;
 --- new
-            let _ = &c;
+            let _ = &s;
 
 === a tunnel's Digest is traced only once a header goes
 file: crates/curl-core/src/multi/state/tunnel.rs
@@ -612,10 +612,10 @@ witness: curl-core proto::http::tests::tls::http_through_an_https_proxy_goes_ove
 file: crates/curl-core/src/multi/state/tunnel.rs
 witness: curl-core proto::http::tests::https_trace::tls_in_tls_sets_up_as_c
 --- old
-        let size = if c.route.proxy_tls().is_some() {
+        let size = if lent.route.proxy_tls().is_some() {
             1
 --- new
-        let size = if c.route.proxy_tls().is_some() {
+        let size = if lent.route.proxy_tls().is_some() {
             READ_SIZE
 
 === the proxy's TLS answers the ALPN question a tunnel above it keeps

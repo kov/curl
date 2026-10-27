@@ -116,9 +116,9 @@ witness: curl-core proto::http::tests::socks_gss::a_failed_send_is_said_of_its_m
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::socks_gss::an_unanswered_message_fails_its_read_when_the_time_is_out
 --- old
-            Some(Handshake::Socks(_)) => socks::timed_out(&mut c, cx),
+            Some(Handshake::Socks(_)) => socks::timed_out(&mut c.shaking().0, cx),
 --- new
-            Some(Handshake::Socks(_)) => socks::timed_out(&mut c, cx).filter(|_| false),
+            Some(Handshake::Socks(_)) => socks::timed_out(&mut c.shaking().0, cx).filter(|_| false),
 
 === a token too long for its 16-bit length is sent cut
 file: crates/curl-core/src/conn/socks/gss.rs

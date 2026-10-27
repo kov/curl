@@ -1598,6 +1598,11 @@ fn a_refused_tunnel_through_an_http_2_proxy_fails_to_connect() {
         text.iter().any(|l| l == "CONNECT Response Status 407\n"),
         "{text:?}"
     );
+    // The challenge is taken in: what the proxy offered is reported.
+    assert_eq!(
+        ran.easy.report().proxy_auth_offered(),
+        crate::options::AuthMethods::BASIC
+    );
     let sent = String::from_utf8(sent(&talk)).unwrap();
     assert_eq!(sent.matches(":method: CONNECT").count(), 1, "{sent}");
     assert_eq!(ran.easy.report().failure(), None, "no message");

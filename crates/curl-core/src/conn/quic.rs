@@ -1615,7 +1615,7 @@ impl State {
 
 #[cfg(test)]
 #[allow(clippy::disallowed_methods, clippy::disallowed_macros)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
@@ -1627,7 +1627,7 @@ mod tests {
 
     /// What a scripted socket does with a call.
     #[derive(Debug)]
-    enum Act {
+    pub(crate) enum Act {
         Take,
         Short(usize),
         Fail(i32),
@@ -1637,10 +1637,10 @@ mod tests {
     /// A UDP socket whose sends do as scripted, taking all once the
     /// script is used, and whose receives give what is queued.
     #[derive(Debug, Default)]
-    struct Scripted {
-        sends: Mutex<VecDeque<Act>>,
-        sent: Mutex<Vec<(usize, usize)>>,
-        datagrams: Mutex<VecDeque<Result<Vec<u8>, i32>>>,
+    pub(crate) struct Scripted {
+        pub(crate) sends: Mutex<VecDeque<Act>>,
+        pub(crate) sent: Mutex<Vec<(usize, usize)>>,
+        pub(crate) datagrams: Mutex<VecDeque<Result<Vec<u8>, i32>>>,
     }
 
     impl Socket for Scripted {
@@ -1736,6 +1736,8 @@ mod tests {
         sends: VecDeque<Result<Sent, ErrorKind>>,
         sent: Vec<Vec<u8>>,
         datagrams: VecDeque<Result<Vec<u8>, ErrorKind>>,
+        /// The room each receive was given.
+        rooms: Vec<usize>,
         /// The egresses that flushed the layers first.
         flushes: usize,
     }
@@ -1796,7 +1798,9 @@ mod tests {
         }
 
         fn recv_below(&mut self, buf: &mut [u8]) -> Result<Recv, ErrorKind> {
-            match self.below.as_mut().unwrap().datagrams.pop_front() {
+            let below = self.below.as_mut().unwrap();
+            below.rooms.push(buf.len());
+            match below.datagrams.pop_front() {
                 None => Ok(Recv::WouldBlock),
                 Some(Err(kind)) => Err(kind),
                 Some(Ok(d)) => {
@@ -2275,6 +2279,9 @@ mod tests {
             script.lock().unwrap().read,
             [(b"one".to_vec(), 0), (b"two".to_vec(), 0)]
         );
+        // Each into C's room for a tunnel's datagram, 64 KiB
+        // (`QUIC_TUNNEL_INBUF_SIZE`).
+        assert_eq!(cx.below.as_ref().unwrap().rooms, [64 * 1024; 3]);
         assert!(
             cx.lines
                 .contains(&"progress_ingress(sub-filters)".to_owned())
@@ -2291,5 +2298,58 @@ mod tests {
             cx.lines.last().unwrap(),
             "ingress, recv from tunnel failed: 56"
         );
+    }
+
+    /// The layer under a connection over a tunnel: nothing to read or
+    /// send, and a flush that counts itself and fails.
+    #[derive(Debug)]
+    struct Stuck(Arc<Mutex<usize>>);
+
+    impl crate::conn::part::Part<Below<'_>> for Stuck {}
+
+    impl crate::conn::layer::Layer for Stuck {
+        fn recv(&mut self, _: &mut dyn LayerCx, _: Below<'_>, _: &mut [u8]) -> io::Result<Recv> {
+            Ok(Recv::WouldBlock)
+        }
+
+        fn send(&mut self, _: &mut dyn LayerCx, _: Below<'_>, _: &[u8]) -> io::Result<Sent> {
+            Ok(Sent::WouldBlock)
+        }
+
+        fn flush(&mut self, _: &mut dyn LayerCx, _: Below<'_>) -> io::Result<bool> {
+            *self.0.lock().unwrap() += 1;
+            Err(io::Error::other("stuck"))
+        }
+    }
+
+    /// A call over a tunnel flushes the tunnel's layers, a failure there
+    /// failing the send (`Curl_conn_flush`).
+    #[test]
+    fn a_call_over_a_tunnel_flushes_its_layers() {
+        let script = Script::new();
+        let (_q, mut cx) = quic(&script);
+        let flushes = Arc::new(Mutex::new(0));
+        let mut layers: [Box<dyn crate::conn::layer::Layer>; 1] =
+            [Box::new(Stuck(flushes.clone()))];
+        let socket = Scripted::default();
+        let mut over = Over {
+            cx: &mut cx,
+            path: Path::Layers(Below::new(&mut layers, &socket)),
+        };
+        assert_eq!(over.flush_below(), Err(ErrorKind::SendError));
+        assert_eq!(*flushes.lock().unwrap(), 1);
+    }
+
+    /// A stream cancelled is stopped both ways with
+    /// `H3_REQUEST_CANCELLED`, and what that says is sent at once
+    /// (`Curl_cf_ngtcp2_h3_stream_close`).
+    #[test]
+    fn a_stream_cancelled_is_stopped_and_said_at_once() {
+        let script = Script::new();
+        packets(&script, &[40]);
+        let (mut q, mut cx) = quic(&script);
+        q.cancel(&mut cx, StreamId(4));
+        assert_eq!(script.lock().unwrap().cancelled, [(4, 0x10c)]);
+        assert_eq!(*cx.socket.sent.lock().unwrap(), [(40, 40)]);
     }
 }

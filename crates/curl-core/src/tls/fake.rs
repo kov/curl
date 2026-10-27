@@ -214,7 +214,8 @@ impl FakeTls {
 
     /// The same, each QUIC session resuming a session that allows `most`
     /// bytes of early data, made for `alpn` with the transport
-    /// parameters `params`, which the transfer may send early data under.
+    /// parameters `params`, which a transfer asking for early data may
+    /// send it under.
     pub fn quic_resuming(
         most: usize,
         alpn: Option<Chosen>,
@@ -313,14 +314,16 @@ impl TlsBackend for FakeTls {
             log.sessions
         };
         cx.trace(format_args!("fake QUIC session {number}"));
+        // OpenSSL's sends early data under it only for a transfer that
+        // asks to.
         let early = match self.quic_resumes {
-            Some((most, alpn, params)) => {
+            Some((most, alpn, params)) if peer.early_data => {
                 let mut kept = Vec::new();
                 kept.try_extend_from_slice(params)
                     .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
                 Some(TlsTicket::new(Vec::new(), 0x0304, alpn, most, 0).with_quic_params(kept))
             }
-            None => None,
+            _ => None,
         };
         try_box(FakeQuicSession {
             log: self.log.clone(),

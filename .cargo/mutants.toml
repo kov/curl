@@ -667,6 +667,34 @@ exclude_re = [
     # a leak checker sees: Miri's run of the binding's user-data test
     # reports it.
     'curl-nghttp2/src/lib\.rs:.*: replace <impl Drop for UserData>::drop with \(\)$',
+    # A varint's tag bits sit above every bit of the length it is chosen
+    # for, and a byte shifted in lands on zeroes: or and xor agree.
+    'curl-core/src/conn/capsule\.rs:.*: replace \| with \^ in (header|varint)$',
+    # A proxy that does not tunnel is SOCKS, or HTTP forwarding plain
+    # HTTP: HTTP/3 is refused over both before a route is dialed
+    # (`quic_refused`, `may_quic`), and neither is an HTTP/3 proxy's
+    # tunnel (`over_quic` asks it to tunnel), so either arm says TCP.
+    'curl-core/src/conn/mod\.rs:.*: replace match guard proxy\.tunnels\(\) with true in Tcp::first_hop_quic$',
+    # A reservation size: a wrong one is only capacity, the extends
+    # after it grow the buffer as they need, and one that cannot fails
+    # the layer either way.
+    'curl-core/src/conn/capsule\.rs:.*: replace \+ with \* in CapsuleLayer::take$',
+    # The tunnel's Debug is for a reader of a panic, not the transfer.
+    'curl-core/src/conn/h3proxy\.rs:.*: replace <impl std::fmt::Debug for H3Proxy>::fmt -> std::fmt::Result with Ok\(Default::default\(\)\)$',
+    # A connection on its own socket never asks to flush layers below:
+    # the default is unreachable, as is any value in its place.
+    'curl-core/src/conn/quic\.rs:.*: replace QuicIo::flush_below -> Result<\(\), ErrorKind> with Ok\(\(\)\)$',
+    # The room a call into the proxy's connection reads in is scratch: one
+    # made again, or remade at the same size, reads the same.
+    'curl-core/src/conn/h3proxy\.rs:.*: replace < with <= in <impl QuicCx for Tunnelled<._>>::take_room$',
+    'curl-core/src/conn/h3proxy\.rs:.*: replace <impl QuicCx for Tunnelled<._>>::give_room with \(\)$',
+    # Nothing read leaves what is held and the window as the last DATA
+    # left them, opened then; anything read opens it by as much, so what
+    # it opens by is never 0.
+    'curl-core/src/conn/h3proxy\.rs:.*: replace > with >= in H3Proxy::take_held$',
+    # Only an allocation the tests cannot fail on its own reports
+    # OutOfMemory from the `CONNECT`'s submit.
+    'curl-core/src/multi/state/h3tunnel\.rs:.*: delete match arm ErrorKind::OutOfMemory in connect$',
     # The build claims HTTPS proxies, HTTP/2 and HTTP/3: refused with one
     # missing or with both, an HTTPS proxy in a version is accepted alike.
     'curl-tool/src/options/parse\.rs:.*: replace claims_proxy_http -> bool with true$',

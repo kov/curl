@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::altsvc::{AltSvcCtrl, Versions};
+use crate::libraries::{Libraries, Library, SharedLibraries};
 use crate::save::CacheFile;
 use crate::tls::fake::{self, WELCOME};
 
@@ -199,6 +200,48 @@ fn an_alternative_is_taken_only_where_c_takes_one() {
             // The origin itself, which the network does not know.
             assert_eq!(ran.result, Err(ErrorKind::CouldntResolveHost), "{name}");
         }
+    }
+}
+
+/// An alternative in a version no library here speaks is not taken, nor
+/// one heard over HTTP/3 by a transfer that does not want HTTP/3
+/// (`Curl_altsvc_lookup`'s versions, as `url_set_conn_peer` allows them).
+#[test]
+fn an_alternative_needs_a_library_for_its_versions() {
+    let cases = [
+        ("noh2", "h1", "h2", false),
+        ("noh3", "h1", "h3", false),
+        ("h3-unwanted", "h3", "h1", true),
+    ];
+    for (name, src, dst, h3) in cases {
+        let line = format!(
+            "{src} origin.example {PORT} {dst} alt.example {PORT} \"20991231 00:00:00\" 0 0\n"
+        );
+        let file = Temp::new(name, &line);
+        let (backend, _) = super::tls::tls();
+        let script = crate::http3::fake::Script::new();
+        let fake_h3: &'static crate::http3::fake::FakeHttp3 =
+            Box::leak(Box::new(crate::http3::fake::FakeHttp3::new(script)));
+        let libraries = SharedLibraries::new(Libraries {
+            tls: Some(Library::Static(backend)),
+            h3: h3.then_some(fake_h3),
+            ..Libraries::NONE
+        })
+        .unwrap();
+        let (mut m, talk) = alt_server(&[WELCOME, &fake::records(SAID).unwrap()]);
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        e.add_alt_svc_file(Some(file.name())).unwrap();
+        let url = format!("https://origin.example:{PORT}/a");
+        let ran = get_with(&mut m, e, "/a", talk, |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+        });
+        let text = ran.seen.text();
+        assert!(
+            !text.iter().any(|l| l.starts_with("Alt-svc connecting")),
+            "{name}: {text:?}"
+        );
+        assert_eq!(ran.result, Err(ErrorKind::CouldntResolveHost), "{name}");
     }
 }
 

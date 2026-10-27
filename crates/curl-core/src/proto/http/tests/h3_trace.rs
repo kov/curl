@@ -1916,10 +1916,41 @@ fn a_session_resumed_without_early_data_says_why() {
     }
 }
 
+/// A transfer that does not ask for early data sends none under a
+/// session resumed that allows it (`conn_cfg->earlydata`).
+#[test]
+fn a_transfer_not_asking_for_early_data_sends_none() {
+    let script = get_script(b"123456789");
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let tls = FakeTls::quic_resuming(16384, Some(crate::tls::Chosen::H3), b"params").unwrap();
+    let e = tracing(tls, &script);
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.ip_version = IpVersion::Any;
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"123456789");
+    assert!(script.lock().unwrap().early_params.is_empty());
+    assert!(lines(&ran, &["SSL session allows", "[HTTP/3] server did"]).is_empty());
+    assert_eq!(ran.easy.report().earlydata_sent(), 0);
+}
+
 /// A script for a tunnel through an HTTP/3 proxy: the handshake's
 /// flights, then the `CONNECT`'s packet, answered by `status`, then the
 /// origin's request's packet, answered with `told`.
 fn tunnel_script(status: &[u8], told: Vec<Told>) -> Arc<Mutex<Script>> {
+    tunnel_script_with(status, &[(b"via", b"h3proxy")], told)
+}
+
+/// `tunnel_script`, the `CONNECT`'s answer with the `fields` after its
+/// status.
+fn tunnel_script_with(
+    status: &[u8],
+    fields: &[(&[u8], &[u8])],
+    told: Vec<Told>,
+) -> Arc<Mutex<Script>> {
     let script = Script::new();
     {
         let mut s = script.lock().unwrap();
@@ -1941,11 +1972,10 @@ fn tunnel_script(status: &[u8], told: Vec<Told>) -> Arc<Mutex<Script>> {
             name: name.to_vec(),
             value: value.to_vec(),
         };
-        s.on_read.push_back(vec![
-            header(b":status", status),
-            header(b"via", b"h3proxy"),
-            Told::HeadersDone(0),
-        ]);
+        let mut answer = vec![header(b":status", status)];
+        answer.extend(fields.iter().map(|&(name, value)| header(name, value)));
+        answer.push(Told::HeadersDone(0));
+        s.on_read.push_back(answer);
         s.on_read.push_back(told);
     }
     script
@@ -2104,6 +2134,30 @@ fn a_tunnel_an_http3_proxy_refuses_fails_the_attempt() {
     );
 }
 
+/// A 407 has its `Proxy-Authenticate` taken in, traced as C traces it;
+/// a Basic challenge does not make the `CONNECT` go again, and the setup
+/// fails. Only a 407's is taken: a success's is let be.
+#[test]
+fn a_tunnel_s_407_takes_its_challenge_in() {
+    let challenge: &[(&[u8], &[u8])] = &[(b"proxy-authenticate", b"Basic realm=\"x\"")];
+    let script = tunnel_script_with(b"407", challenge, vec![]);
+    let mut m = quic_server(&[b"server flight", b"connect answer", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = through_h3_proxy(&mut m, e);
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(
+        lines(&ran, &["[H3-PROXY] [0] CONNECT: fwd auth"]),
+        ["[H3-PROXY] [0] CONNECT: fwd auth header 'Basic realm=\"x\"'"]
+    );
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n".to_vec();
+    let script = tunnel_script_with(b"200", challenge, vec![Told::Data(0, response)]);
+    let mut m = quic_server(&[b"server flight", b"connect answer", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = through_h3_proxy(&mut m, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert!(lines(&ran, &["CONNECT: fwd auth"]).is_empty());
+}
+
 /// The proxy closing the tunnel's stream mid-response fails the read:
 /// the stream is gone (`cf_h3_proxy_recv`, `!stream`).
 #[test]
@@ -2130,6 +2184,73 @@ fn a_tunnel_an_http3_proxy_closes_fails_the_read() {
     assert_eq!(lines(&ran, &["[H3-PROXY] [0] CLOSED"]).len(), 1);
 }
 
+/// A tunnel whose response, read to its end, comes in one packet and
+/// whose stream the proxy then closes with `code` in the next, which a
+/// read finds with nothing held (`cf_h3_proxy_recv_closed_stream`); and
+/// its script.
+fn tunnel_closed_after(code: u64) -> (Ran, Arc<Mutex<Script>>) {
+    let response = b"HTTP/1.1 200 OK\r\n\r\nok\n".to_vec();
+    let script = tunnel_script(b"200", vec![]);
+    {
+        let mut s = script.lock().unwrap();
+        s.out.extend([vec![5; 60], vec![], vec![6; 40], vec![]]);
+        s.on_read.push_back(vec![Told::Data(0, response)]);
+        s.on_read.push_back(vec![Told::Closed(0, code)]);
+    }
+    let mut m = quic_server(&[
+        b"server flight",
+        b"connect answer",
+        b"ack",
+        b"response",
+        b"close",
+    ]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    (through_h3_proxy(&mut m, e), script)
+}
+
+/// The proxy closing the tunnel's stream cleanly once its answer was
+/// final ends the tunnel's bytes: a response read to its end is whole.
+/// The stream's window was opened to 512 KiB as its DATA came, and by
+/// as much again as the layer above read (`cf_h3_proxy_upd_rx_win`).
+#[test]
+fn a_tunnel_closed_cleanly_ends_its_bytes() {
+    let (ran, script) = tunnel_closed_after(0x100);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"ok\n");
+    assert_eq!(lines(&ran, &["[H3-PROXY] [0] CLOSED"]).len(), 1);
+    assert_eq!(script.lock().unwrap().windows, [(0, 491_520), (0, 22)]);
+}
+
+/// The proxy resetting the tunnel's stream fails the read, said as C
+/// says it: a stream it refused may be tried again, any other reset is
+/// HTTP/3's error.
+#[test]
+fn a_tunnel_reset_fails_the_read_as_c_says_it() {
+    let (ran, _) = tunnel_closed_after(0x10b);
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::RecvError),
+        "{:#?}",
+        ran.seen.text()
+    );
+    assert_eq!(
+        lines(&ran, &["[H3-PROXY] [0] RESET", "HTTP/3 stream"]),
+        expect(
+            "[H3-PROXY] [0] RESET: error 267
+            HTTP/3 stream 0 refused by server, try again on a new connection"
+        )
+    );
+    let (ran, _) = tunnel_closed_after(0x102);
+    assert_eq!(ran.result, Err(ErrorKind::Http3), "{:#?}", ran.seen.text());
+    assert_eq!(
+        lines(&ran, &["[H3-PROXY] [0] RESET", "HTTP/3 stream"]),
+        expect(
+            "[H3-PROXY] [0] RESET: error 258
+            HTTP/3 stream 0 reset by server (error 0x102 INTERNAL_ERROR)"
+        )
+    );
+}
+
 /// The proxy a CONNECT-UDP goes through, at `127.0.0.1`.
 const UDP_PROXY_PORT: u16 = 3128;
 
@@ -2140,6 +2261,40 @@ fn capsule(payload: &[u8]) -> Vec<u8> {
     let mut c = head[..len].to_vec();
     c.extend_from_slice(payload);
     c
+}
+
+/// A CONNECT-UDP the proxy answers with anything but switching
+/// protocols, or a success, fails the tunnel, said as C says it.
+#[test]
+fn a_connect_udp_refused_fails_the_tunnel() {
+    let script = get_script(b"123456789");
+    let head = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec();
+    let talk = Conversation::replies(&[&head], false).per_send();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], UDP_PROXY_PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(
+        lines(&ran, &["CONNECT-UDP tunnel"]),
+        ["CONNECT-UDP tunnel failed, response 403"]
+    );
 }
 
 /// HTTP/3 alone through an HTTP proxy goes over its CONNECT-UDP

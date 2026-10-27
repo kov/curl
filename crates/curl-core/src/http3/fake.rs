@@ -126,6 +126,9 @@ pub struct Script {
     pub early: Option<EarlyStart>,
     /// The peer rejects the early data sent.
     pub early_rejected: bool,
+    /// The connection may send nothing more now: its congestion window
+    /// or the peer's limit on its data is used up.
+    pub no_send_room: bool,
 }
 
 /// A request body as the binding holds it: what was written, handed to
@@ -542,7 +545,7 @@ impl Connection for FakeConnection {
     }
 
     fn send_room(&self) -> bool {
-        true
+        !self.script.lock().unwrap().no_send_room
     }
 
     fn failed(&mut self, error: QuicError) -> bool {

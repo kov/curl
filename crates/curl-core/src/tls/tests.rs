@@ -232,3 +232,24 @@ fn an_alpn_offer_is_put_as_c_puts_it() {
     assert_eq!(Chosen::named(b"h3"), Some(Chosen::H3));
     assert_eq!(Chosen::H3.wire(), b"\x02h3");
 }
+
+/// A session is an HTTPS proxy's when its layer is the TLS to an HTTPS
+/// proxy or the QUIC to an HTTP/3 one (`Curl_ssl_cf_is_proxy`), and the
+/// origin's otherwise: what OpenSSL's verbose lines call its certificate.
+#[test]
+fn a_session_is_a_proxy_s_as_its_layer_is() {
+    let identity = TryArc::try_new(identity(|_| {})).unwrap();
+    let origin = Peer::new(
+        crate::proto::http::HTTPS,
+        b"example.com".to_vec(),
+        443,
+        None,
+    );
+    let peer = SessionPeer::new(&identity, &origin, None, &"test", crate::conn::Dial::Tcp).unwrap();
+    let mut notes = Notes::default();
+    for component in Component::ALL {
+        let cx = TlsCx::new(&mut notes, component, &peer);
+        let proxy = matches!(component, Component::SslProxy | Component::H3Proxy);
+        assert_eq!(cx.for_proxy(), proxy, "{component:?}");
+    }
+}

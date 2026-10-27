@@ -415,6 +415,56 @@ mod tests {
         );
     }
 
+    /// An HTTPS proxy's TLS shows connected once it is made, its tunnel's
+    /// filter then under way above it.
+    #[test]
+    fn an_https_proxy_s_tls_made_shows_connected() {
+        let scheme = Scheme {
+            name: "http",
+            reuse: true,
+        };
+        let peer =
+            |name: &[u8], port| TryArc::try_new(Peer::new(scheme, name.to_vec(), port, None));
+        let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
+        let proxy = crate::conn::ProxyRoute::new(
+            crate::options::ProxyType::Https,
+            peer(b"p.test", 443).unwrap(),
+            None,
+            false,
+            false,
+        )
+        .secured(tls)
+        .unwrap();
+        let route = Tcp {
+            origin: peer(b"o.test", 80).unwrap(),
+            via: None,
+            ip: IpVersion::Any,
+            proxy: Some(proxy),
+            tls: None,
+            local: None,
+            delegation: Default::default(),
+            dial: crate::conn::Dial::Tcp,
+        };
+        let shown = |made, under_way| {
+            Chain::of(
+                &route,
+                Head::default(),
+                SetupPoint::Dialed(made),
+                under_way,
+                false,
+            )
+            .to_string()
+        };
+        assert_eq!(
+            shown(Made::default(), Some(Component::SslProxy)),
+            "[0][!DNS][!SETUP][!HTTP-PROXY][!SSL-PROXY][HAPPY-EYEBALLS][TCP]"
+        );
+        assert_eq!(
+            shown(Made::PROXY_TLS, Some(Component::HttpProxy)),
+            "[0][!DNS][!SETUP][!HTTP-PROXY][SSL-PROXY][HAPPY-EYEBALLS][TCP]"
+        );
+    }
+
     /// An HTTP/3 proxy's tunnel is the race's attempt in C, held apart
     /// from the chain until it connects: the chain is the race's until
     /// then, then the attempt's filters below HAPPY-EYEBALLS, with no
@@ -531,6 +581,10 @@ mod tests {
         assert_eq!(
             shown(Made::TUNNEL, Some(Component::Http3), true),
             "[0][!DNS][!SETUP][!HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]"
+        );
+        assert_eq!(
+            shown(Made::TUNNEL | Made::QUIC, None, true),
+            "[0][!DNS][!SETUP][HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]"
         );
         let up = Chain::connected(&route, Head::default(), false, Component::H1Proxy);
         assert_eq!(

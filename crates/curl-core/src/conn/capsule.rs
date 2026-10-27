@@ -491,6 +491,8 @@ mod tests {
         /// How much each send takes; all, once the steps are used.
         takes: VecDeque<usize>,
         sent: Vec<u8>,
+        /// A flush leaves something unsent.
+        stuck: bool,
     }
 
     #[derive(Debug)]
@@ -517,6 +519,10 @@ mod tests {
             let n = s.takes.pop_front().unwrap_or(bytes.len()).min(bytes.len());
             s.sent.extend(&bytes[..n]);
             Ok(NonZeroUsize::new(n).map_or(Sent::WouldBlock, Sent::Bytes))
+        }
+
+        fn flush(&mut self, _: &mut dyn LayerCx, _: Below<'_>) -> io::Result<bool> {
+            Ok(!self.0.lock().unwrap().stuck)
         }
     }
 
@@ -566,6 +572,12 @@ mod tests {
         f(&mut |call| call(&mut capsules, Below::new(&mut layers, &*socket), &mut cx));
     }
 
+    /// The layer is C's `CAPSULE` filter, which the chain's trace names.
+    #[test]
+    fn the_layer_is_the_capsule_filter() {
+        assert_eq!(CapsuleLayer::default().filter(), Some(Component::Capsule));
+    }
+
     /// Each datagram sent is one capsule, taken whole; what the layers
     /// below do not take waits, goes before the next, and goes on a
     /// flush, which the poll asks for meanwhile.
@@ -598,6 +610,22 @@ mod tests {
             });
             call(&mut |c, below, cx| assert!(c.flush(cx, below).unwrap()));
             assert!(script.lock().unwrap().sent.ends_with(&capsule(b"three")));
+        });
+    }
+
+    /// A flush is done only when the layers below are done too, as C's
+    /// reaches every filter of the connection (`Curl_conn_flush`).
+    #[test]
+    fn a_flush_waits_for_the_layers_below() {
+        let script = Arc::new(Mutex::new(Script::default()));
+        script.lock().unwrap().stuck = true;
+        over(&script, |call| {
+            call(&mut |c, mut below, cx| {
+                c.send(cx, below.reborrow(), b"one").unwrap();
+                assert!(!c.flush(cx, below).unwrap());
+            });
+            script.lock().unwrap().stuck = false;
+            call(&mut |c, below, cx| assert!(c.flush(cx, below).unwrap()));
         });
     }
 
@@ -644,6 +672,7 @@ mod tests {
                     Recv::Data(NonZeroUsize::new(6).unwrap())
                 );
                 assert_eq!(&buf[..6], b"second");
+                assert!(!c.data_pending(below.reborrow()), "none waits");
                 assert_eq!(c.recv(cx, below, &mut buf).unwrap(), Recv::WouldBlock);
             });
             script.lock().unwrap().incoming.push_back(vec![5, 1, 0]);
@@ -657,6 +686,80 @@ mod tests {
                 );
             });
         });
+    }
+
+    /// A capsule cut short waits for the rest while the buffer has room
+    /// for it; one longer than all the buffer holds fails the read, said
+    /// as C says it (`Curl_capsule_process_udp_raw` over a full buffer).
+    #[test]
+    fn a_part_waits_and_a_capsule_past_the_buffer_fails() {
+        let script = Arc::new(Mutex::new(Script::default()));
+        let whole = capsule(b"whole");
+        script
+            .lock()
+            .unwrap()
+            .incoming
+            .push_back(whole[..5].to_vec());
+        over(&script, |call| {
+            call(&mut |c, mut below, cx| {
+                let mut buf = [0; 64];
+                assert_eq!(
+                    c.recv(cx, below.reborrow(), &mut buf).unwrap(),
+                    Recv::WouldBlock
+                );
+                assert!(cx.0.is_empty());
+            });
+            script
+                .lock()
+                .unwrap()
+                .incoming
+                .push_back(whole[5..].to_vec());
+            call(&mut |c, below, cx| {
+                let mut buf = [0; 64];
+                assert_eq!(
+                    c.recv(cx, below, &mut buf).unwrap(),
+                    Recv::Data(NonZeroUsize::new(5).unwrap())
+                );
+                assert_eq!(&buf[..5], b"whole");
+            });
+            script
+                .lock()
+                .unwrap()
+                .incoming
+                .push_back(capsule(&vec![1; 70000]));
+            call(&mut |c, below, cx| {
+                let mut buf = vec![0; 70000];
+                assert!(c.recv(cx, below, &mut buf).is_err());
+                assert_eq!(
+                    cx.0,
+                    ["Error! Capsule does not fit the receive buffer: 70000"]
+                );
+            });
+        });
+    }
+
+    /// A read takes from below in chunks of 16 KiB, the first only what
+    /// fills the one begun, until it holds four of them, C's buffer
+    /// (`CAPSULE_CHUNK_SIZE`, `CAPSULE_RECV_CHUNKS`), and leaves the rest
+    /// there.
+    #[test]
+    fn a_read_takes_four_chunks_of_16_kib_from_below() {
+        let script = Arc::new(Mutex::new(Script::default()));
+        let payload = vec![7; 16000];
+        let mut stream = [0; 5].map(|_| capsule(&payload)).concat();
+        let rest = stream.split_off(100);
+        script.lock().unwrap().incoming.push_back(rest);
+        over_with(&script, CapsuleLayer::holding(stream), |call| {
+            call(&mut |c, below, cx| {
+                let mut buf = vec![0; 16000];
+                assert_eq!(
+                    c.recv(cx, below, &mut buf).unwrap(),
+                    Recv::Data(NonZeroUsize::new(16000).unwrap())
+                );
+            });
+        });
+        let left: usize = script.lock().unwrap().incoming.iter().map(Vec::len).sum();
+        assert_eq!(5 * 16004 - left, 4 * 16 * 1024);
     }
 
     /// What the proxy sent after its answer, held when the layer goes on,

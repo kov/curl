@@ -978,7 +978,9 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
     its inline sockets.
 63. **Alt-svc to h3**, and HTTP/3's early data (0-RTT), its transport parameters kept with the
     session's ticket.
-64. **The HTTP/3 proxy** (`--proxy-http3`, CONNECT-UDP; pytest test_60).
+64. **The HTTP/3 proxy** (`--proxy-http3`, CONNECT-UDP; pytest test_60). Always built, with no
+    switch: C's is experimental and off unless built with `USE_PROXY_HTTP3`, but for its code's
+    youth, not its standards (RFC 9297, 9298), and the reference build has it on.
 
 ## Milestone 6: the other protocols
 

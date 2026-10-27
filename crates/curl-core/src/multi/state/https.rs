@@ -207,7 +207,7 @@ fn answered<H: Host>(route: &Tcp, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKin
 
 /// HTTP/2 is offered where a library speaks it and the request may.
 fn h2_offered<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> bool {
-    c.proto.http_versions(cx.easy().options()).h2 && cx.easy().libraries().h2.is_some()
+    c.proto.http_versions().h2 && cx.easy().libraries().h2.is_some()
 }
 
 /// The second attempt, as the origin's record is known to be none: the
@@ -217,7 +217,7 @@ fn h2_offered<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> bool {
 fn choose_second<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>, first: Alpn) -> Second {
     let hc = Component::HttpsConnect;
     trace::of(cx, hc, format_args!("HTTPS-RR not available"));
-    let h1 = c.proto.http_versions(cx.easy().options()).h1;
+    let h1 = c.proto.http_versions().h1;
     let second = match first {
         Alpn::H3 if h2_offered(c, cx) => Alpn::H2,
         Alpn::H3 if h1 => Alpn::H1,
@@ -256,7 +256,7 @@ pub(super) fn start<H: Host>(
     let first = match dial {
         Dial::Quic => Alpn::H3,
         Dial::Tcp => {
-            if c.proto.http_versions(cx.easy().options()).h3
+            if c.proto.http_versions().h3
                 && let Some((kind, why)) = super::quic_refused(&c.route, true)
             {
                 trace::fail(cx, kind, format_args!("{why}"));

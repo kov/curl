@@ -164,9 +164,9 @@ witness: curl-core proto::http::tests::h2::an_alternative_in_http_2_is_reached_i
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::h2::an_alternative_in_http_2_is_reached_in_http_2
 --- old
-            Some(crate::altsvc::Alpn::H2) => (self.h1_only, self.h2_only) = (false, true),
+                (self.neg.wanted, self.neg.allowed) = (only(false, true), only(false, true));
 --- new
-            Some(crate::altsvc::Alpn::H2) => {}
+
 
 === a response's Alt-Svc is kept as HTTP/1's whatever it came in
 file: crates/curl-core/src/proto/http.rs

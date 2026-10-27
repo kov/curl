@@ -9,7 +9,7 @@ use crate::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 /// it, beyond the method and the first origin, which any protocol's
 /// does. The engine keeps it for HTTP between the requests and never
 /// reads it.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Inherited {
     /// The application's custom method is no longer sent
     /// (`state.http_ignorecustom`).
@@ -20,17 +20,20 @@ pub(crate) struct Inherited {
     /// A 417 refused `Expect: 100-continue`: the library adds it no more
     /// (`state.disableexpect`).
     pub(in crate::proto) no_expect: bool,
-    /// An HTTP/2 stream said HTTP/1.1 is required: the requests after it
-    /// speak HTTP/1 only (`http_neg.wanted` and `allowed` set to
-    /// `CURL_HTTP_V1x`).
-    pub(in crate::proto) h1_only: bool,
+    /// The versions the requests may speak, as the last left them
+    /// (`state.http_neg`).
+    pub(in crate::proto) neg: crate::proto::http::Negotiation,
 }
 
 impl Inherited {
-    /// HTTP/1.1 was required: the requests after this one speak HTTP/1
-    /// only.
-    pub(crate) fn downgrade(&mut self) {
-        self.h1_only = true;
+    /// What a transfer asking for `version` starts with.
+    pub(crate) fn new(version: crate::options::HttpVersion) -> Inherited {
+        Inherited {
+            ignore_custom: false,
+            http10: false,
+            no_expect: false,
+            neg: crate::proto::http::Negotiation::new(version),
+        }
     }
 }
 

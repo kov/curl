@@ -567,34 +567,34 @@ impl ProtoState {
 
     /// What an HTTP request may speak, as C negotiates it; none for
     /// another protocol.
-    pub(crate) fn negotiation(&self, options: &Options) -> Option<http::Negotiation> {
+    pub(crate) fn negotiation(&self) -> Option<http::Negotiation> {
         match self {
-            ProtoState::Http(r) => Some(r.negotiation(options.http.version)),
+            ProtoState::Http(r) => Some(r.negotiation()),
             _ => None,
+        }
+    }
+
+    /// HTTP/1.1 was required: the request and those after it speak HTTP/1
+    /// only.
+    pub(crate) fn downgrade(&mut self) {
+        if let ProtoState::Http(r) = self {
+            r.downgrade();
         }
     }
 
     /// The HTTP versions a connection the request reuses or joins may
     /// speak (`http_neg.allowed`): with no version asked for, HTTP/3 too,
     /// though it is not wanted; any, for another protocol.
-    pub(crate) fn allowed_versions(&self, options: &Options) -> http::Versions {
-        match self.negotiation(options) {
-            Some(neg) => http::Versions {
-                h1: neg.allowed.h1,
-                h2: neg.allowed.h2,
-                h3: neg.allowed.h3,
-            },
-            None => http::Versions::ALL,
-        }
+    pub(crate) fn allowed_versions(&self) -> http::Versions {
+        self.negotiation()
+            .map_or(http::Versions::ALL, |neg| neg.allowed_versions())
     }
 
     /// The HTTP versions the request wants (`http_neg.wanted`); any, for
     /// another protocol.
-    pub(crate) fn http_versions(&self, options: &Options) -> http::Versions {
-        match self {
-            ProtoState::Http(r) => r.versions(options.http.version),
-            _ => http::Versions::ALL,
-        }
+    pub(crate) fn http_versions(&self) -> http::Versions {
+        self.negotiation()
+            .map_or(http::Versions::ALL, |neg| neg.versions())
     }
 
     /// Whether the transfer has found what its connection speaks: a

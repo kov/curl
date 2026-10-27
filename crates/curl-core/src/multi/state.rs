@@ -118,7 +118,7 @@ impl Run {
             first: None,
             method: Method::Get,
             course: Course::START,
-            http: Inherited::default(),
+            http: Inherited::new(crate::options::HttpVersion::Any),
             alive: false,
         }
     }
@@ -2083,7 +2083,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 // (`multistate_performing`).
                 Err(ErrorKind::Http2Stream) if x.proto.h1_required() => {
                     trace::info(cx, format_args!("Downgrades to HTTP/1.1"));
-                    run.http.downgrade();
+                    x.proto.downgrade();
                     x.lease.get().mark_close();
                     trace::reset_fail(cx);
                     (
@@ -2434,7 +2434,7 @@ fn connecting<H: Host>(
         }
         if let Some(SetupPoint::Racing { started: false }) = c.lease.reached() {
             https::start(&mut c, &mut run.deadlines, cx);
-            let h3_only = c.proto.http_versions(cx.easy().options()).h3_only();
+            let h3_only = c.proto.http_versions().h3_only();
             if race_starts(&mut c, cx.now(), h3_only).is_err() {
                 return (
                     TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
@@ -3694,7 +3694,7 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
     run.first = None;
     run.method = cx.easy().options().method;
     run.course = Course::START;
-    run.http = Inherited::default();
+    run.http = Inherited::new(cx.easy().options().http.version);
     let options = cx.easy().options();
     let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);
     cx.easy_mut().auth.start(want, proxy_want);
@@ -4268,7 +4268,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
             Ok(Some(via)) => Some(via),
             // No connect-to entry: an alternative service, then.
             Ok(None) => {
-                let neg = proto.negotiation(cx.easy().options());
+                let neg = proto.negotiation();
                 match alt_svc(cx, &origin, &scheme, neg) {
                     Ok(Some(AltPeer { via, speaks })) => {
                         alt_used = Some(speaks);
@@ -4350,7 +4350,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     // HTTP/3 alone must be possible (`Curl_http_setup_conn`), and is
     // dialed over QUIC, as the HTTPS connect's one attempt is
     // (`cf_hc_baller_assign`).
-    let versions = proto.http_versions(cx.easy().options());
+    let versions = proto.http_versions();
     if versions.h3_only() {
         if let Err(kind) = may_http3(cx, &route, secured) {
             return TransferState::Init.fail(kind);
@@ -4967,7 +4967,7 @@ fn acquire<H: Host>(
     let last = cx.easy().last_conn.map(|l| l.id);
     // What it allows, not only what it wants: a connection in HTTP/3 serves
     // one that asked for no version (`url_match_http_version`).
-    let versions = proto.allowed_versions(cx.easy().options());
+    let versions = proto.allowed_versions();
     // An HTTP transfer that may speak HTTP/2 or HTTP/3 shares a
     // connection that multiplexes, as the multi lets it
     // (`xfer_may_multiplex`).

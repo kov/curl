@@ -17,7 +17,6 @@ use crate::http2::{BodyRead, DEFAULT_WEIGHT, Event, H2Error, Heard, StreamId};
 use crate::multi::PushFields;
 use crate::multi::push::Full;
 use crate::multi::state::{Offered, start_pushed};
-use crate::options::HttpVersion as Wanted;
 use crate::proto::http2::{
     EgressFailed, GoAway, H2Conn, SEND_MAX, STREAM_WINDOW_MAX, WindowFailed, fields_of, settings,
 };
@@ -317,7 +316,7 @@ impl Request {
             return Ok(());
         }
         let library = cx.easy().libraries().h2;
-        let prior = cx.easy().options().http.version == Wanted::Http2Prior && !self.h1_only;
+        let prior = self.neg.prior && self.neg.wanted.h2;
         let h2 = match library {
             None => false,
             Some(_) if alpn == Some(Chosen::H2) => true,
@@ -356,11 +355,10 @@ impl Request {
         lease: &ConnLease,
         h2: bool,
     ) -> Result<Option<Vec<u8>>, ErrorKind> {
-        let wanted = cx.easy().options().http.version;
         let library = cx.easy().libraries().h2;
-        let Some(library) = library.filter(|_| {
-            !h2 && wanted == Wanted::Http2 && !self.h1_only && !lease.conn().over_tls()
-        }) else {
+        let Some(library) = library
+            .filter(|_| !h2 && self.neg.upgrade && self.neg.wanted.h2 && !lease.conn().over_tls())
+        else {
             return Ok(None);
         };
         let mut payload = [0u8; 80];
@@ -1333,7 +1331,7 @@ impl Request {
     ) -> Result<Request, ErrorKind> {
         let scheme = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;
         let secured = scheme.eq_ignore_ascii_case(b"https");
-        let inherited = Inherited::default();
+        let inherited = Inherited::new(cx.easy().options().http.version);
         let before = Before {
             first: None,
             method: Method::Get,

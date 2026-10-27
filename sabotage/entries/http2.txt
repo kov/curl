@@ -176,7 +176,7 @@ witness: curl-core proto::http::tests::h2::a_connection_shutting_down_says_goawa
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h2::http_1_1_required_downgrades_the_request
 --- old
-                    run.http.downgrade();
+                    x.proto.downgrade();
 --- new
 
 === a connection is reused whatever HTTP version it speaks

@@ -54,30 +54,6 @@ pub enum Version {
     Http3,
 }
 
-impl Version {
-    /// HTTP/2 is one of them (`CURL_HTTP_V2x`).
-    pub(crate) fn h2(self) -> bool {
-        matches!(
-            self,
-            Version::Any
-                | Version::Http2
-                | Version::Http2Tls
-                | Version::Http2Prior
-                | Version::Http3
-        )
-    }
-
-    /// HTTP/1 is one of them (`CURL_HTTP_V1x`).
-    pub(crate) fn h1(self) -> bool {
-        !matches!(self, Version::Http2Prior | Version::Http3Only)
-    }
-
-    /// HTTP/3 is one of them (`CURL_HTTP_V3x`).
-    pub(crate) fn h3(self) -> bool {
-        matches!(self, Version::Http3Only | Version::Http3)
-    }
-}
-
 /// The version a request goes in (`httpversion_sent`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SentIn {

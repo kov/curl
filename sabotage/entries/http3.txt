@@ -295,9 +295,9 @@ witness: curl-core proto::http::tests::h3_trace::a_callback_reaches_the_quic_con
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::an_http3_connection_serves_a_transfer_that_asks_for_no_version
 --- old
-    let versions = proto.allowed_versions(cx.easy().options());
+    let versions = proto.allowed_versions();
 --- new
-    let versions = proto.http_versions(cx.easy().options());
+    let versions = proto.http_versions();
 
 === a connection serves only a transfer that dials as it did
 file: crates/curl-core/src/conn/mod.rs
@@ -326,9 +326,9 @@ features: debug-hooks
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::h3_trace::a_shared_connection_keeps_its_clock_under_another_multi
 --- old
-                h3: set.h3 || open,
+            HttpVersion::Http3Only => (set(false, false, true), None),
 --- new
-                h3: open,
+            HttpVersion::Http3Only => (set(false, false, true), Some(set(false, false, false))),
 
 === the second attempt starts before the soft timeout
 file: crates/curl-core/src/multi/state/https.rs

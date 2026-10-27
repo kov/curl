@@ -296,26 +296,81 @@ pub(crate) struct Request {
     /// (`upgr101 == UPGR101_H2`), which a 101 takes up; until its answer
     /// (`bits.upgrade_in_progress`).
     upgrade: Option<Vec<u8>>,
-    /// A request before it was told HTTP/1.1 is required, or an
-    /// alternative service switched it to HTTP/1: it speaks HTTP/1 only.
-    h1_only: bool,
-    /// An alternative service switched it to HTTP/2: it speaks HTTP/2
-    /// only (`neg->wanted = neg->allowed = CURL_HTTP_V2x`).
-    h2_only: bool,
+    /// The versions it may speak, its transfer's, which it changes for
+    /// the requests after it (`state.http_neg`).
+    neg: Negotiation,
 }
 
-/// What a request may speak, as C negotiates it (`http_negotiation`):
-/// the versions wanted and allowed, HTTP/2 by prior knowledge, and
-/// HTTP/1.0 alone.
-#[derive(Clone, Copy, Debug)]
+/// What a transfer's requests may speak, as C negotiates it
+/// (`http_negotiation`): the versions wanted and allowed, HTTP/2 by prior
+/// knowledge or by an upgrade over clear text, and HTTP/1.0 alone. Set as
+/// the transfer starts, from the version the application asks for, and
+/// changed as its requests learn more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Negotiation {
     pub(crate) wanted: crate::altsvc::Versions,
     pub(crate) allowed: crate::altsvc::Versions,
+    /// HTTP/2 by prior knowledge, while it is wanted
+    /// (`h2_prior_knowledge`).
     pub(crate) prior: bool,
+    /// HTTP/2 by an upgrade over clear text, while it is wanted
+    /// (`h2_upgrade`).
+    pub(crate) upgrade: bool,
     pub(crate) only_10: bool,
 }
 
 impl Negotiation {
+    /// What a transfer asking for `version` may speak
+    /// (`Curl_http_neg_init`): with no version asked for, HTTP/3 is
+    /// allowed though not wanted.
+    pub(crate) fn new(version: HttpVersion) -> Negotiation {
+        let set = |h1, h2, h3| crate::altsvc::Versions { h1, h2, h3 };
+        let (wanted, allowed) = match version {
+            HttpVersion::Http10 | HttpVersion::Http11 => (set(true, false, false), None),
+            HttpVersion::Http2 | HttpVersion::Http2Tls => (set(true, true, false), None),
+            HttpVersion::Http2Prior => (set(false, true, false), None),
+            HttpVersion::Http3 => (set(true, true, true), None),
+            HttpVersion::Http3Only => (set(false, false, true), None),
+            HttpVersion::Any => (set(true, true, false), Some(set(true, true, true))),
+        };
+        Negotiation {
+            wanted,
+            allowed: allowed.unwrap_or(wanted),
+            prior: version == HttpVersion::Http2Prior,
+            upgrade: version == HttpVersion::Http2,
+            only_10: version == HttpVersion::Http10,
+        }
+    }
+
+    /// HTTP/1 alone from now on, as HTTP/1.1 was required.
+    pub(crate) fn h1_only(&mut self) {
+        let h1 = crate::altsvc::Versions {
+            h1: true,
+            h2: false,
+            h3: false,
+        };
+        (self.wanted, self.allowed) = (h1, h1);
+    }
+
+    /// The versions wanted (`http_neg.wanted`).
+    pub(crate) fn versions(&self) -> Versions {
+        Versions {
+            h1: self.wanted.h1,
+            h2: self.wanted.h2,
+            h3: self.wanted.h3,
+        }
+    }
+
+    /// The versions a connection the request reuses or joins may speak
+    /// (`http_neg.allowed`).
+    pub(crate) fn allowed_versions(&self) -> Versions {
+        Versions {
+            h1: self.allowed.h1,
+            h2: self.allowed.h2,
+            h3: self.allowed.h3,
+        }
+    }
+
     /// The sets as C's bits say them (`CURL_HTTP_V1x` and the rest).
     pub(crate) fn bits(set: crate::altsvc::Versions) -> u8 {
         u8::from(set.h1) | u8::from(set.h2) << 1 | u8::from(set.h3) << 2
@@ -449,51 +504,15 @@ enum Body {
 }
 
 impl Request {
-    /// The HTTP versions it may speak (`http_neg.allowed`): the
-    /// application's, or HTTP/1 alone once HTTP/1.1 was required.
-    pub(crate) fn versions(&self, wanted: HttpVersion) -> Versions {
-        if self.h1_only {
-            Versions {
-                h1: true,
-                h2: false,
-                h3: false,
-            }
-        } else if self.h2_only {
-            Versions {
-                h1: false,
-                h2: true,
-                h3: false,
-            }
-        } else {
-            Versions {
-                h1: wanted.h1(),
-                h2: wanted.h2(),
-                h3: wanted.h3(),
-            }
-        }
+    /// What it may speak, as C negotiates it.
+    pub(crate) fn negotiation(&self) -> Negotiation {
+        self.neg
     }
 
-    /// What the request may speak as C negotiates it for `wanted`
-    /// (`Curl_http_neg_init`, and what a request after it was changed
-    /// to): with no version asked for, HTTP/3 is allowed though not
-    /// wanted.
-    pub(crate) fn negotiation(&self, wanted: HttpVersion) -> Negotiation {
-        let versions = self.versions(wanted);
-        let set = crate::altsvc::Versions {
-            h1: versions.h1,
-            h2: versions.h2,
-            h3: versions.h3,
-        };
-        let open = wanted == HttpVersion::Any && !self.h1_only && !self.h2_only;
-        Negotiation {
-            wanted: set,
-            allowed: crate::altsvc::Versions {
-                h3: set.h3 || open,
-                ..set
-            },
-            prior: wanted == HttpVersion::Http2Prior && !self.h1_only,
-            only_10: wanted == HttpVersion::Http10 && !self.h1_only && !self.h2_only,
-        }
+    /// HTTP/1.1 was required: it and the requests after it speak HTTP/1
+    /// only.
+    pub(crate) fn downgrade(&mut self) {
+        self.neg.h1_only();
     }
 
     /// Whether the request has found what its connection speaks, short
@@ -613,8 +632,7 @@ impl Request {
             wire: Wire::H1,
             refused: false,
             upgrade: None,
-            h1_only: before.http.h1_only,
-            h2_only: false,
+            neg: before.http.neg,
         })
     }
 
@@ -650,9 +668,15 @@ impl Request {
         via: &Peer,
         speaks: Option<crate::altsvc::Alpn>,
     ) -> Result<(), OutOfMemory> {
+        let only = |h1, h2| crate::altsvc::Versions { h1, h2, h3: false };
         match speaks {
-            Some(crate::altsvc::Alpn::H1) => (self.h1_only, self.h2_only) = (true, false),
-            Some(crate::altsvc::Alpn::H2) => (self.h1_only, self.h2_only) = (false, true),
+            Some(crate::altsvc::Alpn::H1) => {
+                (self.neg.wanted, self.neg.allowed) = (only(true, false), only(true, false));
+                self.neg.only_10 = false;
+            }
+            Some(crate::altsvc::Alpn::H2) => {
+                (self.neg.wanted, self.neg.allowed) = (only(false, true), only(false, true));
+            }
             // No HTTP/3 is looked up.
             Some(crate::altsvc::Alpn::H3) | None => {}
         }
@@ -2700,6 +2724,8 @@ impl Request {
         next: &AfterRequest,
         inherited: &mut Inherited,
     ) -> Result<(), ErrorKind> {
+        // What it learned of the versions is the transfer's.
+        inherited.neg = self.neg;
         let Some(head) = self.head.as_ref() else {
             // The request was never made.
             return result;

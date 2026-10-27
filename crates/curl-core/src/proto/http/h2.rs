@@ -976,9 +976,9 @@ impl Request {
             self.stream().failed = Some(kind);
         }
         if goaway.is_some() {
-            // No new request goes on it (`Curl_multi_connchanged`), and
-            // each stream on it learns so.
-            lease.get().mark_close();
+            // Each stream on it learns so (`Curl_multi_connchanged`); no
+            // new request goes on it, as it takes no more transfers than
+            // it has (`cf_h2_query`).
             self.wake_others(cx, lease);
         }
         let fed = fed.map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;

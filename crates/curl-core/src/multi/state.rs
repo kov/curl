@@ -684,6 +684,22 @@ fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done
     }
 }
 
+/// HTTP/3's session said how many transfers connection `number` takes,
+/// with `in_use` on it (`cf_ngtcp2_query`).
+fn trace_max_concurrent<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    number: crate::conn::ConnNumber,
+    max: u32,
+    in_use: u32,
+) {
+    let n = number.get();
+    trace::of(
+        cx,
+        Component::Http3,
+        format_args!("query conn[{n}]: MAX_CONCURRENT -> {max} ({in_use} in use)"),
+    );
+}
+
 /// The readers kept for the next request are rewound
 /// (`Curl_client_start`).
 fn client_start<H: Host>(cx: &mut StepCx<'_, H>) {
@@ -714,11 +730,24 @@ fn release<H: Host>(
     // has its connection out to say what became of it.
     let mut lease = lease;
     cx.rest.caches.pool.check_out(&mut lease);
+    // How many transfers its session takes, as C asks a connection no
+    // transfer is on any more that it would keep (`multi_done_locked`):
+    // none once its server shut it down. Said only if it was asked.
+    let asked = match lease.is_up() {
+        true => lease.conn().session().map(|s| {
+            use crate::conn::mux::Mux as _;
+            let max = s.max_concurrent(0, cx.max_streams());
+            (max, s.says_max_concurrent())
+        }),
+        false => None,
+    };
     let finish = Finish {
         premature,
         forbid_reuse: cx.easy().options().limits.reuse.forbid,
         reserve: cx.easy().options().connect_only.reserves(),
+        shut_down: asked.is_some_and(|(max, _)| max == 0),
     };
+    let number = lease.is_up().then(|| lease.conn().number());
     let now = cx.rest.now;
     let limit = Limit {
         max: cx.rest.tell.limits.max_connects,
@@ -765,6 +794,22 @@ fn release<H: Host>(
             format_args!("Connection still in use {in_use}, no more multi_done now!"),
         );
     }
+    let kept_or_shut = matches!(
+        released,
+        Released::Idle { .. } | Released::Evicted(_) | Released::ShutDown { .. }
+    );
+    if kept_or_shut && let (Some((max, true)), Some(number)) = (asked, number) {
+        trace_max_concurrent(cx, number, max, 0);
+    }
+    if let Released::ShutDown { number: n, .. } = released {
+        let (host, port) = origin.map_or((Bytes(b""), 0), |o| (Bytes(o.name()), o.port()));
+        mstate::trace(
+            cx,
+            format_args!(
+                "multi_done, conn {n} to {host}:{port} was shutdown by server, not reusing"
+            ),
+        );
+    }
     if let Released::Closed(n) | Released::Terminated(n) = &released {
         // A connection to no host, a file's, has an empty name.
         let (host, port) = origin.map_or((Bytes(b""), 0), |o| (Bytes(o.name()), o.port()));
@@ -800,8 +845,16 @@ fn release<H: Host>(
                 format_args!("Connection {n} to host {host}:{port} left intact"),
             );
         }
-        Released::Closed(n) => trace::info(cx, format_args!("shutting down connection {n}")),
-        Released::Terminated(n) => trace::info(cx, format_args!("closing connection {n}")),
+        Released::Closed(n)
+        | Released::ShutDown {
+            number: n,
+            premature: false,
+        } => trace::info(cx, format_args!("shutting down connection {n}")),
+        Released::Terminated(n)
+        | Released::ShutDown {
+            number: n,
+            premature: true,
+        } => trace::info(cx, format_args!("closing connection {n}")),
         Released::InUse(_) => {}
     }
     // Room, perhaps, for one waiting (`multi_done`).
@@ -4576,10 +4629,11 @@ fn acquire<H: Host>(
     };
     let last = cx.easy().last_conn.map(|l| l.id);
     let versions = proto.http_versions(cx.easy().options());
-    // An HTTP transfer that may speak HTTP/2 shares a connection that
-    // multiplexes, as the multi lets it (`xfer_may_multiplex`).
+    // An HTTP transfer that may speak HTTP/2 or HTTP/3 shares a
+    // connection that multiplexes, as the multi lets it
+    // (`xfer_may_multiplex`).
     let http = matches!(proto, ProtoState::Http(_));
-    let multiplex = (cx.rest.tell.limits.multiplex && http && versions.h2)
+    let multiplex = (cx.rest.tell.limits.multiplex && http && (versions.h2 || versions.h3))
         .then_some(cx.rest.tell.limits.max_streams);
     let pipewait = cx.easy().options().http.pipewait;
     let found = if pool::searches(&route, rules) {
@@ -4681,6 +4735,11 @@ fn acquire<H: Host>(
                 ),
             ),
             PoolNote::Multiplexed => trace::info(cx, format_args!("Multiplexed connection found")),
+            PoolNote::MaxConcurrent {
+                number,
+                max,
+                in_use,
+            } => trace_max_concurrent(cx, number, max, in_use),
             PoolNote::NotOpenEnough(n) => trace::info(
                 cx,
                 format_args!("Connection {n} is not open enough, cannot reuse"),

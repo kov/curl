@@ -961,8 +961,9 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
       head a line at a time; a stream closed early, reset or refused fails as C's; the
       library's timer runs as the multi's `QUIC` timer. Against caddy a GET's trace is C's.
     - (c) **Streams multiplexed and the connection kept**: several requests on one connection,
-      `MAX_CONCURRENT`, its health checked (`is_alive`), a refused request retried, its goodbye
-      sent.
+      as many as `MAX_CONCURRENT` says, and a connection reused under another multi's clock,
+      **done**; its health checked (`is_alive`), a refused request retried and its goodbye
+      sent to do.
     - (d) **Request bodies.**
     - (e) **The version told:** `HTTP3` among the features, `-V`, the shim's
       `CURL_HTTP_VERSION_3` and `_3ONLY`, and `Http3` in the public `Version`.

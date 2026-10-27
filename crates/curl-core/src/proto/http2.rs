@@ -168,8 +168,14 @@ impl H2Conn {
         &mut *self.session
     }
 
-    /// The peer's limit on streams open at once.
-    pub(crate) fn max_concurrent(&self) -> u32 {
+    /// How many transfers it takes at once, with `attached` on it
+    /// (`cf_h2_query`'s `CF_QUERY_MAX_CONCURRENT`): the peer's limit, or,
+    /// once it may make no more requests, its peer gone or going away,
+    /// those on it.
+    pub(crate) fn max_concurrent(&self, attached: u32) -> u32 {
+        if self.closed() || self.goaway.is_some() {
+            return attached;
+        }
         self.session.max_concurrent()
     }
 

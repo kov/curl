@@ -11,10 +11,10 @@ witness: curl-core conn::pool::tests::local_connections_are_numbered_and_closed_
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::local_connections_are_numbered_and_closed_when_released
 --- old
-        if finish.premature {
+        } else if finish.premature {
             Released::Terminated
 --- new
-        if !finish.premature {
+        } else if !finish.premature {
             Released::Terminated
 
 === a lease dropped without release goes unnoticed
@@ -348,9 +348,9 @@ witness: curl-core multi::tests::a_waiting_transfer_runs_out_of_time
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core multi::tests::a_transfer_can_refuse_to_share_its_connection
 --- old
-            // Forbidden its reuse, it is kept all the same for the request
-            // Negotiate's handshake makes again on it.
-            && (!finish.forbid_reuse || conn.negotiating())
+                // Forbidden its reuse, it is kept all the same for the
+                // request Negotiate's handshake makes again on it.
+                && (!finish.forbid_reuse || conn.negotiating())
 --- new
 
 === a transfer wanting a fresh connection reuses one

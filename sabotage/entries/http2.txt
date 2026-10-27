@@ -258,25 +258,27 @@ witness: curl-core proto::http::tests::h2::two_transfers_share_a_connection
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core proto::http::tests::h2::a_connection_at_the_multis_limit_takes_no_more
 --- old
-    if users >= max || users.get() >= peer_max {
+    if users >= max {
+        return JoinVerdict::Full {
 --- new
-    if users.get() >= peer_max {
+    if false {
+        return JoinVerdict::Full {
 
 === a transfer joins a connection past the server's limit on streams
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core proto::http::tests::h2::a_connection_at_the_servers_limit_takes_no_more
 --- old
-    if users >= max || users.get() >= peer_max {
+    if users.get() >= peer_max {
 --- new
-    if users >= max {
+    if false {
 
 === a transfer joins a connection in a multi that does not multiplex
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h2::a_multi_that_does_not_multiplex_shares_no_connection
 --- old
-    let multiplex = (cx.rest.tell.limits.multiplex && http && versions.h2)
+    let multiplex = (cx.rest.tell.limits.multiplex && http && (versions.h2 || versions.h3))
 --- new
-    let multiplex = (http && versions.h2)
+    let multiplex = (http && (versions.h2 || versions.h3))
 
 === a transfer that pipewaits never waits
 file: crates/curl-core/src/conn/pool.rs
@@ -626,3 +628,19 @@ witness: curl-core proto::http::tests::h2::a_stream_whose_window_cannot_be_set_i
             if let Some((stream, _, _)) = unset.as_ref().filter(|u| Some(u.0) != own) {
 --- new
             if let Some((stream, _, _)) = unset.as_ref().filter(|u| Some(u.0) == own) {
+
+=== a connection going away takes new transfers
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http::tests::h2::a_connection_going_away_takes_no_one_new
+--- old
+        if self.closed() || self.goaway.is_some() {
+--- new
+        if self.closed() {
+
+=== a connection its server shut down is kept
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_connection_gone_away_is_not_kept
+--- old
+        shut_down: asked.is_some_and(|(max, _)| max == 0),
+--- new
+        shut_down: false,

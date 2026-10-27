@@ -18,8 +18,13 @@ pub(crate) trait Mux {
     /// The version it speaks.
     fn version(&self) -> ResponseVersion;
 
-    /// The peer's limit on streams open at once.
-    fn max_concurrent(&self) -> u32;
+    /// How many transfers it takes at once, with `attached` on it and the
+    /// multi's own limit `default` (`CF_QUERY_MAX_CONCURRENT`): none once
+    /// it is shut down.
+    fn max_concurrent(&self, attached: u32, default: u32) -> u32;
+
+    /// Whether its answer is traced, as C's QUIC filter traces it.
+    fn says_max_concurrent(&self) -> bool;
 }
 
 /// A connection's session.
@@ -37,11 +42,15 @@ impl Mux for Session {
         }
     }
 
-    fn max_concurrent(&self) -> u32 {
+    fn max_concurrent(&self, attached: u32, default: u32) -> u32 {
         match self {
-            Session::H2(h2) => h2.max_concurrent(),
-            Session::H3(h3) => h3.max_concurrent(),
+            Session::H2(h2) => h2.max_concurrent(attached),
+            Session::H3(h3) => h3.max_concurrent(attached, default),
         }
+    }
+
+    fn says_max_concurrent(&self) -> bool {
+        matches!(self, Session::H3(_))
     }
 }
 

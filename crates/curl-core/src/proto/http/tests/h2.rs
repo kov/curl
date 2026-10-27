@@ -2044,3 +2044,106 @@ fn a_promise_of_another_origin_is_refused_unoffered() {
     assert!(sent.contains("R 2 8\n"), "{sent}");
     assert!(ev.offers.is_empty());
 }
+
+/// A connection whose server went away after the response is not kept:
+/// it takes no more transfers, which C asks as it gives the connection
+/// back (`multi_done_locked`'s `Curl_conn_get_max_concurrent`), nothing
+/// else having marked it to close.
+#[test]
+fn a_connection_gone_away_is_not_kept() {
+    let talk =
+        Conversation::replies(&[b"S\nH 1 0\n:status: 200\n\nD 1 2 1\nokG 1 0\n"], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"all");
+    e.set_components(Some(c));
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        o.http.version = HttpVersion::Http2Prior;
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"ok");
+    let text = ran.seen.text();
+    let from = text
+        .iter()
+        .position(|l| l.contains("multi_done_locked"))
+        .expect("given back");
+    let said: Vec<_> = text[from..from + 3]
+        .iter()
+        .map(|l| l.trim_end().split_once("] ").map_or(l.as_str(), |(_, r)| r))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "[MULTI] [DONE] multi_done_locked, in use=0",
+            &format!(
+                "[MULTI] [DONE] multi_done, conn #0 to 127.0.0.1:{PORT} was shutdown by server, not reusing"
+            ),
+            "shutting down connection #0",
+        ]
+    );
+}
+
+/// A connection whose server is going away takes no more transfers than
+/// it has (`cf_h2_query`): a second transfer looking for one while the
+/// first's stream is still open on it finds it full and makes its own.
+#[test]
+fn a_connection_going_away_takes_no_one_new() {
+    let first = Conversation::replies(
+        &[b"S\nG 1 0\n", b"H 1 0\n:status: 200\n\nD 1 2 1\naa"],
+        false,
+    )
+    .per_send()
+    .held();
+    let second =
+        Conversation::replies(&[b"S\nH 1 0\n:status: 201\n\nD 1 1 1\nb"], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let mut ids = Vec::new();
+    let mut seen = Vec::new();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let s = Seen::default();
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.output.verbose = true;
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.version = HttpVersion::Http2Prior;
+        o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
+        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        seen.push(s);
+        if path == "/b" {
+            // The first heard its server is going away, its stream open.
+            first.allow(1);
+            for _ in 0..3 {
+                m.perform(&mut NoEvents).unwrap();
+            }
+            assert!(
+                seen[0]
+                    .text()
+                    .iter()
+                    .any(|l| l.starts_with("received GOAWAY")),
+                "{:?}",
+                seen[0].text()
+            );
+        }
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+    }
+    let b = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
+    first.allow(2);
+    let a = drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap();
+    for id in ids {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+    assert_eq!((a, b), (Ok(()), Ok(())), "{:#?}", seen[1].text());
+    assert_eq!(seen[0].body(), b"aa");
+    assert_eq!(seen[1].body(), b"b");
+    let text = seen[1].text();
+    assert!(
+        text.iter()
+            .any(|l| l == "connection #0reached MAX_CONCURRENT_STREAMS(1), skip\n"),
+        "{text:?}"
+    );
+}

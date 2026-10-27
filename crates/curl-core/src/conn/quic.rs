@@ -335,16 +335,22 @@ impl Quic {
         self.state.handshake_at
     }
 
-    /// The streams the peer allows that are not used yet, or C's default
-    /// before its limit arrives (`CF_QUERY_MAX_CONCURRENT`).
-    pub(crate) fn streams_left(&self) -> u64 {
+    /// How many transfers it takes at once, with `attached` on it
+    /// (`cf_ngtcp2_query`'s `CF_QUERY_MAX_CONCURRENT`): QUIC counts the
+    /// streams opened over the connection's life, so those open and the
+    /// streams the peer still allows; before its limit arrives, the
+    /// multi's own, `default`; none once it is shutting down. At most
+    /// C's `INT_MAX`.
+    pub(crate) fn max_concurrent(&self, attached: u32, default: u32) -> u32 {
+        const MOST: u64 = i32::MAX as u64;
         if self.state.shutdown_started {
             return 0;
         }
-        if self.state.max_bidi == 0 {
-            return 100;
-        }
-        self.state.max_bidi.saturating_sub(self.state.used_bidi)
+        let max = match self.state.max_bidi {
+            0 => u64::from(default),
+            limit => u64::from(attached) + limit.saturating_sub(self.state.used_bidi),
+        };
+        u32::try_from(max.min(MOST)).expect("at most INT_MAX")
     }
 
     /// What the socket is watched for (`cf_ngtcp2_adjust_pollset`): to
@@ -1538,7 +1544,8 @@ mod tests {
     }
 
     /// The handshake done and the peer checked, the connect is done; the
-    /// limit on streams comes as the library tells it.
+    /// limit on transfers comes as the library tells the streams allowed,
+    /// each opened counted.
     #[test]
     fn the_handshake_done_and_checked_connects() {
         let script = Script::new();
@@ -1548,14 +1555,30 @@ mod tests {
             .on_read
             .push_back(vec![Told::HandshakeDone, Told::MaxBidiStreams(3)]);
         let (mut q, mut cx) = quic(&script);
-        assert_eq!(q.streams_left(), 100, "C's default before the peer's");
+        assert_eq!(
+            q.max_concurrent(0, 7),
+            7,
+            "the multi's own before the peer's"
+        );
         cx.socket
             .datagrams
             .lock()
             .unwrap()
             .push_back(Ok(b"flight".to_vec()));
         assert_eq!(q.connect(&mut cx), Ok(true));
-        assert_eq!(q.streams_left(), 3);
+        assert_eq!(
+            q.max_concurrent(2, 7),
+            5,
+            "those on it and the 3 the peer allows"
+        );
+        // A stream opened is one of the peer's used.
+        q.submit(
+            &mut cx,
+            &[(b":method".as_slice(), b"GET".as_slice())],
+            false,
+        )
+        .unwrap();
+        assert_eq!(q.max_concurrent(1, 7), 3);
         assert_eq!(q.first_byte_at(), Some(cx.clock.now()));
         assert_eq!(q.handshake_at(), Some(cx.clock.now()));
         assert!(cx.lines.contains(&"peer verified".to_owned()));

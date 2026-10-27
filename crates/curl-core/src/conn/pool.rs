@@ -443,6 +443,9 @@ pub(crate) struct Finish {
     /// The transfer only connected (`CURLOPT_CONNECT_ONLY`): the
     /// connection is kept for its handle to send and receive on.
     pub(crate) reserve: bool,
+    /// Its session takes no more transfers: its server shut it down
+    /// (`Curl_conn_get_max_concurrent` is 0).
+    pub(crate) shut_down: bool,
 }
 
 /// What the pool did with a connection given back (`multi_done_locked`).
@@ -461,6 +464,9 @@ pub(crate) enum Released {
     Closed(ConnNumber),
     /// Closed at once: the transfer ended prematurely.
     Terminated(ConnNumber),
+    /// Closed, as `Closed` or `Terminated` by `premature`, though nothing
+    /// else would have: its server shut it down.
+    ShutDown { number: ConnNumber, premature: bool },
     /// Kept for the transfers still attached to it, this many.
     InUse(NonZeroU32),
 }
@@ -524,6 +530,13 @@ pub(crate) enum PoolNote {
     },
     /// A connection that multiplexes was joined.
     Multiplexed,
+    /// HTTP/3's session said how many transfers its connection takes,
+    /// with `in_use` on it (`cf_ngtcp2_query`'s `CF_QUERY_MAX_CONCURRENT`).
+    MaxConcurrent {
+        number: ConnNumber,
+        max: u32,
+        in_use: u32,
+    },
     /// A connection that serves the transfer, which may multiplex, is
     /// not up, or not known to multiplex (`url_match_fully_connected`).
     NotOpenEnough(ConnNumber),
@@ -678,13 +691,17 @@ enum JoinVerdict {
     Passed,
     /// Seen, but it cannot take the transfer.
     Seen,
-    /// Seen, with as many transfers on it as it takes.
+    /// Seen, with as many transfers on it as it takes; its session was
+    /// asked how many, saying so if `asked`.
     Full {
         number: ConnNumber,
         users: u32,
         peer: bool,
+        asked: Option<PoolNote>,
     },
-    Join,
+    Join {
+        asked: Option<PoolNote>,
+    },
 }
 
 /// What the multi searching a share's pool has of the share's
@@ -1378,17 +1395,25 @@ impl Pool {
                 }
             },
         };
-        if let ConnSlot::Open(conn) = &mut *slot
-            && let Route::Tcp(tcp) = &conn.route
-            // One only connected is the handle's, whatever its protocol.
-            && (tcp.origin.scheme().reuse || finish.reserve)
-            // An HTTP/2 connection outlives a stream cut short
-            // (`Curl_conn_is_multiplex`).
-            && (!finish.premature || conn.multiplexes())
-            // Forbidden its reuse, it is kept all the same for the request
-            // Negotiate's handshake makes again on it.
-            && (!finish.forbid_reuse || conn.negotiating())
-            && !conn.close
+        // Kept for another transfer, unless its server shut it down,
+        // which C asks only of one it would keep (`multi_done_locked`).
+        let keeps = |conn: &Conn| {
+            matches!(&conn.route, Route::Tcp(tcp)
+                // One only connected is the handle's, whatever its protocol.
+                if tcp.origin.scheme().reuse || finish.reserve)
+                // An HTTP/2 connection outlives a stream cut short
+                // (`Curl_conn_is_multiplex`).
+                && (!finish.premature || conn.multiplexes())
+                // Forbidden its reuse, it is kept all the same for the
+                // request Negotiate's handshake makes again on it.
+                && (!finish.forbid_reuse || conn.negotiating())
+                && !conn.close
+        };
+        let kept = matches!(&*slot, ConnSlot::Open(conn) if keeps(conn));
+        let shut_down = kept && finish.shut_down;
+        if kept
+            && !shut_down
+            && let ConnSlot::Open(conn) = &mut *slot
         {
             assert_eq!(conn.use_, Use::Leased(NonZeroU32::MIN), "one lease");
             conn.use_ = Use::Idle {
@@ -1426,7 +1451,12 @@ impl Pool {
             }
             ConnSlot::Failed(number) => number,
         };
-        if finish.premature {
+        if shut_down {
+            Released::ShutDown {
+                number,
+                premature: finish.premature,
+            }
+        } else if finish.premature {
             Released::Terminated(number)
         } else {
             Released::Closed(number)
@@ -1675,15 +1705,32 @@ fn join_verdict(conn: &Conn, wanted: &Wanted<'_>) -> JoinVerdict {
     let Use::Leased(users) = conn.use_ else {
         unreachable!("a connection that multiplexes is leased");
     };
-    let peer_max = session.max_concurrent();
-    if users >= max || users.get() >= peer_max {
+    // The multi's limit first, then the session's, asked only then.
+    if users >= max {
         return JoinVerdict::Full {
             number: conn.number,
             users: users.get(),
-            peer: users < max,
+            peer: false,
+            asked: None,
         };
     }
-    JoinVerdict::Join
+    let peer_max = session.max_concurrent(users.get(), max.get());
+    let asked = session
+        .says_max_concurrent()
+        .then_some(PoolNote::MaxConcurrent {
+            number: conn.number,
+            max: peer_max,
+            in_use: users.get(),
+        });
+    if users.get() >= peer_max {
+        return JoinVerdict::Full {
+            number: conn.number,
+            users: users.get(),
+            peer: true,
+            asked,
+        };
+    }
+    JoinVerdict::Join { asked }
 }
 
 /// Whether the transfer joins a connection that made `verdict` of it,
@@ -1703,8 +1750,12 @@ fn judged(
             number,
             users,
             peer,
+            asked,
         } => {
             seen.multiplex = true;
+            if let Some(asked) = asked {
+                notes.try_push(asked)?;
+            }
             notes.try_push(PoolNote::Full {
                 number,
                 users,
@@ -1712,8 +1763,11 @@ fn judged(
             })?;
             Ok(false)
         }
-        JoinVerdict::Join => {
+        JoinVerdict::Join { asked } => {
             seen.multiplex = true;
+            if let Some(asked) = asked {
+                notes.try_push(asked)?;
+            }
             notes.try_push(PoolNote::Multiplexed)?;
             Ok(true)
         }

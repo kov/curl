@@ -37,8 +37,12 @@ fn tracing(tls: FakeTls, script: &Arc<Mutex<Script>>) -> Easy {
 /// The lines a run traced that start with one of `starts`, past their
 /// ids, the waits the multi's clock makes left out.
 fn lines(ran: &Ran, starts: &[&str]) -> Vec<String> {
-    ran.seen
-        .text()
+    lines_of(&ran.seen, starts)
+}
+
+/// `lines`, of what `seen` saw.
+fn lines_of(seen: &Seen, starts: &[&str]) -> Vec<String> {
+    seen.text()
         .into_iter()
         .map(|l| {
             let l = l.trim_end();
@@ -407,6 +411,7 @@ fn a_get_over_http3_is_answered() {
         [HTTP/3] [0] easy handle is done
         [HTTP/3] no active streams, unset keep-alive
         [MULTI] [DONE] multi_done_locked, in use=0
+        [HTTP/3] query conn[0]: MAX_CONCURRENT -> 99 (0 in use)
         Connection #0 to host localhost:{PORT} left intact"
     ));
     assert_eq!(got[from..], want);
@@ -574,5 +579,112 @@ fn a_shared_connection_keeps_its_clock_under_another_multi() {
         script.lock().unwrap().requests.len(),
         2,
         "both on the one connection"
+    );
+}
+
+/// Two transfers at once: the second, finding the first's connection
+/// being set up, waits for it (`CURLOPT_PIPEWAIT`, which the tool sets for
+/// `-Z`), then joins it on a stream of its own, as many as the peer allows
+/// and those open; the second's read hands each stream's response to its
+/// transfer, the first's to its sibling, so the second is done first; the
+/// connection is kept for the last.
+#[test]
+fn a_second_transfer_multiplexes_on_the_first_s_connection() {
+    let script = Script::new();
+    {
+        let mut s = script.lock().unwrap();
+        s.idle = Some(std::time::Duration::from_secs(30));
+        s.out.extend([vec![1; 1200], vec![2; 1200], vec![], vec![]]);
+        s.on_submit
+            .extend([vec![vec![3; 75], vec![]], vec![vec![4; 76], vec![]]]);
+        s.on_read
+            .push_back(vec![Told::HandshakeDone, Told::MaxBidiStreams(100)]);
+        // Stream 0's request is only acknowledged.
+        s.on_read.push_back(vec![]);
+        let mut both = Vec::new();
+        for (stream, body) in [(0, b"first".as_slice()), (4, b"second".as_slice())] {
+            let header = |name: &[u8], value: &[u8]| Told::Header {
+                stream,
+                name: name.to_vec(),
+                value: value.to_vec(),
+            };
+            both.extend([
+                header(b":status", b"200"),
+                header(b"content-length", body.len().to_string().as_bytes()),
+                Told::HeadersDone(stream),
+                Told::Data(stream, body.to_vec()),
+                Told::Closed(stream, 0x100),
+            ]);
+        }
+        s.on_read.push_back(both);
+    }
+    let mut m = quic_server(&[b"server flight", b"ack", b"responses"]);
+    let url = format!("https://localhost:{PORT}/");
+    let mut ids = Vec::new();
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let mut e = tracing(FakeTls::new().unwrap(), &script);
+        let s = Seen::default();
+        let o = e.options_mut();
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.output.verbose = true;
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.http.user_agent = Some(b"curl/test".to_vec());
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.http.pipewait = true;
+        o.ip_version = IpVersion::Any;
+        o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
+        o.callbacks.header = Some(Handler::header(s.clone()).unwrap());
+        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        seen.push(s);
+    }
+    let a = drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap();
+    let b = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
+    for id in ids {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+    assert_eq!((a, b), (Ok(()), Ok(())), "{:#?}", seen[1].text());
+    assert_eq!(seen[0].body(), b"first");
+    assert_eq!(seen[1].body(), b"second");
+    let says = |s: &Seen| {
+        lines_of(
+            s,
+            &[
+                "Connection #0 is not open enough",
+                "Found pending candidate",
+                "[HTTP/3] query conn",
+                "Multiplexed connection found",
+                "Reusing existing",
+                "[HTTP/3] [0] OPENED",
+                "[HTTP/3] [4] OPENED",
+                "[HTTP/3] [0] easy handle",
+                "[HTTP/3] [4] easy handle",
+                "[MULTI] [DONE] Connection still in use",
+                "Connection #0 to host",
+            ],
+        )
+    };
+    assert_eq!(
+        says(&seen[0]),
+        expect(&format!(
+            "[HTTP/3] [0] OPENED stream for https://localhost:{PORT}/
+            [HTTP/3] [0] easy handle is done
+            [HTTP/3] query conn[0]: MAX_CONCURRENT -> 98 (0 in use)
+            Connection #0 to host localhost:{PORT} left intact"
+        ))
+    );
+    assert_eq!(
+        says(&seen[1]),
+        expect(&format!(
+            "Connection #0 is not open enough, cannot reuse
+            Found pending candidate for reuse and CURLOPT_PIPEWAIT is set
+            [HTTP/3] query conn[0]: MAX_CONCURRENT -> 100 (1 in use)
+            Multiplexed connection found
+            Reusing existing https: connection with host localhost
+            [HTTP/3] [4] OPENED stream for https://localhost:{PORT}/
+            [HTTP/3] [4] easy handle is done
+            [MULTI] [DONE] Connection still in use 1, no more multi_done now!"
+        ))
     );
 }

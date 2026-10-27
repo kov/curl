@@ -35,10 +35,10 @@ impl H3Conn {
         ResponseVersion::Http3
     }
 
-    /// The streams it may have open at once: those the peer allows that
-    /// are not used yet (`CF_QUERY_MAX_CONCURRENT`).
-    pub(crate) fn max_concurrent(&self) -> u32 {
-        u32::try_from(self.quic.streams_left()).unwrap_or(u32::MAX)
+    /// How many transfers it takes at once, with `attached` on it
+    /// (`CF_QUERY_MAX_CONCURRENT`).
+    pub(crate) fn max_concurrent(&self, attached: u32, default: u32) -> u32 {
+        self.quic.max_concurrent(attached, default)
     }
 }
 

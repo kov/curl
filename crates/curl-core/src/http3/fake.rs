@@ -67,6 +67,9 @@ pub struct Script {
     pub timer_at: Option<Instant>,
     /// What it has to send once its timer ran, as its retransmission.
     pub on_expiry: Vec<Vec<u8>>,
+    /// What it has to send as each request is submitted, in turn: the
+    /// request's packets, which no egress before can take.
+    pub on_submit: VecDeque<Vec<Vec<u8>>>,
     /// Its timer ran this many times.
     pub expired: usize,
     pub handshake_done: bool,
@@ -435,7 +438,12 @@ impl Connection for FakeConnection {
                 )
             })
             .collect();
-        self.script.lock().unwrap().requests.push(lines);
+        let mut s = self.script.lock().unwrap();
+        s.requests.push(lines);
+        if let Some(packets) = s.on_submit.pop_front() {
+            s.out.extend(packets);
+        }
+        drop(s);
         let id = self.next_stream;
         self.next_stream += 4;
         Ok(StreamId(id))

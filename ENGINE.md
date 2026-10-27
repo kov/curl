@@ -1625,8 +1625,9 @@ take it answers in HTTP/1.1.
 one is: the session's `is_alive` reads the frames (a SETTINGS or PING), and it is alive unless the
 session failed, a GOAWAY came or the session wants nothing more (`http2_connisalive`). A
 connection that shuts down has the session say GOAWAY first, with C's debug data, through its
-`shutdown`, which never waits (`cf_h2_shutdown`). A GOAWAY read marks the connection closing, so no search joins it, and wakes
-every other transfer on it; so do the connection's end and its failure. A failure other than a
+`shutdown`, which never waits (`cf_h2_shutdown`). A GOAWAY read wakes every other transfer on
+it, as do the connection's end and its failure; after it the session takes no more transfers than
+it has, so no search joins it, and the transfer that gives it back last closes it. A failure other than a
 stream's own closes the connection after the request (`streamclose`).
 
 **Ownership.** A connection that multiplexes lives in its pool place, `Attached { slot, users }`;
@@ -1655,11 +1656,16 @@ locks for each; the last gives the share its lease back (`Pool::release_lent`), 
 as any.
 
 **Joining and streams.** The search joins an `Attached` connection (`Pool::join_if`) that serves
-the transfer's route and credentials, if the transfer may speak HTTP/2 and the multi multiplexes
-(`CURLMOPT_PIPELINING`), the connection is not closing, and it has fewer transfers on it than
-both the multi's `CURLMOPT_MAX_CONCURRENT_STREAMS` and the server's
-`SETTINGS_MAX_CONCURRENT_STREAMS` (`Session::max_concurrent`), with C's lines for each
-(`url_match_multiplex_limits`). The session's streams map to their transfers (`H2Conn`'s routes,
+the transfer's route and credentials, if the transfer may speak HTTP/2 or HTTP/3 and the multi
+multiplexes (`CURLMOPT_PIPELINING`), the connection is not closing, and it has fewer transfers on
+it than the multi's `CURLMOPT_MAX_CONCURRENT_STREAMS` and then than its session takes
+(`Mux::max_concurrent`, C's `CF_QUERY_MAX_CONCURRENT`, asked only past the multi's limit), with
+C's lines for each (`url_match_multiplex_limits`): HTTP/2's the server's
+`SETTINGS_MAX_CONCURRENT_STREAMS`, or after a GOAWAY those it has; HTTP/3's those it has and the
+streams the peer still allows, QUIC counting those opened over the connection's life, the
+multi's limit before the peer says, none once it shuts down, its answer traced as C's QUIC filter
+traces it. The transfer giving a connection back asks it too, once none is on it and nothing else
+closes it (`multi_done_locked`): one that takes none is closed, "was shutdown by server". The session's streams map to their transfers (`H2Conn`'s routes,
 set as a request opens its stream and let go as it is done); the session's events and body reads
 come with the transfer their stream is routed to, looked up as they come. What the session reads
 for a sibling's stream goes to it as it is read, in the order C delivers it, by moving that

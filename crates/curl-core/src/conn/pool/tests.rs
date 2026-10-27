@@ -162,6 +162,7 @@ fn local_connections_are_numbered_and_closed_when_released() {
         premature: true,
         forbid_reuse: false,
         reserve: false,
+        shut_down: false,
     };
     assert_eq!(
         pool.release(&Home::Multi, b, premature, UNLIMITED, &mut net, now),
@@ -547,6 +548,7 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
         premature: true,
         forbid_reuse: false,
         reserve: false,
+        shut_down: false,
     };
     assert_eq!(
         pool.release(&Home::Multi, lease, premature, UNLIMITED, &mut net, now),
@@ -590,6 +592,7 @@ fn refused_and_silent_attempts() {
         premature: true,
         forbid_reuse: false,
         reserve: false,
+        shut_down: false,
     };
     assert_eq!(
         pool.release(&Home::Multi, refused, premature, UNLIMITED, &mut net, now),
@@ -624,6 +627,7 @@ fn unresolved_names_and_immediate_failures() {
         premature: true,
         forbid_reuse: false,
         reserve: false,
+        shut_down: false,
     };
     for lease in [named, nobody] {
         assert!(matches!(
@@ -684,6 +688,7 @@ fn a_finished_connection_is_kept_for_an_equal_route() {
         premature: true,
         forbid_reuse: false,
         reserve: false,
+        shut_down: false,
     };
     for lease in [other, third] {
         pool.release(&Home::Multi, lease, premature, UNLIMITED, &mut net, now);
@@ -996,6 +1001,7 @@ fn a_search_closes_what_it_must_not_reuse() {
             premature: true,
             forbid_reuse: false,
             reserve: false,
+            shut_down: false,
         },
         UNLIMITED,
         &mut net,
@@ -1022,6 +1028,7 @@ fn a_search_closes_what_it_must_not_reuse() {
             premature: true,
             forbid_reuse: false,
             reserve: false,
+            shut_down: false,
         },
         UNLIMITED,
         &mut net,
@@ -1081,6 +1088,7 @@ fn a_limit_is_passed_a_whole_millisecond_after_it() {
                         premature: true,
                         forbid_reuse: false,
                         reserve: false,
+                        shut_down: false,
                     },
                     UNLIMITED,
                     net,
@@ -1187,6 +1195,7 @@ fn a_search_prunes_once_a_second() {
             premature: true,
             forbid_reuse: false,
             reserve: false,
+            shut_down: false,
         },
         UNLIMITED,
         &mut net,
@@ -1217,6 +1226,7 @@ fn a_search_prunes_once_a_second() {
             premature: true,
             forbid_reuse: false,
             reserve: false,
+            shut_down: false,
         },
         UNLIMITED,
         &mut net,
@@ -1530,6 +1540,7 @@ fn a_reserved_connection_is_its_handle_s_alone() {
     let (id, fd) = (lease.id(), socket(&lease));
     let reserve = Finish {
         reserve: true,
+        shut_down: false,
         ..Finish::default()
     };
     let one = Limit {

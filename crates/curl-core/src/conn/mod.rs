@@ -884,6 +884,11 @@ impl Conn {
         }
     }
 
+    /// Its number among those the pool made (`connection_id`).
+    pub(crate) fn number(&self) -> ConnNumber {
+        self.number
+    }
+
     /// Whether it multiplexes: a session speaks for it
     /// (`Curl_conn_is_multiplex`).
     pub(crate) fn multiplexes(&self) -> bool {

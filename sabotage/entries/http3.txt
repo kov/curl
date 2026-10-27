@@ -169,3 +169,19 @@ witness: curl-core proto::http::tests::h3_trace::a_shared_connection_keeps_its_c
 --- new
         let from = d.from.unwrap_or(self.remote);
         let now = cx.now();
+
+=== a transfer that may speak HTTP/3 alone never multiplexes
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_second_transfer_multiplexes_on_the_first_s_connection
+--- old
+    let multiplex = (cx.rest.tell.limits.multiplex && http && (versions.h2 || versions.h3))
+--- new
+    let multiplex = (cx.rest.tell.limits.multiplex && http && versions.h2)
+
+=== QUIC's limit on transfers leaves out those on the connection
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::the_handshake_done_and_checked_connects
+--- old
+            limit => u64::from(attached) + limit.saturating_sub(self.state.used_bidi),
+--- new
+            limit => limit.saturating_sub(self.state.used_bidi),

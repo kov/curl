@@ -10,12 +10,14 @@
 
 mod boxed;
 mod grow;
+mod lossy;
 mod rc;
 #[cfg(feature = "debug-hooks")]
 pub mod track;
 
 pub use boxed::{try_box, try_box_or_back};
 pub use grow::{TryString, TryVec, try_format};
+pub use lossy::Lossy;
 pub use rc::{Count, Shared, TryArc, TryRc};
 
 /// An allocation failed.

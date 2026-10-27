@@ -56,7 +56,7 @@ impl From<ErrorKind> for Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.detail {
-            Some(detail) => String::from_utf8_lossy(detail).fmt(f),
+            Some(detail) => curl_alloc::Lossy(detail).fmt(f),
             None => self.kind.fmt(f),
         }
     }

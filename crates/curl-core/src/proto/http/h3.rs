@@ -17,6 +17,7 @@ use crate::http3::{Event, H3Error, Heard, StreamId};
 use crate::proto::http2::fields_of;
 use crate::proto::http3::H3Conn;
 use crate::tls::TlsNative;
+use curl_alloc::Lossy;
 
 /// The most a stream's receive window opens to
 /// (`H3_STREAM_WINDOW_SIZE_MAX`).
@@ -731,7 +732,7 @@ impl Request {
                 if made.is_ok() {
                     self.h3_head_line(cx, lease, &line);
                 }
-                let shown = String::from_utf8_lossy(&line);
+                let shown = Lossy(&line);
                 trace::of(cx, h3, format_args!("[{id}] status: {shown}"));
                 match made {
                     Ok(()) => Heard::Fine,
@@ -739,10 +740,7 @@ impl Request {
                 }
             }
             Event::Header { name, value, .. } => {
-                let (n, v) = (
-                    String::from_utf8_lossy(name),
-                    String::from_utf8_lossy(value),
-                );
+                let (n, v) = (Lossy(name), Lossy(value));
                 trace::of(cx, h3, format_args!("[{id}] header: {n}: {v}"));
                 let mut line = Vec::new();
                 let made = line

@@ -9,7 +9,7 @@
 use std::io;
 use std::num::NonZeroUsize;
 
-use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_alloc::{Lossy, OutOfMemory, TryVec as _};
 
 use super::buf::HeldBytes;
 use super::h2proxy::Answer;
@@ -170,11 +170,7 @@ impl Tunnel {
                 let Some(answer) = &mut self.answer else {
                     return Heard::Failed;
                 };
-                let (id, n, v) = (
-                    stream.0,
-                    String::from_utf8_lossy(name),
-                    String::from_utf8_lossy(value),
-                );
+                let (id, n, v) = (stream.0, Lossy(name), Lossy(value));
                 cx.of(H3P, format_args!("[{id}] header: {n}: {v}"));
                 match answer.add(name, value) {
                     Ok(()) => Heard::Fine,
@@ -481,7 +477,7 @@ impl H3Proxy {
         let id = stream.0;
         cx.of(H3P, format_args!("[{id}] opened bidi stream"));
         if verbose {
-            let url = String::from_utf8_lossy(url);
+            let url = Lossy(url);
             cx.of(
                 H3P,
                 format_args!("[H3-PROXY] [{id}] OPENED stream for {url}"),

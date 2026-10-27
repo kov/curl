@@ -220,7 +220,7 @@ impl fmt::Display for Components<'_> {
         // much of it as C's buffer of 300 holds.
         #[cfg(feature = "debug-hooks")]
         if let Some(given) = curl_os::env::var_into(b"CURL_DEBUG_VERSION", &mut [0u8; 299]) {
-            return f.write_str(&String::from_utf8_lossy(given));
+            return curl_alloc::Lossy(given).fmt(f);
         }
         write!(f, "libcurl/{}", self.0.version)?;
         for library in self.1 {

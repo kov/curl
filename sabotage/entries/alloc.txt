@@ -33,3 +33,11 @@ features: debug-hooks
     state.held += bytes.len();
     flush(state);
 }
+
+=== bytes not UTF-8 are shown as one U+FFFD each, not one per invalid run
+file: crates/curl-alloc/src/lossy.rs
+witness: curl-alloc lossy::tests::shows_bytes_as_from_utf8_lossy
+--- old
+            if !chunk.invalid().is_empty() {
+--- new
+            for _ in chunk.invalid() {

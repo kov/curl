@@ -8,7 +8,7 @@
 //! to the transfer: the head a line at a time, `HTTP/2 200 \r\n` first,
 //! the body as it comes, and the trailers once the stream closes.
 
-use curl_alloc::try_box;
+use curl_alloc::{Lossy, try_box};
 
 use super::*;
 use crate::components::Component;
@@ -1632,11 +1632,7 @@ impl Request {
     fn serves_authority(&self, value: &[u8]) -> Result<bool, OutOfMemory> {
         let peer = &self.peer;
         let name = peer.name();
-        let check = curl_alloc::try_format(format_args!(
-            "{}:{}",
-            String::from_utf8_lossy(name),
-            peer.port()
-        ))?;
+        let check = curl_alloc::try_format(format_args!("{}:{}", Lossy(name), peer.port()))?;
         let default = if peer.scheme() == HTTPS { 443 } else { 80 };
         Ok(check.as_bytes().eq_ignore_ascii_case(value)
             || (peer.port() == default && name.eq_ignore_ascii_case(value)))

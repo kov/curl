@@ -1,6 +1,8 @@
 //! Link MIT krb5's GSS-API library, as the C build does, and take its
 //! version as CMake's FindGSS does: from pkg-config's `mit-krb5-gssapi`.
 
+#![allow(clippy::disallowed_methods)]
+
 use std::process::Command;
 
 fn main() {

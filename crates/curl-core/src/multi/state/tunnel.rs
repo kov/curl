@@ -4,7 +4,7 @@
 //! challenges, and what it leads to: the tunnel, another `CONNECT` over
 //! the same connection or a new one, or the transfer's failure.
 
-use curl_alloc::{OutOfMemory, TryVec as _, try_box};
+use curl_alloc::{Lossy, OutOfMemory, TryVec as _, try_box};
 
 use super::{Connecting, Handshake, StepCx, TransferState, Wake};
 use crate::components::Component;
@@ -171,7 +171,7 @@ pub(super) fn udp_answer<H: Host>(
             format_args!("CONNECT-UDP tunnel established, response {status}"),
         ),
         Some(v) => {
-            let v = String::from_utf8_lossy(v);
+            let v = Lossy(v);
             return Err(trace::fail(
                 cx,
                 ErrorKind::CouldntConnect,

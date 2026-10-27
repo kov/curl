@@ -32,6 +32,9 @@ disallowed-methods = [
     { path = "str::repeat", reason = "allocates infallibly" },
     { path = "std::iter::Iterator::collect", reason = "allocates infallibly" },
     { path = "std::iter::Extend::extend", reason = "allocates infallibly" },
+    # Bytes that are not UTF-8 are copied into a String that cannot fail.
+    { path = "std::string::String::from_utf8_lossy", reason = "use curl_alloc::Lossy" },
+    { path = "std::string::String::from_utf8_lossy_owned", reason = "use curl_alloc::Lossy" },
     { path = "std::collections::HashMap::insert", reason = "reserve with try_reserve first" },
     { path = "std::collections::VecDeque::push_back", reason = "reserve with try_reserve first" },
     { path = "std::collections::VecDeque::push_front", reason = "reserve with try_reserve first" },

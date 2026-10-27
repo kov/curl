@@ -2406,3 +2406,78 @@ fn an_http3_proxy_s_other_capsule_protocol_fails_the_tunnel() {
         )
     );
 }
+
+/// The trace lines of `ran` that contain `needle`, as their bytes.
+fn raw_lines_with(ran: &Ran, needle: &[u8]) -> Vec<Vec<u8>> {
+    ran.seen
+        .of("text")
+        .into_iter()
+        .filter(|l| l.windows(needle.len()).any(|w| w == needle))
+        .collect()
+}
+
+/// Whether `line` ends in `shown` as `from_utf8_lossy` shows it, and a
+/// newline.
+fn ends_lossy(line: &[u8], shown: &[u8]) -> bool {
+    let mut want = String::from_utf8_lossy(shown).into_owned().into_bytes();
+    want.push(b'\n');
+    line.ends_with(&want)
+}
+
+/// A response header whose value is not UTF-8 (obs-text) is traced with
+/// each invalid run shown as U+FFFD, as `from_utf8_lossy` showed it, and
+/// handed to the application as its bytes.
+#[test]
+fn an_http3_header_not_utf8_is_traced_lossily() {
+    let script = get_script(b"123456789");
+    script.lock().unwrap().on_read[1].insert(
+        1,
+        Told::Header {
+            stream: 0,
+            name: b"x-obs".to_vec(),
+            value: b"caf\xe9 \xff\xfe!".to_vec(),
+        },
+    );
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()));
+    let traced = raw_lines_with(&ran, b"header: x-obs: ");
+    assert_eq!(traced.len(), 1, "{traced:?}");
+    assert!(
+        ends_lossy(&traced[0], b"[HTTP/3] [0] header: x-obs: caf\xe9 \xff\xfe!"),
+        "{:?}",
+        String::from_utf8_lossy(&traced[0])
+    );
+    assert!(traced[0].ends_with("caf\u{FFFD} \u{FFFD}\u{FFFD}!\n".as_bytes()));
+    assert!(
+        ran.seen
+            .of("header")
+            .contains(&b"x-obs: caf\xe9 \xff\xfe!\r\n".to_vec())
+    );
+}
+
+/// The same through an HTTP/3 proxy: its answer's header that is not
+/// UTF-8 is traced as `from_utf8_lossy` showed it.
+#[test]
+fn an_http3_proxy_header_not_utf8_is_traced_lossily() {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n".to_vec();
+    let script = tunnel_script(b"200", vec![Told::Data(0, response)]);
+    script.lock().unwrap().on_read[1][1] = Told::Header {
+        stream: 0,
+        name: b"via".to_vec(),
+        value: b"h3\xc3proxy".to_vec(),
+    };
+    let mut m = quic_server(&[b"server flight", b"connect answer", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = through_h3_proxy(&mut m, e);
+    assert_eq!(ran.result, Ok(()));
+    let traced = raw_lines_with(&ran, b"[0] header: via: ");
+    assert_eq!(traced.len(), 1, "{traced:?}");
+    assert!(
+        ends_lossy(&traced[0], b"[H3-PROXY] [0] header: via: h3\xc3proxy"),
+        "{:?}",
+        String::from_utf8_lossy(&traced[0])
+    );
+    assert!(traced[0].ends_with("via: h3\u{FFFD}proxy\n".as_bytes()));
+}

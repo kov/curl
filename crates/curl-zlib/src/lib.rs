@@ -238,7 +238,7 @@ impl Inflater {
             ErrorKind::BadContentEncoding,
             format_args!(
                 "Error while processing content unencoding: {}",
-                String::from_utf8_lossy(said)
+                curl_alloc::Lossy(said)
             ),
         )
     }

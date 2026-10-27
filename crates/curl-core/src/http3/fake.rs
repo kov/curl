@@ -571,13 +571,7 @@ impl Connection for FakeConnection {
     ) -> Result<StreamId, SubmitFailed> {
         let lines = fields
             .iter()
-            .map(|(n, v)| {
-                format!(
-                    "{}: {}",
-                    String::from_utf8_lossy(n),
-                    String::from_utf8_lossy(v)
-                )
-            })
+            .map(|(n, v)| format!("{}: {}", curl_alloc::Lossy(n), curl_alloc::Lossy(v)))
             .collect();
         let mut s = self.script.lock().unwrap();
         s.requests.push(lines);

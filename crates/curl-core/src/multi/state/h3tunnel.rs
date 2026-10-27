@@ -4,7 +4,7 @@
 //! connection, the proxy's answer read and traced, and the connection,
 //! once the proxy agrees, the layer the tunnel's bytes pass through.
 
-use curl_alloc::{OutOfMemory, TryVec as _, try_box};
+use curl_alloc::{Lossy, OutOfMemory, TryVec as _, try_box};
 
 use super::{Connecting, Handshake, StepCx, TransferState, Wake};
 use crate::components::Component;
@@ -43,10 +43,7 @@ fn connect<H: Host>(
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
     let target = c.route.target();
-    let (host, port) = (
-        String::from_utf8_lossy(target.request_host()),
-        target.port(),
-    );
+    let (host, port) = (Lossy(target.request_host()), target.port());
     trace::of(cx, H3P, format_args!("[0] CONNECT start for {host}:{port}"));
     let head = super::tunnel::connect_head(c, cx, b"HTTP/3")?;
     let fields = match &head.udp {

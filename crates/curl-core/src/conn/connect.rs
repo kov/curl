@@ -386,7 +386,7 @@ impl ConnCx for Plain<'_> {
 /// What a drive needs beyond its context: the settings of the transfer
 /// it is driven for.
 #[derive(Clone, Copy)]
-pub(crate) struct Setup {
+pub(crate) struct DriveOptions {
     /// A `*` entry answers for any name (C's `wildcard_resolve`).
     pub(crate) wildcard: bool,
     /// How long an answer is kept (`CURLOPT_DNS_CACHE_TIMEOUT`).
@@ -891,7 +891,7 @@ impl ConnectMachine {
     pub(crate) fn drive(
         mut self,
         cx: &mut dyn ConnCx,
-        setup: Setup,
+        setup: DriveOptions,
     ) -> Result<Drove, ConnectError> {
         let now = cx.now();
         let delay = setup.delay;
@@ -1465,7 +1465,7 @@ impl ConnectMachine {
     fn won(
         mut self,
         cx: &mut dyn ConnCx,
-        setup: Setup,
+        setup: DriveOptions,
         i: usize,
         now: Instant,
     ) -> Result<Drove, ConnectError> {
@@ -1576,7 +1576,7 @@ impl ConnectMachine {
     fn socks_target(
         &self,
         cx: &mut dyn ConnCx,
-        setup: Setup,
+        setup: DriveOptions,
     ) -> Result<Option<Result<(TryArc<Answer>, Came), ()>>, ConnectError> {
         let Some(leg) = self.route.socks() else {
             return Ok(None);
@@ -1897,7 +1897,7 @@ fn resolve(
     peer: &Peer,
     ip: IpVersion,
     cx: &mut dyn ConnCx,
-    setup: Setup,
+    setup: DriveOptions,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
     let family = family(ip, cx);
     resolve_name((peer.shown(), peer.name(), peer.port()), family, cx, setup)
@@ -1920,7 +1920,7 @@ pub(super) fn resolve_name(
     (shown, name, port): (&[u8], &[u8], u16),
     family: Family,
     cx: &mut dyn ConnCx,
-    setup: Setup,
+    setup: DriveOptions,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
     lookup_name((shown, name, port), family, cx, setup, true)
 }
@@ -1933,7 +1933,7 @@ pub(super) fn lookup_name(
     (shown, name, port): (&[u8], &[u8], u16),
     family: Family,
     cx: &mut dyn ConnCx,
-    setup: Setup,
+    setup: DriveOptions,
     keep_negative: bool,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
     match lookup_start((shown, name, port), family, cx, setup, keep_negative)? {
@@ -2007,7 +2007,7 @@ pub(super) fn lookup_start(
     (shown, name, port): (&[u8], &[u8], u16),
     family: Family,
     cx: &mut dyn ConnCx,
-    setup: Setup,
+    setup: DriveOptions,
     keep_negative: bool,
 ) -> Result<Looked, ConnectError> {
     if is_onion(name) {
@@ -2255,7 +2255,7 @@ mod tests {
         let he = Duration::from_millis(he_ms);
         for _ in 0..5000 {
             let ms = u64::try_from(clock.now().since(start).as_millis()).unwrap();
-            let setup = Setup {
+            let setup = DriveOptions {
                 wildcard: false,
                 max_age: Some(Duration::from_secs(60)),
                 delay: he,
@@ -2335,7 +2335,7 @@ mod tests {
             Closer::System,
             ConnSettings::DEFAULT,
         );
-        let setup = Setup {
+        let setup = DriveOptions {
             wildcard: false,
             max_age: Some(Duration::from_secs(60)),
             delay: Duration::from_millis(200),
@@ -2395,7 +2395,7 @@ mod tests {
                 Closer::System,
                 ConnSettings::DEFAULT,
             ));
-            let setup = Setup {
+            let setup = DriveOptions {
                 wildcard: false,
                 max_age: Some(Duration::from_secs(60)),
                 delay: Duration::from_millis(200),
@@ -2515,7 +2515,7 @@ mod tests {
         let he = Duration::from_millis(200);
         let mut dns = DnsCache::default();
         let conn = loop {
-            let setup = Setup {
+            let setup = DriveOptions {
                 wildcard: false,
                 max_age: Some(Duration::from_secs(60)),
                 delay: he,

@@ -1318,7 +1318,7 @@ pub(crate) enum ConnectMachine {
     Socks(SocksHandshake), Tunnel(TunnelHandshake), Tls(TlsHandshake),
 }
 impl ConnectMachine {
-    fn drive(self, cx: &mut dyn ConnCx, setup: Setup) -> Result<Drove, ConnectError>;
+    fn drive(self, cx: &mut dyn ConnCx, options: DriveOptions) -> Result<Drove, ConnectError>;
 }
 pub(crate) enum Drove { Connecting(ConnectMachine, Progress), Established(Conn) }
 pub(crate) enum Progress { Trying(SocketAddr), Waiting }
@@ -1349,7 +1349,7 @@ socket`, a bind's) is let go as the race starts the next attempt, connects, or e
 left (`Curl_reset_fail`), as is what the application's error buffer was told: the reason kept
 is the race's, or none. The machine
 is driven in its lease, the pool not borrowed (§3.6), and reaches the transfer only through its
-`ConnCx`; `Setup` carries the transfer's settings for the drive (the eyeballs delay, the
+`ConnCx`; `DriveOptions` carries the transfer's settings for the drive (the eyeballs delay, the
 scope, the socket options, the names' rules). A transfer whose receiving is paused is not driven (`multistate_connecting`), and the
 connect limit is judged before each drive. A resolved name is reported as `cf_dns_report`
 reports it ("Host H:P was resolved.", then each family's addresses), read back from the
@@ -1375,7 +1375,7 @@ socket before its connect.
   on whichever transfer happens to call.
 - A setup that makes a handshake does not end at the winning attempt: a route through SOCKS
   or an HTTP proxy that tunnels (`Tcp::handshakes`), or a transfer that sends the PROXY line
-  (`Setup::haproxy`, the creating transfer's, as the line is not part of the route), has the
+  (`DriveOptions::haproxy`, the creating transfer's, as the line is not part of the route), has the
   machine keep its socket as `Stage::Dialed(Dialed)`, with a receive buffer, and return
   `Progress::Dialed`. The machine does only the I/O of the handshake; the transfer
   (`multi/state/tunnel.rs`) makes it. It renders the `CONNECT` with the proxy's side of its
@@ -1419,7 +1419,7 @@ socket before its connect.
   if the transfer asks (`multi/state/haproxy.rs`, `cf-haproxy.c`), with the addresses of the
   socket to the first hop, before it is open and traced as established. Whether it asks is
   read once, as the setup reaches that stage, as `cf_setup_add_haproxy` reads it: as the
-  attempt wins for a route without a proxy's handshake (`Setup::haproxy`), else as the last of
+  attempt wins for a route without a proxy's handshake (`DriveOptions::haproxy`), else as the last of
   them is made (`ConnLease::proxied`); `Dialed` carries the answer to the handshake chosen
   next, the chain traced and the chain left once up. A reused one sends none, and reuse does
   not ask, as in C.
@@ -1988,7 +1988,7 @@ the request; while a tunnel is set up there is no binding, the origin's TLS havi
 pub struct ConnLease { id: ConnId, conn: Option<ConnSlot>, home: Home }  // no Clone/Copy
 pub enum Home { Multi, Share(Share) }      // the pool the lease came from and goes back to
 impl ConnLease {
-    pub fn connect(&mut self, cx: &mut dyn ConnCx, setup: Setup)
+    pub fn connect(&mut self, cx: &mut dyn ConnCx, options: DriveOptions)
         -> Result<Connected, ConnectError>;                     // Connecting, Established, AlreadyUp
     pub fn get(&mut self) -> &mut Conn;                                         // once up
     pub fn home(&self) -> &Home;

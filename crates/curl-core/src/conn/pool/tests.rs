@@ -2,7 +2,7 @@ use super::*;
 use crate::conn::connect::Plain;
 use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Remote, Sent};
 use crate::conn::layer::Silent;
-use crate::conn::{DnsCache, Limit, Scheme, Setup, Tcp};
+use crate::conn::{DnsCache, DriveOptions, Limit, Scheme, Tcp};
 
 use crate::options::IpVersion;
 use crate::time::{Clock as _, ManualClock};
@@ -26,7 +26,7 @@ fn connect(
     net: &mut FakeNet,
     now: Instant,
 ) -> Result<Connected, ConnectError> {
-    let setup = Setup {
+    let setup = DriveOptions {
         wildcard: false,
         max_age: Some(Duration::from_secs(60)),
         delay: Duration::from_millis(200),

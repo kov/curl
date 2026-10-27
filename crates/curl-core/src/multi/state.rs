@@ -18,9 +18,9 @@ use crate::conn::proxy::{self, Refused};
 use crate::conn::shutdown::ConnSettings;
 use crate::conn::{
     Acquired, Answer, Asked, BadEntry, BadVia, Conn, ConnLease, ConnSlot, ConnectError,
-    ConnectMachine, Connected, Drove, Finish, Found, Full, Home, Limit, ListEntry, Made, Peer,
-    Pool, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute, Released, ReuseRules, Route, Setup,
-    Tcp, Unresolved, WaitReason, parse_entry, queries,
+    ConnectMachine, Connected, DriveOptions, Drove, Finish, Found, Full, Home, Limit, ListEntry,
+    Made, Peer, Pool, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute, Released, ReuseRules,
+    Route, Tcp, Unresolved, WaitReason, parse_entry, queries,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -2811,7 +2811,7 @@ fn connect_once<H: Host>(
     if let Some(SetupPoint::Dialed(_)) = c.lease.reached() {
         return handshake_next(c, cx);
     }
-    let setup = setup_of(cx);
+    let setup = drive_options(cx);
     let kept = cx.rest.kept(cx.me, Kind::Names);
     let answered = c.lease.answer().is_some();
     let connected = c.lease.connect(
@@ -2916,9 +2916,9 @@ fn connect_once<H: Host>(
 }
 
 /// What a drive of a setup is told of the transfer's options.
-fn setup_of<H: Host>(cx: &mut StepCx<'_, H>) -> Setup {
+fn drive_options<H: Host>(cx: &mut StepCx<'_, H>) -> DriveOptions {
     let options = cx.easy().options();
-    Setup {
+    DriveOptions {
         wildcard: cx.easy().wildcard_resolve,
         max_age: options.limits.reuse.dns_max_age,
         delay: options.limits.eyeballs.0,
@@ -3028,7 +3028,7 @@ fn drive_aside<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>
     loop {
         let chain = Chain::of(first.route(), head_of(&c), first.reached(), None, true);
         mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
-        let setup = setup_of(cx);
+        let setup = drive_options(cx);
         let drove = first.drive(
             &mut DriveCx {
                 step: cx,

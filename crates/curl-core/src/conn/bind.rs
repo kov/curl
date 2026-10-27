@@ -6,7 +6,7 @@
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 
-use super::connect::{Asked, ConnCx, ConnectError, Found, Setup, Unresolved, lookup_name};
+use super::connect::{Asked, ConnCx, ConnectError, DriveOptions, Found, Unresolved, lookup_name};
 use super::io::{AF_INET, AF_INET6, Family, InterfaceAddress, Socket, SocketOption, ipv6_scope};
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
@@ -50,7 +50,7 @@ pub(super) fn bind_local(
     remote: SocketAddr,
     bind: &LocalBind,
     scope_id: u32,
-    setup: Setup,
+    setup: DriveOptions,
 ) -> Result<(), BindFailed> {
     let v6 = remote.is_ipv6();
     let parts = bind
@@ -137,7 +137,7 @@ fn where_to_bind(
     remote: SocketAddr,
     (iface, host, iface_in, host_in): (Option<&[u8]>, Option<&[u8]>, bool, bool),
     scope_id: u32,
-    setup: Setup,
+    setup: DriveOptions,
 ) -> Result<Option<(IpAddr, u32)>, BindFailed> {
     let v6 = remote.is_ipv6();
     let af = if v6 { AF_INET6 } else { AF_INET };
@@ -249,7 +249,7 @@ fn resolve_host(
     cx: &mut dyn ConnCx,
     host: &[u8],
     v6: bool,
-    setup: Setup,
+    setup: DriveOptions,
 ) -> Result<Option<IpAddr>, BindFailed> {
     let (family, queries) = if v6 {
         (Family::V6, "AAAA")

@@ -1,11 +1,11 @@
 //! C's HTTPS connect filter (`lib/cf-https-connect.c`), which heads the
 //! setup of a connection to an `https` origin: it chooses the HTTP
 //! versions its attempts offer by ALPN, from the origin's HTTPS record
-//! (HTTPS-RR) and the transfer's wanted versions, and races them. A build
-//! without HTTP/2 makes one attempt, offering HTTP/1.1, so the race is its
-//! trace and its timer: C arms its wait for a second attempt
-//! (`EXPIRE_ALPN_EYEBALLS`) as the attempt starts while the record is
-//! still to come.
+//! (HTTPS-RR) and the transfer's wanted versions, and races them. Without
+//! HTTP/3 wanted it makes one attempt, offering HTTP/2 and HTTP/1.1 or
+//! HTTP/1.1 alone, so the race is its trace and its timer: C arms its
+//! wait for a second attempt (`EXPIRE_ALPN_EYEBALLS`) as the attempt
+//! starts while the record is still to come.
 //!
 //! The engine resolves no HTTPS record yet. It asks where the reference
 //! build's resolver would: for the origin's name, unless that is an
@@ -188,9 +188,13 @@ pub(super) fn start<H: Host>(
     let hc = Component::HttpsConnect;
     trace::of(cx, hc, format_args!("connect, init"));
     trace::of(cx, hc, format_args!("HTTPS-RR not available"));
-    // HTTP/3 alone is its one attempt's (`cf_hc_get_first_alpn`).
+    // The first of the wanted versions it can speak, HTTP/3, HTTP/2,
+    // HTTP/1, as its ALPN offers them (`cf_hc_get_first_alpn`).
+    let options = cx.easy().options();
+    let h2 = c.proto.http_versions(options).h2 && cx.easy().libraries().h2.is_some();
     let first = match c.route.dial {
         Dial::Quic => "h3",
+        Dial::Tcp if h2 => "h2",
         Dial::Tcp => "h1",
     };
     trace::of(

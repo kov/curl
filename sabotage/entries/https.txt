@@ -155,3 +155,11 @@ witness: curl-core tls::tests::an_alpn_offer_is_put_as_c_puts_it
             Chosen::H2 => matches!(self, Alpn::H2Http11 | Alpn::H2),
 --- new
             Chosen::H2 => matches!(self, Alpn::H2Http11 | Alpn::H2 | Alpn::H3),
+
+=== the HTTPS connect filter names HTTP/1 its attempt where it offers HTTP/2
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h2::alpn_offers_h2_where_a_library_speaks_it
+--- old
+        Dial::Tcp if h2 => "h2",
+--- new
+        Dial::Tcp if h2 => "h1",

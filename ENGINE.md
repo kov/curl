@@ -2554,9 +2554,11 @@ point at the handle's `curl_tlssessioninfo`, `CURLSSLBACKEND_OPENSSL` with the `
 `SSL_CTX`, NULL while the transfer holds no connection, as C's getinfo answers. The SSL data (`CURLINFO_SSL_DATA_IN`,
 `OUT`) and the msg callback's text lines go through `TlsIo::bytes` and `info`.
 
-**ALPN.** Until HTTP/2 (stage 5) the offer is a C build's without nghttp2: `http/1.1` alone,
-one baller (`1st attempt uses h1 from wanted versions`); the reference offers `h2,http/1.1`, so
-the goldens are its `--http1.1` runs. `ENABLE_ALPN` off offers none. The HTTPS-CONNECT race and
+**ALPN.** The origin is offered `h2,http/1.1` where an HTTP/2 library is linked and the request
+allows both, `h2` alone by prior knowledge, `http/1.1` otherwise, and `http/1.0` to a request in
+HTTP/1.0; the HTTPS connect filter names its attempt for the first offered (`1st attempt uses h2
+from wanted versions`, `cf_hc_get_first_alpn`). The goldens without HTTP/2 are the reference's
+`--http1.1` runs. `ENABLE_ALPN` off offers none. The HTTPS-CONNECT race and
 its timer are rendered and armed as §2.5 and §3.4 say; SNI is sent for a host name, never for an
 IP literal.
 

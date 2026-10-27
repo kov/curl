@@ -296,7 +296,9 @@ fn an_alternative_in_http_2_is_reached_in_http_2() {
 /// Over TLS with an HTTP/2 library, ALPN offers `h2` first, which the
 /// fake's peer takes, and the connection speaks HTTP/2; `h2` alone by
 /// prior knowledge. Without one, or with HTTP/1 asked for, HTTP/1 is
-/// offered, which it takes (`alpn_get_spec`).
+/// offered, which it takes (`alpn_get_spec`). The HTTPS connect filter's
+/// one attempt is named for the first it offers (`cf_hc_get_first_alpn`):
+/// C's `1st attempt uses h2` at the default version.
 #[test]
 fn alpn_offers_h2_where_a_library_speaks_it() {
     use crate::libraries::Library;
@@ -328,10 +330,14 @@ fn alpn_offers_h2_where_a_library_speaks_it() {
         let mut m = serving(Peer::Accepts, &[&talk]);
         let mut e = Easy::new();
         e.set_libraries(libraries);
+        let components = crate::components::Components::new().unwrap();
+        components.configure(b"https-connect");
+        e.set_components(Some(components));
         let url = format!("https://127.0.0.1:{PORT}/");
         let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
             o.set_url(Some(url.as_bytes())).unwrap();
             o.http.version = version;
+            o.output.verbose = true;
         });
         assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
         assert_eq!(ran.seen.body(), b"hello");
@@ -343,6 +349,9 @@ fn alpn_offers_h2_where_a_library_speaks_it() {
         };
         assert_eq!(backend.log().alpn, Some(offer), "{version:?}");
         assert!(text.iter().any(|l| l == using), "{text:?}");
+        let first = if h2_spoken { "h2" } else { "h1" };
+        let line = format!("[HTTPS-CONNECT] 1st attempt uses {first} from wanted versions\n");
+        assert!(text.iter().any(|l| *l == line), "{version:?} {text:?}");
     }
 }
 

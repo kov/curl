@@ -23,7 +23,7 @@ use crate::handler::{Configured, Handler, SocketToSet};
 use crate::options::Options;
 use crate::report::TransferReport;
 use crate::share::{Kind, Share, ShareLock, watched};
-use crate::time::{Clock, Instant};
+use crate::time::Instant;
 use crate::tls::{TlsNative, TlsShared};
 
 use super::notify::{NotifyKind, NotifyQueue};
@@ -68,7 +68,7 @@ pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) now: Instant,
     /// For the drive's reads, and the calendar time, which only a date
     /// needs.
-    pub(super) clock: &'a dyn Clock,
+    pub(super) clock: &'a crate::time::SharedClock,
     /// The tests' layer each connection set up is given.
     #[cfg(any(test, feature = "test-util"))]
     pub(super) linger: Option<crate::conn::layer::Linger>,
@@ -404,10 +404,6 @@ impl<H: Host> crate::conn::quic::QuicCx for DriveCx<'_, '_, H> {
             .expect("a QUIC attempt is driven with the transfer's timers");
         super::state::arm_quic(deadlines, self.step, wait);
     }
-
-    fn live(&self) -> Instant {
-        self.step.rest.clock.now()
-    }
 }
 
 impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
@@ -436,6 +432,7 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
             libraries,
             shared,
             handshake_timeout,
+            clock: self.step.rest.clock.clone(),
         }))
     }
 

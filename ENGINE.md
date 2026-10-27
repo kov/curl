@@ -1743,8 +1743,11 @@ sent apart from it; a datagram too large for the path is lost and counted as sen
 (`EIO`) sends a datagram at a time from then on; a blocked send keeps its packets and asks to be
 called in a millisecond. Ingress reads batches of datagrams (`recvmmsg`, GRO) into the multi's
 one receive buffer, lent and given back across the call, at most 1000 packets a pass. The
-library's timer is armed as the transfer's `QUIC` timer, in whole milliseconds rounded up. Every
-library call is given the live clock, as C's `Curl_pgrs_now`. A fatal error closes the
+library's timer is armed as the transfer's `QUIC` timer, in whole milliseconds rounded up, a
+wait from now that any multi stepping it arms. Every library call is given the time read again
+then (`Curl_cf_ngtcp2_io_ctx_update_time`) from the clock the connection was made under, which
+it keeps (`SharedClock`, the multi's one clock, held once): whichever transfer, multi or share
+uses it later, the library is never handed a time before one it had. A fatal error closes the
 connection, its close packet sent at once. The transfer reaches all of this through `QuicCx`,
 and the socket through `QuicIo`, asked for at each call: the socket stays in the connection while
 the library's events reach the transfers.
@@ -3570,7 +3573,8 @@ peer gets a protocol error, not an out-of-memory one.
   that what is refused is the library's.
 - Budgets count allocations on the test's thread (`curl_alloc::track::count_allocations`). They
   are set as each scenario lands, at what this design calls for: the first, a plain GET over
-  `FakeNet`, is fixed beside the test (`GET_BUDGET`) at 47, some of these taking more than one: the multi; the easy's URL, user
+  `FakeNet`, is fixed beside the test (`GET_BUDGET`) at 48, some of these taking more than one: the multi and its clock, shared
+  with the QUIC connections it makes; the easy's URL, user
   agent and handlers; the transfer's place in the multi and its slot, boxed so the table's
   empty rows cost little, as C's hold pointers; the URL as fetched and its parts; the URL read
   back once parsed, as C reads it back; the target grown by its query; the protocol's state;
@@ -3580,13 +3584,13 @@ peer gets a protocol error, not an out-of-memory one.
   header store; and the content type. `Stream`, `Sock`, `Closer::System`, `Home` and an empty
   `LayerStack` allocate nothing, so step 40 leaves the budget as it is.
 - The core's own part of an HTTPS GET is pinned over the fake TLS library
-  (`HTTPS_FAKE_GET_BUDGET`, 56): the plain GET's 47, then the route's `TlsIdentity` (shared with
+  (`HTTPS_FAKE_GET_BUDGET`, 57): the plain GET's 48, then the route's `TlsIdentity` (shared with
   the connection), the handshake under way, the library's session (the fake's one box), its
   layer, the stream's layer stack and its list, the multi's `TlsShared` with the fake's state
   in its box, and the key the connection's sessions are kept by. The same GET is run with each
   allocation refused in turn and alone; its server says goodbye back at once, so the
   connection's shutdown, as the multi goes, finishes in its one try and joins no set.
-  `GET_BUDGET` stays 47: a plain GET makes no TLS group, identity or layer.
+  `GET_BUDGET` stays 48: a plain GET makes no TLS group, identity or layer.
 - Over OpenSSL, `crates/curl-openssl/tests/peer.rs` pins three, as the core cannot depend on
   the binding; OpenSSL's own allocations are libc's, not counted, as C's tracker does not count
   them, and the ALPN list and trace text are on the stack:

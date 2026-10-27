@@ -231,6 +231,8 @@ pub(crate) struct QuicMaking {
     pub(crate) libraries: crate::libraries::SharedLibraries,
     pub(crate) shared: crate::tls::TlsShared,
     pub(crate) handshake_timeout: Duration,
+    /// The multi's clock, which the connection keeps.
+    pub(crate) clock: crate::time::SharedClock,
 }
 
 /// A socket opened for an attempt, or why none was, and whether the
@@ -297,10 +299,6 @@ impl QuicCx for Plain<'_> {
     fn give_room(&mut self, _: Vec<u8>) {}
 
     fn quic_due(&mut self, _: Duration) {}
-
-    fn live(&self) -> Instant {
-        self.now
-    }
 }
 
 #[cfg(test)]
@@ -1010,7 +1008,7 @@ impl ConnectMachine {
         }
         cx.of(component, format_args!("cf_socket_open() -> 0, fd={fd}"));
         if kind == SocketKind::Datagram {
-            return self.quic_attempt(cx, socket, remote, now, delay);
+            return self.quic_attempt(cx, socket, remote, delay);
         }
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("an attempt is made in a race");
@@ -1087,7 +1085,6 @@ impl ConnectMachine {
         cx: &mut dyn ConnCx,
         socket: Box<dyn Socket>,
         remote: Remote,
-        now: Instant,
         delay: Duration,
     ) -> Result<Drove, ConnectError> {
         let component = self.route.socket_component();
@@ -1125,7 +1122,7 @@ impl ConnectMachine {
             format_args!("cf_udp_connect(), opened socket={fd} ({lip}:{lport})"),
         );
         let made = match local {
-            Some(local) => self.make_quic(cx, local, addr, now),
+            Some(local) => self.make_quic(cx, local, addr),
             None => Err(ErrorKind::QuicConnectError),
         };
         let started = made.and_then(|mut quic| {
@@ -1175,7 +1172,6 @@ impl ConnectMachine {
         cx: &mut dyn ConnCx,
         local: SocketAddr,
         remote: SocketAddr,
-        now: Instant,
     ) -> Result<Box<Quic>, ErrorKind> {
         let oom = |OutOfMemory| ErrorKind::OutOfMemory;
         let failed = |cx: &mut dyn ConnCx, kind: ErrorKind| {
@@ -1222,7 +1218,7 @@ impl ConnectMachine {
         let setup = crate::http3::ClientSetup {
             local,
             remote,
-            now,
+            now: making.clock.now(),
             handshake_timeout: making.handshake_timeout,
             max_window: H3_CONN_WINDOW_SIZE_MAX,
             stream_window: crate::conn::quic::STREAM_WINDOW_INITIAL,
@@ -1239,7 +1235,7 @@ impl ConnectMachine {
                 return Err(failed(cx, kind));
             }
         };
-        let quic = Quic::new(conn, kept_for, remote, now).map_err(oom)?;
+        let quic = Quic::new(conn, kept_for, remote, making.clock.clone()).map_err(oom)?;
         curl_alloc::try_box(quic).map_err(oom)
     }
 

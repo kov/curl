@@ -782,7 +782,8 @@ fn a_get_takes_no_refusal_for_success() {
 }
 
 /// What a plain GET with a query allocates, from a new multi to its
-/// removal (`ENGINE.md` 8.1): the multi; the easy's URL, user agent and
+/// removal (`ENGINE.md` 8.1): the multi and its clock, shared with the
+/// QUIC connections it makes; the easy's URL, user agent and
 /// handlers; the transfer's place in the multi and its slot, boxed so
 /// the table's empty rows cost little, as C's hold pointers; then the URL as fetched
 /// and its parts, the URL read back once parsed (as C reads it back), the
@@ -793,7 +794,7 @@ fn a_get_takes_no_refusal_for_success() {
 /// attempts, the socket, the request head, the
 /// receive buffer, the head parser's line, the header store and the
 /// content type.
-const GET_BUDGET: u64 = 47;
+const GET_BUDGET: u64 = 48;
 
 /// The fake TLS library and the libraries naming it, made once and
 /// untracked: the test's, not the library's to account for.
@@ -873,7 +874,7 @@ fn an_https_get_takes_no_refusal_for_success() {
 }
 
 /// What an HTTPS GET allocates over the fake TLS library, the core's
-/// own beside the plain GET's 46: the route's TLS identity (shared with
+/// own beside the plain GET's 48: the route's TLS identity (shared with
 /// the connection), the handshake under way, the library's session, its
 /// layer, the stream's layer stack and its list, and the multi's
 /// `TlsShared` with the fake's state boxed in it, made with the multi's

@@ -159,3 +159,13 @@ witness: curl-core proto::http::tests::h3_trace::a_stream_closed_before_its_head
 --- new
         if !s.head_done && s.reset {
             return Err(trace::fail(
+
+=== a QUIC connection reads the time of whoever uses it
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_shared_connection_keeps_its_clock_under_another_multi
+--- old
+        let from = d.from.unwrap_or(self.remote);
+        let now = self.clock.now();
+--- new
+        let from = d.from.unwrap_or(self.remote);
+        let now = cx.now();

@@ -19,7 +19,7 @@ use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::http3::{
     CloseError, Connection, Event, Expiry, H3Error, Heard, QuicError, StreamId, SubmitFailed,
 };
-use crate::time::Instant;
+use crate::time::{Instant, SharedClock};
 use crate::tls::{SessionPeer, TlsCx};
 use crate::trace::{Code, Ip, OsError};
 
@@ -66,11 +66,6 @@ pub(crate) trait QuicCx: LayerCx {
     /// The QUIC library wants to be called again after `wait` from now,
     /// in whole milliseconds (`Curl_expire_set(EXPIRE_QUIC)`).
     fn quic_due(&mut self, wait: Duration);
-
-    /// The time, read again, as C's QUIC filter reads it before each
-    /// call into its library (`Curl_cf_ngtcp2_io_ctx_update_time`): a
-    /// step's time is from before its handshakes' work.
-    fn live(&self) -> Instant;
 }
 
 /// A `QuicCx` with the UDP socket the connection goes over, asked for at
@@ -172,10 +167,6 @@ impl QuicCx for Over<'_> {
     fn quic_due(&mut self, wait: Duration) {
         self.cx.quic_due(wait);
     }
-
-    fn live(&self) -> Instant {
-        self.cx.live()
-    }
 }
 
 impl QuicIo for Over<'_> {
@@ -276,6 +267,11 @@ pub(crate) struct Quic {
     remote: SocketAddr,
     out: Out,
     state: State,
+    /// The clock it was made under, read again before each call into
+    /// its library as C's filter reads the time
+    /// (`Curl_cf_ngtcp2_io_ctx_update_time`), whichever transfer, multi or
+    /// share uses it.
+    clock: SharedClock,
 }
 
 impl std::fmt::Debug for Quic {
@@ -289,13 +285,14 @@ impl std::fmt::Debug for Quic {
 
 impl Quic {
     /// The connection `conn`, to `remote`, whose TLS's sessions are kept
-    /// for `peer`, its connect started `now`.
+    /// for `peer`, its connect started now on `clock`.
     pub(crate) fn new(
         conn: Box<dyn Connection>,
         peer: SessionPeer,
         remote: SocketAddr,
-        now: Instant,
+        clock: SharedClock,
     ) -> Result<Quic, curl_alloc::OutOfMemory> {
+        let now = clock.now();
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(SEND_ROOM)
@@ -323,6 +320,7 @@ impl Quic {
                 now,
                 first_byte_at: None,
             },
+            clock,
         })
     }
 
@@ -442,9 +440,9 @@ impl Quic {
     /// The library's timer: run if it is due, and set for when it next is
     /// (`Curl_cf_ngtcp2_cmn_set_expiry`).
     pub(crate) fn set_expiry(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
-        let mut expiry = self.conn.expiry(cx.live());
+        let mut expiry = self.conn.expiry(self.clock.now());
         if expiry == Expiry::Due {
-            let now = cx.live();
+            let now = self.clock.now();
             self.state.now = now;
             let ran = {
                 let Quic {
@@ -467,7 +465,7 @@ impl Quic {
                 // A failed check of the peer wins over what else failed.
                 return Err(self.state.verified.err().unwrap_or(kind));
             }
-            expiry = self.conn.expiry(cx.live());
+            expiry = self.conn.expiry(self.clock.now());
         }
         if let Expiry::In(wait) = expiry {
             // In whole milliseconds, rounded up.
@@ -628,7 +626,7 @@ impl Quic {
             self.state.shutdown_started = true;
             let mut packet = [0u8; CLOSE_ROOM];
             let closing = self.conn.close_error();
-            let written = self.conn.write_close(cx.live(), &mut packet);
+            let written = self.conn.write_close(self.clock.now(), &mut packet);
             let (kind, code) = (closing.kind, closing.code);
             match written {
                 Ok(n) => cx.of(
@@ -749,7 +747,7 @@ impl Quic {
                 }
                 Err(Stop::Failed(kind)) => return Err(kind),
             }
-            self.conn.sent_at(cx.live());
+            self.conn.sent_at(self.clock.now());
         }
         Ok(())
     }
@@ -762,7 +760,7 @@ impl Quic {
         if self.out.bytes.try_resize(at + max, 0).is_err() {
             return Err(ErrorKind::OutOfMemory);
         }
-        let now = cx.live();
+        let now = self.clock.now();
         self.state.now = now;
         let wrote = {
             let Quic {
@@ -1000,7 +998,7 @@ impl Quic {
                     continue;
                 }
                 total += d.len;
-                first.get_or_insert_with(|| cx.live());
+                first.get_or_insert_with(|| self.clock.now());
                 let bytes = &room[i * SLOT..i * SLOT + d.len];
                 if let Err(kind) = self.read_datagram(cx, d, bytes) {
                     failed = Some(kind);
@@ -1045,7 +1043,7 @@ impl Quic {
             );
         }
         let from = d.from.unwrap_or(self.remote);
-        let now = cx.live();
+        let now = self.clock.now();
         self.state.now = now;
         for packet in bytes.chunks(d.segment) {
             let read = {
@@ -1264,9 +1262,6 @@ mod tests {
         fn quic_due(&mut self, wait: Duration) {
             self.due.push(wait);
         }
-        fn live(&self) -> Instant {
-            self.clock.now()
-        }
     }
 
     impl QuicIo for Cx {
@@ -1305,7 +1300,8 @@ mod tests {
             due: Vec::new(),
             socket: Scripted::default(),
         };
-        (Quic::new(conn, peer, remote, clock.now()).unwrap(), cx)
+        let shared = SharedClock::new(Box::new(clock)).unwrap();
+        (Quic::new(conn, peer, remote, shared).unwrap(), cx)
     }
 
     fn packets(script: &Arc<Mutex<Script>>, sizes: &[usize]) {

@@ -63,7 +63,11 @@ fn expect(lines: &str) -> Vec<String> {
 /// A peer at `PORT`, over IPv4 and IPv6, answering each datagram sent
 /// with its next of `replies`.
 fn quic_server(replies: &[&[u8]]) -> Multi {
-    let clock = ManualClock::new().unwrap();
+    quic_server_on(ManualClock::new().unwrap(), replies)
+}
+
+/// `quic_server`'s peer, for a multi reading `clock`.
+fn quic_server_on(clock: ManualClock, replies: &[&[u8]]) -> Multi {
     let mut net = FakeNet::new(clock.clone()).with_name(
         "localhost",
         &[
@@ -524,5 +528,51 @@ fn a_stream_closed_before_its_head_fails() {
             "HTTP/3 stream 0 was closed cleanly, but before getting all response header fields, \
              treated as error"
         ]
+    );
+}
+
+/// A connection a share keeps is reused by a multi whose clock reads
+/// behind the one it was made under: it goes on reading its own, so the
+/// library is never handed a time before one it had.
+#[test]
+fn a_shared_connection_keeps_its_clock_under_another_multi() {
+    use crate::share::{Kind, Share};
+    let share = Share::new().unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let script = get_script(b"123456789");
+    {
+        let mut s = script.lock().unwrap();
+        let header = |name: &[u8], value: &[u8]| Told::Header {
+            stream: 4,
+            name: name.to_vec(),
+            value: value.to_vec(),
+        };
+        s.on_read.push_back(vec![
+            header(b":status", b"200"),
+            header(b"content-length", b"2"),
+            Told::HeadersDone(4),
+            Told::Data(4, b"ok".to_vec()),
+            Told::Closed(4, 0x100),
+        ]);
+    }
+    let ahead = ManualClock::new().unwrap();
+    ahead.advance(std::time::Duration::from_secs(10));
+    let replies: &[&[u8]] = &[b"server flight", b"response", b"second"];
+    let mut first = quic_server_on(ahead, replies);
+    let mut e = tracing(FakeTls::new().unwrap(), &script);
+    e.set_share(Some(share.clone()));
+    assert_eq!(h3_get(&mut first, e).result, Ok(()));
+    // The second request's packet, once the first is done.
+    script.lock().unwrap().out.extend([vec![5; 75], vec![]]);
+    let mut second = quic_server_on(ManualClock::new().unwrap(), replies);
+    let mut e = tracing(FakeTls::new().unwrap(), &script);
+    e.set_share(Some(share.clone()));
+    let ran = h3_get(&mut second, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"ok");
+    assert_eq!(
+        script.lock().unwrap().requests.len(),
+        2,
+        "both on the one connection"
     );
 }

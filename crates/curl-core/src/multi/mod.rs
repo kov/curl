@@ -327,7 +327,7 @@ pub struct Multi<H: Host = NoHost> {
     /// The transfer last let look for a connection again.
     pending_after: Option<TransferId>,
     sockets: SocketTable<H::Socket>,
-    clock: Box<dyn Clock>,
+    clock: crate::time::SharedClock,
     net: Box<dyn Net + Send>,
     /// IPv6 works here, as the network said once as the multi was made
     /// (`Curl_probeipv6`, `multi->ipv6_works`): a property of the system
@@ -419,7 +419,7 @@ impl<H: Host> Multi<H> {
             limits,
             pending_after: None,
             sockets: SocketTable::new(),
-            clock: env.clock,
+            clock: crate::time::SharedClock::new(env.clock)?,
             net,
             ipv6_works,
             fail_ipv6,
@@ -1080,7 +1080,7 @@ impl<H: Host> Multi<H> {
             timers: &mut self.timers,
             events: ev,
             now,
-            clock: &*self.clock,
+            clock: &self.clock,
             #[cfg(any(test, feature = "test-util"))]
             linger: self.linger,
         }

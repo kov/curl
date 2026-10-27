@@ -267,10 +267,6 @@ impl<H: Host> QuicCx for H3Step<'_, '_, H> {
     fn quic_due(&mut self, wait: std::time::Duration) {
         QuicCx::quic_due(&mut *self.cx, wait);
     }
-
-    fn live(&self) -> crate::time::Instant {
-        QuicCx::live(&*self.cx)
-    }
 }
 
 impl<H: Host> QuicIo for H3Step<'_, '_, H> {

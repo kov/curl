@@ -79,6 +79,9 @@ pub struct Script {
     pub keep_alive: Option<Option<Duration>>,
     /// The times the packets it wrote went.
     pub sent_at: Vec<Instant>,
+    /// The latest time it was handed, which none after may be before, as
+    /// ngtcp2 asserts (`conn_update_timestamp`).
+    pub last_ts: Option<Instant>,
     /// The failures it was told, and the close it then says.
     pub failed: Vec<QuicError>,
     pub close: Option<CloseError>,
@@ -93,6 +96,14 @@ pub struct Script {
 }
 
 impl Script {
+    /// The library is handed the time `now`: never earlier than before.
+    fn at(&mut self, now: Instant) {
+        if let Some(last) = self.last_ts {
+            assert!(last <= now, "the time went back from {last:?} to {now:?}");
+        }
+        self.last_ts = Some(now);
+    }
+
     pub fn new() -> Arc<Mutex<Script>> {
         Arc::new(Mutex::new(Script {
             max_payload: 1200,
@@ -127,6 +138,7 @@ impl Http3 for FakeHttp3 {
         tls: Box<dyn QuicTls>,
     ) -> Result<Box<dyn Connection>, ConnectFailed> {
         self.setups.lock().unwrap().push(*setup);
+        self.script.lock().unwrap().at(setup.now);
         Ok(Box::new(FakeConnection {
             script: self.script.clone(),
             tls,
@@ -265,7 +277,7 @@ impl Connection for FakeConnection {
     fn read_packet(
         &mut self,
         cx: &mut TlsCx<'_>,
-        _now: Instant,
+        now: Instant,
         _from: SocketAddr,
         ecn: u8,
         packet: &[u8],
@@ -273,6 +285,7 @@ impl Connection for FakeConnection {
     ) -> Result<(), QuicError> {
         let told = {
             let mut s = self.script.lock().unwrap();
+            s.at(now);
             s.read.push((packet.to_vec(), ecn));
             if let Some(code) = s.read_fails {
                 return Err(quic_error("ngtcp2_conn_read_pkt", code));
@@ -288,11 +301,12 @@ impl Connection for FakeConnection {
     fn write_packet(
         &mut self,
         _cx: &mut TlsCx<'_>,
-        _now: Instant,
+        now: Instant,
         buf: &mut [u8],
         _events: Events<'_>,
     ) -> Result<Option<usize>, QuicError> {
         let mut s = self.script.lock().unwrap();
+        s.at(now);
         let Some(packet) = s.out.pop_front().filter(|p| !p.is_empty()) else {
             return Ok(None);
         };
@@ -306,7 +320,9 @@ impl Connection for FakeConnection {
     }
 
     fn sent_at(&mut self, now: Instant) {
-        self.script.lock().unwrap().sent_at.push(now);
+        let mut s = self.script.lock().unwrap();
+        s.at(now);
+        s.sent_at.push(now);
     }
 
     fn max_payload(&self) -> usize {
@@ -340,10 +356,11 @@ impl Connection for FakeConnection {
     fn handle_expiry(
         &mut self,
         _cx: &mut TlsCx<'_>,
-        _now: Instant,
+        now: Instant,
         _events: Events<'_>,
     ) -> Result<(), QuicError> {
         let mut s = self.script.lock().unwrap();
+        s.at(now);
         s.expired += 1;
         s.expiry = None;
         s.timer = None;
@@ -397,7 +414,8 @@ impl Connection for FakeConnection {
         s.draining.then_some(s.peer_close).flatten()
     }
 
-    fn write_close(&mut self, _now: Instant, buf: &mut [u8]) -> Result<usize, QuicError> {
+    fn write_close(&mut self, now: Instant, buf: &mut [u8]) -> Result<usize, QuicError> {
+        self.script.lock().unwrap().at(now);
         buf[..5].copy_from_slice(b"CLOSE");
         Ok(5)
     }

@@ -60,6 +60,49 @@ pub trait Clock: Send {
     fn unix_time(&self) -> i64;
 }
 
+/// A multi's clock, held once and shared: the multi reads it, and so does
+/// each QUIC connection it makes, which keeps reading the clock it was
+/// made under wherever it is used later. The time a connection hands its
+/// library never comes from another clock, so it never runs back.
+#[derive(Clone)]
+pub(crate) struct SharedClock(curl_alloc::TryArc<std::sync::Mutex<Box<dyn Clock>>>);
+
+impl SharedClock {
+    pub(crate) fn new(clock: Box<dyn Clock>) -> Result<Self, curl_alloc::OutOfMemory> {
+        Ok(SharedClock(curl_alloc::TryArc::try_new(
+            std::sync::Mutex::new(clock),
+        )?))
+    }
+
+    fn get(&self) -> std::sync::MutexGuard<'_, Box<dyn Clock>> {
+        self.0.lock().expect("no reading of a clock panics")
+    }
+
+    pub(crate) fn now(&self) -> Instant {
+        self.get().now()
+    }
+
+    pub(crate) fn unix_time(&self) -> i64 {
+        self.get().unix_time()
+    }
+}
+
+impl Clock for SharedClock {
+    fn now(&self) -> Instant {
+        SharedClock::now(self)
+    }
+
+    fn unix_time(&self) -> i64 {
+        SharedClock::unix_time(self)
+    }
+}
+
+impl std::fmt::Debug for SharedClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SharedClock")
+    }
+}
+
 /// The system's monotonic clock (C's `Curl_now`). Every one reads the
 /// same time: a connection a share keeps is used under the clocks of
 /// several multis, and its times compare under each.

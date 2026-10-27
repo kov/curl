@@ -1268,10 +1268,6 @@ impl<H: Host> crate::conn::quic::QuicCx for StepCx<'_, H> {
         self.quic_at = Some(at);
         trace_set(self, TimerKind::Quic, at);
     }
-
-    fn live(&self) -> Instant {
-        self.rest.clock.now()
-    }
 }
 
 impl<'a, H: Host> StepCx<'a, H> {

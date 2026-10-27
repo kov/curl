@@ -258,7 +258,8 @@ fn a_closing_connection_owns_its_socket_until_the_set_closes_it() {
     assert_eq!(wire.closed(), [], "still open");
     // Waited on by `fdset` and `waitfds` as the set's.
     let mut waited = Vec::new();
-    m.sockets(&mut NoEvents, |k, e| waited.push((k.get(), e)));
+    m.sockets(&mut NoEvents, |k, e| waited.push((k.get(), e)))
+        .unwrap();
     assert_eq!(waited, [(1000, Events::IN)]);
     // Its peer answers: the set runs on the event, and closes it.
     m.remove(id, &mut ev).unwrap();
@@ -630,7 +631,8 @@ fn a_tls_goodbye_waits_in_the_set_for_the_peer_s() {
     assert_eq!((tls.log().closes_sent, tls.log().closes_heard), (1, 0));
     assert_eq!(m.shutdowns.len(), 1);
     let mut waited = Vec::new();
-    m.sockets(&mut NoEvents, |k, e| waited.push((k.get(), e)));
+    m.sockets(&mut NoEvents, |k, e| waited.push((k.get(), e)))
+        .unwrap();
     assert_eq!(waited, [(1000, Events::IN)]);
     assert_eq!(wire.closed(), []);
     talk.allow(3);
@@ -685,7 +687,7 @@ fn the_internal_trace_says_a_shutdown_as_c_does() {
     let id = m.add(closing_tls(tls), (), &mut ev).unwrap();
     by_perform(&mut m, id, &mut ev);
     // Its pollset asked for, as `curl_multi_fdset` asks.
-    m.sockets(&mut ev, |_, _| ());
+    m.sockets(&mut ev, |_, _| ()).unwrap();
     talk.allow(3);
     m.perform(&mut ev).unwrap();
     assert_eq!(m.shutdowns.len(), 0);

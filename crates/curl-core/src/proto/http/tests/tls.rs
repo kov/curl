@@ -303,7 +303,7 @@ fn waits_until_done(m: &mut Multi, id: crate::multi::TransferId) -> Vec<Events> 
             return waits;
         }
         let mut now = Events::NONE;
-        m.sockets(&mut NoEvents, |_, e| now = now | e);
+        m.sockets(&mut NoEvents, |_, e| now = now | e).unwrap();
         if waits.last() != Some(&now) {
             waits.push(now);
         }

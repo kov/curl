@@ -872,7 +872,11 @@ impl TransferState {
     /// leaves only the pause's, which the protocol applies. The
     /// connection's layers adjust what an exchange waits for, if it waits
     /// for anything (`Curl_conn_adjust_pollset`).
-    pub(crate) fn pollset<'a>(&'a self, pause: Pause, pool: &'a Pool) -> Pollset<'a> {
+    pub(crate) fn pollset<'a>(
+        &'a self,
+        pause: Pause,
+        pool: &'a Pool,
+    ) -> Result<Pollset<'a>, OutOfMemory> {
         let mut set = Pollset::new();
         match self {
             TransferState::Connecting(c) if pause.recv == RecvPause::Running => {
@@ -883,14 +887,14 @@ impl TransferState {
                     Some(h) => {
                         let events = h.interest(&c.lease) | Events::IN;
                         for s in c.lease.sockets() {
-                            set.add(s, events);
+                            set.add(s, events)?;
                         }
                     }
                     // A TCP attempt waits to write, a QUIC one for what
                     // its connection waits for.
                     None => {
                         for (s, events) in c.lease.racing_wants() {
-                            set.add(s, events);
+                            set.add(s, events)?;
                         }
                     }
                 }
@@ -901,13 +905,13 @@ impl TransferState {
                 if let Some(slot) = pool.slot_of(&x.lease) {
                     let events = slot.adjust_pollset(x.proto.interest(pause), x.proto.h3_sending());
                     for s in slot.sockets() {
-                        set.add(s, events);
+                        set.add(s, events)?;
                     }
                 }
             }
             _ => {}
         }
-        set
+        Ok(set)
     }
 }
 
@@ -936,8 +940,9 @@ impl Run {
         &self,
         pause: Pause,
         pool: &Pool,
-    ) -> PollsetTrace<impl Iterator<Item = (Instant, TimerKind)> + Clone + use<>> {
-        let wants = self.state.pollset(pause, pool).wants();
+    ) -> Result<PollsetTrace<impl Iterator<Item = (Instant, TimerKind)> + Clone + use<>>, OutOfMemory>
+    {
+        let wants = self.state.pollset(pause, pool)?.into_wants();
         let setup = match &self.state {
             // A QUIC socket is connected as its attempt starts.
             TransferState::Connecting(c) => Some((
@@ -948,14 +953,14 @@ impl Run {
             )),
             _ => None,
         };
-        PollsetTrace {
+        Ok(PollsetTrace {
             wants,
             setup,
             tls: self.state.tls_waits(pool),
             proxy_tls: self.state.proxy_tls_waits(pool),
             timers: self.deadlines.in_order(),
             paused: (pause.send_paused(), pause.recv != RecvPause::Running),
-        }
+        })
     }
 }
 

@@ -428,7 +428,10 @@ lines (`ev new entry`, `ev entry … added transfer`, `ev update`, `ev update ca
 gone`), which count the readers, writers and owners of C's socket hash entries, a bookkeeping the
 engine's `SocketTable` does not keep in that form. A transfer let out of PENDING enters CONNECT
 as it is let, traced on it then (`move_pending_to_connect`), so a wait before it runs collects its
-empty pollset.
+empty pollset. A pollset holds eight sockets in place and more on the heap, as C's
+`easy_pollset` grows past its own: a setup racing HTTP/3 against TCP waits on up to twice an
+address race's six attempts. One that cannot grow fails the wait, `fdset` or `waitfds` for
+memory, as C's.
 
 `TCP` traces each send and receive on a transfer's connection, and the PROXY protocol's line,
 with what it asked for and what it came to. Through the drive's context (§3.6), it traces an

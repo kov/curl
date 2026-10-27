@@ -783,7 +783,8 @@ fn an_exchange_waits_to_read_its_socket() {
     m.perform(&mut NoEvents).unwrap();
     let waits = |m: &mut Multi| {
         let mut seen = Vec::new();
-        m.sockets(&mut NoEvents, |_, events| seen.push(events));
+        m.sockets(&mut NoEvents, |_, events| seen.push(events))
+            .unwrap();
         seen
     };
     assert_eq!(waits(&mut m), [Events::IN]);
@@ -810,7 +811,8 @@ fn an_exchange_waits_for_what_its_layers_want() {
     m.perform(&mut NoEvents).unwrap();
     let waits = |m: &mut Multi| {
         let mut seen = Vec::new();
-        m.sockets(&mut NoEvents, |_, events| seen.push(events));
+        m.sockets(&mut NoEvents, |_, events| seen.push(events))
+            .unwrap();
         seen
     };
     assert_eq!(waits(&mut m), [Events::IN | Events::OUT]);
@@ -4788,7 +4790,8 @@ fn waiting(m: &mut Multi, set: impl FnOnce(&mut Options)) -> Vec<crate::conn::io
     // The connect started in the first pass is taken in the next.
     m.perform(&mut NoEvents).unwrap();
     let mut seen = Vec::new();
-    m.sockets(&mut NoEvents, |_, events| seen.push(events));
+    m.sockets(&mut NoEvents, |_, events| seen.push(events))
+        .unwrap();
     seen
 }
 
@@ -4806,7 +4809,8 @@ fn a_proxy_handshake_waits_to_send_then_to_read() {
     assert_eq!(waiting(&mut m, tunneled), [Events::OUT | Events::IN]);
     m.perform(&mut NoEvents).unwrap();
     let mut seen = Vec::new();
-    m.sockets(&mut NoEvents, |_, events| seen.push(events));
+    m.sockets(&mut NoEvents, |_, events| seen.push(events))
+        .unwrap();
     assert_eq!(seen, [Events::IN], "the CONNECT sent, its answer awaited");
     assert!(
         talk.received()
@@ -4818,7 +4822,8 @@ fn a_proxy_handshake_waits_to_send_then_to_read() {
     assert_eq!(waiting(&mut m, socks), [Events::OUT | Events::IN]);
     m.perform(&mut NoEvents).unwrap();
     let mut seen = Vec::new();
-    m.sockets(&mut NoEvents, |_, events| seen.push(events));
+    m.sockets(&mut NoEvents, |_, events| seen.push(events))
+        .unwrap();
     assert_eq!(seen, [Events::IN], "the offer sent, the pick awaited");
     let talk = stalled(&[OK]);
     let mut m = serving(Peer::Accepts, &[&talk]);
@@ -6029,7 +6034,7 @@ fn a_receive_limit_lets_its_rate_through_each_second() {
         // Waiting out the step, on its timer alone: no socket
         // (RATELIMITING has no pollset).
         let mut sockets = 0;
-        m.sockets(&mut NoEvents, |_, _| sockets += 1);
+        m.sockets(&mut NoEvents, |_, _| sockets += 1).unwrap();
         assert_eq!(sockets, 0, "second {second}");
         let wait = m.timeout().expect("a timer for the limit");
         // The pass's reads moved the clock on 4 ms since the step began.

@@ -126,7 +126,8 @@ witness: curl-core multi::tests::an_accepted_connect_goes_on_to_the_request
             |s, events| {
                 first.get_or_insert((s, events));
             },
-        );
+        )
+        .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
 --- new
 
 === fdset sets a writing socket in the read set
@@ -233,12 +234,16 @@ features: debug-hooks
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core proto::http::tests::wait_trace::a_connect_limit_is_waited_for_as_c
 --- old
-        let last = self.trace_pollsets(now, ev);
+        let last = self
+            .trace_pollsets(now, ev)
+            .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         // After the pollsets, which may arm timers (multi.c:1602).
         let internal = self.multi_timeout(now, ev);
 --- new
         let internal = self.multi_timeout(now, ev);
-        let last = self.trace_pollsets(now, ev);
+        let last = self
+            .trace_pollsets(now, ev)
+            .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
 
 === a wait's descriptors leave the waker out
 file: crates/curl-core/src/multi/wait.rs
@@ -273,12 +278,14 @@ witness: curl-core proto::http::tests::wait_trace::a_transfer_run_by_events_is_t
 --- old
         if self.slots.get(id).is_some() {
             let now = self.clock.now();
-            self.trace_pollset_now(id, now, ev);
+            self.trace_pollset_now(id, now, ev)
+                .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         }
 --- new
         if self.slots.get(id).is_none() {
             let now = self.clock.now();
-            self.trace_pollset_now(id, now, ev);
+            self.trace_pollset_now(id, now, ev)
+                .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         }
 
 === a socket action does not say it runs a dirty transfer

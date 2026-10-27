@@ -221,7 +221,7 @@ fn a_handshake_paused_for_the_application_waits_for_its_word() {
         crate::multi::state::TransferState::Connecting(_)
     ));
     let mut waits = Events::NONE;
-    m.sockets(&mut NoEvents, |_, e| waits = waits | e);
+    m.sockets(&mut NoEvents, |_, e| waits = waits | e).unwrap();
     assert_eq!(waits, Events::NONE, "nothing waited for while paused");
     assert_eq!(backend.log().handshakes, 0);
     assert_eq!(talk.received(), fake::HELLO, "no more sent while paused");

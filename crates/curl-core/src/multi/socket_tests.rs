@@ -542,7 +542,7 @@ fn the_resolver_s_wake_is_listened_on_while_a_transfer_is_alive() {
     let mut m: Multi<Tagged> = Multi::new(env).unwrap();
     let mut ev = Sockets::default();
     let mut keys = Vec::new();
-    m.sockets(&mut ev, |k, _| keys.push(k.get()));
+    m.sockets(&mut ev, |k, _| keys.push(k.get())).unwrap();
     assert_eq!(keys, [], "no transfer alive");
     let id = m
         .add(Box::new(easy("tcp://127.0.0.1:4/")), (), &mut ev)
@@ -556,7 +556,7 @@ fn the_resolver_s_wake_is_listened_on_while_a_transfer_is_alive() {
         ]
     );
     let mut keys = Vec::new();
-    m.sockets(&mut ev, |k, _| keys.push(k.get()));
+    m.sockets(&mut ev, |k, _| keys.push(k.get())).unwrap();
     assert_eq!(keys, [wake, 1000], "the resolver's first");
     clock.advance(Duration::from_millis(5));
     m.socket_action(SocketEvent::Socket(SocketKey::new(1000)), &mut ev)
@@ -568,7 +568,7 @@ fn the_resolver_s_wake_is_listened_on_while_a_transfer_is_alive() {
         ev.calls
     );
     let mut keys = Vec::new();
-    m.sockets(&mut ev, |k, _| keys.push(k.get()));
+    m.sockets(&mut ev, |k, _| keys.push(k.get())).unwrap();
     assert_eq!(keys, [], "none alive");
 }
 

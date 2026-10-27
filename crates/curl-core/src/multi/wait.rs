@@ -6,7 +6,7 @@
 use std::os::fd::AsRawFd as _;
 use std::time::Duration;
 
-use curl_alloc::{TryArc, TryVec};
+use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
 use super::state::StepCx;
 use super::state::{Message as MessageState, TransferState};
@@ -42,14 +42,17 @@ impl<H: Host> Multi<H> {
         ev: &mut dyn MultiEvents<H>,
     ) -> Result<u32, MultiErrorKind> {
         let now = self.clock.now();
-        let last = self.trace_pollsets(now, ev);
+        let last = self
+            .trace_pollsets(now, ev)
+            .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         // After the pollsets, which may arm timers (multi.c:1602).
         let internal = self.multi_timeout(now, ev);
         let timeout = internal.map_or(max, |t| t.min(max));
         let mut wanted = 0;
         pollsets(&self.slots, &self.caches.pool, &self.shutdowns, |_, _| {
             wanted += 1
-        });
+        })
+        .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         // The resolver's wake, listened on while a transfer is alive, is
         // one of the multi's own (C's admin handle's pollset).
         let resolver_waker = self.alive.waker.clone().filter(|_| self.alive.count > 0);
@@ -75,7 +78,8 @@ impl<H: Host> Multi<H> {
             |s, events| {
                 first.get_or_insert((s, events));
             },
-        );
+        )
+        .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         let mut few_sockets;
         let mut more_sockets = Vec::new();
         let sockets: &mut [SocketPoll<'_>] = match first {
@@ -91,7 +95,8 @@ impl<H: Host> Multi<H> {
                         few_sockets[at] = SocketPoll::new(s, events);
                         at += 1;
                     },
-                );
+                )
+                .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
                 &mut few_sockets[..wanted]
             }
             Some(_) => {
@@ -105,7 +110,8 @@ impl<H: Host> Multi<H> {
                             .try_push(SocketPoll::new(s, events))
                             .expect("reserved");
                     },
-                );
+                )
+                .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
                 &mut more_sockets
             }
         };
@@ -218,7 +224,8 @@ impl<H: Host> Multi<H> {
             if let Some(at) = watched.iter().position(|&(k, _)| k == key) {
                 found[at].get_or_insert(s);
             }
-        });
+        })
+        .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         // Watched only while the socket callback was told of it, while a
         // transfer is alive.
         let wake = self.alive.waker.as_deref();

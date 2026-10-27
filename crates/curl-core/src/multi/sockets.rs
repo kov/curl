@@ -32,34 +32,83 @@ pub enum SocketFor {
     Multi,
 }
 
-/// The most sockets a transfer waits on at once: a connection being set
-/// up races up to six addresses, and a resolver may add its own.
-const POLLSET_MAX: usize = 8;
+/// The sockets a pollset holds in place: as many as a connection setup's
+/// race of addresses runs at once and a resolver's own. More go on the
+/// heap, as C's `easy_pollset` grows past its inline sockets.
+const POLLSET_INLINE: usize = 8;
+
+/// Items held in place up to `POLLSET_INLINE`, then on the heap.
+#[derive(Clone, Debug)]
+enum Store<T> {
+    Inline {
+        len: usize,
+        /// Unused past `len`.
+        items: [T; POLLSET_INLINE],
+    },
+    Heap(Vec<T>),
+}
+
+impl<T: Copy> Store<T> {
+    /// None, the room in place filled with `fill`.
+    const fn new(fill: T) -> Store<T> {
+        Store::Inline {
+            len: 0,
+            items: [fill; POLLSET_INLINE],
+        }
+    }
+
+    fn as_slice(&self) -> &[T] {
+        match self {
+            Store::Inline { len, items } => &items[..*len],
+            Store::Heap(items) => items,
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        match self {
+            Store::Inline { len, items } => &mut items[..*len],
+            Store::Heap(items) => items,
+        }
+    }
+
+    /// `item` after the others, moved to the heap once the room in place
+    /// is full.
+    fn push(&mut self, item: T) -> Result<(), OutOfMemory> {
+        match self {
+            Store::Inline { len, items } if *len < POLLSET_INLINE => {
+                items[*len] = item;
+                *len += 1;
+            }
+            Store::Inline { items, .. } => {
+                let mut heap = Vec::new();
+                heap.try_extend_from_slice(items)?;
+                heap.try_push(item)?;
+                *self = Store::Heap(heap);
+            }
+            Store::Heap(items) => items.try_push(item)?,
+        }
+        Ok(())
+    }
+}
 
 /// The sockets a transfer waits on, and for what (C's `easy_pollset`),
-/// held without allocating. A socket added twice waits for both.
+/// held without allocating while they fit in place. A socket added twice
+/// waits for both.
 pub(crate) struct Pollset<'p> {
-    sockets: [Option<&'p dyn Socket>; POLLSET_MAX],
+    sockets: Store<Option<&'p dyn Socket>>,
     wants: Wants,
 }
 
 /// A pollset's sockets by key, apart from the sockets themselves.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Wants {
-    len: usize,
-    /// Unused past `len`.
-    wants: [(SocketKey, Events); POLLSET_MAX],
-}
+#[derive(Clone, Debug)]
+pub(crate) struct Wants(Store<(SocketKey, Events)>);
 
 impl Wants {
     /// No socket.
-    pub(crate) const NONE: Wants = Wants {
-        len: 0,
-        wants: [(SocketKey::BAD, Events::NONE); POLLSET_MAX],
-    };
+    pub(crate) const NONE: Wants = Wants(Store::new((SocketKey::BAD, Events::NONE)));
 
     pub(crate) fn as_slice(&self) -> &[(SocketKey, Events)] {
-        &self.wants[..self.len]
+        self.0.as_slice()
     }
 }
 
@@ -67,41 +116,41 @@ impl<'p> Pollset<'p> {
     /// Waiting on nothing.
     pub(crate) fn new() -> Pollset<'p> {
         Pollset {
-            sockets: [None; POLLSET_MAX],
+            sockets: Store::new(None),
             wants: Wants::NONE,
         }
     }
 
     /// Wait on `socket` for `events` too; nothing, for none.
-    pub(crate) fn add(&mut self, socket: &'p dyn Socket, events: Events) {
+    pub(crate) fn add(
+        &mut self,
+        socket: &'p dyn Socket,
+        events: Events,
+    ) -> Result<(), OutOfMemory> {
         if events.is_empty() {
-            return;
+            return Ok(());
         }
         let key = socket.key();
-        let w = &mut self.wants;
-        if let Some((_, had)) = w.wants[..w.len].iter_mut().find(|(k, _)| *k == key) {
+        let wants = self.wants.0.as_mut_slice();
+        if let Some((_, had)) = wants.iter_mut().find(|(k, _)| *k == key) {
             *had = *had | events;
-            return;
+            return Ok(());
         }
-        assert!(
-            w.len < POLLSET_MAX,
-            "a transfer waits on at most {POLLSET_MAX} sockets"
-        );
-        self.sockets[w.len] = Some(socket);
-        w.wants[w.len] = (key, events);
-        w.len += 1;
+        self.sockets.push(Some(socket))?;
+        self.wants.0.push((key, events))
     }
 
     /// Each socket, and what it is waited on for.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&'p dyn Socket, Events)> + '_ {
-        self.sockets[..self.wants.len]
+        self.sockets
+            .as_slice()
             .iter()
             .zip(self.wants.as_slice())
             .map(|(s, &(_, events))| (s.expect("added"), events))
     }
 
     /// The sockets by key.
-    pub(crate) fn wants(&self) -> Wants {
+    pub(crate) fn into_wants(self) -> Wants {
         self.wants
     }
 }
@@ -306,6 +355,7 @@ pub struct UnknownSocket;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conn::MAX_ATTEMPTS;
     use crate::conn::io::{Readiness, Recv, Sent};
     use crate::id::{Arena, ArenaPolicy};
 
@@ -361,16 +411,45 @@ mod tests {
     fn a_pollset_holds_each_socket_once() {
         let (a, b, c) = (Keyed(3), Keyed(4), Keyed(5));
         let mut set = Pollset::new();
-        set.add(&a, Events::IN);
-        set.add(&b, Events::OUT);
-        set.add(&a, Events::OUT);
-        set.add(&c, Events::NONE);
+        set.add(&a, Events::IN).unwrap();
+        set.add(&b, Events::OUT).unwrap();
+        set.add(&a, Events::OUT).unwrap();
+        set.add(&c, Events::NONE).unwrap();
         let keys = [SocketKey::new(3), SocketKey::new(4)];
         let want = [(keys[0], Events::IN | Events::OUT), (keys[1], Events::OUT)];
-        assert_eq!(set.wants().as_slice(), want);
         let got: Vec<_> = set.iter().map(|(s, e)| (s.key(), e)).collect();
         assert_eq!(got, want);
+        assert_eq!(set.into_wants().as_slice(), want);
         assert_eq!(Wants::NONE.as_slice(), []);
+    }
+
+    /// A pollset holds more sockets than it has room for in place, two
+    /// races of addresses among them, each socket still once.
+    #[test]
+    fn a_pollset_grows_past_its_room_in_place() {
+        let sockets: Vec<_> = (0..2 * MAX_ATTEMPTS as i32)
+            .map(|fd| Keyed(10 + fd))
+            .collect();
+        assert!(sockets.len() > POLLSET_INLINE);
+        let mut set = Pollset::new();
+        for s in &sockets {
+            set.add(s, Events::OUT).unwrap();
+        }
+        // Added again past the room in place, it waits for both.
+        set.add(&sockets[0], Events::IN).unwrap();
+        set.add(&sockets[POLLSET_INLINE], Events::IN).unwrap();
+        let want: Vec<_> = (0..sockets.len())
+            .map(|i| {
+                let events = match i {
+                    0 | POLLSET_INLINE => Events::IN | Events::OUT,
+                    _ => Events::OUT,
+                };
+                (SocketKey::new(10 + i as i32), events)
+            })
+            .collect();
+        let got: Vec<_> = set.iter().map(|(s, e)| (s.key(), e)).collect();
+        assert_eq!(got, want);
+        assert_eq!(set.into_wants().as_slice(), want);
     }
 
     fn ids() -> (SocketOwner, SocketOwner) {

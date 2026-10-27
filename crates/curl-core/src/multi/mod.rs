@@ -903,20 +903,30 @@ impl<H: Host> Multi<H> {
     }
 
     /// Transfer `id`'s pollset, as it is now, traced.
-    fn trace_pollset_now(&mut self, id: TransferId, now: Instant, ev: &mut dyn MultiEvents<H>) {
+    fn trace_pollset_now(
+        &mut self,
+        id: TransferId,
+        now: Instant,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<(), OutOfMemory> {
         let slot = self.slots.get(id).expect("a transfer in the multi");
         let run = slot
             .run
             .as_ref()
             .expect("no transfer is out while the multi is called");
-        let said = run.pollset_trace(slot.pause, &self.caches.pool);
+        let said = run.pollset_trace(slot.pause, &self.caches.pool)?;
         self.trace_pollset(id, now, said, ev);
+        Ok(())
     }
 
     /// Each pollset of the transfers the multi works on traced, in id
     /// order, as `multi_wait`, `curl_multi_fdset` and `curl_multi_waitfds`
     /// make them: the last of them, if any.
-    fn trace_pollsets(&mut self, now: Instant, ev: &mut dyn MultiEvents<H>) -> Option<TransferId> {
+    fn trace_pollsets(
+        &mut self,
+        now: Instant,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<Option<TransferId>, OutOfMemory> {
         // The internal handle's first, as C's is the first in the set: the
         // resolver's wake while it is listened on, and the set's deadline
         // its one timer.
@@ -937,13 +947,13 @@ impl<H: Host> Multi<H> {
         while let Some(id) = self.slots.next_after(cursor) {
             cursor = Some(id);
             if self.in_process(id) {
-                self.trace_pollset_now(id, now, ev);
+                self.trace_pollset_now(id, now, ev)?;
                 last = Some(id);
             }
         }
         // Then the connections shutting down, each chain asked.
         self.shutdowns.say_pollsets(now);
-        last
+        Ok(last)
     }
 
     pub fn counts(&self) -> Counts {
@@ -1033,9 +1043,14 @@ impl<H: Host> Multi<H> {
     /// Every socket the transfers wait on, and for what, in id order
     /// (`curl_multi_fdset`, `curl_multi_waitfds`), each transfer's pollset
     /// traced first.
-    pub fn sockets(&mut self, ev: &mut dyn MultiEvents<H>, mut f: impl FnMut(SocketKey, Events)) {
+    pub fn sockets(
+        &mut self,
+        ev: &mut dyn MultiEvents<H>,
+        mut f: impl FnMut(SocketKey, Events),
+    ) -> Result<(), MultiErrorKind> {
         let now = self.clock.now();
-        self.trace_pollsets(now, ev);
+        self.trace_pollsets(now, ev)
+            .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         // The resolver's wake first, as C's admin handle is the first in
         // the set it walks.
         if let Some(waker) = self.alive.waker.as_deref().filter(|_| self.alive.count > 0) {
@@ -1046,7 +1061,8 @@ impl<H: Host> Multi<H> {
             &self.caches.pool,
             &self.shutdowns,
             |s, events| f(s.key(), events),
-        );
+        )
+        .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)
     }
 
     /// Fail every resolve of IPv6 addresses alone, as the debug build's
@@ -1100,15 +1116,22 @@ impl<H: Host> Multi<H> {
         }
         if self.slots.get(id).is_some() {
             let now = self.clock.now();
-            self.trace_pollset_now(id, now, ev);
+            self.trace_pollset_now(id, now, ev)
+                .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         }
-        let wants = self.slots.get(id).map_or(Wants::NONE, |slot| {
-            let run = slot
-                .run
-                .as_ref()
-                .expect("no transfer is out while the multi is called");
-            run.state.pollset(slot.pause, &self.caches.pool).wants()
-        });
+        let wants = match self.slots.get(id) {
+            Some(slot) => {
+                let run = slot
+                    .run
+                    .as_ref()
+                    .expect("no transfer is out while the multi is called");
+                run.state
+                    .pollset(slot.pause, &self.caches.pool)
+                    .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?
+                    .into_wants()
+            }
+            None => Wants::NONE,
+        };
         self.tell_wants(id, wants, ev)
     }
 
@@ -1401,7 +1424,7 @@ fn pollsets<'a, H: Host>(
     pool: &'a Pool,
     set: &'a ShutdownSet,
     mut f: impl FnMut(&'a dyn Socket, Events),
-) {
+) -> Result<(), OutOfMemory> {
     let mut cursor = None;
     while let Some(id) = slots.next_after(cursor) {
         cursor = Some(id);
@@ -1410,13 +1433,14 @@ fn pollsets<'a, H: Host>(
             .run
             .as_ref()
             .expect("no transfer is out while the multi is called");
-        for (socket, events) in run.state.pollset(slot.pause, pool).iter() {
+        for (socket, events) in run.state.pollset(slot.pause, pool)?.iter() {
             f(socket, events);
         }
     }
     for (socket, events) in set.pollsets() {
         f(socket, events);
     }
+    Ok(())
 }
 
 /// The lowest-id unread completion, marked read (`curl_multi_info_read`).

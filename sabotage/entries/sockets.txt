@@ -96,9 +96,9 @@ witness: curl-sys-abi handle_tests::cleanup_removes_the_sockets_the_socket_funct
 file: crates/curl-core/src/multi/sockets.rs
 witness: curl-core multi::sockets::tests::a_pollset_holds_each_socket_once
 --- old
-        if let Some((_, had)) = w.wants[..w.len].iter_mut().find(|(k, _)| *k == key) {
+        if let Some((_, had)) = wants.iter_mut().find(|(k, _)| *k == key) {
 --- new
-        if let Some((_, had)) = w.wants[..0].iter_mut().find(|(k, _)| *k == key) {
+        if let Some((_, had)) = wants[..0].iter_mut().find(|(k, _)| *k == key) {
 
 === a drive closes a failed attempt's socket without removing it first
 file: crates/curl-core/src/multi/cx.rs
@@ -179,3 +179,16 @@ witness: curl-sys-abi sockets::tests::an_opener_is_asked_for_the_socket_the_tran
             SocketKind::Datagram => (libc::SOCK_DGRAM, libc::IPPROTO_UDP),
 --- new
             SocketKind::Datagram => (libc::SOCK_STREAM, libc::IPPROTO_UDP),
+
+=== a pollset past its room in place loses the sockets beyond it
+file: crates/curl-core/src/multi/sockets.rs
+witness: curl-core multi::sockets::tests::a_pollset_grows_past_its_room_in_place
+--- old
+            Store::Inline { items, .. } => {
+                let mut heap = Vec::new();
+                heap.try_extend_from_slice(items)?;
+                heap.try_push(item)?;
+                *self = Store::Heap(heap);
+            }
+--- new
+            Store::Inline { .. } => {}

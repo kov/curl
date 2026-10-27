@@ -2014,11 +2014,11 @@ fn removing_a_connecting_transfer_closes_its_socket() {
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let mut open = 0;
-    m.sockets(&mut NoEvents, |_, _| open += 1);
+    m.sockets(&mut NoEvents, |_, _| open += 1).unwrap();
     assert_eq!(open, 1);
     m.remove(id, &mut NoEvents).unwrap();
     let mut open = 0;
-    m.sockets(&mut NoEvents, |_, _| open += 1);
+    m.sockets(&mut NoEvents, |_, _| open += 1).unwrap();
     assert_eq!(open, 0);
     assert_eq!(m.caches.pool.len(), 0);
     assert_eq!(
@@ -2044,7 +2044,8 @@ fn a_paused_transfer_does_not_connect() {
     m.perform(&mut NoEvents).unwrap();
     let watched = |m: &mut Multi| {
         let mut watched = Vec::new();
-        m.sockets(&mut NoEvents, |k, e| watched.push((k.get(), e)));
+        m.sockets(&mut NoEvents, |k, e| watched.push((k.get(), e)))
+            .unwrap();
         watched
     };
     assert_eq!(watched(&mut m), [(1000, Events::OUT)]);

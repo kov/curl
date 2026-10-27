@@ -37,6 +37,16 @@ pub enum Told {
     QuicClosed(i64, u64),
     Blocked(i64),
     Unblocked(i64),
+    /// The peer acknowledged this much of the request's body, which it
+    /// lets go; more of it to hand is handed as it next writes.
+    Acked(usize),
+    /// What it tells as it hands the library body bytes.
+    BodyRead {
+        vecs: usize,
+        n: usize,
+        eof: bool,
+        buffered: usize,
+    },
     /// The HTTP/3 library took this much of a stream's framing.
     Consumed(i64, u64),
     /// HTTP/3 could not be set up, for this reason; the call fails, as
@@ -96,6 +106,45 @@ pub struct Script {
     pub cancelled: Vec<(i64, u64)>,
     /// What the session's checks said.
     pub checked: Vec<Result<(), ErrorKind>>,
+    /// The request's body, on stream 0.
+    pub body: FakeBody,
+}
+
+/// A request body as the binding holds it: what was written, handed to
+/// the library and acknowledged by the peer; whether it ends after what
+/// it holds; and whether the library will read it as it next writes, as
+/// nghttp3 does a stream it was told to resume, which it stops at a read
+/// that found nothing.
+#[derive(Debug, Default)]
+pub struct FakeBody {
+    pub bytes: Vec<u8>,
+    pub handed: usize,
+    pub acked: usize,
+    pub ended: bool,
+    pub reading: bool,
+    /// At most this much of it is held, acknowledged bytes let go.
+    pub held_max: Option<usize>,
+}
+
+impl FakeBody {
+    /// What it hands the library as it writes a packet, if it reads it.
+    fn hand(&mut self) -> Option<Told> {
+        if !self.reading {
+            return None;
+        }
+        let n = self.bytes.len() - self.handed;
+        self.handed += n;
+        let eof = self.ended;
+        if eof || n == 0 {
+            self.reading = false;
+        }
+        Some(Told::BodyRead {
+            vecs: n.div_ceil(64 * 1024),
+            n,
+            eof,
+            buffered: self.bytes.len() - self.acked,
+        })
+    }
 }
 
 impl Script {
@@ -205,6 +254,15 @@ impl FakeConnection {
                         });
                         Heard::Failed
                     }
+                    Told::Acked(n) => {
+                        let mut s = script.lock().unwrap();
+                        let b = &mut s.body;
+                        b.acked = (b.acked + n).min(b.handed);
+                        if b.handed < b.bytes.len() {
+                            b.reading = true;
+                        }
+                        Heard::Fine
+                    }
                     other => {
                         let mut h = Heard::Fine;
                         call.with_cx(&mut |cx| h = events(cx, event_of(other)));
@@ -224,7 +282,21 @@ impl FakeConnection {
 /// The event `told` is.
 fn event_of(told: &Told) -> Event<'_> {
     match told {
-        Told::HandshakeDone | Told::H3Failed(_) => unreachable!("told with what follows it"),
+        Told::HandshakeDone | Told::H3Failed(_) | Told::Acked(_) => {
+            unreachable!("told with what follows it")
+        }
+        &Told::BodyRead {
+            vecs,
+            n,
+            eof,
+            buffered,
+        } => Event::BodyRead {
+            stream: StreamId(0),
+            vecs,
+            n,
+            eof,
+            buffered,
+        },
         Told::Consumed(s, n) => Event::Consumed {
             stream: StreamId(*s),
             n: *n,
@@ -303,11 +375,35 @@ impl Connection for FakeConnection {
 
     fn write_packet(
         &mut self,
-        _cx: &mut TlsCx<'_>,
+        cx: &mut TlsCx<'_>,
         now: Instant,
         buf: &mut [u8],
-        _events: Events<'_>,
+        events: Events<'_>,
     ) -> Result<Option<usize>, QuicError> {
+        let read = self.script.lock().unwrap().body.hand();
+        if let Some(told) = read {
+            let Told::BodyRead { n, eof, .. } = told else {
+                unreachable!("a read")
+            };
+            if self.tell(cx, vec![told], events) == Heard::Failed {
+                return Err(quic_error("ngtcp2_conn_writev_stream", -502));
+            }
+            // What it handed goes in a packet of its own: its bytes, or
+            // the stream's end.
+            if n > 0 || eof {
+                let mut s = self.script.lock().unwrap();
+                s.at(now);
+                let b = &s.body;
+                let packet = if n > 0 {
+                    &b.bytes[b.handed - n..b.handed]
+                } else {
+                    &b"FIN"[..]
+                };
+                let len = packet.len().min(buf.len());
+                buf[..len].copy_from_slice(&packet[..len]);
+                return Ok(Some(len));
+            }
+        }
         let mut s = self.script.lock().unwrap();
         s.at(now);
         let Some(packet) = s.out.pop_front().filter(|p| !p.is_empty()) else {
@@ -426,7 +522,7 @@ impl Connection for FakeConnection {
     fn submit_request(
         &mut self,
         fields: &[(&[u8], &[u8])],
-        _body: bool,
+        body: bool,
     ) -> Result<StreamId, SubmitFailed> {
         let lines = fields
             .iter()
@@ -440,6 +536,8 @@ impl Connection for FakeConnection {
             .collect();
         let mut s = self.script.lock().unwrap();
         s.requests.push(lines);
+        // The library reads a body as it first writes the stream.
+        s.body.reading = body;
         if let Some(packets) = s.on_submit.pop_front() {
             s.out.extend(packets);
         }
@@ -450,20 +548,33 @@ impl Connection for FakeConnection {
     }
 
     fn write_body(&mut self, _stream: StreamId, bytes: &[u8]) -> Result<usize, OutOfMemory> {
-        Ok(bytes.len())
+        let mut s = self.script.lock().unwrap();
+        let b = &mut s.body;
+        let room = b
+            .held_max
+            .map_or(usize::MAX, |max| max - (b.bytes.len() - b.acked));
+        let n = bytes.len().min(room);
+        b.bytes.extend_from_slice(&bytes[..n]);
+        Ok(n)
     }
 
-    fn end_body(&mut self, _stream: StreamId) {}
+    fn end_body(&mut self, _stream: StreamId) {
+        self.script.lock().unwrap().body.ended = true;
+    }
 
     fn body_in_flight(&self, _stream: StreamId) -> usize {
-        0
+        let s = self.script.lock().unwrap();
+        s.body.handed - s.body.acked
     }
 
     fn body_buffered(&self, _stream: StreamId) -> usize {
-        0
+        let s = self.script.lock().unwrap();
+        s.body.bytes.len() - s.body.acked
     }
 
-    fn resume(&mut self, _stream: StreamId) {}
+    fn resume(&mut self, _stream: StreamId) {
+        self.script.lock().unwrap().body.reading = true;
+    }
 
     fn cancel(&mut self, stream: StreamId, error: H3Error) {
         self.script

@@ -296,16 +296,46 @@ pub fn drive_to_completion<H: Host>(
     ev: &mut dyn MultiEvents<H>,
 ) -> Result<Result<(), ErrorKind>, MultiErrorKind> {
     loop {
-        // Checked on every round, as a callback may take it out.
-        if m.slots.get(id).is_none() {
-            return Err(MultiErrorKind::BadEasyHandle);
-        }
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
-        m.perform(ev)?;
-        if let Some(outcome) = m.take_outcome(id) {
+        if let Some(outcome) = drive_round(m, id, ev)? {
             return Ok(outcome);
         }
     }
+}
+
+/// One wait and one perform of driving `id`: its result once it is done.
+fn drive_round<H: Host>(
+    m: &mut Multi<H>,
+    id: TransferId,
+    ev: &mut dyn MultiEvents<H>,
+) -> Result<Option<Result<(), ErrorKind>>, MultiErrorKind> {
+    // Checked on every round, as a callback may take it out.
+    if m.slots.get(id).is_none() {
+        return Err(MultiErrorKind::BadEasyHandle);
+    }
+    m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
+    m.perform(ev)?;
+    if let Some(outcome) = m.take_outcome(id) {
+        return Ok(Some(outcome));
+    }
+    Ok(None)
+}
+
+/// `drive_to_completion` for at most `rounds` waits, a transfer still
+/// running after them a test's failure: one that spins never lets a fake
+/// clock move on.
+#[cfg(any(test, feature = "test-util"))]
+pub fn drive_within<H: Host>(
+    m: &mut Multi<H>,
+    id: TransferId,
+    rounds: usize,
+    ev: &mut dyn MultiEvents<H>,
+) -> Result<Result<(), ErrorKind>, MultiErrorKind> {
+    for _ in 0..rounds {
+        if let Some(outcome) = drive_round(m, id, ev)? {
+            return Ok(outcome);
+        }
+    }
+    panic!("still running after {rounds} waits");
 }
 
 /// What `drive_by_events` watches: what the multi last told its timer and

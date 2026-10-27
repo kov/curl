@@ -77,39 +77,43 @@ witness: curl-core multi::tests::ready_extra_descriptors_are_reported_in_their_e
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_messages
 --- old
-        m.perform(ev)?;
-        if let Some(outcome) = m.take_outcome(id) {
+    m.perform(ev)?;
+    if let Some(outcome) = m.take_outcome(id) {
 --- new
-        m.perform(ev)?;
-        if let Some(outcome) = m.info_read().map(|msg| msg.result) {
+    m.perform(ev)?;
+    if let Some(outcome) = m.info_read().map(|msg| msg.result) {
 
 === driving a transfer not in the multi waits forever
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_messages
 --- old
-        if m.slots.get(id).is_none() {
-            return Err(MultiErrorKind::BadEasyHandle);
-        }
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
+    if m.slots.get(id).is_none() {
+        return Err(MultiErrorKind::BadEasyHandle);
+    }
+    m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
 --- new
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
+    m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
 
 === driving a transfer checks only at the start that it is in the multi
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::driving_a_transfer_a_callback_takes_out_is_an_error
 --- old
     loop {
-        // Checked on every round, as a callback may take it out.
-        if m.slots.get(id).is_none() {
-            return Err(MultiErrorKind::BadEasyHandle);
+        if let Some(outcome) = drive_round(m, id, ev)? {
+            return Ok(outcome);
         }
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
+    }
 --- new
-    if m.slots.get(id).is_none() {
-        return Err(MultiErrorKind::BadEasyHandle);
+    if let Some(outcome) = drive_round(m, id, ev)? {
+        return Ok(outcome);
     }
     loop {
         m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
+        m.perform(ev)?;
+        if let Some(outcome) = m.take_outcome(id) {
+            return Ok(outcome);
+        }
+    }
 
 === a wait does not poll the connecting sockets
 file: crates/curl-core/src/multi/wait.rs

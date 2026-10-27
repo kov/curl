@@ -304,12 +304,24 @@ impl ConnSlot {
     /// wants: its layers' say, once it is up. A transfer wanting nothing
     /// is not asked about, as its layers' sockets would then be ready
     /// forever (`Curl_conn_adjust_pollset`).
-    pub(crate) fn adjust_pollset(&self, wanted: Events) -> Events {
+    /// An HTTP/3 connection weighs `h3`, the transfer's stream.
+    pub(crate) fn adjust_pollset(
+        &self,
+        wanted: Events,
+        h3: Option<crate::proto::http::StreamSend>,
+    ) -> Events {
         match self {
             ConnSlot::Open(Conn {
                 transport: Transport::Tcp(stream),
+                session,
                 ..
-            }) if !wanted.is_empty() => stream.adjust_pollset(wanted),
+            }) if !wanted.is_empty() => {
+                let wanted = match session {
+                    Some(super::mux::Session::H3(h3conn)) => h3conn.adjust_pollset(wanted, h3),
+                    _ => wanted,
+                };
+                stream.adjust_pollset(wanted)
+            }
             ConnSlot::Open(_) | ConnSlot::Connecting(_) | ConnSlot::Failed(_) => wanted,
         }
     }

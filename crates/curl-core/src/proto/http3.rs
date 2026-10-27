@@ -1,6 +1,7 @@
 //! HTTP/3 over a QUIC connection (the HTTP/3 half of C's `cf-ngtcp2.c`):
 //! the session a connection dialed over QUIC has from its handshake on.
 
+use crate::conn::io::Events;
 use crate::conn::layer::{Alive, Handshake, LayerCx};
 use crate::conn::layer::{LayerAnswer, LayerQuery};
 use crate::conn::mux::{Carrier, Routes};
@@ -8,6 +9,7 @@ use crate::conn::part::{Lower as _, Part};
 use crate::conn::quic::{Lone, Over, Quic};
 use crate::error::ErrorKind;
 use crate::http3::StreamId;
+use crate::proto::http::StreamSend;
 use crate::report::ResponseVersion;
 use crate::tls::Chosen;
 
@@ -20,6 +22,32 @@ pub(crate) struct H3Conn {
 }
 
 impl H3Conn {
+    /// What a transfer waits for, given what it `wanted` and its stream:
+    /// the socket's output while the connection holds packets; none of
+    /// the stream's own while the peer or the room it has in flight holds
+    /// it back, nor while the connection may send nothing, which wait on
+    /// what the peer says instead (`cf_ngtcp2_adjust_pollset`).
+    pub(crate) fn adjust_pollset(&self, wanted: Events, stream: Option<StreamSend>) -> Events {
+        let held = self.quic.wants().contains(Events::OUT);
+        let want_recv = wanted.contains(Events::IN);
+        let want_send = wanted.contains(Events::OUT) || held;
+        if !want_recv && !want_send {
+            return wanted;
+        }
+        let c_exhaust = want_send && !self.quic.send_room();
+        let s_exhaust = want_send
+            && stream
+                .is_some_and(|s| s.flow_blocked || self.quic.body_in_flight(s.stream) >= s.ideal);
+        let mut events = Events::NONE;
+        if want_recv || c_exhaust || s_exhaust {
+            events = events | Events::IN;
+        }
+        if (!s_exhaust && want_send) || held {
+            events = events | Events::OUT;
+        }
+        events
+    }
+
     /// The session over `quic`, its handshake done.
     pub(crate) fn new(quic: Box<Quic>) -> H3Conn {
         H3Conn {

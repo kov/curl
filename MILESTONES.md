@@ -964,7 +964,11 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
       as many as `MAX_CONCURRENT` says, and a connection reused under another multi's clock,
       its health checked (`is_alive`), its goodbye sent and a refused request retried.
       **Done.**
-    - (d) **Request bodies.**
+    - (d) **Request bodies.** **Done.** Of known size, of unknown size ended once sent, and
+      none for a body of no bytes; held back while as much is in flight as the stream's
+      ideal, the transfer waiting on the peer. Against caddy (an echo backend behind its
+      `reverse_proxy`) `-d hello`, a body of 1 MB, `-T -` and `-d ''` arrive whole, with C's
+      lines.
     - (e) **The version told:** `HTTP3` among the features, `-V`, the shim's
       `CURL_HTTP_VERSION_3` and `_3ONLY`, and `Http3` in the public `Version`.
 62. **The race.** `--http3` (`CURL_HTTP_VERSION_3`): a connection's setup as a value

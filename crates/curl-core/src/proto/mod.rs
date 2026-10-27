@@ -533,6 +533,14 @@ impl ProtoState {
         }
     }
 
+    /// What of its sending an HTTP/3 connection weighs in its pollset.
+    pub(crate) fn h3_sending(&self) -> Option<crate::proto::http::StreamSend> {
+        match *self {
+            ProtoState::Http(ref r) => r.h3_sending(),
+            _ => None,
+        }
+    }
+
     /// What the request waits for on its connection's socket, once made.
     pub(crate) fn interest(&self, pause: Pause) -> Events {
         match *self {

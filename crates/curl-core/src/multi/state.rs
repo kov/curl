@@ -899,7 +899,7 @@ impl TransferState {
                 // A connection another transfer's step has out waits for
                 // nothing of this one's until it is back.
                 if let Some(slot) = pool.slot_of(&x.lease) {
-                    let events = slot.adjust_pollset(x.proto.interest(pause));
+                    let events = slot.adjust_pollset(x.proto.interest(pause), x.proto.h3_sending());
                     for s in slot.sockets() {
                         set.add(s, events);
                     }

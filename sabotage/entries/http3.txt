@@ -238,3 +238,44 @@ witness: curl-core proto::http::tests::h3_trace::a_connection_idle_past_the_peer
                 idle == 0 || idle <= max.as_millis()
 --- new
                 true
+
+=== an empty HTTP/3 body is read as one
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::an_empty_body_is_none
+--- old
+    let body = size != Some(0);
+--- new
+    let body = step.req.body.is_some();
+
+=== an HTTP/3 body of unknown size never ends
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_of_unknown_size_ends_once_it_is_sent
+--- old
+    step.stream().body_size = Some(written);
+    quic.end_body(stream);
+--- new
+    step.stream().body_size = Some(written);
+
+=== an HTTP/3 body of known size ends only once all is sent
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_of_known_size_ends_with_its_last_bytes
+--- old
+                    if step.stream().body_size == Some(written) {
+--- new
+                    if false {
+
+=== an HTTP/3 body is written past what it may have in flight
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_in_flight_waits_for_its_acknowledgement
+--- old
+                    if quic.body_in_flight(stream) >= s.send_ideal {
+--- new
+                    if false {
+
+=== a transfer whose HTTP/3 body is held back waits on the socket's room
+file: crates/curl-core/src/proto/http3.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_in_flight_waits_for_its_acknowledgement
+--- old
+                .is_some_and(|s| s.flow_blocked || self.quic.body_in_flight(s.stream) >= s.ideal);
+--- new
+                .is_some_and(|s| s.flow_blocked || self.quic.body_in_flight(s.stream) == usize::MAX);

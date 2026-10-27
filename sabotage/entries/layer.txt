@@ -2,7 +2,7 @@
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::an_exchange_waits_for_what_its_layers_want
 --- old
-                    let events = slot.adjust_pollset(x.proto.interest(pause));
+                    let events = slot.adjust_pollset(x.proto.interest(pause), x.proto.h3_sending());
 --- new
                     let events = x.proto.interest(pause);
 
@@ -10,9 +10,9 @@ witness: curl-core proto::http::tests::an_exchange_waits_for_what_its_layers_wan
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core proto::http::tests::an_exchange_waits_for_what_its_layers_want
 --- old
-            }) if !wanted.is_empty() => stream.adjust_pollset(wanted),
+            }) if !wanted.is_empty() => {
 --- new
-            }) => stream.adjust_pollset(wanted),
+            }) => {
 
 === a read goes to the socket past the layers
 file: crates/curl-core/src/conn/stream.rs

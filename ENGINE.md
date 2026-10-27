@@ -1781,7 +1781,16 @@ made for the call and no timer is armed.
 **Request bodies.** nghttp3 points at a body's bytes until the peer acknowledges them, so the
 binding holds them: chunks of 64 KiB whose room is reserved as each is made, so that what is
 added never moves what was handed; at most ten, as C's `sendbuf`; a chunk goes once all of it is
-acknowledged. A cancelled stream's body stays until ngtcp2 closes the stream.
+acknowledged. A cancelled stream's body stays until ngtcp2 closes the stream. The binding alone
+says when the body ends (its `ended`, all it holds handed); the core tells it so once all of a
+body of known size is written, and for one of unknown size once the request is all sent (C's
+`CF_CTRL_DATA_DONE_SEND`), which the stream applies at its next call on the connection: that only
+resumes the stream, so its end goes as the connection next sends either way. A body of no bytes
+is none: the head ends the stream. The stream keeps the body's size and what the library was
+handed, from which C's `left=` is said. A send with as much in flight as the stream's ideal, or
+that the binding has no room for, is AGAIN and sends nothing; the transfer's pollset, made from
+the connection as it is asked (`H3Conn::adjust_pollset`), then waits on what the peer says rather
+than on the socket's room (`cf_ngtcp2_adjust_pollset`).
 
 ### 4.5 Route and reuse
 
@@ -2774,7 +2783,9 @@ SMTP's dot-stuffing and FTP's ASCII line ends become stages when those protocols
   body's framing included.
 - Sending more of the request reads first, behind what of the body still waits, while the buffer
   has room and the body has not ended, and then sends what waits (`Curl_req_send_more`); the
-  buffer starts over only once all of it went.
+  buffer starts over only once all of it went. A send that takes less than it was given ends
+  the pass's sending, the rest waiting (`req_send_buffer_flush`): over HTTP/3, the first takes
+  only the head, so the body goes once the request is under way, as C's does.
 - A read handler is given room for `min(free space, what is left of a known size, rate
   tokens)`. The read that completes a known size ends the body; a size of 0 never calls the
   handler. It is latched at EOF and on error (Abort is AbortedByCallback; more than the room is

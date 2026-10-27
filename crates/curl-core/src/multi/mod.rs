@@ -50,6 +50,8 @@ pub use push::{PushFields, PushOffer, Pushed};
 pub use sched::{Census, Counts};
 pub use sockets::{SocketFor, SocketWhat, UnknownSocket};
 pub use timers::TimerChange;
+#[cfg(any(test, feature = "test-util"))]
+pub use wait::drive_within;
 pub use wait::{EventTable, drive_by_events_with};
 pub use wait::{WaitMode, drive_by_events, drive_to_completion};
 

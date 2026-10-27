@@ -52,6 +52,7 @@ pub(crate) mod cookies;
 mod h2;
 pub(crate) use h2::decode_status;
 mod h3;
+pub(crate) use h3::StreamSend;
 pub(crate) mod hsts;
 pub(crate) mod httpsig;
 pub(crate) mod negotiate;
@@ -857,14 +858,17 @@ impl Request {
         if self.sending() && !pause.send_paused() && !waiting {
             events = events | Events::OUT;
         }
-        // What HTTP/2's session or the QUIC connection holds waits for
-        // the socket.
-        if self.wire.h2().is_some_and(h2::H2Stream::out_pending)
-            || self.wire.h3().is_some_and(h3::H3Stream::out_pending)
-        {
+        // What HTTP/2's session holds waits for the socket; QUIC's
+        // connection says its own as the pollset is made.
+        if self.wire.h2().is_some_and(h2::H2Stream::out_pending) {
             events = events | Events::OUT;
         }
         events
+    }
+
+    /// What of its sending an HTTP/3 connection weighs in its pollset.
+    pub(crate) fn h3_sending(&self) -> Option<h3::StreamSend> {
+        self.wire.h3().and_then(h3::H3Stream::sending)
     }
 
     /// The request signed with AWS SigV4, if it has credentials to sign
@@ -1676,7 +1680,13 @@ impl Request {
                 && self.sent < self.filled
                 && self.filled < self.out.len()
                 && !cx.pause().send_paused()
-                && matches!(self.outgoing, Sending::Body(Reading { eos_read: false, .. }))
+                && matches!(
+                    self.outgoing,
+                    Sending::Body(Reading {
+                        eos_read: false,
+                        ..
+                    })
+                )
             {
                 read = false;
                 self.fill(cx)?;
@@ -1835,9 +1845,9 @@ impl Request {
                     }
                 };
             }
-            if self.sent == end && end < self.filled {
-                // Cut short by the send limit, the rest waits
-                // (`req_flush`).
+            if n < len || (self.sent == end && end < self.filled) {
+                // A short send, or one cut short by the send limit: the
+                // rest waits (`req_send_buffer_flush`, `req_flush`).
                 let left = self.filled - self.sent;
                 trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
                 return Ok(false);

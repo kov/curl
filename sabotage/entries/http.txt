@@ -70,7 +70,7 @@ witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::an_exchange_waits_to_read_its_socket
 --- old
-                    let events = slot.adjust_pollset(x.proto.interest(pause));
+                    let events = slot.adjust_pollset(x.proto.interest(pause), x.proto.h3_sending());
 --- new
                     let events = Events::NONE;
 
@@ -1486,6 +1486,14 @@ witness: curl-core proto::http::tests::a_netrc_file_is_read_before_the_protocol_
     if !ProtoState::knows(&scheme) {
 --- new
     if false && !ProtoState::knows(&scheme) {
+
+=== a request's sending goes on past a short send
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_of_known_size_ends_with_its_last_bytes
+--- old
+            if n < len || (self.sent == end && end < self.filled) {
+--- new
+            if self.sent == end && end < self.filled {
 
 === a body is read only once what waits of it is sent
 file: crates/curl-core/src/proto/http.rs

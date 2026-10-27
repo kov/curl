@@ -810,3 +810,202 @@ fn a_refused_request_is_made_again_on_a_new_connection() {
     assert_eq!(script.lock().unwrap().requests.len(), 2);
     assert!(!talks[1].received().is_empty(), "a second connection");
 }
+
+/// `get_script`, for a request with a body: the response answers the
+/// last of `packets` the request and its body go in, the others answered
+/// with nothing.
+fn post_script(response: &[u8], packets: usize) -> Arc<Mutex<Script>> {
+    let script = get_script(response);
+    {
+        let mut s = script.lock().unwrap();
+        let reply = s.on_read.pop_back().unwrap();
+        s.on_read.extend(std::iter::repeat_n(vec![], packets - 1));
+        s.on_read.push_back(reply);
+    }
+    script
+}
+
+/// `h3_get` with the options `set` sets, its peer answering each of
+/// `packets`, as `post_script`'s script says; a transfer that spins
+/// fails.
+fn h3_with(script: &Arc<Mutex<Script>>, packets: usize, set: impl FnOnce(&mut Options)) -> Ran {
+    let mut replies: Vec<&[u8]> = vec![b"server flight"];
+    replies.extend(std::iter::repeat_n(&b"ack"[..], packets - 1));
+    replies.push(b"response");
+    let mut m = quic_server(&replies);
+    let mut e = tracing(FakeTls::new().unwrap(), script);
+    let url = format!("https://localhost:{PORT}/");
+    let seen = Seen::default();
+    let o = e.options_mut();
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.output.verbose = true;
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.http.user_agent = Some(b"curl/test".to_vec());
+    o.http.version = crate::options::HttpVersion::Http3Only;
+    o.ip_version = IpVersion::Any;
+    o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
+    o.callbacks.header = Some(Handler::header(seen.clone()).unwrap());
+    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    set(o);
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    let result = crate::multi::drive_within(&mut m, id, 1000, &mut NoEvents).unwrap();
+    let easy = *m.remove(id, &mut NoEvents).unwrap().easy;
+    Ran {
+        result,
+        request: Vec::new(),
+        seen,
+        easy,
+    }
+}
+
+/// The lines of a request body's sending, as C's QUIC filter traces it.
+fn body_lines(ran: &Ran) -> Vec<String> {
+    lines(
+        ran,
+        &[
+            "[HTTP/3] [0] read req",
+            "[HTTP/3] [0] cf_send",
+            "[MULTI] [DO] -> ",
+            "[MULTI] [DID] -> ",
+            "upload completely",
+        ],
+    )
+}
+
+/// A POST's body.
+fn bytes(body: &[u8]) -> UploadSource {
+    UploadSource::Bytes(curl_alloc::TryArc::try_new(body.to_vec()).unwrap())
+}
+
+/// A body of known size goes after the head, once the request is under
+/// way, and ends with its last bytes: the library reads it as it next
+/// writes the stream (C's lines for `-d hello`).
+#[test]
+fn a_body_of_known_size_ends_with_its_last_bytes() {
+    let script = post_script(b"5\n", 2);
+    let ran = h3_with(&script, 2, |o| {
+        o.method = Method::Post;
+        o.upload = bytes(b"hello");
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(
+        body_lines(&ran),
+        [
+            "[HTTP/3] [0] read req body -> AGAIN",
+            "[HTTP/3] [0] cf_send(148), added 143, inflight=0, reduce tx_win=30720",
+            "[HTTP/3] [0] cf_send(len=148) -> 0, 143",
+            "[MULTI] [DO] -> [DID]",
+            "[MULTI] [DID] -> [PERFORMING]",
+            "[HTTP/3] [0] cf_send, add to sendbuf(len=5) -> 0, 5",
+            "[HTTP/3] [0] read req body -> 1 vecs EOF with 5 (buffered=5, left=0)",
+            "[HTTP/3] [0] cf_send(5), added 5, inflight=5, reduce tx_win=28672",
+            "[HTTP/3] [0] cf_send(len=5) -> 0, 5",
+            "upload completely sent off: 5 bytes",
+        ]
+    );
+    let s = script.lock().unwrap();
+    assert_eq!((&s.body.bytes[..], s.body.ended), (&b"hello"[..], true));
+}
+
+/// A body of unknown size ends once all of it is sent: the library is
+/// told then, and its end goes as the connection next sends
+/// (`CF_CTRL_DATA_DONE_SEND`; C's lines for `-T -`).
+#[test]
+fn a_body_of_unknown_size_ends_once_it_is_sent() {
+    let script = post_script(b"13\n", 3);
+    let ran = h3_with(&script, 3, |o| {
+        o.method = Method::Post;
+        o.upload = super::pieces(&[b"streamed body"]);
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(
+        body_lines(&ran)[5..],
+        [
+            "[HTTP/3] [0] cf_send, add to sendbuf(len=13) -> 0, 13",
+            "[HTTP/3] [0] read req body -> 1 vecs with 13 (buffered=13, left=-1)",
+            "[HTTP/3] [0] read req body -> AGAIN",
+            "[HTTP/3] [0] cf_send(13), added 13, inflight=13, reduce tx_win=28672",
+            "[HTTP/3] [0] cf_send(len=13) -> 0, 13",
+            "upload completely sent off: 13 bytes",
+            "[HTTP/3] [0] read req body -> 0 vecs EOF with 0 (buffered=13, left=0)",
+        ]
+    );
+    assert_eq!(
+        script.lock().unwrap().read.len(),
+        4,
+        "the end in a packet of its own"
+    );
+}
+
+/// A body of no bytes is none: the head ends the stream, and the library
+/// never reads one (`h3_stream_open`'s `upload_left`).
+#[test]
+fn an_empty_body_is_none() {
+    let script = post_script(b"0\n", 1);
+    let ran = h3_with(&script, 1, |o| {
+        o.method = Method::Post;
+        o.upload = bytes(b"");
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(
+        lines(
+            &ran,
+            &[
+                "[HTTP/3] [0] read req",
+                "Request completely",
+                "[MULTI] [DO] -> "
+            ]
+        ),
+        ["Request completely sent off", "[MULTI] [DO] -> [DID]"]
+    );
+    assert!(!script.lock().unwrap().body.ended);
+}
+
+/// A body with as much in flight as is meant to be waits, the transfer
+/// waiting on what the peer says rather than on the socket's room, until
+/// the peer acknowledges some (`cf_ngtcp2_send`, `cf_ngtcp2_adjust_pollset`).
+#[test]
+fn a_body_in_flight_waits_for_its_acknowledgement() {
+    let body = vec![b'x'; 100_000];
+    // The peer answers the request's packet and the body's first with
+    // nothing; the packet the library's timer sends is answered with the
+    // acknowledgement, the body's last with the response.
+    let script = post_script(b"100000\n", 4);
+    {
+        let mut s = script.lock().unwrap();
+        s.on_read[3] = vec![Told::Acked(65_388)];
+        s.timer = Some(std::time::Duration::from_millis(25));
+        s.on_expiry = vec![vec![9; 20]];
+    }
+    let ran = h3_with(&script, 4, |o| {
+        o.method = Method::Post;
+        o.upload = bytes(&body);
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    // The pollset, which `lines` leaves out, waits on what comes alone.
+    let said: Vec<String> = ran
+        .seen
+        .text()
+        .iter()
+        .map(|l| {
+            l.trim_end()
+                .split_once("] ")
+                .map_or("", |(_, r)| r)
+                .to_owned()
+        })
+        .filter(|l| {
+            l.starts_with("[HTTP/3] [0] cf_send(len=34612)")
+                || l.starts_with("[MULTI] [PERFORMING] pollset")
+        })
+        .collect();
+    assert_eq!(
+        said[..3],
+        [
+            "[HTTP/3] [0] cf_send(len=34612) -> 81, 0",
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=3",
+            "[HTTP/3] [0] cf_send(len=34612) -> 0, 34612",
+        ]
+    );
+    let s = script.lock().unwrap();
+    assert_eq!((s.body.bytes.len(), s.body.ended), (100_000, true));
+}

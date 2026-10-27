@@ -57,11 +57,24 @@ pub(super) struct H3Stream {
     error: H3Error,
     /// Nothing more of the request goes (`send_closed`).
     send_closed: bool,
+    /// The body's size, none if unknown until it is all sent; and how
+    /// much of it the library was handed. What is left of it is
+    /// `upload_left`.
+    body_size: Option<u64>,
+    handed: u64,
     /// The peer's flow control holds its sending back
     /// (`quic_flow_blocked`).
     flow_blocked: bool,
-    /// What the connection holds to send waits for the socket.
-    out_pending: bool,
+}
+
+/// What of a request's sending its connection weighs as the transfer's
+/// pollset is made (`cf_ngtcp2_adjust_pollset`): its stream, how much of
+/// its body is to be in flight, and whether the peer holds it back.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StreamSend {
+    pub(crate) stream: StreamId,
+    pub(crate) ideal: usize,
+    pub(crate) flow_blocked: bool,
 }
 
 impl Default for H3Stream {
@@ -79,16 +92,21 @@ impl Default for H3Stream {
             reset: false,
             error: H3Error::default(),
             send_closed: false,
+            body_size: Some(0),
+            handed: 0,
             flow_blocked: false,
-            out_pending: false,
         }
     }
 }
 
 impl H3Stream {
-    /// Whether the connection's output waits for the socket.
-    pub(super) fn out_pending(&self) -> bool {
-        self.out_pending
+    /// What its connection weighs of its sending, once it is open.
+    pub(super) fn sending(&self) -> Option<StreamSend> {
+        self.id.map(|stream| StreamSend {
+            stream,
+            ideal: self.send_ideal,
+            flow_blocked: self.flow_blocked,
+        })
     }
 
     /// The id C traces it by: -1 before it opened.
@@ -341,9 +359,10 @@ impl Request {
             extends: Vec::new(),
             oom: false,
         };
+        if matches!(step.req.outgoing, Sending::Done | Sending::Aborted) {
+            done_sending(&mut step, quic);
+        }
         let r = f(&mut step, quic);
-        let pending = quic.wants().contains(Events::OUT);
-        step.stream().out_pending = pending;
         lease.get().put_h3(h3);
         r
     }
@@ -433,11 +452,34 @@ impl Request {
                     );
                     break 'out Err(ErrorKind::SendError);
                 } else {
-                    break 'out Err(trace::fail(
+                    let Some(stream) = s.id else {
+                        unreachable!("the stream opened above")
+                    };
+                    if quic.body_in_flight(stream) >= s.send_ideal {
+                        // As much is in flight as is meant to be: no
+                        // more until some is acknowledged.
+                        break 'out Ok(Called::Again);
+                    }
+                    let took = match quic.write_body(stream, &step.req.out[start..end]) {
+                        Ok(took) => took,
+                        Err(kind) => break 'out Err(kind),
+                    };
+                    let code = if took == 0 { AGAIN_NUMBER } else { 0 };
+                    trace::of(
                         &mut *step.cx,
-                        ErrorKind::Http3,
-                        format_args!("HTTP/3 request bodies are not sent yet"),
-                    ));
+                        Component::Http3,
+                        format_args!("[{id}] cf_send, add to sendbuf(len={len}) -> {code}, {took}"),
+                    );
+                    if took == 0 {
+                        break 'out Ok(Called::Again);
+                    }
+                    n = took;
+                    // All of a body of known size held: it ends after it.
+                    let written = written(step.stream(), quic, stream);
+                    if step.stream().body_size == Some(written) {
+                        quic.end_body(stream);
+                    }
+                    quic.resume(stream);
                 }
                 let sent = quic.egress(step).map(|()| Called::Done);
                 if n > 0 {
@@ -758,6 +800,37 @@ impl Request {
                 }
                 Heard::Fine
             }
+            Event::BodyRead {
+                vecs,
+                n,
+                eof,
+                buffered,
+                ..
+            } => {
+                // As C's `cb_h3_read_req_body` says it, what is left of a
+                // body of unknown size `-1`.
+                s.handed += n as u64;
+                if eof {
+                    s.send_closed = true;
+                }
+                if n == 0 && !eof {
+                    trace::of(cx, h3, format_args!("[{id}] read req body -> AGAIN"));
+                } else {
+                    let left = s.body_size.map_or(-1, |size| {
+                        i64::try_from(size - s.handed).expect("a body's size fits")
+                    });
+                    let end = if eof { " EOF" } else { "" };
+                    trace::of(
+                        cx,
+                        h3,
+                        format_args!(
+                            "[{id}] read req body -> {vecs} vecs{end} with {n} \
+                             (buffered={buffered}, left={left})"
+                        ),
+                    );
+                }
+                Heard::Fine
+            }
             _ => Heard::Fine,
         }
     }
@@ -859,6 +932,28 @@ fn rx_window<H: Host>(step: &mut H3Step<'_, '_, H>, quic: &mut Quic) {
     }
 }
 
+/// How much of `stream`'s body was written to the library: what it was
+/// handed, and what it holds that it was not.
+fn written(s: &H3Stream, quic: &Quic, stream: StreamId) -> u64 {
+    let unhanded = quic.body_buffered(stream) - quic.body_in_flight(stream);
+    s.handed + unhanded as u64
+}
+
+/// The request is all sent, or will not be (`CF_CTRL_DATA_DONE_SEND`):
+/// its body ends after what the library holds, its size now known. What
+/// is left goes as the connection next sends.
+fn done_sending<H: Host>(step: &mut H3Step<'_, '_, H>, quic: &mut Quic) {
+    let s = step.stream();
+    let Some(stream) = s.id.filter(|_| !s.send_closed && !s.closed) else {
+        return;
+    };
+    s.send_closed = true;
+    let written = written(s, quic, stream);
+    step.stream().body_size = Some(written);
+    quic.end_body(stream);
+    quic.resume(stream);
+}
+
 /// Stop the stream, if it is open, both ways, nothing more heard of it
 /// (`Curl_cf_ngtcp2_h3_stream_close`).
 fn close<H: Host>(step: &mut H3Step<'_, '_, H>, quic: &mut Quic) {
@@ -900,7 +995,15 @@ fn open<H: Host>(
         scheme,
     )?;
     let pairs = fields.pairs().map_err(|_| ErrorKind::OutOfMemory)?;
-    let body = step.req.body.is_some();
+    // A body of no bytes is none: the head ends the stream.
+    let size = match &step.req.body {
+        None => Some(0),
+        Some(body) => {
+            assert!(!body.is_chunked(), "HTTP/3 frames the body itself");
+            body.size()
+        }
+    };
+    let body = size != Some(0);
     let stream = quic.submit(step, &pairs, body)?;
     let me = step.cx.me;
     step.routes
@@ -909,6 +1012,7 @@ fn open<H: Host>(
     let s = step.stream();
     s.id = Some(stream);
     s.send_closed = !body;
+    s.body_size = size;
     rx_window(step, quic);
     if step.cx.easy().options().output.verbose {
         let url = step.cx.easy().report().url().map(copied).transpose()?;

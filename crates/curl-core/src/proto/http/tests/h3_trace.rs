@@ -72,13 +72,13 @@ fn quic_server(replies: &[&[u8]]) -> Multi {
 
 /// `quic_server`'s peer, for a multi reading `clock`.
 fn quic_server_on(clock: ManualClock, replies: &[&[u8]]) -> Multi {
-    quic_peer(clock, replies).0
+    quic_peer(clock, &[replies]).0
 }
 
-/// `quic_server_on`'s multi, and the peer's conversations, over IPv6
-/// then IPv4.
-fn quic_peer(clock: ManualClock, replies: &[&[u8]]) -> (Multi, [Conversation; 2]) {
-    let talks = [(); 2].map(|()| Conversation::replies(replies, false).per_send());
+/// `quic_server_on`'s multi, whose peer gives each connection made to it
+/// the replies of its turn; and the conversations of those over IPv6,
+/// the address tried first.
+fn quic_peer(clock: ManualClock, conns: &[&[&[u8]]]) -> (Multi, Vec<Conversation>) {
     let mut net = FakeNet::new(clock.clone()).with_name(
         "localhost",
         &[
@@ -90,10 +90,16 @@ fn quic_peer(clock: ManualClock, replies: &[&[u8]]) -> (Multi, [Conversation; 2]
         SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, PORT)),
         SocketAddr::from(([127, 0, 0, 1], PORT)),
     ];
-    for (at, talk) in ats.into_iter().zip(&talks) {
-        net = net
-            .with_peer(at, Peer::Accepts)
-            .with_conversation(at, talk.clone());
+    let mut talks = Vec::new();
+    for at in ats {
+        net = net.with_peer(at, Peer::Accepts);
+        for replies in conns {
+            let talk = Conversation::replies(replies, false).per_send();
+            if at.is_ipv6() {
+                talks.push(talk.clone());
+            }
+            net = net.with_conversation(at, talk);
+        }
     }
     let env = Env {
         clock: Box::new(clock),
@@ -705,7 +711,7 @@ fn an_idle_connection_closes_saying_goodbye() {
     let script = get_script(b"123456789");
     let (mut m, talks) = quic_peer(
         ManualClock::new().unwrap(),
-        &[b"server flight", b"response"],
+        &[&[b"server flight", b"response"]],
     );
     let e = tracing(FakeTls::new().unwrap(), &script);
     assert_eq!(h3_get(&mut m, e).result, Ok(()));
@@ -713,4 +719,94 @@ fn an_idle_connection_closes_saying_goodbye() {
     drop(m);
     let sent = talks[0].received();
     assert_eq!(&sent[before..], b"CLOSE", "the close, and nothing else");
+}
+
+/// The script of `get_script`, then the same again for a second
+/// connection, whose response is `body`.
+fn twice(script: &Arc<Mutex<Script>>, body: &[u8]) {
+    let again = get_script(body);
+    let mut again = again.lock().unwrap();
+    let mut s = script.lock().unwrap();
+    s.out.extend(again.out.drain(..));
+    s.on_read.extend(again.on_read.drain(..));
+}
+
+/// A connection idle past the time its peer said it closes one by is
+/// dead: it is closed, saying goodbye, and the next transfer makes its
+/// own (`Curl_cf_ngtcp2_cmn_conn_is_alive`).
+#[test]
+fn a_connection_idle_past_the_peer_s_timeout_is_not_reused() {
+    let script = get_script(b"123456789");
+    let clock = ManualClock::new().unwrap();
+    let (mut m, talks) = quic_peer(
+        clock.clone(),
+        &[
+            &[b"server flight", b"response"],
+            &[b"server flight", b"response"],
+        ],
+    );
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    assert_eq!(h3_get(&mut m, e).result, Ok(()));
+    twice(&script, b"abc");
+    clock.advance(std::time::Duration::from_secs(31));
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"abc");
+    let text = ran.seen.text();
+    assert!(
+        text.iter()
+            .any(|l| l.ends_with("] Connection #1 to host localhost:8990 left intact\n"))
+            && !text.iter().any(|l| l.contains("] Re-using")),
+        "{text:#?}"
+    );
+    assert!(
+        talks[0].received().ends_with(b"CLOSE"),
+        "the first said goodbye"
+    );
+    assert!(!talks[1].received().is_empty(), "a second connection");
+}
+
+/// A request the server refuses is made again on a new connection, the
+/// refused one closed (`recv_closed_stream`, `Curl_retry_request`).
+#[test]
+fn a_refused_request_is_made_again_on_a_new_connection() {
+    let script = get_script(b"");
+    {
+        let mut s = script.lock().unwrap();
+        *s.on_read.back_mut().unwrap() = vec![Told::Closed(0, 0x10b)];
+        // The refused connection's egress after the reset: nothing.
+        s.out.push_back(vec![]);
+    }
+    twice(&script, b"again");
+    let (mut m, talks) = quic_peer(
+        ManualClock::new().unwrap(),
+        &[
+            &[b"server flight", b"refused"],
+            &[b"server flight", b"response"],
+        ],
+    );
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"again");
+    assert_eq!(
+        lines(
+            &ran,
+            &[
+                "HTTP/3 stream",
+                "REFUSED",
+                "Connection died",
+                "Issue another"
+            ]
+        ),
+        [
+            "HTTP/3 stream 0 refused by server, try again on a new connection",
+            "REFUSED_STREAM, retrying a fresh connect",
+            "Connection died, retrying a fresh connect (retry count: 1)",
+            "Issue another request to this URL: 'https://localhost:8990/'",
+        ]
+    );
+    assert_eq!(script.lock().unwrap().requests.len(), 2);
+    assert!(!talks[1].received().is_empty(), "a second connection");
 }

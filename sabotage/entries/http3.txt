@@ -221,3 +221,20 @@ witness: curl-core proto::http::tests::h3_trace::an_idle_connection_closes_sayin
         Ok(match self.quic.close(&mut over) {
 --- new
         Ok(match true {
+
+=== a stream HTTP/3 refused is not made again
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_refused_request_is_made_again_on_a_new_connection
+--- old
+                lease.get().mark_close();
+                self.refused = true;
+--- new
+                lease.get().mark_close();
+
+=== an HTTP/3 connection idle past the peer's timeout is reused
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_connection_idle_past_the_peer_s_timeout_is_not_reused
+--- old
+                idle == 0 || idle <= max.as_millis()
+--- new
+                true

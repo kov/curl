@@ -132,9 +132,50 @@ witness: curl-sys-abi handle_tests::http_options_reach_the_request
 file: crates/curl-sys-abi/src/version.rs
 witness: curl-sys-abi version::tests::names_the_libraries_as_c
 --- old
-                [&ssl, &zlib, &brotli, &zstd, &idn, &psl, &h2, &gss];
+                [&ssl, &zlib, &brotli, &zstd, &idn, &psl, &h2, &h3, &gss];
 --- new
-                [&ssl, &zlib, &zstd, &brotli, &idn, &psl, &h2, &gss];
+                [&ssl, &zlib, &zstd, &brotli, &idn, &psl, &h2, &h3, &gss];
+
+=== curl_version lists HTTP/3's libraries after GSS-API's
+file: crates/curl-sys-abi/src/version.rs
+witness: curl-sys-abi version::tests::names_the_libraries_as_c
+--- old
+                [&ssl, &zlib, &brotli, &zstd, &idn, &psl, &h2, &h3, &gss];
+--- new
+                [&ssl, &zlib, &brotli, &zstd, &idn, &psl, &h2, &gss, &h3];
+
+=== HTTP/3's feature bit is HTTP/2's
+file: crates/curl-sys-abi/src/version.rs
+witness: curl-sys-abi version::tests::features_reach_the_c_struct
+--- old
+        Feature::Http3 => (c"HTTP3", crate::ffi::CURL_VERSION_HTTP3),
+--- new
+        Feature::Http3 => (c"HTTP3", crate::ffi::CURL_VERSION_HTTP2),
+
+=== quic_version is left NULL
+file: crates/curl-sys-abi/src/version.rs
+witness: curl-sys-abi version::tests::quic_version_names_both_libraries
+--- old
+                quic_version: quic.as_ptr(),
+--- new
+                quic_version: c"".as_ptr(),
+
+=== CURL_HTTP_VERSION_3ONLY is refused
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::http_options_reach_the_request
+--- old
+        ffi::CURL_HTTP_VERSION_3ONLY => Ok(HttpVersion::Http3Only),
+--- new
+        ffi::CURL_HTTP_VERSION_3ONLY => Err(Refused::Unsupported),
+
+=== the build does not claim HTTP/3
+file: crates/curl-core/src/version.rs
+witness: curl-sys-abi version::tests::features_reach_the_c_struct
+--- old
+    Feature::Http2,
+    Feature::Http3,
+--- new
+    Feature::Http2,
 
 === the multi's running count takes in the transfers waiting for a connection
 file: crates/curl-sys-abi/src/multi.rs

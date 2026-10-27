@@ -1066,6 +1066,7 @@ fn http_options_reach_the_request() {
             ffi::CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE,
             HttpVersion::Http2Prior,
         ),
+        (ffi::CURL_HTTP_VERSION_3ONLY, HttpVersion::Http3Only),
     ] {
         assert_eq!(long(c, ffi::CURLOPT_HTTP_VERSION, v), CURLE_OK, "{v}");
         assert_eq!(version(c), want);
@@ -1076,7 +1077,7 @@ fn http_options_reach_the_request() {
     ] {
         assert_eq!(long(c, ffi::CURLOPT_HTTP_VERSION, v), code, "{v}");
     }
-    assert_eq!(version(c), HttpVersion::Http2Prior);
+    assert_eq!(version(c), HttpVersion::Http3Only);
     // A stream's weight is 1 to 256; others leave it, and a dependency is
     // taken and not kept.
     let weight = |c| options(c, |o| o.http.stream_weight.map(|w| w.get()));

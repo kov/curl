@@ -967,9 +967,9 @@ witness: curl-tool options::parse::tests::a_range_is_taken_as_c_takes_it
 file: crates/curl-tool/src/main.rs
 witness: curl-tool tests::names_the_libraries_as_c
 --- old
-            [&ssl, &zlib, &brotli, &zstd, &idn, &psl, &h2, &gss];
+            [&ssl, &zlib, &brotli, &zstd, &idn, &psl, &h2, &h3, &gss];
 --- new
-            [&ssl, &zlib, &brotli, &zstd, &idn, &h2, &h2, &gss];
+            [&ssl, &zlib, &brotli, &zstd, &idn, &h2, &h2, &h3, &gss];
 
 === %time{}'s microseconds lose their leading zeros
 file: crates/curl-tool/src/write_out.rs

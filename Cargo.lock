@@ -155,6 +155,7 @@ dependencies = [
  "curl-gssapi",
  "curl-idn2",
  "curl-nghttp2",
+ "curl-ngtcp2",
  "curl-openssl",
  "curl-psl",
  "curl-zlib",

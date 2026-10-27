@@ -41,6 +41,9 @@ pub enum Feature {
     Hsts,
     /// HTTP/2, by nghttp2, which the tool and the C ABI give every handle.
     Http2,
+    /// HTTP/3 over QUIC, by ngtcp2 and nghttp3, which the tool and the C
+    /// ABI give every handle.
+    Http3,
     /// HTTPS proxies: TLS to the proxy, and TLS in TLS to an `https`
     /// origin through one, by the TLS library `Ssl` names.
     HttpsProxy,
@@ -86,6 +89,7 @@ impl Feature {
             Feature::GssApi => "GSS-API",
             Feature::Hsts => "HSTS",
             Feature::Http2 => "HTTP2",
+            Feature::Http3 => "HTTP3",
             Feature::HttpsProxy => "HTTPS-proxy",
             Feature::Httpsig => "HTTPSIG",
             Feature::Idn => "IDN",
@@ -113,6 +117,7 @@ const FEATURES: &[Feature] = &[
     Feature::GssApi,
     Feature::Hsts,
     Feature::Http2,
+    Feature::Http3,
     Feature::HttpsProxy,
     Feature::Httpsig,
     Feature::Idn,

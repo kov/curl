@@ -946,9 +946,9 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
 60. **The QUIC and HTTP/3 libraries.** **Done.** `curl-ngtcp2`: ngtcp2, its OpenSSL crypto and
     nghttp3, behind the core's `http3` seam as nghttp2 is behind `http2`; a GET against caddy
     over it. The seam's fake comes with its first user, step 61.
-61. **HTTP/3 requests.** `--http3-only` (`CURL_HTTP_VERSION_3ONLY`): the setup dials QUIC, the
-    connection's session is `Session::H3`, requests go on its streams and multiplex as HTTP/2's
-    do, with C's trace; the build claims `HTTP3`. In five parts:
+61. **HTTP/3 requests.** **Done.** `--http3-only` (`CURL_HTTP_VERSION_3ONLY`): the setup dials
+    QUIC, the connection's session is `Session::H3`, requests go on its streams and multiplex
+    as HTTP/2's do, with C's trace; the build claims `HTTP3`. In five parts:
     - (a) **The connect over QUIC.** **Done.** Each address the setup tries over QUIC is a whole
       QUIC connection, won when its handshake is done and its peer checked, not when its UDP
       socket connects (`cf-ip-happy.c`'s transport table makes each attempt
@@ -969,13 +969,15 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
       ideal, the transfer waiting on the peer. Against caddy (an echo backend behind its
       `reverse_proxy`) `-d hello`, a body of 1 MB, `-T -` and `-d ''` arrive whole, with C's
       lines.
-    - (e) **The version told:** `HTTP3` among the features, `-V`, the shim's
-      `CURL_HTTP_VERSION_3` and `_3ONLY`, and `Http3` in the public `Version`.
-62. **The race.** `--http3` (`CURL_HTTP_VERSION_3`): a connection's setup as a value
-    (`conn::Setup`), which the transfer owns and steps, its context given at each step as C's
-    filters get `data`; the HTTPS connect filter races an HTTP/3 setup against an HTTP/2-or-1
-    one, as `cf-https-connect.c` does, with its soft and hard timeouts. A pollset grows past
-    its inline sockets.
+    - (e) **The version told.** **Done.** `HTTP3` among the features, ngtcp2's and
+      nghttp3's versions in `-V`, `curl_version` and `quic_version`, the C ABI's handles given
+      HTTP/3 and `CURL_HTTP_VERSION_3ONLY` taken. `CURL_HTTP_VERSION_3` and `Http3` in the
+      public `Version`, HTTP/3 with a fallback, are the race (step 62).
+62. **The race.** `--http3` (`CURL_HTTP_VERSION_3`, `Http3` in the public `Version`): a
+    connection's setup as a value (`conn::Setup`), which the transfer owns and steps, its
+    context given at each step as C's filters get `data`; the HTTPS connect filter races an
+    HTTP/3 setup against an HTTP/2-or-1 one, as `cf-https-connect.c` does, with its soft and
+    hard timeouts. A pollset grows past its inline sockets.
 63. **Alt-svc to h3**, and HTTP/3's early data (0-RTT), its transport parameters kept with the
     session's ticket.
 64. **The HTTP/3 proxy** (`--proxy-http3`, CONNECT-UDP; pytest test_60). Always built, with no

@@ -63,7 +63,13 @@ impl Http3 for Ngtcp2 {
     }
 }
 
-/// The two libraries' versions, as curl's version says them.
+/// The two libraries' versions, as curl's version says them:
+/// `ngtcp2/1.25.0 nghttp3/1.18.0`.
+pub fn version() -> impl fmt::Display {
+    Versions
+}
+
+/// See [`version`].
 struct Versions;
 
 impl fmt::Display for Versions {

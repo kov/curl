@@ -569,7 +569,7 @@ const fn libraries_with(
         gss,
         idn: Some(IDN),
         h2: Some(&curl_nghttp2::NGHTTP2),
-        h3: None,
+        h3: Some(&curl_ngtcp2::NGTCP2),
     }
 }
 

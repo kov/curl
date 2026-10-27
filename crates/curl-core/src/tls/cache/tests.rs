@@ -227,6 +227,21 @@ fn the_cache_traces_as_c_does() {
     );
 }
 
+/// A QUIC session's lines say it keeps its transport parameters.
+#[test]
+fn a_quic_session_is_traced_with_its_transport_parameters() {
+    let mut cache = SessionCache::new(25);
+    let mut lines = Vec::new();
+    let mut trace = |l: fmt::Arguments<'_>| lines.push(l.to_string());
+    let p = peer(|_| {});
+    let quic = ticket(TLS1_3, 1000 + 7200).with_quic_params(b"tp".to_vec());
+    cache.put(&p, quic, 1000, &mut trace).unwrap();
+    assert!(cache.take(&p, 1000, &mut trace).is_some());
+    let said: Vec<_> = lines.iter().filter(|l| l.contains("quic_tp=")).collect();
+    assert_eq!(said.len(), 2, "{lines:?}");
+    assert!(said.iter().all(|l| l.contains("quic_tp=yes]")), "{said:?}");
+}
+
 /// A peer keeps two TLS 1.3 tickets, the oldest dropped for a third and
 /// taken first; one out of date is dropped as it is found.
 #[test]

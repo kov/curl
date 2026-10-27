@@ -417,11 +417,12 @@ impl SessionCache {
                 return Err(OutOfMemory);
             }
         };
-        let (version, valid, alpn, early) = (
+        let (version, valid, alpn, early, tp) = (
             s.version,
             s.valid_until - now,
             Alpn(s.alpn),
             s.earlydata_max,
+            yes_no(!s.quic_params.is_empty()),
         );
         let per_peer = self.per_peer;
         let slot = &mut self.peers[i];
@@ -435,7 +436,7 @@ impl SessionCache {
         let n = slot.sessions.len();
         trace(format_args!(
             "added session for {} [proto=0x{version:x}, valid_secs={valid}, alpn={alpn}, \
-             earlydata={early}, quic_tp=no], peer has {n} sessions now",
+             earlydata={early}, quic_tp={tp}], peer has {n} sessions now",
             Shown(key)
         ));
         Ok(())
@@ -464,12 +465,13 @@ impl SessionCache {
         match taken {
             Some((s, left)) => {
                 trace(format_args!(
-                    "took session for {} [proto=0x{:x}, alpn={}, earlydata={}, quic_tp=no], \
+                    "took session for {} [proto=0x{:x}, alpn={}, earlydata={}, quic_tp={}], \
                      {left} sessions remain",
                     Shown(key),
                     s.version,
                     Alpn(s.alpn),
-                    s.earlydata_max
+                    s.earlydata_max,
+                    yes_no(!s.quic_params.is_empty()),
                 ));
                 Some(s)
             }
@@ -490,6 +492,11 @@ impl SessionCache {
             self.peers[i].clear();
         }
     }
+}
+
+/// C's `"yes"` or `"no"` for a flag in a line.
+fn yes_no(flag: bool) -> &'static str {
+    if flag { "yes" } else { "no" }
 }
 
 fn copy(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {

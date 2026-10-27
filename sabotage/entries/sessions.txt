@@ -131,3 +131,13 @@ witness: curl-core tls::cache::tests::a_quic_session_s_key_names_its_transport
 --- new
     if dial == Dial::Quic && false {
         out.bytes(b":QUIC");
+
+=== a QUIC session is traced as keeping no transport parameters
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::a_quic_session_is_traced_with_its_transport_parameters
+--- old
+            yes_no(!s.quic_params.is_empty()),
+        );
+--- new
+            yes_no(false),
+        );

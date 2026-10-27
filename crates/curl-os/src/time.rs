@@ -1,10 +1,27 @@
-//! The local time of day, as the time zone of the process says
-//! (`localtime_r`), and a time in UTC formatted by the C library
-//! (`strftime`).
+//! The system's monotonic clock (`clock_gettime`), the local time of day,
+//! as the time zone of the process says (`localtime_r`), and a time in UTC
+//! formatted by the C library (`strftime`).
 
 #![allow(unsafe_code)]
 
 use core::ffi::CStr;
+use core::time::Duration;
+
+/// The time on the system's monotonic clock, since a start of its own
+/// that every reading in the system shares (`CLOCK_MONOTONIC`, as C's
+/// `Curl_now`): two readings anywhere compare.
+pub fn monotonic() -> Duration {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid `timespec` the call writes, alive through it.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut ts) };
+    assert_eq!(rc, 0, "the monotonic clock is always there");
+    let secs = u64::try_from(ts.tv_sec).expect("the monotonic clock starts at 0");
+    let nanos = u32::try_from(ts.tv_nsec).expect("under a second");
+    Duration::new(secs, nanos)
+}
 
 /// A time of day.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +85,14 @@ mod tests {
     #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
     use super::*;
+
+    /// The clock does not go back.
+    #[test]
+    fn the_monotonic_clock_moves_on() {
+        let a = monotonic();
+        let b = monotonic();
+        assert!(a <= b && a > Duration::ZERO);
+    }
 
     /// A time in UTC is formatted as `strftime` formats it, in the C
     /// locale; nothing for an empty result, one that does not fit with

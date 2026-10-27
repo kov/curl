@@ -60,17 +60,15 @@ pub trait Clock: Send {
     fn unix_time(&self) -> i64;
 }
 
-/// The system's monotonic clock, with its epoch when it was made.
+/// The system's monotonic clock (C's `Curl_now`). Every one reads the
+/// same time: a connection a share keeps is used under the clocks of
+/// several multis, and its times compare under each.
 #[derive(Debug)]
-pub struct SystemClock {
-    epoch: std::time::Instant,
-}
+pub struct SystemClock(());
 
 impl SystemClock {
     pub fn new() -> Self {
-        SystemClock {
-            epoch: std::time::Instant::now(),
-        }
+        SystemClock(())
     }
 }
 
@@ -82,7 +80,7 @@ impl Default for SystemClock {
 
 impl Clock for SystemClock {
     fn now(&self) -> Instant {
-        Instant(micros(self.epoch.elapsed()))
+        Instant(micros(curl_os::time::monotonic()))
     }
 
     fn unix_time(&self) -> i64 {
@@ -186,10 +184,13 @@ mod tests {
     }
 
     #[test]
-    fn the_system_clock_starts_at_its_epoch_and_does_not_go_back() {
-        let clock = SystemClock::new();
-        let a = clock.now();
-        let b = clock.now();
-        assert!(a.since(Instant::EPOCH) < Duration::from_secs(1) && b >= a);
+    fn system_clocks_made_apart_read_one_time() {
+        let early = SystemClock::new();
+        std::thread::sleep(Duration::from_millis(5));
+        let late = SystemClock::new();
+        let a = early.now();
+        let b = late.now();
+        let c = early.now();
+        assert!(a <= b && b <= c, "{a:?} {b:?} {c:?}");
     }
 }

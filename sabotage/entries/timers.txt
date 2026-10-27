@@ -151,3 +151,45 @@ witness: curl-core multi::timers::tests::limits_are_armed_per_leg_and_judged_fro
         self.set &= !kind.bit();
 --- new
         self.set &= !0;
+
+=== each system clock counts from when it was made
+file: crates/curl-core/src/time.rs
+witness: curl-core time::tests::system_clocks_made_apart_read_one_time
+--- old
+pub struct SystemClock(());
+
+impl SystemClock {
+    pub fn new() -> Self {
+        SystemClock(())
+    }
+}
+
+impl Default for SystemClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant(micros(curl_os::time::monotonic()))
+    }
+--- new
+pub struct SystemClock(std::time::Instant);
+
+impl SystemClock {
+    pub fn new() -> Self {
+        SystemClock(std::time::Instant::now())
+    }
+}
+
+impl Default for SystemClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant(micros(self.0.elapsed()))
+    }

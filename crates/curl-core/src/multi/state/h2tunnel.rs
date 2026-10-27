@@ -191,6 +191,9 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
     );
     trace::info(cx, format_args!("{what} phase completed for HTTP/2 proxy"));
     cx.easy_mut().auth.side(Side::Proxy).finish();
+    // The request follows the `CONNECT`: what reads it starts over
+    // (`cf_h2_proxy_connect`'s `Curl_client_reset`).
+    crate::upload::trace_reset(cx, false);
     c.lease
         .dialed()
         .stream()

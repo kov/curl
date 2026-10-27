@@ -2212,14 +2212,18 @@ fn http3_through_an_http_proxy_goes_over_connect_udp() {
             "[MULTI] [CONNECTING] reduced",
             "[HTTP/3] handshake complete",
             "using HTTP",
+            "[READ] client_reset",
         ],
     );
     let mut got = got;
     got.dedup();
     // The fake proxy answers at once, so the chain is not traced while
-    // the answer is awaited.
+    // the answer is awaited. The request follows the tunnel's request,
+    // so what reads it starts over once the tunnel is up
+    // (`cf_h1_proxy_connect`'s `Curl_client_reset`).
     let want = expect(&format!(
-        "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]
+        "[READ] client_reset, clear readers
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
         [SETUP] added HTTP proxy tunnel filter
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]
@@ -2227,13 +2231,15 @@ fn http3_through_an_http_proxy_goes_over_connect_udp() {
         Establishing HTTP proxy UDP tunnel to localhost:{PORT}
         CONNECT-UDP phase completed for HTTP proxy
         CONNECT-UDP tunnel established, response 101
+        [READ] client_reset, clear readers
         [SETUP] added QUIC filter for origin
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP/3][!CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
         [HTTP/3] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
         [MULTI] [CONNECTING] connected [0][DNS][DNS][HTTPS-CONNECT][SETUP][HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
         [MULTI] [CONNECTING] reduced to [0][HTTP/3][CAPSULE][H1-PROXY][TCP]
-        using HTTP/3"
+        using HTTP/3
+        [READ] client_reset, clear readers"
     ));
     assert_eq!(got, want);
 }

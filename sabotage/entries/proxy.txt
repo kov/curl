@@ -748,3 +748,39 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is
     let fields = match &head.udp {
 --- new
     let fields = match &None::<super::tunnel::UdpAsk> {
+
+=== the readers do not start over once an HTTP proxy's tunnel is up
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::https_trace::the_readers_start_over_once_an_http_proxy_s_tunnel_is_up
+--- old
+        // (`cf_h1_proxy_connect`'s `Curl_client_reset`).
+        crate::upload::trace_reset(cx, false);
+--- new
+        // (`cf_h1_proxy_connect`'s `Curl_client_reset`).
+
+=== the readers do not start over once an HTTP proxy's CONNECT-UDP tunnel is up
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_an_http_proxy_goes_over_connect_udp
+--- old
+        // (`cf_h1_proxy_connect`'s `Curl_client_reset`).
+        crate::upload::trace_reset(cx, false);
+--- new
+        // (`cf_h1_proxy_connect`'s `Curl_client_reset`).
+
+=== the readers do not start over once an HTTP/2 proxy's tunnel is up
+file: crates/curl-core/src/multi/state/h2tunnel.rs
+witness: curl-core proto::http::tests::tls::the_readers_start_over_once_an_http_2_proxy_s_tunnel_is_up
+--- old
+    // (`cf_h2_proxy_connect`'s `Curl_client_reset`).
+    crate::upload::trace_reset(cx, false);
+--- new
+    // (`cf_h2_proxy_connect`'s `Curl_client_reset`).
+
+=== the readers do not start over once an HTTP/2 proxy's CONNECT-UDP tunnel is up
+file: crates/curl-core/src/multi/state/h2tunnel.rs
+witness: curl-core proto::http::tests::tls::http3_through_an_http_2_proxy_asks_for_connect_udp
+--- old
+    // (`cf_h2_proxy_connect`'s `Curl_client_reset`).
+    crate::upload::trace_reset(cx, false);
+--- new
+    // (`cf_h2_proxy_connect`'s `Curl_client_reset`).

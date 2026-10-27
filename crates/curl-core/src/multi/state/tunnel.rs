@@ -685,6 +685,9 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
             cx,
             format_args!("{what} tunnel established, response {code}"),
         );
+        // The request follows the `CONNECT`: what reads it starts over
+        // (`cf_h1_proxy_connect`'s `Curl_client_reset`).
+        crate::upload::trace_reset(cx, false);
         c.lease
             .proxied(Made::TUNNEL, || cx.easy().options().proxy.haproxy);
         return Ok(Ran::Through);

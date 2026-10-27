@@ -468,6 +468,37 @@ fn a_tunnel_through_an_https_proxy_keeps_the_alpn_question() {
     );
 }
 
+/// The request follows an HTTP proxy's `CONNECT`, so once the tunnel is
+/// up what reads it starts over, after the tunnel is said to be
+/// established (`cf_h1_proxy_connect`'s `Curl_client_reset`); before
+/// and after it, the request's own start and end.
+#[test]
+fn the_readers_start_over_once_an_http_proxy_s_tunnel_is_up() {
+    let (_, libraries) = super::tls::tls();
+    let talk = https_proxy_tunnel(false);
+    let url = format!("http://127.0.0.1:{PORT}/");
+    let got = through_https_proxy(&libraries, &url, &talk, |o| {
+        o.proxy.make_mut().unwrap().tunnel = true
+    });
+    let picked: Vec<&str> = got
+        .iter()
+        .map(String::as_str)
+        .filter(|l| l.starts_with("CONNECT") || l.starts_with("[READ] client_reset"))
+        .collect();
+    assert_eq!(
+        picked,
+        [
+            "[READ] client_reset, clear readers",
+            "CONNECT: no ALPN negotiated",
+            "CONNECT phase completed for HTTP proxy",
+            "CONNECT tunnel established, response 200",
+            "[READ] client_reset, clear readers",
+            "[READ] client_reset, clear readers",
+        ],
+        "{got:#?}"
+    );
+}
+
 /// A proxy whose TLS agrees to the protocol offered names the tunnel's
 /// protocol by it (`http_proxy_cf_connect`): "CONNECT: 'http/1.1'
 /// negotiated" in place of "no ALPN negotiated".

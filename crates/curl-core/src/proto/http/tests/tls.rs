@@ -1293,10 +1293,19 @@ fn through_h2_proxy(
     replies: &[Vec<u8>],
     url: &[u8],
 ) -> (Ran, Conversation) {
+    through_h2_proxy_by(Easy::new(), libraries, replies, url)
+}
+
+/// `through_h2_proxy`, by the handle `e`.
+fn through_h2_proxy_by(
+    mut e: Easy,
+    libraries: SharedLibraries,
+    replies: &[Vec<u8>],
+    url: &[u8],
+) -> (Ran, Conversation) {
     let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
     let talk = Conversation::replies(&replies, false).per_send();
     let mut m = serving(Peer::Accepts, &[&talk]);
-    let mut e = Easy::new();
     e.set_libraries(libraries);
     let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
         https_proxy(o, url);
@@ -1348,6 +1357,42 @@ fn a_tunnel_through_an_http_2_proxy_is_a_stream() {
     assert!(text.iter().any(|l| l == "using HTTP/1.x\n"), "{text:?}");
 }
 
+/// The request follows an HTTP/2 proxy's `CONNECT`, so once the tunnel
+/// is up what reads it starts over, after the phase is said to be
+/// completed (`cf_h2_proxy_connect`'s `Curl_client_reset`).
+#[test]
+fn the_readers_start_over_once_an_http_2_proxy_s_tunnel_is_up() {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
+    let data = [format!("D 1 {} 0\n", response.len()).as_bytes(), response].concat();
+    let (_, libraries, replies) = h2_proxy(b"S\nH 1 0\n:status: 200\n\n", &data);
+    let mut e = Easy::new();
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"read");
+    e.set_components(Some(c));
+    let (ran, _) = through_h2_proxy_by(e, libraries, &replies, b"http://origin.example/p");
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let text = ran.seen.text();
+    let picked: Vec<&str> = text
+        .iter()
+        .map(|l| l.trim_end())
+        .map(|l| l.find("[READ] ").map_or(l, |at| &l[at..]))
+        .filter(|l| l.starts_with("CONNECT") || l.starts_with("[READ] client_reset"))
+        .collect();
+    assert_eq!(
+        picked,
+        [
+            "[READ] client_reset, clear readers",
+            "CONNECT: 'h2' negotiated",
+            "CONNECT Response Status 200",
+            "CONNECT tunnel established, response 200",
+            "CONNECT phase completed for HTTP/2 proxy",
+            "[READ] client_reset, clear readers",
+            "[READ] client_reset, clear readers",
+        ],
+        "{text:#?}"
+    );
+}
+
 /// HTTP/3 alone through an HTTPS proxy that speaks HTTP/2 asks it for a
 /// CONNECT-UDP, an extended `CONNECT` (RFC 9298, 8441): the proxy's
 /// scheme and authority, the path naming the origin, the protocol and
@@ -1396,6 +1441,9 @@ fn http3_through_an_http_2_proxy_asks_for_connect_udp() {
         let mut m = serving(Peer::Accepts, &[&talk]);
         let mut e = Easy::new();
         e.set_libraries(libraries);
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"read");
+        e.set_components(Some(c));
         let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
             https_proxy(o, b"https://origin.example/p");
             o.http.version = crate::options::HttpVersion::Http3Only;
@@ -1415,12 +1463,18 @@ fn http3_through_an_http_2_proxy_asks_for_connect_udp() {
             text.iter().any(|l| l.trim_end() == said),
             "{field}: {text:#?}"
         );
-        assert_eq!(
-            text.iter()
-                .any(|l| l == "CONNECT-UDP phase completed for HTTP/2 proxy\n"),
-            made,
-            "{field}: {text:#?}"
-        );
+        let phase = text
+            .iter()
+            .position(|l| l == "CONNECT-UDP phase completed for HTTP/2 proxy\n");
+        assert_eq!(phase.is_some(), made, "{field}: {text:#?}");
+        if let Some(at) = phase {
+            // The request follows: what reads it starts over
+            // (`cf_h2_proxy_connect`'s `Curl_client_reset`).
+            assert!(
+                text[at + 1].ends_with("[READ] client_reset, clear readers\n"),
+                "{field}: {text:#?}"
+            );
+        }
         if made {
             // The origin's first datagram goes through it as a capsule.
             let (head, len) = crate::conn::capsule::header(1200);

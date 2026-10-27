@@ -1080,7 +1080,7 @@ fn sent(took: io::Result<usize>) -> io::Result<Sent> {
 mod tests {
     #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
-    use std::net::{Ipv6Addr, TcpListener};
+    use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
     use std::os::fd::AsRawFd;
     use std::time::Duration;
 
@@ -1889,5 +1889,131 @@ mod tests {
             .unwrap_err();
         assert_eq!(refused.raw_os_error(), Some(libc::ENOENT));
         std::fs::remove_dir(&dir).unwrap();
+    }
+
+    /// A UDP socket bound to `ip`'s loopback port the kernel picks, set
+    /// with `options`, nonblocking as QUIC's are: a blocking batch waits
+    /// to fill.
+    fn udp_at(ip: IpAddr, options: &[SocketOption]) -> UdpSocket {
+        let s = open_udp(SocketAddr::new(ip, 0), true).unwrap();
+        s.bind(SocketAddr::new(ip, 0)).unwrap();
+        for &o in options {
+            s.set(o).unwrap();
+        }
+        s
+    }
+
+    /// Both loopbacks.
+    fn loopbacks() -> [IpAddr; 2] {
+        [Ipv4Addr::LOCALHOST.into(), Ipv6Addr::LOCALHOST.into()]
+    }
+
+    /// A batch `to` receives, once it has something to.
+    fn batch(to: &UdpSocket, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> usize {
+        let mut fds = [PollFd::new(to.fd(), Events::IN)];
+        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+        to.recv_batch(buf, slot, out).unwrap()
+    }
+
+    /// A sender connected to a receiver with `options`.
+    fn udp_pair(ip: IpAddr, options: &[SocketOption]) -> (UdpSocket, UdpSocket) {
+        let to = udp_at(ip, options);
+        let from = udp_at(ip, &[]);
+        from.connect(to.local_addr().unwrap()).unwrap();
+        (from, to)
+    }
+
+    /// One send of segments arrives as datagrams of the segment's size,
+    /// the last what is left, each told with its sender.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot send datagrams")]
+    fn a_send_of_segments_arrives_cut() {
+        for ip in loopbacks() {
+            let (from, to) = udp_pair(ip, &[]);
+            let bytes: Vec<u8> = (0..2500u32).map(|i| i as u8).collect();
+            assert_eq!(from.send_segments(&bytes, 1000).unwrap(), 2500);
+            let mut buf = vec![0; 4 * SLOT];
+            let mut out = [Datagram::default(); 4];
+            let mut got = Vec::new();
+            while got.len() < 3 {
+                let n = batch(&to, &mut buf, SLOT, &mut out);
+                got.extend_from_slice(&out[..n]);
+            }
+            let me = Some(from.local_addr().unwrap());
+            let lens: Vec<_> = got.iter().map(|d| (d.len, d.segment, d.from)).collect();
+            assert_eq!(
+                lens,
+                [(1000, 1000, me), (1000, 1000, me), (500, 500, me)],
+                "{ip}"
+            );
+        }
+    }
+
+    /// A receiver that takes packets joined gets them as one datagram, as
+    /// large as they are together, told by the size of each.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot send datagrams")]
+    fn joined_packets_arrive_as_one_datagram() {
+        for ip in loopbacks() {
+            let (from, to) = udp_pair(ip, &[SocketOption::ReceiveJoined]);
+            let bytes = vec![7; 20 * 1400];
+            assert_eq!(from.send_segments(&bytes, 1400).unwrap(), bytes.len());
+            let mut buf = vec![0; SLOT];
+            let mut out = [Datagram::default(); 1];
+            assert_eq!(batch(&to, &mut buf, SLOT, &mut out), 1);
+            assert_eq!((out[0].len, out[0].segment), (20 * 1400, 1400), "{ip}");
+            assert!(buf[..20 * 1400].iter().all(|&b| b == 7));
+        }
+    }
+
+    /// Each datagram of a batch is told with its own ECN bits.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot send datagrams")]
+    fn each_datagram_has_its_ecn_bits() {
+        for ip in loopbacks() {
+            let (from, to) = udp_pair(ip, &[SocketOption::ReceiveEcn]);
+            for ecn in [1, 2, 0] {
+                from.set(SocketOption::TypeOfService(ecn)).unwrap();
+                assert_eq!(
+                    from.send(&[ecn as u8; 10]).unwrap(),
+                    Sent::Bytes(NonZeroUsize::new(10).unwrap())
+                );
+            }
+            let mut buf = vec![0; 4 * 2000];
+            let mut out = [Datagram::default(); 4];
+            let mut got = Vec::new();
+            while got.len() < 3 {
+                let n = batch(&to, &mut buf, 2000, &mut out);
+                got.extend(out[..n].iter().map(|d| d.ecn));
+            }
+            assert_eq!(got, [1, 2, 0], "{ip}");
+        }
+    }
+
+    /// A batch takes no more datagrams than the buffer has slots for,
+    /// though more wait.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot send datagrams")]
+    fn a_batch_takes_what_its_buffer_holds() {
+        let (from, to) = udp_pair(Ipv4Addr::LOCALHOST.into(), &[]);
+        for _ in 0..3 {
+            from.send(&[1; 100]).unwrap();
+        }
+        let mut buf = vec![0; 2 * 200 + 50];
+        let mut out = [Datagram::default(); 4];
+        // Over loopback each is there as its send returns.
+        assert_eq!(batch(&to, &mut buf, 200, &mut out), 2);
+        assert_eq!(batch(&to, &mut buf, 200, &mut out), 1);
+    }
+
+    /// A datagram larger than any can be fails at once, the system's
+    /// error as it is.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot send datagrams")]
+    fn a_datagram_too_large_fails_the_send() {
+        let (from, _to) = udp_pair(Ipv4Addr::LOCALHOST.into(), &[]);
+        let bytes = vec![0; 70_000];
+        let failed = from.send_segments(&bytes, bytes.len()).unwrap_err();
+        assert_eq!(failed.raw_os_error(), Some(TOO_LARGE));
     }
 }

@@ -51,6 +51,14 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # The kernel writes one `UDP_GRO` message to a datagram; `IP_TOS` only
+    # to an IPv4 socket and `IPV6_TCLASS` only to an IPv6 one, each asked
+    # for by the socket's family; and a control message's length counts its
+    # header, so it is never 0. The guards hold where nothing breaks them.
+    'curl-os/src/net\.rs:.*: replace match guard segment == 0 with true in control_of$',
+    'curl-os/src/net\.rs:.*: replace match guard family == libc::AF_INET6? as libc::sa_family_t && len > 0 with true in control_of$',
+    'curl-os/src/net\.rs:.*: replace && with \|\| in control_of$',
+    'curl-os/src/net\.rs:.*: replace > with >= in control_of$',
     # Negotiate's output is done whenever it returns a request to send (a
     # token went: `CURL_NEGO_AUTH_DONE`), so `!done` alone already makes
     # its probe false.

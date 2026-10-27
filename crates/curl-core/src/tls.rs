@@ -588,6 +588,11 @@ impl TlsCx<'_> {
         self.cx.of(self.component, line);
     }
 
+    /// Hand the transfer what the HTTP/3 library told of a stream.
+    pub(crate) fn h3_event(&mut self, event: crate::http3::Event<'_>) -> crate::http3::Heard {
+        self.cx.h3_event(event)
+    }
+
     /// The transfer is verbose (`Curl_trc_is_verbose`): a library with
     /// work to do for its `info` lines, work that can fail, asks first.
     pub fn verbose(&self) -> bool {

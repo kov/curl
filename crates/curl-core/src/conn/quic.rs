@@ -4,7 +4,7 @@
 //! datagrams received, read in batches and handed to the library; its
 //! timer; and the close it sends once a failure is past saving. What the
 //! library tells of the connection as it reads is heard here, and what it
-//! tells of a stream is handed on to the session that owns the streams.
+//! tells of a stream is handed on to the transfer the call is made for.
 
 use std::io;
 use std::net::SocketAddr;
@@ -47,7 +47,8 @@ const CONNECTION_REFUSED: u64 = 0x2;
 
 /// What QUIC reaches beyond the transfer's trace: the multi's room for
 /// the datagrams it receives, and the transfer's timer for the QUIC
-/// library's (`EXPIRE_QUIC`).
+/// library's (`EXPIRE_QUIC`). What the library tells of a stream reaches
+/// the transfer through `LayerCx::h3_event`.
 pub(crate) trait QuicCx: LayerCx {
     /// The room to receive in, of at least `RECV_ROOM` bytes, lent until
     /// it is given back.
@@ -64,6 +65,117 @@ pub(crate) trait QuicCx: LayerCx {
     /// call into its library (`Curl_cf_ngtcp2_io_ctx_update_time`): a
     /// step's time is from before its handshakes' work.
     fn live(&self) -> Instant;
+}
+
+/// A `QuicCx` with the UDP socket the connection goes over, asked for at
+/// each call on it, so that nothing holds it while the library tells the
+/// transfer what it read.
+pub(crate) trait QuicIo: QuicCx {
+    fn socket(&self) -> &dyn Socket;
+}
+
+/// An attempt's context, with the socket it dialed.
+pub(crate) struct Over<'a> {
+    pub(crate) cx: &'a mut dyn QuicCx,
+    pub(crate) socket: &'a dyn Socket,
+}
+
+impl LayerCx for Over<'_> {
+    fn now(&self) -> Instant {
+        self.cx.now()
+    }
+
+    fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
+        self.cx.of(component, line);
+    }
+
+    fn info(&mut self, line: std::fmt::Arguments<'_>) {
+        self.cx.info(line);
+    }
+
+    fn socket_failed(&mut self, e: &io::Error) {
+        self.cx.socket_failed(e);
+    }
+
+    fn early_done(&mut self, sent: i64) {
+        self.cx.early_done(sent);
+    }
+
+    fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
+        self.cx.fails(kind, why)
+    }
+
+    fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
+        self.cx.bytes(kind, bytes);
+    }
+
+    fn debugs(&self) -> bool {
+        self.cx.debugs()
+    }
+
+    fn verbose(&self) -> bool {
+        self.cx.verbose()
+    }
+
+    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
+        self.cx.certinfo_report()
+    }
+
+    fn tls_verified(&mut self, filter: Component, result: i64) {
+        self.cx.tls_verified(filter, result);
+    }
+
+    fn configures_tls(&self) -> bool {
+        self.cx.configures_tls()
+    }
+
+    fn configure_tls(&mut self, native: crate::tls::TlsNative) -> Result<(), ErrorKind> {
+        self.cx.configure_tls(native)
+    }
+
+    fn pause_recv(&mut self) {
+        self.cx.pause_recv();
+    }
+
+    fn unix_time(&self) -> i64 {
+        self.cx.unix_time()
+    }
+
+    fn has_tls_sessions(&self) -> bool {
+        self.cx.has_tls_sessions()
+    }
+
+    fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx)) {
+        self.cx.tls_sessions(f);
+    }
+
+    fn h3_event(&mut self, event: Event<'_>) -> Heard {
+        self.cx.h3_event(event)
+    }
+}
+
+impl QuicCx for Over<'_> {
+    fn take_room(&mut self) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
+        self.cx.take_room()
+    }
+
+    fn give_room(&mut self, room: Vec<u8>) {
+        self.cx.give_room(room);
+    }
+
+    fn quic_due(&mut self, wait: Duration) {
+        self.cx.quic_due(wait);
+    }
+
+    fn live(&self) -> Instant {
+        self.cx.live()
+    }
+}
+
+impl QuicIo for Over<'_> {
+    fn socket(&self) -> &dyn Socket {
+        self.socket
+    }
 }
 
 /// What an I/O call came to, short of success.
@@ -169,10 +281,6 @@ impl std::fmt::Debug for Quic {
     }
 }
 
-/// What the library tells of a stream, which the session owning the
-/// streams hears; the connect has none.
-pub(crate) type Streams<'e> = &'e mut dyn FnMut(&mut TlsCx<'_>, Event<'_>) -> Heard;
-
 impl Quic {
     /// The connection `conn`, to `remote`, whose TLS's sessions are kept
     /// for `peer`, its connect started `now`.
@@ -247,26 +355,18 @@ impl Quic {
 
     /// The first connect call: the client's first flight sent, and the
     /// timer set (`Curl_cf_ngtcp2_cmn_connect` with no connection yet).
-    pub(crate) fn start(
-        &mut self,
-        cx: &mut dyn QuicCx,
-        socket: &dyn Socket,
-    ) -> Result<bool, ErrorKind> {
-        let sent = self.egress(cx, socket, &mut ignore);
-        self.connect_ended(cx, socket, sent.map(|()| false))
+    pub(crate) fn start(&mut self, cx: &mut dyn QuicIo) -> Result<bool, ErrorKind> {
+        let sent = self.egress(cx);
+        self.connect_ended(cx, sent.map(|()| false))
     }
 
     /// A later connect call: what came read, what is due sent, and done
     /// once the handshake is and the peer checked
     /// (`Curl_cf_ngtcp2_cmn_connect`).
-    pub(crate) fn connect(
-        &mut self,
-        cx: &mut dyn QuicCx,
-        socket: &dyn Socket,
-    ) -> Result<bool, ErrorKind> {
+    pub(crate) fn connect(&mut self, cx: &mut dyn QuicIo) -> Result<bool, ErrorKind> {
         let step = (|| {
-            self.ingress(cx, socket, &mut ignore)?;
-            self.egress(cx, socket, &mut ignore)?;
+            self.ingress(cx)?;
+            self.egress(cx)?;
             if self.conn.handshake_done() {
                 self.state.verified?;
                 cx.of(Component::Http3, format_args!("peer verified"));
@@ -275,7 +375,7 @@ impl Quic {
             }
             Ok(false)
         })();
-        self.connect_ended(cx, socket, step)
+        self.connect_ended(cx, step)
     }
 
     /// A connect call ended with `step`: a failed check of the peer wins
@@ -283,8 +383,7 @@ impl Quic {
     /// timer is set if it goes on.
     fn connect_ended(
         &mut self,
-        cx: &mut dyn QuicCx,
-        socket: &dyn Socket,
+        cx: &mut dyn QuicIo,
         step: Result<bool, ErrorKind>,
     ) -> Result<bool, ErrorKind> {
         let mut step = step;
@@ -318,7 +417,7 @@ impl Quic {
             ));
         }
         if step.is_ok()
-            && let Err(kind) = self.set_expiry(cx, socket)
+            && let Err(kind) = self.set_expiry(cx)
         {
             step = Err(kind);
         }
@@ -336,7 +435,7 @@ impl Quic {
 
     /// The library's timer: run if it is due, and set for when it next is
     /// (`Curl_cf_ngtcp2_cmn_set_expiry`).
-    fn set_expiry(&mut self, cx: &mut dyn QuicCx, socket: &dyn Socket) -> Result<(), ErrorKind> {
+    fn set_expiry(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
         let mut expiry = self.conn.expiry(cx.live());
         if expiry == Expiry::Due {
             let now = cx.live();
@@ -346,9 +445,7 @@ impl Quic {
                     conn, peer, state, ..
                 } = self;
                 let mut tcx = TlsCx::new(cx, Component::Http3, peer);
-                conn.handle_expiry(&mut tcx, now, &mut |tcx, e| {
-                    state.heard(tcx, e, &mut ignore)
-                })
+                conn.handle_expiry(&mut tcx, now, &mut |tcx, e| state.heard(tcx, e))
             };
             if let Err(error) = ran {
                 let why = error.text;
@@ -356,12 +453,10 @@ impl Quic {
                     ErrorKind::SendError,
                     format_args!("ngtcp2_conn_handle_expiry returned error: {why}"),
                 );
-                self.failed(cx, socket, error);
+                self.failed(cx, error);
                 return Err(ErrorKind::SendError);
             }
-            let moved = self
-                .ingress(cx, socket, &mut ignore)
-                .and_then(|()| self.egress(cx, socket, &mut ignore));
+            let moved = self.ingress(cx).and_then(|()| self.egress(cx));
             if let Err(kind) = moved {
                 // A failed check of the peer wins over what else failed.
                 return Err(self.state.verified.err().unwrap_or(kind));
@@ -379,31 +474,31 @@ impl Quic {
     /// The library's call failed with `error`: kept as what it closes
     /// with, if nothing was before, and closed now if past saving
     /// (`Curl_cf_ngtcp2_cmn_err_set`).
-    fn failed(&mut self, cx: &mut dyn QuicCx, socket: &dyn Socket, error: QuicError) {
+    fn failed(&mut self, cx: &mut dyn QuicIo, error: QuicError) {
         if self.conn.failed(error) {
-            self.close(cx, socket);
+            self.close(cx);
         }
     }
 
     /// Close it: what waits to go sent, then the packet that closes it,
     /// as far as the socket takes them now (`Curl_cf_ngtcp2_cmn_shutdown`).
     /// Whether all went.
-    pub(crate) fn close(&mut self, cx: &mut dyn QuicCx, socket: &dyn Socket) -> bool {
+    pub(crate) fn close(&mut self, cx: &mut dyn QuicIo) -> bool {
         if self.state.closing {
             return false;
         }
         self.state.closing = true;
-        let done = self.close_step(cx, socket);
+        let done = self.close_step(cx);
         self.state.closing = false;
         done
     }
 
-    fn close_step(&mut self, cx: &mut dyn QuicCx, socket: &dyn Socket) -> bool {
+    fn close_step(&mut self, cx: &mut dyn QuicIo) -> bool {
         let h3 = Component::Http3;
         if !self.state.shutdown_started {
             if !self.out.is_empty() {
                 cx.of(h3, format_args!("shutdown, flushing sendbuf"));
-                let sent = self.egress(cx, socket, &mut ignore);
+                let sent = self.egress(cx);
                 if !self.out.is_empty() {
                     cx.of(h3, format_args!("sending shutdown packets blocked"));
                     return false;
@@ -454,7 +549,7 @@ impl Quic {
         }
         if !self.out.is_empty() {
             cx.of(h3, format_args!("shutdown, flushing egress"));
-            match self.flush(cx, socket) {
+            match self.flush(cx) {
                 Ok(()) => {}
                 Err(Stop::Again) => {
                     cx.of(h3, format_args!("sending shutdown packets blocked"));
@@ -476,13 +571,8 @@ impl Quic {
 
     /// Send what waits, then collect what the library has to send and
     /// send it, in runs of packets of one size (`progress_egress`).
-    pub(crate) fn egress(
-        &mut self,
-        cx: &mut dyn QuicCx,
-        socket: &dyn Socket,
-        streams: Streams<'_>,
-    ) -> Result<(), ErrorKind> {
-        match self.flush(cx, socket) {
+    pub(crate) fn egress(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
+        match self.flush(cx) {
             Ok(()) => {}
             Err(Stop::Again) => {
                 cx.quic_due(Duration::from_millis(1));
@@ -502,7 +592,7 @@ impl Quic {
             format_args!("egress, collect and send packets, quantum={quantum}"),
         );
         let (mut packets, mut gso) = (0usize, 0usize);
-        while let Some(n) = self.collect(cx, socket, max, &mut *streams)? {
+        while let Some(n) = self.collect(cx, max)? {
             let len = self.out.unsent().len();
             if len >= quantum || len + gso >= SEND_ROOM {
                 break;
@@ -514,7 +604,7 @@ impl Quic {
             } else if n > gso || (gso > path_max && n != gso) {
                 // This one is a probe, or those before were and this one
                 // is smaller: those before go first.
-                match self.send_tail_split(cx, socket, gso, n, n) {
+                match self.send_tail_split(cx, gso, n, n) {
                     Ok(()) => {}
                     Err(Stop::Again) => {
                         cx.quic_due(Duration::from_millis(1));
@@ -535,7 +625,7 @@ impl Quic {
                 format_args!("egress, send collected {packets} packets in {len} bytes"),
             );
             self.out.gso = gso;
-            match self.flush(cx, socket) {
+            match self.flush(cx) {
                 Ok(()) => {}
                 Err(Stop::Again) => {
                     cx.quic_due(Duration::from_millis(1));
@@ -551,13 +641,7 @@ impl Quic {
     /// The library's next packet, of at most `max` bytes, added to those
     /// collected: its length, or none if it has none
     /// (`read_pkt_to_send`).
-    fn collect(
-        &mut self,
-        cx: &mut dyn QuicCx,
-        socket: &dyn Socket,
-        max: usize,
-        streams: Streams<'_>,
-    ) -> Result<Option<usize>, ErrorKind> {
+    fn collect(&mut self, cx: &mut dyn QuicIo, max: usize) -> Result<Option<usize>, ErrorKind> {
         let at = self.out.bytes.len();
         if self.out.bytes.try_resize(at + max, 0).is_err() {
             return Err(ErrorKind::OutOfMemory);
@@ -574,7 +658,7 @@ impl Quic {
             } = self;
             let mut tcx = TlsCx::new(cx, Component::Http3, peer);
             conn.write_packet(&mut tcx, now, &mut out.bytes[at..], &mut |tcx, e| {
-                state.heard(tcx, e, &mut *streams)
+                state.heard(tcx, e)
             })
         };
         match wrote {
@@ -593,7 +677,7 @@ impl Quic {
                     ErrorKind::SendError,
                     format_args!("{call} returned error: {why}"),
                 );
-                self.failed(cx, socket, error);
+                self.failed(cx, error);
                 Err(ErrorKind::SendError)
             }
         }
@@ -604,8 +688,7 @@ impl Quic {
     /// (`Curl_vquic_send_tail_split`).
     fn send_tail_split(
         &mut self,
-        cx: &mut dyn QuicCx,
-        socket: &dyn Socket,
+        cx: &mut dyn QuicIo,
         gso: usize,
         tail: usize,
         tail_gso: usize,
@@ -619,18 +702,18 @@ impl Quic {
             Component::Http3,
             format_args!("vquic_send_tail_split: [{head} gso={gso}][{tail} gso={tail_gso}]"),
         );
-        self.flush(cx, socket)
+        self.flush(cx)
     }
 
     /// Send what is collected (`Curl_vquic_flush`).
-    fn flush(&mut self, cx: &mut dyn QuicCx, socket: &dyn Socket) -> Result<(), Stop> {
+    fn flush(&mut self, cx: &mut dyn QuicIo) -> Result<(), Stop> {
         while !self.out.is_empty() {
             let unsent = self.out.unsent().len();
             let (len, gso) = match self.out.split {
                 Some((len, gso)) => (unsent.min(len), gso),
                 None => (unsent, self.out.gso),
             };
-            let (sent, r) = self.send_packets(cx, socket, len, gso);
+            let (sent, r) = self.send_packets(cx, len, gso);
             self.out.skip(sent);
             r?;
         }
@@ -641,15 +724,14 @@ impl Quic {
     /// bytes: how many went (`vquic_send_packets`).
     fn send_packets(
         &mut self,
-        cx: &mut dyn QuicCx,
-        socket: &dyn Socket,
+        cx: &mut dyn QuicIo,
         len: usize,
         gso: usize,
     ) -> (usize, Result<(), Stop>) {
         if self.out.no_gso && len > gso {
-            self.send_apart(cx, socket, len, gso)
+            self.send_apart(cx, len, gso)
         } else {
-            self.send_run(cx, socket, len, gso)
+            self.send_run(cx, len, gso)
         }
     }
 
@@ -657,8 +739,7 @@ impl Quic {
     /// bytes (`do_sendmsg`).
     fn send_run(
         &mut self,
-        cx: &mut dyn QuicCx,
-        socket: &dyn Socket,
+        cx: &mut dyn QuicIo,
         len: usize,
         gso: usize,
     ) -> (usize, Result<(), Stop>) {
@@ -667,7 +748,7 @@ impl Quic {
         // No size known yet is no cutting: one datagram, as the kernel
         // takes a segment size of 0.
         let segment = if gso == 0 { len } else { gso };
-        let (sent, r) = match socket.send_segments(bytes, segment) {
+        let (sent, r) = match cx.socket().send_segments(bytes, segment) {
             Ok(n) if n == len => (n, Ok(())),
             Ok(n) => {
                 cx.fails(
@@ -687,7 +768,7 @@ impl Quic {
                     "sendmsg() returned -1 (errno {errno}); disable GSO"
                 ));
                 self.out.no_gso = true;
-                return self.send_apart(cx, socket, len, gso);
+                return self.send_apart(cx, len, gso);
             }
             Err(e) => {
                 let errno = e.raw_os_error().unwrap_or(0);
@@ -710,8 +791,7 @@ impl Quic {
     /// (`send_packet_no_gso`).
     fn send_apart(
         &mut self,
-        cx: &mut dyn QuicCx,
-        socket: &dyn Socket,
+        cx: &mut dyn QuicIo,
         len: usize,
         gso: usize,
     ) -> (usize, Result<(), Stop>) {
@@ -723,7 +803,7 @@ impl Quic {
             // Each is sent from where the last left off, which the
             // collected bytes are not yet skipped past.
             self.out.sent = start + sent;
-            let (n, got) = self.send_run(cx, socket, one, one);
+            let (n, got) = self.send_run(cx, one, one);
             self.out.sent = start;
             if let Err(stop) = got {
                 r = Err(stop);
@@ -744,12 +824,7 @@ impl Quic {
 
     /// Read what the socket has, in batches, and hand each packet to the
     /// library (`Curl_cf_ngtcp2_progress_ingress`).
-    pub(crate) fn ingress(
-        &mut self,
-        cx: &mut dyn QuicCx,
-        socket: &dyn Socket,
-        streams: Streams<'_>,
-    ) -> Result<(), ErrorKind> {
+    pub(crate) fn ingress(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
         {
             let Quic { conn, peer, .. } = self;
             conn.before_recv(&mut TlsCx::new(cx, Component::Http3, peer))?;
@@ -758,20 +833,14 @@ impl Quic {
         let Ok(mut room) = cx.take_room() else {
             return Err(ErrorKind::OutOfMemory);
         };
-        let r = self.recv_packets(cx, socket, &mut room, streams);
+        let r = self.recv_packets(cx, &mut room);
         cx.give_room(room);
         r
     }
 
     /// What the socket has, at most `MAX_PACKETS` packets of it, read
     /// into `room` and handed to the library (`recvmmsg_packets`).
-    fn recv_packets(
-        &mut self,
-        cx: &mut dyn QuicCx,
-        socket: &dyn Socket,
-        room: &mut [u8],
-        streams: Streams<'_>,
-    ) -> Result<(), ErrorKind> {
+    fn recv_packets(&mut self, cx: &mut dyn QuicIo, room: &mut [u8]) -> Result<(), ErrorKind> {
         let mut got = [Datagram::default(); BATCH];
         let (mut total, mut packets, mut calls) = (0usize, 0usize, 0usize);
         let mut first = None;
@@ -780,7 +849,7 @@ impl Quic {
                 break Ok(());
             }
             let n = BATCH.min(MAX_PACKETS - packets);
-            let count = match socket.recv_batch(room, SLOT, &mut got[..n]) {
+            let count = match cx.socket().recv_batch(room, SLOT, &mut got[..n]) {
                 Ok(count) => count,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     cx.of(
@@ -817,7 +886,7 @@ impl Quic {
                 total += d.len;
                 first.get_or_insert_with(|| cx.live());
                 let bytes = &room[i * SLOT..i * SLOT + d.len];
-                if let Err(kind) = self.read_datagram(cx, socket, d, bytes, &mut *streams) {
+                if let Err(kind) = self.read_datagram(cx, d, bytes) {
                     failed = Some(kind);
                     break;
                 }
@@ -848,11 +917,9 @@ impl Quic {
     /// one (`cf_ngtcp2_recv_pkts`).
     fn read_datagram(
         &mut self,
-        cx: &mut dyn QuicCx,
-        socket: &dyn Socket,
+        cx: &mut dyn QuicIo,
         d: &Datagram,
         bytes: &[u8],
-        streams: Streams<'_>,
     ) -> Result<(), ErrorKind> {
         if d.ecn != 0 {
             let (len, gso, ecn) = (d.len, d.segment, d.ecn);
@@ -871,7 +938,7 @@ impl Quic {
                 } = self;
                 let mut tcx = TlsCx::new(cx, Component::Http3, peer);
                 conn.read_packet(&mut tcx, now, from, d.ecn, packet, &mut |tcx, e| {
-                    state.heard(tcx, e, &mut *streams)
+                    state.heard(tcx, e)
                 })
             };
             if let Err(error) = read {
@@ -880,7 +947,7 @@ impl Quic {
                     Component::Http3,
                     format_args!("ingress, read_pkt -> {text} ({code})"),
                 );
-                self.failed(cx, socket, error);
+                self.failed(cx, error);
                 // A failed TLS, which an unverified peer often is.
                 return Err(if error.crypto {
                     ErrorKind::PeerFailedVerification
@@ -895,8 +962,8 @@ impl Quic {
 
 impl State {
     /// The library told `event`: the connection's own heard here, a
-    /// stream's handed to `streams`.
-    fn heard(&mut self, cx: &mut TlsCx<'_>, event: Event<'_>, streams: Streams<'_>) -> Heard {
+    /// stream's handed to the transfer the call is made for.
+    fn heard(&mut self, cx: &mut TlsCx<'_>, event: Event<'_>) -> Heard {
         match event {
             Event::HandshakeDone {
                 checked,
@@ -921,14 +988,9 @@ impl State {
                 cx.trace(format_args!("max bidi streams now {n}, used {used}"));
                 Heard::Fine
             }
-            other => streams(cx, other),
+            other => cx.h3_event(other),
         }
     }
-}
-
-/// The connect's hearing of a stream's events: it has no streams.
-fn ignore(_: &mut TlsCx<'_>, _: Event<'_>) -> Heard {
-    Heard::Fine
 }
 
 #[cfg(test)]
@@ -1041,6 +1103,7 @@ mod tests {
         clock: ManualClock,
         lines: Vec<String>,
         due: Vec<Duration>,
+        socket: Scripted,
     }
 
     impl LayerCx for Cx {
@@ -1072,8 +1135,14 @@ mod tests {
         }
     }
 
+    impl QuicIo for Cx {
+        fn socket(&self) -> &dyn Socket {
+            &self.socket
+        }
+    }
+
     /// A QUIC connection over the fake library running `script`, and a
-    /// context for it.
+    /// context for it, with its socket.
     fn quic(script: &Arc<Mutex<Script>>) -> (Quic, Cx) {
         let clock = ManualClock::new().unwrap();
         let remote = SocketAddr::from(([127, 0, 0, 1], 443));
@@ -1100,6 +1169,7 @@ mod tests {
             clock: clock.clone(),
             lines: Vec::new(),
             due: Vec::new(),
+            socket: Scripted::default(),
         };
         (Quic::new(conn, peer, remote, clock.now()).unwrap(), cx)
     }
@@ -1121,9 +1191,11 @@ mod tests {
         script.lock().unwrap().max_payload = 1452;
         packets(&script, &[1200, 1200, 1406]);
         let (mut q, mut cx) = quic(&script);
-        let socket = Scripted::default();
-        q.egress(&mut cx, &socket, &mut ignore).unwrap();
-        assert_eq!(*socket.sent.lock().unwrap(), [(2400, 1200), (1406, 1406)]);
+        q.egress(&mut cx).unwrap();
+        assert_eq!(
+            *cx.socket.sent.lock().unwrap(),
+            [(2400, 1200), (1406, 1406)]
+        );
         assert_eq!(
             cx.lines,
             [
@@ -1143,9 +1215,8 @@ mod tests {
         let script = Script::new();
         packets(&script, &[1200, 1200, 900, 1200]);
         let (mut q, mut cx) = quic(&script);
-        let socket = Scripted::default();
-        q.egress(&mut cx, &socket, &mut ignore).unwrap();
-        assert_eq!(*socket.sent.lock().unwrap(), [(3300, 1200)]);
+        q.egress(&mut cx).unwrap();
+        assert_eq!(*cx.socket.sent.lock().unwrap(), [(3300, 1200)]);
         assert_eq!(
             cx.lines[1],
             "egress, send collected 3 packets in 3300 bytes"
@@ -1161,20 +1232,30 @@ mod tests {
         let script = Script::new();
         packets(&script, &[1200, 1200]);
         let (mut q, mut cx) = quic(&script);
-        let socket = Scripted::default();
-        socket.sends.lock().unwrap().push_back(Act::Fail(TOO_LARGE));
-        q.egress(&mut cx, &socket, &mut ignore).unwrap();
+        cx.socket
+            .sends
+            .lock()
+            .unwrap()
+            .push_back(Act::Fail(TOO_LARGE));
+        q.egress(&mut cx).unwrap();
         assert_eq!(
             cx.lines.last().unwrap(),
             "vquic_sendmsg(len=2400, gso=1200, calls=1) -> 0, sent=2400"
         );
-        assert!(socket.sent.lock().unwrap().is_empty());
+        assert!(cx.socket.sent.lock().unwrap().is_empty());
 
         cx.lines.clear();
         packets(&script, &[1200, 1200]);
-        socket.sends.lock().unwrap().push_back(Act::Fail(IO_FAILED));
-        q.egress(&mut cx, &socket, &mut ignore).unwrap();
-        assert_eq!(*socket.sent.lock().unwrap(), [(1200, 1200), (1200, 1200)]);
+        cx.socket
+            .sends
+            .lock()
+            .unwrap()
+            .push_back(Act::Fail(IO_FAILED));
+        q.egress(&mut cx).unwrap();
+        assert_eq!(
+            *cx.socket.sent.lock().unwrap(),
+            [(1200, 1200), (1200, 1200)]
+        );
         assert_eq!(
             cx.lines[2..],
             [
@@ -1185,10 +1266,13 @@ mod tests {
             ]
         );
         // From then on each goes on its own.
-        socket.sent.lock().unwrap().clear();
+        cx.socket.sent.lock().unwrap().clear();
         packets(&script, &[1200, 1200]);
-        q.egress(&mut cx, &socket, &mut ignore).unwrap();
-        assert_eq!(*socket.sent.lock().unwrap(), [(1200, 1200), (1200, 1200)]);
+        q.egress(&mut cx).unwrap();
+        assert_eq!(
+            *cx.socket.sent.lock().unwrap(),
+            [(1200, 1200), (1200, 1200)]
+        );
     }
 
     /// A socket that would block keeps the packets, the socket watched
@@ -1199,22 +1283,21 @@ mod tests {
         let script = Script::new();
         packets(&script, &[1200, 1200]);
         let (mut q, mut cx) = quic(&script);
-        let socket = Scripted::default();
-        socket.sends.lock().unwrap().push_back(Act::Block);
-        q.egress(&mut cx, &socket, &mut ignore).unwrap();
+        cx.socket.sends.lock().unwrap().push_back(Act::Block);
+        q.egress(&mut cx).unwrap();
         assert_eq!(
             cx.lines.last().unwrap(),
             "vquic_sendmsg(len=2400, gso=1200, calls=1) -> 81, sent=0"
         );
         assert_eq!(cx.due, [Duration::from_millis(1)]);
         assert_eq!(q.wants(), Events::IN | Events::OUT);
-        q.egress(&mut cx, &socket, &mut ignore).unwrap();
-        assert_eq!(*socket.sent.lock().unwrap(), [(2400, 1200)]);
+        q.egress(&mut cx).unwrap();
+        assert_eq!(*cx.socket.sent.lock().unwrap(), [(2400, 1200)]);
         assert_eq!(q.wants(), Events::IN);
 
         packets(&script, &[1200, 1200]);
-        socket.sends.lock().unwrap().push_back(Act::Short(1000));
-        let r = q.egress(&mut cx, &socket, &mut ignore);
+        cx.socket.sends.lock().unwrap().push_back(Act::Short(1000));
+        let r = q.egress(&mut cx);
         assert_eq!(r, Err(ErrorKind::SendError));
         assert!(
             cx.lines
@@ -1228,12 +1311,11 @@ mod tests {
     fn a_refused_receive_fails_the_connect() {
         let script = Script::new();
         let (mut q, mut cx) = quic(&script);
-        let socket = Scripted::default();
         let refused = io::Error::from(io::ErrorKind::ConnectionRefused)
             .raw_os_error()
             .unwrap_or(111);
-        socket.datagrams.lock().unwrap().push_back(Err(refused));
-        let r = q.connect(&mut cx, &socket);
+        cx.socket.datagrams.lock().unwrap().push_back(Err(refused));
+        let r = q.connect(&mut cx);
         assert_eq!(r, Err(ErrorKind::CouldntConnect));
         assert!(
             cx.lines
@@ -1256,31 +1338,30 @@ mod tests {
         let script = Script::new();
         script.lock().unwrap().read_fails = Some(-213);
         let (mut q, mut cx) = quic(&script);
-        let socket = Scripted::default();
-        socket
+        cx.socket
             .datagrams
             .lock()
             .unwrap()
             .push_back(Ok(b"flight".to_vec()));
-        let r = q.connect(&mut cx, &socket);
+        let r = q.connect(&mut cx);
         assert_eq!(r, Err(ErrorKind::PeerFailedVerification));
         assert!(
             cx.lines
                 .contains(&"ingress, read_pkt -> ERR_FAKE (-213)".to_owned())
         );
         assert_eq!(
-            *socket.sent.lock().unwrap(),
+            *cx.socket.sent.lock().unwrap(),
             [] as [(usize, usize); 0],
             "not past saving"
         );
         script.lock().unwrap().read_fails = Some(-502);
-        socket
+        cx.socket
             .datagrams
             .lock()
             .unwrap()
             .push_back(Ok(b"flight".to_vec()));
-        assert_eq!(q.connect(&mut cx, &socket), Err(ErrorKind::RecvError));
-        assert_eq!(*socket.sent.lock().unwrap(), [(5, 5)], "its close");
+        assert_eq!(q.connect(&mut cx), Err(ErrorKind::RecvError));
+        assert_eq!(*cx.socket.sent.lock().unwrap(), [(5, 5)], "its close");
     }
 
     /// The library's timer is set in whole milliseconds, rounded up; one
@@ -1290,11 +1371,10 @@ mod tests {
         let script = Script::new();
         script.lock().unwrap().expiry = Some(Duration::from_micros(4500));
         let (mut q, mut cx) = quic(&script);
-        let socket = Scripted::default();
-        assert_eq!(q.start(&mut cx, &socket), Ok(false));
+        assert_eq!(q.start(&mut cx), Ok(false));
         assert_eq!(cx.due, [Duration::from_millis(5)]);
         script.lock().unwrap().expiry = Some(Duration::ZERO);
-        assert_eq!(q.connect(&mut cx, &socket), Ok(false));
+        assert_eq!(q.connect(&mut cx), Ok(false));
         assert_eq!(script.lock().unwrap().expired, 1);
         // Run, it is never due again.
         assert_eq!(cx.due.len(), 1);
@@ -1311,14 +1391,13 @@ mod tests {
             .on_read
             .push_back(vec![Told::HandshakeDone, Told::MaxBidiStreams(3)]);
         let (mut q, mut cx) = quic(&script);
-        let socket = Scripted::default();
         assert_eq!(q.streams_left(), 100, "C's default before the peer's");
-        socket
+        cx.socket
             .datagrams
             .lock()
             .unwrap()
             .push_back(Ok(b"flight".to_vec()));
-        assert_eq!(q.connect(&mut cx, &socket), Ok(true));
+        assert_eq!(q.connect(&mut cx), Ok(true));
         assert_eq!(q.streams_left(), 3);
         assert_eq!(q.first_byte_at(), Some(cx.clock.now()));
         assert_eq!(q.handshake_at(), Some(cx.clock.now()));

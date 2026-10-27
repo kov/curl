@@ -177,6 +177,14 @@ pub(crate) trait LayerCx {
         _f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx),
     ) {
     }
+
+    /// What a QUIC connection's HTTP/3 library told of one of its
+    /// streams, as it read or wrote for the transfer: the transfer hands
+    /// it to the stream's own (C's callbacks reach the stream's
+    /// transfer). A connect has no streams, and hears it as nothing.
+    fn h3_event(&mut self, _event: crate::http3::Event<'_>) -> crate::http3::Heard {
+        crate::http3::Heard::Fine
+    }
 }
 
 /// The context of work done for no transfer: it traces nothing, as C's

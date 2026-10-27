@@ -1129,7 +1129,11 @@ impl ConnectMachine {
             None => Err(ErrorKind::QuicConnectError),
         };
         let started = made.and_then(|mut quic| {
-            let done = quic.start(cx, socket.socket())?;
+            let mut over = crate::conn::quic::Over {
+                cx: &mut *cx,
+                socket: socket.socket(),
+            };
+            let done = quic.start(&mut over)?;
             Ok((quic, done))
         });
         let quic = match started {
@@ -1455,7 +1459,11 @@ impl Racing {
             // A QUIC attempt is decided by its handshake, its socket
             // connected from the start.
             if let Some(quic) = a.quic.as_mut() {
-                match quic.connect(cx, socket) {
+                let mut over = crate::conn::quic::Over {
+                    cx: &mut *cx,
+                    socket,
+                };
+                match quic.connect(&mut over) {
                     Ok(true) => return Checked::Won(i),
                     Ok(false) => continue,
                     Err(kind) => return Checked::QuicFailed(i, kind),

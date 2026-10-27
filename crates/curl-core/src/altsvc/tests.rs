@@ -206,8 +206,11 @@ fn a_lookup_finds_the_first_allowed_alternative() {
         80,
         Alpn::H1,
     );
-    let built = AltSvcCtrl::DEFAULT.versions;
-    let found = a.lookup((b"ORIGIN.", 80, Alpn::H1), built, NOW).unwrap();
+    let no_h3 = Versions {
+        h3: false,
+        ..AltSvcCtrl::DEFAULT.versions
+    };
+    let found = a.lookup((b"ORIGIN.", 80, Alpn::H1), no_h3, NOW).unwrap();
     assert_eq!(
         (found.host, found.port, found.alpn),
         (&b"Alt1"[..], 2, Alpn::H1)

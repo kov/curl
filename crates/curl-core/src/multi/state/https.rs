@@ -23,6 +23,8 @@ use crate::conn::{HttpsLookup, address};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::multi::timers::{Deadlines, TimerKind};
+use crate::proto::ProtoState;
+use crate::proto::http::Negotiation;
 use crate::share::Kind;
 use crate::trace::{self, Bytes};
 
@@ -32,8 +34,8 @@ pub(crate) struct HttpsConnect {
     record: Record,
     /// Its first attempt's version, once started (`connect, init`).
     first: Option<Alpn>,
-    /// Its second, an HTTP/2-or-1 attempt over TCP after an HTTP/3 one
-    /// (`ballers[1]`).
+    /// Its second, of another version, over QUIC where the first is over
+    /// TCP or the other way round (`ballers[1]`).
     second: Second,
 }
 
@@ -52,6 +54,122 @@ impl Alpn {
             Alpn::H2 => "h2",
             Alpn::H1 => "h1",
         }
+    }
+}
+
+impl From<crate::altsvc::Alpn> for Alpn {
+    fn from(alpn: crate::altsvc::Alpn) -> Alpn {
+        match alpn {
+            crate::altsvc::Alpn::H3 => Alpn::H3,
+            crate::altsvc::Alpn::H2 => Alpn::H2,
+            crate::altsvc::Alpn::H1 => Alpn::H1,
+        }
+    }
+}
+
+/// What an attempt's version was chosen from, as the trace says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Source {
+    /// The version an alternative service for the origin names.
+    Preferred,
+    Wanted,
+    Allowed,
+}
+
+impl Source {
+    fn name(self) -> &'static str {
+        match self {
+            Source::Preferred => "preferred version",
+            Source::Wanted => "wanted versions",
+            Source::Allowed => "allowed versions",
+        }
+    }
+}
+
+/// What the versions of a setup's attempts are chosen from: the
+/// transfer's negotiation, whether a library speaks HTTP/2, and whether
+/// HTTP/3 may be spoken over the route, which is asked only as it is
+/// weighed (`cf_hc_may_h3`).
+pub(super) struct Choosing {
+    neg: Negotiation,
+    h2: bool,
+    may_h3: bool,
+    /// HTTP/3 was weighed.
+    asked_h3: std::cell::Cell<bool>,
+}
+
+impl Choosing {
+    /// The choice for the setup `c`, over `route`.
+    pub(super) fn of<H: Host>(proto: &ProtoState, route: &Tcp, cx: &StepCx<'_, H>) -> Choosing {
+        let neg = proto
+            .negotiation()
+            .expect("an HTTPS connect filter heads an HTTP setup");
+        Choosing {
+            neg,
+            h2: cx.easy().libraries().h2.is_some(),
+            may_h3: super::may_quic(cx, route),
+            asked_h3: std::cell::Cell::new(false),
+        }
+    }
+
+    fn may_h3(&self) -> bool {
+        self.asked_h3.set(true);
+        self.may_h3
+    }
+
+    /// The preferred version, if allowed and not `not`
+    /// (`cf_hc_get_pref_alpn`): HTTP/1 not after HTTP/2, which offers it.
+    fn preferred(&self, not: Option<Alpn>) -> Option<Alpn> {
+        let preferred = Alpn::from(self.neg.preferred()?);
+        let ok = match preferred {
+            Alpn::H3 => self.may_h3() && not != Some(Alpn::H3),
+            Alpn::H2 => self.h2 && not != Some(Alpn::H2),
+            Alpn::H1 => not != Some(Alpn::H1) && not != Some(Alpn::H2),
+        };
+        ok.then_some(preferred)
+    }
+
+    /// The first of `set` that may be spoken, HTTP/3, HTTP/2, HTTP/1, but
+    /// `not`, and neither HTTP/2 nor HTTP/1 after either, as each offers
+    /// the other (`cf_hc_get_first_alpn`).
+    fn first_of(&self, set: crate::altsvc::Versions, not: Option<Alpn>) -> Option<Alpn> {
+        let h1_or_h2 = not != Some(Alpn::H1) && not != Some(Alpn::H2);
+        if not != Some(Alpn::H3) && set.h3 && self.may_h3() {
+            Some(Alpn::H3)
+        } else if h1_or_h2 && set.h2 && self.h2 {
+            Some(Alpn::H2)
+        } else if h1_or_h2 && set.h1 {
+            Some(Alpn::H1)
+        } else {
+            None
+        }
+    }
+
+    /// The first attempt's version and where it came from: the preferred,
+    /// else the first wanted, else the first allowed
+    /// (`cf_hc_set_baller1`).
+    pub(super) fn first(&self) -> Option<(Alpn, Source)> {
+        self.preferred(None)
+            .map(|a| (a, Source::Preferred))
+            .or_else(|| {
+                self.first_of(self.neg.wanted, None)
+                    .map(|a| (a, Source::Wanted))
+            })
+            .or_else(|| {
+                self.first_of(self.neg.allowed, None)
+                    .map(|a| (a, Source::Allowed))
+            })
+    }
+
+    /// The second's after `first`: the preferred, else the first wanted
+    /// (`cf_hc_set_baller2`).
+    fn second(&self, first: Alpn) -> Option<(Alpn, Source)> {
+        self.preferred(Some(first))
+            .map(|a| (a, Source::Preferred))
+            .or_else(|| {
+                self.first_of(self.neg.wanted, Some(first))
+                    .map(|a| (a, Source::Wanted))
+            })
     }
 }
 
@@ -131,7 +249,11 @@ pub(super) fn connect_call<H: Host>(
         Record::Pending if let Some(first) = h.first => {
             answered(&c.route, cx)?;
             h.record = Record::Known;
-            let second = choose_second(c, cx, first);
+            // Whether the first's choice weighed HTTP/3, as it does again.
+            let choosing = Choosing::of(&c.proto, &c.route, cx);
+            choosing.first();
+            let said = choosing.asked_h3.get();
+            let second = choose_second(c, cx, first, said);
             c.https.as_mut().expect("the filter heads the setup").second = second;
             Ok(())
         }
@@ -205,37 +327,56 @@ fn answered<H: Host>(route: &Tcp, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKin
     Ok(())
 }
 
-/// HTTP/2 is offered where a library speaks it and the request may.
-fn h2_offered<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> bool {
-    c.proto.http_versions().h2 && cx.easy().libraries().h2.is_some()
+/// HTTP/3 was weighed, for the first time, and may not be spoken over
+/// the route: why, said once, as C asks once (`cf_hc_may_h3`).
+fn h3_refused<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>, asked: bool) {
+    if !asked {
+        return;
+    }
+    if let Some((kind, why)) = super::quic_refused(&c.route, true) {
+        trace::fail(cx, kind, format_args!("{why}"));
+    }
 }
 
-/// The second attempt, as the origin's record is known to be none: the
-/// first wanted version other than the first's, HTTP/2 or HTTP/1 after
-/// HTTP/3 and none after either of those, as each offers the other
-/// (`cf_hc_set_baller2`, `cf_hc_get_first_alpn`).
-fn choose_second<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>, first: Alpn) -> Second {
+/// The second attempt, as the origin's record is known to be none; why
+/// HTTP/3 may not be spoken is said if the first's choice did not weigh
+/// it already, which `said` tells.
+fn choose_second<H: Host>(
+    c: &mut Connecting,
+    cx: &mut StepCx<'_, H>,
+    first: Alpn,
+    said: bool,
+) -> Second {
     let hc = Component::HttpsConnect;
     trace::of(cx, hc, format_args!("HTTPS-RR not available"));
-    let h1 = c.proto.http_versions().h1;
-    let second = match first {
-        Alpn::H3 if h2_offered(c, cx) => Alpn::H2,
-        Alpn::H3 if h1 => Alpn::H1,
-        Alpn::H3 | Alpn::H2 | Alpn::H1 => return Second::None,
+    let choosing = Choosing::of(&c.proto, &c.route, cx);
+    let second = choosing.second(first);
+    h3_refused(c, cx, choosing.asked_h3.get() && !said);
+    let Some((second, source)) = second else {
+        return Second::None;
     };
-    let name = second.name();
+    let (name, source) = (second.name(), source.name());
     trace::of(
         cx,
         hc,
-        format_args!("2nd attempt uses {name} from wanted versions"),
+        format_args!("2nd attempt uses {name} from {source}"),
     );
     Second::Due(second)
 }
 
+/// Whether the setup `c` would race a second attempt against its first,
+/// as the origin's record, known or not, chooses none.
+pub(super) fn may_race<H: Host>(c: &Connecting, cx: &StepCx<'_, H>) -> bool {
+    let Some(first) = c.https.and_then(|h| h.first) else {
+        return false;
+    };
+    Choosing::of(&c.proto, &c.route, cx).second(first).is_some()
+}
+
 /// The setup's first attempt starts (`cf_hc_connect`'s INIT): its
-/// version chosen, one that a build without HTTP/2 can speak, its second
-/// chosen if the record is known, and the wait for the second armed
-/// while there may be one.
+/// version chosen, the one the plan dialed for, its second chosen if
+/// the record is known, and the wait for the second armed while there
+/// may be one.
 pub(super) fn start<H: Host>(
     c: &mut Connecting,
     deadlines: &mut Deadlines,
@@ -247,33 +388,31 @@ pub(super) fn start<H: Host>(
     let hc = Component::HttpsConnect;
     trace::of(cx, hc, format_args!("connect, init"));
     trace::of(cx, hc, format_args!("HTTPS-RR not available"));
-    // The first of the wanted versions it can speak, HTTP/3, HTTP/2,
-    // HTTP/1, as its ALPN offers them (`cf_hc_get_first_alpn`): HTTP/3
-    // where the plan dials QUIC, which it does where HTTP/3 may be
-    // spoken; where it may not, the reason is said as it is looked at.
-    let h2 = h2_offered(c, cx);
+    let choosing = Choosing::of(&c.proto, &c.route, cx);
+    let first = choosing.first();
+    let said = choosing.asked_h3.get();
+    h3_refused(c, cx, said);
+    let (first, source) = first.expect("the plan dials an attempt it can choose");
     let dial = c.lease.setup_route().map_or(c.route.dial, |r| r.dial);
-    let first = match dial {
-        Dial::Quic => Alpn::H3,
-        Dial::Tcp => {
-            if c.proto.http_versions().h3
-                && let Some((kind, why)) = super::quic_refused(&c.route, true)
-            {
-                trace::fail(cx, kind, format_args!("{why}"));
-            }
-            if h2 { Alpn::H2 } else { Alpn::H1 }
-        }
-    };
-    let name = first.name();
+    assert_eq!(
+        first == Alpn::H3,
+        dial == Dial::Quic,
+        "the plan dials for the first attempt"
+    );
+    // HTTP/1.1 alone is offered by an attempt in HTTP/1.
+    if first == Alpn::H1 {
+        c.proto.negotiation_mut().expect("an HTTP setup").h1_first();
+    }
+    let (name, source) = (first.name(), source.name());
     trace::of(
         cx,
         hc,
-        format_args!("1st attempt uses {name} from wanted versions"),
+        format_args!("1st attempt uses {name} from {source}"),
     );
     let h = c.https.as_mut().expect("the filter heads the setup");
     h.first = Some(first);
     if h.record != Record::Pending {
-        let second = choose_second(c, cx, first);
+        let second = choose_second(c, cx, first, said);
         c.https.as_mut().expect("the filter heads the setup").second = second;
     }
     let h = c.https.as_mut().expect("the filter heads the setup");
@@ -283,31 +422,49 @@ pub(super) fn start<H: Host>(
     }
 }
 
+/// Whether the attempt out of the lease, its QUIC one, is the first: it
+/// is then driven, and polled, before the lease's.
+pub(super) fn aside_leads(c: &Connecting) -> bool {
+    c.https.is_some_and(|h| h.first == Some(Alpn::H3))
+}
+
 /// The attempt the lease held failed with `kind`: whether the race
 /// outlives it, its other attempt still to start or running, or the
 /// record that chooses it still to come; or fails with it, which
-/// `all_failed` then says.
+/// `all_failed` then says. The lease holds the first but where an
+/// HTTP/3 first was set aside for the second.
 pub(super) fn attempt_failed(c: &mut Connecting, kind: ErrorKind) -> bool {
+    let leads = aside_leads(c);
     let (Some(h), Some(race)) = (c.https.as_mut(), c.race.as_mut()) else {
         return false;
     };
     match h.second {
-        // The first's, in the lease until the second starts.
         Second::Unchosen | Second::Due(_) => {
             race.first_failed = Some(kind);
             true
         }
         Second::None => false,
-        Second::Started(alpn, _) => {
+        Second::Started(alpn, _) if leads => {
             h.second = Second::Started(alpn, true);
+            true
+        }
+        Second::Started(..) => {
+            race.first_failed = Some(kind);
             true
         }
     }
 }
 
-/// The first attempt, set aside as the second runs, failed with `kind`.
-pub(super) fn first_failed(c: &mut Connecting, kind: ErrorKind) {
-    c.race.as_mut().expect("a race of two").first_failed = Some(kind);
+/// The attempt out of the lease failed with `kind`: the first, an HTTP/3
+/// one set aside, or the second, an HTTP/3 one after a first over TCP.
+pub(super) fn aside_failed(c: &mut Connecting, kind: ErrorKind) {
+    let leads = aside_leads(c);
+    let h = c.https.as_mut().expect("a race of two");
+    if leads {
+        c.race.as_mut().expect("a race of two").first_failed = Some(kind);
+    } else if let Second::Started(alpn, _) = h.second {
+        h.second = Second::Started(alpn, true);
+    }
 }
 
 /// Whether the second attempt starts now, as the first failed or did not
@@ -371,13 +528,14 @@ pub(super) fn second_due<H: Host>(
     false
 }
 
-/// The second attempt started.
-pub(super) fn second_started(c: &mut Connecting) {
+/// The second attempt starts: its version.
+pub(super) fn second_started(c: &mut Connecting) -> Alpn {
     let h = c.https.as_mut().expect("a race of two");
     let Second::Due(alpn) = h.second else {
         panic!("a second is due");
     };
     h.second = Second::Started(alpn, false);
+    alpn
 }
 
 /// Every attempt failed: the setup fails with the first's failure.
@@ -410,4 +568,109 @@ pub(super) fn call_ended<H: Host>(
         }
     };
     trace::of(cx, hc, format_args!("connect -> {code}, done={done}"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::altsvc::Alpn as Named;
+    use crate::options::HttpVersion;
+
+    fn choosing(
+        version: HttpVersion,
+        preferred: Option<Named>,
+        h2: bool,
+        may_h3: bool,
+    ) -> Choosing {
+        let mut neg = Negotiation::new(version);
+        if let Some(p) = preferred {
+            // As an alternative for the origin itself has it.
+            match p {
+                Named::H1 => neg.wanted.h1 = true,
+                Named::H2 => neg.wanted.h2 = true,
+                Named::H3 => neg.wanted.h3 = true,
+            }
+            neg.preferred = Some(p);
+        }
+        Choosing {
+            neg,
+            h2,
+            may_h3,
+            asked_h3: std::cell::Cell::new(false),
+        }
+    }
+
+    /// An attempt's version and where it came from.
+    type Attempt = Option<(Alpn, Source)>;
+
+    /// The two attempts' versions and where each came from, and whether
+    /// HTTP/3 was weighed, as `cf_hc_set_baller1` and `_baller2` choose.
+    fn chosen(c: &Choosing) -> (Attempt, Attempt, bool) {
+        let first = c.first();
+        let second = first.and_then(|(f, _)| c.second(f));
+        (first, second, c.asked_h3.get())
+    }
+
+    #[test]
+    fn the_attempts_are_chosen_as_c_chooses_them() {
+        use Alpn::{H1, H2, H3};
+        use HttpVersion::{Any, Http3, Http3Only};
+        use Source::{Preferred as P, Wanted as W};
+        let cases = [
+            // version, preferred, HTTP/2 library, HTTP/3 may be spoken
+            ((Any, None, true, true), (Some((H2, W)), None, false)),
+            ((Any, None, false, true), (Some((H1, W)), None, false)),
+            (
+                (Http3, None, true, true),
+                (Some((H3, W)), Some((H2, W)), true),
+            ),
+            (
+                (Http3, None, false, true),
+                (Some((H3, W)), Some((H1, W)), true),
+            ),
+            ((Http3, None, true, false), (Some((H2, W)), None, true)),
+            ((Http3Only, None, true, true), (Some((H3, W)), None, true)),
+            (
+                (Any, Some(Named::H3), true, true),
+                (Some((H3, P)), Some((H2, W)), true),
+            ),
+            (
+                (Any, Some(Named::H3), true, false),
+                (Some((H2, W)), None, true),
+            ),
+            (
+                (Any, Some(Named::H1), true, true),
+                (Some((H1, P)), None, false),
+            ),
+            (
+                (Http3, Some(Named::H1), true, true),
+                (Some((H1, P)), Some((H3, W)), true),
+            ),
+            (
+                (Http3, Some(Named::H2), true, true),
+                (Some((H2, P)), Some((H3, W)), true),
+            ),
+        ];
+        for ((version, preferred, h2, may_h3), want) in cases {
+            let c = choosing(version, preferred, h2, may_h3);
+            assert_eq!(chosen(&c), want, "{version:?} {preferred:?} {h2} {may_h3}");
+        }
+    }
+
+    /// With none of the wanted versions to be spoken, the first allowed
+    /// is tried; a version preferred that is not allowed is not.
+    #[test]
+    fn the_allowed_versions_are_the_last_resort() {
+        let mut c = choosing(HttpVersion::Http3Only, None, true, false);
+        c.neg.allowed = crate::altsvc::Versions {
+            h1: true,
+            h2: true,
+            h3: true,
+        };
+        assert_eq!(c.first(), Some((Alpn::H2, Source::Allowed)));
+        let mut c = choosing(HttpVersion::Any, Some(Named::H2), true, true);
+        c.neg.allowed.h2 = false;
+        assert_eq!(c.first().map(|(a, _)| a), Some(Alpn::H2));
+        assert_eq!(c.first().map(|(_, s)| s), Some(Source::Wanted));
+    }
 }

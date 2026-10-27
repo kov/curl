@@ -13,7 +13,6 @@ use crate::conn::tls::TlsLayer;
 use crate::conn::{Dial, Made};
 use crate::error::ErrorKind;
 use crate::multi::Host;
-use crate::options::HttpVersion;
 use crate::options::{ProxyType, SslOptions, TlsMaxVersion, TlsMinVersion, TlsOptions};
 use crate::tls::{Alpn, Handshake as Shake, SessionPeer, TlsPeer, TlsShared};
 use crate::trace;
@@ -79,7 +78,7 @@ pub(super) fn start<H: Host>(
     };
     // HTTP/2 is offered only where a library speaks it, and the request
     // may.
-    let version = options.http.version;
+    let only_10 = c.proto.negotiation().is_some_and(|n| n.only_10);
     let versions = c.proto.http_versions();
     let h2 = versions.h2 && cx.easy().libraries().h2.is_some();
     // An HTTPS proxy asked for in HTTP/2 is offered it, by ALPN whatever
@@ -90,14 +89,16 @@ pub(super) fn start<H: Host>(
             .proxy
             .as_ref()
             .is_some_and(|p| p.kind == ProxyType::Https2);
-    let alpn = match (options.tls.options.alpn || proxy_h2, side, version) {
-        (false, ..) => Alpn::None,
-        (true, TlsSide::Proxy, _) if proxy_h2 => Alpn::H2Http11,
-        (true, TlsSide::Proxy, _) => Alpn::Http11,
-        (true, TlsSide::Origin, HttpVersion::Http10) => Alpn::Http10,
-        (true, TlsSide::Origin, _) if h2 && !versions.h1 => Alpn::H2,
-        (true, TlsSide::Origin, _) if h2 => Alpn::H2Http11,
-        (true, TlsSide::Origin, _) => Alpn::Http11,
+    // HTTP/1.0 alone is offered as `http/1.0` and `http/1.1`
+    // (`alpn_get_spec`).
+    let alpn = match (options.tls.options.alpn || proxy_h2, side) {
+        (false, _) => Alpn::None,
+        (true, TlsSide::Proxy) if proxy_h2 => Alpn::H2Http11,
+        (true, TlsSide::Proxy) => Alpn::Http11,
+        (true, TlsSide::Origin) if only_10 && versions.h1 => Alpn::Http10,
+        (true, TlsSide::Origin) if h2 && !versions.h1 => Alpn::H2,
+        (true, TlsSide::Origin) if h2 => Alpn::H2Http11,
+        (true, TlsSide::Origin) => Alpn::Http11,
     };
     // Early data, where the transfer asks for it and makes requests
     // (`conn_cfg->earlydata`, `bits.connect_only`).

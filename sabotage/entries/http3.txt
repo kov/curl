@@ -385,3 +385,56 @@ witness: curl-core proto::http::tests::h3_trace::a_silent_quic_peer_gives_way_to
         if filter == Component::HttpsConnect {
             continue;
         }
+
+=== a race given up drops its attempt out of the lease unclosed
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_attempts
+--- old
+                next: AfterRequest::Complete,
+                race: c.race,
+            }),
+--- new
+                next: AfterRequest::Complete,
+                race: None,
+            }),
+
+=== an HTTP/3 second is polled before the TCP first it races
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_silent_tcp_first_gives_way_to_quic_at_the_soft_timeout
+--- old
+                let leads = https::aside_leads(c);
+--- new
+                let leads = true;
+
+=== an attempt in HTTP/1 offers HTTP/2 too
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h2::an_alternative_here_in_http1_offers_http1_alone
+--- old
+        c.proto.negotiation_mut().expect("an HTTP setup").h1_first();
+--- new
+
+=== a TCP first failing after the second started is taken for the second
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h3_trace::a_tcp_first_failing_last_still_names_the_failure
+--- old
+        Second::Started(alpn, _) if leads => {
+--- new
+        Second::Started(alpn, _) if leads || true => {
+
+=== an HTTP/3 second failing beside a TCP first is not counted
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h3_trace::a_tcp_first_and_quic_second_failing_fail_with_tcp_s_failure
+--- old
+    } else if let Second::Started(alpn, _) = h.second {
+        h.second = Second::Started(alpn, true);
+    }
+--- new
+    }
+
+=== the attempts' versions are chosen in another order than C's
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core multi::state::https::tests::the_attempts_are_chosen_as_c_chooses_them
+--- old
+        let h1_or_h2 = not != Some(Alpn::H1) && not != Some(Alpn::H2);
+--- new
+        let h1_or_h2 = not != Some(Alpn::H1);

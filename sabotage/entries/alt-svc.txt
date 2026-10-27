@@ -164,8 +164,9 @@ witness: curl-core proto::http::tests::h2::an_alternative_in_http_2_is_reached_i
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::h2::an_alternative_in_http_2_is_reached_in_http_2
 --- old
-                (self.neg.wanted, self.neg.allowed) = (only(false, true), only(false, true));
+                (self.neg.wanted, self.neg.allowed) = (h2, h2);
 --- new
+                let _ = h2;
 
 
 === a response's Alt-Svc is kept as HTTP/1's whatever it came in
@@ -182,11 +183,11 @@ witness: curl-core proto::http::tests::h2::an_alternative_in_http_2_is_reached_i
 --- old
             h1: true,
             h2: true,
-            h3: false,
+            h3: true,
 --- new
             h1: true,
             h2: false,
-            h3: false,
+            h3: true,
 
 === a saved alt-svc host is re-encoded as text
 file: crates/curl-core/src/altsvc.rs
@@ -199,3 +200,18 @@ witness: curl-core altsvc::tests::a_file_s_hosts_are_saved_as_they_were_read
     } else {
         [b"", String::from_utf8_lossy(host).into_owned().leak().as_bytes(), b""]
     };
+
+=== an alternative for the origin itself is not preferred
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::an_alternative_here_in_http3_is_tried_first
+--- old
+        neg.preferred = Some(alpn);
+--- new
+
+=== no alternative from HTTP/3 is looked up
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::an_alternative_here_in_http1_leads_an_http3_transfer
+--- old
+        (neg.wanted.h3 && h3).then_some(Alpn::H3),
+--- new
+        None,

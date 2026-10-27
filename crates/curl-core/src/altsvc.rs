@@ -90,14 +90,14 @@ pub struct AltSvcCtrl {
 
 impl AltSvcCtrl {
     /// A cache the application has not set: every version the build
-    /// speaks (`Curl_altsvc_init`), HTTP/1 and HTTP/2; an alternative in
-    /// HTTP/2 is taken only by a handle with a library for it.
+    /// speaks (`Curl_altsvc_init`); an alternative in HTTP/2 or HTTP/3 is
+    /// taken only by a handle with a library for it.
     pub const DEFAULT: AltSvcCtrl = AltSvcCtrl {
         file: CacheFile::ReadWrite,
         versions: Versions {
             h1: true,
             h2: true,
-            h3: false,
+            h3: true,
         },
     };
 }

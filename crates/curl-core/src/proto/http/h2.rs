@@ -356,9 +356,10 @@ impl Request {
         h2: bool,
     ) -> Result<Option<Vec<u8>>, ErrorKind> {
         let library = cx.easy().libraries().h2;
-        let Some(library) = library
-            .filter(|_| !h2 && self.neg.upgrade && self.neg.wanted.h2 && !lease.conn().over_tls())
-        else {
+        let Some(library) = library.filter(|_| {
+            let upgrade = cx.easy().options().http.version == HttpVersion::Http2;
+            !h2 && upgrade && self.neg.wanted.h2 && !lease.conn().over_tls()
+        }) else {
             return Ok(None);
         };
         let mut payload = [0u8; 80];

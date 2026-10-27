@@ -985,6 +985,13 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
     follows alt-svc (step 63).
 63. **Alt-svc to h3**, and HTTP/3's early data (0-RTT), its transport parameters kept with the
     session's ticket.
+    - (a) **Alt-svc to h3.** **Done**: the transfer's version negotiation is one stored value,
+      as C's `state.http_neg`; an alternative in HTTP/3 is looked up and taken, one on the
+      origin itself makes its version the one preferred, and the HTTPS connect filter chooses
+      both its attempts as C does, the race run either way round (a TCP first and an HTTP/3
+      second). Against caddy, C's five shapes (pytest 06_20, 06_21, 06_24, a switch to h3
+      elsewhere, h2 to h1 on the origin) reach C's version with C's choice of attempts.
+    - (b) **Early data.** To do.
 64. **The HTTP/3 proxy** (`--proxy-http3`, CONNECT-UDP; pytest test_60). Always built, with no
     switch: C's is experimental and off unless built with `USE_PROXY_HTTP3`, but for its code's
     youth, not its standards (RFC 9297, 9298), and the reference build has it on. With it, HTTP/3

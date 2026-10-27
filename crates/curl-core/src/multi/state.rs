@@ -254,8 +254,8 @@ pub(crate) struct Connecting {
     /// The HTTPS connect filter heading the setup, if it has one.
     https: Option<https::HttpsConnect>,
     /// The race of an HTTP/3 attempt against one over TCP, once its first
-    /// started: what the second is made from, and the first once set
-    /// aside from the lease as the second runs in its place.
+    /// started: what the second is made from, and the QUIC attempt out
+    /// of the lease while both run.
     race: Option<Box<Race>>,
     /// HTTP Negotiate with the proxy a tunnel goes through, before the
     /// connection it belongs to is up: kept across a redial, as C keeps it
@@ -265,18 +265,21 @@ pub(crate) struct Connecting {
 }
 
 /// The race of an HTTP/3 attempt against an HTTP/2-or-1 one over TCP, as
-/// C's HTTPS connect filter runs its two ballers: the first is the lease's
-/// setup until the second starts and takes its place, the first set
-/// aside; once the first wins, the second is set aside in its turn, to go
-/// with the filter.
+/// C's HTTPS connect filter runs its two ballers, either first. The first
+/// is the lease's setup until the second starts; then the QUIC attempt is
+/// the one out of the lease: an HTTP/3 first set aside as a TCP second
+/// takes its place, or an HTTP/3 second beside a TCP first. Once one
+/// wins, the other is set aside in its turn, to go with the filter; a
+/// race given up goes with the request, its attempt out of the lease
+/// closed as the lease is given back.
 #[derive(Debug)]
 struct Race {
     /// The addresses the first resolved, which the second races.
     answer: TryArc<Answer>,
     /// The connection's makings, which the second is made with.
     makings: (Closer, ConnSettings, Instant),
-    /// The attempt out of the lease: the first as the second runs, none
-    /// once it failed; the second once the first won.
+    /// The attempt out of the lease: the QUIC one while both run, none
+    /// once it failed; the loser once the other won.
     aside: Option<ConnectMachine>,
     /// When the first started (`ctx->started`), which the second's
     /// timeouts count from.
@@ -359,6 +362,9 @@ pub(crate) struct Done {
     /// The host connected to, if any, as a connection kept names it.
     origin: Option<Origin>,
     next: AfterRequest,
+    /// The race its setup ran, if it failed racing: its attempt out of
+    /// the lease goes with the lease's.
+    race: Option<Box<Race>>,
 }
 
 impl Done {
@@ -568,6 +574,7 @@ impl TransferState {
                 reached: Reached::Unmade,
                 origin: Some(c.route.origin),
                 next: AfterRequest::Complete,
+                race: c.race,
             }),
             TransferState::ProtoConnect(x) | TransferState::Do(x) => {
                 TransferState::Done(x.done(Err(err), true, Reached::Unmade))
@@ -624,6 +631,7 @@ impl TransferState {
                 reached: Reached::Unmade,
                 origin: Some(c.route.origin),
                 next: AfterRequest::Complete,
+                race: c.race,
             },
             TransferState::ProtoConnect(x) | TransferState::Do(x) => {
                 x.done(Ok(()), true, Reached::Unmade)
@@ -704,7 +712,25 @@ fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done
     if let Some(proto) = d.proto.as_mut() {
         proto.data_done(cx, &mut d.lease);
     }
-    release(cx, d.lease, premature, stream_closed, d.origin.as_ref());
+    // A race given up closes its attempt out of the lease, as the lease's
+    // own goes as it is given back.
+    let raced = d.race.take().map(|race| {
+        if let Some(aside) = race.aside {
+            aside.close(&mut DriveCx {
+                step: cx,
+                kept: None,
+                deadlines: None,
+            });
+        }
+    });
+    release(
+        cx,
+        d.lease,
+        premature,
+        stream_closed,
+        d.origin.as_ref(),
+        raced.is_some(),
+    );
     RequestEnd {
         proto: d.proto,
         result: d.result,
@@ -751,6 +777,7 @@ fn release<H: Host>(
     premature: bool,
     stream_closed: bool,
     origin: Option<&Origin>,
+    raced: bool,
 ) {
     // The connection's objects go with its lease: the step lends them no
     // more (`Curl_detach_connection`).
@@ -782,8 +809,9 @@ fn release<H: Host>(
         max: cx.rest.tell.limits.max_connects,
         attached: cx.rest.tell.slots.len(),
     };
-    if lease.answer().is_some() {
-        // A setup given up lets its answer go (`CF_CTRL_DATA_DONE`).
+    if lease.answer().is_some() || raced {
+        // A setup given up lets its answer go (`CF_CTRL_DATA_DONE`), a
+        // race's once.
         let kept = cx.rest.kept(cx.me, Kind::Names);
         cx.rest.net_names(cx.me, kept.as_ref()).1.release();
     }
@@ -909,10 +937,14 @@ impl TransferState {
         let mut set = Pollset::new();
         match self {
             TransferState::Connecting(c) if pause.recv == RecvPause::Running => {
-                // The race's first attempt, set aside, before the second
-                // (`cf_hc_adjust_pollset`).
-                for (s, events) in c.aside().into_iter().flat_map(ConnectMachine::racing_wants) {
-                    set.add(s, events)?;
+                // The race's attempts in their order (`cf_hc_adjust_pollset`):
+                // the one out of the lease first if it is the first.
+                let leads = https::aside_leads(c);
+                let aside = || c.aside().into_iter().flat_map(ConnectMachine::racing_wants);
+                if leads {
+                    for (s, events) in aside() {
+                        set.add(s, events)?;
+                    }
                 }
                 // A handshake waits for what it sends or reads, and to read
                 // too, as the socket's filter, connected but not yet in
@@ -930,6 +962,11 @@ impl TransferState {
                         for (s, events) in c.lease.racing_wants() {
                             set.add(s, events)?;
                         }
+                    }
+                }
+                if !leads {
+                    for (s, events) in aside() {
+                        set.add(s, events)?;
                     }
                 }
             }
@@ -968,9 +1005,11 @@ pub(crate) struct PollsetTrace<T> {
 
 /// What a setup's sockets' filters say of the pollset.
 pub(crate) struct SetupTrace {
-    /// The first sockets are those of the race's first attempt, set
-    /// aside: QUIC's, connected as they open.
+    /// The race's attempt out of the lease, QUIC's, connected as its
+    /// sockets open: their number, and whether they come first, that
+    /// attempt the first, or last.
     aside: usize,
+    aside_leads: bool,
     /// Whether the lease's setup's sockets are connected, a handshake
     /// under way over the one dialed.
     dialed: bool,
@@ -993,6 +1032,7 @@ impl Run {
             // A QUIC socket is connected as its attempt starts.
             TransferState::Connecting(c) => Some(SetupTrace {
                 aside: c.aside().map_or(0, |m| m.racing_wants().count()),
+                aside_leads: https::aside_leads(c),
                 dialed: matches!(c.lease.reached(), Some(SetupPoint::Dialed(_)))
                     || c.lease
                         .setup_route()
@@ -1034,14 +1074,26 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
     /// of timers armed, then each timer in the order they fire.
     pub(crate) fn trace<H: Host>(self, cx: &mut StepCx<'_, H>) {
         let all = self.wants.as_slice();
-        // The race's first attempt's sockets, set aside, go first.
-        let aside = self.setup.as_ref().map_or(0, |s| s.aside);
-        let (first, wants) = all.split_at(aside);
-        for &(key, _) in first {
-            let fd = key.get();
-            let line = format_args!("adjust_pollset, !active, POLLIN fd={fd}");
-            trace::of(cx, Component::Udp, line);
-        }
+        // The race's attempt out of the lease, in its turn.
+        let (aside, leads) = self
+            .setup
+            .as_ref()
+            .map_or((0, true), |s| (s.aside, s.aside_leads));
+        let (first, wants, last) = if leads {
+            let (first, wants) = all.split_at(aside);
+            (first, wants, &[][..])
+        } else {
+            let (wants, last) = all.split_at(all.len() - aside);
+            (&[][..], wants, last)
+        };
+        let udp = |cx: &mut StepCx<'_, H>, sockets: &[(SocketKey, Events)]| {
+            for &(key, _) in sockets {
+                let fd = key.get();
+                let line = format_args!("adjust_pollset, !active, POLLIN fd={fd}");
+                trace::of(cx, Component::Udp, line);
+            }
+        };
+        udp(cx, first);
         // The TLS filter puts its socket in for what its session waits
         // for (`Curl_ssl_adjust_pollset`).
         if let (Some(waits), Some(&(key, _))) = (self.tls, wants.first()) {
@@ -1083,6 +1135,7 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
                     trace::of(cx, component, line);
                 }
             }
+            udp(cx, last);
             // The HTTPS connect filter, not connected while the setup
             // runs, says how many sockets the pollset has below it
             // (`cf_hc_adjust_pollset`).
@@ -1194,6 +1247,7 @@ impl Attached {
             reached,
             origin: self.origin,
             next: AfterRequest::Complete,
+            race: None,
         }
     }
 
@@ -2402,19 +2456,27 @@ fn connecting<H: Host>(
     if let Err(kind) = https::connect_call(&mut c, cx) {
         return (TransferState::Connecting(c).fail(kind), Wake::Again);
     }
-    let mut c = match first_aside(run, c, cx) {
-        Aside::Racing(c) => c,
-        Aside::Up(state, wake) => return (state, wake),
-    };
+    let mut c = c;
+    if https::aside_leads(&c) {
+        c = match drive_aside(run, c, cx) {
+            Aside::Racing(c) => c,
+            Aside::Up(state, wake) => return (state, wake),
+        };
+    }
     let mut entered = false;
     loop {
         // The attempt the lease held failed, and the race went on: the
         // second starts, the other attempt is waited for, or every one
         // failed.
         if c.lease.setup_failed() {
-            if https::second_due(&mut c, &mut run.deadlines, cx) {
-                second_starts(&mut c);
+            if https::second_due(&mut c, &mut run.deadlines, cx) && second_starts(&mut c) {
                 continue;
+            }
+            if !https::aside_leads(&c) {
+                c = match drive_aside(run, c, cx) {
+                    Aside::Racing(c) => c,
+                    Aside::Up(state, wake) => return (state, wake),
+                };
             }
             let https = c.https;
             if let Some(kind) = https::all_failed(&c) {
@@ -2425,7 +2487,6 @@ fn connecting<H: Host>(
                     cx,
                     format_args!("connect failed -> {}", trace::Code(Err(kind))),
                 );
-                c.race = None;
                 return (TransferState::Connecting(c).fail(kind), Wake::Again);
             }
             https::call_ended(https, cx, Ok(false));
@@ -2434,8 +2495,7 @@ fn connecting<H: Host>(
         }
         if let Some(SetupPoint::Racing { started: false }) = c.lease.reached() {
             https::start(&mut c, &mut run.deadlines, cx);
-            let h3_only = c.proto.http_versions().h3_only();
-            if race_starts(&mut c, cx.now(), h3_only).is_err() {
+            if race_starts(&mut c, cx).is_err() {
                 return (
                     TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
                     Wake::Again,
@@ -2466,11 +2526,18 @@ fn connecting<H: Host>(
                 return (next, wake);
             }
             TransferState::Connecting(mut next) => {
-                // The first attempt waits: the second may be due.
-                if https::second_due(&mut next, &mut run.deadlines, cx) {
-                    second_starts(&mut next);
+                // The lease's attempt waits: the second may be due, and
+                // is driven after it if it is out of the lease.
+                if https::second_due(&mut next, &mut run.deadlines, cx) && second_starts(&mut next)
+                {
                     c = next;
                     continue;
+                }
+                if !https::aside_leads(&next) {
+                    next = match drive_aside(run, next, cx) {
+                        Aside::Racing(next) => next,
+                        Aside::Up(state, wake) => return (state, wake),
+                    };
                 }
                 https::call_ended(https, cx, Ok(false));
                 chain_connect_ended(cx, Ok(false));
@@ -2787,17 +2854,13 @@ fn attempt_failed<H: Host>(
     (TransferState::Connecting(c), Wake::Again)
 }
 
-/// The race starts with its first attempt, an HTTP/3 one in the lease,
-/// where another version may follow: what its second is made from is
-/// kept. HTTP/3 alone is one attempt, outside any race.
-fn race_starts(c: &mut Connecting, at: Instant, h3_only: bool) -> Result<(), OutOfMemory> {
-    let quic = c
-        .lease
-        .setup_route()
-        .is_some_and(|r| r.dial == crate::conn::Dial::Quic);
-    if c.race.is_some() || c.https.is_none() || !quic || h3_only {
+/// The race starts with its first attempt, in the lease, where a second
+/// may follow: what the second is made from is kept.
+fn race_starts<H: Host>(c: &mut Connecting, cx: &StepCx<'_, H>) -> Result<(), OutOfMemory> {
+    if c.race.is_some() || !https::may_race(c, cx) {
         return Ok(());
     }
+    let at = cx.now();
     let (Some(answer), Some(makings)) = (c.lease.answer(), c.lease.makings()) else {
         unreachable!("an attempt starts once its name is resolved");
     };
@@ -2812,14 +2875,19 @@ fn race_starts(c: &mut Connecting, at: Instant, h3_only: bool) -> Result<(), Out
     Ok(())
 }
 
-/// The second attempt starts in the lease, over TCP, racing the
-/// addresses the first resolved; the first, if it still runs, set aside
-/// (`cf_hc_baller_init`).
-fn second_starts(c: &mut Connecting) {
+/// The second attempt starts, racing the addresses the first resolved
+/// (`cf_hc_baller_init`): over TCP in the lease, the first, an HTTP/3
+/// one, set aside if it still runs; or over QUIC, set aside, the first
+/// over TCP staying in the lease. Whether it is the lease's, to drive
+/// there.
+fn second_starts(c: &mut Connecting) -> bool {
+    let alpn = https::second_started(c);
     let race = c.race.as_mut().expect("a race of two");
-    race.aside = c.lease.take_setup();
     let mut route = c.route.clone();
-    route.dial = crate::conn::Dial::Tcp;
+    route.dial = match alpn {
+        https::Alpn::H3 => crate::conn::Dial::Quic,
+        https::Alpn::H2 | https::Alpn::H1 => crate::conn::Dial::Tcp,
+    };
     let (closer, settings, created) = race.makings.clone();
     let number = c.lease.number();
     let second = ConnectMachine::racing(
@@ -2830,8 +2898,14 @@ fn second_starts(c: &mut Connecting) {
         settings,
         race.answer.clone(),
     );
+    if alpn == https::Alpn::H3 {
+        assert!(race.aside.is_none(), "one attempt out of the lease");
+        race.aside = Some(second);
+        return false;
+    }
+    race.aside = c.lease.take_setup();
     c.lease.put_setup(second);
-    https::second_started(c);
+    true
 }
 
 /// What a drive of the race's first attempt, set aside, came to.
@@ -2842,10 +2916,11 @@ enum Aside {
     Up(TransferState, Wake),
 }
 
-/// The first attempt, set aside as the second runs, is driven, before
-/// the second as C's filter drives its ballers (`cf_hc_connect`): the
-/// transfer's step ends here if it made the connection.
-fn first_aside<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>) -> Aside {
+/// The race's QUIC attempt, out of the lease, is driven, in its turn as
+/// C's filter drives its ballers (`cf_hc_connect`): before the lease's
+/// if it is the first, after it if the second. The transfer's step ends
+/// here if it made the connection.
+fn drive_aside<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>) -> Aside {
     let Some(mut first) = c.race.as_mut().and_then(|r| r.aside.take()) else {
         return Aside::Racing(c);
     };
@@ -2894,7 +2969,7 @@ fn first_aside<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>
             }
             Err(e) => {
                 let kind = connect_failed(cx, &c.route, e);
-                https::first_failed(&mut c, kind);
+                https::aside_failed(&mut c, kind);
                 return Aside::Racing(c);
             }
         }
@@ -4262,6 +4337,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     };
     let over_unix = unix.is_some();
     let mut alt_used = None;
+    let mut preferred = None;
     let via = match unix {
         Some(peer) => Some(peer),
         None => match connect_to(cx, &origin) {
@@ -4270,9 +4346,13 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
             Ok(None) => {
                 let neg = proto.negotiation();
                 match alt_svc(cx, &origin, &scheme, neg) {
-                    Ok(Some(AltPeer { via, speaks })) => {
+                    Ok(Some(AltSvc::Elsewhere { via, speaks })) => {
                         alt_used = Some(speaks);
                         Some(via)
+                    }
+                    Ok(Some(AltSvc::Here(alpn))) => {
+                        preferred = Some(alpn);
+                        None
                     }
                     Ok(None) => None,
                     Err(e) => return TransferState::Init.fail(e),
@@ -4293,6 +4373,15 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     // A request a proxy sends on names the whole URL, and the connection
     // is the proxy's (`origin_is_proxy`).
     let mut proto = proto;
+    // The origin speaks another version too: it is wanted, and preferred.
+    if let (Some(alpn), Some(neg)) = (preferred, proto.negotiation_mut()) {
+        match alpn {
+            crate::altsvc::Alpn::H1 => neg.wanted.h1 = true,
+            crate::altsvc::Alpn::H2 => neg.wanted.h2 = true,
+            crate::altsvc::Alpn::H3 => neg.wanted.h3 = true,
+        }
+        neg.preferred = Some(alpn);
+    }
     if let Some(speaks) = alt_used {
         let via = via.as_deref().expect("an alternative is the peer");
         if let Err(OutOfMemory) = proto.alt_used(via, speaks) {
@@ -4356,9 +4445,13 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
             return TransferState::Init.fail(kind);
         }
         route.dial = crate::conn::Dial::Quic;
-    } else if versions.h3 && races(cx, &route, secured) {
-        // The HTTPS connect filter's first attempt is HTTP/3's, its
-        // second an HTTP/2-or-1 one over TCP (`cf_hc_set_baller1`).
+    } else if https::HttpsConnect::heading(&route, cx.easy().options().tls.options.alpn).is_some()
+        && https::Choosing::of(&proto, &route, cx)
+            .first()
+            .is_some_and(|(alpn, _)| alpn == https::Alpn::H3)
+    {
+        // The HTTPS connect filter's first attempt is HTTP/3's
+        // (`cf_hc_set_baller1`).
         route.dial = crate::conn::Dial::Quic;
     }
     setup(cx, Plan { proto, route })
@@ -4373,16 +4466,14 @@ fn may_http3<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, secured: bool) -> Res
     }
 }
 
-/// Whether a setup over `route` races an HTTP/3 attempt against one over
-/// TCP: one the HTTPS connect filter heads, with a QUIC library, over
-/// which HTTP/3 may be spoken; not yet through a proxy's tunnel, which C
-/// makes over HTTP/3's CONNECT-UDP.
-fn races<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, secured: bool) -> bool {
-    let alpn = cx.easy().options().tls.options.alpn;
-    https::HttpsConnect::heading(route, alpn).is_some()
-        && cx.easy().libraries().h3.is_some()
+/// Whether the HTTPS connect filter of a setup over `route` may make an
+/// attempt in HTTP/3: with a QUIC library, where HTTP/3 may be spoken;
+/// not yet through a proxy's tunnel, which C makes over HTTP/3's
+/// CONNECT-UDP.
+fn may_quic<H: Host>(cx: &StepCx<'_, H>, route: &Tcp) -> bool {
+    cx.easy().libraries().h3.is_some()
         && route.proxy.is_none()
-        && quic_refused(route, secured).is_none()
+        && quic_refused(route, true).is_none()
 }
 
 /// Why HTTP/3 may not be spoken over `route`, to an origin `secured` or
@@ -4809,27 +4900,29 @@ fn connect_to<H: Host>(
     Err(trace::fail_for(cx, kind, reason))
 }
 
-/// An alternative service a connection goes to: the peer, and the
-/// version it switches the request to, if another than the one looked up.
-struct AltPeer {
-    via: TryArc<Peer>,
-    speaks: Option<crate::altsvc::Alpn>,
+/// What an alternative service for the origin says.
+enum AltSvc {
+    /// A connection goes to another peer, `via`, switching the request to
+    /// `speaks` if that is another version than the one looked up.
+    Elsewhere {
+        via: TryArc<Peer>,
+        speaks: Option<crate::altsvc::Alpn>,
+    },
+    /// The origin itself speaks this version too, which is preferred.
+    Here(crate::altsvc::Alpn),
 }
 
-/// The peer an alternative service sends a connection for `origin` to, if
-/// the cache is on and knows one other than the origin itself, for an
-/// `https` URL, or any in a debug build told `CURL_ALTSVC_HTTP`, and the
-/// version it switches the request to, where it names another than the
-/// one looked up (`url_set_conn_peer`). HTTP/2's alternative is looked
-/// for first, then HTTP/1's, as the request wants them and the cache
-/// allows; no HTTP/3 is spoken here. One for the same host and port would
-/// only change the version C prefers, which here is none to change.
+/// What an alternative service says of `origin`, if the cache is on and
+/// knows one, for an `https` URL, or any in a debug build told
+/// `CURL_ALTSVC_HTTP` (`url_set_conn_peer`). HTTP/3's alternative is
+/// looked for first, then HTTP/2's, then HTTP/1's, as the request wants
+/// them and the cache allows, those of HTTP/3 where a library speaks it.
 fn alt_svc<H: Host>(
     cx: &mut StepCx<'_, H>,
     origin: &Peer,
     scheme: &[u8],
     neg: Option<crate::proto::http::Negotiation>,
-) -> Result<Option<AltPeer>, ErrorKind> {
+) -> Result<Option<AltSvc>, ErrorKind> {
     use crate::altsvc::{Alpn, Versions};
     use crate::proto::http::Negotiation;
     let (Some(alt_svc), Some(neg)) = (cx.easy().alt_svc(), neg) else {
@@ -4851,16 +4944,18 @@ fn alt_svc<H: Host>(
         format_args!("Alt-svc check wanted={wanted:x}, allowed={allowed:x}"),
     );
     let h2 = cx.easy().libraries().h2.is_some();
+    let h3 = cx.easy().libraries().h3.is_some();
     let allowed = Versions {
         h1: neg.allowed.h1 && ctrl.h1,
         h2: neg.allowed.h2 && h2 && ctrl.h2,
-        h3: false,
+        h3: neg.allowed.h3 && h3 && ctrl.h3,
     };
     let host = Bytes(origin.name());
     trace::debug_info(cx, format_args!("check Alt-Svc for host '{host}'"));
     let now = crate::date::cache_now(cx.unix_time());
     let alt_svc = cx.easy_mut().alt_svc_mut().expect("on, as above");
     let mut sources = [
+        (neg.wanted.h3 && h3).then_some(Alpn::H3),
         (neg.wanted.h2 && h2 && !neg.prior).then_some(Alpn::H2),
         (neg.wanted.h1 && !neg.only_10).then_some(Alpn::H1),
     ]
@@ -4875,7 +4970,7 @@ fn alt_svc<H: Host>(
         }
     };
     if found.same {
-        return Ok(None);
+        return Ok(Some(AltSvc::Here(found.alpn)));
     }
     let oom = |OutOfMemory| ErrorKind::OutOfMemory;
     // An IPv6 address in brackets, as a peer holds one.
@@ -4907,7 +5002,7 @@ fn alt_svc<H: Host>(
     );
     let speaks = (src != dst_alpn).then_some(dst_alpn);
     let via = TryArc::try_new(via).map_err(oom)?;
-    Ok(Some(AltPeer { via, speaks }))
+    Ok(Some(AltSvc::Elsewhere { via, speaks }))
 }
 
 /// The search passed over connection `number`, as it speaks `version`,

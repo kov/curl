@@ -102,7 +102,7 @@ witness: curl-core proto::http::tests::h2::alpn_offers_h2_where_a_library_speaks
 file: crates/curl-core/src/multi/state/tls.rs
 witness: curl-core proto::http::tests::h2::alpn_offers_h2_where_a_library_speaks_it
 --- old
-        (true, TlsSide::Origin, _) if h2 && !versions.h1 => Alpn::H2,
+        (true, TlsSide::Origin) if h2 && !versions.h1 => Alpn::H2,
 --- new
 
 === the application's chunked framing goes over HTTP/2
@@ -428,17 +428,17 @@ witness: curl-core proto::http2::tests::an_absolute_target_names_the_scheme_auth
 file: crates/curl-core/src/multi/state/tls.rs
 witness: curl-core proto::http::tests::tls::http_through_an_http_2_proxy_goes_as_its_streams_fields
 --- old
-        (true, TlsSide::Proxy, _) if proxy_h2 => Alpn::H2Http11,
+        (true, TlsSide::Proxy) if proxy_h2 => Alpn::H2Http11,
 --- new
-        (true, TlsSide::Proxy, _) if proxy_h2 => Alpn::Http11,
+        (true, TlsSide::Proxy) if proxy_h2 => Alpn::Http11,
 
 === an HTTP/2 proxy is offered nothing with ALPN off
 file: crates/curl-core/src/multi/state/tls.rs
 witness: curl-core proto::http::tests::tls::http_through_an_http_2_proxy_goes_as_its_streams_fields
 --- old
-    let alpn = match (options.tls.options.alpn || proxy_h2, side, version) {
+    let alpn = match (options.tls.options.alpn || proxy_h2, side) {
 --- new
-    let alpn = match (options.tls.options.alpn, side, version) {
+    let alpn = match (options.tls.options.alpn, side) {
 
 === a tunnel through an HTTP/2 proxy is HTTP/1.1's
 file: crates/curl-core/src/multi/state/tunnel.rs

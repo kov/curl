@@ -303,9 +303,11 @@ pub(crate) struct Request {
 
 /// What a transfer's requests may speak, as C negotiates it
 /// (`http_negotiation`): the versions wanted and allowed, HTTP/2 by prior
-/// knowledge or by an upgrade over clear text, and HTTP/1.0 alone. Set as
-/// the transfer starts, from the version the application asks for, and
-/// changed as its requests learn more.
+/// knowledge, HTTP/1.0 alone and the version preferred. HTTP/2 by an
+/// upgrade over clear text is the application's to ask for, which C
+/// copies as the transfer starts (`h2_upgrade`). Set as the transfer
+/// starts, from the version the application asks for, and changed as its
+/// requests learn more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Negotiation {
     pub(crate) wanted: crate::altsvc::Versions,
@@ -313,10 +315,11 @@ pub(crate) struct Negotiation {
     /// HTTP/2 by prior knowledge, while it is wanted
     /// (`h2_prior_knowledge`).
     pub(crate) prior: bool,
-    /// HTTP/2 by an upgrade over clear text, while it is wanted
-    /// (`h2_upgrade`).
-    pub(crate) upgrade: bool,
     pub(crate) only_10: bool,
+    /// The version an alternative service for the origin itself names,
+    /// which the HTTPS connect filter tries first where it is allowed
+    /// (`preferred`).
+    pub(crate) preferred: Option<crate::altsvc::Alpn>,
 }
 
 impl Negotiation {
@@ -337,9 +340,20 @@ impl Negotiation {
             wanted,
             allowed: allowed.unwrap_or(wanted),
             prior: version == HttpVersion::Http2Prior,
-            upgrade: version == HttpVersion::Http2,
             only_10: version == HttpVersion::Http10,
+            preferred: None,
         }
+    }
+
+    /// The preferred version, if it is allowed.
+    pub(crate) fn preferred(&self) -> Option<crate::altsvc::Alpn> {
+        self.preferred.filter(|&p| self.allowed.has(p))
+    }
+
+    /// The HTTPS connect filter's first attempt offers HTTP/1.1 alone: HTTP/2
+    /// is no longer wanted (`cf_hc_set_baller1`).
+    pub(crate) fn h1_first(&mut self) {
+        self.wanted.h2 = false;
     }
 
     /// HTTP/1 alone from now on, as HTTP/1.1 was required.
@@ -515,6 +529,11 @@ impl Request {
         self.neg.h1_only();
     }
 
+    /// What it may speak, to change.
+    pub(crate) fn negotiation_mut(&mut self) -> &mut Negotiation {
+        &mut self.neg
+    }
+
     /// Whether the request has found what its connection speaks, short
     /// of an upgrade not yet answered: made at DO, which finds it, and
     /// no upgrade pending (`url_match_fully_connected`).
@@ -668,17 +687,23 @@ impl Request {
         via: &Peer,
         speaks: Option<crate::altsvc::Alpn>,
     ) -> Result<(), OutOfMemory> {
-        let only = |h1, h2| crate::altsvc::Versions { h1, h2, h3: false };
+        let only = |h1, h2, h3| crate::altsvc::Versions { h1, h2, h3 };
         match speaks {
             Some(crate::altsvc::Alpn::H1) => {
-                (self.neg.wanted, self.neg.allowed) = (only(true, false), only(true, false));
+                let h1 = only(true, false, false);
+                (self.neg.wanted, self.neg.allowed) = (h1, h1);
                 self.neg.only_10 = false;
             }
             Some(crate::altsvc::Alpn::H2) => {
-                (self.neg.wanted, self.neg.allowed) = (only(false, true), only(false, true));
+                let h2 = only(false, true, false);
+                (self.neg.wanted, self.neg.allowed) = (h2, h2);
             }
-            // No HTTP/3 is looked up.
-            Some(crate::altsvc::Alpn::H3) | None => {}
+            // Dialed over QUIC, as HTTP/3 alone is.
+            Some(crate::altsvc::Alpn::H3) => {
+                let h3 = only(false, false, true);
+                (self.neg.wanted, self.neg.allowed) = (h3, h3);
+            }
+            None => {}
         }
         let mut used = Vec::new();
         let mut digits = [0u8; 20];

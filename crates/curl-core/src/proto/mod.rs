@@ -574,6 +574,15 @@ impl ProtoState {
         }
     }
 
+    /// What an HTTP request may speak, to change; none for another
+    /// protocol.
+    pub(crate) fn negotiation_mut(&mut self) -> Option<&mut http::Negotiation> {
+        match self {
+            ProtoState::Http(r) => Some(r.negotiation_mut()),
+            _ => None,
+        }
+    }
+
     /// HTTP/1.1 was required: the request and those after it speak HTTP/1
     /// only.
     pub(crate) fn downgrade(&mut self) {

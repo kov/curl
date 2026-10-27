@@ -2156,3 +2156,53 @@ fn a_connection_going_away_takes_no_one_new() {
         "{text:?}"
     );
 }
+
+/// An alternative service for the origin itself in HTTP/1.1 has a
+/// transfer at the default version try HTTP/1.1 first, as the version
+/// preferred, offering it alone though a library speaks HTTP/2
+/// (`cf_hc_set_baller1` taking HTTP/2 from the wanted versions); no
+/// second attempt follows, HTTP/2 offering HTTP/1.1 itself.
+#[test]
+fn an_alternative_here_in_http1_offers_http1_alone() {
+    use crate::libraries::Library;
+    use crate::tls::Alpn;
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    static FAKE: FakeH2 = FakeH2;
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        h2: Some(&FAKE as &dyn crate::http2::Http2),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let file = std::env::temp_dir().join(format!("curl-core-alt-here-h1-{}", std::process::id()));
+    let entry =
+        format!("h2 127.0.0.1 {PORT} http/1.1 127.0.0.1 {PORT} \"20991231 00:00:00\" 0 0\n");
+    std::fs::write(&file, entry).unwrap();
+    let response = fake::records(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello").unwrap();
+    let talk = Conversation::replies(&[WELCOME, &response], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    e.add_alt_svc_file(Some(file.as_os_str().as_encoded_bytes()))
+        .unwrap();
+    std::fs::remove_file(&file).unwrap();
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"https-connect");
+    e.set_components(Some(components));
+    let url = format!("https://127.0.0.1:{PORT}/");
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.output.verbose = true;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"hello");
+    assert_eq!(backend.log().alpn, Some(Alpn::Http11));
+    let text = ran.seen.text();
+    let said = |s: &str| text.iter().any(|l| l.contains(s));
+    assert!(
+        said("1st attempt uses h1 from preferred version"),
+        "{text:#?}"
+    );
+    assert!(!said("2nd attempt"), "{text:#?}");
+}

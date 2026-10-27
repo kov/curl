@@ -18,7 +18,11 @@ use crate::tls::fake::FakeTls;
 /// A handle with the fake TLS library `tls` and an HTTP/3 one running
 /// `script`, tracing everything.
 fn tracing(tls: FakeTls, script: &Arc<Mutex<Script>>) -> Easy {
-    let tls: &'static FakeTls = Box::leak(Box::new(tls));
+    tracing_by(Box::leak(Box::new(tls)), script)
+}
+
+/// `tracing`, by the TLS backend `tls`, which the test reads.
+fn tracing_by(tls: &'static FakeTls, script: &Arc<Mutex<Script>>) -> Easy {
     let h3: &'static FakeHttp3 = Box::leak(Box::new(FakeHttp3::new(script.clone())));
     let libraries = SharedLibraries::new(Libraries {
         tls: Some(Library::Static(tls)),
@@ -1132,6 +1136,30 @@ fn racing_peer(quic: Peer, quic_talk: &Conversation, tcp: Peer, tcp_talk: &Conve
     Multi::new(env).unwrap()
 }
 
+/// `racing_peer`, the TCP attempt's socket opened first, as a TCP first
+/// attempt's is.
+fn tcp_first_peer(
+    quic: Peer,
+    quic_talk: &Conversation,
+    tcp: Peer,
+    tcp_talk: &Conversation,
+) -> Multi {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, tcp)
+        .with_datagram_peer(at, quic)
+        .with_conversation(at, tcp_talk.clone())
+        .with_conversation(at, quic_talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    Multi::new(env).unwrap()
+}
+
 /// What the TCP attempt's peer says over TLS: an HTTP/1.1 response of
 /// `hello`.
 fn tls_hello() -> Conversation {
@@ -1386,4 +1414,356 @@ fn a_race_both_attempts_lose_fails_with_the_first_s_failure() {
         ),
         "{got:#?}"
     );
+}
+
+/// `e` with an alt-svc cache that knows `entry`, a line of its file.
+fn knowing(mut e: Easy, name: &str, entry: &str) -> Easy {
+    let file = std::env::temp_dir().join(format!("curl-core-h3-alt-{name}-{}", std::process::id()));
+    std::fs::write(&file, format!("{entry} \"20991231 00:00:00\" 0 0\n")).unwrap();
+    e.add_alt_svc_file(Some(file.as_os_str().as_encoded_bytes()))
+        .unwrap();
+    std::fs::remove_file(&file).unwrap();
+    e
+}
+
+/// A GET of `https://127.0.0.1:PORT/` by `e`, in `version`.
+fn race_in(
+    m: &mut Multi,
+    e: Easy,
+    talk: &Conversation,
+    version: crate::options::HttpVersion,
+) -> Ran {
+    let url = format!("https://127.0.0.1:{PORT}/");
+    get_with(m, e, "/", talk.clone(), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = version;
+    })
+}
+
+/// An alternative service for the origin itself in HTTP/3 has a transfer
+/// that asks for no version try HTTP/3 first, as the version preferred,
+/// HTTP/3 now wanted too; refused, HTTP/1.1 over TCP takes over
+/// (`url_set_conn_peer`'s same destination, `cf_hc_get_pref_alpn`). C's
+/// test_06_20.
+#[test]
+fn an_alternative_here_in_http3_is_tried_first() {
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let tcp_talk = tls_hello();
+    let mut m = racing_peer(Peer::Refuses, &quic_talk, Peer::Accepts, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let entry = format!("h1 127.0.0.1 {PORT} h3 127.0.0.1 {PORT}");
+    let e = knowing(e, "here-h3", &entry);
+    let ran = race_in(&mut m, e, &tcp_talk, crate::options::HttpVersion::Any);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"hello");
+    let got = race_lines(&ran);
+    let want = expect(
+        "
+        [HTTPS-CONNECT] 1st attempt uses h3 from preferred version
+        [HTTPS-CONNECT] 2nd attempt uses h1 from wanted versions
+        [HTTPS-CONNECT] h3 baller failed, starting h1
+        using HTTP/1.x
+        ",
+    );
+    assert!(in_order(&got, &want), "{got:#?}");
+    // No other peer is gone to.
+    let text = ran.seen.text();
+    assert!(!text.iter().any(|l| l.contains("Alt-svc connecting")));
+}
+
+/// An alternative service for the origin itself in HTTP/1.1 has a
+/// transfer in HTTP/3 try HTTP/1.1 first, offering it alone, and HTTP/3
+/// second; TCP answers at once and wins (`cf_hc_set_baller1` clearing
+/// HTTP/2 from the wanted versions). C's test_06_21.
+#[test]
+fn an_alternative_here_in_http1_leads_an_http3_transfer() {
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let tcp_talk = tls_hello();
+    let mut m = tcp_first_peer(Peer::Silent, &quic_talk, Peer::Accepts, &tcp_talk);
+    let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+    let e = tracing_by(tls, &first_flight_only());
+    let entry = format!("h3 127.0.0.1 {PORT} http/1.1 127.0.0.1 {PORT}");
+    let e = knowing(e, "here-h1", &entry);
+    let ran = race_in(&mut m, e, &tcp_talk, crate::options::HttpVersion::Http3);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"hello");
+    let got = race_lines(&ran);
+    let want = expect(
+        "
+        [HTTPS-CONNECT] 1st attempt uses h1 from preferred version
+        [HTTPS-CONNECT] 2nd attempt uses h3 from wanted versions
+        [TIMER] [ALPN_EYEBALLS] set for 100000us
+        using HTTP/1.x
+        ",
+    );
+    assert!(in_order(&got, &want), "{got:#?}");
+    assert_eq!(tls.log().alpn, Some(crate::tls::Alpn::Http11));
+    assert!(!got.iter().any(|l| l.contains("starting h3")), "{got:#?}");
+    assert_eq!(ran.easy.report().timings().connect().as_millis(), 0);
+}
+
+/// A TCP first attempt whose peer never answers gives way at the soft
+/// timeout to HTTP/3, the second, which is driven and polled after it
+/// and wins; the TCP attempt goes with the HTTPS connect filter.
+#[test]
+fn a_silent_tcp_first_gives_way_to_quic_at_the_soft_timeout() {
+    let quic_talk = Conversation::replies(&[b"server flight", b"response"], false).per_send();
+    let tcp_talk = Conversation::replies(&[], false).per_send();
+    let mut m = tcp_first_peer(Peer::Accepts, &quic_talk, Peer::Silent, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &get_script(b"quic"));
+    let entry = format!("h3 127.0.0.1 {PORT} http/1.1 127.0.0.1 {PORT}");
+    let e = knowing(e, "tcp-first", &entry);
+    let ran = race_in(&mut m, e, &tcp_talk, crate::options::HttpVersion::Http3);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"quic");
+    let got = race_lines(&ran);
+    let want = expect(
+        "
+        [HTTPS-CONNECT] 1st attempt uses h1 from preferred version
+        [HTTPS-CONNECT] 2nd attempt uses h3 from wanted versions
+        [HAPPY-EYEBALLS] query connect reply: -1ms
+        [HTTPS-CONNECT] h1 has not seen any data after 100ms, starting h3
+        [HTTPS-CONNECT] adjust_pollset -> 0, 2 socks
+        [HTTPS-CONNECT] connect -> 0, done=1
+        [HTTPS-CONNECT] removing connected setup filter
+        [HTTPS-CONNECT] destroy
+        [SETUP] destroy
+        [HAPPY-EYEBALLS] destroy
+        [TCP] destroy
+        using HTTP/3
+        ",
+    );
+    assert!(in_order(&got, &want), "{got:#?}");
+    // The first attempt's socket is polled, and traced, before the
+    // second's.
+    let text = ran.seen.text();
+    assert!(
+        text.iter()
+            .any(|l| l.contains("[CONNECTING] pollset[fd=1000 OUT, fd=1001 IN]")),
+        "{text:#?}"
+    );
+
+    let adjusted = lines(&ran, &["[TCP] adjust_pollset", "[UDP] adjust_pollset"]);
+    let tcp = adjusted.iter().position(|l| l.starts_with("[TCP]"));
+    let udp = adjusted.iter().position(|l| l.starts_with("[UDP]"));
+    assert!(tcp.is_some() && tcp < udp, "{adjusted:#?}");
+    assert_eq!(ran.easy.report().timings().connect().as_millis(), 100);
+    assert!(tcp_talk.received().is_empty(), "nothing goes over TCP");
+}
+
+/// A TCP first attempt refused starts HTTP/3, the second, at once, which
+/// wins as the first lies failed in the lease.
+#[test]
+fn a_refused_tcp_first_starts_quic_at_once() {
+    let quic_talk = Conversation::replies(&[b"server flight", b"response"], false).per_send();
+    let tcp_talk = Conversation::replies(&[], false).per_send();
+    let mut m = tcp_first_peer(Peer::Accepts, &quic_talk, Peer::Refuses, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &get_script(b"quic"));
+    let entry = format!("h3 127.0.0.1 {PORT} http/1.1 127.0.0.1 {PORT}");
+    let e = knowing(e, "tcp-refused", &entry);
+    let ran = race_in(&mut m, e, &tcp_talk, crate::options::HttpVersion::Http3);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"quic");
+    let got = race_lines(&ran);
+    let want = expect(
+        "
+        [HTTPS-CONNECT] h1 baller failed, starting h3
+        [HTTPS-CONNECT] connect -> 0, done=1
+        [HTTPS-CONNECT] destroy
+        [SETUP] destroy
+        [HAPPY-EYEBALLS] destroy
+        using HTTP/3
+        ",
+    );
+    assert!(in_order(&got, &want), "{got:#?}");
+    assert_eq!(ran.easy.report().timings().connect().as_millis(), 0);
+}
+
+/// A TCP first attempt and the HTTP/3 second both fail: the setup fails
+/// with the first's failure, TCP's.
+#[test]
+fn a_tcp_first_and_quic_second_failing_fail_with_tcp_s_failure() {
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    // The TCP peer hangs up in the TLS handshake.
+    let tcp_talk = Conversation::replies(&[], true).per_send();
+    let mut m = tcp_first_peer(Peer::Refuses, &quic_talk, Peer::Accepts, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let entry = format!("h3 127.0.0.1 {PORT} http/1.1 127.0.0.1 {PORT}");
+    let e = knowing(e, "both-fail", &entry);
+    let ran = race_in(&mut m, e, &tcp_talk, crate::options::HttpVersion::Http3);
+    let got = race_lines(&ran);
+    assert!(
+        ran.result.is_err_and(|e| e != ErrorKind::CouldntConnect),
+        "{:?} {got:#?}",
+        ran.result
+    );
+    assert!(
+        in_order(
+            &got,
+            &expect(
+                "
+                [HTTPS-CONNECT] h1 baller failed, starting h3
+                [HTTPS-CONNECT] connect, all attempts failed
+                "
+            )
+        ),
+        "{got:#?}"
+    );
+}
+
+/// The HTTP/3 first attempt, set aside, fails after the TCP second
+/// failed: the setup fails with the first's failure, QUIC's, though it
+/// came last.
+#[test]
+fn a_quic_first_failing_last_still_names_the_failure() {
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let tcp_talk = Conversation::replies(&[], false).per_send();
+    let late = Peer::RefusesAfter(std::time::Duration::from_millis(150));
+    let mut m = racing_peer(late, &quic_talk, Peer::HangsUp, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let ran = h3_race(&mut m, e, &tcp_talk);
+    let got = race_lines(&ran);
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::CouldntConnect),
+        "{:#?}",
+        ran.seen.text()
+    );
+    assert!(
+        in_order(
+            &got,
+            &expect(
+                "
+                [HTTPS-CONNECT] h3 has not seen any data after 100ms, starting h1
+                [HTTPS-CONNECT] connect, all attempts failed
+                [HTTPS-CONNECT] connect -> 7, done=0
+                "
+            )
+        ),
+        "{got:#?}"
+    );
+}
+
+/// An alternative service elsewhere in HTTP/3 has the transfer dial QUIC
+/// alone, HTTP/3 the one version it then wants (`conn->transport_wanted`).
+#[test]
+fn an_alternative_elsewhere_in_http3_is_dialed_over_quic() {
+    let quic_talk = Conversation::replies(&[b"server flight", b"response"], false).per_send();
+    let tcp_talk = Conversation::replies(&[], false).per_send();
+    let mut m = racing_peer(Peer::Accepts, &quic_talk, Peer::Refuses, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &get_script(b"quic"));
+    let entry = format!("h1 127.0.0.1 1 h3 127.0.0.1 {PORT}");
+    let e = knowing(e, "elsewhere", &entry);
+    let url = "https://127.0.0.1:1/".to_string();
+    let ran = get_with(&mut m, e, "/", quic_talk.clone(), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"quic");
+    let got = race_lines(&ran);
+    let want = expect(
+        "
+        [HTTPS-CONNECT] 1st attempt uses h3 from wanted versions
+        using HTTP/3
+        ",
+    );
+    assert!(in_order(&got, &want), "{got:#?}");
+    assert!(!got.iter().any(|l| l.contains("2nd attempt")), "{got:#?}");
+    let text = ran.seen.text();
+    let switch = format!("Alt-svc connecting from [h1]127.0.0.1:1 to [h3]127.0.0.1:{PORT}");
+    assert!(text.iter().any(|l| l.contains(&switch)), "{text:#?}");
+}
+
+/// A race that runs out of time with both its attempts under way fails,
+/// both attempts closed with the request: the one out of the lease goes
+/// with the lease's.
+#[test]
+fn a_race_timed_out_closes_both_attempts() {
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let tcp_talk = Conversation::replies(&[], false).per_send();
+    let mut m = racing_peer(Peer::Silent, &quic_talk, Peer::Silent, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let url = format!("https://127.0.0.1:{PORT}/");
+    let ran = get_with(&mut m, e, "/", tcp_talk.clone(), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3;
+        o.limits.connect = crate::time::TimeLimit::from_millis(300);
+    });
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::OperationTimedout),
+        "{:#?}",
+        ran.seen.text()
+    );
+    let got = race_lines(&ran);
+    assert!(
+        got.iter().any(|l| l.contains("starting h1")),
+        "both ran: {got:#?}"
+    );
+}
+
+/// The TCP first attempt fails after the HTTP/3 second failed: the setup
+/// fails with the first's failure, though it came last.
+#[test]
+fn a_tcp_first_failing_last_still_names_the_failure() {
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let tcp_talk = Conversation::replies(&[], false).per_send();
+    let late = Peer::RefusesAfter(std::time::Duration::from_millis(150));
+    let mut m = tcp_first_peer(Peer::Refuses, &quic_talk, late, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let entry = format!("h3 127.0.0.1 {PORT} http/1.1 127.0.0.1 {PORT}");
+    let e = knowing(e, "tcp-last", &entry);
+    let ran = race_in(&mut m, e, &tcp_talk, crate::options::HttpVersion::Http3);
+    let got = race_lines(&ran);
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect), "{got:#?}");
+    assert!(
+        in_order(
+            &got,
+            &expect(
+                "
+                [HTTPS-CONNECT] h1 has not seen any data after 100ms, starting h3
+                [HTTPS-CONNECT] connect, all attempts failed
+                "
+            )
+        ),
+        "{got:#?}"
+    );
+    assert_eq!(ran.easy.report().timings().total().as_millis(), 150);
+}
+
+/// A transfer in HTTP/3 or older through a proxy makes one attempt, over
+/// TCP: through a SOCKS proxy, HTTP/3 may not be spoken, which is said
+/// as HTTP/3 is weighed (`cf_hc_may_h3`); through an HTTP proxy's tunnel,
+/// not yet made over CONNECT-UDP, it is not weighed.
+#[test]
+fn http3_through_a_proxy_goes_over_tcp_alone() {
+    let cases = [
+        ("socks5", Some("HTTP/3 is not supported over a SOCKS proxy")),
+        ("http", None),
+    ];
+    for (proxy, why) in cases {
+        let quic_talk = Conversation::replies(&[], false).per_send();
+        let tcp_talk = Conversation::replies(&[], false).per_send();
+        let mut m = tcp_first_peer(Peer::Accepts, &quic_talk, Peer::Refuses, &tcp_talk);
+        let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+        let url = format!("https://localhost:{PORT}/");
+        let ran = get_with(&mut m, e, "/", tcp_talk.clone(), |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.http.version = crate::options::HttpVersion::Http3;
+            let to = format!("{proxy}://127.0.0.1:{PORT}");
+            o.proxy.make_mut().unwrap().url = Some(to.into_bytes());
+        });
+        assert_eq!(ran.result, Err(ErrorKind::CouldntConnect), "{proxy}");
+        let got = race_lines(&ran);
+        assert!(
+            got.contains(&"[HTTPS-CONNECT] 1st attempt uses h1 from wanted versions".to_string()),
+            "{proxy}: {got:#?}"
+        );
+        assert!(
+            !got.iter().any(|l| l.contains("2nd attempt")),
+            "{proxy}: {got:#?}"
+        );
+        let said = lines(&ran, &["HTTP/3 is not supported"]);
+        assert_eq!(said.len(), usize::from(why.is_some()), "{proxy}: {said:#?}");
+    }
 }

@@ -536,25 +536,38 @@ the proxy's layer answers only when it is the top. The tunnel's answer is read t
 byte at a time, as C's `recv_CONNECT_resp` reads, each read the socket's. C's `[SHUTDOWN]` lines and a
 shutdown's TLS lines are its internal handle's, so on the internal trace (§4.6).
 
-**The race of HTTP/3 against TCP** (`--http3`, `CURL_HTTP_VERSION_3`; `cf-https-connect.c`'s two
-ballers). Where the HTTPS connect filter heads a direct setup, a QUIC library is linked and HTTP/3
-may be spoken (`Curl_conn_may_http3`), the plan dials QUIC and the first attempt is HTTP/3's; the
-second, HTTP/2-or-1 over TCP, is chosen as the origin's record is known (`2nd attempt uses h2 from
-wanted versions`). HTTP/3 alone (`--http3-only`) is one attempt and no race. The setup in the lease
-is the first until the second starts; then the first is set aside in `Connecting::race` (boxed, as
-a handle's size is budgeted) and the second, made from the addresses the first resolved, takes the
-lease's place, its TLS the transfer's handshake as any. Each connect call drives the attempt set
-aside first, then the lease's, as C's filter drives its ballers. The second starts as the first
-fails (`h3 baller failed`), at the soft timeout (half the eyeballs timeout) if the first's peer has
-sent nothing (`[HAPPY-EYEBALLS] query connect reply: -1ms`, `has not seen any data after 100ms`),
+**The race of HTTP/3 against TCP** (`--http3`, `CURL_HTTP_VERSION_3`, or a version an
+alternative service prefers; `cf-https-connect.c`'s two ballers). The HTTPS connect filter
+chooses its attempts' versions from the transfer's negotiation alone (`https::Choosing`, a pure
+function of it, of whether a library speaks HTTP/2, and of whether HTTP/3 may be spoken over the
+route: a QUIC library, `Curl_conn_may_http3`, no proxy yet): the first is the preferred version
+if allowed, else the first wanted, else the first allowed (`1st attempt uses h3 from preferred
+version`); the second, chosen as the origin's record is known, the preferred else the first
+wanted other than the first's, neither HTTP/2 nor HTTP/1 after either, as each offers the other.
+Why HTTP/3 may not be spoken is said the first time it is weighed. The plan dials QUIC where the
+first is HTTP/3, and `start` asserts the two agree; a first in HTTP/1 takes HTTP/2 from the
+wanted versions, so its ALPN offers `http/1.1` alone. HTTP/3 alone (`--http3-only`) is one
+attempt and no race. The setup in the lease is the first until the second starts. Then the QUIC
+attempt is the one out of the lease, in `Race::aside` (boxed, as a handle's size is budgeted): an
+HTTP/3 first set aside as a TCP second, made from the addresses the first resolved, takes the
+lease's place, its TLS the transfer's handshake as any; or an HTTP/3 second beside a TCP first,
+which keeps the lease. Each connect call drives, and each pollset lists, the two in their
+ballers' order, which `https::aside_leads` reads from the first's version: the first set aside
+before the lease's, a second set aside after it. The second starts as the first fails (`h3
+baller failed`), at the soft timeout (half the eyeballs timeout) if the first's peer has sent
+nothing (`[HAPPY-EYEBALLS] query connect reply: -1ms`, `has not seen any data after 100ms`),
 else at the hard timeout (`inconclusive after 200`), the `ALPN_EYEBALLS` timer armed again for
-what is left of it. An attempt that fails while the other runs is let go; once both fail, the setup
-fails with the first's failure (`ballers[0].result`). The loser goes with the HTTPS connect
-filter at `connected`, its setup's filters with it (`[SETUP] destroy`, `[HAPPY-EYEBALLS] destroy`
-and its attempts'); a first that failed lost its attempts as it failed. The plan's route keeps
-the first's dial; what is traced of a socket or a chain is read from the setup the lease holds,
-or from the connection the winner made. Through a proxy the race is not run yet: C makes the
-HTTP/3 attempt over the proxy's CONNECT-UDP (step 64).
+what is left of it. A TCP first reports no reply yet (its socket keeps no first byte's time),
+so it gives way at the soft timeout. An attempt that fails while the other runs is let go;
+once both fail, the setup fails with the first's failure (`ballers[0].result`). The loser goes
+with the HTTPS connect filter at `connected`, its setup's filters with it (`[SETUP] destroy`,
+`[HAPPY-EYEBALLS] destroy` and its attempts'); a first that failed lost its attempts as it
+failed. A race given up, failed, timed out or its transfer removed, goes into `Done` with the
+lease, and `multi_done` closes its attempt out of the lease as the lease's own is closed, and
+lets the race's answer go once. The plan's route keeps the first's dial; what is traced of a
+socket or a chain is read from the setup the lease holds, or from the connection the winner
+made. Through a proxy the race is not run yet: C makes the HTTP/3 attempt over the proxy's
+CONNECT-UDP (step 64).
 
 `READ` traces a request's body as C's client readers read it: the reader set as the request is
 built (`add buf reader`, `add fread reader`) and each read of it, by the reader C would have, a
@@ -3339,14 +3352,18 @@ the HSTS cache share one box, made the first time either is turned on (`HostCach
 keeps a handle that turns on neither within its byte budget. The file is read as it is named,
 not as transfers start. As each leg picks its peer, an origin no connect-to entry sends
 elsewhere, over `https` (or any URL with the debug build's `CURL_ALTSVC_HTTP`), is looked up
-by its ASCII name and port as C's `url_set_conn_peer` does, from the request's negotiation
-(`Request::negotiation`, C's `http_negotiation`): as an HTTP/2 origin first, where HTTP/2 is
-wanted, a library speaks it and not by prior knowledge, then as an HTTP/1 origin unless only
-HTTP/1.0 is; for an alternative of a version the request and the control allow (by default
-every one the build speaks: HTTP/1 and HTTP/2) and a library speaks. One on another host or
-port is the peer, as a connect-to entry's is: traced "Alt-svc connecting from ...", and named
-by the request's `Alt-Used:` unless the application sends its own; one in another version than
-the one looked up switches the request to that version alone. An `Alt-Svc:` field from a
+by its ASCII name and port as C's `url_set_conn_peer` does, from the transfer's negotiation
+(`proto::http::Negotiation`, C's `state.http_neg`: set as the transfer starts, held by each
+request, changed there and handed to the next as it ends): as an HTTP/3 origin first, where
+HTTP/3 is wanted and a library speaks it, then as an HTTP/2 origin, where HTTP/2 is wanted, a
+library speaks it and not by prior knowledge, then as an HTTP/1 origin unless only HTTP/1.0
+is; for an alternative of a version the request and the control allow (by default every one
+the build speaks) and a library speaks. One on another host or port is the peer, as a
+connect-to entry's is: traced "Alt-svc connecting from ...", and named by the request's
+`Alt-Used:` unless the application sends its own; one in another version than the one looked
+up switches the transfer to that version alone, HTTP/3 dialed over QUIC. One on the origin's
+own host and port adds its version to those wanted and makes it the one preferred, which the
+HTTPS connect filter tries first (§2.5). An `Alt-Svc:` field from a
 response over HTTPS, or HTTP with `CURL_ALTSVC_HTTP`, is parsed as C parses it, as alternatives
 of the origin in the version the response came in, the cache taken out of the handle meanwhile so that what parsing says is traced as
 it is said. The cache is written as the handle goes (`Easy::save_alt_svc`, the shim's cleanup

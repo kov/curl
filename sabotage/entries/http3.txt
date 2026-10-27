@@ -125,3 +125,11 @@ witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_ha
         route.dial = crate::conn::Dial::Quic;
 --- new
         let _ = &mut route;
+
+=== a failure setting HTTP/3 up is not said
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::http3_not_set_up_fails_the_connect_saying_why
+--- old
+                    None => cx.fail(kind, format_args!("{why}")),
+--- new
+                    None => kind,

@@ -37,6 +37,11 @@ pub enum Told {
     QuicClosed(i64, u64),
     Blocked(i64),
     Unblocked(i64),
+    /// The HTTP/3 library took this much of a stream's framing.
+    Consumed(i64, u64),
+    /// HTTP/3 could not be set up, for this reason; the call fails, as
+    /// the binding's callback does.
+    H3Failed(&'static str),
 }
 
 /// The script and the record of one connection, shared with the test.
@@ -167,6 +172,17 @@ impl FakeConnection {
                         }
                         h
                     }
+                    Told::H3Failed(why) => {
+                        let event = Event::H3Failed {
+                            why,
+                            detail: None,
+                            out_of_memory: false,
+                        };
+                        call.with_cx(&mut |cx| {
+                            events(cx, event.clone());
+                        });
+                        Heard::Failed
+                    }
                     other => {
                         let mut h = Heard::Fine;
                         call.with_cx(&mut |cx| h = events(cx, event_of(other)));
@@ -186,7 +202,11 @@ impl FakeConnection {
 /// The event `told` is.
 fn event_of(told: &Told) -> Event<'_> {
     match told {
-        Told::HandshakeDone => unreachable!("told with its check"),
+        Told::HandshakeDone | Told::H3Failed(_) => unreachable!("told with what follows it"),
+        Told::Consumed(s, n) => Event::Consumed {
+            stream: StreamId(*s),
+            n: *n,
+        },
         Told::MaxBidiStreams(n) => Event::MaxBidiStreams(*n),
         Told::Header {
             stream,

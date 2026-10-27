@@ -982,6 +982,24 @@ impl State {
                 }
                 Heard::Fine
             }
+            // The call fails for it; C says why as it fails it
+            // (`init_ngh3_conn`).
+            Event::H3Failed {
+                why,
+                detail,
+                out_of_memory,
+            } => {
+                let kind = if out_of_memory {
+                    ErrorKind::OutOfMemory
+                } else {
+                    ErrorKind::QuicConnectError
+                };
+                match detail {
+                    Some(detail) => cx.fail(kind, format_args!("{why}: {detail}")),
+                    None => cx.fail(kind, format_args!("{why}")),
+                };
+                Heard::Failed
+            }
             Event::MaxBidiStreams(n) => {
                 self.max_bidi = n;
                 let used = self.used_bidi;
@@ -1378,6 +1396,33 @@ mod tests {
         assert_eq!(script.lock().unwrap().expired, 1);
         // Run, it is never due again.
         assert_eq!(cx.due.len(), 1);
+    }
+
+    /// HTTP/3 that could not be set up as the keys came fails the
+    /// connect, saying why (`init_ngh3_conn`'s `failf`).
+    #[test]
+    fn http3_not_set_up_fails_the_connect_saying_why() {
+        let script = Script::new();
+        script
+            .lock()
+            .unwrap()
+            .on_read
+            .push_back(vec![Told::H3Failed(
+                "QUIC connection lacks 3 uni streams to run HTTP/3",
+            )]);
+        let (mut q, mut cx) = quic(&script);
+        cx.socket
+            .datagrams
+            .lock()
+            .unwrap()
+            .push_back(Ok(b"flight".to_vec()));
+        assert_eq!(q.connect(&mut cx), Err(ErrorKind::RecvError));
+        assert!(
+            cx.lines
+                .contains(&"! QUIC connection lacks 3 uni streams to run HTTP/3".to_owned()),
+            "{:?}",
+            cx.lines
+        );
     }
 
     /// The handshake done and the peer checked, the connect is done; the

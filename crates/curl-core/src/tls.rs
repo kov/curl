@@ -814,6 +814,71 @@ impl LayerCx for Notes {
     }
 }
 
+/// What a test's TLS context says, as `Notes`, and the sessions it keeps
+/// from one connection to the next, as a multi keeps them.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug)]
+pub struct Kept {
+    pub notes: Notes,
+    sessions: SessionCache,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl Kept {
+    pub fn new() -> Kept {
+        Kept {
+            notes: Notes::default(),
+            sessions: SessionCache::new(SessionCache::PEERS),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl Default for Kept {
+    fn default() -> Kept {
+        Kept::new()
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl LayerCx for Kept {
+    fn now(&self) -> Instant {
+        self.notes.now()
+    }
+
+    fn of(&mut self, component: Component, line: fmt::Arguments<'_>) {
+        self.notes.of(component, line);
+    }
+
+    fn info(&mut self, line: fmt::Arguments<'_>) {
+        self.notes.info(line);
+    }
+
+    fn fails(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
+        self.notes.fails(kind, why)
+    }
+
+    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
+        self.notes.of_with(component, parts);
+    }
+
+    fn info_with(&mut self, parts: &[&[u8]]) {
+        self.notes.info_with(parts);
+    }
+
+    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+        self.notes.fails_with(kind, parts)
+    }
+
+    fn has_tls_sessions(&self) -> bool {
+        true
+    }
+
+    fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut SessionCache, &mut dyn LayerCx)) {
+        f(&mut self.sessions, &mut self.notes);
+    }
+}
+
 #[cfg(any(test, feature = "test-util"))]
 impl TlsCx<'_> {
     /// Run `f` with what a multi keeps for a library and a context for
@@ -824,6 +889,26 @@ impl TlsCx<'_> {
         identity: &TryArc<TlsIdentity>,
         host: &[u8],
         notes: &mut Notes,
+        f: impl FnOnce(&TlsShared, &mut TlsCx<'_>) -> R,
+    ) -> R {
+        TlsCx::testing_over(identity, host, notes, f)
+    }
+
+    /// `testing`, the sessions kept in `kept`, which also notes what it
+    /// is told.
+    pub fn testing_kept<R>(
+        identity: &TryArc<TlsIdentity>,
+        host: &[u8],
+        kept: &mut Kept,
+        f: impl FnOnce(&TlsShared, &mut TlsCx<'_>) -> R,
+    ) -> R {
+        TlsCx::testing_over(identity, host, kept, f)
+    }
+
+    fn testing_over<R>(
+        identity: &TryArc<TlsIdentity>,
+        host: &[u8],
+        notes: &mut dyn LayerCx,
         f: impl FnOnce(&TlsShared, &mut TlsCx<'_>) -> R,
     ) -> R {
         let mut name = Vec::new();

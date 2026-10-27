@@ -12,12 +12,14 @@ use std::time::{Duration, Instant as StdInstant};
 use curl_alloc::TryArc;
 use curl_core::error::ErrorKind;
 use curl_core::http3::{
-    ClientSetup, ConnEvent, Connection, Event, Expiry, Heard, Http3, Layer, QuicError, StreamEvent,
-    StreamId,
+    ClientSetup, ConnEvent, Connection, EarlyStart, Event, Expiry, Heard, Http3, Layer, QuicError,
+    StreamEvent, StreamId,
 };
 use curl_core::options::{CaSetting, ColdGroup as _, TlsOptions};
 use curl_core::time::{Clock, SystemClock};
-use curl_core::tls::{CaDefaults, Notes, TlsBackend, TlsCx, TlsIdentity, TlsPeer, TlsPeerKind};
+use curl_core::tls::{
+    CaDefaults, Kept, Notes, TlsBackend, TlsCx, TlsIdentity, TlsPeer, TlsPeerKind,
+};
 use curl_ngtcp2::NGTCP2;
 use curl_openssl::OPENSSL;
 use openssl::asn1::Asn1Time;
@@ -223,13 +225,20 @@ struct Told {
     headers: Vec<(Vec<u8>, Vec<u8>)>,
     body: Vec<u8>,
     closed: bool,
+    /// Whether the early data sent was taken, if any was sent.
+    early: Option<Option<bool>>,
 }
 
 impl Told {
     fn hear(&mut self, event: Event<'_>) -> Heard {
         match event {
-            Event::Connection(ConnEvent::HandshakeDone { checked, .. }) => {
-                self.checked = Some(checked)
+            Event::Connection(ConnEvent::HandshakeDone {
+                checked,
+                early_data,
+                ..
+            }) => {
+                self.checked = Some(checked);
+                self.early = Some(early_data);
             }
             Event::Stream(
                 _,
@@ -432,4 +441,93 @@ fn an_untrusted_peer_fails_the_handshake_as_it_completes() {
         )),
         "{notes:?}"
     );
+}
+
+/// The authority of a request to caddy at `addr`.
+fn authority(addr: SocketAddr) -> String {
+    format!("localhost:{}", addr.port())
+}
+
+/// A second connection to caddy resumes the session the first was given
+/// and sends its GET as early data, which caddy takes: the session
+/// allows early data for a transfer asking for it, the transport
+/// parameters kept with it are set, HTTP/3 is set up at once and OpenSSL
+/// sends early data (`cf_ngtcp2_on_session_reuse`); the handshake's end
+/// says the early data was not rejected. Parameters the library cannot
+/// read are refused.
+#[test]
+fn a_resumed_session_sends_its_get_as_early_data() {
+    let dir = Dir(std::env::temp_dir().join(format!("curl-ngtcp2-early-{}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    certs(&dir.0);
+    let (_server, addr) = caddy(&dir.0);
+    let ca = dir.0.join("ca.pem").into_os_string().into_encoded_bytes();
+    let identity = TryArc::try_new(TlsIdentity {
+        verify_peer: true,
+        verify_host: true,
+        options: TlsOptions {
+            ca_file: CaSetting::Given(ca),
+            ..TlsOptions::NONE
+        },
+        ca_defaults: CaDefaults::default(),
+    })
+    .unwrap();
+    let peer = TlsPeer {
+        name: b"localhost",
+        port: addr.port(),
+        kind: TlsPeerKind::Name,
+        early_data: true,
+    };
+    let authority = authority(addr);
+    let fields: [(&[u8], &[u8]); 4] = [
+        (b":method", b"GET"),
+        (b":scheme", b"https"),
+        (b":authority", authority.as_bytes()),
+        (b":path", b"/data.txt"),
+    ];
+    let mut kept = Kept::new();
+    let told = TlsCx::testing_kept(&identity, b"localhost", &mut kept, |shared, cx| {
+        let clock = SystemClock::new();
+        let connect = |cx: &mut TlsCx<'_>, early: bool| {
+            let tls = OPENSSL.quic_session(&identity, &peer, shared, cx).unwrap();
+            let params = tls.early_data().map(|t| t.quic_params.clone());
+            let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+            sock.connect(addr).unwrap();
+            let setup = ClientSetup {
+                local: sock.local_addr().unwrap(),
+                remote: addr,
+                now: clock.now(),
+                handshake_timeout: Duration::from_secs(10),
+                max_window: 100 * 10 * 1024 * 1024,
+                stream_window: 32 * 1024,
+                max_streams: 256 * 1024,
+            };
+            let mut conn = NGTCP2.client(&setup, tls).unwrap();
+            let over = Over {
+                sock: &sock,
+                clock: &clock,
+            };
+            let mut told = Told::default();
+            if early {
+                let params = params.expect("the session resumed allows early data");
+                assert!(conn.set_early_params(b"\xff\xff").is_err());
+                conn.set_early_params(&params).unwrap();
+                assert!(matches!(conn.start_early(), Ok(EarlyStart::Started)));
+                conn.submit_request(&fields, false).unwrap();
+            } else {
+                assert!(params.is_none(), "nothing to resume yet");
+                run(&mut *conn, cx, &over, &mut told, |t| t.checked.is_some()).unwrap();
+                conn.submit_request(&fields, false).unwrap();
+            }
+            run(&mut *conn, cx, &over, &mut told, |t| t.closed).unwrap();
+            told
+        };
+        let first = connect(cx, false);
+        assert_eq!(first.early, Some(None));
+        connect(cx, true)
+    });
+    assert_eq!(told.checked, Some(Ok(())));
+    assert_eq!(told.early, Some(Some(true)), "{:?}", kept.notes);
+    assert_eq!(told.status.as_deref(), Some(&b"200"[..]));
+    assert_eq!(told.body, BODY);
 }

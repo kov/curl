@@ -287,6 +287,9 @@ impl Tunnel {
 pub(crate) struct H3Proxy {
     quic: Box<Quic>,
     tunnel: Tunnel,
+    /// The tunnel is CONNECT-UDP's, QUIC's datagrams going through it
+    /// as capsules (`h3_tunnel_stream.udp`).
+    udp: bool,
     /// The room the connection receives in, kept between calls.
     room: Vec<u8>,
     /// What a receive or send of the layer failed with, for the
@@ -410,10 +413,11 @@ impl QuicIo for Tunnelled<'_> {
 impl H3Proxy {
     /// The tunnel over `quic`, a connection to the proxy whose handshake
     /// is done; nothing asked of it yet.
-    pub(crate) fn new(quic: Box<Quic>) -> H3Proxy {
+    pub(crate) fn new(quic: Box<Quic>, udp: bool) -> H3Proxy {
         H3Proxy {
             quic,
             tunnel: Tunnel::new(),
+            udp,
             room: Vec::new(),
             failure: None,
         }
@@ -496,7 +500,10 @@ impl H3Proxy {
         cx.of(H3P, format_args!("[{id}] -> [{name}]"));
         self.tunnel.state = state;
         if state == TunnelState::Established {
-            cx.info(format_args!("CONNECT phase completed for HTTP/3 proxy"));
+            let udp = if self.udp { "-UDP" } else { "" };
+            cx.info(format_args!(
+                "CONNECT{udp} phase completed for HTTP/3 proxy"
+            ));
         }
     }
 

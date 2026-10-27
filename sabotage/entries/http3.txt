@@ -499,9 +499,9 @@ witness: curl-core proto::http::tests::h3_trace::a_session_resumed_without_early
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection
 --- old
-            cx.of(Component::H3Proxy, format_args!("created, udp_tunnel=0"));
+                format_args!("created, udp_tunnel={udp}"),
 --- new
-            cx.of(Component::H3Proxy, format_args!("created"));
+                format_args!("created"),
 
 === the readers do not start over once an HTTP/3 proxy's tunnel is up
 file: crates/curl-core/src/multi/state/h3tunnel.rs
@@ -524,9 +524,9 @@ witness: curl-core proto::http::tests::h3_trace::a_tunnel_an_http3_proxy_refuses
 file: crates/curl-core/src/multi/state/h3tunnel.rs
 witness: curl-core proto::http::tests::h3_trace::a_tunnel_an_http3_proxy_refuses_fails_the_attempt
 --- old
-    if status / 100 != 2 {
+    } else if status / 100 != 2 {
 --- new
-    if status / 100 == 5 {
+    } else if status / 100 == 5 {
 
 === a read of an HTTP/3 tunnel whose stream is gone is the end of it
 file: crates/curl-core/src/conn/h3proxy.rs
@@ -621,3 +621,55 @@ witness: curl-core conn::capsule::tests::what_came_with_the_answer_is_read_first
             rx: RecvBuf::holding(received),
 --- new
             rx: RecvBuf::holding({ drop(received); Vec::new() }),
+
+=== HTTP/3 through an HTTP/3 proxy is not tunnelled over CONNECT-UDP
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
+--- old
+        self.dial == Dial::Quic && self.proxy.as_ref().is_some_and(ProxyRoute::tunnels)
+--- new
+        self.dial == Dial::Quic && self.proxy.as_ref().is_some_and(|p| p.tunnels() && !p.over_quic())
+
+=== the origin's QUIC through an HTTP/3 proxy is made as the proxy's
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
+--- old
+        let proxied = !tunnelled && self.route.proxy_over_quic();
+--- new
+        let proxied = self.route.proxy_over_quic();
+
+=== the origin's QUIC through an HTTP/3 proxy sends on the socket, not through the tunnel
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
+--- old
+            component,
+            tunnelled,
+        )
+--- new
+            component,
+            false,
+        )
+
+=== the chain through an HTTP/3 proxy shows the origin's TLS for QUIC's
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
+--- old
+        let quic = route.dial == crate::conn::Dial::Quic;
+--- new
+        let quic = route.dial == crate::conn::Dial::Quic && !h3_proxy;
+
+=== an HTTP/3 proxy's filter is traced as made for no UDP tunnel
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
+--- old
+            let udp = u8::from(self.route.tunnels_udp());
+--- new
+            let udp = 0;
+
+=== an HTTP/3 proxy's CONNECT-UDP is said to be a CONNECT as it completes
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
+--- old
+            let udp = if self.udp { "-UDP" } else { "" };
+--- new
+            let udp = "";

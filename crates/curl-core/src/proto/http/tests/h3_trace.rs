@@ -23,7 +23,12 @@ fn tracing(tls: FakeTls, script: &Arc<Mutex<Script>>) -> Easy {
 
 /// `tracing`, by the TLS backend `tls`, which the test reads.
 fn tracing_by(tls: &'static FakeTls, script: &Arc<Mutex<Script>>) -> Easy {
-    let h3: &'static FakeHttp3 = Box::leak(Box::new(FakeHttp3::new(script.clone())));
+    tracing_with(tls, FakeHttp3::new(script.clone()))
+}
+
+/// `tracing`, by the TLS backend `tls` and the HTTP/3 library `h3`.
+fn tracing_with(tls: &'static FakeTls, h3: FakeHttp3) -> Easy {
+    let h3: &'static FakeHttp3 = Box::leak(Box::new(h3));
     let libraries = SharedLibraries::new(Libraries {
         tls: Some(Library::Static(tls)),
         h3: Some(h3),
@@ -2231,4 +2236,167 @@ fn http3_through_an_http_proxy_goes_over_connect_udp() {
         using HTTP/3"
     ));
     assert_eq!(got, want);
+}
+
+/// The script of the QUIC connection to an HTTP/3 proxy a CONNECT-UDP
+/// goes through: `tunnel_script`'s, the answer naming `capsules` as its
+/// capsule protocol, then the origin's datagrams the tunnel brings.
+fn udp_tunnel_script(capsules: &[u8]) -> Arc<Mutex<Script>> {
+    let proxy = tunnel_script(b"200", vec![]);
+    {
+        let mut s = proxy.lock().unwrap();
+        s.on_read.pop_back();
+        let answer = s.on_read.back_mut().unwrap();
+        answer.insert(
+            1,
+            Told::Header {
+                stream: 0,
+                name: b"capsule-protocol".to_vec(),
+                value: capsules.to_vec(),
+            },
+        );
+        s.out.clear();
+        s.out.extend([
+            vec![1; 1200],
+            vec![2; 1200],
+            vec![],
+            vec![],
+            vec![3; 75],
+            vec![],
+        ]);
+        // The origin's flight goes in two packets; the second's reply
+        // tells nothing, and the GET's brings the response.
+        s.on_read
+            .push_back(vec![Told::Data(0, capsule(b"server flight"))]);
+        s.on_read.push_back(vec![]);
+        s.on_read
+            .push_back(vec![Told::Data(0, capsule(b"response"))]);
+    }
+    proxy
+}
+
+/// A GET of `https://origin.example/p` in HTTP/3 alone by `e`, through
+/// the HTTP/3 proxy at `https://localhost:PORT`.
+fn h3_through_h3_proxy(m: &mut Multi, e: Easy) -> Ran {
+    get_with(m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(b"https://origin.example/p")).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.ip_version = IpVersion::Any;
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
+        proxy.kind = crate::options::ProxyType::Https3;
+        proxy.tunnel = true;
+    })
+}
+
+/// HTTP/3 alone through an HTTP/3 proxy goes over its CONNECT-UDP, QUIC
+/// in QUIC (`cf-ngtcp2-proxy.c` with `udp_tunnel=1`): the race's attempt
+/// is the proxy's QUIC connection; the tunnel's request is an extended
+/// `CONNECT` at the path naming the origin; once the proxy agrees, the
+/// origin's QUIC connection is made over capsules sent as the tunnel
+/// stream's DATA, the chain C's (`[HTTP/3][CAPSULE]` over the proxy's
+/// filter), and the GET goes over it. C's build against h2o,
+/// `test_60_01[h3_over_h3_proxytunnel]`.
+#[test]
+fn http3_through_an_http3_proxy_is_quic_in_quic() {
+    let proxy = udp_tunnel_script(b"?1");
+    let origin = get_script(b"123456789");
+    let h3 = FakeHttp3::new(proxy.clone());
+    h3.then.lock().unwrap().push_back(origin.clone());
+    let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    let e = tracing_with(tls, h3);
+    let mut m = quic_server(&[
+        b"server flight",
+        b"connect answer",
+        b"origin flight",
+        b"origin response",
+        b"more",
+        b"more",
+    ]);
+    let ran = h3_through_h3_proxy(&mut m, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"123456789");
+    // The origin's TLS, the last session made, is the origin's own.
+    assert_eq!(tls.log().name(), b"origin.example");
+    {
+        let s = proxy.lock().unwrap();
+        assert_eq!(
+            s.requests[0],
+            [
+                ":method: CONNECT",
+                ":scheme: https",
+                &format!(":authority: localhost:{PORT}"),
+                ":path: /.well-known/masque/udp/origin.example/443/",
+                ":protocol: connect-udp",
+                "capsule-protocol: ?1",
+            ]
+        );
+        // The origin's flight and its GET, each datagram a capsule.
+        let mut capsules = capsule(&[1; 1200]);
+        capsules.extend(capsule(&[2; 1200]));
+        capsules.extend(capsule(&[3; 75]));
+        assert_eq!(s.body.bytes, capsules);
+    }
+    let got = lines(
+        &ran,
+        &[
+            "Establishing",
+            "CONNECT-UDP",
+            "[H3-PROXY] created",
+            "[H3-PROXY] [0] -> [",
+            "[SETUP] added",
+            "[MULTI] [CONNECTING] cf_setup_connect",
+            "[MULTI] [CONNECTING] connected [",
+            "[MULTI] [CONNECTING] reduced",
+            "[HTTP/3] handshake complete",
+            "using HTTP",
+        ],
+    );
+    let mut got = got;
+    got.dedup();
+    // The fake proxy answers at once, so the chain is not traced again
+    // while the answer is awaited.
+    let want = expect(
+        "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [H3-PROXY] created, udp_tunnel=1
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        Establishing HTTP/3 proxy UDP tunnel to origin.example:443
+        [H3-PROXY] [0] -> [connect]
+        [H3-PROXY] [0] -> [response]
+        CONNECT-UDP Response Status 200
+        CONNECT-UDP tunnel established, response 200
+        [H3-PROXY] [0] -> [established]
+        CONNECT-UDP phase completed for HTTP/3 proxy
+        [SETUP] added QUIC filter for origin
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP/3][!CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP/3][CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]
+        [HTTP/3] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
+        [MULTI] [CONNECTING] connected [0][DNS][DNS][HTTPS-CONNECT][SETUP][HTTP/3][CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]
+        [MULTI] [CONNECTING] reduced to [0][HTTP/3][CAPSULE][H3-PROXY][UDP]
+        using HTTP/3",
+    );
+    assert_eq!(got, want);
+}
+
+/// An HTTP/3 proxy naming another capsule protocol than RFC 9297's in
+/// its answer to a CONNECT-UDP fails the tunnel, as one over HTTP/2 does
+/// (`Curl_http_proxy_inspect_tunnel_response`).
+#[test]
+fn an_http3_proxy_s_other_capsule_protocol_fails_the_tunnel() {
+    let proxy = udp_tunnel_script(b"?0");
+    let h3 = FakeHttp3::new(proxy.clone());
+    h3.then.lock().unwrap().push_back(Script::new());
+    let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    let e = tracing_with(tls, h3);
+    let mut m = quic_server(&[b"server flight", b"connect answer"]);
+    let ran = h3_through_h3_proxy(&mut m, e);
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(
+        lines(&ran, &["Failed to establish", "[H3-PROXY] [0] -> [f", "[HTTP/3]"]),
+        expect(
+            "Failed to establish CONNECT-UDP tunnel, response 200, unsupported capsule-protocol value '?0'
+            [H3-PROXY] [0] -> [failed]"
+        )
+    );
 }

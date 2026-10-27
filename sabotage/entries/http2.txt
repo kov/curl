@@ -480,9 +480,9 @@ witness: curl-core proto::http::tests::tls::a_refused_tunnel_through_an_http_2_p
 file: crates/curl-core/src/multi/state/h2tunnel.rs
 witness: curl-core proto::http::tests::tls::a_refused_tunnel_through_an_http_2_proxy_fails_to_connect
 --- old
-    if status / 100 != 2 {
+    } else if status / 100 != 2 {
 --- new
-    if status / 100 == 5 {
+    } else if status / 100 == 5 {
 
 === the HTTP/2 tunnel's answer is not traced
 file: crates/curl-core/src/multi/state/h2tunnel.rs

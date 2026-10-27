@@ -777,7 +777,7 @@ impl ConnectMachine {
         let none = SocketAddr::from(([0, 0, 0, 0], 0));
         let remote = d.remote.inet().unwrap_or(none);
         let local = d.stream.local_addr().unwrap_or(none);
-        self.make_quic(cx, local, remote)
+        self.make_quic(cx, local, remote, true)
     }
 
     /// The addresses the name resolved to, once it has.
@@ -1002,7 +1002,11 @@ impl ConnectMachine {
         // An HTTP/3 proxy's filter is the attempt's, made as it starts
         // (`Curl_cf_h3_proxy_create`).
         if self.route.proxy_over_quic() {
-            cx.of(Component::H3Proxy, format_args!("created, udp_tunnel=0"));
+            let udp = u8::from(self.route.tunnels_udp());
+            cx.of(
+                Component::H3Proxy,
+                format_args!("created, udp_tunnel={udp}"),
+            );
         }
         cx.of(
             Component::HappyEyeballs,
@@ -1213,7 +1217,7 @@ impl ConnectMachine {
             format_args!("cf_udp_connect(), opened socket={fd} ({lip}:{lport})"),
         );
         let made = match local {
-            Some(local) => self.make_quic(cx, local, addr),
+            Some(local) => self.make_quic(cx, local, addr, false),
             None => Err(ErrorKind::QuicConnectError),
         };
         let started = made.and_then(|mut quic| {
@@ -1268,16 +1272,23 @@ impl ConnectMachine {
     /// The QUIC connection from `local` to `remote`: its TLS session made
     /// for the origin, or for the HTTP/3 proxy whose tunnel the route goes
     /// through, offering HTTP/3, and the HTTP/3 library's connection over
-    /// it (`cf_connect_start`). A failure is traced as C traces a connect
-    /// call's.
+    /// it (`cf_connect_start`). One `tunnelled` is the origin's, through
+    /// the proxy's CONNECT-UDP, its datagrams sent through the layers
+    /// below; else it is the race's attempt, on its own socket. A failure
+    /// is traced as C traces a connect call's.
     fn make_quic(
         &self,
         cx: &mut dyn ConnCx,
         local: SocketAddr,
         remote: SocketAddr,
+        tunnelled: bool,
     ) -> Result<Box<Quic>, ErrorKind> {
         let oom = |OutOfMemory| ErrorKind::OutOfMemory;
-        let component = self.quic_component();
+        let component = if tunnelled {
+            Component::Http3
+        } else {
+            self.quic_component()
+        };
         let failed = |cx: &mut dyn ConnCx, kind: ErrorKind| {
             let (ip, port) = (remote.ip(), remote.port());
             let why = kind.message();
@@ -1297,7 +1308,7 @@ impl ConnectMachine {
         };
         // To an HTTP/3 proxy, its TLS is the proxy's, and no early data
         // goes before the tunnel's `CONNECT`.
-        let proxied = self.route.proxy_over_quic();
+        let proxied = !tunnelled && self.route.proxy_over_quic();
         let (identity, origin, via) = if proxied {
             let identity = self.route.proxy_tls().expect("an HTTP/3 proxy speaks TLS");
             (identity, self.route.destination(), None)
@@ -1366,14 +1377,13 @@ impl ConnectMachine {
                 return Err(failed(cx, kind));
             }
         };
-        let layered = self.route.tunnels_udp();
         let mut quic = Quic::new(
             conn,
             kept_for,
             remote,
             making.clock.clone(),
             component,
-            layered,
+            tunnelled,
         )
         .map_err(oom)?;
         if let Some(ticket) = early {

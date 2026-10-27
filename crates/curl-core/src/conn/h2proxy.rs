@@ -70,6 +70,14 @@ impl Answer {
         }
     }
 
+    /// The first field named `name`, any case (`Curl_dynhds_cget`).
+    pub(crate) fn field(&self, name: &[u8]) -> Option<&[u8]> {
+        self.fields
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| &v[..])
+    }
+
     /// Keep a field, unless it is past the limit, which C's
     /// `Curl_dynhds_add` says as it says memory ran out.
     pub(crate) fn add(&mut self, name: &[u8], value: &[u8]) -> Result<(), OutOfMemory> {

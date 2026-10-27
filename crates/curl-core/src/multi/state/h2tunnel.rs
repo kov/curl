@@ -164,52 +164,17 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
         c.handshake = Some(try_box(Handshake::H2Connect(p)).map_err(oom)?);
         return Ok(Ran::Again);
     }
-    if status / 100 != 2 {
-        if c.route.tunnels_udp() {
-            trace::fail(
-                cx,
-                ErrorKind::CouldntConnect,
-                format_args!("Failed to establish CONNECT-UDP tunnel, response {status}"),
-            );
-        }
-        proxy(&mut c.handshake).set_state(TunnelState::Failed);
-        return Err(ErrorKind::CouldntConnect);
-    }
     if c.route.tunnels_udp() {
-        // The datagrams go as capsules (RFC 9297): a proxy may leave the
-        // header out, but not ask for another protocol.
         let p = proxy(&mut c.handshake);
         let answer = p.answer().expect("the answer is whole");
-        let capsules = answer
-            .fields
-            .iter()
-            .find(|(n, _)| n.eq_ignore_ascii_case(b"capsule-protocol"))
-            .map(|(_, v)| v);
-        match capsules {
-            Some(v) if v[..] == b"?1"[..] => trace::info(
-                cx,
-                format_args!("CONNECT-UDP tunnel established, response {status}"),
-            ),
-            Some(v) => {
-                let v = String::from_utf8_lossy(v).into_owned();
-                p.set_state(TunnelState::Failed);
-                return Err(trace::fail(
-                    cx,
-                    ErrorKind::CouldntConnect,
-                    format_args!(
-                        "Failed to establish CONNECT-UDP tunnel, response {status}, \
-                         unsupported capsule-protocol value '{v}'"
-                    ),
-                ));
-            }
-            None => trace::info(
-                cx,
-                format_args!(
-                    "CONNECT-UDP tunnel established, response {status} \
-                     but no capsule-protocol header found"
-                ),
-            ),
+        let verdict = super::tunnel::udp_answer(cx, status, answer.field(b"capsule-protocol"));
+        if verdict.is_err() {
+            p.set_state(TunnelState::Failed);
         }
+        verdict?;
+    } else if status / 100 != 2 {
+        proxy(&mut c.handshake).set_state(TunnelState::Failed);
+        return Err(ErrorKind::CouldntConnect);
     } else {
         trace::info(
             cx,

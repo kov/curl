@@ -148,6 +148,50 @@ pub(super) fn method_name(route: &Tcp) -> &'static str {
     }
 }
 
+/// A CONNECT-UDP's final answer, `status` with its `capsule-protocol`
+/// field's value if it has one, acted on
+/// (`Curl_http_proxy_inspect_tunnel_response`): the datagrams go as
+/// capsules (RFC 9297), which a proxy may leave unsaid but not ask for
+/// another protocol in place of. Traced; the tunnel fails but on a 2xx.
+pub(super) fn udp_answer<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    status: u16,
+    capsules: Option<&[u8]>,
+) -> Result<(), ErrorKind> {
+    if status / 100 != 2 {
+        return Err(trace::fail(
+            cx,
+            ErrorKind::CouldntConnect,
+            format_args!("Failed to establish CONNECT-UDP tunnel, response {status}"),
+        ));
+    }
+    match capsules {
+        Some(b"?1") => trace::info(
+            cx,
+            format_args!("CONNECT-UDP tunnel established, response {status}"),
+        ),
+        Some(v) => {
+            let v = String::from_utf8_lossy(v);
+            return Err(trace::fail(
+                cx,
+                ErrorKind::CouldntConnect,
+                format_args!(
+                    "Failed to establish CONNECT-UDP tunnel, response {status}, \
+                     unsupported capsule-protocol value '{v}'"
+                ),
+            ));
+        }
+        None => trace::info(
+            cx,
+            format_args!(
+                "CONNECT-UDP tunnel established, response {status} \
+                 but no capsule-protocol header found"
+            ),
+        ),
+    }
+    Ok(())
+}
+
 /// The proxy and what it is given, as the route has them.
 pub(super) fn proxy(route: &Tcp) -> (&Peer, Option<Secret<'_>>, bool) {
     let proxy = route.proxy.as_ref().expect("a tunnel goes through a proxy");

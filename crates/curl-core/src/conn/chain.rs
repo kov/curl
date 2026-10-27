@@ -205,10 +205,10 @@ impl Chain {
         // with neither the HTTP proxy's filter nor its TLS's
         // (`CF_SETUP_CNNCT_HTTP_PROXY`).
         let h3_proxy = route.proxy_over_quic();
-        let quic = route.dial == crate::conn::Dial::Quic && !h3_proxy;
+        let quic = route.dial == crate::conn::Dial::Quic;
         // Through a CONNECT-UDP tunnel, the origin's QUIC filter is the
         // last the setup adds, over the capsules the tunnel carries
-        // (`Curl_cf_quic_insert_after`); the race is the proxy's, in TCP.
+        // (`Curl_cf_quic_insert_after`); the race is the proxy's.
         let tunnels_udp = route.tunnels_udp();
         if added.quic && tunnels_udp {
             push(Component::Http3);

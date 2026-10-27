@@ -4553,13 +4553,6 @@ fn quic_refused(route: &Tcp, secured: bool) -> Option<(ErrorKind, &'static str)>
             ErrorKind::UrlMalformat,
             "HTTP/3 is not supported over a SOCKS proxy",
         )
-    } else if route.proxy_over_quic() {
-        // CONNECT-UDP over an HTTP/3 proxy is step 64(d)'s: until then
-        // the transfer fails rather than speak another version.
-        (
-            ErrorKind::QuicConnectError,
-            "HTTP/3 through an HTTP/3 proxy is not supported yet",
-        )
     } else {
         return None;
     })

@@ -13,7 +13,7 @@ use crate::conn::h3proxy::{H3Proxy, TunnelState};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::proto::http1::auth::Side;
-use crate::proto::http2::fields_of;
+use crate::proto::http2::{connect_udp_fields, fields_of};
 use crate::trace;
 
 const H3P: Component = Component::H3Proxy;
@@ -29,7 +29,7 @@ pub(super) fn start<H: Host>(
         .dialed()
         .take_quic()
         .expect("an HTTP/3 proxy's tunnel goes over its QUIC connection");
-    let mut proxy = H3Proxy::new(quic);
+    let mut proxy = H3Proxy::new(quic, c.route.tunnels_udp());
     connect(&mut proxy, c, cx)?;
     let proxy = try_box(proxy).map_err(oom)?;
     try_box(Handshake::H3Connect(proxy)).map_err(oom)
@@ -48,8 +48,17 @@ fn connect<H: Host>(
         target.port(),
     );
     trace::of(cx, H3P, format_args!("[0] CONNECT start for {host}:{port}"));
-    let head = super::tunnel::connect_head(c, cx, b"HTTP/3")?.head;
-    let fields = fields_of(&head, None, b"https")?;
+    let head = super::tunnel::connect_head(c, cx, b"HTTP/3")?;
+    let fields = match &head.udp {
+        Some(udp) => connect_udp_fields(
+            &head.head,
+            head.authorized,
+            udp.scheme,
+            &udp.authority,
+            &udp.path,
+        )?,
+        None => fields_of(&head.head, None, b"https")?,
+    };
     let pairs = fields.pairs().map_err(oom)?;
     let url = cx.easy().report().url().map(copied).transpose()?;
     let url = url.as_deref().unwrap_or_default();
@@ -143,7 +152,8 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
     let p = proxy(&mut c.handshake);
     let answer = p.answer().expect("the answer is whole");
     let status = answer.status;
-    trace::info(cx, format_args!("CONNECT Response Status {status}"));
+    let what = super::tunnel::method_name(&c.route);
+    trace::info(cx, format_args!("{what} Response Status {status}"));
     let total = answer.fields.len();
     trace::info(cx, format_args!("Response Headers ({total} total):"));
     for (name, value) in &answer.fields {
@@ -167,13 +177,18 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
             return Ok(Ran::Again);
         }
     }
-    if status / 100 != 2 {
+    if c.route.tunnels_udp() {
+        let p = proxy(&mut c.handshake);
+        let answer = p.answer().expect("the answer is whole");
+        super::tunnel::udp_answer(cx, status, answer.field(b"capsule-protocol"))?;
+    } else if status / 100 != 2 {
         return Err(ErrorKind::CouldntConnect);
+    } else {
+        trace::info(
+            cx,
+            format_args!("CONNECT tunnel established, response {status}"),
+        );
     }
-    trace::info(
-        cx,
-        format_args!("CONNECT tunnel established, response {status}"),
-    );
     let mut p = take(c);
     p.go_state(cx, TunnelState::Established);
     // The request follows the `CONNECT`: what reads it starts over

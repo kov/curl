@@ -295,12 +295,12 @@ impl Tcp {
         }
     }
 
-    /// The origin is spoken to over QUIC through a tunnel an HTTP proxy
-    /// opens over TCP, CONNECT-UDP's: its QUIC connection's datagrams go
-    /// through the stream's layers (`tunnel_transport` is QUIC's, the
-    /// first hop's TCP).
+    /// The origin is spoken to over QUIC through an HTTP proxy's tunnel,
+    /// CONNECT-UDP's: its QUIC connection's datagrams go through the
+    /// layers of the connection to the proxy, over TCP or over QUIC
+    /// (`tunnel_transport` is QUIC's).
     pub(crate) fn tunnels_udp(&self) -> bool {
-        self.dial == Dial::Quic && !self.first_hop_quic()
+        self.dial == Dial::Quic && self.proxy.as_ref().is_some_and(ProxyRoute::tunnels)
     }
 
     /// The route's tunnel is a stream of a QUIC connection to an HTTP/3

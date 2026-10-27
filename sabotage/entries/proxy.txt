@@ -698,12 +698,12 @@ witness: curl-core multi::state::tunnel::tests::a_connect_udp_names_its_target_i
             b':' => path.try_push(b':')?,
 
 === an HTTP/2 proxy asked to carry another protocol's capsules is taken
-file: crates/curl-core/src/multi/state/h2tunnel.rs
+file: crates/curl-core/src/multi/state/tunnel.rs
 witness: curl-core proto::http::tests::tls::http3_through_an_http_2_proxy_asks_for_connect_udp
 --- old
-            Some(v) if v[..] == b"?1"[..] => trace::info(
+        Some(b"?1") => trace::info(
 --- new
-            Some(_) => trace::info(
+        Some(_) => trace::info(
 
 === a CONNECT-UDP to an HTTP/2 proxy carries HTTP/1's user agent
 file: crates/curl-core/src/proto/http1/tunnel.rs
@@ -732,3 +732,19 @@ witness: curl-core proto::http2::tests::a_connect_udp_s_fields_put_its_protocol_
     if authorized && let Some(line) = lines.next() {
         add_line(&mut fields, line)?;
     }
+
+=== an HTTP/3 proxy's CONNECT-UDP answer is taken whatever capsule protocol it names
+file: crates/curl-core/src/multi/state/h3tunnel.rs
+witness: curl-core proto::http::tests::h3_trace::an_http3_proxy_s_other_capsule_protocol_fails_the_tunnel
+--- old
+        super::tunnel::udp_answer(cx, status, answer.field(b"capsule-protocol"))?;
+--- new
+        super::tunnel::udp_answer(cx, status, answer.field(b"capsule-protocol").and(Some(b"?1")))?;
+
+=== an HTTP/3 proxy's CONNECT-UDP asks with a plain CONNECT's fields
+file: crates/curl-core/src/multi/state/h3tunnel.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
+--- old
+    let fields = match &head.udp {
+--- new
+    let fields = match &None::<super::tunnel::UdpAsk> {

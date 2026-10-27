@@ -2668,28 +2668,33 @@ attempt failing in C: the setup fails as a race with no address left does, `Fail
 over proxy …` and `CouldntConnect`. A read once the stream is gone fails (`RecvError`). The
 library's timer is asked for through `LayerCx::quic_due`, which a layer below the transfer's
 reaches as the transfer's own QUIC connection does. Requests not tunnelled go to such a proxy over
-TCP, as C sends them (`Curl_http_proxy_transport`). An HTTP/3 origin through an HTTP/3 proxy,
-QUIC in QUIC, is step 64(d)'s: until then it is refused.
+TCP, as C sends them (`Curl_http_proxy_transport`). An HTTP/3 origin through an HTTP/3 proxy is
+QUIC in QUIC: the tunnel is CONNECT-UDP's (§ the CONNECT-UDP tunnel), its capsules the stream's
+DATA, as C's `cf-ngtcp2-proxy.c` sends them; `H3Proxy` knows it is (`udp`) only for its lines.
 
 **The CONNECT-UDP tunnel** (RFC 9297, 9298; `http_proxy_create_CONNECTUDP`, `cf-capsule.c`) is
-how HTTP/3 goes through an HTTP proxy: `Tcp::tunnels_udp`, a route dialed for QUIC whose first
-hop is the proxy in TCP. The race is the proxy's, in TCP; the tunnel's request asks the proxy
+how HTTP/3 goes through an HTTP proxy: `Tcp::tunnels_udp`, a route dialed for QUIC through an
+HTTP proxy's tunnel, over TCP or over QUIC to an HTTP/3 proxy. The race is the proxy's; the
+tunnel's request asks the proxy
 itself, at `/.well-known/masque/udp/<host>/<port>/` (an IPv6 address's colons as `%3A`), to carry
 datagrams: over HTTP/1.1 a `GET` to upgrade to `connect-udp` (`ConnectRequest::udp`), answered
-by a 101 or a 2xx; over HTTP/2 an extended `CONNECT` (`proto::http2::connect_udp_fields`: the
-proxy's scheme and authority, the path, its authorization, `:protocol`, `capsule-protocol`, then
-the application's headers, no `Host`, `User-Agent` or `Proxy-Connection`), whose 2xx must name
-no capsule protocol but `?1`. The lines are C's, `CONNECT-UDP` for `CONNECT`. Once through, the
+by a 101 or a 2xx; over HTTP/2 and HTTP/3 an extended `CONNECT`
+(`proto::http2::connect_udp_fields`: the proxy's scheme and authority, the path, its
+authorization, `:protocol`, `capsule-protocol`, then the application's headers, no `Host`,
+`User-Agent` or `Proxy-Connection`), whose 2xx must name no capsule protocol but `?1`
+(`tunnel::udp_answer`). The lines are C's, `CONNECT-UDP` for `CONNECT`. Once through, the
 setup's next handshake is `Due::Quic` in place of the origin's TLS (`multi/state/quictunnel.rs`):
 `conn/capsule.rs`'s `CapsuleLayer` goes on the stream, seeded with what the proxy sent after its
 answer, each datagram a capsule both ways (the codec C's `capsule.c`, a bad capsule failing the
 read as C says it; at most four 16 KiB chunks held to read, a capsule taken whole to send, `OUT`
 asked for while some waits); the origin's `Quic` is made layered over the stream's ends
-(`ConnectMachine::tunnel_quic`) and held by `Handshake::Quic`, its connect driven over the
+(`ConnectMachine::tunnel_quic`, the origin's TLS and `Component::Http3` whatever the race made)
+and held by `Handshake::Quic`, its connect driven over the
 layers; done, it rides in `Dialed` (`put_quic`, `Made::QUIC`) and becomes the connection's HTTP/3
 session as the setup ends. The chain is C's: `[HTTP/3][CAPSULE]` on top of the tunnel's filters,
 the capsule filter connected at once, HAPPY-EYEBALLS going with the setup's others,
-`[HTTP/3][CAPSULE][H1-PROXY][TCP]` once reduced.
+`[HTTP/3][CAPSULE][H1-PROXY][TCP]` once reduced, `[HTTP/3][CAPSULE][H3-PROXY][UDP]` through an
+HTTP/3 proxy.
 
 **Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the
 multi's `ShutdownSet` until the peer's goodbye or the connection's 2 s. OpenSSL's is

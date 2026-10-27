@@ -176,10 +176,13 @@ impl Script {
     }
 }
 
-/// The fake library: each connection it makes runs `script`.
+/// The fake library: each connection it makes runs `script`, but for
+/// those after the first, which run the scripts of `then` in turn while
+/// there are some.
 #[derive(Debug)]
 pub struct FakeHttp3 {
     pub script: Arc<Mutex<Script>>,
+    pub then: Mutex<VecDeque<Arc<Mutex<Script>>>>,
     /// What each `client` was given.
     pub setups: Mutex<Vec<ClientSetup>>,
 }
@@ -188,6 +191,7 @@ impl FakeHttp3 {
     pub fn new(script: Arc<Mutex<Script>>) -> FakeHttp3 {
         FakeHttp3 {
             script,
+            then: Mutex::new(VecDeque::new()),
             setups: Mutex::new(Vec::new()),
         }
     }
@@ -199,10 +203,16 @@ impl Http3 for FakeHttp3 {
         setup: &ClientSetup,
         tls: Box<dyn QuicTls>,
     ) -> Result<Box<dyn Connection>, ConnectFailed> {
-        self.setups.lock().unwrap().push(*setup);
-        self.script.lock().unwrap().at(setup.now);
+        let mut setups = self.setups.lock().unwrap();
+        let script = match setups.len() {
+            0 => None,
+            _ => self.then.lock().unwrap().pop_front(),
+        }
+        .unwrap_or_else(|| self.script.clone());
+        setups.push(*setup);
+        script.lock().unwrap().at(setup.now);
         Ok(Box::new(FakeConnection {
-            script: self.script.clone(),
+            script,
             tls,
             next_stream: 0,
         }))

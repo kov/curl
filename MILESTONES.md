@@ -1010,8 +1010,9 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
       through `cf->next`.
     - (c) **Done.** Capsules (`capsule.c`, `cf-capsule.c`) and CONNECT-UDP over HTTP/1.1 and
       HTTP/2 proxies, for `--http3-only`: test_60 01 h3 over h1 and h2, 02 h3 over h1, 03 pass,
-      their chains C's. An HTTP/3 origin through the HTTP/3 proxy is refused until (d).
-    - (d) CONNECT-UDP over the HTTP/3 proxy, QUIC in QUIC: 01 and 02 h3 over h3, 05, 13, 18.
+      their chains C's.
+    - (d) **Done.** CONNECT-UDP over the HTTP/3 proxy, QUIC in QUIC, the capsules the tunnel
+      stream's DATA: all of test_60 passes (12 and 04 skip, as C's do).
     - (e) The race through an HTTP proxy for `--http3`: C weighs HTTP/3 there as anywhere
       (`cf_hc_may_h3` refuses only SOCKS), its attempt over CONNECT-UDP beside one over
       CONNECT, two tunnels to the proxy at once; ours makes the one over CONNECT.

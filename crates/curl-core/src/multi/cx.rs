@@ -299,8 +299,12 @@ pub(super) fn upkeep(
         }
         // The share's lock is let go.
         later.close();
-        Ok(())
-    })
+        Ok::<(), OutOfMemory>(())
+    })?;
+    // Its connections lent to this multi are the multi's while they are,
+    // reached through it; one lent to another multi is that one's.
+    pool.upkeep_lent(share, interval, now);
+    Ok(())
 }
 
 /// As `EngineRest::announce_closing`, on the multi's parts.

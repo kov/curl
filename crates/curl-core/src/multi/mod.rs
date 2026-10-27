@@ -1041,6 +1041,12 @@ impl<H: Host> Multi<H> {
         &self.run_of(id).state
     }
 
+    /// How many connections of shares are lent to it, for the tests.
+    #[cfg(test)]
+    pub(crate) fn lent_connections(&self) -> usize {
+        self.caches.pool.lent_here()
+    }
+
     /// Every socket the transfers wait on, and for what, in id order
     /// (`curl_multi_fdset`, `curl_multi_waitfds`), each transfer's pollset
     /// traced first.

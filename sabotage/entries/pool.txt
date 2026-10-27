@@ -533,7 +533,7 @@ witness: curl-core proto::http::tests::h2::a_pipewait_on_a_share_s_connection_en
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h2::a_multi_dropped_gives_a_share_s_lent_connection_back
 --- old
-            let back = cx.rest.caches.pool.release_lent(lease);
+            let back = cx.rest.caches.pool.release_lent(lease, now);
 --- new
             let back = pool::LentBack::Last(lease);
 
@@ -703,6 +703,30 @@ witness: curl-core proto::http::tests::h2::a_connection_in_use_is_pinged_with_it
                     Some(ConnSlot::Open(conn)) => (conn, false),
 --- new
                     Some(ConnSlot::Open(_)) => continue,
+
+=== the upkeep passes over a share's connections lent to the multi
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core proto::http::tests::h2::a_connection_in_use_is_pinged_with_its_transfer_s_next_send
+--- old
+    pool.upkeep_lent(share, interval, now);
+--- new
+
+=== the upkeep of one share keeps another's lent connections alive
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::a_connection_in_use_is_pinged_with_its_transfer_s_next_send
+--- old
+        for l in self.lent.iter_mut().filter(|l| l.share.is(share)) {
+--- new
+        for l in self.lent.iter_mut().filter(|l| l.share.is(share) || !l.share.is(share)) {
+
+=== a lent connection one of its transfers gives back keeps its upkeep interval
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::the_upkeep_interval_starts_as_one_of_two_transfers_is_done
+--- old
+        let conn = self.lent[at].shared.conn_mut();
+        conn.returned(now);
+--- new
+        let conn = self.lent[at].shared.conn_mut();
 
 === an idle connection whose PING failed is kept
 file: crates/curl-core/src/conn/pool.rs

@@ -1653,11 +1653,11 @@ fn a_share_s_connection_lent_to_a_multi_is_that_multi_s() {
     assert_eq!(joined.id(), in_share);
     // Out with its step, then back in its place.
     mine.check_in(&mut joined);
-    let LentBack::InUse(n) = mine.release_lent(joined) else {
+    let LentBack::InUse(n) = mine.release_lent(joined, Instant::EPOCH) else {
         panic!("the first is on it still");
     };
     assert_eq!(n.get(), 1);
-    let LentBack::Last(back) = mine.release_lent(lease) else {
+    let LentBack::Last(back) = mine.release_lent(lease, Instant::EPOCH) else {
         panic!("the last");
     };
     assert_eq!(back.id(), in_share);
@@ -1703,15 +1703,15 @@ fn connections_lent_by_two_shares_are_told_apart() {
     one.pool().lend(lease_one.id());
     let mut joined = multi.join_lent(&one, lease_one.id());
     multi.check_in(&mut joined);
-    let LentBack::InUse(n) = multi.release_lent(joined) else {
+    let LentBack::InUse(n) = multi.release_lent(joined, Instant::EPOCH) else {
         panic!("the first share's own lease is on it still");
     };
     assert_eq!(n.get(), 1);
-    let LentBack::Last(back_one) = multi.release_lent(lease_one) else {
+    let LentBack::Last(back_one) = multi.release_lent(lease_one, Instant::EPOCH) else {
         panic!("the first share's last key");
     };
     assert_eq!(socket(&back_one), sock_one);
-    let LentBack::Last(back_two) = multi.release_lent(lease_two) else {
+    let LentBack::Last(back_two) = multi.release_lent(lease_two, Instant::EPOCH) else {
         panic!("the second share's last key");
     };
     assert_eq!(socket(&back_two), sock_two);
@@ -1760,7 +1760,7 @@ fn search_lent(versions: crate::proto::http::Versions, close: bool) -> Found {
         .pool()
         .find(&home, wanted, RULES, &mut net, now, &mut Vec::new())
         .unwrap();
-    let LentBack::Last(back) = multi.release_lent(lease) else {
+    let LentBack::Last(back) = multi.release_lent(lease, Instant::EPOCH) else {
         panic!("its one key");
     };
     share

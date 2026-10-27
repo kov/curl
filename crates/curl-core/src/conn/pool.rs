@@ -1362,13 +1362,14 @@ impl Pool {
     /// less on it, and if it was the last, the connection leased as any
     /// by the lease the share's pool takes back, out of its place here.
     /// A lease not lent here is the share's to take back as it is.
-    pub(crate) fn release_lent(&mut self, lease: ConnLease) -> LentBack {
+    pub(crate) fn release_lent(&mut self, lease: ConnLease, now: Instant) -> LentBack {
         let Some(at) = self.lent_at(&lease) else {
             return LentBack::Last(lease);
         };
         let (id, slot, home) = lease.into_parts();
         assert!(slot.is_none(), "a key's connection is in its place");
         let conn = self.lent[at].shared.conn_mut();
+        conn.returned(now);
         let Use::Leased(n) = conn.use_ else {
             unreachable!("a lent connection is leased");
         };
@@ -1451,6 +1452,24 @@ impl Pool {
                 close(&mut self.conns, id, Evicted::Linger, exits, now);
             }
         }
+    }
+
+    /// Keep alive `share`'s connections lent to this multi that have gone
+    /// `interval` without, as the share's pool does its own
+    /// (`Pool::upkeep`): each is in use, so none is closed whatever its
+    /// keep-alive does. One out with a transfer's step is that step's.
+    pub(crate) fn upkeep_lent(&mut self, share: &Share, interval: Duration, now: Instant) {
+        for l in self.lent.iter_mut().filter(|l| l.share.is(share)) {
+            if let Some(ConnSlot::Open(conn)) = l.shared.slot.as_deref_mut() {
+                let _in_use = conn.upkeep(&mut Silent(now), interval);
+            }
+        }
+    }
+
+    /// How many connections of shares are lent to this multi.
+    #[cfg(test)]
+    pub(crate) fn lent_here(&self) -> usize {
+        self.lent.len()
     }
 
     /// The connection `id`, reserved for its handle, if the pool still

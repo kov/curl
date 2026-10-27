@@ -837,7 +837,7 @@ fn release<H: Host>(
         Home::Share(_) => {
             let mut lease = lease;
             cx.rest.caches.pool.check_in(&mut lease);
-            let back = cx.rest.caches.pool.release_lent(lease);
+            let back = cx.rest.caches.pool.release_lent(lease, now);
             cx.rest
                 .pool_section(cx.me, &home, |pool, exits, here| match back {
                     pool::LentBack::InUse(n) => Released::InUse(n),

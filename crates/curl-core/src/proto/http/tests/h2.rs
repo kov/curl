@@ -617,37 +617,72 @@ fn an_idle_http1_connection_is_sent_nothing_by_the_upkeep() {
 /// A connection in use is due its PING an interval after it was found
 /// connected, as an idle one is after it was given back; with a stream
 /// open, the PING goes with the transfer's next send, which alone can
-/// frame the stream's body.
+/// frame the stream's body. A share's connection lent to the multi is
+/// reached through the multi, for a handle on that share; a handle on
+/// another share reaches that one's, which does not have it.
 #[test]
 fn a_connection_in_use_is_pinged_with_its_transfer_s_next_send() {
-    let talk = Conversation::replies(&[RESPONSE], false).per_send().held();
-    let (mut m, clock) = clocked(&[&talk]);
-    let mut e = Easy::new();
-    e.set_libraries(with_h2());
-    let o = e.options_mut();
-    let url = format!("http://127.0.0.1:{PORT}/");
-    o.set_url(Some(url.as_bytes())).unwrap();
-    o.http.version = HttpVersion::Http2Prior;
-    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-    for _ in 0..3 {
-        m.perform(&mut NoEvents).unwrap();
+    use crate::share::{Kind, Share};
+    #[derive(Debug, PartialEq)]
+    enum On {
+        Multi,
+        Share,
+        ShareAskedByAnother,
     }
-    let request = talk.received();
-    assert!(
-        request.ends_with(b"U 1 10420224\n"),
-        "the request and its window went: {:?}",
-        String::from_utf8_lossy(&request)
-    );
-    clock.advance(Duration::from_secs(60));
-    m.upkeep(id, &mut NoEvents).unwrap().unwrap();
-    assert_eq!(talk.received(), request, "not sent beside the transfer");
-    talk.allow(1);
-    assert_eq!(
-        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
-        Ok(())
-    );
-    assert_eq!(&talk.received()[request.len()..], b"P\n");
-    m.remove(id, &mut NoEvents).unwrap();
+    for on in [On::Multi, On::Share, On::ShareAskedByAnother] {
+        let talk = Conversation::replies(&[RESPONSE], false).per_send().held();
+        let (mut m, clock) = clocked(&[&talk]);
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        if on != On::Multi {
+            let share = Share::new().unwrap();
+            share.keep(Kind::Connections).unwrap();
+            e.set_share(Some(share));
+        }
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = HttpVersion::Http2Prior;
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        for _ in 0..3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        let request = talk.received();
+        assert!(
+            request.ends_with(b"U 1 10420224\n"),
+            "{on:?}: the request and its window went: {:?}",
+            String::from_utf8_lossy(&request)
+        );
+        let lent = usize::from(on != On::Multi);
+        assert_eq!(m.lent_connections(), lent, "{on:?}");
+        clock.advance(Duration::from_secs(60));
+        match on {
+            On::Multi | On::Share => m.upkeep(id, &mut NoEvents).unwrap().unwrap(),
+            On::ShareAskedByAnother => {
+                let mut other = Easy::new();
+                let share = Share::new().unwrap();
+                share.keep(Kind::Connections).unwrap();
+                other.set_share(Some(share));
+                m.upkeep_for(&other, &mut NoEvents).unwrap();
+            }
+        }
+        assert_eq!(
+            talk.received(),
+            request,
+            "{on:?}: not sent beside the transfer"
+        );
+        talk.allow(1);
+        assert_eq!(
+            drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+            Ok(())
+        );
+        let ping: &[u8] = match on {
+            On::Multi | On::Share => b"P\n",
+            On::ShareAskedByAnother => b"",
+        };
+        assert_eq!(&talk.received()[request.len()..], ping, "{on:?}");
+        m.remove(id, &mut NoEvents).unwrap();
+    }
 }
 
 /// An idle connection whose PING cannot be sent is closed by the upkeep
@@ -690,50 +725,60 @@ fn an_idle_connection_whose_ping_fails_is_closed() {
 /// The interval starts again as each transfer gives its connection back,
 /// another still on it (`Curl_cpool_return`): one interval less a
 /// millisecond after the first is done, the second's next send carries
-/// no PING.
+/// no PING. A share's connection lent to the multi starts it again as
+/// one of its own does.
 #[test]
 fn the_upkeep_interval_starts_as_one_of_two_transfers_is_done() {
-    let replies: [&[u8]; 4] = [
-        b"S\nH 1 0\n:status: 200\n\n",
-        b"",
-        b"D 1 2 1\naa",
-        b"H 3 0\n:status: 200\n\nD 3 1 1\nc",
-    ];
-    let talk = Conversation::replies(&replies, false).per_send().held();
-    talk.allow(2);
-    let (mut m, clock) = clocked(&[&talk]);
-    let mut ids = Vec::new();
-    for path in ["/a", "/b"] {
-        let mut e = Easy::new();
-        e.set_libraries(with_h2());
-        let o = e.options_mut();
-        let url = format!("http://127.0.0.1:{PORT}{path}");
-        o.set_url(Some(url.as_bytes())).unwrap();
-        o.limits.total = crate::time::TimeLimit::from_millis(200_000);
-        o.http.version = HttpVersion::Http2Prior;
-        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
-        for _ in 0..3 {
-            m.perform(&mut NoEvents).unwrap();
+    use crate::share::{Kind, Share};
+    for shared in [false, true] {
+        let replies: [&[u8]; 4] = [
+            b"S\nH 1 0\n:status: 200\n\n",
+            b"",
+            b"D 1 2 1\naa",
+            b"H 3 0\n:status: 200\n\nD 3 1 1\nc",
+        ];
+        let talk = Conversation::replies(&replies, false).per_send().held();
+        talk.allow(2);
+        let (mut m, clock) = clocked(&[&talk]);
+        let share = Share::new().unwrap();
+        share.keep(Kind::Connections).unwrap();
+        let mut ids = Vec::new();
+        for path in ["/a", "/b"] {
+            let mut e = Easy::new();
+            e.set_libraries(with_h2());
+            if shared {
+                e.set_share(Some(share.clone()));
+            }
+            let o = e.options_mut();
+            let url = format!("http://127.0.0.1:{PORT}{path}");
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.limits.total = crate::time::TimeLimit::from_millis(200_000);
+            o.http.version = HttpVersion::Http2Prior;
+            ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+            for _ in 0..3 {
+                m.perform(&mut NoEvents).unwrap();
+            }
         }
+        assert_eq!(m.lent_connections(), usize::from(shared));
+        clock.advance(Duration::from_secs(30));
+        talk.allow(3);
+        assert_eq!(
+            drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap(),
+            Ok(())
+        );
+        m.remove(ids[0], &mut NoEvents).unwrap();
+        clock.advance(Duration::from_millis(59_999));
+        m.upkeep(ids[1], &mut NoEvents).unwrap().unwrap();
+        talk.allow(4);
+        assert_eq!(
+            drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap(),
+            Ok(())
+        );
+        let sent = String::from_utf8(talk.received()).unwrap();
+        assert!(sent.contains("H 3 1\n"), "shared {shared}: {sent}");
+        assert!(!sent.contains("P\n"), "shared {shared}: {sent}");
+        m.remove(ids[1], &mut NoEvents).unwrap();
     }
-    clock.advance(Duration::from_secs(30));
-    talk.allow(3);
-    assert_eq!(
-        drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap(),
-        Ok(())
-    );
-    m.remove(ids[0], &mut NoEvents).unwrap();
-    clock.advance(Duration::from_millis(59_999));
-    m.upkeep(ids[1], &mut NoEvents).unwrap().unwrap();
-    talk.allow(4);
-    assert_eq!(
-        drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap(),
-        Ok(())
-    );
-    let sent = String::from_utf8(talk.received()).unwrap();
-    assert!(sent.contains("H 3 1\n"), "{sent}");
-    assert!(!sent.contains("P\n"), "{sent}");
-    m.remove(ids[1], &mut NoEvents).unwrap();
 }
 
 /// The interval starts again as a transfer gives its connection back,

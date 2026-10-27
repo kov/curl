@@ -123,6 +123,14 @@ fn main() {
             "an_http3_get_stays_within_its_allocation_budget",
             an_http3_get_stays_within_its_allocation_budget,
         ),
+        (
+            "a_tunnel_through_an_http3_proxy_survives_every_allocation_failing",
+            a_tunnel_through_an_http3_proxy_survives_every_allocation_failing,
+        ),
+        (
+            "a_tunnel_through_an_http3_proxy_takes_no_refusal_for_success",
+            a_tunnel_through_an_http3_proxy_takes_no_refusal_for_success,
+        ),
     ] {
         // The tests whose names hold a filter given, if any is, as libtest.
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {
@@ -1402,4 +1410,73 @@ fn an_http3_get_stays_within_its_allocation_budget() {
         n <= H3_GET_BUDGET,
         "an HTTP/3 GET over the fakes made {n} allocations, over its {H3_GET_BUDGET}"
     );
+}
+
+/// The HTTP/3 proxy's answer to a `CONNECT`: its status, and a header
+/// that is not UTF-8.
+fn h3_connect_answer() -> Vec<Told> {
+    vec![
+        h3_header(b":status", b"200"),
+        h3_header(b"via", b"h3\xc3proxy"),
+        Told::HeadersDone(0),
+    ]
+}
+
+/// Through the tunnel the HTTP/3 proxy at 127.0.0.1:443 makes, traced.
+fn h3_proxy(o: &mut Options) -> Result<(), OutOfMemory> {
+    let proxy = o.proxy.make_mut()?;
+    proxy.url = Some(b"https://127.0.0.1:443".to_vec_fallible()?);
+    proxy.kind = curl_core::options::ProxyType::Https3;
+    proxy.tunnel = true;
+    traced(o)
+}
+
+/// A GET of `http://origin.example/1?q` in HTTP/1.1 through the HTTP/3
+/// proxy's tunnel, a stream of the QUIC connection to it
+/// (`cf-ngtcp2-proxy.c`), answered with test 1's reply.
+fn h3_tunnel_scenario() -> Result<Got, OutOfMemory> {
+    h3_scripts(
+        || {
+            let out: &[&[u8]] = &[
+                &[1; 1200],
+                &[2; 1200],
+                &[],
+                &[],
+                &[3; 75],
+                &[],
+                &[4; 150],
+                &[],
+            ];
+            let response = vec![Told::Data(0, REPLY.to_vec())];
+            h3_script(out, vec![h3_connect_answer(), response])
+        },
+        None,
+    );
+    let (clock, net, talk) = quic_server(&[b"server flight", b"connect answer", b"response"]);
+    let wire = Wire {
+        libraries: fake_h3_libraries(),
+        sent: h3_sent,
+        refused_as: H3_REFUSED_AS,
+        trace_all: true,
+    };
+    let request = b":method: CONNECT\n:authority: origin.example:80\nuser-agent: curl/test\n\
+        GET /1?q HTTP/1.1\r\nHost: origin.example\r\nUser-Agent: curl/test\r\n\
+        Accept: */*\r\n\r\n";
+    let url = b"http://origin.example/1?q";
+    get_over(clock, net, &talk, (url, request), h3_proxy, wire)
+}
+
+fn a_tunnel_through_an_http3_proxy_survives_every_allocation_failing() {
+    fake_h3_libraries();
+    let full = Got {
+        result: Ok(()),
+        body: 6,
+        headers: REPLY.len() as u64 - 6,
+    };
+    torture(h3_tunnel_scenario, Ok(full));
+}
+
+fn a_tunnel_through_an_http3_proxy_takes_no_refusal_for_success() {
+    fake_h3_libraries();
+    refused_alone(h3_tunnel_scenario, took_no_refusal);
 }

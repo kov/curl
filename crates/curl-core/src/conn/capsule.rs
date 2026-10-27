@@ -209,7 +209,8 @@ impl CapsuleLayer {
     /// Its failure, kept to be asked for.
     fn failed(&mut self, kind: ErrorKind) -> io::Error {
         self.failure.get_or_insert(kind);
-        io::Error::other("the capsule layer failed")
+        // A bare kind, which allocates nothing: the failure is `kind`.
+        io::Error::from(io::ErrorKind::Other)
     }
 
     /// Bytes taken to send and not yet sent.

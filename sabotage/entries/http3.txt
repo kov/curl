@@ -707,3 +707,12 @@ witness: curl-core an_http3_get_survives_every_allocation_failing
 --- new
             Some(Err(OutOfMemory)) => {
                 drop(won.socket);
+
+=== an HTTP/3 tunnel's failure boxes its message with an allocation that cannot fail
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core a_tunnel_through_an_http3_proxy_survives_every_allocation_failing
+--- old
+        // A bare kind, which allocates nothing: the failure is `kind`.
+        io::Error::from(io::ErrorKind::Other)
+--- new
+        io::Error::other("the HTTP/3 tunnel failed")

@@ -589,7 +589,8 @@ impl H3Proxy {
     /// The layer's receive or send fails with `kind`.
     fn failed(&mut self, kind: ErrorKind) -> io::Error {
         self.failure.get_or_insert(kind);
-        io::Error::other("the HTTP/3 tunnel failed")
+        // A bare kind, which allocates nothing: the failure is `kind`.
+        io::Error::from(io::ErrorKind::Other)
     }
 
     /// Take what is held for the layer above into `buf`, its window

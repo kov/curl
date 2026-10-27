@@ -2772,6 +2772,9 @@ SMTP's dot-stuffing and FTP's ASCII line ends become stages when those protocols
   HEADER_OUT and DATA_OUT are traced for the bytes `Net::send` accepted, split at the head
   length; SIZE_UPLOAD counts accepted body bytes only (`upload::sent`), as sent: a chunked
   body's framing included.
+- Sending more of the request reads first, behind what of the body still waits, while the buffer
+  has room and the body has not ended, and then sends what waits (`Curl_req_send_more`); the
+  buffer starts over only once all of it went.
 - A read handler is given room for `min(free space, what is left of a known size, rate
   tokens)`. The read that completes a known size ends the body; a size of 0 never calls the
   handler. It is latched at EOF and on error (Abort is AbortedByCallback; more than the room is

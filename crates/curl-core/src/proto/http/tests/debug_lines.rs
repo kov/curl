@@ -270,7 +270,9 @@ fn a_bad_head_fails_the_reads_and_the_pass() {
 
 /// What a send limit cuts short, and what a send that would block
 /// leaves, is said as what is left behind what went (`req_flush`): the
-/// body earned over the wait for a 100 goes a second's worth a pass.
+/// body earned over the wait for a 100 goes a second's worth a pass,
+/// more read behind what waits while tokens are left, as the C build
+/// says on a real clock (22768 left after the first send).
 #[test]
 fn what_a_send_leaves_is_said_after_what_went() {
     const RATE: usize = 10_000;
@@ -307,16 +309,20 @@ fn what_a_send_leaves_is_said_after_what_went() {
         .filter(|l| l.starts_with("Curl_req_flush("))
         .collect();
     let sends: Vec<usize> = seen.of("dataout").iter().map(Vec::len).collect();
-    let filled: usize = sends.iter().sum();
-    assert_eq!(sends, [RATE, RATE, RATE, filled - 3 * RATE]);
+    assert_eq!(sends, [RATE; 4]);
+    // The burst of 32 KiB read, a second's worth sent; the tokens left
+    // read behind what waits as the send blocks, and the buffer's last
+    // room the pass after; then a second's worth a pass until the tokens
+    // are spent.
     let left = |n: usize| format!("Curl_req_flush(len={n}) -> EAGAIN\n");
     assert_eq!(
         flushes,
         [
-            left(filled - RATE),
-            left(filled - RATE),
-            left(filled - 2 * RATE),
-            left(filled - 3 * RATE),
+            left(22_768),
+            left(45_536),
+            left(45_536),
+            left(35_536),
+            left(25_536),
         ]
     );
 }

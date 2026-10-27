@@ -6667,8 +6667,11 @@ fn a_handler_is_given_no_room_past_the_size() {
 
 /// Under a send limit, a body held for a 100 earns its tokens from when
 /// the head went, as C's readers are asked for it then: after a wait of
-/// three seconds, the burst of 32 KiB goes at once, a second's worth in
-/// each send and each pass (`xfer_send`).
+/// three seconds, the burst of 32 KiB is read at once and more behind
+/// what waits as the sends spend it, a second's worth in each send and
+/// each pass (`xfer_send`), until the tokens are spent: the clock stands
+/// still. The C build, on a real clock, sends 10000 bytes a pass until
+/// its buffer of 64 KiB is sent.
 #[test]
 fn a_body_held_for_a_100_earns_from_the_head() {
     const RATE: u64 = 10_000;
@@ -6697,7 +6700,7 @@ fn a_body_held_for_a_100_earns_from_the_head() {
         m.perform(&mut NoEvents).unwrap();
     }
     let sends: Vec<usize> = seen.of("dataout").iter().map(Vec::len).collect();
-    assert_eq!(sends, [10_000, 10_000, 10_000, 2768]);
+    assert_eq!(sends, [10_000, 10_000, 10_000, 10_000]);
 }
 
 /// The head does not count against a send's second's worth of the body:

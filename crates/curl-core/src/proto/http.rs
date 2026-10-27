@@ -1669,6 +1669,18 @@ impl Request {
         mut read: bool,
     ) -> Result<bool, ErrorKind> {
         while self.sending() {
+            // With some of the body still waiting, more is read behind it
+            // first while there is room (`Curl_req_send_more` fills before
+            // it flushes).
+            if read
+                && self.sent < self.filled
+                && self.filled < self.out.len()
+                && !cx.pause().send_paused()
+                && matches!(self.outgoing, Sending::Body(Reading { eos_read: false, .. }))
+            {
+                read = false;
+                self.fill(cx)?;
+            }
             if self.sent == self.filled {
                 if let Sending::Body(Reading { eos_read: true, .. }) = self.outgoing {
                     // The stream hears the body's end, which no bytes

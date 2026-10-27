@@ -127,8 +127,22 @@ fn certs(dir: &Path) {
 }
 
 /// caddy serving `BODY` as `/data.txt` over HTTP/3 on a free port of
-/// 127.0.0.1, from `dir`.
+/// 127.0.0.1, from `dir`. A port found free may be taken before caddy
+/// binds it, by another test or another run on the machine: caddy then
+/// fails, and is started again on other ports.
 fn caddy(dir: &Path) -> (Server, SocketAddr) {
+    for _ in 0..10 {
+        let (mut server, port) = caddy_once(dir);
+        if wait_bound(&mut server, port) {
+            return (server, SocketAddr::from(([127, 0, 0, 1], port)));
+        }
+    }
+    panic!("caddy bound no UDP port in ten tries");
+}
+
+/// caddy started on ports free as they were looked for, and its HTTP/3
+/// one.
+fn caddy_once(dir: &Path) -> (Server, u16) {
     let port = UdpSocket::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -160,30 +174,44 @@ fn caddy(dir: &Path) -> (Server, SocketAddr) {
         .stderr(Stdio::null())
         .spawn()
         .expect("caddy, installed, to serve HTTP/3");
-    let server = Server(child);
-    wait_bound(port);
-    (server, SocketAddr::from(([127, 0, 0, 1], port)))
+    (Server(child), port)
 }
 
-/// Wait until a UDP socket is bound to `port`.
-fn wait_bound(port: u16) {
+/// Wait until `server` itself has a UDP socket bound to `port`: one of
+/// another process's on it does not count. False if it ends first.
+fn wait_bound(server: &mut Server, port: u16) -> bool {
     let deadline = StdInstant::now() + Duration::from_secs(20);
-    let needle = format!(":{port:04X} ");
+    let needle = format!(":{port:04X}");
+    let fds = format!("/proc/{}/fd", server.0.id());
     while StdInstant::now() < deadline {
+        if server.0.try_wait().unwrap().is_some() {
+            return false;
+        }
+        // The sockets bound to the port, by inode.
+        let mut inodes = Vec::new();
         for table in ["/proc/net/udp", "/proc/net/udp6"] {
             let udp = std::fs::read_to_string(table).unwrap_or_default();
-            let bound = udp.lines().any(|l| {
-                l.split_whitespace()
-                    .nth(1)
-                    .is_some_and(|a| a.ends_with(needle.trim()))
-            });
-            if bound {
-                return;
+            for l in udp.lines() {
+                let cols: Vec<&str> = l.split_whitespace().collect();
+                if cols.get(1).is_some_and(|a| a.ends_with(&needle)) {
+                    inodes.extend(cols.get(9).map(|i| format!("socket:[{i}]")));
+                }
             }
+        }
+        let owned = std::fs::read_dir(&fds)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|fd| {
+                std::fs::read_link(fd.path())
+                    .is_ok_and(|link| inodes.iter().any(|i| link.as_os_str() == i.as_str()))
+            });
+        if owned {
+            return true;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    panic!("caddy bound no UDP port {port}");
+    false
 }
 
 /// What a connection told.

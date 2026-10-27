@@ -1013,9 +1013,6 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
       their chains C's.
     - (d) **Done.** CONNECT-UDP over the HTTP/3 proxy, QUIC in QUIC, the capsules the tunnel
       stream's DATA: all of test_60 passes (12 and 04 skip, as C's do).
-    - (e) The race through an HTTP proxy for `--http3`: C weighs HTTP/3 there as anywhere
-      (`cf_hc_may_h3` refuses only SOCKS), its attempt over CONNECT-UDP beside one over
-      CONNECT, two tunnels to the proxy at once; ours makes the one over CONNECT.
 
 ## Milestone 6: the other protocols
 
@@ -1026,7 +1023,10 @@ build with, with a C oracle built against it; then LDAP, MQTT, WebSocket, DICT, 
 RTSP, SMB, TELNET and TFTP. NTLM stays out of scope (SCOPE.md). It opens with the protocol
 phases C's table has: connect and connecting, doing and do-more with their pollsets,
 per-connection protocol state, a disconnect hook before the goodbye, the scheme table generated
-with its flags, auth out of `proto/http1`. WebSocket's step lends a write callback a send handle
+with its flags, auth out of `proto/http1`. Two setups at once, FTP's second chain, also give
+`--http3` its race through an HTTP proxy: C weighs HTTP/3 there as anywhere (`cf_hc_may_h3`
+refuses only SOCKS), its attempt over CONNECT-UDP beside one over CONNECT, two tunnels to the
+proxy at once, where ours makes the one over CONNECT. WebSocket's step lends a write callback a send handle
 on its own connection, a typed exception to ENGINE's decision 9, as C allows `curl_ws_send`
 there.
 

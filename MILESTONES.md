@@ -915,8 +915,8 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
       (`CURLOPT_UPKEEP_INTERVAL_MS`, `Curl_cpool_upkeep`, `http2_conn_upkeep`). **Done**,
       pinned against the fake at the interval's last millisecond and its first: the C leg
       cannot see a PING, which its test servers do not record and C traces to its admin handle.
-      A share's connection lent to the caller's multi is reached through it; one lent to another
-      multi, or kept alive from a handle with no multi, is not reached yet.
+      A share's connection lent to a multi is asked of that multi, which keeps it alive as it
+      next sends on it or gives it back.
     - The pool checks a multiplexed connection's health at most once a second
       (`lastchecked_ms`). **Done**, pinned against the fake at 999 and 1000 ms: the C leg
       cannot time a server's GOAWAY that closely.

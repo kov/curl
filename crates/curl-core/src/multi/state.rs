@@ -834,8 +834,17 @@ fn release<H: Host>(
         // A share's lease, lent to the multi: the last key gives it back to
         // the share's pool. Each is a use of the share's pool, as C
         // returns any under its lock (`Curl_cpool_return`).
-        Home::Share(_) => {
+        Home::Share(ref share) => {
             let mut lease = lease;
+            // What the share's upkeep asked of the connection, lent here,
+            // is done before the return starts its interval again, under
+            // the share's pool's own lock.
+            let ask = share.pool().take_ask(lease.id());
+            if let Some(ask) = ask
+                && lease.is_up()
+            {
+                ask.keep_alive(lease.get(), now);
+            }
             cx.rest.caches.pool.check_in(&mut lease);
             let back = cx.rest.caches.pool.release_lent(lease, now);
             cx.rest

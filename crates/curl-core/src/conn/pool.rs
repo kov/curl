@@ -690,9 +690,43 @@ struct Leased {
     route: Route,
     number: ConnNumber,
     verdict: Verdict,
-    /// A share's connection found to multiplex, lent to a multi while it
-    /// does: the multi it is lent to has it among those lent to it.
-    lent: bool,
+    /// A share's connection found to multiplex is lent to a multi while
+    /// it does: the multi it is lent to has it among those lent to it.
+    loan: Loan,
+}
+
+/// Whether a share's connection leased is lent to a multi, and what the
+/// share's upkeep asked of the multi that has it (`Pool::upkeep`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Loan {
+    Kept,
+    Lent { asked: Option<UpkeepAsk> },
+}
+
+/// An upkeep asked at `at`, with the calling handle's `interval`: the
+/// connection is kept alive if it was due then.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct UpkeepAsk {
+    at: Instant,
+    interval: Duration,
+}
+
+impl UpkeepAsk {
+    /// Keep `conn`, in use, alive as asked, at `now`: none is closed
+    /// whatever its keep-alive does, and the caller hears nothing of it.
+    pub(crate) fn keep_alive(self, conn: &mut Conn, now: Instant) {
+        let _in_use = conn.upkeep_at(&mut Silent(now), self.interval, self.at);
+    }
+
+    /// Of two asks, the one by which the connection is due sooner, or at
+    /// all: the later `at` less its interval.
+    fn most_overdue(self, other: UpkeepAsk) -> UpkeepAsk {
+        if self.at.after(other.interval) >= other.at.after(self.interval) {
+            self
+        } else {
+            other
+        }
+    }
 }
 
 /// Whether a leased connection may yet take more transfers, as its
@@ -1013,7 +1047,7 @@ impl Pool {
             route: route.clone(),
             number,
             verdict: Verdict::of(None, false),
-            lent: false,
+            loan: Loan::Kept,
         };
         let slot = match route {
             Route::Local => ConnSlot::Open(Conn {
@@ -1137,7 +1171,9 @@ impl Pool {
             // pool says; lent to another, it is seen and passed over
             // (`url_match_multi`).
             Some(Place::Leased(Leased {
-                lent: true, route, ..
+                loan: Loan::Lent { .. },
+                route,
+                ..
             })) => {
                 let verdict = wanted.lending.lent.iter().find(|(lent, _)| *lent == id);
                 return match verdict {
@@ -1208,7 +1244,7 @@ impl Pool {
                     number: conn.number,
                     // An idle one carried a request, which found it.
                     verdict: Verdict::of(Some(conn), true),
-                    lent: false,
+                    loan: Loan::Kept,
                 };
                 let Some(Place::Idle(mut slot)) = self
                     .conns
@@ -1354,8 +1390,8 @@ impl Pool {
         let Some(Place::Leased(leased)) = self.conns.get_mut(id) else {
             panic!("{id:?} is not leased");
         };
-        assert!(!leased.lent, "{id:?} is lent already");
-        leased.lent = true;
+        assert_eq!(leased.loan, Loan::Kept, "{id:?} is lent already");
+        leased.loan = Loan::Lent { asked: None };
     }
 
     /// A key to a share's connection lent here given back: one transfer
@@ -1442,6 +1478,16 @@ impl Pool {
                     // Out with a transfer's step, which keeps it.
                     None => continue,
                 },
+                // A share's lent to a multi is asked of the multi that has
+                // it, which takes the ask as it can.
+                Some(Place::Leased(Leased {
+                    loan: Loan::Lent { asked },
+                    ..
+                })) => {
+                    let ask = UpkeepAsk { at: now, interval };
+                    *asked = Some(asked.map_or(ask, |a| a.most_overdue(ask)));
+                    continue;
+                }
                 Some(Place::Leased(_)) | None => continue,
             };
             // Traced, and failed, as the multi's own handle's: the
@@ -1454,15 +1500,15 @@ impl Pool {
         }
     }
 
-    /// Keep alive `share`'s connections lent to this multi that have gone
-    /// `interval` without, as the share's pool does its own
-    /// (`Pool::upkeep`): each is in use, so none is closed whatever its
-    /// keep-alive does. One out with a transfer's step is that step's.
-    pub(crate) fn upkeep_lent(&mut self, share: &Share, interval: Duration, now: Instant) {
-        for l in self.lent.iter_mut().filter(|l| l.share.is(share)) {
-            if let Some(ConnSlot::Open(conn)) = l.shared.slot.as_deref_mut() {
-                let _in_use = conn.upkeep(&mut Silent(now), interval);
-            }
+    /// What the upkeep asked of the connection `id`, lent to a multi,
+    /// taken by that multi.
+    pub(crate) fn take_ask(&mut self, id: ConnId) -> Option<UpkeepAsk> {
+        match self.conns.get_mut(id) {
+            Some(Place::Leased(Leased {
+                loan: Loan::Lent { asked },
+                ..
+            })) => asked.take(),
+            _ => None,
         }
     }
 
@@ -1746,7 +1792,7 @@ impl Pool {
                 route: shared.route.clone(),
                 number: shared.conn().number,
                 verdict: Verdict::Pending,
-                lent: false,
+                loan: Loan::Kept,
             };
             (Place::Leased(leased), place)
         }) else {

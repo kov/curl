@@ -784,6 +784,16 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
+        // What a share's upkeep asked of its connection, lent to this
+        // multi, is done now, its PING going with this send
+        // (`Pool::upkeep`), under the share's pool's own lock.
+        if let crate::conn::Home::Share(share) = lease.home() {
+            let share = share.clone();
+            let ask = share.pool().take_ask(lease.id());
+            if let Some(ask) = ask {
+                ask.keep_alive(lease.get(), cx.now());
+            }
+        }
         let me = cx.me;
         let stream = self.wire.h2_mut().expect("a request over HTTP/2");
         let sent = with_session(lease, |h2, lease| {

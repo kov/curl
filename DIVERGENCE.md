@@ -352,8 +352,11 @@ not a difference: it is tracked in `MILESTONES.md`.
   (`nghttp2_session_send`), framing with it whatever request body the streams have buffered,
   which its read callback reaches in the stream's own buffer; here the body is the transfer's,
   reached only from its step, and a send without it would fail the stream. An idle connection
-  has no stream open, and is sent its PING at once as in C. Pinned by
-  `a_connection_in_use_is_pinged_with_its_transfer_s_next_send`
+  has no stream open, and is sent its PING at once as in C. A share's connection lent to a
+  multi is asked of that multi, which keeps it alive as one of its transfers sends on it or
+  gives it back, judged due at the time asked; C's share pool reaches it and sends the PING at
+  once. Pinned by `a_connection_in_use_is_pinged_with_its_transfer_s_next_send` and
+  `a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked`
   (`crates/curl-core/src/proto/http/tests/h2.rs`).
 
 ## Handles the application never made

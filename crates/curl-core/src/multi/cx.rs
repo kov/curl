@@ -285,9 +285,9 @@ pub(super) fn upkeep(
     watched(watch, share, Kind::Connections, || {
         let mut later = CloseLater::new(net);
         {
-            let mut pool = share.pool();
+            let mut shared = share.pool();
             // Each connection may close.
-            let each = usize::try_from(pool.len()).expect("a pool's size fits");
+            let each = usize::try_from(shared.len()).expect("a pool's size fits");
             later.make_room(each)?;
             let mut exits = WithSet {
                 net: &mut later,
@@ -295,16 +295,12 @@ pub(super) fn upkeep(
                 max_total,
                 multi_pool,
             };
-            pool.upkeep(interval, &mut exits, now);
+            shared.upkeep(interval, &mut exits, now);
         }
         // The share's lock is let go.
         later.close();
-        Ok::<(), OutOfMemory>(())
-    })?;
-    // Its connections lent to this multi are the multi's while they are,
-    // reached through it; one lent to another multi is that one's.
-    pool.upkeep_lent(share, interval, now);
-    Ok(())
+        Ok(())
+    })
 }
 
 /// As `EngineRest::announce_closing`, on the multi's parts.

@@ -1757,22 +1757,30 @@ made (`lastchecked_ms`), set as it is returned.
 
 The upkeep (`curl_easy_upkeep`, `Curl_cpool_upkeep`; `Easy::upkeep`, `Multi::upkeep`) visits
 every connection of the calling handle's pool the pool holds, idle, reserved or attached
-between steps; one leased whole is its transfer's and is passed over. A share's connection
-lent to the calling multi is the multi's while it is, and is visited through the multi's pool
-(`Pool::upkeep_lent`), the view the reuse search has of it (`Pool::lending`); in use, it is
-never closed. Each is due once the caller's `CURLOPT_UPKEEP_INTERVAL_MS` has passed since
-`Conn::upkept_ms`, whole milliseconds since it was made, set as it is found connected, at
-every lease given back and at each keep-alive (`lastupkeep_ms`). A due connection asks its
-session to keep it alive (`Part::keep_alive`): HTTP/2 sends a PING, at once on a connection
-with no stream open, else with its transfers' next send (DIVERGENCE.md); HTTP/3, whose QUIC
-connection keeps itself alive on its own timer, the layers and an HTTP/2 proxy's tunnel send
-nothing, as C's filters pass it down to a socket that does nothing. An idle connection whose
-keep-alive fails is closed; the caller hears nothing of it, as C fails it to the multi's
-admin handle.
+between steps; one leased whole is its transfer's and is passed over. Each is due once the
+caller's `CURLOPT_UPKEEP_INTERVAL_MS` has passed since `Conn::upkept_ms`, whole milliseconds
+since it was made, set as it is found connected, at every lease given back and at each
+keep-alive (`lastupkeep_ms`). A due connection asks its session to keep it alive
+(`Part::keep_alive`): HTTP/2 sends a PING, at once on a connection with no stream open, else
+with its transfers' next send (DIVERGENCE.md); HTTP/3, whose QUIC connection keeps itself alive
+on its own timer, the layers and an HTTP/2 proxy's tunnel send nothing, as C's filters pass it
+down to a socket that does nothing. An idle connection whose keep-alive fails is closed; the
+caller hears nothing of it, as C fails it to the multi's admin handle.
 
-**Not built** (MILESTONES step 55): the `--trace-config http/2` lines; and the upkeep of a
-share's HTTP/2 connection lent to a multi other than the caller's, or asked by a handle with no
-multi, which C sends a PING and neither the share's pool nor the caller's multi reaches.
+A share's connection lent to a multi is that multi's while it is lent, and the share's pool
+keeps only its place (`Leased`, `Loan::Lent`), with no way to the multi, the caller's or
+another. The upkeep of a share's pool asks instead: it marks the place with the time and the
+caller's interval (`UpkeepAsk`), and the multi holding the connection keeps it alive as asked,
+judged due at the time asked, not when it gets to it. The multi takes the mark under the
+share's pool's own lock, never the application's, as C keeps the connection's fields: as a
+transfer on the connection sends (`h2_egress`), its PING going with that send, and as a
+transfer gives the connection back, before the return starts the interval again, so a
+connection given back before its multi sends on it is kept alive first. Asked twice before it
+is taken, the place keeps the ask most overdue, and the connection gets one PING for both. A
+handle with no multi asks the share's pool as any other, as C's release build walks the share's
+pool with the handle as its admin (`Curl_get_admin`, whose debug build asserts there). C sends
+the PING as it is asked; a lent connection is in use, and its PING goes with its transfers'
+next send as on any connection in use (DIVERGENCE.md).
 
 ### 4.4.1 HTTP/3
 

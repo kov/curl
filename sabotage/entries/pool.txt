@@ -505,9 +505,11 @@ witness: curl-core proto::http::tests::h2::transfers_on_a_share_share_its_connec
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_share_s_connection_lent_to_a_multi_is_that_multi_s
 --- old
-                lent: true, route, ..
+                loan: Loan::Lent { .. },
+                route,
 --- new
-                lent: false, route, ..
+                loan: Loan::Kept,
+                route,
 
 === a lent connection goes back to its share while others are on it
 file: crates/curl-core/src/conn/pool.rs
@@ -704,20 +706,51 @@ witness: curl-core proto::http::tests::h2::a_connection_in_use_is_pinged_with_it
 --- new
                     Some(ConnSlot::Open(_)) => continue,
 
-=== the upkeep passes over a share's connections lent to the multi
-file: crates/curl-core/src/multi/cx.rs
-witness: curl-core proto::http::tests::h2::a_connection_in_use_is_pinged_with_its_transfer_s_next_send
---- old
-    pool.upkeep_lent(share, interval, now);
---- new
-
-=== the upkeep of one share keeps another's lent connections alive
+=== the upkeep of a share's pool asks nothing of a connection lent to a multi
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core proto::http::tests::h2::a_connection_in_use_is_pinged_with_its_transfer_s_next_send
 --- old
-        for l in self.lent.iter_mut().filter(|l| l.share.is(share)) {
+                    *asked = Some(asked.map_or(ask, |a| a.most_overdue(ask)));
 --- new
-        for l in self.lent.iter_mut().filter(|l| l.share.is(share) || !l.share.is(share)) {
+                    let _unasked = (asked, ask);
+
+=== a later ask replaces a more overdue one
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked
+--- old
+                    *asked = Some(asked.map_or(ask, |a| a.most_overdue(ask)));
+--- new
+                    *asked = Some(ask);
+
+=== an ask is judged due when the multi gets to it, not when it was asked
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked
+--- old
+        let _in_use = conn.upkeep_at(&mut Silent(now), self.interval, self.at);
+--- new
+        let _in_use = conn.upkeep_at(&mut Silent(now), self.interval, now);
+
+=== a transfer's send leaves its lent connection's ask for later
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked
+--- old
+            if let Some(ask) = ask {
+                ask.keep_alive(lease.get(), cx.now());
+            }
+--- new
+            drop(ask);
+
+=== a lent connection given back drops what the upkeep asked of it
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2::a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked
+--- old
+            if let Some(ask) = ask
+                && lease.is_up()
+            {
+                ask.keep_alive(lease.get(), now);
+            }
+--- new
+            drop(ask);
 
 === a lent connection one of its transfers gives back keeps its upkeep interval
 file: crates/curl-core/src/conn/pool.rs

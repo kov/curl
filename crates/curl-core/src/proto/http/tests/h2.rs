@@ -618,8 +618,8 @@ fn an_idle_http1_connection_is_sent_nothing_by_the_upkeep() {
 /// connected, as an idle one is after it was given back; with a stream
 /// open, the PING goes with the transfer's next send, which alone can
 /// frame the stream's body. A share's connection lent to the multi is
-/// reached through the multi, for a handle on that share; a handle on
-/// another share reaches that one's, which does not have it.
+/// asked of the multi by a handle on that share, and goes the same way;
+/// a handle on another share asks that one's, which does not have it.
 #[test]
 fn a_connection_in_use_is_pinged_with_its_transfer_s_next_send() {
     use crate::share::{Kind, Share};
@@ -682,6 +682,143 @@ fn a_connection_in_use_is_pinged_with_its_transfer_s_next_send() {
         };
         assert_eq!(&talk.received()[request.len()..], ping, "{on:?}");
         m.remove(id, &mut NoEvents).unwrap();
+    }
+}
+
+/// A share's connection lent to a multi other than the caller's, or
+/// kept alive from a handle with no multi, is asked of the multi that has
+/// it, which keeps it alive as it gets to it: judged due when asked, one
+/// PING for asks made before it gets to it, the most overdue deciding,
+/// and the PING going with its transfer's next send.
+#[test]
+fn a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked() {
+    use crate::share::{Kind, Share};
+    #[derive(Debug, PartialEq)]
+    enum Ask {
+        /// By another multi, past the interval.
+        Due,
+        /// By no multi, past the interval.
+        DueWithoutMulti,
+        /// A millisecond short of it, the holder getting to it later.
+        Early,
+        /// Past a short interval, then short of a long one.
+        DueThenEarly,
+        /// By another multi, past the interval, the holder's transfer then
+        /// given up before it steps.
+        DueThenRemoved,
+        /// By another multi, past the interval, a second transfer then
+        /// joining the connection and sending its request.
+        DueThenJoined,
+        /// By another multi, past the interval, the holder's transfer
+        /// having its whole response, paused, then given up: it sends
+        /// nothing more, and gives the connection back.
+        DueThenRemovedQuiet,
+    }
+    let asks = [
+        Ask::Due,
+        Ask::DueWithoutMulti,
+        Ask::Early,
+        Ask::DueThenEarly,
+        Ask::DueThenRemoved,
+        Ask::DueThenJoined,
+        Ask::DueThenRemovedQuiet,
+    ];
+    for ask in asks {
+        let talk = Conversation::replies(&[RESPONSE], false).per_send().held();
+        let (mut holder, clock) = clocked(&[&talk]);
+        let mut other: Multi = Multi::new(Env {
+            clock: Box::new(clock.clone()),
+            net: Box::new(FakeNet::new(clock.clone())),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        })
+        .unwrap();
+        let share = Share::new().unwrap();
+        share.keep(Kind::Connections).unwrap();
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        e.set_share(Some(share.clone()));
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = HttpVersion::Http2Prior;
+        if ask == Ask::DueThenRemovedQuiet {
+            o.callbacks.write = Some(Handler::write(PausesFirst::default()).unwrap());
+            talk.allow(1);
+        }
+        let id = holder.add(Box::new(e), (), &mut NoEvents).unwrap();
+        for _ in 0..3 {
+            holder.perform(&mut NoEvents).unwrap();
+        }
+        assert_eq!(holder.lent_connections(), 1, "{ask:?}");
+        let request = talk.received();
+        let asking = |ms: u64| {
+            let mut e = Easy::new();
+            e.set_share(Some(share.clone()));
+            e.options_mut().limits.reuse.upkeep =
+                crate::options::UpkeepInterval(Duration::from_millis(ms));
+            e
+        };
+        match ask {
+            Ask::Due | Ask::DueThenRemoved | Ask::DueThenJoined | Ask::DueThenRemovedQuiet => {
+                clock.advance(Duration::from_secs(60));
+                other.upkeep_for(&asking(60_000), &mut NoEvents).unwrap();
+            }
+            Ask::DueWithoutMulti => {
+                clock.advance(Duration::from_secs(60));
+                share.upkeep(Duration::from_secs(60), clock.now());
+            }
+            Ask::Early => {
+                clock.advance(Duration::from_millis(59_999));
+                other.upkeep_for(&asking(60_000), &mut NoEvents).unwrap();
+                clock.advance(Duration::from_secs(10));
+            }
+            Ask::DueThenEarly => {
+                clock.advance(Duration::from_secs(30));
+                other.upkeep_for(&asking(5_000), &mut NoEvents).unwrap();
+                other.upkeep_for(&asking(60_000), &mut NoEvents).unwrap();
+            }
+        }
+        assert_eq!(talk.received(), request, "{ask:?}: asked, not done");
+        if ask == Ask::DueThenJoined {
+            // The PING goes with the next send on the connection, the
+            // joining transfer's request.
+            let mut e = Easy::new();
+            e.set_libraries(with_h2());
+            e.set_share(Some(share.clone()));
+            let o = e.options_mut();
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.http.version = HttpVersion::Http2Prior;
+            let joined = holder.add(Box::new(e), (), &mut NoEvents).unwrap();
+            for _ in 0..3 {
+                holder.perform(&mut NoEvents).unwrap();
+            }
+            let sent = String::from_utf8(talk.received()[request.len()..].to_vec()).unwrap();
+            assert!(sent.contains("H 3 1\n"), "{ask:?}: {sent:?}");
+            assert_eq!(sent.matches("P\n").count(), 1, "{ask:?}: {sent:?}");
+            holder.remove(joined, &mut NoEvents).unwrap();
+            holder.remove(id, &mut NoEvents).unwrap();
+        } else if ask == Ask::DueThenRemoved || ask == Ask::DueThenRemovedQuiet {
+            // Its stream reset, the connection is kept alive as it is
+            // given back, before its return starts the interval again.
+            holder.remove(id, &mut NoEvents).unwrap();
+            let sent = String::from_utf8(talk.received()[request.len()..].to_vec()).unwrap();
+            assert!(sent.contains("P\n"), "{ask:?}: {sent:?}");
+        } else {
+            talk.allow(1);
+            assert_eq!(
+                drive_to_completion(&mut holder, id, &mut NoEvents).unwrap(),
+                Ok(())
+            );
+            let ping: &[u8] = match ask {
+                Ask::Early => b"",
+                _ => b"P\n",
+            };
+            assert_eq!(&talk.received()[request.len()..], ping, "{ask:?}");
+            holder.remove(id, &mut NoEvents).unwrap();
+        }
+        let leased = share.pool().leased();
+        assert_eq!(leased, 0, "{ask:?}: given back");
     }
 }
 

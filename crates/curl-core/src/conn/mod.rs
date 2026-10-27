@@ -1066,8 +1066,21 @@ impl Conn {
         cx: &mut dyn LayerCx,
         interval: std::time::Duration,
     ) -> Option<Result<(), crate::error::ErrorKind>> {
+        let now = cx.now();
+        self.upkeep_at(cx, interval, now)
+    }
+
+    /// As `upkeep`, asked at `at` and judged due then: what a share's pool
+    /// asked of the multi the connection is lent to, done as the multi
+    /// gets to it.
+    pub(crate) fn upkeep_at(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        interval: std::time::Duration,
+        at: Instant,
+    ) -> Option<Result<(), crate::error::ErrorKind>> {
         use part::Part as _;
-        let made_ms = u64::try_from(cx.now().since(self.created).as_millis()).unwrap_or(u64::MAX);
+        let made_ms = u64::try_from(at.since(self.created).as_millis()).unwrap_or(u64::MAX);
         let interval_ms = u64::try_from(interval.as_millis()).unwrap_or(u64::MAX);
         if made_ms.saturating_sub(self.upkept_ms) < interval_ms {
             return None;

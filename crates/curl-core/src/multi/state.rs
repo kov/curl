@@ -4599,6 +4599,27 @@ fn alt_svc<H: Host>(
     Ok(Some(AltPeer { via, speaks }))
 }
 
+/// The search passed over connection `number`, as it speaks `version`,
+/// which the transfer does not allow: the C debug build's line.
+fn unwanted<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    number: crate::conn::ConnNumber,
+    version: crate::report::ResponseVersion,
+) {
+    use crate::report::ResponseVersion;
+    let not = match version {
+        ResponseVersion::Http3 => "h3",
+        ResponseVersion::Http2 => "h2",
+        ResponseVersion::Http10 | ResponseVersion::Http11 => "h1",
+    };
+    if cfg!(feature = "debug-hooks") {
+        trace::info(
+            cx,
+            format_args!("not reusing conn {number}, we do not want {not}"),
+        );
+    }
+}
+
 /// A connection for the transfer making `proto`, and the trace of what
 /// the search for one did.
 /// `last` is the transfer's last connection, tried first and then
@@ -4633,7 +4654,9 @@ fn acquire<H: Host>(
         None => Home::Multi,
     };
     let last = cx.easy().last_conn.map(|l| l.id);
-    let versions = proto.http_versions(cx.easy().options());
+    // What it allows, not only what it wants: a connection in HTTP/3 serves
+    // one that asked for no version (`url_match_http_version`).
+    let versions = proto.allowed_versions(cx.easy().options());
     // An HTTP transfer that may speak HTTP/2 or HTTP/3 shares a
     // connection that multiplexes, as the multi lets it
     // (`xfer_may_multiplex`).
@@ -4667,6 +4690,15 @@ fn acquire<H: Host>(
     } else {
         pool::Found::Nothing
     };
+    // Said as the search passes them over, before a connection is made or
+    // attached, as C's debug build says it in `url_match_http_version`.
+    notes.retain(|note| match *note {
+        PoolNote::Unwanted { number, version } => {
+            unwanted(cx, number, version);
+            false
+        }
+        _ => true,
+    });
     let acquired = match found {
         pool::Found::Lease(lease) => Acquired::Reused(lease),
         pool::Found::Lent(id) => {
@@ -4726,6 +4758,7 @@ fn acquire<H: Host>(
                 );
             }
             PoolNote::Closed(n) => trace::info(cx, format_args!("shutting down connection {n}")),
+            PoolNote::Unwanted { .. } => unreachable!("said as the search returns"),
             // The server's limit is said with no space before "reached",
             // as C says it.
             PoolNote::Full {

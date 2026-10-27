@@ -554,6 +554,12 @@ pub(crate) enum PoolNote {
     NotOpenEnough(ConnNumber),
     /// The transfer waits for such a one (`url_match_result`).
     PendingCandidate,
+    /// A connection that serves the transfer speaks a version it does not
+    /// allow (`url_match_http_version`).
+    Unwanted {
+        number: ConnNumber,
+        version: crate::report::ResponseVersion,
+    },
     /// A connection closed, gracefully.
     Closed(ConnNumber),
 }
@@ -703,6 +709,8 @@ enum JoinVerdict {
     Passed,
     /// Seen, but it cannot take the transfer.
     Seen,
+    /// Seen, but speaking a version the transfer does not allow.
+    Unwanted(PoolNote),
     /// Seen, with as many transfers on it as it takes; its session was
     /// asked how many, saying so if `asked`.
     Full {
@@ -1087,11 +1095,15 @@ impl Pool {
         {
             return Ok(None);
         }
-        let speaks = match conn.session() {
-            Some(session) => wanted.versions.allows(session.version()),
-            None => wanted.versions.h1,
+        let version = match conn.session() {
+            Some(session) => session.version(),
+            None => crate::report::ResponseVersion::Http11,
         };
-        if !speaks {
+        if !wanted.versions.allows(version) {
+            notes.try_push(PoolNote::Unwanted {
+                number: conn.number,
+                version,
+            })?;
             return Ok(None);
         }
         let number = conn.number;
@@ -1711,8 +1723,14 @@ fn join_verdict(conn: &Conn, wanted: &Wanted<'_>) -> JoinVerdict {
     let Some(session) = conn.session() else {
         unreachable!("a connection that multiplexes has a session");
     };
-    if !conn.serves_auth(&wanted.auth) || !wanted.versions.allows(session.version()) {
+    if !conn.serves_auth(&wanted.auth) {
         return JoinVerdict::Seen;
+    }
+    if !wanted.versions.allows(session.version()) {
+        return JoinVerdict::Unwanted(PoolNote::Unwanted {
+            number: conn.number,
+            version: session.version(),
+        });
     }
     let Use::Leased(users) = conn.use_ else {
         unreachable!("a connection that multiplexes is leased");
@@ -1756,6 +1774,11 @@ fn judged(
         JoinVerdict::Passed => Ok(false),
         JoinVerdict::Seen => {
             seen.multiplex = true;
+            Ok(false)
+        }
+        JoinVerdict::Unwanted(note) => {
+            seen.multiplex = true;
+            notes.try_push(note)?;
             Ok(false)
         }
         JoinVerdict::Full {

@@ -183,7 +183,7 @@ witness: curl-core proto::http::tests::h2::http_1_1_required_downgrades_the_requ
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core proto::http::tests::h2::a_connection_is_reused_only_by_a_transfer_that_speaks_its_version
 --- old
-        if !speaks {
+        if !wanted.versions.allows(version) {
 --- new
         if false {
 

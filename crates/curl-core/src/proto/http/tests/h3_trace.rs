@@ -596,6 +596,79 @@ fn a_shared_connection_keeps_its_clock_under_another_multi() {
     );
 }
 
+/// `get_script`, then a second response on the connection's next stream,
+/// `ok`, and the packet the second request goes in.
+fn and_then_ok(script: &Arc<Mutex<Script>>) {
+    let mut s = script.lock().unwrap();
+    let header = |name: &[u8], value: &[u8]| Told::Header {
+        stream: 4,
+        name: name.to_vec(),
+        value: value.to_vec(),
+    };
+    s.on_read.push_back(vec![
+        header(b":status", b"200"),
+        header(b"content-length", b"2"),
+        Told::HeadersDone(4),
+        Told::Data(4, b"ok".to_vec()),
+        Told::Closed(4, 0x100),
+    ]);
+}
+
+/// A GET of `https://localhost:PORT/` by `e`, asking for `version`.
+fn get_as(m: &mut Multi, e: Easy, version: crate::options::HttpVersion) -> Ran {
+    let url = format!("https://localhost:{PORT}/");
+    get_with(m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = version;
+        o.ip_version = IpVersion::Any;
+        o.limits.connect = crate::time::TimeLimit::from_millis(1000);
+    })
+}
+
+/// A connection in HTTP/3 serves a transfer that asks for no version,
+/// which allows HTTP/3 though it does not want it: C compares no
+/// transport, only the version spoken against those allowed
+/// (`url_match_http_version`).
+#[test]
+fn an_http3_connection_serves_a_transfer_that_asks_for_no_version() {
+    let script = get_script(b"123456789");
+    and_then_ok(&script);
+    let replies: &[&[u8]] = &[b"server flight", b"response", b"second"];
+    let mut m = quic_server(replies);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    assert_eq!(h3_get(&mut m, e).result, Ok(()));
+    script.lock().unwrap().out.extend([vec![5; 75], vec![]]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = get_as(&mut m, e, crate::options::HttpVersion::Any);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"ok");
+    assert_eq!(
+        script.lock().unwrap().requests.len(),
+        2,
+        "both on the one connection"
+    );
+}
+
+/// A transfer that allows HTTP/1 alone passes an HTTP/3 connection over,
+/// as C's debug build says (`url_match_http_version`).
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn an_http3_connection_is_passed_over_by_a_transfer_in_http1() {
+    let script = get_script(b"123456789");
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    assert_eq!(h3_get(&mut m, e).result, Ok(()));
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = get_as(&mut m, e, crate::options::HttpVersion::Http11);
+    let text = ran.seen.text();
+    let at = |line: &str| text.iter().position(|l| l.ends_with(line));
+    // Before the connection the transfer makes, on none, as in C.
+    let unwanted = at("[1-x] not reusing conn #0, we do not want h3\n");
+    let added = at("[CPOOL] added connection 1. The cache now contains 2 members\n");
+    assert!(unwanted.is_some() && unwanted < added, "{text:#?}");
+    assert_eq!(script.lock().unwrap().requests.len(), 1, "none on it");
+}
+
 /// Two transfers at once: the second, finding the first's connection
 /// being set up, waits for it (`CURLOPT_PIPEWAIT`, which the tool sets for
 /// `-Z`), then joins it on a stream of its own, as many as the peer allows

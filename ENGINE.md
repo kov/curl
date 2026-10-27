@@ -1862,7 +1862,11 @@ speaks TLS before anything else goes to it (§4.9).
 `candidate.route.reusable_for(&needle)`: `Eq` on each sub-struct plus the deliberate
 asymmetries (a TLS connection may serve the plain scheme, STARTTLS reuse with
 `PROTOPT_SSL_REUSE`, HTTP-version allowances, MAXLIFETIME, busy non-multiplexed, max streams,
-another multi). A field added to `TlsIdentity` or `SchemeConfig` joins the comparison by
+another multi). The dial, TCP or QUIC, is not compared, as C compares no transport: the version
+a connection speaks must be one the transfer allows (`url_match_http_version`), so a transfer
+that asks for no version takes a connection in HTTP/3, and one that allows HTTP/3 alone passes a
+connection in HTTP/2 over (`not reusing conn #N, we do not want h2` in the debug build, as the
+search passes it). A field added to `TlsIdentity` or `SchemeConfig` joins the comparison by
 construction, which is the class behind CVE-2021-22924, CVE-2022-27782 and CVE-2023-27535/27538.
 The transfer's authority (origin, credentials) lives on its `Target`, never written onto a
 shared connection (C's `url_conn_reuse_adjust` has no counterpart). Idle connections are

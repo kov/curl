@@ -168,7 +168,7 @@ impl Route {
                     tls,
                     local,
                     delegation,
-                    dial,
+                    dial: _,
                 } = have;
                 let Tcp {
                     origin: want_origin,
@@ -178,11 +178,12 @@ impl Route {
                     tls: want_tls,
                     local: want_local,
                     delegation: want_delegation,
-                    dial: want_dial,
+                    // Not compared, as C compares no transport: a
+                    // connection's version is (`url_match_http_version`).
+                    dial: _,
                 } = want;
                 **origin == **want_origin
                     && delegation == want_delegation
-                    && dial == want_dial
                     // C compares the detours without their schemes
                     // (`Curl_peer_same_destination`); each has its
                     // origin's.
@@ -250,8 +251,8 @@ pub(crate) struct Tcp {
     /// same (`url_match_auth`).
     pub(crate) delegation: crate::options::Delegation,
     /// How the connection to its first hop is made: a TCP stream, or QUIC
-    /// over UDP (C's `transport_wanted`). A connection serves only a
-    /// transfer that dials as it did.
+    /// over UDP (C's `transport_wanted`). A connection serves a transfer
+    /// whichever it dials, if the transfer allows the version it speaks.
     pub(crate) dial: Dial,
 }
 
@@ -1263,11 +1264,11 @@ mod tests {
         assert!(!over(b"/tmp/s").serves(&over(b"/tmp/t")));
     }
 
-    /// A connection dialed over QUIC serves only a transfer that dials
-    /// QUIC, and one over TCP only one over TCP, the same origin
-    /// otherwise (`url_match_conn`'s `transport` check).
+    /// A connection serves a transfer whichever way either dials, as C
+    /// compares no transport: the version it speaks is weighed apart
+    /// (`url_match_http_version`).
     #[test]
-    fn a_connection_serves_only_a_transfer_that_dials_as_it_did() {
+    fn a_connection_serves_a_transfer_whichever_way_it_dials() {
         let dialed = |dial| {
             Route::Tcp(Tcp {
                 origin: TryArc::try_new(peer(b"o.example", 443, None)).unwrap(),
@@ -1282,8 +1283,8 @@ mod tests {
         };
         assert!(dialed(Dial::Quic).serves(&dialed(Dial::Quic)));
         assert!(dialed(Dial::Tcp).serves(&dialed(Dial::Tcp)));
-        assert!(!dialed(Dial::Quic).serves(&dialed(Dial::Tcp)));
-        assert!(!dialed(Dial::Tcp).serves(&dialed(Dial::Quic)));
+        assert!(dialed(Dial::Quic).serves(&dialed(Dial::Tcp)));
+        assert!(dialed(Dial::Tcp).serves(&dialed(Dial::Quic)));
         // Its socket's lines are traced as C's UDP filter's.
         let Route::Tcp(quic) = dialed(Dial::Quic) else {
             unreachable!()

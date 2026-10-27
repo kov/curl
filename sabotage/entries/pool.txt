@@ -577,9 +577,9 @@ witness: curl-core conn::pool::tests::a_multiplexed_connection_is_joined_only_as
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_multiplexed_connection_is_joined_only_as_it_may_be
 --- old
-    if !conn.serves_auth(&wanted.auth) || !wanted.versions.allows(session.version()) {
+    if !wanted.versions.allows(session.version()) {
 --- new
-    if !conn.serves_auth(&wanted.auth) && !wanted.versions.allows(session.version()) {
+    if false {
 
 === a connection made before the network changed is reused
 file: crates/curl-core/src/conn/pool.rs
@@ -632,14 +632,6 @@ witness: curl-core a_get_survives_every_allocation_failing
         let slot = try_box(slot)?;
 --- new
         let slot = Box::new(slot);
-
-=== a connection over QUIC serves a transfer over TCP
-file: crates/curl-core/src/conn/mod.rs
-witness: curl-core conn::tests::a_connection_serves_only_a_transfer_that_dials_as_it_did
---- old
-                    && dial == want_dial
---- new
-                    && (dial == want_dial || true)
 
 === a route over QUIC opens a stream socket
 file: crates/curl-core/src/conn/connect.rs

@@ -565,7 +565,6 @@ impl ProtoState {
         }
     }
 
-    /// The HTTP versions the request may speak; any, for another protocol.
     /// What an HTTP request may speak, as C negotiates it; none for
     /// another protocol.
     pub(crate) fn negotiation(&self, options: &Options) -> Option<http::Negotiation> {
@@ -575,6 +574,22 @@ impl ProtoState {
         }
     }
 
+    /// The HTTP versions a connection the request reuses or joins may
+    /// speak (`http_neg.allowed`): with no version asked for, HTTP/3 too,
+    /// though it is not wanted; any, for another protocol.
+    pub(crate) fn allowed_versions(&self, options: &Options) -> http::Versions {
+        match self.negotiation(options) {
+            Some(neg) => http::Versions {
+                h1: neg.allowed.h1,
+                h2: neg.allowed.h2,
+                h3: neg.allowed.h3,
+            },
+            None => http::Versions::ALL,
+        }
+    }
+
+    /// The HTTP versions the request wants (`http_neg.wanted`); any, for
+    /// another protocol.
     pub(crate) fn http_versions(&self, options: &Options) -> http::Versions {
         match self {
             ProtoState::Http(r) => r.versions(options.http.version),

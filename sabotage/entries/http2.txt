@@ -91,12 +91,12 @@ witness: curl-core proto::http::tests::h2::a_get_goes_as_fields_and_its_response
             Some(_) => false,
 
 === ALPN offers h2 without a library to speak it
-file: crates/curl-core/src/multi/state/tls.rs
+file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::h2::alpn_offers_h2_where_a_library_speaks_it
 --- old
-    let h2 = versions.h2 && cx.easy().libraries().h2.is_some();
+        } else if h1_or_h2 && set.h2 && self.h2 {
 --- new
-    let h2 = versions.h2;
+        } else if h1_or_h2 && set.h2 {
 
 === prior knowledge over TLS offers HTTP/1.1 too
 file: crates/curl-core/src/multi/state/tls.rs

@@ -3762,6 +3762,15 @@ peer gets a protocol error, not an out-of-memory one.
   allocation refused in turn and alone; its server says goodbye back at once, so the
   connection's shutdown, as the multi goes, finishes in its one try and joins no set.
   `GET_BUDGET` stays 48: a plain GET makes no TLS group, identity or layer.
+- HTTP/3 runs over the fake TLS and HTTP/3 libraries, every component traced and a response
+  header that is not UTF-8: a GET in HTTP/3 alone, a GET in HTTP/1.1 through an HTTP/3 proxy's
+  tunnel, and a GET in HTTP/3 alone through that proxy's CONNECT-UDP, each with every
+  allocation refused in turn and alone. The fake HTTP/3 library keeps its bookkeeping out of the
+  tracker (curl-core's `test-util` turns curl-alloc's on), as a real library's memory is its
+  own. A refusal inside the library's read callbacks fails the read, and the transfer with
+  `RecvError`, as C fails any callback's failure (`cf_ngtcp2_recv`); those runs take it beside
+  `OutOfMemory`. The GET is pinned at its measured 73 allocations (`H3_GET_BUDGET`), not yet
+  itemised against the HTTPS GET's 57.
 - Over OpenSSL, `crates/curl-openssl/tests/peer.rs` pins three, as the core cannot depend on
   the binding; OpenSSL's own allocations are libc's, not counted, as C's tracker does not count
   them, and the ALPN list and trace text are on the stack:

@@ -24,13 +24,7 @@ fn what_the_tunnel_read_is_let_go_of_while_more_comes() {
     for round in 0..100 {
         let bytes = counting(came, DATA);
         came += DATA;
-        let heard = t.heard(
-            &mut cx,
-            Event::Data {
-                stream: StreamId(0),
-                bytes: &bytes,
-            },
-        );
+        let heard = t.heard(&mut cx, StreamId(0), StreamEvent::Data(&bytes));
         assert_eq!(heard, Heard::Fine);
         let want = if round == 0 { DATA / 2 } else { DATA };
         assert_eq!(t.take(&mut buf[..want]), want);

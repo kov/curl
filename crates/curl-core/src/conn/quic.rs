@@ -17,7 +17,8 @@ use super::layer::{Below, LayerCx};
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::http3::{
-    CloseError, Connection, Event, Expiry, H3Error, Heard, QuicError, StreamId, SubmitFailed,
+    CloseError, ConnEvent, Connection, Event, Expiry, H3Error, Heard, QuicError, StreamEvent,
+    StreamId, SubmitFailed,
 };
 use crate::time::{Instant, SharedClock};
 use crate::tls::{SessionPeer, TlsCx};
@@ -104,9 +105,9 @@ pub(crate) trait QuicIo: QuicCx {
 /// stream has no user data: the QUIC stream's close is traced for the
 /// transfer of the call (`cb_stream_close`), and body bytes for nobody
 /// fail the read (`cb_h3_recv_data`).
-pub(crate) fn unrouted(cx: &mut dyn LayerCx, event: &Event<'_>) -> Heard {
+pub(crate) fn unrouted(cx: &mut dyn LayerCx, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
     match *event {
-        Event::QuicClosed { stream, error, rv } => {
+        StreamEvent::QuicClosed { error, rv } => {
             let (id, error) = (stream.0, error.0);
             cx.of(
                 Component::Http3,
@@ -114,7 +115,7 @@ pub(crate) fn unrouted(cx: &mut dyn LayerCx, event: &Event<'_>) -> Heard {
             );
             Heard::Fine
         }
-        Event::Data { .. } => Heard::Failed,
+        StreamEvent::Data(_) => Heard::Failed,
         _ => Heard::Fine,
     }
 }
@@ -208,8 +209,8 @@ impl LayerCx for Lone<'_> {
         self.cx.tls_sessions(f);
     }
 
-    fn h3_event(&mut self, event: Event<'_>) -> Heard {
-        unrouted(&mut *self.cx, &event)
+    fn h3_event(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
+        unrouted(&mut *self.cx, stream, &event)
     }
 }
 
@@ -323,8 +324,8 @@ impl LayerCx for Over<'_> {
         self.cx.tls_sessions(f);
     }
 
-    fn h3_event(&mut self, event: Event<'_>) -> Heard {
-        self.cx.h3_event(event)
+    fn h3_event(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
+        self.cx.h3_event(stream, event)
     }
 }
 
@@ -665,22 +666,7 @@ impl Quic {
                 cx.of(h3, format_args!("OpenSSL refused to use early data"));
                 Ok(())
             }
-            Err(Event::H3Failed {
-                why,
-                detail,
-                out_of_memory,
-            }) => {
-                let kind = if out_of_memory {
-                    ErrorKind::OutOfMemory
-                } else {
-                    ErrorKind::QuicConnectError
-                };
-                Err(match detail {
-                    Some(detail) => cx.fails(kind, format_args!("{why}: {detail}")),
-                    None => cx.fails(kind, format_args!("{why}")),
-                })
-            }
-            Err(other) => unreachable!("early data fails only setting up HTTP/3: {other:?}"),
+            Err(failed) => Err(cx.fails(failed.kind(), format_args!("{failed}"))),
         }
     }
 
@@ -1584,8 +1570,12 @@ impl State {
     /// The library told `event`: the connection's own heard here, a
     /// stream's handed to the transfer the call is made for.
     fn heard(&mut self, cx: &mut TlsCx<'_>, event: Event<'_>) -> Heard {
+        let event = match event {
+            Event::Connection(event) => event,
+            Event::Stream(stream, event) => return cx.h3_event(stream, event),
+        };
         match event {
-            Event::HandshakeDone {
+            ConnEvent::HandshakeDone {
                 checked,
                 max_udp_payload,
                 initial_max_data,
@@ -1614,29 +1604,16 @@ impl State {
             }
             // The call fails for it; C says why as it fails it
             // (`init_ngh3_conn`).
-            Event::H3Failed {
-                why,
-                detail,
-                out_of_memory,
-            } => {
-                let kind = if out_of_memory {
-                    ErrorKind::OutOfMemory
-                } else {
-                    ErrorKind::QuicConnectError
-                };
-                match detail {
-                    Some(detail) => cx.fail(kind, format_args!("{why}: {detail}")),
-                    None => cx.fail(kind, format_args!("{why}")),
-                };
+            ConnEvent::H3Failed(failed) => {
+                cx.fail(failed.kind(), format_args!("{failed}"));
                 Heard::Failed
             }
-            Event::MaxBidiStreams(n) => {
+            ConnEvent::MaxBidiStreams(n) => {
                 self.max_bidi = n;
                 let used = self.used_bidi;
                 cx.trace(format_args!("max bidi streams now {n}, used {used}"));
                 Heard::Fine
             }
-            other => cx.h3_event(other),
         }
     }
 }

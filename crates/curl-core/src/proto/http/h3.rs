@@ -13,7 +13,7 @@ use crate::conn::layer::LayerCx;
 use crate::conn::mux::Routes;
 use crate::conn::quic::{Quic, QuicCx, QuicIo, STREAM_WINDOW_INITIAL};
 use crate::error::AGAIN_NUMBER;
-use crate::http3::{Event, H3Error, Heard, StreamId};
+use crate::http3::{H3Error, Heard, StreamEvent, StreamId};
 use crate::proto::http2::fields_of;
 use crate::proto::http3::H3Conn;
 use crate::text::Text;
@@ -250,13 +250,10 @@ impl<H: Host> LayerCx for H3Step<'_, '_, H> {
     /// What the library told of a stream, handed to its transfer: the
     /// stepping one's own, a sibling's, or none, as C's callbacks find
     /// the stream's transfer by its user data.
-    fn h3_event(&mut self, event: Event<'_>) -> Heard {
-        let Some(stream) = stream_of(&event) else {
-            return Heard::Fine;
-        };
+    fn h3_event(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
         // The packet's writer says so, whichever transfer the stream is
         // (`read_pkt_to_send`).
-        if let Event::Blocked { .. } = event {
+        if let StreamEvent::Blocked = event {
             let id = stream.0;
             trace::of(
                 &mut *self.cx,
@@ -278,7 +275,7 @@ impl<H: Host> LayerCx for H3Step<'_, '_, H> {
                     sib.h3_event(scx, lease, event.clone(), &mut extend)
                 })
             });
-            told.unwrap_or_else(|| crate::conn::quic::unrouted(&mut *self.cx, &event))
+            told.unwrap_or_else(|| crate::conn::quic::unrouted(&mut *self.cx, stream, &event))
         };
         if let Some(n) = extend
             && self.extends.try_push((stream, n)).is_err()
@@ -355,24 +352,6 @@ impl<H: Host> H3Step<'_, '_, H> {
 
     fn stream(&mut self) -> &mut H3Stream {
         self.req.h3_stream()
-    }
-}
-
-/// The stream an event of the library's is of, if any.
-fn stream_of(event: &Event<'_>) -> Option<StreamId> {
-    match *event {
-        Event::Consumed { stream, .. }
-        | Event::QuicClosed { stream, .. }
-        | Event::QuicReset { stream, .. }
-        | Event::Unblocked { stream }
-        | Event::Blocked { stream }
-        | Event::Header { stream, .. }
-        | Event::HeadersDone { stream }
-        | Event::Data { stream, .. }
-        | Event::Closed { stream, .. }
-        | Event::H3Reset { stream, .. }
-        | Event::BodyRead { stream, .. } => Some(stream),
-        Event::HandshakeDone { .. } | Event::H3Failed { .. } | Event::MaxBidiStreams(_) => None,
     }
 }
 
@@ -720,14 +699,14 @@ impl Request {
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
-        event: Event<'_>,
+        event: StreamEvent<'_>,
         extend: &mut Option<u64>,
     ) -> Heard {
         let s = self.h3_stream();
         let id = s.shown_id();
         let h3 = Component::Http3;
         match event {
-            Event::Header {
+            StreamEvent::Header {
                 value,
                 status: true,
                 ..
@@ -751,7 +730,7 @@ impl Request {
                     Err(OutOfMemory) => Heard::Failed,
                 }
             }
-            Event::Header { name, value, .. } => {
+            StreamEvent::Header { name, value, .. } => {
                 let id = Text::<24>::clipped(format_args!("[{id}] ")).0;
                 trace::of_with(cx, h3, &[id.bytes(), b"header: ", name, b": ", value]);
                 let mut line = Vec::new();
@@ -768,7 +747,7 @@ impl Request {
                     Err(OutOfMemory) => Heard::Failed,
                 }
             }
-            Event::HeadersDone { .. } => {
+            StreamEvent::HeadersDone => {
                 self.h3_head_line(cx, lease, b"\r\n");
                 let s = self.h3_stream();
                 let status = s.status;
@@ -778,7 +757,7 @@ impl Request {
                 }
                 Heard::Fine
             }
-            Event::Data { bytes, .. } => {
+            StreamEvent::Data(bytes) => {
                 if self.h3_stream().failed.is_none() {
                     let written = self.input(cx, lease, bytes);
                     deliver::write_resp(cx, bytes.len(), false, written);
@@ -800,12 +779,12 @@ impl Request {
                 *extend = self.rx_extend(cx);
                 Heard::Fine
             }
-            Event::Consumed { n, .. } => {
+            StreamEvent::Consumed(n) => {
                 s.rx_offset += n;
                 s.rx_offset_max += n;
                 Heard::Fine
             }
-            Event::Closed { error, .. } => {
+            StreamEvent::Closed(error) => {
                 s.closed = true;
                 s.error = error;
                 if error == H3Error::NO_ERROR {
@@ -818,7 +797,7 @@ impl Request {
                 }
                 Heard::Fine
             }
-            Event::QuicClosed { error, rv, .. } => {
+            StreamEvent::QuicClosed { error, rv } => {
                 let error = error.0;
                 trace::of(
                     cx,
@@ -827,27 +806,26 @@ impl Request {
                 );
                 Heard::Fine
             }
-            Event::QuicReset { rv, .. } | Event::H3Reset { rv, .. } => {
+            StreamEvent::QuicReset { rv } | StreamEvent::H3Reset { rv } => {
                 trace::of(cx, h3, format_args!("[{id}] reset -> {rv}"));
                 Heard::Fine
             }
-            Event::Blocked { .. } => {
+            StreamEvent::Blocked => {
                 s.flow_blocked = true;
                 Heard::Fine
             }
-            Event::Unblocked { .. } => {
+            StreamEvent::Unblocked => {
                 if s.flow_blocked {
                     trace::of(cx, h3, format_args!("[{id}] unblock quic flow"));
                     s.flow_blocked = false;
                 }
                 Heard::Fine
             }
-            Event::BodyRead {
+            StreamEvent::BodyRead {
                 vecs,
                 n,
                 eof,
                 buffered,
-                ..
             } => {
                 // As C's `cb_h3_read_req_body` says it, what is left of a
                 // body of unknown size `-1`.
@@ -873,7 +851,6 @@ impl Request {
                 }
                 Heard::Fine
             }
-            _ => Heard::Fine,
         }
     }
 

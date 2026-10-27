@@ -13,12 +13,12 @@ use std::time::Duration;
 use curl_alloc::OutOfMemory;
 
 use super::{
-    ClientSetup, CloseError, ConnectFailed, Connection, EarlyStart, Event, Events, Expiry, H3Error,
-    Heard, Http3, Layer, QuicError, StreamId, SubmitFailed,
+    ClientSetup, CloseError, ConnEvent, ConnectFailed, Connection, EarlyStart, Event, Events,
+    Expiry, H3Error, H3Failed, Heard, Http3, Layer, QuicError, StreamEvent, StreamId, SubmitFailed,
 };
 use crate::error::ErrorKind;
 use crate::time::Instant;
-use crate::tls::{QuicTls, TlsCx};
+use crate::tls::{DriveCall, QuicTls, TlsCx};
 
 /// Run `f`, the fake's own bookkeeping, untracked: a library's memory is
 /// its own, not the core's to account for, and the torture tests refuse
@@ -260,6 +260,7 @@ impl FakeConnection {
         let mut heard = Heard::Fine;
         self.tls.drive(cx, &mut || None, &mut |call| {
             for t in &told {
+                let stream = |s: i64, event| Event::Stream(StreamId(s), event);
                 let event_heard = match t {
                     Told::HandshakeDone => {
                         let checked = call.handshake_done();
@@ -269,28 +270,22 @@ impl FakeConnection {
                         drop(s);
                         let early = script.lock().unwrap().early;
                         let rejected = script.lock().unwrap().early_rejected;
-                        let event = Event::HandshakeDone {
+                        let event = ConnEvent::HandshakeDone {
                             checked,
                             max_udp_payload: 1452,
                             initial_max_data: 786432,
                             early_data: (early == Some(EarlyStart::Started)).then_some(!rejected),
                         };
-                        let mut h = Heard::Fine;
-                        call.with_cx(&mut |cx| h = events(cx, event.clone()));
-                        if checked.is_err() {
-                            h = Heard::Failed;
-                        }
-                        h
+                        let h = told_to(call, events, Event::Connection(event));
+                        if checked.is_err() { Heard::Failed } else { h }
                     }
                     Told::H3Failed(why) => {
-                        let event = Event::H3Failed {
+                        let failed = H3Failed {
                             why,
                             detail: None,
                             out_of_memory: false,
                         };
-                        call.with_cx(&mut |cx| {
-                            events(cx, event.clone());
-                        });
+                        told_to(call, events, Event::Connection(ConnEvent::H3Failed(failed)));
                         Heard::Failed
                     }
                     Told::Acked(n) => {
@@ -302,11 +297,58 @@ impl FakeConnection {
                         }
                         Heard::Fine
                     }
-                    other => {
-                        let mut h = Heard::Fine;
-                        call.with_cx(&mut |cx| h = events(cx, event_of(other)));
-                        h
+                    Told::MaxBidiStreams(n) => told_to(
+                        call,
+                        events,
+                        Event::Connection(ConnEvent::MaxBidiStreams(*n)),
+                    ),
+                    &Told::BodyRead {
+                        vecs,
+                        n,
+                        eof,
+                        buffered,
+                    } => {
+                        let read = StreamEvent::BodyRead {
+                            vecs,
+                            n,
+                            eof,
+                            buffered,
+                        };
+                        told_to(call, events, stream(0, read))
                     }
+                    Told::Consumed(s, n) => {
+                        told_to(call, events, stream(*s, StreamEvent::Consumed(*n)))
+                    }
+                    Told::Header {
+                        stream: s,
+                        name,
+                        value,
+                    } => {
+                        let field = StreamEvent::Header {
+                            name,
+                            value,
+                            status: name == b":status",
+                        };
+                        told_to(call, events, stream(*s, field))
+                    }
+                    Told::HeadersDone(s) => {
+                        told_to(call, events, stream(*s, StreamEvent::HeadersDone))
+                    }
+                    Told::Data(s, bytes) => {
+                        told_to(call, events, stream(*s, StreamEvent::Data(bytes)))
+                    }
+                    Told::Closed(s, e) => {
+                        told_to(call, events, stream(*s, StreamEvent::Closed(H3Error(*e))))
+                    }
+                    Told::QuicClosed(s, e) => {
+                        let closed = StreamEvent::QuicClosed {
+                            error: H3Error(*e),
+                            rv: 0,
+                        };
+                        told_to(call, events, stream(*s, closed))
+                    }
+                    Told::Blocked(s) => told_to(call, events, stream(*s, StreamEvent::Blocked)),
+                    Told::Unblocked(s) => told_to(call, events, stream(*s, StreamEvent::Unblocked)),
                 };
                 if event_heard == Heard::Failed {
                     heard = Heard::Failed;
@@ -318,62 +360,11 @@ impl FakeConnection {
     }
 }
 
-/// The event `told` is.
-fn event_of(told: &Told) -> Event<'_> {
-    match told {
-        Told::HandshakeDone | Told::H3Failed(_) | Told::Acked(_) => {
-            unreachable!("told with what follows it")
-        }
-        &Told::BodyRead {
-            vecs,
-            n,
-            eof,
-            buffered,
-        } => Event::BodyRead {
-            stream: StreamId(0),
-            vecs,
-            n,
-            eof,
-            buffered,
-        },
-        Told::Consumed(s, n) => Event::Consumed {
-            stream: StreamId(*s),
-            n: *n,
-        },
-        Told::MaxBidiStreams(n) => Event::MaxBidiStreams(*n),
-        Told::Header {
-            stream,
-            name,
-            value,
-        } => Event::Header {
-            stream: StreamId(*stream),
-            name,
-            value,
-            status: name == b":status",
-        },
-        Told::HeadersDone(s) => Event::HeadersDone {
-            stream: StreamId(*s),
-        },
-        Told::Data(s, bytes) => Event::Data {
-            stream: StreamId(*s),
-            bytes,
-        },
-        Told::Closed(s, e) => Event::Closed {
-            stream: StreamId(*s),
-            error: H3Error(*e),
-        },
-        Told::QuicClosed(s, e) => Event::QuicClosed {
-            stream: StreamId(*s),
-            error: H3Error(*e),
-            rv: 0,
-        },
-        Told::Blocked(s) => Event::Blocked {
-            stream: StreamId(*s),
-        },
-        Told::Unblocked(s) => Event::Unblocked {
-            stream: StreamId(*s),
-        },
-    }
+/// Tell `events` of `event`, with the transfer `call` reaches.
+fn told_to(call: &mut dyn DriveCall, events: Events<'_>, event: Event<'_>) -> Heard {
+    let mut heard = Heard::Fine;
+    call.with_cx(&mut |cx| heard = events(cx, event.clone()));
+    heard
 }
 
 /// The QUIC library's failure `code` in `call`.
@@ -524,7 +515,7 @@ impl Connection for FakeConnection {
         }
     }
 
-    fn start_early(&mut self) -> Result<EarlyStart, Event<'static>> {
+    fn start_early(&mut self) -> Result<EarlyStart, H3Failed> {
         let mut s = self.script.lock().unwrap();
         let start = match s.early_tls_refuses {
             true => EarlyStart::Refused,

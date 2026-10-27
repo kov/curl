@@ -597,8 +597,12 @@ impl TlsCx<'_> {
     }
 
     /// Hand the transfer what the HTTP/3 library told of a stream.
-    pub(crate) fn h3_event(&mut self, event: crate::http3::Event<'_>) -> crate::http3::Heard {
-        self.cx.h3_event(event)
+    pub(crate) fn h3_event(
+        &mut self,
+        stream: crate::http3::StreamId,
+        event: crate::http3::StreamEvent<'_>,
+    ) -> crate::http3::Heard {
+        self.cx.h3_event(stream, event)
     }
 
     /// The transfer is verbose (`Curl_trc_is_verbose`): a library with

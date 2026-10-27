@@ -35,8 +35,8 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::http3::{
-    BODY_HELD, ClientSetup, CloseError, ConnectFailed, EarlyStart, Event, Events, Expiry, H3Error,
-    Heard, Http3, Layer, QuicError, StreamId, SubmitFailed,
+    BODY_HELD, ClientSetup, CloseError, ConnEvent, ConnectFailed, EarlyStart, Event, Events,
+    Expiry, H3Error, H3Failed, Heard, Http3, Layer, QuicError, StreamEvent, StreamId, SubmitFailed,
 };
 use curl_core::time::Instant;
 use curl_core::tls::{DriveCall, QuicTls, TlsCx};
@@ -362,6 +362,16 @@ impl Drop for UserData {
 /// The body of `stream`, if it has one.
 fn body_of(bodies: &mut [Body], stream: i64) -> Option<&mut Body> {
     bodies.iter_mut().find(|b| b.stream == stream)
+}
+
+/// Tell the caller of the call under way of `event` of the stream
+/// `stream`.
+///
+/// # Safety
+/// As `tell`'s.
+unsafe fn tell_stream(inner: *mut Inner, stream: i64, event: StreamEvent<'_>) -> Heard {
+    // SAFETY: as the caller says.
+    unsafe { tell(inner, Event::Stream(StreamId(stream), event)) }
 }
 
 /// Tell the caller of the call under way of `event`.
@@ -850,7 +860,7 @@ impl curl_core::http3::Connection for Connection {
         }
     }
 
-    fn start_early(&mut self) -> Result<EarlyStart, Event<'static>> {
+    fn start_early(&mut self) -> Result<EarlyStart, H3Failed> {
         let p = self.inner.ptr();
         // HTTP/3 is set up now, as the 1-RTT keys would; they find it
         // made (`init_h3_conn_cb`).
@@ -1159,14 +1169,7 @@ fn write_packet(
                 // SAFETY: the HTTP/3 connection, which wrote for `sid`.
                 unsafe { sys::nghttp3_conn_block_stream(h3, sid) };
                 // SAFETY: inside the call, holding nothing of the state.
-                unsafe {
-                    tell(
-                        inner,
-                        Event::Blocked {
-                            stream: StreamId(sid),
-                        },
-                    )
-                };
+                unsafe { tell_stream(inner, sid, StreamEvent::Blocked) };
                 0
             }
             Ok(sys::NGTCP2_ERR_STREAM_SHUT_WR) => {
@@ -1228,7 +1231,7 @@ unsafe extern "C" fn handshake_completed(
     let rp = unsafe { sys::ngtcp2_conn_get_remote_transport_params(conn) };
     // SAFETY: as above: never NULL then, alive until the next call.
     let rp = unsafe { &*rp };
-    let event = Event::HandshakeDone {
+    let event = ConnEvent::HandshakeDone {
         checked,
         max_udp_payload: rp.max_udp_payload_size,
         initial_max_data: rp.initial_max_data,
@@ -1237,7 +1240,7 @@ unsafe extern "C" fn handshake_completed(
             .then(|| unsafe { sys::ngtcp2_conn_get_tls_early_data_rejected2(conn) } == 0),
     };
     // SAFETY: inside the call, holding nothing of the state.
-    let heard = unsafe { tell(inner, event) };
+    let heard = unsafe { tell(inner, Event::Connection(event)) };
     if checked.is_err() || heard == Heard::Failed {
         sys::NGTCP2_ERR_CALLBACK_FAILURE
     } else {
@@ -1275,12 +1278,8 @@ unsafe extern "C" fn recv_stream_data(
         unsafe { sys::ngtcp2_conn_extend_max_stream_offset(conn, stream_id, consumed) };
         // SAFETY: the connection.
         unsafe { sys::ngtcp2_conn_extend_max_offset(conn, consumed) };
-        let event = Event::Consumed {
-            stream: StreamId(stream_id),
-            n: consumed,
-        };
         // SAFETY: inside the call, holding nothing of the state.
-        unsafe { tell(inner, event) };
+        unsafe { tell_stream(inner, stream_id, StreamEvent::Consumed(consumed)) };
     }
     0
 }
@@ -1332,13 +1331,12 @@ unsafe extern "C" fn stream_close2(
             bodies.remove(i);
         }
     }
-    let event = Event::QuicClosed {
-        stream: StreamId(stream_id),
+    let event = StreamEvent::QuicClosed {
         error: H3Error(code),
         rv,
     };
     // SAFETY: inside the call, holding nothing of the state.
-    unsafe { tell(inner, event) };
+    unsafe { tell_stream(inner, stream_id, event) };
     if rv != 0 && rv != sys::NGHTTP3_ERR_STREAM_NOT_FOUND {
         // SAFETY: the state, no other reference into it held.
         set_h3_error(unsafe { &mut (*inner).last_error }, rv);
@@ -1361,12 +1359,8 @@ unsafe extern "C" fn stream_reset(
     let h3 = unsafe { (*inner).h3 };
     // SAFETY: the HTTP/3 connection.
     let rv = unsafe { sys::nghttp3_conn_shutdown_stream_read(h3, stream_id) };
-    let event = Event::QuicReset {
-        stream: StreamId(stream_id),
-        rv,
-    };
     // SAFETY: inside the call, holding nothing of the state.
-    unsafe { tell(inner, event) };
+    unsafe { tell_stream(inner, stream_id, StreamEvent::QuicReset { rv }) };
     if rv != 0 && rv != sys::NGHTTP3_ERR_STREAM_NOT_FOUND {
         return sys::NGTCP2_ERR_CALLBACK_FAILURE;
     }
@@ -1397,8 +1391,9 @@ unsafe extern "C" fn extend_max_local_streams_bidi(
     max_streams: u64,
     user_data: *mut c_void,
 ) -> c_int {
+    let event = Event::Connection(ConnEvent::MaxBidiStreams(max_streams));
     // SAFETY: inside the call, holding nothing of the state.
-    unsafe { tell(inner_of(user_data), Event::MaxBidiStreams(max_streams)) };
+    unsafe { tell(inner_of(user_data), event) };
     0
 }
 
@@ -1419,14 +1414,7 @@ unsafe extern "C" fn extend_max_stream_data(
         return sys::NGTCP2_ERR_CALLBACK_FAILURE;
     }
     // SAFETY: inside the call, holding nothing of the state.
-    unsafe {
-        tell(
-            inner,
-            Event::Unblocked {
-                stream: StreamId(stream_id),
-            },
-        )
-    };
+    unsafe { tell_stream(inner, stream_id, StreamEvent::Unblocked) };
     0
 }
 
@@ -1484,7 +1472,8 @@ unsafe extern "C" fn recv_rx_key(
             unsafe { (*inner).h3 = h3 };
             0
         }
-        Err(event) => {
+        Err(failed) => {
+            let event = Event::Connection(ConnEvent::H3Failed(failed));
             // SAFETY: inside the call, holding nothing of the state.
             unsafe { tell(inner, event) };
             sys::NGTCP2_ERR_CALLBACK_FAILURE
@@ -1497,8 +1486,8 @@ unsafe extern "C" fn recv_rx_key(
 fn init_h3(
     conn: *mut sys::ngtcp2_conn,
     user_data: *mut c_void,
-) -> Result<*mut sys::nghttp3_conn, Event<'static>> {
-    let failed = |why, detail| Event::H3Failed {
+) -> Result<*mut sys::nghttp3_conn, H3Failed> {
+    let failed = |why, detail| H3Failed {
         why,
         detail,
         out_of_memory: false,
@@ -1532,7 +1521,7 @@ fn init_h3(
         )
     };
     if rc != 0 {
-        return Err(Event::H3Failed {
+        return Err(H3Failed {
             why: "error creating nghttp3 connection instance",
             detail: None,
             out_of_memory: true,
@@ -1613,12 +1602,9 @@ unsafe extern "C" fn h3_stream_close(
     user_data: *mut c_void,
     _stream_user_data: *mut c_void,
 ) -> c_int {
-    let event = Event::Closed {
-        stream: StreamId(stream_id),
-        error: H3Error(app_error_code),
-    };
+    let event = StreamEvent::Closed(H3Error(app_error_code));
     // SAFETY: inside the call, holding nothing of the state.
-    unsafe { tell(inner_of(user_data), event) };
+    unsafe { tell_stream(inner_of(user_data), stream_id, event) };
     0
 }
 
@@ -1636,12 +1622,8 @@ unsafe extern "C" fn h3_recv_data(
     let conn = unsafe { (*inner).conn };
     // SAFETY: the library's bytes, alive for the callback.
     let bytes = unsafe { bytes(data, datalen) };
-    let event = Event::Data {
-        stream: StreamId(stream_id),
-        bytes,
-    };
     // SAFETY: inside the call, holding nothing of the state.
-    if unsafe { tell(inner, event) } == Heard::Failed {
+    if unsafe { tell_stream(inner, stream_id, StreamEvent::Data(bytes)) } == Heard::Failed {
         return sys::NGHTTP3_ERR_CALLBACK_FAILURE;
     }
     // SAFETY: the connection.
@@ -1666,12 +1648,8 @@ unsafe extern "C" fn h3_deferred_consume(
     unsafe { sys::ngtcp2_conn_extend_max_stream_offset(conn, stream_id, n) };
     // SAFETY: the connection.
     unsafe { sys::ngtcp2_conn_extend_max_offset(conn, n) };
-    let event = Event::Consumed {
-        stream: StreamId(stream_id),
-        n,
-    };
     // SAFETY: inside the call, holding nothing of the state.
-    unsafe { tell(inner, event) };
+    unsafe { tell_stream(inner, stream_id, StreamEvent::Consumed(n)) };
     0
 }
 
@@ -1695,14 +1673,13 @@ unsafe extern "C" fn h3_recv_header(
     let name = unsafe { bytes(name.base, name.len) };
     // SAFETY: as above.
     let value = unsafe { bytes(value.base, value.len) };
-    let event = Event::Header {
-        stream: StreamId(stream_id),
+    let event = StreamEvent::Header {
         name,
         value,
         status: token == sys::NGHTTP3_QPACK_TOKEN__STATUS,
     };
     // SAFETY: inside the call, holding nothing of the state.
-    match unsafe { tell(inner_of(user_data), event) } {
+    match unsafe { tell_stream(inner_of(user_data), stream_id, event) } {
         Heard::Fine => 0,
         Heard::Failed => sys::NGHTTP3_ERR_CALLBACK_FAILURE,
     }
@@ -1716,11 +1693,9 @@ unsafe extern "C" fn h3_end_headers(
     user_data: *mut c_void,
     _stream_user_data: *mut c_void,
 ) -> c_int {
-    let event = Event::HeadersDone {
-        stream: StreamId(stream_id),
-    };
+    let event = StreamEvent::HeadersDone;
     // SAFETY: inside the call, holding nothing of the state.
-    unsafe { tell(inner_of(user_data), event) };
+    unsafe { tell_stream(inner_of(user_data), stream_id, event) };
     0
 }
 
@@ -1755,12 +1730,8 @@ unsafe extern "C" fn h3_reset_stream(
     let conn = unsafe { (*inner).conn };
     // SAFETY: the connection.
     let rv = unsafe { sys::ngtcp2_conn_shutdown_stream_write(conn, 0, stream_id, app_error_code) };
-    let event = Event::H3Reset {
-        stream: StreamId(stream_id),
-        rv,
-    };
     // SAFETY: inside the call, holding nothing of the state.
-    unsafe { tell(inner, event) };
+    unsafe { tell_stream(inner, stream_id, StreamEvent::H3Reset { rv }) };
     if rv != 0 && rv != sys::NGTCP2_ERR_STREAM_NOT_FOUND {
         return sys::NGHTTP3_ERR_CALLBACK_FAILURE;
     }
@@ -1799,15 +1770,14 @@ unsafe extern "C" fn h3_read_req_body(
         // SAFETY: the library's flags to set.
         unsafe { *pflags = sys::NGHTTP3_DATA_FLAG_EOF };
     }
-    let event = Event::BodyRead {
-        stream: StreamId(stream_id),
+    let event = StreamEvent::BodyRead {
         vecs: count,
         n,
         eof,
         buffered,
     };
     // SAFETY: inside the call, holding nothing of the state.
-    unsafe { tell(inner, event) };
+    unsafe { tell_stream(inner, stream_id, event) };
     if !eof && n == 0 {
         return sys::NGHTTP3_ERR_WOULDBLOCK;
     }

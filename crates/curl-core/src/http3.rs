@@ -12,7 +12,8 @@
 //! callbacks that tell them run inside the drive. What passes between
 //! the QUIC library and the HTTP/3 one (stream data read, acknowledged,
 //! closed, reset, unblocked) is the library's; what C's filter decides
-//! or traces of it is told as an `Event`.
+//! or traces of it is told as an `Event`: of the connection itself, or
+//! of one of its streams.
 //!
 //! C's callbacks act on the connection as they are told (opening a
 //! stream's window as its data is read, resuming a body the peer
@@ -111,9 +112,17 @@ pub struct CloseError {
 
 /// What the connection read, as it read it. The library acts on what
 /// passes between its two halves; these are what C's filter traces or
-/// decides on.
+/// decides on: the connection's own, heard by the connection, and a
+/// stream's, handed to the stream's transfer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event<'a> {
+    Connection(ConnEvent),
+    Stream(StreamId, StreamEvent<'a>),
+}
+
+/// What the connection read of itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConnEvent {
     /// The handshake is done and the peer checked
     /// (`cb_ngtcp2_handshake_completed`): `checked` is the check's
     /// verdict, a failure of which fails the call under way. The peer's
@@ -126,68 +135,91 @@ pub enum Event<'a> {
         initial_max_data: u64,
         early_data: Option<bool>,
     },
-    /// The HTTP/3 library could not be set up as the 1-RTT keys arrived
-    /// (`init_ngh3_conn`): why, as C says it, and the library's word for
-    /// it if C adds it; for want of memory if `out_of_memory`.
-    H3Failed {
-        why: &'static str,
-        detail: Option<&'static str>,
-        out_of_memory: bool,
-    },
+    /// The HTTP/3 library could not be set up as the 1-RTT keys arrived.
+    H3Failed(H3Failed),
     /// The peer allows this many bidirectional streams of ours
     /// (`cb_extend_max_local_streams_bidi`).
     MaxBidiStreams(u64),
-    /// The HTTP/3 library took `n` bytes of `stream`'s framing, its
+}
+
+/// Why the HTTP/3 library could not be set up (`init_ngh3_conn`): why, as
+/// C says it, and the library's word for it if C adds it; for want of
+/// memory if `out_of_memory`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct H3Failed {
+    pub why: &'static str,
+    pub detail: Option<&'static str>,
+    pub out_of_memory: bool,
+}
+
+impl H3Failed {
+    /// What the call under way fails with.
+    pub fn kind(&self) -> ErrorKind {
+        if self.out_of_memory {
+            ErrorKind::OutOfMemory
+        } else {
+            ErrorKind::QuicConnectError
+        }
+    }
+}
+
+/// Its words, as C fails the call with them.
+impl fmt::Display for H3Failed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.detail {
+            Some(detail) => write!(f, "{}: {detail}", self.why),
+            None => f.write_str(self.why),
+        }
+    }
+}
+
+/// What the connection read of one of its streams.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StreamEvent<'a> {
+    /// The HTTP/3 library took `n` bytes of the stream's framing, its
     /// window opened by as much (`cb_recv_stream_data`,
     /// `cb_h3_deferred_consume`).
-    Consumed { stream: StreamId, n: u64 },
+    Consumed(u64),
     /// The QUIC stream closed, with the peer's error code if it gave one;
     /// the HTTP/3 library's answer to closing it (`cb_stream_close`).
-    QuicClosed {
-        stream: StreamId,
-        error: H3Error,
-        rv: i32,
-    },
-    /// The peer reset `stream`; the HTTP/3 library's answer to it
+    QuicClosed { error: H3Error, rv: i32 },
+    /// The peer reset the stream; the HTTP/3 library's answer to it
     /// (`cb_stream_reset`).
-    QuicReset { stream: StreamId, rv: i32 },
-    /// The peer let `stream` send more (`cb_extend_max_stream_data`).
-    Unblocked { stream: StreamId },
-    /// `stream` could not send for the peer's flow control
+    QuicReset { rv: i32 },
+    /// The peer let the stream send more (`cb_extend_max_stream_data`).
+    Unblocked,
+    /// The stream could not send for the peer's flow control
     /// (`NGTCP2_ERR_STREAM_DATA_BLOCKED`).
-    Blocked { stream: StreamId },
-    /// A field of a header block of `stream`: the response's head, an
-    /// interim response's, or the trailers. `:status` is `status`.
+    Blocked,
+    /// A field of a header block: the response's head, an interim
+    /// response's, or the trailers. `:status` is `status`.
     Header {
-        stream: StreamId,
         name: &'a [u8],
         value: &'a [u8],
         status: bool,
     },
-    /// A header block of `stream` is over (`cb_h3_end_headers`).
-    HeadersDone { stream: StreamId },
-    /// Body bytes of `stream` (`cb_h3_recv_data`); the connection's
-    /// window opened by as many.
-    Data { stream: StreamId, bytes: &'a [u8] },
+    /// A header block is over (`cb_h3_end_headers`).
+    HeadersDone,
+    /// Body bytes (`cb_h3_recv_data`); the connection's window opened by
+    /// as many.
+    Data(&'a [u8]),
     /// The HTTP/3 stream closed, with this error code
     /// (`cb_h3_stream_close`).
-    Closed { stream: StreamId, error: H3Error },
-    /// The peer asked `stream` to stop sending; the QUIC library's answer
-    /// to shutting it (`cb_h3_reset_stream`).
-    H3Reset { stream: StreamId, rv: i32 },
-    /// The HTTP/3 library took `n` bytes of `stream`'s request body in
+    Closed(H3Error),
+    /// The peer asked the stream to stop sending; the QUIC library's
+    /// answer to shutting it (`cb_h3_reset_stream`).
+    H3Reset { rv: i32 },
+    /// The HTTP/3 library took `n` bytes of the stream's request body in
     /// `vecs` pieces to send, the last if `eof`, `buffered` held in all;
     /// or, with none and not the last, found none to take
     /// (`cb_h3_read_req_body`).
     BodyRead {
-        stream: StreamId,
         vecs: usize,
         n: usize,
         eof: bool,
         buffered: usize,
     },
 }
-
 /// What the caller is told the events of a call with: the transfer the
 /// call reaches, and each event.
 pub type Events<'e> = &'e mut dyn FnMut(&mut TlsCx<'_>, Event<'_>) -> Heard;
@@ -337,8 +369,8 @@ pub trait Connection: fmt::Debug + Send {
     /// Send early data: HTTP/3 set up before the handshake, and the TLS
     /// library told to send it (`init_h3_conn_cb`,
     /// `SSL_set_quic_tls_early_data_enabled`). Whether the TLS library
-    /// would; or why HTTP/3 could not be set up, an `Event::H3Failed`.
-    fn start_early(&mut self) -> Result<EarlyStart, Event<'static>>;
+    /// would; or why HTTP/3 could not be set up.
+    fn start_early(&mut self) -> Result<EarlyStart, H3Failed>;
 
     /// It is draining: the peer closed it (`ngtcp2_conn_in_draining_period`).
     fn draining(&self) -> bool;

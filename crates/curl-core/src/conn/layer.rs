@@ -195,7 +195,11 @@ pub(crate) trait LayerCx {
     /// streams, as it read or wrote for the transfer: the transfer hands
     /// it to the stream's own (C's callbacks reach the stream's
     /// transfer). A connect has no streams, and hears it as nothing.
-    fn h3_event(&mut self, _event: crate::http3::Event<'_>) -> crate::http3::Heard {
+    fn h3_event(
+        &mut self,
+        _stream: crate::http3::StreamId,
+        _event: crate::http3::StreamEvent<'_>,
+    ) -> crate::http3::Heard {
         crate::http3::Heard::Fine
     }
 

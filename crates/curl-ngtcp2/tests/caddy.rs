@@ -12,7 +12,8 @@ use std::time::{Duration, Instant as StdInstant};
 use curl_alloc::TryArc;
 use curl_core::error::ErrorKind;
 use curl_core::http3::{
-    ClientSetup, Connection, Event, Expiry, Heard, Http3, Layer, QuicError, StreamId,
+    ClientSetup, ConnEvent, Connection, Event, Expiry, Heard, Http3, Layer, QuicError, StreamEvent,
+    StreamId,
 };
 use curl_core::options::{CaSetting, ColdGroup as _, TlsOptions};
 use curl_core::time::{Clock, SystemClock};
@@ -227,22 +228,26 @@ struct Told {
 impl Told {
     fn hear(&mut self, event: Event<'_>) -> Heard {
         match event {
-            Event::HandshakeDone { checked, .. } => self.checked = Some(checked),
-            Event::Header {
-                name,
-                value,
-                status,
-                ..
-            } => {
+            Event::Connection(ConnEvent::HandshakeDone { checked, .. }) => {
+                self.checked = Some(checked)
+            }
+            Event::Stream(
+                _,
+                StreamEvent::Header {
+                    name,
+                    value,
+                    status,
+                },
+            ) => {
                 if status {
                     self.status = Some(value.to_vec());
                 } else {
                     self.headers.push((name.to_vec(), value.to_vec()));
                 }
             }
-            Event::Data { bytes, .. } => self.body.extend_from_slice(bytes),
-            Event::Closed { .. } => self.closed = true,
-            Event::H3Failed { why, .. } => panic!("{why}"),
+            Event::Stream(_, StreamEvent::Data(bytes)) => self.body.extend_from_slice(bytes),
+            Event::Stream(_, StreamEvent::Closed(_)) => self.closed = true,
+            Event::Connection(ConnEvent::H3Failed(failed)) => panic!("{failed}"),
             _ => {}
         }
         Heard::Fine

@@ -18,7 +18,7 @@ use super::layer::{Alive, Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQu
 use super::quic::{Quic, QuicCx, QuicIo, RECV_ROOM};
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
-use crate::http3::{Event, H3Error, Heard, StreamId};
+use crate::http3::{H3Error, Heard, StreamEvent, StreamId};
 use crate::text::Text;
 use crate::time::Instant;
 
@@ -148,11 +148,10 @@ impl Tunnel {
     /// What it makes of an event of the connection's streams
     /// (`ngh3_proxy_callbacks`): one of another stream is let be, as C's
     /// callbacks find no tunnel for it.
-    fn heard(&mut self, cx: &mut dyn LayerCx, event: Event<'_>) -> Heard {
+    fn heard(&mut self, cx: &mut dyn LayerCx, stream: StreamId, event: StreamEvent<'_>) -> Heard {
         let ours = |s: StreamId, me: Option<StreamId>| Some(s) == me;
         match event {
-            Event::Header {
-                stream,
+            StreamEvent::Header {
                 name,
                 value,
                 status,
@@ -178,7 +177,7 @@ impl Tunnel {
                     Err(OutOfMemory) => Heard::Failed,
                 }
             }
-            Event::HeadersDone { stream } => {
+            StreamEvent::HeadersDone => {
                 if !ours(stream, self.stream) {
                     return Heard::Fine;
                 }
@@ -189,7 +188,7 @@ impl Tunnel {
                 }
                 Heard::Fine
             }
-            Event::Data { stream, bytes } => {
+            StreamEvent::Data(bytes) => {
                 if !ours(stream, self.stream) {
                     return Heard::Failed;
                 }
@@ -210,7 +209,7 @@ impl Tunnel {
                 self.update_window(cx);
                 Heard::Fine
             }
-            Event::Closed { stream, error } => {
+            StreamEvent::Closed(error) => {
                 if !ours(stream, self.stream) {
                     return Heard::Fine;
                 }
@@ -227,7 +226,7 @@ impl Tunnel {
                 self.closed = true;
                 Heard::Fine
             }
-            Event::QuicClosed { stream, error, rv } => {
+            StreamEvent::QuicClosed { error, rv } => {
                 let (id, error) = (stream.0, error.0);
                 cx.of(
                     H3P,
@@ -235,7 +234,7 @@ impl Tunnel {
                 );
                 Heard::Fine
             }
-            Event::H3Reset { stream, rv } => {
+            StreamEvent::H3Reset { rv } => {
                 if ours(stream, self.stream) {
                     let id = stream.0;
                     cx.of(H3P, format_args!("[{id}] reset -> {rv}"));
@@ -244,8 +243,7 @@ impl Tunnel {
                 }
                 Heard::Fine
             }
-            Event::BodyRead {
-                stream,
+            StreamEvent::BodyRead {
                 vecs,
                 n,
                 eof,
@@ -265,22 +263,19 @@ impl Tunnel {
                 }
                 Heard::Fine
             }
-            Event::Blocked { stream } => {
+            StreamEvent::Blocked => {
                 if ours(stream, self.stream) {
                     self.flow_blocked = true;
                 }
                 Heard::Fine
             }
-            Event::Unblocked { stream } => {
+            StreamEvent::Unblocked => {
                 if ours(stream, self.stream) {
                     self.flow_blocked = false;
                 }
                 Heard::Fine
             }
-            Event::QuicReset { .. } | Event::Consumed { .. } => Heard::Fine,
-            Event::HandshakeDone { .. } | Event::H3Failed { .. } | Event::MaxBidiStreams(_) => {
-                unreachable!("the connection's own events are its own")
-            }
+            StreamEvent::QuicReset { .. } | StreamEvent::Consumed(_) => Heard::Fine,
         }
     }
 }
@@ -396,8 +391,8 @@ impl LayerCx for Tunnelled<'_> {
         self.cx.tls_sessions(f);
     }
 
-    fn h3_event(&mut self, event: Event<'_>) -> Heard {
-        self.tunnel.heard(&mut *self.cx, event)
+    fn h3_event(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
+        self.tunnel.heard(&mut *self.cx, stream, event)
     }
 
     fn quic_due(&mut self, wait: std::time::Duration) {

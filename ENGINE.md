@@ -1803,7 +1803,10 @@ library, as ngtcp2's reading of stream data calls nghttp3, which calls back in t
 between the two libraries (stream data read, acknowledged, closed, reset, unblocked; framing
 consumed; the connection's window as body data arrives) the binding does inside the callback as
 C does; what C's filter traces or decides is told to the caller as an `http3::Event`, with the
-transfer. Where C's callbacks act on the connection for the caller (a stream's receive window,
+transfer: the connection's own (`ConnEvent`: the handshake's end, HTTP/3 failing to set up, the
+streams the peer allows), which `Quic` hears, or a stream's (`StreamEvent`, with its id), which
+`Quic` hands to the transfer through `LayerCx::h3_event`, so that neither consumer has a case it
+cannot be told. Where C's callbacks act on the connection for the caller (a stream's receive window,
 `cf_ngtcp2_upd_rx_win`), the caller does it once the call returns, which changes nothing on the
 wire before the connection next writes.
 

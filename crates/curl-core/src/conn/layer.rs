@@ -271,6 +271,19 @@ impl Below<'_> {
         self.socket
     }
 
+    /// What the topmost of these layers that failed of its own failed
+    /// with, if one did: a call through them that failed fails with it,
+    /// as C passes on a lower filter's result.
+    pub(crate) fn failure(&self) -> Option<ErrorKind> {
+        self.layers
+            .iter()
+            .rev()
+            .find_map(|layer| match layer.query(LayerQuery::Failure) {
+                Some(LayerAnswer::Failure(kind)) => Some(kind),
+                _ => None,
+            })
+    }
+
     pub(crate) fn reborrow(&mut self) -> Below<'_> {
         Below {
             layers: &mut *self.layers,

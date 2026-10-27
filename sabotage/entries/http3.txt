@@ -716,3 +716,20 @@ witness: curl-core a_tunnel_through_an_http3_proxy_survives_every_allocation_fai
         io::Error::from(io::ErrorKind::Other)
 --- new
         io::Error::other("the HTTP/3 tunnel failed")
+
+=== a datagram a tunnel's layer could not take fails the QUIC connection as a send error, not as the layer's own failure
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core http3_through_an_http3_proxy_survives_every_allocation_failing
+--- old
+        sent.map_err(|_| below.failure().unwrap_or(ErrorKind::SendError))
+--- new
+        sent.map_err(|_| ErrorKind::SendError)
+
+=== the capsule layer's failure boxes its message with an allocation that cannot fail
+file: crates/curl-core/src/conn/capsule.rs
+witness: curl-core http3_through_an_http3_proxy_survives_every_allocation_failing
+--- old
+        // A bare kind, which allocates nothing: the failure is `kind`.
+        io::Error::from(io::ErrorKind::Other)
+--- new
+        io::Error::other("the capsule layer failed")

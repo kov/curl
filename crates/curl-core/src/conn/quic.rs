@@ -326,20 +326,16 @@ impl QuicIo for Over<'_> {
         let Path::Layers(below) = &mut self.path else {
             unreachable!("a layered connection is called over its layers");
         };
-        below
-            .reborrow()
-            .send(&mut *self.cx, datagram)
-            .map_err(|_| ErrorKind::SendError)
+        let sent = below.reborrow().send(&mut *self.cx, datagram);
+        sent.map_err(|_| below.failure().unwrap_or(ErrorKind::SendError))
     }
 
     fn recv_below(&mut self, buf: &mut [u8]) -> Result<Recv, ErrorKind> {
         let Path::Layers(below) = &mut self.path else {
             unreachable!("a layered connection is called over its layers");
         };
-        below
-            .reborrow()
-            .recv(&mut *self.cx, buf)
-            .map_err(|_| ErrorKind::RecvError)
+        let got = below.reborrow().recv(&mut *self.cx, buf);
+        got.map_err(|_| below.failure().unwrap_or(ErrorKind::RecvError))
     }
 
     fn flush_below(&mut self) -> Result<(), ErrorKind> {
@@ -347,7 +343,9 @@ impl QuicIo for Over<'_> {
             unreachable!("a layered connection is called over its layers");
         };
         let flushed = below.reborrow().flush(&mut *self.cx);
-        flushed.map(|_| ()).map_err(|_| ErrorKind::SendError)
+        flushed
+            .map(|_| ())
+            .map_err(|_| below.failure().unwrap_or(ErrorKind::SendError))
     }
 }
 

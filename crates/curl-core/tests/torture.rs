@@ -131,6 +131,14 @@ fn main() {
             "a_tunnel_through_an_http3_proxy_takes_no_refusal_for_success",
             a_tunnel_through_an_http3_proxy_takes_no_refusal_for_success,
         ),
+        (
+            "http3_through_an_http3_proxy_survives_every_allocation_failing",
+            http3_through_an_http3_proxy_survives_every_allocation_failing,
+        ),
+        (
+            "http3_through_an_http3_proxy_takes_no_refusal_for_success",
+            http3_through_an_http3_proxy_takes_no_refusal_for_success,
+        ),
     ] {
         // The tests whose names hold a filter given, if any is, as libtest.
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {
@@ -1479,4 +1487,85 @@ fn a_tunnel_through_an_http3_proxy_survives_every_allocation_failing() {
 fn a_tunnel_through_an_http3_proxy_takes_no_refusal_for_success() {
     fake_h3_libraries();
     refused_alone(h3_tunnel_scenario, took_no_refusal);
+}
+
+/// A capsule carrying the datagram `payload`, shorter than 16 KiB:
+/// DATAGRAM's type, the length with the context id, the id, 0.
+fn capsule(payload: &[u8]) -> Vec<u8> {
+    let length = payload.len() + 1;
+    let mut c = vec![0];
+    match u8::try_from(length) {
+        Ok(n) if n < 0x40 => c.push(n),
+        _ => c.extend_from_slice(&(0x4000 | u16::try_from(length).unwrap()).to_be_bytes()),
+    }
+    c.push(0);
+    c.extend_from_slice(payload);
+    c
+}
+
+/// The proxy's script for a CONNECT-UDP: its answer agreeing to
+/// capsules, then the origin's flight and response as capsules on the
+/// tunnel's stream.
+fn connect_udp_script() -> H3Script {
+    let mut answer = h3_connect_answer();
+    answer.insert(1, h3_header(b"capsule-protocol", b"?1"));
+    h3_script(
+        H3_GET_OUT,
+        vec![
+            answer,
+            vec![Told::Data(0, capsule(b"server flight"))],
+            vec![],
+            vec![Told::Data(0, capsule(b"response"))],
+        ],
+    )
+}
+
+/// HTTP/3 alone to `https://origin.example/1?q` through the HTTP/3
+/// proxy, over its CONNECT-UDP: the origin's QUIC connection in capsules
+/// on the tunnel's stream of the proxy's.
+fn h3_over_h3_proxy_scenario() -> Result<Got, OutOfMemory> {
+    h3_scripts(
+        connect_udp_script,
+        Some(|| h3_script(H3_GET_OUT, vec![h3_response()])),
+    );
+    let (clock, net, talk) = quic_server(&[
+        b"server flight",
+        b"connect answer",
+        b"origin flight",
+        b"origin response",
+        b"more",
+        b"more",
+    ]);
+    let wire = Wire {
+        libraries: fake_h3_libraries(),
+        sent: h3_sent,
+        refused_as: H3_REFUSED_AS,
+        trace_all: true,
+    };
+    let request = track::untracked(|| {
+        let mut r = b":method: CONNECT\n:scheme: https\n:authority: 127.0.0.1:443\n\
+            :path: /.well-known/masque/udp/origin.example/443/\n:protocol: connect-udp\n\
+            capsule-protocol: ?1\n"
+            .to_vec();
+        for packet in [&[1; 1200][..], &[2; 1200], &[3; 75]] {
+            r.extend(capsule(packet));
+        }
+        r
+    });
+    let url = b"https://origin.example/1?q";
+    let both = |o: &mut Options| {
+        o.http.version = curl_core::options::HttpVersion::Http3Only;
+        h3_proxy(o)
+    };
+    get_over(clock, net, &talk, (url, &request), both, wire)
+}
+
+fn http3_through_an_http3_proxy_survives_every_allocation_failing() {
+    fake_h3_libraries();
+    torture(h3_over_h3_proxy_scenario, Ok(H3_GOT));
+}
+
+fn http3_through_an_http3_proxy_takes_no_refusal_for_success() {
+    fake_h3_libraries();
+    refused_alone(h3_over_h3_proxy_scenario, took_no_refusal);
 }

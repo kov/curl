@@ -1207,12 +1207,13 @@ struct Binding {
 /// process has open, so that a fake one is never mistaken for them.
 #[cfg(any(test, feature = "test-util"))]
 const FIRST_FAKE: i32 = 1000;
-
-/// The sockets, and the bytes of requests, a fake holds without growing.
+/// The sockets, and the bytes of requests, a fake holds without growing:
+/// room for a QUIC handshake and request in a tunnel, a few full
+/// datagrams.
 #[cfg(any(test, feature = "test-util"))]
 const SOCKETS_ROOM: usize = 16;
 #[cfg(any(test, feature = "test-util"))]
-const REQUESTS_ROOM: usize = 4096;
+const REQUESTS_ROOM: usize = 16384;
 
 #[cfg(any(test, feature = "test-util"))]
 impl FakeNet {

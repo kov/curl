@@ -150,14 +150,17 @@ witness: curl-core conn::buf::tests::received_bytes_wait_until_used
 file: crates/curl-core/src/conn/buf.rs
 witness: curl-core conn::buf::tests::received_bytes_wait_until_used
 --- old
-        let len = self.bytes.len();
-        self.bytes
-            .try_reserve_exact(max)
+        let len = self.filled;
 --- new
-        self.bytes.clear();
-        let len = self.bytes.len();
-        self.bytes
-            .try_reserve_exact(max)
+        let len: usize = 0;
+
+=== the room an earlier read made is taken for received bytes
+file: crates/curl-core/src/conn/buf.rs
+witness: curl-core conn::buf::tests::received_bytes_wait_until_used
+--- old
+        &self.bytes[..self.filled]
+--- new
+        &self.bytes
 
 === a peer's host is told apart by case
 file: crates/curl-core/src/conn/mod.rs

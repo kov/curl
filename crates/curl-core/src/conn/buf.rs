@@ -10,27 +10,37 @@ use super::io::Recv;
 /// Received bytes no request has used yet.
 #[derive(Debug, Default)]
 pub(crate) struct RecvBuf {
+    /// What waits, then the room earlier reads made: room is zeroed as
+    /// it is first made, not again for each read, which may be many in a
+    /// step, each taking a few bytes of a large room.
     bytes: Vec<u8>,
+    /// How much of `bytes` waits to be used.
+    filled: usize,
 }
 
 impl RecvBuf {
     /// Holding `bytes`, received elsewhere and not used yet.
     pub(crate) fn holding(bytes: Vec<u8>) -> RecvBuf {
-        RecvBuf { bytes }
+        let filled = bytes.len();
+        RecvBuf { bytes, filled }
     }
 
     /// What is waiting to be used.
     pub(crate) fn filled(&self) -> &[u8] {
-        &self.bytes
+        &self.bytes[..self.filled]
     }
 
     /// The first `n` bytes were used.
     pub(crate) fn consume(&mut self, n: usize) {
-        self.bytes.drain(..n);
+        assert!(n <= self.filled, "only what waits is used");
+        self.bytes.copy_within(n..self.filled, 0);
+        self.filled -= n;
     }
 
     /// What is waiting, taken out whole, leaving it empty: no copy.
     pub(crate) fn take(&mut self) -> Vec<u8> {
+        self.bytes.truncate(self.filled);
+        self.filled = 0;
         std::mem::take(&mut self.bytes)
     }
 
@@ -43,22 +53,24 @@ impl RecvBuf {
         max: usize,
         read: impl FnOnce(&mut [u8]) -> io::Result<Recv>,
     ) -> Result<Recv, RecvFailed> {
-        let len = self.bytes.len();
-        self.bytes
-            .try_reserve_exact(max)
-            .map_err(|_| RecvFailed::OutOfMemory)?;
-        #[expect(clippy::disallowed_methods, reason = "reserved just above")]
-        self.bytes.resize(len + max, 0);
-        let got = read(&mut self.bytes[len..]);
+        let len = self.filled;
+        let end = len.checked_add(max).ok_or(RecvFailed::OutOfMemory)?;
+        if let Some(more) = end.checked_sub(self.bytes.len()) {
+            self.bytes
+                .try_reserve_exact(more)
+                .map_err(|_| RecvFailed::OutOfMemory)?;
+            #[expect(clippy::disallowed_methods, reason = "reserved just above")]
+            self.bytes.resize(end, 0);
+        }
+        let got = read(&mut self.bytes[len..end]);
         let n = match &got {
             Ok(Recv::Data(n)) => n.get(),
             Ok(Recv::Eof | Recv::WouldBlock) | Err(_) => 0,
         };
         if n > max {
-            self.bytes.truncate(len);
             return Err(RecvFailed::Os(io::ErrorKind::InvalidData.into()));
         }
-        self.bytes.truncate(len + n);
+        self.filled = len + n;
         got.map_err(RecvFailed::Os)
     }
 }

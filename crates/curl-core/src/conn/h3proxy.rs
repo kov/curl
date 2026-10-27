@@ -737,21 +737,19 @@ impl Part<Below<'_>> for H3Proxy {
     /// What the transfer waits for, as the windows the proxy left say: to
     /// read for a window that is shut, to write while the stream may and
     /// the connection has something to send (`cf_h3_proxy_adjust_pollset`).
+    /// With no stream, before the `CONNECT` or once it closed, the poll is
+    /// left as it is.
     fn adjust_pollset(&self, wanted: Events) -> Events {
+        let Life::Open { flow_blocked, .. } = self.tunnel.life else {
+            return wanted;
+        };
         let (want_recv, want_send) = (wanted.contains(Events::IN), wanted.contains(Events::OUT));
         let held_out = self.quic.wants().contains(Events::OUT);
         if !want_recv && !want_send && !held_out {
             return wanted;
         }
         let c_exhaust = want_send && !self.quic.send_room();
-        let s_exhaust = want_send
-            && matches!(
-                self.tunnel.life,
-                Life::Open {
-                    flow_blocked: true,
-                    ..
-                }
-            );
+        let s_exhaust = want_send && flow_blocked;
         let recv = want_recv || c_exhaust || s_exhaust;
         let send = (!s_exhaust && want_send) || held_out;
         let mut events = Events::NONE;

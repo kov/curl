@@ -790,3 +790,19 @@ witness: curl-ngtcp2 tests::a_close_kind_is_said_as_ngtcp2_numbers_it
 --- new
         sys::NGTCP2_CCERR_TYPE_IDLE_CLOSE => CloseKind::DropConn,
         sys::NGTCP2_CCERR_TYPE_DROP_CONN => CloseKind::IdleClose,
+
+=== an HTTP/3 proxy's tunnel with no stream asks the poll for what its connection holds
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core conn::h3proxy::tests::a_tunnel_s_poll_is_as_its_windows_say
+--- old
+        let Life::Open { flow_blocked, .. } = self.tunnel.life else {
+            return wanted;
+        };
+--- new
+        let flow_blocked = matches!(
+            self.tunnel.life,
+            Life::Open {
+                flow_blocked: true,
+                ..
+            }
+        );

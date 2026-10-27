@@ -438,8 +438,8 @@ fn hold_a_packet(p: &mut H3Proxy, script: &Arc<Mutex<Script>>) {
 }
 
 /// The poll asks to read for a window shut, the connection's or the
-/// stream's, and to write while the stream may or packets wait
-/// (`cf_h3_proxy_adjust_pollset`).
+/// stream's, and to write while the stream may or packets wait; with
+/// no stream it is left as it is (`cf_h3_proxy_adjust_pollset`).
 #[test]
 fn a_tunnel_s_poll_is_as_its_windows_say() {
     let script = Script::new();
@@ -472,6 +472,11 @@ fn a_tunnel_s_poll_is_as_its_windows_say() {
     assert_eq!(p.adjust_pollset(r), rw);
     p.tunnel.life = open(0, true);
     assert_eq!(p.adjust_pollset(w), rw);
+    // No stream, none of it.
+    p.tunnel.life = gone(0);
+    for wanted in [none, r, w, rw] {
+        assert_eq!(p.adjust_pollset(wanted), wanted);
+    }
 }
 
 /// The connection waits to read as the `CONNECT` goes, and to write

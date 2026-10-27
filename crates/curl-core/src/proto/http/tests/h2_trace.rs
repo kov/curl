@@ -269,3 +269,81 @@ fn a_step_reads_frames_however_many_reads_they_take() {
     assert_eq!(reads, reply.len().div_ceil(9), "{lines:#?}");
     assert!(reads > 11);
 }
+
+/// Over TLS with ALPN agreeing `h2`, the session is made at the request,
+/// not at connect: the chain's lines lack `[HTTP/2]`, and the request
+/// asks the TLS filter for the protocol itself. A known gap
+/// (`DIVERGENCE.md`, "Traces C makes at connect"), pinned as it is.
+#[test]
+fn alpn_agreeing_h2_makes_the_session_at_the_request() {
+    use crate::libraries::Library;
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    static FAKE: FakeH2 = FakeH2;
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        h2: Some(&FAKE as &dyn crate::http2::Http2),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let reply = b"S 100\nH 1 0\n:status: 200\ncontent-length: 5\n\nD 1 5 1\nhello";
+    let response = fake::records(reply).unwrap();
+    let talk = Conversation::replies(&[WELCOME, &response], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let c = Components::new().unwrap();
+    c.configure(b"all");
+    e.set_components(Some(c));
+    let url = format!("https://127.0.0.1:{PORT}/");
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.output.verbose = true;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let lines: Vec<String> = ran
+        .seen
+        .text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .filter(|l| {
+            [
+                "query ALPN",
+                "connected [",
+                "reduced to [",
+                "created h2 session",
+            ]
+            .iter()
+            .any(|n| l.contains(n))
+                || l.ends_with("] using HTTP/2")
+        })
+        .collect();
+    // C's, from pytest test_02_08 (h2, `CURL_DEBUG=all`), these lines
+    // being, with its connect's SETTINGS between the first three and
+    // the chain's:
+    //   [SETUP] query ALPN
+    //   [SSL] query ALPN: returning 'h2'
+    //   [HTTP/2] [0] created h2 session
+    //   [MULTI] [CONNECTING] connected
+    //       [0][DNS][DNS][HTTPS-CONNECT][HTTP/2][SETUP][SSL][HAPPY-EYEBALLS][TCP]
+    //   [MULTI] [CONNECTING] reduced to [0][HTTP/2][SSL][TCP]
+    //   [HTTP/2] query ALPN
+    //   [SSL] query ALPN: returning 'h2'
+    //   using HTTP/2
+    // The fake's chain has one `[DNS]`, its resolve being one filter.
+    assert_eq!(
+        lines,
+        expect(
+            "[0-0] [SETUP] query ALPN
+             [0-0] [SSL] query ALPN: returning 'h2'
+             [0-0] [MULTI] [CONNECTING] connected \
+                 [0][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]
+             [0-0] [MULTI] [CONNECTING] reduced to [0][SSL][TCP]
+             [0-0] [SSL] query ALPN
+             [0-0] [SSL] query ALPN: returning 'h2'
+             [0-0] [HTTP/2] [0] created h2 session
+             [0-0] using HTTP/2"
+        ),
+        "{lines:#?}"
+    );
+}

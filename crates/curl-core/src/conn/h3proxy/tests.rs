@@ -18,7 +18,10 @@ fn what_the_tunnel_read_is_let_go_of_while_more_comes() {
     const DATA: usize = 16 * 1024;
     let mut cx = Silent(ManualClock::new().unwrap().now());
     let mut t = Tunnel::new();
-    t.stream = Some(StreamId(0));
+    t.life = Life::Open {
+        stream: StreamId(0),
+        flow_blocked: false,
+    };
     let (mut came, mut taken) = (0, 0);
     let mut buf = vec![0; DATA];
     for round in 0..100 {

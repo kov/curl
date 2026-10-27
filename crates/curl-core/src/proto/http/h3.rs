@@ -51,11 +51,8 @@ pub(super) struct H3Stream {
     failed: Option<ErrorKind>,
     /// The final head is whole (`resp_hds_complete`).
     head_done: bool,
-    /// The stream closed (`closed`), with this code (`error3`); one with
-    /// an error is a reset (`reset`).
-    closed: bool,
-    reset: bool,
-    error: H3Error,
+    /// How the stream ended, once it did (`closed`, `reset`, `error3`).
+    ended: Option<Ended>,
     /// Nothing more of the request goes (`send_closed`).
     send_closed: bool,
     /// The body's size, none if unknown until it is all sent; and how
@@ -66,6 +63,16 @@ pub(super) struct H3Stream {
     /// The peer's flow control holds its sending back
     /// (`quic_flow_blocked`).
     flow_blocked: bool,
+}
+
+/// How a request's stream ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ended {
+    /// It closed: the peer closed it with no error, or the request
+    /// stopped it.
+    Closed,
+    /// The peer reset it with this error.
+    Reset(H3Error),
 }
 
 /// What of a request's sending its connection weighs as the transfer's
@@ -89,9 +96,7 @@ impl Default for H3Stream {
             status: 0,
             failed: None,
             head_done: false,
-            closed: false,
-            reset: false,
-            error: H3Error::default(),
+            ended: None,
             send_closed: false,
             body_size: Some(0),
             handed: 0,
@@ -448,7 +453,7 @@ impl Request {
                     );
                     close(step, quic);
                     break 'out Err(kind);
-                } else if s.closed {
+                } else if s.ended.is_some() {
                     if s.head_done {
                         // The server is done with the request: what is left
                         // of its body is dropped, as no transport failed.
@@ -596,7 +601,7 @@ impl Request {
                         close(step, quic);
                         break 'out Err(kind);
                     }
-                    if s.closed {
+                    if s.ended.is_some() {
                         break 'out step.req.recv_closed_stream(step.cx, step.lease);
                     }
                     if first
@@ -641,8 +646,7 @@ impl Request {
         let bytecount = self.pipeline.bytecount();
         let s = self.h3_stream();
         let id = s.shown_id();
-        if s.reset {
-            let error = s.error;
+        if let Some(Ended::Reset(error)) = s.ended {
             let (code, name) = (error.0, error.name());
             if error == H3Error::REQUEST_REJECTED {
                 trace::info(
@@ -785,13 +789,11 @@ impl Request {
                 Heard::Fine
             }
             StreamEvent::Closed(error) => {
-                s.closed = true;
-                s.error = error;
                 if error == H3Error::NO_ERROR {
+                    s.ended = Some(Ended::Closed);
                     trace::of(cx, h3, format_args!("[{id}] CLOSED"));
                 } else {
-                    s.reset = true;
-                    s.send_closed = true;
+                    s.ended = Some(Ended::Reset(error));
                     let code = error.0;
                     trace::of(cx, h3, format_args!("[{id}] RESET: error {code}"));
                 }
@@ -963,7 +965,7 @@ fn written(s: &H3Stream, quic: &Quic, stream: StreamId) -> u64 {
 /// is left goes as the connection next sends.
 fn done_sending<H: Host>(step: &mut H3Step<'_, '_, H>, quic: &mut Quic) {
     let s = step.stream();
-    let Some(stream) = s.id.filter(|_| !s.send_closed && !s.closed) else {
+    let Some(stream) = s.id.filter(|_| !s.send_closed && s.ended.is_none()) else {
         return;
     };
     s.send_closed = true;
@@ -977,10 +979,10 @@ fn done_sending<H: Host>(step: &mut H3Step<'_, '_, H>, quic: &mut Quic) {
 /// (`Curl_cf_ngtcp2_h3_stream_close`).
 fn close<H: Host>(step: &mut H3Step<'_, '_, H>, quic: &mut Quic) {
     let s = step.stream();
-    if s.closed {
+    if s.ended.is_some() {
         return;
     }
-    s.closed = true;
+    s.ended = Some(Ended::Closed);
     if let Some(stream) = s.id {
         quic.cancel(step, stream);
     }

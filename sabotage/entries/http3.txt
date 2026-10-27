@@ -160,7 +160,7 @@ witness: curl-core proto::http::tests::h3_trace::a_stream_closed_before_its_head
         if !s.head_done {
             return Err(trace::fail(
 --- new
-        if !s.head_done && s.reset {
+        if !s.head_done && matches!(s.ended, Some(Ended::Reset(_))) {
             return Err(trace::fail(
 
 === a QUIC connection reads the time of whoever uses it
@@ -532,11 +532,11 @@ witness: curl-core proto::http::tests::h3_trace::a_tunnel_an_http3_proxy_refuses
 file: crates/curl-core/src/conn/h3proxy.rs
 witness: curl-core proto::http::tests::h3_trace::a_tunnel_an_http3_proxy_closes_fails_the_read
 --- old
-        if self.tunnel.stream.is_none() || self.quic.shutdown_started() {
+        if self.tunnel.open().is_none() || self.quic.shutdown_started() {
             return (Err(ErrorKind::RecvError), 0);
         }
 --- new
-        if self.tunnel.stream.is_none() || self.quic.shutdown_started() {
+        if self.tunnel.open().is_none() || self.quic.shutdown_started() {
             return (Ok(Recv::Data(NonZeroUsize::MIN)), 0);
         }
 

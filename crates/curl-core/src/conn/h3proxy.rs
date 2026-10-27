@@ -50,54 +50,88 @@ pub(crate) enum TunnelState {
 /// The `CONNECT`'s stream (`h3_tunnel_stream`).
 #[derive(Debug)]
 struct Tunnel {
-    /// None before the `CONNECT`, and once the stream closed
-    /// (`ts->stream`, cleared by the close).
-    stream: Option<StreamId>,
-    /// The stream it was, for the traces after.
-    last: i64,
+    life: Life,
     state: TunnelState,
-    /// The answer being read: an interim one's replaced by the next.
-    answer: Option<Answer>,
-    /// The status of the answer being read (`status_code`).
-    status: u16,
-    /// The answer read is final, not an interim 1xx.
-    final_answer: bool,
+    answer: Answering,
     /// Its DATA, not read by the layer above yet.
     recv: HeldBytes,
-    /// The DATA received in all (`rx_total`), and the receive window's
-    /// offsets (`rx_offset`, `rx_offset_max`).
-    rx_total: u64,
+    /// The DATA received in all, the receive window's offset
+    /// (`rx_total`, `rx_offset`), and how far the proxy may send
+    /// (`rx_offset_max`).
     rx_offset: u64,
     rx_offset_max: u64,
     /// The window to open by, once the library's call is over.
     extend: u64,
-    closed: bool,
-    /// The code it closed with, and whether the proxy reset it.
-    error: H3Error,
-    reset: bool,
-    /// The library may send none of the stream's data for its flow
-    /// control (`quic_flow_blocked`).
-    flow_blocked: bool,
+}
+
+/// Where the tunnel's stream is in its life (`ts->stream`, cleared by
+/// the close; `closed`, `reset`, `error3`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Life {
+    /// No `CONNECT` went yet.
+    Unopened,
+    /// The `CONNECT`'s stream is open; the library may send none of its
+    /// data for the proxy's flow control if `flow_blocked`
+    /// (`quic_flow_blocked`).
+    Open {
+        stream: StreamId,
+        flow_blocked: bool,
+    },
+    /// The stream closed, the proxy resetting it with an error if
+    /// `reset`.
+    Closed {
+        stream: StreamId,
+        reset: Option<H3Error>,
+    },
+}
+
+/// The proxy's answer, as it is read (`status_code`, `resp`).
+#[derive(Debug)]
+enum Answering {
+    /// No head yet.
+    Waiting,
+    /// A head being read: an interim one's replaced by the next.
+    Reading(Answer),
+    /// The final answer's head is whole: none if it had no status.
+    Final(Option<Answer>),
+}
+
+impl Answering {
+    /// The status of the answer read, 0 if it had none (`status_code`).
+    fn status(&self) -> u16 {
+        match self {
+            Answering::Reading(answer) | Answering::Final(Some(answer)) => answer.status,
+            Answering::Waiting | Answering::Final(None) => 0,
+        }
+    }
 }
 
 impl Tunnel {
     fn new() -> Tunnel {
         Tunnel {
-            stream: None,
-            last: -1,
+            life: Life::Unopened,
             state: TunnelState::Init,
-            answer: None,
-            status: 0,
-            final_answer: false,
+            answer: Answering::Waiting,
             recv: HeldBytes::default(),
-            rx_total: 0,
             rx_offset: 0,
             rx_offset_max: STREAM_WINDOW_INITIAL,
             extend: 0,
-            closed: false,
-            error: H3Error::NO_ERROR,
-            reset: false,
-            flow_blocked: false,
+        }
+    }
+
+    /// Its stream, while it is open.
+    fn open(&self) -> Option<StreamId> {
+        match self.life {
+            Life::Open { stream, .. } => Some(stream),
+            Life::Unopened | Life::Closed { .. } => None,
+        }
+    }
+
+    /// The stream it is or was, for the traces: -1 before the `CONNECT`.
+    fn last(&self) -> i64 {
+        match self.life {
+            Life::Unopened => -1,
+            Life::Open { stream, .. } | Life::Closed { stream, .. } => stream.0,
         }
     }
 
@@ -118,14 +152,14 @@ impl Tunnel {
 
     /// The stream's id as traced: -1 once it is gone.
     fn id(&self) -> i64 {
-        self.stream.map_or(-1, |s| s.0)
+        self.open().map_or(-1, |s| s.0)
     }
 
     /// Open the receive window back to what is held for the layer above
     /// allowing for as much again (`cf_h3_proxy_upd_rx_win`): by how much,
     /// once the library's call is over.
     fn update_window(&mut self, cx: &mut dyn LayerCx) {
-        let Some(stream) = self.stream else { return };
+        let Some(stream) = self.open() else { return };
         let buffered = self.held().len() as u64;
         let wanted = TUNNEL_WINDOW.saturating_sub(buffered);
         let current = self.rx_offset_max - self.rx_offset;
@@ -149,25 +183,24 @@ impl Tunnel {
     /// (`ngh3_proxy_callbacks`): one of another stream is let be, as C's
     /// callbacks find no tunnel for it.
     fn heard(&mut self, cx: &mut dyn LayerCx, stream: StreamId, event: StreamEvent<'_>) -> Heard {
-        let ours = |s: StreamId, me: Option<StreamId>| Some(s) == me;
+        let ours = self.open() == Some(stream);
         match event {
             StreamEvent::Header {
                 name,
                 value,
                 status,
             } => {
-                if !ours(stream, self.stream) || self.final_answer {
+                if !ours || matches!(self.answer, Answering::Final(_)) {
                     return Heard::Fine;
                 }
                 if status {
                     let Some(code) = crate::proto::http::decode_status(value) else {
                         return Heard::Failed;
                     };
-                    self.status = code;
-                    self.answer = Some(Answer::new(code));
+                    self.answer = Answering::Reading(Answer::new(code));
                     return Heard::Fine;
                 }
-                let Some(answer) = &mut self.answer else {
+                let Answering::Reading(answer) = &mut self.answer else {
                     return Heard::Failed;
                 };
                 let id = Text::<24>::clipped(format_args!("[{}] ", stream.0)).0;
@@ -178,23 +211,26 @@ impl Tunnel {
                 }
             }
             StreamEvent::HeadersDone => {
-                if !ours(stream, self.stream) {
+                if !ours {
                     return Heard::Fine;
                 }
-                let (id, status) = (stream.0, self.status);
+                let (id, status) = (stream.0, self.answer.status());
                 cx.of(H3P, format_args!("[{id}] end_headers, status={status}"));
                 if status / 100 != 1 {
-                    self.final_answer = true;
+                    self.answer = match std::mem::replace(&mut self.answer, Answering::Waiting) {
+                        Answering::Waiting => Answering::Final(None),
+                        Answering::Reading(answer) => Answering::Final(Some(answer)),
+                        done @ Answering::Final(_) => done,
+                    };
                 }
                 Heard::Fine
             }
             StreamEvent::Data(bytes) => {
-                if !ours(stream, self.stream) {
+                if !ours {
                     return Heard::Failed;
                 }
                 let (id, len) = (stream.0, bytes.len());
-                self.rx_total += len as u64;
-                let total = self.rx_total;
+                let total = self.rx_offset + len as u64;
                 cx.of(
                     H3P,
                     format_args!("[cb_h3_proxy_recv_data] [{id}] DATA len={len}, total={total}"),
@@ -210,20 +246,19 @@ impl Tunnel {
                 Heard::Fine
             }
             StreamEvent::Closed(error) => {
-                if !ours(stream, self.stream) {
+                if !ours {
                     return Heard::Fine;
                 }
                 let id = stream.0;
-                self.error = error;
-                if error == H3Error::NO_ERROR {
+                let reset = if error == H3Error::NO_ERROR {
                     cx.of(H3P, format_args!("[{id}] CLOSED"));
+                    None
                 } else {
-                    self.reset = true;
                     let code = error.0;
                     cx.of(H3P, format_args!("[{id}] RESET: error {code}"));
-                }
-                self.stream = None;
-                self.closed = true;
+                    Some(error)
+                };
+                self.life = Life::Closed { stream, reset };
                 Heard::Fine
             }
             StreamEvent::QuicClosed { error, rv } => {
@@ -235,11 +270,13 @@ impl Tunnel {
                 Heard::Fine
             }
             StreamEvent::H3Reset { rv } => {
-                if ours(stream, self.stream) {
+                if ours {
                     let id = stream.0;
                     cx.of(H3P, format_args!("[{id}] reset -> {rv}"));
-                    self.stream = None;
-                    self.closed = true;
+                    self.life = Life::Closed {
+                        stream,
+                        reset: None,
+                    };
                 }
                 Heard::Fine
             }
@@ -263,15 +300,11 @@ impl Tunnel {
                 }
                 Heard::Fine
             }
-            StreamEvent::Blocked => {
-                if ours(stream, self.stream) {
-                    self.flow_blocked = true;
-                }
-                Heard::Fine
-            }
-            StreamEvent::Unblocked => {
-                if ours(stream, self.stream) {
-                    self.flow_blocked = false;
+            StreamEvent::Blocked | StreamEvent::Unblocked => {
+                if let Life::Open { flow_blocked, .. } = &mut self.life
+                    && ours
+                {
+                    *flow_blocked = event == StreamEvent::Blocked;
                 }
                 Heard::Fine
             }
@@ -298,7 +331,7 @@ pub(crate) struct H3Proxy {
 impl std::fmt::Debug for H3Proxy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("H3Proxy")
-            .field("stream", &self.tunnel.stream)
+            .field("stream", &self.tunnel.life)
             .field("state", &self.tunnel.state)
             .field("held", &self.tunnel.held().len())
             .finish_non_exhaustive()
@@ -453,7 +486,7 @@ impl H3Proxy {
         let r = f(quic, &mut over);
         let extend = std::mem::take(&mut self.tunnel.extend);
         if extend > 0
-            && let Some(stream) = self.tunnel.stream
+            && let Some(stream) = self.tunnel.open()
         {
             self.quic.extend_stream_window(stream, extend);
         }
@@ -480,8 +513,10 @@ impl H3Proxy {
             quic.submit(over, fields, true)
         });
         let stream = stream?;
-        self.tunnel.stream = Some(stream);
-        self.tunnel.last = stream.0;
+        self.tunnel.life = Life::Open {
+            stream,
+            flow_blocked: false,
+        };
         let id = stream.0;
         cx.of(H3P, format_args!("[{id}] opened bidi stream"));
         if verbose {
@@ -496,7 +531,7 @@ impl H3Proxy {
         if self.tunnel.state == state {
             return;
         }
-        let id = self.tunnel.last;
+        let id = self.tunnel.last();
         let name = match state {
             TunnelState::Init => "init",
             TunnelState::Connect => "connect",
@@ -516,15 +551,15 @@ impl H3Proxy {
 
     /// The proxy's final answer to the `CONNECT`, once it is whole.
     pub(crate) fn answer(&self) -> Option<&Answer> {
-        self.tunnel
-            .answer
-            .as_ref()
-            .filter(|_| self.tunnel.final_answer)
+        match &self.tunnel.answer {
+            Answering::Final(answer) => answer.as_ref(),
+            Answering::Waiting | Answering::Reading(_) => None,
+        }
     }
 
     /// The tunnel's stream closed.
     pub(crate) fn tunnel_closed(&self) -> bool {
-        self.tunnel.closed
+        matches!(self.tunnel.life, Life::Closed { .. })
     }
 
     /// Read what came, then send what waits, the timer set as the
@@ -561,12 +596,11 @@ impl H3Proxy {
     /// stream closed, its end, or a failure for a reset or a close before
     /// the answer's head (`cf_h3_proxy_recv_closed_stream`).
     fn nothing_held(&mut self, cx: &mut dyn LayerCx) -> Result<Recv, ErrorKind> {
-        if !self.tunnel.closed {
+        let Life::Closed { stream, reset } = self.tunnel.life else {
             return Ok(Recv::WouldBlock);
-        }
-        let id = self.tunnel.last;
-        if self.tunnel.reset {
-            let error = self.tunnel.error;
+        };
+        let id = stream.0;
+        if let Some(error) = reset {
             if error == H3Error::REQUEST_REJECTED {
                 cx.info(format_args!(
                     "HTTP/3 stream {id} refused by server, try again on a new connection"
@@ -579,7 +613,7 @@ impl H3Proxy {
                 format_args!("HTTP/3 stream {id} reset by server (error 0x{code:x} {name})"),
             ));
         }
-        if !self.tunnel.final_answer {
+        if !matches!(self.tunnel.answer, Answering::Final(_)) {
             return Err(cx.fails(
                 ErrorKind::Http3,
                 format_args!(
@@ -606,7 +640,7 @@ impl H3Proxy {
             self.tunnel.update_window(cx);
             let extend = std::mem::take(&mut self.tunnel.extend);
             if extend > 0
-                && let Some(stream) = self.tunnel.stream
+                && let Some(stream) = self.tunnel.open()
             {
                 self.quic.extend_stream_window(stream, extend);
             }
@@ -621,7 +655,7 @@ impl H3Proxy {
         buf: &mut [u8],
     ) -> (Result<Recv, ErrorKind>, usize) {
         // A stream gone before the read fails it (`!stream`).
-        if self.tunnel.stream.is_none() || self.quic.shutdown_started() {
+        if self.tunnel.open().is_none() || self.quic.shutdown_started() {
             return (Err(ErrorKind::RecvError), 0);
         }
         let mut n = self.take_held(cx, buf);
@@ -655,7 +689,7 @@ impl H3Proxy {
         if let Err(kind) = read {
             return (self.send_ended(cx, socket, Err(kind)), 0);
         }
-        let Some(stream) = self.tunnel.stream.filter(|_| !self.tunnel.closed) else {
+        let Some(stream) = self.tunnel.open() else {
             return (Err(ErrorKind::SendError), 0);
         };
         let took = match self.quic.write_body(stream, bytes) {
@@ -708,7 +742,14 @@ impl Part<Below<'_>> for H3Proxy {
             return wanted;
         }
         let c_exhaust = want_send && !self.quic.send_room();
-        let s_exhaust = want_send && self.tunnel.stream.is_some() && self.tunnel.flow_blocked;
+        let s_exhaust = want_send
+            && matches!(
+                self.tunnel.life,
+                Life::Open {
+                    flow_blocked: true,
+                    ..
+                }
+            );
         let recv = want_recv || c_exhaust || s_exhaust;
         let send = (!s_exhaust && want_send) || held_out;
         let mut events = Events::NONE;

@@ -1841,7 +1841,8 @@ the stream's transfer as it is read, the stepping one's own or a sibling's throu
 `with_sibling`, routed by `conn::mux::Routes`, which HTTP/2 shares; a stream no transfer has is
 heard as C's callbacks hear one without user data. The response's head reaches the request a
 line at a time, as HTTP/2's does; the windows its reading opens are opened once the call
-returns. The library's timer, set in a step, is armed on the transfer after it. The stream is
+returns. How the stream ended is one field, closed or reset with the peer's error (C's `closed`,
+`reset` and `error3`). The library's timer, set in a step, is armed on the transfer after it. The stream is
 done with as the connection hears the transfer is (`Curl_conn_ev_data_done`), after the
 request's own end.
 
@@ -2693,7 +2694,10 @@ and the race's attempt is a `Quic` of `Component::H3Proxy`, its TLS the proxy's 
 (`TlsIo::for_proxy`), no early data. The winner's connection rides in the `Dialed` stream
 (`take_quic`) to `multi/state/h3tunnel.rs`, which makes `conn/h3proxy.rs`'s `H3Proxy` of it: the
 `Quic`, its one stream's `Tunnel` (state, the answer, what came on the stream, held as the
-HTTP/2 tunnel's is, and its window) and the room the library's events land in.
+HTTP/2 tunnel's is, and its window) and the room the library's events land in. Each of C's
+flags that say one fact is one field: the stream's life is unopened, open (flow-blocked or not)
+or closed (reset with an error or not), and the answer waiting, being read or final, the status
+its own.
 `Handshake::H3Connect` holds it while the `CONNECT` goes as the HTTP/2 tunnel's fields; once the
 proxy's 2xx is in, the box is pushed as the layer the tunnel's bytes pass through, each read and
 write its stream's, the window opened by 512 KiB as C does (`PROXY_H3_TUNNEL_RX_WIN`). The

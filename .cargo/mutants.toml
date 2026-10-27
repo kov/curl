@@ -697,6 +697,9 @@ exclude_re = [
     # left them, opened then; anything read opens it by as much, so what
     # it opens by is never 0.
     'curl-core/src/conn/h3proxy\.rs:.*: replace > with >= in H3Proxy::take_held$',
+    # A window already as wide as wanted is opened by nothing, which the
+    # check of the amount skips as the check of the widths does.
+    'curl-core/src/conn/h3proxy\.rs:.*: replace > with >= in Tunnel::update_window$',
     # Only an allocation the tests cannot fail on its own reports
     # OutOfMemory from the `CONNECT`'s submit.
     'curl-core/src/multi/state/h3tunnel\.rs:.*: delete match arm ErrorKind::OutOfMemory in connect$',

@@ -2256,6 +2256,39 @@ fn a_tunnel_reset_fails_the_read_as_c_says_it() {
     );
 }
 
+/// The proxy closing the tunnel's stream before its answer fails the
+/// tunnel at once (`cf_h3_proxy_tunnel`, `H3_TUNNEL_FAILED`), not as the
+/// connect times out.
+#[test]
+fn a_tunnel_closed_before_its_answer_fails() {
+    let script = Script::new();
+    {
+        let mut s = script.lock().unwrap();
+        s.idle = Some(std::time::Duration::from_secs(30));
+        s.out.extend([
+            vec![1; 1200],
+            vec![2; 1200],
+            vec![],
+            vec![],
+            vec![3; 75],
+            vec![],
+        ]);
+        s.on_read
+            .push_back(vec![Told::HandshakeDone, Told::MaxBidiStreams(100)]);
+        s.on_read.push_back(vec![Told::Closed(0, 0x100)]);
+    }
+    let mut m = quic_server(&[b"server flight", b"close"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = through_h3_proxy(&mut m, e);
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::RecvError),
+        "{:#?}",
+        ran.seen.text()
+    );
+    assert_eq!(ran.easy.report().timings().total().as_millis(), 0);
+}
+
 /// The proxy a CONNECT-UDP goes through, at `127.0.0.1`.
 const UDP_PROXY_PORT: u16 = 3128;
 

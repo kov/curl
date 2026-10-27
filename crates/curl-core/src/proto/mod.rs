@@ -11,6 +11,7 @@ pub(crate) mod file;
 pub(crate) mod http;
 pub(crate) mod http1;
 pub(crate) mod http2;
+pub(crate) mod http3;
 #[cfg(any(test, feature = "test-util"))]
 mod script;
 

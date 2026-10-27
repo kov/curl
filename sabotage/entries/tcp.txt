@@ -19,13 +19,13 @@ witness: curl-core proto::http::tests::tcp_trace::a_losing_attempt_is_closed_as_
         let won = r.attempts.remove(i);
         let component = self.route.socket_component();
         for a in r.attempts.drain(..) {
-            discard(cx, component, a.socket);
+            a.discard(cx, component);
         }
 --- new
         let won = r.attempts.remove(i);
         let component = self.route.socket_component();
         for a in r.attempts.drain(..) {
-            discard(cx, component, a.socket);
+            a.discard(cx, component);
         }
         cx.of(
             Component::HappyEyeballs,

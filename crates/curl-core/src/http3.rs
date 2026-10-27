@@ -79,7 +79,7 @@ pub struct CloseError {
 /// What the connection read, as it read it. The library acts on what
 /// passes between its two halves; these are what C's filter traces or
 /// decides on.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event<'a> {
     /// The handshake is done and the peer checked
     /// (`cb_ngtcp2_handshake_completed`): `checked` is the check's
@@ -305,6 +305,10 @@ pub trait Connection: fmt::Debug + Send {
     /// What it closes with (`last_error`).
     fn close_error(&self) -> CloseError;
 
+    /// What it was closed with, by the peer or by itself
+    /// (`ngtcp2_conn_get_ccerr`), if it says.
+    fn closed_with(&self) -> Option<CloseError>;
+
     /// Write the packet that closes it into `buf`, with what it closes
     /// with (`ngtcp2_conn_write_connection_close`): its length.
     fn write_close(&mut self, now: Instant, buf: &mut [u8]) -> Result<usize, QuicError>;
@@ -362,3 +366,6 @@ pub enum SubmitFailed {
 /// The most of a stream's request body a connection holds
 /// (`H3_STREAM_SEND_BUFFER_MAX`, ten chunks of 64 KiB).
 pub const BODY_HELD: usize = 10 * 64 * 1024;
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod fake;

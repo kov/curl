@@ -86,15 +86,27 @@ pub(crate) const HTTPS: Scheme = Scheme {
     reuse: true,
 };
 
-/// The HTTP versions a request may speak (`CURL_HTTP_V1x`, `CURL_HTTP_V2x`).
+/// The HTTP versions a request may speak (`CURL_HTTP_V1x`, `CURL_HTTP_V2x`,
+/// `CURL_HTTP_V3x`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Versions {
     pub(crate) h1: bool,
     pub(crate) h2: bool,
+    pub(crate) h3: bool,
 }
 
 impl Versions {
-    pub(crate) const ALL: Versions = Versions { h1: true, h2: true };
+    pub(crate) const ALL: Versions = Versions {
+        h1: true,
+        h2: true,
+        h3: true,
+    };
+
+    /// HTTP/3 alone (`CURL_HTTP_V3x`), which C's QUIC connections are
+    /// set up for.
+    pub(crate) fn h3_only(self) -> bool {
+        self.h3 && !self.h1 && !self.h2
+    }
 
     /// Whether a connection that speaks `version` may serve the request.
     pub(crate) fn allows(self, version: crate::report::ResponseVersion) -> bool {
@@ -102,7 +114,7 @@ impl Versions {
         match version {
             Http10 | Http11 => self.h1,
             Http2 => self.h2,
-            Http3 => false,
+            Http3 => self.h3,
         }
     }
 }
@@ -391,16 +403,19 @@ impl Request {
             Versions {
                 h1: true,
                 h2: false,
+                h3: false,
             }
         } else if self.h2_only {
             Versions {
                 h1: false,
                 h2: true,
+                h3: false,
             }
         } else {
             Versions {
                 h1: wanted.h1(),
                 h2: wanted.h2(),
+                h3: wanted.h3(),
             }
         }
     }
@@ -414,7 +429,7 @@ impl Request {
         let set = crate::altsvc::Versions {
             h1: versions.h1,
             h2: versions.h2,
-            h3: false,
+            h3: versions.h3,
         };
         let open = wanted == HttpVersion::Any && !self.h1_only && !self.h2_only;
         Negotiation {

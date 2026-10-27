@@ -27,7 +27,10 @@ use super::io::{
     Closer, Connect, Events, Family, Net, Queued, Remote, Resolve, ResolveFailure, ResolveId, Sock,
     Socket, SocketKind, SocketOption, SocketPoll, UnixPeer, Waiter,
 };
-use super::layer::{LayerAnswer, LayerCx, LayerQuery};
+#[cfg(test)]
+use super::layer::LayerCx;
+use super::layer::{LayerAnswer, LayerQuery};
+use super::quic::{Quic, QuicCx};
 use super::shutdown::ConnSettings;
 use super::{Conn, ConnNumber, Peer, Route, Stream, Tcp, Transport, Use};
 use crate::components::Component;
@@ -178,8 +181,12 @@ struct Racing {
 /// (`LayerCx`), the network, and the names kept. A transfer's step
 /// gives one over its own context (`DriveCx`); it is an argument, never
 /// stored.
-pub(crate) trait ConnCx: LayerCx {
+pub(crate) trait ConnCx: QuicCx {
     fn net(&mut self) -> &mut dyn Net;
+
+    /// What a QUIC attempt is made with, if the transfer has an HTTP/3
+    /// library.
+    fn quic_making(&mut self) -> Result<Option<QuicMaking>, OutOfMemory>;
 
     /// The answers kept from the setups before: the multi's, or its
     /// share's.
@@ -215,6 +222,15 @@ pub(crate) trait ConnCx: LayerCx {
     /// Tell the application a resolve starts, if it asked to hear of
     /// it: it may stop it (`Curl_resolv_announce_start`).
     fn announce_resolve(&mut self) -> Result<(), ConnectError>;
+}
+
+/// What a QUIC attempt is made with: the transfer's libraries, what its
+/// TLS library keeps across the multi's connections, and how long the
+/// handshake may take (`quic_settings`).
+pub(crate) struct QuicMaking {
+    pub(crate) libraries: crate::libraries::SharedLibraries,
+    pub(crate) shared: crate::tls::TlsShared,
+    pub(crate) handshake_timeout: Duration,
 }
 
 /// A socket opened for an attempt, or why none was, and whether the
@@ -273,9 +289,29 @@ impl LayerCx for Plain<'_> {
 }
 
 #[cfg(test)]
+impl QuicCx for Plain<'_> {
+    fn take_room(&mut self) -> Result<Vec<u8>, OutOfMemory> {
+        Ok(vec![0; super::quic::RECV_ROOM])
+    }
+
+    fn give_room(&mut self, _: Vec<u8>) {}
+
+    fn quic_due(&mut self, _: Duration) {}
+
+    fn live(&self) -> Instant {
+        self.now
+    }
+}
+
+#[cfg(test)]
 impl ConnCx for Plain<'_> {
     fn net(&mut self) -> &mut dyn Net {
         self.net
+    }
+
+    /// It has no HTTP/3 library.
+    fn quic_making(&mut self) -> Result<Option<QuicMaking>, OutOfMemory> {
+        Ok(None)
     }
 
     fn names(&mut self) -> Names<'_> {
@@ -474,11 +510,14 @@ impl Eyeballs {
     }
 }
 
-/// A socket connecting to one address.
+/// A socket connecting to one address, and over it, for a route dialed
+/// over QUIC, the QUIC connection whose handshake decides it (C's
+/// `cf_ip_attempt` with its QUIC filter).
 #[derive(Debug)]
 struct Attempt {
     remote: Remote,
     socket: Sock,
+    quic: Option<Box<Quic>>,
 }
 
 /// What a drive did.
@@ -528,12 +567,13 @@ pub(crate) enum Progress {
 pub(crate) enum ConnectError {
     /// The name has no address to try.
     Unresolved(Unresolved),
-    /// The last attempt failed, with its error, as `.1` says it. The
+    /// The last attempt failed, with its error if the system gave one
+    /// (a QUIC handshake's failure is none), as `.1` says it. The
     /// transfer took the error's number from the drive's context as each
     /// attempt failed (`LayerCx::socket_failed`); the machine's tests,
     /// which have no transfer, read it here.
     Failed(
-        #[cfg_attr(not(test), expect(dead_code, reason = "read by the tests"))] io::Error,
+        #[cfg_attr(not(test), expect(dead_code, reason = "read by the tests"))] Option<io::Error>,
         ErrorKind,
     ),
     /// The application stopped a resolve as it started.
@@ -607,6 +647,19 @@ impl ConnectMachine {
             Stage::Dialed(d) => (&[][..], Some(d.stream.socket())),
         };
         running.iter().map(|a| a.socket.socket()).chain(dialed)
+    }
+
+    /// What each attempt running waits for: a TCP connect to write, a
+    /// QUIC connection what it says (`cf_ngtcp2_adjust_pollset`).
+    pub(crate) fn racing_wants(&self) -> impl Iterator<Item = (&dyn Socket, Events)> {
+        let running = match &self.stage {
+            Stage::Racing(r) => &r.attempts[..],
+            Stage::Resolving(_) | Stage::Dialed(_) => &[][..],
+        };
+        running.iter().map(|a| {
+            let wants = a.quic.as_ref().map_or(Events::OUT, |q| q.wants());
+            (a.socket.socket(), wants)
+        })
     }
 
     /// How far it got, as C's filter chain shows it.
@@ -818,8 +871,12 @@ impl ConnectMachine {
             Checked::Failed(i, error) => {
                 let failure = r.attempts.remove(i).fail(cx, component, error)?;
                 return r
-                    .failed(failure, ErrorKind::CouldntConnect)
+                    .failed(Some(failure), ErrorKind::CouldntConnect)
                     .map(|p| Drove::Connecting(self, p));
+            }
+            Checked::QuicFailed(i, kind) => {
+                r.attempts.remove(i).discard(cx, component);
+                return r.failed(None, kind).map(|p| Drove::Connecting(self, p));
             }
         }
         let due = r.last_start.is_none_or(|at| now >= at.after(delay)) || r.attempts.is_empty();
@@ -840,7 +897,7 @@ impl ConnectMachine {
         if r.attempts.len() == MAX_ATTEMPTS {
             // The oldest makes room (`cf_ip_ballers_prune`).
             let oldest = r.attempts.remove(0);
-            discard(cx, component, oldest.socket);
+            oldest.discard(cx, component);
             cx.of(
                 Component::HappyEyeballs,
                 format_args!("discarding oldest attempt to keep limit"),
@@ -875,6 +932,7 @@ impl ConnectMachine {
                 let superseded = r.attempts.remove(i).fail(cx, component, error)?;
                 drop(superseded);
             }
+            Checked::QuicFailed(i, _) => r.attempts.remove(i).discard(cx, component),
         }
         let (mut remote, scope_found) = match candidate {
             Candidate::Ip(ip) => {
@@ -951,6 +1009,9 @@ impl ConnectMachine {
             return self.not_opened(cx, Some(&remote), kind, error);
         }
         cx.of(component, format_args!("cf_socket_open() -> 0, fd={fd}"));
+        if kind == SocketKind::Datagram {
+            return self.quic_attempt(cx, socket, remote, now, delay);
+        }
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("an attempt is made in a race");
         };
@@ -959,7 +1020,11 @@ impl ConnectMachine {
             // connect to check.
             let socket = Sock::new(socket, self.closer.clone());
             r.attempts
-                .try_push(Attempt { remote, socket })
+                .try_push(Attempt {
+                    remote,
+                    socket,
+                    quic: None,
+                })
                 .expect("reserved");
             let i = r.attempts.len() - 1;
             return self.won(cx, setup, i, now);
@@ -984,6 +1049,7 @@ impl ConnectMachine {
                     .try_push(Attempt {
                         remote: remote.clone(),
                         socket,
+                        quic: None,
                     })
                     .expect("reserved");
                 let tried = Progress::Trying {
@@ -1006,10 +1072,184 @@ impl ConnectMachine {
                     remote.port()
                 ));
                 cx.of(component, format_args!("destroy"));
-                r.failed(error, ErrorKind::CouldntConnect)
+                r.failed(Some(error), ErrorKind::CouldntConnect)
                     .map(|p| Drove::Connecting(self, p))
             }
         }
+    }
+
+    /// An attempt over QUIC, its socket `socket` opened for `remote`:
+    /// connected, set as QUIC's sockets are (`cf_udp_setup_quic`), and
+    /// the QUIC connection over it made and its first flight sent
+    /// (`cf_connect_start`, `Curl_cf_ngtcp2_cmn_connect`).
+    fn quic_attempt(
+        mut self,
+        cx: &mut dyn ConnCx,
+        socket: Box<dyn Socket>,
+        remote: Remote,
+        now: Instant,
+        delay: Duration,
+    ) -> Result<Drove, ConnectError> {
+        let component = self.route.socket_component();
+        let fd = socket.key().get();
+        let socket = Sock::new(socket, self.closer.clone());
+        let Remote::Inet(addr) = remote else {
+            unreachable!("HTTP/3 is refused over a Unix socket");
+        };
+        let rip = remote.shown_ip();
+        if let Err(error) = socket.socket().connect(&remote) {
+            cx.socket_failed(&error);
+            let why = OsError(&error);
+            cx.info(format_args!("Immediate connect fail for {rip}: {why}"));
+            cx.of(Component::Http3, format_args!("destroy"));
+            discard(cx, component, socket);
+            return self.quic_failed(Some(error), ErrorKind::CouldntConnect);
+        }
+        let local = socket.socket().local_addr().ok();
+        let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
+        let rport = remote.port();
+        cx.of(
+            component,
+            format_args!("QUIC socket {fd} connected: [{lip}:{lport}] -> [{rip}:{rport}]"),
+        );
+        // What the system does not take, it does without, as C does.
+        for option in [
+            SocketOption::ReceiveEcn,
+            SocketOption::DiscoverMtu,
+            SocketOption::ReceiveJoined,
+        ] {
+            socket.socket().set(option).ok();
+        }
+        cx.of(
+            component,
+            format_args!("cf_udp_connect(), opened socket={fd} ({lip}:{lport})"),
+        );
+        let made = match local {
+            Some(local) => self.make_quic(cx, local, addr, now),
+            None => Err(ErrorKind::QuicConnectError),
+        };
+        let started = made.and_then(|mut quic| {
+            let done = quic.start(cx, socket.socket())?;
+            Ok((quic, done))
+        });
+        let quic = match started {
+            Ok((quic, _)) => quic,
+            Err(ErrorKind::OutOfMemory) => {
+                cx.net().close(socket);
+                return Err(ConnectError::OutOfMemory);
+            }
+            Err(kind) => {
+                cx.of(Component::Http3, format_args!("destroy"));
+                discard(cx, component, socket);
+                return self.quic_failed(None, kind);
+            }
+        };
+        let Stage::Racing(r) = &mut self.stage else {
+            unreachable!("an attempt is made in a race");
+        };
+        r.attempts
+            .try_push(Attempt {
+                remote: remote.clone(),
+                socket,
+                quic: Some(quic),
+            })
+            .expect("reserved");
+        let tried = Progress::Trying {
+            remote,
+            at_once: false,
+            until: r.next_due(delay),
+        };
+        Ok(Drove::Connecting(self, tried))
+    }
+
+    /// The QUIC connection from `local` to `remote`: its TLS session made
+    /// for the origin, offering HTTP/3, and the HTTP/3 library's
+    /// connection over it (`cf_connect_start`). A failure is traced as C
+    /// traces a connect call's.
+    fn make_quic(
+        &self,
+        cx: &mut dyn ConnCx,
+        local: SocketAddr,
+        remote: SocketAddr,
+        now: Instant,
+    ) -> Result<Box<Quic>, ErrorKind> {
+        let oom = |OutOfMemory| ErrorKind::OutOfMemory;
+        let failed = |cx: &mut dyn ConnCx, kind: ErrorKind| {
+            let (ip, port) = (remote.ip(), remote.port());
+            let why = kind.message();
+            cx.info(format_args!(
+                "QUIC connect to {ip} port {port} failed: {why}"
+            ));
+            let code = crate::trace::Code(Err(kind));
+            cx.of(Component::Http3, format_args!("connect -> {code}, done=0"));
+            kind
+        };
+        let Some(making) = cx.quic_making().map_err(oom)? else {
+            return Err(failed(cx, ErrorKind::QuicConnectError));
+        };
+        let libraries = &*making.libraries;
+        let (Some(backend), Some(h3)) = (libraries.tls.as_deref(), libraries.h3) else {
+            return Err(failed(cx, ErrorKind::QuicConnectError));
+        };
+        let identity = self
+            .route
+            .tls
+            .as_ref()
+            .expect("HTTP/3 is refused but over TLS");
+        let origin = &*self.route.origin;
+        let kept_for = crate::tls::SessionPeer::new(
+            identity,
+            origin,
+            self.route.via.as_deref(),
+            backend.id(),
+            super::Dial::Quic,
+        )
+        .map_err(oom)?;
+        let peer = crate::tls::TlsPeer::of(origin, false);
+        let tls = {
+            let mut tcx = crate::tls::TlsCx::new(cx, Component::Http3, &kept_for);
+            backend.quic_session(identity, &peer, &making.shared, &mut tcx)
+        };
+        let tls = match tls {
+            Ok(tls) => tls,
+            Err(ErrorKind::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+            Err(kind) => return Err(failed(cx, kind)),
+        };
+        let setup = crate::http3::ClientSetup {
+            local,
+            remote,
+            now,
+            handshake_timeout: making.handshake_timeout,
+            max_window: H3_CONN_WINDOW_SIZE_MAX,
+            stream_window: H3_STREAM_WINDOW_SIZE_INITIAL,
+            max_streams: QUIC_MAX_STREAMS,
+        };
+        let conn = match h3.client(&setup, tls) {
+            Ok(conn) => conn,
+            Err(crate::http3::ConnectFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+            Err(crate::http3::ConnectFailed::Refused) => {
+                return Err(failed(cx, ErrorKind::QuicConnectError));
+            }
+            Err(crate::http3::ConnectFailed::Crypto { why }) => {
+                let kind = cx.fails(ErrorKind::FailedInit, format_args!("{why}"));
+                return Err(failed(cx, kind));
+            }
+        };
+        let quic = Quic::new(conn, kept_for, remote, now).map_err(oom)?;
+        curl_alloc::try_box(quic).map_err(oom)
+    }
+
+    /// A QUIC attempt failed as it was made: the race goes on while
+    /// another runs or an address is left.
+    fn quic_failed(
+        mut self,
+        error: Option<io::Error>,
+        kind: ErrorKind,
+    ) -> Result<Drove, ConnectError> {
+        let Stage::Racing(r) = &mut self.stage else {
+            unreachable!("an attempt is made in a race");
+        };
+        r.failed(error, kind).map(|p| Drove::Connecting(self, p))
     }
 
     /// An attempt whose socket did not open, or was closed as it was set:
@@ -1042,7 +1282,8 @@ impl ConnectMachine {
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("an attempt is made in a race");
         };
-        r.failed(error, kind).map(|p| Drove::Connecting(self, p))
+        r.failed(Some(error), kind)
+            .map(|p| Drove::Connecting(self, p))
     }
 
     /// The race's attempt `i` connected: the others close, and the
@@ -1064,11 +1305,13 @@ impl ConnectMachine {
         let won = r.attempts.remove(i);
         let component = self.route.socket_component();
         for a in r.attempts.drain(..) {
-            discard(cx, component, a.socket);
+            a.discard(cx, component);
         }
         // Whatever the attempts said is let go (`cf_ip_happy_connect`).
         cx.reset_fail();
-        if self.route.handshakes() || setup.haproxy || self.route.secured() {
+        // A QUIC connection is up with its handshake: its TLS is its own.
+        let quic = won.quic;
+        if quic.is_none() && (self.route.handshakes() || setup.haproxy || self.route.secured()) {
             // The connection is the first hop's; the handshakes over it
             // are still to be made.
             let answer = r.eyeballs.answer.clone();
@@ -1108,8 +1351,13 @@ impl ConnectMachine {
             let layer = super::layer::Lingering::boxed(how).expect("a test's memory");
             stream.layers_mut().push(layer).expect("a test's memory");
         }
-        let conn = Self::conn(made, stream, won.remote, now);
-
+        // A QUIC connection is connected as its first datagram came.
+        let at = quic.as_ref().and_then(|q| q.first_byte_at()).unwrap_or(now);
+        let mut conn = Self::conn(made, stream, won.remote, at);
+        if let Some(quic) = quic {
+            let h3 = crate::proto::http3::H3Conn::new(quic);
+            conn.put_h3(curl_alloc::try_box(h3).map_err(|OutOfMemory| ConnectError::OutOfMemory)?);
+        }
         Ok(Drove::Established(conn))
     }
 
@@ -1193,15 +1441,26 @@ enum Checked {
     Won(usize),
     /// Attempt `.0` failed with `.1`.
     Failed(usize, io::Error),
+    /// Attempt `.0`, over QUIC, failed as `.1` says, traced as it did.
+    QuicFailed(usize, ErrorKind),
 }
 
 impl Racing {
     /// Each running attempt's socket checked for its connect, oldest
     /// first, as `cf_tcp_connect` checks it (`SOCKET_WRITABLE(sock, 0)`):
     /// the first decided ends the check.
-    fn check(&self, cx: &mut dyn ConnCx, component: Component) -> Checked {
-        for (i, a) in self.attempts.iter().enumerate() {
+    fn check(&mut self, cx: &mut dyn ConnCx, component: Component) -> Checked {
+        for (i, a) in self.attempts.iter_mut().enumerate() {
             let socket = a.socket.socket();
+            // A QUIC attempt is decided by its handshake, its socket
+            // connected from the start.
+            if let Some(quic) = a.quic.as_mut() {
+                match quic.connect(cx, socket) {
+                    Ok(true) => return Checked::Won(i),
+                    Ok(false) => continue,
+                    Err(kind) => return Checked::QuicFailed(i, kind),
+                }
+            }
             let fd = socket.key().get();
             let mut watch = [SocketPoll::new(socket, Events::OUT)];
             let revents = match cx.net().poll(&mut watch, &mut [], Duration::ZERO) {
@@ -1251,7 +1510,7 @@ impl Racing {
     /// address is left, and fails with it otherwise.
     /// The attempt failed with `error`, as `kind` says: the setup goes
     /// on while another runs or an address is left.
-    fn failed(&self, error: io::Error, kind: ErrorKind) -> Result<Progress, ConnectError> {
+    fn failed(&self, error: Option<io::Error>, kind: ErrorKind) -> Result<Progress, ConnectError> {
         if !self.attempts.is_empty() || self.eyeballs.more() {
             Ok(Progress::Failed)
         } else {
@@ -1288,6 +1547,27 @@ impl Attempt {
         Ok(error)
     }
 }
+
+impl Attempt {
+    /// The attempt goes, its QUIC connection first, then its socket
+    /// (`cf_ip_attempt_free`).
+    fn discard(self, cx: &mut dyn ConnCx, component: Component) {
+        if self.quic.is_some() {
+            cx.of(Component::Http3, format_args!("destroy"));
+        }
+        drop(self.quic);
+        discard(cx, component, self.socket);
+    }
+}
+
+/// The receive window of a QUIC connection at its largest
+/// (`H3_CONN_WINDOW_SIZE_MAX`).
+const H3_CONN_WINDOW_SIZE_MAX: u64 = 100 * 10 * 1024 * 1024;
+/// A request stream's first receive window
+/// (`H3_STREAM_WINDOW_SIZE_INITIAL`).
+const H3_STREAM_WINDOW_SIZE_INITIAL: u64 = 32 * 1024;
+/// The streams the peer may open of each kind (`QUIC_MAX_STREAMS`).
+const QUIC_MAX_STREAMS: u64 = 256 * 1024;
 
 /// A socket whose filter goes, still open (`cf_socket_destroy`).
 fn discard(cx: &mut dyn ConnCx, component: Component, socket: Sock) {
@@ -1854,8 +2134,10 @@ mod tests {
     }
 
     /// A route that dials QUIC opens a socket for datagrams for each
-    /// attempt, and one over TCP a stream; TCP's options are set on a
-    /// stream alone (`cf_socket_open`'s `is_tcp`).
+    /// attempt, set as QUIC's are, and one over TCP a stream; TCP's
+    /// options are set on a stream alone (`cf_socket_open`'s `is_tcp`).
+    /// With no HTTP/3 library, the QUIC attempt fails once its socket is
+    /// set.
     #[test]
     fn a_route_over_quic_opens_a_socket_for_datagrams() {
         for (dial, datagrams) in [(crate::conn::Dial::Tcp, 0), (crate::conn::Dial::Quic, 1)] {
@@ -1881,13 +2163,13 @@ mod tests {
                 delegation: Default::default(),
                 dial,
             };
-            let mut m = ConnectMachine::new(
+            let mut m = Some(ConnectMachine::new(
                 ConnNumber(0),
                 route,
                 clock.now(),
                 Closer::System,
                 ConnSettings::DEFAULT,
-            );
+            ));
             let setup = Setup {
                 wildcard: false,
                 max_age: Some(Duration::from_secs(60)),
@@ -1912,27 +2194,47 @@ mod tests {
                     dns: &mut dns,
                     now: clock.now(),
                 };
-                match m.drive(&mut cx, setup) {
+                match m
+                    .take()
+                    .expect("driven while it sets up")
+                    .drive(&mut cx, setup)
+                {
                     Ok(Drove::Connecting(next, Progress::Trying { .. })) => {
-                        m = next;
+                        m = Some(next);
                         break;
                     }
-                    Ok(Drove::Connecting(next, _)) => m = next,
+                    Ok(Drove::Connecting(next, _)) => m = Some(next),
+                    Err(ConnectError::Failed(None, ErrorKind::QuicConnectError))
+                        if dial == crate::conn::Dial::Quic =>
+                    {
+                        break;
+                    }
                     other => panic!("{other:?}"),
                 }
             }
-            assert_eq!(net.open_sockets(), 1, "{dial:?}");
             assert_eq!(net.datagram_sockets(), datagrams, "{dial:?}");
-            let tcp = wire.options();
+            let options = wire.options();
             match dial {
                 crate::conn::Dial::Tcp => {
-                    assert!(tcp.contains(&SocketOption::NoDelay), "{tcp:?}");
-                    assert!(tcp.contains(&SocketOption::KeepAlive), "{tcp:?}");
-                    assert!(tcp.contains(&SocketOption::FastOpenConnect), "{tcp:?}");
+                    assert_eq!(net.open_sockets(), 1);
+                    assert!(options.contains(&SocketOption::NoDelay), "{options:?}");
+                    assert!(options.contains(&SocketOption::KeepAlive), "{options:?}");
+                    assert!(
+                        options.contains(&SocketOption::FastOpenConnect),
+                        "{options:?}"
+                    );
+                    m.expect("still trying").close(&mut net);
                 }
-                crate::conn::Dial::Quic => assert_eq!(tcp, []),
+                crate::conn::Dial::Quic => {
+                    assert_eq!(net.open_sockets(), 0, "the failed attempt's closed");
+                    let quic = [
+                        SocketOption::ReceiveEcn,
+                        SocketOption::DiscoverMtu,
+                        SocketOption::ReceiveJoined,
+                    ];
+                    assert_eq!(options, quic);
+                }
             }
-            m.close(&mut net);
         }
     }
 

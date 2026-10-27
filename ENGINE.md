@@ -178,6 +178,8 @@ curl-core/src/
   idn.rs                     Idn, IdnFailure: host names in Unicode, converted by a library
   http2.rs, http2/           Http2, Session, Event: the seam an HTTP/2 library implements;
                              fake.rs: FakeH2, frames as lines (test-util)
+  http3.rs, http3/           Http3, Connection, Event: the seam a QUIC and HTTP/3 library
+                             implements; fake.rs: FakeHttp3, run by a Script (test-util)
   netrc.rs                   .netrc files: the file's path, its entries for a host
   coding.rs                  Coding, Decoder, Decoders, AcceptEncoding: the content codings
   libraries.rs               Libraries, SharedLibraries, Library, Ed25519: what the bound C
@@ -225,6 +227,8 @@ curl-core/src/
     part.rs                  Part, Lower: what every piece of a connection answers of its life
     layer.rs                 Layer, Below, LayerStack, LayerCx; the tests' layers
     mux.rs                   Session, Mux, Carrier: the session a connection multiplexes over
+    quic.rs                  Quic, QuicCx: a QUIC connection over its UDP socket, its
+                             packets batched both ways and its timer
     tls.rs                   TlsLayer: the layer over a TLS library's session
     shutdown.rs, shutdown/   ShutdownSet, ConnSettings: connections saying goodbye
     chain.rs                 Chain: C's filter chain rendered for the trace from how
@@ -245,6 +249,7 @@ curl-core/src/
                              cases over the fake network
     http2.rs                 H2Conn: a connection's HTTP/2 session and its output; the
                              request's head read back into fields
+    http3.rs                 H3Conn: a connection's HTTP/3 session
     script.rs                the test protocol `script:` (test-util)
     http1/                   the parsers and the renderer, sans-IO, which import nothing of
                              the driver: request.rs, response.rs, framing.rs, chunked.rs
@@ -1424,6 +1429,18 @@ socket before its connect.
   in turn. A failure closes the socket as one not opened; an address of the other family fails
   the attempt as `CouldntConnect`, letting the next address be tried, any other as
   `InterfaceFailed`.
+- **A QUIC attempt** is a whole QUIC connection over its UDP socket (`cf-ip-happy.c`'s
+  transport table makes each attempt `Curl_cf_quic_create`): the socket is connected, QUIC's
+  options set on it (ECN, path MTU discovery, GRO; a failure ignored, as C ignores it), and the
+  connection made over a QUIC TLS session and started, its first flight sent, as the attempt
+  starts. The race drives it each time it is checked (`conn/quic.rs`, below); it wins when its
+  handshake is done and its peer checked, not when its socket connects, and goes straight to an
+  open connection whose session is `Session::H3`, timed as connected at its first datagram and
+  as through TLS at its handshake. A failed one is traced (`QUIC connect to … failed: …`), its
+  close sent if it failed past saving, and its filters destroyed before its socket closes.
+  QUIC's route has no TLS filter of TCP's; its chain reads `[HTTP/3][UDP]`.
+  `Curl_conn_may_http3`'s refusals come first: over a Unix socket, to an origin not over TLS,
+  through a SOCKS proxy.
 - **Unix sockets.** A transfer over the network with `Sockets::unix` set connects to that
   socket in place of its host (`url_set_conn_origin_etc`): the route's `via` is a `Peer` at it
   (`PeerAt::Unix` or `AbstractUnix`, the path as its host, compared exactly), no connect-to entry
@@ -1717,6 +1734,17 @@ C does; what C's filter traces or decides is told to the caller as an `http3::Ev
 transfer. Where C's callbacks act on the connection for the caller (a stream's receive window,
 `cf_ngtcp2_upd_rx_win`), the caller does it once the call returns, which changes nothing on the
 wire before the connection next writes.
+
+**The driver.** `conn::quic::Quic` is C's `vquic.c` and `cf-ngtcp2.c`'s connection half over
+the seam: egress collects the library's packets into runs of one size, each sent in one call the
+kernel cuts (`UDP_SEGMENT`); a packet larger than the run, which may probe the path's MTU, is
+sent apart from it; a datagram too large for the path is lost and counted as sent; a failed cut
+(`EIO`) sends a datagram at a time from then on; a blocked send keeps its packets and asks to be
+called in a millisecond. Ingress reads batches of datagrams (`recvmmsg`, GRO) into the multi's
+one receive buffer, lent and given back across the call, at most 1000 packets a pass. The
+library's timer is armed as the transfer's `QUIC` timer, in whole milliseconds rounded up. Every
+library call is given the live clock, as C's `Curl_pgrs_now`. A fatal error closes the
+connection, its close packet sent at once. The transfer reaches all of this through `QuicCx`.
 
 **Request bodies.** nghttp3 points at a body's bytes until the peer acknowledges them, so the
 binding holds them: chunks of 64 KiB whose room is reserved as each is made, so that what is

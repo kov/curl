@@ -46,6 +46,9 @@ pub enum Version {
     /// HTTP/2 only, with no upgrade over clear text
     /// (`CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE`).
     Http2Prior,
+    /// HTTP/3 only, over QUIC, with no fallback
+    /// (`CURL_HTTP_VERSION_3ONLY`).
+    Http3Only,
 }
 
 impl Version {
@@ -59,7 +62,12 @@ impl Version {
 
     /// HTTP/1 is one of them (`CURL_HTTP_V1x`).
     pub(crate) fn h1(self) -> bool {
-        self != Version::Http2Prior
+        !matches!(self, Version::Http2Prior | Version::Http3Only)
+    }
+
+    /// HTTP/3 is one of them (`CURL_HTTP_V3x`).
+    pub(crate) fn h3(self) -> bool {
+        self == Version::Http3Only
     }
 }
 

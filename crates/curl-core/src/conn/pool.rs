@@ -119,6 +119,15 @@ impl ConnLease {
         connected
     }
 
+    /// What each attempt of its setup waits for, while it races.
+    pub(crate) fn racing_wants(&self) -> impl Iterator<Item = (&dyn Socket, Events)> {
+        let machine = match self.slot() {
+            ConnSlot::Connecting(machine) => Some(machine),
+            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
+        };
+        machine.into_iter().flat_map(ConnectMachine::racing_wants)
+    }
+
     /// How far its setup got, while it is set up.
     pub(crate) fn reached(&self) -> Option<SetupPoint> {
         match self.slot() {
@@ -310,10 +319,17 @@ impl ConnSlot {
     pub(crate) fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
         match self {
             ConnSlot::Connecting(m) => m.query(q),
-            ConnSlot::Open(Conn {
-                transport: Transport::Tcp(stream),
-                ..
-            }) => stream.query(q),
+            // Its session is on top, an HTTP/3 one the filter that answers
+            // for QUIC.
+            ConnSlot::Open(
+                conn @ Conn {
+                    transport: Transport::Tcp(stream),
+                    ..
+                },
+            ) => conn
+                .session()
+                .and_then(|s| crate::conn::part::Part::query(s, q))
+                .or_else(|| stream.query(q)),
             ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
         }
     }

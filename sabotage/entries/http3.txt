@@ -61,3 +61,67 @@ witness: curl-ngtcp2 an_untrusted_peer_fails_the_handshake_as_it_completes
     if checked.is_err() || heard == Heard::Failed {
 --- new
     if heard == Heard::Failed {
+
+=== a probe of the path's MTU goes in the run before it
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_larger_packet_splits_the_run_before_it
+--- old
+            } else if n > gso || (gso > path_max && n != gso) {
+--- new
+            } else if gso > path_max && n != gso {
+
+=== a datagram too large for the path fails the send
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::too_large_is_lost_and_a_failed_cut_sends_apart
+--- old
+            Err(e) if e.raw_os_error() == Some(TOO_LARGE) => (len, Ok(())),
+--- new
+            Err(e) if e.raw_os_error() == Some(TOO_LARGE) => (len, Err(Stop::Failed(ErrorKind::SendError))),
+
+=== the QUIC library's timer is set short of when it is due
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::the_timer_rounds_up_and_runs_when_due
+--- old
+            let ms = wait.as_nanos().div_ceil(1_000_000);
+--- new
+            let ms = wait.as_nanos() / 1_000_000;
+
+=== a failed check of the peer gives way to the receive's failure
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::an_unverified_peer_fails_each_attempt_and_the_setup
+--- old
+        if let Err(kind) = self.state.verified {
+--- new
+        if let Err(kind) = self.state.verified.and(Err(ErrorKind::RecvError)).or(Ok(())) {
+
+=== a QUIC attempt whose handshake is done never wins
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
+--- old
+                    Ok(true) => return Checked::Won(i),
+--- new
+                    Ok(true) => continue,
+
+=== a QUIC socket is left as a plain UDP one
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::a_route_over_quic_opens_a_socket_for_datagrams
+--- old
+            socket.socket().set(option).ok();
+--- new
+            let _ = option;
+
+=== a QUIC connection's chain shows a TLS filter of TCP's
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
+--- old
+        if added.tls && !quic {
+--- new
+        if added.tls {
+
+=== HTTP/3 alone is dialed over TCP
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
+--- old
+        route.dial = crate::conn::Dial::Quic;
+--- new
+        let _ = &mut route;

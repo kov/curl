@@ -578,6 +578,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
         let redialed = c.lease.redial(&mut DriveCx {
             step: cx,
             kept: None,
+            deadlines: None,
         });
         if !redialed {
             return Err(ErrorKind::CouldntConnect);

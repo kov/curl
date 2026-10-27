@@ -289,19 +289,18 @@ witness: curl-core proto::http::tests::wait_trace::a_transfer_run_by_events_is_t
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_proxy_handshake_waits_to_send_then_to_read
 --- old
-                    Some(h) => h.interest(&c.lease) | Events::IN,
+                        let events = h.interest(&c.lease) | Events::IN;
 --- new
-                    Some(h) => h.interest(&c.lease),
+                        let events = h.interest(&c.lease);
 
 === a handshake's socket is traced as one still connecting
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::wait_trace::a_tunnel_s_waits_are_traced_as_c
 --- old
-                matches!(c.lease.reached(), Some(SetupPoint::Dialed(_))),
-                c.route.socket_component(),
+                matches!(c.lease.reached(), Some(SetupPoint::Dialed(_)))
+                    || c.route.dial == crate::conn::Dial::Quic,
 --- new
-                false,
-                c.route.socket_component(),
+                c.route.dial == crate::conn::Dial::Quic,
 
 === a wait driven by events looks for the resolver's wake among the transfers' sockets alone
 file: crates/curl-core/src/multi/wait.rs

@@ -212,7 +212,7 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::the_winner_closes_the_other_attempts
 --- old
         for a in r.attempts.drain(..) {
-            discard(cx, component, a.socket);
+            a.discard(cx, component);
         }
 --- new
         let _ = (&mut r.attempts, component);

@@ -33,8 +33,8 @@ use std::sync::Mutex;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use super::{
-    Alpn, CaDefaults, Chosen, Handshake, TLS1_3, TlsBackend, TlsIdentity, TlsIo, TlsNative,
-    TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
+    Alpn, CaDefaults, Chosen, DriveCall, Handshake, QuicTls, TLS1_3, TlsBackend, TlsCx,
+    TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 use crate::conn::io::{Recv, Sent};
 use crate::error::ErrorKind;
@@ -77,6 +77,8 @@ pub struct FakeTls {
     tickets: bool,
     /// The early data the tickets given allow.
     early: usize,
+    /// Each QUIC session's check of its peer fails.
+    quic_unverified: bool,
     /// What each session binds a channel with.
     binding: FakeBinding,
 }
@@ -200,7 +202,17 @@ impl FakeTls {
             agree: false,
             tickets: false,
             early: 0,
+            quic_unverified: false,
             binding: FakeBinding::None,
+        })
+    }
+
+    /// The same, each QUIC session's check of its peer failing as an
+    /// unknown CA's does.
+    pub fn quic_unverified() -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            quic_unverified: true,
+            ..FakeTls::new()?
         })
     }
 
@@ -260,6 +272,36 @@ impl FakeTls {
 impl TlsBackend for FakeTls {
     fn id(&self) -> &dyn fmt::Display {
         &"FakeTLS/1.0"
+    }
+
+    fn quic_session(
+        &self,
+        identity: &TryArc<TlsIdentity>,
+        peer: &TlsPeer<'_>,
+        _shared: &TlsShared,
+        cx: &mut TlsCx<'_>,
+    ) -> Result<Box<dyn QuicTls>, ErrorKind> {
+        let number = {
+            let mut log = self.log.lock().expect("no test panics holding the log");
+            log.sessions += 1;
+            let n = peer.name.len().min(NAME);
+            log.name[..n].copy_from_slice(&peer.name[..n]);
+            log.name_len = n;
+            log.port = peer.port;
+            log.kind = Some(peer.kind);
+            log.verify_peer = identity.verify_peer;
+            log.alpn = Some(Alpn::H3);
+            log.sessions
+        };
+        cx.trace(format_args!("fake QUIC session {number}"));
+        try_box(FakeQuicSession {
+            log: self.log.clone(),
+            number,
+            unverified: self.quic_unverified,
+            store: false,
+        })
+        .map(|b| b as Box<dyn QuicTls>)
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)
     }
 
     fn ca_defaults(&self) -> CaDefaults {
@@ -892,4 +934,80 @@ pub fn read_client(wire: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
         }
     }
     Ok(out)
+}
+
+/// A QUIC session of the fake's on its own, for the tests of what drives
+/// one: its check passes.
+pub fn quic_session() -> Result<Box<dyn QuicTls>, OutOfMemory> {
+    let session = FakeQuicSession {
+        log: FakeTls::new()?.log,
+        number: 1,
+        unverified: false,
+        store: false,
+    };
+    try_box(session).map(|b| b as Box<dyn QuicTls>)
+}
+
+/// A QUIC session of the fake's: its handshake is the fake QUIC
+/// library's to script; its check passes, or fails as an unknown CA's.
+struct FakeQuicSession {
+    log: TryArc<Mutex<FakeLog>>,
+    number: usize,
+    unverified: bool,
+    /// The trust store is set up (`before_recv`).
+    store: bool,
+}
+
+impl QuicTls for FakeQuicSession {
+    fn native(&self) -> TlsNative {
+        TlsNative::new(NonNull::dangling(), Some(NonNull::dangling()))
+    }
+
+    fn resumed(&self) -> Option<&TlsTicket> {
+        None
+    }
+
+    fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+        if !self.store {
+            self.store = true;
+            cx.trace(format_args!("fake QUIC session {} trusts", self.number));
+        }
+        Ok(())
+    }
+
+    fn drive(
+        &mut self,
+        cx: &mut TlsCx<'_>,
+        _params: &mut dyn FnMut() -> Option<Vec<u8>>,
+        call: &mut dyn FnMut(&mut dyn DriveCall),
+    ) {
+        let mut drive = FakeDrive { cx, session: self };
+        call(&mut drive);
+    }
+}
+
+/// What a fake QUIC session's drive lends its call.
+struct FakeDrive<'d, 'a> {
+    cx: &'d mut TlsCx<'a>,
+    session: &'d mut FakeQuicSession,
+}
+
+impl DriveCall for FakeDrive<'_, '_> {
+    fn handshake_done(&mut self) -> Result<(), ErrorKind> {
+        self.session
+            .log
+            .lock()
+            .expect("no test panics holding the log")
+            .handshakes += 1;
+        if self.session.unverified {
+            let why = format_args!("fake QUIC peer not verified");
+            return Err(self.cx.fail(ErrorKind::PeerFailedVerification, why));
+        }
+        self.cx.info(format_args!("fake QUIC peer verified"));
+        Ok(())
+    }
+
+    fn with_cx(&mut self, f: &mut dyn FnMut(&mut TlsCx<'_>)) {
+        f(self.cx);
+    }
 }

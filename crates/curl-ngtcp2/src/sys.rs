@@ -403,6 +403,7 @@ unsafe extern "C" {
     pub(crate) fn ngtcp2_conn_handle_expiry(conn: *mut ngtcp2_conn, ts: ngtcp2_tstamp) -> c_int;
     pub(crate) fn ngtcp2_conn_get_handshake_completed(conn: *mut ngtcp2_conn) -> c_int;
     pub(crate) fn ngtcp2_conn_in_draining_period(conn: *mut ngtcp2_conn) -> c_int;
+    pub(crate) fn ngtcp2_conn_get_ccerr(conn: *mut ngtcp2_conn) -> *const ngtcp2_ccerr;
     pub(crate) fn ngtcp2_conn_get_remote_transport_params(
         conn: *mut ngtcp2_conn,
     ) -> *const ngtcp2_transport_params;

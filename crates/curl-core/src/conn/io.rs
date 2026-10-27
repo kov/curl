@@ -14,8 +14,9 @@ use crate::handler::{Handler, SocketCloser};
 use crate::time::Instant;
 
 pub use curl_os::net::{
-    AF_INET, AF_INET6, BATCH, Connect, Datagram, InterfaceAddress, Ipv6Scope, Protocol, Recv, SLOT,
-    Sent, SocketOption, TcpSocket, UdpSocket, adopt, adopt_udp, ipv6_scope, open, open_udp,
+    AF_INET, AF_INET6, BATCH, Connect, Datagram, IO_FAILED, InterfaceAddress, Ipv6Scope, Protocol,
+    Recv, SLOT, Sent, SocketOption, TOO_LARGE, TcpSocket, UdpSocket, adopt, adopt_udp, ipv6_scope,
+    open, open_udp,
 };
 pub use curl_os::poll::{Events, PollFd};
 pub use curl_os::resolve::{Failure as ResolveFailure, Family};
@@ -1777,6 +1778,39 @@ impl Socket for FakeSocket {
 
     fn release(self: Box<Self>) -> SocketKey {
         self.key
+    }
+
+    /// One send, as a stream's: the run is the peer's to cut.
+    fn send_segments(&self, buf: &[u8], _segment: usize) -> io::Result<usize> {
+        match self.send(buf)? {
+            Sent::Bytes(n) => Ok(n.get()),
+            Sent::WouldBlock => Err(io::ErrorKind::WouldBlock.into()),
+        }
+    }
+
+    /// Each reply the peer has ready is a datagram, none joined.
+    fn recv_batch(&self, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> io::Result<usize> {
+        let room = out.len().min(buf.len() / slot);
+        let mut n = 0;
+        while n < room {
+            match self.recv(&mut buf[n * slot..(n + 1) * slot])? {
+                Recv::Data(got) => {
+                    let len = got.get();
+                    out[n] = Datagram {
+                        len,
+                        segment: len,
+                        ecn: 0,
+                        from: None,
+                    };
+                    n += 1;
+                }
+                Recv::WouldBlock | Recv::Eof => break,
+            }
+        }
+        if n == 0 {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        Ok(n)
     }
 
     fn send(&self, buf: &[u8]) -> io::Result<Sent> {

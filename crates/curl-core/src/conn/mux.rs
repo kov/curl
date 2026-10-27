@@ -5,11 +5,12 @@
 //! session by matching.
 
 use super::io::Recv;
-use super::layer::{Alive, Handshake, LayerCx, Lower, Part};
+use super::layer::{Alive, Handshake, LayerAnswer, LayerCx, LayerQuery, Lower, Part};
 use super::{RecvBuf, RecvFailed, Stream};
 use crate::components::Component;
 use crate::error::ErrorKind;
 use crate::proto::http2::H2Conn;
+use crate::proto::http3::H3Conn;
 use crate::report::ResponseVersion;
 
 /// What a session that multiplexes answers, whatever its version.
@@ -25,18 +26,21 @@ pub(crate) trait Mux {
 #[derive(Debug)]
 pub(crate) enum Session {
     H2(Box<H2Conn>),
+    H3(Box<H3Conn>),
 }
 
 impl Mux for Session {
     fn version(&self) -> ResponseVersion {
         match self {
             Session::H2(h2) => h2.version(),
+            Session::H3(h3) => h3.version(),
         }
     }
 
     fn max_concurrent(&self) -> u32 {
         match self {
             Session::H2(h2) => h2.max_concurrent(),
+            Session::H3(h3) => h3.max_concurrent(),
         }
     }
 }
@@ -45,6 +49,14 @@ impl<'a> Part<Carrier<'a>> for Session {
     fn is_alive(&mut self, cx: &mut dyn LayerCx, below: Carrier<'a>) -> Alive {
         match self {
             Session::H2(h2) => h2.is_alive(cx, below),
+            Session::H3(h3) => h3.is_alive(cx, below),
+        }
+    }
+
+    fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
+        match self {
+            Session::H2(_) => None,
+            Session::H3(h3) => h3.query(q),
         }
     }
 
@@ -55,6 +67,7 @@ impl<'a> Part<Carrier<'a>> for Session {
     ) -> Result<Handshake, ErrorKind> {
         match self {
             Session::H2(h2) => h2.shutdown(cx, below),
+            Session::H3(h3) => h3.shutdown(cx, below),
         }
     }
 }

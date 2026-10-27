@@ -318,6 +318,9 @@ pub struct Multi<H: Host = NoHost> {
     /// made with the first TLS session; the multi's own, never a share's,
     /// as C keeps it.
     tls: Option<TlsShared>,
+    /// The room QUIC's datagrams are received in, lent to one transfer's
+    /// step at a time (`xfer_sockbuf`): empty until one asks.
+    sockbuf: Vec<u8>,
     /// The connections shutting down, whichever pool they left.
     shutdowns: ShutdownSet,
     limits: ConnLimits,
@@ -411,6 +414,7 @@ impl<H: Host> Multi<H> {
             delivering: false,
             caches,
             tls: None,
+            sockbuf: Vec::new(),
             shutdowns: ShutdownSet::default(),
             limits,
             pending_after: None,
@@ -1066,6 +1070,7 @@ impl<H: Host> Multi<H> {
             },
             caches: &mut self.caches,
             tls: &mut self.tls,
+            sockbuf: &mut self.sockbuf,
             shutdowns: &mut self.shutdowns,
             pending_after: &mut self.pending_after,
             net: &mut *self.net,

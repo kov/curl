@@ -45,9 +45,9 @@ witness: curl-core proto::http::tests::tls::the_proxy_protocol_s_line_goes_befor
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::tls::an_https_get_goes_through_its_tls_layer
 --- old
-        if self.route.handshakes() || setup.haproxy || self.route.secured() {
+        if quic.is_none() && (self.route.handshakes() || setup.haproxy || self.route.secured()) {
 --- new
-        if self.route.handshakes() || setup.haproxy {
+        if quic.is_none() && (self.route.handshakes() || setup.haproxy) {
 
 === a read waiting on TLS to write waits to read
 file: crates/curl-core/src/conn/tls.rs
@@ -110,17 +110,17 @@ witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_fol
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls::an_https_get_goes_through_its_tls_layer
 --- old
-    if c.route.tls.is_some() && c.lease.query(LayerQuery::TlsDeferred).is_none() {
-        let now = cx.now();
+        if c.route.tls.is_some() && c.lease.query(LayerQuery::TlsDeferred).is_none() {
+            let now = cx.now();
 --- new
-    if false {
-        let now = cx.now();
+        if false {
+            let now = cx.now();
 
 === the chain shows no TLS filter
 file: crates/curl-core/src/conn/chain.rs
 witness: curl-core proto::http::tests::setup_trace::an_https_setup_is_traced_as_c
 --- old
-        if added.tls {
+        if added.tls && !quic {
             push(Component::Ssl);
         }
 --- new

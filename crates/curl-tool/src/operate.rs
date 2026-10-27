@@ -2787,6 +2787,10 @@ fn http_setopts(
                 options::HttpVersion::Http2Prior,
                 easysrc::CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE,
             ),
+            HttpVersion::Http3Only => (
+                options::HttpVersion::Http3Only,
+                easysrc::CURL_HTTP_VERSION_3ONLY,
+            ),
         };
         s.enumerated("CURLOPT_HTTP_VERSION", easysrc::HTTP_VERSIONS, value, |o| {
             o.http.version = version;
@@ -3543,7 +3547,7 @@ impl Linked {
                 gss,
                 idn: Some(&curl_idn2::IDN2),
                 h2: Some(&curl_nghttp2::NGHTTP2),
-                h3: None,
+                h3: Some(&curl_ngtcp2::NGTCP2),
             })
         };
         Ok(Linked {

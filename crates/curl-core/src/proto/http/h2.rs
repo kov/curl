@@ -311,6 +311,11 @@ impl Request {
     ) -> Result<bool, ErrorKind> {
         let top = lease.conn().top();
         let alpn = crate::multi::state::query_alpn(cx, lease, top);
+        if alpn == Some(Chosen::H3) {
+            trace::info(cx, format_args!("using HTTP/3"));
+            let why = format_args!("HTTP/3 requests are not made yet");
+            return Err(trace::fail(cx, ErrorKind::Http3, why));
+        }
         let library = cx.easy().libraries().h2;
         let prior = cx.easy().options().http.version == Wanted::Http2Prior && !self.h1_only;
         let h2 = match library {

@@ -45,6 +45,9 @@ pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) caches: &'a mut Caches,
     /// What the TLS library keeps across the multi's connections.
     pub(super) tls: &'a mut Option<TlsShared>,
+    /// The room QUIC's datagrams are received in, lent while a step reads
+    /// them.
+    pub(super) sockbuf: &'a mut Vec<u8>,
     /// The connections shutting down.
     pub(super) shutdowns: &'a mut ShutdownSet,
     /// The transfer last let look for a connection again.
@@ -78,6 +81,7 @@ impl<H: Host> EngineRest<'_, H> {
             tell: self.tell.reborrow(),
             caches: &mut *self.caches,
             tls: &mut *self.tls,
+            sockbuf: &mut *self.sockbuf,
             shutdowns: &mut *self.shutdowns,
             pending_after: &mut *self.pending_after,
             net: &mut *self.net,
@@ -304,6 +308,9 @@ fn names<'k>(own: &'k mut DnsCache, kept: Option<&'k Kept>) -> Names<'k> {
 pub(crate) struct DriveCx<'c, 'a, H: Host> {
     pub(crate) step: &'c mut StepCx<'a, H>,
     pub(crate) kept: Option<&'c Kept>,
+    /// The transfer's timers, which a QUIC attempt arms its library's in:
+    /// none for a redial, which dials TCP.
+    pub(crate) deadlines: Option<&'c mut crate::multi::timers::Deadlines>,
 }
 
 impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
@@ -376,9 +383,60 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
     }
 }
 
+impl<H: Host> crate::conn::quic::QuicCx for DriveCx<'_, '_, H> {
+    fn take_room(&mut self) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
+        let mut room = std::mem::take(self.step.rest.sockbuf);
+        let want = crate::conn::quic::RECV_ROOM;
+        if room.len() < want {
+            curl_alloc::TryVec::try_resize(&mut room, want, 0)?;
+        }
+        Ok(room)
+    }
+
+    fn give_room(&mut self, room: Vec<u8>) {
+        *self.step.rest.sockbuf = room;
+    }
+
+    fn quic_due(&mut self, wait: Duration) {
+        let deadlines = self
+            .deadlines
+            .as_deref_mut()
+            .expect("a QUIC attempt is driven with the transfer's timers");
+        super::state::arm_quic(deadlines, self.step, wait);
+    }
+
+    fn live(&self) -> Instant {
+        self.step.rest.clock.now()
+    }
+}
+
 impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
     fn net(&mut self) -> &mut dyn Net {
         self
+    }
+
+    fn quic_making(&mut self) -> Result<Option<crate::conn::QuicMaking>, curl_alloc::OutOfMemory> {
+        let libraries = self.step.easy().shared_libraries();
+        if libraries.h3.is_none() || libraries.tls.is_none() {
+            return Ok(None);
+        }
+        let shared = match &mut *self.step.rest.tls {
+            Some(shared) => shared.clone(),
+            none => none.insert(TlsShared::new()?).clone(),
+        };
+        // The connection's limit, or C's own (`QUIC_HANDSHAKE_TIMEOUT`).
+        let handshake_timeout = self
+            .step
+            .easy()
+            .options()
+            .limits
+            .connect
+            .map_or(Duration::from_secs(10), |l| l.duration());
+        Ok(Some(crate::conn::QuicMaking {
+            libraries,
+            shared,
+            handshake_timeout,
+        }))
     }
 
     fn names(&mut self) -> Names<'_> {

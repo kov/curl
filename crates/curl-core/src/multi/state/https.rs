@@ -18,7 +18,7 @@
 
 use super::{Connecting, StepCx};
 use crate::components::Component;
-use crate::conn::Tcp;
+use crate::conn::{Dial, Tcp};
 use crate::conn::{HttpsLookup, address};
 use crate::error::ErrorKind;
 use crate::multi::Host;
@@ -188,10 +188,15 @@ pub(super) fn start<H: Host>(
     let hc = Component::HttpsConnect;
     trace::of(cx, hc, format_args!("connect, init"));
     trace::of(cx, hc, format_args!("HTTPS-RR not available"));
+    // HTTP/3 alone is its one attempt's (`cf_hc_get_first_alpn`).
+    let first = match c.route.dial {
+        Dial::Quic => "h3",
+        Dial::Tcp => "h1",
+    };
     trace::of(
         cx,
         hc,
-        format_args!("1st attempt uses h1 from wanted versions"),
+        format_args!("1st attempt uses {first} from wanted versions"),
     );
     match h.record {
         Record::Pending => {

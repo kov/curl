@@ -15,6 +15,10 @@ pub trait TryVec<T> {
     fn try_extend_from_slice(&mut self, values: &[T]) -> Result<(), OutOfMemory>
     where
         T: Clone;
+    /// Grows or shrinks it to `len`, filling what is added with `value`.
+    fn try_resize(&mut self, len: usize, value: T) -> Result<(), OutOfMemory>
+    where
+        T: Clone;
 }
 
 impl<T> TryVec<T> for Vec<T> {
@@ -30,6 +34,15 @@ impl<T> TryVec<T> for Vec<T> {
     {
         self.try_reserve(values.len())?;
         self.extend_from_slice(values);
+        Ok(())
+    }
+
+    fn try_resize(&mut self, len: usize, value: T) -> Result<(), OutOfMemory>
+    where
+        T: Clone,
+    {
+        self.try_reserve(len.saturating_sub(self.len()))?;
+        self.resize(len, value);
         Ok(())
     }
 }
@@ -92,6 +105,11 @@ mod tests {
         v.try_push(1u8).unwrap();
         v.try_extend_from_slice(&[2, 3]).unwrap();
         assert_eq!(v, [1, 2, 3]);
+        v.try_resize(5, 9).unwrap();
+        assert_eq!(v, [1, 2, 3, 9, 9]);
+        v.try_resize(2, 0).unwrap();
+        assert_eq!(v, [1, 2]);
+        assert_eq!(v.try_resize(usize::MAX, 0), Err(OutOfMemory));
         let mut s = String::new();
         s.try_push_str("ab").unwrap();
         s.try_push('c').unwrap();

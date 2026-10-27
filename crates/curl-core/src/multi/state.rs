@@ -823,12 +823,20 @@ impl TransferState {
                 // A handshake waits for what it sends or reads, and to read
                 // too, as the socket's filter, connected but not yet in
                 // use, adds (`cf_socket_adjust_pollset`).
-                let events = match c.handshake.as_ref() {
-                    Some(h) => h.interest(&c.lease) | Events::IN,
-                    None => Events::OUT,
-                };
-                for s in c.lease.sockets() {
-                    set.add(s, events);
+                match c.handshake.as_ref() {
+                    Some(h) => {
+                        let events = h.interest(&c.lease) | Events::IN;
+                        for s in c.lease.sockets() {
+                            set.add(s, events);
+                        }
+                    }
+                    // A TCP attempt waits to write, a QUIC one for what
+                    // its connection waits for.
+                    None => {
+                        for (s, events) in c.lease.racing_wants() {
+                            set.add(s, events);
+                        }
+                    }
                 }
             }
             TransferState::Exchanging(x) => {
@@ -875,8 +883,10 @@ impl Run {
     ) -> PollsetTrace<impl Iterator<Item = (Instant, TimerKind)> + Clone + use<>> {
         let wants = self.state.pollset(pause, pool).wants();
         let setup = match &self.state {
+            // A QUIC socket is connected as its attempt starts.
             TransferState::Connecting(c) => Some((
-                matches!(c.lease.reached(), Some(SetupPoint::Dialed(_))),
+                matches!(c.lease.reached(), Some(SetupPoint::Dialed(_)))
+                    || c.route.dial == crate::conn::Dial::Quic,
                 c.route.socket_component(),
                 c.https.is_some(),
             )),
@@ -1629,9 +1639,12 @@ pub(crate) fn query_alpn<H: Host>(
     if let Some(LayerAnswer::Alpn(chosen, filter)) = lease.query(LayerQuery::Alpn)
         && (filter != Component::SslProxy || top == Component::SslProxy)
     {
-        let name = chosen.map_or("(nil)", crate::tls::Chosen::name);
-        let line = format_args!("query ALPN: returning '{name}'");
-        trace::of(cx, filter, line);
+        // QUIC's filter answers saying nothing (`cf_ngtcp2_query`).
+        if filter != Component::Http3 {
+            let name = chosen.map_or("(nil)", crate::tls::Chosen::name);
+            let line = format_args!("query ALPN: returning '{name}'");
+            trace::of(cx, filter, line);
+        }
         return chosen;
     }
     None
@@ -2448,6 +2461,7 @@ fn connect_once<H: Host>(
         &mut DriveCx {
             step: cx,
             kept: kept.as_ref(),
+            deadlines: Some(&mut run.deadlines),
         },
         setup,
     );
@@ -2792,7 +2806,8 @@ fn waiting<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, until: Option<Instant
 /// for the end of the time left to connect if that comes first, as C
 /// arms it.
 fn eyeballs_due<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, at: Instant) {
-    let now = cx.now();
+    // The time read again, after the attempts' work (`cf_ip_ballers_run`).
+    let now = cx.rest.clock.now();
     let mut wait = wait_ms(now, at);
     if let TimeLeft::Remaining(left) = run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
         wait = wait.min(left);
@@ -2804,7 +2819,8 @@ fn eyeballs_due<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, at: Instant) {
         he,
         format_args!("next HAPPY_EYEBALLS timeout in {ms}ms"),
     );
-    arm(&mut run.deadlines, cx, TimerKind::Eyeballs, wait);
+    let at = run.deadlines.arm_in(TimerKind::Eyeballs, now, wait);
+    trace_set(cx, TimerKind::Eyeballs, at);
 }
 
 /// The race's attempt to `remote`, the peer `route` connects to first
@@ -2824,6 +2840,14 @@ fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, remote: &Remote) {
     );
     trace_timer(cx, TimerKind::Eyeballs, format_args!("cleared"));
     cx.report_mut().count_connect();
+}
+
+/// The QUIC library's timer armed to fire `wait` (`Curl_expire_set(EXPIRE_QUIC)`)
+/// from the time read again, as C arms it from the time its filter read.
+pub(crate) fn arm_quic<H: Host>(deadlines: &mut Deadlines, cx: &mut StepCx<'_, H>, wait: Duration) {
+    let now = cx.rest.clock.now();
+    let at = deadlines.arm_in(TimerKind::Quic, now, wait);
+    trace_set(cx, TimerKind::Quic, at);
 }
 
 /// Arm `kind` to fire `wait` after the step's start, traced as C's
@@ -2894,13 +2918,26 @@ fn up<H: Host>(
     // (`Curl_pgrsTime` for `TIMER_APPCONNECT` as the SSL filter connects),
     // unless its handshake is put off for early data, which times it as
     // it ends (`early_done`).
-    if c.route.tls.is_some() && c.lease.query(LayerQuery::TlsDeferred).is_none() {
-        let now = cx.now();
-        let marked = cx.report_mut().timings_mut().mark(Timer::AppConnect, now);
+    // A QUIC connection reports its own: connected as its first datagram
+    // came, then up as its handshake completed (`Curl_cf_ngtcp2_cmn_cntrl`).
+    let handshake_at = c.lease.conn().h3().and_then(|h3| h3.handshake_at());
+    if let Some(handshake_at) = handshake_at {
+        let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
+        mstate::marked(cx, Timer::Connect, marked);
+        let marked = cx
+            .report_mut()
+            .timings_mut()
+            .mark(Timer::AppConnect, handshake_at);
         mstate::marked(cx, Timer::AppConnect, marked);
+    } else {
+        if c.route.tls.is_some() && c.lease.query(LayerQuery::TlsDeferred).is_none() {
+            let now = cx.now();
+            let marked = cx.report_mut().timings_mut().mark(Timer::AppConnect, now);
+            mstate::marked(cx, Timer::AppConnect, marked);
+        }
+        let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
+        mstate::marked(cx, Timer::Connect, marked);
     }
-    let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
-    mstate::marked(cx, Timer::Connect, marked);
     // `CURL_CONN_HOST_DISPNAME`.
     let host = Bytes(c.route.destination().shown());
     let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
@@ -3925,7 +3962,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         },
         Some(Err(OutOfMemory)) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
-    let route = Tcp {
+    let mut route = Tcp {
         origin,
         via,
         ip: cx.easy().options().ip_version,
@@ -3936,7 +3973,38 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         delegation: cx.easy().options().login.delegation,
         dial: crate::conn::Dial::Tcp,
     };
+    // HTTP/3 alone must be possible (`Curl_http_setup_conn`), and is
+    // dialed over QUIC, as the HTTPS connect's one attempt is
+    // (`cf_hc_baller_assign`).
+    if proto.http_versions(cx.easy().options()).h3_only() {
+        if let Err(kind) = may_http3(cx, &route, secured) {
+            return TransferState::Init.fail(kind);
+        }
+        route.dial = crate::conn::Dial::Quic;
+    }
     setup(cx, Plan { proto, route })
+}
+
+/// Whether HTTP/3 may be spoken over `route`, to an origin `secured` or
+/// not (`Curl_conn_may_http3`): failed as C fails it if not.
+fn may_http3<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, secured: bool) -> Result<(), ErrorKind> {
+    let (kind, why) = if route.destination().is_unix() {
+        let why = "HTTP/3 cannot be used over UNIX domain sockets";
+        (ErrorKind::QuicConnectError, why)
+    } else if !secured {
+        (
+            ErrorKind::UrlMalformat,
+            "HTTP/3 requested for non-HTTPS URL",
+        )
+    } else if route.socks().is_some() {
+        (
+            ErrorKind::UrlMalformat,
+            "HTTP/3 is not supported over a SOCKS proxy",
+        )
+    } else {
+        return Ok(());
+    };
+    Err(trace::fail(cx, kind, format_args!("{why}")))
 }
 
 /// The peer at the Unix socket the options name, if they name one,

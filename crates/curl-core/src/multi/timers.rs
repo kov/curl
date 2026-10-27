@@ -41,6 +41,8 @@ pub(crate) enum TimerKind {
     Proto,
     /// A speed limit's wait, or its next tokens (`EXPIRE_TOOFAST`).
     TooFast,
+    /// The QUIC library's own wait (`EXPIRE_QUIC`).
+    Quic,
     /// The HTTPS connect's wait before a second attempt, armed as its
     /// race starts while the attempts are not all known
     /// (`EXPIRE_ALPN_EYEBALLS`).
@@ -51,7 +53,7 @@ pub(crate) enum TimerKind {
 }
 
 impl TimerKind {
-    const COUNT: usize = 8;
+    const COUNT: usize = 9;
 
     /// The name C's trace gives it (`Curl_trc_timer_name`). The
     /// protocol's own wait is HTTP's for a 100, the only one there is.
@@ -63,6 +65,7 @@ impl TimerKind {
             TimerKind::Eyeballs => "HAPPY_EYEBALLS",
             TimerKind::Proto => "100_TIMEOUT",
             TimerKind::TooFast => "TOOFAST",
+            TimerKind::Quic => "QUIC",
             TimerKind::AlpnEyeballs => "ALPN_EYEBALLS",
             TimerKind::AsyncName => "ASYNC_NAME",
         }
@@ -77,6 +80,7 @@ impl TimerKind {
         TimerKind::Eyeballs,
         TimerKind::Proto,
         TimerKind::TooFast,
+        TimerKind::Quic,
         TimerKind::AlpnEyeballs,
         TimerKind::AsyncName,
     ];
@@ -85,7 +89,7 @@ impl TimerKind {
         self as usize
     }
 
-    fn bit(self) -> u8 {
+    fn bit(self) -> u16 {
         1 << self.slot()
     }
 }
@@ -121,7 +125,7 @@ pub(crate) struct Deadlines {
     /// is in the past. Kept apart from the bits, as every transfer's slot
     /// holds them.
     at: [Instant; TimerKind::COUNT],
-    set: u8,
+    set: u16,
 }
 
 impl Deadlines {

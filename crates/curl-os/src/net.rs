@@ -940,6 +940,13 @@ impl UdpSocket {
     }
 }
 
+/// A datagram was too large for the path (`EMSGSIZE`), which a send of
+/// segments may fail with.
+pub const TOO_LARGE: i32 = libc::EMSGSIZE;
+
+/// The kernel could not cut a send of segments (`EIO`).
+pub const IO_FAILED: i32 = libc::EIO;
+
 /// The most datagrams one batched receive gets (`MMSG_NUM`, with GRO).
 pub const BATCH: usize = 16;
 

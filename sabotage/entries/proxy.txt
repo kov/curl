@@ -515,9 +515,9 @@ witness: curl-core multi::tests::a_failed_connect_names_the_first_proxy
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::a_connection_is_not_open_until_its_proxy_line_is_sent
 --- old
-        if self.route.handshakes() || setup.haproxy || self.route.secured() {
+        if quic.is_none() && (self.route.handshakes() || setup.haproxy || self.route.secured()) {
 --- new
-        if self.route.handshakes() || self.route.secured() {
+        if quic.is_none() && (self.route.handshakes() || self.route.secured()) {
 
 === a transfer removed mid-connect gives back its connection as open
 file: crates/curl-core/src/multi/state.rs

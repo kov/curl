@@ -566,7 +566,7 @@ fn refused_and_silent_attempts() {
     resolved(&mut refused, &mut net, now);
     connect(&mut refused, &mut net, now).unwrap();
     let err = connect(&mut refused, &mut net, now).unwrap_err();
-    let ConnectError::Failed(error, _) = err else {
+    let ConnectError::Failed(Some(error), _) = err else {
         panic!("{err:?}");
     };
     assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
@@ -617,7 +617,7 @@ fn unresolved_names_and_immediate_failures() {
     resolved(&mut nobody, &mut net, now);
     let err = connect(&mut nobody, &mut net, now).unwrap_err();
     assert!(
-        matches!(&err, ConnectError::Failed(e, _) if e.kind() == std::io::ErrorKind::ConnectionRefused),
+        matches!(&err, ConnectError::Failed(Some(e), _) if e.kind() == std::io::ErrorKind::ConnectionRefused),
         "{err:?}"
     );
     let premature = Finish {
@@ -1769,6 +1769,7 @@ fn a_multiplexed_connection_is_joined_only_as_it_may_be() {
     let http_1 = Versions {
         h1: true,
         h2: false,
+        h3: false,
     };
     let found = search_lent(http_1, false);
     assert!(!matches!(found, Found::Lent(_)), "{found:?}");

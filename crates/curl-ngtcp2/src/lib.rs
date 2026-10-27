@@ -888,6 +888,17 @@ impl curl_core::http3::Connection for Connection {
         }
     }
 
+    fn closed_with(&self) -> Option<CloseError> {
+        // SAFETY: the connection; what it closed with, or NULL.
+        let cerr = unsafe { sys::ngtcp2_conn_get_ccerr(self.conn()) };
+        // SAFETY: none, or the connection's, alive until its next call.
+        let cerr = unsafe { cerr.as_ref() }?;
+        Some(CloseError {
+            kind: cerr.r#type,
+            code: cerr.error_code,
+        })
+    }
+
     fn write_close(&mut self, now: Instant, buf: &mut [u8]) -> Result<usize, QuicError> {
         let conn = self.conn();
         // SAFETY: the state, between calls.

@@ -19,6 +19,7 @@ pub(crate) mod mux;
 pub(crate) mod part;
 pub(crate) mod pool;
 pub(crate) mod proxy;
+pub(crate) mod quic;
 pub(crate) mod shutdown;
 pub(crate) mod socks;
 mod stream;
@@ -26,8 +27,8 @@ pub mod threaded;
 pub(crate) mod tls;
 
 pub(crate) use connect::{
-    Asked, Came, ConnCx, ConnectError, Found, MAX_ATTEMPTS, Made, Opened, Progress, Setup,
-    SocketSetup, Unresolved, queries,
+    Asked, Came, ConnCx, ConnectError, Found, MAX_ATTEMPTS, Made, Opened, Progress, QuicMaking,
+    Setup, SocketSetup, Unresolved, queries,
 };
 pub(crate) use connect_to::{BadVia, via};
 pub(crate) use dns::{
@@ -896,13 +897,36 @@ impl Conn {
 
     /// Its HTTP/2 session, if it speaks HTTP/2.
     pub(crate) fn h2(&self) -> Option<&crate::proto::http2::H2Conn> {
-        self.session.as_ref().map(|mux::Session::H2(h2)| &**h2)
+        match self.session.as_ref()? {
+            mux::Session::H2(h2) => Some(&**h2),
+            mux::Session::H3(_) => None,
+        }
+    }
+
+    /// Its HTTP/3 session, if it speaks HTTP/3.
+    pub(crate) fn h3(&self) -> Option<&crate::proto::http3::H3Conn> {
+        match self.session.as_ref()? {
+            mux::Session::H3(h3) => Some(&**h3),
+            mux::Session::H2(_) => None,
+        }
     }
 
     /// Its HTTP/2 session, taken out for a step to drive beside the
     /// connection, which it is put back on after (`put_h2`).
     pub(crate) fn take_h2(&mut self) -> Option<Box<crate::proto::http2::H2Conn>> {
-        self.session.take().map(|mux::Session::H2(h2)| h2)
+        match self.session.take()? {
+            mux::Session::H2(h2) => Some(h2),
+            other @ mux::Session::H3(_) => {
+                self.session = Some(other);
+                None
+            }
+        }
+    }
+
+    /// Put its HTTP/3 session on it, as its QUIC handshake is done.
+    pub(crate) fn put_h3(&mut self, h3: Box<crate::proto::http3::H3Conn>) {
+        assert!(self.session.is_none(), "one session per connection");
+        self.session = Some(mux::Session::H3(h3));
     }
 
     /// Put an HTTP/2 session on it, a new one or one taken out.

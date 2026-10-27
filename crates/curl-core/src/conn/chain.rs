@@ -178,7 +178,9 @@ impl Chain {
         // or, with none, is the origin's filter (`origin_is_proxy`), added
         // last.
         let tunnels = route.proxy.as_ref().is_some_and(|p| p.tunnels());
-        if added.tls {
+        // QUIC's TLS is its own, in its filter below the race's.
+        let quic = route.dial == crate::conn::Dial::Quic;
+        if added.tls && !quic {
             push(Component::Ssl);
         }
         if added.proxy_tls && !tunnels {
@@ -200,6 +202,9 @@ impl Chain {
             push(Component::Socks);
         }
         push(Component::HappyEyeballs);
+        if quic {
+            push(Component::Http3);
+        }
         push(route.socket_component());
         chain
     }

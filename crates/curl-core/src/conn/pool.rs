@@ -8,20 +8,14 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
+use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
-use super::chain::SetupPoint;
-use super::connect::{
-    ConnCx, ConnectError, ConnectMachine, Dialed, DriveOptions, Drove, Made, Progress,
-};
-use super::dns::Answer;
+use super::connect::{ConnCx, ConnectError, ConnectMachine, DriveOptions, Drove, Progress};
 use super::io::{Closer, Events, Socket, SocketKey};
 use super::layer::{Alive, LayerAnswer, LayerQuery, Silent};
 use super::mux::Mux as _;
-use super::quic::Quic;
 use super::shutdown::{ConnSettings, Exits, discard};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, TransferNumber, Transport, Use};
-use crate::error::ErrorKind;
 use crate::id::{Arena, ArenaPolicy};
 use crate::proto::http::negotiate::Wants;
 use crate::share::Share;
@@ -123,84 +117,21 @@ impl ConnLease {
         connected
     }
 
-    /// What each attempt of its setup waits for, while it races.
-    pub(crate) fn racing_wants(&self) -> impl Iterator<Item = (&dyn Socket, Events)> {
-        let machine = match self.slot() {
+    /// The connection's setup, while it is set up: none once it is up or
+    /// its setup failed.
+    pub(crate) fn setup(&self) -> Option<&ConnectMachine> {
+        match self.slot() {
             ConnSlot::Connecting(machine) => Some(machine),
             ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
-        };
-        machine.into_iter().flat_map(ConnectMachine::racing_wants)
-    }
-
-    /// How far its setup got, while it is set up.
-    pub(crate) fn reached(&self) -> Option<SetupPoint> {
-        match self.slot() {
-            ConnSlot::Connecting(machine) => Some(machine.reached()),
-            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
         }
     }
 
-    /// The PROXY protocol's line is sent over the connection to the first
-    /// hop, as was decided once the proxies' handshakes were made; false
-    /// before, and once set up.
-    pub(crate) fn sends_preface(&self) -> bool {
-        match self.slot() {
-            ConnSlot::Connecting(machine) => machine.sends_preface(),
-            ConnSlot::Open(_) | ConnSlot::Failed(_) => false,
-        }
-    }
-
-    /// The proxy's handshake `which` is made over the connection to the
-    /// first hop; `haproxy` is read once the route's are all made
-    /// (`ConnectMachine::proxied`).
-    pub(crate) fn proxied(&mut self, which: Made, haproxy: impl FnOnce() -> bool) {
+    /// The connection's setup, which is under way.
+    pub(crate) fn setting_up(&mut self) -> &mut ConnectMachine {
         let id = self.id;
         match self.slot_mut() {
-            ConnSlot::Connecting(machine) => machine.proxied(which, haproxy),
+            ConnSlot::Connecting(machine) => machine,
             _ => panic!("{id:?} is not setting up"),
-        }
-    }
-
-    /// What a failing setup keeps of its connection to the first hop
-    /// (`ConnectMachine::partly_made`); nothing once it is not setting up.
-    pub(crate) fn partly_made(
-        &self,
-    ) -> Option<(
-        super::io::Remote,
-        Option<std::net::SocketAddr>,
-        crate::time::Instant,
-    )> {
-        match self.slot() {
-            ConnSlot::Connecting(machine) => machine.partly_made(),
-            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
-        }
-    }
-
-    /// The origin's QUIC connection, made for the CONNECT-UDP tunnel the
-    /// connection being set up carries.
-    pub(crate) fn tunnel_quic(&mut self, cx: &mut dyn ConnCx) -> Result<Box<Quic>, ErrorKind> {
-        let id = self.id;
-        match self.slot_mut() {
-            ConnSlot::Connecting(machine) => machine.tunnel_quic(cx),
-            _ => panic!("{id:?} is not setting up"),
-        }
-    }
-
-    /// The connection to the first hop, while its handshakes are made.
-    pub(crate) fn dialed(&mut self) -> &mut Dialed {
-        let id = self.id;
-        match self.slot_mut() {
-            ConnSlot::Connecting(machine) => machine.dialed(),
-            _ => panic!("{id:?} is not setting up"),
-        }
-    }
-
-    /// What the handshake under way over the connection to the first
-    /// hop waits for, as its layers say: TLS's.
-    pub(crate) fn handshake_pollset(&self, wanted: Events) -> Events {
-        match self.slot() {
-            ConnSlot::Connecting(machine) => machine.handshake_pollset(wanted),
-            _ => panic!("{:?} is not setting up", self.id),
         }
     }
 
@@ -245,34 +176,9 @@ impl ConnLease {
         (up, lost)
     }
 
-    /// How long its setup's first QUIC attempt to hear from its peer took
-    /// to, if one has.
-    pub(crate) fn reply_ms(&self) -> Option<u128> {
-        match self.slot() {
-            ConnSlot::Connecting(machine) => machine.reply_ms(),
-            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
-        }
-    }
-
     /// Whether its setup failed, which a race of two outlives.
     pub(crate) fn setup_failed(&self) -> bool {
         matches!(self.slot(), ConnSlot::Failed(_))
-    }
-
-    /// The route its setup dials, while it is set up.
-    pub(crate) fn setup_route(&self) -> Option<&super::Tcp> {
-        match self.slot() {
-            ConnSlot::Connecting(machine) => Some(machine.route()),
-            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
-        }
-    }
-
-    /// What its setup is, to start a second of the same connection from.
-    pub(crate) fn makings(&self) -> Option<(Closer, ConnSettings, crate::time::Instant)> {
-        match self.slot() {
-            ConnSlot::Connecting(machine) => Some(machine.makings()),
-            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
-        }
     }
 
     /// The setup's handshakes are made: the connection is up.
@@ -291,16 +197,6 @@ impl ConnLease {
         };
         *self.slot_mut() = ConnSlot::Open(conn);
         up
-    }
-
-    /// Start the setup over, as its proxy closed the connection; false if
-    /// it was started over too often.
-    pub(crate) fn redial(&mut self, cx: &mut dyn ConnCx) -> bool {
-        let id = self.id;
-        match self.slot_mut() {
-            ConnSlot::Connecting(machine) => machine.redial(cx),
-            _ => panic!("{id:?} is not setting up"),
-        }
     }
 
     /// The connection, once up.
@@ -333,15 +229,6 @@ impl ConnLease {
         match self.slot_mut() {
             ConnSlot::Open(conn) => conn,
             _ => panic!("{id:?} is not up"),
-        }
-    }
-
-    /// What the name of a connection being set up resolved to, once it
-    /// has.
-    pub(crate) fn answer(&self) -> Option<TryArc<Answer>> {
-        match self.slot() {
-            ConnSlot::Connecting(m) => m.answer().cloned(),
-            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
         }
     }
 

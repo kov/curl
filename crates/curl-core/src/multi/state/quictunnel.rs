@@ -18,7 +18,7 @@ use crate::multi::cx::DriveCx;
 /// The tunnel is up: the capsule layer and the origin's QUIC connection
 /// go over it.
 pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    let stream = c.lease.dialed().stream();
+    let stream = c.lease.setting_up().dialed().stream();
     let pushed = stream.push_over_received(|received| {
         try_box(CapsuleLayer::holding(received)).map(|l| l as Box<dyn crate::conn::layer::Layer>)
     });
@@ -28,7 +28,7 @@ pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tran
             Wake::Again,
         );
     }
-    let made = c.lease.tunnel_quic(&mut DriveCx {
+    let made = c.lease.setting_up().tunnel_quic(&mut DriveCx {
         step: cx,
         kept: None,
         deadlines: None,
@@ -57,7 +57,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
     // The tunnel's bytes are the socket's, traced as C's socket filter
     // traces them.
     let traced = Some(c.route.socket_component());
-    let stream = c.lease.dialed().stream();
+    let stream = c.lease.setting_up().dialed().stream();
     let mut over = Over {
         cx,
         path: Path::Layers(stream.below(traced)),
@@ -68,7 +68,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
             let Some(Handshake::Quic(quic)) = c.setup.handshake.take().map(|h| *h) else {
                 unreachable!("the origin's QUIC handshake was under way");
             };
-            let dialed = c.lease.dialed();
+            let dialed = c.lease.setting_up().dialed();
             dialed.put_quic(quic);
             dialed.mark_made(Made::QUIC);
             (TransferState::Connecting(c), Wake::Again)

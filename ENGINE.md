@@ -1304,7 +1304,9 @@ keeps one lease-holding path through `Done` for every protocol, as C attaches a 
 the slot in the lease: `Established(conn)` makes it `Open`, a failure `Failed`, which holds
 nothing open and goes when its lease is released. The `ConnId` and every outstanding lease
 survive the handshake. Send,
-receive, reuse matching, health checks and upkeep exist only on `Conn`. A `Connecting` slot with
+receive, reuse matching, health checks and upkeep exist only on `Conn`; the setup is reached
+through the lease as its machine (`ConnLease::setup`, `setting_up`), which the lease does not
+speak for. A `Connecting` slot with
 a matching route counts toward the limits and makes `acquire` return
 `Wait(Multiplexable(id))` when the needle wants PIPEWAIT (C's `seen_pending_conn`).
 
@@ -1379,7 +1381,7 @@ socket before its connect.
   machine keep its socket as `Stage::Dialed(Dialed)`, with a receive buffer, and return
   `Progress::Dialed`. The machine does only the I/O of the handshake; the transfer
   (`multi/state/tunnel.rs`) makes it. It renders the `CONNECT` with the proxy's side of its
-  `Auth`, sends it and reads the answer through `ConnLease::dialed`, parses it with
+  `Auth`, sends it and reads the answer through its machine's `Dialed` stage (`ConnLease::setting_up`), parses it with
   `proto::http1::tunnel::Answer`, and delivers each line through its own pipeline as
   `HeaderOrigin::Connect`, so the report, header handler and auth state are the transfer's to
   write. It reads until the socket would block or the answer is whole, as C does, and takes
@@ -1420,11 +1422,11 @@ socket before its connect.
   socket to the first hop, before it is open and traced as established. Whether it asks is
   read once, as the setup reaches that stage, as `cf_setup_add_haproxy` reads it: as the
   attempt wins for a route without a proxy's handshake (`DriveOptions::haproxy`), else as the last of
-  them is made (`ConnLease::proxied`); `Dialed` carries the answer to the handshake chosen
+  them is made (`ConnectMachine::proxied`); `Dialed` carries the answer to the handshake chosen
   next, the chain traced and the chain left once up. A reused one sends none, and reuse does
   not ask, as in C.
 - A proxy that closes the connection on its 407 starts the setup over from resolving
-  (`ConnLease::redial`, cf-setup.c's "AGAIN"), counted by the machine, at most 5. Each connection to
+  (`ConnectMachine::redial`, cf-setup.c's "AGAIN"), counted by the machine, at most 5. Each connection to
   the proxy counts toward `CURLINFO_NUM_CONNECTS` as it is made.
 - **Handshake order** is decided in one place, `handshake_due` (`multi/state.rs`), from the
   route, the transfer's PROXY line and what `Dialed::made` records, in cf-setup.c's order

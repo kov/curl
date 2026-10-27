@@ -18,7 +18,7 @@
 
 use super::{Connecting, StepCx};
 use crate::components::Component;
-use crate::conn::{Dial, Tcp};
+use crate::conn::{ConnectMachine, Dial, Tcp};
 use crate::conn::{HttpsLookup, address};
 use crate::error::ErrorKind;
 use crate::multi::Host;
@@ -404,7 +404,11 @@ pub(super) fn start<H: Host>(
     let said = choosing.asked_h3.get();
     h3_refused(c, cx, said);
     let (first, source) = first.expect("the plan dials an attempt it can choose");
-    let dial = c.lease.setup_route().map_or(c.route.dial, |r| r.dial);
+    let dial = c
+        .lease
+        .setup()
+        .map(ConnectMachine::route)
+        .map_or(c.route.dial, |r| r.dial);
     assert_eq!(
         first == Alpn::H3,
         dial == Dial::Quic,
@@ -515,7 +519,7 @@ pub(super) fn second_due<H: Host>(
     }
     if elapsed_ms >= soft.as_millis() {
         if !race.replied {
-            let reply = c.lease.reply_ms();
+            let reply = c.lease.setup().and_then(ConnectMachine::reply_ms);
             race.replied = reply.is_some();
             let shown = reply.map_or(-1, |ms| i128::try_from(ms).unwrap_or(i128::MAX));
             trace::of(

@@ -135,7 +135,7 @@ pub(super) fn start<H: Host>(
         }
     };
     let filter = side.filter();
-    let stream = c.lease.dialed().stream();
+    let stream = c.lease.setting_up().dialed().stream();
     let pushed = stream
         .push_over_received(|early| TlsLayer::boxed(session, early, kept_for, filter))
         .and_then(|()| try_box(Handshake::Tls(side)));
@@ -168,7 +168,7 @@ pub(super) fn step<H: Host>(
     };
     let checked = prefs_check(cx, &identity.expect("a TLS stage's settings").options);
     let shaken = match checked {
-        Ok(()) => c.lease.dialed().stream().connect(cx, traced),
+        Ok(()) => c.lease.setting_up().dialed().stream().connect(cx, traced),
         Err(kind) => Err(kind),
     };
     let (code, done) = match shaken {
@@ -181,7 +181,7 @@ pub(super) fn step<H: Host>(
     cx.lend(super::tls_native(&c.lease));
     match shaken {
         Ok(Shake::Done) => {
-            c.lease.dialed().mark_made(side.made());
+            c.lease.setting_up().dialed().mark_made(side.made());
             c.setup.handshake = None;
             (TransferState::Connecting(c), Wake::Again)
         }

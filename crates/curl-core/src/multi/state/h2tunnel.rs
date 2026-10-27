@@ -31,7 +31,7 @@ pub(super) fn start<H: Host>(
         .h2
         .expect("HTTP/2 is offered to a proxy with a library to speak it");
     let mut proxy = H2Proxy::open(library, cx.max_streams())?;
-    proxy.received(c.lease.dialed().stream().rx_mut().take());
+    proxy.received(c.lease.setting_up().dialed().stream().rx_mut().take());
     connect(&mut proxy, c, cx)?;
     let proxy = try_box(proxy).map_err(oom)?;
     try_box(Handshake::H2Connect(proxy)).map_err(oom)
@@ -115,7 +115,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
             format_args!("proxy closed connection"),
         ));
     }
-    let stream = c.lease.dialed().stream();
+    let stream = c.lease.setting_up().dialed().stream();
     p.ingress(cx, stream.below(traced))
         .and_then(|()| p.egress(cx, stream.below(traced)))
         .map_err(|e| e.kind())?;
@@ -195,6 +195,7 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
     // (`cf_h2_proxy_connect`'s `Curl_client_reset`).
     crate::upload::trace_reset(cx, false);
     c.lease
+        .setting_up()
         .dialed()
         .stream()
         .push_over_received(|received| {
@@ -202,9 +203,11 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
             Ok(p as Box<dyn crate::conn::layer::Layer>)
         })
         .map_err(oom)?;
-    c.lease.proxied(Made::TUNNEL | Made::H2_TUNNEL, || {
-        cx.easy().options().proxy.haproxy
-    });
+    c.lease
+        .setting_up()
+        .proxied(Made::TUNNEL | Made::H2_TUNNEL, || {
+            cx.easy().options().proxy.haproxy
+        });
     Ok(Ran::Through)
 }
 

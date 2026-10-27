@@ -27,6 +27,7 @@ pub(super) fn start<H: Host>(
 ) -> Result<Box<Handshake>, ErrorKind> {
     let quic = c
         .lease
+        .setting_up()
         .dialed()
         .take_quic()
         .expect("an HTTP/3 proxy's tunnel goes over its QUIC connection");
@@ -65,7 +66,7 @@ fn connect<H: Host>(
     let pairs = fields.pairs().map_err(oom)?;
     let url = cx.easy().report().url().map(copied).transpose()?;
     let url = url.as_deref().unwrap_or_default();
-    let socket = c.lease.dialed().stream().socket();
+    let socket = c.lease.setting_up().dialed().stream().socket();
     if let Err(kind) = proxy.submit(cx, socket, &pairs, url) {
         let kind = match kind {
             ErrorKind::OutOfMemory => kind,
@@ -78,7 +79,7 @@ fn connect<H: Host>(
         ));
     }
     proxy.go_state(cx, TunnelState::Connect);
-    let socket = c.lease.dialed().stream().socket();
+    let socket = c.lease.setting_up().dialed().stream().socket();
     proxy.egress(cx, socket)
 }
 
@@ -134,7 +135,7 @@ enum Ran {
 /// `H3_TUNNEL_CONNECT`: read what came and send what waits, once; then,
 /// with the answer whole, `H3_TUNNEL_RESPONSE`.
 fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, ErrorKind> {
-    let socket = c.lease.dialed().stream().socket();
+    let socket = c.lease.setting_up().dialed().stream().socket();
     let p = proxy(&mut c.setup.handshake);
     p.progress(cx, socket)?;
     if p.answer().is_none() {
@@ -199,6 +200,7 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
     crate::upload::trace_reset(cx, false);
     cx.easy_mut().auth.side(Side::Proxy).finish();
     c.lease
+        .setting_up()
         .dialed()
         .stream()
         .push_over_received(|received| {
@@ -209,9 +211,11 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
             Ok(p as Box<dyn crate::conn::layer::Layer>)
         })
         .map_err(oom)?;
-    c.lease.proxied(Made::TUNNEL | Made::H3_TUNNEL, || {
-        cx.easy().options().proxy.haproxy
-    });
+    c.lease
+        .setting_up()
+        .proxied(Made::TUNNEL | Made::H3_TUNNEL, || {
+            cx.easy().options().proxy.haproxy
+        });
     Ok(Ran::Through)
 }
 

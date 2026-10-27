@@ -65,7 +65,7 @@ fn start<H: Host>(
     version: Version,
 ) -> Result<Box<Handshake>, ErrorKind> {
     let ip = cx.easy().options().ip_version;
-    let found = match c.lease.dialed().target() {
+    let found = match c.lease.setting_up().dialed().target() {
         None => None,
         Some(Ok((answer, found))) => Some(Ok((answer.clone(), *found))),
         Some(Err(_)) => Some(Err(())),
@@ -125,7 +125,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
 fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
     loop {
         let h = socks(&mut c.setup.handshake);
-        let dialed = c.lease.dialed().stream();
+        let dialed = c.lease.setting_up().dialed().stream();
         if !h.to_send().is_empty() {
             match dialed.send(cx, h.to_send(), None) {
                 Ok(Sent::Bytes(n)) => h.sent(n.get()),
@@ -188,7 +188,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, Erro
 /// read of it failed, as C's blocking read fails it once no time is left
 /// (`Curl_blockread_all`), and the method with it.
 pub(super) fn timed_out<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Option<ErrorKind> {
-    let received = c.lease.dialed().stream().received().len();
+    let received = c.lease.setting_up().dialed().stream().received().len();
     let e = socks(&mut c.setup.handshake).gss_recv_failed(received)?;
     Some(refused(cx, &e))
 }
@@ -200,11 +200,12 @@ pub(super) fn timed_out<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> 
 fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     let authenticated = socks(&mut c.setup.handshake).authenticated();
     if authenticated {
-        c.lease.dialed().socks5_authenticated();
+        c.lease.setting_up().dialed().socks5_authenticated();
     }
     c.lease
+        .setting_up()
         .proxied(Made::SOCKS, || cx.easy().options().proxy.haproxy);
-    let (remote, local) = c.lease.dialed().ends();
+    let (remote, local) = c.lease.setting_up().dialed().ends();
     let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
     let proxy = c.route.proxy.as_ref().expect("dialed through a proxy");
     let to = proxy

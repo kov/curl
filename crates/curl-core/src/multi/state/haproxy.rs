@@ -97,7 +97,7 @@ fn line(
 /// connection's socket to the first hop, saying the client the transfer
 /// names if it does.
 pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    let (remote, local) = c.lease.dialed().ends();
+    let (remote, local) = c.lease.setting_up().dialed().ends();
     let client = cx.easy().options().proxy.haproxy_client_ip.as_deref();
     let preface = line(&remote, local, client)
         .and_then(|line| try_box(Handshake::Haproxy(Preface { line, sent: 0 })));
@@ -122,7 +122,12 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
         _ => unreachable!("the PROXY line is being sent"),
     };
     while p.sent < p.line.len() {
-        let sent = c.lease.dialed().stream().send(cx, &p.line[p.sent..], None);
+        let sent = c
+            .lease
+            .setting_up()
+            .dialed()
+            .stream()
+            .send(cx, &p.line[p.sent..], None);
         trace::sent(cx, component, p.line.len() - p.sent, &sent);
         match sent {
             Ok(Sent::Bytes(n)) => p.sent += n.get(),
@@ -138,7 +143,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
             }
         }
     }
-    c.lease.dialed().mark_made(Made::PREFACE);
+    c.lease.setting_up().dialed().mark_made(Made::PREFACE);
     c.setup.handshake = None;
     (TransferState::Connecting(c), Wake::Again)
 }

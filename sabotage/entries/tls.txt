@@ -30,11 +30,11 @@ witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_fol
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls::the_proxy_protocol_s_line_goes_before_tls
 --- old
-    if c.lease.sends_preface() && !made.has(Made::PREFACE) {
+    if c.lease.setup().is_some_and(ConnectMachine::sends_preface) && !made.has(Made::PREFACE) {
         return Some(Due::Preface);
     }
 --- new
-    if c.lease.sends_preface()
+    if c.lease.setup().is_some_and(ConnectMachine::sends_preface)
         && !made.has(Made::PREFACE)
         && (c.route.tls.is_none() || made.has(Made::TLS))
     {
@@ -61,7 +61,7 @@ witness: curl-core proto::http::tests::tls::a_read_waits_to_write_what_tls_still
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls::a_handshake_waits_to_write_while_it_reads
 --- old
-            Handshake::Tls(_) => lease.handshake_pollset(Events::NONE),
+            Handshake::Tls(_) => setup.handshake_pollset(Events::NONE),
 --- new
             Handshake::Tls(_) => Events::NONE,
 

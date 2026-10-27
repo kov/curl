@@ -344,15 +344,15 @@ impl Handshake {
     /// holds: TLS's, what its layer says; the others', what they want as
     /// the layers below adjust it, an HTTPS proxy's TLS under a tunnel or
     /// the PROXY line.
-    fn interest(&self, lease: &ConnLease) -> Events {
+    fn interest(&self, setup: &ConnectMachine) -> Events {
         match self {
-            Handshake::Socks(s) => lease.handshake_pollset(s.interest()),
-            Handshake::Connect(t) => lease.handshake_pollset(t.interest()),
-            Handshake::H2Connect(p) => lease.handshake_pollset(p.connect_interest()),
-            Handshake::H3Connect(p) => lease.handshake_pollset(p.connect_interest()),
-            Handshake::Quic(q) => lease.handshake_pollset(q.wants()),
-            Handshake::Haproxy(p) => lease.handshake_pollset(p.interest()),
-            Handshake::Tls(_) => lease.handshake_pollset(Events::NONE),
+            Handshake::Socks(s) => setup.handshake_pollset(s.interest()),
+            Handshake::Connect(t) => setup.handshake_pollset(t.interest()),
+            Handshake::H2Connect(p) => setup.handshake_pollset(p.connect_interest()),
+            Handshake::H3Connect(p) => setup.handshake_pollset(p.connect_interest()),
+            Handshake::Quic(q) => setup.handshake_pollset(q.wants()),
+            Handshake::Haproxy(p) => setup.handshake_pollset(p.interest()),
+            Handshake::Tls(_) => setup.handshake_pollset(Events::NONE),
         }
     }
 }
@@ -479,7 +479,7 @@ impl TransferState {
         let waits = self.waits(LayerQuery::ProxyTlsWaits, pool)?;
         let tunneled = match self {
             TransferState::Connecting(c) => {
-                matches!(c.lease.reached(), Some(SetupPoint::Dialed(m)) if m.has(Made::TUNNEL))
+                matches!(c.lease.setup().map(ConnectMachine::reached), Some(SetupPoint::Dialed(m)) if m.has(Made::TUNNEL))
             }
             state => state
                 .slot(pool)
@@ -830,7 +830,7 @@ fn release<H: Host>(
         max: cx.rest.tell.limits.max_connects,
         attached: cx.rest.tell.slots.len(),
     };
-    if lease.answer().is_some() || raced {
+    if lease.setup().and_then(ConnectMachine::answer).is_some() || raced {
         // A setup given up lets its answer go (`CF_CTRL_DATA_DONE`), a
         // race's once.
         let kept = cx.rest.kept(cx.me, Kind::Names);
@@ -977,7 +977,8 @@ impl TransferState {
                 // use, adds (`cf_socket_adjust_pollset`).
                 match c.setup.handshake.as_ref() {
                     Some(h) => {
-                        let events = h.interest(&c.lease) | Events::IN;
+                        let setup = c.lease.setup().expect("a handshake is made over a setup");
+                        let events = h.interest(setup) | Events::IN;
                         for s in c.lease.sockets() {
                             set.add(s, events)?;
                         }
@@ -985,7 +986,12 @@ impl TransferState {
                     // A TCP attempt waits to write, a QUIC one for what
                     // its connection waits for.
                     None => {
-                        for (s, events) in c.lease.racing_wants() {
+                        for (s, events) in c
+                            .lease
+                            .setup()
+                            .into_iter()
+                            .flat_map(ConnectMachine::racing_wants)
+                        {
                             set.add(s, events)?;
                         }
                     }
@@ -1059,10 +1065,14 @@ impl Run {
             TransferState::Connecting(c) => Some(SetupTrace {
                 aside: c.aside().map_or(0, |m| m.racing_wants().count()),
                 aside_leads: https::aside_leads(c),
-                dialed: matches!(c.lease.reached(), Some(SetupPoint::Dialed(_)))
-                    || c.lease
-                        .setup_route()
-                        .is_some_and(|r| r.dial == crate::conn::Dial::Quic),
+                dialed: matches!(
+                    c.lease.setup().map(ConnectMachine::reached),
+                    Some(SetupPoint::Dialed(_))
+                ) || c
+                    .lease
+                    .setup()
+                    .map(ConnectMachine::route)
+                    .is_some_and(|r| r.dial == crate::conn::Dial::Quic),
                 component: c.socket_component(),
                 https: c.https.is_some(),
             }),
@@ -1229,7 +1239,8 @@ impl Connecting {
     /// is TCP's where the plan dials QUIC.
     fn socket_component(&self) -> Component {
         self.lease
-            .setup_route()
+            .setup()
+            .map(ConnectMachine::route)
             .map_or(self.route.socket_component(), Tcp::socket_component)
     }
 
@@ -2521,7 +2532,7 @@ fn connecting<H: Host>(
             )
             | None => {
                 // Named for the name, while it is not resolved yet.
-                let what = match c.lease.reached() {
+                let what = match c.lease.setup().map(ConnectMachine::reached) {
                     Some(SetupPoint::Resolving) => "Resolving",
                     _ => "Connection",
                 };
@@ -2534,7 +2545,7 @@ fn connecting<H: Host>(
         };
         // What is known of a partly made connection is kept: TCP up, the
         // TLS handshake still under way.
-        report_failed(cx, c.lease.partly_made());
+        report_failed(cx, c.lease.setup().and_then(ConnectMachine::partly_made));
         return (TransferState::Connecting(c).fail(kind), Wake::Again);
     }
     if StepCx::pause(cx).recv != RecvPause::Running {
@@ -2582,7 +2593,9 @@ fn connecting<H: Host>(
             chain_connect_ended(cx, Ok(false));
             return (TransferState::Connecting(c), Wake::Idle);
         }
-        if let Some(SetupPoint::Racing { started: false }) = c.lease.reached() {
+        if let Some(SetupPoint::Racing { started: false }) =
+            c.lease.setup().map(ConnectMachine::reached)
+        {
             https::start(&mut c, &mut run.deadlines, cx);
             if race_starts(&mut c, cx).is_err() {
                 return (
@@ -2592,7 +2605,7 @@ fn connecting<H: Host>(
             }
         }
         let chain = enter_setup(&c, cx, &mut entered);
-        let partly = c.lease.partly_made();
+        let partly = c.lease.setup().and_then(ConnectMachine::partly_made);
         let https = c.https;
         let (next, wake) = connect_once(run, c, cx);
         match next {
@@ -2676,12 +2689,16 @@ fn enter_setup<H: Host>(
     cx: &mut StepCx<'_, H>,
     entered: &mut bool,
 ) -> Option<Chain> {
-    let reached = c.lease.reached()?;
+    let reached = c.lease.setup().map(ConnectMachine::reached)?;
     let under_way = c.setup.handshake.as_deref().map(Handshake::filter);
     let head = head_of(c);
     // The route the lease's setup dials, which a race's second dials
     // otherwise than the plan's.
-    let route = c.lease.setup_route().unwrap_or(&c.route);
+    let route = c
+        .lease
+        .setup()
+        .map(ConnectMachine::route)
+        .unwrap_or(&c.route);
     let chain =
         |reached, under_way, installed| Chain::of(route, head, reached, under_way, installed);
     let entry = |cx: &mut StepCx<'_, H>, chain: Chain| {
@@ -2816,12 +2833,12 @@ fn connect_once<H: Host>(
         Some(&Handshake::Tls(side)) => return tls::step(c, cx, side),
         None => {}
     }
-    if let Some(SetupPoint::Dialed(_)) = c.lease.reached() {
+    if let Some(SetupPoint::Dialed(_)) = c.lease.setup().map(ConnectMachine::reached) {
         return handshake_next(c, cx);
     }
     let setup = drive_options(cx);
     let kept = cx.rest.kept(cx.me, Kind::Names);
-    let answered = c.lease.answer().is_some();
+    let answered = c.lease.setup().and_then(ConnectMachine::answer).is_some();
     let connected = c.lease.connect(
         &mut DriveCx {
             step: cx,
@@ -2830,7 +2847,7 @@ fn connect_once<H: Host>(
         },
         setup,
     );
-    if answered && c.lease.answer().is_none() && c.race.is_none() {
+    if answered && c.lease.setup().and_then(ConnectMachine::answer).is_none() && c.race.is_none() {
         // Connected, or failed: the answer is let go; a race's, as the
         // race ends.
         cx.rest.net_names(cx.me, kept.as_ref()).1.release();
@@ -2857,7 +2874,7 @@ fn connect_once<H: Host>(
             if !c.route.destination().is_unix() {
                 trace_lookup(cx, &c.route, Some(found));
                 if let Found::Stale(asked) | Found::Resolved(asked) = found {
-                    let answer = c.lease.answer();
+                    let answer = c.lease.setup().and_then(|m| m.answer().cloned());
                     let addrs = answer.as_ref().map_or(&[][..], |a| a.addrs());
                     trace_resolved(cx, &c.route, Ok(asked), addrs);
                 }
@@ -2877,7 +2894,7 @@ fn connect_once<H: Host>(
             (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Connected::Connecting(Progress::Dialed)) => {
-            let (remote, _) = c.lease.dialed().ends();
+            let (remote, _) = c.lease.setting_up().dialed().ends();
             eyeballs_won(cx, &c.route, &remote);
             (TransferState::Connecting(c), Wake::Again)
         }
@@ -2969,7 +2986,10 @@ fn race_starts<H: Host>(c: &mut Connecting, cx: &StepCx<'_, H>) -> Result<(), Ou
         return Ok(());
     }
     let at = cx.now();
-    let (Some(answer), Some(makings)) = (c.lease.answer(), c.lease.makings()) else {
+    let (Some(answer), Some(makings)) = (
+        c.lease.setup().and_then(|m| m.answer().cloned()),
+        c.lease.setup().map(ConnectMachine::makings),
+    ) else {
         unreachable!("an attempt starts once its name is resolved");
     };
     c.race = Some(curl_alloc::try_box(Race {
@@ -3090,7 +3110,7 @@ fn drive_aside<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>
 /// proxy's tunnel, the PROXY protocol's line, the origin's TLS. With
 /// none left, the connection is open.
 fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    let made = c.lease.dialed().made();
+    let made = c.lease.setting_up().dialed().made();
     match handshake_due(&c, made) {
         Some(Due::Socks(version)) => return socks::dialed(c, cx, version),
         Some(Due::Tunnel) => return tunnel::dialed(c, cx),
@@ -3101,7 +3121,7 @@ fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Transf
     }
     // The origin's QUIC connection made through the tunnel is the
     // connection's session.
-    let h3 = match c.lease.dialed().take_quic() {
+    let h3 = match c.lease.setting_up().dialed().take_quic() {
         Some(quic) => match curl_alloc::try_box(crate::proto::http3::H3Conn::new(quic)) {
             Ok(h3) => Some(h3),
             Err(OutOfMemory) => {
@@ -3113,7 +3133,7 @@ fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Transf
         },
         None => None,
     };
-    let preface = c.lease.sends_preface();
+    let preface = c.lease.setup().is_some_and(ConnectMachine::sends_preface);
     let up_at = c.lease.handshaken();
     if let Some(h3) = h3 {
         c.lease.get().put_h3(h3);
@@ -3153,7 +3173,7 @@ fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
     if tunnels && !made.has(Made::TUNNEL) {
         return Some(Due::Tunnel);
     }
-    if c.lease.sends_preface() && !made.has(Made::PREFACE) {
+    if c.lease.setup().is_some_and(ConnectMachine::sends_preface) && !made.has(Made::PREFACE) {
         return Some(Due::Preface);
     }
     // Requests go whole to the HTTPS proxy: its TLS is the origin's
@@ -3729,7 +3749,7 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
 /// (`cf_dns_report`), under the name it was found for; nothing for an
 /// address the URL names.
 fn report_answer<H: Host>(cx: &mut StepCx<'_, H>, c: &Connecting) {
-    let Some(answer) = c.lease.answer() else {
+    let Some(answer) = c.lease.setup().and_then(|m| m.answer().cloned()) else {
         return;
     };
     report_resolved(cx, &answer, c.route.destination().port());

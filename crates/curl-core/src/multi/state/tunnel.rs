@@ -425,11 +425,12 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
     loop {
         let t = tunnel(&mut c.setup.handshake);
         if t.sent < t.request.len() {
-            let sent = c
-                .lease
-                .dialed()
-                .stream()
-                .send(cx, &t.request[t.sent..], traced);
+            let sent =
+                c.lease
+                    .setting_up()
+                    .dialed()
+                    .stream()
+                    .send(cx, &t.request[t.sent..], traced);
             let n = match sent {
                 Ok(Sent::Bytes(n)) => n.get(),
                 Ok(Sent::WouldBlock) => return Ok(Ran::Idle),
@@ -463,7 +464,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
         } else {
             READ_SIZE
         };
-        let dialed = c.lease.dialed().stream();
+        let dialed = c.lease.setting_up().dialed().stream();
         if dialed.received().is_empty() {
             match dialed.recv(cx, size, traced) {
                 Ok(Recv::Data(_)) => {}
@@ -690,6 +691,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
         // (`cf_h1_proxy_connect`'s `Curl_client_reset`).
         crate::upload::trace_reset(cx, false);
         c.lease
+            .setting_up()
             .proxied(Made::TUNNEL, || cx.easy().options().proxy.haproxy);
         return Ok(Ran::Through);
     }
@@ -732,7 +734,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
     if closes {
         trace::info(cx, format_args!("Connect me again please"));
         c.setup.handshake = None;
-        let redialed = c.lease.redial(&mut DriveCx {
+        let redialed = c.lease.setting_up().redial(&mut DriveCx {
             step: cx,
             kept: None,
             deadlines: None,

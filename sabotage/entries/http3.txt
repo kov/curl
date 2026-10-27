@@ -318,3 +318,11 @@ features: debug-hooks
         }
 --- new
         PoolNote::Unwanted { .. } => true,
+
+=== a transfer in HTTP/3 alone does not allow HTTP/3 in a connection it reuses
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h3_trace::a_shared_connection_keeps_its_clock_under_another_multi
+--- old
+                h3: set.h3 || open,
+--- new
+                h3: open,

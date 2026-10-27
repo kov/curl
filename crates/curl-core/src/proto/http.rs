@@ -487,7 +487,10 @@ impl Request {
         let open = wanted == HttpVersion::Any && !self.h1_only && !self.h2_only;
         Negotiation {
             wanted: set,
-            allowed: crate::altsvc::Versions { h3: open, ..set },
+            allowed: crate::altsvc::Versions {
+                h3: set.h3 || open,
+                ..set
+            },
             prior: wanted == HttpVersion::Http2Prior && !self.h1_only,
             only_10: wanted == HttpVersion::Http10 && !self.h1_only && !self.h2_only,
         }

@@ -1029,15 +1029,45 @@ Status: **to do**. SCOPE stage 6, in groups, each through the test servers `runt
 starts: FTP and FTPS (the data connection a second chain beside the control connection's);
 IMAP, POP3 and SMTP with STARTTLS; SCP and SFTP through libssh, the SSH library distributions
 build with, with a C oracle built against it; then LDAP, MQTT, WebSocket, DICT, Gopher,
-RTSP, SMB, TELNET and TFTP. NTLM stays out of scope (SCOPE.md). It opens with the protocol
-phases C's table has: connect and connecting, doing and do-more with their pollsets,
-per-connection protocol state, a disconnect hook before the goodbye, the scheme table generated
-with its flags, auth out of `proto/http1`. Two setups at once, FTP's second chain, also give
-`--http3` its race through an HTTP proxy: C weighs HTTP/3 there as anywhere (`cf_hc_may_h3`
-refuses only SOCKS), its attempt over CONNECT-UDP beside one over CONNECT, two tunnels to the
-proxy at once, where ours makes the one over CONNECT. WebSocket's step lends a write callback a send handle
-on its own connection, a typed exception to ENGINE's decision 9, as C allows `curl_ws_send`
-there.
+RTSP, SMB, TELNET and TFTP. NTLM stays out of scope (SCOPE.md). WebSocket's step lends a write
+callback a send handle on its own connection, a typed exception to ENGINE's decision 9, as C
+allows `curl_ws_send` there. It opens with what milestone 5's design review found the
+protocols need, each step leaving behaviour and traces as they are:
+
+65. **A connection's setup apart from its transfer.** A `Setup` owns one connection's setup:
+    its lease or connect machine, how it is dialed (`dial` leaves the route for the attempt,
+    recorded on the connection once up), the handshake under way, its Negotiate and redials;
+    the handshake drivers take `&mut Setup`, the TLS one over a stream so that it can upgrade
+    an open connection too. `Connecting` holds one; the HTTPS race holds two in place of its
+    aside and the lease's placeholder slot. `Transport` gains a datagram variant for TFTP,
+    and the route's names stop saying TCP for QUIC's. Two setups at once give FTP its data
+    connection and `--http3` its race through an HTTP proxy: C weighs HTTP/3 there as
+    anywhere (`cf_hc_may_h3` refuses only SOCKS), its attempt over CONNECT-UDP beside one
+    over CONNECT, two tunnels to the proxy at once, where ours makes the one over CONNECT.
+    ENGINE §4.1 and §4.2 are rewritten to the shape built.
+66. **Types for what flags say.** A layered QUIC connection is a type of its own, its
+    datagram path given by its context with no `unreachable!` default; `Conn`'s session an
+    enum of none (HTTP/1), not made yet, HTTP/2 and HTTP/3, out for a step; `LayerCx` split
+    by who needs what, its no-op defaults gone; HTTP/3's connection and stream events apart;
+    its stream and tunnel state one fact per field; the HTTP/3 library seam's failures typed,
+    as HTTP/2's are.
+67. **The protocol phases.** Connect and connecting, doing and do-more with their pollsets
+    and timeouts, a phase-shaped protocol state; per-connection protocol state one boxed
+    `Part` carrying the disconnect goodbye; reuse that tells protocol families, STARTTLS and
+    per-connection credentials apart, with FTP's own rules; the scheme table generated with
+    its flags; auth out of `proto/http1`; the HTTP/2 session made at connect where ALPN or
+    prior knowledge settles on h2, so that the chain shows C's `[HTTP/2]` filter and its
+    `query ALPN`.
+68. **One reader for the line protocols.** A sans-IO response reader and command writer for
+    FTP, IMAP, POP3 and SMTP (C's pingpong), at the trust boundary. STARTTLS (and FTP's
+    `AUTH TLS`) upgrades an open connection only when no bytes follow the reply, failing
+    `WEIRD_SERVER_REPLY` as C does (tests 980 to 983), never by handing them to TLS as a
+    proxy's answer is; FTP's CCC removes the TLS layer after its goodbye.
+
+SCP and SFTP hand libssh the socket, as C does (`SSH_OPTIONS_FD`): bytes a proxy's tunnel or a
+SOCKS answer left in the stream's buffer would be lost to it, so the hand-over is refused while
+any are held, and DIVERGENCE.md's entry on the bulk read of a `CONNECT` answer is narrowed to
+consumers that read through the stream.
 
 ## Milestone 7: shared state
 

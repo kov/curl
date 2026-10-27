@@ -103,7 +103,7 @@ pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tran
         .and_then(|line| try_box(Handshake::Haproxy(Preface { line, sent: 0 })));
     match preface {
         Ok(h) => {
-            c.handshake = Some(h);
+            c.setup.handshake = Some(h);
             (TransferState::Connecting(c), Wake::Again)
         }
         Err(_) => (
@@ -117,7 +117,7 @@ pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tran
 /// up (`cf_haproxy_connect`).
 pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     let component = c.socket_component();
-    let p = match c.handshake.as_deref_mut() {
+    let p = match c.setup.handshake.as_deref_mut() {
         Some(Handshake::Haproxy(p)) => p,
         _ => unreachable!("the PROXY line is being sent"),
     };
@@ -139,6 +139,6 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
         }
     }
     c.lease.dialed().mark_made(Made::PREFACE);
-    c.handshake = None;
+    c.setup.handshake = None;
     (TransferState::Connecting(c), Wake::Again)
 }

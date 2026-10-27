@@ -106,13 +106,13 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
             Wake::Again,
         ),
         Err(kind) => {
-            if let Some(Handshake::H3Connect(p)) = c.handshake.as_deref_mut() {
+            if let Some(Handshake::H3Connect(p)) = c.setup.handshake.as_deref_mut() {
                 p.go_state(cx, TunnelState::Failed);
             }
             // The tunnel is the race's attempt in C, whose failure is the
             // last attempt's (`cf_ip_happy_connect`): the proxy's
             // connection goes, and the setup fails as the race does.
-            if c.handshake.take().is_some() {
+            if c.setup.handshake.take().is_some() {
                 trace::of(cx, H3P, format_args!("cf_h3_proxy_destroy()"));
             }
             let failed = crate::conn::ConnectError::Failed(None, kind);
@@ -135,7 +135,7 @@ enum Ran {
 /// with the answer whole, `H3_TUNNEL_RESPONSE`.
 fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, ErrorKind> {
     let socket = c.lease.dialed().stream().socket();
-    let p = proxy(&mut c.handshake);
+    let p = proxy(&mut c.setup.handshake);
     p.progress(cx, socket)?;
     if p.answer().is_none() {
         // A stream closed before its answer leaves the tunnel failed.
@@ -152,7 +152,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
 /// (`Curl_http_proxy_inspect_tunnel_response`): the tunnel is up, or a
 /// `CONNECT` goes again for a Negotiate challenge taken, or it failed.
 fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, ErrorKind> {
-    let p = proxy(&mut c.handshake);
+    let p = proxy(&mut c.setup.handshake);
     let answer = p.answer().expect("the answer is whole");
     let status = answer.status;
     let what = super::tunnel::method_name(&c.route);
@@ -172,16 +172,16 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
         if let Some(value) = value
             && super::h2tunnel::challenged(c, cx, H3P, value)?
         {
-            let p = proxy(&mut c.handshake);
+            let p = proxy(&mut c.setup.handshake);
             p.go_state(cx, TunnelState::Init);
             let mut p = take(c);
             connect(&mut p, c, cx)?;
-            c.handshake = Some(try_box(Handshake::H3Connect(p)).map_err(oom)?);
+            c.setup.handshake = Some(try_box(Handshake::H3Connect(p)).map_err(oom)?);
             return Ok(Ran::Again);
         }
     }
     if c.route.tunnels_udp() {
-        let p = proxy(&mut c.handshake);
+        let p = proxy(&mut c.setup.handshake);
         let answer = p.answer().expect("the answer is whole");
         super::tunnel::udp_answer(cx, status, answer.field(b"capsule-protocol"))?;
     } else if status / 100 != 2 {
@@ -217,7 +217,7 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
 
 /// The tunnel, out of the handshake.
 fn take(c: &mut Connecting) -> Box<H3Proxy> {
-    match c.handshake.take().map(|h| *h) {
+    match c.setup.handshake.take().map(|h| *h) {
         Some(Handshake::H3Connect(p)) => p,
         _ => unreachable!("an HTTP/3 tunnel is set up"),
     }

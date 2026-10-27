@@ -141,7 +141,7 @@ pub(super) fn start<H: Host>(
         .and_then(|()| try_box(Handshake::Tls(side)));
     match pushed {
         Ok(h) => {
-            c.handshake = Some(h);
+            c.setup.handshake = Some(h);
             (TransferState::Connecting(c), Wake::Again)
         }
         Err(OutOfMemory) => (
@@ -182,7 +182,7 @@ pub(super) fn step<H: Host>(
     match shaken {
         Ok(Shake::Done) => {
             c.lease.dialed().mark_made(side.made());
-            c.handshake = None;
+            c.setup.handshake = None;
             (TransferState::Connecting(c), Wake::Again)
         }
         Ok(Shake::Waiting) => (TransferState::Connecting(c), Wake::Idle),

@@ -39,7 +39,7 @@ pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tran
     };
     match try_box(Handshake::Quic(quic)) {
         Ok(h) => {
-            c.handshake = Some(h);
+            c.setup.handshake = Some(h);
             (TransferState::Connecting(c), Wake::Again)
         }
         Err(OutOfMemory) => (
@@ -51,7 +51,7 @@ pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tran
 
 /// Move the handshake on, its datagrams through the tunnel's layers.
 pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    let Some(Handshake::Quic(quic)) = c.handshake.as_deref_mut() else {
+    let Some(Handshake::Quic(quic)) = c.setup.handshake.as_deref_mut() else {
         unreachable!("the origin's QUIC handshake is under way");
     };
     // The tunnel's bytes are the socket's, traced as C's socket filter
@@ -65,7 +65,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
     match quic.connect(&mut over) {
         Ok(false) => (TransferState::Connecting(c), Wake::Idle),
         Ok(true) => {
-            let Some(Handshake::Quic(quic)) = c.handshake.take().map(|h| *h) else {
+            let Some(Handshake::Quic(quic)) = c.setup.handshake.take().map(|h| *h) else {
                 unreachable!("the origin's QUIC handshake was under way");
             };
             let dialed = c.lease.dialed();

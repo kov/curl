@@ -251,9 +251,8 @@ pub(crate) struct Connecting {
     /// connected to in their place and the proxy on the way, as the
     /// failure names them.
     route: Tcp,
-    /// The handshake made over the connection to the proxy, once
-    /// connected.
-    handshake: Option<Box<Handshake>>,
+    /// The connection's setup: the handshake under way over it.
+    setup: Setup,
     /// The HTTPS connect filter heading the setup, if it has one.
     https: Option<https::HttpsConnect>,
     /// The race of an HTTP/3 attempt against one over TCP, once its first
@@ -265,6 +264,15 @@ pub(crate) struct Connecting {
     /// on the connection whose filters it makes again, and handed to the
     /// connection as it comes up.
     negotiate: Option<Box<crate::proto::http::negotiate::Negotiate>>,
+}
+
+/// One way of making a connection: what is under way over it, apart from
+/// the transfer it is made for.
+#[derive(Debug, Default)]
+struct Setup {
+    /// The handshake made over the connection to its first hop, once
+    /// connected: a proxy's, the PROXY line or TLS.
+    handshake: Option<Box<Handshake>>,
 }
 
 /// The race of an HTTP/3 attempt against an HTTP/2-or-1 one over TCP, as
@@ -967,7 +975,7 @@ impl TransferState {
                 // A handshake waits for what it sends or reads, and to read
                 // too, as the socket's filter, connected but not yet in
                 // use, adds (`cf_socket_adjust_pollset`).
-                match c.handshake.as_ref() {
+                match c.setup.handshake.as_ref() {
                     Some(h) => {
                         let events = h.interest(&c.lease) | Events::IN;
                         for s in c.lease.sockets() {
@@ -1237,7 +1245,7 @@ impl Connecting {
             lease,
             proto,
             route,
-            handshake: _,
+            setup: _,
             https: _,
             race,
             negotiate,
@@ -2492,11 +2500,11 @@ fn connecting<H: Host>(
         let kind = ErrorKind::OperationTimedout;
         // C reads SOCKS5's GSS-API messages blocking, until its own check
         // of the time left fails the read.
-        let gss_read = match c.handshake.as_deref() {
+        let gss_read = match c.setup.handshake.as_deref() {
             Some(Handshake::Socks(_)) => socks::timed_out(&mut c, cx),
             _ => None,
         };
-        let kind = match c.handshake.as_deref() {
+        let kind = match c.setup.handshake.as_deref() {
             _ if let Some(failed) = gss_read => failed,
             Some(Handshake::Connect(_) | Handshake::H2Connect(_) | Handshake::H3Connect(_)) => {
                 trace::fail(
@@ -2669,7 +2677,7 @@ fn enter_setup<H: Host>(
     entered: &mut bool,
 ) -> Option<Chain> {
     let reached = c.lease.reached()?;
-    let under_way = c.handshake.as_deref().map(Handshake::filter);
+    let under_way = c.setup.handshake.as_deref().map(Handshake::filter);
     let head = head_of(c);
     // The route the lease's setup dials, which a race's second dials
     // otherwise than the plan's.
@@ -2798,7 +2806,7 @@ fn connect_once<H: Host>(
     mut c: Connecting,
     cx: &mut StepCx<'_, H>,
 ) -> (TransferState, Wake) {
-    match c.handshake.as_deref() {
+    match c.setup.handshake.as_deref() {
         Some(Handshake::Socks(_)) => return socks::step(c, cx),
         Some(Handshake::Connect(_)) => return tunnel::step(c, cx),
         Some(Handshake::H2Connect(_)) => return h2tunnel::step(c, cx),
@@ -2943,7 +2951,7 @@ fn attempt_failed<H: Host>(
         return (TransferState::Connecting(c).fail(kind), Wake::Again);
     }
     // A handshake's failure leaves its setup in the lease.
-    c.handshake = None;
+    c.setup.handshake = None;
     if let Some(lost) = c.lease.take_setup() {
         lost.discard(&mut DriveCx {
             step: cx,
@@ -3062,7 +3070,7 @@ fn drive_aside<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>
                 };
                 eyeballs_won(cx, &c.route, &remote);
                 // The second's handshake goes with it.
-                c.handshake = None;
+                c.setup.handshake = None;
                 c.race.as_mut().expect("a race of two").aside = lost;
                 let (state, wake) = up(c, cx, remote, local, at, false);
                 return Aside::Up(state, wake);
@@ -4930,7 +4938,7 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
         lease,
         proto,
         route,
-        handshake: None,
+        setup: Setup::default(),
         https,
         race: None,
         negotiate: None,

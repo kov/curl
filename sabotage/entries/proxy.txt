@@ -426,7 +426,7 @@ witness: curl-core proto::http::tests::a_proxy_closing_on_the_credentials_is_con
 file: crates/curl-core/src/multi/state/tunnel.rs
 witness: curl-core proto::http::tests::a_proxy_closing_after_a_wait_aborts_the_tunnel
 --- old
-            tunnel(&mut c.handshake).authorized = false;
+            tunnel(&mut c.setup.handshake).authorized = false;
 --- new
             let _ = &c;
 

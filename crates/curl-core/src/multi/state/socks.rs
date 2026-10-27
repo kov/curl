@@ -52,7 +52,7 @@ pub(super) fn dialed<H: Host>(
 ) -> (TransferState, Wake) {
     match start(&mut c, cx, version) {
         Ok(handshake) => {
-            c.handshake = Some(handshake);
+            c.setup.handshake = Some(handshake);
             (TransferState::Connecting(c), Wake::Again)
         }
         Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
@@ -124,7 +124,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
 /// destination (`socks_flush`, `socks_recv`).
 fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
     loop {
-        let h = socks(&mut c.handshake);
+        let h = socks(&mut c.setup.handshake);
         let dialed = c.lease.dialed().stream();
         if !h.to_send().is_empty() {
             match dialed.send(cx, h.to_send(), None) {
@@ -189,7 +189,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, Erro
 /// (`Curl_blockread_all`), and the method with it.
 pub(super) fn timed_out<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Option<ErrorKind> {
     let received = c.lease.dialed().stream().received().len();
-    let e = socks(&mut c.handshake).gss_recv_failed(received)?;
+    let e = socks(&mut c.setup.handshake).gss_recv_failed(received)?;
     Some(refused(cx, &e))
 }
 
@@ -198,7 +198,7 @@ pub(super) fn timed_out<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> 
 /// that insist on the user being authenticated if it was: the next
 /// handshake follows.
 fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    let authenticated = socks(&mut c.handshake).authenticated();
+    let authenticated = socks(&mut c.setup.handshake).authenticated();
     if authenticated {
         c.lease.dialed().socks5_authenticated();
     }
@@ -221,7 +221,7 @@ fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState,
     line.raw(remote.shown_ip().bytes());
     line.text(format_args!(" port {})", remote.port()));
     trace::info_with(cx, &[line.bytes()]);
-    c.handshake = None;
+    c.setup.handshake = None;
     (TransferState::Connecting(c), Wake::Again)
 }
 

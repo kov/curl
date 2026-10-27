@@ -86,7 +86,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
         Ok(Ran::Again) => (TransferState::Connecting(c), Wake::Again),
         Ok(Ran::Through) => (TransferState::Connecting(c), Wake::Again),
         Err(kind) => {
-            if let Some(Handshake::H2Connect(p)) = c.handshake.as_deref_mut() {
+            if let Some(Handshake::H2Connect(p)) = c.setup.handshake.as_deref_mut() {
                 p.set_state(TunnelState::Failed);
             }
             (TransferState::Connecting(c).fail(kind), Wake::Again)
@@ -107,7 +107,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
     // Through the proxy's TLS, the socket's sends and receives are the
     // TLS session's records, traced as C's socket filter traces them.
     let traced = c.route.proxy_tls().map(|_| c.route.socket_component());
-    let p = proxy(&mut c.handshake);
+    let p = proxy(&mut c.setup.handshake);
     if p.conn_closed() {
         return Err(trace::fail(
             cx,
@@ -133,7 +133,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
 /// (`Curl_http_proxy_inspect_tunnel_response`): the tunnel is up, or a
 /// `CONNECT` goes again for a Negotiate challenge taken, or it failed.
 fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, ErrorKind> {
-    let p = proxy(&mut c.handshake);
+    let p = proxy(&mut c.setup.handshake);
     let answer = p.answer().expect("the answer is whole");
     let status = answer.status;
     let what = super::tunnel::method_name(&c.route);
@@ -161,11 +161,11 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
     {
         let mut p = take(c);
         connect(&mut p, c, cx)?;
-        c.handshake = Some(try_box(Handshake::H2Connect(p)).map_err(oom)?);
+        c.setup.handshake = Some(try_box(Handshake::H2Connect(p)).map_err(oom)?);
         return Ok(Ran::Again);
     }
     if c.route.tunnels_udp() {
-        let p = proxy(&mut c.handshake);
+        let p = proxy(&mut c.setup.handshake);
         let answer = p.answer().expect("the answer is whole");
         let verdict = super::tunnel::udp_answer(cx, status, answer.field(b"capsule-protocol"));
         if verdict.is_err() {
@@ -173,7 +173,7 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
         }
         verdict?;
     } else if status / 100 != 2 {
-        proxy(&mut c.handshake).set_state(TunnelState::Failed);
+        proxy(&mut c.setup.handshake).set_state(TunnelState::Failed);
         return Err(ErrorKind::CouldntConnect);
     } else {
         trace::info(
@@ -210,7 +210,7 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
 
 /// The session, out of the handshake.
 fn take(c: &mut Connecting) -> Box<H2Proxy> {
-    match c.handshake.take().map(|h| *h) {
+    match c.setup.handshake.take().map(|h| *h) {
         Some(Handshake::H2Connect(p)) => p,
         _ => unreachable!("an HTTP/2 tunnel is set up"),
     }

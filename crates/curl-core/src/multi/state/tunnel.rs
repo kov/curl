@@ -83,7 +83,7 @@ pub(super) fn dialed<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tra
     if c.route.proxy_over_quic() {
         return match super::h3tunnel::start(&mut c, cx) {
             Ok(tunnel) => {
-                c.handshake = Some(tunnel);
+                c.setup.handshake = Some(tunnel);
                 (TransferState::Connecting(c), Wake::Again)
             }
             Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
@@ -132,7 +132,7 @@ pub(super) fn dialed<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tra
     };
     match started {
         Ok(tunnel) => {
-            c.handshake = Some(tunnel);
+            c.setup.handshake = Some(tunnel);
             (TransferState::Connecting(c), Wake::Again)
         }
         Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
@@ -397,12 +397,12 @@ fn udp_target(
 pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     match run(&mut c, cx) {
         Ok(Ran::Idle) => {
-            tunnel(&mut c.handshake).authorized = false;
+            tunnel(&mut c.setup.handshake).authorized = false;
             (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Ran::Again) => (TransferState::Connecting(c), Wake::Again),
         Ok(Ran::Through) => {
-            c.handshake = None;
+            c.setup.handshake = None;
             (TransferState::Connecting(c), Wake::Again)
         }
         Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
@@ -423,7 +423,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
     // the TLS session's records, traced as C's socket filter traces them.
     let traced = c.route.proxy_tls().map(|_| c.route.socket_component());
     loop {
-        let t = tunnel(&mut c.handshake);
+        let t = tunnel(&mut c.setup.handshake);
         if t.sent < t.request.len() {
             let sent = c
                 .lease
@@ -441,7 +441,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
                     ));
                 }
             };
-            let t = tunnel(&mut c.handshake);
+            let t = tunnel(&mut c.setup.handshake);
             let from = t.sent;
             t.sent += n;
             trace::bytes(cx, DebugKind::HeaderOut, &t.request[from..from + n]);
@@ -509,15 +509,15 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
 /// credentials were sent and methods are left to try, but the connection
 /// is not used again (`recv_CONNECT_resp`).
 fn closed<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, ErrorKind> {
-    let t = tunnel(&mut c.handshake);
+    let t = tunnel(&mut c.setup.handshake);
     if t.answer.closed() == Read::Line {
         line(c, cx)?;
     }
-    let t = tunnel(&mut c.handshake);
+    let t = tunnel(&mut c.setup.handshake);
     let wanted = !cx.easy().options().proxy.auth.0.is_empty();
     if wanted && t.authorized && cx.easy().auth.proxy_offers(&t.challenges) {
         trace::info(cx, format_args!("Proxy CONNECT connection closed"));
-        tunnel(&mut c.handshake).closed = true;
+        tunnel(&mut c.setup.handshake).closed = true;
         progress::update(cx, false)?;
         return finish(c, cx);
     }
@@ -531,7 +531,7 @@ fn closed<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
 /// A line of the answer is traced, checked, delivered and taken in
 /// (`single_header`).
 fn line<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
-    let t = tunnel(&mut c.handshake);
+    let t = tunnel(&mut c.setup.handshake);
     let line = t.answer.line();
     trace::bytes(cx, DebugKind::HeaderIn, line);
     if let Err(e) = t.answer.verify() {
@@ -567,7 +567,7 @@ fn line<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<(), Error
         Applied::Note(note) => trace::info(cx, format_args!("{note}")),
         Applied::Challenge => {
             let asked = proxy_asked(c, cx);
-            let t = tunnel(&mut c.handshake);
+            let t = tunnel(&mut c.setup.handshake);
             let value = fields::header_value(t.answer.line()).unwrap_or(&[]);
             let heard = t.challenges.read(value, &asked).map_err(oom)?;
             for note in heard.notes() {
@@ -609,7 +609,7 @@ fn challenged<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) {
         // The origin's TLS has no peer yet while the tunnel is set up.
         tls: None,
     };
-    let Some(Handshake::Connect(t)) = c.handshake.as_deref_mut() else {
+    let Some(Handshake::Connect(t)) = c.setup.handshake.as_deref_mut() else {
         unreachable!("a tunnel is set up");
     };
     let value = fields::header_value(t.answer.line()).unwrap_or(&[]);
@@ -671,7 +671,7 @@ pub(super) fn proxy_asked<H: Host>(c: &Connecting, cx: &StepCx<'_, H>) -> PeerAs
 /// The answer ended: the tunnel is up, or another `CONNECT` is made for
 /// the proxy's challenge, or it failed (`H1_CONNECT`'s response).
 fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, ErrorKind> {
-    let t = tunnel(&mut c.handshake);
+    let t = tunnel(&mut c.setup.handshake);
     if t.answer.chunks_read() {
         trace::info(cx, format_args!("chunk reading DONE"));
     }
@@ -700,7 +700,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
             .auth
             .asked((None, peer), (secret, peer), false, true)
     };
-    let t = tunnel(&mut c.handshake);
+    let t = tunnel(&mut c.setup.handshake);
     let closes = t.answer.closes() || t.closed;
     let offered = Offered {
         host: Challenges::default(),
@@ -731,7 +731,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
     }
     if closes {
         trace::info(cx, format_args!("Connect me again please"));
-        c.handshake = None;
+        c.setup.handshake = None;
         let redialed = c.lease.redial(&mut DriveCx {
             step: cx,
             kept: None,
@@ -744,7 +744,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
     }
     // Over the same connection.
     let tunnel = start(c, cx)?;
-    c.handshake = Some(tunnel);
+    c.setup.handshake = Some(tunnel);
     Ok(Ran::Again)
 }
 

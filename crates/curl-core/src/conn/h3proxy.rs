@@ -749,7 +749,7 @@ impl Part<Below<'_>> for H3Proxy {
         };
         let (want_recv, want_send) = (wanted.contains(Events::IN), wanted.contains(Events::OUT));
         let held_out = self.quic.wants().contains(Events::OUT);
-        if !want_recv && !want_send && !held_out {
+        if !(want_recv || want_send || held_out) {
             return wanted;
         }
         let c_exhaust = want_send && !self.quic.send_room();

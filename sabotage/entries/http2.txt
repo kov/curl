@@ -679,3 +679,31 @@ witness: curl-core proto::http::tests::h2::a_push_on_a_share_s_connection_is_tak
 --- new
         pushed.enable_cookies().unwrap();
         let (to, from) = (&mut pushed.options, &self.options);
+
+=== a PING on a connection with streams open is sent beside their transfers
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http::tests::h2::a_connection_in_use_is_pinged_with_its_transfer_s_next_send
+--- old
+        if self.routes.len() > 0 {
+            return Ok(());
+        }
+--- new
+
+=== a PING on an idle connection waits for a transfer to send it
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http::tests::h2::an_idle_connection_is_pinged_once_its_upkeep_interval_passed
+--- old
+        if self.routes.len() > 0 {
+--- new
+        if self.routes.len() < usize::MAX {
+
+=== a negative upkeep interval is taken
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::limits_are_checked_as_in_c
+features: debug-hooks
+--- old
+            let ms = u64::try_from(n).map_err(|_| Refused::Bad)?;
+            options.limits.reuse.upkeep = UpkeepInterval(std::time::Duration::from_millis(ms));
+--- new
+            let ms = n.unsigned_abs();
+            options.limits.reuse.upkeep = UpkeepInterval(std::time::Duration::from_millis(ms));

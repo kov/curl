@@ -642,3 +642,74 @@ witness: curl-core conn::connect::tests::a_route_over_quic_opens_a_socket_for_da
 --- new
         let kind = if self.route.first_hop_quic() {
             SocketKind::Stream
+
+=== the upkeep pings a connection an interval and a millisecond after its last
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::h2::an_idle_connection_is_pinged_once_its_upkeep_interval_passed
+--- old
+        if made_ms.saturating_sub(self.upkept_ms) < interval_ms {
+--- new
+        if made_ms.saturating_sub(self.upkept_ms) <= interval_ms {
+
+=== the upkeep pings a connection a millisecond before its interval passed
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::h2::an_idle_connection_is_pinged_once_its_upkeep_interval_passed
+--- old
+        if made_ms.saturating_sub(self.upkept_ms) < interval_ms {
+--- new
+        if made_ms.saturating_sub(self.upkept_ms) < interval_ms.saturating_sub(1) {
+
+=== a PING leaves the upkeep's interval where it started
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::h2::an_idle_connection_is_pinged_once_its_upkeep_interval_passed
+--- old
+        self.upkept_ms = made_ms;
+        Some(match self.split() {
+--- new
+        Some(match self.split() {
+
+=== a connection given back keeps the upkeep interval it was found connected with
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::the_upkeep_interval_starts_as_the_connection_is_given_back
+--- old
+        if let ConnSlot::Open(conn) = &mut *slot {
+            conn.returned(now);
+        }
+--- new
+
+=== a connection one of its transfers gives back keeps its upkeep interval
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::the_upkeep_interval_starts_as_one_of_two_transfers_is_done
+--- old
+                    shared.conn_mut().returned(now);
+--- new
+
+=== the upkeep reads the default interval, not the calling handle's
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::h2::an_idle_connection_is_pinged_once_its_upkeep_interval_passed
+--- old
+    ) -> Result<(), OutOfMemory> {
+        let interval = easy.options().limits.reuse.upkeep.0;
+        let share = easy.share().filter(|s| s.keeps(Kind::Connections)).cloned();
+--- new
+    ) -> Result<(), OutOfMemory> {
+        let interval = crate::options::UpkeepInterval::default().0;
+        let share = easy.share().filter(|s| s.keeps(Kind::Connections)).cloned();
+
+=== the upkeep passes over a connection transfers multiplex on
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::a_connection_in_use_is_pinged_with_its_transfer_s_next_send
+--- old
+                    Some(ConnSlot::Open(conn)) => (conn, false),
+--- new
+                    Some(ConnSlot::Open(_)) => continue,
+
+=== an idle connection whose PING failed is kept
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::an_idle_connection_whose_ping_fails_is_closed
+--- old
+            if let Some(Err(_)) = conn.upkeep(&mut Silent(now), interval)
+                && idle
+--- new
+            if let Some(Err(_)) = conn.upkeep(&mut Silent(now), interval)
+                && !idle

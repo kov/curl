@@ -912,7 +912,10 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
 55. **What HTTP/2 left unbuilt,** each with a test, run on the C leg too where the C leg can
     show it:
     - `curl_easy_upkeep` sends a PING on an HTTP/2 connection past its upkeep interval
-      (`CURLOPT_UPKEEP_INTERVAL_MS`, `Curl_cpool_upkeep`, `http2_conn_upkeep`).
+      (`CURLOPT_UPKEEP_INTERVAL_MS`, `Curl_cpool_upkeep`, `http2_conn_upkeep`). **Done**,
+      pinned against the fake at the interval's last millisecond and its first: the C leg
+      cannot see a PING, which its test servers do not record and C traces to its admin handle.
+      A share's connection lent to a multi is not reached yet.
     - The pool checks a multiplexed connection's health at most once a second
       (`lastchecked_ms`). **Done**, pinned against the fake at 999 and 1000 ms: the C leg
       cannot time a server's GOAWAY that closely.

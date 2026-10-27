@@ -178,6 +178,15 @@ impl Share {
         lock(&self.0.cookies)
     }
 
+    /// Keep alive its connections that have gone `interval` without, for
+    /// a handle with no multi (`Curl_cpool_upkeep`): an idle one whose
+    /// keep-alive fails closes through the share's own network, as the
+    /// pool closes one when the share goes.
+    pub(crate) fn upkeep(&self, interval: std::time::Duration, now: crate::time::Instant) {
+        let mut net = lock(&self.0.net);
+        self.pool().upkeep(interval, &mut NoSet(&mut **net), now);
+    }
+
     /// The TLS sessions, locked; none if the share keeps none.
     pub(crate) fn sessions(&self) -> MutexGuard<'_, Option<SessionCache>> {
         lock(&self.0.sessions)

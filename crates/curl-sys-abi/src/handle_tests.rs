@@ -1484,6 +1484,17 @@ fn limits_are_checked_as_in_c() {
         CURLE_BAD_FUNCTION_ARGUMENT
     );
     assert_eq!(he(c), std::time::Duration::ZERO);
+    let upkeep = |c| options(c, |o| o.limits.reuse.upkeep.0);
+    assert_eq!(upkeep(c), std::time::Duration::from_secs(60), "C's default");
+    assert_eq!(long(c, ffi::CURLOPT_UPKEEP_INTERVAL_MS, 1500), CURLE_OK);
+    assert_eq!(upkeep(c), std::time::Duration::from_millis(1500));
+    assert_eq!(long(c, ffi::CURLOPT_UPKEEP_INTERVAL_MS, 0), CURLE_OK);
+    assert_eq!(upkeep(c), std::time::Duration::ZERO);
+    assert_eq!(
+        long(c, ffi::CURLOPT_UPKEEP_INTERVAL_MS, -1),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(upkeep(c), std::time::Duration::ZERO);
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }

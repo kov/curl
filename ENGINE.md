@@ -1755,8 +1755,22 @@ where an idle HTTP/1 one's input is polled at every reuse (`Curl_cpool_conn_seem
 `Use::Idle` keeps when it was last found healthy as C does, in whole milliseconds since it was
 made (`lastchecked_ms`), set as it is returned.
 
-**Not built** (MILESTONES step 55): `curl_easy_upkeep`'s PING (it does nothing); and the
-`--trace-config http/2` lines.
+The upkeep (`curl_easy_upkeep`, `Curl_cpool_upkeep`; `Easy::upkeep`, `Multi::upkeep`) visits
+every connection of the calling handle's pool the pool holds, idle, reserved or attached
+between steps; one leased whole, or a share's lent to a multi, is its transfer's and is
+passed over. Each is due once the caller's `CURLOPT_UPKEEP_INTERVAL_MS` has passed since
+`Conn::upkept_ms`, whole milliseconds since it was made, set as it is found connected, at
+every lease given back and at each keep-alive (`lastupkeep_ms`). A due connection asks its
+session to keep it alive (`Part::keep_alive`): HTTP/2 sends a PING, at once on a connection
+with no stream open, else with its transfers' next send (DIVERGENCE.md); HTTP/3, whose QUIC
+connection keeps itself alive on its own timer, the layers and an HTTP/2 proxy's tunnel send
+nothing, as C's filters pass it down to a socket that does nothing. An idle connection whose
+keep-alive fails is closed; the caller hears nothing of it, as C fails it to the multi's
+admin handle.
+
+**Not built** (MILESTONES step 55): the `--trace-config http/2` lines; and the upkeep of a
+share's HTTP/2 connection lent to a multi, which C sends a PING and the share's pool cannot
+reach.
 
 ### 4.4.1 HTTP/3
 

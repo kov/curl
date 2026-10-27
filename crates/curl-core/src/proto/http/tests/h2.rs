@@ -541,6 +541,233 @@ fn a_refused_body_resets_its_stream_as_c_does() {
     assert!(sent.contains("R 1 4294966394\n"), "{sent}");
 }
 
+/// A multi with a manual clock, its server answering on `talks`.
+fn clocked(talks: &[&Conversation]) -> (Multi, ManualClock) {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let mut net = FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts);
+    for talk in talks {
+        net = net.with_conversation(at, (*talk).clone());
+    }
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    (Multi::new(env).unwrap(), clock)
+}
+
+/// An idle HTTP/2 connection is sent a PING by the upkeep once the
+/// calling handle's interval has passed since it was given back, 60
+/// seconds unless set, and not a millisecond before; the PING starts the
+/// interval again (`conn_upkeep`, `cf_h2_keep_alive`).
+#[test]
+fn an_idle_connection_is_pinged_once_its_upkeep_interval_passed() {
+    for interval in [None, Some(5000), Some(0)] {
+        let talk = Conversation::replies(&[RESPONSE], false).per_send();
+        let (mut m, clock) = clocked(&[&talk]);
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+            o.http.version = HttpVersion::Http2Prior;
+            if let Some(ms) = interval {
+                o.limits.reuse.upkeep = crate::options::UpkeepInterval(Duration::from_millis(ms));
+            }
+        });
+        assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+        let pings = || talk.received().windows(2).filter(|w| w == b"P\n").count();
+        let request = talk.received().len();
+        let ms = interval.unwrap_or(60_000);
+        let upkeep = |m: &mut Multi| m.upkeep_for(&ran.easy, &mut NoEvents).unwrap();
+        if ms > 0 {
+            clock.advance(Duration::from_millis(ms - 1));
+            upkeep(&mut m);
+            assert_eq!(talk.received().len(), request, "{ms} ms: early");
+            clock.advance(Duration::from_millis(1));
+        }
+        upkeep(&mut m);
+        assert_eq!(&talk.received()[request..], b"P\n", "{ms} ms: due");
+        if ms > 0 {
+            upkeep(&mut m);
+            clock.advance(Duration::from_millis(ms - 1));
+            upkeep(&mut m);
+            assert_eq!(pings(), 1, "{ms} ms: the interval starts again");
+            clock.advance(Duration::from_millis(1));
+        }
+        upkeep(&mut m);
+        assert_eq!(pings(), 2, "{ms} ms: due again");
+    }
+}
+
+/// An idle HTTP/1 connection is sent nothing by the upkeep: it has no
+/// keep-alive of its own to send (`Curl_cf_def_conn_keep_alive`).
+#[test]
+fn an_idle_http1_connection_is_sent_nothing_by_the_upkeep() {
+    let talk = Conversation::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", false);
+    let (mut m, clock) = clocked(&[&talk]);
+    let ran = get_with(&mut m, Easy::new(), "/", talk.clone(), |_| {});
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let request = talk.received();
+    clock.advance(Duration::from_secs(60));
+    m.upkeep_for(&ran.easy, &mut NoEvents).unwrap();
+    assert_eq!(talk.received(), request);
+}
+
+/// A connection in use is due its PING an interval after it was found
+/// connected, as an idle one is after it was given back; with a stream
+/// open, the PING goes with the transfer's next send, which alone can
+/// frame the stream's body.
+#[test]
+fn a_connection_in_use_is_pinged_with_its_transfer_s_next_send() {
+    let talk = Conversation::replies(&[RESPONSE], false).per_send().held();
+    let (mut m, clock) = clocked(&[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let o = e.options_mut();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.http.version = HttpVersion::Http2Prior;
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..3 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let request = talk.received();
+    assert!(
+        request.ends_with(b"U 1 10420224\n"),
+        "the request and its window went: {:?}",
+        String::from_utf8_lossy(&request)
+    );
+    clock.advance(Duration::from_secs(60));
+    m.upkeep(id, &mut NoEvents).unwrap().unwrap();
+    assert_eq!(talk.received(), request, "not sent beside the transfer");
+    talk.allow(1);
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    assert_eq!(&talk.received()[request.len()..], b"P\n");
+    m.remove(id, &mut NoEvents).unwrap();
+}
+
+/// An idle connection whose PING cannot be sent is closed by the upkeep
+/// (`conn_upkeep`'s `cpool_conn_close`): the next transfer makes another.
+#[test]
+fn an_idle_connection_whose_ping_fails_is_closed() {
+    // The sends of the first transfer, which all go.
+    const SENDS: usize = 1;
+    for breaks in [false, true] {
+        let mut talk = Conversation::replies(&[RESPONSE], false).per_send();
+        if breaks {
+            talk = talk.breaking_after(SENDS);
+        }
+        let fresh =
+            Conversation::replies(&[b"S\nH 1 0\n:status: 200\n\nD 1 2 1\nok"], false).per_send();
+        let (mut m, clock) = clocked(&[&talk, &fresh]);
+        let mut texts = Vec::new();
+        for (path, talk) in [("/1", &talk), ("/2", &fresh)] {
+            let mut e = Easy::new();
+            e.set_libraries(with_h2());
+            let ran = get_with(&mut m, e, path, talk.clone(), |o| {
+                o.http.version = HttpVersion::Http2Prior;
+            });
+            // The first connection has no answer for a second request.
+            if path == "/1" || breaks {
+                assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+            }
+            texts.push(ran.seen.text());
+            if path == "/1" {
+                clock.advance(Duration::from_secs(60));
+                m.upkeep_for(&ran.easy, &mut NoEvents).unwrap();
+            }
+        }
+        let reused = texts[1].iter().any(|l| l.starts_with("Reusing existing"));
+        assert_eq!(reused, !breaks, "{:?}", texts[1]);
+        assert_eq!(fresh.received().is_empty(), !breaks);
+    }
+}
+
+/// The interval starts again as each transfer gives its connection back,
+/// another still on it (`Curl_cpool_return`): one interval less a
+/// millisecond after the first is done, the second's next send carries
+/// no PING.
+#[test]
+fn the_upkeep_interval_starts_as_one_of_two_transfers_is_done() {
+    let replies: [&[u8]; 4] = [
+        b"S\nH 1 0\n:status: 200\n\n",
+        b"",
+        b"D 1 2 1\naa",
+        b"H 3 0\n:status: 200\n\nD 3 1 1\nc",
+    ];
+    let talk = Conversation::replies(&replies, false).per_send().held();
+    talk.allow(2);
+    let (mut m, clock) = clocked(&[&talk]);
+    let mut ids = Vec::new();
+    for path in ["/a", "/b"] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.total = crate::time::TimeLimit::from_millis(200_000);
+        o.http.version = HttpVersion::Http2Prior;
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        for _ in 0..3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+    }
+    clock.advance(Duration::from_secs(30));
+    talk.allow(3);
+    assert_eq!(
+        drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    m.remove(ids[0], &mut NoEvents).unwrap();
+    clock.advance(Duration::from_millis(59_999));
+    m.upkeep(ids[1], &mut NoEvents).unwrap().unwrap();
+    talk.allow(4);
+    assert_eq!(
+        drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert!(sent.contains("H 3 1\n"), "{sent}");
+    assert!(!sent.contains("P\n"), "{sent}");
+    m.remove(ids[1], &mut NoEvents).unwrap();
+}
+
+/// The interval starts again as a transfer gives its connection back,
+/// however long it was found connected before (`Curl_cpool_return`).
+#[test]
+fn the_upkeep_interval_starts_as_the_connection_is_given_back() {
+    let talk = Conversation::replies(&[RESPONSE], false).per_send().held();
+    let (mut m, clock) = clocked(&[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let o = e.options_mut();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.http.version = HttpVersion::Http2Prior;
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..3 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    clock.advance(Duration::from_secs(30));
+    talk.allow(1);
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let easy = m.remove(id, &mut NoEvents).unwrap().easy;
+    let request = talk.received();
+    clock.advance(Duration::from_millis(59_999));
+    m.upkeep_for(&easy, &mut NoEvents).unwrap();
+    assert_eq!(talk.received(), request, "given back 59999 ms ago");
+    clock.advance(Duration::from_millis(1));
+    m.upkeep_for(&easy, &mut NoEvents).unwrap();
+    assert_eq!(&talk.received()[request.len()..], b"P\n");
+}
+
 /// An idle HTTP/2 connection is looked at once a second at most: a
 /// GOAWAY waiting on it goes unread by a reuse within a second of its
 /// return, whose stream the GOAWAY then refuses, and is read a second on,

@@ -1024,6 +1024,7 @@ impl Pool {
                 created: now,
                 connected_at: now,
                 use_: Use::Leased(NonZeroU32::MIN),
+                upkept_ms: 0,
                 served: false,
                 socks5_authenticated: false,
                 seen_version: None,
@@ -1415,6 +1416,43 @@ impl Pool {
         }
     }
 
+    /// Keep each connection it holds alive that has gone `interval`
+    /// without (`Curl_cpool_upkeep`, `conn_upkeep`): idle, reserved for
+    /// its handle, or multiplexing transfers between their steps. An idle
+    /// one whose keep-alive fails is closed; one in use stays, as C
+    /// closes only what it can (`cpool_conn_can_be_closed`). A connection
+    /// leased whole is its transfer's, out of the pool's reach.
+    pub(crate) fn upkeep(&mut self, interval: Duration, exits: &mut dyn Exits, now: Instant) {
+        let mut cursor = None;
+        while let Some(id) = self.conns.next_after(cursor) {
+            cursor = Some(id);
+            let (conn, idle) = match self.conns.get_mut(id) {
+                Some(Place::Idle(slot)) => match &mut **slot {
+                    ConnSlot::Open(conn) => (conn, true),
+                    _ => unreachable!("an idle connection is open"),
+                },
+                Some(Place::Reserved(slot)) => match &mut **slot {
+                    ConnSlot::Open(conn) => (conn, false),
+                    _ => unreachable!("a reserved connection is open"),
+                },
+                Some(Place::Attached(shared)) => match shared.slot.as_deref_mut() {
+                    Some(ConnSlot::Open(conn)) => (conn, false),
+                    Some(_) => unreachable!("an attached connection is open"),
+                    // Out with a transfer's step, which keeps it.
+                    None => continue,
+                },
+                Some(Place::Leased(_)) | None => continue,
+            };
+            // Traced, and failed, as the multi's own handle's: the
+            // caller's hears of neither.
+            if let Some(Err(_)) = conn.upkeep(&mut Silent(now), interval)
+                && idle
+            {
+                close(&mut self.conns, id, Evicted::Linger, exits, now);
+            }
+        }
+    }
+
     /// The connection `id`, reserved for its handle, if the pool still
     /// has it there.
     pub(crate) fn reserved_mut(&mut self, id: ConnId) -> Option<&mut Conn> {
@@ -1492,9 +1530,10 @@ impl Pool {
             None => match self.detach(id) {
                 Some(slot) => slot,
                 None => {
-                    let Some(Place::Attached(shared)) = self.conns.get(id) else {
+                    let Some(Place::Attached(shared)) = self.conns.get_mut(id) else {
                         unreachable!("just detached from");
                     };
+                    shared.conn_mut().returned(now);
                     let Use::Leased(in_use) = shared.conn().use_ else {
                         unreachable!("an attached connection is leased");
                     };
@@ -1502,6 +1541,9 @@ impl Pool {
                 }
             },
         };
+        if let ConnSlot::Open(conn) = &mut *slot {
+            conn.returned(now);
+        }
         // Kept for another transfer, unless its server shut it down,
         // which C asks only of one it would keep (`multi_done_locked`).
         let keeps = |conn: &Conn| {

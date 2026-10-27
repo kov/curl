@@ -57,6 +57,14 @@ pub(crate) trait Part<B: Lower> {
         Ok(Handshake::Done)
     }
 
+    /// Send the peer what keeps the connection alive, if it has such a
+    /// thing (`keep_alive`): HTTP/2's PING. No layer under a session
+    /// has, nor a session over QUIC, whose own timer keeps it alive: the
+    /// default sends nothing, and is not passed below.
+    fn keep_alive(&mut self, _cx: &mut dyn LayerCx, _below: B) -> Result<(), ErrorKind> {
+        Ok(())
+    }
+
     /// Answer a question asked of the connection, if it can; the pieces
     /// below are asked if it does not.
     fn query(&self, _q: LayerQuery) -> Option<LayerAnswer> {

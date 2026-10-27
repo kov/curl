@@ -28,7 +28,8 @@ use curl_core::hsts::LoadError as CacheLoadError;
 use curl_core::options::{
     BufferSize, ColdGroup, ConnectOnly, ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion,
     IpVersion, Lines, LowSpeed, MaxRedirects, Method, Options, PostRedir, Protocols, ProxyType,
-    Resume, ReuseLimits, Schemes, Sockets, TimeCondition, UploadBufferSize, UserHeaders,
+    Resume, ReuseLimits, Schemes, Sockets, TimeCondition, UpkeepInterval, UploadBufferSize,
+    UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -876,6 +877,10 @@ fn apply(
         (ffi::CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS, Long(n)) => {
             let ms = u64::try_from(n).map_err(|_| Refused::Bad)?;
             options.limits.eyeballs = EyeballsDelay(std::time::Duration::from_millis(ms));
+        }
+        (ffi::CURLOPT_UPKEEP_INTERVAL_MS, Long(n)) => {
+            let ms = u64::try_from(n).map_err(|_| Refused::Bad)?;
+            options.limits.reuse.upkeep = UpkeepInterval(std::time::Duration::from_millis(ms));
         }
         (ffi::CURLOPT_IPRESOLVE, Long(n)) => {
             options.ip_version = match n {

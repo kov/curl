@@ -62,6 +62,13 @@ impl<'a> Part<Carrier<'a>> for Session {
         }
     }
 
+    fn keep_alive(&mut self, cx: &mut dyn LayerCx, below: Carrier<'a>) -> Result<(), ErrorKind> {
+        match self {
+            Session::H2(h2) => h2.keep_alive(cx, below),
+            Session::H3(h3) => h3.keep_alive(cx, below),
+        }
+    }
+
     fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
         match self {
             Session::H2(_) => None,

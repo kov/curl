@@ -256,6 +256,53 @@ impl<H: Host> EngineRest<'_, H> {
     }
 }
 
+/// Keep alive the connections of the pool a handle's are in, every
+/// `interval` (`Curl_cpool_upkeep`): `share`'s, if it keeps connections,
+/// under its lock, whose idle connections a failed keep-alive closes
+/// once the lock is let go; else `pool`, the multi's. A connection closed
+/// goes through `net` into the multi's set, as the multi's own work.
+pub(super) fn upkeep(
+    pool: &mut Pool,
+    share: Option<(&Share, Option<&dyn ShareLock>)>,
+    net: &mut dyn Net,
+    set: &mut ShutdownSet,
+    max_total: Option<NonZeroU32>,
+    interval: Duration,
+    now: Instant,
+) -> Result<(), OutOfMemory> {
+    let Some((share, watch)) = share else {
+        let mut exits = WithSet {
+            net,
+            set,
+            max_total,
+            multi_pool: None,
+        };
+        pool.upkeep(interval, &mut exits, now);
+        return Ok(());
+    };
+    // The set is capped by the multi's own pool (conncache.c:236).
+    let multi_pool = Some(pool.len());
+    watched(watch, share, Kind::Connections, || {
+        let mut later = CloseLater::new(net);
+        {
+            let mut pool = share.pool();
+            // Each connection may close.
+            let each = usize::try_from(pool.len()).expect("a pool's size fits");
+            later.make_room(each)?;
+            let mut exits = WithSet {
+                net: &mut later,
+                set,
+                max_total,
+                multi_pool,
+            };
+            pool.upkeep(interval, &mut exits, now);
+        }
+        // The share's lock is let go.
+        later.close();
+        Ok(())
+    })
+}
+
 /// As `EngineRest::announce_closing`, on the multi's parts.
 pub(super) fn announce_closing<H: Host>(
     set: &mut ShutdownSet,

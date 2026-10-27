@@ -712,8 +712,10 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
 }
 const _: ffi::proto::curl_easy_duphandle = curl_easy_duphandle;
 
-/// Keep the handle's connections alive (`Curl_cpool_upkeep`): an HTTP/1
-/// connection has nothing to send to stay so, and no other is spoken.
+/// Keep the connections of the handle's pool alive that have gone its
+/// `CURLOPT_UPKEEP_INTERVAL_MS` without (`Curl_cpool_upkeep`): its
+/// multi's, the one its perform keeps, or its share's. An HTTP/2
+/// connection is sent a PING; how that goes is not the caller's to hear.
 ///
 /// # Safety
 ///
@@ -727,7 +729,41 @@ pub unsafe extern "C" fn curl_easy_upkeep(curl: *mut CURL) -> CURLcode {
     let Ok(_entry) = easy.enter(EasyCall::Upkeep) else {
         return CURLE_RECURSIVE_API_CALL;
     };
-    CURLE_OK
+    let kept = match easy.added() {
+        None => {
+            let private = easy.private.get();
+            let kept = easy.with_detached(|e| match private {
+                Some(m) => {
+                    // SAFETY: the handle owns its private multi.
+                    let m = unsafe { m.as_ref() };
+                    let mut ev = ShimEvents::new(m);
+                    // SAFETY: nothing runs on it once its perform is done.
+                    unsafe { m.core_mut() }.upkeep_for(e, &mut ev)
+                }
+                None => e.upkeep(),
+            });
+            let Some(kept) = kept else {
+                return CURLE_RECURSIVE_API_CALL;
+            };
+            kept
+        }
+        Some((multi, id)) => {
+            // SAFETY: the handle's multi outlives its `Added`.
+            let m = unsafe { multi.as_ref() };
+            let Ok(Reach::Direct) = m.stack.reach() else {
+                return CURLE_RECURSIVE_API_CALL;
+            };
+            let mut ev = ShimEvents::new(m);
+            // SAFETY: nothing runs on the multi.
+            let core = unsafe { m.core_mut() };
+            core.upkeep(id, &mut ev)
+                .expect("an added handle is in its multi")
+        }
+    };
+    match kept {
+        Ok(()) => CURLE_OK,
+        Err(OutOfMemory) => ffi::CURLE_OUT_OF_MEMORY,
+    }
 }
 const _: ffi::proto::curl_easy_upkeep = curl_easy_upkeep;
 

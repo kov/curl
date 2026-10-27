@@ -363,6 +363,26 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
         }
     }
 
+    /// PING the peer (`cf_h2_keep_alive`, `http2_send_ping`). With no
+    /// stream open the frame is sent at once, as far as the connection
+    /// takes it now; with streams open it goes with the next send of
+    /// their transfers, which alone can give the session their bodies.
+    fn keep_alive(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        mut below: Carrier<'a>,
+    ) -> Result<(), ErrorKind> {
+        self.session.ping().map_err(|_| ErrorKind::Http2)?;
+        if self.routes.len() > 0 {
+            return Ok(());
+        }
+        match self.egress(&mut Bare(cx), &mut below) {
+            Ok(_) => Ok(()),
+            Err(EgressFailed::OutOfMemory) => Err(ErrorKind::OutOfMemory),
+            Err(EgressFailed::Session(_) | EgressFailed::Send) => Err(ErrorKind::SendError),
+        }
+    }
+
     /// Say goodbye as the connection shuts down, once, and send what the
     /// connection takes of it now (`cf_h2_shutdown`): a peer that closed
     /// hears nothing. What does not go now goes with the connection.

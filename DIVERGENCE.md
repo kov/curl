@@ -344,6 +344,18 @@ not a difference: it is tracked in `MILESTONES.md`.
   (`crates/curl-sys-abi/src/tls.rs`) and `the_ssl_ctx_function_s_code_fails_the_transfer`
   (`crates/curl-sys-abi/src/tls_tests.rs`).
 
+## Frames C sends beside a transfer
+
+- **A PING on an HTTP/2 connection with streams open goes with their transfer's next send.**
+  `curl_easy_upkeep` on such a connection queues the PING in the session, and the next send
+  of a transfer on it frames and sends it. C's `http2_send_ping` sends it at once
+  (`nghttp2_session_send`), framing with it whatever request body the streams have buffered,
+  which its read callback reaches in the stream's own buffer; here the body is the transfer's,
+  reached only from its step, and a send without it would fail the stream. An idle connection
+  has no stream open, and is sent its PING at once as in C. Pinned by
+  `a_connection_in_use_is_pinged_with_its_transfer_s_next_send`
+  (`crates/curl-core/src/proto/http/tests/h2.rs`).
+
 ## Handles the application never made
 
 - **The connection lock at share cleanup is called with no handle.** When `curl_share_cleanup`

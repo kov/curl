@@ -886,6 +886,10 @@ pub(crate) struct Conn {
     created: Instant,
     connected_at: Instant,
     use_: Use,
+    /// When it was last kept alive, or else used: whole milliseconds
+    /// after it was made, as it was found connected, given back by a
+    /// transfer or sent a keep-alive (C's `lastupkeep_ms`).
+    upkept_ms: u64,
     /// It carried a request before the one leasing it (C's
     /// `bits.reuse`).
     served: bool,
@@ -1050,6 +1054,35 @@ impl Conn {
         if let (Some(session), Some(carrier)) = self.split() {
             let _done = session.shutdown(cx, carrier);
         }
+    }
+
+    /// Keep it alive, if `interval` has passed by `now` since it last was
+    /// or was used, in whole milliseconds since it was made
+    /// (`conn_upkeep`): its session sends what keeps it so, and its
+    /// layers have nothing to (`Curl_conn_keep_alive`). Whether it was
+    /// due, and if so how the keep-alive went.
+    pub(crate) fn upkeep(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        interval: std::time::Duration,
+    ) -> Option<Result<(), crate::error::ErrorKind>> {
+        use part::Part as _;
+        let made_ms = u64::try_from(cx.now().since(self.created).as_millis()).unwrap_or(u64::MAX);
+        let interval_ms = u64::try_from(interval.as_millis()).unwrap_or(u64::MAX);
+        if made_ms.saturating_sub(self.upkept_ms) < interval_ms {
+            return None;
+        }
+        self.upkept_ms = made_ms;
+        Some(match self.split() {
+            (Some(session), Some(carrier)) => session.keep_alive(cx, carrier),
+            (None, _) | (_, None) => Ok(()),
+        })
+    }
+
+    /// It was given back by a transfer at `now` (`Curl_cpool_return`):
+    /// its next keep-alive is due an interval from then.
+    pub(crate) fn returned(&mut self, now: Instant) {
+        self.upkept_ms = u64::try_from(now.since(self.created).as_millis()).unwrap_or(u64::MAX);
     }
 
     /// The filter at the top of its chain once it is up, which a question

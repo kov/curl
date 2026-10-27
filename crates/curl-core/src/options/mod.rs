@@ -1446,6 +1446,9 @@ pub struct ReuseLimits {
     /// `CURLOPT_DNS_CACHE_TIMEOUT`: how long a name's answer is kept, 60
     /// seconds unless set; none for ever.
     pub dns_max_age: Option<Duration>,
+    /// `CURLOPT_UPKEEP_INTERVAL_MS`: how long a connection goes between
+    /// the keep-alives `upkeep` sends on it.
+    pub upkeep: UpkeepInterval,
 }
 
 impl Default for ReuseLimits {
@@ -1457,7 +1460,20 @@ impl Default for ReuseLimits {
             forbid: false,
             fresh: false,
             dns_max_age: Some(Duration::from_secs(60)),
+            upkeep: UpkeepInterval::default(),
         }
+    }
+}
+
+/// How long a connection goes without a keep-alive before `upkeep` sends
+/// it one (`CURLOPT_UPKEEP_INTERVAL_MS`): 60 seconds unless set, counted
+/// in whole milliseconds; none means each call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UpkeepInterval(pub Duration);
+
+impl Default for UpkeepInterval {
+    fn default() -> Self {
+        UpkeepInterval(Duration::from_secs(60))
     }
 }
 

@@ -3,7 +3,8 @@
 //! (`curl_easy_send`, `curl_easy_recv`) and its socket told
 //! (`CURLINFO_ACTIVESOCKET`). The connection stays reserved for the handle
 //! in the pool it was made in (`Place::Reserved`), which the handle names
-//! by its last connection.
+//! by its last connection. Also what a handle does with its pool's
+//! connections between transfers: keep them alive (`curl_easy_upkeep`).
 
 use std::fmt;
 
@@ -227,6 +228,35 @@ fn no_clock() -> Instant {
 }
 
 impl Easy {
+    /// Keep alive the connections of the handle's pool that have gone its
+    /// upkeep interval without (`curl_easy_upkeep`): an HTTP/2 connection
+    /// is sent a PING, others nothing. The pool is its share's, if that
+    /// keeps connections, else the one `perform` keeps; a handle with
+    /// neither has none to keep.
+    pub fn upkeep(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
+        match self.private.take() {
+            Some(mut private) => {
+                let crate::easy::Private { multi, events } = &mut *private;
+                let kept = match events {
+                    Some(table) => multi.upkeep_for(self, table),
+                    None => multi.upkeep_for(self, &mut super::NoEvents),
+                };
+                self.private = Some(private);
+                kept
+            }
+            None => {
+                if let Some(share) = self.share().filter(|s| s.keeps(Kind::Connections)) {
+                    let watch = self.share_watch.as_deref();
+                    let interval = self.options().limits.reuse.upkeep.0;
+                    watched(watch, share, Kind::Connections, || {
+                        share.upkeep(interval, no_clock());
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Receive into `buf` on the connection the handle's last transfer
     /// only made (`curl_easy_recv`), once `perform` is done.
     pub fn recv_raw(&mut self, buf: &mut [u8]) -> Result<RawIo, ErrorKind> {

@@ -1584,6 +1584,8 @@ impl ConnectMachine {
             created,
             connected_at: at,
             use_: Use::Leased(NonZeroU32::MIN),
+            // As it is found connected (`Curl_cpool_conn_was_used`).
+            upkept_ms: u64::try_from(at.since(created).as_millis()).unwrap_or(u64::MAX),
             served: false,
             socks5_authenticated: false,
             seen_version: None,

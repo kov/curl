@@ -33,10 +33,11 @@ use crate::conn::{ConnId, Home};
 use crate::deliver::{Pause, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
+use crate::handler::Handler;
 use crate::id::{Arena, ArenaPolicy, Key};
 use crate::progress::Speedometer;
 use crate::progress::rate::{RateLimits, Way};
-use crate::share::{Kind, watched};
+use crate::share::{Kind, Share, ShareLock, watched};
 use crate::time::{Clock, Instant};
 use crate::tls::{TlsNative, TlsShared};
 use crate::upload::Readers;
@@ -1743,6 +1744,70 @@ impl<H: Host> Multi<H> {
             self.caches.pool.network_changed(&mut exits, now);
         }
         cx::announce_closing(&mut self.shutdowns, &mut *self.net, &mut tell, ev, now);
+    }
+
+    /// Keep alive the connections of transfer `id`'s pool that have gone
+    /// its upkeep interval without (`curl_easy_upkeep`): an HTTP/2
+    /// connection is sent a PING, others nothing. The socket callback in
+    /// `ev` hears of each socket that closes or waits to. `None` if `id`
+    /// is not in this multi.
+    pub fn upkeep(
+        &mut self,
+        id: TransferId,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Option<Result<(), OutOfMemory>> {
+        let easy = &self.slots.get(id)?.easy;
+        let interval = easy.options().limits.reuse.upkeep.0;
+        let share = easy.share().filter(|s| s.keeps(Kind::Connections)).cloned();
+        let watch = easy.share_watch.clone();
+        Some(self.upkeep_with(interval, share.as_ref().map(|s| (s, watch)), ev))
+    }
+
+    /// As `upkeep`, for `easy`, not added, whose transfers this multi
+    /// ran.
+    pub fn upkeep_for(
+        &mut self,
+        easy: &Easy,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<(), OutOfMemory> {
+        let interval = easy.options().limits.reuse.upkeep.0;
+        let share = easy.share().filter(|s| s.keeps(Kind::Connections)).cloned();
+        let watch = easy.share_watch.clone();
+        self.upkeep_with(interval, share.as_ref().map(|s| (s, watch)), ev)
+    }
+
+    fn upkeep_with(
+        &mut self,
+        interval: std::time::Duration,
+        share: Option<(&Share, Option<Handler<dyn ShareLock>>)>,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<(), OutOfMemory> {
+        let now = self.clock.now();
+        let max_total = self.limits.max_total;
+        let mut tell = Telling {
+            alive: &mut self.alive,
+            slots: &mut self.slots,
+            limits: &mut self.limits,
+            notify: &mut self.notify,
+            counts: &mut self.counts,
+            sockets: &mut self.sockets,
+            life: &mut self.life,
+        };
+        let kept = {
+            let mut net = Announcing::multi(&mut *self.net, tell.reborrow(), &mut *ev);
+            let share = share.as_ref().map(|(s, w)| (*s, w.as_deref()));
+            cx::upkeep(
+                &mut self.caches.pool,
+                share,
+                &mut net,
+                &mut self.shutdowns,
+                max_total,
+                interval,
+                now,
+            )
+        };
+        cx::announce_closing(&mut self.shutdowns, &mut *self.net, &mut tell, ev, now);
+        kept
     }
 
     /// A line of the multi's internal trace, in `MULTI`'s name.

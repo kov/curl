@@ -708,6 +708,10 @@ impl H3Proxy {
             H3P,
             format_args!("[{id}] cf_send, add to sendbuf(len={len}) -> {code}, {took}"),
         );
+        // None taken is to wait: nothing is sent, the timer set.
+        if code != 0 {
+            return (self.send_ended(cx, socket, Ok(())), 0);
+        }
         self.quic.resume(stream);
         let r = self.call(cx, socket, |quic, over| quic.egress(over));
         (self.send_ended(cx, socket, r), took)
@@ -844,7 +848,11 @@ impl Layer for H3Proxy {
         let socket = below.socket();
         let (r, n) = self.send_inner(cx, socket, bytes);
         let (id, len) = (self.tunnel.id(), bytes.len());
-        let code = crate::trace::Code(r);
+        let code = match r {
+            Ok(()) if n == 0 => AGAIN_NUMBER,
+            Ok(()) => 0,
+            Err(kind) => kind.number(),
+        };
         cx.of(
             H3P,
             format_args!("[{id}] cf_send(len={len}) -> {code}, {n}"),

@@ -559,8 +559,9 @@ fn a_tunnel_is_the_h3_proxy_filter() {
 }
 
 /// The layer above's bytes go as the stream's body as far as the
-/// library takes them, traced as C traces it, and a send the socket
-/// fails fails, as does a packet sent alone.
+/// library takes them, traced as C traces it; none taken is to wait,
+/// sending nothing (`cf_h3_proxy_send`'s `CURLE_AGAIN`), and a send
+/// the socket fails fails, as does a packet sent alone.
 #[test]
 fn a_send_into_the_tunnel_is_the_stream_s_body() {
     let script = Script::new();
@@ -574,15 +575,31 @@ fn a_send_into_the_tunnel_is_the_stream_s_body() {
             .unwrap(),
         Sent::Bytes(NonZeroUsize::new(3).unwrap())
     );
+    script.lock().unwrap().body.held_max = Some(3);
+    script.lock().unwrap().out.extend([vec![8; 50], vec![]]);
+    let sent = socket.sent.lock().unwrap().len();
+    assert_eq!(
+        p.send(&mut notes, Below::new(&mut layers, &socket), b"def")
+            .unwrap(),
+        Sent::WouldBlock
+    );
+    assert_eq!(
+        socket.sent.lock().unwrap().len(),
+        sent,
+        "nothing goes while the send waits"
+    );
     let sends: Vec<&String> = notes.0.iter().filter(|l| l.contains("cf_send")).collect();
     assert_eq!(
         sends,
         [
             "trace: [0] cf_send, add to sendbuf(len=3) -> 0, 3",
             "trace: [0] cf_send(len=3) -> 0, 3",
+            "trace: [0] cf_send, add to sendbuf(len=3) -> 81, 0",
+            "trace: [0] cf_send(len=3) -> 81, 0",
         ]
     );
     // The socket fails the packets the send makes.
+    script.lock().unwrap().body.held_max = None;
     socket.sends.lock().unwrap().push_back(Act::Fail(111));
     assert!(
         p.send(&mut notes, Below::new(&mut layers, &socket), b"ghi")

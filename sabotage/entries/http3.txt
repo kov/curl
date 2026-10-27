@@ -806,3 +806,15 @@ witness: curl-core conn::h3proxy::tests::a_tunnel_s_poll_is_as_its_windows_say
                 ..
             }
         );
+
+=== a send into an HTTP/3 proxy's tunnel whose stream takes none of it sends the connection's packets
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core conn::h3proxy::tests::a_send_into_the_tunnel_is_the_stream_s_body
+--- old
+        if code != 0 {
+            return (self.send_ended(cx, socket, Ok(())), 0);
+        }
+--- new
+        if code != 0 {
+            let _ = socket;
+        }

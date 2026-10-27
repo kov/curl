@@ -37,6 +37,9 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-zstd/src/lib.rs`: zstd's decoder, undoing the `zstd` coding.
 - `crates/curl-nghttp2/src/lib.rs` and `src/sys.rs`: nghttp2's HTTP/2 session, its callbacks and
   the declarations of the functions it calls.
+- `crates/curl-ngtcp2/src/lib.rs` and `src/sys.rs`: ngtcp2's QUIC connection with its OpenSSL
+  crypto, and nghttp3's HTTP/3 session over it: their callbacks and the declarations of the
+  functions they call.
 - `crates/curl-idn2/src/lib.rs`: libidn2, converting host names to and from punycode.
 - `crates/curl-ngtcp2/src/lib.rs` and `src/sys.rs`: ngtcp2's QUIC connection, its OpenSSL
   crypto and nghttp3's HTTP/3 over it, their callbacks and the declarations of the functions

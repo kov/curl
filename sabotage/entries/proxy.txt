@@ -630,10 +630,10 @@ witness: curl-core proto::http::tests::https_trace::a_tunnel_through_an_https_pr
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls::https_through_an_https_proxy_is_tls_in_tls
 --- old
-        if filter == Component::SslProxy {
+        if matches!(filter, Component::SslProxy | Component::H3Proxy) {
             self.report_mut().set_proxy_verify_result(result);
 --- new
-        if filter != Component::SslProxy {
+        if !matches!(filter, Component::SslProxy | Component::H3Proxy) {
             self.report_mut().set_proxy_verify_result(result);
 
 === a proxy service named alone makes no credentials for the proxy

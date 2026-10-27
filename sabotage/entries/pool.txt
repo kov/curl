@@ -637,6 +637,8 @@ witness: curl-core a_get_survives_every_allocation_failing
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::a_route_over_quic_opens_a_socket_for_datagrams
 --- old
-            super::Dial::Quic => SocketKind::Datagram,
+        let kind = if self.route.first_hop_quic() {
+            SocketKind::Datagram
 --- new
-            super::Dial::Quic => SocketKind::Stream,
+        let kind = if self.route.first_hop_quic() {
+            SocketKind::Stream

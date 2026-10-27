@@ -631,7 +631,7 @@ impl TlsCx<'_> {
     /// The session is an HTTPS proxy's, not the origin's
     /// (`Curl_ssl_cf_is_proxy`): its certificate is the proxy's.
     pub fn for_proxy(&self) -> bool {
-        self.component == Component::SslProxy
+        matches!(self.component, Component::SslProxy | Component::H3Proxy)
     }
 
     /// The transfer asked for its peer's chain (`CURLOPT_CERTINFO`).

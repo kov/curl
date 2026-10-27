@@ -62,10 +62,6 @@ pub(crate) trait QuicCx: LayerCx {
 
     /// The room lent, given back.
     fn give_room(&mut self, room: Vec<u8>);
-
-    /// The QUIC library wants to be called again after `wait` from now,
-    /// in whole milliseconds (`Curl_expire_set(EXPIRE_QUIC)`).
-    fn quic_due(&mut self, wait: Duration);
 }
 
 /// A `QuicCx` with the UDP socket the connection goes over, asked for at
@@ -184,8 +180,6 @@ impl QuicCx for Lone<'_> {
     }
 
     fn give_room(&mut self, _room: Vec<u8>) {}
-
-    fn quic_due(&mut self, _wait: Duration) {}
 }
 
 /// An attempt's context, with the socket it dialed.
@@ -195,6 +189,10 @@ pub(crate) struct Over<'a> {
 }
 
 impl LayerCx for Over<'_> {
+    fn quic_due(&mut self, wait: Duration) {
+        self.cx.quic_due(wait);
+    }
+
     fn now(&self) -> Instant {
         self.cx.now()
     }
@@ -275,10 +273,6 @@ impl QuicCx for Over<'_> {
 
     fn give_room(&mut self, room: Vec<u8>) {
         self.cx.give_room(room);
-    }
-
-    fn quic_due(&mut self, wait: Duration) {
-        self.cx.quic_due(wait);
     }
 }
 
@@ -372,6 +366,9 @@ struct State {
     first_byte_at: Option<Instant>,
     /// When a datagram last went or came (`last_io`).
     last_io: Instant,
+    /// The filter C's chain traces it as: `HTTP/3`, or `H3-PROXY` for a
+    /// connection to an HTTP/3 proxy.
+    component: Component,
     /// Early data is sent: this much of the request went before the
     /// handshake was done (`use_earlydata`, `earlydata_skip`).
     early: Option<usize>,
@@ -413,12 +410,14 @@ impl std::fmt::Debug for Quic {
 
 impl Quic {
     /// The connection `conn`, to `remote`, whose TLS's sessions are kept
-    /// for `peer`, its connect started now on `clock`.
+    /// for `peer`, its connect started now on `clock`, traced as
+    /// `component`'s.
     pub(crate) fn new(
         conn: Box<dyn Connection>,
         peer: SessionPeer,
         remote: SocketAddr,
         clock: SharedClock,
+        component: Component,
     ) -> Result<Quic, curl_alloc::OutOfMemory> {
         let now = clock.now();
         let mut bytes = Vec::new();
@@ -448,6 +447,7 @@ impl Quic {
                 now,
                 first_byte_at: None,
                 last_io: now,
+                component,
                 early: None,
             },
             clock,
@@ -456,6 +456,11 @@ impl Quic {
 
     /// When the first datagram came, the time a QUIC connection is
     /// connected at (`cf_socket_cntrl`'s for QUIC).
+    /// The filter C's chain traces it as.
+    pub(crate) fn component(&self) -> Component {
+        self.state.component
+    }
+
     pub(crate) fn first_byte_at(&self) -> Option<Instant> {
         self.state.first_byte_at
     }
@@ -523,7 +528,7 @@ impl Quic {
         cx: &mut dyn LayerCx,
         ticket: &EarlyTicket,
     ) -> Result<(), ErrorKind> {
-        let h3 = Component::Http3;
+        let h3 = self.state.component;
         if ticket.most == 0 {
             cx.of(h3, format_args!("SSL session does not allow earlydata"));
             return Ok(());
@@ -604,7 +609,7 @@ impl Quic {
             self.egress(cx)?;
             if self.conn.handshake_done() {
                 self.state.verified?;
-                cx.of(Component::Http3, format_args!("peer verified"));
+                cx.of(self.state.component, format_args!("peer verified"));
                 self.state.connected = true;
                 return Ok(true);
             }
@@ -629,7 +634,7 @@ impl Quic {
         {
             step = Err(ErrorKind::CouldntConnect);
             if let Some(CloseError { kind, code }) = self.conn.closed_with() {
-                let h3 = Component::Http3;
+                let h3 = self.state.component;
                 cx.of(h3, format_args!("connect error, type={kind}, code={code}"));
                 if kind == CLOSE_VERSION_NEGOTIATION {
                     cx.of(h3, format_args!("error in version negotiation"));
@@ -661,7 +666,7 @@ impl Quic {
             let code = Code(step.map(|_| ()));
             let done = u8::from(done);
             cx.of(
-                Component::Http3,
+                self.state.component,
                 format_args!("connect -> {code}, done={done}"),
             );
         }
@@ -679,7 +684,7 @@ impl Quic {
                 let Quic {
                     conn, peer, state, ..
                 } = self;
-                let mut tcx = TlsCx::new(cx, Component::Http3, peer);
+                let mut tcx = TlsCx::new(cx, state.component, peer);
                 conn.handle_expiry(&mut tcx, now, &mut |tcx, e| state.heard(tcx, e))
             };
             if let Err(error) = ran {
@@ -734,7 +739,7 @@ impl Quic {
         let read = self.ingress(cx);
         let code = Code(read);
         cx.of(
-            Component::Http3,
+            self.state.component,
             format_args!("is_alive, progress ingress -> {code}"),
         );
         read.is_ok()
@@ -780,13 +785,13 @@ impl Quic {
                 let id = stream.0;
                 if closing {
                     cx.of(
-                        Component::Http3,
+                        self.state.component,
                         format_args!("h3sid[{id}] failed to send, connection is closing"),
                     );
                 } else {
                     let (code, text) = (error.code, error.text);
                     cx.of(
-                        Component::Http3,
+                        self.state.component,
                         format_args!("h3sid[{id}] failed to send -> {code} ({text})"),
                     );
                 }
@@ -803,7 +808,7 @@ impl Quic {
         if let Err(kind) = self.egress(cx) {
             let (id, code) = (stream.0, kind.number());
             cx.of(
-                Component::Http3,
+                self.state.component,
                 format_args!("[{id}] cancel stream -> {code}"),
             );
         }
@@ -859,7 +864,7 @@ impl Quic {
     /// half the peer's idle timeout, lest it close one waiting for a
     /// response (`cf_ngtcp2_setup_keep_alive`).
     pub(crate) fn keep_alive(&mut self, cx: &mut dyn LayerCx, streams: usize) {
-        let h3 = Component::Http3;
+        let h3 = self.state.component;
         match self.conn.peer_idle_timeout() {
             None => {
                 self.conn.set_keep_alive(None);
@@ -908,7 +913,7 @@ impl Quic {
     }
 
     fn close_step(&mut self, cx: &mut dyn QuicIo) -> bool {
-        let h3 = Component::Http3;
+        let h3 = self.state.component;
         if !self.state.shutdown_started {
             if !self.out.is_empty() {
                 cx.of(h3, format_args!("shutdown, flushing sendbuf"));
@@ -1002,7 +1007,7 @@ impl Quic {
         let path_max = self.conn.path_max_payload();
         let quantum = self.conn.send_quantum();
         cx.of(
-            Component::Http3,
+            self.state.component,
             format_args!("egress, collect and send packets, quantum={quantum}"),
         );
         let (mut packets, mut gso) = (0usize, 0usize);
@@ -1035,7 +1040,7 @@ impl Quic {
         if !self.out.is_empty() {
             let len = self.out.unsent().len();
             cx.of(
-                Component::Http3,
+                self.state.component,
                 format_args!("egress, send collected {packets} packets in {len} bytes"),
             );
             self.out.gso = gso;
@@ -1070,7 +1075,7 @@ impl Quic {
                 out,
                 ..
             } = self;
-            let mut tcx = TlsCx::new(cx, Component::Http3, peer);
+            let mut tcx = TlsCx::new(cx, state.component, peer);
             conn.write_packet(&mut tcx, now, &mut out.bytes[at..], &mut |tcx, e| {
                 state.heard(tcx, e)
             })
@@ -1113,7 +1118,7 @@ impl Quic {
         self.out.split = Some((head, gso));
         self.out.gso = tail_gso;
         cx.of(
-            Component::Http3,
+            self.state.component,
             format_args!("vquic_send_tail_split: [{head} gso={gso}][{tail} gso={tail_gso}]"),
         );
         self.flush(cx)
@@ -1196,7 +1201,7 @@ impl Quic {
         };
         let code = number(r);
         cx.of(
-            Component::Http3,
+            self.state.component,
             format_args!("vquic_sendmsg(len={len}, gso={gso}, calls=1) -> {code}, sent={sent}"),
         );
         (sent, r)
@@ -1229,7 +1234,7 @@ impl Quic {
         }
         let code = number(r);
         cx.of(
-            Component::Http3,
+            self.state.component,
             format_args!(
                 "vquic_sendmsg(len={len}, gso={gso}, calls={calls}) -> {code}, sent={sent}"
             ),
@@ -1241,10 +1246,14 @@ impl Quic {
     /// library (`Curl_cf_ngtcp2_progress_ingress`).
     pub(crate) fn ingress(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
         {
+            let component = self.state.component;
             let Quic { conn, peer, .. } = self;
-            conn.before_recv(&mut TlsCx::new(cx, Component::Http3, peer))?;
+            conn.before_recv(&mut TlsCx::new(cx, component, peer))?;
         }
-        cx.of(Component::Http3, format_args!("progress_ingress(socket)"));
+        cx.of(
+            self.state.component,
+            format_args!("progress_ingress(socket)"),
+        );
         let Ok(mut room) = cx.take_room() else {
             return Err(ErrorKind::OutOfMemory);
         };
@@ -1268,7 +1277,7 @@ impl Quic {
                 Ok(count) => count,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     cx.of(
-                        Component::Http3,
+                        self.state.component,
                         format_args!("ingress, recvmmsg -> EAGAIN"),
                     );
                     break Ok(());
@@ -1322,7 +1331,7 @@ impl Quic {
         if total > 0 || r.is_err() {
             let code = Code(r);
             cx.of(
-                Component::Http3,
+                self.state.component,
                 format_args!(
                     "vquic_recvmmsg(len={total}, packets={packets}, calls={calls}) -> {code}"
                 ),
@@ -1342,7 +1351,7 @@ impl Quic {
         if d.ecn != 0 {
             let (len, gso, ecn) = (d.len, d.segment, d.ecn);
             cx.of(
-                Component::Http3,
+                self.state.component,
                 format_args!("vquic_recv(len={len}, gso={gso}, ecn={ecn:x})"),
             );
         }
@@ -1354,7 +1363,7 @@ impl Quic {
                 let Quic {
                     conn, peer, state, ..
                 } = self;
-                let mut tcx = TlsCx::new(cx, Component::Http3, peer);
+                let mut tcx = TlsCx::new(cx, state.component, peer);
                 conn.read_packet(&mut tcx, now, from, d.ecn, packet, &mut |tcx, e| {
                     state.heard(tcx, e)
                 })
@@ -1362,7 +1371,7 @@ impl Quic {
             if let Err(error) = read {
                 let (text, code) = (error.text, error.code);
                 cx.of(
-                    Component::Http3,
+                    self.state.component,
                     format_args!("ingress, read_pkt -> {text} ({code})"),
                 );
                 self.failed(cx, error);
@@ -1553,6 +1562,10 @@ mod tests {
     }
 
     impl LayerCx for Cx {
+        fn quic_due(&mut self, wait: Duration) {
+            self.due.push(wait);
+        }
+
         fn now(&self) -> Instant {
             self.clock.now()
         }
@@ -1573,9 +1586,6 @@ mod tests {
             Ok(vec![0; RECV_ROOM])
         }
         fn give_room(&mut self, _: Vec<u8>) {}
-        fn quic_due(&mut self, wait: Duration) {
-            self.due.push(wait);
-        }
     }
 
     impl QuicIo for Cx {
@@ -1615,7 +1625,10 @@ mod tests {
             socket: Scripted::default(),
         };
         let shared = SharedClock::new(Box::new(clock)).unwrap();
-        (Quic::new(conn, peer, remote, shared).unwrap(), cx)
+        (
+            Quic::new(conn, peer, remote, shared, Component::Http3).unwrap(),
+            cx,
+        )
     }
 
     fn packets(script: &Arc<Mutex<Script>>, sizes: &[usize]) {

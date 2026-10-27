@@ -185,6 +185,11 @@ pub(crate) trait LayerCx {
     fn h3_event(&mut self, _event: crate::http3::Event<'_>) -> crate::http3::Heard {
         crate::http3::Heard::Fine
     }
+
+    /// A QUIC connection's library wants to be called again after `wait`
+    /// from now, in whole milliseconds (`Curl_expire_set(EXPIRE_QUIC)`):
+    /// work done for no transfer has no timer to set.
+    fn quic_due(&mut self, _wait: std::time::Duration) {}
 }
 
 /// The context of work done for no transfer: it traces nothing, as C's
@@ -253,6 +258,12 @@ impl<'a> Below<'a> {
 impl Below<'_> {
     /// The same layers and socket, for one call that leaves them to the
     /// caller after.
+    /// The socket under the layers: what a QUIC connection sends and
+    /// reads its datagrams through, the bottom layer's own.
+    pub(crate) fn socket(&self) -> &dyn Socket {
+        self.socket
+    }
+
     pub(crate) fn reborrow(&mut self) -> Below<'_> {
         Below {
             layers: &mut *self.layers,

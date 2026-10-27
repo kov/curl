@@ -77,6 +77,17 @@ impl Tunnel {
 /// Connected to the proxy: the tunnel's first `CONNECT` is made
 /// (`http_proxy_cf_connect`).
 pub(super) fn dialed<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
+    // An HTTP/3 proxy's tunnel is its QUIC connection's own: the setup
+    // skips the HTTP proxy's filter (`CF_SETUP_CNNCT_HTTP_PROXY`).
+    if c.route.proxy_over_quic() {
+        return match super::h3tunnel::start(&mut c, cx) {
+            Ok(tunnel) => {
+                c.handshake = Some(tunnel);
+                (TransferState::Connecting(c), Wake::Again)
+            }
+            Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
+        };
+    }
     // The filter below the tunnel's is asked (`http_proxy_cf_connect`):
     // an HTTPS proxy's TLS, the SOCKS proxy's, or the one that dialed the
     // proxy.
@@ -136,7 +147,7 @@ pub(super) fn proxy(route: &Tcp) -> (&Peer, Option<Secret<'_>>, bool) {
 /// A `CONNECT` made (`start_CONNECT`), with the proxy's credentials as
 /// far as they go.
 fn start<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshake>, ErrorKind> {
-    let (request, authorized) = connect_head(c, cx, false)?;
+    let (request, authorized) = connect_head(c, cx, b"HTTP")?;
     let tunnel = Tunnel {
         request,
         sent: 0,
@@ -158,7 +169,7 @@ fn start<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Hand
 pub(super) fn connect_head<H: Host>(
     c: &mut Connecting,
     cx: &mut StepCx<'_, H>,
-    h2: bool,
+    version: &[u8],
 ) -> Result<(Vec<u8>, bool), ErrorKind> {
     // Each `CONNECT` reads the application's header lists as they are
     // now.
@@ -219,7 +230,6 @@ pub(super) fn connect_head<H: Host>(
             &[b"Proxy auth using ", name, b" with user '", user, b"'"],
         );
     }
-    let version: &[u8] = if h2 { b"HTTP/2" } else { b"HTTP" };
     trace::info_with(
         cx,
         &[b"Establishing ", version, b" proxy tunnel to ", &authority],

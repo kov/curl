@@ -1195,6 +1195,17 @@ pub(crate) fn apply<'a>(
                 ProxyType::Https
             };
         }
+        Opt::ProxyHttp3 => {
+            // Refused even to turn off, as C's check has no toggle.
+            if !super::parse::claims("HTTPS-proxy") || !super::parse::claims("HTTP3") {
+                return Err(ParamError::LibcurlDoesntSupport);
+            }
+            line.current().proxy_kind = if value.toggle() {
+                ProxyType::Https3
+            } else {
+                ProxyType::Https
+            };
+        }
         Opt::ProxyBasic => line.current().proxy_basic = value.toggle(),
         Opt::ProxyDigest => line.current().proxy_digest = value.toggle(),
         Opt::Socks5Basic => line.current().socks5_basic = value.toggle(),
@@ -1818,7 +1829,6 @@ pub(crate) fn apply<'a>(
         | Opt::MailRcpt
         | Opt::MailRcptAllowfails
         | Opt::Ntlm
-        | Opt::ProxyHttp3
         | Opt::ProxyNtlm
         | Opt::Pubkey
         | Opt::Quote

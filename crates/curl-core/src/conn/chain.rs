@@ -43,6 +43,9 @@ const MOST: usize = 13;
 pub(crate) struct Chain {
     filters: [(Component, bool); MOST],
     len: usize,
+    /// The HAPPY-EYEBALLS filter stays until the chain connects, its
+    /// attempt an HTTP/3 proxy's tunnel's, and traces its going.
+    eyeballs_stay: bool,
 }
 
 impl Chain {
@@ -50,6 +53,7 @@ impl Chain {
         Chain {
             filters: [(Component::Tcp, false); MOST],
             len: 0,
+            eyeballs_stay: false,
         }
     }
 
@@ -88,6 +92,17 @@ impl Chain {
                 chain.push(Component::HappyEyeballs, false);
                 return chain;
             }
+            // An HTTP/3 proxy's tunnel is the race's attempt, held apart
+            // from the chain until it connects.
+            SetupPoint::Dialed(made) if route.proxy_over_quic() && !made.has(Made::TUNNEL) => {
+                return Chain::of(
+                    route,
+                    head,
+                    SetupPoint::Racing { started: true },
+                    None,
+                    false,
+                );
+            }
             SetupPoint::Dialed(made) => made,
         };
         let added = |which: Made, filter: Component| made.has(which) || under_way == Some(filter);
@@ -106,12 +121,12 @@ impl Chain {
         let connected = |filter| match filter {
             Component::Socks => made.has(Made::SOCKS),
             Component::SslProxy => made.has(Made::PROXY_TLS),
-            Component::HttpProxy | Component::H1Proxy | Component::H2Proxy => {
+            Component::HttpProxy | Component::H1Proxy | Component::H2Proxy | Component::H3Proxy => {
                 made.has(Made::TUNNEL)
             }
             Component::Haproxy => made.has(Made::PREFACE),
             Component::Ssl => made.has(Made::TLS),
-            Component::HappyEyeballs | Component::Tcp | Component::Unix => true,
+            Component::HappyEyeballs | Component::Tcp | Component::Udp | Component::Unix => true,
             _ => false,
         };
         let installed = (installed && !proxy_tls_first) || made.has(Made::TUNNEL) || h2;
@@ -178,8 +193,12 @@ impl Chain {
         // or, with none, is the origin's filter (`origin_is_proxy`), added
         // last.
         let tunnels = route.proxy.as_ref().is_some_and(|p| p.tunnels());
-        // QUIC's TLS is its own, in its filter below the race's.
-        let quic = route.dial == crate::conn::Dial::Quic;
+        // QUIC's TLS is its own, in its filter below the race's. An
+        // HTTP/3 proxy's tunnel is its QUIC filter's, the race's attempt,
+        // with neither the HTTP proxy's filter nor its TLS's
+        // (`CF_SETUP_CNNCT_HTTP_PROXY`).
+        let h3_proxy = route.proxy_over_quic();
+        let quic = route.dial == crate::conn::Dial::Quic && !h3_proxy;
         if added.tls && !quic {
             push(Component::Ssl);
         }
@@ -189,13 +208,13 @@ impl Chain {
         if added.preface {
             push(Component::Haproxy);
         }
-        if added.tunnel {
+        if added.tunnel && !h3_proxy {
             push(Component::HttpProxy);
             if installed {
                 push(tunnel_filter);
             }
         }
-        if added.proxy_tls && tunnels {
+        if added.proxy_tls && tunnels && !h3_proxy {
             push(Component::SslProxy);
         }
         if added.socks {
@@ -204,8 +223,11 @@ impl Chain {
         push(Component::HappyEyeballs);
         if quic {
             push(Component::Http3);
+        } else if h3_proxy {
+            push(Component::H3Proxy);
         }
         push(route.socket_component());
+        chain.eyeballs_stay = h3_proxy;
         chain
     }
 
@@ -249,7 +271,11 @@ impl Chain {
         self.filters[..self.len]
             .iter()
             .map(|&(filter, _)| filter)
-            .filter(|&f| is_setup(f) && f != Component::Dns && f != Component::HappyEyeballs)
+            .filter(|&f| {
+                is_setup(f)
+                    && f != Component::Dns
+                    && (f != Component::HappyEyeballs || self.eyeballs_stay)
+            })
     }
 }
 
@@ -370,5 +396,68 @@ mod tests {
             shown(Made::default(), Some(Component::Ssl)),
             "[0][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]"
         );
+    }
+
+    /// An HTTP/3 proxy's tunnel is the race's attempt in C, held apart
+    /// from the chain until it connects: the chain is the race's until
+    /// then, then the attempt's filters below HAPPY-EYEBALLS, with no
+    /// HTTP-PROXY or SSL-PROXY.
+    #[test]
+    fn an_http3_proxy_s_tunnel_is_the_race_s_attempt() {
+        let scheme = Scheme {
+            name: "http",
+            reuse: true,
+        };
+        let peer =
+            |name: &[u8], port| TryArc::try_new(Peer::new(scheme, name.to_vec(), port, None));
+        let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
+        let proxy = crate::conn::ProxyRoute::new(
+            crate::options::ProxyType::Https3,
+            peer(b"p.test", 443).unwrap(),
+            None,
+            false,
+            false,
+        )
+        .secured(tls)
+        .unwrap();
+        let route = Tcp {
+            origin: peer(b"o.test", 80).unwrap(),
+            via: None,
+            ip: IpVersion::Any,
+            proxy: Some(proxy),
+            tls: None,
+            local: None,
+            delegation: Default::default(),
+            dial: crate::conn::Dial::Tcp,
+        };
+        let shown = |made, under_way| {
+            Chain::of(
+                &route,
+                Head::default(),
+                SetupPoint::Dialed(made),
+                under_way,
+                false,
+            )
+            .to_string()
+        };
+        assert_eq!(
+            shown(Made::PROXY_TLS, Some(Component::H3Proxy)),
+            "[0][!DNS][!SETUP][!HAPPY-EYEBALLS]"
+        );
+        let made = Made::PROXY_TLS | Made::TUNNEL | Made::H3_TUNNEL;
+        let up = Chain::of(
+            &route,
+            Head::default(),
+            SetupPoint::Dialed(made),
+            None,
+            false,
+        );
+        assert_eq!(
+            up.to_string(),
+            "[0][!DNS][!SETUP][HAPPY-EYEBALLS][H3-PROXY][UDP]"
+        );
+        let going: Vec<_> = up.going().collect();
+        assert_eq!(going, [Component::Setup, Component::HappyEyeballs]);
+        assert_eq!(up.reduced().to_string(), "[0][H3-PROXY][UDP]");
     }
 }

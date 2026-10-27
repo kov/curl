@@ -43,7 +43,7 @@ fn connect<H: Host>(
     c: &mut Connecting,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
-    let (head, _) = super::tunnel::connect_head(c, cx, true)?;
+    let (head, _) = super::tunnel::connect_head(c, cx, b"HTTP/2")?;
     let fields = fields_of(&head, None, b"https")?;
     let pairs = fields.pairs().map_err(oom)?;
     if proxy.submit(&pairs).is_err() {
@@ -133,7 +133,22 @@ fn inspect<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, E
     for (name, value) in &answer.fields {
         trace::info_with(cx, &[b"  ", name, b": ", value]);
     }
-    if status == 407 && challenged(c, cx)? {
+    let challenge = match status {
+        407 => answer
+            .fields
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(b"Proxy-Authenticate"))
+            .map(|(_, v)| {
+                let mut copied = Vec::new();
+                copied.try_extend_from_slice(v).map(|()| copied)
+            })
+            .transpose()
+            .map_err(oom)?,
+        _ => None,
+    };
+    if let Some(value) = challenge
+        && challenged(c, cx, Component::H2Proxy, value)?
+    {
         let mut p = take(c);
         connect(&mut p, c, cx)?;
         c.handshake = Some(try_box(Handshake::H2Connect(p)).map_err(oom)?);
@@ -179,26 +194,20 @@ fn take(c: &mut Connecting) -> Box<H2Proxy> {
     }
 }
 
-/// A 407's `Proxy-Authenticate`, if it has one, taken in
-/// (`Curl_http_input_auth`): whether a Negotiate challenge was taken, so
-/// that the `CONNECT` goes again with its answer. No other challenge
-/// makes it go again, as none sets C's `newurl`.
-fn challenged<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
-    let p = proxy(&mut c.handshake);
-    let answer = p.answer().expect("the answer is whole");
-    let Some((_, value)) = answer
-        .fields
-        .iter()
-        .find(|(n, _)| n.eq_ignore_ascii_case(b"Proxy-Authenticate"))
-    else {
-        return Ok(false);
-    };
-    let mut copied = Vec::new();
-    copied.try_extend_from_slice(value).map_err(oom)?;
-    let value = copied;
+/// A 407's `Proxy-Authenticate`, `value`, taken in
+/// (`Curl_http_input_auth`), traced as the tunnel's `filter`: whether a
+/// Negotiate challenge was taken, so that the `CONNECT` goes again with
+/// its answer. No other challenge makes it go again, as none sets C's
+/// `newurl`.
+pub(super) fn challenged<H: Host>(
+    c: &mut Connecting,
+    cx: &mut StepCx<'_, H>,
+    filter: Component,
+    value: Vec<u8>,
+) -> Result<bool, ErrorKind> {
     trace::of_with(
         cx,
-        Component::H2Proxy,
+        filter,
         &[b"[0] CONNECT: fwd auth header '", &value, b"'"],
     );
     let asked = super::tunnel::proxy_asked(c, cx);

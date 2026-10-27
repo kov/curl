@@ -93,6 +93,9 @@ pub(crate) struct Dialed {
     /// proxies' handshakes are made, as C reads the option once as its
     /// setup reaches that stage (`cf_setup_add_haproxy`); `None` before.
     preface: Option<bool>,
+    /// The QUIC connection to an HTTP/3 proxy, its handshake done, until
+    /// the tunnel's `CONNECT` takes it over.
+    quic: Option<Box<Quic>>,
 }
 
 /// The handshakes made over a dialed connection, each once, in
@@ -114,6 +117,9 @@ impl Made {
     /// The tunnel is a stream of an HTTP/2 session with the proxy
     /// (`[H2-PROXY]`), made with `TUNNEL`.
     pub(crate) const H2_TUNNEL: Made = Made(32);
+    /// The tunnel is a stream of a QUIC connection to an HTTP/3 proxy
+    /// (`[H3-PROXY]`), made with `TUNNEL`.
+    pub(crate) const H3_TUNNEL: Made = Made(64);
 
     pub(crate) fn has(self, which: Made) -> bool {
         self.0 & which.0 != 0
@@ -153,6 +159,12 @@ impl Dialed {
     /// The addresses of the destination, resolved here.
     pub(crate) fn target(&self) -> Option<&Result<(TryArc<Answer>, Came), ()>> {
         self.target.as_ref()
+    }
+
+    /// The QUIC connection to an HTTP/3 proxy, for the tunnel's
+    /// `CONNECT` to take.
+    pub(crate) fn take_quic(&mut self) -> Option<Box<Quic>> {
+        self.quic.take()
     }
 
     /// The proxy's address, and the connection's end here.
@@ -300,8 +312,6 @@ impl QuicCx for Plain<'_> {
     }
 
     fn give_room(&mut self, _: Vec<u8>) {}
-
-    fn quic_due(&mut self, _: Duration) {}
 }
 
 #[cfg(test)]
@@ -964,6 +974,11 @@ impl ConnectMachine {
                 6
             },
         );
+        // An HTTP/3 proxy's filter is the attempt's, made as it starts
+        // (`Curl_cf_h3_proxy_create`).
+        if self.route.proxy_over_quic() {
+            cx.of(Component::H3Proxy, format_args!("created, udp_tunnel=0"));
+        }
         cx.of(
             Component::HappyEyeballs,
             format_args!("starting {which} attempt for ipv{v} -> 0"),
@@ -997,9 +1012,10 @@ impl ConnectMachine {
                 "determined scope_id={scope} for link-local address from local interface"
             ));
         }
-        let kind = match self.route.dial {
-            super::Dial::Tcp => SocketKind::Stream,
-            super::Dial::Quic => SocketKind::Datagram,
+        let kind = if self.route.first_hop_quic() {
+            SocketKind::Datagram
+        } else {
+            SocketKind::Stream
         };
         let opened = cx.open_socket(&mut remote, kind);
         let socket = match opened.socket {
@@ -1148,7 +1164,7 @@ impl ConnectMachine {
             cx.socket_failed(&error);
             let why = OsError(&error);
             cx.info(format_args!("Immediate connect fail for {rip}: {why}"));
-            cx.of(Component::Http3, format_args!("destroy"));
+            cx.of(self.quic_component(), format_args!("destroy"));
             discard(cx, component, socket);
             return self.quic_failed(Some(error), ErrorKind::CouldntConnect);
         }
@@ -1190,7 +1206,7 @@ impl ConnectMachine {
                 return Err(ConnectError::OutOfMemory);
             }
             Err(kind) => {
-                cx.of(Component::Http3, format_args!("destroy"));
+                cx.of(self.quic_component(), format_args!("destroy"));
                 discard(cx, component, socket);
                 return self.quic_failed(None, kind);
             }
@@ -1214,10 +1230,21 @@ impl ConnectMachine {
         Ok(Drove::Connecting(self, tried))
     }
 
+    /// The filter a QUIC attempt's connection is traced as: an HTTP/3
+    /// proxy's (`H3-PROXY`), or the origin's (`HTTP/3`).
+    fn quic_component(&self) -> Component {
+        if self.route.proxy_over_quic() {
+            Component::H3Proxy
+        } else {
+            Component::Http3
+        }
+    }
+
     /// The QUIC connection from `local` to `remote`: its TLS session made
-    /// for the origin, offering HTTP/3, and the HTTP/3 library's
-    /// connection over it (`cf_connect_start`). A failure is traced as C
-    /// traces a connect call's.
+    /// for the origin, or for the HTTP/3 proxy whose tunnel the route goes
+    /// through, offering HTTP/3, and the HTTP/3 library's connection over
+    /// it (`cf_connect_start`). A failure is traced as C traces a connect
+    /// call's.
     fn make_quic(
         &self,
         cx: &mut dyn ConnCx,
@@ -1225,6 +1252,7 @@ impl ConnectMachine {
         remote: SocketAddr,
     ) -> Result<Box<Quic>, ErrorKind> {
         let oom = |OutOfMemory| ErrorKind::OutOfMemory;
+        let component = self.quic_component();
         let failed = |cx: &mut dyn ConnCx, kind: ErrorKind| {
             let (ip, port) = (remote.ip(), remote.port());
             let why = kind.message();
@@ -1232,7 +1260,7 @@ impl ConnectMachine {
                 "QUIC connect to {ip} port {port} failed: {why}"
             ));
             let code = crate::trace::Code(Err(kind));
-            cx.of(Component::Http3, format_args!("connect -> {code}, done=0"));
+            cx.of(component, format_args!("connect -> {code}, done=0"));
             kind
         };
         let Some(making) = cx.quic_making().map_err(oom)? else {
@@ -1242,30 +1270,34 @@ impl ConnectMachine {
         let (Some(backend), Some(h3)) = (libraries.tls.as_deref(), libraries.h3) else {
             return Err(failed(cx, ErrorKind::QuicConnectError));
         };
-        let identity = self
-            .route
-            .tls
-            .as_ref()
-            .expect("HTTP/3 is refused but over TLS");
-        let origin = &*self.route.origin;
-        let kept_for = crate::tls::SessionPeer::new(
-            identity,
-            origin,
-            self.route.via.as_deref(),
-            backend.id(),
-            super::Dial::Quic,
-        )
-        .map_err(oom)?;
+        // To an HTTP/3 proxy, its TLS is the proxy's, and no early data
+        // goes before the tunnel's `CONNECT`.
+        let proxied = self.route.proxy_over_quic();
+        let (identity, origin, via) = if proxied {
+            let identity = self.route.proxy_tls().expect("an HTTP/3 proxy speaks TLS");
+            (identity, self.route.destination(), None)
+        } else {
+            let identity = self
+                .route
+                .tls
+                .as_ref()
+                .expect("HTTP/3 is refused but over TLS");
+            (identity, &*self.route.origin, self.route.via.as_deref())
+        };
+        let kept_for =
+            crate::tls::SessionPeer::new(identity, origin, via, backend.id(), super::Dial::Quic)
+                .map_err(oom)?;
         // Early data, where the transfer asks for it and makes requests
         // (`conn_cfg->earlydata`, `bits.connect_only`).
-        let early_data = identity
-            .options
-            .ssl_options
-            .contains(crate::options::SslOptions::EARLYDATA)
+        let early_data = !proxied
+            && identity
+                .options
+                .ssl_options
+                .contains(crate::options::SslOptions::EARLYDATA)
             && making.requests;
         let peer = crate::tls::TlsPeer::of(origin, early_data);
         let tls = {
-            let mut tcx = crate::tls::TlsCx::new(cx, Component::Http3, &kept_for);
+            let mut tcx = crate::tls::TlsCx::new(cx, component, &kept_for);
             backend.quic_session(identity, &peer, &making.shared, &mut tcx)
         };
         let tls = match tls {
@@ -1309,7 +1341,8 @@ impl ConnectMachine {
                 return Err(failed(cx, kind));
             }
         };
-        let mut quic = Quic::new(conn, kept_for, remote, making.clock.clone()).map_err(oom)?;
+        let mut quic =
+            Quic::new(conn, kept_for, remote, making.clock.clone(), component).map_err(oom)?;
         if let Some(ticket) = early {
             match quic.early_data(cx, &ticket) {
                 Ok(()) => {}
@@ -1391,7 +1424,14 @@ impl ConnectMachine {
         // Whatever the attempts said is let go (`cf_ip_happy_connect`).
         cx.reset_fail();
         // A QUIC connection is up with its handshake: its TLS is its own.
-        let quic = won.quic;
+        // One to an HTTP/3 proxy is the first hop's, with the tunnel's
+        // `CONNECT` still to go over it.
+        let mut quic = won.quic;
+        let proxy_quic = if self.route.proxy_over_quic() {
+            quic.take()
+        } else {
+            None
+        };
         if quic.is_none() && (self.route.handshakes() || setup.haproxy || self.route.secured()) {
             // The connection is the first hop's; the handshakes over it
             // are still to be made.
@@ -1403,17 +1443,29 @@ impl ConnectMachine {
                     return Err(e);
                 }
             };
+            // A QUIC connection is connected as its first datagram came.
+            let connected_at = proxy_quic
+                .as_ref()
+                .and_then(|q| q.first_byte_at())
+                .unwrap_or(now);
+            // The proxy's TLS is its QUIC connection's, made.
+            let made = if proxy_quic.is_some() {
+                Made::PROXY_TLS
+            } else {
+                Made::default()
+            };
             self.stage = Stage::Dialed(Dialed {
                 remote: won.remote,
                 stream: Stream::new(won.socket),
-                connected_at: now,
+                connected_at,
                 answer,
                 target,
                 socks5_authenticated: false,
-                made: Made::default(),
+                made,
                 // With no proxy's handshake to make first, the stage is
                 // reached now.
                 preface: (!self.route.handshakes()).then_some(setup.haproxy),
+                quic: proxy_quic,
             });
             return Ok(Drove::Connecting(self, Progress::Dialed));
         }
@@ -1654,8 +1706,8 @@ impl Attempt {
     /// The attempt goes, its QUIC connection first, then its socket
     /// (`cf_ip_attempt_free`).
     fn discard(self, cx: &mut dyn ConnCx, component: Component) {
-        if self.quic.is_some() {
-            cx.of(Component::Http3, format_args!("destroy"));
+        if let Some(quic) = &self.quic {
+            cx.of(quic.component(), format_args!("destroy"));
         }
         drop(self.quic);
         discard(cx, component, self.socket);

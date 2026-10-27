@@ -1076,12 +1076,11 @@ fn apply(
                 ffi::CURLPROXY_HTTP_1_0 => ProxyType::Http10,
                 ffi::CURLPROXY_HTTPS => ProxyType::Https,
                 ffi::CURLPROXY_HTTPS2 => ProxyType::Https2,
+                ffi::CURLPROXY_HTTPS3 => ProxyType::Https3,
                 ffi::CURLPROXY_SOCKS4 => ProxyType::Socks4,
                 ffi::CURLPROXY_SOCKS5 => ProxyType::Socks5,
                 ffi::CURLPROXY_SOCKS4A => ProxyType::Socks4a,
                 ffi::CURLPROXY_SOCKS5_HOSTNAME => ProxyType::Socks5Hostname,
-                // Without an HTTP/3 proxy built in.
-                ffi::CURLPROXY_HTTPS3 => return Err(Refused::NotBuiltIn),
                 _ => return Err(Refused::Bad),
             };
         }

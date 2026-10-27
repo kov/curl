@@ -1910,3 +1910,217 @@ fn a_session_resumed_without_early_data_says_why() {
         );
     }
 }
+
+/// A script for a tunnel through an HTTP/3 proxy: the handshake's
+/// flights, then the `CONNECT`'s packet, answered by `status`, then the
+/// origin's request's packet, answered with `told`.
+fn tunnel_script(status: &[u8], told: Vec<Told>) -> Arc<Mutex<Script>> {
+    let script = Script::new();
+    {
+        let mut s = script.lock().unwrap();
+        s.idle = Some(std::time::Duration::from_secs(30));
+        s.out.extend([
+            vec![1; 1200],
+            vec![2; 1200],
+            vec![],
+            vec![],
+            vec![3; 75],
+            vec![],
+            vec![4; 150],
+            vec![],
+        ]);
+        s.on_read
+            .push_back(vec![Told::HandshakeDone, Told::MaxBidiStreams(100)]);
+        let header = |name: &[u8], value: &[u8]| Told::Header {
+            stream: 0,
+            name: name.to_vec(),
+            value: value.to_vec(),
+        };
+        s.on_read.push_back(vec![
+            header(b":status", status),
+            header(b"via", b"h3proxy"),
+            Told::HeadersDone(0),
+        ]);
+        s.on_read.push_back(told);
+    }
+    script
+}
+
+/// A GET of `http://origin.example/p` by `e` through the HTTP/3 proxy at
+/// `https://localhost:PORT`, its tunnel a stream of a QUIC connection to
+/// it.
+fn through_h3_proxy(m: &mut Multi, e: Easy) -> Ran {
+    get_with(m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(b"http://origin.example/p")).unwrap();
+        o.ip_version = IpVersion::Any;
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
+        proxy.kind = crate::options::ProxyType::Https3;
+        proxy.tunnel = true;
+    })
+}
+
+/// A tunnel through an HTTP/3 proxy is a stream of a QUIC connection to
+/// it, which the race makes as its attempt (`cf-ngtcp2-proxy.c`): the
+/// `CONNECT` goes as the stream's fields once the handshake is done, the
+/// proxy's answer is traced as C traces it, and the origin's request and
+/// response, in HTTP/1.1, go as the stream's DATA.
+#[test]
+fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n".to_vec();
+    let script = tunnel_script(b"200", vec![Told::Data(0, response)]);
+    let mut m = quic_server(&[b"server flight", b"connect answer", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = through_h3_proxy(&mut m, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"ok\n");
+    {
+        let s = script.lock().unwrap();
+        assert_eq!(
+            s.requests[0],
+            [
+                ":method: CONNECT",
+                ":authority: origin.example:80",
+                "user-agent: curl/test"
+            ]
+        );
+        let request =
+            b"GET /p HTTP/1.1\r\nHost: origin.example\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\r\n";
+        assert_eq!(s.body.bytes, request);
+    }
+    let got = lines(
+        &ran,
+        &[
+            "[SETUP] happy eyeballing",
+            "[H3-PROXY]",
+            "Establishing",
+            "CONNECT",
+            "Response Headers",
+            "via",
+            "[READ] client_reset",
+        ],
+    );
+    let from = got
+        .iter()
+        .position(|l| l.starts_with("[SETUP] happy eyeballing"))
+        .unwrap();
+    let want = expect(&format!(
+        "[SETUP] happy eyeballing to HTTP/3 proxy localhost:{PORT}
+        [H3-PROXY] created, udp_tunnel=0
+        [H3-PROXY] fake QUIC session 1
+        [H3-PROXY] fake QUIC session 1 trusts
+        [H3-PROXY] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
+        [H3-PROXY] max bidi streams now 100, used 0
+        [H3-PROXY] peer verified
+        [H3-PROXY] connect -> 0, done=1
+        [H3-PROXY] [0] CONNECT start for origin.example:80
+        Establishing HTTP/3 proxy tunnel to origin.example:80
+        [H3-PROXY] peer idle timeout is 30000ms, set keep-alive to 15000 ms.
+        [H3-PROXY] [0] opened bidi stream
+        [H3-PROXY] [H3-PROXY] [0] OPENED stream for http://origin.example/p
+        [H3-PROXY] [0] -> [connect]
+        [H3-PROXY] [0] read req body -> AGAIN
+        [H3-PROXY] [0] header: via: h3proxy
+        [H3-PROXY] [0] end_headers, status=200
+        [H3-PROXY] [0] -> [response]
+        CONNECT Response Status 200
+        Response Headers (1 total):
+        via: h3proxy
+        CONNECT tunnel established, response 200
+        [H3-PROXY] [0] -> [established]
+        CONNECT phase completed for HTTP/3 proxy
+        [READ] client_reset, clear readers
+        [H3-PROXY] query ALPN"
+    ));
+    let got: Vec<String> = got[from..]
+        .iter()
+        .filter(|l| {
+            !l.contains("progress_ingress")
+                && !l.contains("egress")
+                && !l.contains("recvmmsg")
+                && !l.contains("vquic_")
+        })
+        .cloned()
+        .collect();
+    assert_eq!(got[..want.len()], want);
+    // C's chain holds the attempt apart until the tunnel is up, then the
+    // HAPPY-EYEBALLS filter goes with the setup's others.
+    let chain = lines(
+        &ran,
+        &[
+            "[MULTI] [CONNECTING] cf_setup_connect",
+            "[MULTI] [CONNECTING] connected [",
+            "[MULTI] [CONNECTING] reduced",
+            "[HAPPY-EYEBALLS] removing",
+        ],
+    );
+    let chain: Vec<&str> = chain.iter().map(String::as_str).collect();
+    assert!(
+        chain.contains(&"[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]"),
+        "{chain:#?}"
+    );
+    assert_eq!(
+        chain[chain.len() - 3..],
+        [
+            "[MULTI] [CONNECTING] connected [0][DNS][SETUP][HAPPY-EYEBALLS][H3-PROXY][UDP]",
+            "[HAPPY-EYEBALLS] removing connected setup filter",
+            "[MULTI] [CONNECTING] reduced to [0][H3-PROXY][UDP]",
+        ]
+    );
+}
+
+/// A `CONNECT` the proxy refuses fails the setup as the race's attempt
+/// fails in C, whose filter the tunnel is: the proxy's connection goes,
+/// and the setup says it could not connect over the proxy.
+#[test]
+fn a_tunnel_an_http3_proxy_refuses_fails_the_attempt() {
+    let script = tunnel_script(b"403", vec![]);
+    let mut m = quic_server(&[b"server flight", b"connect answer", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = through_h3_proxy(&mut m, e);
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    let got = lines(
+        &ran,
+        &[
+            "[H3-PROXY] [0] -> [f",
+            "[H3-PROXY] cf_h3",
+            "[HAPPY-EYEBALLS] no more",
+            "Failed to connect",
+        ],
+    );
+    assert_eq!(
+        got,
+        expect(
+            "[H3-PROXY] [0] -> [failed]
+            [H3-PROXY] cf_h3_proxy_destroy()
+            [HAPPY-EYEBALLS] no more attempts to try
+            Failed to connect to origin.example:80 over proxy localhost after 0 ms: Could not connect to server"
+        )
+    );
+}
+
+/// The proxy closing the tunnel's stream mid-response fails the read:
+/// the stream is gone (`cf_h3_proxy_recv`, `!stream`).
+#[test]
+fn a_tunnel_an_http3_proxy_closes_fails_the_read() {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nok\n".to_vec();
+    // The response and the close come once the request is written, as
+    // the peer answers the packet carrying it.
+    let script = tunnel_script(b"200", vec![]);
+    {
+        let mut s = script.lock().unwrap();
+        s.out.extend([vec![5; 60], vec![]]);
+        s.on_read
+            .push_back(vec![Told::Data(0, response), Told::Closed(0, 0x100)]);
+    }
+    let mut m = quic_server(&[b"server flight", b"connect answer", b"ack", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = through_h3_proxy(&mut m, e);
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::RecvError),
+        "{:#?}",
+        ran.seen.text()
+    );
+    assert_eq!(lines(&ran, &["[H3-PROXY] [0] CLOSED"]).len(), 1);
+}

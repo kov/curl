@@ -162,6 +162,10 @@ struct H3Step<'a, 'c, H: Host> {
 }
 
 impl<H: Host> LayerCx for H3Step<'_, '_, H> {
+    fn quic_due(&mut self, wait: std::time::Duration) {
+        LayerCx::quic_due(&mut *self.cx, wait);
+    }
+
     fn now(&self) -> crate::time::Instant {
         self.cx.now()
     }
@@ -280,10 +284,6 @@ impl<H: Host> QuicCx for H3Step<'_, '_, H> {
 
     fn give_room(&mut self, room: Vec<u8>) {
         QuicCx::give_room(&mut *self.cx, room);
-    }
-
-    fn quic_due(&mut self, wait: std::time::Duration) {
-        QuicCx::quic_due(&mut *self.cx, wait);
     }
 }
 

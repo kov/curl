@@ -567,7 +567,8 @@ lease, and `multi_done` closes its attempt out of the lease as the lease's own i
 lets the race's answer go once. The plan's route keeps the first's dial; what is traced of a
 socket or a chain is read from the setup the lease holds, or from the connection the winner
 made. Through a proxy the race is not run yet: C makes the HTTP/3 attempt over the proxy's
-CONNECT-UDP (step 64).
+CONNECT-UDP (step 64). Through an HTTP/3 proxy's tunnel the race's attempt is the QUIC
+connection to the proxy (§ the HTTP/3 tunnel).
 
 `READ` traces a request's body as C's client readers read it: the reader set as the request is
 built (`add buf reader`, `add fread reader`) and each read of it, by the reader C would have, a
@@ -2641,6 +2642,26 @@ stream's window by what the layer above reads (`nghttp2_session_consume`), waits
 the proxy's window for it is shut, answers `LayerQuery::Tunnel` with its filter for the chain,
 and says GOAWAY as it shuts down. What is inside the tunnel speaks what the origin agrees: the
 proxy's ALPN is not the origin's (`query_alpn` passes over the SSL-PROXY answer).
+
+**The HTTP/3 tunnel** (`cf-ngtcp2-proxy.c`) is the tunnel through an HTTPS proxy asked for in
+HTTP/3 (`CURLPROXY_HTTPS3`, `--proxy-http3`): a stream of a QUIC connection to the proxy,
+`[H3-PROXY][UDP]` under the race. C makes the H3-PROXY filter the race's attempt, with neither
+HTTP-PROXY nor SSL-PROXY above it, so the setup dials QUIC to the proxy (`Tcp::first_hop_quic`)
+and the race's attempt is a `Quic` of `Component::H3Proxy`, its TLS the proxy's identity
+(`TlsIo::for_proxy`), no early data. The winner's connection rides in the `Dialed` stream
+(`take_quic`) to `multi/state/h3tunnel.rs`, which makes `conn/h3proxy.rs`'s `H3Proxy` of it: the
+`Quic`, its one stream's `Tunnel` (state, the answer, what came on the stream and its window) and
+the room the library's events land in. `Handshake::H3Connect` holds it while the `CONNECT` goes as
+the HTTP/2 tunnel's fields; once the proxy's 2xx is in, the box is pushed as the layer the
+tunnel's bytes pass through, each read and write its stream's, the window opened by 512 KiB as C
+does (`PROXY_H3_TUNNEL_RX_WIN`). The answer is traced as the HTTP/2 tunnel's; the HAPPY-EYEBALLS
+filter stays in the chain until the tunnel is up, as C's attempt does. A refusal is the race's
+attempt failing in C: the setup fails as a race with no address left does, `Failed to connect …
+over proxy …` and `CouldntConnect`. A read once the stream is gone fails (`RecvError`). The
+library's timer is asked for through `LayerCx::quic_due`, which a layer below the transfer's
+reaches as the transfer's own QUIC connection does. Requests not tunnelled go to such a proxy over
+TCP, as C sends them (`Curl_http_proxy_transport`). An HTTP/3 origin through any proxy needs
+CONNECT-UDP, step 64's later parts.
 
 **Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the
 multi's `ShutdownSet` until the peer's goodbye or the connection's 2 s. OpenSSL's is

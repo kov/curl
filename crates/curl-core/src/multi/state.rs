@@ -31,6 +31,7 @@ use crate::progress::{self, Speedometer};
 use crate::share::Kind;
 
 mod h2tunnel;
+mod h3tunnel;
 mod haproxy;
 mod https;
 mod socks;
@@ -302,6 +303,9 @@ enum Handshake {
     /// An HTTPS proxy's tunnel, with `CONNECT` as a stream of an HTTP/2
     /// session with it, which becomes the tunnel's layer.
     H2Connect(Box<crate::conn::h2proxy::H2Proxy>),
+    /// An HTTP/3 proxy's tunnel, with `CONNECT` as a stream of the QUIC
+    /// connection the race made to it, which becomes the tunnel's layer.
+    H3Connect(Box<crate::conn::h3proxy::H3Proxy>),
     /// The PROXY protocol's line, once the connection is up.
     Haproxy(haproxy::Preface),
     /// The origin's or an HTTPS proxy's TLS, whose state is the layer on
@@ -316,6 +320,7 @@ impl Handshake {
             Handshake::Socks(_) => Component::Socks,
             Handshake::Connect(_) => Component::HttpProxy,
             Handshake::H2Connect(_) => Component::H2Proxy,
+            Handshake::H3Connect(_) => Component::H3Proxy,
             Handshake::Haproxy(_) => Component::Haproxy,
             Handshake::Tls(side) => side.filter(),
         }
@@ -330,6 +335,7 @@ impl Handshake {
             Handshake::Socks(s) => lease.handshake_pollset(s.interest()),
             Handshake::Connect(t) => lease.handshake_pollset(t.interest()),
             Handshake::H2Connect(p) => lease.handshake_pollset(p.connect_interest()),
+            Handshake::H3Connect(p) => lease.handshake_pollset(p.connect_interest()),
             Handshake::Haproxy(p) => lease.handshake_pollset(p.interest()),
             Handshake::Tls(_) => lease.handshake_pollset(Events::NONE),
         }
@@ -1262,6 +1268,12 @@ impl Attached {
 
 /// A layer working for the stepping transfer traces as it does.
 impl<H: Host> LayerCx for StepCx<'_, H> {
+    fn quic_due(&mut self, wait: Duration) {
+        let at = self.rest.clock.now().after(wait);
+        self.quic_at = Some(at);
+        trace_set(self, TimerKind::Quic, at);
+    }
+
     fn now(&self) -> Instant {
         self.rest.now
     }
@@ -1308,7 +1320,7 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
     }
 
     fn tls_verified(&mut self, filter: Component, result: i64) {
-        if filter == Component::SslProxy {
+        if matches!(filter, Component::SslProxy | Component::H3Proxy) {
             self.report_mut().set_proxy_verify_result(result);
         } else {
             self.report_mut().set_verify_result(result);
@@ -1452,12 +1464,6 @@ impl<H: Host> crate::conn::quic::QuicCx for StepCx<'_, H> {
 
     fn give_room(&mut self, room: Vec<u8>) {
         *self.rest.sockbuf = room;
-    }
-
-    fn quic_due(&mut self, wait: Duration) {
-        let at = self.rest.clock.now().after(wait);
-        self.quic_at = Some(at);
-        trace_set(self, TimerKind::Quic, at);
     }
 }
 
@@ -2425,11 +2431,13 @@ fn connecting<H: Host>(
         };
         let kind = match c.handshake.as_deref() {
             _ if let Some(failed) = gss_read => failed,
-            Some(Handshake::Connect(_) | Handshake::H2Connect(_)) => trace::fail(
-                cx,
-                kind,
-                format_args!("Proxy CONNECT aborted due to timeout"),
-            ),
+            Some(Handshake::Connect(_) | Handshake::H2Connect(_) | Handshake::H3Connect(_)) => {
+                trace::fail(
+                    cx,
+                    kind,
+                    format_args!("Proxy CONNECT aborted due to timeout"),
+                )
+            }
             Some(Handshake::Socks(_) | Handshake::Haproxy(_) | Handshake::Tls(_)) | None => {
                 // Named for the name, while it is not resolved yet.
                 let what = match c.lease.reached() {
@@ -2604,7 +2612,9 @@ fn enter_setup<H: Host>(
             // The happy eyeballs filter is added (`cf_setup_add_ip_happy`).
             entry(cx, chain(reached, None, true));
             let peer = c.route.destination();
-            let to = if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) {
+            let to = if c.route.proxy_over_quic() {
+                "HTTP/3 proxy"
+            } else if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) {
                 "proxy"
             } else {
                 "origin"
@@ -2704,6 +2714,7 @@ fn connect_once<H: Host>(
         Some(Handshake::Socks(_)) => return socks::step(c, cx),
         Some(Handshake::Connect(_)) => return tunnel::step(c, cx),
         Some(Handshake::H2Connect(_)) => return h2tunnel::step(c, cx),
+        Some(Handshake::H3Connect(_)) => return h3tunnel::step(c, cx),
         Some(Handshake::Haproxy(_)) => return haproxy::step(c, cx),
         Some(&Handshake::Tls(side)) => return tls::step(c, cx, side),
         None => {}

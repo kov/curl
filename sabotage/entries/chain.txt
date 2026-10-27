@@ -47,9 +47,10 @@ witness: curl-core proto::http::tests::setup_trace::a_pre_proxy_s_and_a_tunnel_s
 file: crates/curl-core/src/conn/chain.rs
 witness: curl-core proto::http::tests::setup_trace::a_direct_setup_is_traced_as_c
 --- old
-            .filter(|&f| is_setup(f) && f != Component::Dns && f != Component::HappyEyeballs)
+                    && (f != Component::HappyEyeballs || self.eyeballs_stay)
 --- new
-            .filter(|&f| is_setup(f) && f != Component::Dns && f != Component::Setup)
+                    && (f != Component::HappyEyeballs || self.eyeballs_stay)
+                    && f != Component::Setup
 
 === a connect under way is polled in the call that started it
 file: crates/curl-core/src/multi/state.rs

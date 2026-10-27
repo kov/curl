@@ -4322,9 +4322,17 @@ fn proxy_options_are_checked_as_in_c() {
         long(c, ffi::CURLOPT_PROXYTYPE, -1),
         CURLE_BAD_FUNCTION_ARGUMENT
     );
+    // An HTTP/3 proxy is built in, as with C's `USE_PROXY_HTTP3`.
     assert_eq!(
         long(c, ffi::CURLOPT_PROXYTYPE, ffi::CURLPROXY_HTTPS3),
-        CURLE_NOT_BUILT_IN
+        CURLE_OK
+    );
+    options(c, |o| {
+        assert_eq!(o.proxy.kind, curl_core::options::ProxyType::Https3);
+    });
+    assert_eq!(
+        long(c, ffi::CURLOPT_PROXYTYPE, ffi::CURLPROXY_SOCKS5_HOSTNAME),
+        CURLE_OK
     );
     assert_eq!(
         pointer(c, ffi::CURLOPT_PROXY, ptr::null_mut::<c_void>()),

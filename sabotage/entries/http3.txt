@@ -494,3 +494,64 @@ witness: curl-core proto::http::tests::h3_trace::a_session_resumed_without_early
                 self.state.early = Some(0);
                 Ok(())
             }
+
+=== an HTTP/3 proxy's filter is not traced as the race's attempt makes it
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection
+--- old
+            cx.of(Component::H3Proxy, format_args!("created, udp_tunnel=0"));
+--- new
+            cx.of(Component::H3Proxy, format_args!("created"));
+
+=== the readers do not start over once an HTTP/3 proxy's tunnel is up
+file: crates/curl-core/src/multi/state/h3tunnel.rs
+witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection
+--- old
+    crate::upload::trace_reset(cx, false);
+--- new
+
+=== a refused HTTP/3 tunnel fails the transfer, not the race's attempt
+file: crates/curl-core/src/multi/state/h3tunnel.rs
+witness: curl-core proto::http::tests::h3_trace::a_tunnel_an_http3_proxy_refuses_fails_the_attempt
+--- old
+            let failed = crate::conn::ConnectError::Failed(None, kind);
+            let kind = super::connect_failed(cx, &c.route, failed);
+            super::attempt_failed(c, cx, kind)
+--- new
+            (TransferState::Connecting(c).fail(kind), Wake::Again)
+
+=== a non-2xx answer to an HTTP/3 CONNECT opens the tunnel
+file: crates/curl-core/src/multi/state/h3tunnel.rs
+witness: curl-core proto::http::tests::h3_trace::a_tunnel_an_http3_proxy_refuses_fails_the_attempt
+--- old
+    if status / 100 != 2 {
+--- new
+    if status / 100 == 5 {
+
+=== a read of an HTTP/3 tunnel whose stream is gone is the end of it
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core proto::http::tests::h3_trace::a_tunnel_an_http3_proxy_closes_fails_the_read
+--- old
+        if self.tunnel.stream.is_none() || self.quic.shutdown_started() {
+            return (Err(ErrorKind::RecvError), 0);
+        }
+--- new
+        if self.tunnel.stream.is_none() || self.quic.shutdown_started() {
+            return (Ok(Recv::Data(NonZeroUsize::MIN)), 0);
+        }
+
+=== an HTTP/3 proxy's attempt shows in the chain before its tunnel is up
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core conn::chain::tests::an_http3_proxy_s_tunnel_is_the_race_s_attempt
+--- old
+            SetupPoint::Dialed(made) if route.proxy_over_quic() && !made.has(Made::TUNNEL) => {
+--- new
+            SetupPoint::Dialed(made) if route.proxy_over_quic() && made.has(Made::SOCKS) => {
+
+=== the HAPPY-EYEBALLS filter goes untraced once an HTTP/3 proxy's tunnel is up
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection
+--- old
+        chain.eyeballs_stay = h3_proxy;
+--- new
+        chain.eyeballs_stay = false;

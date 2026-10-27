@@ -59,6 +59,9 @@ pub enum Feature {
     /// The `deflate` and `gzip` content codings are undone by zlib, which
     /// the tool and the C ABI give every handle.
     Libz,
+    /// HTTP/3 proxies: a tunnel through one is a stream of a QUIC
+    /// connection to it (C's `USE_PROXY_HTTP3`).
+    ProxyHttp3,
     /// Cookies' domains are checked against libpsl's public suffixes,
     /// which the tool and the C ABI give every handle.
     Psl,
@@ -96,6 +99,7 @@ impl Feature {
             Feature::Ipv6 => "IPv6",
             Feature::Kerberos => "Kerberos",
             Feature::Libz => "libz",
+            Feature::ProxyHttp3 => "proxy-HTTP3",
             Feature::Psl => "PSL",
             Feature::Spnego => "SPNEGO",
             Feature::Ssl => "SSL",
@@ -124,6 +128,7 @@ const FEATURES: &[Feature] = &[
     Feature::Ipv6,
     Feature::Kerberos,
     Feature::Libz,
+    Feature::ProxyHttp3,
     Feature::Psl,
     Feature::Spnego,
     Feature::Ssl,

@@ -1000,6 +1000,17 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
     youth, not its standards (RFC 9297, 9298), and the reference build has it on. With it, HTTP/3
     through an HTTP proxy goes over its CONNECT-UDP: `--http3-only` dials QUIC to the proxy
     until then, and `--http3` runs no race through one.
+    - (a) **Done.** The tunnel over QUIC to the proxy (CONNECT on a stream of it), the race's
+      attempt as C's H3-PROXY filter is, its chain and trace C's, a refusal the attempt's
+      failure. test_60's cases with an HTTP/1.1 or HTTP/2 origin pass (01, 02, 06–11, 14, 16,
+      17); 12 needs session export. Left: the race's win is traced as the QUIC handshake ends,
+      C's once the tunnel is up (its attempt holds the `CONNECT`, and the race checks its
+      addresses again meanwhile), which wants the tunnel inside the connect machine's attempt.
+    - (b) The datagram seam: QUIC's socket a trait the connection is handed, so its datagrams
+      can go through a tunnel.
+    - (c) Capsules (`capsule.c`, `cf-capsule.c`) and CONNECT-UDP over HTTP/1.1 and HTTP/2
+      proxies: test_60 01 and 02 for an HTTP/3 origin over them, 03.
+    - (d) CONNECT-UDP over the HTTP/3 proxy, QUIC in QUIC: 01 and 02 h3 over h3, 05, 13, 18.
 
 ## Milestone 6: the other protocols
 

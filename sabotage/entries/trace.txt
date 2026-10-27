@@ -647,8 +647,10 @@ witness: curl-core proto::http::tests::traced_bytes_with_the_ids_keep_a_zero_byt
 
 === QUIC's socket is traced as TCP's
 file: crates/curl-core/src/conn/mod.rs
-witness: curl-core conn::tests::a_connection_serves_only_a_transfer_that_dials_as_it_did
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
 --- old
-        } else if self.dial == Dial::Quic {
+        } else if self.first_hop_quic() {
+            crate::components::Component::Udp
 --- new
-        } else if self.dial == Dial::Quic && false {
+        } else if self.first_hop_quic() && false {
+            crate::components::Component::Udp

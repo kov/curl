@@ -13,6 +13,7 @@ mod connect;
 mod connect_to;
 mod dns;
 pub(crate) mod h2proxy;
+pub(crate) mod h3proxy;
 pub mod io;
 pub(crate) mod layer;
 pub(crate) mod mux;
@@ -283,12 +284,28 @@ impl Tcp {
         }
     }
 
+    /// The first hop is QUIC: to an HTTP/3 proxy whose tunnel the route
+    /// goes through, or to the origin dialed over QUIC with no tunnel on
+    /// the way (`first_transport`).
+    pub(crate) fn first_hop_quic(&self) -> bool {
+        match &self.proxy {
+            Some(proxy) if proxy.tunnels() => proxy.over_quic(),
+            _ => self.dial == Dial::Quic,
+        }
+    }
+
+    /// The route's tunnel is a stream of a QUIC connection to an HTTP/3
+    /// proxy.
+    pub(crate) fn proxy_over_quic(&self) -> bool {
+        self.proxy.as_ref().is_some_and(ProxyRoute::over_quic)
+    }
+
     /// What the socket's filter traces as: `UNIX` for a Unix socket's
     /// (`Curl_cft_unix`), `UDP` for QUIC's (`Curl_cft_udp`), else `TCP`.
     pub(crate) fn socket_component(&self) -> crate::components::Component {
         if self.destination().is_unix() {
             crate::components::Component::Unix
-        } else if self.dial == Dial::Quic {
+        } else if self.first_hop_quic() {
             crate::components::Component::Udp
         } else {
             crate::components::Component::Tcp
@@ -509,6 +526,13 @@ impl ProxyRoute {
     /// It is an HTTP proxy the setup opens a tunnel through.
     pub(crate) fn tunnels(&self) -> bool {
         self.http() && !self.forward
+    }
+
+    /// It is an HTTP/3 proxy whose tunnel is a stream of a QUIC
+    /// connection to it (`Curl_http_proxy_transport`), which requests
+    /// sent to it whole do not use.
+    pub(crate) fn over_quic(&self) -> bool {
+        self.kind == ProxyType::Https3 && self.tunnels()
     }
 
     /// Whether it is an HTTP proxy, not a SOCKS one.

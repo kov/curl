@@ -314,6 +314,14 @@ pub(crate) struct DriveCx<'c, 'a, H: Host> {
 }
 
 impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
+    fn quic_due(&mut self, wait: Duration) {
+        let deadlines = self
+            .deadlines
+            .as_deref_mut()
+            .expect("a QUIC attempt is driven with the transfer's timers");
+        super::state::arm_quic(deadlines, self.step, wait);
+    }
+
     fn now(&self) -> Instant {
         self.step.now()
     }
@@ -395,14 +403,6 @@ impl<H: Host> crate::conn::quic::QuicCx for DriveCx<'_, '_, H> {
 
     fn give_room(&mut self, room: Vec<u8>) {
         *self.step.rest.sockbuf = room;
-    }
-
-    fn quic_due(&mut self, wait: Duration) {
-        let deadlines = self
-            .deadlines
-            .as_deref_mut()
-            .expect("a QUIC attempt is driven with the transfer's timers");
-        super::state::arm_quic(deadlines, self.step, wait);
     }
 }
 

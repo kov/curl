@@ -62,7 +62,7 @@ pub(crate) struct Answer {
 impl Answer {
     const MAX_BYTES: usize = 1024 * 1024;
 
-    fn new(status: u16) -> Answer {
+    pub(crate) fn new(status: u16) -> Answer {
         Answer {
             status,
             fields: Vec::new(),
@@ -72,7 +72,7 @@ impl Answer {
 
     /// Keep a field, unless it is past the limit, which C's
     /// `Curl_dynhds_add` says as it says memory ran out.
-    fn add(&mut self, name: &[u8], value: &[u8]) -> Result<(), OutOfMemory> {
+    pub(crate) fn add(&mut self, name: &[u8], value: &[u8]) -> Result<(), OutOfMemory> {
         let room = Self::MAX_BYTES - self.held;
         if room < name.len() || room - name.len() < value.len() {
             return Err(OutOfMemory);

@@ -876,8 +876,8 @@ the system's under the HTTP-only programs installed here.
       Rust leg.
     - **d. A share's connections multiplexed:** a connection the share's pool keeps serves
       several transfers of one multi at once, as the multi's own do. **Done**: lent to the multi
-      while it multiplexes, the share's lock taken as C takes it. Not built (step 55): a push on
-      a share's connection, refused where C takes it.
+      while it multiplexes, the share's lock taken as C takes it; a push on one is taken (step
+      55).
 53. **`CURLOPT_CONNECT_ONLY`** with the pool's `Reserved` place (3231, 3232, 3234). **Done**,
     ahead of 51 and 52, as it needs neither: a transfer that only connects is done once
     connected, its connection reserved for the handle in its pool; `curl_easy_send`,
@@ -917,7 +917,8 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
       (`lastchecked_ms`). **Done**, pinned against the fake at 999 and 1000 ms: the C leg
       cannot time a server's GOAWAY that closely.
     - The `--trace-config http/2` lines (`CURL_TRC_CF` of `cf-h2`).
-    - A push on a share's connection is taken, as C takes it.
+    - A push on a share's connection is taken, as C takes it. **Done**: the connection lent to
+      the multi as the push takes it; the C suite has no push on a share to run.
 56. **A connection behind a pointer, budgets against C's.** **Done.** The lease holds its
     connection's slot boxed, one allocation per connection as C's `connectdata`; a handle is
     held to C's 3,081 bytes (2,856 measured) and a connection to C's 656 (232) (DESIGN.md, "A

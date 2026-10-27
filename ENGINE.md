@@ -1738,13 +1738,15 @@ events do (`MultiEvents::wants_push`). A PUSH_PROMISE's fields come to the reque
 it is beside, which keeps them as C does (`name:value`, at most 1,280) and fails the read on one
 naming another authority (`on_header`). On the promise, the request makes the pushed transfer's
 `Easy` as `h2_duphandle` does (`Easy::pushed`: libraries, share, weight, the write, header,
-debug and progress handlers), sets its URL from the pseudo-fields, refusing one of another
+debug and progress handlers; not the cookie engine, so its cookies are off even on a share that
+keeps them), sets its URL from the pseudo-fields, refusing one of another
 origin unasked, and offers it with the fields (`MultiEvents::push`). Taken, the transfer is
 added from inside the step (the add's part that a step can make, `insert`; the engine's parts
 carry the timer rows and the counts for it): its run starts in PERFORMING in its own context,
 as `with_sibling` lends one, with a request on the promised stream waiting for its head and a
 key to the parent's connection, one more user found by no search (`Pool::pushed`); a
-connection not attached yet is attached then. The promised stream is routed to it at once,
+connection of the multi's own not attached yet is attached then, and a share's not lent yet is
+lent then (`StepCx::pushed_lease`), as the step would at its end. The promised stream is routed to it at once,
 within the read, so the frames that follow the promise go to it as a sibling's. Refused, the
 stream is cancelled; failed (`CURL_PUSH_ERROROUT`), the parent fails too.
 
@@ -1753,8 +1755,8 @@ where an idle HTTP/1 one's input is polled at every reuse (`Curl_cpool_conn_seem
 `Use::Idle` keeps when it was last found healthy as C does, in whole milliseconds since it was
 made (`lastchecked_ms`), set as it is returned.
 
-**Not built** (MILESTONES step 55): `curl_easy_upkeep`'s PING (it does nothing); the `--trace-config http/2` lines; and a push on a share's connection, which is
-refused where C takes it, as a share's connections are lent, never attached.
+**Not built** (MILESTONES step 55): `curl_easy_upkeep`'s PING (it does nothing); and the
+`--trace-config http/2` lines.
 
 ### 4.4.1 HTTP/3
 

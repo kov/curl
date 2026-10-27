@@ -644,3 +644,38 @@ witness: curl-core proto::http::tests::h2::a_connection_gone_away_is_not_kept
         shut_down: asked.is_some_and(|(max, _)| max == 0),
 --- new
         shut_down: false,
+
+=== a push on a share's connection is refused
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::a_push_on_a_share_s_connection_is_taken
+--- old
+        let offered = if cx.wants_push() {
+--- new
+        let offered = if cx.wants_push() && matches!(lease.home(), crate::conn::Home::Multi) {
+
+=== a pushed transfer is not counted on the connection it joins
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h2::a_push_on_a_share_s_connection_is_taken
+--- old
+        self.check_out(lease);
+        let conn = lease.get();
+        let Use::Leased(n) = conn.use_ else {
+            unreachable!("an attached connection is leased");
+        };
+        conn.use_ = Use::Leased(n.checked_add(1).expect("a count of transfers fits"));
+--- new
+        self.check_out(lease);
+        let conn = lease.get();
+        let Use::Leased(n) = conn.use_ else {
+            unreachable!("an attached connection is leased");
+        };
+        conn.use_ = Use::Leased(n);
+
+=== a pushed transfer's cookies are on, its parent's cookie engine copied
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::h2::a_push_on_a_share_s_connection_is_taken
+--- old
+        let (to, from) = (&mut pushed.options, &self.options);
+--- new
+        pushed.enable_cookies().unwrap();
+        let (to, from) = (&mut pushed.options, &self.options);

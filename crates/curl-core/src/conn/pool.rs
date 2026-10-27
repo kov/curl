@@ -1710,17 +1710,17 @@ impl Pool {
     /// transfer the server pushes on it: one more user, found by no search
     /// (`Curl_multi_add_perform`'s `Curl_attach_connection`). A connection
     /// of the multi's own not attached yet is from now, and stays out with
-    /// the step; a share's is not pushed on, as push is offered on the
-    /// multi's own alone.
+    /// the step; a share's is lent here first (`StepCx::pushed_lease`),
+    /// and is out with the step from now as well.
     pub(crate) fn pushed(&mut self, lease: &mut ConnLease) -> ConnLease {
-        assert!(
-            !matches!(lease.home, Home::Share(_)),
-            "a share's connection is not pushed on"
-        );
         if !self.is_attached(lease) {
+            assert!(
+                matches!(lease.home, Home::Multi),
+                "a share's connection is lent here before it is pushed on"
+            );
             self.attach(lease);
-            self.check_out(lease);
         }
+        self.check_out(lease);
         let conn = lease.get();
         let Use::Leased(n) = conn.use_ else {
             unreachable!("an attached connection is leased");

@@ -1607,9 +1607,20 @@ impl<H: Host> StepCx<'_, H> {
     }
 
     /// A key to the connection the stepping transfer's `lease` has out,
-    /// for a transfer the server pushes on it.
-    pub(crate) fn pushed_lease(&mut self, lease: &mut ConnLease) -> ConnLease {
-        self.rest.caches.pool.pushed(lease)
+    /// for a transfer the server pushes on it. A share's not lent to the
+    /// multi yet is lent now, as the step would lend it once done: the
+    /// pushed transfer is the multi's, and joins it as C attaches it
+    /// (`attached_multi`), unlocked as C sets the connection's field.
+    pub(crate) fn pushed_lease(&mut self, lease: &mut ConnLease) -> Result<ConnLease, OutOfMemory> {
+        let pool = &mut self.rest.caches.pool;
+        if let Home::Share(share) = lease.home()
+            && !pool.is_attached(lease)
+        {
+            let share = share.clone();
+            pool.borrow(lease)?;
+            share.pool().lend(lease.id());
+        }
+        Ok(pool.pushed(lease))
     }
 
     /// Step transfer `id` again in the pass: something it waits on, a

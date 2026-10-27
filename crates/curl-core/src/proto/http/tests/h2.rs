@@ -1937,10 +1937,20 @@ fn pushed_get(
     reply: &[u8],
     ev: &mut dyn crate::multi::MultiEvents<crate::multi::NoHost>,
 ) -> (Results, String) {
+    pushed_get_with(reply, ev, |_| {})
+}
+
+/// As `pushed_get`, the request's handle given to `setup` first.
+fn pushed_get_with(
+    reply: &[u8],
+    ev: &mut dyn crate::multi::MultiEvents<crate::multi::NoHost>,
+    setup: impl FnOnce(&mut Easy),
+) -> (Results, String) {
     let talk = Conversation::replies(&[reply, WINDOW_SENT], false).per_send();
     let mut m = serving(Peer::Accepts, &[&talk]);
     let mut e = Easy::new();
     e.set_libraries(with_h2());
+    setup(&mut e);
     let o = e.options_mut();
     let url = format!("http://127.0.0.1:{PORT}/");
     o.set_url(Some(url.as_bytes())).unwrap();
@@ -1992,6 +2002,45 @@ fn a_pushed_response_becomes_a_transfer_of_its_own() {
     let url = format!("http://127.0.0.1:{PORT}/pushed");
     assert_eq!(ev.offers[0].1.as_deref(), Some(url.as_bytes()));
     assert_eq!(ev.seen.body(), b"abc");
+}
+
+/// A push on a share's connection (`CURL_LOCK_DATA_CONNECT`) is taken as
+/// on the multi's own: the pushed transfer, linked to the parent's share
+/// (`h2_duphandle`), runs on the connection lent to the multi. The promise
+/// comes in the parent's first read, before its step lends the connection;
+/// the connection goes back to the share's pool, idle, with the pushed
+/// transfer, the last on it, whose options do not forbid its reuse. The
+/// pushed handle's cookies stay off though the parent's and the share's
+/// are on, as C's (`cookie_engine` is not copied): its response's cookie
+/// is not stored.
+#[test]
+fn a_push_on_a_share_s_connection_is_taken() {
+    use crate::share::{Kind, Share};
+    let share = Share::new().unwrap();
+    share.keep(Kind::Connections).unwrap();
+    share.keep(Kind::Cookies).unwrap();
+    let mut ev = Pushes::answering(Answer::Take);
+    let reply = format!(
+        "S\nH 1 0\n:status: 200\n\nPP 1 2\n:method: GET\n:scheme: http\n\
+         :authority: 127.0.0.1:{PORT}\n:path: /pushed\n\nH 2 0\n:status: 200\n\
+         set-cookie: pushed=1\n\nD 2 3 1\nabcD 1 2 1\nok"
+    );
+    let (done, sent) = pushed_get_with(reply.as_bytes(), &mut ev, |e| {
+        e.options_mut().limits.reuse.forbid = true;
+        e.set_share(Some(share.clone()));
+        e.enable_cookies().unwrap();
+    });
+    assert_eq!(done.len(), 2, "{done:?}\n{sent}");
+    assert!(done.iter().all(|(_, r)| r.is_ok()), "{done:?}\n{sent}");
+    assert!(!sent.contains("R 2 "), "{sent}");
+    assert_eq!(ev.seen.body(), b"abc");
+    let stored = share.cookies().as_ref().unwrap().len();
+    assert_eq!(stored, 0, "the pushed transfer's cookies are off");
+    let (leased, kept) = {
+        let pool = share.pool();
+        (pool.leased(), pool.len())
+    };
+    assert_eq!((leased, kept), (0, 1), "given back to the share, idle");
 }
 
 /// A push the application refuses is cancelled, and the request goes on.

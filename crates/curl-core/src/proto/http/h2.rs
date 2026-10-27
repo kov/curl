@@ -1233,8 +1233,7 @@ impl Request {
         after: &mut After,
     ) -> Heard {
         let fields = std::mem::take(&mut self.stream().promise);
-        // A share's connections are not attached, so none is pushed on.
-        let offered = if cx.wants_push() && matches!(lease.home(), crate::conn::Home::Multi) {
+        let offered = if cx.wants_push() {
             self.offer(cx, lease, promised, &fields)
         } else {
             Offered::Denied
@@ -1276,7 +1275,9 @@ impl Request {
             let request = Request::pushed(&url, pcx, promised)?;
             let request = try_box(request).map_err(|_| ErrorKind::OutOfMemory)?;
             let origin = lease.conn().origin().cloned();
-            let key = pcx.pushed_lease(lease);
+            let key = pcx
+                .pushed_lease(lease)
+                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
             let proto = crate::proto::ProtoState::Http(request);
             start_pushed(run, pcx, &url, (key, origin), proto)
         })

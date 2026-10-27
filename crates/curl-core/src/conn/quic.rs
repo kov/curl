@@ -75,6 +75,119 @@ pub(crate) trait QuicIo: QuicCx {
     fn socket(&self) -> &dyn Socket;
 }
 
+/// An event of a stream no transfer has, as C's callbacks hear one whose
+/// stream has no user data: the QUIC stream's close is traced for the
+/// transfer of the call (`cb_stream_close`), and body bytes for nobody
+/// fail the read (`cb_h3_recv_data`).
+pub(crate) fn unrouted(cx: &mut dyn LayerCx, event: &Event<'_>) -> Heard {
+    match *event {
+        Event::QuicClosed { stream, error, rv } => {
+            let (id, error) = (stream.0, error.0);
+            cx.of(
+                Component::Http3,
+                format_args!("[{id}] quic close(app_error={error}) -> {rv}"),
+            );
+            Heard::Fine
+        }
+        Event::Data { .. } => Heard::Failed,
+        _ => Heard::Fine,
+    }
+}
+
+/// The context of a call on a connection no transfer is stepping, as its
+/// health is checked or it says goodbye: every stream is one no transfer
+/// has, the room to read into is made for the call, and the library's
+/// timer is set by no one, as C's calls give it no packet context.
+pub(crate) struct Lone<'a> {
+    pub(crate) cx: &'a mut dyn LayerCx,
+}
+
+impl LayerCx for Lone<'_> {
+    fn now(&self) -> Instant {
+        self.cx.now()
+    }
+
+    fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
+        self.cx.of(component, line);
+    }
+
+    fn info(&mut self, line: std::fmt::Arguments<'_>) {
+        self.cx.info(line);
+    }
+
+    fn socket_failed(&mut self, e: &io::Error) {
+        self.cx.socket_failed(e);
+    }
+
+    fn early_done(&mut self, sent: i64) {
+        self.cx.early_done(sent);
+    }
+
+    fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
+        self.cx.fails(kind, why)
+    }
+
+    fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
+        self.cx.bytes(kind, bytes);
+    }
+
+    fn debugs(&self) -> bool {
+        self.cx.debugs()
+    }
+
+    fn verbose(&self) -> bool {
+        self.cx.verbose()
+    }
+
+    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
+        self.cx.certinfo_report()
+    }
+
+    fn tls_verified(&mut self, filter: Component, result: i64) {
+        self.cx.tls_verified(filter, result);
+    }
+
+    fn configures_tls(&self) -> bool {
+        self.cx.configures_tls()
+    }
+
+    fn configure_tls(&mut self, native: crate::tls::TlsNative) -> Result<(), ErrorKind> {
+        self.cx.configure_tls(native)
+    }
+
+    fn pause_recv(&mut self) {
+        self.cx.pause_recv();
+    }
+
+    fn unix_time(&self) -> i64 {
+        self.cx.unix_time()
+    }
+
+    fn has_tls_sessions(&self) -> bool {
+        self.cx.has_tls_sessions()
+    }
+
+    fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx)) {
+        self.cx.tls_sessions(f);
+    }
+
+    fn h3_event(&mut self, event: Event<'_>) -> Heard {
+        unrouted(&mut *self.cx, &event)
+    }
+}
+
+impl QuicCx for Lone<'_> {
+    fn take_room(&mut self) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
+        let mut room = Vec::new();
+        room.try_resize(RECV_ROOM, 0)?;
+        Ok(room)
+    }
+
+    fn give_room(&mut self, _room: Vec<u8>) {}
+
+    fn quic_due(&mut self, _wait: Duration) {}
+}
+
 /// An attempt's context, with the socket it dialed.
 pub(crate) struct Over<'a> {
     pub(crate) cx: &'a mut dyn QuicCx,
@@ -257,6 +370,8 @@ struct State {
     now: Instant,
     /// When the first datagram came (`first_byte_at`), the connect's time.
     first_byte_at: Option<Instant>,
+    /// When a datagram last went or came (`last_io`).
+    last_io: Instant,
 }
 
 /// A QUIC connection over its UDP socket.
@@ -319,6 +434,7 @@ impl Quic {
                 connected: false,
                 now,
                 first_byte_at: None,
+                last_io: now,
             },
             clock,
         })
@@ -479,6 +595,35 @@ impl Quic {
             cx.quic_due(Duration::from_millis(u64::try_from(ms).unwrap_or(u64::MAX)));
         }
         Ok(())
+    }
+
+    /// Whether it may still be used, as far as it knows itself
+    /// (`Curl_cf_ngtcp2_cmn_conn_is_alive`): not if it shuts down, nor once
+    /// idle past the time the peer said it closes an idle connection by,
+    /// in whole milliseconds.
+    pub(crate) fn usable(&self) -> bool {
+        if self.state.shutdown_started {
+            return false;
+        }
+        match self.conn.peer_idle_timeout() {
+            Some(max) if max > Duration::ZERO => {
+                let idle = self.clock.now().since(self.state.last_io).as_millis();
+                idle == 0 || idle <= max.as_millis()
+            }
+            _ => true,
+        }
+    }
+
+    /// What waits on the socket of a connection no transfer uses, read: it
+    /// is alive if that went (`Curl_cf_ngtcp2_cmn_conn_is_alive`).
+    pub(crate) fn read_pending(&mut self, cx: &mut dyn QuicIo) -> bool {
+        let read = self.ingress(cx);
+        let code = Code(read);
+        cx.of(
+            Component::Http3,
+            format_args!("is_alive, progress ingress -> {code}"),
+        );
+        read.is_ok()
     }
 
     /// What the check of the peer said (`tls_vrfy_result`): a failure
@@ -836,6 +981,7 @@ impl Quic {
             let (sent, r) = self.send_packets(cx, len, gso);
             self.out.skip(sent);
             r?;
+            self.state.last_io = self.clock.now();
         }
         Ok(())
     }
@@ -1020,6 +1166,9 @@ impl Quic {
         // (`Curl_vquic_recv_packets`).
         if r.is_ok() && total > 0 && self.state.first_byte_at.is_none() {
             self.state.first_byte_at = first;
+        }
+        if r.is_ok() && total > 0 {
+            self.state.last_io = self.clock.now();
         }
         if total > 0 || r.is_err() {
             let code = Code(r);
@@ -1582,5 +1731,64 @@ mod tests {
         assert_eq!(q.first_byte_at(), Some(cx.clock.now()));
         assert_eq!(q.handshake_at(), Some(cx.clock.now()));
         assert!(cx.lines.contains(&"peer verified".to_owned()));
+    }
+
+    /// A connection is usable until it is idle past the time the peer
+    /// said it closes an idle one by, counted from its last datagram,
+    /// and not once it shuts down.
+    #[test]
+    fn idle_past_the_peer_s_timeout_or_shut_down_is_unusable() {
+        let script = Script::new();
+        script.lock().unwrap().idle = Some(Duration::from_secs(30));
+        let (mut q, mut cx) = quic(&script);
+        assert!(q.usable());
+        cx.clock.advance(Duration::from_millis(30_000));
+        assert!(q.usable(), "at the timeout, not past it");
+        cx.clock.advance(Duration::from_millis(1));
+        assert!(!q.usable());
+        // A datagram read starts the wait again.
+        cx.socket
+            .datagrams
+            .lock()
+            .unwrap()
+            .push_back(Ok(b"ping".to_vec()));
+        assert!(q.read_pending(&mut cx));
+        assert!(q.usable());
+        q.close(&mut cx);
+        assert!(!q.usable(), "shutting down");
+    }
+
+    /// What waits on an idle connection is read as its health is checked;
+    /// one the library cannot take makes it dead, said as C says it.
+    #[test]
+    fn input_pending_is_read_as_the_connection_is_checked() {
+        let script = Script::new();
+        let (mut q, mut cx) = quic(&script);
+        cx.socket
+            .datagrams
+            .lock()
+            .unwrap()
+            .push_back(Ok(b"frames".to_vec()));
+        assert!(q.read_pending(&mut cx));
+        assert_eq!(script.lock().unwrap().read.len(), 1);
+        assert_eq!(
+            cx.lines.last().map(String::as_str),
+            Some("is_alive, progress ingress -> 0")
+        );
+        script.lock().unwrap().read_fails = Some(-502);
+        cx.socket
+            .datagrams
+            .lock()
+            .unwrap()
+            .push_back(Ok(b"bad".to_vec()));
+        assert!(!q.read_pending(&mut cx));
+        assert!(
+            cx.lines
+                .last()
+                .is_some_and(|l| l.starts_with("is_alive, progress ingress -> ")
+                    && l != "is_alive, progress ingress -> 0"),
+            "{:?}",
+            cx.lines
+        );
     }
 }

@@ -243,7 +243,7 @@ impl<H: Host> LayerCx for H3Step<'_, '_, H> {
                     sib.h3_event(scx, lease, event.clone(), &mut extend)
                 })
             });
-            told.unwrap_or_else(|| unrouted(&mut *self.cx, &event))
+            told.unwrap_or_else(|| crate::conn::quic::unrouted(&mut *self.cx, &event))
         };
         if let Some(n) = extend
             && self.extends.try_push((stream, n)).is_err()
@@ -312,26 +312,6 @@ fn stream_of(event: &Event<'_>) -> Option<StreamId> {
         | Event::H3Reset { stream, .. }
         | Event::BodyRead { stream, .. } => Some(stream),
         Event::HandshakeDone { .. } | Event::H3Failed { .. } | Event::MaxBidiStreams(_) => None,
-    }
-}
-
-/// An event of a stream no transfer has, as C's callbacks hear one whose
-/// stream has no user data: the QUIC stream's close is traced for the
-/// transfer of the call (`cb_stream_close`), and body bytes for nobody
-/// fail the read (`cb_h3_recv_data`).
-fn unrouted<H: Host>(cx: &mut StepCx<'_, H>, event: &Event<'_>) -> Heard {
-    match *event {
-        Event::QuicClosed { stream, error, rv } => {
-            let (id, error) = (stream.0, error.0);
-            trace::of(
-                cx,
-                Component::Http3,
-                format_args!("[{id}] quic close(app_error={error}) -> {rv}"),
-            );
-            Heard::Fine
-        }
-        Event::Data { .. } => Heard::Failed,
-        _ => Heard::Fine,
     }
 }
 

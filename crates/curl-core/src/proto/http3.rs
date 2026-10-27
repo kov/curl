@@ -1,10 +1,12 @@
 //! HTTP/3 over a QUIC connection (the HTTP/3 half of C's `cf-ngtcp2.c`):
 //! the session a connection dialed over QUIC has from its handshake on.
 
+use crate::conn::layer::{Alive, Handshake, LayerCx};
 use crate::conn::layer::{LayerAnswer, LayerQuery};
 use crate::conn::mux::{Carrier, Routes};
-use crate::conn::part::Part;
-use crate::conn::quic::Quic;
+use crate::conn::part::{Lower as _, Part};
+use crate::conn::quic::{Lone, Over, Quic};
+use crate::error::ErrorKind;
 use crate::http3::StreamId;
 use crate::report::ResponseVersion;
 use crate::tls::Chosen;
@@ -43,6 +45,53 @@ impl H3Conn {
 }
 
 impl<'a> Part<Carrier<'a>> for H3Conn {
+    /// Alive while it may be used, its socket is, and what waits on it
+    /// reads (`Curl_cf_ngtcp2_cmn_conn_is_alive`): this happens before a
+    /// transfer uses it, so it should hold only frames of the
+    /// connection's own.
+    fn is_alive(&mut self, cx: &mut dyn LayerCx, mut below: Carrier<'a>) -> Alive {
+        if !self.quic.usable() {
+            return Alive::Dead;
+        }
+        match below.reborrow().alive(cx) {
+            Alive::Alive {
+                input_pending: true,
+            } => {
+                let mut lone = Lone { cx };
+                let mut over = Over {
+                    cx: &mut lone,
+                    socket: below.socket(),
+                };
+                if self.quic.read_pending(&mut over) {
+                    Alive::Alive {
+                        input_pending: false,
+                    }
+                } else {
+                    Alive::Dead
+                }
+            }
+            alive => alive,
+        }
+    }
+
+    /// Close it, as far as the socket takes the packets now
+    /// (`Curl_cf_ngtcp2_cmn_shutdown`).
+    fn shutdown(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        below: Carrier<'a>,
+    ) -> Result<Handshake, ErrorKind> {
+        let mut lone = Lone { cx };
+        let mut over = Over {
+            cx: &mut lone,
+            socket: below.socket(),
+        };
+        Ok(match self.quic.close(&mut over) {
+            true => Handshake::Done,
+            false => Handshake::Waiting,
+        })
+    }
+
     /// It agreed on HTTP/3, saying nothing of it (`cf_ngtcp2_query`).
     fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
         match q {

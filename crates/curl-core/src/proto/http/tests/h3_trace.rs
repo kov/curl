@@ -72,6 +72,13 @@ fn quic_server(replies: &[&[u8]]) -> Multi {
 
 /// `quic_server`'s peer, for a multi reading `clock`.
 fn quic_server_on(clock: ManualClock, replies: &[&[u8]]) -> Multi {
+    quic_peer(clock, replies).0
+}
+
+/// `quic_server_on`'s multi, and the peer's conversations, over IPv6
+/// then IPv4.
+fn quic_peer(clock: ManualClock, replies: &[&[u8]]) -> (Multi, [Conversation; 2]) {
+    let talks = [(); 2].map(|()| Conversation::replies(replies, false).per_send());
     let mut net = FakeNet::new(clock.clone()).with_name(
         "localhost",
         &[
@@ -79,13 +86,14 @@ fn quic_server_on(clock: ManualClock, replies: &[&[u8]]) -> Multi {
             std::net::Ipv4Addr::LOCALHOST.into(),
         ],
     );
-    for at in [
+    let ats = [
         SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, PORT)),
         SocketAddr::from(([127, 0, 0, 1], PORT)),
-    ] {
+    ];
+    for (at, talk) in ats.into_iter().zip(&talks) {
         net = net
             .with_peer(at, Peer::Accepts)
-            .with_conversation(at, Conversation::replies(replies, false).per_send());
+            .with_conversation(at, talk.clone());
     }
     let env = Env {
         clock: Box::new(clock),
@@ -93,7 +101,7 @@ fn quic_server_on(clock: ManualClock, replies: &[&[u8]]) -> Multi {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    Multi::new(env).unwrap()
+    (Multi::new(env).unwrap(), talks)
 }
 
 /// A GET of `https://localhost:PORT/` in HTTP/3 alone, by `e`.
@@ -687,4 +695,22 @@ fn a_second_transfer_multiplexes_on_the_first_s_connection() {
             [MULTI] [DONE] Connection still in use 1, no more multi_done now!"
         ))
     );
+}
+
+/// A connection kept idle is closed as the multi goes, saying goodbye:
+/// the packet that closes it goes to the peer
+/// (`Curl_cf_ngtcp2_cmn_shutdown`).
+#[test]
+fn an_idle_connection_closes_saying_goodbye() {
+    let script = get_script(b"123456789");
+    let (mut m, talks) = quic_peer(
+        ManualClock::new().unwrap(),
+        &[b"server flight", b"response"],
+    );
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    assert_eq!(h3_get(&mut m, e).result, Ok(()));
+    let before = talks[0].received().len();
+    drop(m);
+    let sent = talks[0].received();
+    assert_eq!(&sent[before..], b"CLOSE", "the close, and nothing else");
 }

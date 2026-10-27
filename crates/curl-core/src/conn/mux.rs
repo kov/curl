@@ -91,6 +91,12 @@ pub(crate) struct Carrier<'a> {
 }
 
 impl Carrier<'_> {
+    /// The connection's socket, which QUIC's session sends and reads
+    /// through itself.
+    pub(crate) fn socket(&self) -> &dyn super::io::Socket {
+        self.stream.socket()
+    }
+
     /// The same, for one call that leaves it to the caller after.
     pub(crate) fn reborrow(&mut self) -> Carrier<'_> {
         Carrier {

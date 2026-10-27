@@ -1770,6 +1770,14 @@ returns. The library's timer, set in a step, is armed on the transfer after it. 
 done with as the connection hears the transfer is (`Curl_conn_ev_data_done`), after the
 request's own end.
 
+**The connection's life.** A kept connection is dead once it shuts down, or once idle, since its
+last datagram went or came, past the idle timeout the peer gave, in whole milliseconds; else it
+is as its socket is, and input waiting on it is read there and then, alive if that reads
+(`Curl_cf_ngtcp2_cmn_conn_is_alive`). Its goodbye is the close packet, sent as the pool shuts it
+down (`Curl_cf_ngtcp2_cmn_shutdown`). Neither call has a transfer stepping it: the connection is
+given `quic::Lone`, a context in which every stream is one no transfer has, the receive room is
+made for the call and no timer is armed.
+
 **Request bodies.** nghttp3 points at a body's bytes until the peer acknowledges them, so the
 binding holds them: chunks of 64 KiB whose room is reserved as each is made, so that what is
 added never moves what was handed; at most ten, as C's `sendbuf`; a chunk goes once all of it is

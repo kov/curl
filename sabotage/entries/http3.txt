@@ -185,3 +185,39 @@ witness: curl-core conn::quic::tests::the_handshake_done_and_checked_connects
             limit => u64::from(attached) + limit.saturating_sub(self.state.used_bidi),
 --- new
             limit => limit.saturating_sub(self.state.used_bidi),
+
+=== a QUIC connection idle past the peer's timeout is used
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::idle_past_the_peer_s_timeout_or_shut_down_is_unusable
+--- old
+                idle == 0 || idle <= max.as_millis()
+--- new
+                true
+
+=== a QUIC connection shutting down is used
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::idle_past_the_peer_s_timeout_or_shut_down_is_unusable
+--- old
+        if self.state.shutdown_started {
+            return false;
+        }
+        match self.conn.peer_idle_timeout() {
+--- new
+        match self.conn.peer_idle_timeout() {
+
+=== a datagram read does not count as the connection's last I/O
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::idle_past_the_peer_s_timeout_or_shut_down_is_unusable
+--- old
+        if r.is_ok() && total > 0 {
+            self.state.last_io = self.clock.now();
+        }
+--- new
+
+=== an HTTP/3 connection closes without saying goodbye
+file: crates/curl-core/src/proto/http3.rs
+witness: curl-core proto::http::tests::h3_trace::an_idle_connection_closes_saying_goodbye
+--- old
+        Ok(match self.quic.close(&mut over) {
+--- new
+        Ok(match true {

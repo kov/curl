@@ -366,13 +366,17 @@ witness: curl-core proto::http::tests::h3_trace::a_race_both_attempts_lose_fails
 --- new
         Second::Started(_, true) | Second::None => Some(ErrorKind::SslConnectError).filter(|_| failed != ErrorKind::OutOfMemory),
 
-=== the first attempt set aside is dropped, not driven
+=== the attempt beside the lead is not driven
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::a_late_quic_peer_wins_over_a_tcp_attempt_running
 --- old
-    let Some(mut first) = c.race.as_mut().and_then(|r| r.aside.take()) else {
+    if c.other().is_none() {
+        return Other::Racing(c);
+    }
 --- new
-    let Some(mut first) = c.race.as_mut().and_then(|r| r.aside.take()).filter(|_| false) else {
+    if c.other().is_none() || c.race.is_some() {
+        return Other::Racing(c);
+    }
 
 === the race's loser goes before the HTTPS connect filter
 file: crates/curl-core/src/multi/state.rs
@@ -402,7 +406,7 @@ witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_at
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::a_silent_tcp_first_gives_way_to_quic_at_the_soft_timeout
 --- old
-                let leads = https::aside_leads(c);
+                let leads = https::other_leads(c);
 --- new
                 let leads = true;
 

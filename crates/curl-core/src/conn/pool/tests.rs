@@ -135,7 +135,7 @@ fn idle_conn(pool: &Pool, id: ConnId) -> Option<&Conn> {
 }
 
 fn socket(lease: &ConnLease) -> Option<i32> {
-    lease.sockets().next().map(|s| s.key().get())
+    lease.holding()?.sockets().next().map(|s| s.key().get())
 }
 
 #[test]
@@ -1393,7 +1393,14 @@ fn a_connection_moves_bytes_both_ways() {
     let mut pool = Pool::new().unwrap();
     let mut lease = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
     up(&mut lease, &mut net, now);
-    let readable = |lease: &ConnLease| match lease.sockets().next().unwrap().readiness() {
+    let readable = |lease: &ConnLease| match lease
+        .holding()
+        .unwrap()
+        .sockets()
+        .next()
+        .unwrap()
+        .readiness()
+    {
         Readiness::Known { now, .. } => now.contains(Events::IN),
         Readiness::Poll(_) => unreachable!("a fake socket"),
     };

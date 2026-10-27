@@ -547,13 +547,16 @@ wanted other than the first's, neither HTTP/2 nor HTTP/1 after either, as each o
 Why HTTP/3 may not be spoken is said the first time it is weighed. The plan dials QUIC where the
 first is HTTP/3, and `start` asserts the two agree; a first in HTTP/1 takes HTTP/2 from the
 wanted versions, so its ALPN offers `http/1.1` alone. HTTP/3 alone (`--http3-only`) is one
-attempt and no race. The setup in the lease is the first until the second starts. Then the QUIC
-attempt is the one out of the lease, in `Race::aside` (boxed, as a handle's size is budgeted): an
-HTTP/3 first set aside as a TCP second, made from the addresses the first resolved, takes the
-lease's place, its TLS the transfer's handshake as any; or an HTTP/3 second beside a TCP first,
-which keeps the lease. Each connect call drives, and each pollset lists, the two in their
-ballers' order, which `https::aside_leads` reads from the first's version: the first set aside
-before the lease's, a second set aside after it. The second starts as the first fails (`h3
+attempt and no race. The first's setup is the lease's throughout; the second, made from the
+addresses the first resolved, runs beside it in `Race::second` (boxed, as a handle's size is
+budgeted). One of the two leads (`Race::lead`): the first, until a second over TCP starts and
+leads from then on, its TLS the transfer's handshake as any. The lead is the setup the
+transfer reports, traces the chain of and makes the handshakes of (`Connecting::lead`); the
+other is driven beside it (`drive_other`), and nothing is moved between the lease and the
+race. Each connect call drives, and each pollset lists, the two in their ballers' order, which
+`https::other_leads` reads from the first's version: the first before the second. A second
+that makes the connection puts it in the lease, which gives back the first's machine to go as
+the loser (`ConnLease::adopt`). The second starts as the first fails (`h3
 baller failed`), at the soft timeout (half the eyeballs timeout) if the first's peer has sent
 nothing (`[HAPPY-EYEBALLS] query connect reply: -1ms`, `has not seen any data after 100ms`),
 else at the hard timeout (`inconclusive after 200`), the `ALPN_EYEBALLS` timer armed again for
@@ -563,10 +566,11 @@ once both fail, the setup fails with the first's failure (`ballers[0].result`). 
 with the HTTPS connect filter at `connected`, its setup's filters with it (`[SETUP] destroy`,
 `[HAPPY-EYEBALLS] destroy` and its attempts'); a first that failed lost its attempts as it
 failed. A race given up, failed, timed out or its transfer removed, goes into `Done` with the
-lease, and `multi_done` closes its attempt out of the lease as the lease's own is closed, and
-lets the race's answer go once. The plan's route keeps the first's dial; what is traced of a
-socket or a chain is read from the setup the lease holds, or from the connection the winner
-made. Through an HTTP proxy HTTP/3 alone goes over the proxy's CONNECT-UDP (§ the CONNECT-UDP
+lease, and `multi_done` closes its QUIC attempt, then its TCP one (a leading second's after
+the first, taken out of the lease as given up), the lease's first otherwise closed as the lease
+is given back, and lets the race's answer go once. The plan's route keeps the first's dial;
+what is traced of a socket or a chain is read from the leading setup, or from the connection
+the winner made. Through an HTTP proxy HTTP/3 alone goes over the proxy's CONNECT-UDP (§ the CONNECT-UDP
 tunnel); a race through one, C's HTTP/3 attempt over CONNECT-UDP beside its other over CONNECT,
 is not run yet. Through an HTTP/3 proxy's tunnel the race's attempt is the QUIC connection to
 the proxy (§ the HTTP/3 tunnel).

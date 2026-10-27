@@ -405,8 +405,7 @@ pub(super) fn start<H: Host>(
     h3_refused(c, cx, said);
     let (first, source) = first.expect("the plan dials an attempt it can choose");
     let dial = c
-        .lease
-        .setup()
+        .lead()
         .map(ConnectMachine::route)
         .map_or(c.route.dial, |r| r.dial);
     assert_eq!(
@@ -437,19 +436,19 @@ pub(super) fn start<H: Host>(
     }
 }
 
-/// Whether the attempt out of the lease, its QUIC one, is the first: it
-/// is then driven, and polled, before the lease's.
-pub(super) fn aside_leads(c: &Connecting) -> bool {
+/// Whether the attempt beside the lead, its QUIC one, is the first: it is
+/// then driven, and polled, before the lead.
+pub(super) fn other_leads(c: &Connecting) -> bool {
     c.https.is_some_and(|h| h.first == Some(Alpn::H3))
 }
 
-/// The attempt the lease held failed with `kind`: whether the race
-/// outlives it, its other attempt still to start or running, or the
-/// record that chooses it still to come; or fails with it, which
-/// `all_failed` then says. The lease holds the first but where an
-/// HTTP/3 first was set aside for the second.
+/// The leading attempt failed with `kind`: whether the race outlives it,
+/// its other attempt still to start or running, or the record that
+/// chooses it still to come; or fails with it, which `all_failed` then
+/// says. The first leads but where a TCP second leads beside an HTTP/3
+/// first.
 pub(super) fn attempt_failed(c: &mut Connecting, kind: ErrorKind) -> bool {
-    let leads = aside_leads(c);
+    let leads = other_leads(c);
     let (Some(h), Some(race)) = (c.https.as_mut(), c.race.as_mut()) else {
         return false;
     };
@@ -470,10 +469,11 @@ pub(super) fn attempt_failed(c: &mut Connecting, kind: ErrorKind) -> bool {
     }
 }
 
-/// The attempt out of the lease failed with `kind`: the first, an HTTP/3
-/// one set aside, or the second, an HTTP/3 one after a first over TCP.
-pub(super) fn aside_failed(c: &mut Connecting, kind: ErrorKind) {
-    let leads = aside_leads(c);
+/// The attempt beside the lead failed with `kind`: the first, an HTTP/3
+/// one beside a TCP second, or the second, an HTTP/3 one beside a first
+/// over TCP.
+pub(super) fn other_failed(c: &mut Connecting, kind: ErrorKind) {
+    let leads = other_leads(c);
     let h = c.https.as_mut().expect("a race of two");
     if leads {
         c.race.as_mut().expect("a race of two").first_failed = Some(kind);

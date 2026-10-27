@@ -129,10 +129,10 @@ impl ConnLease {
         }
     }
 
-    /// The setup, taken out for a race of two ways of dialing (C's HTTPS
-    /// connect filter's ballers): the lease holds a failed one in its
-    /// place until another is put in. None if it failed already.
-    pub(crate) fn take_setup(&mut self) -> Option<ConnectMachine> {
+    /// The setup failed, or was given up: the lease holds it failed, and
+    /// its machine is given back, to be discarded or closed. None if it
+    /// had failed already.
+    pub(crate) fn fail_setup(&mut self) -> Option<ConnectMachine> {
         let number = self.number();
         match std::mem::replace(self.slot_mut(), ConnSlot::Failed(number)) {
             ConnSlot::Connecting(machine) => Some(machine),
@@ -141,22 +141,10 @@ impl ConnLease {
         }
     }
 
-    /// `machine` sets the connection up, the setup it held taken out or
-    /// failed.
-    pub(crate) fn put_setup(&mut self, machine: ConnectMachine) {
-        let number = self.number();
-        assert_eq!(machine.number(), number, "the same connection's");
-        match std::mem::replace(self.slot_mut(), ConnSlot::Connecting(machine)) {
-            ConnSlot::Failed(_) => {}
-            ConnSlot::Connecting(_) | ConnSlot::Open(_) => {
-                panic!("{:?} holds a setup or is up", self.id)
-            }
-        }
-    }
-
-    /// The race's other setup made the connection, `conn`, in place of
-    /// the setup the lease held, which is given back to be discarded.
-    pub(crate) fn won_aside(&mut self, conn: Conn) -> (Connected, Option<ConnectMachine>) {
+    /// A race's other attempt made the connection, `conn`, in place of
+    /// the setup the lease held, which is given back to go with the race,
+    /// if it had not failed.
+    pub(crate) fn adopt(&mut self, conn: Conn) -> (Connected, Option<ConnectMachine>) {
         let up = Connected::Established {
             remote: conn.remote.clone().expect("set up over the network"),
             local: conn.local(),
@@ -224,12 +212,6 @@ impl ConnLease {
             ConnSlot::Open(conn) => conn,
             _ => panic!("{id:?} is not up"),
         }
-    }
-
-    /// The connection's sockets: its attempts' while it is set up, none
-    /// without a network.
-    pub(crate) fn sockets(&self) -> impl Iterator<Item = &dyn Socket> {
-        self.slot().sockets()
     }
 
     /// What the connection's layers answer `q` (`ConnSlot::query`).

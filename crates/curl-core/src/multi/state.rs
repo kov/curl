@@ -301,20 +301,28 @@ enum Failure {
 }
 
 impl Connecting {
-    /// The setup in the lease and what the transfer lends it, borrowed
-    /// apart.
+    /// The leading setup and what the transfer lends it, borrowed apart.
     fn shaking(&mut self) -> (SetupMut<'_>, Lent<'_>) {
         let Connecting {
             lease,
             proto,
             route,
             setup,
+            race,
             negotiate,
             ..
         } = self;
+        let machine = match race.as_deref_mut() {
+            Some(Race {
+                lead: Lead::Second,
+                second,
+                ..
+            }) => second.as_mut().expect("the lead runs"),
+            _ => lease.setting_up(),
+        };
         (
             SetupMut {
-                machine: lease.setting_up(),
+                machine,
                 handshake: &mut setup.handshake,
             },
             Lent {
@@ -343,21 +351,22 @@ impl Connecting {
 
 /// The race of an HTTP/3 attempt against an HTTP/2-or-1 one over TCP, as
 /// C's HTTPS connect filter runs its two ballers, either first. The first
-/// is the lease's setup until the second starts; then the QUIC attempt is
-/// the one out of the lease: an HTTP/3 first set aside as a TCP second
-/// takes its place, or an HTTP/3 second beside a TCP first. Once one
-/// wins, the other is set aside in its turn, to go with the filter; a
-/// race given up goes with the request, its attempt out of the lease
-/// closed as the lease is given back.
+/// is the lease's setup throughout; the second runs beside it. One of
+/// them leads: the transfer reports, traces the chain of and makes the
+/// handshakes of the lead's setup. Once one wins, its connection is the
+/// lease's and the other goes with the filter; a race given up goes with
+/// the request, both its attempts closed as the lease is given back.
 #[derive(Debug)]
 struct Race {
     /// The addresses the first resolved, which the second races.
     answer: TryArc<Answer>,
     /// The connection's makings, which the second is made with.
     makings: (Closer, ConnSettings, Instant),
-    /// The attempt out of the lease: the QUIC one while both run, none
-    /// once it failed; the loser once the other won.
-    aside: Option<ConnectMachine>,
+    /// The second attempt, once it started; none once it failed.
+    second: Option<ConnectMachine>,
+    /// Which attempt leads: a second over TCP once it starts, else the
+    /// first.
+    lead: Lead,
     /// When the first started (`ctx->started`), which the second's
     /// timeouts count from.
     at: Instant,
@@ -367,6 +376,13 @@ struct Race {
     /// The first's peer answered, found once asked (`reply_ms`), which is
     /// not asked again.
     replied: bool,
+}
+
+/// Which of a race's attempts leads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lead {
+    First,
+    Second,
 }
 
 /// A handshake over the connection to the first hop: a proxy's, or the
@@ -517,6 +533,9 @@ impl TransferState {
     /// A key's connection is reached through `pool`; without it, or
     /// while another transfer's step has it out, it has none.
     pub(crate) fn tls_native(&self, pool: Option<&Pool>) -> Option<TlsNative> {
+        if let TransferState::Connecting(c) = self {
+            return native_of(c.query(LayerQuery::TlsNative));
+        }
         let lease = self.lease()?;
         let slot = match pool {
             Some(pool) => pool.slot_of(lease)?,
@@ -545,7 +564,7 @@ impl TransferState {
         let waits = self.waits(LayerQuery::ProxyTlsWaits, pool)?;
         let tunneled = match self {
             TransferState::Connecting(c) => {
-                matches!(c.lease.setup().map(ConnectMachine::reached), Some(SetupPoint::Dialed(m)) if m.has(Made::TUNNEL))
+                matches!(c.lead().map(ConnectMachine::reached), Some(SetupPoint::Dialed(m)) if m.has(Made::TUNNEL))
             }
             state => state
                 .slot(pool)
@@ -557,11 +576,12 @@ impl TransferState {
 
     /// What the TLS session `q` asks of waits for, if it waits.
     fn waits(&self, q: LayerQuery, pool: &Pool) -> Option<TlsWait> {
-        let slot = match self {
+        let answer = match self {
             TransferState::Done(_) => None,
-            state => state.slot(pool),
-        }?;
-        match slot.query(q)? {
+            TransferState::Connecting(c) => c.query(q),
+            state => state.slot(pool)?.query(q),
+        };
+        match answer? {
             LayerAnswer::TlsWaits(TlsWait::Nothing) => None,
             LayerAnswer::TlsWaits(waits) => Some(waits),
             LayerAnswer::TlsNative(_)
@@ -799,15 +819,25 @@ fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done
     if let Some(proto) = d.proto.as_mut() {
         proto.data_done(cx, &mut d.lease);
     }
-    // A race given up closes its attempt out of the lease, as the lease's
-    // own goes as it is given back.
+    // A race given up closes its QUIC attempt, then the TCP one: the
+    // lease's first goes as it is given back, unless a TCP second leads,
+    // which goes after it.
     let raced = d.race.take().map(|race| {
-        if let Some(aside) = race.aside {
-            aside.close(&mut DriveCx {
+        let Race { second, lead, .. } = *race;
+        let mut close = |m: ConnectMachine| {
+            m.close(&mut DriveCx {
                 step: cx,
                 kept: None,
                 deadlines: None,
             });
+        };
+        if lead == Lead::Second
+            && let Some(first) = d.lease.fail_setup()
+        {
+            close(first);
+        }
+        if let Some(second) = second {
+            close(second);
         }
     });
     release(
@@ -1031,10 +1061,10 @@ impl TransferState {
             TransferState::Connecting(c) if pause.recv == RecvPause::Running => {
                 // The race's attempts in their order (`cf_hc_adjust_pollset`):
                 // the one out of the lease first if it is the first.
-                let leads = https::aside_leads(c);
-                let aside = || c.aside().into_iter().flat_map(ConnectMachine::racing_wants);
+                let leads = https::other_leads(c);
+                let other = || c.other().into_iter().flat_map(ConnectMachine::racing_wants);
                 if leads {
-                    for (s, events) in aside() {
+                    for (s, events) in other() {
                         set.add(s, events)?;
                     }
                 }
@@ -1043,27 +1073,24 @@ impl TransferState {
                 // use, adds (`cf_socket_adjust_pollset`).
                 match c.setup.handshake.as_ref() {
                     Some(h) => {
-                        let setup = c.lease.setup().expect("a handshake is made over a setup");
+                        let setup = c.lead().expect("a handshake is made over a setup");
                         let events = h.interest(setup) | Events::IN;
-                        for s in c.lease.sockets() {
+                        for s in setup.sockets() {
                             set.add(s, events)?;
                         }
                     }
                     // A TCP attempt waits to write, a QUIC one for what
                     // its connection waits for.
                     None => {
-                        for (s, events) in c
-                            .lease
-                            .setup()
-                            .into_iter()
-                            .flat_map(ConnectMachine::racing_wants)
+                        for (s, events) in
+                            c.lead().into_iter().flat_map(ConnectMachine::racing_wants)
                         {
                             set.add(s, events)?;
                         }
                     }
                 }
                 if !leads {
-                    for (s, events) in aside() {
+                    for (s, events) in other() {
                         set.add(s, events)?;
                     }
                 }
@@ -1103,12 +1130,12 @@ pub(crate) struct PollsetTrace<T> {
 
 /// What a setup's sockets' filters say of the pollset.
 pub(crate) struct SetupTrace {
-    /// The race's attempt out of the lease, QUIC's, connected as its
+    /// The race's attempt beside the lead, QUIC's, connected as its
     /// sockets open: their number, and whether they come first, that
     /// attempt the first, or last.
-    aside: usize,
-    aside_leads: bool,
-    /// Whether the lease's setup's sockets are connected, a handshake
+    other: usize,
+    other_leads: bool,
+    /// Whether the leading setup's sockets are connected, a handshake
     /// under way over the one dialed.
     dialed: bool,
     /// What their filter traces as.
@@ -1129,14 +1156,13 @@ impl Run {
         let setup = match &self.state {
             // A QUIC socket is connected as its attempt starts.
             TransferState::Connecting(c) => Some(SetupTrace {
-                aside: c.aside().map_or(0, |m| m.racing_wants().count()),
-                aside_leads: https::aside_leads(c),
+                other: c.other().map_or(0, |m| m.racing_wants().count()),
+                other_leads: https::other_leads(c),
                 dialed: matches!(
-                    c.lease.setup().map(ConnectMachine::reached),
+                    c.lead().map(ConnectMachine::reached),
                     Some(SetupPoint::Dialed(_))
                 ) || c
-                    .lease
-                    .setup()
+                    .lead()
                     .map(ConnectMachine::route)
                     .is_some_and(|r| r.dial == crate::conn::Dial::Quic),
                 component: c.socket_component(),
@@ -1177,15 +1203,15 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
     pub(crate) fn trace<H: Host>(self, cx: &mut StepCx<'_, H>) {
         let all = self.wants.as_slice();
         // The race's attempt out of the lease, in its turn.
-        let (aside, leads) = self
+        let (other, leads) = self
             .setup
             .as_ref()
-            .map_or((0, true), |s| (s.aside, s.aside_leads));
+            .map_or((0, true), |s| (s.other, s.other_leads));
         let (first, wants, last) = if leads {
-            let (first, wants) = all.split_at(aside);
+            let (first, wants) = all.split_at(other);
             (first, wants, &[][..])
         } else {
-            let (wants, last) = all.split_at(all.len() - aside);
+            let (wants, last) = all.split_at(all.len() - other);
             (&[][..], wants, last)
         };
         let udp = |cx: &mut StepCx<'_, H>, sockets: &[(SocketKey, Events)]| {
@@ -1301,19 +1327,137 @@ impl fmt::Display for FdEvents {
 }
 
 impl Connecting {
-    /// What the socket of the lease's setup traces as: a race's second's
+    /// What the socket of the leading setup traces as: a race's second's
     /// is TCP's where the plan dials QUIC.
     fn socket_component(&self) -> Component {
-        self.lease
-            .setup()
+        self.lead()
             .map(ConnectMachine::route)
             .map_or(self.route.socket_component(), Tcp::socket_component)
     }
 
-    /// The race's attempt out of the lease, while the setup runs: the
-    /// first, set aside as the second runs.
-    fn aside(&self) -> Option<&ConnectMachine> {
-        self.race.as_ref()?.aside.as_ref()
+    /// Whether a race's second leads.
+    fn second_leads(&self) -> bool {
+        self.race.as_ref().is_some_and(|r| r.lead == Lead::Second)
+    }
+
+    /// The leading setup's machine, while it runs: the lease's, or a
+    /// race's second's once it leads.
+    fn lead(&self) -> Option<&ConnectMachine> {
+        match self.race.as_deref() {
+            Some(Race {
+                lead: Lead::Second,
+                second,
+                ..
+            }) => second.as_ref(),
+            _ => self.lease.setup(),
+        }
+    }
+
+    /// The leading setup's machine, which runs.
+    fn lead_mut(&mut self) -> &mut ConnectMachine {
+        match self.race.as_deref_mut() {
+            Some(Race {
+                lead: Lead::Second,
+                second,
+                ..
+            }) => second.as_mut().expect("the lead runs"),
+            _ => self.lease.setting_up(),
+        }
+    }
+
+    /// The leading setup failed, which a race of two outlives.
+    fn lead_failed(&self) -> bool {
+        match self.race.as_deref() {
+            Some(Race {
+                lead: Lead::Second,
+                second,
+                ..
+            }) => second.is_none(),
+            _ => self.lease.setup_failed(),
+        }
+    }
+
+    /// The setup beside the lead, while the race runs it: the second
+    /// beside a leading first, or the first beside a leading second.
+    fn other(&self) -> Option<&ConnectMachine> {
+        match self.race.as_deref()? {
+            Race {
+                lead: Lead::First,
+                second,
+                ..
+            } => second.as_ref(),
+            Race {
+                lead: Lead::Second, ..
+            } => self.lease.setup(),
+        }
+    }
+
+    /// What the connection's layers answer `q`: the leading setup's, while
+    /// it is set up.
+    fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
+        if self.second_leads() {
+            return self.lead()?.query(q);
+        }
+        self.lease.query(q)
+    }
+
+    /// The leading setup failed or was given up: its machine, to be
+    /// discarded or closed, if it ran.
+    fn fail_lead(&mut self) -> Option<ConnectMachine> {
+        match self.race.as_deref_mut() {
+            Some(Race {
+                lead: Lead::Second,
+                second,
+                ..
+            }) => second.take(),
+            _ => self.lease.fail_setup(),
+        }
+    }
+
+    /// The attempt that lost to the one that made the connection: the
+    /// lease's first, given back as the other's connection took its place
+    /// (`displaced`), else the race's second.
+    fn loser(&mut self, displaced: Option<ConnectMachine>) -> Option<ConnectMachine> {
+        displaced.or_else(|| self.race.as_mut()?.second.take())
+    }
+
+    /// Move the leading setup on by one event: the lease's, or a race's
+    /// second's, whose connection, made, the lease takes, giving back the
+    /// first's machine in `displaced`.
+    fn connect_lead(
+        &mut self,
+        cx: &mut dyn crate::conn::ConnCx,
+        options: DriveOptions,
+        displaced: &mut Option<ConnectMachine>,
+    ) -> Result<Connected, ConnectError> {
+        let Some(race) = self.race.as_deref_mut().filter(|r| r.lead == Lead::Second) else {
+            return self.lease.connect(cx, options);
+        };
+        let machine = race.second.take().expect("the lead runs");
+        match machine.drive(cx, options)? {
+            Drove::Connecting(m, progress) => {
+                race.second = Some(m);
+                Ok(Connected::Connecting(progress))
+            }
+            Drove::Established(conn) => {
+                let (up, lost) = self.lease.adopt(conn);
+                *displaced = lost;
+                Ok(up)
+            }
+        }
+    }
+
+    /// The leading setup's handshakes are made: the connection is up, in
+    /// the lease, the first's machine given back in `displaced` if a
+    /// race's second made it.
+    fn handshaken(&mut self, displaced: &mut Option<ConnectMachine>) -> Connected {
+        let Some(race) = self.race.as_deref_mut().filter(|r| r.lead == Lead::Second) else {
+            return self.lease.handshaken();
+        };
+        let conn = race.second.take().expect("the lead runs").handshaken();
+        let (up, lost) = self.lease.adopt(conn);
+        *displaced = lost;
+        up
     }
 
     /// The connection is up: on to the protocol's connect.
@@ -2595,7 +2739,7 @@ fn connecting<H: Host>(
             )
             | None => {
                 // Named for the name, while it is not resolved yet.
-                let what = match c.lease.setup().map(ConnectMachine::reached) {
+                let what = match c.lead().map(ConnectMachine::reached) {
                     Some(SetupPoint::Resolving) => "Resolving",
                     _ => "Connection",
                 };
@@ -2608,7 +2752,7 @@ fn connecting<H: Host>(
         };
         // What is known of a partly made connection is kept: TCP up, the
         // TLS handshake still under way.
-        report_failed(cx, c.lease.setup().and_then(ConnectMachine::partly_made));
+        report_failed(cx, c.lead().and_then(ConnectMachine::partly_made));
         return (TransferState::Connecting(c).fail(kind), Wake::Again);
     }
     if StepCx::pause(cx).recv != RecvPause::Running {
@@ -2620,10 +2764,10 @@ fn connecting<H: Host>(
         return (TransferState::Connecting(c).fail(kind), Wake::Again);
     }
     let mut c = c;
-    if https::aside_leads(&c) {
-        c = match drive_aside(run, c, cx) {
-            Aside::Racing(c) => c,
-            Aside::Up(state, wake) => return (state, wake),
+    if https::other_leads(&c) {
+        c = match drive_other(run, c, cx) {
+            Other::Racing(c) => c,
+            Other::Up(state, wake) => return (state, wake),
         };
     }
     let mut entered = false;
@@ -2631,14 +2775,14 @@ fn connecting<H: Host>(
         // The attempt the lease held failed, and the race went on: the
         // second starts, the other attempt is waited for, or every one
         // failed.
-        if c.lease.setup_failed() {
+        if c.lead_failed() {
             if https::second_due(&mut c, &mut run.deadlines, cx) && second_starts(&mut c) {
                 continue;
             }
-            if !https::aside_leads(&c) {
-                c = match drive_aside(run, c, cx) {
-                    Aside::Racing(c) => c,
-                    Aside::Up(state, wake) => return (state, wake),
+            if !https::other_leads(&c) {
+                c = match drive_other(run, c, cx) {
+                    Other::Racing(c) => c,
+                    Other::Up(state, wake) => return (state, wake),
                 };
             }
             let https = c.https;
@@ -2656,9 +2800,7 @@ fn connecting<H: Host>(
             chain_connect_ended(cx, Ok(false));
             return (TransferState::Connecting(c), Wake::Idle);
         }
-        if let Some(SetupPoint::Racing { started: false }) =
-            c.lease.setup().map(ConnectMachine::reached)
-        {
+        if let Some(SetupPoint::Racing { started: false }) = c.lead().map(ConnectMachine::reached) {
             https::start(&mut c, &mut run.deadlines, cx);
             if race_starts(&mut c, cx).is_err() {
                 return (
@@ -2668,7 +2810,7 @@ fn connecting<H: Host>(
             }
         }
         let chain = enter_setup(&c, cx, &mut entered);
-        let partly = c.lease.setup().and_then(ConnectMachine::partly_made);
+        let partly = c.lead().and_then(ConnectMachine::partly_made);
         let https = c.https;
         let (next, wake) = connect_once(run, c, cx);
         match next {
@@ -2698,10 +2840,10 @@ fn connecting<H: Host>(
                     c = next;
                     continue;
                 }
-                if !https::aside_leads(&next) {
-                    next = match drive_aside(run, next, cx) {
-                        Aside::Racing(next) => next,
-                        Aside::Up(state, wake) => return (state, wake),
+                if !https::other_leads(&next) {
+                    next = match drive_other(run, next, cx) {
+                        Other::Racing(next) => next,
+                        Other::Up(state, wake) => return (state, wake),
                     };
                 }
                 https::call_ended(https, cx, Ok(false));
@@ -2752,16 +2894,12 @@ fn enter_setup<H: Host>(
     cx: &mut StepCx<'_, H>,
     entered: &mut bool,
 ) -> Option<Chain> {
-    let reached = c.lease.setup().map(ConnectMachine::reached)?;
+    let reached = c.lead().map(ConnectMachine::reached)?;
     let under_way = c.setup.handshake.as_deref().map(Handshake::filter);
     let head = head_of(c);
     // The route the lease's setup dials, which a race's second dials
     // otherwise than the plan's.
-    let route = c
-        .lease
-        .setup()
-        .map(ConnectMachine::route)
-        .unwrap_or(&c.route);
+    let route = c.lead().map(ConnectMachine::route).unwrap_or(&c.route);
     let chain =
         |reached, under_way, installed| Chain::of(route, head, reached, under_way, installed);
     let entry = |cx: &mut StepCx<'_, H>, chain: Chain| {
@@ -2904,21 +3042,23 @@ fn connect_once<H: Host>(
         let shook = under_way(&mut s, &mut t, cx);
         return c.shook(shook, cx);
     }
-    if let Some(SetupPoint::Dialed(_)) = c.lease.setup().map(ConnectMachine::reached) {
+    if let Some(SetupPoint::Dialed(_)) = c.lead().map(ConnectMachine::reached) {
         return handshake_next(c, cx);
     }
     let setup = drive_options(cx);
     let kept = cx.rest.kept(cx.me, Kind::Names);
-    let answered = c.lease.setup().and_then(ConnectMachine::answer).is_some();
-    let connected = c.lease.connect(
+    let answered = c.lead().and_then(ConnectMachine::answer).is_some();
+    let mut displaced = None;
+    let connected = c.connect_lead(
         &mut DriveCx {
             step: cx,
             kept: kept.as_ref(),
             deadlines: Some(&mut run.deadlines),
         },
         setup,
+        &mut displaced,
     );
-    if answered && c.lease.setup().and_then(ConnectMachine::answer).is_none() && c.race.is_none() {
+    if answered && c.lead().and_then(ConnectMachine::answer).is_none() && c.race.is_none() {
         // Connected, or failed: the answer is let go; a race's, as the
         // race ends.
         cx.rest.net_names(cx.me, kept.as_ref()).1.release();
@@ -2945,7 +3085,7 @@ fn connect_once<H: Host>(
             if !c.route.destination().is_unix() {
                 trace_lookup(cx, &c.route, Some(found));
                 if let Found::Stale(asked) | Found::Resolved(asked) = found {
-                    let answer = c.lease.setup().and_then(|m| m.answer().cloned());
+                    let answer = c.lead().and_then(|m| m.answer().cloned());
                     let addrs = answer.as_ref().map_or(&[][..], |a| a.addrs());
                     trace_resolved(cx, &c.route, Ok(asked), addrs);
                 }
@@ -2965,7 +3105,7 @@ fn connect_once<H: Host>(
             (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Connected::Connecting(Progress::Dialed)) => {
-            let (remote, _) = c.lease.setting_up().dialed().ends();
+            let (remote, _) = c.lead_mut().dialed().ends();
             eyeballs_won(cx, &c.route, &remote);
             (TransferState::Connecting(c), Wake::Again)
         }
@@ -2994,7 +3134,8 @@ fn connect_once<H: Host>(
         }
         Ok(Connected::Established { remote, local, at }) => {
             eyeballs_won(cx, &c.route, &remote);
-            up(c, cx, remote, local, at, false)
+            let lost = c.loser(displaced);
+            up(c, cx, remote, local, at, false, lost)
         }
         // A reused connection is up: nothing to trace or time
         // (`Curl_conn_connect` returns before `conn_connect_trace`).
@@ -3038,9 +3179,9 @@ fn attempt_failed<H: Host>(
     if c.race.is_none() || !https::attempt_failed(&mut c, kind) {
         return (TransferState::Connecting(c).fail(kind), Wake::Again);
     }
-    // A handshake's failure leaves its setup in the lease.
+    // A handshake's failure leaves its setup running.
     c.setup.handshake = None;
-    if let Some(lost) = c.lease.take_setup() {
+    if let Some(lost) = c.fail_lead() {
         lost.discard(&mut DriveCx {
             step: cx,
             kept: None,
@@ -3058,15 +3199,16 @@ fn race_starts<H: Host>(c: &mut Connecting, cx: &StepCx<'_, H>) -> Result<(), Ou
     }
     let at = cx.now();
     let (Some(answer), Some(makings)) = (
-        c.lease.setup().and_then(|m| m.answer().cloned()),
-        c.lease.setup().map(ConnectMachine::makings),
+        c.lead().and_then(|m| m.answer().cloned()),
+        c.lead().map(ConnectMachine::makings),
     ) else {
         unreachable!("an attempt starts once its name is resolved");
     };
     c.race = Some(curl_alloc::try_box(Race {
         answer,
         makings,
-        aside: None,
+        second: None,
+        lead: Lead::First,
         at,
         first_failed: None,
         replied: false,
@@ -3074,11 +3216,10 @@ fn race_starts<H: Host>(c: &mut Connecting, cx: &StepCx<'_, H>) -> Result<(), Ou
     Ok(())
 }
 
-/// The second attempt starts, racing the addresses the first resolved
-/// (`cf_hc_baller_init`): over TCP in the lease, the first, an HTTP/3
-/// one, set aside if it still runs; or over QUIC, set aside, the first
-/// over TCP staying in the lease. Whether it is the lease's, to drive
-/// there.
+/// The second attempt starts beside the first, racing the addresses the
+/// first resolved (`cf_hc_baller_init`): one over TCP leads from now on,
+/// one over QUIC runs beside the first over TCP. Whether it leads, to be
+/// driven as the lead.
 fn second_starts(c: &mut Connecting) -> bool {
     let alpn = https::second_started(c);
     let race = c.race.as_mut().expect("a race of two");
@@ -3097,48 +3238,69 @@ fn second_starts(c: &mut Connecting) -> bool {
         settings,
         race.answer.clone(),
     );
+    assert!(race.second.is_none(), "one second attempt");
+    race.second = Some(second);
     if alpn == https::Alpn::H3 {
-        assert!(race.aside.is_none(), "one attempt out of the lease");
-        race.aside = Some(second);
         return false;
     }
-    race.aside = c.lease.take_setup();
-    c.lease.put_setup(second);
+    race.lead = Lead::Second;
     true
 }
 
-/// What a drive of the race's first attempt, set aside, came to.
-enum Aside {
+/// What a drive of the setup beside the lead came to.
+enum Other {
     /// The setup goes on.
     Racing(Connecting),
     /// It made the connection, which is up.
     Up(TransferState, Wake),
 }
 
-/// The race's QUIC attempt, out of the lease, is driven, in its turn as
-/// C's filter drives its ballers (`cf_hc_connect`): before the lease's
-/// if it is the first, after it if the second. The transfer's step ends
-/// here if it made the connection.
-fn drive_aside<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>) -> Aside {
-    let Some(mut first) = c.race.as_mut().and_then(|r| r.aside.take()) else {
-        return Aside::Racing(c);
+/// The race's attempt beside the lead, its QUIC one, is driven in its
+/// turn as C's filter drives its ballers (`cf_hc_connect`): before the
+/// lead if it is the first, after it if the second. The transfer's step
+/// ends here if it made the connection.
+fn drive_other<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>) -> Other {
+    let Some(lead) = c.race.as_ref().map(|r| r.lead) else {
+        return Other::Racing(c);
     };
+    if c.other().is_none() {
+        return Other::Racing(c);
+    }
     let kept = cx.rest.kept(cx.me, Kind::Names);
     loop {
-        let chain = Chain::of(first.route(), head_of(&c), first.reached(), None, true);
+        let other = c.other().expect("the other attempt runs");
+        let chain = Chain::of(other.route(), head_of(&c), other.reached(), None, true);
         mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
         let setup = drive_options(cx);
-        let drove = first.drive(
-            &mut DriveCx {
-                step: cx,
-                kept: kept.as_ref(),
-                deadlines: Some(&mut run.deadlines),
-            },
-            setup,
-        );
+        let mut drive = DriveCx {
+            step: cx,
+            kept: kept.as_ref(),
+            deadlines: Some(&mut run.deadlines),
+        };
+        // The first in the lease, or the second beside a leading first,
+        // whose connection, made, the lease takes in the first's place.
+        let mut displaced = None;
+        let drove = match lead {
+            Lead::Second => c.lease.connect(&mut drive, setup),
+            Lead::First => {
+                let race = c.race.as_mut().expect("a race of two");
+                let second = race.second.take().expect("the other attempt runs");
+                match second.drive(&mut drive, setup) {
+                    Ok(Drove::Connecting(m, progress)) => {
+                        race.second = Some(m);
+                        Ok(Connected::Connecting(progress))
+                    }
+                    Ok(Drove::Established(conn)) => {
+                        let (up_at, first) = c.lease.adopt(conn);
+                        displaced = first;
+                        Ok(up_at)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        };
         match drove {
-            Ok(Drove::Connecting(m, progress)) => {
-                first = m;
+            Ok(Connected::Connecting(progress)) => {
                 match progress {
                     // An attempt failed, or another is to start now.
                     Progress::Failed | Progress::Trying { at_once: true, .. } => continue,
@@ -3151,25 +3313,21 @@ fn drive_aside<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>
                         unreachable!("a QUIC attempt resolved, and up with its handshake")
                     }
                 }
-                c.race.as_mut().expect("a race of two").aside = Some(first);
-                return Aside::Racing(c);
+                return Other::Racing(c);
             }
-            Ok(Drove::Established(conn)) => {
-                let (up_at, lost) = c.lease.won_aside(conn);
-                let Connected::Established { remote, local, at } = up_at else {
-                    unreachable!("the connection is made");
-                };
+            Ok(Connected::Established { remote, local, at }) => {
                 eyeballs_won(cx, &c.route, &remote);
-                // The second's handshake goes with it.
+                // The lead's handshake goes with it.
                 c.setup.handshake = None;
-                c.race.as_mut().expect("a race of two").aside = lost;
-                let (state, wake) = up(c, cx, remote, local, at, false);
-                return Aside::Up(state, wake);
+                let lost = c.loser(displaced);
+                let (state, wake) = up(c, cx, remote, local, at, false, lost);
+                return Other::Up(state, wake);
             }
+            Ok(Connected::AlreadyUp { .. }) => unreachable!("a race's attempt is set up"),
             Err(e) => {
                 let kind = connect_failed(cx, &c.route, e);
-                https::aside_failed(&mut c, kind);
-                return Aside::Racing(c);
+                https::other_failed(&mut c, kind);
+                return Other::Racing(c);
             }
         }
     }
@@ -3181,7 +3339,7 @@ fn drive_aside<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>
 /// proxy's tunnel, the PROXY protocol's line, the origin's TLS. With
 /// none left, the connection is open.
 fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    let made = c.lease.setting_up().dialed().made();
+    let made = c.lead_mut().dialed().made();
     if let Some(due) = handshake_due(&c, made) {
         let (mut s, mut t) = c.shaking();
         let (s, t) = (&mut s, &mut t);
@@ -3196,7 +3354,7 @@ fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Transf
     }
     // The origin's QUIC connection made through the tunnel is the
     // connection's session.
-    let h3 = match c.lease.setting_up().dialed().take_quic() {
+    let h3 = match c.lead_mut().dialed().take_quic() {
         Some(quic) => match curl_alloc::try_box(crate::proto::http3::H3Conn::new(quic)) {
             Ok(h3) => Some(h3),
             Err(OutOfMemory) => {
@@ -3208,15 +3366,17 @@ fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Transf
         },
         None => None,
     };
-    let preface = c.lease.setup().is_some_and(ConnectMachine::sends_preface);
-    let up_at = c.lease.handshaken();
+    let preface = c.lead().is_some_and(ConnectMachine::sends_preface);
+    let mut displaced = None;
+    let up_at = c.handshaken(&mut displaced);
     if let Some(h3) = h3 {
         c.lease.get().put_h3(h3);
     }
+    let lost = c.loser(displaced);
     match up_at {
         Connected::Established {
             remote, local, at, ..
-        } => up(c, cx, remote, local, at, preface),
+        } => up(c, cx, remote, local, at, preface, lost),
         _ => unreachable!("the handshakes make the connection"),
     }
 }
@@ -3248,7 +3408,7 @@ fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
     if tunnels && !made.has(Made::TUNNEL) {
         return Some(Due::Tunnel);
     }
-    if c.lease.setup().is_some_and(ConnectMachine::sends_preface) && !made.has(Made::PREFACE) {
+    if c.lead().is_some_and(ConnectMachine::sends_preface) && !made.has(Made::PREFACE) {
         return Some(Due::Preface);
     }
     // Requests go whole to the HTTPS proxy: its TLS is the origin's
@@ -3576,6 +3736,7 @@ fn up<H: Host>(
     local: Option<SocketAddr>,
     at: Instant,
     preface: bool,
+    lost: Option<ConnectMachine>,
 ) -> (TransferState, Wake) {
     // What its tunnel negotiated is the connection's from now on.
     *c.lease.get().negotiate_mut() = c.negotiate.take();
@@ -3648,7 +3809,11 @@ fn up<H: Host>(
     // A first attempt that failed keeps its setup's filters, its
     // attempts gone as they failed, until then.
     let first_failed = race.as_ref().is_some_and(|r| r.first_failed.is_some());
-    let mut lost = race.and_then(|r| r.aside);
+    assert!(
+        race.as_ref().is_none_or(|r| r.second.is_none()),
+        "the race's loser is given"
+    );
+    let mut lost = lost;
     for filter in connected.going() {
         trace::of(cx, filter, format_args!("removing connected setup filter"));
         trace::of(cx, filter, format_args!("destroy"));
@@ -3824,7 +3989,7 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
 /// (`cf_dns_report`), under the name it was found for; nothing for an
 /// address the URL names.
 fn report_answer<H: Host>(cx: &mut StepCx<'_, H>, c: &Connecting) {
-    let Some(answer) = c.lease.setup().and_then(|m| m.answer().cloned()) else {
+    let Some(answer) = c.lead().and_then(|m| m.answer().cloned()) else {
         return;
     };
     report_resolved(cx, &answer, c.route.destination().port());

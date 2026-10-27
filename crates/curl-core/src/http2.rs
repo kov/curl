@@ -35,8 +35,12 @@ pub enum Event<'a> {
     WindowUpdate { stream: Option<StreamId> },
     /// `stream` closed, with this error code (`NO_ERROR`: none).
     Closed { stream: StreamId, error: H2Error },
-    /// The peer's settings arrived.
-    Settings,
+    /// The peer's settings arrived: its limit on streams open at once,
+    /// and whether it lets push be used, as they now stand.
+    Settings {
+        max_concurrent: u32,
+        enable_push: bool,
+    },
     /// The peer is going away: streams past `last_stream` are not served.
     GoAway {
         last_stream: StreamId,
@@ -56,10 +60,122 @@ pub enum Event<'a> {
         stream: StreamId,
         promised: StreamId,
     },
+    /// The session read this frame whole: told before what the frame
+    /// means is (`on_frame_recv`), its fields and data after them.
+    Received(Frame<'a>),
+    /// The session sent this frame (`on_frame_send`).
+    Sent(Frame<'a>),
+}
+
+/// A frame as the trace describes it (`Curl_nghttp2_fr_print`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Frame<'a> {
+    /// The stream it is on; 0 for the connection's own.
+    pub stream: StreamId,
+    /// Its payload's length.
+    pub length: usize,
+    /// Its flags, as its header carries them.
+    pub flags: u8,
+    pub kind: FrameKind<'a>,
+}
+
+/// What a frame is, with what its description tells of its payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameKind<'a> {
+    Data {
+        padlen: usize,
+        /// The stream's receive window as the frame left it: what came
+        /// on it not given back yet, and its size; -1 for both on a
+        /// stream the session no longer knows.
+        window: (i32, i32),
+    },
+    Headers,
+    Priority,
+    RstStream {
+        error: H2Error,
+    },
+    Settings,
+    PushPromise,
+    Ping,
+    GoAway {
+        last_stream: StreamId,
+        error: H2Error,
+        /// Its debug data, as sent.
+        debug: &'a [u8],
+    },
+    WindowUpdate {
+        increment: i32,
+    },
+    /// A type the description names by its number.
+    Other(u8),
+}
+
+/// The flag that ends a stream (DATA, HEADERS) and the one that
+/// acknowledges (SETTINGS, PING): the same bit.
+const FLAG_END_STREAM: u8 = 0x01;
+const FLAG_ACK: u8 = 0x01;
+const FLAG_END_HEADERS: u8 = 0x04;
+
+/// C's description of a frame (`Curl_nghttp2_fr_print`): a GOAWAY's
+/// debug data up to its first zero byte, of at most 127 bytes, a byte
+/// not text written as U+FFFD.
+impl fmt::Display for Frame<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let len = self.length;
+        let flags = self.flags;
+        let bit = |b: u8| u8::from(flags & b != 0);
+        match self.kind {
+            FrameKind::Data { padlen, .. } => {
+                let eos = bit(FLAG_END_STREAM);
+                write!(f, "FRAME[DATA, len={len}, eos={eos}, padlen={padlen}]")
+            }
+            FrameKind::Headers => {
+                let (hend, eos) = (bit(FLAG_END_HEADERS), bit(FLAG_END_STREAM));
+                write!(f, "FRAME[HEADERS, len={len}, hend={hend}, eos={eos}]")
+            }
+            FrameKind::Priority => write!(f, "FRAME[PRIORITY, len={len}, flags={flags}]"),
+            FrameKind::RstStream { error } => write!(
+                f,
+                "FRAME[RST_STREAM, len={len}, flags={flags}, error={error}]"
+            ),
+            FrameKind::Settings if flags & FLAG_ACK != 0 => f.write_str("FRAME[SETTINGS, ack=1]"),
+            FrameKind::Settings => write!(f, "FRAME[SETTINGS, len={len}]"),
+            FrameKind::PushPromise => {
+                let hend = bit(FLAG_END_HEADERS);
+                write!(f, "FRAME[PUSH_PROMISE, len={len}, hend={hend}]")
+            }
+            FrameKind::Ping => {
+                let ack = flags & FLAG_ACK;
+                write!(f, "FRAME[PING, len={len}, ack={ack}]")
+            }
+            FrameKind::GoAway {
+                last_stream,
+                error,
+                debug,
+            } => {
+                let debug = &debug[..debug.len().min(127)];
+                let end = debug.iter().position(|&b| b == 0).unwrap_or(debug.len());
+                write!(f, "FRAME[GOAWAY, error={error}, reason='")?;
+                for chunk in debug[..end].utf8_chunks() {
+                    f.write_str(chunk.valid())?;
+                    if !chunk.invalid().is_empty() {
+                        f.write_str("\u{fffd}")?;
+                    }
+                }
+                write!(f, "', last_stream={}]", last_stream.0)
+            }
+            FrameKind::WindowUpdate { increment } => {
+                write!(f, "FRAME[WINDOW_UPDATE, incr={increment}]")
+            }
+            FrameKind::Other(kind) => write!(f, "FRAME[{kind}, len={len}, flags={flags}]"),
+        }
+    }
 }
 
 impl Event<'_> {
-    /// The stream the event is of; none for the connection's own.
+    /// The stream the event is of; none for the connection's own, and
+    /// none for a frame told whole, which the transfer reading or
+    /// sending traces, whichever stream it is on.
     pub fn stream(&self) -> Option<StreamId> {
         match *self {
             Event::Header { stream, .. }
@@ -71,7 +187,9 @@ impl Event<'_> {
             | Event::PushField { stream, .. }
             | Event::Promised { stream, .. } => Some(stream),
             Event::WindowUpdate { stream } => stream,
-            Event::Settings | Event::GoAway { .. } => None,
+            Event::Settings { .. } | Event::GoAway { .. } | Event::Received(_) | Event::Sent(_) => {
+                None
+            }
         }
     }
 }
@@ -189,6 +307,19 @@ pub trait Session: fmt::Debug + Send {
     /// `stream`'s receive window as the session keeps it
     /// (`nghttp2_session_get_stream_effective_local_window_size`).
     fn stream_window(&self, stream: StreamId) -> i32;
+
+    /// What the peer sent on `stream` the caller has not consumed yet
+    /// (`nghttp2_session_get_stream_effective_recv_data_length`); -1 for
+    /// a stream the session does not know.
+    fn stream_recv_length(&self, stream: StreamId) -> i32;
+
+    /// The connection's receive window as it stands, what the peer sent
+    /// taken off it (`nghttp2_session_get_local_window_size`).
+    fn local_window(&self) -> i32;
+
+    /// Whether the peer's settings let push be used
+    /// (`NGHTTP2_SETTINGS_ENABLE_PUSH`), as they stand.
+    fn peer_enables_push(&self) -> bool;
 
     /// What the peer lets the client send on the connection, all streams
     /// together (`nghttp2_session_get_remote_window_size`).

@@ -33,7 +33,8 @@ use std::fmt::Write as _;
 use curl_alloc::OutOfMemory;
 
 use super::{
-    BodyRead, Event, FrameError, H2Error, Heard, Http2, Session, Setting, StreamId, Wants,
+    BodyRead, Event, Frame, FrameError, FrameKind, H2Error, Heard, Http2, Session, Setting,
+    StreamId, Wants,
 };
 
 /// The fake library.
@@ -130,6 +131,9 @@ struct Stream {
     consumed: i32,
     /// The next setting of its receive window fails.
     window_fails: bool,
+    /// What the server sent on it since the client last opened its
+    /// window by as much (`effective_recv_data_length`).
+    received: i32,
 }
 
 /// Each stream's receive window as it opens.
@@ -149,6 +153,76 @@ pub struct FakeSession {
     resets: Vec<(i32, H2Error)>,
     /// The server's limit on streams open at once, as its `S <n>` said.
     max_concurrent: Option<u32>,
+    /// The connection's receive window, as set, less what came since.
+    local_window: i32,
+    /// The debug data of the GOAWAY the client queued.
+    goaway_debug: Vec<u8>,
+}
+
+/// A frame of the fake's, as the trace describes it: its length the
+/// bytes after its line, or what nghttp2's would carry where the fake
+/// carries none.
+fn described<'a>(frame: &[u8], goaway_debug: &'a [u8]) -> Frame<'a> {
+    let nl = frame
+        .iter()
+        .position(|&b| b == b'\n')
+        .unwrap_or(frame.len());
+    let line = std::str::from_utf8(&frame[..nl]).unwrap_or_default();
+    let words: Vec<&str> = line.split(' ').collect();
+    let num = |i: usize| -> i64 { words.get(i).and_then(|w| w.parse().ok()).unwrap_or(0) };
+    let rest = frame.len().saturating_sub(nl + 1);
+    let end = |i: usize| if num(i) == 1 { 0x01 } else { 0 };
+    let (stream, length, flags, kind) = match words[0] {
+        "S" => {
+            let settings = line.matches(';').count();
+            (0, 6 * settings, 0, FrameKind::Settings)
+        }
+        "H" => (num(1), rest, 0x04 | end(2), FrameKind::Headers),
+        "D" => (
+            num(1),
+            usize::try_from(num(2)).unwrap_or(0),
+            end(3),
+            FrameKind::Data {
+                padlen: 0,
+                window: (0, 0),
+            },
+        ),
+        "R" => (
+            num(1),
+            4,
+            0,
+            FrameKind::RstStream {
+                error: H2Error(u32::try_from(num(2)).unwrap_or(0)),
+            },
+        ),
+        "G" => (
+            0,
+            8 + goaway_debug.len(),
+            0,
+            FrameKind::GoAway {
+                last_stream: StreamId(i32::try_from(num(1)).unwrap_or(0)),
+                error: H2Error(u32::try_from(num(2)).unwrap_or(0)),
+                debug: goaway_debug,
+            },
+        ),
+        "U" => (
+            num(1),
+            4,
+            0,
+            FrameKind::WindowUpdate {
+                increment: i32::try_from(num(2)).unwrap_or(0),
+            },
+        ),
+        "P" => (0, 8, 0, FrameKind::Ping),
+        "PP" => (num(1), rest + 4, 0x04, FrameKind::PushPromise),
+        _ => (0, frame.len(), 0, FrameKind::Other(0xff)),
+    };
+    Frame {
+        stream: StreamId(i32::try_from(stream).unwrap_or(0)),
+        length,
+        flags,
+        kind,
+    }
 }
 
 impl FakeSession {
@@ -244,10 +318,24 @@ impl FakeSession {
                 if words.len() > 1 {
                     self.max_concurrent = Some(u32::try_from(num(1)?).map_err(|_| bad)?);
                 }
-                check(events(Event::Settings))?;
+                // The server's settings say one setting, if any.
+                let frame = Frame {
+                    stream: StreamId(0),
+                    length: if words.len() > 1 { 6 } else { 0 },
+                    flags: 0,
+                    kind: FrameKind::Settings,
+                };
+                check(events(Event::Received(frame)))?;
+                check(events(Event::Settings {
+                    max_concurrent: self.max_concurrent.unwrap_or(u32::MAX),
+                    enable_push: true,
+                }))?;
                 Ok(Some(nl + 1))
             }
-            "P" => Ok(Some(nl + 1)),
+            "P" => {
+                check(events(Event::Received(described(&input[..nl], &[]))))?;
+                Ok(Some(nl + 1))
+            }
             "XW" => {
                 let id = num(1)? as i32;
                 if let Some(s) = self.stream(id) {
@@ -257,6 +345,7 @@ impl FakeSession {
             }
             "U" => {
                 let id = num(1)? as i32;
+                check(events(Event::Received(described(&input[..nl], &[]))))?;
                 // Stream 0's is the connection's.
                 check(events(Event::WindowUpdate {
                     stream: Some(StreamId(id)).filter(|s| s.0 != 0),
@@ -277,6 +366,8 @@ impl FakeSession {
                         value,
                     }))?;
                 }
+                let frame = described(&input[..nl + 1 + at], &[]);
+                check(events(Event::Received(frame)))?;
                 // The client sends nothing on a pushed stream.
                 self.streams.push((
                     promised,
@@ -305,6 +396,8 @@ impl FakeSession {
                         value,
                     }))?;
                 }
+                let frame = described(&input[..nl + 1 + at], &[]);
+                check(events(Event::Received(frame)))?;
                 check(events(Event::HeadersDone {
                     stream: StreamId(id),
                     end_stream: end,
@@ -323,11 +416,24 @@ impl FakeSession {
                     return Ok(None);
                 };
                 if !bytes.is_empty() {
+                    if let Some(s) = self.stream(id) {
+                        s.received += i32::try_from(len).expect("a frame fits a window");
+                    }
+                    self.local_window -= i32::try_from(len).expect("a frame fits a window");
                     check(events(Event::Data {
                         stream: StreamId(id),
                         bytes,
                     }))?;
                 }
+                let mut frame = described(&input[..nl], &[]);
+                frame.kind = FrameKind::Data {
+                    padlen: 0,
+                    window: (
+                        self.stream_recv_length(StreamId(id)),
+                        self.stream_window(StreamId(id)),
+                    ),
+                };
+                check(events(Event::Received(frame)))?;
                 if end {
                     check(events(Event::DataEnd {
                         stream: StreamId(id),
@@ -342,6 +448,7 @@ impl FakeSession {
             "R" => {
                 let id = num(1)? as i32;
                 let code = num(2)? as u32;
+                check(events(Event::Received(described(&input[..nl], &[]))))?;
                 check(events(Event::Reset {
                     stream: StreamId(id),
                     error: H2Error(code),
@@ -361,6 +468,7 @@ impl FakeSession {
                 let last = num(1)? as i32;
                 let code = num(2)? as u32;
                 self.goaway = true;
+                check(events(Event::Received(described(&input[..nl], &[]))))?;
                 check(events(Event::GoAway {
                     last_stream: StreamId(last),
                     error: H2Error(code),
@@ -392,7 +500,8 @@ impl Session for FakeSession {
         Ok(())
     }
 
-    fn set_local_window(&mut self, _: i32) -> Result<(), FrameError> {
+    fn set_local_window(&mut self, size: i32) -> Result<(), FrameError> {
+        self.local_window = size;
         Ok(())
     }
 
@@ -470,6 +579,7 @@ impl Session for FakeSession {
             if self.stale_update(&frame) {
                 continue;
             }
+            events(Event::Sent(described(&frame, &self.goaway_debug)));
             if !out(&frame) {
                 return Ok(());
             }
@@ -503,6 +613,7 @@ impl Session for FakeSession {
                 };
                 let mut frame = format!("D {id} {n} {}\n", u8::from(last)).into_bytes();
                 frame.extend_from_slice(&room[..n]);
+                events(Event::Sent(described(&frame, &[])));
                 let more = out(&frame);
                 if last {
                     self.stream(id).unwrap().local_end = true;
@@ -518,6 +629,7 @@ impl Session for FakeSession {
             if self.stale_update(&frame) {
                 continue;
             }
+            events(Event::Sent(described(&frame, &self.goaway_debug)));
             if !out(&frame) {
                 return Ok(());
             }
@@ -534,6 +646,7 @@ impl Session for FakeSession {
         let window = s.window + STREAM_WINDOW;
         if window > 0 && s.consumed >= window / 2 {
             let by = std::mem::take(&mut s.consumed);
+            s.received -= by;
             self.queued.push_back(format!("U {id} {by}\n").into_bytes());
         }
         Ok(())
@@ -559,6 +672,21 @@ impl Session for FakeSession {
             .iter()
             .find(|(i, s)| *i == stream.0 && !s.closed)
             .map_or(-1, |(_, s)| s.window + STREAM_WINDOW)
+    }
+
+    fn stream_recv_length(&self, stream: StreamId) -> i32 {
+        self.streams
+            .iter()
+            .find(|(i, s)| *i == stream.0 && !s.closed)
+            .map_or(-1, |(_, s)| s.received)
+    }
+
+    fn local_window(&self) -> i32 {
+        self.local_window
+    }
+
+    fn peer_enables_push(&self) -> bool {
+        true
     }
 
     /// The fake keeps no send windows: the peer always has room.
@@ -602,7 +730,8 @@ impl Session for FakeSession {
         Ok(())
     }
 
-    fn goaway(&mut self, error: H2Error, _: &[u8]) -> Result<(), FrameError> {
+    fn goaway(&mut self, error: H2Error, debug: &[u8]) -> Result<(), FrameError> {
+        self.goaway_debug = debug.to_vec();
         self.queued.push_back(format!("G 0 {error}\n").into_bytes());
         self.goaway = true;
         Ok(())

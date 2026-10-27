@@ -225,7 +225,9 @@ impl Tunnel {
                 }
             }
             Event::PushField { .. } | Event::Promised { .. } => Heard::Failed,
-            Event::Settings | Event::GoAway { .. } => Heard::Fine,
+            Event::Settings { .. } | Event::GoAway { .. } | Event::Received(_) | Event::Sent(_) => {
+                Heard::Fine
+            }
         })
     }
 }

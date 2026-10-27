@@ -11,14 +11,17 @@
 use curl_alloc::try_box;
 
 use super::*;
+use crate::components::Component;
 use crate::conn::RecvFailed;
 use crate::conn::layer::LayerCx;
-use crate::http2::{BodyRead, DEFAULT_WEIGHT, Event, H2Error, Heard, StreamId};
+use crate::error::AGAIN_NUMBER;
+use crate::http2::{BodyRead, DEFAULT_WEIGHT, Event, Frame, FrameKind, H2Error, Heard, StreamId};
 use crate::multi::PushFields;
 use crate::multi::push::Full;
 use crate::multi::state::{Offered, start_pushed};
 use crate::proto::http2::{
     EgressFailed, GoAway, H2Conn, SEND_MAX, STREAM_WINDOW_MAX, WindowFailed, fields_of, settings,
+    trace_frame, trace_settings,
 };
 use crate::tls::Chosen;
 use crate::url::ParseOptions;
@@ -99,7 +102,13 @@ pub(super) struct H2Stream {
     /// The fields of a PUSH_PROMISE on it, until the promise is whole
     /// (`push_headers`).
     promise: PushFields,
+    /// Its transfer's output was paused when last written to
+    /// (`write_paused`).
+    write_paused: bool,
 }
+
+/// A line of the HTTP/2 filter's (`CURL_TRC_CF` of `cf-h2`).
+const H2: Component = Component::Http2;
 
 impl H2Stream {
     /// Whether the session's output waits for the connection.
@@ -113,11 +122,20 @@ impl H2Stream {
     }
 
     /// The session takes what of the body the buffer holds, as much as
-    /// `room` has (`req_body_read_callback`).
-    fn body_read(&mut self, room: &mut [u8]) -> BodyRead {
-        let n = (self.sendbuf.len() - self.taken).min(room.len());
+    /// `room` has (`req_body_read_callback`), traced by its transfer on
+    /// `cx`: an empty buffer is C's `CURLE_AGAIN`.
+    fn body_read(&mut self, cx: &mut dyn LayerCx, room: &mut [u8]) -> BodyRead {
+        let len = room.len();
+        let n = (self.sendbuf.len() - self.taken).min(len);
         room[..n].copy_from_slice(&self.sendbuf[self.taken..self.taken + n]);
         self.taken += n;
+        let id = self.id.map_or(0, |s| s.0);
+        let eos = u8::from(self.body_eos);
+        let code = if n == 0 { AGAIN_NUMBER } else { 0 };
+        cx.of(
+            H2,
+            format_args!("[{id}] req_body_read(len={len}) eos={eos} -> {n}, {code}"),
+        );
         let empty = self.taken == self.sendbuf.len();
         match (n, empty && self.body_eos) {
             (_, true) => BodyRead::Last(n),
@@ -235,14 +253,14 @@ impl<H: Host> crate::proto::http2::Egress for Egressing<'_, '_, H> {
         room: &mut [u8],
     ) -> BodyRead {
         if Some(s) == self.stream.id {
-            return self.stream.body_read(room);
+            return self.stream.body_read(&mut *self.cx, room);
         }
         let me = self.cx.me;
         match to {
             Some(to) if to != me => self
                 .cx
-                .with_sibling(to, |_, req| match req.wire.h2_mut() {
-                    Some(sib) if sib.id == Some(s) => sib.body_read(room),
+                .with_sibling(to, |bcx, req| match req.wire.h2_mut() {
+                    Some(sib) if sib.id == Some(s) => sib.body_read(bcx, room),
                     _ => BodyRead::Failed,
                 })
                 .unwrap_or(BodyRead::Failed),
@@ -250,15 +268,49 @@ impl<H: Host> crate::proto::http2::Egress for Egressing<'_, '_, H> {
         }
     }
 
-    fn event(&mut self, event: Event<'_>) -> Heard {
-        if let Event::Closed { stream, error } = event
-            && self.closes.try_push((stream, error)).is_err()
-        {
+    /// A stream closed as the session sent is traced by its transfer
+    /// (`on_stream_close`), and told after.
+    fn event(&mut self, event: Event<'_>, to: Option<crate::multi::TransferId>) -> Heard {
+        let Event::Closed { stream, error } = event else {
+            return Heard::Fine;
+        };
+        let me = self.cx.me;
+        if Some(stream) == self.stream.id {
+            trace_closed(&mut *self.cx, stream, error);
+        } else if let Some(to) = to.filter(|&to| to != me) {
+            self.cx
+                .with_sibling(to, |bcx, _| trace_closed(bcx, stream, error));
+        } else {
+            no_easy(&mut *self.cx, stream);
+        }
+        if self.closes.try_push((stream, error)).is_err() {
             self.oom = true;
             return Heard::Failed;
         }
         Heard::Fine
     }
+}
+
+/// A stream closed, traced by its transfer (`on_stream_close`): with its
+/// error code, a reset.
+fn trace_closed<H: Host>(cx: &mut StepCx<'_, H>, stream: StreamId, error: H2Error) {
+    let id = stream.0;
+    if error == H2Error::NO_ERROR {
+        trace::of(cx, H2, format_args!("[{id}] CLOSED"));
+    } else {
+        let text = error_text(cx, error);
+        trace::of(cx, H2, format_args!("[{id}] RESET: {text} (err {error})"));
+    }
+}
+
+/// A stream closed that is no transfer's (`on_stream_close`).
+fn no_easy<H: Host>(cx: &mut StepCx<'_, H>, stream: StreamId) {
+    let id = stream.0;
+    trace::of(
+        cx,
+        H2,
+        format_args!("[{id}] on_stream_close, no easy set on stream"),
+    );
 }
 
 /// Run `f` with the connection's session taken off it, the lease free
@@ -268,6 +320,74 @@ fn with_session<R>(lease: &mut ConnLease, f: impl FnOnce(&mut H2Conn, &mut ConnL
     let r = f(&mut h2, lease);
     lease.get().put_h2(h2);
     r
+}
+
+/// A field of a stream's head or trailers, as it came (`on_header`).
+fn field_line<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    stream: StreamId,
+    what: &str,
+    name: &[u8],
+    value: &[u8],
+) {
+    if !trace::traces(cx, H2) {
+        return;
+    }
+    let mut id = [0u8; 12];
+    let n = {
+        use std::io::Write as _;
+        let mut at = &mut id[..];
+        // An i32 fits in 11 bytes.
+        write!(at, "{}", stream.0).expect("room for a stream id");
+        12 - at.len()
+    };
+    let parts: [&[u8]; 8] = [
+        b"[",
+        &id[..n],
+        b"] ",
+        what.as_bytes(),
+        b": ",
+        name,
+        b": ",
+        value,
+    ];
+    trace::of_with(cx, H2, &parts);
+}
+
+/// The session is made: what it starts with is framed, to go with the
+/// first request, and the filter is connected (`cf_h2_ctx_open`,
+/// `cf_h2_connect`).
+fn h2_connect<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    lease: &mut ConnLease,
+    upgraded: bool,
+) -> Result<(), ErrorKind> {
+    if upgraded {
+        trace::of(cx, H2, format_args!("created session via Upgrade"));
+    }
+    let via = if upgraded { " (via h1 upgrade)" } else { "" };
+    trace::of(cx, H2, format_args!("[0] created h2 session{via}"));
+    let framed = with_session(lease, |h2, _| h2.frame_first(&mut *cx));
+    let made = match framed {
+        Ok(()) => Ok(()),
+        Err(EgressFailed::Session(e)) => {
+            let (text, code) = (e.text, e.code);
+            trace::of(
+                cx,
+                H2,
+                format_args!("nghttp2_session_send error ({text}){code}"),
+            );
+            Err(ErrorKind::SendError)
+        }
+        Err(EgressFailed::Send) => Err(ErrorKind::SendError),
+        Err(EgressFailed::OutOfMemory) => Err(ErrorKind::OutOfMemory),
+    };
+    let (code, done) = match &made {
+        Ok(()) => (0, 1),
+        Err(e) => (e.number(), 0),
+    };
+    trace::of(cx, H2, format_args!("cf_connect() -> {code}, {done}, "));
+    made
 }
 
 /// The text of an HTTP/2 error code, as the library has it.
@@ -330,11 +450,17 @@ impl Request {
             Some(_) => prior,
         };
         if let Some(library) = library.filter(|_| h2) {
+            if alpn != Some(Chosen::H2) {
+                // The filter goes on the connection now (`Curl_http2_switch`).
+                trace::of(cx, H2, format_args!("added"));
+                trace::of(cx, H2, format_args!("switching connection to HTTP/2"));
+            }
             let (conn, _) =
                 H2Conn::open(library, &settings(cx.max_streams(), cx.wants_push()), None)?;
             lease
                 .get()
                 .put_h2(try_box(conn).map_err(|_| ErrorKind::OutOfMemory)?);
+            h2_connect(cx, lease, false)?;
             if prior {
                 // No ALPN said so, but the connection speaks it now.
                 lease.get().saw_version(ResponseVersion::Http2);
@@ -382,6 +508,8 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
         trace::info(cx, format_args!("Received 101, Switching to HTTP/2"));
+        trace::of(cx, H2, format_args!("added"));
+        trace::of(cx, H2, format_args!("upgrading connection to HTTP/2"));
         let settings = self.upgrade.take().expect("an upgrade asked for");
         let library = cx.easy().libraries().h2.expect("asked with a library");
         let head = self.method == Method::Head;
@@ -409,24 +537,28 @@ impl Request {
         Ok(())
     }
 
-    /// Feed the session what came behind a 101, which is HTTP/2 already.
+    /// Feed the session what came behind a 101, which is HTTP/2 already,
+    /// once the session sent what it starts with (`Curl_http2_upgrade`).
     pub(super) fn upgraded_input<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
         rest: &[u8],
     ) -> Result<(), ErrorKind> {
-        if rest.is_empty() {
-            return Ok(());
-        }
         let n = rest.len();
-        trace::info(
-            cx,
-            format_args!(
-                "Copied HTTP/2 data in stream buffer to connection buffer after upgrade: len={n}"
-            ),
-        );
-        self.h2_feed(cx, lease, rest)
+        if n > 0 {
+            trace::info(
+                cx,
+                format_args!(
+                    "Copied HTTP/2 data in stream buffer to connection buffer after upgrade: \
+                     len={n}"
+                ),
+            );
+        }
+        // Held for the session to read as the stream is next read, as C
+        // holds it in its input buffer.
+        with_session(lease, |h2, _| h2.hold(rest)).map_err(|_| ErrorKind::OutOfMemory)?;
+        h2_connect(cx, lease, true)
     }
 
     /// Send what of the request is in `out[sent..end]`, the last of it if
@@ -440,12 +572,45 @@ impl Request {
         end: usize,
         eos: bool,
     ) -> Result<usize, ErrorKind> {
+        let len = end - self.sent;
+        let mut n = 0;
+        let sent = self.h2_send_on(cx, lease, end, eos, &mut n);
+        // What the send came to, and the windows and buffers it left
+        // (`cf_h2_send`'s last line).
+        let stream = self.stream();
+        let id = stream.id.map_or(-1, |s| s.0);
+        let body_eos = u8::from(stream.body_eos);
+        let held = stream.sendbuf.len() - stream.taken;
+        let code = sent.as_ref().err().map_or(0, |e| e.number());
+        let (sw, cw, out) = lease.conn().h2().map_or((-1, -1, 0), |h2| {
+            let (sw, cw) = h2.send_windows(StreamId(id));
+            (sw, cw, h2.out_len())
+        });
+        trace::of(
+            cx,
+            H2,
+            format_args!(
+                "[{id}] cf_send(len={len}) -> {code}, {n}, eos={body_eos}, h2 windows {sw}-{cw} \
+                 (stream-conn), buffers {held}-{out} (stream-conn)"
+            ),
+        );
+        sent.map(|()| n)
+    }
+
+    /// `h2_send`, short of its last line: `n` is what was taken.
+    fn h2_send_on<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        end: usize,
+        eos: bool,
+        n: &mut usize,
+    ) -> Result<(), ErrorKind> {
         let head = match self.outgoing {
             Sending::Head { left, .. } => left.get(),
             _ => 0,
         };
         let start = self.sent;
-        let mut n = 0;
         if self.stream().id.is_none() {
             // The head goes whole, before any of the body (`h2_submit`).
             let custom = self.custom_method(cx);
@@ -461,13 +626,28 @@ impl Request {
                 .map_or(DEFAULT_WEIGHT, std::num::NonZeroU16::get);
             let me = cx.me;
             let id = with_session(lease, |h2, _| {
-                let id = h2
-                    .session()
-                    .submit_request(&pairs, body, weight)
-                    .map_err(|_| ErrorKind::SendError)?;
+                let id = h2.session().submit_request(&pairs, body, weight);
+                let id = match id {
+                    Ok(id) => id,
+                    Err(e) => return Ok(Err(e)),
+                };
                 h2.route(id, me).map_err(|_| ErrorKind::OutOfMemory)?;
-                Ok::<_, ErrorKind>(id)
+                Ok::<_, ErrorKind>(Ok(id))
             })?;
+            let id = match id {
+                Ok(id) => id,
+                Err(e) => {
+                    let (text, code) = (e.text, e.code);
+                    trace::of(
+                        cx,
+                        H2,
+                        format_args!("send: nghttp2_submit_request error ({text}){code}"),
+                    );
+                    let failed = ErrorKind::SendError.number();
+                    trace::of(cx, H2, format_args!("[-1] submit -> {failed}, 0"));
+                    return Err(ErrorKind::SendError);
+                }
+            };
             self.stream().id = Some(id);
             if cx.easy().options().output.verbose {
                 let url = cx.easy().report().url().map(copied).transpose()?;
@@ -502,11 +682,38 @@ impl Request {
                     );
                 }
             }
-            n = head;
-        }
-        let body_len = end - start - n;
-        if body_len > 0 || eos {
-            n += self.h2_body(cx, lease, start + n..end, eos)?;
+            *n = head;
+            let body_len = end - start - head;
+            let body = if body_len > 0 || eos {
+                self.h2_body(cx, lease, start + head..end, eos)
+            } else {
+                Ok(0)
+            };
+            let code = body.as_ref().err().map_or(0, |e| e.number());
+            if let Ok(k) = body {
+                *n += k;
+            }
+            let id = id.0;
+            let taken = *n;
+            trace::of(cx, H2, format_args!("[{id}] submit -> {code}, {taken}"));
+            body?;
+        } else {
+            let body_len = end - start;
+            if body_len > 0 || eos {
+                let body = self.h2_body(cx, lease, start..end, eos);
+                let id = self.stream().id.map_or(-1, |s| s.0);
+                let (code, k) = match &body {
+                    Ok(k) => (0, *k),
+                    Err(e) => (e.number(), 0),
+                };
+                let e = u8::from(eos);
+                trace::of(
+                    cx,
+                    H2,
+                    format_args!("[{id}] cf_body_send(len={body_len}) -> {code}, {k}, eos={e}"),
+                );
+                *n = body?;
+            }
         }
         self.h2_egress(cx, lease)?;
         let stream = self.stream();
@@ -515,7 +722,7 @@ impl Request {
             trace::info(cx, format_args!("stream {id} closed"));
             return Err(ErrorKind::SendError);
         }
-        Ok(n)
+        Ok(())
     }
 
     /// Put `out[range]` of the body into the stream's buffer, as much as
@@ -535,6 +742,12 @@ impl Request {
             if stream.body_started {
                 // The server is done with the request: what is left of its
                 // body is dropped, as no transport failed.
+                let id = id.0;
+                trace::of(
+                    cx,
+                    H2,
+                    format_args!("[{id}] discarding dataon closed stream with response"),
+                );
                 stream.body_eos |= eos;
                 return Ok(len);
             }
@@ -605,11 +818,19 @@ impl Request {
                 self.stream().out_pending = !all;
                 Ok(())
             }
-            Err(EgressFailed::Session(e)) => Err(trace::fail(
-                cx,
-                ErrorKind::SendError,
-                format_args!("nghttp2_session_send() failed: {}({})", e.text, e.code),
-            )),
+            Err(EgressFailed::Session(e)) => {
+                let (text, code) = (e.text, e.code);
+                trace::of(
+                    cx,
+                    H2,
+                    format_args!("nghttp2_session_send error ({text}){code}"),
+                );
+                Err(trace::fail(
+                    cx,
+                    ErrorKind::SendError,
+                    format_args!("nghttp2_session_send() failed: {text}({code})"),
+                ))
+            }
             Err(EgressFailed::Send) => Err(ErrorKind::SendError),
             Err(EgressFailed::OutOfMemory) => Err(ErrorKind::OutOfMemory),
         }
@@ -646,78 +867,141 @@ impl Request {
         }
     }
 
-    /// `read_some` over HTTP/2: what the stream has, then what the
-    /// connection has, read and handed on as the session reads it, until
-    /// the stream is over, a read would block or the step has read its
-    /// most: a buffer's worth of the connection, whichever streams it
-    /// carried, so that each transfer on it reads in its own steps as C's
-    /// do (`cf_h2_recv`, `h2_progress_ingress`'s `data_max_bytes`).
+    /// `read_some` over HTTP/2, as one call of C's `cf_h2_recv`: what the
+    /// stream has come to; if nothing yet, what the connection has, read
+    /// and handed on as the session reads it until the stream is over, a
+    /// read would block or the step has read its most, a buffer's worth of
+    /// the connection, whichever streams it carried, so that each transfer
+    /// on it reads in its own steps (`h2_progress_ingress`'s
+    /// `data_max_bytes`); then what the stream came to, and what the
+    /// reading left to send goes, all traced as C traces it.
     pub(super) fn h2_read_some<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<Read, ErrorKind> {
-        let mut reads = 0;
-        let mut taken = 0;
-        loop {
-            if matches!(self.stage, Stage::Done) || cx.pause().recv_paused() {
-                return Ok(Read::Waits);
-            }
-            if let StreamRecv::Closed = self.stream_recv(cx, lease)? {
+        if matches!(self.stage, Stage::Done) || cx.pause().recv_paused() {
+            return Ok(Read::Waits);
+        }
+        // Under a receive limit, no more than it allows; once spent, the
+        // engine waits for it (`sendrecv_dl`'s `rate_limited`).
+        let max = cx.easy().options().limits.buffer_size.get();
+        let max = match cx.rate_allowance(Way::Recv) {
+            Some(..=0) => return Ok(Read::Waits),
+            Some(allowed) => max.min(usize::try_from(allowed).unwrap_or(usize::MAX)),
+            None => max,
+        };
+        let mut stopped = false;
+        let mut came = self.stream_recv(cx, lease, max);
+        if let Ok(StreamRecv::Again) = came {
+            // A connection that failed under the read fails it at once.
+            stopped = self.h2_ingress(cx, lease, max)?;
+            came = self.stream_recv(cx, lease, max);
+        }
+        // What the stream came to is read before what the reading left to
+        // send goes, as C's `cf_h2_recv` asks the stream before its
+        // egress: a reset the client sends then does not undo a response
+        // already whole.
+        let sent = self.h2_egress(cx, lease);
+        let came = match (came, sent) {
+            (Ok(_), Err(e)) => Err(e),
+            (came, _) => came,
+        };
+        let code = match &came {
+            Ok(StreamRecv::Closed) => 0,
+            Ok(StreamRecv::Again) => AGAIN_NUMBER,
+            Err(e) => e.number(),
+        };
+        if let Some(id) = self.stream().id
+            && let Some(h2) = lease.conn().h2()
+        {
+            let (used, size) = h2.stream_windows(id);
+            let conn = h2.local_window();
+            let huge = crate::proto::http2::CONNECTION_WINDOW;
+            let id = id.0;
+            trace::of(
+                cx,
+                H2,
+                format_args!(
+                    "[{id}] cf_recv(len={max}) -> {code}, 0, window={used}/{size}, \
+                     connection {conn}/{huge}"
+                ),
+            );
+        }
+        match came? {
+            StreamRecv::Closed => {
                 self.stream_ended(cx)?;
-                continue;
+                Ok(Read::Waits)
             }
-            if reads == MAX_READS || taken >= cx.easy().options().limits.buffer_size.get() {
-                return Ok(Read::Stopped);
+            StreamRecv::Again => Ok(if stopped || lease.get().data_pending() {
+                Read::Stopped
+            } else {
+                Read::Waits
+            }),
+        }
+    }
+
+    /// Read from the connection and have the session read it, up to
+    /// `max` bytes, until the stream is over, a read would block, the
+    /// peer closed or the transfer paused (`h2_progress_ingress`): whether
+    /// it stopped at its most.
+    fn h2_ingress<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        max: usize,
+    ) -> Result<bool, ErrorKind> {
+        let held = with_session(lease, |h2, _| h2.take_held());
+        if !held.is_empty() {
+            let n = held.len();
+            trace::of(
+                cx,
+                H2,
+                format_args!("Process {n} bytes in connection buffer"),
+            );
+            self.h2_feed(cx, lease, &held)?;
+        }
+        let mut left = max;
+        let mut reads = 0;
+        let mut spent = false;
+        loop {
+            let closed = lease.conn().h2().is_none_or(H2Conn::closed);
+            if closed || cx.pause().recv_paused() {
+                break;
             }
-            // Under a receive limit, no more than it allows; once spent,
-            // the engine waits for it (`sendrecv_dl`'s `rate_limited`).
-            let max = cx.easy().options().limits.buffer_size.get();
-            let max = match cx.rate_allowance(Way::Recv) {
-                Some(..=0) => return Ok(Read::Waits),
-                Some(allowed) => max.min(usize::try_from(allowed).unwrap_or(usize::MAX)),
-                None => max,
-            };
+            // At most so many reads too, as for HTTP/1, unlike C: a
+            // connection busy with many streams' small frames would hold
+            // one transfer's step for a buffer's worth of them, the
+            // others waiting.
+            if self.stream().closed || left == 0 || reads == MAX_READS {
+                spent = left == 0 || reads == MAX_READS;
+                break;
+            }
             reads += 1;
             let said = cx.easy().report().reasons();
-            let got = lease.get().recv(cx, max);
+            let got = lease.get().recv(cx, left);
             match got {
-                Ok(Recv::WouldBlock) => {
-                    self.h2_egress(cx, lease)?;
-                    if let StreamRecv::Closed = self.stream_recv(cx, lease)? {
-                        self.stream_ended(cx)?;
-                        continue;
-                    }
-                    return Ok(if lease.get().data_pending() {
-                        Read::Stopped
-                    } else {
-                        Read::Waits
-                    });
-                }
+                Ok(Recv::WouldBlock) => break,
                 Ok(Recv::Eof) => {
                     // The peer closed the connection: the streams end
-                    // with it, whole or not (`h2_progress_ingress`).
+                    // with it, whole or not.
+                    trace::of(cx, H2, format_args!("[0] ingress: connection closed"));
                     with_session(lease, |h2, _| h2.set_closed());
                     lease.get().mark_close();
                     self.wake_others(cx, lease);
                 }
                 Ok(Recv::Data(n)) => {
-                    taken += n.get();
+                    let n = n.get();
+                    trace::of(cx, H2, format_args!("[0] ingress: read {n} bytes"));
+                    left = left.saturating_sub(n);
                     let mut rx = std::mem::take(lease.get().rx_mut());
                     let fed = self.h2_feed(cx, lease, rx.filled());
                     let all = rx.filled().len();
                     rx.consume(all);
                     *lease.get().rx_mut() = rx;
                     fed?;
-                    // What the stream came to is read before what the
-                    // reading left to send goes, as C's `cf_h2_recv` asks
-                    // the stream before its egress: a reset the client
-                    // sends then does not undo a response already whole.
-                    let closed = self.stream_recv(cx, lease)?;
-                    if let StreamRecv::Closed = closed {
-                        self.stream_ended(cx)?;
-                    }
-                    self.h2_egress(cx, lease)?;
+                    // The session reads all it is given.
+                    trace::of(cx, H2, format_args!("[0] ingress: nw-in buffered 0"));
                 }
                 Err(e) => {
                     // The connection failed under every stream on it.
@@ -747,6 +1031,16 @@ impl Request {
                 }
             }
         }
+        if let Some(h2) = lease.conn().h2().filter(|h2| h2.closed()) {
+            let how = if h2.goaway().is_some() {
+                "with GOAWAY"
+            } else {
+                "abruptly"
+            };
+            trace::of(cx, H2, format_args!("server closed {how}"));
+        }
+        trace::of(cx, H2, format_args!("[0] ingress: done"));
+        Ok(spent)
     }
 
     /// The stream is over and whole: the response ends as a connection's
@@ -768,8 +1062,28 @@ impl Request {
 
     /// What the stream has come to (`stream_recv`): a failure writing the
     /// response; its close, handled; or its end with the connection's or
-    /// by a reset, a failure.
+    /// by a reset, a failure. Asked for `len` bytes, which a failure says.
     fn stream_recv<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        len: usize,
+    ) -> Result<StreamRecv, ErrorKind> {
+        let came = self.stream_came(cx, lease);
+        if let Err(e) = &came {
+            let id = self.stream().id.map_or(-1, |id| id.0);
+            let code = e.number();
+            trace::of(
+                cx,
+                H2,
+                format_args!("[{id}] stream_recv(len={len}) -> {code}, 0"),
+            );
+        }
+        came
+    }
+
+    /// `stream_recv`, short of its line for a failure.
+    fn stream_came<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
@@ -781,23 +1095,26 @@ impl Request {
             && lease.conn().h2().is_some()
         {
             let wanted = wanted_window(cx, false);
-            if let Err(e) = with_session(lease, |h2, _| h2.window_to(id, wanted)) {
+            if let Err(e) = with_session(lease, |h2, _| h2.window_to(&mut *cx, id, wanted)) {
                 let kind = window_failed(cx, id, wanted, e);
                 self.stream().failed = Some(kind);
             }
         }
         let stream = self.stream();
+        let id = stream.id.map_or(-1, |id| id.0);
         if let Some(e) = stream.failed {
+            trace::of(cx, H2, format_args!("[{id}] xfer write failed"));
             return Err(e);
         }
         if stream.closed {
+            trace::of(cx, H2, format_args!("[{id}] returning CLOSE"));
             self.stream_closed(cx, lease)?;
             return Ok(StreamRecv::Closed);
         }
-        let id = stream.id.map_or(0, |id| id.0);
         let h2 = lease.conn().h2().expect("an HTTP/2 connection");
         let gone = h2.closed() || h2.goaway().is_some_and(|g| g.last.0 < id);
         if stream.reset || gone {
+            trace::of(cx, H2, format_args!("[{id}] returning ERR"));
             return Err(if self.pipeline.bytecount() > 0 {
                 ErrorKind::PartialFile
             } else {
@@ -835,6 +1152,15 @@ impl Request {
                 return Err(ErrorKind::RecvError);
             }
             if stream.body_started && no_body {
+                let text = error_text(cx, error);
+                trace::of(
+                    cx,
+                    H2,
+                    format_args!(
+                        "[{id}] error after response headers, but we did not want a body \
+                         anyway, ignore: {text} (err {error})"
+                    ),
+                );
                 return Ok(());
             }
             let by = if stream.reset_by_server {
@@ -867,9 +1193,13 @@ impl Request {
             ));
         }
         let trailers = std::mem::take(&mut stream.trailers);
+        let mut handed = Ok(());
         for line in trailers.lines.split_inclusive(|&b| b == b'\n') {
             trace::bytes(cx, DebugKind::HeaderIn, line);
-            self.pipeline.header(cx, line, HeaderOrigin::Trailer)?;
+            handed = self.pipeline.header(cx, line, HeaderOrigin::Trailer);
+            if handed.is_err() {
+                break;
+            }
             let head = self.head.as_mut().expect("made at DO");
             let mut request_bytes = head.request_bytes();
             response::count_head(
@@ -879,7 +1209,9 @@ impl Request {
             )
             .map_err(|e| head_failed(cx, &e))?;
         }
-        Ok(())
+        let code = handed.as_ref().err().map_or(0, |e| e.number());
+        trace::of(cx, H2, format_args!("handle_stream_close -> {code}, 0"));
+        handed
     }
 
     /// Feed the session what the connection read; what it reads for the
@@ -898,14 +1230,36 @@ impl Request {
         let me = cx.me;
         let own = self.stream().id;
         let fed = with_session(lease, |h2, lease| {
-            let read = h2.recv(bytes, &mut |event, routed| {
+            let read = h2.recv(bytes, &mut |event, routed, said| {
+                // A frame is traced by the transfer reading, whichever
+                // stream it is on (`on_frame_recv`).
+                trace_frame(&mut *cx, &event);
+                if let Event::Settings {
+                    max_concurrent,
+                    enable_push,
+                } = event
+                {
+                    trace_settings(&mut *cx, said, max_concurrent, enable_push);
+                }
+                let stream = crate::proto::http2::stream_of(&event);
+                let to = stream.and_then(|s| {
+                    routed.or_else(|| after.routed.iter().find(|r| r.0 == s).map(|&(_, to)| to))
+                });
+                if let Event::Received(f) = event
+                    && let Some(s) = stream
+                    && Some(s) != own
+                    && to.is_none()
+                {
+                    let id = f.stream.0;
+                    trace::of(cx, H2, format_args!("[{id}] No Curl_easy associated"));
+                    return Heard::Fine;
+                }
                 // What is read for a sibling's stream is handed to it at
                 // once, as C's callbacks write to that stream's transfer;
                 // a stream promised in this read is routed by `after`.
-                if let Some(s) = event.stream()
+                if let Some(s) = stream
                     && Some(s) != own
-                    && let Some(to) =
-                        routed.or_else(|| after.routed.iter().find(|r| r.0 == s).map(|&(_, to)| to))
+                    && let Some(to) = to
                     && to != me
                 {
                     let consumed = match event {
@@ -918,10 +1272,14 @@ impl Request {
                     {
                         Some(heard) => heard,
                         None => match consumed {
-                            Some(c) => match after.consumed.try_push(c) {
-                                Ok(()) => Heard::Fine,
-                                Err(_) => Heard::Failed,
-                            },
+                            Some(c) => {
+                                let id = c.0.0;
+                                trace::of(cx, H2, format_args!("[{id}] Data for unknown"));
+                                match after.consumed.try_push(c) {
+                                    Ok(()) => Heard::Fine,
+                                    Err(_) => Heard::Failed,
+                                }
+                            }
                             None => Heard::Fine,
                         },
                     };
@@ -946,7 +1304,7 @@ impl Request {
             // consumes.
             let mut unset = None;
             for &(stream, wanted) in &after.windows {
-                if let Err(e) = h2.window_to(stream, wanted) {
+                if let Err(e) = h2.window_to(&mut *cx, stream, wanted) {
                     unset = Some((stream, wanted, e));
                     break;
                 }
@@ -1017,6 +1375,8 @@ impl Request {
             } if ours(stream) => {
                 let s = self.stream();
                 if s.body_started {
+                    field_line(cx, stream, "trailer", name, value);
+                    let s = self.stream();
                     // A trailer, kept until the stream closes; one past
                     // C's limits fails the stream as memory would.
                     return match s.trailers.add(name, value) {
@@ -1043,6 +1403,14 @@ impl Request {
                     return self.header_error(cx, ErrorKind::OutOfMemory, after);
                 }
                 self.h2_head_line(cx, lease, &line);
+                // Traced once written (`on_header`).
+                match self.stream().status.filter(|_| name == b":status") {
+                    Some(code) => {
+                        let id = stream.0;
+                        trace::of(cx, H2, format_args!("[{id}] status: HTTP/2 {code:03}"));
+                    }
+                    None => field_line(cx, stream, "header", name, value),
+                }
                 Heard::Fine
             }
             Event::HeadersDone { stream, end_stream } if ours(stream) => {
@@ -1059,7 +1427,7 @@ impl Request {
                     self.h2_head_line(cx, lease, b"\r\n");
                 }
                 if end_stream {
-                    self.stream_end(stream, after);
+                    self.stream_end(cx, stream, after);
                     return Heard::Fine;
                 }
                 let wanted = wanted_window(cx, self.stream().failed.is_some());
@@ -1084,6 +1452,24 @@ impl Request {
                             .ok();
                     }
                 }
+                // What the write came to (`h2_xfer_write_resp`).
+                let id = stream.0;
+                let paused = cx.pause().recv_paused();
+                let s = self.stream();
+                if let Some(e) = s.failed {
+                    let (code, len) = (e.number(), bytes.len());
+                    trace::of(
+                        cx,
+                        H2,
+                        format_args!(
+                            "[{id}] error {code} writing {len} bytes of data, RST-ing stream"
+                        ),
+                    );
+                } else if paused != s.write_paused {
+                    s.write_paused = paused;
+                    let un = if paused { "" } else { "un" };
+                    trace::of(cx, H2, format_args!("[{id}] stream output {un}paused"));
+                }
                 let wanted = wanted_window(cx, self.stream().failed.is_some());
                 pushed(
                     after
@@ -1093,9 +1479,27 @@ impl Request {
                 )
             }
             // Nobody reads it: consumed as it comes.
-            Event::Data { stream, bytes } => pushed(after.consumed.try_push((stream, bytes.len()))),
+            Event::Data { stream, bytes } => {
+                let id = stream.0;
+                trace::of(cx, H2, format_args!("[{id}] Data for unknown"));
+                pushed(after.consumed.try_push((stream, bytes.len())))
+            }
+            // The frame whole, for the stream's transfer (`on_stream_frame`).
+            Event::Received(Frame {
+                stream,
+                kind:
+                    FrameKind::Data {
+                        window: (used, size),
+                        ..
+                    },
+                ..
+            }) if ours(stream) => {
+                let id = stream.0;
+                trace::of(cx, H2, format_args!("[{id}] DATA, window={used}/{size}"));
+                Heard::Fine
+            }
             Event::DataEnd { stream } if ours(stream) => {
-                self.stream_end(stream, after);
+                self.stream_end(cx, stream, after);
                 Heard::Fine
             }
             Event::WindowUpdate {
@@ -1136,6 +1540,11 @@ impl Request {
                         s.error = g.error;
                     }
                 }
+                trace_closed(cx, stream, error);
+                Heard::Fine
+            }
+            Event::Closed { stream, .. } => {
+                no_easy(cx, stream);
                 Heard::Fine
             }
             Event::GoAway { last_stream, error } => {
@@ -1233,15 +1642,24 @@ impl Request {
         after: &mut After,
     ) -> Heard {
         let fields = std::mem::take(&mut self.stream().promise);
+        let p = promised.0;
+        trace::of(cx, H2, format_args!("[{p}] PUSH_PROMISE received"));
         let offered = if cx.wants_push() {
             self.offer(cx, lease, promised, &fields)
         } else {
+            if !cx.wants_push() {
+                trace::of(cx, H2, format_args!("Got PUSH_PROMISE, ignore it"));
+            }
             Offered::Denied
         };
         let pushed = match offered {
             Offered::Added(to) => after.routed.try_push((promised, to)),
             Offered::Denied => after.resets.try_push((promised, H2Error::CANCEL)),
             Offered::Failed => {
+                if let Some(id) = self.stream().id {
+                    let id = id.0;
+                    trace::of(cx, H2, format_args!("[{id}] fail in PUSH_PROMISE received"));
+                }
                 let s = self.stream();
                 s.failed = s.failed.or(Some(ErrorKind::RecvError));
                 after.resets.try_push((promised, H2Error::CANCEL))
@@ -1383,12 +1801,22 @@ impl Request {
     /// A frame ended the stream (`on_stream_frame`'s END_STREAM): one
     /// that ends a response that was no success while the request's body
     /// still goes stops the body by a reset.
-    fn stream_end(&mut self, stream: StreamId, after: &mut After) {
+    fn stream_end<H: Host>(&mut self, cx: &mut StepCx<'_, H>, stream: StreamId, after: &mut After) {
         let s = self.stream();
         let status = s.status.unwrap_or(0);
         if !s.closed && !s.body_eos && !(200..400).contains(&status) {
             after.resets.try_push((stream, H2Error::STREAM_CLOSED)).ok();
             s.closed = true;
+            let id = stream.0;
+            let status = s.status.map_or(-1, i32::from);
+            trace::of(
+                cx,
+                H2,
+                format_args!(
+                    "[{id}] EOS frame with unfinished upload and HTTP status {status}, abort \
+                     upload by RST"
+                ),
+            );
         }
     }
 

@@ -71,9 +71,9 @@ witness: curl-core proto::http::tests::h2::a_stream_closed_before_its_head_fails
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::trailers_come_as_the_stream_closes
 --- old
-            self.pipeline.header(cx, line, HeaderOrigin::Trailer)?;
+            handed = self.pipeline.header(cx, line, HeaderOrigin::Trailer);
 --- new
-
+            handed = Ok::<(), ErrorKind>(());
 === a connection closed under an open stream ends it whole
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_connection_closed_under_a_stream_fails_it
@@ -199,25 +199,26 @@ witness: curl-core proto::http::tests::h2::a_stream_s_failure_keeps_the_connecti
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_refusal_mid_upload_is_the_response
 --- old
-                    let closed = self.stream_recv(cx, lease)?;
-                    if let StreamRecv::Closed = closed {
-                        self.stream_ended(cx)?;
-                    }
+            stopped = self.h2_ingress(cx, lease, max)?;
+            came = self.stream_recv(cx, lease, max);
 --- new
+            stopped = self.h2_ingress(cx, lease, max)?;
+            self.h2_egress(cx, lease)?;
+            came = self.stream_recv(cx, lease, max);
 
 === a stream reads past its receive limit
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_receive_limit_paces_a_stream
 --- old
-                Some(..=0) => return Ok(Read::Waits),
-                Some(allowed) => max.min(usize::try_from(allowed).unwrap_or(usize::MAX)),
-                None => max,
-            };
-            reads += 1;
+            Some(..=0) => return Ok(Read::Waits),
+            Some(allowed) => max.min(usize::try_from(allowed).unwrap_or(usize::MAX)),
+            None => max,
+        };
+        let mut stopped = false;
 --- new
-                _ => max,
-            };
-            reads += 1;
+            _ => max,
+        };
+        let mut stopped = false;
 
 === the client's SETTINGS ignore the multi's streams
 file: crates/curl-core/src/proto/http/h2.rs
@@ -239,10 +240,10 @@ witness: curl-core proto::http::tests::h2::a_stream_asks_its_weight
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::two_transfers_share_a_connection
 --- old
-                        routed.or_else(|| after.routed.iter().find(|r| r.0 == s).map(|&(_, to)| to))
+                    && let Some(to) = to
                     && to != me
 --- new
-                        routed.or_else(|| after.routed.iter().find(|r| r.0 == s).map(|&(_, to)| to))
+                    && let Some(to) = to
                     && to == me
 
 === a transfer joining a connection makes it a session of its own
@@ -336,9 +337,9 @@ witness: curl-core proto::http::tests::h2::two_transfers_stay_on_a_connection_be
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_step_reads_a_buffer_of_the_connection_at_most
 --- old
-            if reads == MAX_READS || taken >= cx.easy().options().limits.buffer_size.get() {
+                    left = left.saturating_sub(n);
 --- new
-            if reads == MAX_READS {
+                    left = max;
 
 === a paused stream keeps its window open
 file: crates/curl-core/src/proto/http/h2.rs
@@ -372,9 +373,9 @@ witness: curl-core proto::http::tests::h2::a_stream_paused_in_a_siblings_step_re
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_pushed_response_becomes_a_transfer_of_its_own
 --- old
-                        routed.or_else(|| after.routed.iter().find(|r| r.0 == s).map(|&(_, to)| to))
+                    routed.or_else(|| after.routed.iter().find(|r| r.0 == s).map(|&(_, to)| to))
 --- new
-                        routed
+                    routed
 
 === the client says it takes no pushes though the application does
 file: crates/curl-core/src/proto/http2.rs
@@ -707,3 +708,37 @@ features: debug-hooks
 --- new
             let ms = n.unsigned_abs();
             options.limits.reuse.upkeep = UpkeepInterval(std::time::Duration::from_millis(ms));
+
+=== the frames nghttp2 reads are not told whole
+file: crates/curl-nghttp2/src/lib.rs
+witness: curl-nghttp2 tests::frames_are_told_as_c_describes_them
+--- old
+    let told = unsafe { tell(user, Event::Received(whole)) };
+--- new
+    let told = unsafe { tell(user, Event::Settings { max_concurrent: whole.length as u32, enable_push: false }) };
+
+=== a GOAWAY's debug data is traced past its zero byte
+file: crates/curl-core/src/http2.rs
+witness: curl-core proto::http::tests::h2_trace::a_shutdown_traces_its_goaway_and_its_end_once
+--- old
+                let end = debug.iter().position(|&b| b == 0).unwrap_or(debug.len());
+--- new
+                let end = debug.iter().position(|&b| b == 1).unwrap_or(debug.len());
+
+=== a peer's limit on streams is said changed when it is not
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core proto::http::tests::h2_trace::a_get_traces_the_filter_s_lines_in_c_s_order
+--- old
+    if std::mem::replace(said, max_concurrent) != max_concurrent {
+--- new
+    if std::mem::replace(said, max_concurrent) == max_concurrent {
+
+=== a reset stream is traced as closed cleanly
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::a_reset_traces_the_stream_s_end_and_the_failed_read
+--- old
+    if error == H2Error::NO_ERROR {
+        trace::of(cx, H2, format_args!("[{id}] CLOSED"));
+--- new
+    if error != H2Error::NO_ERROR {
+        trace::of(cx, H2, format_args!("[{id}] CLOSED"));

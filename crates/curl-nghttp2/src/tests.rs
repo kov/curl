@@ -17,6 +17,10 @@ enum Seen {
     Reset(i32, u32),
     PushField(i32, String, String),
     Promised(i32, i32),
+    /// A frame read whole, as the trace describes it.
+    Frame(String),
+    /// A frame sent, as the trace describes it.
+    Sent(String),
 }
 
 fn own(e: Event<'_>) -> Seen {
@@ -31,7 +35,7 @@ fn own(e: Event<'_>) -> Seen {
         Event::Data { stream, bytes } => Seen::Data(stream.0, bytes.to_vec()),
         Event::DataEnd { stream } => Seen::DataEnd(stream.0),
         Event::Closed { stream, error } => Seen::Closed(stream.0, error.0),
-        Event::Settings => Seen::Settings,
+        Event::Settings { .. } => Seen::Settings,
         Event::WindowUpdate { .. } => Seen::WindowUpdate,
         Event::GoAway { last_stream, error } => Seen::GoAway(last_stream.0, error.0),
         Event::Reset { stream, error } => Seen::Reset(stream.0, error.0),
@@ -41,6 +45,8 @@ fn own(e: Event<'_>) -> Seen {
             value,
         } => Seen::PushField(stream.0, s(name), s(value)),
         Event::Promised { stream, promised } => Seen::Promised(stream.0, promised.0),
+        Event::Received(f) => Seen::Frame(f.to_string()),
+        Event::Sent(f) => Seen::Sent(f.to_string()),
     }
 }
 
@@ -109,7 +115,7 @@ fn a_request_and_its_response() {
     pump(&mut server, &mut client, &mut reply, &mut at_client);
     let stream_events: Vec<&Seen> = at_client
         .iter()
-        .filter(|e| !matches!(e, Seen::Settings | Seen::WindowUpdate))
+        .filter(|e| !matches!(e, Seen::Settings | Seen::WindowUpdate | Seen::Frame(_)))
         .collect();
     assert_eq!(
         stream_events,
@@ -127,6 +133,143 @@ fn a_request_and_its_response() {
     client.consume(StreamId(1), 3).unwrap();
     // The server set no limit: unlimited.
     assert_eq!(client.max_concurrent(), u32::MAX);
+}
+
+/// Each frame is told whole as it is sent and read, described as C's
+/// trace describes it (`Curl_nghttp2_fr_print`): read, before what it
+/// means; a DATA frame with its stream's window as it left it, a GOAWAY
+/// with its debug data up to its zero byte.
+#[test]
+fn frames_are_told_as_c_describes_them() {
+    let mut client = Session::client().unwrap();
+    let mut server = Session::server().unwrap();
+    client
+        .submit_settings(&[
+            Setting::MaxConcurrentStreams(100),
+            Setting::InitialWindowSize(65536),
+            Setting::EnablePush(false),
+        ])
+        .unwrap();
+    server
+        .submit_settings(&[Setting::MaxConcurrentStreams(9)])
+        .unwrap();
+    let fields: [(&[u8], &[u8]); 4] = [
+        (b":method", b"GET"),
+        (b":scheme", b"https"),
+        (b":authority", b"x"),
+        (b":path", b"/"),
+    ];
+    client.submit_request(&fields, false, 16).unwrap();
+    let mut wire = Vec::new();
+    let mut sent = Vec::new();
+    client
+        .send(
+            &mut |b| {
+                wire.extend_from_slice(b);
+                true
+            },
+            &mut |_, _| BodyRead::Failed,
+            &mut |e| {
+                sent.push(own(e));
+                Heard::Fine
+            },
+        )
+        .unwrap();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert_eq!(sent[0], Seen::Sent("FRAME[SETTINGS, len=18]".into()));
+    let Seen::Sent(headers) = &sent[1] else {
+        panic!("{sent:?}")
+    };
+    assert!(headers.starts_with("FRAME[HEADERS, len="), "{headers}");
+    assert!(headers.ends_with(", hend=1, eos=1]"), "{headers}");
+    let mut at_server = Vec::new();
+    server
+        .recv(&wire, &mut |e| {
+            at_server.push(own(e));
+            Heard::Fine
+        })
+        .unwrap();
+    let frames: Vec<&Seen> = at_server
+        .iter()
+        .filter(|e| matches!(e, Seen::Frame(_)))
+        .collect();
+    assert_eq!(frames[0], &Seen::Frame("FRAME[SETTINGS, len=18]".into()));
+    // The fields of a HEADERS frame come before the frame is told whole.
+    let at = |want: &Seen| at_server.iter().position(|e| e == want).unwrap();
+    let path = at(&Seen::Header(1, ":path".into(), "/".into()));
+    let whole = at_server
+        .iter()
+        .position(|e| matches!(e, Seen::Frame(f) if f.starts_with("FRAME[HEADERS")))
+        .unwrap();
+    assert!(path < whole, "{at_server:?}");
+    let response: [(&[u8], &[u8]); 1] = [(b":status", b"200")];
+    server
+        .submit_response(StreamId(1), &response, true)
+        .unwrap();
+    let mut reply = b"ok\n".to_vec();
+    let mut wire = Vec::new();
+    let mut send = |server: &mut Session| {
+        server
+            .send(
+                &mut |b| {
+                    wire.extend_from_slice(b);
+                    true
+                },
+                &mut |_, room| {
+                    let n = reply.len();
+                    room[..n].copy_from_slice(&reply);
+                    reply.clear();
+                    BodyRead::Last(n)
+                },
+                &mut |_| Heard::Fine,
+            )
+            .unwrap();
+    };
+    send(&mut server);
+    // A GOAWAY goes ahead of what is queued: said after.
+    server.goaway(H2Error::NO_ERROR, b"shutdown\0").unwrap();
+    send(&mut server);
+    let mut data_window = None;
+    let mut settings = None;
+    let mut at_client = Vec::new();
+    client
+        .recv(&wire, &mut |e| {
+            match e {
+                Event::Received(Frame {
+                    kind: FrameKind::Data { window, .. },
+                    ..
+                }) => data_window = Some(window),
+                Event::Settings {
+                    max_concurrent,
+                    enable_push,
+                } => settings = Some((max_concurrent, enable_push)),
+                _ => {}
+            }
+            at_client.push(own(e));
+            Heard::Fine
+        })
+        .unwrap();
+    let told: Vec<&Seen> = at_client
+        .iter()
+        .filter(|e| matches!(e, Seen::Frame(_) | Seen::Settings | Seen::DataEnd(_)))
+        .collect();
+    assert_eq!(
+        told,
+        [
+            &Seen::Frame("FRAME[SETTINGS, len=6]".into()),
+            &Seen::Settings,
+            &Seen::Frame("FRAME[SETTINGS, ack=1]".into()),
+            &Seen::Frame("FRAME[HEADERS, len=1, hend=1, eos=0]".into()),
+            &Seen::Frame("FRAME[DATA, len=3, eos=1, padlen=0]".into()),
+            &Seen::DataEnd(1),
+            &Seen::Frame("FRAME[GOAWAY, error=0, reason='shutdown', last_stream=0]".into()),
+        ],
+        "{at_client:?}"
+    );
+    // What came is not given back yet; the window is as the client set it.
+    assert_eq!(data_window, Some((3, 65536)));
+    // The server's limit, and push it did not forbid.
+    assert_eq!(settings, Some((9, true)));
 }
 
 /// A reset stream and a goaway are told, and the peer's settings read.
@@ -268,8 +411,12 @@ fn what_is_lent_reaches_the_callbacks_through_the_user_pointer() {
                 *mut BodySource,
             >(body)
         });
+        let settings = Event::Settings {
+            max_concurrent: 1,
+            enable_push: false,
+        };
         // SAFETY: the user pointer, its events lent.
-        assert_eq!(unsafe { tell(user, Event::Settings) }, 0);
+        assert_eq!(unsafe { tell(user, settings) }, 0);
         let mut buf = [0u8; 8];
         let mut flags = 0u32;
         // SAFETY: the user pointer, its body lent; a buffer of its

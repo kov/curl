@@ -84,12 +84,29 @@ pub(crate) struct nghttp2_goaway {
     pub(crate) reserved: u8,
 }
 
-/// The frames the session reads, of which only these members are read;
-/// the union is as large as the library's (its largest member, the
-/// HEADERS frame, is smaller than the padding here).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct nghttp2_data {
+    pub(crate) hd: nghttp2_frame_hd,
+    pub(crate) padlen: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct nghttp2_window_update {
+    pub(crate) hd: nghttp2_frame_hd,
+    pub(crate) window_size_increment: i32,
+    pub(crate) reserved: u8,
+}
+
+/// The frames the session reads and sends, of which only these members
+/// are read; the union is as large as the library's (its largest member,
+/// the HEADERS frame, is smaller than the padding here).
 #[repr(C)]
 pub(crate) union nghttp2_frame {
     pub(crate) hd: nghttp2_frame_hd,
+    pub(crate) data: nghttp2_data,
+    pub(crate) window_update: nghttp2_window_update,
     pub(crate) push_promise: nghttp2_push_promise,
     pub(crate) rst_stream: nghttp2_rst_stream,
     pub(crate) goaway: nghttp2_goaway,
@@ -134,7 +151,9 @@ pub(crate) const NGHTTP2_ERR_NOMEM: c_int = -901;
 pub(crate) const NGHTTP2_NV_FLAG_NONE: u8 = 0;
 pub(crate) const NGHTTP2_DATA: u8 = 0;
 pub(crate) const NGHTTP2_HEADERS: u8 = 0x01;
+pub(crate) const NGHTTP2_PRIORITY: u8 = 0x02;
 pub(crate) const NGHTTP2_RST_STREAM: u8 = 0x03;
+pub(crate) const NGHTTP2_PING: u8 = 0x06;
 pub(crate) const NGHTTP2_PUSH_PROMISE: u8 = 0x05;
 pub(crate) const NGHTTP2_SETTINGS: u8 = 0x04;
 pub(crate) const NGHTTP2_GOAWAY: u8 = 0x07;
@@ -149,6 +168,7 @@ pub(crate) const NGHTTP2_DATA_FLAG_EOF: u32 = 0x01;
 
 type OnFrameRecv =
     Option<unsafe extern "C" fn(*mut nghttp2_session, *const nghttp2_frame, *mut c_void) -> c_int>;
+type OnFrameSend = OnFrameRecv;
 type OnHeader = Option<
     unsafe extern "C" fn(
         *mut nghttp2_session,
@@ -177,6 +197,10 @@ unsafe extern "C" {
     pub(crate) fn nghttp2_session_callbacks_set_on_frame_recv_callback(
         cbs: *mut nghttp2_session_callbacks,
         cb: OnFrameRecv,
+    );
+    pub(crate) fn nghttp2_session_callbacks_set_on_frame_send_callback(
+        cbs: *mut nghttp2_session_callbacks,
+        cb: OnFrameSend,
     );
     pub(crate) fn nghttp2_session_callbacks_set_on_header_callback(
         cbs: *mut nghttp2_session_callbacks,
@@ -292,6 +316,11 @@ unsafe extern "C" {
         session: *mut nghttp2_session,
         stream_id: i32,
     ) -> i32;
+    pub(crate) fn nghttp2_session_get_stream_effective_recv_data_length(
+        session: *mut nghttp2_session,
+        stream_id: i32,
+    ) -> i32;
+    pub(crate) fn nghttp2_session_get_local_window_size(session: *mut nghttp2_session) -> i32;
     pub(crate) fn nghttp2_session_get_remote_window_size(session: *mut nghttp2_session) -> i32;
     pub(crate) fn nghttp2_session_get_stream_remote_window_size(
         session: *mut nghttp2_session,

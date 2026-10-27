@@ -9,13 +9,15 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
+use crate::components::Component;
 use crate::conn::io::{Recv, Sent};
 use crate::conn::layer::{Alive, Handshake, LayerCx, Lower as _, Part as ConnPart};
 use crate::conn::mux::{Carrier, Routes};
 use crate::error::ErrorKind;
 use crate::error::UrlErrorKind;
 use crate::http2::{
-    BodyRead, Event, FrameError, H2Error, Heard, Http2, Session, Setting, StreamId,
+    BodyRead, Event, Frame, FrameError, FrameKind, H2Error, Heard, Http2, Session, Setting,
+    StreamId,
 };
 use crate::multi::TransferId;
 use crate::url::{GetOptions, ParseOptions, Part, Url};
@@ -30,7 +32,7 @@ pub(crate) const STREAM_WINDOW_MAX: i32 = 10 * 1024 * 1024;
 
 /// The connection's receive window: as large as it goes, the streams'
 /// own windows doing the flow control (`HTTP2_HUGE_WINDOW_SIZE`).
-const CONNECTION_WINDOW: i32 = 100 * STREAM_WINDOW_MAX;
+pub(crate) const CONNECTION_WINDOW: i32 = 100 * STREAM_WINDOW_MAX;
 
 /// The most the session's output may hold before it is sent on
 /// (`H2_NW_SEND_CHUNKS` of `H2_CHUNK_SIZE`).
@@ -42,6 +44,8 @@ pub(crate) const SEND_MAX: usize = 64 * 1024;
 
 /// What a connection that speaks HTTP/2 keeps (`cf_h2_ctx`).
 pub(crate) struct H2Conn {
+    /// The library the session is of, for its texts.
+    library: &'static dyn Http2,
     session: Box<dyn Session>,
     /// What the session gave to send and the connection has not taken
     /// yet (`outbufq`): `out[sent..]`.
@@ -56,6 +60,81 @@ pub(crate) struct H2Conn {
     /// Each open stream's transfer, with the receive window last asked
     /// for it (`local_window_size`).
     routes: Routes<StreamId, i32>,
+    /// The peer's limit on streams open at once, as last traced: C's
+    /// guess until the peer says, 100 (`max_concurrent_streams`).
+    max_said: u32,
+    /// What came behind the 101 of an upgrade, for the session to read
+    /// first (`inbufq`).
+    held: Vec<u8>,
+    /// Its goodbye is done (`cf->shutdown`).
+    shut: bool,
+}
+
+/// What C takes the peer's limit on streams open at once to be until its
+/// settings say (`DEFAULT_MAX_CONCURRENT_STREAMS`).
+const MAX_SAID_FIRST: u32 = 100;
+
+/// A frame the session read or sent, traced by the transfer it read or
+/// sent for (`on_frame_recv`, `on_frame_send`); anything else, nothing.
+pub(crate) fn trace_frame(cx: &mut dyn LayerCx, event: &Event<'_>) {
+    match event {
+        Event::Received(f) => cx.of(Component::Http2, format_args!("[{}] <- {f}", f.stream.0)),
+        Event::Sent(f) => cx.of(Component::Http2, format_args!("[{}] -> {f}", f.stream.0)),
+        _ => {}
+    }
+}
+
+/// The stream an event read is of, a frame told whole by the stream its
+/// header names; none for the connection's own.
+pub(crate) fn stream_of(event: &Event<'_>) -> Option<StreamId> {
+    match event {
+        Event::Received(f) => Some(f.stream).filter(|s| s.0 != 0),
+        _ => event.stream(),
+    }
+}
+
+/// The peer's settings, traced as they come (`on_frame_recv`'s SETTINGS):
+/// its limit on streams, whether it allows push, and, if the limit is not
+/// the one last said, `said`, that it changed.
+pub(crate) fn trace_settings(
+    cx: &mut dyn LayerCx,
+    said: &mut u32,
+    max_concurrent: u32,
+    enable_push: bool,
+) {
+    let h2 = Component::Http2;
+    cx.of(
+        h2,
+        format_args!("[0] MAX_CONCURRENT_STREAMS: {max_concurrent}"),
+    );
+    let push = if enable_push { "TRUE" } else { "false" };
+    cx.of(h2, format_args!("[0] ENABLE_PUSH: {push}"));
+    if std::mem::replace(said, max_concurrent) != max_concurrent {
+        cx.of(
+            h2,
+            format_args!("[0] notify MAX_CONCURRENT_STREAMS: {max_concurrent}"),
+        );
+    }
+}
+
+/// A frame the session sent, traced; a GOAWAY the client did not ask
+/// for is the library's own, on a failure of the connection
+/// (`on_frame_send`).
+fn sent(cx: &mut dyn LayerCx, library: &dyn Http2, frame: &Frame<'_>, sent_goaway: bool) {
+    cx.of(
+        Component::Http2,
+        format_args!("[{}] -> {frame}", frame.stream.0),
+    );
+    if let FrameKind::GoAway { error, .. } = frame.kind
+        && !sent_goaway
+    {
+        let text = library.error_text(error);
+        // Said, as C's `failf` says it; the failure is the read's.
+        let _said = cx.fails(
+            ErrorKind::Http2,
+            format_args!("nghttp2 shuts down connection with error {error}: {text}"),
+        );
+    }
 }
 
 /// Which call setting a stream's window failed, and how.
@@ -97,7 +176,10 @@ pub(crate) trait Egress {
     /// Read `stream`'s body into `room`; `to` is the transfer the
     /// stream is routed to, if any.
     fn body(&mut self, stream: StreamId, to: Option<TransferId>, room: &mut [u8]) -> BodyRead;
-    fn event(&mut self, event: Event<'_>) -> Heard;
+    /// Hear what the session tells of a stream as it sends, `to` the
+    /// transfer the stream is routed to, if any; the frames it sends are
+    /// traced, not told.
+    fn event(&mut self, event: Event<'_>, to: Option<TransferId>) -> Heard;
 }
 
 /// Sending with no body to frame and nothing to hear, as a goodbye.
@@ -112,7 +194,7 @@ impl Egress for Bare<'_> {
         BodyRead::Failed
     }
 
-    fn event(&mut self, _: Event<'_>) -> Heard {
+    fn event(&mut self, _: Event<'_>, _: Option<TransferId>) -> Heard {
         Heard::Fine
     }
 }
@@ -133,7 +215,7 @@ impl H2Conn {
     /// `upgrade`, the connection was upgraded from HTTP/1.1, the request
     /// having sent these settings, which the session takes as sent.
     pub(crate) fn open(
-        library: &dyn Http2,
+        library: &'static dyn Http2,
         settings: &[Setting],
         upgrade: Option<(&[u8], bool)>,
     ) -> Result<(H2Conn, Option<StreamId>), ErrorKind> {
@@ -152,6 +234,7 @@ impl H2Conn {
             .map_err(failed)?;
         Ok((
             H2Conn {
+                library,
                 session,
                 out: Vec::new(),
                 sent: 0,
@@ -159,6 +242,9 @@ impl H2Conn {
                 closed: false,
                 sent_goaway: false,
                 routes: Routes::new(),
+                max_said: MAX_SAID_FIRST,
+                held: Vec::new(),
+                shut: false,
             },
             stream,
         ))
@@ -204,26 +290,75 @@ impl H2Conn {
     }
 
     /// Feed the session what the connection read, `events` hearing
-    /// each event with the transfer its stream is routed to, if any.
+    /// each event with the transfer its stream is routed to, if any, and
+    /// the peer's limit on streams as last traced, which its settings are
+    /// traced against.
     pub(crate) fn recv(
         &mut self,
         bytes: &[u8],
-        events: &mut dyn FnMut(Event<'_>, Option<TransferId>) -> Heard,
+        events: &mut dyn FnMut(Event<'_>, Option<TransferId>, &mut u32) -> Heard,
     ) -> Result<usize, FrameError> {
         let H2Conn {
-            session, routes, ..
+            session,
+            routes,
+            max_said,
+            ..
         } = self;
         session.recv(bytes, &mut |event| {
-            let to = event.stream().and_then(|s| routes.route_of(s));
-            events(event, to)
+            let to = stream_of(&event).and_then(|s| routes.route_of(s));
+            events(event, to, max_said)
         })
+    }
+
+    /// The stream's receive window as the trace says it: what came on it
+    /// not given back yet, and its size; -1 for both once it is closed.
+    pub(crate) fn stream_windows(&self, stream: StreamId) -> (i32, i32) {
+        (
+            self.session.stream_recv_length(stream),
+            self.session.stream_window(stream),
+        )
+    }
+
+    /// The connection's receive window as it stands.
+    pub(crate) fn local_window(&self) -> i32 {
+        self.session.local_window()
+    }
+
+    /// What the peer lets the client send, on `stream` and on the
+    /// connection.
+    pub(crate) fn send_windows(&self, stream: StreamId) -> (i32, i32) {
+        (
+            self.session.stream_remote_window(stream),
+            self.session.remote_window(),
+        )
+    }
+
+    /// Hold what came behind a 101, for the session to read first.
+    pub(crate) fn hold(&mut self, bytes: &[u8]) -> Result<(), OutOfMemory> {
+        self.held.try_extend_from_slice(bytes)
+    }
+
+    /// What is held for the session to read first, taken.
+    pub(crate) fn take_held(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.held)
+    }
+
+    /// The session's output not sent yet (`Curl_bufq_len(&ctx->outbufq)`).
+    pub(crate) fn out_len(&self) -> usize {
+        self.out.len() - self.sent
     }
 
     /// Ask for `stream`'s receive window to be `wanted`, as its transfer
     /// can take: none while its output is paused, so that the server
     /// holds back what it would only buffer (`cf_h2_update_local_win`).
     /// Growing it, the peer is told by how much, as C tells it.
-    pub(crate) fn window_to(&mut self, stream: StreamId, wanted: i32) -> Result<(), WindowFailed> {
+    /// Traced on `cx`, the stream's transfer's, as C traces it.
+    pub(crate) fn window_to(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        stream: StreamId,
+        wanted: i32,
+    ) -> Result<(), WindowFailed> {
         let Some(window) = self.routes.kept_mut(stream) else {
             return Ok(());
         };
@@ -241,6 +376,19 @@ impl H2Conn {
                 .map_err(WindowFailed::Update)?;
         }
         *window = wanted;
+        let id = stream.0;
+        if grows {
+            let by = wanted - now;
+            cx.of(
+                Component::Http2,
+                format_args!("[{id}] local window update by {by}"),
+            );
+        } else {
+            cx.of(
+                Component::Http2,
+                format_args!("[{id}] local window size now {wanted}"),
+            );
+        }
         Ok(())
     }
 
@@ -270,49 +418,99 @@ impl H2Conn {
         io: &mut Carrier<'_>,
     ) -> Result<bool, EgressFailed> {
         loop {
+            // What the session frames goes behind what waits, and all of
+            // it to the connection together, as C's output buffer sends it
+            // (`h2_progress_egress`, `nw_out_flush`).
+            self.frame(with)?;
+            if self.out_len() == 0 {
+                self.out.clear();
+                self.sent = 0;
+                return Ok(true);
+            }
             if !self.flush(with.layer_cx(), io)? {
                 return Ok(false);
             }
-            let H2Conn {
-                session,
-                out,
-                routes,
-                ..
-            } = self;
-            let mut oom = false;
-            let with = std::cell::RefCell::new(&mut *with);
-            session
-                .send(
-                    &mut |bytes| {
-                        if out.try_extend_from_slice(bytes).is_err() {
-                            oom = true;
-                            return false;
-                        }
-                        out.len() < OUT_MAX
-                    },
-                    &mut |stream, room| {
-                        with.borrow_mut()
-                            .body(stream, routes.route_of(stream), room)
-                    },
-                    &mut |event| with.borrow_mut().event(event),
-                )
-                .map_err(EgressFailed::Session)?;
-            if oom {
-                return Err(EgressFailed::OutOfMemory);
-            }
-            if self.out.is_empty() {
-                return Ok(true);
-            }
         }
+    }
+
+    /// Have the session frame what it wants sent into its output, while
+    /// there is room, reading bodies and telling what it says of streams
+    /// through `with`.
+    fn frame(&mut self, with: &mut dyn Egress) -> Result<(), EgressFailed> {
+        if self.out_len() >= OUT_MAX {
+            return Ok(());
+        }
+        let H2Conn {
+            session,
+            out,
+            sent: gone,
+            routes,
+            sent_goaway,
+            library,
+            ..
+        } = self;
+        let gone = *gone;
+        let sent_goaway = *sent_goaway;
+        let mut oom = false;
+        let with = std::cell::RefCell::new(&mut *with);
+        session
+            .send(
+                &mut |bytes| {
+                    if out.try_extend_from_slice(bytes).is_err() {
+                        oom = true;
+                        return false;
+                    }
+                    out.len() - gone < OUT_MAX
+                },
+                &mut |stream, room| {
+                    with.borrow_mut()
+                        .body(stream, routes.route_of(stream), room)
+                },
+                &mut |event| {
+                    let mut with = with.borrow_mut();
+                    if let Event::Sent(frame) = &event {
+                        sent(with.layer_cx(), *library, frame, sent_goaway);
+                        return Heard::Fine;
+                    }
+                    let to = event.stream().and_then(|s| routes.route_of(s));
+                    with.event(event, to)
+                },
+            )
+            .map_err(EgressFailed::Session)?;
+        if oom {
+            return Err(EgressFailed::OutOfMemory);
+        }
+        Ok(())
+    }
+
+    /// Have the session frame what it starts with, its SETTINGS, kept to
+    /// go with the first request (`cf_h2_connect`'s egress, which C does
+    /// not flush while the filter connects).
+    pub(crate) fn frame_first(&mut self, cx: &mut dyn LayerCx) -> Result<(), EgressFailed> {
+        self.frame(&mut Bare(cx))
     }
 
     /// Send what the session's output holds, as far as the connection
     /// takes it: whether all of it went.
     fn flush(&mut self, cx: &mut dyn LayerCx, io: &mut Carrier<'_>) -> Result<bool, EgressFailed> {
+        let mut wrote = false;
         while self.sent < self.out.len() {
             match io.send(cx, &self.out[self.sent..]) {
-                Ok(Sent::Bytes(n)) => self.sent += n.get(),
-                Ok(_) => return Ok(false),
+                Ok(Sent::Bytes(n)) => {
+                    self.sent += n.get();
+                    wrote = true;
+                }
+                Ok(_) => {
+                    // Blocked with nothing taken (`nw_out_flush`).
+                    if !wrote {
+                        let held = self.out_len();
+                        cx.of(
+                            Component::Http2,
+                            format_args!("flush nw send buffer({held}) -> EAGAIN"),
+                        );
+                    }
+                    return Ok(false);
+                }
                 Err(_) => return Err(EgressFailed::Send),
             }
         }
@@ -343,8 +541,17 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
             Ok(Recv::Data(_)) => {
                 let mut rx = std::mem::take(below.rx_mut());
                 let mut goaway = false;
+                let said = &mut self.max_said;
                 let read = self.session.recv(rx.filled(), &mut |event| {
-                    goaway |= matches!(event, Event::GoAway { .. });
+                    trace_frame(&mut *cx, &event);
+                    match event {
+                        Event::GoAway { .. } => goaway = true,
+                        Event::Settings {
+                            max_concurrent,
+                            enable_push,
+                        } => trace_settings(&mut *cx, said, max_concurrent, enable_push),
+                        _ => {}
+                    }
                     Heard::Fine
                 });
                 let all = rx.filled().len();
@@ -385,24 +592,29 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
 
     /// Say goodbye as the connection shuts down, once, and send what the
     /// connection takes of it now (`cf_h2_shutdown`): a peer that closed
-    /// hears nothing. What does not go now goes with the connection.
+    /// hears nothing. What does not go now goes with the connection. Its
+    /// end is said once, as C's connection says it of its filter
+    /// (`Curl_cshutdn_try_once_idx`).
     fn shutdown(
         &mut self,
         cx: &mut dyn LayerCx,
         mut below: Carrier<'a>,
     ) -> Result<Handshake, ErrorKind> {
-        if self.closed || self.sent_goaway {
+        if std::mem::replace(&mut self.shut, true) {
             return Ok(Handshake::Done);
         }
-        self.sent_goaway = true;
-        if self
-            .session
-            .goaway(H2Error::NO_ERROR, b"shutdown\0")
-            .is_ok()
-        {
-            let sent = self.egress(&mut Bare(cx), &mut below);
-            drop(sent);
+        if !self.closed && !self.sent_goaway {
+            self.sent_goaway = true;
+            if self
+                .session
+                .goaway(H2Error::NO_ERROR, b"shutdown\0")
+                .is_ok()
+            {
+                let sent = self.egress(&mut Bare(cx), &mut below);
+                drop(sent);
+            }
         }
+        cx.of(Component::Http2, format_args!("shut down successfully"));
         Ok(Handshake::Done)
     }
 }

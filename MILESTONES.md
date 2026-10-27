@@ -920,7 +920,9 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
     - The pool checks a multiplexed connection's health at most once a second
       (`lastchecked_ms`). **Done**, pinned against the fake at 999 and 1000 ms: the C leg
       cannot time a server's GOAWAY that closely.
-    - The `--trace-config http/2` lines (`CURL_TRC_CF` of `cf-h2`).
+    - The `--trace-config http/2` lines (`CURL_TRC_CF` of `cf-h2`). **Done**, in C's order
+      against the C leg's traces of a GET, a POST, parallel GETs and an h2c upgrade; the
+      session made at DO leaves the filter out of the chain's lines and its `query ALPN`.
     - A push on a share's connection is taken, as C takes it. **Done**: the connection lent to
       the multi as the push takes it; the C suite has no push on a share to run.
 56. **A connection behind a pointer, budgets against C's.** **Done.** The lease holds its

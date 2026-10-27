@@ -5303,6 +5303,7 @@ mod connect_only;
 #[cfg(feature = "debug-hooks")]
 mod debug_lines;
 mod h2;
+mod h2_trace;
 mod h3_trace;
 mod hsts;
 mod https_trace;

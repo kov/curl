@@ -17,7 +17,9 @@ use core::ptr::{self, NonNull};
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use curl_core::http2::Http2;
-pub use curl_core::http2::{BodyRead, Event, FrameError, H2Error, Heard, Setting, StreamId, Wants};
+pub use curl_core::http2::{
+    BodyRead, Event, Frame, FrameError, FrameKind, H2Error, Heard, Setting, StreamId, Wants,
+};
 
 /// The library, as the handles are given it.
 pub static NGHTTP2: Nghttp2 = Nghttp2;
@@ -219,6 +221,13 @@ impl Session {
             sys::nghttp2_session_callbacks_set_on_frame_recv_callback(
                 callbacks.0,
                 Some(on_frame_recv),
+            );
+        }
+        // SAFETY: as above.
+        unsafe {
+            sys::nghttp2_session_callbacks_set_on_frame_send_callback(
+                callbacks.0,
+                Some(on_frame_send),
             );
         }
         // SAFETY: as above.
@@ -429,6 +438,29 @@ impl curl_core::http2::Session for Session {
         }
     }
 
+    fn stream_recv_length(&self, stream: StreamId) -> i32 {
+        // SAFETY: the session; a stream it does not know answers -1.
+        unsafe {
+            sys::nghttp2_session_get_stream_effective_recv_data_length(self.raw.as_ptr(), stream.0)
+        }
+    }
+
+    fn local_window(&self) -> i32 {
+        // SAFETY: the session.
+        unsafe { sys::nghttp2_session_get_local_window_size(self.raw.as_ptr()) }
+    }
+
+    fn peer_enables_push(&self) -> bool {
+        // SAFETY: the session.
+        let push = unsafe {
+            sys::nghttp2_session_get_remote_settings(
+                self.raw.as_ptr(),
+                sys::NGHTTP2_SETTINGS_ENABLE_PUSH,
+            )
+        };
+        push != 0
+    }
+
     fn remote_window(&self) -> i32 {
         // SAFETY: the session.
         unsafe { sys::nghttp2_session_get_remote_window_size(self.raw.as_ptr()) }
@@ -630,16 +662,116 @@ unsafe fn tell(user: *mut c_void, event: Event<'_>) -> c_int {
     }
 }
 
+/// A frame as the trace describes it, borrowing its debug data; a DATA
+/// frame with its stream's receive window as `session` has it now.
+///
+/// # Safety
+///
+/// `session` is the library's session the frame is of, in a callback.
+unsafe fn describe(session: *mut sys::nghttp2_session, frame: &sys::nghttp2_frame) -> Frame<'_> {
+    // SAFETY: every frame starts with its header.
+    let hd = unsafe { frame.hd };
+    let kind = match hd.r#type {
+        sys::NGHTTP2_DATA => {
+            // SAFETY: a DATA frame, as its header says.
+            let padlen = unsafe { frame.data }.padlen;
+            // SAFETY: the session, as the caller guarantees, which a
+            // callback may ask.
+            let received = unsafe {
+                sys::nghttp2_session_get_stream_effective_recv_data_length(session, hd.stream_id)
+            };
+            // SAFETY: as above.
+            let size = unsafe {
+                sys::nghttp2_session_get_stream_effective_local_window_size(session, hd.stream_id)
+            };
+            FrameKind::Data {
+                padlen,
+                window: (received, size),
+            }
+        }
+        sys::NGHTTP2_HEADERS => FrameKind::Headers,
+        sys::NGHTTP2_PRIORITY => FrameKind::Priority,
+        sys::NGHTTP2_RST_STREAM => {
+            // SAFETY: an RST_STREAM frame, as its header says.
+            let r = unsafe { frame.rst_stream };
+            FrameKind::RstStream {
+                error: H2Error(r.error_code),
+            }
+        }
+        sys::NGHTTP2_SETTINGS => FrameKind::Settings,
+        sys::NGHTTP2_PUSH_PROMISE => FrameKind::PushPromise,
+        sys::NGHTTP2_PING => FrameKind::Ping,
+        sys::NGHTTP2_GOAWAY => {
+            // SAFETY: a GOAWAY frame, as its header says.
+            let g = unsafe { frame.goaway };
+            let debug = if g.opaque_data.is_null() || g.opaque_data_len == 0 {
+                &[][..]
+            } else {
+                // SAFETY: the frame's debug data, of its length, valid
+                // while the frame is, which the result borrows.
+                unsafe { core::slice::from_raw_parts(g.opaque_data, g.opaque_data_len) }
+            };
+            FrameKind::GoAway {
+                last_stream: StreamId(g.last_stream_id),
+                error: H2Error(g.error_code),
+                debug,
+            }
+        }
+        sys::NGHTTP2_WINDOW_UPDATE => {
+            // SAFETY: a WINDOW_UPDATE frame, as its header says.
+            let w = unsafe { frame.window_update };
+            FrameKind::WindowUpdate {
+                increment: w.window_size_increment,
+            }
+        }
+        other => FrameKind::Other(other),
+    };
+    Frame {
+        stream: StreamId(hd.stream_id),
+        length: hd.length,
+        flags: hd.flags,
+        kind,
+    }
+}
+
+/// # Safety
+///
+/// Called by the library with the frame it sent and the session's user
+/// data.
+unsafe extern "C" fn on_frame_send(
+    session: *mut sys::nghttp2_session,
+    frame: *const sys::nghttp2_frame,
+    user: *mut c_void,
+) -> c_int {
+    // SAFETY: the frame the library sent, valid for the call.
+    let frame = unsafe { &*frame };
+    // SAFETY: the session the callback is of.
+    let frame = unsafe { describe(session, frame) };
+    // What a frame sent is told fails nothing: the library's own GOAWAY
+    // has failed the session already.
+    // SAFETY: the session's user data.
+    let _heard = unsafe { tell(user, Event::Sent(frame)) };
+    0
+}
+
 /// # Safety
 ///
 /// Called by the library with its frame and the session's user data.
 unsafe extern "C" fn on_frame_recv(
-    _session: *mut sys::nghttp2_session,
+    session: *mut sys::nghttp2_session,
     frame: *const sys::nghttp2_frame,
     user: *mut c_void,
 ) -> c_int {
     // SAFETY: the frame the library read, valid for the call.
     let frame = unsafe { &*frame };
+    // Told whole first, as C traces it before it acts on it.
+    // SAFETY: the session the callback is of.
+    let whole = unsafe { describe(session, frame) };
+    // SAFETY: the session's user data.
+    let told = unsafe { tell(user, Event::Received(whole)) };
+    if told != 0 {
+        return told;
+    }
     // SAFETY: every frame starts with its header.
     let hd = unsafe { frame.hd };
     let stream = StreamId(hd.stream_id);
@@ -651,7 +783,23 @@ unsafe extern "C" fn on_frame_recv(
         sys::NGHTTP2_DATA if hd.flags & sys::NGHTTP2_FLAG_END_STREAM != 0 => {
             Event::DataEnd { stream }
         }
-        sys::NGHTTP2_SETTINGS if hd.flags & sys::NGHTTP2_FLAG_ACK == 0 => Event::Settings,
+        sys::NGHTTP2_SETTINGS if hd.flags & sys::NGHTTP2_FLAG_ACK == 0 => {
+            // SAFETY: the session the callback is of, which it may ask.
+            let max_concurrent = unsafe {
+                sys::nghttp2_session_get_remote_settings(
+                    session,
+                    sys::NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS,
+                )
+            };
+            // SAFETY: as above.
+            let enable_push = unsafe {
+                sys::nghttp2_session_get_remote_settings(session, sys::NGHTTP2_SETTINGS_ENABLE_PUSH)
+            } != 0;
+            Event::Settings {
+                max_concurrent,
+                enable_push,
+            }
+        }
         // Stream 0's is the connection's.
         sys::NGHTTP2_WINDOW_UPDATE => Event::WindowUpdate {
             stream: Some(stream).filter(|s| s.0 != 0),

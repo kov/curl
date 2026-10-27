@@ -1738,7 +1738,7 @@ fn a_tcp_first_failing_last_still_names_the_failure() {
 
 /// A transfer in HTTP/3 or older through a proxy makes one attempt, over
 /// TCP: through a SOCKS proxy, HTTP/3 may not be spoken, which is said
-/// as HTTP/3 is weighed (`cf_hc_may_h3`); through an HTTP proxy's tunnel
+/// as HTTP/3 is first weighed (`cf_hc_may_h3`); through an HTTP proxy's tunnel
 /// HTTP/3 goes over CONNECT-UDP only alone, and no race is run yet.
 #[test]
 fn http3_through_a_proxy_goes_over_tcp_alone() {
@@ -1770,6 +1770,11 @@ fn http3_through_a_proxy_goes_over_tcp_alone() {
         );
         let said = lines(&ran, &["HTTP/3 is not supported"]);
         assert_eq!(said.len(), usize::from(why.is_some()), "{proxy}: {said:#?}");
+        // Said as the first attempt is chosen, before it is named.
+        if let Some(why) = why {
+            let order = lines(&ran, &["HTTP/3 is not supported", "[HTTPS-CONNECT] 1st"]);
+            assert_eq!(order[0], why, "{order:#?}");
+        }
     }
 }
 

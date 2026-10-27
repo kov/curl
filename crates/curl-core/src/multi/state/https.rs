@@ -184,8 +184,9 @@ enum Second {
     None,
     /// Chosen, to start as the first fails or at its timeouts.
     Due(Alpn),
-    /// Started, and failed if `.1`.
-    Started(Alpn, bool),
+    /// Started: running beside the first, or failed, as the race's
+    /// second attempt says.
+    Started(Alpn),
 }
 
 /// Where the origin's HTTPS record is.
@@ -449,7 +450,7 @@ pub(super) fn other_leads(c: &Connecting) -> bool {
 /// first.
 pub(super) fn attempt_failed(c: &mut Connecting, kind: ErrorKind) -> bool {
     let leads = other_leads(c);
-    let (Some(h), Some(race)) = (c.https.as_mut(), c.race.as_mut()) else {
+    let (Some(h), Some(race)) = (c.https.as_ref(), c.race.as_mut()) else {
         return false;
     };
     match h.second {
@@ -458,11 +459,8 @@ pub(super) fn attempt_failed(c: &mut Connecting, kind: ErrorKind) -> bool {
             true
         }
         Second::None => false,
-        Second::Started(alpn, _) if leads => {
-            h.second = Second::Started(alpn, true);
-            true
-        }
-        Second::Started(..) => {
+        Second::Started(_) if leads => true,
+        Second::Started(_) => {
             race.first_failed = Some(kind);
             true
         }
@@ -473,12 +471,8 @@ pub(super) fn attempt_failed(c: &mut Connecting, kind: ErrorKind) -> bool {
 /// one beside a TCP second, or the second, an HTTP/3 one beside a first
 /// over TCP.
 pub(super) fn other_failed(c: &mut Connecting, kind: ErrorKind) {
-    let leads = other_leads(c);
-    let h = c.https.as_mut().expect("a race of two");
-    if leads {
+    if other_leads(c) {
         c.race.as_mut().expect("a race of two").first_failed = Some(kind);
-    } else if let Second::Started(alpn, _) = h.second {
-        h.second = Second::Started(alpn, true);
     }
 }
 
@@ -549,17 +543,19 @@ pub(super) fn second_started(c: &mut Connecting) -> Alpn {
     let Second::Due(alpn) = h.second else {
         panic!("a second is due");
     };
-    h.second = Second::Started(alpn, false);
+    h.second = Second::Started(alpn);
     alpn
 }
 
 /// Every attempt failed: the setup fails with the first's failure.
 pub(super) fn all_failed(c: &Connecting) -> Option<ErrorKind> {
     let h = c.https.as_ref()?;
-    let failed = c.race.as_ref()?.first_failed?;
+    let race = c.race.as_ref()?;
+    let failed = race.first_failed?;
     match h.second {
-        Second::Started(_, true) | Second::None => Some(failed),
-        Second::Unchosen | Second::Due(_) | Second::Started(_, false) => None,
+        Second::Started(_) if race.second.is_none() => Some(failed),
+        Second::None => Some(failed),
+        Second::Unchosen | Second::Due(_) | Second::Started(_) => None,
     }
 }
 

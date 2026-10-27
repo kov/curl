@@ -362,9 +362,9 @@ witness: curl-core proto::http::tests::h3_trace::a_refused_quic_attempt_starts_t
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::h3_trace::a_race_both_attempts_lose_fails_with_the_first_s_failure
 --- old
-        Second::Started(_, true) | Second::None => Some(failed),
+        Second::Started(_) if race.second.is_none() => Some(failed),
 --- new
-        Second::Started(_, true) | Second::None => Some(ErrorKind::SslConnectError).filter(|_| failed != ErrorKind::OutOfMemory),
+        Second::Started(_) if race.second.is_none() => Some(ErrorKind::SslConnectError).filter(|_| failed != ErrorKind::OutOfMemory),
 
 === the attempt beside the lead is not driven
 file: crates/curl-core/src/multi/state.rs
@@ -421,19 +421,21 @@ witness: curl-core proto::http::tests::h2::an_alternative_here_in_http1_offers_h
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::h3_trace::a_tcp_first_failing_last_still_names_the_failure
 --- old
-        Second::Started(alpn, _) if leads => {
+        Second::Started(_) if leads => true,
 --- new
-        Second::Started(alpn, _) if leads || true => {
+        Second::Started(_) if leads || true => true,
 
 === an HTTP/3 second failing beside a TCP first is not counted
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::h3_trace::a_tcp_first_and_quic_second_failing_fail_with_tcp_s_failure
 --- old
-    } else if let Second::Started(alpn, _) = h.second {
-        h.second = Second::Started(alpn, true);
-    }
+        Second::Started(_) if race.second.is_none() => Some(failed),
+        Second::None => Some(failed),
 --- new
-    }
+        Second::Started(_) if race.second.is_none() && race.lead == super::Lead::Second => {
+            Some(failed)
+        }
+        Second::None => Some(failed),
 
 === the attempts' versions are chosen in another order than C's
 file: crates/curl-core/src/multi/state/https.rs

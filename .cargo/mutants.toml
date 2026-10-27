@@ -694,12 +694,9 @@ exclude_re = [
     'curl-core/src/conn/h3proxy\.rs:.*: replace < with <= in <impl QuicCx for Tunnelled<._>>::take_room$',
     'curl-core/src/conn/h3proxy\.rs:.*: replace <impl QuicCx for Tunnelled<._>>::give_room with \(\)$',
     # Nothing read leaves what is held and the window as the last DATA
-    # left them, opened then; anything read opens it by as much, so what
-    # it opens by is never 0.
+    # left them, opened then, so it opens by nothing; and a stream's window
+    # extended by nothing is as it was.
     'curl-core/src/conn/h3proxy\.rs:.*: replace > with >= in H3Proxy::take_held$',
-    # A window already as wide as wanted is opened by nothing, which the
-    # check of the amount skips as the check of the widths does.
-    'curl-core/src/conn/h3proxy\.rs:.*: replace > with >= in Tunnel::update_window$',
     # A layer is never sent nothing, so what it is sent is never empty.
     'curl-core/src/conn/h3proxy\.rs:.*: replace > with >= in H3Proxy::send_inner$',
     # Only the capsule layer holds what it was sent, and it is above

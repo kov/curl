@@ -163,19 +163,21 @@ impl Tunnel {
         let buffered = self.held().len() as u64;
         let wanted = TUNNEL_WINDOW.saturating_sub(buffered);
         let current = self.rx_offset_max - self.rx_offset;
-        if wanted > current {
-            let delta = (wanted - current).min(u64::MAX - self.rx_offset_max);
-            if delta > 0 {
-                let id = stream.0;
-                cx.of(
-                    H3P,
-                    format_args!(
-                        "[{id}] rx window, extend {current} (buffered {buffered}) by {delta} bytes"
-                    ),
-                );
-                self.rx_offset_max += delta;
-                self.extend += delta;
-            }
+        // Opened by what is wanted past what is open, if anything, short of
+        // the largest offset.
+        let delta = wanted
+            .saturating_sub(current)
+            .min(u64::MAX - self.rx_offset_max);
+        if delta > 0 {
+            let id = stream.0;
+            cx.of(
+                H3P,
+                format_args!(
+                    "[{id}] rx window, extend {current} (buffered {buffered}) by {delta} bytes"
+                ),
+            );
+            self.rx_offset_max += delta;
+            self.extend += delta;
         }
     }
 

@@ -82,32 +82,92 @@ impl H3Error {
 }
 
 /// A library's failure: which library, the call that failed, its code
-/// and its text for it (`ngtcp2_strerror`, `nghttp3_strerror`).
+/// and its text for it (`ngtcp2_strerror`, `nghttp3_strerror`). The code
+/// is the library's number, kept for C's messages, which print it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QuicError {
     pub layer: Layer,
     pub call: &'static str,
     pub code: i32,
     pub text: &'static str,
-    /// It is the QUIC library's failure of the handshake's TLS, commonly
-    /// the peer's certificate (`NGTCP2_ERR_CRYPTO`).
-    pub crypto: bool,
 }
 
 /// Which of the two libraries a failure is the code of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layer {
     Quic,
+    /// The QUIC library's failure of the handshake's TLS, commonly the
+    /// peer's certificate (`NGTCP2_ERR_CRYPTO`).
+    Crypto,
     Http3,
 }
 
+/// What a library call the caller is told of came to, as C traces it:
+/// 0, or the failure's code.
+pub fn returned(answer: Result<(), QuicError>) -> i32 {
+    answer.map_or_else(|error| error.code, |()| 0)
+}
+
 /// What a connection closes with, or the peer closed it with
-/// (`ngtcp2_ccerr`): its kind, as the library numbers it (a transport
-/// error is 0, an application's 1), and its code.
+/// (`ngtcp2_ccerr`): its kind, and its code, a QUIC transport error's or
+/// the application's as the kind says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CloseError {
-    pub kind: i32,
+    pub kind: CloseKind,
     pub code: u64,
+}
+
+/// The transport error from which a code is TLS's alert, in its low byte
+/// (RFC 9001, section 4.8; `NGTCP2_CRYPTO_ERROR`).
+const CRYPTO_ERROR: u64 = 0x100;
+/// The server refused the connection (RFC 9000, section 20.1;
+/// `NGTCP2_CONNECTION_REFUSED`).
+const CONNECTION_REFUSED: u64 = 0x2;
+
+impl CloseError {
+    /// The TLS alert its code is, if it is one: as C reads it, whatever
+    /// the kind (`cf_ngtcp2_connect`).
+    pub fn tls_alert(&self) -> Option<u64> {
+        (self.code >= CRYPTO_ERROR).then_some(self.code & 0xff)
+    }
+
+    /// Its code says the server refused the connection, whatever the
+    /// kind, as C reads it.
+    pub fn refused(&self) -> bool {
+        self.code == CONNECTION_REFUSED
+    }
+}
+
+/// What kind of close a `CloseError` is (`ngtcp2_ccerr_type`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseKind {
+    /// A QUIC transport error.
+    Transport,
+    /// The application's error, HTTP/3's.
+    Application,
+    /// The peer answered with a Version Negotiation packet.
+    VersionNegotiation,
+    /// The idle timeout passed.
+    IdleClose,
+    /// The connection is dropped with no CONNECTION_CLOSE sent.
+    DropConn,
+    /// A Retry packet is sent (a server's).
+    Retry,
+}
+
+/// The kind's number, as C's traces print it (`ngtcp2_ccerr_type`).
+impl fmt::Display for CloseKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let n = match self {
+            CloseKind::Transport => 0,
+            CloseKind::Application => 1,
+            CloseKind::VersionNegotiation => 2,
+            CloseKind::IdleClose => 3,
+            CloseKind::DropConn => 4,
+            CloseKind::Retry => 5,
+        };
+        write!(f, "{n}")
+    }
 }
 
 /// What the connection read, as it read it. The library acts on what
@@ -182,10 +242,13 @@ pub enum StreamEvent<'a> {
     Consumed(u64),
     /// The QUIC stream closed, with the peer's error code if it gave one;
     /// the HTTP/3 library's answer to closing it (`cb_stream_close`).
-    QuicClosed { error: H3Error, rv: i32 },
+    QuicClosed {
+        error: H3Error,
+        answer: Result<(), QuicError>,
+    },
     /// The peer reset the stream; the HTTP/3 library's answer to it
     /// (`cb_stream_reset`).
-    QuicReset { rv: i32 },
+    QuicReset { answer: Result<(), QuicError> },
     /// The peer let the stream send more (`cb_extend_max_stream_data`).
     Unblocked,
     /// The stream could not send for the peer's flow control
@@ -208,7 +271,7 @@ pub enum StreamEvent<'a> {
     Closed(H3Error),
     /// The peer asked the stream to stop sending; the QUIC library's
     /// answer to shutting it (`cb_h3_reset_stream`).
-    H3Reset { rv: i32 },
+    H3Reset { answer: Result<(), QuicError> },
     /// The HTTP/3 library took `n` bytes of the stream's request body in
     /// `vecs` pieces to send, the last if `eof`, `buffered` held in all;
     /// or, with none and not the last, found none to take
@@ -442,12 +505,15 @@ pub trait Connection: fmt::Debug + Send {
 pub enum SubmitFailed {
     /// No stream could be opened.
     NoStream,
-    /// The HTTP/3 library refused it on `stream`, the connection closing
-    /// if `closing`.
+    /// The HTTP/3 library refused it on `stream`, as the connection is
+    /// closing (`NGHTTP3_ERR_CONN_CLOSING`).
+    Closing {
+        stream: StreamId,
+    },
+    /// The HTTP/3 library refused it on `stream` for another reason.
     Refused {
         stream: StreamId,
         error: QuicError,
-        closing: bool,
     },
     OutOfMemory,
 }

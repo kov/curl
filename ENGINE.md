@@ -1787,7 +1787,12 @@ next send as on any connection in use (DIVERGENCE.md).
 **The libraries.** QUIC and HTTP/3 are spoken by a binding crate (ngtcp2, its OpenSSL crypto and
 nghttp3, `crates/curl-ngtcp2`) behind the core's `http3::Http3` and `http3::Connection`, shaped
 as `http2`'s seam is: library-shaped, the libraries' failures crossing only inside `QuicError`
-(which library, which call, its code and text) for C's messages. ngtcp2 is linked statically
+(which library, a TLS failure of the QUIC library's apart, which call, its code and text) for
+C's messages. No other number of the libraries' crosses: a callback's call into the other library
+is told as a `Result<(), QuicError>`, printed as C prints its return; a close's type is a
+`CloseKind`, its number said only for the traces, its code read for a TLS alert or a refusal by
+`CloseError`'s own methods; a request refused as the connection closes is
+`SubmitFailed::Closing`. ngtcp2 is linked statically
 from the copy `inventory/measure/deps.py` builds, the version the C oracle uses. The connection
 is made over a TLS session already made (`TlsBackend::quic_session`, a `QuicTls`), which it owns
 and frees first, as C frees its TLS before ngtcp2; ngtcp2's crypto finds the connection through

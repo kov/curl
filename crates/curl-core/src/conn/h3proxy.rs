@@ -261,7 +261,8 @@ impl Tunnel {
                 self.life = Life::Closed { stream, reset };
                 Heard::Fine
             }
-            StreamEvent::QuicClosed { error, rv } => {
+            StreamEvent::QuicClosed { error, answer } => {
+                let rv = crate::http3::returned(answer);
                 let (id, error) = (stream.0, error.0);
                 cx.of(
                     H3P,
@@ -269,8 +270,9 @@ impl Tunnel {
                 );
                 Heard::Fine
             }
-            StreamEvent::H3Reset { rv } => {
+            StreamEvent::H3Reset { answer } => {
                 if ours {
+                    let rv = crate::http3::returned(answer);
                     let id = stream.0;
                     cx.of(H3P, format_args!("[{id}] reset -> {rv}"));
                     self.life = Life::Closed {

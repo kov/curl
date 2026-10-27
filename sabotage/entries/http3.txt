@@ -780,3 +780,13 @@ witness: curl-core http3_through_an_http3_proxy_survives_every_allocation_failin
         io::Error::from(io::ErrorKind::Other)
 --- new
         io::Error::other("the capsule layer failed")
+
+=== a close's kind is said with another kind's number
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 tests::a_close_kind_is_said_as_ngtcp2_numbers_it
+--- old
+        sys::NGTCP2_CCERR_TYPE_IDLE_CLOSE => CloseKind::IdleClose,
+        sys::NGTCP2_CCERR_TYPE_DROP_CONN => CloseKind::DropConn,
+--- new
+        sys::NGTCP2_CCERR_TYPE_IDLE_CLOSE => CloseKind::DropConn,
+        sys::NGTCP2_CCERR_TYPE_DROP_CONN => CloseKind::IdleClose,

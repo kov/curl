@@ -17,7 +17,7 @@ use super::layer::{Below, LayerCx};
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::http3::{
-    CloseError, ConnEvent, Connection, Event, Expiry, H3Error, Heard, QuicError, StreamEvent,
+    CloseKind, ConnEvent, Connection, Event, Expiry, H3Error, Heard, Layer, QuicError, StreamEvent,
     StreamId, SubmitFailed,
 };
 use crate::time::{Instant, SharedClock};
@@ -47,15 +47,6 @@ const _: () = assert!(RECV_ROOM >= TUNNEL_ROOM);
 /// The most a packet that closes the connection is
 /// (`NGTCP2_MAX_UDP_PAYLOAD_SIZE`).
 const CLOSE_ROOM: usize = 1200;
-
-/// What closes are kinds of (`ngtcp2_ccerr_type`): a version
-/// negotiation's.
-const CLOSE_VERSION_NEGOTIATION: i32 = 2;
-/// The transport's codes from which a close is TLS's alert
-/// (`NGTCP2_CRYPTO_ERROR`).
-const CRYPTO_ERROR: u64 = 0x100;
-/// The server refused the connection (`NGTCP2_CONNECTION_REFUSED`).
-const CONNECTION_REFUSED: u64 = 0x2;
 
 /// What QUIC reaches beyond the transfer's trace: the multi's room for
 /// the datagrams it receives, and the transfer's timer for the QUIC
@@ -107,7 +98,8 @@ pub(crate) trait QuicIo: QuicCx {
 /// fail the read (`cb_h3_recv_data`).
 pub(crate) fn unrouted(cx: &mut dyn LayerCx, stream: StreamId, event: &StreamEvent<'_>) -> Heard {
     match *event {
-        StreamEvent::QuicClosed { error, rv } => {
+        StreamEvent::QuicClosed { error, answer } => {
+            let rv = crate::http3::returned(answer);
             let (id, error) = (stream.0, error.0);
             cx.of(
                 Component::Http3,
@@ -717,15 +709,15 @@ impl Quic {
         if matches!(step, Err(ErrorKind::RecvError | ErrorKind::SendError)) && self.conn.draining()
         {
             step = Err(ErrorKind::CouldntConnect);
-            if let Some(CloseError { kind, code }) = self.conn.closed_with() {
+            if let Some(closed) = self.conn.closed_with() {
                 let h3 = self.state.component;
+                let (kind, code) = (closed.kind, closed.code);
                 cx.of(h3, format_args!("connect error, type={kind}, code={code}"));
-                if kind == CLOSE_VERSION_NEGOTIATION {
+                if kind == CloseKind::VersionNegotiation {
                     cx.of(h3, format_args!("error in version negotiation"));
-                } else if code >= CRYPTO_ERROR {
-                    let alert = code & 0xff;
+                } else if let Some(alert) = closed.tls_alert() {
                     cx.of(h3, format_args!("crypto error, tls alert={alert}"));
-                } else if code == CONNECTION_REFUSED {
+                } else if closed.refused() {
                     cx.of(h3, format_args!("connection refused by server"));
                     // A server shutting down may say so at once: the next
                     // address is tried.
@@ -860,29 +852,32 @@ impl Quic {
                 ErrorKind::SendError,
                 format_args!("cannot open bidi streams"),
             )),
-            Err(SubmitFailed::Refused {
-                stream,
-                error,
-                closing,
-            }) => {
-                self.state.used_bidi += 1;
+            Err(SubmitFailed::Closing { stream }) => {
                 let id = stream.0;
-                if closing {
-                    cx.of(
-                        self.state.component,
-                        format_args!("h3sid[{id}] failed to send, connection is closing"),
-                    );
-                } else {
-                    let (code, text) = (error.code, error.text);
-                    cx.of(
-                        self.state.component,
-                        format_args!("h3sid[{id}] failed to send -> {code} ({text})"),
-                    );
-                }
-                self.cancel(cx, stream);
+                cx.of(
+                    self.state.component,
+                    format_args!("h3sid[{id}] failed to send, connection is closing"),
+                );
+                self.refused(cx, stream);
+                Err(ErrorKind::SendError)
+            }
+            Err(SubmitFailed::Refused { stream, error }) => {
+                let (id, code, text) = (stream.0, error.code, error.text);
+                cx.of(
+                    self.state.component,
+                    format_args!("h3sid[{id}] failed to send -> {code} ({text})"),
+                );
+                self.refused(cx, stream);
                 Err(ErrorKind::SendError)
             }
         }
+    }
+
+    /// The library refused a request on `stream`: the stream, counted
+    /// among those the peer allows, is cancelled.
+    fn refused(&mut self, cx: &mut dyn QuicIo, stream: StreamId) {
+        self.state.used_bidi += 1;
+        self.cancel(cx, stream);
     }
 
     /// Stop `stream` both ways as cancelled, nothing more heard of it,
@@ -1555,7 +1550,7 @@ impl Quic {
                 );
                 self.failed(cx, error);
                 // A failed TLS, which an unverified peer often is.
-                return Err(if error.crypto {
+                return Err(if error.layer == Layer::Crypto {
                     ErrorKind::PeerFailedVerification
                 } else {
                     ErrorKind::RecvError

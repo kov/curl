@@ -25,6 +25,13 @@ pub(crate) const NGTCP2_SETTINGS_VERSION: c_int = 4;
 pub(crate) const NGTCP2_TRANSPORT_PARAMS_VERSION: c_int = 1;
 pub(crate) const NGTCP2_CALLBACKS_VERSION: c_int = 5;
 
+pub(crate) const NGTCP2_CCERR_TYPE_TRANSPORT: c_int = 0;
+pub(crate) const NGTCP2_CCERR_TYPE_APPLICATION: c_int = 1;
+pub(crate) const NGTCP2_CCERR_TYPE_VERSION_NEGOTIATION: c_int = 2;
+pub(crate) const NGTCP2_CCERR_TYPE_IDLE_CLOSE: c_int = 3;
+pub(crate) const NGTCP2_CCERR_TYPE_DROP_CONN: c_int = 4;
+pub(crate) const NGTCP2_CCERR_TYPE_RETRY: c_int = 5;
+
 pub(crate) const NGTCP2_ERR_STREAM_DATA_BLOCKED: c_int = -208;
 pub(crate) const NGTCP2_ERR_CRYPTO: c_int = -213;
 pub(crate) const NGTCP2_ERR_STREAM_SHUT_WR: c_int = -219;

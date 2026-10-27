@@ -799,7 +799,8 @@ impl Request {
                 }
                 Heard::Fine
             }
-            StreamEvent::QuicClosed { error, rv } => {
+            StreamEvent::QuicClosed { error, answer } => {
+                let rv = crate::http3::returned(answer);
                 let error = error.0;
                 trace::of(
                     cx,
@@ -808,7 +809,8 @@ impl Request {
                 );
                 Heard::Fine
             }
-            StreamEvent::QuicReset { rv } | StreamEvent::H3Reset { rv } => {
+            StreamEvent::QuicReset { answer } | StreamEvent::H3Reset { answer } => {
+                let rv = crate::http3::returned(answer);
                 trace::of(cx, h3, format_args!("[{id}] reset -> {rv}"));
                 Heard::Fine
             }

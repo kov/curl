@@ -35,8 +35,9 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::http3::{
-    BODY_HELD, ClientSetup, CloseError, ConnEvent, ConnectFailed, EarlyStart, Event, Events,
-    Expiry, H3Error, H3Failed, Heard, Http3, Layer, QuicError, StreamEvent, StreamId, SubmitFailed,
+    BODY_HELD, ClientSetup, CloseError, CloseKind, ConnEvent, ConnectFailed, EarlyStart, Event,
+    Events, Expiry, H3Error, H3Failed, Heard, Http3, Layer, QuicError, StreamEvent, StreamId,
+    SubmitFailed,
 };
 use curl_core::time::Instant;
 use curl_core::tls::{DriveCall, QuicTls, TlsCx};
@@ -114,11 +115,14 @@ fn quic_error(call: &'static str, code: c_int) -> QuicError {
     // SAFETY: and returns a static C string for it.
     let text = unsafe { CStr::from_ptr(text) };
     QuicError {
-        layer: Layer::Quic,
+        layer: if code == sys::NGTCP2_ERR_CRYPTO {
+            Layer::Crypto
+        } else {
+            Layer::Quic
+        },
         call,
         code,
         text: text.to_str().unwrap_or("unknown"),
-        crypto: code == sys::NGTCP2_ERR_CRYPTO,
     }
 }
 
@@ -133,7 +137,32 @@ fn h3_error(call: &'static str, code: c_int) -> QuicError {
         call,
         code,
         text: text.to_str().unwrap_or("unknown"),
-        crypto: false,
+    }
+}
+
+/// What a library's call that returned `rv` came to: `failure` of the
+/// code, unless 0.
+fn answer(rv: c_int, failure: impl FnOnce(c_int) -> QuicError) -> Result<(), QuicError> {
+    match rv {
+        0 => Ok(()),
+        code => Err(failure(code)),
+    }
+}
+
+/// What ngtcp2 says a close is (`ngtcp2_ccerr_type`).
+fn close_error(cerr: &sys::ngtcp2_ccerr) -> CloseError {
+    let kind = match cerr.r#type {
+        sys::NGTCP2_CCERR_TYPE_TRANSPORT => CloseKind::Transport,
+        sys::NGTCP2_CCERR_TYPE_APPLICATION => CloseKind::Application,
+        sys::NGTCP2_CCERR_TYPE_VERSION_NEGOTIATION => CloseKind::VersionNegotiation,
+        sys::NGTCP2_CCERR_TYPE_IDLE_CLOSE => CloseKind::IdleClose,
+        sys::NGTCP2_CCERR_TYPE_DROP_CONN => CloseKind::DropConn,
+        sys::NGTCP2_CCERR_TYPE_RETRY => CloseKind::Retry,
+        other => unreachable!("ngtcp2 has no close of type {other}"),
+    };
+    CloseError {
+        kind,
+        code: cerr.error_code,
     }
 }
 
@@ -917,9 +946,9 @@ impl curl_core::http3::Connection for Connection {
         // SAFETY: the state, between calls.
         let last = unsafe { &mut (*inner).last_error };
         match error.layer {
-            Layer::Quic => {
+            Layer::Quic | Layer::Crypto => {
                 if last.error_code == 0 {
-                    if error.code == sys::NGTCP2_ERR_CRYPTO {
+                    if error.layer == Layer::Crypto {
                         // SAFETY: the connection.
                         let alert = unsafe { sys::ngtcp2_conn_get_tls_alert(conn) };
                         // SAFETY: the error, and no reason.
@@ -944,10 +973,7 @@ impl curl_core::http3::Connection for Connection {
     fn close_error(&self) -> CloseError {
         // SAFETY: the state, between calls.
         let last = unsafe { &(*self.inner.ptr()).last_error };
-        CloseError {
-            kind: last.r#type,
-            code: last.error_code,
-        }
+        close_error(last)
     }
 
     fn closed_with(&self) -> Option<CloseError> {
@@ -955,10 +981,7 @@ impl curl_core::http3::Connection for Connection {
         let cerr = unsafe { sys::ngtcp2_conn_get_ccerr(self.conn()) };
         // SAFETY: none, or the connection's, alive until its next call.
         let cerr = unsafe { cerr.as_ref() }?;
-        Some(CloseError {
-            kind: cerr.r#type,
-            code: cerr.error_code,
-        })
+        Some(close_error(cerr))
     }
 
     fn write_close(&mut self, now: Instant, buf: &mut [u8]) -> Result<usize, QuicError> {
@@ -1043,14 +1066,16 @@ impl curl_core::http3::Connection for Connection {
         let rc = unsafe {
             sys::nghttp3_conn_submit_request(h3, sid, nva.as_ptr(), nva.len(), dr, ptr::null_mut())
         };
-        if rc != 0 {
-            return Err(SubmitFailed::Refused {
-                stream: StreamId(sid),
-                error: h3_error("nghttp3_conn_submit_request", rc),
-                closing: rc == sys::NGHTTP3_ERR_CONN_CLOSING,
-            });
+        let stream = StreamId(sid);
+        match rc {
+            0 => {}
+            sys::NGHTTP3_ERR_CONN_CLOSING => return Err(SubmitFailed::Closing { stream }),
+            rc => {
+                let error = h3_error("nghttp3_conn_submit_request", rc);
+                return Err(SubmitFailed::Refused { stream, error });
+            }
         }
-        Ok(StreamId(sid))
+        Ok(stream)
     }
 
     fn write_body(&mut self, stream: StreamId, bytes: &[u8]) -> Result<usize, OutOfMemory> {
@@ -1333,7 +1358,7 @@ unsafe extern "C" fn stream_close2(
     }
     let event = StreamEvent::QuicClosed {
         error: H3Error(code),
-        rv,
+        answer: answer(rv, |rv| h3_error("nghttp3_conn_close_stream", rv)),
     };
     // SAFETY: inside the call, holding nothing of the state.
     unsafe { tell_stream(inner, stream_id, event) };
@@ -1359,8 +1384,9 @@ unsafe extern "C" fn stream_reset(
     let h3 = unsafe { (*inner).h3 };
     // SAFETY: the HTTP/3 connection.
     let rv = unsafe { sys::nghttp3_conn_shutdown_stream_read(h3, stream_id) };
+    let answer = answer(rv, |rv| h3_error("nghttp3_conn_shutdown_stream_read", rv));
     // SAFETY: inside the call, holding nothing of the state.
-    unsafe { tell_stream(inner, stream_id, StreamEvent::QuicReset { rv }) };
+    unsafe { tell_stream(inner, stream_id, StreamEvent::QuicReset { answer }) };
     if rv != 0 && rv != sys::NGHTTP3_ERR_STREAM_NOT_FOUND {
         return sys::NGTCP2_ERR_CALLBACK_FAILURE;
     }
@@ -1730,8 +1756,9 @@ unsafe extern "C" fn h3_reset_stream(
     let conn = unsafe { (*inner).conn };
     // SAFETY: the connection.
     let rv = unsafe { sys::ngtcp2_conn_shutdown_stream_write(conn, 0, stream_id, app_error_code) };
+    let answer = answer(rv, |rv| quic_error("ngtcp2_conn_shutdown_stream_write", rv));
     // SAFETY: inside the call, holding nothing of the state.
-    unsafe { tell_stream(inner, stream_id, StreamEvent::H3Reset { rv }) };
+    unsafe { tell_stream(inner, stream_id, StreamEvent::H3Reset { answer }) };
     if rv != 0 && rv != sys::NGTCP2_ERR_STREAM_NOT_FOUND {
         return sys::NGHTTP3_ERR_CALLBACK_FAILURE;
     }
@@ -1786,7 +1813,7 @@ unsafe extern "C" fn h3_read_req_body(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_macros)]
+    #![allow(clippy::disallowed_macros, clippy::disallowed_methods)]
 
     use super::*;
 
@@ -1806,6 +1833,24 @@ mod tests {
             base: ptr::null_mut(),
             len: 0,
         }; 4]
+    }
+
+    /// A close's kind is said as ngtcp2 numbers it, as C's traces print
+    /// it, for each of its types; and its code is kept as it is.
+    #[test]
+    fn a_close_kind_is_said_as_ngtcp2_numbers_it() {
+        for kind in 0..=5 {
+            let cerr = sys::ngtcp2_ccerr {
+                r#type: kind,
+                error_code: 0x128,
+                frame_type: 0,
+                reason: ptr::null(),
+                reasonlen: 0,
+            };
+            let closed = close_error(&cerr);
+            assert_eq!(closed.kind.to_string(), kind.to_string());
+            assert_eq!(closed.code, 0x128);
+        }
     }
 
     /// A body holds ten chunks at most, as C's buffer does; what is

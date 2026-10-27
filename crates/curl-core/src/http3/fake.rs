@@ -13,8 +13,9 @@ use std::time::Duration;
 use curl_alloc::OutOfMemory;
 
 use super::{
-    ClientSetup, CloseError, ConnEvent, ConnectFailed, Connection, EarlyStart, Event, Events,
-    Expiry, H3Error, H3Failed, Heard, Http3, Layer, QuicError, StreamEvent, StreamId, SubmitFailed,
+    ClientSetup, CloseError, CloseKind, ConnEvent, ConnectFailed, Connection, EarlyStart, Event,
+    Events, Expiry, H3Error, H3Failed, Heard, Http3, Layer, QuicError, StreamEvent, StreamId,
+    SubmitFailed,
 };
 use crate::error::ErrorKind;
 use crate::time::Instant;
@@ -343,7 +344,7 @@ impl FakeConnection {
                     Told::QuicClosed(s, e) => {
                         let closed = StreamEvent::QuicClosed {
                             error: H3Error(*e),
-                            rv: 0,
+                            answer: Ok(()),
                         };
                         told_to(call, events, stream(*s, closed))
                     }
@@ -370,11 +371,14 @@ fn told_to(call: &mut dyn DriveCall, events: Events<'_>, event: Event<'_>) -> He
 /// The QUIC library's failure `code` in `call`.
 pub fn quic_error(call: &'static str, code: i32) -> QuicError {
     QuicError {
-        layer: Layer::Quic,
+        layer: if code == -213 {
+            Layer::Crypto
+        } else {
+            Layer::Quic
+        },
         call,
         code,
         text: "ERR_FAKE",
-        crypto: code == -213,
     }
 }
 
@@ -546,7 +550,7 @@ impl Connection for FakeConnection {
         own(|| s.failed.push(error));
         if s.close.is_none() {
             s.close = Some(CloseError {
-                kind: 0,
+                kind: CloseKind::Transport,
                 code: u64::from(error.code.unsigned_abs()),
             });
         }
@@ -554,11 +558,10 @@ impl Connection for FakeConnection {
     }
 
     fn close_error(&self) -> CloseError {
-        self.script
-            .lock()
-            .unwrap()
-            .close
-            .unwrap_or(CloseError { kind: 0, code: 0 })
+        self.script.lock().unwrap().close.unwrap_or(CloseError {
+            kind: CloseKind::Transport,
+            code: 0,
+        })
     }
 
     fn closed_with(&self) -> Option<CloseError> {

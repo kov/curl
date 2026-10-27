@@ -230,3 +230,42 @@ fn a_shutdown_traces_its_goaway_and_its_end_once() {
         "{text}"
     );
 }
+
+/// A connection whose frames come a few bytes a read is read in one
+/// receive of the step, however many reads that takes, until the stream
+/// ends or a read would block: C's `h2_progress_ingress` stops only at a
+/// buffer's worth of bytes, never at a count of reads, and `cf_h2_recv`
+/// says nothing read, so `sendrecv_dl` makes it once a step (pytest
+/// `test_04_04` h2: a thousand reads and more in one `cf_recv`).
+#[test]
+fn a_step_reads_frames_however_many_reads_they_take() {
+    const FRAMES: usize = 20;
+    let mut reply = b"S 100\nH 1 0\n:status: 200\n\n".to_vec();
+    for i in 0..FRAMES {
+        let end = u8::from(i == FRAMES - 1);
+        reply.extend_from_slice(format!("D 1 1 {end}\nx").as_bytes());
+    }
+    // A frame a read: nine bytes each.
+    let per_read = std::num::NonZeroUsize::new(9).unwrap();
+    let talk = Conversation::replies(&[&reply], false)
+        .per_send()
+        .giving(per_read);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get_with(&mut m, tracing(), "/x", talk.clone(), |o| {
+        o.http.version = HttpVersion::Http2Prior;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let lines = h2_lines(&ran.seen);
+    let receives: Vec<&String> = lines.iter().filter(|l| l.contains("cf_recv(")).collect();
+    assert_eq!(
+        receives,
+        [
+            "[HTTP/2] [1] cf_recv(len=16384) -> 0, 0, window=-1/-1, connection \
+          1048575980/1048576000"
+        ],
+        "{lines:#?}"
+    );
+    let reads = lines.iter().filter(|l| l.contains("ingress: read")).count();
+    assert_eq!(reads, reply.len().div_ceil(9), "{lines:#?}");
+    assert!(reads > 11);
+}

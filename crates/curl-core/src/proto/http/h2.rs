@@ -972,22 +972,24 @@ impl Request {
             self.h2_feed(cx, lease, &held)?;
         }
         let mut left = max;
-        let mut reads = 0;
         let mut spent = false;
         loop {
             let closed = lease.conn().h2().is_none_or(H2Conn::closed);
             if closed || cx.pause().recv_paused() {
                 break;
             }
-            // At most so many reads too, as for HTTP/1, unlike C: a
-            // connection busy with many streams' small frames would hold
-            // one transfer's step for a buffer's worth of them, the
-            // others waiting.
-            if self.stream().closed || left == 0 || reads == MAX_READS {
-                spent = left == 0 || reads == MAX_READS;
+            // Bounded by bytes, never by a count of reads, as C's
+            // `data_max_bytes`: a connection busy with many streams' small
+            // frames is read until it would block or a buffer's worth
+            // came, however many reads that takes, what came for the
+            // siblings handed to them as it is read. This is the step's
+            // one receive: C's `cf_h2_recv` says nothing read, the body
+            // written by the session's callbacks, so `sendrecv_dl` does
+            // not call it again.
+            if self.stream().closed || left == 0 {
+                spent = left == 0;
                 break;
             }
-            reads += 1;
             let said = cx.easy().report().reasons();
             let got = lease.get().recv(cx, left);
             match got {

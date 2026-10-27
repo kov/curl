@@ -1994,7 +1994,10 @@ impl Request {
     }
 
     /// Read what the connection has now, at most `MAX_READS` times, until
-    /// the response is over or receiving pauses (`sendrecv_dl`).
+    /// the response is over or receiving pauses (`sendrecv_dl`). A
+    /// session's stream is one receive a step, as C's ends its loop at
+    /// once: its stream's receive gives no bytes, the session's callbacks
+    /// writing them.
     fn receive<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,

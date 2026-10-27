@@ -861,6 +861,8 @@ struct Wire {
     stalls_after: usize,
     /// The most a send takes; the rest is left to the sender.
     takes: Option<std::num::NonZeroUsize>,
+    /// The most a read gives; the rest waits for the next.
+    gives: Option<std::num::NonZeroUsize>,
     /// Each reply arrives a poll after its request: its first read
     /// would block.
     late: bool,
@@ -984,6 +986,16 @@ impl Conversation {
             .lock()
             .expect("no test panics holding the wire")
             .takes = Some(n);
+        self
+    }
+
+    /// The same peer, each read giving at most `n` bytes: a peer whose
+    /// bytes come a few at a time, each read finding the next waiting.
+    pub fn giving(self, n: std::num::NonZeroUsize) -> Conversation {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .gives = Some(n);
         self
     }
 
@@ -1780,7 +1792,8 @@ impl Socket for FakeSocket {
                 return Ok(Recv::WouldBlock);
             }
             let left = &wire.replies[wire.answered][wire.read..];
-            let n = left.len().min(buf.len());
+            let most = wire.gives.map_or(buf.len(), |g| g.get().min(buf.len()));
+            let n = left.len().min(most);
             buf[..n].copy_from_slice(&left[..n]);
             wire.read += n;
             if wire.read == wire.replies[wire.answered].len() {

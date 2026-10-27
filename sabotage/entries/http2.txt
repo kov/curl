@@ -742,3 +742,21 @@ witness: curl-core proto::http::tests::h2_trace::a_reset_traces_the_stream_s_end
 --- new
     if error != H2Error::NO_ERROR {
         trace::of(cx, H2, format_args!("[{id}] CLOSED"));
+
+=== a step's HTTP/2 read stops at eleven socket reads, as HTTP/1's does
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::a_step_reads_frames_however_many_reads_they_take
+--- old
+        let mut spent = false;
+        loop {
+            let closed = lease.conn().h2().is_none_or(H2Conn::closed);
+--- new
+        let mut spent = false;
+        let mut reads = 0;
+        loop {
+            if reads == MAX_READS {
+                spent = true;
+                break;
+            }
+            reads += 1;
+            let closed = lease.conn().h2().is_none_or(H2Conn::closed);

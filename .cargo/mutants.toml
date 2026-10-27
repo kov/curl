@@ -667,4 +667,8 @@ exclude_re = [
     # a leak checker sees: Miri's run of the binding's user-data test
     # reports it.
     'curl-nghttp2/src/lib\.rs:.*: replace <impl Drop for UserData>::drop with \(\)$',
+    # The build claims HTTPS proxies, HTTP/2 and HTTP/3: refused with one
+    # missing or with both, an HTTPS proxy in a version is accepted alike.
+    'curl-tool/src/options/parse\.rs:.*: replace claims_proxy_http -> bool with true$',
+    'curl-tool/src/options/parse\.rs:.*: replace && with \|\| in claims_proxy_http$',
 ]

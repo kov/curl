@@ -1186,7 +1186,7 @@ pub(crate) fn apply<'a>(
         Opt::ProxyAnyauth => line.current().proxy_anyauth = value.toggle(),
         Opt::ProxyHttp2 => {
             // Refused even to turn off, as C's check has no toggle.
-            if !super::parse::claims("HTTPS-proxy") || !super::parse::claims("HTTP2") {
+            if !super::parse::claims_proxy_http("HTTP2") {
                 return Err(ParamError::LibcurlDoesntSupport);
             }
             line.current().proxy_kind = if value.toggle() {
@@ -1197,7 +1197,7 @@ pub(crate) fn apply<'a>(
         }
         Opt::ProxyHttp3 => {
             // Refused even to turn off, as C's check has no toggle.
-            if !super::parse::claims("HTTPS-proxy") || !super::parse::claims("HTTP3") {
+            if !super::parse::claims_proxy_http("HTTP3") {
                 return Err(ParamError::LibcurlDoesntSupport);
             }
             line.current().proxy_kind = if value.toggle() {

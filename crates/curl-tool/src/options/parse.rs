@@ -573,6 +573,13 @@ pub(crate) fn claims_spnego() -> bool {
     claims("SPNEGO")
 }
 
+/// Whether the library claims HTTPS proxies and `version` of HTTP, which
+/// an HTTPS proxy speaking it needs (`feature_httpsproxy` and
+/// `feature_http2` or `feature_http3`).
+pub(crate) fn claims_proxy_http(version: &str) -> bool {
+    claims("HTTPS-proxy") && claims(version)
+}
+
 /// Whether the library claims the feature `name` (`feature_*`).
 pub(crate) fn claims(name: &str) -> bool {
     version().claims(name)
@@ -1485,6 +1492,11 @@ mod tests {
         assert_eq!(proxy(&["x", "--proxy-http2", "-x", "p"]), h2);
         assert_eq!(proxy(&["x", "-x", "p", "--proxy-http2"]), h2);
         let off = proxy(&["x", "-x", "p", "--proxy-http2", "--no-proxy-http2"]);
+        assert_eq!(off, (Some(&b"p"[..]), ProxyType::Https));
+        // `--proxy-http3` likewise, for HTTP/3.
+        let h3 = (Some(&b"p"[..]), ProxyType::Https3);
+        assert_eq!(proxy(&["x", "--proxy-http3", "-x", "p"]), h3);
+        let off = proxy(&["x", "-x", "p", "--proxy-http3", "--no-proxy-http3"]);
         assert_eq!(off, (Some(&b"p"[..]), ProxyType::Https));
     }
 

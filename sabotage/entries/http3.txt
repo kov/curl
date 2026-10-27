@@ -124,7 +124,7 @@ witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_ha
 --- old
             return TransferState::Init.fail(kind);
         }
-        route.dial = crate::conn::Dial::Quic;
+        dial = Dial::Quic;
 --- new
             return TransferState::Init.fail(kind);
         }
@@ -632,9 +632,10 @@ witness: curl-core conn::capsule::tests::what_came_with_the_answer_is_read_first
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
 --- old
-        self.dial == Dial::Quic && self.proxy.as_ref().is_some_and(ProxyRoute::tunnels)
+        self.dial == Dial::Quic && self.route.proxy.as_ref().is_some_and(ProxyRoute::tunnels)
 --- new
-        self.dial == Dial::Quic && self.proxy.as_ref().is_some_and(|p| p.tunnels() && !p.over_quic())
+        self.dial == Dial::Quic
+            && self.route.proxy.as_ref().is_some_and(|p| p.tunnels() && !p.over_quic())
 
 === the origin's QUIC through an HTTP/3 proxy is made as the proxy's
 file: crates/curl-core/src/conn/connect.rs
@@ -668,7 +669,7 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
 --- old
-            let udp = u8::from(self.route.tunnels_udp());
+            let udp = u8::from(dialing.tunnels_udp());
 --- new
             let udp = 0;
 

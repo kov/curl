@@ -8,8 +8,8 @@
 
 use std::fmt;
 
-use super::Tcp;
 use super::connect::Made;
+use super::{Dialing, Tcp};
 use crate::components::Component;
 
 /// How far a setup got, as the chain shows it.
@@ -74,7 +74,7 @@ impl Chain {
     /// with it, as C adds both at once (`cf_setup_add_http_proxy`), its
     /// H1-PROXY not yet installed.
     pub(crate) fn of(
-        route: &Tcp,
+        route: Dialing<'_>,
         head: Head,
         reached: SetupPoint,
         under_way: Option<Component>,
@@ -159,7 +159,12 @@ impl Chain {
     /// The chain of a setup over `route` once it is connected, every
     /// filter connected; `haproxy` if the PROXY line was sent, `tunnel`
     /// the filter of a tunnel through the proxy, H1-PROXY or H2-PROXY.
-    pub(crate) fn connected(route: &Tcp, head: Head, haproxy: bool, tunnel: Component) -> Chain {
+    pub(crate) fn connected(
+        route: Dialing<'_>,
+        head: Head,
+        haproxy: bool,
+        tunnel: Component,
+    ) -> Chain {
         let added = Handshakes {
             socks: route.socks().is_some(),
             proxy_tls: route.proxy_tls().is_some(),
@@ -174,7 +179,7 @@ impl Chain {
     /// The chain over a first hop connected, with the handshakes `added`,
     /// the tunnel's filter shown if it is installed.
     fn dialed(
-        route: &Tcp,
+        route: Dialing<'_>,
         head: Head,
         added: Handshakes,
         (installed, tunnel_filter): (bool, Component),
@@ -188,7 +193,7 @@ impl Chain {
         push(Component::Dns);
         // The SOCKS proxy's goes after the last DNS filter there is
         // (`cf_dns_add_resolve`), above the HTTPS connect filter.
-        if added.socks && resolves_target(route) {
+        if added.socks && resolves_target(route.route) {
             push(Component::Dns);
         }
         if head.https {
@@ -366,11 +371,14 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
-            dial: crate::conn::Dial::Tcp,
         };
+        let route = &route;
         let shown = |made, under_way| {
             Chain::of(
-                &route,
+                Dialing {
+                    route,
+                    dial: crate::conn::Dial::Tcp,
+                },
                 Head::default(),
                 SetupPoint::Dialed(made),
                 under_way,
@@ -393,11 +401,15 @@ mod tests {
         let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
         let route = Tcp {
             tls: Some(tls),
-            ..route
+            ..route.clone()
         };
+        let route = &route;
         let shown = |made, under_way| {
             Chain::of(
-                &route,
+                Dialing {
+                    route,
+                    dial: crate::conn::Dial::Tcp,
+                },
                 Head::default(),
                 SetupPoint::Dialed(made),
                 under_way,
@@ -443,11 +455,13 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
-            dial: crate::conn::Dial::Tcp,
         };
         let shown = |made, under_way| {
             Chain::of(
-                &route,
+                Dialing {
+                    route: &route,
+                    dial: crate::conn::Dial::Tcp,
+                },
                 Head::default(),
                 SetupPoint::Dialed(made),
                 under_way,
@@ -495,11 +509,14 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
-            dial: crate::conn::Dial::Tcp,
         };
+        let route = &route;
         let shown = |made, under_way| {
             Chain::of(
-                &route,
+                Dialing {
+                    route,
+                    dial: crate::conn::Dial::Tcp,
+                },
                 Head::default(),
                 SetupPoint::Dialed(made),
                 under_way,
@@ -513,7 +530,10 @@ mod tests {
         );
         let made = Made::PROXY_TLS | Made::TUNNEL | Made::H3_TUNNEL;
         let up = Chain::of(
-            &route,
+            Dialing {
+                route,
+                dial: crate::conn::Dial::Tcp,
+            },
             Head::default(),
             SetupPoint::Dialed(made),
             None,
@@ -557,12 +577,16 @@ mod tests {
             tls: Some(tls),
             local: None,
             delegation: Default::default(),
+        };
+        let route = &route;
+        let route = Dialing {
+            route,
             dial: crate::conn::Dial::Quic,
         };
         assert!(route.tunnels_udp());
         let shown = |made, under_way, installed| {
             Chain::of(
-                &route,
+                route,
                 Head::default(),
                 SetupPoint::Dialed(made),
                 under_way,
@@ -586,7 +610,7 @@ mod tests {
             shown(Made::TUNNEL | Made::QUIC, None, true),
             "[0][!DNS][!SETUP][HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]"
         );
-        let up = Chain::connected(&route, Head::default(), false, Component::H1Proxy);
+        let up = Chain::connected(route, Head::default(), false, Component::H1Proxy);
         assert_eq!(
             up.to_string(),
             "[0][DNS][SETUP][HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]"

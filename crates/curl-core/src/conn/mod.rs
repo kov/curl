@@ -169,7 +169,6 @@ impl Route {
                     tls,
                     local,
                     delegation,
-                    dial: _,
                 } = have;
                 let Tcp {
                     origin: want_origin,
@@ -179,9 +178,6 @@ impl Route {
                     tls: want_tls,
                     local: want_local,
                     delegation: want_delegation,
-                    // Not compared, as C compares no transport: a
-                    // connection's version is (`url_match_http_version`).
-                    dial: _,
                 } = want;
                 **origin == **want_origin
                     && delegation == want_delegation
@@ -251,10 +247,58 @@ pub(crate) struct Tcp {
     /// (`conn->gssapi_delegation`): a transfer reusing it must ask the
     /// same (`url_match_auth`).
     pub(crate) delegation: crate::options::Delegation,
-    /// How the connection to its first hop is made: a TCP stream, or QUIC
-    /// over UDP (C's `transport_wanted`). A connection serves a transfer
-    /// whichever it dials, if the transfer allows the version it speaks.
+}
+
+/// A network route as one attempt dials it: how the connection to its
+/// first hop is made, a TCP stream or QUIC over UDP (C's
+/// `transport_wanted`), is the attempt's, not the route's, so that two
+/// attempts racing over one route each say their own. A connection serves
+/// a transfer whichever way it was dialed, if the transfer allows the
+/// version it speaks.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Dialing<'a> {
+    pub(crate) route: &'a Tcp,
     pub(crate) dial: Dial,
+}
+
+impl std::ops::Deref for Dialing<'_> {
+    type Target = Tcp;
+
+    fn deref(&self) -> &Tcp {
+        self.route
+    }
+}
+
+impl Dialing<'_> {
+    /// The first hop is QUIC: to an HTTP/3 proxy whose tunnel the route
+    /// goes through, or to the origin dialed over QUIC with no tunnel on
+    /// the way (`first_transport`).
+    pub(crate) fn first_hop_quic(&self) -> bool {
+        match &self.route.proxy {
+            Some(proxy) if proxy.tunnels() => proxy.over_quic(),
+            _ => self.dial == Dial::Quic,
+        }
+    }
+
+    /// The origin is spoken to over QUIC through an HTTP proxy's tunnel,
+    /// CONNECT-UDP's: its QUIC connection's datagrams go through the
+    /// layers of the connection to the proxy, over TCP or over QUIC
+    /// (`tunnel_transport` is QUIC's).
+    pub(crate) fn tunnels_udp(&self) -> bool {
+        self.dial == Dial::Quic && self.route.proxy.as_ref().is_some_and(ProxyRoute::tunnels)
+    }
+
+    /// What the socket's filter traces as: `UNIX` for a Unix socket's
+    /// (`Curl_cft_unix`), `UDP` for QUIC's (`Curl_cft_udp`), else `TCP`.
+    pub(crate) fn socket_component(&self) -> crate::components::Component {
+        if self.route.destination().is_unix() {
+            crate::components::Component::Unix
+        } else if self.first_hop_quic() {
+            crate::components::Component::Udp
+        } else {
+            crate::components::Component::Tcp
+        }
+    }
 }
 
 /// How a route's connection is dialed.
@@ -285,40 +329,10 @@ impl Tcp {
         }
     }
 
-    /// The first hop is QUIC: to an HTTP/3 proxy whose tunnel the route
-    /// goes through, or to the origin dialed over QUIC with no tunnel on
-    /// the way (`first_transport`).
-    pub(crate) fn first_hop_quic(&self) -> bool {
-        match &self.proxy {
-            Some(proxy) if proxy.tunnels() => proxy.over_quic(),
-            _ => self.dial == Dial::Quic,
-        }
-    }
-
-    /// The origin is spoken to over QUIC through an HTTP proxy's tunnel,
-    /// CONNECT-UDP's: its QUIC connection's datagrams go through the
-    /// layers of the connection to the proxy, over TCP or over QUIC
-    /// (`tunnel_transport` is QUIC's).
-    pub(crate) fn tunnels_udp(&self) -> bool {
-        self.dial == Dial::Quic && self.proxy.as_ref().is_some_and(ProxyRoute::tunnels)
-    }
-
     /// The route's tunnel is a stream of a QUIC connection to an HTTP/3
     /// proxy.
     pub(crate) fn proxy_over_quic(&self) -> bool {
         self.proxy.as_ref().is_some_and(ProxyRoute::over_quic)
-    }
-
-    /// What the socket's filter traces as: `UNIX` for a Unix socket's
-    /// (`Curl_cft_unix`), `UDP` for QUIC's (`Curl_cft_udp`), else `TCP`.
-    pub(crate) fn socket_component(&self) -> crate::components::Component {
-        if self.destination().is_unix() {
-            crate::components::Component::Unix
-        } else if self.first_hop_quic() {
-            crate::components::Component::Udp
-        } else {
-            crate::components::Component::Tcp
-        }
     }
 
     /// The SOCKS proxy on the way, and where it is asked to connect.
@@ -877,6 +891,9 @@ pub(crate) enum Transport {
 pub(crate) struct Conn {
     number: ConnNumber,
     route: Route,
+    /// How its first hop was dialed, recorded as it came up; a stream's
+    /// for one without a network, which dials nothing.
+    dial: Dial,
     transport: Transport,
     /// The address connected to; none without a network. Its end here
     /// is its socket's to say (`local`).
@@ -932,6 +949,15 @@ impl Conn {
             Route::Tcp(tcp) => Some(tcp),
             Route::Local => None,
         }
+    }
+
+    /// Its route as it was dialed; none without a network.
+    pub(crate) fn dialing(&self) -> Option<Dialing<'_>> {
+        let route = self.tcp_route()?;
+        Some(Dialing {
+            route,
+            dial: self.dial,
+        })
     }
 
     /// Whether it multiplexes: a session speaks for it
@@ -1111,10 +1137,18 @@ impl Conn {
                     Some(layer::LayerAnswer::Tunnel(filter)) => filter,
                     _ => crate::components::Component::H1Proxy,
                 };
-                chain::Chain::connected(route, chain::Head::default(), false, tunnel)
-                    .reduced()
-                    .top()
-                    .expect("a connection has a socket")
+                chain::Chain::connected(
+                    Dialing {
+                        route,
+                        dial: self.dial,
+                    },
+                    chain::Head::default(),
+                    false,
+                    tunnel,
+                )
+                .reduced()
+                .top()
+                .expect("a connection has a socket")
             }
             Route::Local => crate::components::Component::Tcp,
         }
@@ -1123,7 +1157,11 @@ impl Conn {
     /// What its socket's filter traces as (`TCP`, `UNIX`).
     pub(crate) fn socket_component(&self) -> crate::components::Component {
         match &self.route {
-            Route::Tcp(route) => route.socket_component(),
+            Route::Tcp(route) => Dialing {
+                route,
+                dial: self.dial,
+            }
+            .socket_component(),
             Route::Local => crate::components::Component::Tcp,
         }
     }
@@ -1343,39 +1381,37 @@ mod tests {
                 tls: None,
                 local: None,
                 delegation: Default::default(),
-                dial: crate::conn::Dial::Tcp,
             })
         };
         assert!(over(b"/tmp/s").serves(&over(b"/tmp/s")));
         assert!(!over(b"/tmp/s").serves(&over(b"/tmp/t")));
     }
 
-    /// A connection serves a transfer whichever way either dials, as C
-    /// compares no transport: the version it speaks is weighed apart
-    /// (`url_match_http_version`).
+    /// A route dialed over QUIC has its socket's lines traced as C's UDP
+    /// filter's, over TCP as its TCP filter's; a connection serves a
+    /// transfer whichever way either dials, as the route holds no dial
+    /// and C compares no transport (`url_match_http_version` weighs the
+    /// version apart).
     #[test]
-    fn a_connection_serves_a_transfer_whichever_way_it_dials() {
+    fn a_route_s_socket_is_traced_as_its_attempt_dials() {
+        let route = Tcp {
+            origin: TryArc::try_new(peer(b"o.example", 443, None)).unwrap(),
+            via: None,
+            ip: IpVersion::Any,
+            proxy: None,
+            tls: None,
+            local: None,
+            delegation: Default::default(),
+        };
         let dialed = |dial| {
-            Route::Tcp(Tcp {
-                origin: TryArc::try_new(peer(b"o.example", 443, None)).unwrap(),
-                via: None,
-                ip: IpVersion::Any,
-                proxy: None,
-                tls: None,
-                local: None,
-                delegation: Default::default(),
+            Dialing {
+                route: &route,
                 dial,
-            })
+            }
+            .socket_component()
         };
-        assert!(dialed(Dial::Quic).serves(&dialed(Dial::Quic)));
-        assert!(dialed(Dial::Tcp).serves(&dialed(Dial::Tcp)));
-        assert!(dialed(Dial::Quic).serves(&dialed(Dial::Tcp)));
-        assert!(dialed(Dial::Tcp).serves(&dialed(Dial::Quic)));
-        // Its socket's lines are traced as C's UDP filter's.
-        let Route::Tcp(quic) = dialed(Dial::Quic) else {
-            unreachable!()
-        };
-        assert_eq!(quic.socket_component(), crate::components::Component::Udp);
+        assert_eq!(dialed(Dial::Quic), crate::components::Component::Udp);
+        assert_eq!(dialed(Dial::Tcp), crate::components::Component::Tcp);
     }
 
     /// Peers are the same as `Curl_peer_equal` finds them: the host in
@@ -1464,7 +1500,6 @@ mod tests {
                 tls: None,
                 local: None,
                 delegation: Default::default(),
-                dial: crate::conn::Dial::Tcp,
             })
         };
         let have = tcp(
@@ -1555,7 +1590,6 @@ mod tests {
                 tls: tls.map(|t| TlsIdentity::of(t, Default::default()).unwrap()),
                 local: None,
                 delegation: Default::default(),
-                dial: crate::conn::Dial::Tcp,
             })
         };
         let verified = Tls::default();
@@ -1609,7 +1643,6 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
-            dial: crate::conn::Dial::Tcp,
         })
     }
 
@@ -1634,7 +1667,6 @@ mod tests {
                 tls: None,
                 local: local.binds().then(|| TryArc::try_new(local).unwrap()),
                 delegation: Default::default(),
-                dial: crate::conn::Dial::Tcp,
             })
         };
         let plain = bound("", 0, 0);
@@ -1668,7 +1700,6 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
-            dial: crate::conn::Dial::Tcp,
         });
         let route = via_proxy(b"proxy.example", None, true);
         assert!(route.serves(&via_proxy(b"PROXY.example", None, true)));

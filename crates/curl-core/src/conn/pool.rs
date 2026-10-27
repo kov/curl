@@ -15,7 +15,9 @@ use super::io::{Closer, Events, Socket, SocketKey};
 use super::layer::{Alive, LayerAnswer, LayerQuery, Silent};
 use super::mux::Mux as _;
 use super::shutdown::{ConnSettings, Exits, discard};
-use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, TransferNumber, Transport, Use};
+use super::{
+    Conn, ConnId, ConnNumber, ConnSlot, Dial, Peer, Route, TransferNumber, Transport, Use,
+};
 use crate::id::{Arena, ArenaPolicy};
 use crate::proto::http::negotiate::Wants;
 use crate::share::Share;
@@ -877,7 +879,16 @@ impl Pool {
             return Ok(Acquired::Reused(lease));
         }
         let settings = ConnSettings::DEFAULT;
-        self.add(here, route, Closer::System, settings, limits, exits, now)
+        self.add(
+            here,
+            route,
+            Dial::Tcp,
+            Closer::System,
+            settings,
+            limits,
+            exits,
+            now,
+        )
     }
 
     /// A new connection for `route`, within `limits`, or none, for want
@@ -892,6 +903,7 @@ impl Pool {
         &mut self,
         here: &Home,
         route: Route,
+        dial: Dial,
         closer: Closer,
         settings: ConnSettings,
         limits: AddLimits,
@@ -918,6 +930,7 @@ impl Pool {
             Route::Local => ConnSlot::Open(Conn {
                 number,
                 route,
+                dial: Dial::Tcp,
                 transport: Transport::Local,
                 remote: None,
                 created: now,
@@ -932,9 +945,9 @@ impl Pool {
                 negotiate: None,
                 session: None,
             }),
-            Route::Tcp(tcp) => {
-                ConnSlot::Connecting(ConnectMachine::new(number, tcp, now, closer, settings))
-            }
+            Route::Tcp(tcp) => ConnSlot::Connecting(ConnectMachine::new(
+                number, tcp, dial, now, closer, settings,
+            )),
         };
         // Its own allocation, as C's `connectdata`: a transfer holds a
         // pointer to it, so a handle pays for no connection it has not.

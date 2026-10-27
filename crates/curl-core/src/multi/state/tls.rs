@@ -182,7 +182,7 @@ pub(super) fn step<H: Host>(
     cx: &mut StepCx<'_, H>,
     side: TlsSide,
 ) -> Result<Wake, Failure> {
-    let traced = Some(s.machine.route().socket_component());
+    let traced = Some(s.machine.dialing().socket_component());
     let identity = match side {
         TlsSide::Origin => lent.route.tls.as_ref(),
         TlsSide::Proxy => lent.route.proxy_tls(),

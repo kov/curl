@@ -18,9 +18,9 @@ use crate::conn::proxy::{self, Refused};
 use crate::conn::shutdown::ConnSettings;
 use crate::conn::{
     Acquired, Answer, Asked, BadEntry, BadVia, Conn, ConnLease, ConnSlot, ConnectError,
-    ConnectMachine, Connected, DriveOptions, Drove, Finish, Found, Full, Home, Limit, ListEntry,
-    Made, Peer, Pool, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute, Released, ReuseRules,
-    Route, Tcp, Unresolved, WaitReason, parse_entry, queries,
+    ConnectMachine, Connected, Dial, DriveOptions, Drove, Finish, Found, Full, Home, Limit,
+    ListEntry, Made, Peer, Pool, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute, Released,
+    ReuseRules, Route, Tcp, Unresolved, WaitReason, parse_entry, queries,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -240,6 +240,8 @@ pub(crate) struct Plan {
     /// What the connection must be, decided once for the leg. Its origin
     /// is the proxy, for one the request goes to whole.
     route: Tcp,
+    /// How the first attempt dials it, which its setup takes over.
+    dial: Dial,
 }
 
 /// A request whose connection is being set up.
@@ -1161,10 +1163,7 @@ impl Run {
                 dialed: matches!(
                     c.lead().map(ConnectMachine::reached),
                     Some(SetupPoint::Dialed(_))
-                ) || c
-                    .lead()
-                    .map(ConnectMachine::route)
-                    .is_some_and(|r| r.dial == crate::conn::Dial::Quic),
+                ) || c.lead().is_some_and(|m| m.dial() == Dial::Quic),
                 component: c.socket_component(),
                 https: c.https.is_some(),
             }),
@@ -1328,11 +1327,12 @@ impl fmt::Display for FdEvents {
 
 impl Connecting {
     /// What the socket of the leading setup traces as: a race's second's
-    /// is TCP's where the plan dials QUIC.
+    /// is TCP's where the first dials QUIC. With the leading second gone,
+    /// the first's, which runs on.
     fn socket_component(&self) -> Component {
         self.lead()
-            .map(ConnectMachine::route)
-            .map_or(self.route.socket_component(), Tcp::socket_component)
+            .or(self.lease.setup())
+            .map_or(Component::Tcp, |m| m.dialing().socket_component())
     }
 
     /// Whether a race's second leads.
@@ -2899,7 +2899,7 @@ fn enter_setup<H: Host>(
     let head = head_of(c);
     // The route the lease's setup dials, which a race's second dials
     // otherwise than the plan's.
-    let route = c.lead().map(ConnectMachine::route).unwrap_or(&c.route);
+    let route = c.lead().expect("a setup runs").dialing();
     let chain =
         |reached, under_way, installed| Chain::of(route, head, reached, under_way, installed);
     let entry = |cx: &mut StepCx<'_, H>, chain: Chain| {
@@ -3223,16 +3223,17 @@ fn race_starts<H: Host>(c: &mut Connecting, cx: &StepCx<'_, H>) -> Result<(), Ou
 fn second_starts(c: &mut Connecting) -> bool {
     let alpn = https::second_started(c);
     let race = c.race.as_mut().expect("a race of two");
-    let mut route = c.route.clone();
-    route.dial = match alpn {
-        https::Alpn::H3 => crate::conn::Dial::Quic,
-        https::Alpn::H2 | https::Alpn::H1 => crate::conn::Dial::Tcp,
+    let route = c.route.clone();
+    let dial = match alpn {
+        https::Alpn::H3 => Dial::Quic,
+        https::Alpn::H2 | https::Alpn::H1 => Dial::Tcp,
     };
     let (closer, settings, created) = race.makings.clone();
     let number = c.lease.number();
     let second = ConnectMachine::racing(
         number,
         route,
+        dial,
         created,
         closer,
         settings,
@@ -3269,7 +3270,7 @@ fn drive_other<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>
     let kept = cx.rest.kept(cx.me, Kind::Names);
     loop {
         let other = c.other().expect("the other attempt runs");
-        let chain = Chain::of(other.route(), head_of(&c), other.reached(), None, true);
+        let chain = Chain::of(other.dialing(), head_of(&c), other.reached(), None, true);
         mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
         let setup = drive_options(cx);
         let mut drive = DriveCx {
@@ -3418,7 +3419,8 @@ fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
     }
     // Through a CONNECT-UDP tunnel, the origin's TLS is its QUIC
     // connection's.
-    if c.route.tunnels_udp() {
+    let lead = c.lead().expect("a handshake is due over a setup");
+    if lead.dialing().tunnels_udp() {
         return (!made.has(Made::QUIC)).then_some(Due::Quic);
     }
     if c.route.tls.is_some() && !made.has(Made::TLS) {
@@ -3795,7 +3797,7 @@ fn up<H: Host>(
         });
     // The route the winner dialed, which a race's second dials
     // otherwise than the plan's.
-    let route = c.lease.conn().tcp_route().unwrap_or(&c.route);
+    let route = c.lease.conn().dialing().expect("set up over the network");
     let connected = Chain::connected(route, head_of(&c), preface, tunnel);
     mstate::trace(cx, format_args!("connected {connected}"));
     // The race's loser goes with the HTTPS connect filter, its chain from
@@ -4696,7 +4698,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     let target = match target {
         Ok(Some(target)) => target,
         Ok(None) => {
-            let lease = match acquire(cx, &proto, Route::Local) {
+            let lease = match acquire(cx, &proto, Route::Local, Dial::Tcp) {
                 Ok(Acquired::New(lease)) => lease,
                 Ok(Acquired::Reused(_)) => {
                     unreachable!("a connection without a network is never kept")
@@ -4819,7 +4821,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         },
         Some(Err(OutOfMemory)) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
-    let mut route = Tcp {
+    let route = Tcp {
         origin,
         via,
         ip: cx.easy().options().ip_version,
@@ -4828,8 +4830,8 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         local,
         // Compared for any protocol, as C compares it (`url_match_auth`).
         delegation: cx.easy().options().login.delegation,
-        dial: crate::conn::Dial::Tcp,
     };
+    let mut dial = Dial::Tcp;
     // HTTP/3 alone must be possible (`Curl_http_setup_conn`), and is
     // dialed over QUIC, as the HTTPS connect's one attempt is
     // (`cf_hc_baller_assign`).
@@ -4838,7 +4840,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         if let Err(kind) = may_http3(cx, &route, secured) {
             return TransferState::Init.fail(kind);
         }
-        route.dial = crate::conn::Dial::Quic;
+        dial = Dial::Quic;
     } else if https::HttpsConnect::heading(&route, cx.easy().options().tls.options.alpn).is_some()
         && https::Choosing::of(&proto, &route, cx)
             .first()
@@ -4846,9 +4848,9 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     {
         // The HTTPS connect filter's first attempt is HTTP/3's
         // (`cf_hc_set_baller1`).
-        route.dial = crate::conn::Dial::Quic;
+        dial = Dial::Quic;
     }
-    setup(cx, Plan { proto, route })
+    setup(cx, Plan { proto, route, dial })
 }
 
 /// Whether HTTP/3 may be spoken over `route`, to an origin `secured` or
@@ -5143,7 +5145,7 @@ fn copied(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 /// idle one to reuse, or none while the multi's limits allow none, the
 /// request waiting for one (`multistate_connect`).
 fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
-    let acquired = acquire(cx, &plan.proto, Route::Tcp(plan.route.clone()));
+    let acquired = acquire(cx, &plan.proto, Route::Tcp(plan.route.clone()), plan.dial);
     if !matches!(acquired, Ok(Acquired::Wait(_))) {
         // One waiting may now find room too.
         schedule_pending(&mut cx.rest);
@@ -5180,7 +5182,11 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
         Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
     cx.report_mut().set_used_proxy(plan.route.proxy.is_some());
-    let Plan { proto, route } = plan;
+    let Plan {
+        proto,
+        route,
+        dial: _,
+    } = plan;
     let mut https = None;
     if !lease.is_up() {
         // The HTTPS connect filter starts the chain, which puts the setup
@@ -5421,6 +5427,7 @@ fn acquire<H: Host>(
     cx: &mut StepCx<'_, H>,
     proto: &ProtoState,
     route: Route,
+    dial: Dial,
 ) -> Result<Acquired, OutOfMemory> {
     let auth = &cx.easy().auth;
     let wants = match (proto, &route) {
@@ -5512,7 +5519,7 @@ fn acquire<H: Host>(
             // defaults, as no option sets them.
             let settings = ConnSettings::DEFAULT;
             let (added, members) = cx.rest.pool_search(cx.me, &home, |pool, exits, here| {
-                pool.add(here, route, closer, settings, add, exits, now)
+                pool.add(here, route, dial, closer, settings, add, exits, now)
                     .map(|added| (added, pool.len()))
             })?;
             if let Acquired::New(lease) = &added {

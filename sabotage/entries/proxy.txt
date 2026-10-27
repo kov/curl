@@ -452,10 +452,12 @@ witness: curl-core proto::http::tests::a_proxy_s_digest_is_traced_before_its_fir
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::a_proxy_closing_on_the_credentials_is_connected_to_again
 --- old
-        discard(cx, self.route.socket_component(), d.stream.into_socket());
+            d.stream.into_socket(),
+        );
         self.stage = Stage::Racing(Racing {
 --- new
-        discard(cx, self.route.socket_component(), d.stream.into_socket());
+            d.stream.into_socket(),
+        );
         let _ = Stage::Racing(Racing {
 
 === a tunnel's setup traces the origin's name as found in the cache

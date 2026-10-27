@@ -121,7 +121,7 @@ pub(super) fn step<H: Host>(
     _: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Wake, Failure> {
-    let component = s.machine.route().socket_component();
+    let component = s.machine.dialing().socket_component();
     let p = match s.handshake.as_deref_mut() {
         Some(Handshake::Haproxy(p)) => p,
         _ => unreachable!("the PROXY line is being sent"),

@@ -76,7 +76,6 @@ fn to(scheme: Scheme, host: &[u8], port: u16) -> Route {
         tls: None,
         local: None,
         delegation: Default::default(),
-        dial: crate::conn::Dial::Tcp,
     })
 }
 

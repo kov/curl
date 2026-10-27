@@ -107,7 +107,7 @@ pub(super) fn dialed<H: Host>(
     // What the proxy's TLS negotiated names the tunnel's protocol; with
     // none, the proxy type does: HTTP/2 for an HTTPS proxy asked for in
     // it.
-    let what = method_name(lent.route);
+    let what = method_name(s.machine.dialing().tunnels_udp());
     let h2 = match super::query_alpn(cx, s.machine.query(LayerQuery::Alpn), below) {
         Some(chosen) => {
             let name = chosen.name();
@@ -133,7 +133,7 @@ pub(super) fn dialed<H: Host>(
     let started = if h2 {
         super::h2tunnel::start(s, lent, cx)
     } else {
-        start(lent, cx)
+        start(lent, cx, s.machine.dialing().tunnels_udp())
     };
     match started {
         Ok(tunnel) => {
@@ -146,12 +146,8 @@ pub(super) fn dialed<H: Host>(
 
 /// What the tunnel's request is called in C's lines: `CONNECT`, or
 /// `CONNECT-UDP` for a tunnel QUIC's datagrams go through.
-pub(super) fn method_name(route: &Tcp) -> &'static str {
-    if route.tunnels_udp() {
-        "CONNECT-UDP"
-    } else {
-        "CONNECT"
-    }
+pub(super) fn method_name(udp: bool) -> &'static str {
+    if udp { "CONNECT-UDP" } else { "CONNECT" }
 }
 
 /// A CONNECT-UDP's final answer, `status` with its `capsule-protocol`
@@ -210,12 +206,13 @@ pub(super) fn proxy(route: &Tcp) -> (&Peer, Option<Secret<'_>>, bool) {
 fn start<H: Host>(
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
+    udp: bool,
 ) -> Result<Box<Handshake>, ErrorKind> {
     let ConnectHead {
         head: request,
         authorized,
         ..
-    } = connect_head(lent, cx, b"HTTP")?;
+    } = connect_head(lent, cx, b"HTTP", udp)?;
     let tunnel = Tunnel {
         request,
         sent: 0,
@@ -233,11 +230,13 @@ fn start<H: Host>(
 /// `Proxy-Authorization` (`Curl_http_proxy_create_tunnel_request`). For a
 /// proxy that speaks HTTP/2, `h2`, the head is what its stream's fields
 /// are made of, which leave out the `Host` and `Proxy-Connection` C adds
-/// for HTTP/1 alone.
+/// for HTTP/1 alone. A `udp` one is CONNECT-UDP's, for an attempt dialing
+/// QUIC through the tunnel.
 pub(super) fn connect_head<H: Host>(
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
     version: &[u8],
+    udp: bool,
 ) -> Result<ConnectHead, ErrorKind> {
     // Each `CONNECT` reads the application's header lists as they are
     // now.
@@ -258,7 +257,6 @@ pub(super) fn connect_head<H: Host>(
     let (peer, secret, http10) = proxy(lent.route);
     // A CONNECT-UDP asks the proxy itself, at the path naming the target
     // (`http_proxy_create_CONNECTUDP`); over HTTP/1, with `GET`.
-    let udp = lent.route.tunnels_udp();
     let h1 = version == b"HTTP";
     let mut proxy_authority = Vec::new();
     let mut path = Vec::new();
@@ -440,7 +438,7 @@ fn run<H: Host>(
     let traced = lent
         .route
         .proxy_tls()
-        .map(|_| lent.route.socket_component());
+        .map(|_| s.machine.dialing().socket_component());
     loop {
         let t = tunnel(s.handshake);
         if t.sent < t.request.len() {
@@ -708,8 +706,8 @@ fn finish<H: Host>(
     }
     let code = t.answer.code().unwrap_or(0);
     // A CONNECT-UDP is answered by switching protocols (RFC 9298).
-    let udp = lent.route.tunnels_udp();
-    let what = method_name(lent.route);
+    let udp = s.machine.dialing().tunnels_udp();
+    let what = method_name(s.machine.dialing().tunnels_udp());
     if code / 100 == 2 || (udp && code == 101) {
         trace::info(cx, format_args!("{what} phase completed for HTTP proxy"));
         cx.easy_mut().auth.side(Side::Proxy).finish();
@@ -774,7 +772,7 @@ fn finish<H: Host>(
         return Ok(Ran::Again);
     }
     // Over the same connection.
-    let tunnel = start(lent, cx)?;
+    let tunnel = start(lent, cx, s.machine.dialing().tunnels_udp())?;
     *s.handshake = Some(tunnel);
     Ok(Ran::Again)
 }

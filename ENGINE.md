@@ -545,7 +545,7 @@ if allowed, else the first wanted, else the first allowed (`1st attempt uses h3 
 version`); the second, chosen as the origin's record is known, the preferred else the first
 wanted other than the first's, neither HTTP/2 nor HTTP/1 after either, as each offers the other.
 Why HTTP/3 may not be spoken is said the first time it is weighed. The plan dials QUIC where the
-first is HTTP/3, and `start` asserts the two agree; a first in HTTP/1 takes HTTP/2 from the
+first is HTTP/3, and `start` asserts the first's setup agrees; a first in HTTP/1 takes HTTP/2 from the
 wanted versions, so its ALPN offers `http/1.1` alone. HTTP/3 alone (`--http3-only`) is one
 attempt and no race. The first's setup is the lease's throughout; the second, made from the
 addresses the first resolved, runs beside it in `Race::second` (boxed, as a handle's size is
@@ -568,9 +568,13 @@ with the HTTPS connect filter at `connected`, its setup's filters with it (`[SET
 failed. A race given up, failed, timed out or its transfer removed, goes into `Done` with the
 lease, and `multi_done` closes its QUIC attempt, then its TCP one (a leading second's after
 the first, taken out of the lease as given up), the lease's first otherwise closed as the lease
-is given back, and lets the race's answer go once. The plan's route keeps the first's dial;
-what is traced of a socket or a chain is read from the leading setup, or from the connection
-the winner made. Through an HTTP proxy HTTP/3 alone goes over the proxy's CONNECT-UDP (§ the CONNECT-UDP
+is given back, and lets the race's answer go once. The dial, TCP or QUIC, is not the
+route's: the plan's goes to the first's setup as the lease is added, the second's setup is made
+with its own, each machine holds its (`ConnectMachine::dial`) and the connection records the
+winner's (`Conn::dialing`). What depends on it, the socket's filter, the first hop's transport, a
+CONNECT-UDP tunnel, is read off a route as one setup dials it (`Dialing`): what is traced of a
+socket or a chain, from the leading setup (the first's once a leading second is gone), or from
+the connection the winner made. Through an HTTP proxy HTTP/3 alone goes over the proxy's CONNECT-UDP (§ the CONNECT-UDP
 tunnel); a race through one, C's HTTP/3 attempt over CONNECT-UDP beside its other over CONNECT,
 is not run yet. Through an HTTP/3 proxy's tunnel the race's attempt is the QUIC connection to
 the proxy (§ the HTTP/3 tunnel).
@@ -2706,7 +2710,7 @@ inside the tunnel speaks what the origin agrees: the proxy's ALPN is not the ori
 **The HTTP/3 tunnel** (`cf-ngtcp2-proxy.c`) is the tunnel through an HTTPS proxy asked for in
 HTTP/3 (`CURLPROXY_HTTPS3`, `--proxy-http3`): a stream of a QUIC connection to the proxy,
 `[H3-PROXY][UDP]` under the race. C makes the H3-PROXY filter the race's attempt, with neither
-HTTP-PROXY nor SSL-PROXY above it, so the setup dials QUIC to the proxy (`Tcp::first_hop_quic`)
+HTTP-PROXY nor SSL-PROXY above it, so the setup dials QUIC to the proxy (`Dialing::first_hop_quic`)
 and the race's attempt is a `Quic` of `Component::H3Proxy`, its TLS the proxy's identity
 (`TlsIo::for_proxy`), no early data. The winner's connection rides in the `Dialed` stream
 (`take_quic`) to `multi/state/h3tunnel.rs`, which makes `conn/h3proxy.rs`'s `H3Proxy` of it: the
@@ -2729,7 +2733,7 @@ tunnel is CONNECT-UDP's (§ the CONNECT-UDP tunnel), its capsules the stream's D
 `cf-ngtcp2-proxy.c` sends them; `H3Proxy` knows it is (`udp`) only for its lines.
 
 **The CONNECT-UDP tunnel** (RFC 9297, 9298; `http_proxy_create_CONNECTUDP`, `cf-capsule.c`) is
-how HTTP/3 goes through an HTTP proxy: `Tcp::tunnels_udp`, a route dialed for QUIC through an
+how HTTP/3 goes through an HTTP proxy: `Dialing::tunnels_udp`, a route dialed for QUIC through an
 HTTP proxy's tunnel, over TCP or over QUIC to an HTTP/3 proxy. The race is the proxy's; the
 tunnel's request asks the proxy
 itself, at `/.well-known/masque/udp/<host>/<port>/` (an IPv6 address's colons as `%3A`), to carry

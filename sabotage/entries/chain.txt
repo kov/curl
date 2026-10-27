@@ -39,9 +39,9 @@ witness: curl-core proto::http::tests::setup_trace::a_socks_handshake_refused_as
 file: crates/curl-core/src/conn/chain.rs
 witness: curl-core proto::http::tests::setup_trace::a_pre_proxy_s_and_a_tunnel_s_setup_is_traced_as_c
 --- old
-        if added.socks && resolves_target(route) {
+        if added.socks && resolves_target(route.route) {
 --- new
-        if added.socks && !resolves_target(route) {
+        if added.socks && !resolves_target(route.route) {
 
 === the setup filter does not say it goes
 file: crates/curl-core/src/conn/chain.rs

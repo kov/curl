@@ -33,7 +33,7 @@ pub(super) fn start<H: Host>(
         .expect("HTTP/2 is offered to a proxy with a library to speak it");
     let mut proxy = H2Proxy::open(library, cx.max_streams())?;
     proxy.received(s.machine.dialed().stream().rx_mut().take());
-    connect(&mut proxy, lent, cx)?;
+    connect(&mut proxy, lent, cx, s.machine.dialing().tunnels_udp())?;
     let proxy = try_box(proxy).map_err(oom)?;
     try_box(Handshake::H2Connect(proxy)).map_err(oom)
 }
@@ -43,8 +43,9 @@ fn connect<H: Host>(
     proxy: &mut H2Proxy,
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
+    udp: bool,
 ) -> Result<(), ErrorKind> {
-    let head = super::tunnel::connect_head(lent, cx, b"HTTP/2")?;
+    let head = super::tunnel::connect_head(lent, cx, b"HTTP/2", udp)?;
     let fields = match &head.udp {
         Some(udp) => connect_udp_fields(
             &head.head,
@@ -118,7 +119,7 @@ fn run<H: Host>(
     let traced = lent
         .route
         .proxy_tls()
-        .map(|_| lent.route.socket_component());
+        .map(|_| s.machine.dialing().socket_component());
     let p = proxy(s.handshake);
     if p.conn_closed() {
         return Err(trace::fail(
@@ -152,7 +153,7 @@ fn inspect<H: Host>(
     let p = proxy(s.handshake);
     let answer = p.answer().expect("the answer is whole");
     let status = answer.status;
-    let what = super::tunnel::method_name(lent.route);
+    let what = super::tunnel::method_name(s.machine.dialing().tunnels_udp());
     trace::info(cx, format_args!("{what} Response Status {status}"));
     let total = answer.fields.len();
     trace::info(cx, format_args!("Response Headers ({total} total):"));
@@ -176,11 +177,11 @@ fn inspect<H: Host>(
         && challenged(lent, cx, Component::H2Proxy, value)?
     {
         let mut p = take(s);
-        connect(&mut p, lent, cx)?;
+        connect(&mut p, lent, cx, s.machine.dialing().tunnels_udp())?;
         *s.handshake = Some(try_box(Handshake::H2Connect(p)).map_err(oom)?);
         return Ok(Ran::Again);
     }
-    if lent.route.tunnels_udp() {
+    if s.machine.dialing().tunnels_udp() {
         let p = proxy(s.handshake);
         let answer = p.answer().expect("the answer is whole");
         let verdict = super::tunnel::udp_answer(cx, status, answer.field(b"capsule-protocol"));

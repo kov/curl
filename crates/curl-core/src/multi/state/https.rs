@@ -405,10 +405,7 @@ pub(super) fn start<H: Host>(
     let said = choosing.asked_h3.get();
     h3_refused(c, cx, said);
     let (first, source) = first.expect("the plan dials an attempt it can choose");
-    let dial = c
-        .lead()
-        .map(ConnectMachine::route)
-        .map_or(c.route.dial, |r| r.dial);
+    let dial = c.lead().expect("the first attempt is set up").dial();
     assert_eq!(
         first == Alpn::H3,
         dial == Dial::Quic,

@@ -50,7 +50,7 @@ pub(super) fn start<H: Host>(
 /// Move the handshake on, its datagrams through the tunnel's layers.
 pub(super) fn step<H: Host>(
     s: &mut SetupMut<'_>,
-    lent: &mut Lent<'_>,
+    _: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Wake, Failure> {
     let Some(Handshake::Quic(quic)) = s.handshake.as_deref_mut() else {
@@ -58,7 +58,7 @@ pub(super) fn step<H: Host>(
     };
     // The tunnel's bytes are the socket's, traced as C's socket filter
     // traces them.
-    let traced = Some(lent.route.socket_component());
+    let traced = Some(s.machine.dialing().socket_component());
     let stream = s.machine.dialed().stream();
     let mut over = Over {
         cx,

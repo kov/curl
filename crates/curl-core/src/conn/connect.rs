@@ -32,7 +32,7 @@ use super::layer::LayerCx;
 use super::layer::{LayerAnswer, LayerQuery};
 use super::quic::{Quic, QuicCx};
 use super::shutdown::ConnSettings;
-use super::{Conn, ConnNumber, Peer, Route, Stream, Tcp, Transport, Use};
+use super::{Conn, ConnNumber, Dial, Dialing, Peer, Route, Stream, Tcp, Transport, Use};
 use crate::components::Component;
 use crate::error::ErrorKind;
 use crate::handler::Configured;
@@ -46,6 +46,8 @@ use curl_os::error::ErrorText;
 pub(crate) struct ConnectMachine {
     number: ConnNumber,
     route: Tcp,
+    /// How it dials the route's first hop.
+    dial: Dial,
     /// When the setup started (C's `conn->created`).
     created: Instant,
     stage: Stage,
@@ -649,6 +651,7 @@ impl ConnectMachine {
     pub(crate) fn new(
         number: ConnNumber,
         route: Tcp,
+        dial: Dial,
         created: Instant,
         closer: Closer,
         settings: ConnSettings,
@@ -656,6 +659,7 @@ impl ConnectMachine {
         ConnectMachine {
             number,
             route,
+            dial,
             created,
             stage: Stage::Resolving(None),
             redials: 0,
@@ -671,6 +675,7 @@ impl ConnectMachine {
     pub(crate) fn racing(
         number: ConnNumber,
         route: Tcp,
+        dial: Dial,
         created: Instant,
         closer: Closer,
         settings: ConnSettings,
@@ -680,6 +685,7 @@ impl ConnectMachine {
         ConnectMachine {
             number,
             route,
+            dial,
             created,
             stage: Stage::Racing(Racing {
                 eyeballs,
@@ -704,6 +710,19 @@ impl ConnectMachine {
 
     pub(crate) fn route(&self) -> &Tcp {
         &self.route
+    }
+
+    /// How it dials the route's first hop.
+    pub(crate) fn dial(&self) -> Dial {
+        self.dial
+    }
+
+    /// Its route, as it dials it.
+    pub(crate) fn dialing(&self) -> Dialing<'_> {
+        Dialing {
+            route: &self.route,
+            dial: self.dial,
+        }
     }
 
     /// The sockets of the attempts running.
@@ -784,7 +803,7 @@ impl ConnectMachine {
         let Stage::Dialed(d) = &self.stage else {
             panic!("a tunnel goes over a dialed connection");
         };
-        assert!(self.route.tunnels_udp(), "a CONNECT-UDP tunnel");
+        assert!(self.dialing().tunnels_udp(), "a CONNECT-UDP tunnel");
         let none = SocketAddr::from(([0, 0, 0, 0], 0));
         let remote = d.remote.inet().unwrap_or(none);
         let local = d.stream.local_addr().unwrap_or(none);
@@ -845,7 +864,13 @@ impl ConnectMachine {
         };
         let at = d.connected_at;
         let mut conn = Self::conn(
-            (self.number, self.route, self.created, self.settings),
+            (
+                self.number,
+                self.route,
+                self.dial,
+                self.created,
+                self.settings,
+            ),
             d.stream,
             d.remote,
             at,
@@ -878,7 +903,11 @@ impl ConnectMachine {
             cx.of(Component::HttpProxy, format_args!("destroy"));
             cx.of(Component::H1Proxy, format_args!("destroy"));
         }
-        discard(cx, self.route.socket_component(), d.stream.into_socket());
+        discard(
+            cx,
+            self.dialing().socket_component(),
+            d.stream.into_socket(),
+        );
         self.stage = Stage::Racing(Racing {
             eyeballs: Eyeballs::new(d.answer, self.route.ip),
             attempts: Vec::new(),
@@ -895,7 +924,7 @@ impl ConnectMachine {
     ) -> Result<Drove, ConnectError> {
         let now = cx.now();
         let delay = setup.delay;
-        let component = self.route.socket_component();
+        let component = self.dialing().socket_component();
         let r = match &mut self.stage {
             Stage::Resolving(pending) => {
                 let pending = pending.take();
@@ -1013,7 +1042,11 @@ impl ConnectMachine {
         // An HTTP/3 proxy's filter is the attempt's, made as it starts
         // (`Curl_cf_h3_proxy_create`).
         if self.route.proxy_over_quic() {
-            let udp = u8::from(self.route.tunnels_udp());
+            let dialing = Dialing {
+                route: &self.route,
+                dial: self.dial,
+            };
+            let udp = u8::from(dialing.tunnels_udp());
             cx.of(
                 Component::H3Proxy,
                 format_args!("created, udp_tunnel={udp}"),
@@ -1052,7 +1085,7 @@ impl ConnectMachine {
                 "determined scope_id={scope} for link-local address from local interface"
             ));
         }
-        let kind = if self.route.first_hop_quic() {
+        let kind = if self.dialing().first_hop_quic() {
             SocketKind::Datagram
         } else {
             SocketKind::Stream
@@ -1199,7 +1232,7 @@ impl ConnectMachine {
         remote: Remote,
         delay: Duration,
     ) -> Result<Drove, ConnectError> {
-        let component = self.route.socket_component();
+        let component = self.dialing().socket_component();
         let fd = socket.key().get();
         let socket = Sock::new(socket, self.closer.clone());
         let Remote::Inet(addr) = remote else {
@@ -1440,7 +1473,7 @@ impl ConnectMachine {
         error: io::Error,
     ) -> Result<Drove, ConnectError> {
         let code = crate::trace::Code(Err(kind));
-        let component = self.route.socket_component();
+        let component = self.dialing().socket_component();
         cx.of(component, format_args!("cf_socket_open() -> {code}, fd=-1"));
         let rport = remote.map_or(0, Remote::port);
         let why = ErrorText::of(&error);
@@ -1477,7 +1510,11 @@ impl ConnectMachine {
             format_args!("connect attempt #{i} successful"),
         );
         let won = r.attempts.remove(i);
-        let component = self.route.socket_component();
+        let component = Dialing {
+            route: &self.route,
+            dial: self.dial,
+        }
+        .socket_component();
         for a in r.attempts.drain(..) {
             a.discard(cx, component);
         }
@@ -1541,7 +1578,13 @@ impl ConnectMachine {
                 return Err(ConnectError::OutOfMemory);
             }
         };
-        let made = (self.number, self.route, self.created, self.settings);
+        let made = (
+            self.number,
+            self.route,
+            self.dial,
+            self.created,
+            self.settings,
+        );
         #[cfg_attr(
             not(any(test, feature = "test-util")),
             expect(unused_mut, reason = "tests push a layer")
@@ -1596,15 +1639,16 @@ impl ConnectMachine {
     /// The connection the setup `made` (its number, route, start and
     /// settings) becomes over `stream`.
     fn conn(
-        made: (ConnNumber, Tcp, Instant, ConnSettings),
+        made: (ConnNumber, Tcp, Dial, Instant, ConnSettings),
         stream: Stream,
         remote: Remote,
         at: Instant,
     ) -> Conn {
-        let (number, route, created, settings) = made;
+        let (number, route, dial, created, settings) = made;
         Conn {
             number,
             route: Route::Tcp(route),
+            dial,
             transport: Transport::Tcp(stream),
             remote: Some(remote),
             created,
@@ -1626,7 +1670,7 @@ impl ConnectMachine {
     /// the loser's chain): its attempts go as a race's losers do, with no
     /// goodbye to their peers.
     pub(crate) fn discard(self, cx: &mut dyn ConnCx) {
-        let component = self.route.socket_component();
+        let component = self.dialing().socket_component();
         match self.stage {
             Stage::Racing(mut r) => {
                 cx.of(Component::HappyEyeballs, format_args!("destroy"));
@@ -2227,11 +2271,11 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
-            dial: crate::conn::Dial::Tcp,
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),
             route,
+            crate::conn::Dial::Tcp,
             start,
             Closer::System,
             ConnSettings::DEFAULT,
@@ -2326,11 +2370,11 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
-            dial: crate::conn::Dial::Tcp,
         };
         let m = ConnectMachine::new(
             ConnNumber(0),
             route,
+            crate::conn::Dial::Tcp,
             clock.now(),
             Closer::System,
             ConnSettings::DEFAULT,
@@ -2386,11 +2430,11 @@ mod tests {
                 tls: None,
                 local: None,
                 delegation: Default::default(),
-                dial,
             };
             let mut m = Some(ConnectMachine::new(
                 ConnNumber(0),
                 route,
+                dial,
                 clock.now(),
                 Closer::System,
                 ConnSettings::DEFAULT,
@@ -2503,11 +2547,11 @@ mod tests {
             tls: None,
             local: None,
             delegation: Default::default(),
-            dial: crate::conn::Dial::Tcp,
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),
             route,
+            crate::conn::Dial::Tcp,
             clock.now(),
             Closer::System,
             ConnSettings::DEFAULT,

@@ -31,7 +31,7 @@ pub(super) fn start<H: Host>(
         .dialed()
         .take_quic()
         .expect("an HTTP/3 proxy's tunnel goes over its QUIC connection");
-    let mut proxy = H3Proxy::new(quic, lent.route.tunnels_udp());
+    let mut proxy = H3Proxy::new(quic, s.machine.dialing().tunnels_udp());
     connect(&mut proxy, s, lent, cx)?;
     let proxy = try_box(proxy).map_err(oom)?;
     try_box(Handshake::H3Connect(proxy)).map_err(oom)
@@ -53,7 +53,7 @@ fn connect<H: Host>(
         port.bytes(),
     ];
     trace::of_with(cx, H3P, &parts);
-    let head = super::tunnel::connect_head(lent, cx, b"HTTP/3")?;
+    let head = super::tunnel::connect_head(lent, cx, b"HTTP/3", s.machine.dialing().tunnels_udp())?;
     let fields = match &head.udp {
         Some(udp) => connect_udp_fields(
             &head.head,
@@ -166,7 +166,7 @@ fn inspect<H: Host>(
     let p = proxy(s.handshake);
     let answer = p.answer().expect("the answer is whole");
     let status = answer.status;
-    let what = super::tunnel::method_name(lent.route);
+    let what = super::tunnel::method_name(s.machine.dialing().tunnels_udp());
     trace::info(cx, format_args!("{what} Response Status {status}"));
     let total = answer.fields.len();
     trace::info(cx, format_args!("Response Headers ({total} total):"));
@@ -191,7 +191,7 @@ fn inspect<H: Host>(
             return Ok(Ran::Again);
         }
     }
-    if lent.route.tunnels_udp() {
+    if s.machine.dialing().tunnels_udp() {
         let p = proxy(s.handshake);
         let answer = p.answer().expect("the answer is whole");
         super::tunnel::udp_answer(cx, status, answer.field(b"capsule-protocol"))?;

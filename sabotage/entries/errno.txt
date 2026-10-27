@@ -40,9 +40,9 @@ witness: curl-core proto::http::tests::os_errno::an_immediate_refusal_keeps_its_
 features: test-util
 --- old
                 cx.socket_failed(&error);
-                let why = OsError(&error);
+                let why = ErrorText::of(&error);
 --- new
-                let why = OsError(&error);
+                let why = ErrorText::of(&error);
 
 === the transfer's context drops the number
 file: crates/curl-core/src/multi/state.rs

@@ -184,9 +184,9 @@ witness: curl-core proto::http::tests::tls::a_session_s_reason_for_a_failed_read
 file: crates/curl-core/src/conn/layer.rs
 witness: curl-core proto::http::tests::tls::a_socket_failing_under_a_session_is_said_first
 --- old
-                            cx.fails(kind, format_args!("Send failure: {why}"));
+                            cx.fails_with(kind, &[b"Send failure: ", why.as_bytes()]);
 --- new
-                            cx.fails(kind, format_args!("{why}"));
+                            cx.fails_with(kind, &[why.as_bytes()]);
 
 === a setup cut short in its handshake forgets the connection's ends and connect time
 file: crates/curl-core/src/multi/state.rs

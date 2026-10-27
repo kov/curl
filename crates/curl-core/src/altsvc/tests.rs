@@ -34,7 +34,7 @@ fn parse(a: &mut AltSvc, value: &str, host: &str, port: u16, alpn: Alpn) -> Vec<
         value.as_bytes(),
         (host.as_bytes(), port, alpn),
         NOW,
-        &mut |args| said.push(args.to_string()),
+        &mut |parts| said.push(String::from_utf8(parts.concat()).expect("a test's line is text")),
     )
     .unwrap();
     said

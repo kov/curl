@@ -58,6 +58,19 @@ pub(crate) fn trace<H: Host>(cx: &mut StepCx<'_, H>, args: std::fmt::Arguments<'
     }
 }
 
+/// `trace` with a line made of `parts`, which need not be text.
+pub(crate) fn trace_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
+    if trace::traces(cx, Component::Multi) {
+        let state = cx.mstate().name();
+        let mut line = trace::Line::new();
+        line.text(format_args!("[{state}] "));
+        for part in parts {
+            line.raw(part);
+        }
+        trace::of_with(cx, Component::Multi, &[line.bytes()]);
+    }
+}
+
 /// The transfer goes to `next` (`multistate`): traced in the state it
 /// leaves. Nothing is traced for a state it is in already.
 pub(crate) fn enter<H: Host>(cx: &mut StepCx<'_, H>, next: MState) {

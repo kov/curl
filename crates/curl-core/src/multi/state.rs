@@ -44,9 +44,10 @@ use crate::proto::http1::follow;
 use crate::proto::http1::follow::Inherited;
 use crate::proto::{Before, DoStep, Ended, ProtoState, ProtoStep};
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
+use crate::text::Text;
 use crate::time::{Instant, TimeLimit};
 use crate::tls::{TlsIdentity, TlsNative, TlsWait};
-use crate::trace::{self, Bytes, Ip, OsError};
+use crate::trace::{self, Ip};
 use crate::upload::{self, Readers};
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
 use crate::version::Protocol;
@@ -880,26 +881,24 @@ fn release<H: Host>(
         trace_max_concurrent(cx, number, max, 0);
     }
     if let Released::ShutDown { number: n, .. } = released {
-        let (host, port) = origin.map_or((Bytes(b""), 0), |o| (Bytes(o.name()), o.port()));
-        mstate::trace(
-            cx,
-            format_args!(
-                "multi_done, conn {n} to {host}:{port} was shutdown by server, not reusing"
-            ),
-        );
+        let (host, port) = origin.map_or((&b""[..], 0), |o| (o.name(), o.port()));
+        let conn = Text::<64>::clipped(format_args!("multi_done, conn {n} to ")).0;
+        let rest =
+            Text::<64>::clipped(format_args!(":{port} was shutdown by server, not reusing")).0;
+        mstate::trace_with(cx, &[conn.bytes(), host, rest.bytes()]);
     }
     if let Released::Closed(n) | Released::Terminated(n) = &released {
         // A connection to no host, a file's, has an empty name.
-        let (host, port) = origin.map_or((Bytes(b""), 0), |o| (Bytes(o.name()), o.port()));
-        mstate::trace(
-            cx,
-            format_args!(
-                "multi_done, terminating conn {n} to {host}:{port}, forbid={}, close={}, premature={}, conn_multiplex={multiplex}",
-                u8::from(finish.forbid_reuse),
-                u8::from(closes),
-                u8::from(finish.premature)
-            ),
-        );
+        let (host, port) = origin.map_or((&b""[..], 0), |o| (o.name(), o.port()));
+        let conn = Text::<64>::clipped(format_args!("multi_done, terminating conn {n} to ")).0;
+        let rest = Text::<96>::clipped(format_args!(
+            ":{port}, forbid={}, close={}, premature={}, conn_multiplex={multiplex}",
+            u8::from(finish.forbid_reuse),
+            u8::from(closes),
+            u8::from(finish.premature)
+        ))
+        .0;
+        mstate::trace_with(cx, &[conn.bytes(), host, rest.bytes()]);
     }
     if let Released::Idle {
         full: Some(full), ..
@@ -917,11 +916,9 @@ fn release<H: Host>(
         Released::Evicted(_) => cx.report_mut().set_conn(None),
         Released::Idle { number: n, .. } => {
             let origin = origin.expect("a connection kept has a host");
-            let (host, port) = (Bytes(origin.shown()), origin.port());
-            trace::info(
-                cx,
-                format_args!("Connection {n} to host {host}:{port} left intact"),
-            );
+            let conn = Text::<64>::clipped(format_args!("Connection {n} to host ")).0;
+            let rest = Text::<24>::clipped(format_args!(":{} left intact", origin.port())).0;
+            trace::info_with(cx, &[conn.bytes(), origin.shown(), rest.bytes()]);
         }
         Released::Closed(n)
         | Released::ShutDown {
@@ -1305,12 +1302,20 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
         trace::info(self, line);
     }
 
+    fn info_with(&mut self, parts: &[&[u8]]) {
+        trace::info_with(self, parts);
+    }
+
     fn socket_failed(&mut self, e: &std::io::Error) {
         self.report_mut().socket_failed(e);
     }
 
     fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
         trace::fail(self, kind, why)
+    }
+
+    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+        trace::fail_with(self, kind, parts)
     }
 
     fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
@@ -1399,7 +1404,7 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
                 trace::of_with(self, Component::Ssls, &[line]);
             }
             if let Some((kind, why)) = held.failure {
-                trace::fail(self, kind, format_args!("{why}"));
+                trace::fail_with(self, kind, &[&why]);
             }
             return;
         }
@@ -1419,7 +1424,7 @@ struct HeldSays {
     /// The transfer traces the cache's lines (`ssls`).
     traces: bool,
     lines: Vec<Vec<u8>>,
-    failure: Option<(ErrorKind, String)>,
+    failure: Option<(ErrorKind, Vec<u8>)>,
 }
 
 impl LayerCx for HeldSays {
@@ -1454,9 +1459,27 @@ impl LayerCx for HeldSays {
 
     fn info(&mut self, _: std::fmt::Arguments<'_>) {}
 
+    fn info_with(&mut self, _: &[&[u8]]) {}
+
     fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
         if self.failure.is_none()
             && let Ok(why) = curl_alloc::try_format(why)
+        {
+            self.failure = Some((kind, why.into_bytes()));
+        }
+        kind
+    }
+
+    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+        if self.failure.is_some() {
+            return kind;
+        }
+        let mut why = Vec::new();
+        // As for `fails`, a reason there is no memory for is not said.
+        if parts
+            .iter()
+            .try_for_each(|p| why.try_extend_from_slice(p))
+            .is_ok()
         {
             self.failure = Some((kind, why));
         }
@@ -2669,11 +2692,17 @@ fn enter_setup<H: Host>(
             } else {
                 "origin"
             };
-            let (name, port) = (Bytes(peer.name()), peer.port());
-            trace::of(
+            let at = port_text(peer.port());
+            trace::of_with(
                 cx,
                 Component::Setup,
-                format_args!("happy eyeballing to {to} {name}:{port}"),
+                &[
+                    b"happy eyeballing to ",
+                    to.as_bytes(),
+                    b" ",
+                    peer.name(),
+                    at.bytes(),
+                ],
             );
             let racing = chain(SetupPoint::Racing { started: true }, None, true);
             entry(cx, racing);
@@ -2702,11 +2731,11 @@ fn enter_setup<H: Host>(
     let filter = match due {
         Due::Socks(_) => {
             let leg = c.route.socks().expect("through a SOCKS proxy");
-            let (name, port) = (Bytes(leg.to.name()), leg.to.port());
-            trace::of(
+            let at = port_text(leg.to.port());
+            trace::of_with(
                 cx,
                 Component::Setup,
-                format_args!("added SOCKS filter to {name}:{port}"),
+                &[b"added SOCKS filter to ", leg.to.name(), at.bytes()],
             );
             Component::Socks
         }
@@ -3140,7 +3169,7 @@ fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
 fn no_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, proxy: bool) -> ErrorKind {
     trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver(None))));
     let peer = route.destination();
-    let (host, port) = (Bytes(peer.name()), peer.port());
+    let (host, at) = (peer.name(), port_text(peer.port()));
     let queries = queries(peer, route.ip, cx.rest.ipv6_works);
     let kind = if proxy {
         ErrorKind::CouldntResolveProxy
@@ -3154,8 +3183,13 @@ fn no_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, proxy: bool) -> ErrorKi
         dns,
         format_args!("[{queries}] hostip_resolv started -> {code}"),
     );
-    let kind = trace::fail(cx, kind, format_args!("Could not resolve: {host}:{port}"));
-    trace::fail(cx, kind, format_args!("Could not resolve: {host}"))
+    let kind = trace::fail_with(cx, kind, &[b"Could not resolve: ", host, at.bytes()]);
+    trace::fail_with(cx, kind, &[b"Could not resolve: ", host])
+}
+
+/// `:port`, as a line shows it after a name.
+fn port_text(port: u16) -> Text<8> {
+    Text::clipped(format_args!(":{port}")).0
 }
 
 /// The debug build failed the resolve of IPv6 addresses alone of the name
@@ -3163,24 +3197,24 @@ fn no_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, proxy: bool) -> ErrorKi
 /// (`hostip_resolv`, `CURL_DBG_RESOLV_FAIL_IPV6`).
 fn debug_failed_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, proxy: bool) -> ErrorKind {
     let peer = route.destination();
-    let (host, port) = (Bytes(peer.name()), peer.port());
-    let queries = queries(peer, route.ip, cx.rest.ipv6_works);
+    let (host, at) = (peer.name(), port_text(peer.port()));
+    let queries = queries(peer, route.ip, cx.rest.ipv6_works).as_bytes();
     // The C debug build's line, said here always: only a debug build
     // fails the resolve.
-    trace::of(
+    trace::of_with(
         cx,
         Component::Dns,
-        format_args!("[{queries}] hostip_resolv({host}:{port})"),
+        &[b"[", queries, b"] hostip_resolv(", host, at.bytes(), b")"],
     );
     trace::info(cx, format_args!("DEBUG fail ipv6 resolve"));
-    let (what, kind) = if proxy {
-        ("proxy", ErrorKind::CouldntResolveProxy)
+    let (what, kind): (&[u8], _) = if proxy {
+        (b"proxy", ErrorKind::CouldntResolveProxy)
     } else {
-        ("host", ErrorKind::CouldntResolveHost)
+        (b"host", ErrorKind::CouldntResolveHost)
     };
-    let kind = trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"));
-    let kind = trace::fail(cx, kind, format_args!("Could not resolve: {host}:{port}"));
-    trace::fail(cx, kind, format_args!("Could not resolve: {host}"))
+    let kind = trace::fail_with(cx, kind, &[b"Could not resolve ", what, b": ", host]);
+    let kind = trace::fail_with(cx, kind, &[b"Could not resolve: ", host, at.bytes()]);
+    trace::fail_with(cx, kind, &[b"Could not resolve: ", host])
 }
 
 /// The name `route` connects to first was looked up in the cache, as
@@ -3191,17 +3225,25 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, found: Option<Foun
     // The name looked up: the proxy's, or what a connect-to names in the
     // origin's place.
     let peer = route.destination();
-    let (name, port, queries) = (
-        Bytes(peer.name()),
-        peer.port(),
+    let (name, at, queries) = (
+        peer.name(),
+        port_text(peer.port()),
         queries(peer, route.ip, cx.rest.ipv6_works),
     );
+    let at = at.bytes();
     // The C debug build's line.
     #[cfg(feature = "debug-hooks")]
-    trace::of(
+    trace::of_with(
         cx,
         Component::Dns,
-        format_args!("[{queries}] hostip_resolv({name}:{port})"),
+        &[
+            b"[",
+            queries.as_bytes(),
+            b"] hostip_resolv(",
+            name,
+            at,
+            b")",
+        ],
     );
     match found {
         Some(Found::Stale(_)) => {
@@ -3222,10 +3264,11 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, found: Option<Foun
         None => (Err(ErrorKind::CouldntResolveHost), "not "),
     };
     let code = trace::Code(code);
-    trace::of(
+    let rest = Text::<64>::clipped(format_args!(" queries={queries} -> {code} {not}found")).0;
+    trace::of_with(
         cx,
         Component::Dns,
-        format_args!("cache lookup {name}:{port} queries={queries} -> {code} {not}found"),
+        &[b"cache lookup ", name, at, rest.bytes()],
     );
     if let Some(
         Found::Stale(Asked::Resolver(Some(q))) | Found::Resolved(Asked::Resolver(Some(q))),
@@ -3237,16 +3280,17 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, found: Option<Foun
         let id = q.id.get();
         for (queued, query) in [(q.v6, "AAAA"), (q.v4, "A")] {
             if queued {
-                trace::of(
+                let ids = Text::<80>::clipped(format_args!("queueing query [{xfer}/{id}] ")).0;
+                trace::of_with(
                     cx,
                     Component::Dns,
-                    format_args!("queueing query [{xfer}/{id}] {query} {name}:{port}"),
+                    &[ids.bytes(), query.as_bytes(), b" ", name, at],
                 );
             }
         }
     }
     if found == Some(Found::Cached) {
-        trace::info(cx, format_args!("Hostname {name} was found in DNS cache"));
+        trace::info_with(cx, &[b"Hostname ", name, b" was found in DNS cache"]);
     }
 }
 
@@ -3262,11 +3306,12 @@ fn trace_resolved<H: Host>(
     addrs: &[IpAddr],
 ) {
     let peer = route.destination();
-    let (name, port, queries) = (
-        Bytes(peer.name()),
-        peer.port(),
+    let (name, at, queries) = (
+        peer.name(),
+        port_text(peer.port()),
         queries(peer, route.ip, cx.rest.ipv6_works),
     );
+    let at = at.bytes();
     let code = match asked {
         Ok(Asked::Shortcut) => 0,
         Ok(Asked::Resolver(_)) | Err(_) => crate::error::AGAIN_NUMBER,
@@ -3283,11 +3328,10 @@ fn trace_resolved<H: Host>(
         for (queued, v6) in [(q.v4, false), (q.v6, true)] {
             if queued {
                 let (addrs, c) = (Family(addrs, v6), if v6 { '6' } else { '4' });
-                trace::of(
-                    cx,
-                    dns,
-                    format_args!("Host {name}:{port} resolved IPv{c}: {addrs}"),
-                );
+                let mut line = trace::Line::new();
+                line.raw(b"Host ").raw(name).raw(at);
+                line.text(format_args!(" resolved IPv{c}: {addrs}"));
+                trace::of_with(cx, dns, &[line.bytes()]);
             }
         }
     }
@@ -3295,16 +3339,28 @@ fn trace_resolved<H: Host>(
         return;
     }
     if let Ok(Asked::Resolver(_)) = asked {
-        trace::of(
+        trace::of_with(
             cx,
             dns,
-            format_args!("[{queries}] resolve complete for {name}:{port}"),
+            &[
+                b"[",
+                queries.as_bytes(),
+                b"] resolve complete for ",
+                name,
+                at,
+            ],
         );
     }
-    trace::of(
+    trace::of_with(
         cx,
         dns,
-        format_args!("cached entry for {name}:{port} queries={queries}"),
+        &[
+            b"cached entry for ",
+            name,
+            at,
+            b" queries=",
+            queries.as_bytes(),
+        ],
     );
 }
 
@@ -3344,15 +3400,12 @@ fn eyeballs_due<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, at: Instant) {
 /// and counted (`cf_ip_happy_connect`).
 fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, remote: &Remote) {
     let he = Component::HappyEyeballs;
-    let (name, ip, port) = (
-        Bytes(route.destination().name()),
-        remote.shown_ip(),
-        remote.port(),
-    );
-    trace::of(
+    let (name, ip, port) = (route.destination().name(), remote.shown_ip(), remote.port());
+    let port = Text::<16>::clipped(format_args!(") port {port}")).0;
+    trace::of_with(
         cx,
         he,
-        format_args!("Connected to {name} ({ip}) port {port}"),
+        &[b"Connected to ", name, b" (", ip.bytes(), port.bytes()],
     );
     trace_timer(cx, TimerKind::Eyeballs, format_args!("cleared"));
     cx.report_mut().count_connect();
@@ -3455,17 +3508,17 @@ fn up<H: Host>(
         mstate::marked(cx, Timer::Connect, marked);
     }
     // `CURL_CONN_HOST_DISPNAME`.
-    let host = Bytes(c.route.destination().shown());
+    let host = c.route.destination().shown();
     let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
     let lip = Ip(lip);
-    trace::info(
-        cx,
-        format_args!(
-            "Established connection to {host} ({} port {}) from {lip} port {lport} ",
-            remote.shown_ip(),
-            remote.port()
-        ),
-    );
+    let mut line = trace::Line::new();
+    line.raw(b"Established connection to ").raw(host).raw(b" (");
+    line.raw(remote.shown_ip().bytes());
+    line.text(format_args!(
+        " port {}) from {lip} port {lport} ",
+        remote.port()
+    ));
+    trace::info_with(cx, &[line.bytes()]);
     cx.report_mut().set_primary(Ends { remote, local });
     // The setup filters go once the chain is connected
     // (`Curl_conn_remove_setup_filters`).
@@ -3537,26 +3590,23 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
                 Unresolved::UnixPathTooLong => {
                     // `resolv_unix`, then the name's filter, which says
                     // the path alone.
-                    let path = Bytes(first.name());
+                    let path = first.name();
                     let kind = ErrorKind::CouldntResolveHost;
-                    let kind = trace::fail(
-                        cx,
-                        kind,
-                        format_args!("Unix socket path too long: '{path}'"),
-                    );
-                    trace::info(cx, format_args!("Could not resolve: {path}"));
+                    let kind =
+                        trace::fail_with(cx, kind, &[b"Unix socket path too long: '", path, b"'"]);
+                    trace::info_with(cx, &[b"Could not resolve: ", path]);
                     return kind;
                 }
                 Unresolved::Onion => {
-                    let (onion, port) = (Bytes(first.name()), first.port());
+                    let (onion, at) = (first.name(), port_text(first.port()));
                     let kind = match proxy {
                         Some(_) => ErrorKind::CouldntResolveProxy,
                         None => ErrorKind::CouldntResolveHost,
                     };
                     let why = format_args!("Not resolving .onion address (RFC 7686)");
                     let kind = trace::fail(cx, kind, why);
-                    trace::info(cx, format_args!("Could not resolve: {onion}:{port}"));
-                    trace::info(cx, format_args!("Could not resolve: {onion}"));
+                    trace::info_with(cx, &[b"Could not resolve: ", onion, at.bytes()]);
+                    trace::info_with(cx, &[b"Could not resolve: ", onion]);
                     return kind;
                 }
                 Unresolved::Negative => trace_lookup(cx, route, None),
@@ -3573,10 +3623,11 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
             }
             // The name looked up is the first peer's: with a proxy, the
             // first proxy's.
-            let (host, port) = (Bytes(first.name()), first.port());
-            let (what, kind) = match proxy {
-                Some(_) => ("proxy", ErrorKind::CouldntResolveProxy),
-                None => ("host", ErrorKind::CouldntResolveHost),
+            let (host, at) = (first.name(), port_text(first.port()));
+            let at = at.bytes();
+            let (what, kind): (&[u8], _) = match proxy {
+                Some(_) => (b"Could not resolve proxy: ", ErrorKind::CouldntResolveProxy),
+                None => (b"Could not resolve host: ", ErrorKind::CouldntResolveHost),
             };
             if why == Unresolved::Negative {
                 trace::info(cx, format_args!("Negative DNS entry"));
@@ -3588,18 +3639,16 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
                 // (`Curl_async_failed`, twice).
                 Unresolved::Resolver { explained, .. } => {
                     let kind = match explained {
-                        Some(reason) => trace::fail(
+                        Some(reason) => trace::fail_with(
                             cx,
                             kind,
-                            format_args!("Could not resolve {what}: {host} ({reason})"),
+                            &[what, host, b" (", reason.as_bytes(), b")"],
                         ),
-                        None => {
-                            trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"))
-                        }
+                        None => trace::fail_with(cx, kind, &[what, host]),
                     };
-                    trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"))
+                    trace::fail_with(cx, kind, &[what, host])
                 }
-                _ => trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}")),
+                _ => trace::fail_with(cx, kind, &[what, host]),
             };
             // What the resolver said no to is kept as said
             // (`Curl_dnscache_add_negative`).
@@ -3609,15 +3658,21 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
             } = why
             {
                 let queries = queries(first, route.ip, cx.rest.ipv6_works);
-                trace::of(
+                trace::of_with(
                     cx,
                     Component::Dns,
-                    format_args!("cache negative name resolve for {host}:{port} type={queries}"),
+                    &[
+                        b"cache negative name resolve for ",
+                        host,
+                        at,
+                        b" type=",
+                        queries.as_bytes(),
+                    ],
                 );
             }
-            trace::info(cx, format_args!("Could not resolve: {host}:{port}"));
+            trace::info_with(cx, &[b"Could not resolve: ", host, at]);
             if why == Unresolved::Negative {
-                trace::info(cx, format_args!("Could not resolve: {host}"));
+                trace::info_with(cx, &[b"Could not resolve: ", host]);
             }
             return kind;
         }
@@ -3636,43 +3691,30 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
         }
     };
     let origin = &*route.origin;
-    let (host, port) = (Bytes(origin.name()), origin.port());
+    let mut line = trace::Line::new();
+    line.raw(b"Failed to connect to ").raw(origin.name());
+    line.text(format_args!(":{}", origin.port()));
     // A peer that is neither the origin nor the proxy named is shown.
-    let via = Via(Some(first).filter(|&f| f != origin && Some(f) != proxy));
-    let over = OverProxy(proxy);
+    match Some(first).filter(|&f| f != origin && Some(f) != proxy) {
+        Some(via) if via.is_unix() => {
+            line.raw(b" over unix://").raw(via.name());
+        }
+        Some(via) => {
+            line.raw(b" via ").raw(via.name());
+            line.text(format_args!(":{}", via.port()));
+        }
+        None => {}
+    }
+    line.raw(b" ");
+    // The proxy connected through.
+    if let Some(proxy) = proxy {
+        line.raw(b"over proxy ").raw(proxy.name()).raw(b" ");
+    }
     let ms = cx.easy().report().timings().since_single_ms(cx.rest.now);
     // The last attempt's failure says what the setup's is.
     let why = failure.message();
-    trace::fail(
-        cx,
-        failure,
-        format_args!("Failed to connect to {host}:{port}{via} {over}after {ms} ms: {why}"),
-    )
-}
-
-/// The proxy connected through, as a failure names it.
-struct OverProxy<'a>(Option<&'a Peer>);
-
-impl std::fmt::Display for OverProxy<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            Some(peer) => write!(f, "over proxy {} ", Bytes(peer.name())),
-            None => Ok(()),
-        }
-    }
-}
-
-/// The peer connected to in place of the origin, as a failure names it.
-struct Via<'a>(Option<&'a Peer>);
-
-impl std::fmt::Display for Via<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            Some(peer) if peer.is_unix() => write!(f, " over unix://{}", Bytes(peer.name())),
-            Some(peer) => write!(f, " via {}:{}", Bytes(peer.name()), peer.port()),
-            None => Ok(()),
-        }
-    }
+    line.text(format_args!("after {ms} ms: {why}"));
+    trace::fail_with(cx, failure, &[line.bytes()])
 }
 
 /// The addresses a name resolved to, each family on a line of its own
@@ -3690,8 +3732,11 @@ fn report_resolved<H: Host>(cx: &mut StepCx<'_, H>, answer: &Answer, port: u16) 
     if !answer.resolved() {
         return;
     }
-    let host = Bytes(answer.name());
-    trace::info(cx, format_args!("Host {host}:{port} was resolved."));
+    let at = port_text(port);
+    trace::info_with(
+        cx,
+        &[b"Host ", answer.name(), at.bytes(), b" was resolved."],
+    );
     trace::info(cx, format_args!("IPv6: {}", Family(answer.addrs(), true)));
     trace::info(cx, format_args!("IPv4: {}", Family(answer.addrs(), false)));
 }
@@ -3965,16 +4010,11 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
             Err(BadEntry::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
             Err(BadEntry::Syntax { illegal }) => {
                 if let Some(ip) = illegal {
-                    let ip = Bytes(ip);
-                    trace::info(
-                        cx,
-                        format_args!("Resolve IP address '{ip}' found is illegal"),
-                    );
+                    trace::info_with(cx, &[b"Resolve IP address '", ip, b"' found is illegal"]);
                 }
                 let kind = ErrorKind::SetoptOptionSyntax;
-                let line = Bytes(line);
-                let why = format_args!("Could not parse CURLOPT_RESOLVE entry '{line}'");
-                return Err(trace::fail(cx, kind, why));
+                let why: [&[u8]; 3] = [b"Could not parse CURLOPT_RESOLVE entry '", line, b"'"];
+                return Err(trace::fail_with(cx, kind, &why));
             }
         };
         let answer = Answer::new(name, addrs).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
@@ -3987,19 +4027,16 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
             let discarded = dns.remove(name, port);
             (discarded, dns.put(answer, port, now, permanent))
         });
+        let at = Text::<8>::clipped(format_args!(":{port}")).0;
+        let at = at.bytes();
         if discarded {
-            let name = Bytes(name);
-            trace::info(
-                cx,
-                format_args!("RESOLVE {name}:{port} - old addresses discarded"),
-            );
+            trace::info_with(cx, &[b"RESOLVE ", name, at, b" - old addresses discarded"]);
         }
         put.map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-        let (shown, given) = (Bytes(name), Bytes(given));
-        let kept = if permanent { "" } else { " (non-permanent)" };
-        trace::info(
+        let kept: &[u8] = if permanent { b"" } else { b" (non-permanent)" };
+        trace::info_with(
             cx,
-            format_args!("[DNS] added {shown}:{port}:{given} to cache{kept}"),
+            &[b"[DNS] added ", name, at, b":", given, b" to cache", kept],
         );
         if name == b"*" {
             trace::info(cx, format_args!("RESOLVE *:{port} using wildcard"));
@@ -4126,11 +4163,7 @@ fn follow_leg<H: Host>(
         client_start(cx);
     }
     let rewound = proto.rewind_upload(cx);
-    let shown = Bytes(&text);
-    trace::info(
-        cx,
-        format_args!("Issue another request to this URL: '{shown}'"),
-    );
+    trace::info_with(cx, &[b"Issue another request to this URL: '", &text, b"'"]);
     let switched = proto.redirected(cx, code, &mut run.method, &mut run.http);
     if let Err(e) = rewound
         && !switched
@@ -4173,11 +4206,7 @@ fn retry_leg<H: Host>(
     // rewinds (`Curl_retry_request`).
     client_start(cx);
     let rewound = proto.rewind_upload(cx);
-    let shown = Bytes(&shown);
-    trace::info(
-        cx,
-        format_args!("Issue another request to this URL: '{shown}'"),
-    );
+    trace::info_with(cx, &[b"Issue another request to this URL: '", &shown, b"'"]);
     if let Err(e) = rewound {
         return TransferState::Init.fail(e);
     }
@@ -4737,11 +4766,11 @@ fn parse_proxy<H: Host>(
         Ok(parsed) => parsed,
         Err(Refused::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
         Err(Refused::Syntax(e)) => {
-            let text = Bytes(text);
-            return Err(trace::fail(
+            let e = Text::<256>::clipped(format_args!("': {e}")).0;
+            return Err(trace::fail_with(
                 cx,
                 ErrorKind::CouldntResolveProxy,
-                format_args!("Unsupported proxy syntax in '{text}': {e}"),
+                &[b"Unsupported proxy syntax in '", text, e.bytes()],
             ));
         }
         Err(Refused::Scheme) => {
@@ -4856,14 +4885,11 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
         Ok(Acquired::Reused(lease)) => {
             let route = &plan.route;
             let name = route.origin.scheme().name;
-            let (to, host) = match &route.proxy {
-                Some(proxy) => ("proxy", Bytes(proxy.peer.shown())),
-                None => ("host", Bytes(route.origin.name())),
+            let (to, host): (&[u8], _) = match &route.proxy {
+                Some(proxy) => (b": connection with proxy ", proxy.peer.shown()),
+                None => (b": connection with host ", route.origin.name()),
             };
-            trace::info(
-                cx,
-                format_args!("Reusing existing {name}: connection with {to} {host}"),
-            );
+            trace::info_with(cx, &[b"Reusing existing ", name.as_bytes(), to, host]);
             lease
         }
         Ok(Acquired::Wait(reason)) => {
@@ -4992,8 +5018,8 @@ fn connect_to<H: Host>(
         }
         Err(BadVia::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
         Err(BadVia::Syntax { kind, why, text }) => {
-            let text = Bytes(text);
-            (kind, trace::reason(format_args!("{why} in '{text}'")))
+            let why = why.as_bytes();
+            (kind, trace::reason_with(&[why, b" in '", text, b"'"]))
         }
     };
     Err(trace::fail_for(cx, kind, reason))
@@ -5049,8 +5075,7 @@ fn alt_svc<H: Host>(
         h2: neg.allowed.h2 && h2 && ctrl.h2,
         h3: neg.allowed.h3 && h3 && ctrl.h3,
     };
-    let host = Bytes(origin.name());
-    trace::debug_info(cx, format_args!("check Alt-Svc for host '{host}'"));
+    trace::debug_info_with(cx, &[b"check Alt-Svc for host '", origin.name(), b"'"]);
     let now = crate::date::cache_now(cx.unix_time());
     let alt_svc = cx.easy_mut().alt_svc_mut().expect("on, as above");
     let mut sources = [
@@ -5087,18 +5112,13 @@ fn alt_svc<H: Host>(
     // (`Curl_peer_create`).
     let via = via.idn(cx.easy().libraries().idn);
     let via = via.map_err(crate::idn::IdnFailure::kind)?;
-    trace::info(
-        cx,
-        format_args!(
-            "Alt-svc connecting from [{}]{}:{} to [{}]{}:{}",
-            src.name(),
-            Bytes(origin.name()),
-            origin.port(),
-            dst_alpn.name(),
-            Bytes(via.name()),
-            via.port()
-        ),
-    );
+    let mut line = trace::Line::new();
+    line.text(format_args!("Alt-svc connecting from [{}]", src.name()));
+    line.raw(origin.name());
+    line.text(format_args!(":{} to [{}]", origin.port(), dst_alpn.name()));
+    line.raw(via.name());
+    line.text(format_args!(":{}", via.port()));
+    trace::info_with(cx, &[line.bytes()]);
     let speaks = (src != dst_alpn).then_some(dst_alpn);
     let via = TryArc::try_new(via).map_err(oom)?;
     Ok(Some(AltSvc::Elsewhere { via, speaks }))

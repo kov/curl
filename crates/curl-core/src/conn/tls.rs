@@ -485,6 +485,10 @@ mod tests {
         fn of(&mut self, _: Component, _: fmt::Arguments<'_>) {}
         fn of_with(&mut self, _: Component, _: &[&[u8]]) {}
         fn info(&mut self, _: fmt::Arguments<'_>) {}
+        fn info_with(&mut self, _: &[&[u8]]) {}
+        fn fails_with(&mut self, kind: ErrorKind, _: &[&[u8]]) -> ErrorKind {
+            kind
+        }
         fn early_done(&mut self, sent: i64) {
             assert_eq!(self.0.replace(sent), None, "told once");
         }

@@ -689,7 +689,7 @@ witness: curl-core proto::http::tests::h3_trace::an_http3_header_not_utf8_is_tra
                 trace::of_with(cx, h3, &[id.bytes(), b"header: ", name, b": ", value]);
 --- new
                 let (n, v) = (curl_alloc::Lossy(name), curl_alloc::Lossy(value));
-                trace::of(cx, h3, format_args!("{}header: {n}: {v}", crate::trace::Bytes(id.bytes())));
+                trace::of(cx, h3, format_args!("{}header: {n}: {v}", curl_alloc::Lossy(id.bytes())));
 
 === an HTTP/3 proxy's header not UTF-8 is traced lossily, not as its bytes
 file: crates/curl-core/src/conn/h3proxy.rs
@@ -698,7 +698,7 @@ witness: curl-core proto::http::tests::h3_trace::an_http3_proxy_header_not_utf8_
                 cx.of_with(H3P, &[id.bytes(), b"header: ", name, b": ", value]);
 --- new
                 let (n, v) = (curl_alloc::Lossy(name), curl_alloc::Lossy(value));
-                cx.of(H3P, format_args!("{}header: {n}: {v}", crate::trace::Bytes(id.bytes())));
+                cx.of(H3P, format_args!("{}header: {n}: {v}", curl_alloc::Lossy(id.bytes())));
 
 === an HTTP/3 proxy's CONNECT names a host not UTF-8 lossily in its trace
 file: crates/curl-core/src/multi/state/h3tunnel.rs
@@ -714,7 +714,7 @@ witness: curl-core proto::http::tests::h3_trace::an_http3_proxy_connect_names_it
     ];
     let _ = parts;
     let host = curl_alloc::Lossy(target.request_host());
-    let port = crate::trace::Bytes(port.bytes());
+    let port = curl_alloc::Lossy(port.bytes());
     trace::of(cx, H3P, format_args!("[0] CONNECT start for {host}{port}"));
 
 === a capsule protocol not UTF-8 is said lossily in the tunnel's failure

@@ -2928,6 +2928,22 @@ impl DebugHandler for ChangesOn {
     }
 }
 
+/// A custom method that is not text is traced as its bytes as it sticks
+/// across a redirect, as C's `%s` writes it (`http_switch_to_get`).
+#[test]
+fn a_custom_method_not_utf8_is_traced_as_its_bytes() {
+    let ran = redirected(303, Method::Get, b"", |o| {
+        o.http.custom.make_mut().unwrap().method = Some(b"DEL\xffETE".to_vec());
+    });
+    assert!(
+        ran.seen
+            .of("text")
+            .contains(&b"Stick to DEL\xffETE instead of GET\n".to_vec()),
+        "{:?}",
+        ran.seen.of("text")
+    );
+}
+
 /// A custom method the debug handler sets while the switch to GET is
 /// traced is the next request's, as C's `http_switch_to_get` leaves it.
 #[test]

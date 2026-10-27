@@ -11,7 +11,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use curl_alloc::try_box;
 
-use super::{Connecting, Handshake, OsError, StepCx, TransferState, Wake};
+use super::{Connecting, Handshake, StepCx, TransferState, Wake};
 use crate::conn::Made;
 use crate::conn::io::{Events, Remote, Sent};
 use crate::error::ErrorKind;
@@ -128,11 +128,11 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
             Ok(Sent::Bytes(n)) => p.sent += n.get(),
             Ok(Sent::WouldBlock) => return (TransferState::Connecting(c), Wake::Idle),
             Err(e) => {
-                let why = OsError(&e);
-                let kind = trace::fail(
+                let why = curl_os::error::ErrorText::of(&e);
+                let kind = trace::fail_with(
                     cx,
                     ErrorKind::SendError,
-                    format_args!("Send failure: {why}"),
+                    &[b"Send failure: ", why.as_bytes()],
                 );
                 return (TransferState::Connecting(c).fail(kind), Wake::Again);
             }

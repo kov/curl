@@ -53,10 +53,9 @@ pub(crate) fn upgrade<H: Host>(
     url.set(Part::Scheme, Some(b"https"), SetOptions::NONE)
         .map_err(url_error)?;
     let whole = url.get(Part::Url, GetOptions::NONE).map_err(url_error)?;
-    let shown = trace::Bytes(&whole);
-    trace::info(
+    trace::info_with(
         cx,
-        format_args!("Switched from HTTP to HTTPS due to HSTS => {shown}"),
+        &[b"Switched from HTTP to HTTPS due to HSTS => ", &whole],
     );
     Ok(true)
 }

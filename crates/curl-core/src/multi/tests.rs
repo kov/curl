@@ -1214,6 +1214,18 @@ impl crate::handler::DebugHandler for TextLines {
     }
 }
 
+/// Keeps the trace's text lines as their bytes, which need not be text.
+#[derive(Clone, Default)]
+struct RawLines(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
+
+impl crate::handler::DebugHandler for RawLines {
+    fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
+        if kind == crate::handler::DebugKind::Text {
+            self.0.lock().unwrap().push(data.to_vec());
+        }
+    }
+}
+
 /// A multi over fake peers: 127.0.0.1 port 1 accepts, 2 refuses, 3 never
 /// answers, 4 accepts after 5 ms.
 fn networked() -> (Multi, ManualClock) {
@@ -3353,6 +3365,51 @@ fn a_network_change_forgets_what_it_is_asked_to() {
     m.network_changed(true, false, &mut NoEvents);
     m.network_changed(false, true, &mut NoEvents);
     assert_eq!(run(&mut m)[0], resolved, "the names are forgotten");
+}
+
+/// A resolve list's names, and the entries it cannot read, are traced as
+/// their bytes, as C's `%s` writes them (`Curl_loadhostpairs`): the
+/// application's, which need not be text.
+#[test]
+fn a_resolve_entry_not_utf8_is_traced_as_its_bytes() {
+    let (mut m, _clock) = networked();
+    let mut e = easy("tcp://foo.test:1/");
+    let lines = RawLines::default();
+    e.options_mut().output.verbose = true;
+    e.options_mut().callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    e.options_mut()
+        .resolve
+        .set([&b"caf\xff.test:1:127.0.0.1"[..], b"foo.test:1:127.0.0.1"])
+        .unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
+    assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
+    let said = lines.0.lock().unwrap().clone();
+    assert!(
+        said.contains(&b"[DNS] added caf\xff.test:1:127.0.0.1 to cache\n".to_vec()),
+        "{said:?}"
+    );
+    let mut e = m.remove(id, &mut NoEvents).unwrap().easy;
+    lines.0.lock().unwrap().clear();
+    e.options_mut()
+        .resolve
+        .set([&b"caf\xff.test:1:127.0.0.1,ex\xff"[..]])
+        .unwrap();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::SetoptOptionSyntax), 0)]
+    );
+    let said = lines.0.lock().unwrap().clone();
+    let wanted: [&[u8]; 2] = [
+        b"Resolve IP address 'ex\xff' found is illegal\n",
+        b"Could not parse CURLOPT_RESOLVE entry 'caf\xff.test:1:127.0.0.1,ex\xff'\n",
+    ];
+    for line in wanted {
+        assert!(said.contains(&line.to_vec()), "{said:?}");
+    }
+    m.remove(id, &mut NoEvents).unwrap();
 }
 
 /// An entry the list cannot be read with fails the transfer, and the list

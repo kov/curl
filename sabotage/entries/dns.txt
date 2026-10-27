@@ -349,15 +349,11 @@ witness: curl-core conn::threaded::tests::a_failure_is_given_no_reason
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_failure_without_a_reason_is_said_twice
 --- old
-                        None => {
-                            trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"))
-                        }
+                        None => trace::fail_with(cx, kind, &[what, host]),
                     };
-                    trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"))
+                    trace::fail_with(cx, kind, &[what, host])
 --- new
-                        None => {
-                            trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"))
-                        }
+                        None => trace::fail_with(cx, kind, &[what, host]),
                     };
                     kind
 
@@ -436,3 +432,27 @@ witness: curl-core multi::tests::an_onion_name_is_never_resolved
                         None => ErrorKind::CouldntResolveHost,
                     };
                     let why = format_args!("Not resolving .onion address (RFC 7686)");
+
+=== a resolve entry's name not UTF-8 is traced lossily as it is added
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_resolve_entry_not_utf8_is_traced_as_its_bytes
+--- old
+        trace::info_with(
+            cx,
+            &[b"[DNS] added ", name, at, b":", given, b" to cache", kept],
+        );
+--- new
+        let (n, g) = (curl_alloc::Lossy(name), curl_alloc::Lossy(given));
+        let (at, kept) = (curl_alloc::Lossy(at), curl_alloc::Lossy(kept));
+        trace::info(cx, format_args!("[DNS] added {n}{at}:{g} to cache{kept}"));
+
+=== a resolve entry not UTF-8 is said lossily as it fails
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_resolve_entry_not_utf8_is_traced_as_its_bytes
+--- old
+                let why: [&[u8]; 3] = [b"Could not parse CURLOPT_RESOLVE entry '", line, b"'"];
+                return Err(trace::fail_with(cx, kind, &why));
+--- new
+                let line = curl_alloc::Lossy(line);
+                let why = format_args!("Could not parse CURLOPT_RESOLVE entry '{line}'");
+                return Err(trace::fail(cx, kind, why));

@@ -56,3 +56,23 @@ witness: curl-core proto::http::tests::bind_trace::a_name_binds_to_its_interface
     let local = match bind.binds().then(|| bind.try_clone()) {
 --- new
     let local = match false.then(|| bind.try_clone()) {
+
+=== an interface not UTF-8 is said lossily as it fails to bind
+file: crates/curl-core/src/conn/bind.rs
+witness: curl-core proto::http::tests::bind_trace::an_interface_not_utf8_fails_as_its_bytes
+--- old
+                cx.fail_with(&[
+                    b"Could not bind to interface '",
+                    name,
+                    n.bytes(),
+                    ErrorText::of(&error).as_bytes(),
+                ]);
+--- new
+                let (name, n) = (curl_alloc::Lossy(name), curl_alloc::Lossy(n.bytes()));
+                let why = ErrorText::of(&error);
+                let why = curl_alloc::Lossy(why.as_bytes());
+                let line = Text::<256>::clipped(format_args!(
+                    "Could not bind to interface '{name}{n}{why}"
+                ))
+                .0;
+                cx.fail_with(&[line.bytes()]);

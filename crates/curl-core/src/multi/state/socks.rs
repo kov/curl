@@ -5,7 +5,7 @@
 
 use curl_alloc::try_box;
 
-use super::{Bytes, Connecting, Handshake, Ip, StepCx, TransferState, Wake, report_resolved};
+use super::{Connecting, Handshake, Ip, StepCx, TransferState, Wake, report_resolved};
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::socks::{
     Creds, Dest, Failed, GssError, GssLine, GssMethod, Handshake as Exchange, Resolved, SocksError,
@@ -77,8 +77,8 @@ fn start<H: Host>(
         Some(Ok((answer, found))) => {
             match found {
                 Came::Cached => {
-                    let name = Bytes(answer.name());
-                    trace::info(cx, format_args!("Hostname {name} was found in DNS cache"));
+                    let name = answer.name();
+                    trace::info_with(cx, &[b"Hostname ", name, b" was found in DNS cache"]);
                 }
                 Came::Stale => {
                     trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"));
@@ -211,16 +211,16 @@ fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState,
         .socks(c.route.target())
         .expect("through a SOCKS proxy")
         .to;
-    let (name, port) = (Bytes(to.name()), to.port());
-    trace::info(
-        cx,
-        format_args!(
-            "Opened SOCKS connection from {} port {lport} to {name} port {port} (via {} port {})",
-            Ip(lip),
-            remote.shown_ip(),
-            remote.port()
-        ),
-    );
+    let mut line = trace::Line::new();
+    line.text(format_args!(
+        "Opened SOCKS connection from {} port {lport} to ",
+        Ip(lip)
+    ));
+    line.raw(to.name());
+    line.text(format_args!(" port {} (via ", to.port()));
+    line.raw(remote.shown_ip().bytes());
+    line.text(format_args!(" port {})", remote.port()));
+    trace::info_with(cx, &[line.bytes()]);
     c.handshake = None;
     (TransferState::Connecting(c), Wake::Again)
 }

@@ -12,7 +12,8 @@ use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::options::LocalBind;
 use crate::text::Text;
-use crate::trace::{Bytes, Code, OsError};
+use crate::trace::Code;
+use curl_os::error::ErrorText;
 
 /// Why a socket's local end was not bound.
 #[derive(Debug, PartialEq, Eq)]
@@ -122,10 +123,8 @@ pub(super) fn bind_local(
     };
     cx.socket_failed(&error);
     let n = error.raw_os_error().unwrap_or(0);
-    cx.fail(format_args!(
-        "bind failed with errno {n}: {}",
-        OsError(&error)
-    ));
+    let n = Text::<48>::clipped(format_args!("bind failed with errno {n}: ")).0;
+    cx.fail_with(&[n.bytes(), ErrorText::of(&error).as_bytes()]);
     Err(BindFailed::Failed(ErrorKind::InterfaceFailed))
 }
 
@@ -149,10 +148,7 @@ fn where_to_bind(
     if let Some(name) = iface {
         match socket.bind_to_device(name) {
             Ok(()) if !host_in => {
-                cx.info(format_args!(
-                    "socket successfully bound to interface '{}'",
-                    Bytes(name)
-                ));
+                cx.info_with(&[b"socket successfully bound to interface '", name, b"'"]);
                 return Ok(None);
             }
             Ok(()) => {}
@@ -172,11 +168,13 @@ fn where_to_bind(
                 let error = by_name.unwrap_or_else(|| io::Error::from_raw_os_error(0));
                 cx.socket_failed(&error);
                 let n = error.raw_os_error().unwrap_or(0);
-                cx.fail(format_args!(
-                    "Could not bind to interface '{}' with errno {n}: {}",
-                    Bytes(name),
-                    OsError(&error)
-                ));
+                let n = Text::<32>::clipped(format_args!("' with errno {n}: ")).0;
+                cx.fail_with(&[
+                    b"Could not bind to interface '",
+                    name,
+                    n.bytes(),
+                    ErrorText::of(&error).as_bytes(),
+                ]);
                 return Err(BindFailed::Failed(ErrorKind::InterfaceFailed));
             }
             InterfaceAddress::NotFound => {}
@@ -184,11 +182,8 @@ fn where_to_bind(
             InterfaceAddress::Found(ip, scope) => {
                 host_text = Text::clipped(format_args!("{ip}{}", Scope(scope))).0;
                 host = host_text.bytes();
-                cx.info(format_args!(
-                    "Local Interface {} is ip {} using address family {af}",
-                    Bytes(name),
-                    Bytes(host)
-                ));
+                let af = Text::<32>::clipped(format_args!(" using address family {af}")).0;
+                cx.info_with(&[b"Local Interface ", name, b" is ip ", host, af.bytes()]);
                 found = Some((ip, scope));
             }
         }
@@ -199,10 +194,11 @@ fn where_to_bind(
         found = match resolve_host(cx, host, v6, setup)? {
             Some(ip) => {
                 let h_af = if ip.is_ipv6() { AF_INET6 } else { AF_INET };
-                cx.info(format_args!(
-                    "Name '{}' family {af} resolved to '{ip}' family {h_af}",
-                    Bytes(host)
-                ));
+                let rest = Text::<128>::clipped(format_args!(
+                    "' family {af} resolved to '{ip}' family {h_af}"
+                ))
+                .0;
+                cx.info_with(&[b"Name '", host, rest.bytes()]);
                 if ip.is_ipv6() != v6 {
                     return Err(BindFailed::OtherFamily);
                 }
@@ -220,11 +216,13 @@ fn where_to_bind(
             cx.socket_failed(&error);
             let n = error.raw_os_error().unwrap_or(0);
             cx.reset_fail();
-            cx.fail(format_args!(
-                "Could not bind to '{}' with errno {n}: {}",
-                Bytes(host),
-                OsError(&error)
-            ));
+            let n = Text::<32>::clipped(format_args!("' with errno {n}: ")).0;
+            cx.fail_with(&[
+                b"Could not bind to '",
+                host,
+                n.bytes(),
+                ErrorText::of(&error).as_bytes(),
+            ]);
             Err(BindFailed::Failed(ErrorKind::InterfaceFailed))
         }
     }
@@ -259,14 +257,23 @@ fn resolve_host(
         (Family::V4, "A")
     };
     let port = BIND_RESOLVE_PORT;
-    let name = Bytes(host);
+    let name = host;
+    // The port as a line shows it after the name, and the queries asked.
+    let at = Text::<8>::clipped(format_args!(":{port}")).0;
+    let at = at.bytes();
     // An IPv6 address is a host as a URL shows it in brackets.
     let bare_v6 = std::str::from_utf8(host)
         .ok()
         .is_some_and(|h| h.parse::<Ipv6Addr>().is_ok());
     let bracketed: Text<64>;
     let shown = if bare_v6 {
-        bracketed = Text::clipped(format_args!("[{name}]")).0;
+        bracketed = {
+            let mut b = Text::new();
+            b.push_clipped(b"[");
+            b.push_clipped(host);
+            b.push_clipped(b"]");
+            b
+        };
         bracketed.bytes()
     } else {
         host
@@ -274,15 +281,22 @@ fn resolve_host(
     let dns = Component::Dns;
     // The C debug build's line.
     #[cfg(feature = "debug-hooks")]
-    cx.of(
+    cx.of_with(
         dns,
-        format_args!("[{queries}] hostip_resolv({name}:{port})"),
+        &[
+            b"[",
+            queries.as_bytes(),
+            b"] hostip_resolv(",
+            name,
+            at,
+            b")",
+        ],
     );
     let looked = lookup_name((shown, host, port), family, cx, setup, false);
     if let Err(ConnectError::Unresolved(Unresolved::DebugFailIpv6)) = looked {
         cx.info(format_args!("DEBUG fail ipv6 resolve"));
-        cx.fail(format_args!("Could not resolve host: {name}"));
-        cx.fail(format_args!("Could not resolve: {name}:{port}"));
+        cx.fail_with(&[b"Could not resolve host: ", name]);
+        cx.fail_with(&[b"Could not resolve: ", name, at]);
         return Ok(None);
     }
     let found = match &looked {
@@ -311,12 +325,10 @@ fn resolve_host(
         None => (Err(ErrorKind::CouldntResolveHost), "not "),
     };
     let code = Code(code);
-    cx.of(
-        dns,
-        format_args!("cache lookup {name}:{port} queries={queries} -> {code} {not}found"),
-    );
+    let rest = Text::<64>::clipped(format_args!(" queries={queries} -> {code} {not}found")).0;
+    cx.of_with(dns, &[b"cache lookup ", name, at, rest.bytes()]);
     if found == Some(Found::Cached) {
-        cx.info(format_args!("Hostname {name} was found in DNS cache"));
+        cx.info_with(&[b"Hostname ", name, b" was found in DNS cache"]);
     }
     match looked {
         Ok((answer, found)) => {
@@ -333,9 +345,15 @@ fn resolve_host(
                 // resolver gives is waited for without a word
                 // (`Curl_resolv_blocking`).
                 if asked == Asked::Shortcut {
-                    cx.of(
+                    cx.of_with(
                         dns,
-                        format_args!("cached entry for {name}:{port} queries={queries}"),
+                        &[
+                            b"cached entry for ",
+                            name,
+                            at,
+                            b" queries=",
+                            queries.as_bytes(),
+                        ],
                     );
                 }
             }
@@ -354,8 +372,14 @@ fn resolve_host(
                 Unresolved::Resolver {
                     explained: Some(reason),
                     ..
-                } => cx.fail(format_args!("Could not resolve host: {name} ({reason})")),
-                _ => cx.fail(format_args!("Could not resolve host: {name}")),
+                } => cx.fail_with(&[
+                    b"Could not resolve host: ",
+                    name,
+                    b" (",
+                    reason.as_bytes(),
+                    b")",
+                ]),
+                _ => cx.fail_with(&[b"Could not resolve host: ", name]),
             }
             Ok(None)
         }

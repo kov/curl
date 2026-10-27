@@ -196,6 +196,24 @@ fn an_interface_not_there_fails_to_bind() {
     );
 }
 
+/// An interface named in bytes that are not text is said as its bytes as
+/// it fails to bind, as C's `%s` writes them.
+#[test]
+fn an_interface_not_utf8_fails_as_its_bytes() {
+    let bind = LocalBind {
+        interface: Interface::parse(b"if!caf\xffx").unwrap(),
+        ..LocalBind::NONE
+    };
+    let ran = bound(|n| n, bind);
+    assert_eq!(ran.result, Err(ErrorKind::InterfaceFailed));
+    let wanted = b"Could not bind to interface 'caf\xffx' with errno 19: No such device\n";
+    assert!(
+        ran.seen.of("text").contains(&wanted.to_vec()),
+        "{:?}",
+        ran.seen.of("text")
+    );
+}
+
 /// A host's address of the other family fails the attempt, as one that
 /// could not connect: the next address would be tried.
 #[test]

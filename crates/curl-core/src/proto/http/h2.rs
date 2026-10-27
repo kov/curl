@@ -1026,11 +1026,11 @@ impl Request {
                             ErrorKind::RecvError
                         }
                         RecvFailed::Os(e) => {
-                            let why = OsError(&e);
-                            trace::fail(
+                            let why = curl_os::error::ErrorText::of(&e);
+                            trace::fail_with(
                                 cx,
                                 ErrorKind::RecvError,
-                                format_args!("Recv failure: {why}"),
+                                &[b"Recv failure: ", why.as_bytes()],
                             )
                         }
                     };

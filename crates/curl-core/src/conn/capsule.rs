@@ -533,6 +533,13 @@ mod tests {
         fn info(&mut self, line: fmt::Arguments<'_>) {
             self.0.push(line.to_string());
         }
+        fn info_with(&mut self, parts: &[&[u8]]) {
+            self.0
+                .push(String::from_utf8(parts.concat()).expect("a test's line is text"));
+        }
+        fn fails_with(&mut self, kind: ErrorKind, _: &[&[u8]]) -> ErrorKind {
+            kind
+        }
     }
 
     /// Run `f` on a capsule layer over the scripted layers.

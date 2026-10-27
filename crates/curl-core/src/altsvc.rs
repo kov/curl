@@ -4,8 +4,6 @@
 //! alternative in its place. The cache is read from a file as the
 //! application names it and written back as the handle goes.
 
-use std::fmt;
-
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::date::HttpDate;
@@ -345,13 +343,14 @@ impl AltSvc {
     /// alternatives; otherwise each alternative of a known version, the
     /// first of them forgetting the origin's earlier ones. What cannot be
     /// read ends the reading; `say` is told what was added and why an
-    /// alternative was passed over, as C traces it.
+    /// alternative was passed over, as C traces it: a line in pieces,
+    /// the field's own bytes among them as they came.
     pub fn parse(
         &mut self,
         value: &[u8],
         origin: (&[u8], u16, Alpn),
         now: i64,
-        say: &mut dyn FnMut(fmt::Arguments<'_>),
+        say: &mut dyn FnMut(&[&[u8]]),
     ) -> Result<(), OutOfMemory> {
         let (host, port, alpn) = origin;
         let mut c = Cursor::new(value);
@@ -390,11 +389,9 @@ impl AltSvc {
                 // An origin whose host is a dot alone keeps nothing; C
                 // fails the transfer for memory there (DIVERGENCE.md).
                 if made {
-                    let shown = crate::trace::Bytes(dst_host);
-                    say(format_args!(
-                        "Added alt-svc: {shown}:{dst_port} over {}",
-                        dst_alpn.name()
-                    ));
+                    let port = crate::text::Text::<8>::clipped(format_args!(":{dst_port}")).0;
+                    let over = dst_alpn.name().as_bytes();
+                    say(&[b"Added alt-svc: ", dst_host, port.bytes(), b" over ", over]);
                 }
             }
             if !c.single(b',') {
@@ -517,7 +514,7 @@ fn push_host(out: &mut Vec<u8>, host: &[u8]) -> Result<(), OutOfMemory> {
 fn destination<'a>(
     c: &mut Cursor<'a>,
     host: &'a [u8],
-    say: &mut dyn FnMut(fmt::Arguments<'_>),
+    say: &mut dyn FnMut(&[&[u8]]),
 ) -> Option<(&'a [u8], u16)> {
     if !c.single(b'"') {
         return None;
@@ -527,13 +524,13 @@ fn destination<'a>(
     } else {
         let dst = if !c.single(b'[') {
             let Some(name) = c.until(b':', MAX_HOST_LEN) else {
-                say(format_args!("Bad alt-svc hostname, ignoring."));
+                say(&[b"Bad alt-svc hostname, ignoring."]);
                 return None;
             };
             name
         } else {
             let Some(address) = c.until(b']', MAX_IPV6_LEN).filter(|_| c.single(b']')) else {
-                say(format_args!("Bad alt-svc IPv6 hostname, ignoring."));
+                say(&[b"Bad alt-svc IPv6 hostname, ignoring."]);
                 return None;
             };
             address
@@ -544,7 +541,7 @@ fn destination<'a>(
         dst
     };
     let Some(port) = c.number(0xffff) else {
-        say(format_args!("Unknown alt-svc port number, ignoring."));
+        say(&[b"Unknown alt-svc port number, ignoring."]);
         return None;
     };
     let port = u16::try_from(port).expect("read no larger than 65535");

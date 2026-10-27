@@ -42,6 +42,13 @@ pub(crate) fn debug_info<H: Host>(cx: &mut StepCx<'_, H>, args: fmt::Arguments<'
     }
 }
 
+/// `debug_info` with a line made of `parts`, which need not be text.
+pub(crate) fn debug_info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
+    if cfg!(feature = "debug-hooks") {
+        info_with(cx, parts);
+    }
+}
+
 /// Whether `line` is one `debug_info` writes for C's debug build, for
 /// the tests that read a trace whole, whichever build runs them.
 #[cfg(test)]
@@ -205,6 +212,15 @@ impl Internal {
         });
     }
 
+    /// `info` with a line made of `parts`, which need not be text.
+    pub(crate) fn info_with(&self, parts: &[&[u8]]) {
+        self.write(None, |line| {
+            for part in parts {
+                line.push_clipped(part);
+            }
+        });
+    }
+
     /// A line of `component`'s, if it is on (`CURL_TRC_M`,
     /// `CURL_TRC_CF`).
     pub(crate) fn of(&self, component: Component, args: fmt::Arguments<'_>) {
@@ -272,6 +288,16 @@ impl crate::conn::layer::LayerCx for InternalCx<'_> {
         }
     }
 
+    fn info_with(&mut self, parts: &[&[u8]]) {
+        if let Some(trace) = self.trace {
+            trace.info_with(parts);
+        }
+    }
+
+    fn fails_with(&mut self, kind: ErrorKind, _: &[&[u8]]) -> ErrorKind {
+        kind
+    }
+
     fn verbose(&self) -> bool {
         self.trace.is_some()
     }
@@ -332,6 +358,30 @@ impl fmt::Display for Ids {
 pub(crate) struct Line(Text<LINE_MAX>);
 
 impl Line {
+    /// An empty line, to be built of pieces: `text` formatted on the
+    /// stack, and `raw` bytes of the peer's or the application's, as C's
+    /// `%s` writes them.
+    pub(crate) fn new() -> Line {
+        Line(Text::new())
+    }
+
+    /// Add `args`, formatted: numbers, and text of our own.
+    pub(crate) fn text(&mut self, args: fmt::Arguments<'_>) -> &mut Line {
+        self.0.push_fmt(args);
+        self
+    }
+
+    /// Add `bytes` as they are, which need not be text.
+    pub(crate) fn raw(&mut self, bytes: &[u8]) -> &mut Line {
+        self.0.push_clipped(bytes);
+        self
+    }
+
+    /// What the line holds, not ended.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        self.0.bytes()
+    }
+
     /// The line as traced without ids, its end included.
     pub(crate) fn ended(&self) -> Text<LINE_MAX> {
         let mut line = self.0.clone();
@@ -415,6 +465,15 @@ impl Reason {
 
 pub(crate) fn reason(args: fmt::Arguments<'_>) -> Reason {
     Reason(Text::<DETAIL_MAX>::clipped(args).0)
+}
+
+/// `reason` made of `parts`, which need not be text.
+pub(crate) fn reason_with(parts: &[&[u8]]) -> Reason {
+    let mut detail = Text::<DETAIL_MAX>::new();
+    for part in parts {
+        detail.push_clipped(part);
+    }
+    Reason(detail)
 }
 
 /// `fail` with a reason `reason` formatted.
@@ -511,33 +570,6 @@ impl fmt::Display for Ip {
             Some(ip) => ip.fmt(f),
             None => Ok(()),
         }
-    }
-}
-
-/// An operating system error as `strerror` words it, made without
-/// allocating, as C's `curlx_strerror` writes it into a buffer on the
-/// stack.
-pub(crate) struct OsError<'a>(pub(crate) &'a std::io::Error);
-
-impl fmt::Display for OsError<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Bytes(curl_os::error::ErrorText::of(self.0).as_bytes()).fmt(f)
-    }
-}
-
-/// Bytes shown as text, as C's `%s` shows them.
-pub(crate) struct Bytes<'a>(pub(crate) &'a [u8]);
-
-impl fmt::Display for Bytes<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use fmt::Write as _;
-        for chunk in self.0.utf8_chunks() {
-            f.write_str(chunk.valid())?;
-            for b in chunk.invalid() {
-                f.write_char(char::from(*b))?;
-            }
-        }
-        Ok(())
     }
 }
 

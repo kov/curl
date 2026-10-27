@@ -52,19 +52,24 @@ impl LayerCx for RawCx<'_> {
 
     fn info(&mut self, _: fmt::Arguments<'_>) {}
 
+    fn info_with(&mut self, _: &[&[u8]]) {}
+
     fn socket_failed(&mut self, e: &std::io::Error) {
         self.easy.report_mut().socket_failed(e);
     }
 
     fn fails(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
-        fail(self.easy, kind, why)
+        fail(self.easy, kind, crate::trace::reason(why))
+    }
+
+    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+        fail(self.easy, kind, crate::trace::reason_with(parts))
     }
 }
 
 /// Keep `why` as the reason the handle failed, if it is the first, and
 /// tell the application's error sink (`failf` outside a transfer).
-fn fail(easy: &mut Easy, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
-    let reason = crate::trace::reason(why);
+fn fail(easy: &mut Easy, kind: ErrorKind, reason: crate::trace::Reason) -> ErrorKind {
     let detail = reason.bytes();
     let first = easy.report().unsaid();
     easy.report_mut().record_failure(detail);
@@ -107,7 +112,11 @@ fn raw(
 ) -> Result<RawIo, ErrorKind> {
     if !easy.options().connect_only.reserves() {
         let why = format_args!("CONNECT_ONLY is required");
-        return Err(fail(easy, ErrorKind::UnsupportedProtocol, why));
+        return Err(fail(
+            easy,
+            ErrorKind::UnsupportedProtocol,
+            crate::trace::reason(why),
+        ));
     }
     let last = easy.last_conn;
     let conn = last.and_then(|l| pool?.reserved_mut(l.id));
@@ -116,7 +125,11 @@ fn raw(
         easy.last_conn = None;
         easy.report_mut().set_conn(None);
         let why = format_args!("Failed to get last socket used for connection #-1");
-        return Err(fail(easy, ErrorKind::UnsupportedProtocol, why));
+        return Err(fail(
+            easy,
+            ErrorKind::UnsupportedProtocol,
+            crate::trace::reason(why),
+        ));
     };
     if let Some(l) = easy.last_conn.as_mut() {
         l.used = true;

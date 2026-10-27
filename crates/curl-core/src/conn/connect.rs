@@ -38,7 +38,8 @@ use crate::error::ErrorKind;
 use crate::handler::Configured;
 use crate::options::{IpVersion, KeepAlive, Sockets};
 use crate::time::Instant;
-use crate::trace::{Ip, OsError};
+use crate::trace::{Ip, Line};
+use curl_os::error::ErrorText;
 
 /// A connection being set up.
 #[derive(Debug)]
@@ -234,8 +235,10 @@ pub(crate) trait ConnCx: QuicCx {
     /// before it connects.
     fn configure_socket(&mut self, socket: &dyn Socket) -> Configured;
 
-    /// Why the transfer fails, kept if nothing said so before (`failf`).
-    fn fail(&mut self, reason: std::fmt::Arguments<'_>);
+    /// Why the transfer fails, made of `parts`, kept if nothing said so
+    /// before (`failf`). The parts need not be text: bytes of the
+    /// application's or the system's are said as they are.
+    fn fail_with(&mut self, parts: &[&[u8]]);
 
     /// Let go of the reason kept, as the race starts an attempt or ends
     /// (`Curl_reset_fail`): what an attempt said is not why the transfer
@@ -316,6 +319,12 @@ impl LayerCx for Plain<'_> {
     fn of_with(&mut self, _: crate::components::Component, _: &[&[u8]]) {}
 
     fn info(&mut self, _: std::fmt::Arguments<'_>) {}
+
+    fn info_with(&mut self, _: &[&[u8]]) {}
+
+    fn fails_with(&mut self, kind: ErrorKind, _: &[&[u8]]) -> ErrorKind {
+        kind
+    }
 }
 
 #[cfg(test)]
@@ -365,7 +374,7 @@ impl ConnCx for Plain<'_> {
         Configured::Ok
     }
 
-    fn fail(&mut self, _: std::fmt::Arguments<'_>) {}
+    fn fail_with(&mut self, _: &[&[u8]]) {}
 
     fn reset_fail(&mut self) {}
 
@@ -1056,7 +1065,8 @@ impl ConnectMachine {
             }
             Err(error) => {
                 // Neither address is known yet (`set_remote_ip`).
-                cx.fail(format_args!("failed to open socket: {}", OsError(&error)));
+                let why = ErrorText::of(&error);
+                cx.fail_with(&[b"failed to open socket: ", why.as_bytes()]);
                 let none = io::Error::from_raw_os_error(0);
                 return self.not_opened(cx, None, ErrorKind::CouldntConnect, none);
             }
@@ -1158,14 +1168,19 @@ impl ConnectMachine {
                 // The socket was opened before its connect failed, and
                 // never got a local address (`cf_tcp_connect`).
                 cx.socket_failed(&error);
-                let why = OsError(&error);
+                let why = ErrorText::of(&error);
+                let why = why.as_bytes();
                 let rip = remote.shown_ip();
-                cx.info(format_args!("Immediate connect fail for {rip}: {why}"));
+                cx.info_with(&[b"Immediate connect fail for ", rip.bytes(), b": ", why]);
                 cx.net().close(socket);
-                cx.info(format_args!(
-                    "connect to {rip} port {} from {lip} port {lport} failed: {why}",
+                let mut line = Line::new();
+                line.raw(b"connect to ").raw(rip.bytes());
+                line.text(format_args!(
+                    " port {} from {lip} port {lport} failed: ",
                     remote.port()
                 ));
+                line.raw(why);
+                cx.info_with(&[line.bytes()]);
                 cx.of(component, format_args!("destroy"));
                 r.failed(Some(error), ErrorKind::CouldntConnect)
                     .map(|p| Drove::Connecting(self, p))
@@ -1190,11 +1205,12 @@ impl ConnectMachine {
         let Remote::Inet(addr) = remote else {
             unreachable!("HTTP/3 is refused over a Unix socket");
         };
-        let rip = remote.shown_ip();
+        let rip = addr.ip();
         if let Err(error) = socket.socket().connect(&remote) {
             cx.socket_failed(&error);
-            let why = OsError(&error);
-            cx.info(format_args!("Immediate connect fail for {rip}: {why}"));
+            let why = ErrorText::of(&error);
+            let rip = crate::text::Text::<48>::clipped(format_args!("{rip}: ")).0;
+            cx.info_with(&[b"Immediate connect fail for ", rip.bytes(), why.as_bytes()]);
             cx.of(self.quic_component(), format_args!("destroy"));
             discard(cx, component, socket);
             return self.quic_failed(Some(error), ErrorKind::CouldntConnect);
@@ -1427,16 +1443,15 @@ impl ConnectMachine {
         let component = self.route.socket_component();
         cx.of(component, format_args!("cf_socket_open() -> {code}, fd=-1"));
         let rport = remote.map_or(0, Remote::port);
-        let why = OsError(&error);
-        match remote {
-            Some(remote) => cx.info(format_args!(
-                "connect to {} port {rport} from  port 0 failed: {why}",
-                remote.shown_ip()
-            )),
-            None => cx.info(format_args!(
-                "connect to  port {rport} from  port 0 failed: {why}"
-            )),
+        let why = ErrorText::of(&error);
+        let mut line = Line::new();
+        line.raw(b"connect to ");
+        if let Some(remote) = remote {
+            line.raw(remote.shown_ip().bytes());
         }
+        line.text(format_args!(" port {rport} from  port 0 failed: "));
+        line.raw(why.as_bytes());
+        cx.info_with(&[line.bytes()]);
         cx.of(component, format_args!("destroy"));
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("an attempt is made in a race");
@@ -1746,13 +1761,16 @@ impl Attempt {
         }
         cx.socket_failed(&error);
         let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
-        let why = OsError(&error);
+        let why = ErrorText::of(&error);
         let remote = &self.remote;
-        cx.info(format_args!(
-            "connect to {} port {} from {lip} port {lport} failed: {why}",
-            remote.shown_ip(),
+        let mut line = Line::new();
+        line.raw(b"connect to ").raw(remote.shown_ip().bytes());
+        line.text(format_args!(
+            " port {} from {lip} port {lport} failed: ",
             remote.port()
         ));
+        line.raw(why.as_bytes());
+        cx.info_with(&[line.bytes()]);
         cx.of(component, format_args!("destroy"));
         Ok(error)
     }
@@ -1796,7 +1814,7 @@ fn trace_trying(cx: &mut dyn ConnCx, remote: &Remote) {
         Remote::Inet(SocketAddr::V6(v6)) => {
             cx.info(format_args!("  Trying [{}]:{}...", v6.ip(), v6.port()));
         }
-        Remote::Unix(_) => cx.info(format_args!("  Trying {}:0...", remote.shown_ip())),
+        Remote::Unix(_) => cx.info_with(&[b"  Trying ", remote.shown_ip().bytes(), b":0..."]),
     }
 }
 
@@ -1808,10 +1826,10 @@ fn set_up(cx: &mut dyn ConnCx, socket: &dyn Socket, setup: SocketSetup) {
     if setup.nodelay
         && let Err(e) = socket.set(SocketOption::NoDelay)
     {
-        let why = OsError(&e);
-        cx.of(
+        let why = ErrorText::of(&e);
+        cx.of_with(
             Component::Tcp,
-            format_args!("Could not set TCP_NODELAY: {why}"),
+            &[b"Could not set TCP_NODELAY: ", why.as_bytes()],
         );
     }
     let alive = setup.keepalive;

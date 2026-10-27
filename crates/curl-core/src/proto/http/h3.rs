@@ -183,6 +183,10 @@ impl<H: Host> LayerCx for H3Step<'_, '_, H> {
         LayerCx::info(&mut *self.cx, line);
     }
 
+    fn info_with(&mut self, parts: &[&[u8]]) {
+        LayerCx::info_with(&mut *self.cx, parts);
+    }
+
     fn socket_failed(&mut self, e: &std::io::Error) {
         LayerCx::socket_failed(&mut *self.cx, e);
     }
@@ -193,6 +197,10 @@ impl<H: Host> LayerCx for H3Step<'_, '_, H> {
 
     fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
         LayerCx::fails(&mut *self.cx, kind, why)
+    }
+
+    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+        LayerCx::fails_with(&mut *self.cx, kind, parts)
     }
 
     fn bytes(&mut self, kind: DebugKind, bytes: &[u8]) {

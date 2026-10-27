@@ -26,7 +26,8 @@ use crate::multi::timers::{Deadlines, TimerKind};
 use crate::proto::ProtoState;
 use crate::proto::http::Negotiation;
 use crate::share::Kind;
-use crate::trace::{self, Bytes};
+use crate::text::Text;
+use crate::trace;
 
 /// The HTTPS connect filter heading a setup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,15 +266,13 @@ pub(super) fn connect_call<H: Host>(
 /// (`hostip_resolv`, `Curl_dnscache_get`): what the setup knows of it.
 fn look_up<H: Host>(route: &Tcp, cx: &mut StepCx<'_, H>) -> Record {
     let peer = route.target();
-    let (name, port) = (Bytes(peer.name()), peer.port());
+    let (name, port) = (peer.name(), peer.port());
+    let at = Text::<8>::clipped(format_args!(":{port}")).0;
+    let at = at.bytes();
     let dns = Component::Dns;
     // The C debug build's line.
     #[cfg(feature = "debug-hooks")]
-    trace::of(
-        cx,
-        dns,
-        format_args!("[HTTPS] hostip_resolv({name}:{port})"),
-    );
+    trace::of_with(cx, dns, &[b"[HTTPS] hostip_resolv(", name, at, b")"]);
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
     let now = cx.rest.now;
     let kept = cx.rest.kept(cx.me, Kind::Names);
@@ -287,14 +286,21 @@ fn look_up<H: Host>(route: &Tcp, cx: &mut StepCx<'_, H>) -> Record {
     } else {
         "not "
     };
-    trace::of(
+    trace::of_with(
         cx,
         dns,
-        format_args!("cache lookup {name}:{port} queries=HTTPS -> 0 {not}found"),
+        &[
+            b"cache lookup ",
+            name,
+            at,
+            b" queries=HTTPS -> 0 ",
+            not.as_bytes(),
+            b"found",
+        ],
     );
     if found == HttpsLookup::Found {
-        trace::info(cx, format_args!("Hostname {name} was found in DNS cache"));
-        trace::info(cx, format_args!("HTTPS-RR {name}:{port}: -"));
+        trace::info_with(cx, &[b"Hostname ", name, b" was found in DNS cache"]);
+        trace::info_with(cx, &[b"HTTPS-RR ", name, at, b": -"]);
         Record::Known
     } else {
         // The resolver answers later (`CURLE_AGAIN`).
@@ -318,11 +324,16 @@ fn answered<H: Host>(route: &Tcp, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKin
     names
         .section(|d| d.put_https(peer.name(), peer.port(), now))
         .map_err(|_| ErrorKind::OutOfMemory)?;
-    let (name, port) = (Bytes(peer.name()), peer.port());
-    trace::of(
+    let at = Text::<8>::clipped(format_args!(":{}", peer.port())).0;
+    trace::of_with(
         cx,
         Component::Dns,
-        format_args!("cache negative name resolve for {name}:{port} type=HTTPS"),
+        &[
+            b"cache negative name resolve for ",
+            peer.name(),
+            at.bytes(),
+            b" type=HTTPS",
+        ],
     );
     Ok(())
 }

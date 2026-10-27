@@ -27,7 +27,6 @@ use crate::progress::rate::Way;
 use crate::report::{ResponseVersion, Timer};
 use crate::time::Instant;
 use crate::trace;
-use crate::trace::OsError;
 use crate::upload::chain;
 use crate::upload::{self, Upload};
 use crate::url::{GetOptions, Part, SetOptions, Url};
@@ -1841,9 +1840,9 @@ impl Request {
                         (0, Some(ErrorKind::SendError))
                     }
                     Err(e) => {
-                        let why = OsError(&e);
-                        let said = format_args!("Send failure: {why}");
-                        (0, Some(trace::fail(cx, ErrorKind::SendError, said)))
+                        let why = curl_os::error::ErrorText::of(&e);
+                        let said: [&[u8]; 2] = [b"Send failure: ", why.as_bytes()];
+                        (0, Some(trace::fail_with(cx, ErrorKind::SendError, &said)))
                     }
                 }
             };
@@ -2096,11 +2095,11 @@ impl Request {
                     return Err(ErrorKind::RecvError);
                 }
                 Err(RecvFailed::Os(e)) => {
-                    let why = OsError(&e);
-                    return Err(trace::fail(
+                    let why = curl_os::error::ErrorText::of(&e);
+                    return Err(trace::fail_with(
                         cx,
                         ErrorKind::RecvError,
-                        format_args!("Recv failure: {why}"),
+                        &[b"Recv failure: ", why.as_bytes()],
                     ));
                 }
             }
@@ -2849,10 +2848,11 @@ fn switch_to_get<H: Host>(
     } else if let Some(custom) = custom
         && http.follow != Follow::FirstOnly
     {
-        let custom = trace::Bytes(custom);
-        Some(trace::line(format_args!(
-            "Stick to {custom} instead of GET"
-        )))
+        Some(trace::line_with(&[
+            b"Stick to ",
+            custom,
+            b" instead of GET",
+        ]))
     } else {
         None
     };

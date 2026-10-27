@@ -44,20 +44,12 @@ witness: curl-core proto::http::tests::tcp_trace::a_refused_socket_is_traced_as_
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::tcp_trace::a_refused_socket_is_traced_as_c
 --- old
-        cx.info(format_args!(
-            "connect to {} port {} from {lip} port {lport} failed: {why}",
-            remote.shown_ip(),
-            remote.port()
-        ));
+        cx.info_with(&[line.bytes()]);
         cx.of(component, format_args!("destroy"));
         Ok(error)
 --- new
         cx.of(component, format_args!("destroy"));
-        cx.info(format_args!(
-            "connect to {} port {} from {lip} port {lport} failed: {why}",
-            remote.shown_ip(),
-            remote.port()
-        ));
+        cx.info_with(&[line.bytes()]);
         Ok(error)
 
 === a connect that polls in error is taken for one decided by the socket's error alone

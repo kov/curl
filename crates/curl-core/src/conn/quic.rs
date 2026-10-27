@@ -21,7 +21,7 @@ use crate::http3::{
 };
 use crate::time::{Instant, SharedClock};
 use crate::tls::{SessionPeer, TlsCx};
-use crate::trace::{Code, Ip, OsError};
+use crate::trace::{Code, Ip};
 
 /// The room the packets to send are collected in (`NW_CHUNK_SIZE`, one
 /// chunk).
@@ -144,6 +144,10 @@ impl LayerCx for Lone<'_> {
         self.cx.info(line);
     }
 
+    fn info_with(&mut self, parts: &[&[u8]]) {
+        self.cx.info_with(parts);
+    }
+
     fn socket_failed(&mut self, e: &io::Error) {
         self.cx.socket_failed(e);
     }
@@ -154,6 +158,10 @@ impl LayerCx for Lone<'_> {
 
     fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
         self.cx.fails(kind, why)
+    }
+
+    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+        self.cx.fails_with(kind, parts)
     }
 
     fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
@@ -251,6 +259,10 @@ impl LayerCx for Over<'_> {
         self.cx.info(line);
     }
 
+    fn info_with(&mut self, parts: &[&[u8]]) {
+        self.cx.info_with(parts);
+    }
+
     fn socket_failed(&mut self, e: &io::Error) {
         self.cx.socket_failed(e);
     }
@@ -261,6 +273,10 @@ impl LayerCx for Over<'_> {
 
     fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
         self.cx.fails(kind, why)
+    }
+
+    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+        self.cx.fails_with(kind, parts)
     }
 
     fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
@@ -1466,13 +1482,14 @@ impl Quic {
                 }
                 Err(e) => {
                     let errno = e.raw_os_error().unwrap_or(0);
-                    let why = OsError(&e);
-                    break Err(cx.fails(
-                        ErrorKind::RecvError,
-                        format_args!(
-                            "QUIC: recvmmsg() unexpectedly returned -1 (errno={errno}; {why})"
-                        ),
-                    ));
+                    let errno = crate::text::Text::<80>::clipped(format_args!(
+                        "QUIC: recvmmsg() unexpectedly returned -1 (errno={errno}; "
+                    ))
+                    .0;
+                    let why = curl_os::error::ErrorText::of(&e);
+                    break Err(
+                        cx.fails_with(ErrorKind::RecvError, &[errno.bytes(), why.as_bytes(), b")"])
+                    );
                 }
             };
             calls += 1;
@@ -1769,7 +1786,16 @@ mod tests {
         fn info(&mut self, line: std::fmt::Arguments<'_>) {
             self.lines.push(format!("* {line}"));
         }
+        fn info_with(&mut self, parts: &[&[u8]]) {
+            let line = String::from_utf8(parts.concat()).expect("a test's line is text");
+            self.lines.push(format!("* {line}"));
+        }
         fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
+            self.lines.push(format!("! {why}"));
+            kind
+        }
+        fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+            let why = String::from_utf8(parts.concat()).expect("a test's reason is text");
             self.lines.push(format!("! {why}"));
             kind
         }

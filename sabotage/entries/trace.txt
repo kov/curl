@@ -113,12 +113,16 @@ witness: curl-core proto::http::tests::lists_set_while_their_entries_are_traced_
     Err(failed)
 
 === a connect failure is traced through std's display, which allocates
-file: crates/curl-core/src/trace.rs
+file: crates/curl-core/src/conn/connect.rs
 witness: curl-core a_refused_connect_survives_every_allocation_failing
 --- old
-        Bytes(curl_os::error::ErrorText::of(self.0).as_bytes()).fmt(f)
+                let why = ErrorText::of(&error);
+                let why = why.as_bytes();
+                let rip = remote.shown_ip();
 --- new
-        fmt::Display::fmt(self.0, f)
+                let shown = crate::text::Text::<128>::clipped(format_args!("{error}")).0;
+                let why = shown.bytes();
+                let rip = remote.shown_ip();
 
 === a name past 32 bytes is read as a component's
 file: crates/curl-core/src/components.rs
@@ -446,9 +450,9 @@ witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
 --- old
-        format_args!("Connected to {name} ({ip}) port {port}"),
+        &[b"Connected to ", name, b" (", ip.bytes(), port.bytes()],
 --- new
-        format_args!("Connected to {name}"),
+        &[b"Connected to ", name],
 
 === a race with no attempt left ends unsaid
 file: crates/curl-core/src/multi/state.rs
@@ -494,17 +498,29 @@ witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 --- old
-        format_args!("cached entry for {name}:{port} queries={queries}"),
+            b"cached entry for ",
+            name,
+            at,
+            b" queries=",
+            queries.as_bytes(),
 --- new
-        format_args!("cached entry for {name}:{port}"),
+            b"cached entry for ",
+            name,
+            at,
 
 === the resolver's no is kept unsaid
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
 --- old
-                    format_args!("cache negative name resolve for {host}:{port} type={queries}"),
+                        b"cache negative name resolve for ",
+                        host,
+                        at,
+                        b" type=",
+                        queries.as_bytes(),
 --- new
-                    format_args!("cache negative name resolve for {host}:{port}"),
+                        b"cache negative name resolve for ",
+                        host,
+                        at,
 
 === a negative entry is found without a word
 file: crates/curl-core/src/multi/state.rs
@@ -519,17 +535,19 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
 --- old
     let code = trace::Code(code);
-    trace::of(
+    let rest = Text::<64>::clipped(format_args!(" queries={queries} -> {code} {not}found")).0;
+    trace::of_with(
         cx,
         Component::Dns,
-        format_args!("cache lookup {name}:{port} queries={queries} -> {code} {not}found"),
+        &[b"cache lookup ", name, at, rest.bytes()],
     );
 --- new
     let code = trace::Code(code);
-    trace::of(
+    let rest = Text::<64>::clipped(format_args!(" queries={queries} -> {code} {not}found")).0;
+    trace::of_with(
         cx,
         Component::Dns,
-        format_args!("cache lookup {name}:{port} queries={queries} -> {code} {not}found"),
+        &[b"cache lookup ", name, at, rest.bytes()],
     );
     if let Some(Found::Stale(_)) = found {
         trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"));

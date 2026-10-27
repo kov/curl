@@ -364,10 +364,10 @@ witness: curl-core multi::tests::a_paused_transfer_does_not_connect
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::a_refused_connect_fails_as_c_says
 --- old
-        let why = OsError(&error);
+        let why = ErrorText::of(&error);
         let remote = &self.remote;
 --- new
-        let why = OsError(&error);
+        let why = ErrorText::of(&error);
         let remote = &self.remote;
         if remote.port() > 0 {
             let _ = (lip, lport, why);
@@ -378,17 +378,17 @@ witness: curl-core multi::tests::a_refused_connect_fails_as_c_says
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::an_ipv6_host_is_named_as_c_names_it
 --- old
-            let (host, port) = (Bytes(origin.shown()), origin.port());
+            trace::info_with(cx, &[conn.bytes(), origin.shown(), rest.bytes()]);
 --- new
-            let (host, port) = (Bytes(origin.name()), origin.port());
+            trace::info_with(cx, &[conn.bytes(), origin.name(), rest.bytes()]);
 
 === a reused IPv6 connection is named with its brackets
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::an_ipv6_host_is_named_as_c_names_it
 --- old
-                None => ("host", Bytes(route.origin.name())),
+                None => (b": connection with host ", route.origin.name()),
 --- new
-                None => ("host", Bytes(route.origin.shown())),
+                None => (b": connection with host ", route.origin.shown()),
 
 === a setup paused for receiving still waits to write
 file: crates/curl-core/src/multi/state.rs

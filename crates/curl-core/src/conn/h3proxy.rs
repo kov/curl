@@ -336,12 +336,20 @@ impl LayerCx for Tunnelled<'_> {
         self.cx.info(line);
     }
 
+    fn info_with(&mut self, parts: &[&[u8]]) {
+        self.cx.info_with(parts);
+    }
+
     fn socket_failed(&mut self, e: &io::Error) {
         self.cx.socket_failed(e);
     }
 
     fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
         self.cx.fails(kind, why)
+    }
+
+    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+        self.cx.fails_with(kind, parts)
     }
 
     fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {

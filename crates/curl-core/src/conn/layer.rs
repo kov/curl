@@ -18,7 +18,6 @@ pub(crate) use super::part::{Lower, Part};
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::time::Instant;
-use crate::trace::OsError;
 
 /// What a layer's handshake, or its shutdown, came to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +95,10 @@ pub(crate) trait LayerCx {
     /// A line of the transfer's verbose output (`infof`).
     fn info(&mut self, line: fmt::Arguments<'_>);
 
+    /// `info` with a line made of `parts`, which need not be text: bytes
+    /// of the peer's or the application's, traced as they are.
+    fn info_with(&mut self, parts: &[&[u8]]);
+
     /// A call on the socket failed with `e`: a connect, a send or a
     /// receive; the transfer keeps its number (`state.os_errno`). Work
     /// done for no transfer keeps nothing.
@@ -114,6 +117,11 @@ pub(crate) trait LayerCx {
     fn fails(&mut self, kind: ErrorKind, _why: fmt::Arguments<'_>) -> ErrorKind {
         kind
     }
+
+    /// `fails` with a reason made of `parts`, which need not be text:
+    /// bytes of the peer's, the application's or the system's, said as
+    /// they are.
+    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind;
 
     /// Bytes for the transfer's debug handler (`Curl_debug`), if it is
     /// verbose.
@@ -212,6 +220,12 @@ impl LayerCx for Silent {
     fn of_with(&mut self, _: Component, _: &[&[u8]]) {}
 
     fn info(&mut self, _: fmt::Arguments<'_>) {}
+
+    fn info_with(&mut self, _: &[&[u8]]) {}
+
+    fn fails_with(&mut self, kind: ErrorKind, _: &[&[u8]]) -> ErrorKind {
+        kind
+    }
 }
 
 /// A layer that works on a connection's bytes (C's `Curl_cftype`): what
@@ -313,9 +327,9 @@ impl Below<'_> {
                         Ok(Recv::Eof) => (0, 0),
                         Ok(Recv::WouldBlock) => (AGAIN_NUMBER, 0),
                         Err(e) => {
-                            let why = OsError(e);
+                            let why = curl_os::error::ErrorText::of(e);
                             let kind = ErrorKind::RecvError;
-                            cx.fails(kind, format_args!("Recv failure: {why}"));
+                            cx.fails_with(kind, &[b"Recv failure: ", why.as_bytes()]);
                             (kind.number(), 0)
                         }
                     };
@@ -340,9 +354,9 @@ impl Below<'_> {
                         Ok(Sent::Bytes(n)) => (0, n.get()),
                         Ok(Sent::WouldBlock) => (AGAIN_NUMBER, 0),
                         Err(e) => {
-                            let why = OsError(e);
+                            let why = curl_os::error::ErrorText::of(e);
                             let kind = ErrorKind::SendError;
-                            cx.fails(kind, format_args!("Send failure: {why}"));
+                            cx.fails_with(kind, &[b"Send failure: ", why.as_bytes()]);
                             (kind.number(), 0)
                         }
                     };

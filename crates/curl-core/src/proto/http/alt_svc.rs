@@ -36,7 +36,7 @@ pub(crate) fn from_field<H: Host>(
     let on = cx.easy_mut().alt_svc_mut().expect("on, as above");
     let mut alt_svc = std::mem::take(on);
     let origin = (origin.name(), origin.port(), over);
-    let parsed = alt_svc.parse(value, origin, now, &mut |args| trace::info(cx, args));
+    let parsed = alt_svc.parse(value, origin, now, &mut |parts| trace::info_with(cx, parts));
     *cx.easy_mut().alt_svc_mut().expect("on still") = alt_svc;
     parsed.map_err(|_| ErrorKind::OutOfMemory)
 }

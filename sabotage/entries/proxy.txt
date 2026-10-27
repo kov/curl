@@ -490,10 +490,10 @@ witness: curl-core proto::http::tests::a_progress_abort_ends_the_tunnel_at_once
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::an_unresolved_proxy_is_named_in_the_failure
 --- old
-            let (host, port) = (Bytes(first.name()), first.port());
+            let (host, at) = (first.name(), port_text(first.port()));
 --- new
             let to = route.via.as_deref().unwrap_or(&route.origin);
-            let (host, port) = (Bytes(to.name()), to.port());
+            let (host, at) = (to.name(), port_text(to.port()));
 
 === a failed connect names the HTTP proxy behind a pre-proxy
 file: crates/curl-core/src/multi/state.rs
@@ -507,9 +507,9 @@ witness: curl-core multi::tests::a_failed_connect_names_the_first_proxy
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_failed_connect_names_the_first_proxy
 --- old
-    let via = Via(Some(first).filter(|&f| f != origin && Some(f) != proxy));
+    match Some(first).filter(|&f| f != origin && Some(f) != proxy) {
 --- new
-    let via = Via(route.via.as_deref());
+    match route.via.as_deref() {
 
 === a new connection that sends the PROXY line is open before it is sent
 file: crates/curl-core/src/conn/connect.rs

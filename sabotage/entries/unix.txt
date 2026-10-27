@@ -59,16 +59,17 @@ witness: curl-core conn::proxy::tests::a_socks_proxy_at_localhost_with_a_path_is
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::unix_trace::a_unix_socket_refused_fails_over_it
 --- old
-            Some(peer) if peer.is_unix() => write!(f, " over unix://{}", Bytes(peer.name())),
+        Some(via) if via.is_unix() => {
 --- new
-            Some(peer) if peer.is_unix() && false => write!(f, " over unix://{}", Bytes(peer.name())),
+        Some(via) if via.is_unix() && false => {
 
 === an abstract name shows as its name
 file: crates/curl-core/src/conn/io.rs
 witness: curl-core proto::http::tests::unix_trace::an_abstract_name_shows_as_nothing
 --- old
-            Remote::Unix(u) if u.is_abstract() => Ok(()),
+            Remote::Unix(u) if u.is_abstract() => {}
 --- new
+
 
 === an empty path is connected to
 file: crates/curl-core/src/multi/state.rs

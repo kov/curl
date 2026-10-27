@@ -793,7 +793,18 @@ impl LayerCx for Notes {
         self.0.push(format!("info: {line}"));
     }
 
+    fn info_with(&mut self, parts: &[&[u8]]) {
+        let line = String::from_utf8(parts.concat()).expect("a test's line is text");
+        self.0.push(format!("info: {line}"));
+    }
+
     fn fails(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
+        self.0.push(format!("fail: {kind:?}: {why}"));
+        kind
+    }
+
+    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+        let why = String::from_utf8(parts.concat()).expect("a test's reason is text");
         self.0.push(format!("fail: {kind:?}: {why}"));
         kind
     }

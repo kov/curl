@@ -385,6 +385,10 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
         LayerCx::info(&mut *self.step, line);
     }
 
+    fn info_with(&mut self, parts: &[&[u8]]) {
+        LayerCx::info_with(&mut *self.step, parts);
+    }
+
     fn socket_failed(&mut self, e: &std::io::Error) {
         LayerCx::socket_failed(&mut *self.step, e);
     }
@@ -395,6 +399,14 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
         why: fmt::Arguments<'_>,
     ) -> crate::error::ErrorKind {
         LayerCx::fails(&mut *self.step, kind, why)
+    }
+
+    fn fails_with(
+        &mut self,
+        kind: crate::error::ErrorKind,
+        parts: &[&[u8]],
+    ) -> crate::error::ErrorKind {
+        LayerCx::fails_with(&mut *self.step, kind, parts)
     }
 
     fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
@@ -530,8 +542,8 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         }
     }
 
-    fn fail(&mut self, reason: fmt::Arguments<'_>) {
-        crate::trace::fail(self.step, crate::error::ErrorKind::CouldntConnect, reason);
+    fn fail_with(&mut self, parts: &[&[u8]]) {
+        crate::trace::fail_with(self.step, crate::error::ErrorKind::CouldntConnect, parts);
     }
 
     fn reset_fail(&mut self) {

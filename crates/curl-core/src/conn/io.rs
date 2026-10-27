@@ -69,8 +69,16 @@ impl Remote {
     /// The address as C's traces and infos show it (`ip_quadruple`'s
     /// `remote_ip`): an IP address, or a Unix socket's path, which for an
     /// abstract name shows as nothing, as it starts with a zero byte.
-    pub fn shown_ip(&self) -> RemoteIp<'_> {
-        RemoteIp(self)
+    pub(crate) fn shown_ip(&self) -> crate::text::Text<SHOWN_IP_MAX> {
+        let mut shown = crate::text::Text::new();
+        match self {
+            Remote::Inet(a) => {
+                shown.push_fmt(format_args!("{}", a.ip()));
+            }
+            Remote::Unix(u) if u.is_abstract() => {}
+            Remote::Unix(u) => shown.push_clipped(u.path()),
+        }
+        shown
     }
 
     /// The path a Unix socket's address shows, as C's infos show it: an
@@ -93,18 +101,9 @@ impl Remote {
     }
 }
 
-/// A remote address as C's text shows it.
-pub struct RemoteIp<'a>(&'a Remote);
-
-impl fmt::Display for RemoteIp<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            Remote::Inet(a) => a.ip().fmt(f),
-            Remote::Unix(u) if u.is_abstract() => Ok(()),
-            Remote::Unix(u) => crate::trace::Bytes(u.path()).fmt(f),
-        }
-    }
-}
+/// The longest address `Remote::shown_ip` shows: a Unix socket's path
+/// fills at most `sun_path`, and an IPv6 address is shorter.
+const SHOWN_IP_MAX: usize = 108;
 
 /// A Unix socket connected to: the peer that names it, shared.
 #[derive(Clone, Debug)]

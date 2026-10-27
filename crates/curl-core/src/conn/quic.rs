@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use curl_alloc::TryVec;
 
-use super::io::{BATCH, Datagram, Events, IO_FAILED, SLOT, Socket, TOO_LARGE};
+use super::io::{BATCH, Datagram, Events, IO_FAILED, Recv, SLOT, Sent, Socket, TOO_LARGE};
 use super::layer::LayerCx;
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
@@ -37,6 +37,11 @@ pub(crate) const STREAM_WINDOW_INITIAL: u64 = 32 * 1024;
 
 /// The most packets one look at the socket reads (`progress_ingress`).
 const MAX_PACKETS: usize = 1000;
+
+/// The most a datagram through a tunnel is read into
+/// (`QUIC_TUNNEL_INBUF_SIZE`): more than any datagram's payload.
+const TUNNEL_ROOM: usize = 64 * 1024;
+const _: () = assert!(RECV_ROOM >= TUNNEL_ROOM);
 
 /// The most a packet that closes the connection is
 /// (`NGTCP2_MAX_UDP_PAYLOAD_SIZE`).
@@ -68,7 +73,24 @@ pub(crate) trait QuicCx: LayerCx {
 /// each call on it, so that nothing holds it while the library tells the
 /// transfer what it read.
 pub(crate) trait QuicIo: QuicCx {
-    fn socket(&self) -> &dyn Socket;
+    /// The connection's UDP socket; none for one whose datagrams go
+    /// through the layers below it, a proxy's CONNECT-UDP tunnel
+    /// (`qctx->sockfd == CURL_SOCKET_BAD`).
+    fn socket(&self) -> Option<&dyn Socket>;
+
+    /// Send `datagram` through the layers below
+    /// (`Curl_conn_cf_send(cf->next)`), for a connection with no socket.
+    fn send_below(&mut self, datagram: &[u8]) -> Result<Sent, ErrorKind> {
+        let _ = datagram;
+        unreachable!("a QUIC connection over its socket sends through it")
+    }
+
+    /// Receive a datagram into `buf` from the layers below
+    /// (`Curl_conn_cf_recv(cf->next)`), for a connection with no socket.
+    fn recv_below(&mut self, buf: &mut [u8]) -> Result<Recv, ErrorKind> {
+        let _ = buf;
+        unreachable!("a QUIC connection over its socket receives from it")
+    }
 }
 
 /// An event of a stream no transfer has, as C's callbacks hear one whose
@@ -277,8 +299,8 @@ impl QuicCx for Over<'_> {
 }
 
 impl QuicIo for Over<'_> {
-    fn socket(&self) -> &dyn Socket {
-        self.socket
+    fn socket(&self) -> Option<&dyn Socket> {
+        Some(self.socket)
     }
 }
 
@@ -1148,11 +1170,59 @@ impl Quic {
         len: usize,
         gso: usize,
     ) -> (usize, Result<(), Stop>) {
+        if cx.socket().is_none() {
+            return self.send_through(cx, len, gso);
+        }
         if self.out.no_gso && len > gso {
             self.send_apart(cx, len, gso)
         } else {
             self.send_run(cx, len, gso)
         }
+    }
+
+    /// The first `len` bytes of what waits sent through the layers below,
+    /// a datagram of `gso` bytes at a time if they hold more than one,
+    /// each whole or not at all (`Curl_vquic_flush`'s tunnelled branch,
+    /// `send_packet_no_gso_cf`).
+    fn send_through(
+        &mut self,
+        cx: &mut dyn QuicIo,
+        len: usize,
+        gso: usize,
+    ) -> (usize, Result<(), Stop>) {
+        let at = self.out.sent;
+        if gso == 0 || len <= gso {
+            return match cx.send_below(&self.out.bytes[at..at + len]) {
+                Ok(Sent::Bytes(n)) => (n.get(), Ok(())),
+                Ok(Sent::WouldBlock) => (0, Err(Stop::Again)),
+                Err(kind) => (0, Err(Stop::Failed(kind))),
+            };
+        }
+        let (mut sent, mut calls) = (0, 0);
+        let r = loop {
+            if sent == len {
+                break Ok(());
+            }
+            let one = gso.min(len - sent);
+            let datagram = &self.out.bytes[at + sent..at + sent + one];
+            let r = cx.send_below(datagram);
+            calls += 1;
+            match r {
+                Ok(Sent::Bytes(n)) if n.get() == one => sent += one,
+                // Only a whole datagram is sent.
+                Ok(Sent::Bytes(_)) => break Err(Stop::Failed(ErrorKind::SendError)),
+                Ok(Sent::WouldBlock) => break Err(Stop::Again),
+                Err(kind) => break Err(Stop::Failed(kind)),
+            }
+        };
+        let code = number(r);
+        cx.of(
+            self.state.component,
+            format_args!(
+                "vquic_cf_send(len={len}, gso={gso}, calls={calls}) -> {code}, sent={sent}"
+            ),
+        );
+        (sent, r)
     }
 
     /// One send of `len` bytes, cut by the kernel into datagrams of `gso`
@@ -1168,7 +1238,8 @@ impl Quic {
         // No size known yet is no cutting: one datagram, as the kernel
         // takes a segment size of 0.
         let segment = if gso == 0 { len } else { gso };
-        let (sent, r) = match cx.socket().send_segments(bytes, segment) {
+        let socket = cx.socket().expect("a run is sent on the socket");
+        let (sent, r) = match socket.send_segments(bytes, segment) {
             Ok(n) if n == len => (n, Ok(())),
             Ok(n) => {
                 cx.fails(
@@ -1250,16 +1321,57 @@ impl Quic {
             let Quic { conn, peer, .. } = self;
             conn.before_recv(&mut TlsCx::new(cx, component, peer))?;
         }
+        let tunnelled = cx.socket().is_none();
+        let from = if tunnelled { "sub-filters" } else { "socket" };
         cx.of(
             self.state.component,
-            format_args!("progress_ingress(socket)"),
+            format_args!("progress_ingress({from})"),
         );
         let Ok(mut room) = cx.take_room() else {
             return Err(ErrorKind::OutOfMemory);
         };
-        let r = self.recv_packets(cx, &mut room);
+        let r = if tunnelled {
+            self.recv_through(cx, &mut room)
+        } else {
+            self.recv_packets(cx, &mut room)
+        };
         cx.give_room(room);
         r
+    }
+
+    /// What the layers below have, a datagram at a time, at most
+    /// `MAX_PACKETS` of them, read into `room` and handed to the library
+    /// (`Curl_cf_ngtcp2_progress_ingress`'s tunnelled branch). The room
+    /// is the size C's is, which no datagram is larger than
+    /// (`QUIC_TUNNEL_INBUF_SIZE`).
+    fn recv_through(&mut self, cx: &mut dyn QuicIo, room: &mut [u8]) -> Result<(), ErrorKind> {
+        let buf = &mut room[..TUNNEL_ROOM];
+        for _ in 0..MAX_PACKETS {
+            let n = match cx.recv_below(buf) {
+                Ok(Recv::Data(n)) => n.get(),
+                // Nothing more now, or the tunnel closed.
+                Ok(Recv::WouldBlock | Recv::Eof) => return Ok(()),
+                Err(kind) => {
+                    let code = kind.number();
+                    cx.of(
+                        self.state.component,
+                        format_args!("ingress, recv from tunnel failed: {code}"),
+                    );
+                    return Err(kind);
+                }
+            };
+            let d = Datagram {
+                len: n,
+                segment: n,
+                ecn: 0,
+                from: None,
+            };
+            self.read_datagram(cx, &d, &buf[..n])?;
+            let now = self.clock.now();
+            self.state.first_byte_at.get_or_insert(now);
+            self.state.last_io = now;
+        }
+        Ok(())
     }
 
     /// What the socket has, at most `MAX_PACKETS` packets of it, read
@@ -1273,7 +1385,8 @@ impl Quic {
                 break Ok(());
             }
             let n = BATCH.min(MAX_PACKETS - packets);
-            let count = match cx.socket().recv_batch(room, SLOT, &mut got[..n]) {
+            let socket = cx.socket().expect("a batch is read from the socket");
+            let count = match socket.recv_batch(room, SLOT, &mut got[..n]) {
                 Ok(count) => count,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     cx.of(
@@ -1559,6 +1672,18 @@ mod tests {
         lines: Vec<String>,
         due: Vec<Duration>,
         socket: Scripted,
+        /// The layers below, in place of the socket, if set.
+        below: Option<Below>,
+    }
+
+    /// Layers below a connection with no socket, a tunnel's: its sends
+    /// do as scripted, taking all once the script is used, and its
+    /// receives give what is queued.
+    #[derive(Default)]
+    struct Below {
+        sends: VecDeque<Result<Sent, ErrorKind>>,
+        sent: Vec<Vec<u8>>,
+        datagrams: VecDeque<Result<Vec<u8>, ErrorKind>>,
     }
 
     impl LayerCx for Cx {
@@ -1589,8 +1714,32 @@ mod tests {
     }
 
     impl QuicIo for Cx {
-        fn socket(&self) -> &dyn Socket {
-            &self.socket
+        fn socket(&self) -> Option<&dyn Socket> {
+            match self.below {
+                Some(_) => None,
+                None => Some(&self.socket),
+            }
+        }
+
+        fn send_below(&mut self, datagram: &[u8]) -> Result<Sent, ErrorKind> {
+            let below = self.below.as_mut().unwrap();
+            let all = Sent::Bytes(std::num::NonZeroUsize::new(datagram.len()).unwrap());
+            let r = below.sends.pop_front().unwrap_or(Ok(all));
+            if r == Ok(all) {
+                below.sent.push(datagram.to_vec());
+            }
+            r
+        }
+
+        fn recv_below(&mut self, buf: &mut [u8]) -> Result<Recv, ErrorKind> {
+            match self.below.as_mut().unwrap().datagrams.pop_front() {
+                None => Ok(Recv::WouldBlock),
+                Some(Err(kind)) => Err(kind),
+                Some(Ok(d)) => {
+                    buf[..d.len()].copy_from_slice(&d);
+                    Ok(Recv::Data(std::num::NonZeroUsize::new(d.len()).unwrap()))
+                }
+            }
         }
     }
 
@@ -1623,6 +1772,7 @@ mod tests {
             lines: Vec::new(),
             due: Vec::new(),
             socket: Scripted::default(),
+            below: None,
         };
         let shared = SharedClock::new(Box::new(clock)).unwrap();
         (
@@ -1961,6 +2111,109 @@ mod tests {
                     && l != "is_alive, progress ingress -> 0"),
             "{:?}",
             cx.lines
+        );
+    }
+
+    /// Through a tunnel, with no socket, a run of datagrams goes to the
+    /// layers below one at a time, each whole, and one alone in one send
+    /// (`send_packet_no_gso_cf`).
+    #[test]
+    fn a_tunnel_takes_a_datagram_at_a_time() {
+        let script = Script::new();
+        packets(&script, &[1200, 1200, 900]);
+        let (mut q, mut cx) = quic(&script);
+        cx.below = Some(Below::default());
+        q.egress(&mut cx).unwrap();
+        let sent: Vec<usize> = cx
+            .below
+            .as_ref()
+            .unwrap()
+            .sent
+            .iter()
+            .map(Vec::len)
+            .collect();
+        assert_eq!(sent, [1200, 1200, 900]);
+        assert_eq!(
+            cx.lines.last().unwrap(),
+            "vquic_cf_send(len=3300, gso=1200, calls=3) -> 0, sent=3300"
+        );
+
+        cx.lines.clear();
+        packets(&script, &[700]);
+        q.egress(&mut cx).unwrap();
+        assert_eq!(cx.below.as_ref().unwrap().sent.last().unwrap().len(), 700);
+        assert!(
+            !cx.lines.iter().any(|l| l.starts_with("vquic_")),
+            "the layer below traces a single send: {:?}",
+            cx.lines
+        );
+    }
+
+    /// A tunnel that takes part of a datagram fails the send; one that
+    /// blocks keeps what it did not take for later.
+    #[test]
+    fn a_tunnel_s_short_send_fails_and_a_blocked_one_waits() {
+        let script = Script::new();
+        packets(&script, &[1200, 1200]);
+        let (mut q, mut cx) = quic(&script);
+        let mut below = Below::default();
+        below
+            .sends
+            .push_back(Ok(Sent::Bytes(std::num::NonZeroUsize::new(1200).unwrap())));
+        below.sends.push_back(Ok(Sent::WouldBlock));
+        cx.below = Some(below);
+        q.egress(&mut cx).unwrap();
+        assert_eq!(
+            cx.lines.last().unwrap(),
+            &format!("vquic_cf_send(len=2400, gso=1200, calls=2) -> {AGAIN_NUMBER}, sent=1200")
+        );
+        assert!(q.wants().contains(Events::OUT), "the rest waits");
+
+        let (mut q, mut cx) = quic(&script);
+        packets(&script, &[1200, 1200]);
+        let mut below = Below::default();
+        below
+            .sends
+            .push_back(Ok(Sent::Bytes(std::num::NonZeroUsize::new(100).unwrap())));
+        cx.below = Some(below);
+        assert_eq!(q.egress(&mut cx), Err(ErrorKind::SendError));
+        assert_eq!(
+            cx.lines.last().unwrap(),
+            "vquic_cf_send(len=2400, gso=1200, calls=1) -> 55, sent=0"
+        );
+    }
+
+    /// Through a tunnel each receive is one datagram, handed to the
+    /// library whole, until the layers below have no more; a failure
+    /// below fails the read, said as C says it.
+    #[test]
+    fn a_tunnel_gives_a_datagram_at_a_time() {
+        let script = Script::new();
+        let (mut q, mut cx) = quic(&script);
+        let mut below = Below::default();
+        below.datagrams.push_back(Ok(b"one".to_vec()));
+        below.datagrams.push_back(Ok(b"two".to_vec()));
+        cx.below = Some(below);
+        q.ingress(&mut cx).unwrap();
+        assert_eq!(
+            script.lock().unwrap().read,
+            [(b"one".to_vec(), 0), (b"two".to_vec(), 0)]
+        );
+        assert!(
+            cx.lines
+                .contains(&"progress_ingress(sub-filters)".to_owned())
+        );
+        assert_eq!(q.first_byte_at(), Some(cx.clock.now()));
+
+        cx.below
+            .as_mut()
+            .unwrap()
+            .datagrams
+            .push_back(Err(ErrorKind::RecvError));
+        assert_eq!(q.ingress(&mut cx), Err(ErrorKind::RecvError));
+        assert_eq!(
+            cx.lines.last().unwrap(),
+            "ingress, recv from tunnel failed: 56"
         );
     }
 }

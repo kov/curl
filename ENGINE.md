@@ -1794,7 +1794,11 @@ it keeps (`SharedClock`, the multi's one clock, held once): whichever transfer, 
 uses it later, the library is never handed a time before one it had. A fatal error closes the
 connection, its close packet sent at once. The transfer reaches all of this through `QuicCx`,
 and the socket through `QuicIo`, asked for at each call: the socket stays in the connection while
-the library's events reach the transfers.
+the library's events reach the transfers. A connection whose datagrams go through a proxy's
+CONNECT-UDP tunnel has no socket (`QuicIo::socket` is none): each datagram goes to the layers
+below on its own, a run cut at its segment size and only a whole datagram sent (`vquic_cf_send`),
+and comes back one per receive into 64 KiB of the room, at most 1000 a pass
+(`progress_ingress(sub-filters)`).
 
 **A request's stream.** `proto/http/h3.rs` is C's `h3_stream_ctx` and `cf_ngtcp2_send` and
 `_recv`, in their order: each call reads what came first, sends after, and sets the timer, the

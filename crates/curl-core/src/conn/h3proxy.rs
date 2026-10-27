@@ -402,8 +402,8 @@ impl QuicCx for Tunnelled<'_> {
 }
 
 impl QuicIo for Tunnelled<'_> {
-    fn socket(&self) -> &dyn Socket {
-        self.socket
+    fn socket(&self) -> Option<&dyn Socket> {
+        Some(self.socket)
     }
 }
 

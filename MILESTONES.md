@@ -1006,8 +1006,9 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
       17); 12 needs session export. Left: the race's win is traced as the QUIC handshake ends,
       C's once the tunnel is up (its attempt holds the `CONNECT`, and the race checks its
       addresses again meanwhile), which wants the tunnel inside the connect machine's attempt.
-    - (b) The datagram seam: QUIC's socket a trait the connection is handed, so its datagrams
-      can go through a tunnel.
+    - (b) **Done.** The datagram seam: a QUIC connection with no socket sends and receives each
+      datagram through the layers below (`QuicIo::send_below`, `recv_below`), as C's does
+      through `cf->next`.
     - (c) Capsules (`capsule.c`, `cf-capsule.c`) and CONNECT-UDP over HTTP/1.1 and HTTP/2
       proxies: test_60 01 and 02 for an HTTP/3 origin over them, 03.
     - (d) CONNECT-UDP over the HTTP/3 proxy, QUIC in QUIC: 01 and 02 h3 over h3, 05, 13, 18.

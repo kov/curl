@@ -288,11 +288,13 @@ impl<H: Host> QuicCx for H3Step<'_, '_, H> {
 }
 
 impl<H: Host> QuicIo for H3Step<'_, '_, H> {
-    fn socket(&self) -> &dyn crate::conn::io::Socket {
-        self.lease
-            .conn()
-            .stream_socket()
-            .expect("a QUIC connection over its socket")
+    fn socket(&self) -> Option<&dyn crate::conn::io::Socket> {
+        Some(
+            self.lease
+                .conn()
+                .stream_socket()
+                .expect("a QUIC connection over its socket"),
+        )
     }
 }
 

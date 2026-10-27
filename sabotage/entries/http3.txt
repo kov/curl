@@ -555,3 +555,49 @@ witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy
         chain.eyeballs_stay = h3_proxy;
 --- new
         chain.eyeballs_stay = false;
+
+=== a run through a tunnel goes in one send
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_tunnel_takes_a_datagram_at_a_time
+--- old
+        if gso == 0 || len <= gso {
+            return match cx.send_below(&self.out.bytes[at..at + len]) {
+--- new
+        if true {
+            return match cx.send_below(&self.out.bytes[at..at + len]) {
+
+=== a tunnel's short send of a datagram counts as sent
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_tunnel_s_short_send_fails_and_a_blocked_one_waits
+--- old
+                Ok(Sent::Bytes(n)) if n.get() == one => sent += one,
+                // Only a whole datagram is sent.
+                Ok(Sent::Bytes(_)) => break Err(Stop::Failed(ErrorKind::SendError)),
+--- new
+                Ok(Sent::Bytes(n)) => sent += n.get(),
+
+=== a connection without a socket sends on it all the same
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_tunnel_takes_a_datagram_at_a_time
+--- old
+        if cx.socket().is_none() {
+            return self.send_through(cx, len, gso);
+        }
+--- new
+
+=== a tunnel's datagrams are read one per call
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_tunnel_gives_a_datagram_at_a_time
+--- old
+        for _ in 0..MAX_PACKETS {
+            let n = match cx.recv_below(buf) {
+--- new
+        for _ in 0..1 {
+            let n = match cx.recv_below(buf) {
+
+=== a datagram through a tunnel is not the connection's first byte
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_tunnel_gives_a_datagram_at_a_time
+--- old
+            self.state.first_byte_at.get_or_insert(now);
+--- new

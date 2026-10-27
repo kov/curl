@@ -45,6 +45,39 @@ impl H3Error {
     pub const NO_ERROR: H3Error = H3Error(0x100);
     pub const REQUEST_REJECTED: H3Error = H3Error(0x10b);
     pub const REQUEST_CANCELLED: H3Error = H3Error(0x10c);
+
+    /// Its name, as C says it (`Curl_vquic_h3_err_str`): the reserved
+    /// codes past those named are no error.
+    pub fn name(self) -> &'static str {
+        const NAMES: [&str; 17] = [
+            "NO_ERROR",
+            "GENERAL_PROTOCOL_ERROR",
+            "INTERNAL_ERROR",
+            "STREAM_CREATION_ERROR",
+            "CLOSED_CRITICAL_STREAM",
+            "FRAME_UNEXPECTED",
+            "FRAME_ERROR",
+            "EXCESSIVE_LOAD",
+            "ID_ERROR",
+            "SETTINGS_ERROR",
+            "MISSING_SETTINGS",
+            "REQUEST_REJECTED",
+            "REQUEST_CANCELLED",
+            "REQUEST_INCOMPLETE",
+            "MESSAGE_ERROR",
+            "CONNECT_ERROR",
+            "VERSION_FALLBACK",
+        ];
+        match self
+            .0
+            .checked_sub(0x100)
+            .and_then(|i| NAMES.get(usize::try_from(i).ok()?))
+        {
+            Some(name) => name,
+            None if self.0 >= 0x21 && (self.0 - 0x21).is_multiple_of(0x1f) => "NO_ERROR",
+            None => "unknown",
+        }
+    }
 }
 
 /// A library's failure: which library, the call that failed, its code

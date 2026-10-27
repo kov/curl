@@ -672,6 +672,9 @@ fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done
     if d.result.is_ok() {
         upload::trace_reset(cx, d.rewinding());
     }
+    if let Some(proto) = d.proto.as_mut() {
+        proto.data_done(cx, &mut d.lease);
+    }
     release(cx, d.lease, premature, stream_closed, d.origin.as_ref());
     RequestEnd {
         proto: d.proto,
@@ -1238,6 +1241,37 @@ pub(crate) struct StepCx<'a, H: Host> {
     /// lent for the step, whose run is out of reach of its handlers
     /// (`TransferCx::tls_native`).
     lent: Option<TlsNative>,
+    /// When the QUIC library asked the step to call it again, the
+    /// transfer's `QUIC` timer once the step is over.
+    pub(crate) quic_at: Option<Instant>,
+}
+
+/// A step's calls into a QUIC connection: the multi's room to receive
+/// in, its clock read again, and the timer the library asks for, set for
+/// the transfer as the step ends.
+impl<H: Host> crate::conn::quic::QuicCx for StepCx<'_, H> {
+    fn take_room(&mut self) -> Result<Vec<u8>, OutOfMemory> {
+        let mut room = std::mem::take(self.rest.sockbuf);
+        let want = crate::conn::quic::RECV_ROOM;
+        if room.len() < want {
+            curl_alloc::TryVec::try_resize(&mut room, want, 0)?;
+        }
+        Ok(room)
+    }
+
+    fn give_room(&mut self, room: Vec<u8>) {
+        *self.rest.sockbuf = room;
+    }
+
+    fn quic_due(&mut self, wait: Duration) {
+        let at = self.rest.clock.now().after(wait);
+        self.quic_at = Some(at);
+        trace_set(self, TimerKind::Quic, at);
+    }
+
+    fn live(&self) -> Instant {
+        self.rest.clock.now()
+    }
 }
 
 impl<'a, H: Host> StepCx<'a, H> {
@@ -1252,6 +1286,7 @@ impl<'a, H: Host> StepCx<'a, H> {
             me,
             rest,
             lent: None,
+            quic_at: None,
         }
     }
 }

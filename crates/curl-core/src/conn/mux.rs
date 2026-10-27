@@ -130,3 +130,73 @@ impl Lower for Carrier<'_> {
         self.stream.is_alive(cx)
     }
 }
+
+/// Each open stream of a session and the transfer whose request opened
+/// it, with what the session keeps of the stream, until the request is
+/// over (C's stream user data).
+#[derive(Debug)]
+pub(crate) struct Routes<S, X> {
+    routes: Vec<Route<S, X>>,
+}
+
+#[derive(Debug)]
+struct Route<S, X> {
+    stream: S,
+    to: crate::multi::TransferId,
+    kept: X,
+}
+
+impl<S: Copy + Eq + std::fmt::Debug, X> Routes<S, X> {
+    pub(crate) fn new() -> Self {
+        Routes { routes: Vec::new() }
+    }
+
+    /// Stream `stream` is transfer `to`'s, from its opening on, the
+    /// session keeping `kept` of it.
+    pub(crate) fn route(
+        &mut self,
+        stream: S,
+        to: crate::multi::TransferId,
+        kept: X,
+    ) -> Result<(), curl_alloc::OutOfMemory> {
+        debug_assert!(self.route_of(stream).is_none(), "{stream:?} routed twice");
+        curl_alloc::TryVec::try_push(&mut self.routes, Route { stream, to, kept })
+    }
+
+    /// Stream `stream` is no transfer's any more: its request is over.
+    pub(crate) fn unroute(&mut self, stream: S) {
+        self.routes.retain(|r| r.stream != stream);
+    }
+
+    /// The transfer stream `stream` is for, while its request runs.
+    pub(crate) fn route_of(&self, stream: S) -> Option<crate::multi::TransferId> {
+        self.routes
+            .iter()
+            .find(|r| r.stream == stream)
+            .map(|r| r.to)
+    }
+
+    /// What the session keeps of `stream`, while it is routed.
+    pub(crate) fn kept_mut(&mut self, stream: S) -> Option<&mut X> {
+        self.routes
+            .iter_mut()
+            .find(|r| r.stream == stream)
+            .map(|r| &mut r.kept)
+    }
+
+    /// The transfers of the streams open, but `but`'s.
+    pub(crate) fn others(
+        &self,
+        but: crate::multi::TransferId,
+    ) -> impl Iterator<Item = crate::multi::TransferId> + '_ {
+        self.routes
+            .iter()
+            .map(|r| r.to)
+            .filter(move |&to| to != but)
+    }
+
+    /// How many streams are open.
+    pub(crate) fn len(&self) -> usize {
+        self.routes.len()
+    }
+}

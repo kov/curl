@@ -2,22 +2,28 @@
 //! the session a connection dialed over QUIC has from its handshake on.
 
 use crate::conn::layer::{LayerAnswer, LayerQuery};
-use crate::conn::mux::Carrier;
+use crate::conn::mux::{Carrier, Routes};
 use crate::conn::part::Part;
 use crate::conn::quic::Quic;
+use crate::http3::StreamId;
 use crate::report::ResponseVersion;
 use crate::tls::Chosen;
 
 /// A connection's HTTP/3 session.
 #[derive(Debug)]
 pub(crate) struct H3Conn {
-    quic: Box<Quic>,
+    pub(crate) quic: Box<Quic>,
+    /// Each open stream's transfer (`streams`).
+    pub(crate) routes: Routes<StreamId, ()>,
 }
 
 impl H3Conn {
     /// The session over `quic`, its handshake done.
     pub(crate) fn new(quic: Box<Quic>) -> H3Conn {
-        H3Conn { quic }
+        H3Conn {
+            quic,
+            routes: Routes::new(),
+        }
     }
 
     /// When its handshake completed.

@@ -16,7 +16,9 @@ use super::io::{BATCH, Datagram, Events, IO_FAILED, SLOT, Socket, TOO_LARGE};
 use super::layer::LayerCx;
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
-use crate::http3::{CloseError, Connection, Event, Expiry, Heard, QuicError};
+use crate::http3::{
+    CloseError, Connection, Event, Expiry, H3Error, Heard, QuicError, StreamId, SubmitFailed,
+};
 use crate::time::Instant;
 use crate::tls::{SessionPeer, TlsCx};
 use crate::trace::{Code, Ip, OsError};
@@ -28,6 +30,10 @@ const SEND_ROOM: usize = 64 * 1024;
 /// The room the datagrams received are read into, lent by the multi
 /// (`Curl_multi_xfer_sockbuf_borrow`).
 pub(crate) const RECV_ROOM: usize = BATCH * SLOT;
+
+/// A request stream's first receive window, which its request opens
+/// further (`H3_STREAM_WINDOW_SIZE_INITIAL`).
+pub(crate) const STREAM_WINDOW_INITIAL: u64 = 32 * 1024;
 
 /// The most packets one look at the socket reads (`progress_ingress`).
 const MAX_PACKETS: usize = 1000;
@@ -435,7 +441,7 @@ impl Quic {
 
     /// The library's timer: run if it is due, and set for when it next is
     /// (`Curl_cf_ngtcp2_cmn_set_expiry`).
-    fn set_expiry(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
+    pub(crate) fn set_expiry(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
         let mut expiry = self.conn.expiry(cx.live());
         if expiry == Expiry::Due {
             let now = cx.live();
@@ -469,6 +475,116 @@ impl Quic {
             cx.quic_due(Duration::from_millis(u64::try_from(ms).unwrap_or(u64::MAX)));
         }
         Ok(())
+    }
+
+    /// What the check of the peer said (`tls_vrfy_result`): a failure
+    /// denies every send and receive after.
+    pub(crate) fn verified(&self) -> Result<(), ErrorKind> {
+        self.state.verified
+    }
+
+    /// The packet that closes it was made: no stream opens on it, and
+    /// none sends (`shutdown_started`).
+    pub(crate) fn shutdown_started(&self) -> bool {
+        self.state.shutdown_started
+    }
+
+    /// Open a stream for a request of `fields`, with a body if `body`,
+    /// counted among those the peer allows (`h3_stream_open`). A request
+    /// the library refused cancels its stream.
+    pub(crate) fn submit(
+        &mut self,
+        cx: &mut dyn QuicIo,
+        fields: &[(&[u8], &[u8])],
+        body: bool,
+    ) -> Result<StreamId, ErrorKind> {
+        match self.conn.submit_request(fields, body) {
+            Ok(stream) => {
+                self.state.used_bidi += 1;
+                Ok(stream)
+            }
+            Err(SubmitFailed::OutOfMemory) => Err(ErrorKind::OutOfMemory),
+            Err(SubmitFailed::NoStream) => Err(cx.fails(
+                ErrorKind::SendError,
+                format_args!("cannot open bidi streams"),
+            )),
+            Err(SubmitFailed::Refused {
+                stream,
+                error,
+                closing,
+            }) => {
+                self.state.used_bidi += 1;
+                let id = stream.0;
+                if closing {
+                    cx.of(
+                        Component::Http3,
+                        format_args!("h3sid[{id}] failed to send, connection is closing"),
+                    );
+                } else {
+                    let (code, text) = (error.code, error.text);
+                    cx.of(
+                        Component::Http3,
+                        format_args!("h3sid[{id}] failed to send -> {code} ({text})"),
+                    );
+                }
+                self.cancel(cx, stream);
+                Err(ErrorKind::SendError)
+            }
+        }
+    }
+
+    /// Stop `stream` both ways as cancelled, nothing more heard of it,
+    /// and send what that says (`Curl_cf_ngtcp2_h3_stream_close`).
+    pub(crate) fn cancel(&mut self, cx: &mut dyn QuicIo, stream: StreamId) {
+        self.conn.cancel(stream, H3Error::REQUEST_CANCELLED);
+        if let Err(kind) = self.egress(cx) {
+            let (id, code) = (stream.0, kind.number());
+            cx.of(
+                Component::Http3,
+                format_args!("[{id}] cancel stream -> {code}"),
+            );
+        }
+    }
+
+    /// Open `stream`'s receive window by `n`.
+    pub(crate) fn extend_stream_window(&mut self, stream: StreamId, n: u64) {
+        self.conn.extend_stream_window(stream, n);
+    }
+
+    /// The bytes of `stream`'s body handed to the library and not yet
+    /// acknowledged (`tx_in_flight_size`).
+    pub(crate) fn body_in_flight(&self, stream: StreamId) -> usize {
+        self.conn.body_in_flight(stream)
+    }
+
+    /// Keep the connection alive while `streams` are open, as often as
+    /// half the peer's idle timeout, lest it close one waiting for a
+    /// response (`cf_ngtcp2_setup_keep_alive`).
+    pub(crate) fn keep_alive(&mut self, cx: &mut dyn LayerCx, streams: usize) {
+        let h3 = Component::Http3;
+        match self.conn.peer_idle_timeout() {
+            None => {
+                self.conn.set_keep_alive(None);
+                cx.of(h3, format_args!("no peer idle timeout, unset keep-alive"));
+            }
+            Some(_) if streams == 0 => {
+                self.conn.set_keep_alive(None);
+                cx.of(h3, format_args!("no active streams, unset keep-alive"));
+            }
+            Some(idle) => {
+                let keep = if idle > Duration::from_nanos(1) {
+                    idle / 2
+                } else {
+                    Duration::from_nanos(1)
+                };
+                self.conn.set_keep_alive(Some(keep));
+                let (idle, keep) = (idle.as_millis(), keep.as_millis());
+                cx.of(
+                    h3,
+                    format_args!("peer idle timeout is {idle}ms, set keep-alive to {keep} ms."),
+                );
+            }
+        }
     }
 
     /// The library's call failed with `error`: kept as what it closes

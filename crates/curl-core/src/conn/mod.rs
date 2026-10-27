@@ -923,6 +923,26 @@ impl Conn {
         }
     }
 
+    /// Its HTTP/3 session, taken out for a step to drive beside the
+    /// connection, which it is put back on after (`put_h3`).
+    pub(crate) fn take_h3(&mut self) -> Option<Box<crate::proto::http3::H3Conn>> {
+        match self.session.take()? {
+            mux::Session::H3(h3) => Some(h3),
+            other @ mux::Session::H2(_) => {
+                self.session = Some(other);
+                None
+            }
+        }
+    }
+
+    /// The socket under it, if it has a network.
+    pub(crate) fn stream_socket(&self) -> Option<&dyn io::Socket> {
+        match &self.transport {
+            Transport::Tcp(stream) => Some(stream.socket()),
+            Transport::Local => None,
+        }
+    }
+
     /// Put its HTTP/3 session on it, as its QUIC handshake is done.
     pub(crate) fn put_h3(&mut self, h3: Box<crate::proto::http3::H3Conn>) {
         assert!(self.session.is_none(), "one session per connection");

@@ -948,7 +948,7 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
     over it. The seam's fake comes with its first user, step 61.
 61. **HTTP/3 requests.** `--http3-only` (`CURL_HTTP_VERSION_3ONLY`): the setup dials QUIC, the
     connection's session is `Session::H3`, requests go on its streams and multiplex as HTTP/2's
-    do, with C's trace; the build claims `HTTP3`. In four parts:
+    do, with C's trace; the build claims `HTTP3`. In five parts:
     - (a) **The connect over QUIC.** **Done.** Each address the setup tries over QUIC is a whole
       QUIC connection, won when its handshake is done and its peer checked, not when its UDP
       socket connects (`cf-ip-happy.c`'s transport table makes each attempt
@@ -956,10 +956,15 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
       version set gains h3 (C's `http_neg`); `Version::Http3Only` and the tool's
       `--http3-only`. The seam's fake. Against caddy the trace is C's to the connection made,
       and a peer not trusted fails each address and the setup with exit 60, as C's.
-    - (b) **Requests and responses** on the connection's streams, multiplexed, kept alive, its
-      health checked and its goodbye sent; the stream as a `Wire`.
-    - (c) **Request bodies.**
-    - (d) **The version told:** `HTTP3` among the features, `-V`, the shim's
+    - (b) **A request and its response.** **Done.** The request's stream as a `Wire`; its head
+      opens a stream with its fields, the response is written as the library reads it, the
+      head a line at a time; a stream closed early, reset or refused fails as C's; the
+      library's timer runs as the multi's `QUIC` timer. Against caddy a GET's trace is C's.
+    - (c) **Streams multiplexed and the connection kept**: several requests on one connection,
+      `MAX_CONCURRENT`, its health checked (`is_alive`), a refused request retried, its goodbye
+      sent.
+    - (d) **Request bodies.**
+    - (e) **The version told:** `HTTP3` among the features, `-V`, the shim's
       `CURL_HTTP_VERSION_3` and `_3ONLY`, and `Http3` in the public `Version`.
 62. **The race.** `--http3` (`CURL_HTTP_VERSION_3`): a connection's setup as a value
     (`conn::Setup`), which the transfer owns and steps, its context given at each step as C's

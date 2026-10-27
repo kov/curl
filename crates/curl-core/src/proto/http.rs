@@ -215,6 +215,13 @@ impl Wire {
         }
     }
 
+    fn h3(&self) -> Option<&h3::H3Stream> {
+        match self {
+            Wire::H3(s) => Some(s),
+            _ => None,
+        }
+    }
+
     /// It is a session's stream, whose end ends the response.
     fn multiplexed(&self) -> bool {
         !matches!(self, Wire::H1)
@@ -850,8 +857,11 @@ impl Request {
         if self.sending() && !pause.send_paused() && !waiting {
             events = events | Events::OUT;
         }
-        // What HTTP/2's session holds waits for the socket.
-        if self.wire.h2().is_some_and(h2::H2Stream::out_pending) {
+        // What HTTP/2's session or the QUIC connection holds waits for
+        // the socket.
+        if self.wire.h2().is_some_and(h2::H2Stream::out_pending)
+            || self.wire.h3().is_some_and(h3::H3Stream::out_pending)
+        {
             events = events | Events::OUT;
         }
         events
@@ -2641,6 +2651,17 @@ impl Request {
         self.head().meta().close() || self.pipeline.body_closes() || self.closing
     }
 
+    /// The connection hears the transfer is done with it
+    /// (`Curl_conn_ev_data_done`): a stream still open goes
+    /// (`http2_data_done`, `Curl_cf_ngtcp2_h3_stream_done`).
+    pub(crate) fn data_done<H: Host>(&mut self, cx: &mut StepCx<'_, H>, lease: &mut ConnLease) {
+        match self.wire {
+            Wire::H1 => {}
+            Wire::H2(_) => self.h2_done(cx, lease),
+            Wire::H3(_) => self.h3_done(cx, lease),
+        }
+    }
+
     /// The request is over (`Curl_http_done`): a line still held is
     /// delivered, whatever came of it; a reply with nothing in it is an
     /// error, unless the request is to be made again; the connection is
@@ -2654,12 +2675,6 @@ impl Request {
         next: &AfterRequest,
         inherited: &mut Inherited,
     ) -> Result<(), ErrorKind> {
-        // A stream still open goes (`http2_data_done`, `h3_stream_done`).
-        match self.wire {
-            Wire::H1 => {}
-            Wire::H2(_) => self.h2_done(cx, lease),
-            Wire::H3(_) => self.h3_done(cx, lease),
-        }
         let Some(head) = self.head.as_ref() else {
             // The request was never made.
             return result;

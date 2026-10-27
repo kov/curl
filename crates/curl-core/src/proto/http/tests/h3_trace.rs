@@ -134,6 +134,13 @@ fn a_quic_attempt_is_won_by_its_handshake() {
             "using",
         ],
     );
+    // The connect's, to the version it found; the request's are its own
+    // test's.
+    let end = got
+        .iter()
+        .position(|l| l == "using HTTP/3")
+        .map_or(got.len(), |i| i + 1);
+    let got = got[..end].to_vec();
     let want = expect(&format!(
         "[HTTPS-CONNECT] 1st attempt uses h3 from wanted versions
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]
@@ -296,4 +303,226 @@ fn http3_alone_is_refused_where_it_cannot_be() {
         assert!(lines(&ran, &["Trying"]).is_empty(), "{why}");
         assert!(script.lock().unwrap().read.is_empty());
     }
+}
+
+/// A script for a GET: the handshake's flights, then the request's
+/// packet, answered by a response of `body` that closes the stream. Each
+/// egress ends at an empty packet: the connect's two, then the
+/// request's.
+fn get_script(body: &[u8]) -> Arc<Mutex<Script>> {
+    let script = Script::new();
+    {
+        let mut s = script.lock().unwrap();
+        s.idle = Some(std::time::Duration::from_secs(30));
+        s.out.extend([
+            vec![1; 1200],
+            vec![2; 1200],
+            vec![],
+            vec![],
+            vec![3; 75],
+            vec![],
+        ]);
+        s.on_read
+            .push_back(vec![Told::HandshakeDone, Told::MaxBidiStreams(100)]);
+        let header = |name: &[u8], value: &[u8]| Told::Header {
+            stream: 0,
+            name: name.to_vec(),
+            value: value.to_vec(),
+        };
+        s.on_read.push_back(vec![
+            header(b":status", b"200"),
+            header(b"content-length", body.len().to_string().as_bytes()),
+            Told::HeadersDone(0),
+            Told::Data(0, body.to_vec()),
+            Told::Closed(0, 0x100),
+            Told::QuicClosed(0, 0x100),
+        ]);
+    }
+    script
+}
+
+/// A GET goes on the connection's first stream, its fields traced as
+/// C's, its response written as it is read, the head a line at a time,
+/// and the transfer done as the stream closes: the stream is done with
+/// once the request is, and the connection no longer kept alive.
+#[test]
+fn a_get_over_http3_is_answered() {
+    let script = get_script(b"123456789");
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()));
+    let got = lines(
+        &ran,
+        &[
+            "[HTTP/3]",
+            "using",
+            "Request completely sent off",
+            "[TIMER] [QUIC]",
+            "[WRITE] xfer_write_resp",
+            "[WRITE] [OUT] done",
+            "[MULTI] [DONE] multi_done_locked",
+            "Connection #0",
+        ],
+    );
+    let from = got.iter().position(|l| l == "using HTTP/3").unwrap();
+    let want = expect(&format!(
+        "using HTTP/3
+        [HTTP/3] progress_ingress(socket)
+        [HTTP/3] ingress, recvmmsg -> EAGAIN
+        [HTTP/3] peer idle timeout is 30000ms, set keep-alive to 15000 ms.
+        [HTTP/3] [0] rx window, extend by 10452992 bytes
+        [HTTP/3] [0] OPENED stream for https://localhost:{PORT}/
+        [HTTP/3] [0] [:method: GET]
+        [HTTP/3] [0] [:scheme: https]
+        [HTTP/3] [0] [:authority: localhost:{PORT}]
+        [HTTP/3] [0] [:path: /]
+        [HTTP/3] [0] [user-agent: curl/test]
+        [HTTP/3] [0] [accept: */*]
+        [HTTP/3] egress, collect and send packets, quantum=12000
+        [HTTP/3] egress, send collected 1 packets in 75 bytes
+        [HTTP/3] vquic_sendmsg(len=75, gso=75, calls=1) -> 0, sent=75
+        [HTTP/3] [0] cf_send(74), added 74, inflight=0, reduce tx_win=30720
+        [HTTP/3] [0] cf_send(len=74) -> 0, 74
+        Request completely sent off
+        [HTTP/3] progress_ingress(socket)
+        [HTTP/3] [0] status: HTTP/3 200
+        [HTTP/3] [0] header: content-length: 9
+        [HTTP/3] [0] end_headers, status=200
+        [WRITE] xfer_write_resp(len=9, eos=0) -> 0
+        [HTTP/3] [0] DATA len=9, rx win=10485751
+        [HTTP/3] [0] rx window, extend by 9 bytes
+        [HTTP/3] [0] CLOSED
+        [HTTP/3] [0] quic close(app_error=256) -> 0
+        [HTTP/3] ingress, recvmmsg -> EAGAIN
+        [HTTP/3] vquic_recvmmsg(len=8, packets=1, calls=1) -> 0
+        [HTTP/3] egress, collect and send packets, quantum=12000
+        [HTTP/3] [0] cf_recv(buflen=16384) -> 0, 0
+        [WRITE] xfer_write_resp(len=0, eos=1) -> 0
+        [WRITE] [OUT] done
+        [HTTP/3] [0] easy handle is done
+        [HTTP/3] no active streams, unset keep-alive
+        [MULTI] [DONE] multi_done_locked, in use=0
+        Connection #0 to host localhost:{PORT} left intact"
+    ));
+    assert_eq!(got[from..], want);
+    let s = script.lock().unwrap();
+    assert_eq!(
+        s.requests,
+        [[
+            ":method: GET",
+            ":scheme: https",
+            &format!(":authority: localhost:{PORT}"),
+            ":path: /",
+            "user-agent: curl/test",
+            "accept: */*",
+        ]]
+    );
+    // Kept alive while the stream was open, and no longer after.
+    assert_eq!(s.keep_alive, Some(None), "the last set unsets it");
+    assert_eq!(ran.seen.body(), b"123456789");
+    assert_eq!(
+        ran.seen.of("header"),
+        [
+            b"HTTP/3 200 \r\n".to_vec(),
+            b"content-length: 9\r\n".to_vec(),
+            b"\r\n".to_vec()
+        ]
+    );
+    // The window opened as the body was taken, once the read returned.
+    assert_eq!(s.windows, [(0, 10452992), (0, 9)]);
+}
+
+/// The request's packet goes unanswered: the transfer waits for the
+/// library's timer, which the multi runs as it comes due, and what the
+/// library then sends, its retransmission, has the response come.
+#[test]
+fn the_library_s_timer_runs_while_a_response_is_awaited() {
+    let script = get_script(b"123456789");
+    {
+        let mut s = script.lock().unwrap();
+        // Its reply comes to nothing; the retransmission's has the
+        // response.
+        let response = s.on_read.pop_back().unwrap();
+        s.on_read.push_back(vec![]);
+        s.on_read.push_back(response);
+        s.on_expiry = vec![vec![4; 75], vec![]];
+        s.timer = Some(std::time::Duration::from_millis(25));
+    }
+    let mut m = quic_server(&[b"server flight", b"ack", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()));
+    let s = script.lock().unwrap();
+    assert_eq!(s.expired, 1, "the timer ran once");
+    // As it came due: the clock stood still until then.
+    let (first, last) = (s.sent_at[0], *s.sent_at.last().unwrap());
+    assert_eq!(last.since(first), std::time::Duration::from_millis(25));
+    let got = lines(&ran, &["[TIMER] [QUIC]", "[HTTP/3] vquic_sendmsg"]);
+    assert_eq!(
+        got.last().map(String::as_str),
+        Some("[HTTP/3] vquic_sendmsg(len=75, gso=75, calls=1) -> 0, sent=75"),
+        "the retransmission went last: {got:#?}"
+    );
+    assert_eq!(ran.seen.body(), b"123456789");
+}
+
+/// A response's stream closed with `told` in place of its last events.
+fn closed_early(told: Vec<Told>) -> Ran {
+    let script = get_script(b"123456789");
+    {
+        let mut s = script.lock().unwrap();
+        *s.on_read.back_mut().unwrap() = told;
+    }
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    h3_get(&mut m, e)
+}
+
+/// A reset after some of the body fails the transfer as a partial file,
+/// saying the code by its name (`recv_closed_stream`).
+#[test]
+fn a_stream_reset_mid_body_is_a_partial_file() {
+    let header = |name: &[u8], value: &[u8]| Told::Header {
+        stream: 0,
+        name: name.to_vec(),
+        value: value.to_vec(),
+    };
+    let ran = closed_early(vec![
+        header(b":status", b"200"),
+        header(b"content-length", b"9"),
+        Told::HeadersDone(0),
+        Told::Data(0, b"1234".to_vec()),
+        Told::Closed(0, 0x102),
+    ]);
+    assert_eq!(ran.result, Err(ErrorKind::PartialFile));
+    assert_eq!(
+        lines(&ran, &["HTTP/3 stream", "[HTTP/3] [0] RESET"]),
+        [
+            "[HTTP/3] [0] RESET: error 258",
+            "HTTP/3 stream 0 reset by server (error 0x102 INTERNAL_ERROR)",
+        ]
+    );
+}
+
+/// A stream that closes before its response's head is whole fails the
+/// transfer, though no error closed it.
+#[test]
+fn a_stream_closed_before_its_head_fails() {
+    let ran = closed_early(vec![
+        Told::Header {
+            stream: 0,
+            name: b":status".to_vec(),
+            value: b"200".to_vec(),
+        },
+        Told::Closed(0, 0x100),
+    ]);
+    assert_eq!(ran.result, Err(ErrorKind::Http3));
+    assert_eq!(
+        lines(&ran, &["HTTP/3 stream"]),
+        [
+            "HTTP/3 stream 0 was closed cleanly, but before getting all response header fields, \
+             treated as error"
+        ]
+    );
 }

@@ -601,6 +601,14 @@ impl ProtoState {
         }
     }
 
+    /// The connection hears the transfer is done with it, once the
+    /// request is (`Curl_conn_ev_data_done`).
+    pub(crate) fn data_done<H: Host>(&mut self, cx: &mut StepCx<'_, H>, lease: &mut ConnLease) {
+        if let ProtoState::Http(r) = self {
+            r.data_done(cx, lease);
+        }
+    }
+
     /// The request is over, with `result` so far, and `next` to follow it
     /// (C's `done`): what the protocol says of it, and what HTTP's next
     /// request takes from it into `http`.

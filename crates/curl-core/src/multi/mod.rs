@@ -1209,6 +1209,10 @@ impl<H: Host> Multi<H> {
             }
             None => run.deadlines.clear(TimerKind::Proto),
         }
+        // The QUIC library's, as the step's last call asked for it.
+        if let Some(at) = cx.quic_at.take() {
+            run.deadlines.arm_in(TimerKind::Quic, now, at.since(now));
+        }
         let completed = run.state.is_completed();
         if completed {
             self.counts.completed();

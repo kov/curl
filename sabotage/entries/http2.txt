@@ -201,7 +201,7 @@ witness: curl-core proto::http::tests::h2::a_refusal_mid_upload_is_the_response
 --- old
                     let closed = self.stream_recv(cx, lease)?;
                     if let StreamRecv::Closed = closed {
-                        self.h2_ended(cx)?;
+                        self.stream_ended(cx)?;
                     }
 --- new
 

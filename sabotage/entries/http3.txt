@@ -133,3 +133,29 @@ witness: curl-core conn::quic::tests::http3_not_set_up_fails_the_connect_saying_
                     None => cx.fail(kind, format_args!("{why}")),
 --- new
                     None => kind,
+
+=== the library's timer is not armed after a step
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::h3_trace::the_library_s_timer_runs_while_a_response_is_awaited
+--- old
+            run.deadlines.arm_in(TimerKind::Quic, now, at.since(now));
+--- new
+            let _ = at;
+
+=== a reset mid-body is not a partial file
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_stream_reset_mid_body_is_a_partial_file
+--- old
+            let kind = if bytecount > 0 {
+--- new
+            let kind = if bytecount > 0 && no_body {
+
+=== a stream closed before its head ends the response
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_stream_closed_before_its_head_fails
+--- old
+        if !s.head_done {
+            return Err(trace::fail(
+--- new
+        if !s.head_done && s.reset {
+            return Err(trace::fail(

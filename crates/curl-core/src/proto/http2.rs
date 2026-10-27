@@ -11,7 +11,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::conn::io::{Recv, Sent};
 use crate::conn::layer::{Alive, Handshake, LayerCx, Lower as _, Part as ConnPart};
-use crate::conn::mux::Carrier;
+use crate::conn::mux::{Carrier, Routes};
 use crate::error::ErrorKind;
 use crate::error::UrlErrorKind;
 use crate::http2::{
@@ -53,9 +53,9 @@ pub(crate) struct H2Conn {
     closed: bool,
     /// The client said GOAWAY, as the connection shuts down.
     sent_goaway: bool,
-    /// Each open stream's transfer, as its request opened it, until the
-    /// request is over (C's stream user data).
-    routes: Vec<Route>,
+    /// Each open stream's transfer, with the receive window last asked
+    /// for it (`local_window_size`).
+    routes: Routes<StreamId, i32>,
 }
 
 /// Which call setting a stream's window failed, and how.
@@ -65,20 +65,6 @@ pub(crate) enum WindowFailed {
     Set { grows: bool, e: FrameError },
     /// Telling the peer it grew.
     Update(FrameError),
-}
-
-/// An open stream, as its transfer has it.
-#[derive(Clone, Copy, Debug)]
-struct Route {
-    stream: StreamId,
-    to: TransferId,
-    /// The receive window last asked for it (`local_window_size`).
-    window: i32,
-}
-
-/// The transfer `stream` is routed to, if any.
-fn transfer_of(routes: &[Route], stream: StreamId) -> Option<TransferId> {
-    routes.iter().find(|r| r.stream == stream).map(|r| r.to)
 }
 
 impl std::fmt::Debug for H2Conn {
@@ -172,7 +158,7 @@ impl H2Conn {
                 goaway: None,
                 closed: false,
                 sent_goaway: false,
-                routes: Vec::new(),
+                routes: Routes::new(),
             },
             stream,
         ))
@@ -193,33 +179,22 @@ impl H2Conn {
 
     /// Stream `stream` is transfer `to`'s, from its opening on.
     pub(crate) fn route(&mut self, stream: StreamId, to: TransferId) -> Result<(), OutOfMemory> {
-        debug_assert!(self.route_of(stream).is_none(), "{stream:?} routed twice");
-        self.routes.try_push(Route {
-            stream,
-            to,
-            window: STREAM_WINDOW as i32,
-        })
+        self.routes.route(stream, to, STREAM_WINDOW as i32)
     }
 
     /// Stream `stream` is no transfer's any more: its request is over.
     pub(crate) fn unroute(&mut self, stream: StreamId) {
-        self.routes.retain(|r| r.stream != stream);
+        self.routes.unroute(stream);
     }
 
     /// The transfer stream `stream` is for, while its request runs.
     pub(crate) fn route_of(&self, stream: StreamId) -> Option<TransferId> {
-        self.routes
-            .iter()
-            .find(|r| r.stream == stream)
-            .map(|r| r.to)
+        self.routes.route_of(stream)
     }
 
     /// The transfers of the streams open, but `but`'s.
     pub(crate) fn others(&self, but: TransferId) -> impl Iterator<Item = TransferId> + '_ {
-        self.routes
-            .iter()
-            .map(|r| r.to)
-            .filter(move |&to| to != but)
+        self.routes.others(but)
     }
 
     /// Feed the session what the connection read, `events` hearing
@@ -233,7 +208,7 @@ impl H2Conn {
             session, routes, ..
         } = self;
         session.recv(bytes, &mut |event| {
-            let to = event.stream().and_then(|s| transfer_of(routes, s));
+            let to = event.stream().and_then(|s| routes.route_of(s));
             events(event, to)
         })
     }
@@ -243,10 +218,10 @@ impl H2Conn {
     /// holds back what it would only buffer (`cf_h2_update_local_win`).
     /// Growing it, the peer is told by how much, as C tells it.
     pub(crate) fn window_to(&mut self, stream: StreamId, wanted: i32) -> Result<(), WindowFailed> {
-        let Some(route) = self.routes.iter_mut().find(|r| r.stream == stream) else {
+        let Some(window) = self.routes.kept_mut(stream) else {
             return Ok(());
         };
-        if route.window == wanted {
+        if *window == wanted {
             return Ok(());
         }
         let now = self.session.stream_window(stream);
@@ -259,7 +234,7 @@ impl H2Conn {
                 .submit_window_update(stream, wanted - now)
                 .map_err(WindowFailed::Update)?;
         }
-        route.window = wanted;
+        *window = wanted;
         Ok(())
     }
 
@@ -311,7 +286,7 @@ impl H2Conn {
                     },
                     &mut |stream, room| {
                         with.borrow_mut()
-                            .body(stream, transfer_of(routes, stream), room)
+                            .body(stream, routes.route_of(stream), room)
                     },
                     &mut |event| with.borrow_mut().event(event),
                 )

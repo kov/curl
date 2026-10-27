@@ -617,7 +617,7 @@ impl Request {
     }
 
     /// The application's method, if the request line names it.
-    fn custom_method<H: Host>(&self, cx: &StepCx<'_, H>) -> Option<Vec<u8>> {
+    pub(super) fn custom_method<H: Host>(&self, cx: &StepCx<'_, H>) -> Option<Vec<u8>> {
         let custom = cx.easy().options().http.custom.method.as_deref();
         custom.filter(|_| self.custom).and_then(|m| copied(m).ok())
     }
@@ -665,7 +665,7 @@ impl Request {
                 return Ok(Read::Waits);
             }
             if let StreamRecv::Closed = self.stream_recv(cx, lease)? {
-                self.h2_ended(cx)?;
+                self.stream_ended(cx)?;
                 continue;
             }
             if reads == MAX_READS || taken >= cx.easy().options().limits.buffer_size.get() {
@@ -686,7 +686,7 @@ impl Request {
                 Ok(Recv::WouldBlock) => {
                     self.h2_egress(cx, lease)?;
                     if let StreamRecv::Closed = self.stream_recv(cx, lease)? {
-                        self.h2_ended(cx)?;
+                        self.stream_ended(cx)?;
                         continue;
                     }
                     return Ok(if lease.get().data_pending() {
@@ -716,7 +716,7 @@ impl Request {
                     // sends then does not undo a response already whole.
                     let closed = self.stream_recv(cx, lease)?;
                     if let StreamRecv::Closed = closed {
-                        self.h2_ended(cx)?;
+                        self.stream_ended(cx)?;
                     }
                     self.h2_egress(cx, lease)?;
                 }
@@ -752,7 +752,10 @@ impl Request {
 
     /// The stream is over and whole: the response ends as a connection's
     /// end ends HTTP/1's (`sendrecv_dl`'s "we are done").
-    fn h2_ended<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+    pub(super) fn stream_ended<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<(), ErrorKind> {
         trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
         if self.sending() {
             self.upload_done(cx, true);

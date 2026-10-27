@@ -244,7 +244,8 @@ curl-core/src/
                              Before, Ended
     file.rs
     http.rs, http/           the HTTP driver: the request sent, the response read;
-                             h2.rs, the request's HTTP/2 stream; cookies.rs (the jar as
+                             h2.rs and h3.rs, the request's HTTP/2 and HTTP/3 stream;
+                             cookies.rs (the jar as
                              HTTP uses it), sigv4.rs, httpsig.rs; suite.rs, C's test
                              cases over the fake network
     http2.rs                 H2Conn: a connection's HTTP/2 session and its output; the
@@ -1744,7 +1745,21 @@ called in a millisecond. Ingress reads batches of datagrams (`recvmmsg`, GRO) in
 one receive buffer, lent and given back across the call, at most 1000 packets a pass. The
 library's timer is armed as the transfer's `QUIC` timer, in whole milliseconds rounded up. Every
 library call is given the live clock, as C's `Curl_pgrs_now`. A fatal error closes the
-connection, its close packet sent at once. The transfer reaches all of this through `QuicCx`.
+connection, its close packet sent at once. The transfer reaches all of this through `QuicCx`,
+and the socket through `QuicIo`, asked for at each call: the socket stays in the connection while
+the library's events reach the transfers.
+
+**A request's stream.** `proto/http/h3.rs` is C's `h3_stream_ctx` and `cf_ngtcp2_send` and
+`_recv`, in their order: each call reads what came first, sends after, and sets the timer, the
+trace C's. For the call the session is taken off the connection (`Conn::take_h3`) and the
+request's step is the libraries' context, `H3Step`: what the library tells of a stream goes to
+the stream's transfer as it is read, the stepping one's own or a sibling's through
+`with_sibling`, routed by `conn::mux::Routes`, which HTTP/2 shares; a stream no transfer has is
+heard as C's callbacks hear one without user data. The response's head reaches the request a
+line at a time, as HTTP/2's does; the windows its reading opens are opened once the call
+returns. The library's timer, set in a step, is armed on the transfer after it. The stream is
+done with as the connection hears the transfer is (`Curl_conn_ev_data_done`), after the
+request's own end.
 
 **Request bodies.** nghttp3 points at a body's bytes until the peer acknowledges them, so the
 binding holds them: chunks of 64 KiB whose room is reserved as each is made, so that what is

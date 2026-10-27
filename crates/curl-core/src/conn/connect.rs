@@ -1225,7 +1225,7 @@ impl ConnectMachine {
             now,
             handshake_timeout: making.handshake_timeout,
             max_window: H3_CONN_WINDOW_SIZE_MAX,
-            stream_window: H3_STREAM_WINDOW_SIZE_INITIAL,
+            stream_window: crate::conn::quic::STREAM_WINDOW_INITIAL,
             max_streams: QUIC_MAX_STREAMS,
         };
         let conn = match h3.client(&setup, tls) {
@@ -1571,9 +1571,6 @@ impl Attempt {
 /// The receive window of a QUIC connection at its largest
 /// (`H3_CONN_WINDOW_SIZE_MAX`).
 const H3_CONN_WINDOW_SIZE_MAX: u64 = 100 * 10 * 1024 * 1024;
-/// A request stream's first receive window
-/// (`H3_STREAM_WINDOW_SIZE_INITIAL`).
-const H3_STREAM_WINDOW_SIZE_INITIAL: u64 = 32 * 1024;
 /// The streams the peer may open of each kind (`QUIC_MAX_STREAMS`).
 const QUIC_MAX_STREAMS: u64 = 256 * 1024;
 

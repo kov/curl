@@ -60,6 +60,13 @@ pub struct Script {
     pub read_fails: Option<i32>,
     /// Its timer is due in this long, or never.
     pub expiry: Option<Duration>,
+    /// A timer that starts as it is first asked about once a request was
+    /// submitted and comes due this long after, on the clock, then never
+    /// again; and when it is due.
+    pub timer: Option<Duration>,
+    pub timer_at: Option<Instant>,
+    /// What it has to send once its timer ran, as its retransmission.
+    pub on_expiry: Vec<Vec<u8>>,
     /// Its timer ran this many times.
     pub expired: usize,
     pub handshake_done: bool,
@@ -314,8 +321,16 @@ impl Connection for FakeConnection {
         self.script.lock().unwrap().send_quantum
     }
 
-    fn expiry(&self, _now: Instant) -> Expiry {
-        match self.script.lock().unwrap().expiry {
+    fn expiry(&self, now: Instant) -> Expiry {
+        let mut s = self.script.lock().unwrap();
+        if let Some(d) = s.timer.filter(|_| !s.requests.is_empty()) {
+            let at = *s.timer_at.get_or_insert(now.after(d));
+            return match at.since(now) {
+                Duration::ZERO => Expiry::Due,
+                left => Expiry::In(left),
+            };
+        }
+        match s.expiry {
             None => Expiry::Never,
             Some(Duration::ZERO) => Expiry::Due,
             Some(d) => Expiry::In(d),
@@ -331,6 +346,9 @@ impl Connection for FakeConnection {
         let mut s = self.script.lock().unwrap();
         s.expired += 1;
         s.expiry = None;
+        s.timer = None;
+        let resent = std::mem::take(&mut s.on_expiry);
+        s.out.extend(resent);
         Ok(())
     }
 

@@ -233,6 +233,9 @@ pub(crate) struct QuicMaking {
     pub(crate) handshake_timeout: Duration,
     /// The multi's clock, which the connection keeps.
     pub(crate) clock: crate::time::SharedClock,
+    /// The transfer makes requests over it, which early data may carry
+    /// (not `bits.connect_only`).
+    pub(crate) requests: bool,
 }
 
 /// A socket opened for an attempt, or why none was, and whether the
@@ -1180,8 +1183,8 @@ impl ConnectMachine {
             let done = quic.start(&mut over)?;
             Ok((quic, done))
         });
-        let quic = match started {
-            Ok((quic, _)) => quic,
+        let (quic, done) = match started {
+            Ok(started) => started,
             Err(ErrorKind::OutOfMemory) => {
                 cx.net().close(socket);
                 return Err(ConnectError::OutOfMemory);
@@ -1202,9 +1205,10 @@ impl ConnectMachine {
                 quic: Some(quic),
             })
             .expect("reserved");
+        // Connected as it started, for early data: won at once.
         let tried = Progress::Trying {
             remote,
-            at_once: false,
+            at_once: done,
             until: r.next_due(delay),
         };
         Ok(Drove::Connecting(self, tried))
@@ -1252,7 +1256,14 @@ impl ConnectMachine {
             super::Dial::Quic,
         )
         .map_err(oom)?;
-        let peer = crate::tls::TlsPeer::of(origin, false);
+        // Early data, where the transfer asks for it and makes requests
+        // (`conn_cfg->earlydata`, `bits.connect_only`).
+        let early_data = identity
+            .options
+            .ssl_options
+            .contains(crate::options::SslOptions::EARLYDATA)
+            && making.requests;
+        let peer = crate::tls::TlsPeer::of(origin, early_data);
         let tls = {
             let mut tcx = crate::tls::TlsCx::new(cx, Component::Http3, &kept_for);
             backend.quic_session(identity, &peer, &making.shared, &mut tcx)
@@ -1261,6 +1272,22 @@ impl ConnectMachine {
             Ok(tls) => tls,
             Err(ErrorKind::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
             Err(kind) => return Err(failed(cx, kind)),
+        };
+        // The session resumed, if early data may go under it, read before
+        // the connection takes the session.
+        let early = match tls.early_data() {
+            Some(ticket) => {
+                let mut params = Vec::new();
+                params
+                    .try_extend_from_slice(&ticket.quic_params)
+                    .map_err(oom)?;
+                Some(crate::conn::quic::EarlyTicket {
+                    most: ticket.earlydata_max,
+                    alpn: ticket.alpn,
+                    params,
+                })
+            }
+            None => None,
         };
         let setup = crate::http3::ClientSetup {
             local,
@@ -1282,7 +1309,14 @@ impl ConnectMachine {
                 return Err(failed(cx, kind));
             }
         };
-        let quic = Quic::new(conn, kept_for, remote, making.clock.clone()).map_err(oom)?;
+        let mut quic = Quic::new(conn, kept_for, remote, making.clock.clone()).map_err(oom)?;
+        if let Some(ticket) = early {
+            match quic.early_data(cx, &ticket) {
+                Ok(()) => {}
+                Err(ErrorKind::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+                Err(kind) => return Err(failed(cx, kind)),
+            }
+        }
         curl_alloc::try_box(quic).map_err(oom)
     }
 

@@ -35,8 +35,8 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use curl_core::error::ErrorKind;
 use curl_core::http3::{
-    BODY_HELD, ClientSetup, CloseError, ConnectFailed, Event, Events, Expiry, H3Error, Heard,
-    Http3, Layer, QuicError, StreamId, SubmitFailed,
+    BODY_HELD, ClientSetup, CloseError, ConnectFailed, EarlyStart, Event, Events, Expiry, H3Error,
+    Heard, Http3, Layer, QuicError, StreamId, SubmitFailed,
 };
 use curl_core::time::Instant;
 use curl_core::tls::{DriveCall, QuicTls, TlsCx};
@@ -327,6 +327,8 @@ struct Inner {
     /// What the connection closes with (`last_error`).
     last_error: sys::ngtcp2_ccerr,
     local: Addr,
+    /// Early data is sent (`use_earlydata`).
+    early: bool,
 }
 
 /// What a call into the libraries lends their callbacks.
@@ -575,6 +577,7 @@ impl Connection {
             // SAFETY: all zeroes is a valid value; set below.
             last_error: unsafe { core::mem::zeroed() },
             local: Addr::new(setup.local),
+            early: false,
         })?;
         let inner = UserData(NonNull::from(Box::leak(inner)));
         let p = inner.ptr();
@@ -829,6 +832,45 @@ impl curl_core::http3::Connection for Connection {
     fn handshake_done(&self) -> bool {
         // SAFETY: the connection.
         unsafe { sys::ngtcp2_conn_get_handshake_completed(self.conn()) != 0 }
+    }
+
+    fn set_early_params(&mut self, params: &[u8]) -> Result<(), &'static str> {
+        // SAFETY: the connection, and the bytes, which the library reads
+        // during the call.
+        let rv = unsafe {
+            sys::ngtcp2_conn_decode_and_set_0rtt_transport_params(
+                self.conn(),
+                params.as_ptr(),
+                params.len(),
+            )
+        };
+        match rv {
+            0 => Ok(()),
+            rv => Err(quic_error("", rv).text),
+        }
+    }
+
+    fn start_early(&mut self) -> Result<EarlyStart, Event<'static>> {
+        let p = self.inner.ptr();
+        // HTTP/3 is set up now, as the 1-RTT keys would; they find it
+        // made (`init_h3_conn_cb`).
+        let h3 = init_h3(self.conn(), p.cast())?;
+        // SAFETY: the state, which no callback reaches outside a call.
+        unsafe { (*p).h3 = h3 };
+        let ssl = self
+            .tls
+            .native()
+            .session()
+            .expect("a QUIC session is made with its SSL")
+            .as_ptr();
+        // SAFETY: the session's SSL, set up for QUIC by ngtcp2's crypto,
+        // after which OpenSSL takes the setting.
+        if unsafe { sys::SSL_set_quic_tls_early_data_enabled(ssl, 1) } == 0 {
+            return Ok(EarlyStart::Refused);
+        }
+        // SAFETY: as above.
+        unsafe { (*p).early = true };
+        Ok(EarlyStart::Started)
     }
 
     fn draining(&self) -> bool {
@@ -1190,7 +1232,9 @@ unsafe extern "C" fn handshake_completed(
         checked,
         max_udp_payload: rp.max_udp_payload_size,
         initial_max_data: rp.initial_max_data,
-        early_data: None,
+        // SAFETY: the state, read and copied; the connection.
+        early_data: unsafe { (*inner).early }
+            .then(|| unsafe { sys::ngtcp2_conn_get_tls_early_data_rejected2(conn) } == 0),
     };
     // SAFETY: inside the call, holding nothing of the state.
     let heard = unsafe { tell(inner, event) };

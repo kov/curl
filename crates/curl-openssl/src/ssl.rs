@@ -153,12 +153,12 @@ impl OpenSsl {
             shut: false,
             keylog: self.keylog.clone(),
             reused: false,
-            // QUIC's early data is the QUIC library's to send.
-            early_data: peer.early_data && !quic,
+            early_data: peer.early_data,
             deferred: None,
             early: Early::None,
             quic,
             resumed: None,
+            quic_early: false,
         })
     }
 }
@@ -265,6 +265,9 @@ struct Session {
     /// kept here for the early data it allows, as TLS 1.3's are taken
     /// from the cache to serve one connection.
     resumed: Option<TlsTicket>,
+    /// The QUIC library may send early data under `resumed`, which it
+    /// sends itself (`sess_reuse_cb` called).
+    quic_early: bool,
 }
 
 /// The library's major error codes C tells apart.
@@ -1067,7 +1070,12 @@ impl Session {
                     && allows > 0
                     && version == openssl_sys::TLS1_3_VERSION
                 {
-                    self.defer(ticket.earlydata_max, chosen, io);
+                    // QUIC's early data is the QUIC library's to send.
+                    if self.quic {
+                        self.quic_early = true;
+                    } else {
+                        self.defer(ticket.earlydata_max, chosen, io);
+                    }
                 }
             }
         }
@@ -1438,8 +1446,8 @@ impl QuicTls for QuicSession {
         self.0.native().expect("made as the session is")
     }
 
-    fn resumed(&self) -> Option<&TlsTicket> {
-        self.0.resumed.as_ref()
+    fn early_data(&self) -> Option<&TlsTicket> {
+        self.0.resumed.as_ref().filter(|_| self.0.quic_early)
     }
 
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
@@ -1787,7 +1795,7 @@ mod tests {
             )
         };
         assert_eq!(min, 0x304);
-        assert!(session.resumed().is_none());
+        assert!(session.early_data().is_none());
         drop(session);
 
         let capped = identity(|i| i.options.max_version = TlsMaxVersion::Tls1_2);

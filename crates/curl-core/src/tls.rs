@@ -240,9 +240,11 @@ pub trait QuicTls: Send {
     /// library to drive.
     fn native(&self) -> TlsNative;
 
-    /// The session the cache kept that this one resumes, if any: what
-    /// early data on the connection is sent under.
-    fn resumed(&self) -> Option<&TlsTicket>;
+    /// The session the cache kept that this one resumes, if early data
+    /// may be sent under it: the transfer asks for early data, and the
+    /// session has a protocol and allows some over TLS 1.3 (the
+    /// conditions on which C calls `sess_reuse_cb`).
+    fn early_data(&self) -> Option<&TlsTicket>;
 
     /// Get ready for the peer's first bytes: the trust store set up, if
     /// it is not (`Curl_vquic_tls_before_recv`).
@@ -586,6 +588,12 @@ impl TlsCx<'_> {
     /// traced.
     pub fn trace(&mut self, line: fmt::Arguments<'_>) {
         self.cx.of(self.component, line);
+    }
+
+    /// The early data sent was taken, if `sent` is positive, or not:
+    /// reported, with the handshake's end (`Curl_pgrsEarlyData`).
+    pub(crate) fn early_done(&mut self, sent: i64) {
+        self.cx.early_done(sent);
     }
 
     /// Hand the transfer what the HTTP/3 library told of a stream.

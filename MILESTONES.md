@@ -991,7 +991,10 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
       both its attempts as C does, the race run either way round (a TCP first and an HTTP/3
       second). Against caddy, C's five shapes (pytest 06_20, 06_21, 06_24, a switch to h3
       elsewhere, h2 to h1 on the origin) reach C's version with C's choice of attempts.
-    - (b) **Early data.** To do.
+    - (b) **Early data.** **Done**: a QUIC session resuming a ticket made for h3 with its
+      transport parameters sends the request as early data, the connection counted as
+      connected before its first packet, and the peer's verdict reported as the handshake ends.
+      Against caddy, C's count (102 bytes) and lines; pytest 02_32, 07_70 and 08_08 pass.
 64. **The HTTP/3 proxy** (`--proxy-http3`, CONNECT-UDP; pytest test_60). Always built, with no
     switch: C's is experimental and off unless built with `USE_PROXY_HTTP3`, but for its code's
     youth, not its standards (RFC 9297, 9298), and the reference build has it on. With it, HTTP/3

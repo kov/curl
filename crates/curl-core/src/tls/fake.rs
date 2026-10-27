@@ -79,6 +79,10 @@ pub struct FakeTls {
     early: usize,
     /// Each QUIC session's check of its peer fails.
     quic_unverified: bool,
+    /// Each QUIC session resumes a session the transfer may send early
+    /// data under: the early data it allows, its protocol and its
+    /// connection's transport parameters.
+    quic_resumes: Option<(usize, Option<Chosen>, &'static [u8])>,
     /// What each session binds a channel with.
     binding: FakeBinding,
 }
@@ -203,7 +207,22 @@ impl FakeTls {
             tickets: false,
             early: 0,
             quic_unverified: false,
+            quic_resumes: None,
             binding: FakeBinding::None,
+        })
+    }
+
+    /// The same, each QUIC session resuming a session that allows `most`
+    /// bytes of early data, made for `alpn` with the transport
+    /// parameters `params`, which the transfer may send early data under.
+    pub fn quic_resuming(
+        most: usize,
+        alpn: Option<Chosen>,
+        params: &'static [u8],
+    ) -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            quic_resumes: Some((most, alpn, params)),
+            ..FakeTls::new()?
         })
     }
 
@@ -294,11 +313,21 @@ impl TlsBackend for FakeTls {
             log.sessions
         };
         cx.trace(format_args!("fake QUIC session {number}"));
+        let early = match self.quic_resumes {
+            Some((most, alpn, params)) => {
+                let mut kept = Vec::new();
+                kept.try_extend_from_slice(params)
+                    .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+                Some(TlsTicket::new(Vec::new(), 0x0304, alpn, most, 0).with_quic_params(kept))
+            }
+            None => None,
+        };
         try_box(FakeQuicSession {
             log: self.log.clone(),
             number,
             unverified: self.quic_unverified,
             store: false,
+            early,
         })
         .map(|b| b as Box<dyn QuicTls>)
         .map_err(|OutOfMemory| ErrorKind::OutOfMemory)
@@ -944,6 +973,7 @@ pub fn quic_session() -> Result<Box<dyn QuicTls>, OutOfMemory> {
         number: 1,
         unverified: false,
         store: false,
+        early: None,
     };
     try_box(session).map(|b| b as Box<dyn QuicTls>)
 }
@@ -956,6 +986,8 @@ struct FakeQuicSession {
     unverified: bool,
     /// The trust store is set up (`before_recv`).
     store: bool,
+    /// The session it resumes, early data allowed under it.
+    early: Option<TlsTicket>,
 }
 
 impl QuicTls for FakeQuicSession {
@@ -963,8 +995,8 @@ impl QuicTls for FakeQuicSession {
         TlsNative::new(NonNull::dangling(), Some(NonNull::dangling()))
     }
 
-    fn resumed(&self) -> Option<&TlsTicket> {
-        None
+    fn early_data(&self) -> Option<&TlsTicket> {
+        self.early.as_ref()
     }
 
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {

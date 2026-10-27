@@ -372,6 +372,19 @@ struct State {
     first_byte_at: Option<Instant>,
     /// When a datagram last went or came (`last_io`).
     last_io: Instant,
+    /// Early data is sent: this much of the request went before the
+    /// handshake was done (`use_earlydata`, `earlydata_skip`).
+    early: Option<usize>,
+}
+
+/// What a session resumed says of the early data a connection may send
+/// under it: how much it allows, the protocol it was made for and the
+/// transport parameters its connection had, encoded.
+#[derive(Debug)]
+pub(crate) struct EarlyTicket {
+    pub(crate) most: usize,
+    pub(crate) alpn: Option<crate::tls::Chosen>,
+    pub(crate) params: Vec<u8>,
 }
 
 /// A QUIC connection over its UDP socket.
@@ -435,6 +448,7 @@ impl Quic {
                 now,
                 first_byte_at: None,
                 last_io: now,
+                early: None,
             },
             clock,
         })
@@ -489,14 +503,102 @@ impl Quic {
     /// The first connect call: the client's first flight sent, and the
     /// timer set (`Curl_cf_ngtcp2_cmn_connect` with no connection yet).
     pub(crate) fn start(&mut self, cx: &mut dyn QuicIo) -> Result<bool, ErrorKind> {
+        // Sending early data, it counts as connected, and its first
+        // packets go with the request's (`cf->connected` set by
+        // `cf_ngtcp2_on_session_reuse`).
+        if self.state.early.is_some() {
+            self.state.connected = true;
+            return self.connect_ended(cx, Ok(true));
+        }
         let sent = self.egress(cx);
         self.connect_ended(cx, sent.map(|()| false))
+    }
+
+    /// The session resumed allows early data under `ticket`, which is
+    /// sent if it was made for HTTP/3 and kept with its transport
+    /// parameters (`cf_ngtcp2_on_session_reuse`): said as C says it. A
+    /// failure to set up HTTP/3 for it fails the connect.
+    pub(crate) fn early_data(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        ticket: &EarlyTicket,
+    ) -> Result<(), ErrorKind> {
+        let h3 = Component::Http3;
+        if ticket.most == 0 {
+            cx.of(h3, format_args!("SSL session does not allow earlydata"));
+            return Ok(());
+        }
+        if ticket.alpn != Some(crate::tls::Chosen::H3) {
+            cx.of(
+                h3,
+                format_args!("SSL session from different ALPN, no early data"),
+            );
+            return Ok(());
+        }
+        if ticket.params.is_empty() {
+            cx.of(
+                h3,
+                format_args!("no 0RTT transport parameters, no early data"),
+            );
+            return Ok(());
+        }
+        if let Err(why) = self.conn.set_early_params(&ticket.params) {
+            cx.of(
+                h3,
+                format_args!("no early data, failed to set 0RTT transport parameters: {why}"),
+            );
+            return Ok(());
+        }
+        let most = ticket.most;
+        cx.info(format_args!(
+            "SSL session allows {most} bytes of early data, reusing ALPN 'h3'"
+        ));
+        match self.conn.start_early() {
+            Ok(crate::http3::EarlyStart::Started) => {
+                self.state.early = Some(0);
+                Ok(())
+            }
+            Ok(crate::http3::EarlyStart::Refused) => {
+                cx.of(h3, format_args!("OpenSSL refused to use early data"));
+                Ok(())
+            }
+            Err(Event::H3Failed {
+                why,
+                detail,
+                out_of_memory,
+            }) => {
+                let kind = if out_of_memory {
+                    ErrorKind::OutOfMemory
+                } else {
+                    ErrorKind::QuicConnectError
+                };
+                Err(match detail {
+                    Some(detail) => cx.fails(kind, format_args!("{why}: {detail}")),
+                    None => cx.fails(kind, format_args!("{why}")),
+                })
+            }
+            Err(other) => unreachable!("early data fails only setting up HTTP/3: {other:?}"),
+        }
+    }
+
+    /// `n` bytes of the request were taken: early data if the handshake
+    /// is not yet done (`earlydata_skip`).
+    pub(crate) fn sent(&mut self, n: usize) {
+        if let Some(early) = self.state.early.as_mut()
+            && !self.conn.handshake_done()
+        {
+            *early += n;
+        }
     }
 
     /// A later connect call: what came read, what is due sent, and done
     /// once the handshake is and the peer checked
     /// (`Curl_cf_ngtcp2_cmn_connect`).
     pub(crate) fn connect(&mut self, cx: &mut dyn QuicIo) -> Result<bool, ErrorKind> {
+        // Connected already, for early data (`cf->connected`).
+        if self.state.connected {
+            return Ok(true);
+        }
         let step = (|| {
             self.ingress(cx)?;
             self.egress(cx)?;
@@ -1285,7 +1387,7 @@ impl State {
                 checked,
                 max_udp_payload,
                 initial_max_data,
-                ..
+                early_data,
             } => {
                 let now = self.now;
                 self.handshake_at = Some(now);
@@ -1295,6 +1397,16 @@ impl State {
                     cx.trace(format_args!(
                         "handshake complete after {ms}ms, remote transport[max_udp_payload={max_udp_payload}, initial_max_data={initial_max_data}]"
                     ));
+                }
+                // What of the early data the peer took is reported, the
+                // handshake's time the connection's as it truly connected.
+                if let (Some(sent), Some(accepted)) = (self.early, early_data) {
+                    let did = if accepted { "" } else { " not" };
+                    cx.trace(format_args!(
+                        "server did{did} accept {sent} bytes of early data"
+                    ));
+                    let sent = i64::try_from(sent).unwrap_or(i64::MAX);
+                    cx.early_done(if accepted { sent } else { -sent });
                 }
                 Heard::Fine
             }

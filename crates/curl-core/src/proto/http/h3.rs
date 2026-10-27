@@ -481,6 +481,8 @@ impl Request {
                     }
                     quic.resume(stream);
                 }
+                // What went before the handshake is early data.
+                quic.sent(n);
                 let sent = quic.egress(step).map(|()| Called::Done);
                 if n > 0 {
                     adjust_ideal(step, quic, len, n);

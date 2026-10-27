@@ -13,8 +13,8 @@ use std::time::Duration;
 use curl_alloc::OutOfMemory;
 
 use super::{
-    ClientSetup, CloseError, ConnectFailed, Connection, Event, Events, Expiry, H3Error, Heard,
-    Http3, Layer, QuicError, StreamId, SubmitFailed,
+    ClientSetup, CloseError, ConnectFailed, Connection, EarlyStart, Event, Events, Expiry, H3Error,
+    Heard, Http3, Layer, QuicError, StreamId, SubmitFailed,
 };
 use crate::error::ErrorKind;
 use crate::time::Instant;
@@ -108,6 +108,16 @@ pub struct Script {
     pub checked: Vec<Result<(), ErrorKind>>,
     /// The request's body, on stream 0.
     pub body: FakeBody,
+    /// The transport parameters early data was set up with.
+    pub early_params: Vec<u8>,
+    /// They are refused, in these words.
+    pub early_params_refused: Option<&'static str>,
+    /// The TLS library would not send early data.
+    pub early_tls_refuses: bool,
+    /// What starting early data came to.
+    pub early: Option<EarlyStart>,
+    /// The peer rejects the early data sent.
+    pub early_rejected: bool,
 }
 
 /// A request body as the binding holds it: what was written, handed to
@@ -230,11 +240,13 @@ impl FakeConnection {
                         s.checked.push(checked);
                         s.handshake_done = checked.is_ok();
                         drop(s);
+                        let early = script.lock().unwrap().early;
+                        let rejected = script.lock().unwrap().early_rejected;
                         let event = Event::HandshakeDone {
                             checked,
                             max_udp_payload: 1452,
                             initial_max_data: 786432,
-                            early_data: None,
+                            early_data: (early == Some(EarlyStart::Started)).then_some(!rejected),
                         };
                         let mut h = Heard::Fine;
                         call.with_cx(&mut |cx| h = events(cx, event.clone()));
@@ -474,6 +486,25 @@ impl Connection for FakeConnection {
 
     fn handshake_done(&self) -> bool {
         self.script.lock().unwrap().handshake_done
+    }
+
+    fn set_early_params(&mut self, params: &[u8]) -> Result<(), &'static str> {
+        let mut s = self.script.lock().unwrap();
+        s.early_params = params.to_vec();
+        match s.early_params_refused {
+            Some(why) => Err(why),
+            None => Ok(()),
+        }
+    }
+
+    fn start_early(&mut self) -> Result<EarlyStart, Event<'static>> {
+        let mut s = self.script.lock().unwrap();
+        let start = match s.early_tls_refuses {
+            true => EarlyStart::Refused,
+            false => EarlyStart::Started,
+        };
+        s.early = Some(start);
+        Ok(start)
     }
 
     fn draining(&self) -> bool {

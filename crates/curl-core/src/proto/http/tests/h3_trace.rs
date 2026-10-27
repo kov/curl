@@ -1767,3 +1767,146 @@ fn http3_through_a_proxy_goes_over_tcp_alone() {
         assert_eq!(said.len(), usize::from(why.is_some()), "{proxy}: {said:#?}");
     }
 }
+
+/// A GET of `https://localhost:PORT/` by `e` in HTTP/3 alone, asking for
+/// early data.
+fn h3_early_get(m: &mut Multi, e: Easy) -> Ran {
+    let url = format!("https://localhost:{PORT}/");
+    get_with(m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.ip_version = IpVersion::Any;
+        o.tls.options.make_mut().unwrap().ssl_options = crate::options::SslOptions::EARLYDATA;
+    })
+}
+
+/// A session resumed that allows early data, made for HTTP/3 and kept
+/// with its connection's transport parameters: they are set, HTTP/3 is
+/// set up at once, and the connection counts as connected before its
+/// first packet goes, which goes with the request's; the request goes as
+/// early data, which the peer takes, and that is reported as the
+/// handshake ends, the handshake's time the connection's
+/// (`cf_ngtcp2_on_session_reuse`, `earlydata_skip`).
+#[test]
+fn a_request_goes_as_early_data_under_a_session_resumed() {
+    for rejected in [false, true] {
+        let script = get_script(b"123456789");
+        script.lock().unwrap().early_rejected = rejected;
+        let mut m = quic_server(&[b"server flight", b"response"]);
+        let tls = FakeTls::quic_resuming(16384, Some(crate::tls::Chosen::H3), b"params").unwrap();
+        let e = tracing(tls, &script);
+        let ran = h3_early_get(&mut m, e);
+        assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+        assert_eq!(ran.seen.body(), b"123456789");
+        assert_eq!(script.lock().unwrap().early_params, b"params");
+        let got = lines(
+            &ran,
+            &[
+                "SSL session allows",
+                "[HTTP/3] connect ->",
+                "[HTTP/3] egress, send collected",
+                "[HTTP/3] [0] cf_send(len=",
+                "[HTTP/3] handshake complete",
+                "[HTTP/3] server did",
+                "using HTTP/3",
+            ],
+        );
+        let did = if rejected { " not" } else { "" };
+        let want = expect(&format!(
+            "SSL session allows 16384 bytes of early data, reusing ALPN 'h3'
+            [HTTP/3] connect -> 0, done=1
+            using HTTP/3
+            [HTTP/3] egress, send collected 2 packets in 2400 bytes
+            [HTTP/3] [0] cf_send(len=74) -> 0, 74
+            [HTTP/3] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
+            [HTTP/3] server did{did} accept 74 bytes of early data"
+        ));
+        assert_eq!(got[..want.len()], want[..], "{got:#?}");
+        let sent = if rejected { -74 } else { 74 };
+        assert_eq!(ran.easy.report().earlydata_sent(), sent);
+    }
+}
+
+/// A session resumed that cannot carry early data says why, and the
+/// connection is made as any other: one that allows none, one made for
+/// another protocol, one kept without transport parameters, one whose
+/// parameters the library refuses, and one the TLS library will not send
+/// early data under (`cf_ngtcp2_on_session_reuse`).
+#[test]
+fn a_session_resumed_without_early_data_says_why() {
+    use crate::tls::Chosen;
+    type Case = (
+        usize,
+        Option<Chosen>,
+        &'static [u8],
+        Option<&'static str>,
+        bool,
+        &'static str,
+    );
+    let cases: [Case; 5] = [
+        (
+            0,
+            Some(Chosen::H3),
+            b"params",
+            None,
+            false,
+            "[HTTP/3] SSL session does not allow earlydata",
+        ),
+        (
+            16384,
+            Some(Chosen::H2),
+            b"params",
+            None,
+            false,
+            "[HTTP/3] SSL session from different ALPN, no early data",
+        ),
+        (
+            16384,
+            Some(Chosen::H3),
+            b"",
+            None,
+            false,
+            "[HTTP/3] no 0RTT transport parameters, no early data",
+        ),
+        (
+            16384,
+            Some(Chosen::H3),
+            b"params",
+            Some("ERR_MALFORMED_TRANSPORT_PARAM"),
+            false,
+            "[HTTP/3] no early data, failed to set 0RTT transport parameters: ERR_MALFORMED_TRANSPORT_PARAM",
+        ),
+        (
+            16384,
+            Some(Chosen::H3),
+            b"params",
+            None,
+            true,
+            "[HTTP/3] OpenSSL refused to use early data",
+        ),
+    ];
+    for (most, alpn, params, refused, tls_refuses, why) in cases {
+        let script = get_script(b"123456789");
+        {
+            let mut s = script.lock().unwrap();
+            s.early_params_refused = refused;
+            s.early_tls_refuses = tls_refuses;
+        }
+        let mut m = quic_server(&[b"server flight", b"response"]);
+        let e = tracing(FakeTls::quic_resuming(most, alpn, params).unwrap(), &script);
+        let ran = h3_early_get(&mut m, e);
+        assert_eq!(ran.result, Ok(()), "{why}: {:#?}", ran.seen.text());
+        assert_eq!(lines(&ran, &[why]).len(), 1, "{why}");
+        assert!(lines(&ran, &["[HTTP/3] server did"]).is_empty(), "{why}");
+        assert_eq!(ran.easy.report().earlydata_sent(), 0, "{why}");
+        // Connected as the handshake ended, not before.
+        let order = lines(
+            &ran,
+            &["[HTTP/3] connect ->", "[HTTP/3] handshake complete"],
+        );
+        assert!(
+            order[0].starts_with("[HTTP/3] handshake complete"),
+            "{why}: {order:#?}"
+        );
+    }
+}

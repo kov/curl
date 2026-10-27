@@ -2555,6 +2555,16 @@ handle's, kept as transfers start over and cleared by a reset). A handshake put 
 fails every use of the connection after with its own error, which the transfer fails with in
 place of the send's or receive's (`LayerQuery::Failure`).
 
+Over QUIC the QUIC library sends the early data, so OpenSSL defers nothing: a session resuming
+under the same conditions only says so (`QuicTls::early_data`, the ticket). The connection, as
+it is made, takes the ticket's transport parameters as the peer's, sets HTTP/3 up and tells
+OpenSSL to send early data (`Quic::early_data`, `Connection::set_early_params` and
+`start_early`; `cf_ngtcp2_on_session_reuse`), each refusal traced as C's and the connection then
+made as any other. Sending early data it counts as connected at once, its attempt winning as it
+starts, and the request's bytes taken before the handshake ends are counted; the handshake's
+end tells the transfer whether the peer took them (`Event::HandshakeDone::early_data`,
+`ngtcp2_conn_get_tls_early_data_rejected2`), through the same `early_done`.
+
 **The key log** (`tls/keylog.rs`, keylog.c): the file `SSLKEYLOGFILE` names, opened to append
 by the shim's first global init (also `curl_easy_init`'s, for a program that made none) and
 closed by its last cleanup, and opened by the tool as it starts: each owns one `KeyLog`, the

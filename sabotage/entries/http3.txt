@@ -438,3 +438,59 @@ witness: curl-core multi::state::https::tests::the_attempts_are_chosen_as_c_choo
         let h1_or_h2 = not != Some(Alpn::H1) && not != Some(Alpn::H2);
 --- new
         let h1_or_h2 = not != Some(Alpn::H1);
+
+=== early data sent over HTTP/3 is not counted
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_request_goes_as_early_data_under_a_session_resumed
+--- old
+                quic.sent(n);
+--- new
+                let _ = n;
+
+=== early data the peer rejected is reported as taken
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_request_goes_as_early_data_under_a_session_resumed
+--- old
+                    cx.early_done(if accepted { sent } else { -sent });
+--- new
+                    cx.early_done(sent);
+
+=== a QUIC connection sending early data waits for its handshake
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_request_goes_as_early_data_under_a_session_resumed
+--- old
+        if self.state.early.is_some() {
+            self.state.connected = true;
+--- new
+        if self.state.early.is_some() && false {
+            self.state.connected = true;
+
+=== early data goes under a session made for another protocol
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_session_resumed_without_early_data_says_why
+--- old
+        if ticket.alpn != Some(crate::tls::Chosen::H3) {
+--- new
+        if ticket.alpn == Some(crate::tls::Chosen::Http11) {
+
+=== early data goes though the QUIC library refused its parameters
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_session_resumed_without_early_data_says_why
+--- old
+        if let Err(why) = self.conn.set_early_params(&ticket.params) {
+--- new
+        if let Err(why) = self.conn.set_early_params(&ticket.params).and(Err("")).or(Ok::<(), &str>(())) {
+
+=== early data goes though the TLS library refused it
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::a_session_resumed_without_early_data_says_why
+--- old
+            Ok(crate::http3::EarlyStart::Refused) => {
+                cx.of(h3, format_args!("OpenSSL refused to use early data"));
+                Ok(())
+            }
+--- new
+            Ok(crate::http3::EarlyStart::Refused) => {
+                self.state.early = Some(0);
+                Ok(())
+            }

@@ -200,6 +200,15 @@ pub enum Heard {
     Failed,
 }
 
+/// What `Connection::start_early` came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EarlyStart {
+    /// The request goes as early data.
+    Started,
+    /// The TLS library would not send early data: none goes.
+    Refused,
+}
+
 /// How a client connection is set up (`quic_settings`, `cf_connect_start`).
 #[derive(Clone, Copy, Debug)]
 pub struct ClientSetup {
@@ -318,6 +327,18 @@ pub trait Connection: fmt::Debug + Send {
 
     /// The handshake is done (`ngtcp2_conn_get_handshake_completed`).
     fn handshake_done(&self) -> bool;
+
+    /// Take the transport parameters `params`, encoded, which the
+    /// session resumed was kept with, as the peer's until it says its own
+    /// (`ngtcp2_conn_decode_and_set_0rtt_transport_params`): the
+    /// library's words for why not.
+    fn set_early_params(&mut self, params: &[u8]) -> Result<(), &'static str>;
+
+    /// Send early data: HTTP/3 set up before the handshake, and the TLS
+    /// library told to send it (`init_h3_conn_cb`,
+    /// `SSL_set_quic_tls_early_data_enabled`). Whether the TLS library
+    /// would; or why HTTP/3 could not be set up, an `Event::H3Failed`.
+    fn start_early(&mut self) -> Result<EarlyStart, Event<'static>>;
 
     /// It is draining: the peer closed it (`ngtcp2_conn_in_draining_period`).
     fn draining(&self) -> bool;

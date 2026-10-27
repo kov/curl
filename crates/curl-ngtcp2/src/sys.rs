@@ -746,6 +746,11 @@ unsafe extern "C" {
     pub(crate) fn nghttp3_version(least_version: c_int) -> *const nghttp3_info;
 }
 
+unsafe extern "C" {
+    /// OpenSSL's, from 3.5: whether a QUIC session sends early data.
+    pub(crate) fn SSL_set_quic_tls_early_data_enabled(ssl: *mut c_void, enabled: c_int) -> c_int;
+}
+
 /// `SSL_set_app_data`, a macro over `SSL_set_ex_data`'s slot 0.
 pub(crate) unsafe fn ssl_set_app_data(ssl: *mut c_void, data: *mut c_void) {
     unsafe extern "C" {

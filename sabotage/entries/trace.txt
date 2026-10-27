@@ -311,9 +311,9 @@ witness: curl-core proto::http::tests::multi_trace::sends_and_receives_are_trace
 file: crates/curl-core/src/conn/mux.rs
 witness: curl-core proto::http::tests::multi_trace::sends_and_receives_are_traced_as_c
 --- old
-        self.stream.send(cx, bytes, Some(self.socket))
+        self.stream().send(cx, bytes, Some(socket))
 --- new
-        self.stream.send(cx, bytes, None)
+        self.stream().send(cx, bytes, None)
 
 === a debug build ignores CURL_DEBUG
 file: crates/curl-sys-abi/src/root.rs

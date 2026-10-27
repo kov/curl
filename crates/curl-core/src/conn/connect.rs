@@ -871,7 +871,7 @@ impl ConnectMachine {
                 self.created,
                 self.settings,
             ),
-            d.stream,
+            Transport::Tcp(d.stream),
             d.remote,
             at,
         );
@@ -1585,24 +1585,33 @@ impl ConnectMachine {
             self.created,
             self.settings,
         );
-        #[cfg_attr(
-            not(any(test, feature = "test-util")),
-            expect(unused_mut, reason = "tests push a layer")
-        )]
-        let mut stream = Stream::new(won.socket);
+        let Some(h3) = h3 else {
+            #[cfg_attr(
+                not(any(test, feature = "test-util")),
+                expect(unused_mut, reason = "tests push a layer")
+            )]
+            let mut stream = Stream::new(won.socket);
+            #[cfg(test)]
+            if let Some(layer) = setup.layer {
+                stream.layers_mut().push(layer()).expect("a test's memory");
+            }
+            #[cfg(any(test, feature = "test-util"))]
+            if let Some(how) = setup.linger {
+                let layer = super::layer::Lingering::boxed(how).expect("a test's memory");
+                stream.layers_mut().push(layer).expect("a test's memory");
+            }
+            let conn = Self::conn(made, Transport::Tcp(stream), won.remote, at);
+            return Ok(Drove::Established(conn));
+        };
+        // QUIC dialed straight to its peer: its datagrams go to the socket
+        // with nothing between, a test's layers over a stream alone.
         #[cfg(test)]
-        if let Some(layer) = setup.layer {
-            stream.layers_mut().push(layer()).expect("a test's memory");
-        }
+        assert!(setup.layer.is_none(), "a test's layer goes over a stream");
         #[cfg(any(test, feature = "test-util"))]
-        if let Some(how) = setup.linger {
-            let layer = super::layer::Lingering::boxed(how).expect("a test's memory");
-            stream.layers_mut().push(layer).expect("a test's memory");
-        }
-        let mut conn = Self::conn(made, stream, won.remote, at);
-        if let Some(h3) = h3 {
-            conn.put_h3(h3);
-        }
+        assert!(setup.linger.is_none(), "a test's layer goes over a stream");
+        let datagrams = Transport::Datagram(super::Datagrams::new(won.socket));
+        let mut conn = Self::conn(made, datagrams, won.remote, at);
+        conn.put_h3(h3);
         Ok(Drove::Established(conn))
     }
 
@@ -1640,7 +1649,7 @@ impl ConnectMachine {
     /// settings) becomes over `stream`.
     fn conn(
         made: (ConnNumber, Tcp, Dial, Instant, ConnSettings),
-        stream: Stream,
+        transport: Transport,
         remote: Remote,
         at: Instant,
     ) -> Conn {
@@ -1649,7 +1658,7 @@ impl ConnectMachine {
             number,
             route: Route::Tcp(route),
             dial,
-            transport: Transport::Tcp(stream),
+            transport,
             remote: Some(remote),
             created,
             connected_at: at,

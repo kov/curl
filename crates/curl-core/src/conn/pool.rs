@@ -242,6 +242,10 @@ impl ConnSlot {
                 transport: Transport::Tcp(stream),
                 ..
             }) => (None, Some(stream.socket())),
+            ConnSlot::Open(Conn {
+                transport: Transport::Datagram(datagrams),
+                ..
+            }) => (None, Some(datagrams.socket())),
             ConnSlot::Open(_) | ConnSlot::Failed(_) => (None, None),
         };
         setup
@@ -272,6 +276,12 @@ impl ConnSlot {
                 };
                 stream.adjust_pollset(wanted)
             }
+            // Nothing lies between the socket and its QUIC connection.
+            ConnSlot::Open(Conn {
+                transport: Transport::Datagram(_),
+                session: Some(super::mux::Session::H3(h3conn)),
+                ..
+            }) if !wanted.is_empty() => h3conn.adjust_pollset(wanted, h3),
             ConnSlot::Open(_) | ConnSlot::Connecting(_) | ConnSlot::Failed(_) => wanted,
         }
     }
@@ -292,6 +302,14 @@ impl ConnSlot {
                 .session()
                 .and_then(|s| crate::conn::part::Part::query(s, q))
                 .or_else(|| stream.query(q)),
+            ConnSlot::Open(
+                conn @ Conn {
+                    transport: Transport::Datagram(_),
+                    ..
+                },
+            ) => conn
+                .session()
+                .and_then(|s| crate::conn::part::Part::query(s, q)),
             ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
         }
     }
@@ -1437,6 +1455,7 @@ impl Pool {
     pub(crate) fn socket(&self, id: ConnId) -> Option<SocketKey> {
         match &self.conns.get(id)?.held()?.transport {
             Transport::Tcp(stream) => Some(stream.socket().key()),
+            Transport::Datagram(datagrams) => Some(datagrams.socket().key()),
             Transport::Local => None,
         }
     }

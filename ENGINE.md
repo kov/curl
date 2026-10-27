@@ -1274,7 +1274,8 @@ pub(crate) enum ConnSlot { Connecting(ConnectMachine), Open(Conn), Failed(ConnNu
 
 pub(crate) struct Conn {
     number: ConnNumber, route: Route,
-    transport: Transport,              // Tcp(Stream), a Unix socket's too | Local; later Udp
+    transport: Transport,              // Tcp(Stream), a Unix socket's too | Datagram(Datagrams)
+                                       // | Local
     remote: Option<Remote>,            // Inet(SocketAddr) | Unix(UnixPeer); none without a
                                        // network; the local end is the socket's
     created: Instant, connected_at: Instant,
@@ -1301,6 +1302,12 @@ that the end of input marks the connection `close`. A connection that multiplexe
 leased by several transfers at once: `Use::Leased(n)` counts them, one more for each that joins
 it and each pushed transfer.
 `Stream` does not rule out a second stream on one `Conn`, which FTP's data connection needs.
+A QUIC connection dialed straight to its peer is `Transport::Datagram`: its socket alone
+(`Datagrams`), no layers and no `rx`, the QUIC connection reading and writing its datagrams
+itself; the session's `mux::Carrier` is then over it, and asks of it only its socket
+(`Carrier::layers` is bare: `Below::bare`), whether it is alive, and its shutdown's 1 KB drain.
+QUIC through a tunnel (CONNECT-UDP, over TCP or over an HTTP/3 proxy's stream) keeps the
+tunnel's `Stream`, its datagrams going through the tunnel's layers.
 
 Protocols without a network (`file:`, C's PROTOPT_NONETWORK) lease a `Conn` with
 `Transport::Local`: no socket, no layers, never pooled for reuse (released as Close), with an

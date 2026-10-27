@@ -887,7 +887,7 @@ fn a_search_closes_what_it_must_not_reuse() {
     let mut pool = Pool::new().unwrap();
     let key = |lease: &ConnLease| match &lease.conn().transport {
         Transport::Tcp(s) => s.socket().key(),
-        Transport::Local => unreachable!(),
+        Transport::Datagram(_) | Transport::Local => unreachable!(),
     };
     let kept = |pool: &mut Pool, net: &mut FakeNet| {
         let now = clock.now();
@@ -1158,7 +1158,7 @@ fn a_search_prunes_once_a_second() {
     up(&mut lease, &mut net, now);
     let key = match &lease.conn().transport {
         Transport::Tcp(s) => s.socket().key(),
-        Transport::Local => unreachable!(),
+        Transport::Datagram(_) | Transport::Local => unreachable!(),
     };
     pool.release(
         &Home::Multi,

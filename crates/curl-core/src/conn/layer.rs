@@ -287,6 +287,19 @@ impl<'a> Below<'a> {
     }
 }
 
+impl<'a> Below<'a> {
+    /// No layers, straight over `socket`: a QUIC connection's datagrams
+    /// dialed to its peer; the socket's sends and receives traced as
+    /// `traced`, if given.
+    pub(crate) fn bare(socket: &'a dyn Socket, traced: Option<Component>) -> Below<'a> {
+        Below {
+            layers: &mut [],
+            socket,
+            traced,
+        }
+    }
+}
+
 impl Below<'_> {
     /// The same layers and socket, for one call that leaves them to the
     /// caller after.

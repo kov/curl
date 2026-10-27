@@ -62,7 +62,7 @@ witness: curl-core proto::http::tests::an_idle_connection_a_layer_finds_dead_is_
 file: crates/curl-core/src/conn/mux.rs
 witness: curl-core proto::http::tests::bytes_after_a_tunnel_s_answer_are_read_first
 --- old
-        if let Some(n) = std::num::NonZeroUsize::new(self.stream.received().len()) {
+        if let Some(n) = std::num::NonZeroUsize::new(stream.received().len()) {
 --- new
         if let Some(n) = None::<std::num::NonZeroUsize> {
 

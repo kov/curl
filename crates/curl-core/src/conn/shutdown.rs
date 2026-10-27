@@ -130,12 +130,16 @@ impl Shutting {
         }
         // A session says goodbye first (`cf_h2_shutdown`).
         self.conn.goodbye(&mut cx);
-        let Transport::Tcp(stream) = &mut self.conn.transport else {
-            return Tried::Done;
-        };
-        match stream.shutdown(&mut cx, &mut self.shut) {
-            Ok(Handshake::Waiting) => Tried::Waiting,
-            Ok(Handshake::Done) | Err(_) => Tried::Done,
+        match &mut self.conn.transport {
+            Transport::Tcp(stream) => match stream.shutdown(&mut cx, &mut self.shut) {
+                Ok(Handshake::Waiting) => Tried::Waiting,
+                Ok(Handshake::Done) | Err(_) => Tried::Done,
+            },
+            Transport::Datagram(datagrams) => {
+                datagrams.shutdown();
+                Tried::Done
+            }
+            Transport::Local => Tried::Done,
         }
     }
 
@@ -197,19 +201,20 @@ fn terminate(
             format_args!("[SHUTDOWN] {force}closing connection #{n}"),
         );
     }
-    match conn.transport {
-        Transport::Local => {}
-        Transport::Tcp(stream) => {
-            let socket = stream.into_socket();
-            if let Some(t) = trace {
-                let fd = socket.key().get();
-                t.of(
-                    Component::Multi,
-                    format_args!("Curl_multi_will_close fd={fd}"),
-                );
-            }
-            net.close(socket);
+    let socket = match conn.transport {
+        Transport::Local => None,
+        Transport::Tcp(stream) => Some(stream.into_socket()),
+        Transport::Datagram(datagrams) => Some(datagrams.into_socket()),
+    };
+    if let Some(socket) = socket {
+        if let Some(t) = trace {
+            let fd = socket.key().get();
+            t.of(
+                Component::Multi,
+                format_args!("Curl_multi_will_close fd={fd}"),
+            );
         }
+        net.close(socket);
     }
     if in_multi && let Some(t) = trace {
         t.of(

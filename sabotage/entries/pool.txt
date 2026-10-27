@@ -29,9 +29,13 @@ witness: curl-core conn::pool::tests::a_dropped_lease_is_caught
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-            net.close(socket);
+        net.close(socket);
+    }
+    if in_multi && let Some(t) = trace {
 --- new
-            std::mem::forget(socket);
+        std::mem::forget(socket);
+    }
+    if in_multi && let Some(t) = trace {
 
 === a setup given back keeps its attempt's socket open
 file: crates/curl-core/src/conn/pool.rs

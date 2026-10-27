@@ -57,7 +57,7 @@ pub(crate) use self::buf::RecvBuf;
 #[cfg(any(test, feature = "test-util"))]
 pub use self::layer::Linger;
 pub use self::socks::ProxyError;
-pub(crate) use self::stream::Stream;
+pub(crate) use self::stream::{Datagrams, Stream};
 
 /// What transfers keep for those after them: the connections, the names
 /// resolved and the TLS sessions to resume. A multi holds its own; a
@@ -884,6 +884,8 @@ impl Peer {
 pub(crate) enum Transport {
     Local,
     Tcp(Stream),
+    /// A QUIC connection's socket, dialed straight to its peer.
+    Datagram(Datagrams),
 }
 
 /// An established connection.
@@ -1015,6 +1017,7 @@ impl Conn {
     pub(crate) fn stream_socket(&self) -> Option<&dyn io::Socket> {
         match &self.transport {
             Transport::Tcp(stream) => Some(stream.socket()),
+            Transport::Datagram(datagrams) => Some(datagrams.socket()),
             Transport::Local => None,
         }
     }
@@ -1048,7 +1051,12 @@ impl Conn {
         } = self;
         let carrier = match transport {
             Transport::Tcp(stream) => Some(mux::Carrier {
-                stream,
+                over: mux::Over::Stream(stream),
+                socket,
+                close,
+            }),
+            Transport::Datagram(datagrams) => Some(mux::Carrier {
+                over: mux::Over::Datagrams(datagrams),
                 socket,
                 close,
             }),
@@ -1131,7 +1139,7 @@ impl Conn {
             Route::Tcp(route) => {
                 let tunnel = match &self.transport {
                     Transport::Tcp(stream) => stream.query(layer::LayerQuery::Tunnel),
-                    Transport::Local => None,
+                    Transport::Datagram(_) | Transport::Local => None,
                 };
                 let tunnel = match tunnel {
                     Some(layer::LayerAnswer::Tunnel(filter)) => filter,
@@ -1169,6 +1177,7 @@ impl Conn {
     fn stream(&mut self) -> &mut Stream {
         match &mut self.transport {
             Transport::Tcp(stream) => stream,
+            Transport::Datagram(_) => unreachable!("a QUIC connection's bytes are its own"),
             Transport::Local => unreachable!("a local connection moves no bytes"),
         }
     }
@@ -1235,9 +1244,10 @@ impl Conn {
         &mut Option<Box<crate::proto::http::negotiate::Negotiate>>,
         Option<&Stream>,
     ) {
+        // QUIC's TLS is its own, with no binding to give.
         let stream = match &self.transport {
             Transport::Tcp(stream) => Some(stream),
-            Transport::Local => None,
+            Transport::Datagram(_) | Transport::Local => None,
         };
         (&mut self.negotiate, stream)
     }
@@ -1279,6 +1289,7 @@ impl Conn {
     pub(crate) fn local(&self) -> Option<SocketAddr> {
         match &self.transport {
             Transport::Tcp(stream) => stream.local_addr(),
+            Transport::Datagram(datagrams) => datagrams.local_addr(),
             Transport::Local => None,
         }
     }
@@ -1315,7 +1326,7 @@ impl Conn {
     pub(crate) fn data_pending(&mut self) -> bool {
         match &mut self.transport {
             Transport::Tcp(stream) => stream.data_pending(),
-            Transport::Local => false,
+            Transport::Datagram(_) | Transport::Local => false,
         }
     }
 }

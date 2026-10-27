@@ -41,9 +41,6 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   crypto, and nghttp3's HTTP/3 session over it: their callbacks and the declarations of the
   functions they call.
 - `crates/curl-idn2/src/lib.rs`: libidn2, converting host names to and from punycode.
-- `crates/curl-ngtcp2/src/lib.rs` and `src/sys.rs`: ngtcp2's QUIC connection, its OpenSSL
-  crypto and nghttp3's HTTP/3 over it, their callbacks and the declarations of the functions
-  they call.
 - `crates/curl-openssl/src/sys.rs`: OpenSSL's initialisation, and the version of the library
   loaded.
 - `crates/curl-openssl/src/sign.rs`: OpenSSL's Ed25519, signing HTTP message signatures.

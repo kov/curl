@@ -109,7 +109,7 @@ witness: curl-core proto::http::tests::h2::alpn_offers_h2_where_a_library_speaks
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http::tests::h2::an_asked_chunked_body_goes_plain
 --- old
-        if head.version == SentIn::Http2 && h.is(b"Transfer-Encoding") {
+        if head.version.framed() && h.is(b"Transfer-Encoding") {
 --- new
         if false && h.is(b"Transfer-Encoding") {
 
@@ -149,7 +149,7 @@ witness: curl-core proto::http::tests::h2::a_101_switches_an_upgrade_to_http2
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::h2::a_101_switches_an_upgrade_to_http2
 --- old
-                    if self.h2.is_some() {
+                    if self.wire.multiplexed() {
                         return self.upgraded_input(cx, lease, input);
                     }
 --- new
@@ -519,12 +519,9 @@ witness: curl-core proto::http::tests::h2::a_transfer_done_on_a_shared_connectio
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::h2::a_transfer_removed_mid_body_resets_its_stream_at_once
 --- old
-        // A stream still open goes (`http2_data_done`).
-        if self.h2.is_some() {
-            self.h2_done(cx, lease);
-        }
+            Wire::H2(_) => self.h2_done(cx, lease),
 --- new
-        // A stream still open goes (`http2_data_done`).
+            Wire::H2(_) => {}
 
 === trailers are kept past C's count
 file: crates/curl-core/src/proto/http/h2.rs

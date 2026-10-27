@@ -430,9 +430,9 @@ witness: curl-core proto::http::tests::a_body_waits_for_a_100
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::the_application_s_transfer_encoding_decides
 --- old
-        let chunked = !h2 && asked.unwrap_or(size_unknown);
+        let chunked = !framed && asked.unwrap_or(size_unknown);
 --- new
-        let chunked = !h2 && size_unknown;
+        let chunked = !framed && size_unknown;
 
 === the custom method is not sent
 file: crates/curl-core/src/proto/http.rs

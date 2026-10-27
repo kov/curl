@@ -290,6 +290,9 @@ pub trait Connection: fmt::Debug + Send {
     /// if it is not (`Curl_vquic_tls_before_recv`).
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind>;
 
+    /// Its TLS session's library objects.
+    fn tls_native(&self) -> crate::tls::TlsNative;
+
     /// Packets went at `now` (`ngtcp2_conn_update_pkt_tx_time`).
     fn sent_at(&mut self, now: Instant);
 

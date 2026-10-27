@@ -597,6 +597,11 @@ impl Quic {
         Ok(())
     }
 
+    /// Its TLS session's library objects.
+    pub(crate) fn tls_native(&self) -> crate::tls::TlsNative {
+        self.conn.tls_native()
+    }
+
     /// Whether it may still be used, as far as it knows itself
     /// (`Curl_cf_ngtcp2_cmn_conn_is_alive`): not if it shuts down, nor once
     /// idle past the time the peer said it closes an idle connection by,

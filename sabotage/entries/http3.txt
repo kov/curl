@@ -279,3 +279,11 @@ witness: curl-core proto::http::tests::h3_trace::a_body_in_flight_waits_for_its_
                 .is_some_and(|s| s.flow_blocked || self.quic.body_in_flight(s.stream) >= s.ideal);
 --- new
                 .is_some_and(|s| s.flow_blocked || self.quic.body_in_flight(s.stream) == usize::MAX);
+
+=== an HTTP/3 connection keeps its TLS session's objects to itself
+file: crates/curl-core/src/proto/http3.rs
+witness: curl-core proto::http::tests::h3_trace::a_callback_reaches_the_quic_connection_s_tls_session
+--- old
+            LayerQuery::TlsNative => Some(LayerAnswer::TlsNative(self.quic.tls_native())),
+--- new
+            LayerQuery::TlsNative => None,

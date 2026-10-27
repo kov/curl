@@ -771,6 +771,10 @@ impl curl_core::http3::Connection for Connection {
         self.tls.before_recv(cx)
     }
 
+    fn tls_native(&self) -> curl_core::tls::TlsNative {
+        self.tls.native()
+    }
+
     fn sent_at(&mut self, now: Instant) {
         // SAFETY: the connection.
         unsafe { sys::ngtcp2_conn_update_pkt_tx_time(self.conn(), ts(now)) };

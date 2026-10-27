@@ -961,6 +961,35 @@ fn an_empty_body_is_none() {
     assert!(!script.lock().unwrap().body.ended);
 }
 
+/// Whether the response's writer reaches its connection's TLS session.
+#[derive(Clone, Default)]
+struct Natives(Arc<Mutex<Vec<bool>>>);
+
+impl crate::handler::WriteHandler for Natives {
+    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> crate::handler::Write {
+        let me = cx.me();
+        let session = cx.tls_native(me).and_then(|n| n.session());
+        self.0.lock().unwrap().push(session.is_some());
+        crate::handler::Write::Accepted
+    }
+}
+
+/// The QUIC connection's TLS session is the transfer's, as C's filter
+/// answers for its own (`cf_ngtcp2_query`, `CF_QUERY_SSL_INFO`): what
+/// `CURLINFO_TLS_SSL_PTR` gives an application's callbacks.
+#[test]
+fn a_callback_reaches_the_quic_connection_s_tls_session() {
+    let script = post_script(b"5\n", 1);
+    let natives = Natives::default();
+    let ran = h3_with(&script, 1, |o| {
+        o.callbacks.write = Some(Handler::write(natives.clone()).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let natives = natives.0.lock().unwrap();
+    assert!(!natives.is_empty());
+    assert!(natives.iter().all(|&reached| reached), "{natives:?}");
+}
+
 /// A body with as much in flight as is meant to be waits, the transfer
 /// waiting on what the peer says rather than on the socket's room, until
 /// the peer acknowledges some (`cf_ngtcp2_send`, `cf_ngtcp2_adjust_pollset`).

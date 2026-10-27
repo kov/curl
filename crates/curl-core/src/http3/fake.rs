@@ -418,6 +418,10 @@ impl Connection for FakeConnection {
         self.tls.before_recv(cx)
     }
 
+    fn tls_native(&self) -> crate::tls::TlsNative {
+        self.tls.native()
+    }
+
     fn sent_at(&mut self, now: Instant) {
         let mut s = self.script.lock().unwrap();
         s.at(now);

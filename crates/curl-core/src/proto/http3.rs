@@ -120,13 +120,15 @@ impl<'a> Part<Carrier<'a>> for H3Conn {
         })
     }
 
-    /// It agreed on HTTP/3, saying nothing of it (`cf_ngtcp2_query`).
+    /// It agreed on HTTP/3, saying nothing of it, and its TLS session's
+    /// objects are the connection's (`cf_ngtcp2_query`).
     fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
         match q {
             LayerQuery::Alpn => Some(LayerAnswer::Alpn(
                 Some(Chosen::H3),
                 crate::components::Component::Http3,
             )),
+            LayerQuery::TlsNative => Some(LayerAnswer::TlsNative(self.quic.tls_native())),
             _ => None,
         }
     }

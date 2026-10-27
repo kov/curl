@@ -168,7 +168,12 @@ fn described<'a>(frame: &[u8], goaway_debug: &'a [u8]) -> Frame<'a> {
         .position(|&b| b == b'\n')
         .unwrap_or(frame.len());
     let line = std::str::from_utf8(&frame[..nl]).unwrap_or_default();
-    let words: Vec<&str> = line.split(' ').collect();
+    // A frame's line has a few words: kept in place, so that describing
+    // it allocates nothing, as the real library's description does not.
+    let mut words = [""; 8];
+    for (slot, word) in words.iter_mut().zip(line.split(' ')) {
+        *slot = word;
+    }
     let num = |i: usize| -> i64 { words.get(i).and_then(|w| w.parse().ok()).unwrap_or(0) };
     let rest = frame.len().saturating_sub(nl + 1);
     let end = |i: usize| if num(i) == 1 { 0x01 } else { 0 };

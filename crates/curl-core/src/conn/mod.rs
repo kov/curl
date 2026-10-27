@@ -27,8 +27,8 @@ pub mod threaded;
 pub(crate) mod tls;
 
 pub(crate) use connect::{
-    Asked, Came, ConnCx, ConnectError, Found, MAX_ATTEMPTS, Made, Opened, Progress, QuicMaking,
-    Setup, SocketSetup, Unresolved, queries,
+    Asked, Came, ConnCx, ConnectError, ConnectMachine, Drove, Found, MAX_ATTEMPTS, Made, Opened,
+    Progress, QuicMaking, Setup, SocketSetup, Unresolved, queries,
 };
 pub(crate) use connect_to::{BadVia, via};
 pub(crate) use dns::{
@@ -76,7 +76,6 @@ impl Caches {
         })
     }
 }
-use self::connect::ConnectMachine;
 use self::io::{Recv, Sent};
 use self::layer::LayerCx;
 use crate::id::Key;
@@ -888,6 +887,14 @@ impl Conn {
     /// Its number among those the pool made (`connection_id`).
     pub(crate) fn number(&self) -> ConnNumber {
         self.number
+    }
+
+    /// The route it was set up over; none without a network.
+    pub(crate) fn tcp_route(&self) -> Option<&Tcp> {
+        match &self.route {
+            Route::Tcp(tcp) => Some(tcp),
+            Route::Local => None,
+        }
     }
 
     /// Whether it multiplexes: a session speaks for it

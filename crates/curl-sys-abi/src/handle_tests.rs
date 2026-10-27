@@ -1066,13 +1066,17 @@ fn http_options_reach_the_request() {
             ffi::CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE,
             HttpVersion::Http2Prior,
         ),
+        (ffi::CURL_HTTP_VERSION_3, HttpVersion::Http3),
         (ffi::CURL_HTTP_VERSION_3ONLY, HttpVersion::Http3Only),
     ] {
         assert_eq!(long(c, ffi::CURLOPT_HTTP_VERSION, v), CURLE_OK, "{v}");
         assert_eq!(version(c), want);
     }
     for (v, code) in [
-        (ffi::CURL_HTTP_VERSION_3, ffi::CURLE_UNSUPPORTED_PROTOCOL),
+        (
+            ffi::CURL_HTTP_VERSION_3ONLY + 1,
+            ffi::CURLE_UNSUPPORTED_PROTOCOL,
+        ),
         (-1, CURLE_BAD_FUNCTION_ARGUMENT),
     ] {
         assert_eq!(long(c, ffi::CURLOPT_HTTP_VERSION, v), code, "{v}");

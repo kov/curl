@@ -272,9 +272,9 @@ witness: curl-core multi::tests::sockets_are_set_as_the_options_say
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::sockets_are_set_as_the_options_say
 --- old
-    let socket = crate::conn::SocketSetup::of(&cx.easy().options().sockets);
+        socket: crate::conn::SocketSetup::of(&options.sockets),
 --- new
-    let socket = crate::conn::SocketSetup::of(<crate::options::Sockets as crate::options::ColdGroup>::UNSET);
+        socket: crate::conn::SocketSetup::of(<crate::options::Sockets as crate::options::ColdGroup>::UNSET),
 
 === an interrupted receive is an error
 file: crates/curl-os/src/net.rs

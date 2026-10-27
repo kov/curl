@@ -49,6 +49,9 @@ pub enum Version {
     /// HTTP/3 only, over QUIC, with no fallback
     /// (`CURL_HTTP_VERSION_3ONLY`).
     Http3Only,
+    /// HTTP/3 over QUIC, raced against HTTP/2 or HTTP/1.1 over TCP, which
+    /// takes over if it does not connect (`CURL_HTTP_VERSION_3`).
+    Http3,
 }
 
 impl Version {
@@ -56,7 +59,11 @@ impl Version {
     pub(crate) fn h2(self) -> bool {
         matches!(
             self,
-            Version::Any | Version::Http2 | Version::Http2Tls | Version::Http2Prior
+            Version::Any
+                | Version::Http2
+                | Version::Http2Tls
+                | Version::Http2Prior
+                | Version::Http3
         )
     }
 
@@ -67,7 +74,7 @@ impl Version {
 
     /// HTTP/3 is one of them (`CURL_HTTP_V3x`).
     pub(crate) fn h3(self) -> bool {
-        self == Version::Http3Only
+        matches!(self, Version::Http3Only | Version::Http3)
     }
 }
 

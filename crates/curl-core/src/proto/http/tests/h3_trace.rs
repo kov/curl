@@ -1111,3 +1111,279 @@ fn a_body_in_flight_waits_for_its_acknowledgement() {
     let s = script.lock().unwrap();
     assert_eq!((s.body.bytes.len(), s.body.ended), (100_000, true));
 }
+
+/// A peer at `PORT` on IPv4 alone, whose datagrams meet `quic`, its first
+/// conversation `quic_talk`, and whose streams meet `tcp`, its next
+/// `tcp_talk`: the race's two attempts, QUIC's opened first.
+fn racing_peer(quic: Peer, quic_talk: &Conversation, tcp: Peer, tcp_talk: &Conversation) -> Multi {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, tcp)
+        .with_datagram_peer(at, quic)
+        .with_conversation(at, quic_talk.clone())
+        .with_conversation(at, tcp_talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    Multi::new(env).unwrap()
+}
+
+/// What the TCP attempt's peer says over TLS: an HTTP/1.1 response of
+/// `hello`.
+fn tls_hello() -> Conversation {
+    use crate::tls::fake::{self, WELCOME};
+    let response = fake::records(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello").unwrap();
+    Conversation::replies(&[WELCOME, &response], false).per_send()
+}
+
+/// A GET of `https://127.0.0.1:PORT/` by `e` in HTTP/3, falling back to
+/// HTTP/1.1 (`--http3`), with no HTTP/2 library.
+fn h3_race(m: &mut Multi, e: Easy, talk: &Conversation) -> Ran {
+    let url = format!("https://127.0.0.1:{PORT}/");
+    get_with(m, e, "/", talk.clone(), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3;
+    })
+}
+
+/// A QUIC script that sends its first flight and hears nothing it can
+/// use.
+fn first_flight_only() -> Arc<Mutex<Script>> {
+    let script = Script::new();
+    script
+        .lock()
+        .unwrap()
+        .out
+        .extend([vec![1; 1200], vec![2; 1200], vec![]]);
+    script
+}
+
+/// The HTTPS connect filter's lines, the first attempt's reply asked for
+/// and the destroys of the attempts that lost, in order.
+fn race_lines(ran: &Ran) -> Vec<String> {
+    lines(
+        ran,
+        &[
+            "[HTTPS-CONNECT]",
+            "[HAPPY-EYEBALLS] query",
+            "[HAPPY-EYEBALLS] destroy",
+            "[SETUP] destroy",
+            "[HTTP/3] destroy",
+            "[UDP] destroy",
+            "[TCP] destroy",
+            "[TIMER] [ALPN_EYEBALLS]",
+            "using HTTP",
+        ],
+    )
+}
+
+/// A QUIC peer that never answers: the first attempt has seen nothing by
+/// the soft timeout, half the eyeballs timeout, and the second, over TCP,
+/// starts then and wins; the QUIC attempt goes with the HTTPS connect
+/// filter, its setup's filters with it (`time_to_start_baller2`,
+/// `cf_hc_ctx_destroy`). C's `--http3` against a server whose UDP port
+/// takes datagrams and answers none.
+#[test]
+fn a_silent_quic_peer_gives_way_to_tcp_at_the_soft_timeout() {
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let tcp_talk = tls_hello();
+    let mut m = racing_peer(Peer::Silent, &quic_talk, Peer::Accepts, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let ran = h3_race(&mut m, e, &tcp_talk);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"hello");
+    let want = expect(
+        "
+        [HTTPS-CONNECT] added
+        [HTTPS-CONNECT] connect, init
+        [HTTPS-CONNECT] HTTPS-RR not available
+        [HTTPS-CONNECT] 1st attempt uses h3 from wanted versions
+        [HTTPS-CONNECT] HTTPS-RR not available
+        [HTTPS-CONNECT] 2nd attempt uses h1 from wanted versions
+        [TIMER] [ALPN_EYEBALLS] set for 100000us
+        [HTTPS-CONNECT] connect -> 0, done=0
+        [HTTPS-CONNECT] adjust_pollset -> 0, 1 socks
+        [HAPPY-EYEBALLS] query connect reply: -1ms
+        [HTTPS-CONNECT] h3 has not seen any data after 100ms, starting h1
+        [HTTPS-CONNECT] connect -> 0, done=0
+        [HTTPS-CONNECT] adjust_pollset -> 0, 2 socks
+        ",
+    );
+    let got = race_lines(&ran);
+    assert_eq!(got[..want.len()], want[..], "{got:#?}");
+    let end = expect(
+        "
+        [HTTPS-CONNECT] connect -> 0, done=1
+        [HTTPS-CONNECT] removing connected setup filter
+        [HTTPS-CONNECT] destroy
+        [SETUP] destroy
+        [HAPPY-EYEBALLS] destroy
+        [HTTP/3] destroy
+        [UDP] destroy
+        [SETUP] destroy
+        using HTTP/1.x
+        ",
+    );
+    let tail = got.len() - end.len();
+    assert_eq!(got[tail..], end[..], "{got:#?}");
+    // The TCP attempt started at the soft timeout.
+    let connect = ran.easy.report().timings().connect();
+    assert_eq!(connect.as_millis(), 100, "{got:#?}");
+}
+
+/// Whether `want` are among `got`, in order.
+fn in_order(got: &[String], want: &[String]) -> bool {
+    let mut left = got.iter();
+    want.iter().all(|w| left.any(|g| g == w))
+}
+
+/// A QUIC peer that answers with a datagram the library makes nothing
+/// of: the first attempt has seen data by the soft timeout, which arms the
+/// hard one again for what is left of it, and the second starts at the
+/// hard timeout (`time_to_start_baller2`). C's `--http3` against a server
+/// whose UDP port answers each datagram with a zero byte.
+#[test]
+fn a_stalled_quic_peer_gives_way_to_tcp_at_the_hard_timeout() {
+    let quic_talk = Conversation::replies(&[b"\0"], false).per_send();
+    let tcp_talk = tls_hello();
+    let mut m = racing_peer(Peer::Accepts, &quic_talk, Peer::Accepts, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let ran = h3_race(&mut m, e, &tcp_talk);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"hello");
+    let got = race_lines(&ran);
+    let want = expect(
+        "
+        [HTTPS-CONNECT] 2nd attempt uses h1 from wanted versions
+        [TIMER] [ALPN_EYEBALLS] set for 100000us
+        [HAPPY-EYEBALLS] query connect reply: 0ms
+        [TIMER] [ALPN_EYEBALLS] set for 100000us
+        [HTTPS-CONNECT] h3 inconclusive after 200, starting h1
+        [HTTPS-CONNECT] destroy
+        [SETUP] destroy
+        [HAPPY-EYEBALLS] destroy
+        [HTTP/3] destroy
+        [UDP] destroy
+        using HTTP/1.x
+        ",
+    );
+    assert!(in_order(&got, &want), "{got:#?}");
+    // The reply is asked for once, as it is known from then on.
+    let asked = got
+        .iter()
+        .filter(|l| l.contains("query connect reply"))
+        .count();
+    assert_eq!(asked, 1, "{got:#?}");
+    assert_eq!(ran.easy.report().timings().connect().as_millis(), 200);
+}
+
+/// A QUIC peer that refuses: the first attempt fails, and the second
+/// starts at once; the first's setup's filters go with the HTTPS connect
+/// filter, its attempt gone as it failed. C's `--http3` against a server
+/// with no UDP port open.
+#[test]
+fn a_refused_quic_attempt_starts_tcp_at_once() {
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let tcp_talk = tls_hello();
+    let mut m = racing_peer(Peer::Refuses, &quic_talk, Peer::Accepts, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let ran = h3_race(&mut m, e, &tcp_talk);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"hello");
+    let got = race_lines(&ran);
+    let want = expect(
+        "
+        [HTTPS-CONNECT] 2nd attempt uses h1 from wanted versions
+        [HTTP/3] destroy
+        [UDP] destroy
+        [HTTPS-CONNECT] h3 baller failed, starting h1
+        [HTTPS-CONNECT] removing connected setup filter
+        [HTTPS-CONNECT] destroy
+        [SETUP] destroy
+        [HAPPY-EYEBALLS] destroy
+        [SETUP] destroy
+        using HTTP/1.x
+        ",
+    );
+    assert!(in_order(&got, &want), "{got:#?}");
+    assert!(
+        !got.iter().any(|l| l.contains("query connect reply")),
+        "{got:#?}"
+    );
+    // What the first attempt said of its failure is let go.
+    assert!(ran.easy.report().unsaid());
+}
+
+/// A QUIC peer that answers late, after the soft timeout started the
+/// second attempt over TCP, whose peer never answers: the first wins, and
+/// the second goes with the HTTPS connect filter (`baller_connected`,
+/// `cf_hc_ctx_destroy`).
+#[test]
+fn a_late_quic_peer_wins_over_a_tcp_attempt_running() {
+    let quic_talk = Conversation::replies(&[b"server flight", b"response"], false).per_send();
+    let tcp_talk = Conversation::replies(&[], false).per_send();
+    let late = Peer::AcceptsAfter(std::time::Duration::from_millis(150));
+    let mut m = racing_peer(late, &quic_talk, Peer::Silent, &tcp_talk);
+    // The request's packet goes as it is submitted, however often the
+    // attempt was driven as it waited.
+    let script = get_script(b"quic");
+    {
+        let mut s = script.lock().unwrap();
+        s.out.truncate(3);
+        s.on_submit.push_back(vec![vec![3; 75], vec![]]);
+    }
+    let e = tracing(FakeTls::agreeing().unwrap(), &script);
+    let ran = h3_race(&mut m, e, &tcp_talk);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"quic");
+    let got = race_lines(&ran);
+    let want = expect(
+        "
+        [HTTPS-CONNECT] h3 has not seen any data after 100ms, starting h1
+        [HTTPS-CONNECT] connect -> 0, done=1
+        [HTTPS-CONNECT] removing connected setup filter
+        [HTTPS-CONNECT] destroy
+        [SETUP] destroy
+        [HAPPY-EYEBALLS] destroy
+        [TCP] destroy
+        using HTTP/3
+        ",
+    );
+    assert!(in_order(&got, &want), "{got:#?}");
+    assert!(tcp_talk.received().is_empty(), "nothing goes over TCP");
+}
+
+/// Both attempts fail: the setup fails with the first's failure, not the
+/// second's (`cf_hc_connect`'s `ctx->result = ballers[0].result`).
+#[test]
+fn a_race_both_attempts_lose_fails_with_the_first_s_failure() {
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let tcp_talk = Conversation::replies(&[], false).per_send();
+    let mut m = racing_peer(Peer::Refuses, &quic_talk, Peer::HangsUp, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let ran = h3_race(&mut m, e, &tcp_talk);
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::CouldntConnect),
+        "{:#?}",
+        ran.seen.text()
+    );
+    let got = race_lines(&ran);
+    assert!(
+        in_order(
+            &got,
+            &expect(
+                "
+                [HTTPS-CONNECT] h3 baller failed, starting h1
+                [HTTPS-CONNECT] connect, all attempts failed
+                [HTTPS-CONNECT] connect -> 7, done=0
+                "
+            )
+        ),
+        "{got:#?}"
+    );
+}

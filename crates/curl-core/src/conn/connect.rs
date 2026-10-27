@@ -629,6 +629,40 @@ impl ConnectMachine {
         }
     }
 
+    /// A second attempt of the same setup over `route`, another way of
+    /// dialing, racing the addresses `answer` holds, which the first
+    /// resolved (C's HTTPS connect filter's second baller, below the
+    /// name's filter that holds its answer).
+    pub(crate) fn racing(
+        number: ConnNumber,
+        route: Tcp,
+        created: Instant,
+        closer: Closer,
+        settings: ConnSettings,
+        answer: TryArc<Answer>,
+    ) -> ConnectMachine {
+        let eyeballs = Eyeballs::new(Addresses::Resolved(answer), route.ip);
+        ConnectMachine {
+            number,
+            route,
+            created,
+            stage: Stage::Racing(Racing {
+                eyeballs,
+                attempts: Vec::new(),
+                last_start: None,
+            }),
+            redials: 0,
+            closer,
+            settings,
+        }
+    }
+
+    /// What closes its sockets, and what the connection keeps of the
+    /// creating transfer's settings: a second attempt's, as the first's.
+    pub(crate) fn makings(&self) -> (Closer, ConnSettings, Instant) {
+        (self.closer.clone(), self.settings, self.created)
+    }
+
     pub(crate) fn number(&self) -> ConnNumber {
         self.number
     }
@@ -658,6 +692,19 @@ impl ConnectMachine {
             let wants = a.quic.as_ref().map_or(Events::OUT, |q| q.wants());
             (a.socket.socket(), wants)
         })
+    }
+
+    /// How long after it started the first of its QUIC attempts to hear
+    /// from its peer did, if one has (`cf_ip_ballers_min_reply_ms`).
+    pub(crate) fn reply_ms(&self) -> Option<u128> {
+        let running = match &self.stage {
+            Stage::Racing(r) => &r.attempts[..],
+            Stage::Resolving(_) | Stage::Dialed(_) => &[][..],
+        };
+        running
+            .iter()
+            .filter_map(|a| a.quic.as_ref()?.reply_ms())
+            .min()
     }
 
     /// How far it got, as C's filter chain shows it.
@@ -1415,6 +1462,23 @@ impl ConnectMachine {
             settings,
             negotiate: None,
             session: None,
+        }
+    }
+
+    /// The setup lost a race of two (C's HTTPS connect filter discards
+    /// the loser's chain): its attempts go as a race's losers do, with no
+    /// goodbye to their peers.
+    pub(crate) fn discard(self, cx: &mut dyn ConnCx) {
+        let component = self.route.socket_component();
+        match self.stage {
+            Stage::Racing(mut r) => {
+                cx.of(Component::HappyEyeballs, format_args!("destroy"));
+                for a in r.attempts.drain(..) {
+                    a.discard(cx, component);
+                }
+            }
+            Stage::Dialed(d) => discard(cx, component, d.stream.into_socket()),
+            stage @ Stage::Resolving(_) => ConnectMachine { stage, ..self }.close(cx.net()),
         }
     }
 

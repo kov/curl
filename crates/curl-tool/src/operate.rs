@@ -2787,6 +2787,7 @@ fn http_setopts(
                 options::HttpVersion::Http2Prior,
                 easysrc::CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE,
             ),
+            HttpVersion::Http3 => (options::HttpVersion::Http3, easysrc::CURL_HTTP_VERSION_3),
             HttpVersion::Http3Only => (
                 options::HttpVersion::Http3Only,
                 easysrc::CURL_HTTP_VERSION_3ONLY,

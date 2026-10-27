@@ -1104,6 +1104,9 @@ impl Conversation {
 pub struct FakeNet {
     clock: crate::time::ManualClock,
     peers: Vec<(Remote, Peer)>,
+    /// What an address's datagrams meet, where the test gives them a peer
+    /// apart from its streams': a QUIC peer gone, its TCP one there.
+    datagram_peers: Vec<(Remote, Peer)>,
     /// The names it knows, with their addresses in the order answered.
     names: Vec<(Vec<u8>, Vec<IpAddr>)>,
     /// The names answered only once their test lets them, each with its
@@ -1211,6 +1214,7 @@ impl FakeNet {
         FakeNet {
             clock,
             peers: Vec::new(),
+            datagram_peers: Vec::new(),
             names: Vec::new(),
             late: Vec::new(),
             resolving: Vec::new(),
@@ -1391,6 +1395,15 @@ impl FakeNet {
         self.with_peer_at(Remote::Inet(addr), peer)
     }
 
+    /// What datagrams to `addr` meet, apart from what its streams meet,
+    /// which `with_peer` gives: the address needs that too.
+    pub fn with_datagram_peer(mut self, addr: SocketAddr, peer: Peer) -> FakeNet {
+        self.datagram_peers
+            .try_push((Remote::Inet(addr), peer))
+            .expect("a test's peers fit");
+        self
+    }
+
     /// `with_peer`, at an address on the network or a Unix socket.
     pub(crate) fn with_peer_at(mut self, addr: Remote, peer: Peer) -> FakeNet {
         self.peers
@@ -1487,6 +1500,11 @@ impl Net for FakeNet {
             self.datagrams += 1;
         }
         let peer = self.peers.iter().find(|(a, _)| a == addr).map(|&(_, p)| p);
+        let datagram_peer = self.datagram_peers.iter().find(|(a, _)| a == addr);
+        let peer = match datagram_peer {
+            Some(&(_, p)) if kind == SocketKind::Datagram && peer.is_some() => Some(p),
+            _ => peer,
+        };
         let wire = match self.conversations.iter().position(|(a, _)| a == addr) {
             Some(at) if peer.is_some() => self.conversations.remove(at).1,
             _ => Conversation(
@@ -1735,6 +1753,23 @@ impl Socket for FakeSocket {
         wire.last_read_room = buf.len();
         if wire.hung_up || self.peer() == Peer::HangsUp {
             return Ok(Recv::Eof);
+        }
+        // A refusal is read as the error it is, as a UDP socket reads the
+        // ICMP error a datagram met (a stream's connect fails first).
+        if matches!(self.peer(), Peer::Refuses)
+            || matches!(self.peer(), Peer::RefusesAfter(_))
+                && self
+                    .ready_at
+                    .is_some_and(|at| crate::time::Clock::now(&self.clock) >= at)
+        {
+            return Err(io::Error::from_raw_os_error(libc_errno::ECONNREFUSED));
+        }
+        // A peer that answers late says nothing before then.
+        if self
+            .ready_at
+            .is_some_and(|at| crate::time::Clock::now(&self.clock) < at)
+        {
+            return Ok(Recv::WouldBlock);
         }
         while wire.answered < wire.replies.len() {
             if !wire.answering() {

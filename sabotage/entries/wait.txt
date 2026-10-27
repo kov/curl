@@ -308,10 +308,11 @@ witness: curl-core proto::http::tests::a_proxy_handshake_waits_to_send_then_to_r
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::wait_trace::a_tunnel_s_waits_are_traced_as_c
 --- old
-                matches!(c.lease.reached(), Some(SetupPoint::Dialed(_)))
-                    || c.route.dial == crate::conn::Dial::Quic,
+                dialed: matches!(c.lease.reached(), Some(SetupPoint::Dialed(_)))
+                    || c.lease
 --- new
-                c.route.dial == crate::conn::Dial::Quic,
+                dialed: false
+                    || c.lease
 
 === a wait driven by events looks for the resolver's wake among the transfers' sockets alone
 file: crates/curl-core/src/multi/wait.rs

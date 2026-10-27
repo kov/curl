@@ -122,9 +122,12 @@ witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_ha
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
 --- old
+            return TransferState::Init.fail(kind);
+        }
         route.dial = crate::conn::Dial::Quic;
 --- new
-        let _ = &mut route;
+            return TransferState::Init.fail(kind);
+        }
 
 === a failure setting HTTP/3 up is not said
 file: crates/curl-core/src/conn/quic.rs
@@ -326,3 +329,59 @@ witness: curl-core proto::http::tests::h3_trace::a_shared_connection_keeps_its_c
                 h3: set.h3 || open,
 --- new
                 h3: open,
+
+=== the second attempt starts before the soft timeout
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h3_trace::a_silent_quic_peer_gives_way_to_tcp_at_the_soft_timeout
+--- old
+    let soft = hard / 2;
+--- new
+    let soft = hard / 4;
+
+=== a first attempt that has seen data does not wait for the hard timeout
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h3_trace::a_stalled_quic_peer_gives_way_to_tcp_at_the_hard_timeout
+--- old
+        if !race.replied {
+            let soft = soft.as_millis();
+--- new
+        if race.replied || !race.replied {
+            let soft = soft.as_millis();
+
+=== a first attempt that failed does not start the second
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h3_trace::a_refused_quic_attempt_starts_tcp_at_once
+--- old
+    if race.first_failed.is_some() {
+        trace::of(cx, hc, format_args!("{one} baller failed, starting {two}"));
+--- new
+    if race.first_failed.is_some() && false {
+        trace::of(cx, hc, format_args!("{one} baller failed, starting {two}"));
+
+=== a race both attempts lose fails with the second's failure
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h3_trace::a_race_both_attempts_lose_fails_with_the_first_s_failure
+--- old
+        Second::Started(_, true) | Second::None => Some(failed),
+--- new
+        Second::Started(_, true) | Second::None => Some(ErrorKind::SslConnectError).filter(|_| failed != ErrorKind::OutOfMemory),
+
+=== the first attempt set aside is dropped, not driven
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_late_quic_peer_wins_over_a_tcp_attempt_running
+--- old
+    let Some(mut first) = c.race.as_mut().and_then(|r| r.aside.take()) else {
+--- new
+    let Some(mut first) = c.race.as_mut().and_then(|r| r.aside.take()).filter(|_| false) else {
+
+=== the race's loser goes before the HTTPS connect filter
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_silent_quic_peer_gives_way_to_tcp_at_the_soft_timeout
+--- old
+        if filter != Component::HttpsConnect {
+            continue;
+        }
+--- new
+        if filter == Component::HttpsConnect {
+            continue;
+        }

@@ -30,8 +30,43 @@ use crate::trace::{self, Bytes};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HttpsConnect {
     record: Record,
-    /// Its attempt started (`connect, init`).
-    started: bool,
+    /// Its first attempt's version, once started (`connect, init`).
+    first: Option<Alpn>,
+    /// Its second, an HTTP/2-or-1 attempt over TCP after an HTTP/3 one
+    /// (`ballers[1]`).
+    second: Second,
+}
+
+/// The HTTP version an attempt's ALPN offers first (`alpnid`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Alpn {
+    H3,
+    H2,
+    H1,
+}
+
+impl Alpn {
+    fn name(self) -> &'static str {
+        match self {
+            Alpn::H3 => "h3",
+            Alpn::H2 => "h2",
+            Alpn::H1 => "h1",
+        }
+    }
+}
+
+/// The second attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Second {
+    /// Not chosen until the origin's record is known
+    /// (`ballers_complete`).
+    Unchosen,
+    /// There is none.
+    None,
+    /// Chosen, to start as the first fails or at its timeouts.
+    Due(Alpn),
+    /// Started, and failed if `.1`.
+    Started(Alpn, bool),
 }
 
 /// Where the origin's HTTPS record is.
@@ -65,7 +100,8 @@ impl HttpsConnect {
         };
         Some(HttpsConnect {
             record,
-            started: false,
+            first: None,
+            second: Second::Unchosen,
         })
     }
 
@@ -92,14 +128,11 @@ pub(super) fn connect_call<H: Host>(
             h.record = look_up(&c.route, cx);
             Ok(())
         }
-        Record::Pending if h.started => {
+        Record::Pending if let Some(first) = h.first => {
             answered(&c.route, cx)?;
             h.record = Record::Known;
-            trace::of(
-                cx,
-                Component::HttpsConnect,
-                format_args!("HTTPS-RR not available"),
-            );
+            let second = choose_second(c, cx, first);
+            c.https.as_mut().expect("the filter heads the setup").second = second;
             Ok(())
         }
         Record::NotAsked | Record::Pending | Record::Known => Ok(()),
@@ -172,45 +205,188 @@ fn answered<H: Host>(route: &Tcp, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKin
     Ok(())
 }
 
+/// HTTP/2 is offered where a library speaks it and the request may.
+fn h2_offered<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> bool {
+    c.proto.http_versions(cx.easy().options()).h2 && cx.easy().libraries().h2.is_some()
+}
+
+/// The second attempt, as the origin's record is known to be none: the
+/// first wanted version other than the first's, HTTP/2 or HTTP/1 after
+/// HTTP/3 and none after either of those, as each offers the other
+/// (`cf_hc_set_baller2`, `cf_hc_get_first_alpn`).
+fn choose_second<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>, first: Alpn) -> Second {
+    let hc = Component::HttpsConnect;
+    trace::of(cx, hc, format_args!("HTTPS-RR not available"));
+    let h1 = c.proto.http_versions(cx.easy().options()).h1;
+    let second = match first {
+        Alpn::H3 if h2_offered(c, cx) => Alpn::H2,
+        Alpn::H3 if h1 => Alpn::H1,
+        Alpn::H3 | Alpn::H2 | Alpn::H1 => return Second::None,
+    };
+    let name = second.name();
+    trace::of(
+        cx,
+        hc,
+        format_args!("2nd attempt uses {name} from wanted versions"),
+    );
+    Second::Due(second)
+}
+
 /// The setup's first attempt starts (`cf_hc_connect`'s INIT): its
-/// version chosen, one that a build without HTTP/2 can speak, and the
-/// wait for a second armed if the record is still to come; known, it
-/// says there is no second.
+/// version chosen, one that a build without HTTP/2 can speak, its second
+/// chosen if the record is known, and the wait for the second armed
+/// while there may be one.
 pub(super) fn start<H: Host>(
     c: &mut Connecting,
     deadlines: &mut Deadlines,
     cx: &mut StepCx<'_, H>,
 ) {
-    let Some(h) = c.https.as_mut().filter(|h| !h.started) else {
+    if c.https.is_none_or(|h| h.first.is_some()) {
         return;
-    };
-    h.started = true;
+    }
     let hc = Component::HttpsConnect;
     trace::of(cx, hc, format_args!("connect, init"));
     trace::of(cx, hc, format_args!("HTTPS-RR not available"));
     // The first of the wanted versions it can speak, HTTP/3, HTTP/2,
-    // HTTP/1, as its ALPN offers them (`cf_hc_get_first_alpn`).
-    let options = cx.easy().options();
-    let h2 = c.proto.http_versions(options).h2 && cx.easy().libraries().h2.is_some();
-    let first = match c.route.dial {
-        Dial::Quic => "h3",
-        Dial::Tcp if h2 => "h2",
-        Dial::Tcp => "h1",
+    // HTTP/1, as its ALPN offers them (`cf_hc_get_first_alpn`): HTTP/3
+    // where the plan dials QUIC, which it does where HTTP/3 may be
+    // spoken; where it may not, the reason is said as it is looked at.
+    let h2 = h2_offered(c, cx);
+    let dial = c.lease.setup_route().map_or(c.route.dial, |r| r.dial);
+    let first = match dial {
+        Dial::Quic => Alpn::H3,
+        Dial::Tcp => {
+            if c.proto.http_versions(cx.easy().options()).h3
+                && let Some((kind, why)) = super::quic_refused(&c.route, true)
+            {
+                trace::fail(cx, kind, format_args!("{why}"));
+            }
+            if h2 { Alpn::H2 } else { Alpn::H1 }
+        }
     };
+    let name = first.name();
     trace::of(
         cx,
         hc,
-        format_args!("1st attempt uses {first} from wanted versions"),
+        format_args!("1st attempt uses {name} from wanted versions"),
     );
-    match h.record {
-        Record::Pending => {
-            let wait = cx.easy().options().limits.eyeballs.0 / 2;
-            super::arm(deadlines, cx, TimerKind::AlpnEyeballs, wait);
+    let h = c.https.as_mut().expect("the filter heads the setup");
+    h.first = Some(first);
+    if h.record != Record::Pending {
+        let second = choose_second(c, cx, first);
+        c.https.as_mut().expect("the filter heads the setup").second = second;
+    }
+    let h = c.https.as_mut().expect("the filter heads the setup");
+    if h.record == Record::Pending || matches!(h.second, Second::Due(_)) {
+        let wait = cx.easy().options().limits.eyeballs.0 / 2;
+        super::arm(deadlines, cx, TimerKind::AlpnEyeballs, wait);
+    }
+}
+
+/// The attempt the lease held failed with `kind`: whether the race
+/// outlives it, its other attempt still to start or running, or the
+/// record that chooses it still to come; or fails with it, which
+/// `all_failed` then says.
+pub(super) fn attempt_failed(c: &mut Connecting, kind: ErrorKind) -> bool {
+    let (Some(h), Some(race)) = (c.https.as_mut(), c.race.as_mut()) else {
+        return false;
+    };
+    match h.second {
+        // The first's, in the lease until the second starts.
+        Second::Unchosen | Second::Due(_) => {
+            race.first_failed = Some(kind);
+            true
         }
-        Record::NotAsked | Record::Known => {
-            trace::of(cx, hc, format_args!("HTTPS-RR not available"));
+        Second::None => false,
+        Second::Started(alpn, _) => {
+            h.second = Second::Started(alpn, true);
+            true
         }
-        Record::Unasked => unreachable!("the record is looked for as the setup's connect starts"),
+    }
+}
+
+/// The first attempt, set aside as the second runs, failed with `kind`.
+pub(super) fn first_failed(c: &mut Connecting, kind: ErrorKind) {
+    c.race.as_mut().expect("a race of two").first_failed = Some(kind);
+}
+
+/// Whether the second attempt starts now, as the first failed or did not
+/// answer in time (`time_to_start_baller2`): said, and the hard timeout
+/// armed again where the first has answered by the soft one.
+pub(super) fn second_due<H: Host>(
+    c: &mut Connecting,
+    deadlines: &mut Deadlines,
+    cx: &mut StepCx<'_, H>,
+) -> bool {
+    let (Some(h), Some(race)) = (c.https.as_ref(), c.race.as_deref_mut()) else {
+        return false;
+    };
+    let (Some(first), Second::Due(second)) = (h.first, h.second) else {
+        return false;
+    };
+    let hc = Component::HttpsConnect;
+    let (one, two) = (first.name(), second.name());
+    if race.first_failed.is_some() {
+        trace::of(cx, hc, format_args!("{one} baller failed, starting {two}"));
+        return true;
+    }
+    let now = cx.now();
+    let hard = cx.easy().options().limits.eyeballs.0;
+    let soft = hard / 2;
+    let elapsed = now.since(race.at);
+    // C counts in whole milliseconds.
+    let elapsed_ms = elapsed.as_millis();
+    if elapsed_ms >= hard.as_millis() {
+        let hard = hard.as_millis();
+        trace::of(
+            cx,
+            hc,
+            format_args!("{one} inconclusive after {hard}, starting {two}"),
+        );
+        return true;
+    }
+    if elapsed_ms >= soft.as_millis() {
+        if !race.replied {
+            let reply = c.lease.reply_ms();
+            race.replied = reply.is_some();
+            let shown = reply.map_or(-1, |ms| i128::try_from(ms).unwrap_or(i128::MAX));
+            trace::of(
+                cx,
+                Component::HappyEyeballs,
+                format_args!("query connect reply: {shown}ms"),
+            );
+        }
+        if !race.replied {
+            let soft = soft.as_millis();
+            trace::of(
+                cx,
+                hc,
+                format_args!("{one} has not seen any data after {soft}ms, starting {two}"),
+            );
+            return true;
+        }
+        let at = deadlines.arm_in(TimerKind::AlpnEyeballs, now, hard.saturating_sub(elapsed));
+        super::trace_set(cx, TimerKind::AlpnEyeballs, at);
+    }
+    false
+}
+
+/// The second attempt started.
+pub(super) fn second_started(c: &mut Connecting) {
+    let h = c.https.as_mut().expect("a race of two");
+    let Second::Due(alpn) = h.second else {
+        panic!("a second is due");
+    };
+    h.second = Second::Started(alpn, false);
+}
+
+/// Every attempt failed: the setup fails with the first's failure.
+pub(super) fn all_failed(c: &Connecting) -> Option<ErrorKind> {
+    let h = c.https.as_ref()?;
+    let failed = c.race.as_ref()?.first_failed?;
+    match h.second {
+        Second::Started(_, true) | Second::None => Some(failed),
+        Second::Unchosen | Second::Due(_) | Second::Started(_, false) => None,
     }
 }
 
@@ -222,7 +398,7 @@ pub(super) fn call_ended<H: Host>(
     cx: &mut StepCx<'_, H>,
     ended: Result<bool, ErrorKind>,
 ) {
-    if !https.is_some_and(|h| h.started) {
+    if !https.is_some_and(|h| h.first.is_some()) {
         return;
     }
     let hc = Component::HttpsConnect;

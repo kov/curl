@@ -190,6 +190,77 @@ impl ConnLease {
         }
     }
 
+    /// The setup, taken out for a race of two ways of dialing (C's HTTPS
+    /// connect filter's ballers): the lease holds a failed one in its
+    /// place until another is put in. None if it failed already.
+    pub(crate) fn take_setup(&mut self) -> Option<ConnectMachine> {
+        let number = self.number();
+        match std::mem::replace(self.slot_mut(), ConnSlot::Failed(number)) {
+            ConnSlot::Connecting(machine) => Some(machine),
+            ConnSlot::Failed(_) => None,
+            ConnSlot::Open(_) => panic!("{:?} is up", self.id),
+        }
+    }
+
+    /// `machine` sets the connection up, the setup it held taken out or
+    /// failed.
+    pub(crate) fn put_setup(&mut self, machine: ConnectMachine) {
+        let number = self.number();
+        assert_eq!(machine.number(), number, "the same connection's");
+        match std::mem::replace(self.slot_mut(), ConnSlot::Connecting(machine)) {
+            ConnSlot::Failed(_) => {}
+            ConnSlot::Connecting(_) | ConnSlot::Open(_) => {
+                panic!("{:?} holds a setup or is up", self.id)
+            }
+        }
+    }
+
+    /// The race's other setup made the connection, `conn`, in place of
+    /// the setup the lease held, which is given back to be discarded.
+    pub(crate) fn won_aside(&mut self, conn: Conn) -> (Connected, Option<ConnectMachine>) {
+        let up = Connected::Established {
+            remote: conn.remote.clone().expect("set up over the network"),
+            local: conn.local(),
+            at: conn.connected_at,
+        };
+        let lost = match std::mem::replace(self.slot_mut(), ConnSlot::Open(conn)) {
+            ConnSlot::Connecting(other) => Some(other),
+            ConnSlot::Failed(_) => None,
+            ConnSlot::Open(_) => panic!("{:?} was up", self.id),
+        };
+        (up, lost)
+    }
+
+    /// How long its setup's first QUIC attempt to hear from its peer took
+    /// to, if one has.
+    pub(crate) fn reply_ms(&self) -> Option<u128> {
+        match self.slot() {
+            ConnSlot::Connecting(machine) => machine.reply_ms(),
+            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
+        }
+    }
+
+    /// Whether its setup failed, which a race of two outlives.
+    pub(crate) fn setup_failed(&self) -> bool {
+        matches!(self.slot(), ConnSlot::Failed(_))
+    }
+
+    /// The route its setup dials, while it is set up.
+    pub(crate) fn setup_route(&self) -> Option<&super::Tcp> {
+        match self.slot() {
+            ConnSlot::Connecting(machine) => Some(machine.route()),
+            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
+        }
+    }
+
+    /// What its setup is, to start a second of the same connection from.
+    pub(crate) fn makings(&self) -> Option<(Closer, ConnSettings, crate::time::Instant)> {
+        match self.slot() {
+            ConnSlot::Connecting(machine) => Some(machine.makings()),
+            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
+        }
+    }
+
     /// The setup's handshakes are made: the connection is up.
     pub(crate) fn handshaken(&mut self) -> Connected {
         let number = self.number();

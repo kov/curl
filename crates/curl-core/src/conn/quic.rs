@@ -446,6 +446,13 @@ impl Quic {
         self.state.first_byte_at
     }
 
+    /// How long after its connect started the first datagram came, once
+    /// one has (`CF_QUERY_CONNECT_REPLY_MS`).
+    pub(crate) fn reply_ms(&self) -> Option<u128> {
+        let at = self.state.first_byte_at?;
+        Some(at.since(self.state.started).as_millis())
+    }
+
     /// When the handshake completed.
     pub(crate) fn handshake_at(&self) -> Option<Instant> {
         self.state.handshake_at

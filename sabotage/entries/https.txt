@@ -160,6 +160,6 @@ witness: curl-core tls::tests::an_alpn_offer_is_put_as_c_puts_it
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::h2::alpn_offers_h2_where_a_library_speaks_it
 --- old
-        Dial::Tcp if h2 => "h2",
+            if h2 { Alpn::H2 } else { Alpn::H1 }
 --- new
-        Dial::Tcp if h2 => "h1",
+            if h2 { Alpn::H1 } else { Alpn::H1 }

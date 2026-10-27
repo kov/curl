@@ -120,7 +120,7 @@ pub(super) fn start<H: Host>(
     };
     let session = match backend.session(identity, &peer_of(early_data), alpn, shared) {
         Ok(session) => session,
-        Err(kind) => return (TransferState::Connecting(c).fail(kind), Wake::Again),
+        Err(kind) => return super::attempt_failed(c, cx, kind),
     };
     // Who its sessions are kept for: the peer, through a connect-to's
     // peer if any (`cf_ssl_peer_init`), over TCP.
@@ -160,7 +160,7 @@ pub(super) fn step<H: Host>(
 ) -> (TransferState, Wake) {
     let ssl = side.filter();
     trace::of(cx, ssl, format_args!("cf_connect()"));
-    let traced = Some(c.route.socket_component());
+    let traced = Some(c.socket_component());
     let identity = match side {
         TlsSide::Origin => c.route.tls.as_ref(),
         TlsSide::Proxy => c.route.proxy_tls(),
@@ -185,7 +185,7 @@ pub(super) fn step<H: Host>(
             (TransferState::Connecting(c), Wake::Again)
         }
         Ok(Shake::Waiting) => (TransferState::Connecting(c), Wake::Idle),
-        Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
+        Err(kind) => super::attempt_failed(c, cx, kind),
     }
 }
 

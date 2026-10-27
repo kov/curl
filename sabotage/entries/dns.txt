@@ -108,11 +108,9 @@ witness: curl-core conn::dns::tests::the_cache_s_timeout_decides_what_is_stale
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::answers_may_be_kept_for_ever
 --- old
-    let max_age = cx.easy().options().limits.reuse.dns_max_age;
-    let kept = cx.rest.kept(cx.me, Kind::Names);
+        max_age: options.limits.reuse.dns_max_age,
 --- new
-    let max_age = Some(std::time::Duration::from_secs(60));
-    let kept = cx.rest.kept(cx.me, Kind::Names);
+        max_age: Some(std::time::Duration::from_secs(60)),
 
 === a transfer's end never reads the cache's timeout
 file: crates/curl-core/src/multi/state.rs

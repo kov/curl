@@ -351,7 +351,7 @@ fn alpn_offers_h2_where_a_library_speaks_it() {
         assert!(text.iter().any(|l| l == using), "{text:?}");
         let first = if h2_spoken { "h2" } else { "h1" };
         let line = format!("[HTTPS-CONNECT] 1st attempt uses {first} from wanted versions\n");
-        assert!(text.iter().any(|l| *l == line), "{version:?} {text:?}");
+        assert!(text.contains(&line), "{version:?} {text:?}");
     }
 }
 

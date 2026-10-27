@@ -536,6 +536,26 @@ the proxy's layer answers only when it is the top. The tunnel's answer is read t
 byte at a time, as C's `recv_CONNECT_resp` reads, each read the socket's. C's `[SHUTDOWN]` lines and a
 shutdown's TLS lines are its internal handle's, so on the internal trace (§4.6).
 
+**The race of HTTP/3 against TCP** (`--http3`, `CURL_HTTP_VERSION_3`; `cf-https-connect.c`'s two
+ballers). Where the HTTPS connect filter heads a direct setup, a QUIC library is linked and HTTP/3
+may be spoken (`Curl_conn_may_http3`), the plan dials QUIC and the first attempt is HTTP/3's; the
+second, HTTP/2-or-1 over TCP, is chosen as the origin's record is known (`2nd attempt uses h2 from
+wanted versions`). HTTP/3 alone (`--http3-only`) is one attempt and no race. The setup in the lease
+is the first until the second starts; then the first is set aside in `Connecting::race` (boxed, as
+a handle's size is budgeted) and the second, made from the addresses the first resolved, takes the
+lease's place, its TLS the transfer's handshake as any. Each connect call drives the attempt set
+aside first, then the lease's, as C's filter drives its ballers. The second starts as the first
+fails (`h3 baller failed`), at the soft timeout (half the eyeballs timeout) if the first's peer has
+sent nothing (`[HAPPY-EYEBALLS] query connect reply: -1ms`, `has not seen any data after 100ms`),
+else at the hard timeout (`inconclusive after 200`), the `ALPN_EYEBALLS` timer armed again for
+what is left of it. An attempt that fails while the other runs is let go; once both fail, the setup
+fails with the first's failure (`ballers[0].result`). The loser goes with the HTTPS connect
+filter at `connected`, its setup's filters with it (`[SETUP] destroy`, `[HAPPY-EYEBALLS] destroy`
+and its attempts'); a first that failed lost its attempts as it failed. The plan's route keeps
+the first's dial; what is traced of a socket or a chain is read from the setup the lease holds,
+or from the connection the winner made. Through a proxy the race is not run yet: C makes the
+HTTP/3 attempt over the proxy's CONNECT-UDP (step 64).
+
 `READ` traces a request's body as C's client readers read it: the reader set as the request is
 built (`add buf reader`, `add fread reader`) and each read of it, by the reader C would have, a
 buffer, the application's read handler or a mime tree (`cr_buf_read`, `cr_in_read`,
@@ -737,6 +757,7 @@ pub(crate) struct Plan { proto: ProtoState, route: Tcp }  // the leg's route, bu
 pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, route: Tcp,
                                handshake: Option<Box<Handshake>>,
                                https: Option<HttpsConnect>,       // the HTTPS connect filter
+                               race: Option<Box<Race>>,           // HTTP/3 against TCP
                                negotiate: Option<Box<Negotiate>> } // the tunnel's, across a redial
 pub(crate) struct Attached { lease: ConnLease, proto: ProtoState, origin: Option<Origin> }
 pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>, result: Result<(), ErrorKind>,
@@ -949,8 +970,8 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   every protocol, as a transfer runs one at a time.
 - `AlpnEyeballs` (EXPIRE_ALPN_EYEBALLS, half the happy eyeballs delay, 100 ms by default) is
   armed as the HTTPS connect filter's attempt starts while its ballers are not complete: with a
-  second baller, or with the origin's HTTPS-RR answer still to come. With one baller, as here,
-  that is a host name whose HTTPS-RR is not known as the attempt starts (`localhost`, which 758
+  second baller (the race of HTTP/3 against TCP, §2.5), or with the origin's HTTPS-RR answer still
+  to come. With one baller that is a host name whose HTTPS-RR is not known as the attempt starts (`localhost`, which 758
   uses, or a name `CURLOPT_RESOLVE` gives, which answers the addresses only); never an address,
   which asks for none, nor a name whose answer is cached. Once armed it is not cleared when the
   attempt wins: it stays in the transfer's pollset lines until `[TIMEOUT] all cleared` at

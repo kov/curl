@@ -116,13 +116,14 @@ pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tran
 /// Send the line as far as the socket takes it, then the connection is
 /// up (`cf_haproxy_connect`).
 pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
+    let component = c.socket_component();
     let p = match c.handshake.as_deref_mut() {
         Some(Handshake::Haproxy(p)) => p,
         _ => unreachable!("the PROXY line is being sent"),
     };
     while p.sent < p.line.len() {
         let sent = c.lease.dialed().stream().send(cx, &p.line[p.sent..], None);
-        trace::sent(cx, c.route.socket_component(), p.line.len() - p.sent, &sent);
+        trace::sent(cx, component, p.line.len() - p.sent, &sent);
         match sent {
             Ok(Sent::Bytes(n)) => p.sent += n.get(),
             Ok(Sent::WouldBlock) => return (TransferState::Connecting(c), Wake::Idle),

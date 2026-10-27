@@ -491,6 +491,8 @@ pub(crate) enum HttpVersion {
     Http2,
     /// `--http2-prior-knowledge`.
     Http2Prior,
+    /// `--http3`.
+    Http3,
     /// `--http3-only`.
     Http3Only,
 }
@@ -1424,11 +1426,17 @@ pub(crate) fn apply<'a>(
             };
             op.referer = (!given.is_empty()).then_some(given);
         }
-        Opt::Http10 | Opt::Http11 | Opt::Http2 | Opt::Http2PriorKnowledge | Opt::Http3Only => {
+        Opt::Http10
+        | Opt::Http11
+        | Opt::Http2
+        | Opt::Http2PriorKnowledge
+        | Opt::Http3
+        | Opt::Http3Only => {
             let version = match spec.opt {
                 Opt::Http10 => HttpVersion::Http10,
                 Opt::Http11 => HttpVersion::Http11,
                 Opt::Http2 => HttpVersion::Http2,
+                Opt::Http3 => HttpVersion::Http3,
                 Opt::Http3Only => HttpVersion::Http3Only,
                 _ => HttpVersion::Http2Prior,
             };
@@ -1802,7 +1810,6 @@ pub(crate) fn apply<'a>(
         | Opt::FtpSslReqd
         | Opt::Hostpubmd5
         | Opt::Hostpubsha256
-        | Opt::Http3
         | Opt::Knownhosts
         | Opt::ListOnly
         | Opt::LoginOptions

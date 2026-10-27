@@ -977,12 +977,19 @@ proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
     connection's setup as a value (`conn::Setup`), which the transfer owns and steps, its
     context given at each step as C's filters get `data`; the HTTPS connect filter races an
     HTTP/3 setup against an HTTP/2-or-1 one, as `cf-https-connect.c` does, with its soft and
-    hard timeouts. A pollset grows past its inline sockets.
+    hard timeouts. A pollset grows past its inline sockets. **Done**: the race's first attempt
+    is the lease's setup until the second takes its place; a connection is reused by the
+    versions a transfer allows, not by how it was dialed. Against caddy, `--http3` to a server
+    that refuses UDP, takes it silently or answers junk falls back as C's does, at C's times
+    and with C's lines; runtests 2500 to 2503 pass, and pytest test_06 but 06_21, which
+    follows alt-svc (step 63).
 63. **Alt-svc to h3**, and HTTP/3's early data (0-RTT), its transport parameters kept with the
     session's ticket.
 64. **The HTTP/3 proxy** (`--proxy-http3`, CONNECT-UDP; pytest test_60). Always built, with no
     switch: C's is experimental and off unless built with `USE_PROXY_HTTP3`, but for its code's
-    youth, not its standards (RFC 9297, 9298), and the reference build has it on.
+    youth, not its standards (RFC 9297, 9298), and the reference build has it on. With it, HTTP/3
+    through an HTTP proxy goes over its CONNECT-UDP: `--http3-only` dials QUIC to the proxy
+    until then, and `--http3` runs no race through one.
 
 ## Milestone 6: the other protocols
 

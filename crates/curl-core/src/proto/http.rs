@@ -51,6 +51,7 @@ pub(crate) mod alt_svc;
 pub(crate) mod cookies;
 mod h2;
 pub(crate) use h2::decode_status;
+mod h3;
 pub(crate) mod hsts;
 pub(crate) mod httpsig;
 pub(crate) mod negotiate;
@@ -176,6 +177,50 @@ fn made(output: Result<Output, OutputError>) -> Result<Output, ErrorKind> {
     })
 }
 
+/// What a request goes over: the connection's bytes, in HTTP/1, or a
+/// stream of the session the connection multiplexes over.
+#[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a stream is the request's own, held inline as the request is boxed"
+)]
+enum Wire {
+    H1,
+    H2(h2::H2Stream),
+    H3(h3::H3Stream),
+}
+
+impl Wire {
+    /// What a request goes over on `conn`: a stream of the session it
+    /// speaks, whether it is new or reused (`Curl_conn_http_version`).
+    fn of(conn: &crate::conn::Conn) -> Wire {
+        match conn.session() {
+            None => Wire::H1,
+            Some(crate::conn::mux::Session::H2(_)) => Wire::H2(h2::H2Stream::default()),
+            Some(crate::conn::mux::Session::H3(_)) => Wire::H3(h3::H3Stream::default()),
+        }
+    }
+
+    fn h2(&self) -> Option<&h2::H2Stream> {
+        match self {
+            Wire::H2(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn h2_mut(&mut self) -> Option<&mut h2::H2Stream> {
+        match self {
+            Wire::H2(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// It is a session's stream, whose end ends the response.
+    fn multiplexed(&self) -> bool {
+        !matches!(self, Wire::H1)
+    }
+}
+
 /// An HTTP request and its response.
 #[derive(Debug)]
 pub(crate) struct Request {
@@ -235,8 +280,8 @@ pub(crate) struct Request {
     /// The name a custom `Host:` header gives the cookies, in place of
     /// the URL's host.
     cookie_host: Option<Vec<u8>>,
-    /// The request's stream, over a connection that speaks HTTP/2.
-    h2: Option<h2::H2Stream>,
+    /// What it goes over.
+    wire: Wire,
     /// It went on a stream HTTP/2 refused (`state.refused_stream`).
     refused: bool,
     /// It asks to go on in HTTP/2 over clear text, with these settings
@@ -554,7 +599,7 @@ impl Request {
             stage: Stage::Head,
             interim: false,
             cookie_host: None,
-            h2: None,
+            wire: Wire::H1,
             refused: false,
             upgrade: None,
             h1_only: before.http.h1_only,
@@ -806,7 +851,7 @@ impl Request {
             events = events | Events::OUT;
         }
         // What HTTP/2's session holds waits for the socket.
-        if self.h2.as_ref().is_some_and(h2::H2Stream::out_pending) {
+        if self.wire.h2().is_some_and(h2::H2Stream::out_pending) {
             events = events | Events::OUT;
         }
         events
@@ -1012,22 +1057,21 @@ impl Request {
         let reused = lease.conn().reused();
         // On a connection's first request, which finds what it speaks
         // (`http_check_new_conn`).
-        let h2 = if reused {
-            lease.conn().h2().is_some()
-        } else {
-            self.check_new_conn(cx, lease)?
-        };
+        if !reused {
+            self.check_new_conn(cx, lease)?;
+        }
+        // Reused or new, the request goes as its session speaks.
+        self.wire = Wire::of(lease.conn());
         let http_proxy = lease.conn().http_proxy();
         self.version = version(
             cx.easy().options().http.version,
             self.after_http10,
             lease.conn().seen_version(),
-            h2,
+            &self.wire,
         );
-        self.h2 = h2.then(h2::H2Stream::default);
         // Over clear text, HTTP/2 is asked for by an upgrade where the
         // application wants it so (`H1_HD_UPGRADE`).
-        self.upgrade = self.upgrade_settings(cx, lease, h2)?;
+        self.upgrade = self.upgrade_settings(cx, lease, self.wire.multiplexed())?;
         let upgrade = self
             .upgrade
             .as_deref()
@@ -1244,10 +1288,11 @@ impl Request {
                 format_args!("Chunky upload is not supported by HTTP 1.0"),
             ));
         }
-        // HTTP/2 frames the body itself, said once the head is made
-        // (`http_req_set_TE`).
-        let suppressed = h2 && asked == Some(true);
-        let chunked = !h2 && asked.unwrap_or(size_unknown);
+        // HTTP/2 and 3 frame the body themselves, said once the head is
+        // made (`http_req_set_TE`).
+        let framed = self.version.framed();
+        let suppressed = framed && asked == Some(true);
+        let chunked = !framed && asked.unwrap_or(size_unknown);
         // Even a request without a body sends a last chunk if chunked.
         if chunked && upload.is_none() {
             upload = Some(Upload::empty());
@@ -1401,6 +1446,7 @@ impl Request {
                 SentIn::Http10 => response::HttpVersion::Http10,
                 SentIn::Http11 => response::HttpVersion::Http11,
                 SentIn::Http2 => response::HttpVersion::Http2,
+                SentIn::Http3 => response::HttpVersion::Http3,
             },
             reused,
             allow_09: http.allow_09,
@@ -1617,7 +1663,7 @@ impl Request {
                 if let Sending::Body(Reading { eos_read: true, .. }) = self.outgoing {
                     // The stream hears the body's end, which no bytes
                     // carried (`req_flush`'s `xfer_send` of none).
-                    if self.h2.as_ref().is_some_and(|s| !s.body_eos()) {
+                    if self.wire.h2().is_some_and(|s| !s.body_eos()) {
                         self.h2_send(cx, lease, self.sent, true)?;
                     }
                     break;
@@ -1691,9 +1737,14 @@ impl Request {
             let said = cx.easy().report().reasons();
             // The socket traces the send, and says why it failed, as it
             // reaches it (`cf_socket_send`); a layer may say why too. Over
-            // HTTP/2 the stream takes it (`cf_h2_send`).
-            let (taken, failed) = if self.h2.is_some() {
-                match self.h2_send(cx, lease, end, eos) {
+            // HTTP/2 or 3 the stream takes it (`cf_h2_send`, `cf_ngtcp2_send`).
+            let streamed = match self.wire {
+                Wire::H1 => None,
+                Wire::H2(_) => Some(self.h2_send(cx, lease, end, eos)),
+                Wire::H3(_) => Some(self.h3_send(cx, lease, end, eos)),
+            };
+            let (taken, failed) = if let Some(streamed) = streamed {
+                match streamed {
                     Ok(n) => (n, None),
                     Err(kind) => (0, Some(kind)),
                 }
@@ -1844,7 +1895,7 @@ impl Request {
         // is to send (`KEEP_RECV` and `KEEP_SEND` both off).
         if self.sending() {
             self.send(cx, lease, true)?;
-        } else if self.h2.as_ref().is_some_and(h2::H2Stream::out_pending)
+        } else if self.wire.h2().is_some_and(h2::H2Stream::out_pending)
             && lease.conn().h2().is_some()
         {
             self.h2_egress(cx, lease)?;
@@ -1886,8 +1937,8 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<Read, ErrorKind> {
-        if self.h2.is_some() {
-            return self.h2_read_some(cx, lease);
+        if self.wire.multiplexed() {
+            return self.stream_read_some(cx, lease);
         }
         let mut reads = 0;
         loop {
@@ -1947,8 +1998,8 @@ impl Request {
                     deliver::write_resp(cx, all, false, fed);
                     fed?;
                     // Switched to HTTP/2 by a 101: read on in it.
-                    if self.h2.is_some() {
-                        return self.h2_read_some(cx, lease);
+                    if self.wire.multiplexed() {
+                        return self.stream_read_some(cx, lease);
                     }
                 }
                 Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
@@ -2018,10 +2069,10 @@ impl Request {
     ) -> Result<(), ErrorKind> {
         while !input.is_empty() {
             match self.stage {
-                Stage::Head if self.h2.is_none() => {
+                Stage::Head if !self.wire.multiplexed() => {
                     input = self.head_input(cx, lease, input, false)?;
                     // What follows a 101 that switched is HTTP/2's.
-                    if self.h2.is_some() {
+                    if self.wire.multiplexed() {
                         return self.upgraded_input(cx, lease, input);
                     }
                 }
@@ -2443,9 +2494,9 @@ impl Request {
             ignore: head.meta().ignore_body(),
         });
         self.stage = match framing {
-            // Over HTTP/2, a body, if any, ends with the stream.
+            // Over HTTP/2 or 3, a body, if any, ends with the stream.
             Framing::Abandoned => Stage::Done,
-            _ if self.h2.is_some() => Stage::Body(Body::Stream),
+            _ if self.wire.multiplexed() => Stage::Body(Body::Stream),
             Framing::None => Stage::Done,
             Framing::Length(_) => Stage::Body(Body::Length),
             Framing::Chunked => {
@@ -2603,9 +2654,11 @@ impl Request {
         next: &AfterRequest,
         inherited: &mut Inherited,
     ) -> Result<(), ErrorKind> {
-        // A stream still open goes (`http2_data_done`).
-        if self.h2.is_some() {
-            self.h2_done(cx, lease);
+        // A stream still open goes (`http2_data_done`, `h3_stream_done`).
+        match self.wire {
+            Wire::H1 => {}
+            Wire::H2(_) => self.h2_done(cx, lease),
+            Wire::H3(_) => self.h3_done(cx, lease),
         }
         let Some(head) = self.head.as_ref() else {
             // The request was never made.
@@ -2902,17 +2955,20 @@ fn head_failed<H: Host>(cx: &mut StepCx<'_, H>, e: &HeadError) -> ErrorKind {
     }
 }
 
-/// The version a request goes in, `wanted` the application's: HTTP/1.0
-/// after a response in it to the transfer, or on a connection whose last
-/// response was in it (`http_may_use_1_1`).
+/// The version a request goes in, `wanted` the application's: its
+/// session's, on a stream; else HTTP/1.0 after a response in it to the
+/// transfer, or on a connection whose last response was in it
+/// (`http_may_use_1_1`).
 fn version(
     wanted: HttpVersion,
     after_http10: bool,
     seen: Option<ResponseVersion>,
-    h2: bool,
+    wire: &Wire,
 ) -> SentIn {
-    if h2 {
+    if let Wire::H2(_) = wire {
         SentIn::Http2
+    } else if let Wire::H3(_) = wire {
+        SentIn::Http3
     } else if after_http10 || seen == Some(ResponseVersion::Http10) || wanted == HttpVersion::Http10
     {
         SentIn::Http10

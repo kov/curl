@@ -77,6 +77,15 @@ pub(crate) enum SentIn {
     Http10,
     Http11,
     Http2,
+    Http3,
+}
+
+impl SentIn {
+    /// It goes as fields on a stream, whose framing is the session's
+    /// (`httpversion >= 20`).
+    pub(crate) fn framed(self) -> bool {
+        matches!(self, SentIn::Http2 | SentIn::Http3)
+    }
 }
 
 /// Whether what the application said for the first origin may go to the
@@ -644,6 +653,7 @@ fn write_h1(
                     SentIn::Http10 => b"1.0",
                     SentIn::Http11 => b"1.1",
                     SentIn::Http2 => b"2",
+                    SentIn::Http3 => b"3",
                 };
                 out.line(&[head.method, b" ", head.target, b" HTTP/", version])?;
             }
@@ -874,8 +884,8 @@ fn custom(
         if head.probe && h.is(b"Content-Length") {
             continue;
         }
-        // HTTP/2 sends no chunked body.
-        if head.version == SentIn::Http2 && h.is(b"Transfer-Encoding") {
+        // HTTP/2 and 3 send no chunked body.
+        if head.version.framed() && h.is(b"Transfer-Encoding") {
             continue;
         }
         if h.is(b"Content-Type")

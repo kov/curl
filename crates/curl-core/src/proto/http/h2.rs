@@ -242,7 +242,7 @@ impl<H: Host> crate::proto::http2::Egress for Egressing<'_, '_, H> {
         match to {
             Some(to) if to != me => self
                 .cx
-                .with_sibling(to, |_, req| match req.h2.as_mut() {
+                .with_sibling(to, |_, req| match req.wire.h2_mut() {
                     Some(sib) if sib.id == Some(s) => sib.body_read(room),
                     _ => BodyRead::Failed,
                 })
@@ -308,13 +308,13 @@ impl Request {
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
-    ) -> Result<bool, ErrorKind> {
+    ) -> Result<(), ErrorKind> {
         let top = lease.conn().top();
         let alpn = crate::multi::state::query_alpn(cx, lease, top);
         if alpn == Some(Chosen::H3) {
+            // Its session came with its handshake.
             trace::info(cx, format_args!("using HTTP/3"));
-            let why = format_args!("HTTP/3 requests are not made yet");
-            return Err(trace::fail(cx, ErrorKind::Http3, why));
+            return Ok(());
         }
         let library = cx.easy().libraries().h2;
         let prior = cx.easy().options().http.version == Wanted::Http2Prior && !self.h1_only;
@@ -343,7 +343,7 @@ impl Request {
         }
         let version = if h2 { "HTTP/2" } else { "HTTP/1.x" };
         trace::info(cx, format_args!("using {version}"));
-        Ok(h2)
+        Ok(())
     }
 
     /// The settings a request asks to go on in HTTP/2 with, over a
@@ -395,7 +395,7 @@ impl Request {
             .get()
             .put_h2(try_box(conn).map_err(|_| ErrorKind::OutOfMemory)?);
         // The request went whole in HTTP/1.1.
-        self.h2 = Some(H2Stream {
+        self.wire = Wire::H2(H2Stream {
             id: stream,
             body_eos: true,
             ..H2Stream::default()
@@ -528,8 +528,8 @@ impl Request {
         range: std::ops::Range<usize>,
         eos: bool,
     ) -> Result<usize, ErrorKind> {
-        let Request { out, h2, .. } = self;
-        let stream = h2.as_mut().expect("a request over HTTP/2");
+        let Request { out, wire, .. } = self;
+        let stream = wire.h2_mut().expect("a request over HTTP/2");
         let id = stream.id.expect("its head went");
         let len = range.len();
         if stream.closed {
@@ -573,7 +573,7 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
         let me = cx.me;
-        let stream = self.h2.as_mut().expect("a request over HTTP/2");
+        let stream = self.wire.h2_mut().expect("a request over HTTP/2");
         let sent = with_session(lease, |h2, lease| {
             let mut with = Egressing {
                 cx: &mut *cx,
@@ -592,7 +592,7 @@ impl Request {
                 && to != me
             {
                 cx.with_sibling(to, |_, req| {
-                    if let Some(sib) = req.h2.as_mut().filter(|sib| sib.id == Some(s)) {
+                    if let Some(sib) = req.wire.h2_mut().filter(|sib| sib.id == Some(s)) {
                         sib.closed_with(e);
                     }
                 });
@@ -625,13 +625,26 @@ impl Request {
     /// The stream was reset with HTTP/1.1 required
     /// (`Curl_h2_http_1_1_error`).
     pub(crate) fn h1_required(&self) -> bool {
-        self.h2
-            .as_ref()
+        self.wire
+            .h2()
             .is_some_and(|s| s.reset && s.error == H2Error::HTTP_1_1_REQUIRED)
     }
 
     fn stream(&mut self) -> &mut H2Stream {
-        self.h2.as_mut().expect("a request over HTTP/2")
+        self.wire.h2_mut().expect("a request over HTTP/2")
+    }
+
+    /// `read_some` over a session's stream.
+    pub(super) fn stream_read_some<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+    ) -> Result<Read, ErrorKind> {
+        match self.wire {
+            Wire::H1 => unreachable!("a request over a session's stream"),
+            Wire::H2(_) => self.h2_read_some(cx, lease),
+            Wire::H3(_) => self.h3_read_some(cx, lease),
+        }
     }
 
     /// `read_some` over HTTP/2: what the stream has, then what the
@@ -1355,7 +1368,7 @@ impl Request {
         };
         request.head = Some(HeadParser::new(exchange));
         request.version = SentIn::Http2;
-        request.h2 = Some(H2Stream {
+        request.wire = Wire::H2(H2Stream {
             id: Some(promised),
             body_eos: true,
             ..H2Stream::default()

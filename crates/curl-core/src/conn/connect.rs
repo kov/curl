@@ -1512,6 +1512,18 @@ impl ConnectMachine {
             });
             return Ok(Drove::Connecting(self, Progress::Dialed));
         }
+        // A QUIC connection is connected as its first datagram came.
+        let at = quic.as_ref().and_then(|q| q.first_byte_at()).unwrap_or(now);
+        // Boxed before the connection is made, so that a refusal closes
+        // the socket rather than dropping it open.
+        let h3 = match quic.map(|q| curl_alloc::try_box(crate::proto::http3::H3Conn::new(q))) {
+            None => None,
+            Some(Ok(h3)) => Some(h3),
+            Some(Err(OutOfMemory)) => {
+                cx.net().close(won.socket);
+                return Err(ConnectError::OutOfMemory);
+            }
+        };
         let made = (self.number, self.route, self.created, self.settings);
         #[cfg_attr(
             not(any(test, feature = "test-util")),
@@ -1527,12 +1539,9 @@ impl ConnectMachine {
             let layer = super::layer::Lingering::boxed(how).expect("a test's memory");
             stream.layers_mut().push(layer).expect("a test's memory");
         }
-        // A QUIC connection is connected as its first datagram came.
-        let at = quic.as_ref().and_then(|q| q.first_byte_at()).unwrap_or(now);
         let mut conn = Self::conn(made, stream, won.remote, at);
-        if let Some(quic) = quic {
-            let h3 = crate::proto::http3::H3Conn::new(quic);
-            conn.put_h3(curl_alloc::try_box(h3).map_err(|OutOfMemory| ConnectError::OutOfMemory)?);
+        if let Some(h3) = h3 {
+            conn.put_h3(h3);
         }
         Ok(Drove::Established(conn))
     }

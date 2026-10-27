@@ -10,8 +10,9 @@ publish.workspace = true
 # The counterpart of the C debug build: reports the `Debug` feature, and
 # will carry the debug-only behaviours the test suite relies on.
 debug-hooks = []
-# Test doubles for other crates' tests: the manual clock.
-test-util = []
+# Test doubles for other crates' tests: the manual clock; and the
+# memory tracker, which the fakes keep their own memory out of.
+test-util = ["curl-alloc/debug-hooks"]
 # The threaded resolver as the system's (C's `--enable-threaded-resolver`):
 # a pool of threads per multi, in place of the resolver that answers at
 # once.

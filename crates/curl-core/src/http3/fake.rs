@@ -20,6 +20,13 @@ use crate::error::ErrorKind;
 use crate::time::Instant;
 use crate::tls::{QuicTls, TlsCx};
 
+/// Run `f`, the fake's own bookkeeping, untracked: a library's memory is
+/// its own, not the core's to account for, and the torture tests refuse
+/// only the core's.
+fn own<R>(f: impl FnOnce() -> R) -> R {
+    curl_alloc::track::untracked(f)
+}
+
 /// What a fake connection tells as it reads a packet, or writes one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Told {
@@ -203,6 +210,20 @@ impl Http3 for FakeHttp3 {
         setup: &ClientSetup,
         tls: Box<dyn QuicTls>,
     ) -> Result<Box<dyn Connection>, ConnectFailed> {
+        own(|| self.connection(setup, tls))
+    }
+
+    fn version(&self) -> &dyn fmt::Display {
+        &"fake-http3/1.0"
+    }
+}
+
+impl FakeHttp3 {
+    fn connection(
+        &self,
+        setup: &ClientSetup,
+        tls: Box<dyn QuicTls>,
+    ) -> Result<Box<dyn Connection>, ConnectFailed> {
         let mut setups = self.setups.lock().unwrap();
         let script = match setups.len() {
             0 => None,
@@ -216,10 +237,6 @@ impl Http3 for FakeHttp3 {
             tls,
             next_stream: 0,
         }))
-    }
-
-    fn version(&self) -> &dyn fmt::Display {
-        &"fake-http3/1.0"
     }
 }
 
@@ -247,7 +264,7 @@ impl FakeConnection {
                     Told::HandshakeDone => {
                         let checked = call.handshake_done();
                         let mut s = script.lock().unwrap();
-                        s.checked.push(checked);
+                        own(|| s.checked.push(checked));
                         s.handshake_done = checked.is_ok();
                         drop(s);
                         let early = script.lock().unwrap().early;
@@ -383,7 +400,7 @@ impl Connection for FakeConnection {
         let told = {
             let mut s = self.script.lock().unwrap();
             s.at(now);
-            s.read.push((packet.to_vec(), ecn));
+            own(|| s.read.push((packet.to_vec(), ecn)));
             if let Some(code) = s.read_fails {
                 return Err(quic_error("ngtcp2_conn_read_pkt", code));
             }
@@ -407,7 +424,7 @@ impl Connection for FakeConnection {
             let Told::BodyRead { n, eof, .. } = told else {
                 unreachable!("a read")
             };
-            if self.tell(cx, vec![told], events) == Heard::Failed {
+            if self.tell(cx, own(|| vec![told]), events) == Heard::Failed {
                 return Err(quic_error("ngtcp2_conn_writev_stream", -502));
             }
             // What it handed goes in a packet of its own: its bytes, or
@@ -447,7 +464,7 @@ impl Connection for FakeConnection {
     fn sent_at(&mut self, now: Instant) {
         let mut s = self.script.lock().unwrap();
         s.at(now);
-        s.sent_at.push(now);
+        own(|| s.sent_at.push(now));
     }
 
     fn max_payload(&self) -> usize {
@@ -490,7 +507,7 @@ impl Connection for FakeConnection {
         s.expiry = None;
         s.timer = None;
         let resent = std::mem::take(&mut s.on_expiry);
-        s.out.extend(resent);
+        own(|| s.out.extend(resent));
         Ok(())
     }
 
@@ -500,7 +517,7 @@ impl Connection for FakeConnection {
 
     fn set_early_params(&mut self, params: &[u8]) -> Result<(), &'static str> {
         let mut s = self.script.lock().unwrap();
-        s.early_params = params.to_vec();
+        s.early_params = own(|| params.to_vec());
         match s.early_params_refused {
             Some(why) => Err(why),
             None => Ok(()),
@@ -535,7 +552,7 @@ impl Connection for FakeConnection {
 
     fn failed(&mut self, error: QuicError) -> bool {
         let mut s = self.script.lock().unwrap();
-        s.failed.push(error);
+        own(|| s.failed.push(error));
         if s.close.is_none() {
             s.close = Some(CloseError {
                 kind: 0,
@@ -569,18 +586,19 @@ impl Connection for FakeConnection {
         fields: &[(&[u8], &[u8])],
         body: bool,
     ) -> Result<StreamId, SubmitFailed> {
-        let lines = fields
-            .iter()
-            .map(|(n, v)| format!("{}: {}", curl_alloc::Lossy(n), curl_alloc::Lossy(v)))
-            .collect();
-        let mut s = self.script.lock().unwrap();
-        s.requests.push(lines);
-        // The library reads a body as it first writes the stream.
-        s.body.reading = body;
-        if let Some(packets) = s.on_submit.pop_front() {
-            s.out.extend(packets);
-        }
-        drop(s);
+        own(|| {
+            let lines = fields
+                .iter()
+                .map(|(n, v)| format!("{}: {}", curl_alloc::Lossy(n), curl_alloc::Lossy(v)))
+                .collect();
+            let mut s = self.script.lock().unwrap();
+            s.requests.push(lines);
+            // The library reads a body as it first writes the stream.
+            s.body.reading = body;
+            if let Some(packets) = s.on_submit.pop_front() {
+                s.out.extend(packets);
+            }
+        });
         let id = self.next_stream;
         self.next_stream += 4;
         Ok(StreamId(id))
@@ -593,7 +611,7 @@ impl Connection for FakeConnection {
             .held_max
             .map_or(usize::MAX, |max| max - (b.bytes.len() - b.acked));
         let n = bytes.len().min(room);
-        b.bytes.extend_from_slice(&bytes[..n]);
+        own(|| b.bytes.extend_from_slice(&bytes[..n]));
         Ok(n)
     }
 
@@ -616,14 +634,16 @@ impl Connection for FakeConnection {
     }
 
     fn cancel(&mut self, stream: StreamId, error: H3Error) {
-        self.script
-            .lock()
-            .unwrap()
-            .cancelled
-            .push((stream.0, error.0));
+        own(|| {
+            self.script
+                .lock()
+                .unwrap()
+                .cancelled
+                .push((stream.0, error.0))
+        });
     }
 
     fn extend_stream_window(&mut self, stream: StreamId, n: u64) {
-        self.script.lock().unwrap().windows.push((stream.0, n));
+        own(|| self.script.lock().unwrap().windows.push((stream.0, n)));
     }
 }

@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use curl_alloc::track::{self, Tracker};
 use curl_alloc::{OutOfMemory, TryArc, try_box};
+use curl_core::components::Components;
 use curl_core::conn::io::{Conversation, FakeNet, Net, Peer, Waker};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, MultiErrorKind};
@@ -20,6 +21,7 @@ use curl_core::handler::{
     DebugHandler, DebugKind, Handler, HeaderHandler, HeaderOrigin, ProgressHandler, ProgressNow,
     ProgressVerdict, Write, WriteHandler,
 };
+use curl_core::http3::fake::{FakeHttp3, Script as H3Script, Told};
 use curl_core::id::ArenaPolicy;
 use curl_core::libraries::{Libraries, Library, SharedLibraries};
 use curl_core::multi::Multi;
@@ -108,6 +110,18 @@ fn main() {
         (
             "a_file_part_s_long_name_is_read_without_a_copy",
             a_file_part_s_long_name_is_read_without_a_copy,
+        ),
+        (
+            "an_http3_get_survives_every_allocation_failing",
+            an_http3_get_survives_every_allocation_failing,
+        ),
+        (
+            "an_http3_get_takes_no_refusal_for_success",
+            an_http3_get_takes_no_refusal_for_success,
+        ),
+        (
+            "an_http3_get_stays_within_its_allocation_budget",
+            an_http3_get_stays_within_its_allocation_budget,
         ),
     ] {
         // The tests whose names hold a filter given, if any is, as libtest.
@@ -518,6 +532,8 @@ fn get_through(
     let wire = Wire {
         libraries: SharedLibraries::default(),
         sent: <[u8]>::to_vec,
+        refused_as: None,
+        trace_all: false,
     };
     get_over(clock, net, talk, (url, request), set, wire)
 }
@@ -527,6 +543,24 @@ fn get_through(
 struct Wire {
     libraries: SharedLibraries,
     sent: fn(&[u8]) -> Vec<u8>,
+    /// What else than `OutOfMemory` a refusal may fail the transfer
+    /// with, as C fails it.
+    refused_as: Option<ErrorKind>,
+    /// Every component's lines traced, as `--trace-config all` has them.
+    trace_all: bool,
+}
+
+/// Every component traced, made once and untracked.
+fn all_components() -> Components {
+    static ALL: std::sync::OnceLock<Components> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        track::untracked(|| {
+            let c = Components::new().expect("memory");
+            c.configure(b"all");
+            c
+        })
+    })
+    .clone()
 }
 
 /// As `get_through`, by a handle speaking as `wire` says.
@@ -547,6 +581,9 @@ fn get_over(
     let mut m: Multi = Multi::new(env)?;
     let mut easy = Easy::new();
     easy.set_libraries(wire.libraries);
+    if wire.trace_all {
+        easy.set_components(Some(all_components()));
+    }
     let o = easy.options_mut();
     o.set_url(Some(url))?;
     o.http.user_agent = Some(b"curl/test".to_vec_fallible()?);
@@ -564,7 +601,8 @@ fn get_over(
     };
     let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents)
         .expect("the transfer is in the multi");
-    if !matches!(result, Ok(()) | Err(ErrorKind::OutOfMemory)) {
+    let refused = matches!(result, Err(ErrorKind::OutOfMemory)) || result.err() == wire.refused_as;
+    if !(result.is_ok() || refused) {
         track::untracked(|| panic!("the GET ended with {result:?}"));
     }
     if result.is_ok() {
@@ -844,6 +882,8 @@ fn https_get_scenario() -> Result<Got, OutOfMemory> {
     let wire = Wire {
         libraries: fake_tls(),
         sent: sent_over_tls,
+        refused_as: None,
+        trace_all: false,
     };
     let url = b"https://127.0.0.1/1?q";
     get_over(clock, net, &talk, (url, REQUEST), |_| Ok(()), wire)
@@ -938,6 +978,8 @@ fn h2_get_scenario(frames: usize) -> (Result<Got, OutOfMemory>, u64) {
     let wire = Wire {
         libraries,
         sent: h2_request_sent,
+        refused_as: None,
+        trace_all: false,
     };
     let prior = |o: &mut Options| {
         o.http.version = curl_core::options::HttpVersion::Http2Prior;
@@ -1160,4 +1202,204 @@ fn a_file_part_s_long_name_is_read_without_a_copy() {
     let (made, n) = track::count_allocations(|| curl_core::mime::FileData::new(&name));
     assert_eq!(made.err(), Some(curl_core::mime::FileError::Unreadable));
     assert_eq!(n, 0, "the name's status read with nothing allocated");
+}
+
+/// The fake HTTP/3 library, made once and untracked; each run sets the
+/// scripts its connections run (`h3_scripts`).
+fn fake_h3() -> &'static FakeHttp3 {
+    static FAKE: std::sync::OnceLock<FakeHttp3> = std::sync::OnceLock::new();
+    FAKE.get_or_init(|| track::untracked(|| FakeHttp3::new(H3Script::new())))
+}
+
+/// The fake TLS and HTTP/3 libraries and the libraries naming them, made
+/// once and untracked.
+fn fake_h3_libraries() -> SharedLibraries {
+    static LIBRARIES: std::sync::OnceLock<SharedLibraries> = std::sync::OnceLock::new();
+    LIBRARIES
+        .get_or_init(|| {
+            track::untracked(|| {
+                let backend = Box::new(FakeTls::new().expect("memory"));
+                SharedLibraries::new(Libraries {
+                    tls: Some(Library::Owned(backend)),
+                    h3: Some(fake_h3()),
+                    ..Libraries::NONE
+                })
+                .expect("memory")
+            })
+        })
+        .clone()
+}
+
+/// A connection's script: it writes the packets of `out`, each empty one
+/// ending a flight; its handshake completes as it reads the first packet
+/// back, and its next reads tell `answers` in turn; its peer idles out
+/// after 30 s.
+fn h3_script(out: &[&[u8]], answers: Vec<Vec<Told>>) -> H3Script {
+    let mut s = H3Script {
+        max_payload: 1200,
+        path_max_payload: 1452,
+        send_quantum: 12000,
+        idle: Some(Duration::from_secs(30)),
+        ..H3Script::default()
+    };
+    s.out.extend(out.iter().map(|p| p.to_vec()));
+    s.on_read
+        .push_back(vec![Told::HandshakeDone, Told::MaxBidiStreams(100)]);
+    s.on_read.extend(answers);
+    s
+}
+
+/// A field told on stream 0.
+fn h3_header(name: &[u8], value: &[u8]) -> Told {
+    Told::Header {
+        stream: 0,
+        name: name.to_vec(),
+        value: value.to_vec(),
+    }
+}
+
+/// The response to an HTTP/3 GET: a header that is not UTF-8 among its
+/// fields, then its body, and the stream closed.
+fn h3_response() -> Vec<Told> {
+    vec![
+        h3_header(b":status", b"200"),
+        h3_header(b"content-length", b"9"),
+        h3_header(b"x-obs", b"caf\xe9"),
+        Told::HeadersDone(0),
+        Told::Data(0, b"123456789".to_vec()),
+        Told::Closed(0, 0x100),
+        Told::QuicClosed(0, 0x100),
+    ]
+}
+
+/// The packets a GET's connection writes: the handshake's two, then the
+/// request's.
+const H3_GET_OUT: &[&[u8]] = &[&[1; 1200], &[2; 1200], &[], &[], &[3; 75], &[]];
+
+/// The fake's first connection runs `first`'s script, the next `then`'s,
+/// all made untracked: the library's, not the core's to account for.
+fn h3_scripts(first: fn() -> H3Script, then: Option<fn() -> H3Script>) {
+    track::untracked(|| {
+        let fake = fake_h3();
+        *fake.script.lock().unwrap() = first();
+        fake.setups.lock().unwrap().clear();
+        let mut more = fake.then.lock().unwrap();
+        more.clear();
+        more.extend(then.map(|s| std::sync::Arc::new(std::sync::Mutex::new(s()))));
+    })
+}
+
+/// A network with a QUIC peer at 127.0.0.1:443 answering each datagram
+/// with the next of `replies`, made untracked.
+fn quic_server(replies: &[&[u8]]) -> (ManualClock, FakeNet, Conversation) {
+    track::untracked(|| {
+        let clock = ManualClock::new().expect("a clock");
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 443));
+        let talk = Conversation::replies(replies, false).per_send();
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        (clock, net, talk)
+    })
+}
+
+/// What the first connection's library was asked to send: each request's
+/// fields a line, then the request body it was handed.
+fn h3_sent(_wire: &[u8]) -> Vec<u8> {
+    let s = fake_h3().script.lock().unwrap();
+    let mut sent = Vec::new();
+    for request in &s.requests {
+        for field in request {
+            sent.extend_from_slice(field.as_bytes());
+            sent.push(b'\n');
+        }
+    }
+    sent.extend_from_slice(&s.body.bytes);
+    sent
+}
+
+/// A refusal while the HTTP/3 library reads a packet fails the read, and
+/// C then fails the transfer with `CURLE_RECV_ERROR`, whatever the
+/// callback's failure was (`cf_ngtcp2_recv`).
+const H3_REFUSED_AS: Option<ErrorKind> = Some(ErrorKind::RecvError);
+
+/// The GET's fields, as `h3_sent` reads them.
+const H3_REQUEST: &[u8] = b":method: GET\n:scheme: https\n:authority: 127.0.0.1\n\
+    :path: /1?q\nuser-agent: curl/test\naccept: */*\n";
+
+/// Traced to a handler that keeps nothing, so that the trace's lines
+/// are made.
+fn traced(o: &mut Options) -> Result<(), OutOfMemory> {
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(Discard)?);
+    Ok(())
+}
+
+/// HTTP/3 alone, traced.
+fn h3_only(o: &mut Options) -> Result<(), OutOfMemory> {
+    o.http.version = curl_core::options::HttpVersion::Http3Only;
+    traced(o)
+}
+
+/// A traced GET of test 1's URL over HTTPS in HTTP/3 alone, through the
+/// fake TLS and HTTP/3 libraries.
+fn h3_get_scenario() -> Result<Got, OutOfMemory> {
+    h3_scripts(|| h3_script(H3_GET_OUT, vec![h3_response()]), None);
+    let (clock, net, talk) = quic_server(&[b"server flight", b"response"]);
+    let wire = Wire {
+        libraries: fake_h3_libraries(),
+        sent: h3_sent,
+        refused_as: H3_REFUSED_AS,
+        trace_all: true,
+    };
+    let url = b"https://127.0.0.1/1?q";
+    get_over(clock, net, &talk, (url, H3_REQUEST), h3_only, wire)
+}
+
+/// What an HTTP/3 GET's handlers take: its body, and its head a line at
+/// a time, `HTTP/3 200 \r\n` first.
+const H3_GOT: Got = Got {
+    result: Ok(()),
+    body: 9,
+    headers: (b"HTTP/3 200 \r\n".len()
+        + b"content-length: 9\r\n".len()
+        + b"x-obs: caf\xe9\r\n".len()
+        + b"\r\n".len()) as u64,
+};
+
+/// A refusal is never taken for success: it fails the transfer for
+/// memory, or as C fails a read whose callback failed.
+fn took_no_refusal(got: &Result<Got, OutOfMemory>) -> bool {
+    match got {
+        Err(OutOfMemory) => true,
+        Ok(got) => got.result == Err(ErrorKind::OutOfMemory) || got.result.err() == H3_REFUSED_AS,
+    }
+}
+
+fn an_http3_get_survives_every_allocation_failing() {
+    fake_h3_libraries();
+    torture(h3_get_scenario, Ok(H3_GOT));
+}
+
+fn an_http3_get_takes_no_refusal_for_success() {
+    fake_h3_libraries();
+    refused_alone(h3_get_scenario, took_no_refusal);
+}
+
+/// What a GET in HTTP/3 alone allocates over the fake TLS and HTTP/3
+/// libraries, every component traced; the libraries' own memory is
+/// theirs. Measured, not itemised: the HTTPS GET's own beside QUIC's
+/// connection, its HTTP/3 session and stream, and the room datagrams
+/// are read into.
+const H3_GET_BUDGET: u64 = 73;
+
+fn an_http3_get_stays_within_its_allocation_budget() {
+    fake_h3_libraries();
+    let (got, n) = track::count_allocations(h3_get_scenario);
+    assert_eq!(got.expect("nothing refused").result, Ok(()));
+    track::untracked(|| eprintln!("budget: an HTTP/3 GET over the fakes made {n} allocations"));
+    assert!(
+        n <= H3_GET_BUDGET,
+        "an HTTP/3 GET over the fakes made {n} allocations, over its {H3_GET_BUDGET}"
+    );
 }

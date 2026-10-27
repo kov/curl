@@ -697,3 +697,13 @@ witness: curl-core proto::http::tests::h3_trace::an_http3_proxy_header_not_utf8_
                 let (id, n, v) = (stream.0, Lossy(name), Lossy(value));
 --- new
                 let (id, n, v) = (stream.0, crate::trace::Bytes(name), crate::trace::Bytes(value));
+
+=== a QUIC connection whose HTTP/3 session cannot be boxed drops its socket open
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core an_http3_get_survives_every_allocation_failing
+--- old
+            Some(Err(OutOfMemory)) => {
+                cx.net().close(won.socket);
+--- new
+            Some(Err(OutOfMemory)) => {
+                drop(won.socket);

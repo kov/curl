@@ -1607,6 +1607,41 @@ fn a_reserved_connection_is_its_handle_s_alone() {
     assert_eq!((pool.len(), net.open_sockets()), (0, 0));
 }
 
+/// What a connection has pending is asked from its top, as C asks its
+/// filters from the first (`Curl_conn_data_pending`): the HTTP/2
+/// session's input held behind an upgrade's 101 is pending, though its
+/// stream holds nothing (`cf_h2_data_pending`'s `inbufq`).
+#[test]
+fn input_an_http2_session_holds_is_pending_on_its_connection() {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let mut pool = Pool::new().unwrap();
+    let mut lease = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
+    up(&mut lease, &mut net, now);
+    speaks_h2(&mut lease);
+    let Some(ConnSlot::Open(conn)) = lease.conn.as_deref_mut() else {
+        panic!("not up");
+    };
+    assert!(!conn.data_pending(), "nothing is held yet");
+    let mut h2 = conn.take_h2().expect("it speaks HTTP/2");
+    h2.hold(b"S\n").unwrap();
+    conn.put_h2(h2);
+    assert!(conn.data_pending());
+    let mut h2 = conn.take_h2().expect("it speaks HTTP/2");
+    assert_eq!(h2.take_held(), b"S\n");
+    conn.put_h2(h2);
+    assert!(!conn.data_pending(), "what was held is taken");
+    pool.release(
+        &Home::Multi,
+        lease,
+        Finish::default(),
+        UNLIMITED,
+        &mut net,
+        now,
+    );
+    pool.close_idle(&mut net, now);
+}
+
 /// A share's connection lent to one multi takes that multi's transfers
 /// alone: another multi's search sees it and passes it over
 /// (`url_match_multi`), and the last of the first's keys given back

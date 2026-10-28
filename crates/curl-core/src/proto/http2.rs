@@ -521,6 +521,13 @@ impl H2Conn {
 }
 
 impl<'a> ConnPart<Carrier<'a>> for H2Conn {
+    /// What came behind a 101 and the session has not read yet is input
+    /// pending, as what is below holds (`cf_h2_data_pending`'s
+    /// `inbufq`).
+    fn data_pending(&self, below: Carrier<'a>) -> bool {
+        !self.held.is_empty() || below.data_pending()
+    }
+
     /// What an idle connection has to read, read by the session, which a
     /// frame for no stream leaves alive: whether it still is, its session
     /// neither failed, told to go away nor done (`http2_connisalive`,

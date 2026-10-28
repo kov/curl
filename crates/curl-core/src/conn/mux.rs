@@ -69,6 +69,13 @@ impl<'a> Part<Carrier<'a>> for Session {
         }
     }
 
+    fn data_pending(&self, below: Carrier<'a>) -> bool {
+        match self {
+            Session::H2(h2) => h2.data_pending(below),
+            Session::H3(h3) => h3.data_pending(below),
+        }
+    }
+
     fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
         match self {
             Session::H2(_) => None,

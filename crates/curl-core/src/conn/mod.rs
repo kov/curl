@@ -1334,11 +1334,15 @@ impl Conn {
     }
 
     /// Whether bytes wait where a poll of its socket cannot see them, so
-    /// a read that would block is to be tried again at once.
+    /// a read that would block is to be tried again at once: asked of its
+    /// session first, then what it works over, as C asks its filters from
+    /// the top (`Curl_conn_data_pending`).
     pub(crate) fn data_pending(&mut self) -> bool {
-        match &mut self.transport {
-            Transport::Stream(stream) => stream.data_pending(),
-            Transport::Datagram(_) | Transport::Local => false,
+        use crate::conn::part::{Lower, Part};
+        match self.split() {
+            (Some(session), Some(carrier)) => session.data_pending(carrier),
+            (None, Some(carrier)) => carrier.data_pending(),
+            (_, None) => false,
         }
     }
 }

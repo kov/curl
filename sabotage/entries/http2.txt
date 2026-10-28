@@ -784,3 +784,11 @@ witness: curl-core proto::http::tests::h2_trace::alpn_agreeing_h2_makes_the_sess
         if h2 && lease.conn().h2().is_none() {
 --- new
         if h2 {
+
+=== an HTTP/2 session's held input is not pending on its connection
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core conn::pool::tests::input_an_http2_session_holds_is_pending_on_its_connection
+--- old
+        !self.held.is_empty() || below.data_pending()
+--- new
+        below.data_pending()

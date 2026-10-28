@@ -1609,8 +1609,10 @@ the layer below without aliasing its own state.
 `LayerStack` holds the layers that work on the bytes, boxed, behind one pointer, so a
 connection stays within C's `connectdata` (§8.2); for TCP, a SOCKS proxy or a tunnel it is
 empty and allocates nothing. Only TLS pushes a layer, and pushing one allocates.
-The stack answers for the stream: `data_pending` is true while a layer holds bytes or the
-stream's `rx` is not empty (bytes that came after a tunnel's or a SOCKS proxy's answer, which
+A connection's `data_pending` is asked from the top, as `Curl_conn_data_pending` asks the chain:
+its session first, an HTTP/2 one pending while it holds what came behind an upgrade's 101
+(`cf_h2_data_pending`'s `inbufq`), then what it works over. The stack answers for the stream:
+`data_pending` is true while a layer holds bytes or the stream's `rx` is not empty (bytes that came after a tunnel's or a SOCKS proxy's answer, which
 `Conn::recv` gives before it reads again, as a layer gives what it holds); a read that would
 block while data is pending runs the transfer again (`sendrecv_dl` and
 `Curl_conn_data_pending`, through the step's `AtReadLimit` without its trace line). The pollset

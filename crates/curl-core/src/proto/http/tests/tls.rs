@@ -516,6 +516,38 @@ fn http_through_an_https_proxy_goes_over_tls_to_the_proxy() {
     );
 }
 
+/// Plain HTTP forwarded to an HTTPS proxy goes over TLS, so HTTP/2 is not
+/// asked for by an upgrade: the connection is TLS though the origin's
+/// part of it is not (`Curl_conn_is_ssl` seeing the proxy's filter).
+#[test]
+fn http_through_an_https_proxy_asks_no_upgrade_to_http_2() {
+    static FAKE: crate::http2::fake::FakeH2 = crate::http2::fake::FakeH2;
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        h2: Some(&FAKE),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let [welcome, response] = served(OK);
+    let (mut m, talk, _) = server(&[&welcome, &response], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        https_proxy(o, b"http://origin.example/p");
+        o.http.version = crate::options::HttpVersion::Http2;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"ok\n");
+    let sent = String::from_utf8(sent(&talk)).unwrap();
+    assert!(
+        sent.contains("GET http://origin.example/p HTTP/1.1\r\n"),
+        "{sent}"
+    );
+    assert!(!sent.contains("Upgrade"), "{sent}");
+    assert!(!sent.contains("HTTP2-Settings"), "{sent}");
+}
+
 /// HTTPS through an HTTPS proxy makes TLS with the proxy first, then the
 /// tunnel through it, then TLS with the origin inside that: the origin's
 /// records travel inside the proxy's, and the CONNECT never goes in the

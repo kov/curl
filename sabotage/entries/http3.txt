@@ -1003,3 +1003,11 @@ witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_waits_on_noth
             }) if !wanted.is_empty() => h3conn.adjust_pollset(wanted, h3),
 --- new
             }) if true => h3conn.adjust_pollset(wanted, h3),
+
+=== the connect through an HTTP/3 proxy is timed
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection
+--- old
+    let timed = !c.route.proxy_over_quic();
+--- new
+    let timed = true;

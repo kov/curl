@@ -2418,6 +2418,10 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
     let ran = through_h3_proxy(&mut m, e);
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     assert_eq!(ran.seen.body(), b"ok\n");
+    // No filter of C's chain reports the connect through an HTTP/3 proxy:
+    // its time stays 0, as C's tool reports it through h2o.
+    assert_eq!(ran.easy.report().timings().connect(), Duration::ZERO);
+    assert!(lines(&ran, &["[MULTI] [CONNECTING] [PGRS-CONNECT]"]).is_empty());
     {
         let s = script.lock().unwrap();
         assert_eq!(

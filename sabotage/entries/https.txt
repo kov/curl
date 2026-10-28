@@ -259,3 +259,11 @@ witness: curl-core proto::http::tests::h3_trace::a_transfer_given_up_as_it_conne
     if lease.setup().and_then(ConnectMachine::answer).is_some() || raced {
 --- new
     if lease.setup().and_then(ConnectMachine::answer).is_some() {
+
+=== a dialed first hop that heard nothing is taken for an answer
+file: crates/curl-core/src/conn/stream.rs
+witness: curl-core proto::http::tests::h3_trace::a_connect_udp_tunnel_unanswered_starts_the_second_at_the_soft_timeout
+--- old
+        self.heard.get()
+--- new
+        true

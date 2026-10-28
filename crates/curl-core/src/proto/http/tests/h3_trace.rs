@@ -2979,22 +2979,14 @@ fn a_transfer_given_up_as_it_connects_lets_its_answer_go_as_c() {
     }
 }
 
-/// HTTP/3 through an HTTP proxy whose CONNECT-UDP it answers, the
-/// origin then silent: the first attempt's socket has heard the proxy, so
-/// at the soft timeout the race finds it answered, its happy eyeballs
-/// filter connected and silent, and the second starts only at the hard
-/// one. C's tool against a proxy that answers 101 and then says nothing
-/// traces `h3 inconclusive after 200, starting h2` and no `query connect
-/// reply`.
-#[test]
-fn a_connect_udp_tunnel_answered_holds_the_second_to_the_hard_timeout() {
+/// HTTP/3 through an HTTP proxy over CONNECT-UDP, the proxy's first
+/// connection saying `first` and then nothing, the second a CONNECT
+/// tunnel to the origin: the race's lines.
+fn connect_udp_soft_timeout(first: &[u8]) -> Vec<String> {
     use crate::tls::fake::{self, WELCOME};
-    let switched = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\
-                     Upgrade: connect-udp\r\nCapsule-Protocol: ?1\r\n\r\n"
-        .to_vec();
     let tunnel = b"HTTP/1.1 200 Connection established\r\n\r\n".to_vec();
     let response = fake::records(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello").unwrap();
-    let silent = Conversation::replies(&[&switched], false).per_send();
+    let silent = Conversation::replies(&[first], false).per_send();
     let talk = Conversation::replies(&[&tunnel, WELCOME, &response], false).per_send();
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], UDP_PROXY_PORT));
@@ -3019,20 +3011,51 @@ fn a_connect_udp_tunnel_answered_holds_the_second_to_the_hard_timeout() {
     });
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     assert_eq!(ran.seen.body(), b"hello");
-    let got = lines(
+    lines(
         &ran,
         &[
             "CONNECT-UDP tunnel",
             "[HTTPS-CONNECT] h3",
             "[HAPPY-EYEBALLS] query connect reply",
         ],
-    );
+    )
+}
+
+/// HTTP/3 through an HTTP proxy whose CONNECT-UDP it answers, the
+/// origin then silent: the first attempt's socket has heard the proxy, so
+/// at the soft timeout the race finds it answered, its happy eyeballs
+/// filter connected and silent, and the second starts only at the hard
+/// one. C's tool against a proxy that answers 101 and then says nothing
+/// traces `h3 inconclusive after 200, starting h2` and no `query connect
+/// reply`.
+#[test]
+fn a_connect_udp_tunnel_answered_holds_the_second_to_the_hard_timeout() {
+    let switched = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\
+                     Upgrade: connect-udp\r\nCapsule-Protocol: ?1\r\n\r\n";
     let want = expect(
         "
         CONNECT-UDP tunnel established, response 101
         [HTTPS-CONNECT] h3 inconclusive after 200, starting h1
         ",
     );
+    let got = connect_udp_soft_timeout(switched);
+    assert_eq!(got, want, "{got:#?}");
+}
+
+/// HTTP/3 through an HTTP proxy that takes the connection and never
+/// answers its CONNECT-UDP: the first attempt's socket has heard nothing,
+/// so the second starts at the soft timeout, the question answered
+/// untraced by the dialed first hop. C's tool against such a proxy
+/// traces `h3 has not seen any data after 100ms, starting h2` and no
+/// `query connect reply`.
+#[test]
+fn a_connect_udp_tunnel_unanswered_starts_the_second_at_the_soft_timeout() {
+    let want = expect(
+        "
+        [HTTPS-CONNECT] h3 has not seen any data after 100ms, starting h1
+        ",
+    );
+    let got = connect_udp_soft_timeout(b"");
     assert_eq!(got, want, "{got:#?}");
 }
 

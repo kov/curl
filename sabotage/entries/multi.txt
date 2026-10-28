@@ -797,3 +797,18 @@ witness: curl-core multi::tests::a_network_change_forgets_what_it_is_asked_to
             return;
         }
         let now = self.clock.now();
+
+=== a transfer holding input taken in by its sends waits for a poll
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_tunnel_s_input_taken_in_as_the_body_goes_is_read
+--- old
+        cx.rest.dirty.insert(cx.me.index());
+    }
+}
+
+/// Whether the speed limits
+--- new
+    }
+}
+
+/// Whether the speed limits

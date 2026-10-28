@@ -35,6 +35,7 @@ impl RowSet {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn contains(&self, row: u32) -> bool {
         let (w, bit) = place(row);
         self.words.get(w).is_some_and(|word| word & bit != 0)

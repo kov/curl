@@ -2558,6 +2558,83 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
     );
 }
 
+/// The origin's answer taken in by the HTTP/3 proxy's connection as the
+/// request's body is sent through its tunnel, in a step whose read found
+/// nothing, is held, and the transfer runs again to read it without a
+/// wait, as C's pollset marks it (`multi_adjust_pollset`): C's tool
+/// sending a 2 MB body through h2o traces the same mark as its sends
+/// take the origin's bytes in. The body's second piece is read as the
+/// transfer performs, after its step's read, and the proxy's answer
+/// comes as it is.
+#[test]
+fn a_tunnel_s_input_taken_in_as_the_body_goes_is_read() {
+    struct LetsAnswer {
+        talk: Conversation,
+        pieces: Mutex<Vec<&'static [u8]>>,
+    }
+    impl crate::handler::ReadHandler for LetsAnswer {
+        fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
+            let mut pieces = self.pieces.lock().unwrap();
+            if pieces.is_empty() {
+                return crate::handler::Read::Eof;
+            }
+            let piece = pieces.remove(0);
+            if pieces.is_empty() {
+                // The proxy's packet with the answer is on its way.
+                self.talk.allow(3);
+            }
+            buf[..piece.len()].copy_from_slice(piece);
+            crate::handler::Read::Data(std::num::NonZeroUsize::new(piece.len()).unwrap())
+        }
+    }
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n".to_vec();
+    let script = tunnel_script(b"200", vec![Told::Data(0, response)]);
+    let replies: &[&[u8]] = &[b"server flight", b"connect answer", b"response"];
+    let (mut m, talks) = quic_peer(ManualClock::new().unwrap(), &[replies]);
+    talks[0].allow(2);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let upload = crate::options::UploadSource::Read {
+        handler: Handler::read(LetsAnswer {
+            talk: talks[0].clone(),
+            pieces: Mutex::new(vec![b"hel", b"lo"]),
+        })
+        .unwrap(),
+        rewind: None,
+        size: Some(5),
+    };
+    let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(b"http://origin.example/p")).unwrap();
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
+        proxy.kind = crate::options::ProxyType::Https3;
+        proxy.tunnel = true;
+        o.method = Method::Post;
+        o.upload = upload;
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"ok\n");
+    // The lines name the pollset and the wait, which `lines` leaves out:
+    // the mark, and the wait after it, for nothing.
+    let marked: Vec<String> = ran
+        .seen
+        .text()
+        .into_iter()
+        .map(|l| l.trim_start_matches("[0-0] ").trim_end().to_owned())
+        .skip_while(|l| !l.contains("pollset[] has POLLIN"))
+        .filter(|l| l.contains("pollset[] has POLLIN") || l.contains("multi_wait("))
+        .take(2)
+        .collect();
+    assert_eq!(
+        marked,
+        [
+            "[MULTI] [PERFORMING] pollset[] has POLLIN, but there is still buffered input -> mark as dirty",
+            "[MULTI] [PERFORMING] multi_wait(fds=1, timeout=0) tinternal=0",
+        ],
+        "{:#?}",
+        ran.seen.text()
+    );
+}
+
 /// A `CONNECT` the proxy refuses fails the race's attempt, as C's
 /// attempt is the H3-PROXY filter the tunnel is: the proxy's connection
 /// goes, and with no address left the setup says it could not connect

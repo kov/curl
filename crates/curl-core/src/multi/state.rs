@@ -2701,16 +2701,12 @@ fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
     )
 }
 
-/// Whether the speed limits make the transfer wait now, its timer armed
-/// for the wait and its run in the next pass called off; if not, the
-/// timer is armed for when a limit next earns tokens, as the transfer
-/// may need them to go on (`mspeed_check`, `EXPIRE_TOOFAST`). C's state
-/// changes here, before the timer is armed, and each is traced.
 /// An exchange that is to wait for input while its connection holds some
 /// where a poll cannot see it runs again in the next pass, as C's pollset
-/// finds and says (`multi_adjust_pollset`). Only a step that stopped
-/// reading short leaves input held, and it has marked the transfer
-/// already (`ProtoStep::AtReadLimit`), so the mark is C's line here.
+/// finds, says and marks it (`multi_adjust_pollset`). A step that stopped
+/// reading short has marked it already (`ProtoStep::AtReadLimit`); one
+/// whose read found nothing can still leave input held, taken in by its
+/// sends, as a QUIC connection's are with its packets.
 fn buffered_input<H: Host>(x: &mut Attached, cx: &mut StepCx<'_, H>) {
     let wants = x.proto.interest(StepCx::pause(cx)).contains(Events::IN);
     if wants && x.lease.get().data_pending() {
@@ -2720,13 +2716,15 @@ fn buffered_input<H: Host>(x: &mut Attached, cx: &mut StepCx<'_, H>) {
                 "pollset[] has POLLIN, but there is still buffered input -> mark as dirty"
             ),
         );
-        assert!(
-            cx.rest.dirty.contains(cx.me.index()),
-            "a step that leaves input held runs again"
-        );
+        cx.rest.dirty.insert(cx.me.index());
     }
 }
 
+/// Whether the speed limits make the transfer wait now, its timer armed
+/// for the wait and its run in the next pass called off; if not, the
+/// timer is armed for when a limit next earns tokens, as the transfer
+/// may need them to go on (`mspeed_check`, `EXPIRE_TOOFAST`). C's state
+/// changes here, before the timer is armed, and each is traced.
 fn over_limit<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> bool {
     match cx.rate_verdict() {
         Verdict::Wait(wait) => {

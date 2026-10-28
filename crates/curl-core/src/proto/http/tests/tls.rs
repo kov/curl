@@ -292,6 +292,63 @@ fn naming_the_default_ca_file_reuses_a_connection_made_with_it() {
     assert_eq!(backend.log().sessions, 2);
 }
 
+/// Each line a transfer's debug handler hears, with whether the TLS
+/// library's objects were in its reach as it heard it.
+#[derive(Clone, Default)]
+struct NativeHeard(std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>);
+
+impl crate::handler::DebugHandler for NativeHeard {
+    fn debug(&self, cx: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
+        if kind == crate::handler::DebugKind::Text {
+            let native = cx.tls_native(cx.me()).is_some();
+            let line = String::from_utf8_lossy(data).trim_end().to_owned();
+            self.0.lock().unwrap().push((line, native));
+        }
+    }
+}
+
+/// A transfer on a connection it reuses has the connection attached
+/// from the start, as C attaches it as it finds it: its handlers reach
+/// the connection's TLS library's objects while it connects
+/// (`CURLINFO_TLS_SSL_PTR`), as they do once its request goes.
+#[test]
+fn a_transfer_reusing_a_connection_reaches_its_tls_objects_as_it_connects() {
+    let (_, libraries) = tls();
+    let [welcome, response] = served(OK);
+    let talk = Conversation::replies(&[&welcome, &response, &response], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let heard = NativeHeard::default();
+    for path in ["/a", "/b"] {
+        heard.0.lock().unwrap().clear();
+        let mut e = Easy::new();
+        e.set_libraries(libraries.clone());
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"multi");
+        e.set_components(Some(c));
+        let ran = get_with(&mut m, e, path, talk.clone(), |o| {
+            let url = format!("https://127.0.0.1:{PORT}{path}");
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.callbacks.debug = Some(crate::handler::Handler::debug(heard.clone()).unwrap());
+        });
+        assert_eq!(ran.result, Ok(()));
+    }
+    assert_eq!(
+        sent(&talk),
+        [handshake_then(&request_of("/a")), request_of("/b")].concat()
+    );
+    let heard = heard.0.lock().unwrap().clone();
+    let at = heard
+        .iter()
+        .position(|(l, _)| l.starts_with("Reusing existing"))
+        .expect("the second reuses");
+    let connecting: Vec<_> = heard[at..]
+        .iter()
+        .filter(|(l, _)| l.starts_with("[MULTI] [CONNECTING]"))
+        .collect();
+    assert!(!connecting.is_empty(), "{heard:#?}");
+    assert!(connecting.iter().all(|(_, native)| *native), "{heard:#?}");
+}
+
 /// What a transfer's pollset says between the passes of `m` until the
 /// transfer `id` completes: each set of events it waits on, in turn, a
 /// set the same as the one before not said again.

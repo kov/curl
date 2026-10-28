@@ -1389,6 +1389,55 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
     assert_eq!(got, &want[..], "{got:#?}");
 }
 
+/// A TCP second leading beside a QUIC first answers for the connection
+/// while it is set up: its TLS filter, waiting for the server's
+/// handshake, puts its socket in the pollset beside the first's.
+#[test]
+fn a_tcp_second_leading_answers_for_the_connection() {
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let tcp_talk = tls_hello().late_replies();
+    let mut m = racing_peer(
+        Peer::Silent,
+        &quic_talk,
+        Peer::AcceptsAfter(Duration::from_millis(50)),
+        &tcp_talk,
+    );
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let ran = h3_race(&mut m, e, &tcp_talk);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let text: Vec<String> = ran
+        .seen
+        .text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    let from = text
+        .iter()
+        .position(|l| l.contains("[TCP] recv(len=19) -> 81, 0"))
+        .expect("the second's TLS waits");
+    let to = from
+        + text[from..]
+            .iter()
+            .position(|l| l.contains("pollset[fd="))
+            .expect("its pollset is made");
+    // As C's: the first's socket, then the second's TLS filter's and its
+    // socket filter's.
+    let want = expect(
+        "
+        [0-0] [TCP] recv(len=19) -> 81, 0
+        [0-0] [SSL] cf_connect() -> 0, done=0
+        [0-0] [HTTPS-CONNECT] connect -> 0, done=0
+        [0-0] [DNS] Curl_conn_connect(block=0) -> 0, done=0
+        [0-0] [UDP] adjust_pollset, !active, POLLIN fd=1000
+        [0-0] [SSL] adjust_pollset, POLLIN fd=1001
+        [0-0] [TCP] adjust_pollset, !active, POLLIN fd=1001
+        [0-0] [HTTPS-CONNECT] adjust_pollset -> 0, 2 socks
+        [0-0] [MULTI] [CONNECTING] pollset[fd=1000 IN, fd=1001 IN], timeouts=1
+        ",
+    );
+    assert_eq!(&text[from..=to], &want[..], "{text:#?}");
+}
+
 /// Whether `want` are among `got`, in order.
 fn in_order(got: &[String], want: &[String]) -> bool {
     let mut left = got.iter();

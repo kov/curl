@@ -188,9 +188,11 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect
 --- old
-            (Some(race), SetupPoint::Dialed(_)) if race.failed.is_none() => {
+            (Some(race), SetupPoint::Dialed(_)) => {
+                let kept = &mut race.failed[a.index()];
 --- new
-            (Some(race), SetupPoint::Dialed(_)) if race.failed.is_none() && false => {
+            (Some(race), SetupPoint::Dialed(_)) if false => {
+                let kept = &mut race.failed[a.index()];
 
 === a leading TCP second does not answer for its connection
 file: crates/curl-core/src/multi/state.rs

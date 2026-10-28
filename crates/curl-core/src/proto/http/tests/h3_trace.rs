@@ -2898,25 +2898,36 @@ fn http3_through_a_proxy_refusing_both_tunnels_fails() {
         .iter()
         .position(|l| l.ends_with("closing connection #0\n"))
         .expect("the connection closes");
-    let between: Vec<&String> = text[from..=to]
+    let between: Vec<String> = text[from..=to]
         .iter()
         .filter(|l| {
             [
                 "[TCP]",
                 "[HTTPS-CONNECT]",
-                "Curl_multi_will_close",
-                "multi_done",
+                "[DNS] Curl_conn_connect",
+                "[MULTI] [CONNECTING]",
                 "closing",
             ]
             .iter()
             .any(|n| l.contains(n))
         })
+        .map(|l| match l.find(" added ") {
+            Some(at) => format!("{} added Nus\n", &l[..at]),
+            None => l.clone(),
+        })
         .collect();
+    // C's, the connect time that of the first attempt to connect to the
+    // proxy (`cf_hc_cntrl`), after the chain that failed.
     assert_eq!(
         between,
         [
             "[0-0] [HTTPS-CONNECT] connect, all attempts failed\n",
             "[0-0] [HTTPS-CONNECT] connect -> 7, done=0\n",
+            "[0-0] [DNS] Curl_conn_connect(block=0) -> 7, done=0\n",
+            "[0-0] [DNS] Curl_conn_connect(), filter returned 7\n",
+            "[0-0] [MULTI] [CONNECTING] failed to connect [0][!DNS][!DNS][!HTTPS-CONNECT]\n",
+            "[0-0] [MULTI] [CONNECTING] [PGRS-CONNECT] added Nus\n",
+            "[0-0] [MULTI] [CONNECTING] connect failed -> 7\n",
             "[0-0] [MULTI] [CONNECTING] multi_done: status: 7 prem: 1 done: 0\n",
             "[0-0] [MULTI] [CONNECTING] multi_done_locked, in use=0\n",
             "[0-0] [MULTI] [CONNECTING] multi_done, terminating conn #0 to localhost:8990, \

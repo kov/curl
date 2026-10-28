@@ -569,14 +569,13 @@ so it gives way at the soft timeout. An attempt that fails while the other runs 
 once both fail, the setup fails with the first's failure (`ballers[0].result`). The loser goes
 with the HTTPS connect filter at `connected`, its setup's filters with it (`[SETUP] destroy`,
 `[HAPPY-EYEBALLS] destroy` and its attempts'); a first that failed lost its attempts as it
-failed. One that fails once dialed is kept (`Race::failed`) to go with the connection; a second
-failing so, which fails the race, closes both there and then in their ballers' order, on no
-transfer's trace, as C's go with the connection. A race given up, failed, timed out or its
-transfer removed, goes into `Done` with the
-lease, and `multi_done` closes its QUIC attempt, then its TCP one (a leading second's after
-the first, taken out of the lease as given up), the lease's first otherwise closed as the lease
-is given back, all with the connection on no transfer's trace (C's `cf_hc_ctx_destroy`, its
-sockets announced gone), and lets the race's answer go once. The dial, TCP or QUIC, is not the
+failed. Each attempt that fails once dialed is kept, by attempt (`Race::failed`), to go with the
+connection, as C keeps a failed baller's chain; when every attempt has failed, the chain is named
+to the HTTPS connect filter and the first of them that connected says the connect time
+(`cf_hc_cntrl`), after it. A race given up, failed, timed out or its transfer removed, goes into
+`Done` with the lease, and `multi_done` closes its first attempt, then its second, each running
+or kept as it failed (the lease's first taken out of the lease as given up), all with the
+connection on no transfer's trace (C's `cf_hc_ctx_destroy`, its sockets announced gone), and lets the race's answer go once. The dial, TCP or QUIC, is not the
 route's: the plan's goes to the first's setup as the lease is added, the second's setup is made
 with its own, each machine holds its (`ConnectMachine::dial`) and the connection records the
 winner's (`Conn::dialing`). What depends on it, the socket's filter, the first hop's transport, a

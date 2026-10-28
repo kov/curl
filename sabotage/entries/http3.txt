@@ -878,35 +878,46 @@ witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_at
             });
         };
 
-=== a race given up closes its TCP attempt before its QUIC one
+=== a race given up closes its second attempt before its first
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_attempts
 --- old
-        if lead == Attempt::Second
-            && let Some(first) = d.lease.fail_setup()
+        for m in [
+            failed_first.or_else(|| d.lease.fail_setup()),
+            failed_second.or(second),
+        ]
 --- new
-        if lead != Attempt::Second
-            && let Some(first) = d.lease.fail_setup()
+        for m in [
+            failed_second.or(second),
+            failed_first.or_else(|| d.lease.fail_setup()),
+        ]
 
 === a race's second loser once dialed is discarded on the transfer's trace
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_both_tunnels_fails
 --- old
             (Some(race), SetupPoint::Dialed(_)) => {
-                let earlier = race.failed.take().expect("a loser kept");
+                let kept = &mut race.failed[a.index()];
 --- new
-            (Some(race), SetupPoint::Dialed(_)) if false => {
-                let earlier = race.failed.take().expect("a loser kept");
+            (Some(race), SetupPoint::Dialed(_)) if race.failed.iter().all(Option::is_none) => {
+                let kept = &mut race.failed[a.index()];
 
-=== a race's two losers once dialed close out of their ballers' order
+=== a race that every attempt failed names no chain
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_both_tunnels_fails
 --- old
-                    Attempt::First => (lost, earlier),
-                    Attempt::Second => (earlier, lost),
+                mstate::trace(cx, format_args!("failed to connect {}", chain.failed()));
 --- new
-                    Attempt::First => (earlier, lost),
-                    Attempt::Second => (lost, earlier),
+                let _ = chain;
+
+=== a failed connect says its connect time before the chain that failed
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::setup_trace::a_refused_tunnel_names_the_chain_that_failed
+--- old
+                // What connected says when, after the chain
+                // (`Curl_conn_report_failed`).
+                report_failed(cx, partly);
+--- new
 
 === a QUIC connection's receive room is filled byte by byte
 file: crates/curl-core/src/conn/quic.rs

@@ -313,8 +313,18 @@ fn a_refused_tunnel_names_the_chain_that_failed() {
         "[MULTI] [CONNECTING] failed to connect [0][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]",
     ));
     assert_eq!(setup_lines(&ran), want);
-    let connect_failed = "[MULTI] [CONNECTING] connect failed -> 7\n";
-    assert!(ran.seen.text().iter().any(|l| l == connect_failed));
+    // The chain that failed, then the connect time of the proxy's
+    // connection, as C's says them (`Curl_conn_report_failed`).
+    let text = ran.seen.text();
+    let at = text
+        .iter()
+        .position(|l| l.starts_with("[MULTI] [CONNECTING] failed to connect"))
+        .expect("the chain is named");
+    assert!(
+        text[at + 1].starts_with("[MULTI] [CONNECTING] [PGRS-CONNECT] added "),
+        "{text:#?}"
+    );
+    assert_eq!(text[at + 2], "[MULTI] [CONNECTING] connect failed -> 7\n");
 }
 
 /// A tunnel whose `CONNECT` cannot be sent fails in the call that added

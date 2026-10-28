@@ -391,9 +391,10 @@ struct Race {
     /// The first failed, with this (`ballers[0].result`), which is the
     /// setup's if the second fails too.
     first_failed: Option<ErrorKind>,
-    /// An attempt that failed once dialed, its connection kept until the
-    /// race ends, as C keeps a failed baller's chain.
-    failed: Option<ConnectMachine>,
+    /// Each attempt that failed once dialed, the first's then the
+    /// second's, its connection kept until the race ends, as C keeps a
+    /// failed baller's chain.
+    failed: [Option<ConnectMachine>; 2],
     /// The first's peer answered, found once asked (`reply_ms`), which is
     /// not asked again.
     replied: bool,
@@ -407,6 +408,14 @@ enum Attempt {
 }
 
 impl Attempt {
+    /// Its place among the race's ballers: the first's 0, the second's 1.
+    fn index(self) -> usize {
+        match self {
+            Attempt::First => 0,
+            Attempt::Second => 1,
+        }
+    }
+
     /// The attempt beside it.
     fn other(self) -> Attempt {
         match self {
@@ -847,30 +856,27 @@ fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done
     if let Some(proto) = d.proto.as_mut() {
         proto.data_done(cx, &mut d.lease);
     }
-    // A race given up closes its QUIC attempt, then the TCP one, as C's
+    // A race given up closes its first attempt, then its second, as C's
     // connect filter destroys its ballers in their order
-    // (`cf_hc_ctx_destroy`): the lease's first goes as it is given back,
-    // unless a TCP second leads, which goes after it. They go with the
-    // connection, on no transfer's trace, their sockets announced gone.
+    // (`cf_hc_ctx_destroy`), each running or failed once dialed. They go
+    // with the connection, on no transfer's trace, their sockets
+    // announced gone.
     let raced = d.race.take().map(|race| {
         let Race {
             second,
-            lead,
-            failed,
+            failed: [failed_first, failed_second],
             ..
         } = *race;
         let me = cx.me;
         let mut close = |m: ConnectMachine| m.close(&mut cx.rest.announcing(me));
-        if let Some(failed) = failed {
-            close(failed);
-        }
-        if lead == Attempt::Second
-            && let Some(first) = d.lease.fail_setup()
+        for m in [
+            failed_first.or_else(|| d.lease.fail_setup()),
+            failed_second.or(second),
+        ]
+        .into_iter()
+        .flatten()
         {
-            close(first);
-        }
-        if let Some(second) = second {
-            close(second);
+            close(m);
         }
     });
     release(
@@ -2839,9 +2845,29 @@ fn connecting<H: Host>(
             }
             let https = c.https;
             if let Some(kind) = https::all_failed(&c) {
-                report_failed(cx, None);
                 https::call_ended(https, cx, Err(kind));
                 chain_connect_ended(cx, Err(kind));
+                // Its attempts held apart, the chain ends with the HTTPS
+                // connect filter; the first of them that connected at the
+                // network level says when (`cf_hc_cntrl`).
+                let chain = Chain::of(
+                    crate::conn::Dialing {
+                        route: &c.route,
+                        dial: crate::conn::Dial::Stream,
+                    },
+                    head_of(&c),
+                    SetupPoint::Resolving,
+                    None,
+                    true,
+                );
+                mstate::trace(cx, format_args!("failed to connect {}", chain.failed()));
+                let partly = c.race.as_ref().and_then(|r| {
+                    r.failed
+                        .iter()
+                        .flatten()
+                        .find_map(ConnectMachine::partly_made)
+                });
+                report_failed(cx, partly);
                 mstate::trace(
                     cx,
                     format_args!("connect failed -> {}", trace::Code(Err(kind))),
@@ -2870,7 +2896,6 @@ fn connecting<H: Host>(
             TransferState::Connecting(next) if wake == Wake::Again => c = next,
             TransferState::Done(ref d) => {
                 let kind = d.result.expect_err("a setup is done with only as it fails");
-                report_failed(cx, partly);
                 https::call_ended(https, cx, Err(kind));
                 chain_connect_ended(cx, Err(kind));
                 if let Some(chain) = chain {
@@ -2879,6 +2904,9 @@ fn connecting<H: Host>(
                     let chain = chain.failed();
                     mstate::trace(cx, format_args!("failed to connect {chain}"));
                 }
+                // What connected says when, after the chain
+                // (`Curl_conn_report_failed`).
+                report_failed(cx, partly);
                 mstate::trace(
                     cx,
                     format_args!("connect failed -> {}", trace::Code(Err(kind))),
@@ -3315,21 +3343,10 @@ fn attempt_failed<H: Host>(
     c.drop_handshake(a);
     if let Some(lost) = c.fail_attempt(a) {
         match (&mut c.race, lost.reached()) {
-            (Some(race), SetupPoint::Dialed(_)) if race.failed.is_none() => {
-                race.failed = Some(lost);
-            }
-            // Both failed once dialed, which fails the race: both go
-            // with the connection, C's ballers in their order
-            // (`cf_hc_ctx_destroy`), on no transfer's trace.
             (Some(race), SetupPoint::Dialed(_)) => {
-                let earlier = race.failed.take().expect("a loser kept");
-                let (first, second) = match a {
-                    Attempt::First => (lost, earlier),
-                    Attempt::Second => (earlier, lost),
-                };
-                let me = cx.me;
-                first.close(&mut cx.rest.announcing(me));
-                second.close(&mut cx.rest.announcing(me));
+                let kept = &mut race.failed[a.index()];
+                assert!(kept.is_none(), "an attempt fails once");
+                *kept = Some(lost);
             }
             _ => lost.discard(&mut DriveCx {
                 step: cx,
@@ -3367,7 +3384,7 @@ fn race_starts<H: Host>(c: &mut Connecting, cx: &StepCx<'_, H>) -> Result<(), Ou
         setup: Setup::default(),
         at,
         first_failed: None,
-        failed: None,
+        failed: [None, None],
         replied: false,
     })?);
     Ok(())
@@ -3932,7 +3949,10 @@ fn up<H: Host>(
         "the race's loser is given"
     );
     // One that failed once dialed goes with its connection.
-    let mut kept = race.and_then(|r| r.failed);
+    let mut kept = race.and_then(|r| {
+        let [first, second] = r.failed;
+        first.or(second)
+    });
     let mut lost = lost;
     for filter in connected.going() {
         trace::of(cx, filter, format_args!("removing connected setup filter"));

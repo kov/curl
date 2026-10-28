@@ -253,7 +253,14 @@ pub(super) fn connect_call<H: Host>(
             Ok(())
         }
         Record::Pending if let Some(first) = h.first => {
-            answered(&c.route, cx)?;
+            // Looked for again as the answer is taken
+            // (`Curl_resolv_take_result`): kept by another transfer since,
+            // it is not kept again.
+            if cached(&c.route, cx) == HttpsLookup::Found {
+                found_since(&c.route, cx);
+            } else {
+                answered(&c.route, cx)?;
+            }
             h.record = Record::Known;
             // Whether the first's choice weighed HTTP/3, as it does again.
             let choosing = Choosing::of(&c.proto, &c.route, cx);
@@ -278,14 +285,7 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Record {
     // The C debug build's line.
     #[cfg(feature = "debug-hooks")]
     trace::of_with(cx, dns, &[b"[HTTPS] hostip_resolv(", name, at, b")"]);
-    let max_age = cx.easy().options().limits.reuse.dns_max_age;
-    let now = cx.rest.now;
-    let kept = cx.rest.kept(cx.me, Kind::Names);
-    let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
-    let found = names.section(|d| d.lookup_https((peer.name(), port), max_age, now));
-    if found == HttpsLookup::Stale {
-        trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"));
-    }
+    let found = cached(route, cx);
     let not = if found == HttpsLookup::Found {
         ""
     } else {
@@ -315,8 +315,41 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Record {
             dns,
             format_args!("[HTTPS] hostip_resolv started -> {again}"),
         );
+        // The answer is asked for at once, the cache looked in first
+        // (`Curl_resolv_take_result`).
+        if cached(route, cx) == HttpsLookup::Found {
+            found_since(route, cx);
+            return Record::Known;
+        }
         Record::Pending
     }
+}
+
+/// The origin's record looked for in the cache, under the share's lock
+/// when the share keeps names (`Curl_dnscache_get`); one gone stale is
+/// dropped and said to be.
+fn cached<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> HttpsLookup {
+    let peer = route.target();
+    let max_age = cx.easy().options().limits.reuse.dns_max_age;
+    let now = cx.rest.now;
+    let kept = cx.rest.kept(cx.me, Kind::Names);
+    let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
+    let found = names.section(|d| d.lookup_https((peer.name(), peer.port()), max_age, now));
+    if found == HttpsLookup::Stale {
+        trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"));
+    }
+    found
+}
+
+/// The record, asked for, was kept by another transfer meanwhile: the
+/// resolve is let go (`Curl_resolv_take_result`), and what is kept is
+/// the answer, none.
+fn found_since<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) {
+    let peer = route.target();
+    let name = peer.name();
+    trace::info_with(cx, &[b"Hostname '", name, b"' was found in DNS cache"]);
+    let at = Text::<8>::clipped(format_args!(":{}", peer.port())).0;
+    trace::info_with(cx, &[b"HTTPS-RR ", name, at.bytes(), b": -"]);
 }
 
 /// The resolver's answer came: no record, kept as the name's

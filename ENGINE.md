@@ -504,7 +504,7 @@ version and an address's own family make them; the debug build's `hostip_resolv`
 the `debug-hooks` feature. Not traced: C's DNS filter's own life (`created DNS filter`, `added`,
 `cf_dns_start`, `connected filter chain below`, its removal and destruction), the chain's
 connect result C traces under the top filter's name
-(`Curl_conn_connect(block=0) -> R, done=D`, `filter returned R`), c-ares's polling (the cache looked in again at each poll, `resolve incomplete`, `still waiting`),
+(`Curl_conn_connect(block=0) -> R, done=D`, `filter returned R`), c-ares's polling (the line of each look in the cache as the HTTPS record is polled for, `resolve incomplete`, `still waiting`),
 and a SOCKS proxy's lookup of the destination.
 
 The TLS components, as the reference build traces them on the transfer. `SSL` (the origin's
@@ -1023,7 +1023,9 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   as the setup's first connect starts, as C's does (`queries=HTTPS -> 0 not found`, `hostip_resolv
   started -> 81`), and at the setup's next connect has the answer, none, as C's local resolver
   gives it before the attempt is looked at again, keeping it in the cache (`cache negative name
-  resolve for H:P type=HTTPS`). A later setup for the name finds it (`Hostname H was found in DNS
+  resolve for H:P type=HTTPS`). As C's `Curl_resolv_take_result` does, it looks in the cache again
+  as the resolve starts and as the answer is taken, each a use of a share's names; one kept
+  meanwhile by another transfer is not kept again (`Hostname 'H' was found in DNS cache`). A later setup for the name finds it (`Hostname H was found in DNS
   cache`, `HTTPS-RR H:P: -`) and arms nothing.
 - `Shutdown`: the shutdown set's deadline is the multi's, not a transfer's: C arms EXPIRE_SHUTDOWN on its internal
   handle for the earliest deadline of the connections shutting down (cshutdn.c:359–367). Built:

@@ -267,3 +267,32 @@ witness: curl-core proto::http::tests::h3_trace::a_connect_udp_tunnel_unanswered
         self.heard.get()
 --- new
         true
+
+=== the HTTPS record is not looked for again as its resolve starts
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h3_trace::a_name_s_https_record_is_looked_for_as_c_locks_it
+--- old
+        if cached(route, cx) == HttpsLookup::Found {
+            found_since(route, cx);
+            return Record::Known;
+        }
+        Record::Pending
+--- new
+        Record::Pending
+
+=== an HTTPS record kept by another transfer meanwhile is kept again
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h3_trace::a_record_kept_meanwhile_is_found_not_kept_again
+--- old
+            if cached(&c.route, cx) == HttpsLookup::Found {
+--- new
+            if false {
+
+=== an HTTPS record found as its answer is taken is not said to be none
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h3_trace::a_record_kept_meanwhile_is_found_not_kept_again
+--- old
+    trace::info_with(cx, &[b"HTTPS-RR ", name, at.bytes(), b": -"]);
+}
+--- new
+}

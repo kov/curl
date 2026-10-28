@@ -3017,6 +3017,100 @@ fn a_transfer_given_up_as_it_connects_lets_its_answer_go_as_c() {
     }
 }
 
+/// A name looked up for an `https` origin is used on a share that keeps
+/// names as C's is: its HTTPS record looked for, and looked for again
+/// as its resolve starts (`Curl_resolv_take_result`), its addresses
+/// looked for and kept, the record looked for once more as its answer
+/// comes, and the answer, none, kept; then two uses as the transfer,
+/// given up as it connects, is removed. C's library, given up 300 ms
+/// into a GET of `https://localhost:PORT/` from a server that accepts
+/// and says nothing, tells the lock function of the names six times as
+/// the setup goes and twice at the removal, in HTTP/3, HTTP/2 and
+/// HTTP/1.1 alike.
+#[test]
+fn a_name_s_https_record_is_looked_for_as_c_locks_it() {
+    use crate::share::{Kind, Share, Told};
+    for version in [
+        crate::options::HttpVersion::Http3,
+        crate::options::HttpVersion::Http11,
+    ] {
+        let first = Conversation::replies(&[], false);
+        let second = Conversation::replies(&[], false);
+        let mut m = racing_peer(Peer::Refuses, &first, Peer::Accepts, &second);
+        let share = Share::new().unwrap();
+        share.keep(Kind::Names).unwrap();
+        let told = Told::new(&share);
+        let mut e = tracing(FakeTls::new().unwrap(), &first_flight_only());
+        e.set_share_watched(share.clone(), told.handler());
+        let url = format!("https://localhost:{PORT}/");
+        e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+        e.options_mut().http.version = version;
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        for _ in 0..30 {
+            m.perform(&mut NoEvents).unwrap();
+            m.wait(
+                &mut [],
+                Duration::from_millis(10),
+                crate::multi::WaitMode::Wait,
+                &mut NoEvents,
+            )
+            .unwrap();
+        }
+        let hello = |c: &Conversation| c.received().starts_with(crate::tls::fake::HELLO);
+        assert!(
+            hello(&first) || hello(&second),
+            "{version:?}: the TLS hello went"
+        );
+        assert_eq!(told.uses(), [Kind::Names; 6], "{version:?}");
+        m.remove(id, &mut NoEvents).unwrap();
+        assert_eq!(told.uses(), [Kind::Names; 2], "{version:?}");
+    }
+}
+
+/// Two transfers to one name's `https` origin, set up together, both
+/// ask for its HTTPS record; the first's answer, none, is kept, and the
+/// second, looking in the cache again as its answer is taken, finds it
+/// there and keeps nothing (`Curl_resolv_take_result`). C's tool, given
+/// two such URLs at once (`-Z --parallel-immediate`), traces the same.
+#[test]
+fn a_record_kept_meanwhile_is_found_not_kept_again() {
+    let talk = [
+        Conversation::replies(&[], false),
+        Conversation::replies(&[], false),
+    ];
+    let mut m = racing_peer(Peer::Refuses, &talk[0], Peer::Accepts, &talk[1]);
+    let url = format!("https://localhost:{PORT}/");
+    let seen = [Seen::default(), Seen::default()];
+    for s in &seen {
+        let mut e = tracing(FakeTls::new().unwrap(), &first_flight_only());
+        let o = e.options_mut();
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http11;
+        o.output.verbose = true;
+        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    }
+    for _ in 0..5 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let starts = ["[DNS] cache negative", "Hostname ", "HTTPS-RR "];
+    let [one, two] = seen.map(|s| lines_of(&s, &starts));
+    assert_eq!(
+        one,
+        expect(&format!(
+            "[DNS] cache negative name resolve for localhost:{PORT} type=HTTPS"
+        ))
+    );
+    assert_eq!(
+        two,
+        expect(&format!(
+            "Hostname localhost was found in DNS cache
+            Hostname 'localhost' was found in DNS cache
+            HTTPS-RR localhost:{PORT}: -"
+        ))
+    );
+}
+
 /// HTTP/3 through an HTTP proxy over CONNECT-UDP, the proxy's first
 /// connection saying `first` and then nothing, the second a CONNECT
 /// tunnel to the origin: the race's lines.

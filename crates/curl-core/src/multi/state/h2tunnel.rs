@@ -8,8 +8,8 @@ use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
 use crate::components::Component;
-use crate::conn::Made;
 use crate::conn::h2proxy::{H2Proxy, TunnelState};
+use crate::conn::{Handshook, Tunneled};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::proto::http::negotiate;
@@ -219,7 +219,7 @@ fn inspect<H: Host>(
             Ok(p as Box<dyn crate::conn::layer::Layer>)
         })
         .map_err(oom)?;
-    s.machine.proxied(Made::TUNNEL | Made::H2_TUNNEL, || {
+    s.machine.proxied(Handshook::Tunnel(Tunneled::H2), || {
         cx.easy().options().proxy.haproxy
     });
     Ok(Ran::Through)

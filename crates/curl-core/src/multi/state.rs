@@ -566,7 +566,7 @@ impl TransferState {
         let waits = self.waits(LayerQuery::ProxyTlsWaits, pool)?;
         let tunneled = match self {
             TransferState::Connecting(c) => {
-                matches!(c.lead().map(ConnectMachine::reached), Some(SetupPoint::Dialed(m)) if m.has(Made::TUNNEL))
+                matches!(c.lead().map(ConnectMachine::reached), Some(SetupPoint::Dialed(m)) if m.tunnel.is_some())
             }
             state => state
                 .slot(pool)
@@ -2950,7 +2950,7 @@ fn enter_setup<H: Host>(
     // The tunnel's filter was added with the HTTPS proxy's TLS below it,
     // and goes on connecting in the same call.
     if let Due::Tunnel = due
-        && made.has(Made::PROXY_TLS)
+        && made.proxy_tls
     {
         return Some(chain(reached, Some(Component::HttpProxy), false));
     }
@@ -3397,19 +3397,19 @@ enum Due {
 /// cf-setup.c's order; none once they are all made.
 fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
     if let Some(version) = c.route.socks().map(|leg| leg.version)
-        && !made.has(Made::SOCKS)
+        && !made.socks
     {
         return Some(Due::Socks(version));
     }
     let tunnels = c.route.proxy.as_ref().is_some_and(|p| p.tunnels());
-    let proxy_tls = c.route.proxy_tls().is_some() && !made.has(Made::PROXY_TLS);
+    let proxy_tls = c.route.proxy_tls().is_some() && !made.proxy_tls;
     if proxy_tls && tunnels {
         return Some(Due::Tls(TlsSide::Proxy));
     }
-    if tunnels && !made.has(Made::TUNNEL) {
+    if tunnels && made.tunnel.is_none() {
         return Some(Due::Tunnel);
     }
-    if c.lead().is_some_and(ConnectMachine::sends_preface) && !made.has(Made::PREFACE) {
+    if c.lead().is_some_and(ConnectMachine::sends_preface) && !made.preface {
         return Some(Due::Preface);
     }
     // Requests go whole to the HTTPS proxy: its TLS is the origin's
@@ -3421,9 +3421,9 @@ fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
     // connection's.
     let lead = c.lead().expect("a handshake is due over a setup");
     if lead.dialing().tunnels_udp() {
-        return (!made.has(Made::QUIC)).then_some(Due::Quic);
+        return (!made.quic).then_some(Due::Quic);
     }
-    if c.route.tls.is_some() && !made.has(Made::TLS) {
+    if c.route.tls.is_some() && !made.tls {
         return Some(Due::Tls(TlsSide::Origin));
     }
     None

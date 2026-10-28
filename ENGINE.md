@@ -1387,7 +1387,8 @@ socket before its connect.
   every handshake runs over that `Stream`. A handshake whose layer goes on working once it is
   done (TLS) pushes it on the stream; SOCKS and the HTTP proxy's tunnel, which only pass bytes
   once connected, are recorded as made on the `Dialed` connection that owns the stream
-  (`Made`, a few bits in its padding, so no byte more for any transfer), not as boxed layers
+  (`Made`, one fact per handshake, the tunnel's with what it is a stream of (`Tunneled`), in
+  the machine's padding, so no byte more for any transfer), not as boxed layers
   that do nothing. Happy eyeballs never reads DNS sideways (C's
   `Curl_conn_dns_get_ai`), and the resolve record lives with the machine that started it, not
   on whichever transfer happens to call.
@@ -2758,7 +2759,7 @@ read as C says it; at most four 16 KiB chunks held to read, a capsule taken whol
 asked for while some waits); the origin's `Quic` is made layered over the stream's ends
 (`ConnectMachine::tunnel_quic`, the origin's TLS and `Component::Http3` whatever the race made)
 and held by `Handshake::Quic`, its connect driven over the
-layers; done, it rides in `Dialed` (`put_quic`, `Made::QUIC`) and becomes the connection's HTTP/3
+layers; done, it rides in `Dialed` (`put_quic`, `Handshook::Quic`) and becomes the connection's HTTP/3
 session as the setup ends. The chain is C's: `[HTTP/3][CAPSULE]` on top of the tunnel's filters,
 the capsule filter connected at once, HAPPY-EYEBALLS going with the setup's others,
 `[HTTP/3][CAPSULE][H1-PROXY][TCP]` once reduced, `[HTTP/3][CAPSULE][H3-PROXY][UDP]` through an

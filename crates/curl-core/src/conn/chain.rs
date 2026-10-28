@@ -8,7 +8,7 @@
 
 use std::fmt;
 
-use super::connect::Made;
+use super::connect::{Made, Tunneled};
 use super::{Dialing, NetRoute};
 use crate::components::Component;
 
@@ -95,7 +95,7 @@ impl Chain {
             }
             // An HTTP/3 proxy's tunnel is the race's attempt, held apart
             // from the chain until it connects.
-            SetupPoint::Dialed(made) if route.proxy_over_quic() && !made.has(Made::TUNNEL) => {
+            SetupPoint::Dialed(made) if route.proxy_over_quic() && made.tunnel.is_none() => {
                 return Chain::of(
                     route,
                     head,
@@ -106,36 +106,36 @@ impl Chain {
             }
             SetupPoint::Dialed(made) => made,
         };
-        let added = |which: Made, filter: Component| made.has(which) || under_way == Some(filter);
+        let added = |made: bool, filter: Component| made || under_way == Some(filter);
         let tunnels = route.proxy.as_ref().is_some_and(|p| p.tunnels());
         let proxy_tls_first = tunnels && under_way == Some(Component::SslProxy);
-        let h2 = made.has(Made::H2_TUNNEL) || under_way == Some(Component::H2Proxy);
+        let h2 = made.tunnel == Some(Tunneled::H2) || under_way == Some(Component::H2Proxy);
         let added = Handshakes {
-            socks: added(Made::SOCKS, Component::Socks),
-            proxy_tls: added(Made::PROXY_TLS, Component::SslProxy),
-            tunnel: added(Made::TUNNEL, Component::HttpProxy)
+            socks: added(made.socks, Component::Socks),
+            proxy_tls: added(made.proxy_tls, Component::SslProxy),
+            tunnel: added(made.tunnel.is_some(), Component::HttpProxy)
                 || proxy_tls_first
                 || under_way == Some(Component::H2Proxy),
-            preface: added(Made::PREFACE, Component::Haproxy),
-            tls: added(Made::TLS, Component::Ssl),
-            quic: added(Made::QUIC, Component::Http3),
+            preface: added(made.preface, Component::Haproxy),
+            tls: added(made.tls, Component::Ssl),
+            quic: added(made.quic, Component::Http3),
         };
         // The capsule filter connects at once, its tunnel up.
-        let capsules = installed || made.has(Made::QUIC);
+        let capsules = installed || made.quic;
         let connected = |filter| match filter {
-            Component::Socks => made.has(Made::SOCKS),
-            Component::SslProxy => made.has(Made::PROXY_TLS),
+            Component::Socks => made.socks,
+            Component::SslProxy => made.proxy_tls,
             Component::HttpProxy | Component::H1Proxy | Component::H2Proxy | Component::H3Proxy => {
-                made.has(Made::TUNNEL)
+                made.tunnel.is_some()
             }
-            Component::Haproxy => made.has(Made::PREFACE),
-            Component::Ssl => made.has(Made::TLS),
-            Component::Http3 => made.has(Made::QUIC),
+            Component::Haproxy => made.preface,
+            Component::Ssl => made.tls,
+            Component::Http3 => made.quic,
             Component::Capsule => capsules,
             Component::HappyEyeballs | Component::Tcp | Component::Udp | Component::Unix => true,
             _ => false,
         };
-        let installed = (installed && !proxy_tls_first) || made.has(Made::TUNNEL) || h2;
+        let installed = (installed && !proxy_tls_first) || made.tunnel.is_some() || h2;
         let tunnel = if h2 {
             Component::H2Proxy
         } else {
@@ -351,7 +351,16 @@ mod tests {
     use curl_alloc::TryArc;
 
     use super::*;
-    use crate::conn::{Peer, Scheme};
+    use crate::conn::{Handshook, Peer, Scheme};
+
+    /// Each handshake is made once: a second mark of one is a setup that
+    /// lost its place, which the chain would show wrong.
+    #[test]
+    #[should_panic(expected = "is made once")]
+    fn a_handshake_is_made_once() {
+        let made = Made::default().with(Handshook::Tunnel(Tunneled::H1));
+        let _ = made.with(Handshook::Tunnel(Tunneled::H2));
+    }
     use crate::options::IpVersion;
 
     /// A handshake's filter shows connected once it is made, as C's does
@@ -387,7 +396,7 @@ mod tests {
             .to_string()
         };
         assert_eq!(
-            shown(Made::PREFACE, None),
+            shown(Made::default().with(Handshook::Preface), None),
             "[0][!DNS][!SETUP][HAPROXY][HAPPY-EYEBALLS][TCP]"
         );
         assert_eq!(
@@ -418,7 +427,7 @@ mod tests {
             .to_string()
         };
         assert_eq!(
-            shown(Made::TLS, None),
+            shown(Made::default().with(Handshook::Tls), None),
             "[0][!DNS][!SETUP][SSL][HAPPY-EYEBALLS][TCP]"
         );
         assert_eq!(
@@ -474,7 +483,10 @@ mod tests {
             "[0][!DNS][!SETUP][!HTTP-PROXY][!SSL-PROXY][HAPPY-EYEBALLS][TCP]"
         );
         assert_eq!(
-            shown(Made::PROXY_TLS, Some(Component::HttpProxy)),
+            shown(
+                Made::default().with(Handshook::ProxyTls),
+                Some(Component::HttpProxy)
+            ),
             "[0][!DNS][!SETUP][!HTTP-PROXY][SSL-PROXY][HAPPY-EYEBALLS][TCP]"
         );
     }
@@ -525,10 +537,15 @@ mod tests {
             .to_string()
         };
         assert_eq!(
-            shown(Made::PROXY_TLS, Some(Component::H3Proxy)),
+            shown(
+                Made::default().with(Handshook::ProxyTls),
+                Some(Component::H3Proxy)
+            ),
             "[0][!DNS][!SETUP][!HAPPY-EYEBALLS]"
         );
-        let made = Made::PROXY_TLS | Made::TUNNEL | Made::H3_TUNNEL;
+        let made = Made::default()
+            .with(Handshook::ProxyTls)
+            .with(Handshook::Tunnel(Tunneled::H3));
         let up = Chain::of(
             Dialing {
                 route,
@@ -599,15 +616,29 @@ mod tests {
             "[0][!DNS][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]"
         );
         assert_eq!(
-            shown(Made::TUNNEL, Some(Component::Http3), false),
+            shown(
+                Made::default().with(Handshook::Tunnel(Tunneled::H1)),
+                Some(Component::Http3),
+                false
+            ),
             "[0][!DNS][!SETUP][!HTTP/3][!CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]"
         );
         assert_eq!(
-            shown(Made::TUNNEL, Some(Component::Http3), true),
+            shown(
+                Made::default().with(Handshook::Tunnel(Tunneled::H1)),
+                Some(Component::Http3),
+                true
+            ),
             "[0][!DNS][!SETUP][!HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]"
         );
         assert_eq!(
-            shown(Made::TUNNEL | Made::QUIC, None, true),
+            shown(
+                Made::default()
+                    .with(Handshook::Tunnel(Tunneled::H1))
+                    .with(Handshook::Quic),
+                None,
+                true
+            ),
             "[0][!DNS][!SETUP][HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]"
         );
         let up = Chain::connected(route, Head::default(), false, Component::H1Proxy);

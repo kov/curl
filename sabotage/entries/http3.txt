@@ -550,9 +550,9 @@ witness: curl-core proto::http::tests::h3_trace::a_tunnel_an_http3_proxy_closes_
 file: crates/curl-core/src/conn/chain.rs
 witness: curl-core conn::chain::tests::an_http3_proxy_s_tunnel_is_the_race_s_attempt
 --- old
-            SetupPoint::Dialed(made) if route.proxy_over_quic() && !made.has(Made::TUNNEL) => {
+            SetupPoint::Dialed(made) if route.proxy_over_quic() && made.tunnel.is_none() => {
 --- new
-            SetupPoint::Dialed(made) if route.proxy_over_quic() && made.has(Made::SOCKS) => {
+            SetupPoint::Dialed(made) if route.proxy_over_quic() && made.socks => {
 
 === the HAPPY-EYEBALLS filter goes untraced once an HTTP/3 proxy's tunnel is up
 file: crates/curl-core/src/conn/chain.rs

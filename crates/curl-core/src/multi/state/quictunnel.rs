@@ -8,7 +8,7 @@
 use curl_alloc::{OutOfMemory, try_box};
 
 use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
-use crate::conn::Made;
+use crate::conn::Handshook;
 use crate::conn::capsule::CapsuleLayer;
 use crate::conn::quic::{Over, Path};
 use crate::error::ErrorKind;
@@ -72,7 +72,7 @@ pub(super) fn step<H: Host>(
             };
             let dialed = s.machine.dialed();
             dialed.put_quic(quic);
-            dialed.mark_made(Made::QUIC);
+            dialed.mark_made(Handshook::Quic);
             Ok(Wake::Again)
         }
         Err(kind) => Err(Failure::Attempt(kind)),

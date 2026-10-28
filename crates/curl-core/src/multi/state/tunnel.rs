@@ -10,7 +10,7 @@ use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
 use crate::components::Component;
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::layer::LayerQuery;
-use crate::conn::{Made, NetRoute, Peer, RecvFailed};
+use crate::conn::{Handshook, NetRoute, Peer, RecvFailed, Tunneled};
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin};
 use crate::multi::Host;
@@ -718,8 +718,9 @@ fn finish<H: Host>(
         // The request follows the `CONNECT`: what reads it starts over
         // (`cf_h1_proxy_connect`'s `Curl_client_reset`).
         crate::upload::trace_reset(cx, false);
-        s.machine
-            .proxied(Made::TUNNEL, || cx.easy().options().proxy.haproxy);
+        s.machine.proxied(Handshook::Tunnel(Tunneled::H1), || {
+            cx.easy().options().proxy.haproxy
+        });
         return Ok(Ran::Through);
     }
     // What the challenges lead to (`Curl_http_auth_act`).

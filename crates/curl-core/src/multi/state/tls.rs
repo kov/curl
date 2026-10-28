@@ -11,7 +11,7 @@ use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
 use crate::components::Component;
 use crate::conn::layer::LayerQuery;
 use crate::conn::tls::TlsLayer;
-use crate::conn::{Dial, Made, Peer, Stream};
+use crate::conn::{Dial, Handshook, Peer, Stream};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::options::{ProxyType, SslOptions, TlsMaxVersion, TlsMinVersion, TlsOptions};
@@ -36,10 +36,10 @@ impl TlsSide {
     }
 
     /// What the connection's `made` records once it is made.
-    fn made(self) -> Made {
+    fn made(self) -> Handshook {
         match self {
-            TlsSide::Origin => Made::TLS,
-            TlsSide::Proxy => Made::PROXY_TLS,
+            TlsSide::Origin => Handshook::Tls,
+            TlsSide::Proxy => Handshook::ProxyTls,
         }
     }
 }

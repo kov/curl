@@ -12,7 +12,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_alloc::try_box;
 
 use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
-use crate::conn::Made;
+use crate::conn::Handshook;
 use crate::conn::io::{Events, Remote, Sent};
 use crate::error::ErrorKind;
 use crate::multi::Host;
@@ -147,7 +147,7 @@ pub(super) fn step<H: Host>(
             }
         }
     }
-    s.machine.dialed().mark_made(Made::PREFACE);
+    s.machine.dialed().mark_made(Handshook::Preface);
     *s.handshake = None;
     Ok(Wake::Again)
 }

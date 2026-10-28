@@ -11,7 +11,7 @@ use crate::conn::socks::{
     Creds, Dest, Failed, GssError, GssLine, GssMethod, Handshake as Exchange, Resolved, SocksError,
     Took, Version,
 };
-use crate::conn::{Came, Made, RecvFailed};
+use crate::conn::{Came, Handshook, RecvFailed};
 use crate::error::ErrorKind;
 use crate::gss::Style;
 use crate::multi::Host;
@@ -220,7 +220,7 @@ fn opened<H: Host>(
         s.machine.dialed().socks5_authenticated();
     }
     s.machine
-        .proxied(Made::SOCKS, || cx.easy().options().proxy.haproxy);
+        .proxied(Handshook::Socks, || cx.easy().options().proxy.haproxy);
     let (remote, local) = s.machine.dialed().ends();
     let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
     let proxy = lent.route.proxy.as_ref().expect("dialed through a proxy");

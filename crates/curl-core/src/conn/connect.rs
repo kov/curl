@@ -107,36 +107,59 @@ pub(crate) struct Dialed {
 /// line's filter goes once the chain is connected; the origin's TLS stays
 /// as the layer on top (`[SSL][TCP]`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Made(u8);
-
-impl Made {
-    pub(crate) const SOCKS: Made = Made(1);
-    pub(crate) const TUNNEL: Made = Made(2);
-    pub(crate) const PREFACE: Made = Made(4);
-    pub(crate) const TLS: Made = Made(8);
+pub(crate) struct Made {
+    /// The SOCKS proxy's.
+    pub(crate) socks: bool,
     /// An HTTPS proxy's TLS, which stays as a layer below what follows
     /// (`[SSL-PROXY][TCP]`).
-    pub(crate) const PROXY_TLS: Made = Made(16);
-    /// The tunnel is a stream of an HTTP/2 session with the proxy
-    /// (`[H2-PROXY]`), made with `TUNNEL`.
-    pub(crate) const H2_TUNNEL: Made = Made(32);
-    /// The tunnel is a stream of a QUIC connection to an HTTP/3 proxy
-    /// (`[H3-PROXY]`), made with `TUNNEL`.
-    pub(crate) const H3_TUNNEL: Made = Made(64);
+    pub(crate) proxy_tls: bool,
+    /// The tunnel through the HTTP proxy, and what it is a stream of.
+    pub(crate) tunnel: Option<Tunneled>,
+    /// The PROXY protocol's line.
+    pub(crate) preface: bool,
+    /// The origin's TLS.
+    pub(crate) tls: bool,
     /// The origin's QUIC connection through a CONNECT-UDP tunnel
     /// (`[HTTP/3][CAPSULE]`), in place of its TLS.
-    pub(crate) const QUIC: Made = Made(128);
-
-    pub(crate) fn has(self, which: Made) -> bool {
-        self.0 & which.0 != 0
-    }
+    pub(crate) quic: bool,
 }
 
-impl std::ops::BitOr for Made {
-    type Output = Made;
+/// What a tunnel through an HTTP proxy is a stream of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tunneled {
+    /// The connection to the proxy itself, spoken to in HTTP/1
+    /// (`[H1-PROXY]`).
+    H1,
+    /// An HTTP/2 session with the proxy (`[H2-PROXY]`).
+    H2,
+    /// A QUIC connection to an HTTP/3 proxy (`[H3-PROXY]`).
+    H3,
+}
 
-    fn bitor(self, other: Made) -> Made {
-        Made(self.0 | other.0)
+/// One handshake made over a dialed connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Handshook {
+    Socks,
+    ProxyTls,
+    Tunnel(Tunneled),
+    Preface,
+    Tls,
+    Quic,
+}
+
+impl Made {
+    /// With `which` made, which was not before: each is made once.
+    pub(crate) fn with(mut self, which: Handshook) -> Made {
+        let fresh = match which {
+            Handshook::Socks => !std::mem::replace(&mut self.socks, true),
+            Handshook::ProxyTls => !std::mem::replace(&mut self.proxy_tls, true),
+            Handshook::Tunnel(over) => self.tunnel.replace(over).is_none(),
+            Handshook::Preface => !std::mem::replace(&mut self.preface, true),
+            Handshook::Tls => !std::mem::replace(&mut self.tls, true),
+            Handshook::Quic => !std::mem::replace(&mut self.quic, true),
+        };
+        assert!(fresh, "{which:?} is made once");
+        self
     }
 }
 
@@ -147,8 +170,8 @@ impl Dialed {
     }
 
     /// The handshake `which` is made.
-    pub(crate) fn mark_made(&mut self, which: Made) {
-        self.made.0 |= which.0;
+    pub(crate) fn mark_made(&mut self, which: Handshook) {
+        self.made = self.made.with(which);
     }
 
     /// A SOCKS5 proxy on the way authenticated the user, which the
@@ -782,14 +805,14 @@ impl ConnectMachine {
     /// The proxy's handshake `which` is made over the dialed connection.
     /// Once the route's are all made, whether the PROXY protocol's line
     /// follows is decided, `haproxy` read then and only then.
-    pub(crate) fn proxied(&mut self, which: Made, haproxy: impl FnOnce() -> bool) {
+    pub(crate) fn proxied(&mut self, which: Handshook, haproxy: impl FnOnce() -> bool) {
         let Stage::Dialed(d) = &mut self.stage else {
             panic!("no handshake is made");
         };
         d.mark_made(which);
         let route = &self.route;
-        let socks = route.socks().is_some() && !d.made.has(Made::SOCKS);
-        let tunnel = route.proxy.as_ref().is_some_and(|p| p.tunnels()) && !d.made.has(Made::TUNNEL);
+        let socks = route.socks().is_some() && !d.made.socks;
+        let tunnel = route.proxy.as_ref().is_some_and(|p| p.tunnels()) && d.made.tunnel.is_none();
         if !socks && !tunnel {
             assert!(d.preface.is_none(), "the PROXY line is decided once");
             d.preface = Some(haproxy());
@@ -1547,7 +1570,7 @@ impl ConnectMachine {
                 .unwrap_or(now);
             // The proxy's TLS is its QUIC connection's, made.
             let made = if proxy_quic.is_some() {
-                Made::PROXY_TLS
+                Made::default().with(Handshook::ProxyTls)
             } else {
                 Made::default()
             };

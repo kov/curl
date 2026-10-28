@@ -995,3 +995,11 @@ witness: curl-core conn::quic::tests::the_multis_room_is_lent_once
             RecvRoom::Lent => panic!("the multi's receive room is lent to one receive at a time"),
 --- new
             RecvRoom::Lent => new_room(RECV_ROOM),
+
+=== a paused transfer waits to write for its QUIC connection's unsent packets
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_waits_on_nothing_while_its_connection_holds_packets
+--- old
+            }) if !wanted.is_empty() => h3conn.adjust_pollset(wanted, h3),
+--- new
+            }) if true => h3conn.adjust_pollset(wanted, h3),

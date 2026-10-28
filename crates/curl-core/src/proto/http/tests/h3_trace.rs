@@ -376,6 +376,66 @@ fn get_script(body: &[u8]) -> Arc<Mutex<Script>> {
     script
 }
 
+/// A transfer paused both ways waits on nothing, its QUIC connection's
+/// unsent packets among it: the connection's own wish to write is not
+/// put in a pollset that wants no I/O, as C's filters are not asked then
+/// (`Curl_conn_adjust_pollset`), or the multi would be woken by a socket
+/// that is always writable while the transfer can do nothing.
+#[test]
+fn a_paused_transfer_waits_on_nothing_while_its_connection_holds_packets() {
+    use crate::conn::io::Events;
+    use crate::deliver::PauseRequest;
+    let script = get_script(b"123456789");
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    // The handshake's sends go; the request's are refused from then on.
+    let talk = Conversation::replies(&[b"server flight", b"response"], false)
+        .per_send()
+        .stalling_sends_after(1, 1000);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk);
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let mut e = tracing(FakeTls::new().unwrap(), &script);
+    let url = format!("https://127.0.0.1:{PORT}/");
+    e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+    e.options_mut().http.version = crate::options::HttpVersion::Http3Only;
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    let mut waits = Events::NONE;
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+        waits = Events::NONE;
+        m.sockets(&mut NoEvents, |_, e| waits = waits | e).unwrap();
+        if matches!(
+            m.state_of(id),
+            crate::multi::state::TransferState::Exchanging(_)
+        ) && waits.contains(Events::OUT)
+        {
+            break;
+        }
+    }
+    assert!(
+        matches!(
+            m.state_of(id),
+            crate::multi::state::TransferState::Exchanging(_)
+        ),
+        "the request is under way"
+    );
+    assert!(waits.contains(Events::OUT), "the connection holds packets");
+    m.pause(id, PauseRequest::ALL, &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let mut paused = Events::NONE;
+    m.sockets(&mut NoEvents, |_, e| paused = paused | e)
+        .unwrap();
+    assert_eq!(paused, Events::NONE);
+}
+
 /// A QUIC connection's socket is not drained as it closes: C reads the
 /// 1 KB of dangling bytes off a TCP socket alone (`cf_socket_shutdown`),
 /// a datagram socket's being QUIC's to read.
@@ -1926,7 +1986,7 @@ fn a_race_timed_out_closes_both_attempts() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::new(env).unwrap();
     let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
     let url = format!("https://127.0.0.1:{PORT}/");
     let ran = get_with(&mut m, e, "/", tcp_talk.clone(), |o| {
@@ -2567,7 +2627,7 @@ fn a_request_not_tunnelled_goes_to_an_http3_proxy_over_tcp() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::new(env).unwrap();
     let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/p")).unwrap();
@@ -2765,7 +2825,7 @@ fn a_connect_udp_refused_fails_the_tunnel() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::new(env).unwrap();
     let e = tracing(FakeTls::new().unwrap(), &script);
     let url = format!("https://localhost:{PORT}/");
     let ran = get_with(&mut m, e, "/", talk, |o| {
@@ -2806,7 +2866,7 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::new(env).unwrap();
     let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
     let url = format!("https://localhost:{PORT}/");
     let ran = get_with(&mut m, e, "/", talk, |o| {
@@ -2886,7 +2946,7 @@ fn http3_through_a_proxy_refusing_both_tunnels_fails() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::new(env).unwrap();
     let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
     let url = format!("https://localhost:{PORT}/");
     let ran = get_with(&mut m, e, "/", second, |o| {
@@ -2973,7 +3033,7 @@ fn http3_through_an_http_proxy_goes_over_connect_udp() {
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m = Multi::new(env).unwrap();
+    let mut m: Multi = Multi::new(env).unwrap();
     let e = tracing(FakeTls::new().unwrap(), &script);
     let url = format!("https://localhost:{PORT}/");
     let ran = get_with(&mut m, e, "/", talk.clone(), |o| {

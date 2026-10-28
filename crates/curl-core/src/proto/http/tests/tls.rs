@@ -548,6 +548,50 @@ fn http_through_an_https_proxy_asks_no_upgrade_to_http_2() {
     assert!(!sent.contains("HTTP2-Settings"), "{sent}");
 }
 
+/// The HTTPS proxy's TLS filter puts its socket in the pollset for what
+/// its session waits for: once on its own, and once more, once a tunnel
+/// through it is made, as the tunnel's filter, connected, asks it again
+/// (`cf_h1_proxy_adjust_pollset`, `Curl_ssl_adjust_pollset`).
+#[test]
+fn an_https_proxy_s_tls_is_asked_again_by_its_tunnel() {
+    for tunnel in [false, true] {
+        let established = fake::records(b"HTTP/1.1 200 Connection established\r\n\r\n").unwrap();
+        let response = fake::records(OK).unwrap();
+        let replies: &[&[u8]] = if tunnel {
+            &[WELCOME, &established, &response]
+        } else {
+            &[WELCOME, &response]
+        };
+        let (_, libraries) = tls();
+        let (mut m, talk, _) = server(replies, false);
+        let talk = talk.late_replies();
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"ssl-proxy");
+        e.set_components(Some(c));
+        let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+            https_proxy(o, b"http://origin.example/p");
+            o.proxy.make_mut().unwrap().tunnel = tunnel;
+        });
+        assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+        let text = ran.seen.text();
+        let polled: Vec<usize> = (0..text.len())
+            .filter(|&i| text[i] == "[SSL-PROXY] adjust_pollset, POLLIN fd=1000\n")
+            .collect();
+        // Waiting for the proxy's handshake, then, the tunnel's, for its
+        // answer to the CONNECT; then, the request sent, for its answer:
+        // asked twice in a row through a tunnel, as C's trace shows.
+        if tunnel {
+            assert_eq!(polled.len(), 4, "{text:#?}");
+            assert_eq!(polled[3], polled[2] + 1, "{text:#?}");
+        } else {
+            assert_eq!(polled.len(), 2, "{text:#?}");
+            assert_ne!(polled[1], polled[0] + 1, "{text:#?}");
+        }
+    }
+}
+
 /// HTTPS through an HTTPS proxy makes TLS with the proxy first, then the
 /// tunnel through it, then TLS with the origin inside that: the origin's
 /// records travel inside the proxy's, and the CONNECT never goes in the

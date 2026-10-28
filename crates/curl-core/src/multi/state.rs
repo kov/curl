@@ -3186,7 +3186,7 @@ fn connect_once<H: Host>(
                 return (TransferState::Connecting(c), Wake::Again);
             }
             // A connect under way is polled at the next call.
-            attempt_waits(run, cx, a == c.leader(), until);
+            waiting(run, cx, until);
             (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Connected::Connecting(Progress::Dialed)) => {
@@ -3195,7 +3195,7 @@ fn connect_once<H: Host>(
             (TransferState::Connecting(c), Wake::Again)
         }
         Ok(Connected::Connecting(Progress::Waiting { until } | Progress::Tunnel { until })) => {
-            attempt_waits(run, cx, a == c.leader(), until);
+            waiting(run, cx, until);
             (TransferState::Connecting(c), Wake::Idle)
         }
         // The resolver's answer wakes the multi; a thread it could not
@@ -3743,29 +3743,14 @@ fn trace_resolved<H: Host>(
     );
 }
 
-/// The setup waits for its sockets, and for the race's next attempt at
-/// `until`, if one is left.
+/// An attempt waits for its sockets, and until `until` for its next
+/// attempt to be due, if one is left: the race's timer is armed for it.
+/// With none left the timer stays as it was, armed for an attempt that
+/// went before, until it fires or the race is won: C's
+/// `cf_ip_ballers_run` only ever arms it.
 fn waiting<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, until: Option<Instant>) {
-    match until {
-        Some(at) => eyeballs_due(run, cx, at),
-        // Nothing left to start: C never armed it.
-        None => run.deadlines.clear(TimerKind::Eyeballs),
-    }
-}
-
-/// An attempt waits until `until` for its next attempt to be due: the
-/// lead's wait sets the race's timer, or clears it with nothing left to
-/// start; the other's only brings it forward, the lead's still to come.
-fn attempt_waits<H: Host>(
-    run: &mut Run,
-    cx: &mut StepCx<'_, H>,
-    lead: bool,
-    until: Option<Instant>,
-) {
-    match until {
-        _ if lead => waiting(run, cx, until),
-        Some(at) => eyeballs_due(run, cx, at),
-        None => {}
+    if let Some(at) = until {
+        eyeballs_due(run, cx, at);
     }
 }
 

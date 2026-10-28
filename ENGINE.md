@@ -553,8 +553,9 @@ budgeted). One of the two leads (`Race::lead`): the first, until a second over T
 leads from then on. Each attempt has its own setup, the first's handshake on `Connecting`,
 the second's in `Race::setup`, and each is driven the same way, its connect and then its
 handshakes (`connect_once`, `handshake_next` and `enter_setup` for an `Attempt`); a failure
-of the attempt beside the lead is its own (`https::other_failed`), and only the lead's wait
-may clear the race's timer. The lead is the setup the transfer reports and names its
+of the attempt beside the lead is its own (`https::other_failed`). Either attempt's wait arms the
+race's timer for its next attempt; with none left it stays as it was, as C's
+`cf_ip_ballers_run` only ever arms it, until the race is won or the transfer ends. The lead is the setup the transfer reports and names its
 timeout after (`Connecting::lead`); the other is driven in its turn (`drive_other`), and
 nothing is moved between the lease and the race. Each connect call drives, and each pollset lists, the two in their ballers' order, which
 `https::other_leads` reads from the first's version: the first before the second. A second

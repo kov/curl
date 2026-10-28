@@ -193,3 +193,16 @@ impl Clock for SystemClock {
     fn now(&self) -> Instant {
         Instant(micros(self.0.elapsed()))
     }
+
+=== the race's timer is cleared with no attempt left to start
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tcp_trace::the_race_s_timer_stays_armed_with_no_attempt_left
+--- old
+    if let Some(at) = until {
+        eyeballs_due(run, cx, at);
+    }
+--- new
+    match until {
+        Some(at) => eyeballs_due(run, cx, at),
+        None => run.deadlines.clear(TimerKind::Eyeballs),
+    }

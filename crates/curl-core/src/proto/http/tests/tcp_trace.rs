@@ -720,3 +720,64 @@ fn a_reason_is_let_go_as_an_attempt_connects() {
     assert_eq!(ran.easy.report().failure(), None);
     assert_eq!(told, [&b"failed to open socket: Success"[..], b""]);
 }
+
+/// An IPv6 address refused, then the last, an IPv4 one, silent: the
+/// race's timer, armed for the IPv4 attempt as the first started, stays
+/// armed with no attempt left to start, until it fires (C's
+/// `cf_ip_ballers_run` only arms it), and the pollsets list it until
+/// then, as C's do for the same addresses.
+#[test]
+fn the_race_s_timer_stays_armed_with_no_attempt_left() {
+    let talk = Conversation::replies(&[OK], false);
+    let v6 = IpAddr::from(std::net::Ipv6Addr::LOCALHOST);
+    let silent = IpAddr::from([192, 0, 2, 1]);
+    let mut m = named(
+        "dual.example",
+        &[(v6, Peer::Refuses), (silent, Peer::Silent)],
+        &talk,
+    );
+    let mut e = Easy::new();
+    let components = Components::new().unwrap();
+    components.configure(b"tcp,multi,timer");
+    e.set_components(Some(components));
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        let url = format!("http://dual.example:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.connect = crate::time::TimeLimit::from_millis(1000);
+    });
+    assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+    let text: Vec<String> = ran
+        .seen
+        .text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    let from = text
+        .iter()
+        .position(|l| l.starts_with("  Trying 192.0.2.1"))
+        .expect("the last address is tried");
+    let to = text
+        .iter()
+        .position(|l| l.starts_with("Connection timed out"))
+        .expect("the connect runs out");
+    let timers: Vec<&String> = text[from..to]
+        .iter()
+        .filter(|l| l.starts_with("[TIMER]") || l.contains("pollset["))
+        .collect();
+    // C's has no TIMEOUT, its transfer given no limit of its own.
+    assert_eq!(
+        timers,
+        [
+            "[MULTI] [CONNECTING] pollset[fd=1000 OUT], timeouts=3",
+            "[TIMER] [HAPPY_EYEBALLS] expires in 200000us",
+            "[TIMER] [CONNECTTIMEOUT] expires in 1000000us",
+            "[TIMER] [TIMEOUT] expires in 10000000us",
+            "[TIMER] [HAPPY_EYEBALLS] gives multi timeout in 200ms",
+            "[MULTI] [CONNECTING] pollset[fd=1000 OUT], timeouts=2",
+            "[TIMER] [CONNECTTIMEOUT] expires in 800000us",
+            "[TIMER] [TIMEOUT] expires in 9800000us",
+            "[TIMER] [CONNECTTIMEOUT] gives multi timeout in 800ms",
+        ],
+        "{text:#?}"
+    );
+}

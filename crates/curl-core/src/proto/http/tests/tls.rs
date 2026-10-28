@@ -309,8 +309,9 @@ impl crate::handler::DebugHandler for NativeHeard {
 
 /// A transfer on a connection it reuses has the connection attached
 /// from the start, as C attaches it as it finds it: its handlers reach
-/// the connection's TLS library's objects while it connects
-/// (`CURLINFO_TLS_SSL_PTR`), as they do once its request goes.
+/// the connection's TLS library's objects from the line that says it is
+/// reused and while it connects (`CURLINFO_TLS_SSL_PTR`), as they do once
+/// its request goes.
 #[test]
 fn a_transfer_reusing_a_connection_reaches_its_tls_objects_as_it_connects() {
     let (_, libraries) = tls();
@@ -347,6 +348,9 @@ fn a_transfer_reusing_a_connection_reaches_its_tls_objects_as_it_connects() {
         .collect();
     assert!(!connecting.is_empty(), "{heard:#?}");
     assert!(connecting.iter().all(|(_, native)| *native), "{heard:#?}");
+    // C attaches the connection it found before it says so
+    // (`url_find_or_create_conn`), so the line saying so reaches them.
+    assert!(heard[at].1, "{heard:#?}");
 }
 
 /// What a transfer's pollset says between the passes of `m` until the

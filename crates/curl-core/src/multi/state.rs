@@ -5283,6 +5283,10 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
                 Some(proxy) => (b": connection with proxy ", proxy.peer.shown()),
                 None => (b": connection with host ", route.origin.name()),
             };
+            // Attached as it is found, its TLS objects the handlers' from
+            // the line that says so (`url_find_or_create_conn`).
+            let slot = cx.rest.caches.pool.slot_of(&lease);
+            cx.lent = native_of(slot.and_then(|s| s.query(LayerQuery::TlsNative)));
             trace::info_with(cx, &[b"Reusing existing ", name.as_bytes(), to, host]);
             lease
         }

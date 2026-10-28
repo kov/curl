@@ -1625,12 +1625,55 @@ fn input_an_http2_session_holds_is_pending_on_its_connection() {
     assert!(!conn.data_pending(), "nothing is held yet");
     let mut h2 = conn.take_h2().expect("it speaks HTTP/2");
     h2.hold(b"S\n").unwrap();
-    conn.put_h2(h2);
+    conn.give_back_h2(h2);
     assert!(conn.data_pending());
     let mut h2 = conn.take_h2().expect("it speaks HTTP/2");
     assert_eq!(h2.take_held(), b"S\n");
-    conn.put_h2(h2);
+    conn.give_back_h2(h2);
     assert!(!conn.data_pending(), "what was held is taken");
+    pool.release(
+        &Home::Multi,
+        lease,
+        Finish::default(),
+        UNLIMITED,
+        &mut net,
+        now,
+    );
+    pool.close_idle(&mut net, now);
+}
+
+/// A connection's session taken out for a step reads as none until it
+/// is given back, which only the version taken out may be; a new one
+/// goes only where none was found, and none is found where one is.
+#[test]
+fn a_session_out_for_a_step_reads_as_none_and_comes_back_alone() {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let mut pool = Pool::new().unwrap();
+    let mut lease = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
+    up(&mut lease, &mut net, now);
+    speaks_h2(&mut lease);
+    let Some(ConnSlot::Open(conn)) = lease.conn.as_deref_mut() else {
+        panic!("not up");
+    };
+    assert!(conn.multiplexes());
+    let h2 = conn.take_h2().expect("it speaks HTTP/2");
+    assert!(!conn.multiplexes() && conn.session().is_none());
+    assert!(conn.take_h2().is_none() && conn.take_h3().is_none());
+    let (other, _) =
+        crate::proto::http2::H2Conn::open(&crate::http2::fake::FakeH2, &[], None).unwrap();
+    let other = Box::new(other);
+    let new = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| conn.put_h2(other)));
+    assert!(
+        new.is_err(),
+        "a new session goes on no connection with one out"
+    );
+    let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| conn.speaks_http1()));
+    assert!(found.is_err(), "one with a session out speaks it");
+    conn.give_back_h2(h2);
+    assert!(conn.multiplexes() && conn.h2().is_some());
+    let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| conn.speaks_http1()));
+    assert!(found.is_err(), "one with a session speaks it");
     pool.release(
         &Home::Multi,
         lease,

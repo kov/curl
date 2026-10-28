@@ -933,10 +933,11 @@ pub(crate) struct Conn {
     /// HTTP Negotiate's context with the origin, and what the connection
     /// is bound to by it; made the first time a request negotiates.
     negotiate: Option<Box<crate::proto::http::negotiate::Negotiate>>,
-    /// The session it multiplexes over, once its first request found a
-    /// version that does agreed on (`cf-h2`): it speaks nothing else from
-    /// then on.
-    session: Option<mux::Session>,
+    /// What it speaks: the session it multiplexes over, once its first
+    /// request found a version that does agreed on (`cf-h2`), speaking
+    /// nothing else from then on; or none, or not found yet, or its
+    /// session out for a step.
+    session: mux::Speaks,
 }
 
 impl Conn {
@@ -971,19 +972,19 @@ impl Conn {
     }
 
     /// Whether it multiplexes: a session speaks for it
-    /// (`Curl_conn_is_multiplex`).
+    /// (`Curl_conn_is_multiplex`). One taken out for a step does not.
     pub(crate) fn multiplexes(&self) -> bool {
-        self.session.is_some()
+        self.session.session().is_some()
     }
 
     /// The session it multiplexes over, if it does.
     pub(crate) fn session(&self) -> Option<&mux::Session> {
-        self.session.as_ref()
+        self.session.session()
     }
 
     /// Its HTTP/2 session, if it speaks HTTP/2.
     pub(crate) fn h2(&self) -> Option<&crate::proto::http2::H2Conn> {
-        match self.session.as_ref()? {
+        match self.session.session()? {
             mux::Session::H2(h2) => Some(&**h2),
             mux::Session::H3(_) => None,
         }
@@ -991,34 +992,64 @@ impl Conn {
 
     /// Its HTTP/3 session, if it speaks HTTP/3.
     pub(crate) fn h3(&self) -> Option<&crate::proto::http3::H3Conn> {
-        match self.session.as_ref()? {
+        match self.session.session()? {
             mux::Session::H3(h3) => Some(&**h3),
             mux::Session::H2(_) => None,
         }
     }
 
     /// Its HTTP/2 session, taken out for a step to drive beside the
-    /// connection, which it is put back on after (`put_h2`).
+    /// connection, which gives it back after (`give_back_h2`).
     pub(crate) fn take_h2(&mut self) -> Option<Box<crate::proto::http2::H2Conn>> {
-        match self.session.take()? {
-            mux::Session::H2(h2) => Some(h2),
-            other @ mux::Session::H3(_) => {
-                self.session = Some(other);
-                None
-            }
+        let mux::Speaks::Made(mux::Session::H2(_)) = &self.session else {
+            return None;
+        };
+        let out = mux::Speaks::Out(mux::SessionVersion::H2);
+        match std::mem::replace(&mut self.session, out) {
+            mux::Speaks::Made(mux::Session::H2(h2)) => Some(h2),
+            _ => unreachable!("an HTTP/2 session, matched above"),
         }
     }
 
     /// Its HTTP/3 session, taken out for a step to drive beside the
-    /// connection, which it is put back on after (`put_h3`).
+    /// connection, which gives it back after (`give_back_h3`).
     pub(crate) fn take_h3(&mut self) -> Option<Box<crate::proto::http3::H3Conn>> {
-        match self.session.take()? {
-            mux::Session::H3(h3) => Some(h3),
-            other @ mux::Session::H2(_) => {
-                self.session = Some(other);
-                None
-            }
+        let mux::Speaks::Made(mux::Session::H3(_)) = &self.session else {
+            return None;
+        };
+        let out = mux::Speaks::Out(mux::SessionVersion::H3);
+        match std::mem::replace(&mut self.session, out) {
+            mux::Speaks::Made(mux::Session::H3(h3)) => Some(h3),
+            _ => unreachable!("an HTTP/3 session, matched above"),
         }
+    }
+
+    /// Its HTTP/2 session, taken out for a step, given back.
+    pub(crate) fn give_back_h2(&mut self, h2: Box<crate::proto::http2::H2Conn>) {
+        assert!(
+            matches!(self.session, mux::Speaks::Out(mux::SessionVersion::H2)),
+            "an HTTP/2 session is given back where it was taken out"
+        );
+        self.session = mux::Speaks::Made(mux::Session::H2(h2));
+    }
+
+    /// Its HTTP/3 session, taken out for a step, given back.
+    pub(crate) fn give_back_h3(&mut self, h3: Box<crate::proto::http3::H3Conn>) {
+        assert!(
+            matches!(self.session, mux::Speaks::Out(mux::SessionVersion::H3)),
+            "an HTTP/3 session is given back where it was taken out"
+        );
+        self.session = mux::Speaks::Made(mux::Session::H3(h3));
+    }
+
+    /// Its first request found it speaks HTTP/1: no session
+    /// (`http_check_new_conn`).
+    pub(crate) fn speaks_http1(&mut self) {
+        assert!(
+            matches!(self.session, mux::Speaks::Unmade | mux::Speaks::Http1),
+            "a connection with a session speaks it"
+        );
+        self.session = mux::Speaks::Http1;
     }
 
     /// The socket under it, if it has a network.
@@ -1032,14 +1063,21 @@ impl Conn {
 
     /// Put its HTTP/3 session on it, as its QUIC handshake is done.
     pub(crate) fn put_h3(&mut self, h3: Box<crate::proto::http3::H3Conn>) {
-        assert!(self.session.is_none(), "one session per connection");
-        self.session = Some(mux::Session::H3(h3));
+        assert!(
+            matches!(self.session, mux::Speaks::Unmade),
+            "one session per connection"
+        );
+        self.session = mux::Speaks::Made(mux::Session::H3(h3));
     }
 
-    /// Put an HTTP/2 session on it, a new one or one taken out.
+    /// Put a new HTTP/2 session on it: as its first request finds it
+    /// speaks HTTP/2, or as a response upgrades it from HTTP/1.
     pub(crate) fn put_h2(&mut self, h2: Box<crate::proto::http2::H2Conn>) {
-        assert!(self.session.is_none(), "one session per connection");
-        self.session = Some(mux::Session::H2(h2));
+        assert!(
+            matches!(self.session, mux::Speaks::Unmade | mux::Speaks::Http1),
+            "one session per connection"
+        );
+        self.session = mux::Speaks::Made(mux::Session::H2(h2));
     }
 
     /// What its session works over: its stream. A connection without a
@@ -1049,7 +1087,7 @@ impl Conn {
     }
 
     /// Its session, and what it works over, borrowed apart.
-    fn split(&mut self) -> (&mut Option<mux::Session>, Option<mux::Carrier<'_>>) {
+    fn split(&mut self) -> (Option<&mut mux::Session>, Option<mux::Carrier<'_>>) {
         let socket = self.socket_component();
         let Conn {
             transport,
@@ -1070,7 +1108,7 @@ impl Conn {
             }),
             Transport::Local => None,
         };
-        (session, carrier)
+        (session.session_mut(), carrier)
     }
 
     /// Whether it seems usable, asked of its pieces from the top: its

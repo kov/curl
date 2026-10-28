@@ -1309,7 +1309,7 @@ pub(crate) struct Conn {
                                        // said so, or the peer closed (EOF read)
     settings: ConnSettings,            // what it keeps of the creating transfer's settings
     negotiate: Option<Box<Negotiate>>, // its Negotiate with its proxy (C's proxyneg)
-    session: Option<mux::Session>,     // HTTP/2's or HTTP/3's, once made
+    session: mux::Speaks,              // Unmade | Http1 | Made(Session) | Out(SessionVersion)
 }
 pub(crate) struct Stream {             // conn/stream.rs
     socket: Sock,                      // the socket and the closer it was opened with (§4.6)
@@ -1705,8 +1705,14 @@ chain below the HTTPS connect filter (`baller_connected`, `Curl_http2_switch_at`
 the connection's first request finds what the connection speaks (`http_check_new_conn`):
 HTTP/2 if ALPN agreed on it with no HTTPS connect filter (an HTTPS proxy forwarding), or by
 prior knowledge with nothing between, the session made then; the connection then speaks
-HTTP/2 for good. A step takes the session off the connection for the call that drives it and
-puts it back after (`with_session`), so the lease is free beside it.
+HTTP/2 for good, or HTTP/1. What the connection speaks is one field, `conn::mux::Speaks`: not
+found yet (`Unmade`, as a connection is made, and for good on one no HTTP request found it out
+on), HTTP/1 (`Http1`, no session; a local connection's from the start), a session made (`Made`),
+or its session out for a step (`Out`, naming the version). A step takes the session off the
+connection for the call that drives it and gives it back after (`with_session`, `with_h3`), so
+the lease is free beside it; while it is out the connection reads as having none, and only the
+version taken out is given back. A new session goes only on a connection with none: HTTP/2's
+where nothing was found yet or, by an upgrade, on HTTP/1; HTTP/3's as its handshake is done.
 
 **The request and the response.** A request is made as C makes it: its head rendered in
 HTTP/1's form with `HTTP/2` in its request line and traced as sent, then read back into the

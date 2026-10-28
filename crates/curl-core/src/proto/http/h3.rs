@@ -384,7 +384,7 @@ impl Request {
             done_sending(&mut step, quic);
         }
         let r = f(&mut step, quic);
-        lease.get().put_h3(h3);
+        lease.get().give_back_h3(h3);
         r
     }
 

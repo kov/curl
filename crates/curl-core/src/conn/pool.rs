@@ -273,7 +273,9 @@ impl ConnSlot {
                 ..
             }) if !wanted.is_empty() => {
                 let wanted = match session {
-                    Some(super::mux::Session::H3(h3conn)) => h3conn.adjust_pollset(wanted, h3),
+                    super::mux::Speaks::Made(super::mux::Session::H3(h3conn)) => {
+                        h3conn.adjust_pollset(wanted, h3)
+                    }
                     _ => wanted,
                 };
                 stream.adjust_pollset(wanted)
@@ -281,7 +283,7 @@ impl ConnSlot {
             // Nothing lies between the socket and its QUIC connection.
             ConnSlot::Open(Conn {
                 transport: Transport::Datagram(_),
-                session: Some(super::mux::Session::H3(h3conn)),
+                session: super::mux::Speaks::Made(super::mux::Session::H3(h3conn)),
                 ..
             }) if !wanted.is_empty() => h3conn.adjust_pollset(wanted, h3),
             ConnSlot::Open(_) | ConnSlot::Connecting(_) | ConnSlot::Failed(_) => wanted,
@@ -963,7 +965,7 @@ impl Pool {
                 close: false,
                 settings,
                 negotiate: None,
-                session: None,
+                session: super::mux::Speaks::Http1,
             }),
             Route::Net(tcp) => ConnSlot::Connecting(ConnectMachine::new(
                 number, tcp, dial, now, closer, settings,

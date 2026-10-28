@@ -34,6 +34,49 @@ pub(crate) enum Session {
     H3(Box<H3Conn>),
 }
 
+/// What a connection speaks, as far as a session goes: one fact, which
+/// the connection's readers see as a session or none.
+#[derive(Debug)]
+pub(crate) enum Speaks {
+    /// No request found what it speaks yet: an HTTP connection's first
+    /// request finds it (`http_check_new_conn`), and one of another
+    /// protocol stays so. Read as no session.
+    Unmade,
+    /// No session: HTTP/1, as its first request found, or a connection
+    /// that moves no bytes over a network.
+    Http1,
+    /// The session it multiplexes over, HTTP/2's or HTTP/3's.
+    Made(Session),
+    /// Its session, of `version`, taken out for a step to drive beside
+    /// the connection, and given back after. Read as no session, as the
+    /// step holds it.
+    Out(SessionVersion),
+}
+
+/// The version of a session taken out of its connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionVersion {
+    H2,
+    H3,
+}
+
+impl Speaks {
+    /// The session, if it has one on it now.
+    pub(crate) fn session(&self) -> Option<&Session> {
+        match self {
+            Speaks::Made(session) => Some(session),
+            Speaks::Unmade | Speaks::Http1 | Speaks::Out(_) => None,
+        }
+    }
+
+    pub(crate) fn session_mut(&mut self) -> Option<&mut Session> {
+        match self {
+            Speaks::Made(session) => Some(session),
+            Speaks::Unmade | Speaks::Http1 | Speaks::Out(_) => None,
+        }
+    }
+}
+
 impl Mux for Session {
     fn version(&self) -> ResponseVersion {
         match self {

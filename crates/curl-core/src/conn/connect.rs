@@ -1934,7 +1934,7 @@ impl ConnectMachine {
             close: false,
             settings,
             negotiate: None,
-            session: None,
+            session: super::mux::Speaks::Unmade,
         }
     }
 

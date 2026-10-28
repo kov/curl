@@ -319,7 +319,7 @@ fn no_easy<H: Host>(cx: &mut StepCx<'_, H>, stream: StreamId) {
 fn with_session<R>(lease: &mut ConnLease, f: impl FnOnce(&mut H2Conn, &mut ConnLease) -> R) -> R {
     let mut h2 = lease.get().take_h2().expect("an HTTP/2 connection");
     let r = f(&mut h2, lease);
-    lease.get().put_h2(h2);
+    lease.get().give_back_h2(h2);
     r
 }
 
@@ -481,6 +481,9 @@ impl Request {
                 // No ALPN said so, but the connection speaks it now.
                 lease.get().saw_version(ResponseVersion::Http2);
             }
+        }
+        if !h2 {
+            lease.get().speaks_http1();
         }
         let version = if h2 { "HTTP/2" } else { "HTTP/1.x" };
         trace::info(cx, format_args!("using {version}"));

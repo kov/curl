@@ -777,3 +777,23 @@ witness: curl-core proto::http::tests::h2::an_idle_connection_whose_ping_fails_i
 --- new
             if let Some(Err(_)) = conn.upkeep(&mut Silent(now), interval)
                 && !idle
+
+=== a new HTTP/2 session goes on a connection whose session is out for a step
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::pool::tests::a_session_out_for_a_step_reads_as_none_and_comes_back_alone
+--- old
+            matches!(self.session, mux::Speaks::Unmade | mux::Speaks::Http1),
+            "one session per connection"
+--- new
+            !matches!(self.session, mux::Speaks::Made(_)),
+            "one session per connection"
+
+=== a connection whose session is out for a step reads as multiplexing
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::pool::tests::a_session_out_for_a_step_reads_as_none_and_comes_back_alone
+--- old
+    pub(crate) fn multiplexes(&self) -> bool {
+        self.session.session().is_some()
+--- new
+    pub(crate) fn multiplexes(&self) -> bool {
+        matches!(self.session, mux::Speaks::Made(_) | mux::Speaks::Out(_))

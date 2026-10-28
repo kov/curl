@@ -906,7 +906,7 @@ the system's under the HTTP-only programs installed here.
 
 ## Milestone 5: HTTP/3
 
-Status: **done**; `--http3`'s race through an HTTP proxy moved to milestone 6. SCOPE stage 5's
+Status: **done**. SCOPE stage 5's
 second half: QUIC through ngtcp2 and nghttp3, the HTTP/3 proxy, Happy Eyeballs across QUIC and
 TCP, and alt-svc upgrading to h3. Measured 2026-10-27 on the Rust leg: pytest 789 pass, none
 fail; 25 errors are vsftpd's (milestone 6).
@@ -1043,12 +1043,12 @@ protocols need, each step leaving behaviour and traces as they are:
     leading, with no swaps, aside or placeholder slot; a second's failure is read off the race.
     `dial` has left the route for the attempt (`ConnectMachine::dial`, `Dialing`), recorded
     on the connection once up. A QUIC connection dialed straight to its peer is
-    `Transport::Datagram`. Sizes and allocation budgets are unchanged. To do: the route's
-    names stop saying TCP for QUIC's; `Made` as a struct of facts; the other attempt driven as
-    the lead is; then two setups at once giving `--http3` its race through an HTTP proxy (C
-    weighs HTTP/3 there as anywhere, `cf_hc_may_h3` refusing only SOCKS: its attempt over
-    CONNECT-UDP beside one over CONNECT, where ours makes the one over CONNECT) and FTP its
-    data connection; ENGINE §4.1 and §4.2 rewritten whole to the shape built.
+    `Transport::Datagram`. Sizes and allocation budgets are unchanged. `Made` is a struct of
+    facts; the other attempt is driven as the lead is; `--http3` races through an HTTP proxy
+    as C does, its HTTP/3 attempt over CONNECT-UDP, the other over CONNECT on a connection of
+    its own. To do: 64(a)'s win trace once the tunnel is up; FTP's data connection as a
+    second setup; ENGINE §4.1 and §4.2 rewritten
+    whole to the shape built.
 66. **Types for what flags say.** A layered QUIC connection is a type of its own, its
     datagram path given by its context with no `unreachable!` default; `Conn`'s session an
     enum of none (HTTP/1), not made yet, HTTP/2 and HTTP/3, out for a step; `LayerCx` split

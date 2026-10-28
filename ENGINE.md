@@ -577,9 +577,13 @@ with its own, each machine holds its (`ConnectMachine::dial`) and the connection
 winner's (`Conn::dialing`). What depends on it, the socket's filter, the first hop's transport, a
 CONNECT-UDP tunnel, is read off a route as one setup dials it (`Dialing`): what is traced of a
 socket or a chain, from the leading setup (the first's once a leading second is gone), or from
-the connection the winner made. Through an HTTP proxy HTTP/3 alone goes over the proxy's CONNECT-UDP (§ the CONNECT-UDP
-tunnel); a race through one, C's HTTP/3 attempt over CONNECT-UDP beside its other over CONNECT,
-is not run yet. Through an HTTP/3 proxy's tunnel the race's attempt is the QUIC connection to
+the connection the winner made. Through an HTTP proxy HTTP/3 goes over the proxy's CONNECT-UDP (§
+the CONNECT-UDP tunnel), alone or as the race's first attempt, its second over CONNECT on a
+connection of its own; HTTP/3 is weighed there as anywhere, a SOCKS proxy refusing it
+(`cf_hc_may_h3`). A tunnel the proxy refuses fails its attempt, not the transfer, and an attempt
+that fails once dialed keeps its connection until the race ends, going then with the HTTPS
+connect filter, its chain's filters and its socket after the winner's setup filter, as C's failed
+baller goes in `cf_hc_ctx_destroy`. Through an HTTP/3 proxy's tunnel the race's attempt is the QUIC connection to
 the proxy (§ the HTTP/3 tunnel).
 
 `READ` traces a request's body as C's client readers read it: the reader set as the request is

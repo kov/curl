@@ -1736,12 +1736,14 @@ fn a_tcp_first_failing_last_still_names_the_failure() {
     assert_eq!(ran.easy.report().timings().total().as_millis(), 150);
 }
 
-/// A transfer in HTTP/3 or older through a proxy makes one attempt, over
-/// TCP: through a SOCKS proxy, HTTP/3 may not be spoken, which is said
-/// as HTTP/3 is first weighed (`cf_hc_may_h3`); through an HTTP proxy's tunnel
-/// HTTP/3 goes over CONNECT-UDP only alone, and no race is run yet.
+/// A transfer in HTTP/3 or older through a proxy: through a SOCKS proxy,
+/// HTTP/3 may not be spoken, which is said as HTTP/3 is first weighed, and
+/// the one attempt is over TCP (`cf_hc_may_h3`); through an HTTP proxy,
+/// HTTP/3 is weighed as anywhere, its attempt over the proxy's
+/// CONNECT-UDP first and the other over CONNECT once it fails, as C's
+/// race runs through a proxy that refuses both.
 #[test]
-fn http3_through_a_proxy_goes_over_tcp_alone() {
+fn http3_through_a_proxy_is_weighed_as_c_weighs_it() {
     let cases = [
         ("socks5", Some("HTTP/3 is not supported over a SOCKS proxy")),
         ("http", None),
@@ -1760,14 +1762,36 @@ fn http3_through_a_proxy_goes_over_tcp_alone() {
         });
         assert_eq!(ran.result, Err(ErrorKind::CouldntConnect), "{proxy}");
         let got = race_lines(&ran);
-        assert!(
-            got.contains(&"[HTTPS-CONNECT] 1st attempt uses h1 from wanted versions".to_string()),
-            "{proxy}: {got:#?}"
-        );
-        assert!(
-            !got.iter().any(|l| l.contains("2nd attempt")),
-            "{proxy}: {got:#?}"
-        );
+        let has = |line: &str| got.iter().any(|l| l == line);
+        if why.is_some() {
+            assert!(
+                has("[HTTPS-CONNECT] 1st attempt uses h1 from wanted versions"),
+                "{got:#?}"
+            );
+            assert!(!got.iter().any(|l| l.contains("2nd attempt")), "{got:#?}");
+        } else {
+            assert!(
+                has("[HTTPS-CONNECT] 1st attempt uses h3 from wanted versions"),
+                "{got:#?}"
+            );
+            let order = lines(
+                &ran,
+                &[
+                    "[HTTPS-CONNECT] 2nd attempt uses h1",
+                    "[HTTPS-CONNECT] h3 baller failed, starting h1",
+                    "[HTTPS-CONNECT] connect, all attempts failed",
+                ],
+            );
+            assert_eq!(
+                order,
+                [
+                    "[HTTPS-CONNECT] 2nd attempt uses h1 from wanted versions",
+                    "[HTTPS-CONNECT] h3 baller failed, starting h1",
+                    "[HTTPS-CONNECT] connect, all attempts failed",
+                ],
+                "{got:#?}"
+            );
+        }
         let said = lines(&ran, &["HTTP/3 is not supported"]);
         assert_eq!(said.len(), usize::from(why.is_some()), "{proxy}: {said:#?}");
         // Said as the first attempt is chosen, before it is named.
@@ -2333,6 +2357,87 @@ fn a_connect_udp_refused_fails_the_tunnel() {
         lines(&ran, &["CONNECT-UDP tunnel"]),
         ["CONNECT-UDP tunnel failed, response 403"]
     );
+}
+
+/// `--http3` through an HTTP proxy that refuses CONNECT-UDP: the race's
+/// HTTP/3 attempt goes over CONNECT-UDP and fails at the proxy's answer,
+/// its connection kept; the second, over CONNECT on a connection of its
+/// own, makes the connection, and the first goes then with its chain,
+/// its socket closed last, as C's failed baller goes with the filter.
+#[test]
+fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
+    use crate::tls::fake::{self, WELCOME};
+    let refused = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec();
+    let tunnel = b"HTTP/1.1 200 Connection established\r\n\r\n".to_vec();
+    let response = fake::records(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello").unwrap();
+    let refusing = Conversation::replies(&[&refused], false).per_send();
+    let talk = Conversation::replies(&[&tunnel, WELCOME, &response], false).per_send();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], UDP_PROXY_PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, refusing)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3;
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"hello");
+    let got = lines(
+        &ran,
+        &[
+            "[HTTPS-CONNECT] 1st",
+            "[HTTPS-CONNECT] 2nd",
+            "CONNECT-UDP tunnel",
+            "[HTTPS-CONNECT] h3 baller",
+            "[SETUP] happy eyeballing",
+            "CONNECT tunnel",
+            "[MULTI] [CONNECTING] connected [",
+            "[MULTI] [CONNECTING] reduced to",
+            "[HTTPS-CONNECT] destroy",
+            "[SETUP] destroy",
+            "[HTTP-PROXY] destroy",
+            "[H1-PROXY] destroy",
+            "[HAPPY-EYEBALLS] destroy",
+            "[TCP] destroy",
+            "[TCP] cf_socket_close",
+        ],
+    );
+    let want = expect(
+        "
+        [HTTPS-CONNECT] 1st attempt uses h3 from wanted versions
+        [SETUP] happy eyeballing to proxy 127.0.0.1:3128
+        [HTTPS-CONNECT] 2nd attempt uses h1 from wanted versions
+        CONNECT-UDP tunnel failed, response 403
+        [HTTPS-CONNECT] h3 baller failed, starting h1
+        [SETUP] happy eyeballing to proxy 127.0.0.1:3128
+        CONNECT tunnel established, response 200
+        [MULTI] [CONNECTING] connected [0][DNS][DNS][HTTPS-CONNECT][SETUP][SSL][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
+        [HTTPS-CONNECT] destroy
+        [SETUP] destroy
+        [HTTP-PROXY] destroy
+        [H1-PROXY] destroy
+        [HAPPY-EYEBALLS] destroy
+        [TCP] destroy
+        [TCP] cf_socket_close, fd=1000
+        [SETUP] destroy
+        [HTTP-PROXY] destroy
+        [MULTI] [CONNECTING] reduced to [0][SSL][H1-PROXY][TCP]
+        ",
+    );
+    assert_eq!(got, want, "{got:#?}");
 }
 
 /// HTTP/3 alone through an HTTP proxy goes over its CONNECT-UDP

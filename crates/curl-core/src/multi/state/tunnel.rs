@@ -91,7 +91,7 @@ pub(super) fn dialed<H: Host>(
                 *s.handshake = Some(tunnel);
                 Ok(Wake::Again)
             }
-            Err(kind) => Err(Failure::Transfer(kind)),
+            Err(kind) => Err(Failure::of(kind)),
         };
     }
     // The filter below the tunnel's is asked (`http_proxy_cf_connect`):
@@ -128,7 +128,7 @@ pub(super) fn dialed<H: Host>(
             ErrorKind::CouldntConnect,
             format_args!("CONNECT: negotiated ALPN 'h2' not supported"),
         );
-        return Err(Failure::Transfer(failed));
+        return Err(Failure::of(failed));
     }
     let started = if h2 {
         super::h2tunnel::start(s, lent, cx)
@@ -140,7 +140,7 @@ pub(super) fn dialed<H: Host>(
             *s.handshake = Some(tunnel);
             Ok(Wake::Again)
         }
-        Err(kind) => Err(Failure::Transfer(kind)),
+        Err(kind) => Err(Failure::of(kind)),
     }
 }
 
@@ -415,7 +415,7 @@ pub(super) fn step<H: Host>(
             *s.handshake = None;
             Ok(Wake::Again)
         }
-        Err(kind) => Err(Failure::Transfer(kind)),
+        Err(kind) => Err(Failure::of(kind)),
     }
 }
 

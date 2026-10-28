@@ -165,3 +165,29 @@ witness: curl-core proto::http::tests::h2::alpn_offers_h2_where_a_library_speaks
 --- new
         } else if h1_or_h2 && set.h2 && self.h2 {
             Some(Alpn::H1)
+
+=== HTTP/3 is not weighed through an HTTP proxy
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect
+--- old
+    cx.easy().libraries().h3.is_some() && quic_refused(route, true).is_none()
+--- new
+    cx.easy().libraries().h3.is_some() && quic_refused(route, true).is_none() && route.proxy.is_none()
+
+=== a refused tunnel fails the transfer, not its attempt
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect
+--- old
+            ErrorKind::OutOfMemory => Failure::Transfer(kind),
+            kind => Failure::Attempt(kind),
+--- new
+            ErrorKind::OutOfMemory => Failure::Transfer(kind),
+            kind => Failure::Transfer(kind),
+
+=== an attempt failed once dialed goes as it fails, not with the race
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect
+--- old
+            (Some(race), SetupPoint::Dialed(_)) if race.failed.is_none() => {
+--- new
+            (Some(race), SetupPoint::Dialed(_)) if race.failed.is_none() && false => {

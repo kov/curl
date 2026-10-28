@@ -95,7 +95,7 @@ pub(super) fn step<H: Host>(
             if let Some(Handshake::H2Connect(p)) = s.handshake.as_deref_mut() {
                 p.set_state(TunnelState::Failed);
             }
-            Err(Failure::Transfer(kind))
+            Err(Failure::of(kind))
         }
     }
 }

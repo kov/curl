@@ -922,10 +922,7 @@ impl ConnectMachine {
         );
         // The chain below the setup filter is discarded: of the setup
         // filters in it, the tunnel's says so.
-        if self.route.proxy.as_ref().is_some_and(|p| p.tunnels()) {
-            cx.of(Component::HttpProxy, format_args!("destroy"));
-            cx.of(Component::H1Proxy, format_args!("destroy"));
-        }
+        self.tunnel_goes(cx);
         discard(
             cx,
             self.dialing().socket_component(),
@@ -1701,6 +1698,26 @@ impl ConnectMachine {
     /// The setup lost a race of two (C's HTTPS connect filter discards
     /// the loser's chain): its attempts go as a race's losers do, with no
     /// goodbye to their peers.
+    /// The setup failed after it was dialed, its connection kept until
+    /// its race ends, and goes with it: its chain below the setup filter,
+    /// the tunnel's filters, the race's and the socket's
+    /// (`cf_hc_ctx_destroy` of a baller that failed).
+    pub(crate) fn lose(self, cx: &mut dyn ConnCx) {
+        if let Stage::Dialed(_) = &self.stage {
+            self.tunnel_goes(cx);
+            cx.of(Component::HappyEyeballs, format_args!("destroy"));
+        }
+        self.discard(cx);
+    }
+
+    /// The tunnel's filters go, if the route has them.
+    fn tunnel_goes(&self, cx: &mut dyn ConnCx) {
+        if self.route.proxy.as_ref().is_some_and(|p| p.tunnels()) {
+            cx.of(Component::HttpProxy, format_args!("destroy"));
+            cx.of(Component::H1Proxy, format_args!("destroy"));
+        }
+    }
+
     pub(crate) fn discard(self, cx: &mut dyn ConnCx) {
         let component = self.dialing().socket_component();
         match self.stage {

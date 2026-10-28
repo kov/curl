@@ -112,7 +112,7 @@ impl Choosing {
         Choosing {
             neg,
             h2: cx.easy().libraries().h2.is_some(),
-            may_h3: super::may_quic(cx, route, proto.http_versions().h3_only()),
+            may_h3: super::may_quic(cx, route),
             asked_h3: std::cell::Cell::new(false),
         }
     }

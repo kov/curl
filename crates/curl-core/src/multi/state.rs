@@ -304,6 +304,18 @@ enum Failure {
     Transfer(ErrorKind),
 }
 
+impl Failure {
+    /// A handshake's failure with `kind`: its attempt's, as C's HTTPS
+    /// connect filter takes a baller's result, but running out of memory,
+    /// which fails the transfer.
+    fn of(kind: ErrorKind) -> Failure {
+        match kind {
+            ErrorKind::OutOfMemory => Failure::Transfer(kind),
+            kind => Failure::Attempt(kind),
+        }
+    }
+}
+
 impl Connecting {
     /// Attempt `a`'s setup and what the transfer lends it, borrowed
     /// apart.
@@ -378,6 +390,9 @@ struct Race {
     /// The first failed, with this (`ballers[0].result`), which is the
     /// setup's if the second fails too.
     first_failed: Option<ErrorKind>,
+    /// An attempt that failed once dialed, its connection kept until the
+    /// race ends, as C keeps a failed baller's chain.
+    failed: Option<ConnectMachine>,
     /// The first's peer answered, found once asked (`reply_ms`), which is
     /// not asked again.
     replied: bool,
@@ -838,7 +853,12 @@ fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done
     // lease's first goes as it is given back, unless a TCP second leads,
     // which goes after it.
     let raced = d.race.take().map(|race| {
-        let Race { second, lead, .. } = *race;
+        let Race {
+            second,
+            lead,
+            failed,
+            ..
+        } = *race;
         let mut close = |m: ConnectMachine| {
             m.close(&mut DriveCx {
                 step: cx,
@@ -846,6 +866,9 @@ fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done
                 deadlines: None,
             });
         };
+        if let Some(failed) = failed {
+            close(failed);
+        }
         if lead == Attempt::Second
             && let Some(first) = d.lease.fail_setup()
         {
@@ -3237,14 +3260,20 @@ fn attempt_failed<H: Host>(
     if lead && (c.race.is_none() || !https::attempt_failed(&mut c, kind)) {
         return (TransferState::Connecting(c).fail(kind), Wake::Again);
     }
-    // A handshake's failure leaves its setup running.
+    // A handshake's failure leaves its setup running: its connection is
+    // kept until the race ends.
     c.drop_handshake(a);
     if let Some(lost) = c.fail_attempt(a) {
-        lost.discard(&mut DriveCx {
-            step: cx,
-            kept: None,
-            deadlines: None,
-        });
+        match (&mut c.race, lost.reached()) {
+            (Some(race), SetupPoint::Dialed(_)) if race.failed.is_none() => {
+                race.failed = Some(lost);
+            }
+            _ => lost.discard(&mut DriveCx {
+                step: cx,
+                kept: None,
+                deadlines: None,
+            }),
+        }
     }
     if lead {
         (TransferState::Connecting(c), Wake::Again)
@@ -3275,6 +3304,7 @@ fn race_starts<H: Host>(c: &mut Connecting, cx: &StepCx<'_, H>) -> Result<(), Ou
         setup: Setup::default(),
         at,
         first_failed: None,
+        failed: None,
         replied: false,
     })?);
     Ok(())
@@ -3853,6 +3883,8 @@ fn up<H: Host>(
         race.as_ref().is_none_or(|r| r.second.is_none()),
         "the race's loser is given"
     );
+    // One that failed once dialed goes with its connection.
+    let mut kept = race.and_then(|r| r.failed);
     let mut lost = lost;
     for filter in connected.going() {
         trace::of(cx, filter, format_args!("removing connected setup filter"));
@@ -3863,6 +3895,13 @@ fn up<H: Host>(
         if let Some(lost) = lost.take() {
             trace::of(cx, Component::Setup, format_args!("destroy"));
             lost.discard(&mut DriveCx {
+                step: cx,
+                kept: None,
+                deadlines: None,
+            });
+        } else if let Some(failed) = kept.take() {
+            trace::of(cx, Component::Setup, format_args!("destroy"));
+            failed.lose(&mut DriveCx {
                 step: cx,
                 kept: None,
                 deadlines: None,
@@ -4905,15 +4944,10 @@ fn may_http3<H: Host>(
 }
 
 /// Whether the HTTPS connect filter of a setup over `route` may make an
-/// attempt in HTTP/3: with a QUIC library, where HTTP/3 may be spoken;
-/// through a proxy, over its CONNECT-UDP, only as the one attempt of a
-/// transfer `h3_only`.
-fn may_quic<H: Host>(cx: &StepCx<'_, H>, route: &NetRoute, h3_only: bool) -> bool {
-    // Through a proxy, HTTP/3 is no attempt of a race yet: it is spoken
-    // there only alone.
-    cx.easy().libraries().h3.is_some()
-        && (route.proxy.is_none() || h3_only)
-        && quic_refused(route, true).is_none()
+/// attempt in HTTP/3: with a QUIC library, where HTTP/3 may be spoken
+/// (`cf_hc_may_h3`), through an HTTP proxy over its CONNECT-UDP.
+fn may_quic<H: Host>(cx: &StepCx<'_, H>, route: &NetRoute) -> bool {
+    cx.easy().libraries().h3.is_some() && quic_refused(route, true).is_none()
 }
 
 /// Why HTTP/3 may not be spoken over `route`, to an origin `secured` or

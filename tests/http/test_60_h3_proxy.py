@@ -623,3 +623,40 @@ class TestH3Proxy:
                 extra_args=proxy_args,
             )
             r.check_response(count=1, http_status=200)
+
+    # `--http3` through an HTTP proxy races as anywhere: its HTTP/3 attempt
+    # goes over the proxy's CONNECT-UDP, its other over CONNECT. h2o speaks
+    # CONNECT-UDP and HTTP/3 wins; nghttpx refuses it and the other attempt,
+    # on a connection of its own, makes the transfer in HTTP/2.
+
+    @MARK_NEEDS_H2O
+    @MARK_NEEDS_NGHTTPX
+    @MARK_NEEDS_NGHTTP2
+    @pytest.mark.parametrize("proxy", ["h2o", "nghttpx"])
+    def test_60_19_http3_races_through_a_proxy(
+        self, env: Env, httpd, h2o_server, h2o_proxy, nghttpx, nghttpx_fwd, proxy
+    ):
+        _require_available(httpd=httpd, h2o_server=h2o_server, h2o_proxy=h2o_proxy,
+                           nghttpx=nghttpx, nghttpx_fwd=nghttpx_fwd)
+        debug = env.curl_is_debug()
+        run_env = {"CURL_DEBUG": "HTTPS-CONNECT"} if debug else None
+        curl = CurlClient(env=env, run_env=run_env)
+        if proxy == "h2o":
+            url = f"https://localhost:{h2o_server.port}/data.json"
+            proxy_args = _h2o_proxy_args(env, h2o_proxy, "http/1.1", tunnel=False)
+            version = "3"
+        else:
+            url = f"https://localhost:{env.https_port}/data.json"
+            proxy_args = _nghttpx_proxy_args(
+                env, nghttpx, nghttpx_fwd, "http/1.1", tunnel=False
+            )
+            version = "2"
+        r = curl.http_download(
+            urls=[url], with_stats=True, extra_args=proxy_args + ["--http3"]
+        )
+        r.check_response(count=1, http_status=200)
+        assert r.stats[0]["http_version"] == version, f"{r.stats[0]}"
+        if debug:
+            assert "1st attempt uses h3" in r.stderr, r.stderr
+            failed = "h3 baller failed, starting h2" in r.stderr
+            assert failed == (proxy == "nghttpx"), r.stderr

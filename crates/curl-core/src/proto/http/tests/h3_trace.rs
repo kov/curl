@@ -2926,6 +2926,56 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
     assert_eq!(got, want, "{got:#?}");
 }
 
+/// A transfer given up as it connects lets its name's answer go as C's
+/// does, on a share that keeps names: two uses of the share's names as
+/// it is removed, a race's or not, its first hop dialed and its TLS
+/// handshake waiting, after two as it looked the name up. C's library,
+/// given up 300 ms into a GET of `https://127.0.0.1:PORT/` from a server
+/// that accepts and says nothing, its UDP port closed, tells the lock
+/// function of the names twice as the setup goes and twice at the
+/// removal, in HTTP/3, HTTP/2 and HTTP/1.1 alike.
+#[test]
+fn a_transfer_given_up_as_it_connects_lets_its_answer_go_as_c() {
+    use crate::share::{Kind, Share, Told};
+    for version in [
+        crate::options::HttpVersion::Http3,
+        crate::options::HttpVersion::Http11,
+    ] {
+        // A TCP first takes the first conversation, opening the first
+        // socket.
+        let first = Conversation::replies(&[], false);
+        let second = Conversation::replies(&[], false);
+        let mut m = racing_peer(Peer::Refuses, &first, Peer::Accepts, &second);
+        let share = Share::new().unwrap();
+        share.keep(Kind::Names).unwrap();
+        let told = Told::new(&share);
+        let mut e = tracing(FakeTls::new().unwrap(), &first_flight_only());
+        e.set_share_watched(share.clone(), told.handler());
+        let url = format!("https://127.0.0.1:{PORT}/");
+        e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+        e.options_mut().http.version = version;
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        for _ in 0..30 {
+            m.perform(&mut NoEvents).unwrap();
+            m.wait(
+                &mut [],
+                Duration::from_millis(10),
+                crate::multi::WaitMode::Wait,
+                &mut NoEvents,
+            )
+            .unwrap();
+        }
+        let hello = |c: &Conversation| c.received().starts_with(crate::tls::fake::HELLO);
+        assert!(
+            hello(&first) || hello(&second),
+            "{version:?}: the TLS hello went"
+        );
+        assert_eq!(told.uses(), [Kind::Names; 2], "{version:?}");
+        m.remove(id, &mut NoEvents).unwrap();
+        assert_eq!(told.uses(), [Kind::Names; 2], "{version:?}");
+    }
+}
+
 /// HTTP/3 through an HTTP proxy whose CONNECT-UDP it answers, the
 /// origin then silent: the first attempt's socket has heard the proxy, so
 /// at the soft timeout the race finds it answered, its happy eyeballs

@@ -878,14 +878,19 @@ impl ConnectMachine {
         self.make_quic(cx, local, remote, true)
     }
 
-    /// The addresses the name resolved to, once it has.
+    /// The addresses the name resolved to, once it has: held until the
+    /// setup is connected, fails or is given up, as C's DNS filter holds
+    /// its entry above the connect filters (`cf_dns`), the first hop
+    /// dialed or not.
     pub(crate) fn answer(&self) -> Option<&TryArc<Answer>> {
-        match &self.stage {
-            Stage::Resolving(_) | Stage::Dialed(_) => None,
-            Stage::Racing(r) => match &r.eyeballs.answer {
-                Addresses::Resolved(answer) => Some(answer),
-                Addresses::Unix => None,
-            },
+        let answer = match &self.stage {
+            Stage::Resolving(_) => return None,
+            Stage::Racing(r) => &r.eyeballs.answer,
+            Stage::Dialed(d) => &d.answer,
+        };
+        match answer {
+            Addresses::Resolved(answer) => Some(answer),
+            Addresses::Unix => None,
         }
     }
 

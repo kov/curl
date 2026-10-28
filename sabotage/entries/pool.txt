@@ -564,15 +564,13 @@ witness: curl-core conn::pool::tests::connections_lent_by_two_shares_are_told_ap
 --- new
             .find(|l| l.id == id || l.share.is(share))
 
-=== a lease holding its connection says it holds none
-file: crates/curl-core/src/conn/pool.rs
+=== a transfer setting up says its connection has no TLS objects
+file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::shutdown_tests::the_socket_callback_reaches_a_transfer_s_tls_objects
 --- old
-    pub(crate) fn holding(&self) -> Option<&ConnSlot> {
-        self.conn.as_deref()
+            return native_of(c.query(LayerQuery::TlsNative));
 --- new
-    pub(crate) fn holding(&self) -> Option<&ConnSlot> {
-        None
+            return native_of(c.query(LayerQuery::TlsNative)).filter(|_| false);
 
 === a connection marked to close is joined
 file: crates/curl-core/src/conn/pool.rs

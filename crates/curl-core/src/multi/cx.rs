@@ -456,12 +456,7 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
 
 impl<H: Host> crate::conn::quic::QuicCx for DriveCx<'_, '_, H> {
     fn take_room(&mut self) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
-        let mut room = std::mem::take(self.step.rest.sockbuf);
-        let want = crate::conn::quic::RECV_ROOM;
-        if room.len() < want {
-            curl_alloc::TryVec::try_resize(&mut room, want, 0)?;
-        }
-        Ok(room)
+        crate::conn::quic::recv_room(std::mem::take(self.step.rest.sockbuf))
     }
 
     fn give_room(&mut self, room: Vec<u8>) {

@@ -85,6 +85,9 @@ thread_local! {
     static HELD: Cell<i64> = const { Cell::new(0) };
     /// This thread set a limit that only its allocations count against.
     static LIMITED: Cell<bool> = const { Cell::new(false) };
+    /// The largest block this thread allocated outside [`untracked`]
+    /// without the allocator zeroing it, or grew.
+    static UNZEROED: Cell<usize> = const { Cell::new(0) };
 }
 
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -244,6 +247,16 @@ pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Measured) {
     (r, measured)
 }
 
+/// Run `f` and return the largest block this thread allocated in it
+/// without the allocator zeroing it, or grew: a large buffer that must
+/// start zeroed is asked of it zeroed, not filled byte by byte.
+pub fn largest_unzeroed<R>(f: impl FnOnce() -> R) -> (R, usize) {
+    let before = UNZEROED.with(|u| u.replace(0));
+    let r = f();
+    let largest = UNZEROED.with(|u| u.replace(before.max(u.get())));
+    (r, largest)
+}
+
 /// What [`measure`] saw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Measured {
@@ -394,6 +407,13 @@ fn count() {
     }
 }
 
+/// A block of `size` bytes made or grown without zeroing.
+fn unzeroed(size: usize) {
+    if !excluded() {
+        UNZEROED.with(|u| u.set(u.get().max(size)));
+    }
+}
+
 /// `bytes` more held by this thread, or fewer.
 fn hold(bytes: i64) {
     if !excluded() {
@@ -449,6 +469,9 @@ impl Tracker {
         unsafe { tag_slot(block).write(if tracked { TRACKED } else { PLAIN }) };
         count();
         hold(signed(layout.size()));
+        if !zeroed {
+            unzeroed(layout.size());
+        }
         if tracked {
             LIVE.fetch_add(1, Ordering::Relaxed);
             let size = layout.size();
@@ -530,6 +553,7 @@ unsafe impl GlobalAlloc for Tracker {
         let moved = unsafe { q.add(h) };
         count();
         hold(signed(new_size) - signed(layout.size()));
+        unzeroed(new_size);
         if was_tracked {
             log_rust(|l| write!(l, "realloc({}, {new_size}) = {}", Ptr(block), Ptr(moved)));
         } else if now {

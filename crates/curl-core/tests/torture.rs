@@ -139,6 +139,10 @@ fn main() {
             "http3_through_an_http3_proxy_takes_no_refusal_for_success",
             http3_through_an_http3_proxy_takes_no_refusal_for_success,
         ),
+        (
+            "quic_receive_rooms_come_zeroed_from_the_allocator",
+            quic_receive_rooms_come_zeroed_from_the_allocator,
+        ),
     ] {
         // The tests whose names hold a filter given, if any is, as libtest.
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {
@@ -1568,4 +1572,29 @@ fn http3_through_an_http3_proxy_survives_every_allocation_failing() {
 fn http3_through_an_http3_proxy_takes_no_refusal_for_success() {
     fake_h3_libraries();
     refused_alone(h3_over_h3_proxy_scenario, took_no_refusal);
+}
+
+/// The rooms QUIC connections receive in, the multi's and an HTTP/3
+/// proxy connection's own, are asked of the allocator zeroed, as C's are
+/// left unwritten: one filled byte by byte costs milliseconds of an
+/// unoptimised build at a connection's first receive, which made the
+/// origin's handshake through a CONNECT-UDP tunnel lose races C's wins.
+/// Nothing else a GET allocates is as large as a room.
+fn quic_receive_rooms_come_zeroed_from_the_allocator() {
+    let room = curl_os::net::BATCH * curl_os::net::SLOT;
+    fake_h3_libraries();
+    for (what, scenario) in [
+        (
+            "an HTTP/3 GET",
+            h3_get_scenario as fn() -> Result<Got, OutOfMemory>,
+        ),
+        ("HTTP/3 through an HTTP/3 proxy", h3_over_h3_proxy_scenario),
+    ] {
+        let (got, largest) = track::largest_unzeroed(scenario);
+        assert_eq!(got.expect("nothing refused").result, Ok(()), "{what}");
+        assert!(
+            largest < room,
+            "{what} allocated a block of {largest} bytes unzeroed, a receive room of {room} filled by hand"
+        );
+    }
 }

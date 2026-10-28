@@ -9,13 +9,13 @@
 use std::io;
 use std::num::NonZeroUsize;
 
-use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_alloc::OutOfMemory;
 
 use super::buf::HeldBytes;
 use super::h2proxy::Answer;
 use super::io::{Events, Recv, Sent, Socket};
 use super::layer::{Alive, Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Part};
-use super::quic::{Quic, QuicCx, QuicIo, RECV_ROOM};
+use super::quic::{Quic, QuicCx, QuicIo, recv_room};
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::http3::{H3Error, Heard, StreamEvent, StreamId};
@@ -439,11 +439,7 @@ impl LayerCx for Tunnelled<'_> {
 
 impl QuicCx for Tunnelled<'_> {
     fn take_room(&mut self) -> Result<Vec<u8>, OutOfMemory> {
-        let mut room = std::mem::take(self.room);
-        if room.len() < RECV_ROOM {
-            room.try_resize(RECV_ROOM, 0)?;
-        }
-        Ok(room)
+        recv_room(std::mem::take(self.room))
     }
 
     fn give_room(&mut self, room: Vec<u8>) {

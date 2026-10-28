@@ -907,3 +907,26 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_
 --- new
                     Attempt::First => (earlier, lost),
                     Attempt::Second => (lost, earlier),
+
+=== a QUIC connection's receive room is filled byte by byte
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core quic_receive_rooms_come_zeroed_from_the_allocator
+features: test-util,debug-hooks
+--- old
+    drop(room);
+    curl_alloc::try_zeroed(RECV_ROOM)
+--- new
+    let mut room = room;
+    room.try_resize(RECV_ROOM, 0)?;
+    Ok(room)
+
+=== an HTTP/3 proxy connection's receive room is filled byte by byte
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core quic_receive_rooms_come_zeroed_from_the_allocator
+features: test-util,debug-hooks
+--- old
+        recv_room(std::mem::take(self.room))
+--- new
+        let mut room = std::mem::take(self.room);
+        curl_alloc::TryVec::try_resize(&mut room, 1_536_000, 0)?;
+        Ok(room)

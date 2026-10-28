@@ -1801,12 +1801,7 @@ pub(crate) struct StepCx<'a, H: Host> {
 /// the transfer as the step ends.
 impl<H: Host> crate::conn::quic::QuicCx for StepCx<'_, H> {
     fn take_room(&mut self) -> Result<Vec<u8>, OutOfMemory> {
-        let mut room = std::mem::take(self.rest.sockbuf);
-        let want = crate::conn::quic::RECV_ROOM;
-        if room.len() < want {
-            curl_alloc::TryVec::try_resize(&mut room, want, 0)?;
-        }
-        Ok(room)
+        crate::conn::quic::recv_room(std::mem::take(self.rest.sockbuf))
     }
 
     fn give_room(&mut self, room: Vec<u8>) {

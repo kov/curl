@@ -41,3 +41,14 @@ witness: curl-alloc lossy::tests::shows_bytes_as_from_utf8_lossy
             if !chunk.invalid().is_empty() {
 --- new
             for _ in chunk.invalid() {
+
+=== a block the allocator zeroed counts as one filled by hand
+file: crates/curl-alloc/src/track.rs
+witness: curl-alloc the_largest_unzeroed_block_leaves_zeroed_ones_out
+features: debug-hooks
+--- old
+        if !zeroed {
+            unzeroed(layout.size());
+        }
+--- new
+        unzeroed(layout.size());

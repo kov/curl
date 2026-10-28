@@ -13,8 +13,12 @@ static ALLOCATOR: Tracker = Tracker;
 fn main() {
     for (name, test) in [
         (
+            "the_largest_unzeroed_block_leaves_zeroed_ones_out",
+            the_largest_unzeroed_block_leaves_zeroed_ones_out as fn(),
+        ),
+        (
             "logs_tracked_blocks_and_fails_past_the_limit",
-            logs_tracked_blocks_and_fails_past_the_limit as fn(),
+            logs_tracked_blocks_and_fails_past_the_limit,
         ),
         (
             "one_allocation_is_refused_once",
@@ -31,6 +35,37 @@ fn main() {
         test();
         track::untracked(|| println!("ok"));
     }
+}
+
+/// A block the allocator zeroes is left out of the largest unzeroed
+/// block; one made without zeroing, or grown, is counted, outside an
+/// exclusion; and an inner measure leaves the outer one's.
+fn the_largest_unzeroed_block_leaves_zeroed_ones_out() {
+    use curl_alloc::{TryVec as _, try_zeroed};
+    const BIG: usize = 1 << 20;
+    let (zeroed, largest) = track::largest_unzeroed(|| try_zeroed(BIG).unwrap());
+    assert_eq!(zeroed.len(), BIG);
+    assert!(largest < BIG, "a zeroed block counted: {largest}");
+    let (filled, largest) = track::largest_unzeroed(|| {
+        let mut v = Vec::new();
+        v.try_resize(BIG, 0u8).unwrap();
+        v
+    });
+    assert_eq!(largest, BIG, "a block filled by hand");
+    let ((), largest) = track::largest_unzeroed(|| {
+        let mut v = try_zeroed(16).unwrap();
+        v.try_reserve_exact(4096 - 16).unwrap();
+        let ((), inner) = track::largest_unzeroed(|| drop(Vec::<u8>::with_capacity(100)));
+        assert_eq!(inner, 100, "the inner measure's own");
+        let ((), excluded) =
+            track::largest_unzeroed(|| track::untracked(|| drop(Vec::<u8>::with_capacity(200))));
+        assert_eq!(excluded, 0, "an exclusion's");
+    });
+    assert_eq!(
+        largest, 4096,
+        "a zeroed block grown, and the inner measure's kept"
+    );
+    drop((zeroed, filled));
 }
 
 /// Blocks made before tracking or inside an exclusion are not logged;

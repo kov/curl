@@ -32,6 +32,19 @@ const SEND_ROOM: usize = 64 * 1024;
 /// (`Curl_multi_xfer_sockbuf_borrow`).
 pub(crate) const RECV_ROOM: usize = BATCH * SLOT;
 
+/// `room` to receive in, or one of `RECV_ROOM` bytes in its place if it
+/// is smaller. A new room is zeroed by the allocator, where C's is left
+/// unwritten (`Curl_multi_xfer_sockbuf_borrow`): never filled byte by
+/// byte, which in an unoptimised build costs milliseconds at a
+/// connection's first look at what it received.
+pub(crate) fn recv_room(room: Vec<u8>) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
+    if room.len() >= RECV_ROOM {
+        return Ok(room);
+    }
+    drop(room);
+    curl_alloc::try_zeroed(RECV_ROOM)
+}
+
 /// A request stream's first receive window, which its request opens
 /// further (`H3_STREAM_WINDOW_SIZE_INITIAL`).
 pub(crate) const STREAM_WINDOW_INITIAL: u64 = 32 * 1024;
@@ -208,9 +221,7 @@ impl LayerCx for Lone<'_> {
 
 impl QuicCx for Lone<'_> {
     fn take_room(&mut self) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
-        let mut room = Vec::new();
-        room.try_resize(RECV_ROOM, 0)?;
-        Ok(room)
+        recv_room(Vec::new())
     }
 
     fn give_room(&mut self, _room: Vec<u8>) {}

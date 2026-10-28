@@ -29,6 +29,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 
 - `crates/curl-sys-abi`: the C ABI shim.
 - `crates/curl-alloc/src/boxed.rs`: the fallible `Box` constructor std lacks on stable.
+- `crates/curl-alloc/src/zeroed.rs`: the fallible zeroed byte buffer (`calloc`) std lacks on
+  stable.
 - `crates/curl-alloc/src/rc.rs`: the fallible reference-counted pointers std lacks on stable.
 - `crates/curl-alloc/src/track.rs`: the debug test build's global allocator and memory tracker.
 - `crates/curl-psl/src/lib.rs`: libpsl, the public suffix list cookies are checked against.

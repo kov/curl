@@ -245,7 +245,8 @@ fn a_session_is_a_proxy_s_as_its_layer_is() {
         443,
         None,
     );
-    let peer = SessionPeer::new(&identity, &origin, None, &"test", crate::conn::Dial::Tcp).unwrap();
+    let peer =
+        SessionPeer::new(&identity, &origin, None, &"test", crate::conn::Dial::Stream).unwrap();
     let mut notes = Notes::default();
     for component in Component::ALL {
         let cx = TlsCx::new(&mut notes, component, &peer);

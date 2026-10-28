@@ -18,7 +18,7 @@
 
 use super::{Connecting, StepCx};
 use crate::components::Component;
-use crate::conn::{ConnectMachine, Dial, Tcp};
+use crate::conn::{ConnectMachine, Dial, NetRoute};
 use crate::conn::{HttpsLookup, address};
 use crate::error::ErrorKind;
 use crate::multi::Host;
@@ -101,7 +101,11 @@ pub(super) struct Choosing {
 
 impl Choosing {
     /// The choice for the setup `c`, over `route`.
-    pub(super) fn of<H: Host>(proto: &ProtoState, route: &Tcp, cx: &StepCx<'_, H>) -> Choosing {
+    pub(super) fn of<H: Host>(
+        proto: &ProtoState,
+        route: &NetRoute,
+        cx: &StepCx<'_, H>,
+    ) -> Choosing {
         let neg = proto
             .negotiation()
             .expect("an HTTPS connect filter heads an HTTP setup");
@@ -207,7 +211,7 @@ impl HttpsConnect {
     /// The filter a new connection over `route` gets, if any: one to an
     /// `https` origin with ALPN on, which no proxy forwards to
     /// (`Curl_cf_https_setup`).
-    pub(super) fn heading(route: &Tcp, alpn: bool) -> Option<HttpsConnect> {
+    pub(super) fn heading(route: &NetRoute, alpn: bool) -> Option<HttpsConnect> {
         let https = route.origin.scheme().name == "https";
         let forwarded = route.proxy.as_ref().is_some_and(|p| p.forward);
         if !https || forwarded || !alpn {
@@ -265,7 +269,7 @@ pub(super) fn connect_call<H: Host>(
 
 /// The origin's record looked for in the cache, as C traces it
 /// (`hostip_resolv`, `Curl_dnscache_get`): what the setup knows of it.
-fn look_up<H: Host>(route: &Tcp, cx: &mut StepCx<'_, H>) -> Record {
+fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Record {
     let peer = route.target();
     let (name, port) = (peer.name(), peer.port());
     let at = Text::<8>::clipped(format_args!(":{port}")).0;
@@ -317,7 +321,7 @@ fn look_up<H: Host>(route: &Tcp, cx: &mut StepCx<'_, H>) -> Record {
 
 /// The resolver's answer came: no record, kept as the name's
 /// (`Curl_dnscache_add_negative`).
-fn answered<H: Host>(route: &Tcp, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+fn answered<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     let peer = route.target();
     let now = cx.rest.now;
     let kept = cx.rest.kept(cx.me, Kind::Names);

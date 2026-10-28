@@ -10,7 +10,7 @@ use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
 use crate::components::Component;
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::layer::LayerQuery;
-use crate::conn::{Made, Peer, RecvFailed, Tcp};
+use crate::conn::{Made, NetRoute, Peer, RecvFailed};
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin};
 use crate::multi::Host;
@@ -195,7 +195,7 @@ pub(super) fn udp_answer<H: Host>(
 }
 
 /// The proxy and what it is given, as the route has them.
-pub(super) fn proxy(route: &Tcp) -> (&Peer, Option<Secret<'_>>, bool) {
+pub(super) fn proxy(route: &NetRoute) -> (&Peer, Option<Secret<'_>>, bool) {
     let proxy = route.proxy.as_ref().expect("a tunnel goes through a proxy");
     let secret = proxy.creds.as_deref().map(crate::conn::ProxyCreds::secret);
     (&proxy.peer, secret, proxy.kind == ProxyType::Http10)

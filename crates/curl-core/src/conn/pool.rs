@@ -239,7 +239,7 @@ impl ConnSlot {
         let (setup, open) = match self {
             ConnSlot::Connecting(m) => (Some(m), None),
             ConnSlot::Open(Conn {
-                transport: Transport::Tcp(stream),
+                transport: Transport::Stream(stream),
                 ..
             }) => (None, Some(stream.socket())),
             ConnSlot::Open(Conn {
@@ -266,7 +266,7 @@ impl ConnSlot {
     ) -> Events {
         match self {
             ConnSlot::Open(Conn {
-                transport: Transport::Tcp(stream),
+                transport: Transport::Stream(stream),
                 session,
                 ..
             }) if !wanted.is_empty() => {
@@ -295,7 +295,7 @@ impl ConnSlot {
             // for QUIC.
             ConnSlot::Open(
                 conn @ Conn {
-                    transport: Transport::Tcp(stream),
+                    transport: Transport::Stream(stream),
                     ..
                 },
             ) => conn
@@ -802,11 +802,11 @@ impl Place {
         match self {
             Place::Idle(slot) | Place::Reserved(slot) => slot.destination(),
             Place::Leased(Leased {
-                route: Route::Tcp(tcp),
+                route: Route::Net(tcp),
                 ..
             })
             | Place::Attached(Shared {
-                route: Route::Tcp(tcp),
+                route: Route::Net(tcp),
                 ..
             }) => Some(tcp.destination()),
             Place::Leased(_) | Place::Attached(_) => None,
@@ -900,7 +900,7 @@ impl Pool {
         self.add(
             here,
             route,
-            Dial::Tcp,
+            Dial::Stream,
             Closer::System,
             settings,
             limits,
@@ -930,7 +930,7 @@ impl Pool {
     ) -> Result<Acquired, OutOfMemory> {
         // A connection without a network is added with no limits
         // (`Curl_cpool_add(data, needle, 0, 0)`).
-        if let Route::Tcp(tcp) = &route {
+        if let Route::Net(tcp) = &route {
             let evicted = Evicted::of(here);
             let to = tcp.destination();
             if let Some(reason) = make_room(&mut self.conns, to, limits, evicted, exits, now) {
@@ -948,7 +948,7 @@ impl Pool {
             Route::Local => ConnSlot::Open(Conn {
                 number,
                 route,
-                dial: Dial::Tcp,
+                dial: Dial::Stream,
                 transport: Transport::Local,
                 remote: None,
                 created: now,
@@ -963,7 +963,7 @@ impl Pool {
                 negotiate: None,
                 session: None,
             }),
-            Route::Tcp(tcp) => ConnSlot::Connecting(ConnectMachine::new(
+            Route::Net(tcp) => ConnSlot::Connecting(ConnectMachine::new(
                 number, tcp, dial, now, closer, settings,
             )),
         };
@@ -1454,7 +1454,7 @@ impl Pool {
     /// reserved (`Curl_getconnectinfo`).
     pub(crate) fn socket(&self, id: ConnId) -> Option<SocketKey> {
         match &self.conns.get(id)?.held()?.transport {
-            Transport::Tcp(stream) => Some(stream.socket().key()),
+            Transport::Stream(stream) => Some(stream.socket().key()),
             Transport::Datagram(datagrams) => Some(datagrams.socket().key()),
             Transport::Local => None,
         }
@@ -1509,7 +1509,7 @@ impl Pool {
         // Kept for another transfer, unless its server shut it down,
         // which C asks only of one it would keep (`multi_done_locked`).
         let keeps = |conn: &Conn| {
-            matches!(&conn.route, Route::Tcp(tcp)
+            matches!(&conn.route, Route::Net(tcp)
                 // One only connected is the handle's, whatever its protocol.
                 if tcp.origin.scheme().reuse || finish.reserve)
                 // An HTTP/2 connection outlives a stream cut short
@@ -1899,7 +1899,7 @@ fn judged(
 /// Whether a transfer on `route` looks for an idle connection to reuse:
 /// only over a network, and only unless it must have a fresh one.
 pub(crate) fn searches(route: &Route, rules: ReuseRules) -> bool {
-    matches!(route, Route::Tcp(..)) && !rules.fresh
+    matches!(route, Route::Net(..)) && !rules.fresh
 }
 
 /// How many connections a pool keeps once one goes idle

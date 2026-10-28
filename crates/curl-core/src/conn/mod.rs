@@ -131,7 +131,7 @@ impl ConnSlot {
         let route = match self {
             ConnSlot::Connecting(m) => m.route(),
             ConnSlot::Open(Conn {
-                route: Route::Tcp(tcp),
+                route: Route::Net(tcp),
                 ..
             }) => tcp,
             ConnSlot::Open(_) | ConnSlot::Failed(_) => return None,
@@ -148,7 +148,7 @@ pub(crate) enum Route {
     /// No network: the protocol does its own I/O (C's
     /// `PROTOPT_NONETWORK`).
     Local,
-    Tcp(Tcp),
+    Net(NetRoute),
 }
 
 impl Route {
@@ -158,10 +158,10 @@ impl Route {
     /// unless the transfer takes any.
     pub(crate) fn serves(&self, wanted: &Route) -> bool {
         match (self, wanted) {
-            (Route::Tcp(have), Route::Tcp(want)) => {
+            (Route::Net(have), Route::Net(want)) => {
                 // Every field by name, so that one added does not compile
                 // until it is compared here or said why not.
-                let Tcp {
+                let NetRoute {
                     origin,
                     via,
                     ip,
@@ -170,7 +170,7 @@ impl Route {
                     local,
                     delegation,
                 } = have;
-                let Tcp {
+                let NetRoute {
                     origin: want_origin,
                     via: want_via,
                     ip: want_ip,
@@ -196,7 +196,7 @@ impl Route {
                     && tls.as_deref() == want_tls.as_deref()
                     && binds_as(local.as_deref(), want_local.as_deref())
             }
-            (Route::Local | Route::Tcp(..), Route::Local | Route::Tcp(..)) => false,
+            (Route::Local | Route::Net(..), Route::Local | Route::Net(..)) => false,
         }
     }
 }
@@ -231,7 +231,7 @@ fn binds_as(
 /// go to whole; secured by TLS made with `tls`, if its scheme is (C's
 /// `PROTOPT_SSL`).
 #[derive(Clone, Debug)]
-pub(crate) struct Tcp {
+pub(crate) struct NetRoute {
     pub(crate) origin: TryArc<Peer>,
     pub(crate) via: Option<TryArc<Peer>>,
     pub(crate) ip: IpVersion,
@@ -257,14 +257,14 @@ pub(crate) struct Tcp {
 /// version it speaks.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Dialing<'a> {
-    pub(crate) route: &'a Tcp,
+    pub(crate) route: &'a NetRoute,
     pub(crate) dial: Dial,
 }
 
 impl std::ops::Deref for Dialing<'_> {
-    type Target = Tcp;
+    type Target = NetRoute;
 
-    fn deref(&self) -> &Tcp {
+    fn deref(&self) -> &NetRoute {
         self.route
     }
 }
@@ -306,12 +306,12 @@ impl Dialing<'_> {
 pub(crate) enum Dial {
     /// A TCP stream, or a Unix socket's (`TRNSPRT_TCP`, `TRNSPRT_UNIX`).
     #[default]
-    Tcp,
+    Stream,
     /// QUIC over UDP (`TRNSPRT_QUIC`).
     Quic,
 }
 
-impl Tcp {
+impl NetRoute {
     /// The peer connected to (`Curl_conn_get_first_peer`): the first
     /// proxy, if the route has one.
     pub(crate) fn destination(&self) -> &Peer {
@@ -883,7 +883,7 @@ impl Peer {
 #[derive(Debug)]
 pub(crate) enum Transport {
     Local,
-    Tcp(Stream),
+    Stream(Stream),
     /// A QUIC connection's socket, dialed straight to its peer.
     Datagram(Datagrams),
 }
@@ -935,7 +935,7 @@ impl Conn {
     /// Who its requests are for; none without a network.
     pub(crate) fn origin(&self) -> Option<&TryArc<Peer>> {
         match &self.route {
-            Route::Tcp(tcp) => Some(&tcp.origin),
+            Route::Net(tcp) => Some(&tcp.origin),
             Route::Local => None,
         }
     }
@@ -946,9 +946,9 @@ impl Conn {
     }
 
     /// The route it was set up over; none without a network.
-    pub(crate) fn tcp_route(&self) -> Option<&Tcp> {
+    pub(crate) fn tcp_route(&self) -> Option<&NetRoute> {
         match &self.route {
-            Route::Tcp(tcp) => Some(tcp),
+            Route::Net(tcp) => Some(tcp),
             Route::Local => None,
         }
     }
@@ -1016,7 +1016,7 @@ impl Conn {
     /// The socket under it, if it has a network.
     pub(crate) fn stream_socket(&self) -> Option<&dyn io::Socket> {
         match &self.transport {
-            Transport::Tcp(stream) => Some(stream.socket()),
+            Transport::Stream(stream) => Some(stream.socket()),
             Transport::Datagram(datagrams) => Some(datagrams.socket()),
             Transport::Local => None,
         }
@@ -1050,7 +1050,7 @@ impl Conn {
             ..
         } = self;
         let carrier = match transport {
-            Transport::Tcp(stream) => Some(mux::Carrier {
+            Transport::Stream(stream) => Some(mux::Carrier {
                 over: mux::Over::Stream(stream),
                 socket,
                 close,
@@ -1136,9 +1136,9 @@ impl Conn {
     /// of it is asked of first (`conn->cfilter[FIRSTSOCKET]`).
     pub(crate) fn top(&self) -> crate::components::Component {
         match &self.route {
-            Route::Tcp(route) => {
+            Route::Net(route) => {
                 let tunnel = match &self.transport {
-                    Transport::Tcp(stream) => stream.query(layer::LayerQuery::Tunnel),
+                    Transport::Stream(stream) => stream.query(layer::LayerQuery::Tunnel),
                     Transport::Datagram(_) | Transport::Local => None,
                 };
                 let tunnel = match tunnel {
@@ -1165,7 +1165,7 @@ impl Conn {
     /// What its socket's filter traces as (`TCP`, `UNIX`).
     pub(crate) fn socket_component(&self) -> crate::components::Component {
         match &self.route {
-            Route::Tcp(route) => Dialing {
+            Route::Net(route) => Dialing {
                 route,
                 dial: self.dial,
             }
@@ -1176,7 +1176,7 @@ impl Conn {
 
     fn stream(&mut self) -> &mut Stream {
         match &mut self.transport {
-            Transport::Tcp(stream) => stream,
+            Transport::Stream(stream) => stream,
             Transport::Datagram(_) => unreachable!("a QUIC connection's bytes are its own"),
             Transport::Local => unreachable!("a local connection moves no bytes"),
         }
@@ -1186,28 +1186,28 @@ impl Conn {
     /// (`origin_is_proxy`).
     pub(crate) fn forwarding(&self) -> Option<&ProxyRoute> {
         match &self.route {
-            Route::Tcp(Tcp { proxy: Some(p), .. }) if p.forward => Some(p),
+            Route::Net(NetRoute { proxy: Some(p), .. }) if p.forward => Some(p),
             _ => None,
         }
     }
 
     /// Whether it goes through an HTTP proxy's tunnel.
     pub(crate) fn tunnels(&self) -> bool {
-        matches!(&self.route, Route::Tcp(Tcp { proxy: Some(p), .. }) if p.tunnels())
+        matches!(&self.route, Route::Net(NetRoute { proxy: Some(p), .. }) if p.tunnels())
     }
 
     /// Whether any of it is TLS, the origin's or an HTTPS proxy's
     /// (`Curl_conn_is_ssl`).
     pub(crate) fn over_tls(&self) -> bool {
         match &self.route {
-            Route::Tcp(t) => t.tls.is_some() || t.proxy.as_ref().is_some_and(|p| p.tls().is_some()),
+            Route::Net(t) => t.tls.is_some() || t.proxy.as_ref().is_some_and(|p| p.tls().is_some()),
             Route::Local => false,
         }
     }
 
     /// Whether it goes through an HTTP proxy (`http_proxy.peer`).
     pub(crate) fn http_proxy(&self) -> bool {
-        matches!(&self.route, Route::Tcp(Tcp { proxy: Some(p), .. }) if p.http())
+        matches!(&self.route, Route::Net(NetRoute { proxy: Some(p), .. }) if p.http())
     }
 
     /// Whether it may serve a transfer whose route is `wanted`: a route
@@ -1215,13 +1215,13 @@ impl Conn {
     /// the transfer insists (`url_match_proxy_use`).
     pub(crate) fn serves(&self, wanted: &Route) -> bool {
         let insists = match wanted {
-            Route::Tcp(tcp @ Tcp { proxy: Some(p), .. }) => {
+            Route::Net(tcp @ NetRoute { proxy: Some(p), .. }) => {
                 p.auth_only
                     && tcp.socks().is_some_and(|s| {
                         matches!(s.version, socks::Version::V5 | socks::Version::V5Hostname)
                     })
             }
-            Route::Tcp(_) | Route::Local => false,
+            Route::Net(_) | Route::Local => false,
         };
         self.route.serves(wanted) && (!insists || self.socks5_authenticated)
     }
@@ -1246,7 +1246,7 @@ impl Conn {
     ) {
         // QUIC's TLS is its own, with no binding to give.
         let stream = match &self.transport {
-            Transport::Tcp(stream) => Some(stream),
+            Transport::Stream(stream) => Some(stream),
             Transport::Datagram(_) | Transport::Local => None,
         };
         (&mut self.negotiate, stream)
@@ -1288,7 +1288,7 @@ impl Conn {
     /// network, or if the system does not say.
     pub(crate) fn local(&self) -> Option<SocketAddr> {
         match &self.transport {
-            Transport::Tcp(stream) => stream.local_addr(),
+            Transport::Stream(stream) => stream.local_addr(),
             Transport::Datagram(datagrams) => datagrams.local_addr(),
             Transport::Local => None,
         }
@@ -1325,7 +1325,7 @@ impl Conn {
     /// a read that would block is to be tried again at once.
     pub(crate) fn data_pending(&mut self) -> bool {
         match &mut self.transport {
-            Transport::Tcp(stream) => stream.data_pending(),
+            Transport::Stream(stream) => stream.data_pending(),
             Transport::Datagram(_) | Transport::Local => false,
         }
     }
@@ -1384,7 +1384,7 @@ mod tests {
         assert_eq!(unix(b"[::1]", false).name(), b"[::1]");
         // A connection over one serves only a transfer over the same.
         let over = |path: &[u8]| {
-            Route::Tcp(Tcp {
+            Route::Net(NetRoute {
                 origin: TryArc::try_new(peer(b"o.example", 80, None)).unwrap(),
                 via: Some(TryArc::try_new(unix(path, false)).unwrap()),
                 ip: IpVersion::Any,
@@ -1405,7 +1405,7 @@ mod tests {
     /// version apart).
     #[test]
     fn a_route_s_socket_is_traced_as_its_attempt_dials() {
-        let route = Tcp {
+        let route = NetRoute {
             origin: TryArc::try_new(peer(b"o.example", 443, None)).unwrap(),
             via: None,
             ip: IpVersion::Any,
@@ -1422,7 +1422,7 @@ mod tests {
             .socket_component()
         };
         assert_eq!(dialed(Dial::Quic), crate::components::Component::Udp);
-        assert_eq!(dialed(Dial::Tcp), crate::components::Component::Tcp);
+        assert_eq!(dialed(Dial::Stream), crate::components::Component::Tcp);
     }
 
     /// Peers are the same as `Curl_peer_equal` finds them: the host in
@@ -1502,7 +1502,7 @@ mod tests {
     fn routes_compare_every_field() {
         let arc = |host: &[u8]| TryArc::try_new(peer(host, 80, None)).unwrap();
         let tcp = |origin: &[u8], via: Option<&[u8]>, ip, proxy: Option<&[u8]>| {
-            Route::Tcp(Tcp {
+            Route::Net(NetRoute {
                 origin: arc(origin),
                 via: via.map(arc),
                 ip,
@@ -1593,7 +1593,7 @@ mod tests {
         use crate::options::Tls;
         use crate::tls::TlsIdentity;
         let secured = |tls: Option<&Tls>| {
-            Route::Tcp(Tcp {
+            Route::Net(NetRoute {
                 origin: TryArc::try_new(peer(b"o.example", 443, None)).unwrap(),
                 via: None,
                 ip: IpVersion::Any,
@@ -1640,7 +1640,7 @@ mod tests {
         } else {
             TryArc::try_new(peer(b"origin.example", 80, None)).unwrap()
         };
-        Route::Tcp(Tcp {
+        Route::Net(NetRoute {
             origin,
             via: None,
             ip: IpVersion::Any,
@@ -1670,7 +1670,7 @@ mod tests {
                 port,
                 port_range,
             };
-            Route::Tcp(Tcp {
+            Route::Net(NetRoute {
                 origin: TryArc::try_new(peer(b"o.example", 80, None)).unwrap(),
                 via: None,
                 ip: IpVersion::Any,
@@ -1703,7 +1703,7 @@ mod tests {
     /// forwarding one serves any origin, being the proxy's.
     #[test]
     fn proxied_routes_match_as_c() {
-        let direct = Route::Tcp(Tcp {
+        let direct = Route::Net(NetRoute {
             origin: TryArc::try_new(peer(b"proxy.example", 3128, None)).unwrap(),
             via: None,
             ip: IpVersion::Any,
@@ -1724,7 +1724,7 @@ mod tests {
         // The service the proxy is authenticated as is the credentials'
         // too (`Curl_creds_same`).
         let serving_as = |service: &[u8]| match via_proxy(b"proxy.example", Some(b"u"), true) {
-            Route::Tcp(mut tcp) => {
+            Route::Net(mut tcp) => {
                 let p = tcp.proxy.as_mut().unwrap();
                 p.creds = Some(
                     TryArc::try_new(ProxyCreds {
@@ -1734,7 +1734,7 @@ mod tests {
                     })
                     .unwrap(),
                 );
-                Route::Tcp(tcp)
+                Route::Net(tcp)
             }
             Route::Local => unreachable!(),
         };
@@ -1744,14 +1744,14 @@ mod tests {
         // Behind the same SOCKS proxy, or none, as C compares
         // `socks_proxy` beside `http_proxy`.
         let behind = |kind, host: &[u8]| match via_proxy(b"proxy.example", None, true) {
-            Route::Tcp(mut tcp) => {
+            Route::Net(mut tcp) => {
                 let pre = PreProxy {
                     kind,
                     peer: TryArc::try_new(peer(host, 1080, None)).unwrap(),
                     creds: None,
                 };
                 tcp.proxy = tcp.proxy.map(|p| p.behind(pre).unwrap());
-                Route::Tcp(tcp)
+                Route::Net(tcp)
             }
             Route::Local => unreachable!(),
         };

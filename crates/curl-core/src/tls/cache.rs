@@ -132,7 +132,7 @@ impl SessionPeer {
         let tls = crate::options::Tls::default();
         let identity = TlsIdentity::of(&tls, super::CaDefaults::default()).unwrap();
         let origin = Peer::new(crate::proto::http::HTTPS, b"localhost".to_vec(), 443, None);
-        SessionPeer::new(&identity, &origin, None, &"FakeTLS/1", Dial::Tcp).unwrap()
+        SessionPeer::new(&identity, &origin, None, &"FakeTLS/1", Dial::Stream).unwrap()
     }
 
     /// The key, as the trace shows it.

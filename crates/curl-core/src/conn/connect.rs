@@ -32,7 +32,7 @@ use super::layer::LayerCx;
 use super::layer::{LayerAnswer, LayerQuery};
 use super::quic::{Quic, QuicCx};
 use super::shutdown::ConnSettings;
-use super::{Conn, ConnNumber, Dial, Dialing, Peer, Route, Stream, Tcp, Transport, Use};
+use super::{Conn, ConnNumber, Dial, Dialing, NetRoute, Peer, Route, Stream, Transport, Use};
 use crate::components::Component;
 use crate::error::ErrorKind;
 use crate::handler::Configured;
@@ -45,7 +45,7 @@ use curl_os::error::ErrorText;
 #[derive(Debug)]
 pub(crate) struct ConnectMachine {
     number: ConnNumber,
-    route: Tcp,
+    route: NetRoute,
     /// How it dials the route's first hop.
     dial: Dial,
     /// When the setup started (C's `conn->created`).
@@ -650,7 +650,7 @@ impl ConnectMachine {
     /// through `closer`.
     pub(crate) fn new(
         number: ConnNumber,
-        route: Tcp,
+        route: NetRoute,
         dial: Dial,
         created: Instant,
         closer: Closer,
@@ -674,7 +674,7 @@ impl ConnectMachine {
     /// name's filter that holds its answer).
     pub(crate) fn racing(
         number: ConnNumber,
-        route: Tcp,
+        route: NetRoute,
         dial: Dial,
         created: Instant,
         closer: Closer,
@@ -708,7 +708,7 @@ impl ConnectMachine {
         self.number
     }
 
-    pub(crate) fn route(&self) -> &Tcp {
+    pub(crate) fn route(&self) -> &NetRoute {
         &self.route
     }
 
@@ -871,7 +871,7 @@ impl ConnectMachine {
                 self.created,
                 self.settings,
             ),
-            Transport::Tcp(d.stream),
+            Transport::Stream(d.stream),
             d.remote,
             at,
         );
@@ -1600,7 +1600,7 @@ impl ConnectMachine {
                 let layer = super::layer::Lingering::boxed(how).expect("a test's memory");
                 stream.layers_mut().push(layer).expect("a test's memory");
             }
-            let conn = Self::conn(made, Transport::Tcp(stream), won.remote, at);
+            let conn = Self::conn(made, Transport::Stream(stream), won.remote, at);
             return Ok(Drove::Established(conn));
         };
         // QUIC dialed straight to its peer: its datagrams go to the socket
@@ -1648,7 +1648,7 @@ impl ConnectMachine {
     /// The connection the setup `made` (its number, route, start and
     /// settings) becomes over `stream`.
     fn conn(
-        made: (ConnNumber, Tcp, Dial, Instant, ConnSettings),
+        made: (ConnNumber, NetRoute, Dial, Instant, ConnSettings),
         transport: Transport,
         remote: Remote,
         at: Instant,
@@ -1656,7 +1656,7 @@ impl ConnectMachine {
         let (number, route, dial, created, settings) = made;
         Conn {
             number,
-            route: Route::Tcp(route),
+            route: Route::Net(route),
             dial,
             transport,
             remote: Some(remote),
@@ -2272,7 +2272,7 @@ mod tests {
             reuse: true,
         };
         let peer = Peer::new(scheme, b"abc.test".to_vec(), 123, None);
-        let route = Tcp {
+        let route = NetRoute {
             origin: TryArc::try_new(peer).unwrap(),
             via: None,
             ip,
@@ -2284,7 +2284,7 @@ mod tests {
         let mut m = ConnectMachine::new(
             ConnNumber(0),
             route,
-            crate::conn::Dial::Tcp,
+            crate::conn::Dial::Stream,
             start,
             Closer::System,
             ConnSettings::DEFAULT,
@@ -2371,7 +2371,7 @@ mod tests {
             reuse: true,
         };
         let peer = Peer::new(scheme, b"late.test".to_vec(), 123, None);
-        let route = Tcp {
+        let route = NetRoute {
             origin: TryArc::try_new(peer).unwrap(),
             via: None,
             ip: IpVersion::Any,
@@ -2383,7 +2383,7 @@ mod tests {
         let m = ConnectMachine::new(
             ConnNumber(0),
             route,
-            crate::conn::Dial::Tcp,
+            crate::conn::Dial::Stream,
             clock.now(),
             Closer::System,
             ConnSettings::DEFAULT,
@@ -2418,7 +2418,7 @@ mod tests {
     /// set.
     #[test]
     fn a_route_over_quic_opens_a_socket_for_datagrams() {
-        for (dial, datagrams) in [(crate::conn::Dial::Tcp, 0), (crate::conn::Dial::Quic, 1)] {
+        for (dial, datagrams) in [(crate::conn::Dial::Stream, 0), (crate::conn::Dial::Quic, 1)] {
             let clock = ManualClock::new().unwrap();
             let at: IpAddr = [127, 0, 0, 1].into();
             let wire = crate::conn::io::Conversation::new(b"", false);
@@ -2431,7 +2431,7 @@ mod tests {
                 reuse: true,
             };
             let peer = Peer::new(scheme, b"quic.test".to_vec(), 443, None);
-            let route = Tcp {
+            let route = NetRoute {
                 origin: TryArc::try_new(peer).unwrap(),
                 via: None,
                 ip: IpVersion::Any,
@@ -2493,7 +2493,7 @@ mod tests {
             assert_eq!(net.datagram_sockets(), datagrams, "{dial:?}");
             let options = wire.options();
             match dial {
-                crate::conn::Dial::Tcp => {
+                crate::conn::Dial::Stream => {
                     assert_eq!(net.open_sockets(), 1);
                     assert!(options.contains(&SocketOption::NoDelay), "{options:?}");
                     assert!(options.contains(&SocketOption::KeepAlive), "{options:?}");
@@ -2548,7 +2548,7 @@ mod tests {
             reuse: true,
         };
         let peer = Peer::new(scheme, b"localhost".to_vec(), 5, None);
-        let route = Tcp {
+        let route = NetRoute {
             origin: TryArc::try_new(peer).unwrap(),
             via: None,
             ip: IpVersion::Any,
@@ -2560,7 +2560,7 @@ mod tests {
         let mut m = ConnectMachine::new(
             ConnNumber(0),
             route,
-            crate::conn::Dial::Tcp,
+            crate::conn::Dial::Stream,
             clock.now(),
             Closer::System,
             ConnSettings::DEFAULT,
@@ -2595,7 +2595,7 @@ mod tests {
         };
         assert_eq!(conn.remote, Some(Remote::Inet(up)));
         assert_eq!(net.open_sockets(), 1, "the winner's alone");
-        let Transport::Tcp(stream) = conn.transport else {
+        let Transport::Stream(stream) = conn.transport else {
             panic!("over the network");
         };
         net.close(stream.into_socket());

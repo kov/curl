@@ -2,7 +2,7 @@ use super::*;
 use crate::conn::connect::Plain;
 use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Remote, Sent};
 use crate::conn::layer::Silent;
-use crate::conn::{DnsCache, DriveOptions, Limit, Scheme, Tcp};
+use crate::conn::{DnsCache, DriveOptions, Limit, NetRoute, Scheme};
 
 use crate::options::IpVersion;
 use crate::time::{Clock as _, ManualClock};
@@ -68,7 +68,7 @@ fn tcp(port: u16) -> Route {
 
 fn to(scheme: Scheme, host: &[u8], port: u16) -> Route {
     let peer = crate::conn::Peer::new(scheme, host.to_vec(), port, None);
-    Route::Tcp(Tcp {
+    Route::Net(NetRoute {
         origin: TryArc::try_new(peer).unwrap(),
         via: None,
         ip: IpVersion::Any,
@@ -886,7 +886,7 @@ fn a_search_closes_what_it_must_not_reuse() {
     let (mut net, clock) = net();
     let mut pool = Pool::new().unwrap();
     let key = |lease: &ConnLease| match &lease.conn().transport {
-        Transport::Tcp(s) => s.socket().key(),
+        Transport::Stream(s) => s.socket().key(),
         Transport::Datagram(_) | Transport::Local => unreachable!(),
     };
     let kept = |pool: &mut Pool, net: &mut FakeNet| {
@@ -1157,7 +1157,7 @@ fn a_search_prunes_once_a_second() {
     let mut lease = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
     up(&mut lease, &mut net, now);
     let key = match &lease.conn().transport {
-        Transport::Tcp(s) => s.socket().key(),
+        Transport::Stream(s) => s.socket().key(),
         Transport::Datagram(_) | Transport::Local => unreachable!(),
     };
     pool.release(

@@ -163,7 +163,8 @@ pub(super) fn put_on<H: Host>(
     };
     // Who its sessions are kept for: the peer, through a connect-to's
     // peer if any (`cf_ssl_peer_init`), over TCP.
-    let kept_for = match SessionPeer::new(to.identity, to.peer, to.via, backend.id(), Dial::Tcp) {
+    let kept_for = match SessionPeer::new(to.identity, to.peer, to.via, backend.id(), Dial::Stream)
+    {
         Ok(p) => p,
         Err(OutOfMemory) => {
             return Err(Failure::Transfer(ErrorKind::OutOfMemory));

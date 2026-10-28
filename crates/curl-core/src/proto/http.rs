@@ -8,7 +8,7 @@ use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use crate::coding::{AcceptEncoding, Coding, Decoder, Decoders, Identity, Named, Unrecognized};
 use crate::components::Component;
 use crate::conn::io::{Events, Recv, Sent};
-use crate::conn::{ConnLease, Peer, ProxyCreds, RecvFailed, Scheme, Tcp};
+use crate::conn::{ConnLease, NetRoute, Peer, ProxyCreds, RecvFailed, Scheme};
 use crate::date::{HttpDate, OutOfRange};
 use crate::deliver::{self, Expect, Pause, Pipeline, Reach, WriteType};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
@@ -1083,7 +1083,7 @@ impl Request {
         &self,
         want: AuthMethods,
         proxy_want: AuthMethods,
-        route: &Tcp,
+        route: &NetRoute,
     ) -> negotiate::Wants<'_> {
         let proxy_creds = route
             .proxy

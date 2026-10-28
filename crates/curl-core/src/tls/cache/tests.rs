@@ -32,7 +32,7 @@ fn origin(host: &str, port: u16) -> Peer {
 
 fn peer(change: impl FnOnce(&mut TlsIdentity)) -> SessionPeer {
     let o = origin("localhost", 18443);
-    SessionPeer::new(&identity(change), &o, None, &"OpenSSL/3.5.9", Dial::Tcp).unwrap()
+    SessionPeer::new(&identity(change), &o, None, &"OpenSSL/3.5.9", Dial::Stream).unwrap()
 }
 
 fn key(p: &SessionPeer) -> &str {
@@ -61,7 +61,7 @@ fn a_key_is_c_s_for_the_same_settings() {
     let id = identity(|i| i.verify_host = false);
     let o = origin("localhost", 18443);
     let via = origin("127.0.0.1", 9);
-    let p = SessionPeer::new(&id, &o, Some(&via), &"OpenSSL/3.5.9", Dial::Tcp).unwrap();
+    let p = SessionPeer::new(&id, &o, Some(&via), &"OpenSSL/3.5.9", Dial::Stream).unwrap();
     assert_eq!(
         key(&p),
         format!(
@@ -75,7 +75,7 @@ fn a_key_is_c_s_for_the_same_settings() {
         &o,
         Some(&via),
         &"OpenSSL/3.5.9",
-        Dial::Tcp,
+        Dial::Stream,
     )
     .unwrap();
     assert_eq!(key(&p), key(&peer(|_| {})));
@@ -322,7 +322,7 @@ fn a_new_peer_takes_the_least_recently_used_slot() {
     let mut trace = |_: fmt::Arguments<'_>| {};
     let at = |port| {
         let o = origin("localhost", port);
-        SessionPeer::new(&identity(|_| {}), &o, None, &"OpenSSL/3.5.9", Dial::Tcp).unwrap()
+        SessionPeer::new(&identity(|_| {}), &o, None, &"OpenSSL/3.5.9", Dial::Stream).unwrap()
     };
     let (a, b, c, d) = (at(1), at(2), at(3), at(4));
     for p in [&a, &b, &c] {
@@ -356,7 +356,7 @@ fn a_session_serves_only_its_client() {
             i.options.cert = cert.map(|c| c.as_bytes().to_vec());
             i.options.key_password = password.map(|p| p.as_bytes().to_vec());
         });
-        let mut p = SessionPeer::new(&id, &o, None, &"X", Dial::Tcp).unwrap();
+        let mut p = SessionPeer::new(&id, &o, None, &"X", Dial::Stream).unwrap();
         // The same key for all, so the client alone tells them apart.
         p.key = b"same".to_vec();
         p
@@ -379,7 +379,7 @@ fn a_session_serves_only_its_client() {
     );
     let o = origin("localhost", 1);
     let blob = identity(|i| i.options.cert_blob = Some(b"blob".to_vec()));
-    let blob = SessionPeer::new(&blob, &o, None, &"X", Dial::Tcp).unwrap();
+    let blob = SessionPeer::new(&blob, &o, None, &"X", Dial::Stream).unwrap();
     cache
         .put(&blob, ticket(0x303, 0), 1000, &mut trace)
         .unwrap();

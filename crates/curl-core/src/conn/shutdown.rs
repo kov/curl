@@ -131,7 +131,7 @@ impl Shutting {
         // A session says goodbye first (`cf_h2_shutdown`).
         self.conn.goodbye(&mut cx);
         match &mut self.conn.transport {
-            Transport::Tcp(stream) => match stream.shutdown(&mut cx, &mut self.shut) {
+            Transport::Stream(stream) => match stream.shutdown(&mut cx, &mut self.shut) {
                 Ok(Handshake::Waiting) => Tried::Waiting,
                 Ok(Handshake::Done) | Err(_) => Tried::Done,
             },
@@ -155,7 +155,7 @@ impl Shutting {
     /// yet say, from the top (`Curl_conn_adjust_pollset` on a chain in
     /// shutdown, its connected socket adding nothing).
     fn pollset(&self) -> Option<(&dyn Socket, Events)> {
-        let Transport::Tcp(stream) = &self.conn.transport else {
+        let Transport::Stream(stream) = &self.conn.transport else {
             return None;
         };
         let events = stream.shutdown_pollset(self.shut);
@@ -165,7 +165,7 @@ impl Shutting {
     /// Its pollset said on `trace`, as C's chain says it when the admin
     /// handle asks it (`Curl_conn_adjust_pollset`).
     fn say_pollset(&self, now: Instant, trace: &Internal) {
-        if let Transport::Tcp(stream) = &self.conn.transport {
+        if let Transport::Stream(stream) = &self.conn.transport {
             let mut cx = InternalCx {
                 now,
                 trace: Some(trace),
@@ -177,7 +177,7 @@ impl Shutting {
     /// The peer it goes to, for the limits on connections to one host.
     fn destination(&self) -> Option<&Peer> {
         match &self.conn.route {
-            Route::Tcp(tcp) => Some(tcp.destination()),
+            Route::Net(tcp) => Some(tcp.destination()),
             Route::Local => None,
         }
     }
@@ -203,7 +203,7 @@ fn terminate(
     }
     let socket = match conn.transport {
         Transport::Local => None,
-        Transport::Tcp(stream) => Some(stream.into_socket()),
+        Transport::Stream(stream) => Some(stream.into_socket()),
         Transport::Datagram(datagrams) => Some(datagrams.into_socket()),
     };
     if let Some(socket) = socket {

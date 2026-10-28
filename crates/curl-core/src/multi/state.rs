@@ -19,8 +19,8 @@ use crate::conn::shutdown::ConnSettings;
 use crate::conn::{
     Acquired, Answer, Asked, BadEntry, BadVia, Conn, ConnLease, ConnSlot, ConnectError,
     ConnectMachine, Connected, Dial, DriveOptions, Drove, Finish, Found, Full, Home, Limit,
-    ListEntry, Made, Peer, Pool, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute, Released,
-    ReuseRules, Route, Tcp, Unresolved, WaitReason, parse_entry, queries,
+    ListEntry, Made, NetRoute, Peer, Pool, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute,
+    Released, ReuseRules, Route, Unresolved, WaitReason, parse_entry, queries,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -239,7 +239,7 @@ pub(crate) struct Plan {
     proto: ProtoState,
     /// What the connection must be, decided once for the leg. Its origin
     /// is the proxy, for one the request goes to whole.
-    route: Tcp,
+    route: NetRoute,
     /// How the first attempt dials it, which its setup takes over.
     dial: Dial,
 }
@@ -252,7 +252,7 @@ pub(crate) struct Connecting {
     /// The plan's route: the host and port the request is for, the peer
     /// connected to in their place and the proxy on the way, as the
     /// failure names them.
-    route: Tcp,
+    route: NetRoute,
     /// The connection's setup: the handshake under way over it.
     setup: Setup,
     /// The HTTPS connect filter heading the setup, if it has one.
@@ -289,7 +289,7 @@ struct SetupMut<'a> {
 /// request (the ALPN offered, the pipeline a `CONNECT`'s answer goes
 /// through) and the connection's Negotiate with its proxy.
 struct Lent<'a> {
-    route: &'a Tcp,
+    route: &'a NetRoute,
     proto: &'a mut ProtoState,
     negotiate: &'a mut Option<Box<crate::proto::http::negotiate::Negotiate>>,
 }
@@ -3226,7 +3226,7 @@ fn second_starts(c: &mut Connecting) -> bool {
     let route = c.route.clone();
     let dial = match alpn {
         https::Alpn::H3 => Dial::Quic,
-        https::Alpn::H2 | https::Alpn::H1 => Dial::Tcp,
+        https::Alpn::H2 | https::Alpn::H1 => Dial::Stream,
     };
     let (closer, settings, created) = race.makings.clone();
     let number = c.lease.number();
@@ -3431,7 +3431,7 @@ fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
 
 /// The name `route` connects to first, missing from the cache, is not
 /// resolved for IPv6 alone without IPv6 (`can_resolve_dns_queries`).
-fn no_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, proxy: bool) -> ErrorKind {
+fn no_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, proxy: bool) -> ErrorKind {
     trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver(None))));
     let peer = route.destination();
     let (host, at) = (peer.name(), port_text(peer.port()));
@@ -3460,7 +3460,7 @@ fn port_text(port: u16) -> Text<8> {
 /// The debug build failed the resolve of IPv6 addresses alone of the name
 /// `route` connects to first, before the cache was looked in
 /// (`hostip_resolv`, `CURL_DBG_RESOLV_FAIL_IPV6`).
-fn debug_failed_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, proxy: bool) -> ErrorKind {
+fn debug_failed_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, proxy: bool) -> ErrorKind {
     let peer = route.destination();
     let (host, at) = (peer.name(), port_text(peer.port()));
     let queries = queries(peer, route.ip, cx.rest.ipv6_works).as_bytes();
@@ -3486,7 +3486,7 @@ fn debug_failed_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, proxy: bool) 
 /// C's `hostip_resolv` and `Curl_dnscache_get` trace it: found, missing
 /// (or stale, said first) and so resolved, or `None`, the resolver's no
 /// kept from before.
-fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, found: Option<Found>) {
+fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, found: Option<Found>) {
     // The name looked up: the proxy's, or what a connect-to names in the
     // origin's place.
     let peer = route.destination();
@@ -3566,7 +3566,7 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, found: Option<Foun
 /// its polls not traced.
 fn trace_resolved<H: Host>(
     cx: &mut StepCx<'_, H>,
-    route: &Tcp,
+    route: &NetRoute,
     asked: Result<Asked, Option<Queued>>,
     addrs: &[IpAddr],
 ) {
@@ -3663,7 +3663,7 @@ fn eyeballs_due<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, at: Instant) {
 /// The race's attempt to `remote`, the peer `route` connects to first
 /// or the proxy a handshake goes through, connected: the race is over,
 /// and counted (`cf_ip_happy_connect`).
-fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, remote: &Remote) {
+fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, remote: &Remote) {
     let he = Component::HappyEyeballs;
     let (name, ip, port) = (route.destination().name(), remote.shown_ip(), remote.port());
     let port = Text::<16>::clipped(format_args!(") port {port}")).0;
@@ -3842,7 +3842,7 @@ fn up<H: Host>(
 
 /// Why the setup failed, as C traces it (`cf_tcp_connect`,
 /// `is_connected`).
-fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError) -> ErrorKind {
+fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, e: ConnectError) -> ErrorKind {
     // The peer connected to: the first proxy, else what a connect-to
     // names in the origin's place, else the origin
     // (`Curl_conn_get_first_peer`).
@@ -4698,7 +4698,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     let target = match target {
         Ok(Some(target)) => target,
         Ok(None) => {
-            let lease = match acquire(cx, &proto, Route::Local, Dial::Tcp) {
+            let lease = match acquire(cx, &proto, Route::Local, Dial::Stream) {
                 Ok(Acquired::New(lease)) => lease,
                 Ok(Acquired::Reused(_)) => {
                     unreachable!("a connection without a network is never kept")
@@ -4821,7 +4821,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         },
         Some(Err(OutOfMemory)) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
-    let route = Tcp {
+    let route = NetRoute {
         origin,
         via,
         ip: cx.easy().options().ip_version,
@@ -4831,7 +4831,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         // Compared for any protocol, as C compares it (`url_match_auth`).
         delegation: cx.easy().options().login.delegation,
     };
-    let mut dial = Dial::Tcp;
+    let mut dial = Dial::Stream;
     // HTTP/3 alone must be possible (`Curl_http_setup_conn`), and is
     // dialed over QUIC, as the HTTPS connect's one attempt is
     // (`cf_hc_baller_assign`).
@@ -4855,7 +4855,11 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
 
 /// Whether HTTP/3 may be spoken over `route`, to an origin `secured` or
 /// not (`Curl_conn_may_http3`): failed as C fails it if not.
-fn may_http3<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, secured: bool) -> Result<(), ErrorKind> {
+fn may_http3<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    route: &NetRoute,
+    secured: bool,
+) -> Result<(), ErrorKind> {
     match quic_refused(route, secured) {
         None => Ok(()),
         Some((kind, why)) => Err(trace::fail(cx, kind, format_args!("{why}"))),
@@ -4866,7 +4870,7 @@ fn may_http3<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, secured: bool) -> Res
 /// attempt in HTTP/3: with a QUIC library, where HTTP/3 may be spoken;
 /// through a proxy, over its CONNECT-UDP, only as the one attempt of a
 /// transfer `h3_only`.
-fn may_quic<H: Host>(cx: &StepCx<'_, H>, route: &Tcp, h3_only: bool) -> bool {
+fn may_quic<H: Host>(cx: &StepCx<'_, H>, route: &NetRoute, h3_only: bool) -> bool {
     // Through a proxy, HTTP/3 is no attempt of a race yet: it is spoken
     // there only alone.
     cx.easy().libraries().h3.is_some()
@@ -4876,7 +4880,7 @@ fn may_quic<H: Host>(cx: &StepCx<'_, H>, route: &Tcp, h3_only: bool) -> bool {
 
 /// Why HTTP/3 may not be spoken over `route`, to an origin `secured` or
 /// not, if it may not (`Curl_conn_may_http3`).
-fn quic_refused(route: &Tcp, secured: bool) -> Option<(ErrorKind, &'static str)> {
+fn quic_refused(route: &NetRoute, secured: bool) -> Option<(ErrorKind, &'static str)> {
     Some(if route.destination().is_unix() {
         let why = "HTTP/3 cannot be used over UNIX domain sockets";
         (ErrorKind::QuicConnectError, why)
@@ -5145,7 +5149,7 @@ fn copied(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 /// idle one to reuse, or none while the multi's limits allow none, the
 /// request waiting for one (`multistate_connect`).
 fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
-    let acquired = acquire(cx, &plan.proto, Route::Tcp(plan.route.clone()), plan.dial);
+    let acquired = acquire(cx, &plan.proto, Route::Net(plan.route.clone()), plan.dial);
     if !matches!(acquired, Ok(Acquired::Wait(_))) {
         // One waiting may now find room too.
         schedule_pending(&mut cx.rest);
@@ -5431,7 +5435,7 @@ fn acquire<H: Host>(
 ) -> Result<Acquired, OutOfMemory> {
     let auth = &cx.easy().auth;
     let wants = match (proto, &route) {
-        (ProtoState::Http(request), Route::Tcp(tcp)) => {
+        (ProtoState::Http(request), Route::Net(tcp)) => {
             request.reuse_wants(auth.host_want(), auth.proxy_want(), tcp)
         }
         _ => AuthWants::NONE,

@@ -9,7 +9,7 @@
 use std::fmt;
 
 use super::connect::Made;
-use super::{Dialing, Tcp};
+use super::{Dialing, NetRoute};
 use crate::components::Component;
 
 /// How far a setup got, as the chain shows it.
@@ -327,7 +327,7 @@ fn is_setup(filter: Component) -> bool {
 /// The route's SOCKS proxy is given an address, not a name, so a DNS
 /// filter of its own resolves the peer it is to reach
 /// (`Curl_cf_socks_proxy_insert_after`).
-fn resolves_target(route: &Tcp) -> bool {
+fn resolves_target(route: &NetRoute) -> bool {
     route
         .socks()
         .is_some_and(|leg| leg.version.resolves_locally())
@@ -363,7 +363,7 @@ mod tests {
             name: "http",
             reuse: true,
         };
-        let route = Tcp {
+        let route = NetRoute {
             origin: TryArc::try_new(Peer::new(scheme, b"o.test".to_vec(), 80, None)).unwrap(),
             via: None,
             ip: IpVersion::Any,
@@ -377,7 +377,7 @@ mod tests {
             Chain::of(
                 Dialing {
                     route,
-                    dial: crate::conn::Dial::Tcp,
+                    dial: crate::conn::Dial::Stream,
                 },
                 Head::default(),
                 SetupPoint::Dialed(made),
@@ -399,7 +399,7 @@ mod tests {
             "[0][!DNS][!SETUP][HAPPY-EYEBALLS][TCP]"
         );
         let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
-        let route = Tcp {
+        let route = NetRoute {
             tls: Some(tls),
             ..route.clone()
         };
@@ -408,7 +408,7 @@ mod tests {
             Chain::of(
                 Dialing {
                     route,
-                    dial: crate::conn::Dial::Tcp,
+                    dial: crate::conn::Dial::Stream,
                 },
                 Head::default(),
                 SetupPoint::Dialed(made),
@@ -447,7 +447,7 @@ mod tests {
         )
         .secured(tls)
         .unwrap();
-        let route = Tcp {
+        let route = NetRoute {
             origin: peer(b"o.test", 80).unwrap(),
             via: None,
             ip: IpVersion::Any,
@@ -460,7 +460,7 @@ mod tests {
             Chain::of(
                 Dialing {
                     route: &route,
-                    dial: crate::conn::Dial::Tcp,
+                    dial: crate::conn::Dial::Stream,
                 },
                 Head::default(),
                 SetupPoint::Dialed(made),
@@ -501,7 +501,7 @@ mod tests {
         )
         .secured(tls)
         .unwrap();
-        let route = Tcp {
+        let route = NetRoute {
             origin: peer(b"o.test", 80).unwrap(),
             via: None,
             ip: IpVersion::Any,
@@ -515,7 +515,7 @@ mod tests {
             Chain::of(
                 Dialing {
                     route,
-                    dial: crate::conn::Dial::Tcp,
+                    dial: crate::conn::Dial::Stream,
                 },
                 Head::default(),
                 SetupPoint::Dialed(made),
@@ -532,7 +532,7 @@ mod tests {
         let up = Chain::of(
             Dialing {
                 route,
-                dial: crate::conn::Dial::Tcp,
+                dial: crate::conn::Dial::Stream,
             },
             Head::default(),
             SetupPoint::Dialed(made),
@@ -569,7 +569,7 @@ mod tests {
             false,
         );
         let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
-        let route = Tcp {
+        let route = NetRoute {
             origin: peer(b"o.test", 443).unwrap(),
             via: None,
             ip: IpVersion::Any,

@@ -210,7 +210,7 @@ curl-core/src/
     wait.rs                  wait, the waker, drive_to_completion over Net
     props.rs                 random call sequences checked against a model (tests)
   conn/
-    mod.rs                   Caches, ConnSlot, Conn, Route, ProxyRoute, Tcp, Scheme, Peer,
+    mod.rs                   Caches, ConnSlot, Conn, Route, ProxyRoute, NetRoute, Dialing, Scheme, Peer,
                              Transport, ConnNumber
     pool.rs                  Pool, ConnLease, ReuseRules, Released
     connect.rs               ConnectMachine, Eyeballs, Racing, Dialed
@@ -776,11 +776,12 @@ pub(crate) enum TransferState {
     Completed(Completed),              // terminal until remove
 }
 type Origin = TryArc<Peer>;          // the request's peer, shared with its connection's route
-pub(crate) struct Plan { proto: ProtoState, route: Tcp }  // the leg's route, built in start_leg
-pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, route: Tcp,
-                               handshake: Option<Box<Handshake>>,
+pub(crate) struct Plan { proto: ProtoState, route: NetRoute,  // the leg's route, built in start_leg
+                         dial: Dial }                      // the first attempt's, given to its setup
+pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, route: NetRoute,
+                               setup: Setup,                      // the handshake under way
                                https: Option<HttpsConnect>,       // the HTTPS connect filter
-                               race: Option<Box<Race>>,           // HTTP/3 against TCP
+                               race: Option<Box<Race>>,           // HTTP/3 against TCP, its second
                                negotiate: Option<Box<Negotiate>> } // the tunnel's, across a redial
 pub(crate) struct Attached { lease: ConnLease, proto: ProtoState, origin: Option<Origin> }
 pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>, result: Result<(), ErrorKind>,
@@ -1273,8 +1274,8 @@ the number still unread.
 pub(crate) enum ConnSlot { Connecting(ConnectMachine), Open(Conn), Failed(ConnNumber) }
 
 pub(crate) struct Conn {
-    number: ConnNumber, route: Route,
-    transport: Transport,              // Tcp(Stream), a Unix socket's too | Datagram(Datagrams)
+    number: ConnNumber, route: Route, dial: Dial,   // dial: how its first hop was dialed
+    transport: Transport,              // Stream(Stream), a Unix socket's too | Datagram(Datagrams)
                                        // | Local
     remote: Option<Remote>,            // Inet(SocketAddr) | Unix(UnixPeer); none without a
                                        // network; the local end is the socket's
@@ -1391,7 +1392,7 @@ socket before its connect.
   `Curl_conn_dns_get_ai`), and the resolve record lives with the machine that started it, not
   on whichever transfer happens to call.
 - A setup that makes a handshake does not end at the winning attempt: a route through SOCKS
-  or an HTTP proxy that tunnels (`Tcp::handshakes`), or a transfer that sends the PROXY line
+  or an HTTP proxy that tunnels (`NetRoute::handshakes`), or a transfer that sends the PROXY line
   (`DriveOptions::haproxy`, the creating transfer's, as the line is not part of the route), has the
   machine keep its socket as `Stage::Dialed(Dialed)`, with a receive buffer, and return
   `Progress::Dialed`. The machine does only the I/O of the handshake; the transfer
@@ -1428,8 +1429,8 @@ socket before its connect.
   the request went (`CURLPX_GSSAPI_PROTECTION`), as C does.
 - A SOCKS pre-proxy (`CURLOPT_PRE_PROXY`) sits in front of an HTTP proxy only, set on its
   `ProxyRoute` through `ProxyRoute::behind`, which asserts it; alone, it is the route's SOCKS
-  proxy. The route then dials the pre-proxy first (`Tcp::destination`), its SOCKS handshake asks
-  for the HTTP proxy (`Tcp::socks` gives the leg), and a tunnelling HTTP proxy's `CONNECT`
+  proxy. The route then dials the pre-proxy first (`NetRoute::destination`), its SOCKS handshake asks
+  for the HTTP proxy (`NetRoute::socks` gives the leg), and a tunnelling HTTP proxy's `CONNECT`
   follows over the same `Dialed` stage; a SOCKS5 authentication is kept on `Dialed` and carried
   to the `Conn`. Reuse compares the pre-proxy too.
 - A new connection sends the PROXY protocol's line over `Dialed`, after any proxy's handshake,
@@ -1910,7 +1911,7 @@ pub struct Route {
 }
 ```
 
-Built so far: `enum Route { Local, Tcp(Tcp) }`, with `Tcp { origin, via, ip, proxy, tls }`. `Peer` is C's
+Built so far: `enum Route { Local, Net(NetRoute) }`, with `NetRoute { origin, via, ip, proxy, tls }`. `Peer` is C's
 `struct Curl_peer`: the `Scheme` (the protocol's name and whether it keeps connections,
 `PROTOPT_CONN_REUSE`), the host as the URL names it, the port, the IPv6 zone and its scope (a
 numeric zone as it is, a name as its interface's index by `if_nametoindex`, one naming no
@@ -1990,7 +1991,7 @@ a connection bound to credentials serves only those, one mid-handshake with the 
 only a transfer negotiating as the same credentials with the same origin, and one negotiating
 with its proxy only a transfer negotiating with it — the proxy's credentials, its service
 among them, are the route's. The delegation asked (`CURLOPT_GSSAPI_DELEGATION`) is part of
-the `Tcp` route, compared in `Route::serves` (url.c:882). A connection whose handshake with
+the `NetRoute` route, compared in `Route::serves` (url.c:882). A connection whose handshake with
 either peer is in progress (state `Recv`) is kept even when the transfer forbade reuse, as
 multi.c keeps it. Negotiate runs only with a GSS-API library on the handle; without one the
 challenges are still read, so `CURLINFO_HTTPAUTH_AVAIL` has the bit, which the shim reports only
@@ -2549,7 +2550,7 @@ borrows would be. `CURLOPT_ISSUERCERT` or its blob then names the
 certificate that must have issued the peer's (`ossl_check_issuer`): 83 if it cannot be read or
 did not, said only when the peer is verified. The pinned key comes last.
 
-**Identity and reuse.** `Tcp` holds `tls: Option<TryArc<TlsIdentity>>`: the verify bits and a
+**Identity and reuse.** `NetRoute` holds `tls: Option<TryArc<TlsIdentity>>`: the verify bits and a
 copy of the transfer's cold `TlsOptions`, every field `match_ssl_primary_config` compares
 (versions, the options bits, the status check, CA file, path and blob, the CRL, the issuer, the
 client certificate and key with their formats and password, the cipher lists, curves,

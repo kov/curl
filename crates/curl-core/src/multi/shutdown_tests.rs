@@ -1283,10 +1283,12 @@ impl MultiEvents<NoHost> for NativeSeen {
     }
 }
 
-/// The socket callback reaches a transfer's TLS objects while the
-/// transfer holds its connection: as it is told the socket goes, the
-/// transfer done and its connection kept (`CURLINFO_TLS_SSL_PTR` from the
-/// callback).
+/// The socket callback reaches a transfer's TLS objects once its
+/// handshake is under way (`CURLINFO_TLS_SSL_PTR` from the callback):
+/// told the socket is read while the handshake waits for the server, but
+/// not told it is written while TCP connects, before there are any, nor
+/// that it goes once the transfer is done, its connection kept and no
+/// longer the transfer's.
 #[test]
 fn the_socket_callback_reaches_a_transfer_s_tls_objects() {
     let talk = tls_talk().late_replies();
@@ -1297,5 +1299,50 @@ fn the_socket_callback_reaches_a_transfer_s_tls_objects() {
     let id = m.add(e, (), &mut ev).unwrap();
     by_events(&mut m, id, 1000, &mut ev);
     m.remove(id, &mut ev).unwrap();
-    assert!(ev.0.iter().any(|&(_, native)| native), "{:?}", ev.0);
+    assert_eq!(
+        ev.0,
+        [
+            (SocketWhat::Out, false),
+            (SocketWhat::In, true),
+            (SocketWhat::Remove, false)
+        ]
+    );
+}
+
+/// The socket callback reaches the TLS objects of a transfer past its
+/// connect, the connection back in the pool between its steps: told its
+/// socket goes as the transfer is paused, and is read again as it goes on
+/// (`CURLINFO_TLS_SSL_PTR` from the callback, C's `data->conn` attached
+/// throughout).
+#[test]
+fn the_socket_callback_reaches_the_tls_objects_of_a_transfer_past_its_connect() {
+    let talk = tls_talk().late_replies();
+    let (mut m, _wire, tls) = over_tls(&talk);
+    let mut ev = NativeSeen::default();
+    let id = m.add(closing_tls(tls), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    for _ in 0..10 {
+        if matches!(m.state_of(id), state::TransferState::Exchanging(_)) {
+            break;
+        }
+        m.socket_action(SocketEvent::Socket(SocketKey::new(1000)), &mut ev)
+            .unwrap();
+    }
+    assert!(matches!(
+        m.state_of(id),
+        state::TransferState::Exchanging(_)
+    ));
+    let connecting = ev.0.len();
+    m.pause(id, crate::deliver::PauseRequest::RECV, &mut ev)
+        .unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    m.pause(id, crate::deliver::PauseRequest::CONT, &mut ev)
+        .unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(
+        ev.0[connecting..],
+        [(SocketWhat::Remove, true), (SocketWhat::In, true)],
+        "{:?}",
+        ev.0
+    );
 }

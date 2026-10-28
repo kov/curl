@@ -350,3 +350,11 @@ witness: curl-core proto::http::tests::tls::a_handshake_put_off_that_fails_fails
         (ErrorKind::SendError | ErrorKind::RecvError, Some(LayerAnswer::Failure(kind))) => kind,
 --- new
         (ErrorKind::RecvError, Some(LayerAnswer::Failure(kind))) => kind,
+
+=== the socket callback finds no TLS objects of an attached transfer told without the pool
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::shutdown_tests::the_socket_callback_reaches_the_tls_objects_of_a_transfer_past_its_connect
+--- old
+            None => lease.holding()?,
+--- new
+            None => return None,

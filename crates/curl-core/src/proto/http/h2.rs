@@ -355,6 +355,20 @@ fn field_line<H: Host>(
     trace::of_with(cx, H2, &parts);
 }
 
+/// The connection's HTTP/2 session made and its filter connected, the
+/// library there to make it (`http2_cfilter_insert_after`).
+pub(crate) fn open_session<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    lease: &mut ConnLease,
+) -> Result<(), ErrorKind> {
+    let library = cx.easy().libraries().h2.expect("a library for HTTP/2");
+    let (conn, _) = H2Conn::open(library, &settings(cx.max_streams(), cx.wants_push()), None)?;
+    lease
+        .get()
+        .put_h2(try_box(conn).map_err(|_| ErrorKind::OutOfMemory)?);
+    h2_connect(cx, lease, false)
+}
+
 /// The session is made: what it starts with is framed, to go with the
 /// first request, and the filter is connected (`cf_h2_ctx_open`,
 /// `cf_h2_connect`).
@@ -454,18 +468,15 @@ impl Request {
             }
             Some(_) => prior,
         };
-        if let Some(library) = library.filter(|_| h2) {
+        // One the HTTPS connect filter set up has its session already
+        // (`baller_connected`).
+        if h2 && lease.conn().h2().is_none() {
             if alpn != Some(Chosen::H2) {
                 // The filter goes on the connection now (`Curl_http2_switch`).
                 trace::of(cx, H2, format_args!("added"));
                 trace::of(cx, H2, format_args!("switching connection to HTTP/2"));
             }
-            let (conn, _) =
-                H2Conn::open(library, &settings(cx.max_streams(), cx.wants_push()), None)?;
-            lease
-                .get()
-                .put_h2(try_box(conn).map_err(|_| ErrorKind::OutOfMemory)?);
-            h2_connect(cx, lease, false)?;
+            open_session(cx, lease)?;
             if prior {
                 // No ALPN said so, but the connection speaks it now.
                 lease.get().saw_version(ResponseVersion::Http2);

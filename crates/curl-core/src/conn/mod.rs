@@ -1142,6 +1142,11 @@ impl Conn {
     /// The filter at the top of its chain once it is up, which a question
     /// of it is asked of first (`conn->cfilter[FIRSTSOCKET]`).
     pub(crate) fn top(&self) -> crate::components::Component {
+        // An HTTP/2 session's filter goes on top (`Curl_http2_switch_at`,
+        // `Curl_http2_switch`).
+        if self.h2().is_some() {
+            return crate::components::Component::Http2;
+        }
         match &self.route {
             Route::Net(route) => {
                 let tunnel = match &self.transport {

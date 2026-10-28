@@ -2985,6 +2985,7 @@ fn head_of(c: &Connecting) -> Head {
     Head {
         https: c.https.is_some(),
         record: c.https.is_some_and(|h| h.asks()),
+        h2: false,
     }
 }
 
@@ -3897,10 +3898,21 @@ fn up<H: Host>(
 ) -> (TransferState, Wake) {
     // What its tunnel negotiated is the connection's from now on.
     *c.lease.get().negotiate_mut() = c.negotiate.take();
+    let mut head = head_of(&c);
     if c.https.is_some() {
         // The winner's chain is asked whether HTTP/2 was agreed
-        // (`baller_connected`), from its SETUP filter.
-        query_alpn(cx, c.lease.query(LayerQuery::Alpn), Component::Setup);
+        // (`baller_connected`), from its SETUP filter: if it was, the
+        // HTTP/2 filter goes in below the HTTPS connect filter and is
+        // connected there and then (`Curl_http2_switch_at`).
+        let alpn = query_alpn(cx, c.lease.query(LayerQuery::Alpn), Component::Setup);
+        if alpn == Some(crate::tls::Chosen::H2) && cx.easy().libraries().h2.is_some() {
+            if let Err(kind) = crate::proto::http::open_session(cx, &mut c.lease) {
+                https::call_ended(c.https, cx, Err(kind));
+                chain_connect_ended(cx, Err(kind));
+                return (TransferState::Connecting(c).fail(kind), Wake::Again);
+            }
+            head.h2 = true;
+        }
     }
     https::call_ended(c.https, cx, Ok(true));
     chain_connect_ended(cx, Ok(true));
@@ -3953,7 +3965,7 @@ fn up<H: Host>(
     // The route the winner dialed, which a race's second dials
     // otherwise than the plan's.
     let route = c.lease.conn().dialing().expect("set up over the network");
-    let connected = Chain::connected(route, head_of(&c), preface, tunnel);
+    let connected = Chain::connected(route, head, preface, tunnel);
     mstate::trace(cx, format_args!("connected {connected}"));
     // The race's loser goes with the HTTPS connect filter, its chain from
     // its setup filter down (`cf_hc_ctx_destroy`).

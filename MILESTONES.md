@@ -1057,10 +1057,7 @@ protocols need, each step leaving behaviour and traces as they are:
     and timeouts, a phase-shaped protocol state; per-connection protocol state one boxed
     `Part` carrying the disconnect goodbye; reuse that tells protocol families, STARTTLS and
     per-connection credentials apart, with FTP's own rules; the scheme table generated with
-    its flags; auth out of `proto/http1`; the HTTP/2 session made at connect where ALPN or
-    prior knowledge settles on h2, so that the chain shows C's `[HTTP/2]` filter and its
-    `query ALPN` (today's lines pinned by `alpn_agreeing_h2_makes_the_session_at_the_request`,
-    C's quoted beside them).
+    its flags; auth out of `proto/http1`.
 68. **One reader for the line protocols.** A sans-IO response reader and command writer for
     FTP, IMAP, POP3 and SMTP (C's pingpong), at the trust boundary. STARTTLS (and FTP's
     `AUTH TLS`) upgrades an open connection only when no bytes follow the reply, failing

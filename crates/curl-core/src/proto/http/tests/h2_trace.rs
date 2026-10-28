@@ -270,12 +270,11 @@ fn a_step_reads_frames_however_many_reads_they_take() {
     assert!(reads > 11);
 }
 
-/// Over TLS with ALPN agreeing `h2`, the session is made at the request,
-/// not at connect: the chain's lines lack `[HTTP/2]`, and the request
-/// asks the TLS filter for the protocol itself. A known gap
-/// (`DIVERGENCE.md`, "Traces C makes at connect"), pinned as it is.
+/// Over TLS with ALPN agreeing `h2`, the session is made as the HTTPS
+/// connect filter's attempt wins, its filter in the chains the connect
+/// traces, and the request asks it what was agreed.
 #[test]
-fn alpn_agreeing_h2_makes_the_session_at_the_request() {
+fn alpn_agreeing_h2_makes_the_session_as_the_connection_is_set_up() {
     use crate::libraries::Library;
     use crate::tls::fake::{self, FakeTls, WELCOME};
     static FAKE: FakeH2 = FakeH2;
@@ -318,30 +317,20 @@ fn alpn_agreeing_h2_makes_the_session_at_the_request() {
                 || l.ends_with("] using HTTP/2")
         })
         .collect();
-    // C's, from pytest test_02_08 (h2, `CURL_DEBUG=all`), these lines
-    // being, with its connect's SETTINGS between the first three and
-    // the chain's:
-    //   [SETUP] query ALPN
-    //   [SSL] query ALPN: returning 'h2'
-    //   [HTTP/2] [0] created h2 session
-    //   [MULTI] [CONNECTING] connected
-    //       [0][DNS][DNS][HTTPS-CONNECT][HTTP/2][SETUP][SSL][HAPPY-EYEBALLS][TCP]
-    //   [MULTI] [CONNECTING] reduced to [0][HTTP/2][SSL][TCP]
-    //   [HTTP/2] query ALPN
-    //   [SSL] query ALPN: returning 'h2'
-    //   using HTTP/2
-    // The fake's chain has one `[DNS]`, its resolve being one filter.
+    // C's, from pytest test_02_08 (h2, `CURL_DEBUG=all`), with its
+    // connect's SETTINGS between the first three and the chain's. The
+    // fake's chain has one `[DNS]`, its resolve being one filter.
     assert_eq!(
         lines,
         expect(
             "[0-0] [SETUP] query ALPN
              [0-0] [SSL] query ALPN: returning 'h2'
-             [0-0] [MULTI] [CONNECTING] connected \
-                 [0][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]
-             [0-0] [MULTI] [CONNECTING] reduced to [0][SSL][TCP]
-             [0-0] [SSL] query ALPN
-             [0-0] [SSL] query ALPN: returning 'h2'
              [0-0] [HTTP/2] [0] created h2 session
+             [0-0] [MULTI] [CONNECTING] connected \
+                 [0][DNS][HTTPS-CONNECT][HTTP/2][SETUP][SSL][HAPPY-EYEBALLS][TCP]
+             [0-0] [MULTI] [CONNECTING] reduced to [0][HTTP/2][SSL][TCP]
+             [0-0] [HTTP/2] query ALPN
+             [0-0] [SSL] query ALPN: returning 'h2'
              [0-0] using HTTP/2"
         ),
         "{lines:#?}"

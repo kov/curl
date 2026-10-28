@@ -526,7 +526,7 @@ truncated at it) and `adjust_pollset -> 0, N socks`. `query ALPN` is traced by t
 question of what ALPN agreed is asked of: by `SETUP` as the HTTPS connect filter's attempt
 wins, by `HAPPY-EYEBALLS` or `SOCKS` under a tunnel's `CONNECT`, and by the top of the chain as
 HTTP starts on a new connection (`http_check_new_conn`: `[TCP]`, `[UNIX]`, `[SOCKS]`,
-`[H1-PROXY]`, `[SSL]`); the TLS layer adds what it answers (`query ALPN: returning
+`[H1-PROXY]`, `[SSL]`, `[HTTP/2]`); the TLS layer adds what it answers (`query ALPN: returning
 'http/1.1'`, `'(nil)'` for none). Each call of the chain's connect ends with its top filter's
 `[DNS] Curl_conn_connect(block=0) -> R, done=D`. `SSLS` traces the session cache's lookups,
 additions and takings as C's (§4.9). `SSL-PROXY` traces an HTTPS proxy's TLS layer as `SSL`
@@ -1684,10 +1684,13 @@ a `Part` over the stream (`Carrier`: the stream, its socket's trace and the conn
 close), so the connection's health check and goodbye ask it first with no case for its version,
 and a `Mux`, which answers what the pool asks of any session: the version it speaks and the
 peer's limit on streams. The pool and the engine ask `Conn::multiplexes`, never a version; the
-HTTP code reaches `H2Conn` by matching. It is made by the connection's first request, which finds
-what the connection speaks (`http_check_new_conn`): HTTP/2 if TLS's ALPN agreed on `h2`, which
-is offered first where the handle has an HTTP/2 library and its version allows it
-(`alpn_get_spec`), or by prior knowledge with nothing between; the connection then speaks
+HTTP code reaches `H2Conn` by matching. Where the HTTPS connect filter's winner agreed on `h2`
+by ALPN, which is offered first where the handle has an HTTP/2 library and its version allows it
+(`alpn_get_spec`), the session is made as the connection is set up, its filter shown in the
+chain below the HTTPS connect filter (`baller_connected`, `Curl_http2_switch_at`). Otherwise
+the connection's first request finds what the connection speaks (`http_check_new_conn`):
+HTTP/2 if ALPN agreed on it with no HTTPS connect filter (an HTTPS proxy forwarding), or by
+prior knowledge with nothing between, the session made then; the connection then speaks
 HTTP/2 for good. A step takes the session off the connection for the call that drives it and
 puts it back after (`with_session`), so the lease is free beside it.
 

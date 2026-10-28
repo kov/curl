@@ -27,16 +27,19 @@ pub(crate) enum SetupPoint {
 /// filter, for an `https` origin no proxy forwards to with ALPN on
 /// (`Curl_cf_https_setup`), and above the name's DNS filter the one that
 /// asks for the origin's HTTPS record, unless the origin is an address.
+/// Below the HTTPS connect filter, once its winner agreed on HTTP/2, the
+/// HTTP/2 filter it inserts (`baller_connected`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Head {
     pub(crate) https: bool,
     pub(crate) record: bool,
+    pub(crate) h2: bool,
 }
 
-/// The most filters a chain holds: three DNS, HTTPS-CONNECT, SETUP, SSL,
-/// HAPROXY, HTTP-PROXY, H1-PROXY, SSL-PROXY, SOCKS, HAPPY-EYEBALLS and
-/// TCP.
-const MOST: usize = 13;
+/// The most filters a chain holds: three DNS, HTTPS-CONNECT, HTTP/2,
+/// SETUP, SSL, HAPROXY, HTTP-PROXY, H1-PROXY, SSL-PROXY, SOCKS,
+/// HAPPY-EYEBALLS and TCP.
+const MOST: usize = 14;
 
 /// A chain of filters, top first, each connected or not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,6 +201,9 @@ impl Chain {
         }
         if head.https {
             push(Component::HttpsConnect);
+            if head.h2 {
+                push(Component::Http2);
+            }
         }
         push(Component::Setup);
         // Each filter the setup adds goes right below it, so the last,

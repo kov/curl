@@ -49,7 +49,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 pub(crate) mod alt_svc;
 pub(crate) mod cookies;
 mod h2;
-pub(crate) use h2::decode_status;
+pub(crate) use h2::{decode_status, open_session};
 mod h3;
 pub(crate) use h3::StreamSend;
 pub(crate) mod hsts;

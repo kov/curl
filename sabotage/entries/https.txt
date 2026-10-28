@@ -88,9 +88,9 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::https_trace::what_alpn_agreed_is_asked_of_a_new_connection_only
 features: test-util
 --- old
-        query_alpn(cx, c.lease.query(LayerQuery::Alpn), Component::Setup);
+        let alpn = query_alpn(cx, c.lease.query(LayerQuery::Alpn), Component::Setup);
 --- new
-        let _ = &c.lease;
+        let alpn = c.lease.conn().h2().map(|_| crate::tls::Chosen::H2);
 
 === the tunnel asks the proxy's dialer for ALPN where a SOCKS proxy is below
 file: crates/curl-core/src/multi/state/tunnel.rs

@@ -224,9 +224,9 @@ witness: curl-core proto::http::tests::h2::a_receive_limit_paces_a_stream
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::the_settings_say_the_multi_s_streams
 --- old
-                H2Conn::open(library, &settings(cx.max_streams(), cx.wants_push()), None)?;
+    let (conn, _) = H2Conn::open(library, &settings(cx.max_streams(), cx.wants_push()), None)?;
 --- new
-                H2Conn::open(library, &settings(100, cx.wants_push()), None)?;
+    let (conn, _) = H2Conn::open(library, &settings(100, cx.wants_push()), None)?;
 
 === a stream asks the default weight whatever the application set
 file: crates/curl-core/src/proto/http/h2.rs
@@ -760,3 +760,27 @@ witness: curl-core proto::http::tests::h2_trace::a_step_reads_frames_however_man
             }
             reads += 1;
             let closed = lease.conn().h2().is_none_or(H2Conn::closed);
+
+=== the HTTP/2 filter the HTTPS connect filter inserts is left out of its chains
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h2_trace::alpn_agreeing_h2_makes_the_session_as_the_connection_is_set_up
+--- old
+            head.h2 = true;
+--- new
+            head.h2 = false;
+
+=== a connection made HTTP/2 as it was set up is asked of its TLS filter first
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::h2_trace::alpn_agreeing_h2_makes_the_session_as_the_connection_is_set_up
+--- old
+        if self.h2().is_some() {
+--- new
+        if self.h2().is_some() && false {
+
+=== the request makes a second session over one made as the connection was set up
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2_trace::alpn_agreeing_h2_makes_the_session_as_the_connection_is_set_up
+--- old
+        if h2 && lease.conn().h2().is_none() {
+--- new
+        if h2 {

@@ -135,10 +135,9 @@ impl Shutting {
                 Ok(Handshake::Waiting) => Tried::Waiting,
                 Ok(Handshake::Done) | Err(_) => Tried::Done,
             },
-            Transport::Datagram(datagrams) => {
-                datagrams.shutdown();
-                Tried::Done
-            }
+            // A datagram socket is not drained: C reads the dangling bytes
+            // off a TCP socket alone (`cf_socket_shutdown`).
+            Transport::Datagram(_) => Tried::Done,
             Transport::Local => Tried::Done,
         }
     }

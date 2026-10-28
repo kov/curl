@@ -372,6 +372,29 @@ fn get_script(body: &[u8]) -> Arc<Mutex<Script>> {
     script
 }
 
+/// A QUIC connection's socket is not drained as it closes: C reads the
+/// 1 KB of dangling bytes off a TCP socket alone (`cf_socket_shutdown`),
+/// a datagram socket's being QUIC's to read.
+#[test]
+fn a_quic_connection_closes_without_draining_its_socket() {
+    let script = get_script(b"123456789");
+    let (mut m, talks) = quic_peer(
+        ManualClock::new().unwrap(),
+        &[&[b"server flight", b"response"]],
+    );
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let (reads, _) = talks[0].reads();
+    assert!(reads > 0, "the connection read its datagrams");
+    m.close_connections(&mut NoEvents);
+    let (after, room) = talks[0].reads();
+    assert!(
+        after == reads || room != 1024,
+        "drained: {after} reads, the last of {room}"
+    );
+}
+
 /// A GET goes on the connection's first stream, its fields traced as
 /// C's, its response written as it is read, the head a line at a time,
 /// and the transfer done as the stream closes: the stream is done with

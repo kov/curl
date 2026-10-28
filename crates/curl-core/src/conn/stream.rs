@@ -48,14 +48,6 @@ impl Datagrams {
         self.below(None).alive(cx)
     }
 
-    /// Its shutdown: the socket's own, the 1 KB drain, as a stream's with
-    /// no layers (`cf_socket_shutdown`).
-    pub(crate) fn shutdown(&mut self) {
-        let mut buf = [0u8; 1024];
-        // A failure, or nothing to read, leaves the close as it was.
-        let _ = self.socket().recv(&mut buf);
-    }
-
     /// The connection's end here, if the system says.
     pub(crate) fn local_addr(&self) -> Option<SocketAddr> {
         self.socket.socket().local_addr().ok()

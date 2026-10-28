@@ -850,3 +850,15 @@ witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy
         if to_proxy && let Link::Quic(_) = r.attempts[i].link {
 --- new
         if false && to_proxy && let Link::Quic(_) = r.attempts[i].link {
+
+=== a QUIC connection's socket is drained as it closes
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_connection_closes_without_draining_its_socket
+--- old
+            Transport::Datagram(_) => Tried::Done,
+--- new
+            Transport::Datagram(d) => {
+                let mut b = [0u8; 1024];
+                let _ = d.socket().recv(&mut b);
+                Tried::Done
+            }

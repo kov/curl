@@ -1317,7 +1317,8 @@ FTP's data connection needs.
 A QUIC connection dialed straight to its peer is `Transport::Datagram`: its socket alone
 (`Datagrams`), no layers and no `rx`, the QUIC connection reading and writing its datagrams
 itself; the session's `mux::Carrier` is then over it, and asks of it only its socket
-(`Carrier::layers` is bare: `Below::bare`), whether it is alive, and its shutdown's 1 KB drain.
+(`Carrier::layers` is bare: `Below::bare`) and whether it is alive; its shutdown reads nothing,
+as C drains a TCP socket alone.
 QUIC through a tunnel (CONNECT-UDP, over TCP or over an HTTP/3 proxy's stream) keeps the
 tunnel's `Stream`, its datagrams going through the tunnel's layers. Protocols without a network
 (`file:`, C's PROTOPT_NONETWORK) lease a `Conn` with `Transport::Local`: no socket, no layers,

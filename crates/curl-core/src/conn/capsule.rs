@@ -527,9 +527,10 @@ mod tests {
         }
     }
 
-    /// A context noting what is said.
+    /// A context noting what is said: its info lines, which the tests
+    /// read, and its component lines apart.
     #[derive(Default)]
-    struct Said(Vec<String>);
+    struct Said(Vec<String>, Vec<String>);
 
     impl LayerCx for Said {
         fn now(&self) -> crate::time::Instant {
@@ -569,10 +570,14 @@ mod tests {
         }
     }
 
-    /// Its info lines are noted, its component lines not.
     impl crate::conn::layer::Trace for Said {
-        fn line(&mut self, _: Component, _: fmt::Arguments<'_>) {}
-        fn line_with(&mut self, _: Component, _: &[&[u8]]) {}
+        fn line(&mut self, _: Component, line: fmt::Arguments<'_>) {
+            self.1.push(line.to_string());
+        }
+        fn line_with(&mut self, _: Component, parts: &[&[u8]]) {
+            self.1
+                .push(String::from_utf8_lossy(&parts.concat()).into_owned());
+        }
         fn info_line(&mut self, line: fmt::Arguments<'_>) {
             self.0.push(line.to_string());
         }

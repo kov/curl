@@ -1052,7 +1052,11 @@ protocols need, each step leaving behaviour and traces as they are:
     enum of none (HTTP/1), not made yet, HTTP/2 and HTTP/3, out for a step; `LayerCx` split
     by who needs what, its no-op defaults gone; HTTP/3's connection and stream events apart;
     its stream and tunnel state one fact per field; the HTTP/3 library seam's failures typed,
-    as HTTP/2's are.
+    as HTTP/2's are. Done: HTTP/3's events apart, its stream and tunnel state one fact per
+    field and its seam's failures typed; `Conn`'s session is `mux::Speaks` (`Unmade`, `Http1`,
+    `Made`, `Out`); `LayerCx` lends each capability through an accessor every context answers,
+    with no default, and what a layer calls (`LayerCalls`) goes through it. To do: the layered
+    QUIC connection.
 67. **The protocol phases.** Connect and connecting, doing and do-more with their pollsets
     and timeouts, a phase-shaped protocol state; per-connection protocol state one boxed
     `Part` carrying the disconnect goodbye; reuse that tells protocol families, STARTTLS and

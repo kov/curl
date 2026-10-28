@@ -550,10 +550,13 @@ wanted versions, so its ALPN offers `http/1.1` alone. HTTP/3 alone (`--http3-onl
 attempt and no race. The first's setup is the lease's throughout; the second, made from the
 addresses the first resolved, runs beside it in `Race::second` (boxed, as a handle's size is
 budgeted). One of the two leads (`Race::lead`): the first, until a second over TCP starts and
-leads from then on, its TLS the transfer's handshake as any. The lead is the setup the
-transfer reports, traces the chain of and makes the handshakes of (`Connecting::lead`); the
-other is driven beside it (`drive_other`), and nothing is moved between the lease and the
-race. Each connect call drives, and each pollset lists, the two in their ballers' order, which
+leads from then on. Each attempt has its own setup, the first's handshake on `Connecting`,
+the second's in `Race::setup`, and each is driven the same way, its connect and then its
+handshakes (`connect_once`, `handshake_next` and `enter_setup` for an `Attempt`); a failure
+of the attempt beside the lead is its own (`https::other_failed`), and only the lead's wait
+may clear the race's timer. The lead is the setup the transfer reports and names its
+timeout after (`Connecting::lead`); the other is driven in its turn (`drive_other`), and
+nothing is moved between the lease and the race. Each connect call drives, and each pollset lists, the two in their ballers' order, which
 `https::other_leads` reads from the first's version: the first before the second. A second
 that makes the connection puts it in the lease, which gives back the first's machine to go as
 the loser (`ConnLease::adopt`). The second starts as the first fails (`h3

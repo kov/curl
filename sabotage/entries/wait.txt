@@ -300,9 +300,9 @@ witness: curl-core proto::http::tests::wait_trace::a_transfer_run_by_events_is_t
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_proxy_handshake_waits_to_send_then_to_read
 --- old
-                        let events = h.interest(setup) | Events::IN;
+            let events = h.interest(setup) | Events::IN;
 --- new
-                        let events = h.interest(setup);
+            let events = h.interest(setup);
 
 === a handshake's socket is traced as one still connecting
 file: crates/curl-core/src/multi/state.rs

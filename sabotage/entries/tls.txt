@@ -30,11 +30,11 @@ witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_fol
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls::the_proxy_protocol_s_line_goes_before_tls
 --- old
-    if c.lead().is_some_and(ConnectMachine::sends_preface) && !made.preface {
+    if c.attempt(a).is_some_and(ConnectMachine::sends_preface) && !made.preface {
         return Some(Due::Preface);
     }
 --- new
-    if c.lead().is_some_and(ConnectMachine::sends_preface)
+    if c.attempt(a).is_some_and(ConnectMachine::sends_preface)
         && !made.preface
         && (c.route.tls.is_none() || made.tls)
     {

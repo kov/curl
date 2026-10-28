@@ -370,13 +370,13 @@ witness: curl-core proto::http::tests::h3_trace::a_race_both_attempts_lose_fails
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::a_late_quic_peer_wins_over_a_tcp_attempt_running
 --- old
-    if c.other().is_none() {
-        return Other::Racing(c);
-    }
+        let Some(other) = c.attempt(a) else {
+            return Other::Racing(c);
+        };
 --- new
-    if c.other().is_none() || c.race.is_some() {
-        return Other::Racing(c);
-    }
+        let Some(other) = c.attempt(a).filter(|_| c.race.is_none()) else {
+            return Other::Racing(c);
+        };
 
 === the race's loser goes before the HTTPS connect filter
 file: crates/curl-core/src/multi/state.rs

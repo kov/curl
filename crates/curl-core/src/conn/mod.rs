@@ -271,12 +271,19 @@ impl std::ops::Deref for Dialing<'_> {
 
 impl Dialing<'_> {
     /// The first hop is QUIC: to an HTTP/3 proxy whose tunnel the route
-    /// goes through, or to the origin dialed over QUIC with no tunnel on
-    /// the way (`first_transport`).
+    /// goes through, or to the origin dialed over QUIC with no proxy on
+    /// the way (`first_transport`). A request sent whole to a proxy is
+    /// never dialed over QUIC: only HTTPS is, which a proxy tunnels.
     pub(crate) fn first_hop_quic(&self) -> bool {
         match &self.route.proxy {
-            Some(proxy) if proxy.tunnels() => proxy.over_quic(),
-            _ => self.dial == Dial::Quic,
+            Some(proxy) => {
+                assert!(
+                    proxy.tunnels() || self.dial != Dial::Quic,
+                    "QUIC is dialed only to a proxy that tunnels"
+                );
+                proxy.over_quic()
+            }
+            None => self.dial == Dial::Quic,
         }
     }
 

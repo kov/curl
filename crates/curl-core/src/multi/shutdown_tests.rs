@@ -804,8 +804,13 @@ fn work_for_no_transfer_is_said_only_on_the_internal_trace() {
     assert!(!silent.verbose());
     silent.info(format_args!("lost"));
     let written = Written::default();
+    let components = crate::components::Components::new().unwrap();
+    components.set(
+        crate::components::Component::Http3,
+        crate::components::Level::Info,
+    );
     let trace = crate::trace::Internal::to(
-        crate::components::Components::new().unwrap(),
+        components,
         crate::handler::Handler::text(written.clone()).unwrap(),
     );
     let mut said = crate::trace::InternalCx {
@@ -815,7 +820,19 @@ fn work_for_no_transfer_is_said_only_on_the_internal_trace() {
     };
     assert!(said.verbose());
     said.info(format_args!("said"));
-    assert_eq!(written.lines(), ["* said"]);
+    said.info_with(&[b"said ", b"in parts"]);
+    said.of_with(
+        crate::components::Component::Http3,
+        &[b"a component's ", b"parts"],
+    );
+    assert_eq!(
+        written.lines(),
+        [
+            "* said",
+            "* said in parts",
+            "* [HTTP/3] a component's parts"
+        ]
+    );
 }
 
 /// What a transfer's debug handler reaches as it hears the socket

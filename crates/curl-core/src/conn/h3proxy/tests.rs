@@ -665,3 +665,72 @@ fn a_send_into_the_tunnel_is_the_stream_s_body() {
     socket.sends.lock().unwrap().push_back(Act::Fail(111));
     assert!(p.egress(&mut notes, &socket).is_err());
 }
+
+/// A QUIC call over another context lends that one's capabilities: an
+/// attempt's all of them; a pooled connection's check or goodbye all but
+/// the timer, which no one sets, and the streams, none of them a
+/// transfer's.
+#[test]
+fn a_quic_call_over_another_context_lends_its_capabilities() {
+    use crate::conn::io::{Conversation, FakeNet, Peer};
+    use crate::conn::quic::{Lone, Over, Path};
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+    let mut net = FakeNet::new(crate::time::ManualClock::new().unwrap())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, Conversation::new(b"", false));
+    let socket = crate::conn::io::dial(&mut net, at);
+    let asked = || Asked {
+        calls: Vec::new(),
+        yes: true,
+        report: crate::report::TransferReport::default(),
+        room: crate::conn::quic::RecvRoom::Unmade,
+    };
+    let each = |cx: &mut dyn LayerCx| {
+        cx.info(format_args!("said"));
+        cx.socket_failed(&io::Error::other("gone"));
+        cx.pause_recv();
+        cx.with_tls_sessions(&mut |_, _| {});
+        cx.early_done(7);
+        cx.quic_due(std::time::Duration::from_millis(5));
+        let closed = StreamEvent::QuicClosed {
+            error: H3Error(0x100),
+            answer: Ok(()),
+        };
+        let heard = cx.h3_event(StreamId(3), closed);
+        (heard, cx.recv_room().is_some())
+    };
+    let mut over_asked = asked();
+    let mut over = Over {
+        cx: &mut over_asked,
+        path: Path::Socket(&*socket),
+    };
+    assert_eq!(each(&mut over), (Heard::Failed, true));
+    assert_eq!(
+        over_asked.calls,
+        [
+            "info said",
+            "socket_failed gone",
+            "pause_recv",
+            "tls_sessions",
+            "early_done 7",
+            "quic_due 5ms",
+            "h3_event 3",
+        ]
+    );
+    let mut lone_asked = asked();
+    let mut lone = Lone {
+        cx: &mut lone_asked,
+    };
+    assert_eq!(each(&mut lone), (Heard::Fine, true));
+    assert_eq!(
+        lone_asked.calls,
+        [
+            "info said",
+            "socket_failed gone",
+            "pause_recv",
+            "tls_sessions",
+            "early_done 7",
+            "of [3] quic close(app_error=256) -> 0",
+        ]
+    );
+}

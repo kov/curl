@@ -645,7 +645,16 @@ exclude_re = [
     'curl-core/src/altsvc\.rs:.*: replace > with (==|>=) in Cursor<.a>::quoted$',
     # A raw receive's failing errno, which the fake network cannot fail
     # and a real reset needs SO_LINGER for.
-    'curl-core/src/multi/raw\.rs:.*: replace <impl LayerCx for RawCx<._>>::socket_failed with \(\)$',
+    'curl-core/src/multi/raw\.rs:.*: replace <impl crate::conn::layer::Failures for RawCx<._>>::keep_errno with \(\)$',
+    # A raw send or receive has no QUIC connection under it to lend the
+    # room to; a room lent or made for the call would read the same.
+    'curl-core/src/multi/raw\.rs:.*: replace <impl LayerCx for RawCx<._>>::recv_room -> Option<&mut crate::conn::quic::RecvRoom> with Some\(Box::leak\(Box::new\(Default::default\(\)\)\)\)$',
+    # The tests' TLS contexts: `Notes` answers a library that asks first
+    # that the transfer is not verbose, and notes an errno no test's TLS
+    # session fails with; `Kept` is used only by curl-ngtcp2's test
+    # against a live caddy, which a curl-core run does not reach.
+    'curl-core/src/tls\.rs:.*: replace <impl crate::conn::layer::(Trace|Failures) for Notes>::(says_info -> bool with true|keep_errno with \(\))$',
+    'curl-core/src/tls\.rs:.*: replace <impl LayerCx for Kept>::',
     # A connection settles in the step that finds what it speaks, and its
     # transfer steps again in that same pass: a wake one step late still
     # lets its waiters go in the pass, before any of them runs, as

@@ -1045,3 +1045,17 @@ witness: curl-core conn::h3proxy::tests::a_call_into_the_proxy_s_connection_is_t
     fn h3_streams(&mut self) -> Option<&mut dyn super::layer::H3Streams> {
         self.cx.h3_streams()
     }
+
+=== a pooled QUIC connection's check or goodbye sets the transfer's QUIC timer
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::h3proxy::tests::a_quic_call_over_another_context_lends_its_capabilities
+--- old
+    /// context.
+    fn quic_timer(&mut self) -> Option<&mut dyn QuicTimer> {
+        None
+    }
+--- new
+    /// context.
+    fn quic_timer(&mut self) -> Option<&mut dyn QuicTimer> {
+        self.cx.quic_timer()
+    }

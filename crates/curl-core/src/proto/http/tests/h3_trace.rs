@@ -1560,6 +1560,49 @@ fn a_late_quic_peer_wins_over_a_tcp_attempt_running() {
     assert!(tcp_talk.received().is_empty(), "nothing goes over TCP");
 }
 
+/// A QUIC peer that answers late, after the soft timeout started the
+/// second attempt over TCP, which leads and is refused: the race goes on
+/// with the first, which wins, the second's failure not taken for the
+/// first's (`cf_hc_connect` fails only once every baller has).
+#[test]
+fn a_late_quic_peer_wins_after_the_leading_tcp_attempt_failed() {
+    let quic_talk = Conversation::replies(&[b"server flight", b"response"], false).per_send();
+    let tcp_talk = Conversation::replies(&[], false).per_send();
+    let late = Peer::AcceptsAfter(std::time::Duration::from_millis(150));
+    let mut m = racing_peer(late, &quic_talk, Peer::Refuses, &tcp_talk);
+    let script = get_script(b"quic");
+    {
+        let mut s = script.lock().unwrap();
+        s.out.truncate(3);
+        s.on_submit.push_back(vec![vec![3; 75], vec![]]);
+    }
+    let e = tracing(FakeTls::agreeing().unwrap(), &script);
+    let ran = h3_race(&mut m, e, &tcp_talk);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"quic");
+    let got = race_lines(&ran);
+    let want = expect(
+        "
+        [HTTPS-CONNECT] h3 has not seen any data after 100ms, starting h1
+        [HTTPS-CONNECT] connect -> 0, done=0
+        [HTTPS-CONNECT] adjust_pollset -> 0, 2 socks
+        [TCP] destroy
+        [HTTPS-CONNECT] connect -> 0, done=0
+        [HTTPS-CONNECT] adjust_pollset -> 0, 1 socks
+        [HTTPS-CONNECT] connect -> 0, done=1
+        [HTTPS-CONNECT] removing connected setup filter
+        [HTTPS-CONNECT] destroy
+        [SETUP] destroy
+        using HTTP/3
+        ",
+    );
+    let from = got
+        .iter()
+        .position(|l| l.contains("starting h1"))
+        .expect("the second starts");
+    assert_eq!(got[from..], want[..], "{got:#?}");
+}
+
 /// Both attempts fail: the setup fails with the first's failure, not the
 /// second's (`cf_hc_connect`'s `ctx->result = ballers[0].result`).
 #[test]

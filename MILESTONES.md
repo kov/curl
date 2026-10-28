@@ -1034,17 +1034,21 @@ callback a send handle on its own connection, a typed exception to ENGINE's deci
 allows `curl_ws_send` there. It opens with what milestone 5's design review found the
 protocols need, each step leaving behaviour and traces as they are:
 
-65. **A connection's setup apart from its transfer.** A `Setup` owns one connection's setup:
-    its lease or connect machine, how it is dialed (`dial` leaves the route for the attempt,
-    recorded on the connection once up), the handshake under way, its Negotiate and redials;
-    the handshake drivers take `&mut Setup`, the TLS one over a stream so that it can upgrade
-    an open connection too. `Connecting` holds one; the HTTPS race holds two in place of its
-    aside and the lease's placeholder slot. `Transport` gains a datagram variant for TFTP,
-    and the route's names stop saying TCP for QUIC's. Two setups at once give FTP its data
-    connection and `--http3` its race through an HTTP proxy: C weighs HTTP/3 there as
-    anywhere (`cf_hc_may_h3` refuses only SOCKS), its attempt over CONNECT-UDP beside one
-    over CONNECT, two tunnels to the proxy at once, where ours makes the one over CONNECT.
-    ENGINE §4.1 and §4.2 are rewritten to the shape built.
+65. **A connection's setup apart from its transfer.** **In progress.** Done: the handshake
+    under way is held in a `Setup` beside the lease, and the drivers run over a borrowed view
+    of the leading setup (`SetupMut`) and what the transfer lends them (`Lent`), the TLS one
+    over a stream (`tls::put_on`, `tls::shake`) so that it can upgrade an open connection
+    too; Negotiate stays the connection's, as C's proxyneg is per connection. The HTTPS race
+    runs its second attempt inline in `Race::second` beside the lease's first, one of them
+    leading, with no swaps, aside or placeholder slot; a second's failure is read off the race.
+    `dial` has left the route for the attempt (`ConnectMachine::dial`, `Dialing`), recorded
+    on the connection once up. A QUIC connection dialed straight to its peer is
+    `Transport::Datagram`. Sizes and allocation budgets are unchanged. To do: the route's
+    names stop saying TCP for QUIC's; `Made` as a struct of facts; the other attempt driven as
+    the lead is; then two setups at once giving `--http3` its race through an HTTP proxy (C
+    weighs HTTP/3 there as anywhere, `cf_hc_may_h3` refusing only SOCKS: its attempt over
+    CONNECT-UDP beside one over CONNECT, where ours makes the one over CONNECT) and FTP its
+    data connection; ENGINE §4.1 and §4.2 rewritten whole to the shape built.
 66. **Types for what flags say.** A layered QUIC connection is a type of its own, its
     datagram path given by its context with no `unreachable!` default; `Conn`'s session an
     enum of none (HTTP/1), not made yet, HTTP/2 and HTTP/3, out for a step; `LayerCx` split

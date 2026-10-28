@@ -2623,11 +2623,12 @@ fn tracing(mut e: Easy, components: &[u8]) -> Easy {
     e
 }
 
-/// The race traced as C's happy eyeballs filter traces it: each attempt
-/// as it starts, the first or the next, the delay armed for the next
-/// while an address is left, and the winner by its place among those
-/// running. The C build traces the same lines connecting to a silent
-/// IPv6 address and a listening IPv4 one.
+/// The race traced as C's happy eyeballs filter traces it: set up, the
+/// next address looked for in each family it asks, each attempt as it
+/// starts, the first or the next, the delay armed for the next while an
+/// address is left, and the winner by its place among those running.
+/// The C build traces the same lines connecting to a silent IPv6 address
+/// and a listening IPv4 one.
 #[test]
 fn the_race_is_traced_as_c_s_happy_eyeballs() {
     let (mut m, clock) = networked();
@@ -2650,6 +2651,9 @@ fn the_race_is_traced_as_c_s_happy_eyeballs() {
     assert_eq!(
         raced,
         [
+            "[HAPPY-EYEBALLS] init ip ballers for transport 3\n",
+            "[HAPPY-EYEBALLS] want to do more\n",
+            "[HAPPY-EYEBALLS] check for next AAAA address: found\n",
             "[HAPPY-EYEBALLS] starting first attempt for ipv6 -> 0\n",
             "  Trying [::1]:4...\n",
             "[HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive\n",
@@ -2657,6 +2661,8 @@ fn the_race_is_traced_as_c_s_happy_eyeballs() {
             "[TIMER] [HAPPY_EYEBALLS] set for 200000us\n",
             "[HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive\n",
             "[HAPPY-EYEBALLS] happy eyeballs timeout expired, start next attempt\n",
+            "[HAPPY-EYEBALLS] want to do more\n",
+            "[HAPPY-EYEBALLS] check for next A address: found\n",
             "[HAPPY-EYEBALLS] starting next attempt for ipv4 -> 0\n",
             "  Trying 127.0.0.1:4...\n",
             "[HAPPY-EYEBALLS] checked connect attempts: 2 ongoing, 0 inconclusive\n",
@@ -2667,8 +2673,9 @@ fn the_race_is_traced_as_c_s_happy_eyeballs() {
     );
 }
 
-/// The last attempt failing ends the race, said between the attempt's
-/// failure and the transfer's.
+/// The last attempt failing ends the race: it looks for another address
+/// in each family, finds none, and says so between the attempt's failure
+/// and the transfer's, as C's tool does against a refusing port.
 #[test]
 fn a_race_with_no_attempt_left_says_so() {
     let (mut m, _clock) = networked();
@@ -2686,8 +2693,16 @@ fn a_race_with_no_attempt_left_says_so() {
         .position(|l| l == "[HAPPY-EYEBALLS] no more attempts to try\n")
         .unwrap();
     assert!(
-        lines[at - 1].starts_with("connect to 127.0.0.1 port 2 from "),
+        lines[at - 4].starts_with("connect to 127.0.0.1 port 2 from "),
         "{lines:?}"
+    );
+    assert_eq!(
+        lines[at - 3..at],
+        [
+            "[HAPPY-EYEBALLS] want to do more\n",
+            "[HAPPY-EYEBALLS] check for next AAAA address: none\n",
+            "[HAPPY-EYEBALLS] check for next A address: none\n",
+        ]
     );
     assert!(
         lines[at + 1].starts_with("Failed to connect to 127.0.0.1:2 after "),
@@ -2695,7 +2710,7 @@ fn a_race_with_no_attempt_left_says_so() {
     );
     assert_eq!(
         lines[0],
-        "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0\n"
+        "[HAPPY-EYEBALLS] init ip ballers for transport 3\n"
     );
 }
 
@@ -2714,7 +2729,8 @@ fn dns_lines(m: &mut Multi, url: &str, set: impl FnOnce(&mut Options)) -> Vec<St
     dns_only(trace_of(&lines))
 }
 
-/// The DNS component's lines of `lines`, as `dns_lines` keeps them.
+/// The DNS component's lines of `lines`, as `dns_lines` keeps them: the
+/// cache's, not the race's questions of the answer (`get Nth result`).
 fn dns_only(lines: Vec<String>) -> Vec<String> {
     let starts = lines
         .iter()
@@ -2728,7 +2744,8 @@ fn dns_only(lines: Vec<String>) -> Vec<String> {
         .filter(|l| {
             (l.starts_with("[DNS]")
                 && !l.contains("] hostip_resolv(")
-                && !l.contains("] Curl_conn_connect("))
+                && !l.contains("] Curl_conn_connect(")
+                && !l.starts_with("[DNS] get "))
                 || l.starts_with("Hostname")
                 || l.starts_with("Negative")
         })

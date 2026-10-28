@@ -105,8 +105,10 @@ fn lines(text: &str) -> Vec<String> {
 
 /// The socket at the path is connected to, its address made, not looked
 /// up, and its filter traced as `UNIX`; the transfer's ends are the path
-/// and nothing. The fake's connect is under way as it starts, where a
-/// real one's connects at once, as C's then does with no check traced.
+/// and nothing. The race asks for the path's one address as C's does,
+/// in IPv4's place with no IPv6 asked for. The fake's connect is under
+/// way as it starts, where a real one's connects at once, as C's then
+/// does with no check traced and nothing asked after.
 #[test]
 fn a_unix_socket_is_connected_in_place_of_the_host() {
     let at = unix_at("/tmp/t.sock", false);
@@ -116,11 +118,18 @@ fn a_unix_socket_is_connected_in_place_of_the_host() {
     assert_eq!(
         setup_lines(&ran),
         lines(
-            "[HAPPY-EYEBALLS] starting first attempt for ipv6 -> 0
+            "[HAPPY-EYEBALLS] init ip ballers for transport 6
+            [HAPPY-EYEBALLS] want to do more
+            [HAPPY-EYEBALLS] check for next AAAA address: none
+            [DNS] get 0th result for /tmp/t.sock:0, family=1, dns=1
+            [HAPPY-EYEBALLS] check for next A address: found
+            [HAPPY-EYEBALLS] starting first attempt for ipv6 -> 0
             Trying /tmp/t.sock:0...
             [UNIX] cf_socket_open() -> 0, fd=1000
             [UNIX] local address  port 0...
             [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
+            [DNS] get 1th result for /tmp/t.sock:0, family=1, dns=1
+            [DNS] get 1th result for /tmp/t.sock:0, family=1, dns=1
             [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
             [UNIX] connected on fd=1000
             [HAPPY-EYEBALLS] connect attempt #0 successful
@@ -133,15 +142,49 @@ fn a_unix_socket_is_connected_in_place_of_the_host() {
     assert_eq!((&ends.remote, ends.local), (&at, None));
 }
 
+/// A Unix socket refused ends the race as C's does: looking for another
+/// address, its family its own and not IPv4's, it asks for the path's
+/// second address before saying it has no IPv6 one, then again for its
+/// IPv4 place, and finds none. C's tool against a path nothing listens
+/// at traces the same questions.
+#[test]
+fn a_unix_socket_refused_looks_for_no_other() {
+    let at = unix_at("/tmp/t.sock", false);
+    let (ran, _) = over(&at, Peer::Refuses, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    let raced: Vec<String> = setup_lines(&ran)
+        .into_iter()
+        .filter(|l| l.starts_with("[HAPPY-EYEBALLS] ") || l.starts_with("[DNS] get "))
+        .collect();
+    let at = raced
+        .iter()
+        .position(|l| l == "[HAPPY-EYEBALLS] no more attempts to try")
+        .expect("the race ends");
+    assert_eq!(
+        raced[at - 5..at],
+        [
+            "[HAPPY-EYEBALLS] want to do more",
+            "[DNS] get 1th result for /tmp/t.sock:0, family=1, dns=1",
+            "[HAPPY-EYEBALLS] check for next AAAA address: none",
+            "[DNS] get 1th result for /tmp/t.sock:0, family=1, dns=1",
+            "[HAPPY-EYEBALLS] check for next A address: none",
+        ]
+    );
+}
+
 /// An abstract name shows as nothing where C prints its address, which
-/// starts with a zero byte.
+/// starts with a zero byte, and as its name where C asks for it.
 #[test]
 fn an_abstract_name_shows_as_nothing() {
     let at = unix_at("t-abs", true);
     let (ran, _) = over(&at, Peer::Accepts, |_| {});
     assert_eq!(ran.result, Ok(()));
     let lines = setup_lines(&ran);
-    assert_eq!(lines[1], "  Trying :0...");
+    assert_eq!(
+        lines[3],
+        "[DNS] get 0th result for t-abs:0, family=1, dns=1"
+    );
+    assert_eq!(lines[6], "  Trying :0...");
     assert_eq!(
         lines[lines.len() - 2..],
         [

@@ -202,9 +202,9 @@ witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::attempts_race_as_unit_2600_has_them
 --- old
-        let due = r.last_start.is_none_or(|at| now >= at.after(delay)) || r.attempts.is_empty();
+                && r.last_start.is_none_or(|at| now >= at.after(delay)));
 --- new
-        let due = r.attempts.is_empty();
+                && r.attempts.is_empty());
 
 === attempts run without a cap
 file: crates/curl-core/src/conn/connect.rs

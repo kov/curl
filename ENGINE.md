@@ -486,10 +486,15 @@ the limit, the winner by its place among the attempts running before the losers 
 armed while an address is left, the peer it connected to, and the end of a race with no attempt
 left. As C goes back over the running attempts after starting one (`goto evaluate`), the drive
 checks them again before the new attempt's socket opens: one connecting then wins without it,
-and one failing then goes as it opens. Not
-traced: the filter's own life (`init ip ballers`, `adjust_pollset`, its removal and
-destruction) and the walk over the addresses (`want to do more`, `check for next`, `checked
-connect attempts`), which describe C's structures rather than a step the machine takes.
+and one failing then goes as it opens. The race's first drive says it is set up (`init ip
+ballers for transport N`: 3 for TCP, 5 for QUIC, 6 for a Unix socket). It asks for addresses as
+C's run asks its DNS filter, each question traced as `[DNS] get Nth result for HOST:PORT,
+family=F, dns=1` (`Curl_conn_dns_get_ai`; the families numbered as Linux's, a Unix socket's
+path asked for as family 1 and port 0, no IPv6 asked for it): looking for the next attempt's
+(`want to do more`, `check for next AAAA|A address: found|none`, IPv4's asked first unless the
+last attempt was IPv4's), whether one is left once the running attempts are checked, and again as
+the run ends to arm its timer. A race with none running and no address left looks once more and
+finds none before its failure says so. Not traced: the filter's removal and destruction.
 
 `DNS` traces the lookup of the name a connection goes to first, from what the connect machine
 reports (`Found`, `Unresolved`): the cache looked in, found, missing, stale or holding the
@@ -497,8 +502,8 @@ resolver's no; what answered a name it did not have, a shortcut at once or the r
 the reference build's c-ares does; the answer kept, or the no. The queries are named as the IP
 version and an address's own family make them; the debug build's `hostip_resolv` line comes with
 the `debug-hooks` feature. Not traced: C's DNS filter's own life (`created DNS filter`, `added`,
-`cf_dns_start`, `connected filter chain below`, its removal and destruction), its reading of the
-answer (`get Nth result`), the chain's connect result C traces under the top filter's name
+`cf_dns_start`, `connected filter chain below`, its removal and destruction), the chain's
+connect result C traces under the top filter's name
 (`Curl_conn_connect(block=0) -> R, done=D`, `filter returned R`), c-ares's polling (the cache looked in again at each poll, `resolve incomplete`, `still waiting`),
 and a SOCKS proxy's lookup of the destination.
 

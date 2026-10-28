@@ -196,25 +196,25 @@ witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
 --- old
-                if !at_once {
-                    r.checked(cx);
-                }
+                let until = if at_once {
+                    None
+                } else {
+                    r.went_on(cx, of, delay)
+                };
 --- new
-                if at_once {
-                    r.checked(cx);
-                }
+                let until = if at_once {
+                    r.went_on(cx, of, delay)
+                } else {
+                    None
+                };
 
 === a new QUIC attempt is not counted among those running
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
 --- old
-        if !done {
-            r.checked(cx);
-        }
+        let until = if done { None } else { r.went_on(cx, of, delay) };
 --- new
-        if done {
-            r.checked(cx);
-        }
+        let until = if done { r.went_on(cx, of, delay) } else { None };
 
 === a racing QUIC attempt's eyeballs say nothing of the pollset
 file: crates/curl-core/src/multi/state.rs
@@ -243,3 +243,84 @@ witness: curl-core proto::http::tests::h3_trace::a_tcp_second_leading_answers_fo
                     Some(SetupPoint::Racing { started: true })
 --- new
                     Some(_)
+
+=== a Unix socket's attempt is taken for an IPv4 one as the next is looked for
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::unix_trace::a_unix_socket_refused_looks_for_no_other
+--- old
+        self.last_v4 = !matches!(self.answer, Addresses::Unix);
+--- new
+        self.last_v4 = true;
+
+=== the race asks for IPv6's addresses before IPv4's whether more are left
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_tcp_second_leads_beside_a_quic_first_until_it_wins
+--- old
+        self.ask(cx, of, false, self.v4) || self.ask(cx, of, true, self.v6)
+--- new
+        self.ask(cx, of, true, self.v6) || self.ask(cx, of, false, self.v4)
+
+=== the race's questions name the families the other way round
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_tcp_second_leads_beside_a_quic_first_until_it_wins
+--- old
+                if v6 { AF_INET6 } else { AF_INET },
+--- new
+                if v6 { AF_INET } else { AF_INET6 },
+
+=== a race that started an attempt does not ask whether to start another
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_tcp_second_leads_beside_a_quic_first_until_it_wins
+--- old
+        self.checked(cx);
+        self.eyeballs.more_asked(cx, of);
+        self.next_due(cx, of, delay)
+--- new
+        self.checked(cx);
+        self.next_due(cx, of, delay)
+
+=== a race with nothing left does not look for another address
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_race_with_no_attempt_left_says_so
+--- old
+        let none = self.eyeballs.next(cx, of);
+        assert!(none.is_none(), "no address is left");
+--- new
+
+
+=== an attempt going on to its HTTP/3 proxy's tunnel asks nothing of the addresses
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection
+--- old
+            r.eyeballs.more_asked(cx, of);
+            r.eyeballs.more_asked(cx, of);
+        }
+--- new
+        }
+
+=== the race is not said to be set up
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
+--- old
+            cx.of(
+                Component::HappyEyeballs,
+                format_args!("init ip ballers for transport {transport}"),
+            );
+--- new
+
+
+=== a Unix socket's race is set up as TCP's
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::unix_trace::a_unix_socket_is_connected_in_place_of_the_host
+--- old
+                Component::Unix => 6,
+--- new
+                Component::Unix => 3,
+
+=== a QUIC race is set up as TCP's
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
+--- old
+                Component::Udp => 5,
+--- new
+                Component::Udp => 3,

@@ -542,28 +542,69 @@ impl Eyeballs {
             .copied()
     }
 
-    /// The address to try next, if one is left (`cf_ip_ballers_run`).
-    fn next(&mut self) -> Option<Candidate> {
-        if let Addresses::Unix = self.answer {
-            // Counted among IPv4's, as C's family is not IPv6's.
-            let left = self.v4 == 0;
-            self.v4 = 1;
-            return left.then_some(Candidate::Unix);
-        }
-        if (self.last_v4 || self.nth(false, self.v4).is_none())
-            && let Some(a) = self.nth(true, self.v6)
-        {
-            self.v6 += 1;
-            self.last_v4 = false;
-            return Some(Candidate::Ip(a));
-        }
-        let a = self.nth(false, self.v4)?;
-        self.v4 += 1;
-        self.last_v4 = true;
-        Some(Candidate::Ip(a))
+    /// Whether the `n`th address of IPv6 if `v6`, else of IPv4 (a Unix
+    /// socket's one), is there: C's race asks its DNS filter, which traces
+    /// the question (`Curl_conn_dns_get_ai`). A Unix socket has no IPv6
+    /// addresses to ask for.
+    fn ask(&self, cx: &mut dyn LayerCx, of: Asking<'_>, v6: bool, n: usize) -> bool {
+        let (family, there) = match &self.answer {
+            Addresses::Unix if v6 => return false,
+            Addresses::Unix => (AF_UNIX, n == 0),
+            Addresses::Resolved(_) => (
+                if v6 { AF_INET6 } else { AF_INET },
+                self.nth(v6, n).is_some(),
+            ),
+        };
+        let mut line = Line::new();
+        line.text(format_args!("get {n}th result for "))
+            .raw(of.name)
+            .text(format_args!(":{}, family={family}, dns=1", of.port));
+        cx.of_with(Component::Dns, &[line.bytes()]);
+        there
     }
 
-    /// Whether an address is left to try.
+    /// Whether an address is left to try, IPv4's asked first
+    /// (`cf_ai_iter_has_more`).
+    fn more_asked(&self, cx: &mut dyn LayerCx, of: Asking<'_>) -> bool {
+        self.ask(cx, of, false, self.v4) || self.ask(cx, of, true, self.v6)
+    }
+
+    /// The address to try next, if one is left, the families alternating,
+    /// IPv6 first, as C's race looks for it (`cf_ip_ballers_run`).
+    fn next(&mut self, cx: &mut dyn LayerCx, of: Asking<'_>) -> Option<Candidate> {
+        let he = Component::HappyEyeballs;
+        cx.of(he, format_args!("want to do more"));
+        let said = |found: bool| if found { "found" } else { "none" };
+        if self.last_v4 || !self.ask(cx, of, false, self.v4) {
+            let found = self.ask(cx, of, true, self.v6);
+            let shown = said(found);
+            cx.of(he, format_args!("check for next AAAA address: {shown}"));
+            if found {
+                let a = self.nth(true, self.v6).expect("asked");
+                self.v6 += 1;
+                self.last_v4 = false;
+                return Some(Candidate::Ip(a));
+            }
+        }
+        let found = self.ask(cx, of, false, self.v4);
+        let shown = said(found);
+        cx.of(he, format_args!("check for next A address: {shown}"));
+        if !found {
+            return None;
+        }
+        self.v4 += 1;
+        // A Unix socket's family is its own, not IPv4's
+        // (`last_attempt_ai_family`).
+        self.last_v4 = !matches!(self.answer, Addresses::Unix);
+        match &self.answer {
+            // Counted among IPv4's, as C's family is not IPv6's.
+            Addresses::Unix => Some(Candidate::Unix),
+            Addresses::Resolved(_) => self.nth(false, self.v4 - 1).map(Candidate::Ip),
+        }
+    }
+
+    /// Whether an address is left to try, asking no one: the answer, as
+    /// it comes, has one.
     fn more(&self) -> bool {
         match &self.answer {
             Addresses::Unix => self.v4 == 0,
@@ -573,6 +614,28 @@ impl Eyeballs {
         }
     }
 }
+
+/// What `route`'s race asks its addresses for.
+fn asking(route: &NetRoute) -> Asking<'_> {
+    let peer = route.destination();
+    Asking {
+        name: peer.name(),
+        port: if peer.is_unix() { 0 } else { peer.port() },
+    }
+}
+
+/// The peer a race asks its addresses for, as C's trace names it: its
+/// name and port, a Unix socket's path and 0.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Asking<'a> {
+    name: &'a [u8],
+    port: u16,
+}
+
+// The address families as C's trace numbers them, Linux's.
+const AF_UNIX: u8 = 1;
+const AF_INET: u8 = 2;
+const AF_INET6: u8 = 10;
 
 /// A socket connecting to one address, and over it what decides the
 /// attempt (C's `cf_ip_attempt` and its filter).
@@ -883,7 +946,11 @@ impl ConnectMachine {
     /// to an HTTP/3 proxy is made goes on to its tunnel.
     pub(crate) fn checked(&self, cx: &mut dyn LayerCx) {
         if let Stage::Racing(r) = &self.stage {
+            let of = asking(&self.route);
             r.checked(cx);
+            // Whether to start another, then when to be called again.
+            r.eyeballs.more_asked(cx, of);
+            r.eyeballs.more_asked(cx, of);
         }
     }
 
@@ -1004,6 +1071,7 @@ impl ConnectMachine {
         let now = cx.now();
         let delay = setup.delay;
         let component = self.dialing().socket_component();
+        let of = asking(&self.route);
         let r = match &mut self.stage {
             Stage::Resolving(pending) => {
                 let pending = pending.take();
@@ -1065,6 +1133,18 @@ impl ConnectMachine {
             Stage::Racing(r) => r,
             Stage::Dialed(_) => unreachable!("a dialed setup is driven by its handshakes"),
         };
+        // The race's first run sets it up (`cf_ip_happy_init`).
+        if r.last_start.is_none() && r.attempts.is_empty() {
+            let transport = match component {
+                Component::Unix => 6,
+                Component::Udp => 5,
+                _ => 3,
+            };
+            cx.of(
+                Component::HappyEyeballs,
+                format_args!("init ip ballers for transport {transport}"),
+            );
+        }
         // A running attempt that connected wins; one that failed is
         // dropped (`cf_ip_ballers_run`).
         match r.check(cx, component) {
@@ -1073,17 +1153,23 @@ impl ConnectMachine {
             Checked::Failed(i, error) => {
                 let failure = r.attempts.remove(i).fail(cx, component, error)?;
                 return r
-                    .failed(Some(failure), ErrorKind::CouldntConnect)
+                    .failed(cx, of, Some(failure), ErrorKind::CouldntConnect)
                     .map(|p| Drove::Connecting(self, p));
             }
             Checked::QuicFailed(i, kind) => {
                 r.attempts.remove(i).discard(cx, component);
-                return r.failed(None, kind).map(|p| Drove::Connecting(self, p));
+                return r
+                    .failed(cx, of, None, kind)
+                    .map(|p| Drove::Connecting(self, p));
             }
         }
-        let due = r.last_start.is_none_or(|at| now >= at.after(delay)) || r.attempts.is_empty();
-        if !(due && r.eyeballs.more()) {
-            let until = r.next_due(delay);
+        // With none running another is wanted; with some, one is if an
+        // address is left and the last started long enough ago.
+        let do_more = r.attempts.is_empty()
+            || (r.eyeballs.more_asked(cx, of)
+                && r.last_start.is_none_or(|at| now >= at.after(delay)));
+        if !do_more {
+            let until = r.next_due(cx, of, delay);
             return Ok(Drove::Connecting(self, Progress::Waiting { until }));
         }
         let first = r.attempts.is_empty();
@@ -1096,6 +1182,7 @@ impl ConnectMachine {
                 format_args!("happy eyeballs timeout expired, start next attempt"),
             );
         }
+        let candidate = r.eyeballs.next(cx, of).expect("an address is left");
         if r.attempts.len() == MAX_ATTEMPTS {
             // The oldest makes room (`cf_ip_ballers_prune`).
             let oldest = r.attempts.remove(0);
@@ -1108,7 +1195,6 @@ impl ConnectMachine {
         if r.attempts.try_reserve(1).is_err() {
             return Err(ConnectError::OutOfMemory);
         }
-        let candidate = r.eyeballs.next().expect("an address is left");
         // A Unix socket's family is not IPv4's either.
         let (which, v) = (
             if first { "first" } else { "next" },
@@ -1272,13 +1358,15 @@ impl ConnectMachine {
                 // Checked with those before it, the new attempt among
                 // them (`goto evaluate`), unless it connected at once.
                 let at_once = connect == Connect::Done;
-                if !at_once {
-                    r.checked(cx);
-                }
+                let until = if at_once {
+                    None
+                } else {
+                    r.went_on(cx, of, delay)
+                };
                 let tried = Progress::Trying {
                     remote,
                     at_once,
-                    until: r.next_due(delay),
+                    until,
                 };
                 Ok(Drove::Connecting(self, tried))
             }
@@ -1300,7 +1388,7 @@ impl ConnectMachine {
                 line.raw(why);
                 cx.info_with(&[line.bytes()]);
                 cx.of(component, format_args!("destroy"));
-                r.failed(Some(error), ErrorKind::CouldntConnect)
+                r.failed(cx, of, Some(error), ErrorKind::CouldntConnect)
                     .map(|p| Drove::Connecting(self, p))
             }
         }
@@ -1331,7 +1419,7 @@ impl ConnectMachine {
             cx.info_with(&[b"Immediate connect fail for ", rip.bytes(), why.as_bytes()]);
             cx.of(self.quic_component(), format_args!("destroy"));
             discard(cx, component, socket);
-            return self.quic_failed(Some(error), ErrorKind::CouldntConnect);
+            return self.quic_failed(cx, Some(error), ErrorKind::CouldntConnect);
         }
         let local = socket.socket().local_addr().ok();
         let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
@@ -1373,9 +1461,10 @@ impl ConnectMachine {
             Err(kind) => {
                 cx.of(self.quic_component(), format_args!("destroy"));
                 discard(cx, component, socket);
-                return self.quic_failed(None, kind);
+                return self.quic_failed(cx, None, kind);
             }
         };
+        let of = asking(&self.route);
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("an attempt is made in a race");
         };
@@ -1387,13 +1476,11 @@ impl ConnectMachine {
             })
             .expect("reserved");
         // Connected as it started, for early data: won at once.
-        if !done {
-            r.checked(cx);
-        }
+        let until = if done { None } else { r.went_on(cx, of, delay) };
         let tried = Progress::Trying {
             remote,
             at_once: done,
-            until: r.next_due(delay),
+            until,
         };
         Ok(Drove::Connecting(self, tried))
     }
@@ -1539,13 +1626,16 @@ impl ConnectMachine {
     /// another runs or an address is left.
     fn quic_failed(
         mut self,
+        cx: &mut dyn ConnCx,
         error: Option<io::Error>,
         kind: ErrorKind,
     ) -> Result<Drove, ConnectError> {
+        let of = asking(&self.route);
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("an attempt is made in a race");
         };
-        r.failed(error, kind).map(|p| Drove::Connecting(self, p))
+        r.failed(cx, of, error, kind)
+            .map(|p| Drove::Connecting(self, p))
     }
 
     /// An attempt whose socket did not open, or was closed as it was set:
@@ -1574,10 +1664,11 @@ impl ConnectMachine {
         line.raw(why.as_bytes());
         cx.info_with(&[line.bytes()]);
         cx.of(component, format_args!("destroy"));
+        let of = asking(&self.route);
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("an attempt is made in a race");
         };
-        r.failed(Some(error), kind)
+        r.failed(cx, of, Some(error), kind)
             .map(|p| Drove::Connecting(self, p))
     }
 
@@ -1606,7 +1697,10 @@ impl ConnectMachine {
                 return Err(ConnectError::OutOfMemory);
             };
             r.attempts[i].link = Link::Tunnel(tunnel);
-            let until = r.next_due(setup.delay);
+            let until = r
+                .last_start
+                .filter(|_| r.eyeballs.more())
+                .map(|at| at.after(setup.delay));
             return Ok(Drove::Connecting(self, Progress::Tunnel { until }));
         }
         cx.of(
@@ -1775,11 +1869,13 @@ impl ConnectMachine {
         kind: ErrorKind,
     ) -> Result<Drove, ConnectError> {
         let component = self.dialing().socket_component();
+        let of = asking(&self.route);
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("a tunnel is an attempt of a race");
         };
         r.attempts.remove(i).discard(cx, component);
-        r.failed(None, kind).map(|p| Drove::Connecting(self, p))
+        r.failed(cx, of, None, kind)
+            .map(|p| Drove::Connecting(self, p))
     }
 
     /// The Unix socket the first hop is at, if it is one.
@@ -1977,11 +2073,21 @@ impl Racing {
         );
     }
 
-    /// When the next attempt is due, if an address is left for one.
-    fn next_due(&self, delay: Duration) -> Option<Instant> {
-        self.last_start
-            .filter(|_| self.eyeballs.more())
-            .map(|at| at.after(delay))
+    /// When the next attempt is due, if an address is left for one, as
+    /// C's run asks at its end to arm its timer (`cf_ip_ballers_run`).
+    fn next_due(&self, cx: &mut dyn LayerCx, of: Asking<'_>, delay: Duration) -> Option<Instant> {
+        let more = self.eyeballs.more_asked(cx, of);
+        self.last_start.filter(|_| more).map(|at| at.after(delay))
+    }
+
+    /// An attempt started and the race goes on: those running are
+    /// checked, whether to start another is asked, which it is too soon
+    /// for, and when the next is due (`cf_ip_ballers_run`, `goto
+    /// evaluate`).
+    fn went_on(&self, cx: &mut dyn LayerCx, of: Asking<'_>, delay: Duration) -> Option<Instant> {
+        self.checked(cx);
+        self.eyeballs.more_asked(cx, of);
+        self.next_due(cx, of, delay)
     }
 
     fn close_all(&mut self, net: &mut dyn Net) {
@@ -1994,12 +2100,21 @@ impl Racing {
     /// address is left, and fails with it otherwise.
     /// The attempt failed with `error`, as `kind` says: the setup goes
     /// on while another runs or an address is left.
-    fn failed(&self, error: Option<io::Error>, kind: ErrorKind) -> Result<Progress, ConnectError> {
+    /// With none running and no address left, C's run looks for one and
+    /// finds none; the setup's failure says so.
+    fn failed(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        of: Asking<'_>,
+        error: Option<io::Error>,
+        kind: ErrorKind,
+    ) -> Result<Progress, ConnectError> {
         if !self.attempts.is_empty() || self.eyeballs.more() {
-            Ok(Progress::Failed)
-        } else {
-            Err(ConnectError::Failed(error, kind))
+            return Ok(Progress::Failed);
         }
+        let none = self.eyeballs.next(cx, of);
+        assert!(none.is_none(), "no address is left");
+        Err(ConnectError::Failed(error, kind))
     }
 }
 
@@ -2913,8 +3028,15 @@ mod tests {
                 TryArc::try_new(Answer::new(b"a.test", addrs.to_vec()).unwrap()).unwrap(),
             )
         };
+        let now = crate::time::ManualClock::new().unwrap().now();
+        let of = Asking {
+            name: b"a.test",
+            port: 80,
+        };
+        let mut cx = crate::conn::layer::Silent(now);
         let order = |mut e: Eyeballs| {
-            std::iter::from_fn(move || e.next())
+            let mut cx = crate::conn::layer::Silent(now);
+            std::iter::from_fn(move || e.next(&mut cx, of))
                 .map(|c| match c {
                     Candidate::Ip(ip) => ip,
                     Candidate::Unix => panic!("an answer has addresses"),
@@ -2940,8 +3062,8 @@ mod tests {
         );
         let mut e = Eyeballs::new(answer(), IpVersion::V6);
         assert!(e.more());
-        e.next();
-        e.next();
+        e.next(&mut cx, of);
+        e.next(&mut cx, of);
         assert!(!e.more());
     }
 

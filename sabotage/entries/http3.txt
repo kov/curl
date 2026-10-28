@@ -838,7 +838,8 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::h3_trace::a_tunnel_an_http3_proxy_refuses_fails_the_attempt
 --- old
         r.attempts.remove(i).discard(cx, component);
-        r.failed(None, kind).map(|p| Drove::Connecting(self, p))
+        r.failed(cx, of, None, kind)
+            .map(|p| Drove::Connecting(self, p))
 --- new
         r.attempts.remove(i).discard(cx, component);
         Err(ConnectError::Failed(None, kind))

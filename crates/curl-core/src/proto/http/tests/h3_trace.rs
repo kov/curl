@@ -176,6 +176,9 @@ fn a_quic_attempt_is_won_by_its_handshake() {
         "[HTTPS-CONNECT] 1st attempt uses h3 from wanted versions
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [HAPPY-EYEBALLS] init ip ballers for transport 5
+        [HAPPY-EYEBALLS] want to do more
+        [HAPPY-EYEBALLS] check for next AAAA address: found
         [HAPPY-EYEBALLS] starting first attempt for ipv6 -> 0
         Trying [::1]:{PORT}...
         [UDP] cf_socket_open() -> 0, fd=1000
@@ -255,15 +258,27 @@ fn an_unverified_peer_fails_each_attempt_and_the_setup() {
             "fake QUIC peer",
         ],
     );
-    // The second attempt is the last: no timer for another is set.
+    // The second attempt is the last: no timer for another is set. The
+    // race is set up once, and looks for each attempt's address, IPv4's
+    // first after an IPv6 attempt.
     let attempt = |v: u8, ip: &str| {
-        let next = if v == 6 {
-            "[HAPPY-EYEBALLS] next HAPPY_EYEBALLS timeout in 200ms"
+        let (next, looked) = if v == 6 {
+            (
+                "[HAPPY-EYEBALLS] next HAPPY_EYEBALLS timeout in 200ms",
+                "[HAPPY-EYEBALLS] init ip ballers for transport 5
+                [HAPPY-EYEBALLS] want to do more
+                [HAPPY-EYEBALLS] check for next AAAA address: found",
+            )
         } else {
-            ""
+            (
+                "",
+                "[HAPPY-EYEBALLS] want to do more
+                [HAPPY-EYEBALLS] check for next A address: found",
+            )
         };
         format!(
-            "[HAPPY-EYEBALLS] starting first attempt for ipv{v} -> 0
+            "{looked}
+            [HAPPY-EYEBALLS] starting first attempt for ipv{v} -> 0
             [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
             {next}
             [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
@@ -284,6 +299,9 @@ fn an_unverified_peer_fails_each_attempt_and_the_setup() {
     let want = expect(&format!(
         "{}
         {}
+        [HAPPY-EYEBALLS] want to do more
+        [HAPPY-EYEBALLS] check for next AAAA address: none
+        [HAPPY-EYEBALLS] check for next A address: none
         [HAPPY-EYEBALLS] no more attempts to try
         Failed to connect to localhost:{PORT} after 0 ms: SSL peer certificate or SSH remote key was not OK",
         attempt(6, "::1"),
@@ -1395,11 +1413,21 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP]
         [0-0] [SETUP] happy eyeballing to origin 127.0.0.1:8990
         [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [0-0] [HAPPY-EYEBALLS] init ip ballers for transport 3
+        [0-0] [HAPPY-EYEBALLS] want to do more
+        [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=10, dns=1
+        [0-0] [HAPPY-EYEBALLS] check for next AAAA address: none
+        [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=2, dns=1
+        [0-0] [HAPPY-EYEBALLS] check for next A address: found
         [0-0] [HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
         [0-0]   Trying 127.0.0.1:8990...
         [0-0] [TCP] cf_socket_open() -> 0, fd=1001
         [0-0] [TCP] local address 127.0.0.1 port 40001...
         [0-0] [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
+        [0-0] [DNS] get 1th result for 127.0.0.1:8990, family=2, dns=1
+        [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=10, dns=1
+        [0-0] [DNS] get 1th result for 127.0.0.1:8990, family=2, dns=1
+        [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=10, dns=1
         [0-0] [HTTPS-CONNECT] connect -> 0, done=0
         [0-0] [DNS] Curl_conn_connect(block=0) -> 0, done=0
         [0-0] [UDP] adjust_pollset, !active, POLLIN fd=1000
@@ -1416,6 +1444,10 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [HTTP/3] ingress, recvmmsg -> EAGAIN
         [0-0] [HTTP/3] egress, collect and send packets, quantum=12000
         [0-0] [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
+        [0-0] [DNS] get 1th result for 127.0.0.1:8990, family=2, dns=1
+        [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=10, dns=1
+        [0-0] [DNS] get 1th result for 127.0.0.1:8990, family=2, dns=1
+        [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=10, dns=1
         [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
         [0-0] [TCP] connected on fd=1001
         [0-0] [HAPPY-EYEBALLS] connect attempt #0 successful
@@ -2442,6 +2474,7 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
             "[SETUP] happy eyeballing",
             "[H3-PROXY]",
             "[HAPPY-EYEBALLS] checked",
+            "[DNS] get ",
             "Establishing",
             "CONNECT",
             "Response Headers",
@@ -2455,9 +2488,12 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
         .unwrap();
     let want = expect(&format!(
         "[SETUP] happy eyeballing to HTTP/3 proxy localhost:{PORT}
+        [DNS] get 0th result for localhost:{PORT}, family=10, dns=1
         [H3-PROXY] created, udp_tunnel=0
         [H3-PROXY] fake QUIC session 1
         [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
+        [DNS] get 0th result for localhost:{PORT}, family=2, dns=1
+        [DNS] get 0th result for localhost:{PORT}, family=2, dns=1
         [H3-PROXY] fake QUIC session 1 trusts
         [H3-PROXY] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
         [H3-PROXY] max bidi streams now 100, used 0
@@ -2480,6 +2516,8 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
         [H3-PROXY] [0] -> [established]
         CONNECT phase completed for HTTP/3 proxy
         [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
+        [DNS] get 0th result for localhost:{PORT}, family=2, dns=1
+        [DNS] get 0th result for localhost:{PORT}, family=2, dns=1
         [READ] client_reset, clear readers
         [H3-PROXY] query ALPN"
     ));

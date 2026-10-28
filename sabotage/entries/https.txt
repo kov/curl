@@ -191,3 +191,35 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_
             (Some(race), SetupPoint::Dialed(_)) if race.failed.is_none() => {
 --- new
             (Some(race), SetupPoint::Dialed(_)) if race.failed.is_none() && false => {
+
+=== a leading TCP second does not answer for its connection
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_tcp_second_leading_answers_for_the_connection
+--- old
+    fn second_leads(&self) -> bool {
+        self.leader() == Attempt::Second
+    }
+--- new
+    fn second_leads(&self) -> bool {
+        false
+    }
+
+=== a connecting transfer's answers come from its setup even on a reused connection
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::a_transfer_reusing_a_connection_reaches_its_tls_objects_as_it_connects
+--- old
+    fn second_leads(&self) -> bool {
+        self.leader() == Attempt::Second
+    }
+--- new
+    fn second_leads(&self) -> bool {
+        true
+    }
+
+=== a leading TCP second's failure is taken for the first's
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h3_trace::a_late_quic_peer_wins_after_the_leading_tcp_attempt_failed
+--- old
+        Second::Started(_) if leads => true,
+--- new
+        Second::Started(_) if false => true,

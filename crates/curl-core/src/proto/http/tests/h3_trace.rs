@@ -2014,9 +2014,15 @@ fn tunnel_script_with(
 /// `https://localhost:PORT`, its tunnel a stream of a QUIC connection to
 /// it.
 fn through_h3_proxy(m: &mut Multi, e: Easy) -> Ran {
-    get_with(m, e, "/", Conversation::replies(&[], false), |o| {
+    through_h3_proxy_over(m, e, IpVersion::Any)
+}
+
+/// `through_h3_proxy`, the proxy's addresses tried those of `ip`: IPv6's
+/// alone for a setup with one address to try.
+fn through_h3_proxy_over(m: &mut Multi, e: Easy, ip: IpVersion) -> Ran {
+    get_with(m, e, "/", Conversation::replies(&[], false), move |o| {
         o.set_url(Some(b"http://origin.example/p")).unwrap();
-        o.ip_version = IpVersion::Any;
+        o.ip_version = ip;
         let proxy = o.proxy.make_mut().unwrap();
         proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
         proxy.kind = crate::options::ProxyType::Https3;
@@ -2133,16 +2139,46 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
     );
 }
 
-/// A `CONNECT` the proxy refuses fails the setup as the race's attempt
-/// fails in C, whose filter the tunnel is: the proxy's connection goes,
-/// and the setup says it could not connect over the proxy.
+/// A `CONNECT` the proxy refuses fails the race's attempt, as C's
+/// attempt is the H3-PROXY filter the tunnel is: the proxy's connection
+/// goes, and with no address left the setup says it could not connect
+/// over the proxy; with one left, the race goes on to it
+/// (`cf_ip_ballers_run`).
 #[test]
 fn a_tunnel_an_http3_proxy_refuses_fails_the_attempt() {
     let script = tunnel_script(b"403", vec![]);
     let mut m = quic_server(&[b"server flight", b"connect answer", b"response"]);
     let e = tracing(FakeTls::new().unwrap(), &script);
     let ran = through_h3_proxy(&mut m, e);
-    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    let next = lines(
+        &ran,
+        &[
+            "[H3-PROXY] [0] -> [f",
+            "[H3-PROXY] cf_h3",
+            "[HAPPY-EYEBALLS] starting",
+            "[HAPPY-EYEBALLS] no more",
+        ],
+    );
+    assert_eq!(
+        next[..4],
+        expect(
+            "[HAPPY-EYEBALLS] starting first attempt for ipv6 -> 0
+            [H3-PROXY] [0] -> [failed]
+            [H3-PROXY] cf_h3_proxy_destroy()
+            [HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0"
+        ),
+        "{next:#?}"
+    );
+    let script = tunnel_script(b"403", vec![]);
+    let mut m = quic_server(&[b"server flight", b"connect answer", b"response"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = through_h3_proxy_over(&mut m, e, IpVersion::V6);
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::CouldntConnect),
+        "{:#?}",
+        ran.seen.text()
+    );
     let got = lines(
         &ran,
         &[
@@ -2163,6 +2199,40 @@ fn a_tunnel_an_http3_proxy_refuses_fails_the_attempt() {
     );
 }
 
+/// A `CONNECT` the HTTP/3 proxy never answers times out as the race
+/// does, the attempt still running: the multi's own check says the
+/// connection timed out (`multi_handle_timeout`), as C's H3-PROXY filter
+/// has no timeout of its own, unlike the HTTP/1.1 and HTTP/2 tunnels'.
+#[test]
+fn a_tunnel_an_http3_proxy_never_answers_times_out_as_its_race() {
+    let script = tunnel_script(b"200", vec![]);
+    let mut m = quic_server(&[b"server flight"]);
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let ran = through_h3_proxy_over(&mut m, e, IpVersion::V6);
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::OperationTimedout),
+        "{:#?}",
+        ran.seen.text()
+    );
+    let got = lines(
+        &ran,
+        &[
+            "[H3-PROXY] [0] -> [",
+            "Connection timed out",
+            "Proxy CONNECT aborted",
+        ],
+    );
+    assert_eq!(
+        got,
+        expect(
+            "[H3-PROXY] [0] -> [connect]
+            Connection timed out after 10000 milliseconds"
+        ),
+        "{got:#?}"
+    );
+}
+
 /// A 407 has its `Proxy-Authenticate` taken in, traced as C traces it;
 /// a Basic challenge does not make the `CONNECT` go again, and the setup
 /// fails. Only a 407's is taken: a success's is let be.
@@ -2172,7 +2242,7 @@ fn a_tunnel_s_407_takes_its_challenge_in() {
     let script = tunnel_script_with(b"407", challenge, vec![]);
     let mut m = quic_server(&[b"server flight", b"connect answer", b"response"]);
     let e = tracing(FakeTls::new().unwrap(), &script);
-    let ran = through_h3_proxy(&mut m, e);
+    let ran = through_h3_proxy_over(&mut m, e, IpVersion::V6);
     assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
     assert_eq!(
         lines(&ran, &["[H3-PROXY] [0] CONNECT: fwd auth"]),
@@ -2303,7 +2373,7 @@ fn a_tunnel_closed_before_its_answer_fails() {
     }
     let mut m = quic_server(&[b"server flight", b"close"]);
     let e = tracing(FakeTls::new().unwrap(), &script);
-    let ran = through_h3_proxy(&mut m, e);
+    let ran = through_h3_proxy_over(&mut m, e, IpVersion::V6);
     assert_eq!(
         ran.result,
         Err(ErrorKind::RecvError),
@@ -2582,10 +2652,15 @@ fn udp_tunnel_script(capsules: &[u8]) -> Arc<Mutex<Script>> {
 /// A GET of `https://origin.example/p` in HTTP/3 alone by `e`, through
 /// the HTTP/3 proxy at `https://localhost:PORT`.
 fn h3_through_h3_proxy(m: &mut Multi, e: Easy) -> Ran {
-    get_with(m, e, "/", Conversation::replies(&[], false), |o| {
+    h3_through_h3_proxy_over(m, e, IpVersion::Any)
+}
+
+/// `h3_through_h3_proxy`, the proxy's addresses tried those of `ip`.
+fn h3_through_h3_proxy_over(m: &mut Multi, e: Easy, ip: IpVersion) -> Ran {
+    get_with(m, e, "/", Conversation::replies(&[], false), move |o| {
         o.set_url(Some(b"https://origin.example/p")).unwrap();
         o.http.version = crate::options::HttpVersion::Http3Only;
-        o.ip_version = IpVersion::Any;
+        o.ip_version = ip;
         let proxy = o.proxy.make_mut().unwrap();
         proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
         proxy.kind = crate::options::ProxyType::Https3;
@@ -2654,12 +2729,26 @@ fn http3_through_an_http3_proxy_is_quic_in_quic() {
             "[MULTI] [CONNECTING] reduced",
             "[HTTP/3] handshake complete",
             "using HTTP",
+            "[READ] client_reset",
+            "[HAPPY-EYEBALLS] connect attempt",
+            "[HAPPY-EYEBALLS] Connected to",
         ],
     );
     let mut got = got;
     got.dedup();
+    let from = got
+        .iter()
+        .position(|l| l.starts_with("[MULTI] [CONNECTING]"))
+        .expect("the setup is traced");
+    let to = got
+        .iter()
+        .position(|l| l.starts_with("using HTTP"))
+        .expect("the protocol is said");
+    let got = got[from..=to].to_vec();
     // The fake proxy answers at once, so the chain is not traced again
-    // while the answer is awaited.
+    // while the answer is awaited; the attempt is connected at the pass
+    // after the proxy agreed, as C's H3-PROXY filter is
+    // (`H3_TUNNEL_ESTABLISHED`), and the race won then.
     let want = expect(
         "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
@@ -2672,6 +2761,10 @@ fn http3_through_an_http3_proxy_is_quic_in_quic() {
         CONNECT-UDP tunnel established, response 200
         [H3-PROXY] [0] -> [established]
         CONNECT-UDP phase completed for HTTP/3 proxy
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [READ] client_reset, clear readers
+        [HAPPY-EYEBALLS] connect attempt #0 successful
+        [HAPPY-EYEBALLS] Connected to localhost (::1) port 8990
         [SETUP] added QUIC filter for origin
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP/3][!CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP/3][CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]
@@ -2694,7 +2787,7 @@ fn an_http3_proxy_s_other_capsule_protocol_fails_the_tunnel() {
     let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
     let e = tracing_with(tls, h3);
     let mut m = quic_server(&[b"server flight", b"connect answer"]);
-    let ran = h3_through_h3_proxy(&mut m, e);
+    let ran = h3_through_h3_proxy_over(&mut m, e, IpVersion::V6);
     assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
     assert_eq!(
         lines(&ran, &["Failed to establish", "[H3-PROXY] [0] -> [f", "[HTTP/3]"]),
@@ -2781,7 +2874,7 @@ fn an_http3_proxy_s_capsule_protocol_not_utf8_fails_as_its_bytes() {
     let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
     let e = tracing_with(tls, h3);
     let mut m = quic_server(&[b"server flight", b"connect answer"]);
-    let ran = h3_through_h3_proxy(&mut m, e);
+    let ran = h3_through_h3_proxy_over(&mut m, e, IpVersion::V6);
     assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
     let why = b"Failed to establish CONNECT-UDP tunnel, response 200, \
         unsupported capsule-protocol value '?\xff'";

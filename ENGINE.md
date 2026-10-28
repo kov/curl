@@ -2728,20 +2728,26 @@ HTTP/3 (`CURLPROXY_HTTPS3`, `--proxy-http3`): a stream of a QUIC connection to t
 `[H3-PROXY][UDP]` under the race. C makes the H3-PROXY filter the race's attempt, with neither
 HTTP-PROXY nor SSL-PROXY above it, so the setup dials QUIC to the proxy (`Dialing::first_hop_quic`)
 and the race's attempt is a `Quic` of `Component::H3Proxy`, its TLS the proxy's identity
-(`TlsIo::for_proxy`), no early data. The winner's connection rides in the `Dialed` stream
-(`take_quic`) to `multi/state/h3tunnel.rs`, which makes `conn/h3proxy.rs`'s `H3Proxy` of it: the
-`Quic`, its one stream's `Tunnel` (state, the answer, what came on the stream, held as the
-HTTP/2 tunnel's is, and its window) and the room the library's events land in. Each of C's
-flags that say one fact is one field: the stream's life is unopened, open (flow-blocked or not)
-or closed (reset with an error or not), and the answer waiting, being read or final, the status
-its own.
-`Handshake::H3Connect` holds it while the `CONNECT` goes as the HTTP/2 tunnel's fields; once the
-proxy's 2xx is in, the box is pushed as the layer the tunnel's bytes pass through, each read and
-write its stream's, the window opened by 512 KiB as C does (`PROXY_H3_TUNNEL_RX_WIN`). The
-answer is traced as the HTTP/2 tunnel's; the HAPPY-EYEBALLS filter stays in the chain until the
-tunnel is up, as C's attempt does. A refusal is the race's attempt failing in C: the setup fails
-as a race with no address left does, `Failed to connect … over proxy …` and `CouldntConnect`. A
-read once the stream is gone fails (`RecvError`). The library's timer is asked for through
+(`TlsIo::for_proxy`), no early data. The attempt holds the tunnel, as C's H3-PROXY filter
+does (`Link::Tunnel`): once its QUIC handshake is done the machine makes `conn/h3proxy.rs`'s
+`H3Proxy` of the connection, the `Quic`, its one stream's `Tunnel` (state, the answer, what came
+on the stream, held as the HTTP/2 tunnel's is, and its window) and the room the library's events
+land in, and the attempt races on. Each of C's flags that say one fact is one field: the
+stream's life is unopened, open (flow-blocked or not) or closed (reset with an error or not), and
+the answer waiting, being read or final, the status its own.
+The race's tunnels are driven by `multi/state/h3tunnel.rs`, which the machine lends them to
+(`ConnectMachine::tunnels`) before it checks its other attempts, as C's race checks each attempt
+(`cf_ip_attempt_connect`): the `CONNECT` goes as the HTTP/2 tunnel's fields in the pass its
+handshake ends; the answer is traced as the HTTP/2 tunnel's. A 2xx establishes the tunnel and
+marks the transfer to run at once (`Curl_multi_mark_dirty`); at that next pass the attempt is
+connected (`H3_TUNNEL_ESTABLISHED`), the race won (`ConnectMachine::tunneled`) and the box pushed
+as the layer the tunnel's bytes pass through, each read and write its stream's, the window opened
+by 512 KiB as C does (`PROXY_H3_TUNNEL_RX_WIN`). Until then the chain shows `[!HAPPY-EYEBALLS]`,
+the next address is started at the eyeballs delay as for any attempt still running, and a
+timeout is the race's, not a `CONNECT`'s. A refusal fails the attempt
+(`ConnectMachine::tunnel_failed`): the race goes on to an address left, and with none fails as a
+race does, `Failed to connect … over proxy …` and `CouldntConnect`. A read once the stream is gone
+fails (`RecvError`). The library's timer is asked for through
 `LayerCx::quic_due`, which a layer below the transfer's reaches as the transfer's own QUIC
 connection does. Requests not tunnelled go to such a proxy over TCP, as C sends them
 (`Curl_http_proxy_transport`). An HTTP/3 origin through an HTTP/3 proxy is QUIC in QUIC: the

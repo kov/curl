@@ -32,6 +32,7 @@ use crate::share::Kind;
 
 mod h2tunnel;
 mod h3tunnel;
+use h3tunnel::Tunnels;
 mod haproxy;
 mod https;
 mod quictunnel;
@@ -52,7 +53,7 @@ use crate::upload::{self, Readers};
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
 use crate::version::Protocol;
 
-use super::cx::{DriveCx, EngineRest, EventCx, TransferCalls, TransferCx};
+use super::cx::{DriveCx, EngineRest, EventCx, Kept, TransferCalls, TransferCx};
 use super::mstate::{self, MState};
 use super::sched::RowSet;
 use super::sockets::{Pollset, Wants};
@@ -427,7 +428,6 @@ enum Handshake {
     H2Connect(Box<crate::conn::h2proxy::H2Proxy>),
     /// An HTTP/3 proxy's tunnel, with `CONNECT` as a stream of the QUIC
     /// connection the race made to it, which becomes the tunnel's layer.
-    H3Connect(Box<crate::conn::h3proxy::H3Proxy>),
     /// The origin's QUIC connection through a CONNECT-UDP tunnel, over
     /// the capsule layer, which becomes the connection's HTTP/3 session.
     Quic(Box<crate::conn::quic::Quic>),
@@ -445,7 +445,6 @@ impl Handshake {
             Handshake::Socks(_) => Component::Socks,
             Handshake::Connect(_) => Component::HttpProxy,
             Handshake::H2Connect(_) => Component::H2Proxy,
-            Handshake::H3Connect(_) => Component::H3Proxy,
             Handshake::Quic(_) => Component::Http3,
             Handshake::Haproxy(_) => Component::Haproxy,
             Handshake::Tls(side) => side.filter(),
@@ -461,7 +460,6 @@ impl Handshake {
             Handshake::Socks(s) => setup.handshake_pollset(s.interest()),
             Handshake::Connect(t) => setup.handshake_pollset(t.interest()),
             Handshake::H2Connect(p) => setup.handshake_pollset(p.connect_interest()),
-            Handshake::H3Connect(p) => setup.handshake_pollset(p.connect_interest()),
             Handshake::Quic(q) => setup.handshake_pollset(q.wants()),
             Handshake::Haproxy(p) => setup.handshake_pollset(p.interest()),
             Handshake::Tls(_) => setup.handshake_pollset(Events::NONE),
@@ -1491,12 +1489,17 @@ impl Connecting {
         cx: &mut dyn crate::conn::ConnCx,
         options: DriveOptions,
         displaced: &mut Option<ConnectMachine>,
+        step: impl FnOnce(
+            ConnectMachine,
+            &mut dyn crate::conn::ConnCx,
+            DriveOptions,
+        ) -> Result<Drove, ConnectError>,
     ) -> Result<Connected, ConnectError> {
         let Some(race) = self.race.as_deref_mut().filter(|_| a == Attempt::Second) else {
-            return self.lease.connect(cx, options);
+            return self.lease.connect(cx, options, step);
         };
         let machine = race.second.take().expect("the second runs");
-        match machine.drive(cx, options)? {
+        match step(machine, cx, options)? {
             Drove::Connecting(m, progress) => {
                 race.second = Some(m);
                 Ok(Connected::Connecting(progress))
@@ -2787,13 +2790,11 @@ fn connecting<H: Host>(
         };
         let kind = match c.lead_handshake() {
             _ if let Some(failed) = gss_read => failed,
-            Some(Handshake::Connect(_) | Handshake::H2Connect(_) | Handshake::H3Connect(_)) => {
-                trace::fail(
-                    cx,
-                    kind,
-                    format_args!("Proxy CONNECT aborted due to timeout"),
-                )
-            }
+            Some(Handshake::Connect(_) | Handshake::H2Connect(_)) => trace::fail(
+                cx,
+                kind,
+                format_args!("Proxy CONNECT aborted due to timeout"),
+            ),
             Some(
                 Handshake::Socks(_)
                 | Handshake::Haproxy(_)
@@ -3097,7 +3098,6 @@ fn connect_once<H: Host>(
             Handshake::Socks(_) => socks::step,
             Handshake::Connect(_) => tunnel::step,
             Handshake::H2Connect(_) => h2tunnel::step,
-            Handshake::H3Connect(_) => h3tunnel::step,
             Handshake::Quic(_) => quictunnel::step,
             Handshake::Haproxy(_) => haproxy::step,
             &Handshake::Tls(side) => {
@@ -3117,16 +3117,29 @@ fn connect_once<H: Host>(
     let kept = cx.rest.kept(cx.me, Kind::Names);
     let answered = c.attempt(a).and_then(ConnectMachine::answer).is_some();
     let mut displaced = None;
-    let connected = c.connect_attempt(
-        a,
-        &mut DriveCx {
-            step: cx,
-            kept: kept.as_ref(),
-            deadlines: Some(&mut run.deadlines),
-        },
-        setup,
-        &mut displaced,
-    );
+    // An HTTP/3 proxy's tunnels are the race's attempts, checked first.
+    let mut connected = match tunnels_drive(&mut c, cx, a) {
+        Ok(Tunnels::Idle) => c.connect_attempt(
+            a,
+            &mut DriveCx {
+                step: cx,
+                kept: kept.as_ref(),
+                deadlines: Some(&mut run.deadlines),
+            },
+            setup,
+            &mut displaced,
+            ConnectMachine::drive,
+        ),
+        decided => tunnel_decided(&mut c, a, run, cx, kept.as_ref(), &mut displaced, decided),
+    };
+    // A QUIC connection to the proxy made, its tunnel's `CONNECT` goes
+    // in the same check (`cf_h3_proxy_connect`).
+    if let Ok(Connected::Connecting(Progress::Tunnel { until })) = connected {
+        connected = match tunnels_drive(&mut c, cx, a) {
+            Ok(Tunnels::Idle) => Ok(Connected::Connecting(Progress::Waiting { until })),
+            decided => tunnel_decided(&mut c, a, run, cx, kept.as_ref(), &mut displaced, decided),
+        };
+    }
     if answered && c.attempt(a).and_then(ConnectMachine::answer).is_none() && c.race.is_none() {
         // Connected, or failed: the answer is let go; a race's, as the
         // race ends.
@@ -3142,6 +3155,7 @@ fn connect_once<H: Host>(
                     | Progress::Trying { .. }
                     | Progress::Failed
                     | Progress::Waiting { .. }
+                    | Progress::Tunnel { .. }
                     | Progress::Resolving { .. }
             ))
         )
@@ -3180,7 +3194,7 @@ fn connect_once<H: Host>(
             eyeballs_won(cx, &c.route, &remote);
             (TransferState::Connecting(c), Wake::Again)
         }
-        Ok(Connected::Connecting(Progress::Waiting { until })) => {
+        Ok(Connected::Connecting(Progress::Waiting { until } | Progress::Tunnel { until })) => {
             attempt_waits(run, cx, a == c.leader(), until);
             (TransferState::Connecting(c), Wake::Idle)
         }
@@ -3227,6 +3241,54 @@ fn connect_once<H: Host>(
             }
             attempt_failed(c, cx, a, kind)
         }
+    }
+}
+
+/// Attempt `a`'s race's tunnels through an HTTP/3 proxy moved on, if
+/// its setup races.
+fn tunnels_drive<H: Host>(
+    c: &mut Connecting,
+    cx: &mut StepCx<'_, H>,
+    a: Attempt,
+) -> Result<Tunnels, OutOfMemory> {
+    let racing = c
+        .attempt(a)
+        .is_some_and(|m| matches!(m.reached(), SetupPoint::Racing { .. }));
+    if !racing {
+        return Ok(Tunnels::Idle);
+    }
+    let (s, mut lent) = c.shaking(a);
+    h3tunnel::drive(s.machine, &mut lent, cx)
+}
+
+/// A tunnel through an HTTP/3 proxy decided, or a drive of them out of
+/// memory: the setup moves on with it.
+fn tunnel_decided<H: Host>(
+    c: &mut Connecting,
+    a: Attempt,
+    run: &mut Run,
+    cx: &mut StepCx<'_, H>,
+    kept: Option<&Kept>,
+    displaced: &mut Option<ConnectMachine>,
+    decided: Result<Tunnels, OutOfMemory>,
+) -> Result<Connected, ConnectError> {
+    let setup = drive_options(cx);
+    let mut dcx = DriveCx {
+        step: cx,
+        kept,
+        deadlines: Some(&mut run.deadlines),
+    };
+    match decided {
+        Ok(Tunnels::Idle) => unreachable!("an undecided drive moves the setup on"),
+        Ok(Tunnels::Through(i)) => c.connect_attempt(a, &mut dcx, setup, displaced, |m, cx, o| {
+            m.tunneled(cx, o, i)
+        }),
+        Ok(Tunnels::Failed(i, kind)) => {
+            c.connect_attempt(a, &mut dcx, setup, displaced, |m, cx, _| {
+                m.tunnel_failed(cx, i, kind)
+            })
+        }
+        Err(OutOfMemory) => Err(ConnectError::OutOfMemory),
     }
 }
 

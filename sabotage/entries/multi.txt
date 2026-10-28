@@ -539,6 +539,7 @@ witness: curl-core multi::tests::an_established_connection_forgets_the_next_atte
                     | Progress::Trying { .. }
                     | Progress::Failed
                     | Progress::Waiting { .. }
+                    | Progress::Tunnel { .. }
                     | Progress::Resolving { .. }
             ))
         )

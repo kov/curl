@@ -467,7 +467,7 @@ fn a_tunnel_s_poll_is_as_its_windows_say() {
     script.lock().unwrap().no_send_room = false;
     // Packets wait for the socket: it writes, whatever is wanted.
     hold_a_packet(&mut p, &script);
-    assert_eq!(p.connect_interest(), rw);
+    assert_eq!(p.quic().wants(), rw);
     assert_eq!(p.adjust_pollset(none), w);
     assert_eq!(p.adjust_pollset(r), rw);
     p.tunnel.life = open(0, true);
@@ -485,7 +485,7 @@ fn a_tunnel_s_poll_is_as_its_windows_say() {
 fn a_tunnel_s_connect_waits_as_its_connection_does() {
     let script = Script::new();
     let (p, _) = proxy(&script);
-    assert_eq!(p.connect_interest(), Events::IN);
+    assert_eq!(p.quic().wants(), Events::IN);
     assert!(!p.tunnel_closed());
 }
 

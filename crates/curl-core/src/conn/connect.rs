@@ -23,6 +23,7 @@ use super::chain::SetupPoint;
 #[cfg(test)]
 use super::dns::DnsCache;
 use super::dns::{Answer, Lookup, Names};
+use super::h3proxy::H3Proxy;
 use super::io::{
     Closer, Connect, Events, Family, Net, Queued, Remote, Resolve, ResolveFailure, ResolveId, Sock,
     Socket, SocketKind, SocketOption, SocketPoll, UnixPeer, Waiter,
@@ -568,14 +569,38 @@ impl Eyeballs {
     }
 }
 
-/// A socket connecting to one address, and over it, for a route dialed
-/// over QUIC, the QUIC connection whose handshake decides it (C's
-/// `cf_ip_attempt` with its QUIC filter).
+/// A socket connecting to one address, and over it what decides the
+/// attempt (C's `cf_ip_attempt` and its filter).
 #[derive(Debug)]
 struct Attempt {
     remote: Remote,
     socket: Sock,
-    quic: Option<Box<Quic>>,
+    link: Link,
+}
+
+/// What an attempt makes over its socket.
+#[derive(Debug)]
+enum Link {
+    /// Its connect alone: TCP's, or a Unix socket's.
+    Connect,
+    /// A QUIC connection, decided by its handshake.
+    Quic(Box<Quic>),
+    /// The tunnel through an HTTP/3 proxy, over the QUIC connection to
+    /// it, its handshake done: decided as the proxy answers its
+    /// `CONNECT`, the attempt being C's H3-PROXY filter
+    /// (`cf_h3_proxy_connect`).
+    Tunnel(Box<H3Proxy>),
+}
+
+impl Link {
+    /// The QUIC connection it holds, if it is over QUIC.
+    fn quic(&self) -> Option<&Quic> {
+        match self {
+            Link::Connect => None,
+            Link::Quic(q) => Some(q),
+            Link::Tunnel(t) => Some(t.quic()),
+        }
+    }
 }
 
 /// What a drive did.
@@ -618,6 +643,11 @@ pub(crate) enum Progress {
     /// Connected to the first hop, over which handshakes are to be made
     /// (`ConnLease::dialed`).
     Dialed,
+    /// An attempt's QUIC connection to an HTTP/3 proxy is up: its
+    /// tunnel's `CONNECT` is to go now, the attempt racing on until the
+    /// proxy answers; the next attempt is due at `until`, as `Waiting`
+    /// has it.
+    Tunnel { until: Option<Instant> },
 }
 
 /// Why a setup failed; any socket it had is closed.
@@ -766,7 +796,7 @@ impl ConnectMachine {
             Stage::Resolving(_) | Stage::Dialed(_) => &[][..],
         };
         running.iter().map(|a| {
-            let wants = a.quic.as_ref().map_or(Events::OUT, |q| q.wants());
+            let wants = a.link.quic().map_or(Events::OUT, Quic::wants);
             (a.socket.socket(), wants)
         })
     }
@@ -780,7 +810,7 @@ impl ConnectMachine {
         };
         running
             .iter()
-            .filter_map(|a| a.quic.as_ref()?.reply_ms())
+            .filter_map(|a| a.link.quic()?.reply_ms())
             .min()
     }
 
@@ -1181,7 +1211,7 @@ impl ConnectMachine {
                 .try_push(Attempt {
                     remote,
                     socket,
-                    quic: None,
+                    link: Link::Connect,
                 })
                 .expect("reserved");
             let i = r.attempts.len() - 1;
@@ -1207,7 +1237,7 @@ impl ConnectMachine {
                     .try_push(Attempt {
                         remote: remote.clone(),
                         socket,
-                        quic: None,
+                        link: Link::Connect,
                     })
                     .expect("reserved");
                 let tried = Progress::Trying {
@@ -1318,7 +1348,7 @@ impl ConnectMachine {
             .try_push(Attempt {
                 remote: remote.clone(),
                 socket,
-                quic: Some(quic),
+                link: Link::Quic(quic),
             })
             .expect("reserved");
         // Connected as it started, for early data: won at once.
@@ -1514,7 +1544,9 @@ impl ConnectMachine {
     }
 
     /// The race's attempt `i` connected: the others close, and the
-    /// connection is up, or dialed for the handshakes over it.
+    /// connection is up, or dialed for the handshakes over it. One whose
+    /// QUIC connection to an HTTP/3 proxy is up races on, its tunnel to
+    /// be made over it.
     fn won(
         mut self,
         cx: &mut dyn ConnCx,
@@ -1522,9 +1554,23 @@ impl ConnectMachine {
         i: usize,
         now: Instant,
     ) -> Result<Drove, ConnectError> {
+        let udp = self.dialing().tunnels_udp();
+        let to_proxy = self.route.proxy_over_quic();
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("only a race is won");
         };
+        if to_proxy && let Link::Quic(_) = r.attempts[i].link {
+            let Link::Quic(quic) = std::mem::replace(&mut r.attempts[i].link, Link::Connect) else {
+                unreachable!("matched");
+            };
+            let Ok(tunnel) = curl_alloc::try_box(H3Proxy::new(quic, udp)) else {
+                r.close_all(cx.net());
+                return Err(ConnectError::OutOfMemory);
+            };
+            r.attempts[i].link = Link::Tunnel(tunnel);
+            let until = r.next_due(setup.delay);
+            return Ok(Drove::Connecting(self, Progress::Tunnel { until }));
+        }
         cx.of(
             Component::HappyEyeballs,
             format_args!("connect attempt #{i} successful"),
@@ -1541,13 +1587,12 @@ impl ConnectMachine {
         // Whatever the attempts said is let go (`cf_ip_happy_connect`).
         cx.reset_fail();
         // A QUIC connection is up with its handshake: its TLS is its own.
-        // One to an HTTP/3 proxy is the first hop's, with the tunnel's
-        // `CONNECT` still to go over it.
-        let mut quic = won.quic;
-        let proxy_quic = if self.route.proxy_over_quic() {
-            quic.take()
-        } else {
-            None
+        // A tunnel through an HTTP/3 proxy is the first hop's, the
+        // handshakes over it still to be made.
+        let (quic, tunnel) = match won.link {
+            Link::Connect => (None, None),
+            Link::Quic(quic) => (Some(quic), None),
+            Link::Tunnel(tunnel) => (None, Some(tunnel)),
         };
         if quic.is_none() && (self.route.handshakes() || setup.haproxy || self.route.secured()) {
             // The connection is the first hop's; the handshakes over it
@@ -1561,19 +1606,34 @@ impl ConnectMachine {
                 }
             };
             // A QUIC connection is connected as its first datagram came.
-            let connected_at = proxy_quic
+            let connected_at = tunnel
                 .as_ref()
-                .and_then(|q| q.first_byte_at())
+                .and_then(|t| t.quic().first_byte_at())
                 .unwrap_or(now);
             // The proxy's TLS is its QUIC connection's, made.
-            let made = if proxy_quic.is_some() {
+            let made = if tunnel.is_some() {
                 Made::default().with(Handshook::ProxyTls)
             } else {
                 Made::default()
             };
+            let mut stream = Stream::new(won.socket);
+            // The tunnel is the layer its bytes pass through.
+            if let Some(tunnel) = tunnel {
+                let pushed = stream.push_over_received(|received| {
+                    assert!(
+                        received.is_empty(),
+                        "nothing is read over QUIC's socket but by it"
+                    );
+                    Ok(tunnel as Box<dyn super::layer::Layer>)
+                });
+                if pushed.is_err() {
+                    cx.net().close(stream.into_socket());
+                    return Err(ConnectError::OutOfMemory);
+                }
+            }
             self.stage = Stage::Dialed(Dialed {
                 remote: won.remote,
-                stream: Stream::new(won.socket),
+                stream,
                 connected_at,
                 answer,
                 target,
@@ -1582,8 +1642,11 @@ impl ConnectMachine {
                 // With no proxy's handshake to make first, the stage is
                 // reached now.
                 preface: (!self.route.handshakes()).then_some(setup.haproxy),
-                quic: proxy_quic,
+                quic: None,
             });
+            if to_proxy {
+                self.proxied(Handshook::Tunnel(super::Tunneled::H3), || setup.haproxy);
+            }
             return Ok(Drove::Connecting(self, Progress::Dialed));
         }
         // A QUIC connection is connected as its first datagram came.
@@ -1633,6 +1696,52 @@ impl ConnectMachine {
         let mut conn = Self::conn(made, datagrams, won.remote, at);
         conn.put_h3(h3);
         Ok(Drove::Established(conn))
+    }
+
+    /// The tunnels through an HTTP/3 proxy its race's attempts make,
+    /// each with its index and the socket under it, for the transfer to
+    /// drive as C's race checks its attempts (`cf_ip_attempt_connect`).
+    pub(crate) fn tunnels(&mut self) -> impl Iterator<Item = (usize, &mut H3Proxy, &dyn Socket)> {
+        let running = match &mut self.stage {
+            Stage::Racing(r) => &mut r.attempts[..],
+            Stage::Resolving(_) | Stage::Dialed(_) => &mut [][..],
+        };
+        running
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, a)| match &mut a.link {
+                Link::Tunnel(t) => Some((i, &mut **t, a.socket.socket())),
+                Link::Connect | Link::Quic(_) => None,
+            })
+    }
+
+    /// Attempt `i`'s tunnel is through: it won the race, the connection
+    /// dialed for the handshakes over it.
+    pub(crate) fn tunneled(
+        self,
+        cx: &mut dyn ConnCx,
+        setup: DriveOptions,
+        i: usize,
+    ) -> Result<Drove, ConnectError> {
+        let now = cx.now();
+        self.won(cx, setup, i, now)
+    }
+
+    /// Attempt `i`'s tunnel failed with `kind`, traced: it goes, and the
+    /// race goes on while another runs or an address is left
+    /// (`cf_ip_ballers_run` discarding a failed baller).
+    pub(crate) fn tunnel_failed(
+        mut self,
+        cx: &mut dyn ConnCx,
+        i: usize,
+        kind: ErrorKind,
+    ) -> Result<Drove, ConnectError> {
+        let component = self.dialing().socket_component();
+        let Stage::Racing(r) = &mut self.stage else {
+            unreachable!("a tunnel is an attempt of a race");
+        };
+        r.attempts.remove(i).discard(cx, component);
+        r.failed(None, kind).map(|p| Drove::Connecting(self, p))
     }
 
     /// The Unix socket the first hop is at, if it is one.
@@ -1767,17 +1876,22 @@ impl Racing {
         for (i, a) in self.attempts.iter_mut().enumerate() {
             let socket = a.socket.socket();
             // A QUIC attempt is decided by its handshake, its socket
-            // connected from the start.
-            if let Some(quic) = a.quic.as_mut() {
-                let mut over = crate::conn::quic::Over {
-                    cx: &mut *cx,
-                    path: crate::conn::quic::Path::Socket(socket),
-                };
-                match quic.connect(&mut over) {
-                    Ok(true) => return Checked::Won(i),
-                    Ok(false) => continue,
-                    Err(kind) => return Checked::QuicFailed(i, kind),
+            // connected from the start; a tunnel's, as the transfer
+            // drives it.
+            match &mut a.link {
+                Link::Connect => {}
+                Link::Quic(quic) => {
+                    let mut over = crate::conn::quic::Over {
+                        cx: &mut *cx,
+                        path: crate::conn::quic::Path::Socket(socket),
+                    };
+                    match quic.connect(&mut over) {
+                        Ok(true) => return Checked::Won(i),
+                        Ok(false) => continue,
+                        Err(kind) => return Checked::QuicFailed(i, kind),
+                    }
                 }
+                Link::Tunnel(_) => continue,
             }
             let fd = socket.key().get();
             let mut watch = [SocketPoll::new(socket, Events::OUT)];
@@ -1873,10 +1987,12 @@ impl Attempt {
     /// The attempt goes, its QUIC connection first, then its socket
     /// (`cf_ip_attempt_free`).
     fn discard(self, cx: &mut dyn ConnCx, component: Component) {
-        if let Some(quic) = &self.quic {
-            cx.of(quic.component(), format_args!("destroy"));
+        match &self.link {
+            Link::Connect => {}
+            Link::Quic(quic) => cx.of(quic.component(), format_args!("destroy")),
+            Link::Tunnel(_) => cx.of(Component::H3Proxy, format_args!("cf_h3_proxy_destroy()")),
         }
-        drop(self.quic);
+        drop(self.link);
         discard(cx, component, self.socket);
     }
 }
@@ -2385,7 +2501,7 @@ mod tests {
                         Progress::Resolved(_) | Progress::Resolving { .. } => {
                             unreachable!("resolved already")
                         }
-                        Progress::Dialed => unreachable!("no proxy"),
+                        Progress::Dialed | Progress::Tunnel { .. } => unreachable!("no proxy"),
                     }
                 }
                 Ok(Drove::Established(conn)) => panic!("{conn:?}"),

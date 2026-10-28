@@ -83,17 +83,12 @@ pub(super) fn dialed<H: Host>(
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Wake, Failure> {
-    // An HTTP/3 proxy's tunnel is its QUIC connection's own: the setup
-    // skips the HTTP proxy's filter (`CF_SETUP_CNNCT_HTTP_PROXY`).
-    if lent.route.proxy_over_quic() {
-        return match super::h3tunnel::start(s, lent, cx) {
-            Ok(tunnel) => {
-                *s.handshake = Some(tunnel);
-                Ok(Wake::Again)
-            }
-            Err(kind) => Err(Failure::of(kind)),
-        };
-    }
+    // An HTTP/3 proxy's tunnel is its race's attempt's, made as the race
+    // is won (`h3tunnel`).
+    assert!(
+        !lent.route.proxy_over_quic(),
+        "an HTTP/3 proxy's tunnel is made by its race"
+    );
     // The filter below the tunnel's is asked (`http_proxy_cf_connect`):
     // an HTTPS proxy's TLS, the SOCKS proxy's, or the one that dialed the
     // proxy.

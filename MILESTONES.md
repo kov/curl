@@ -1010,10 +1010,9 @@ fail; 25 errors are vsftpd's (milestone 6).
     through an HTTP proxy goes over its CONNECT-UDP.
     - (a) **Done.** The tunnel over QUIC to the proxy (CONNECT on a stream of it), the race's
       attempt as C's H3-PROXY filter is, its chain and trace C's, a refusal the attempt's
-      failure. test_60's cases with an HTTP/1.1 or HTTP/2 origin pass (01, 02, 06–11, 14, 16,
-      17); 12 needs session export. Left: the race's win is traced as the QUIC handshake ends,
-      C's once the tunnel is up (its attempt holds the `CONNECT`, and the race checks its
-      addresses again meanwhile), which wants the tunnel inside the connect machine's attempt.
+      failure, the race going on to an address left. The attempt holds the tunnel, and the race
+      is won as C's is, once the tunnel is up. test_60's cases with an HTTP/1.1 or HTTP/2
+      origin pass (01, 02, 06–11, 14, 16, 17); 12 needs session export.
     - (b) **Done.** The datagram seam: a QUIC connection with no socket sends and receives each
       datagram through the layers below (`QuicIo::send_below`, `recv_below`), as C's does
       through `cf->next`.
@@ -1046,7 +1045,7 @@ protocols need, each step leaving behaviour and traces as they are:
     `Transport::Datagram`. Sizes and allocation budgets are unchanged. `Made` is a struct of
     facts; the other attempt is driven as the lead is; `--http3` races through an HTTP proxy
     as C does, its HTTP/3 attempt over CONNECT-UDP, the other over CONNECT on a connection of
-    its own. To do: 64(a)'s win trace once the tunnel is up; FTP's data connection as a
+    its own; 64(a)'s race is won once the tunnel is up. To do: FTP's data connection as a
     second setup; ENGINE §4.1 and §4.2 rewritten
     whole to the shape built.
 66. **Types for what flags say.** A layered QUIC connection is a type of its own, its

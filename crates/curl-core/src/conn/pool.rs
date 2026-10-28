@@ -77,16 +77,18 @@ impl ConnLease {
         self.conn.as_deref()
     }
 
-    /// Move the connection's setup on by one event. A connection already
-    /// up says so.
+    /// Move the connection's setup on by one event with `step`,
+    /// `ConnectMachine::drive` or one of its kind. A connection already up
+    /// says so.
     pub(crate) fn connect(
         &mut self,
         cx: &mut dyn ConnCx,
         setup: DriveOptions,
+        step: impl FnOnce(ConnectMachine, &mut dyn ConnCx, DriveOptions) -> Result<Drove, ConnectError>,
     ) -> Result<Connected, ConnectError> {
         let number = self.number();
         let (slot, connected) = match std::mem::replace(self.slot_mut(), ConnSlot::Failed(number)) {
-            ConnSlot::Connecting(machine) => match machine.drive(cx, setup) {
+            ConnSlot::Connecting(machine) => match step(machine, cx, setup) {
                 Ok(Drove::Connecting(m, progress)) => {
                     (ConnSlot::Connecting(m), Ok(Connected::Connecting(progress)))
                 }

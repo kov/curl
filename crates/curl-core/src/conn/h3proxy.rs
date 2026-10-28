@@ -458,6 +458,11 @@ impl QuicIo for Tunnelled<'_> {
 }
 
 impl H3Proxy {
+    /// The QUIC connection to the proxy.
+    pub(crate) fn quic(&self) -> &Quic {
+        &self.quic
+    }
+
     /// The tunnel over `quic`, a connection to the proxy whose handshake
     /// is done; nothing asked of it yet.
     pub(crate) fn new(quic: Box<Quic>, udp: bool) -> H3Proxy {
@@ -530,6 +535,16 @@ impl H3Proxy {
         Ok(())
     }
 
+    /// No `CONNECT` is open on it yet.
+    pub(crate) fn unasked(&self) -> bool {
+        self.tunnel.state == TunnelState::Init
+    }
+
+    /// The proxy agreed: the tunnel is up.
+    pub(crate) fn established(&self) -> bool {
+        self.tunnel.state == TunnelState::Established
+    }
+
     /// Move the tunnel to `state`, traced (`h3_tunnel_go_state`).
     pub(crate) fn go_state(&mut self, cx: &mut dyn LayerCx, state: TunnelState) {
         if self.tunnel.state == state {
@@ -589,11 +604,6 @@ impl H3Proxy {
             let r = quic.egress(over);
             first_fatal(r, quic.set_expiry(over))
         })
-    }
-
-    /// What the connection waits for on the socket as the `CONNECT` goes.
-    pub(crate) fn connect_interest(&self) -> Events {
-        self.quic.wants()
     }
 
     /// What a read that found nothing held gets: to wait, or, once the

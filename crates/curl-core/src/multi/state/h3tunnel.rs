@@ -1,15 +1,17 @@
-//! A transfer's tunnel through an HTTPS proxy that speaks HTTP/3, set up
-//! over the QUIC connection the setup's race made to it
+//! A transfer's tunnel through an HTTPS proxy that speaks HTTP/3, made
+//! by a race's attempt over the QUIC connection it made to the proxy
 //! (`cf_h3_proxy_tunnel`): the `CONNECT` sent on a request stream of the
 //! connection, the proxy's answer read and traced, and the connection,
-//! once the proxy agrees, the layer the tunnel's bytes pass through.
+//! once the proxy agrees, the attempt that won the race. C's attempt is
+//! the H3-PROXY filter, connected as the tunnel is (`cf_h3_proxy_connect`).
 
-use curl_alloc::{OutOfMemory, TryVec as _, try_box};
+use curl_alloc::{OutOfMemory, TryVec as _};
 
-use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
+use super::{Lent, StepCx};
 use crate::components::Component;
+use crate::conn::ConnectMachine;
 use crate::conn::h3proxy::{H3Proxy, TunnelState};
-use crate::conn::{Handshook, Tunneled};
+use crate::conn::io::Socket;
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::proto::http1::auth::Side;
@@ -19,29 +21,63 @@ use crate::trace;
 
 const H3P: Component = Component::H3Proxy;
 
-/// The tunnel over the connection the race made, and its `CONNECT` sent
-/// (`H3_TUNNEL_INIT`).
-pub(super) fn start<H: Host>(
-    s: &mut SetupMut<'_>,
+/// What a drive of the race's tunnels came to.
+pub(super) enum Tunnels {
+    /// None is decided.
+    Idle,
+    /// Attempt `.0`'s tunnel is through.
+    Through(usize),
+    /// Attempt `.0`'s tunnel failed with `.1`, traced.
+    Failed(usize, ErrorKind),
+}
+
+/// Each tunnel the race's attempts make moved on as far as its socket
+/// lets it, its `CONNECT` sent first if it is new, oldest first as C's
+/// race checks its attempts (`cf_ip_ballers_run`): the first decided ends
+/// the drive. Running out of memory fails the transfer.
+pub(super) fn drive<H: Host>(
+    machine: &mut ConnectMachine,
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
-) -> Result<Box<Handshake>, ErrorKind> {
-    let quic = s
-        .machine
-        .dialed()
-        .take_quic()
-        .expect("an HTTP/3 proxy's tunnel goes over its QUIC connection");
-    let mut proxy = H3Proxy::new(quic, s.machine.dialing().tunnels_udp());
-    connect(&mut proxy, s, lent, cx)?;
-    let proxy = try_box(proxy).map_err(oom)?;
-    try_box(Handshake::H3Connect(proxy)).map_err(oom)
+) -> Result<Tunnels, OutOfMemory> {
+    let udp = machine.dialing().tunnels_udp();
+    for (i, p, socket) in machine.tunnels() {
+        // Up as the pass before found it, the attempt is connected now
+        // (`H3_TUNNEL_ESTABLISHED`): the request follows the `CONNECT`,
+        // and what reads it starts over (`Curl_client_reset`).
+        if p.established() {
+            crate::upload::trace_reset(cx, false);
+            return Ok(Tunnels::Through(i));
+        }
+        let ran = if p.unasked() {
+            connect(p, socket, udp, lent, cx).and_then(|()| run(p, socket, udp, lent, cx))
+        } else {
+            run(p, socket, udp, lent, cx)
+        };
+        match ran {
+            // Up, the attempt is connected at the next pass, which comes
+            // at once as the answer marked the transfer to run
+            // (`Curl_multi_mark_dirty`).
+            Ok(true) => {
+                cx.rest.dirty.insert(cx.me.index());
+            }
+            Ok(false) => {}
+            Err(ErrorKind::OutOfMemory) => return Err(OutOfMemory),
+            Err(kind) => {
+                p.go_state(cx, TunnelState::Failed);
+                return Ok(Tunnels::Failed(i, kind));
+            }
+        }
+    }
+    Ok(Tunnels::Idle)
 }
 
 /// A `CONNECT` sent on a new stream (`cf_h3_proxy_submit_CONNECT`), and
 /// what the connection has to send sent.
 fn connect<H: Host>(
     proxy: &mut H3Proxy,
-    s: &mut SetupMut<'_>,
+    socket: &dyn Socket,
+    udp: bool,
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
@@ -53,7 +89,7 @@ fn connect<H: Host>(
         port.bytes(),
     ];
     trace::of_with(cx, H3P, &parts);
-    let head = super::tunnel::connect_head(lent, cx, b"HTTP/3", s.machine.dialing().tunnels_udp())?;
+    let head = super::tunnel::connect_head(lent, cx, b"HTTP/3", udp)?;
     let fields = match &head.udp {
         Some(udp) => connect_udp_fields(
             &head.head,
@@ -67,7 +103,6 @@ fn connect<H: Host>(
     let pairs = fields.pairs().map_err(oom)?;
     let url = cx.easy().report().url().map(copied).transpose()?;
     let url = url.as_deref().unwrap_or_default();
-    let socket = s.machine.dialed().stream().socket();
     if let Err(kind) = proxy.submit(cx, socket, &pairs, url) {
         let kind = match kind {
             ErrorKind::OutOfMemory => kind,
@@ -80,7 +115,6 @@ fn connect<H: Host>(
         ));
     }
     proxy.go_state(cx, TunnelState::Connect);
-    let socket = s.machine.dialed().stream().socket();
     proxy.egress(cx, socket)
 }
 
@@ -90,83 +124,47 @@ fn copied(url: &[u8]) -> Result<Vec<u8>, ErrorKind> {
     Ok(v)
 }
 
-/// The tunnel under way in a handshake.
-fn proxy(handshake: &mut Option<Box<Handshake>>) -> &mut H3Proxy {
-    match handshake.as_deref_mut() {
-        Some(Handshake::H3Connect(p)) => p,
-        _ => unreachable!("an HTTP/3 tunnel is set up"),
-    }
-}
-
-/// Move the handshake on as far as its socket lets it.
-pub(super) fn step<H: Host>(
-    s: &mut SetupMut<'_>,
-    lent: &mut Lent<'_>,
-    cx: &mut StepCx<'_, H>,
-) -> Result<Wake, Failure> {
-    match run(s, lent, cx) {
-        Ok(Ran::Idle) => Ok(Wake::Idle),
-        Ok(Ran::Again | Ran::Through) => Ok(Wake::Again),
-        Err(ErrorKind::OutOfMemory) => Err(Failure::Transfer(ErrorKind::OutOfMemory)),
-        Err(kind) => {
-            if let Some(Handshake::H3Connect(p)) = s.handshake.as_deref_mut() {
-                p.go_state(cx, TunnelState::Failed);
-            }
-            // The tunnel is the race's attempt in C, whose failure is the
-            // last attempt's (`cf_ip_happy_connect`): the proxy's
-            // connection goes, and the setup fails as the race does.
-            if s.handshake.take().is_some() {
-                trace::of(cx, H3P, format_args!("cf_h3_proxy_destroy()"));
-            }
-            let failed = crate::conn::ConnectError::Failed(None, kind);
-            let kind = super::connect_failed(cx, lent.route, failed);
-            Err(Failure::Attempt(kind))
-        }
-    }
-}
-
-enum Ran {
-    /// Nothing more until the socket is ready.
-    Idle,
-    /// Another `CONNECT` goes at once.
-    Again,
-    /// The tunnel is through: the next handshake follows.
-    Through,
-}
-
 /// `H3_TUNNEL_CONNECT`: read what came and send what waits, once; then,
-/// with the answer whole, `H3_TUNNEL_RESPONSE`.
+/// with the answer whole, `H3_TUNNEL_RESPONSE`. True once the proxy
+/// agreed; a `CONNECT` that goes again for a Negotiate challenge is moved
+/// on at once.
 fn run<H: Host>(
-    s: &mut SetupMut<'_>,
+    p: &mut H3Proxy,
+    socket: &dyn Socket,
+    udp: bool,
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
-) -> Result<Ran, ErrorKind> {
-    let socket = s.machine.dialed().stream().socket();
-    let p = proxy(s.handshake);
-    p.progress(cx, socket)?;
-    if p.answer().is_none() {
-        // A stream closed before its answer leaves the tunnel failed.
-        if p.tunnel_closed() {
-            return Err(ErrorKind::RecvError);
+) -> Result<bool, ErrorKind> {
+    loop {
+        p.progress(cx, socket)?;
+        if p.answer().is_none() {
+            // A stream closed before its answer leaves the tunnel failed.
+            if p.tunnel_closed() {
+                return Err(ErrorKind::RecvError);
+            }
+            return Ok(false);
         }
-        return Ok(Ran::Idle);
+        p.go_state(cx, TunnelState::Response);
+        if inspect(p, socket, udp, lent, cx)? {
+            return Ok(true);
+        }
     }
-    p.go_state(cx, TunnelState::Response);
-    inspect(s, lent, cx)
 }
 
 /// The proxy's final answer, traced and acted on
-/// (`Curl_http_proxy_inspect_tunnel_response`): the tunnel is up, or a
-/// `CONNECT` goes again for a Negotiate challenge taken, or it failed.
+/// (`Curl_http_proxy_inspect_tunnel_response`): the tunnel is up (true),
+/// or a `CONNECT` goes again for a Negotiate challenge taken (false), or
+/// it failed.
 fn inspect<H: Host>(
-    s: &mut SetupMut<'_>,
+    p: &mut H3Proxy,
+    socket: &dyn Socket,
+    udp: bool,
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
-) -> Result<Ran, ErrorKind> {
-    let p = proxy(s.handshake);
+) -> Result<bool, ErrorKind> {
     let answer = p.answer().expect("the answer is whole");
     let status = answer.status;
-    let what = super::tunnel::method_name(s.machine.dialing().tunnels_udp());
+    let what = super::tunnel::method_name(udp);
     trace::info(cx, format_args!("{what} Response Status {status}"));
     let total = answer.fields.len();
     trace::info(cx, format_args!("Response Headers ({total} total):"));
@@ -183,16 +181,12 @@ fn inspect<H: Host>(
         if let Some(value) = value
             && super::h2tunnel::challenged(lent, cx, H3P, value)?
         {
-            let p = proxy(s.handshake);
             p.go_state(cx, TunnelState::Init);
-            let mut p = take(s);
-            connect(&mut p, s, lent, cx)?;
-            *s.handshake = Some(try_box(Handshake::H3Connect(p)).map_err(oom)?);
-            return Ok(Ran::Again);
+            connect(p, socket, udp, lent, cx)?;
+            return Ok(false);
         }
     }
-    if s.machine.dialing().tunnels_udp() {
-        let p = proxy(s.handshake);
+    if udp {
         let answer = p.answer().expect("the answer is whole");
         super::tunnel::udp_answer(cx, status, answer.field(b"capsule-protocol"))?;
     } else if status / 100 != 2 {
@@ -203,35 +197,9 @@ fn inspect<H: Host>(
             format_args!("CONNECT tunnel established, response {status}"),
         );
     }
-    let mut p = take(s);
     p.go_state(cx, TunnelState::Established);
-    // The request follows the `CONNECT`: what reads it starts over
-    // (`Curl_client_reset`).
-    crate::upload::trace_reset(cx, false);
     cx.easy_mut().auth.side(Side::Proxy).finish();
-    s.machine
-        .dialed()
-        .stream()
-        .push_over_received(|received| {
-            assert!(
-                received.is_empty(),
-                "nothing is read over QUIC's socket but by it"
-            );
-            Ok(p as Box<dyn crate::conn::layer::Layer>)
-        })
-        .map_err(oom)?;
-    s.machine.proxied(Handshook::Tunnel(Tunneled::H3), || {
-        cx.easy().options().proxy.haproxy
-    });
-    Ok(Ran::Through)
-}
-
-/// The tunnel, out of the handshake.
-fn take(s: &mut SetupMut<'_>) -> Box<H3Proxy> {
-    match s.handshake.take().map(|h| *h) {
-        Some(Handshake::H3Connect(p)) => p,
-        _ => unreachable!("an HTTP/3 tunnel is set up"),
-    }
+    Ok(true)
 }
 
 fn oom(_: OutOfMemory) -> ErrorKind {

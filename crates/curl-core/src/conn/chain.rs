@@ -437,7 +437,9 @@ mod tests {
     }
 
     /// An HTTPS proxy's TLS shows connected once it is made, its tunnel's
-    /// filter then under way above it.
+    /// filter then under way above it: H2-PROXY under HTTP-PROXY for one
+    /// that is a stream of an HTTP/2 session, under way and made, as C's
+    /// chain shows it.
     #[test]
     fn an_https_proxy_s_tls_made_shows_connected() {
         let scheme = Scheme {
@@ -488,6 +490,22 @@ mod tests {
                 Some(Component::HttpProxy)
             ),
             "[0][!DNS][!SETUP][!HTTP-PROXY][SSL-PROXY][HAPPY-EYEBALLS][TCP]"
+        );
+        assert_eq!(
+            shown(
+                Made::default().with(Handshook::ProxyTls),
+                Some(Component::H2Proxy)
+            ),
+            "[0][!DNS][!SETUP][!HTTP-PROXY][!H2-PROXY][SSL-PROXY][HAPPY-EYEBALLS][TCP]"
+        );
+        assert_eq!(
+            shown(
+                Made::default()
+                    .with(Handshook::ProxyTls)
+                    .with(Handshook::Tunnel(Tunneled::H2)),
+                None
+            ),
+            "[0][!DNS][!SETUP][HTTP-PROXY][H2-PROXY][SSL-PROXY][HAPPY-EYEBALLS][TCP]"
         );
     }
 

@@ -1293,6 +1293,9 @@ pub(crate) struct Conn {
     seen_version: Option<ResponseVersion>,                   // C's httpversion_seen
     close: bool,                       // not reusable, released as Close: the response
                                        // said so, or the peer closed (EOF read)
+    settings: ConnSettings,            // what it keeps of the creating transfer's settings
+    negotiate: Option<Box<Negotiate>>, // its Negotiate with its proxy (C's proxyneg)
+    session: Option<mux::Session>,     // HTTP/2's or HTTP/3's, once made
 }
 pub(crate) struct Stream {             // conn/stream.rs
     socket: Sock,                      // the socket and the closer it was opened with (§4.6)
@@ -1301,231 +1304,255 @@ pub(crate) struct Stream {             // conn/stream.rs
 }
 ```
 
-One `Stream` type, owned by `Dialed` and then by the `Conn` it becomes, gives one read path:
-`recv(cx, max)` fills `rx` through the layers (`RecvBuf::fill`, where a read that reports more
-than the room it had is an error from the socket, `InvalidData`, not an assertion), `send`
-writes through them; `Conn::recv` adds that bytes received and not used, which only a
+One `Stream` type, owned by the setup's `Dialed` stage and then by the `Conn` it becomes, gives
+one read path: `recv(cx, max)` fills `rx` through the layers (`RecvBuf::fill`, where a read that
+reports more than the room it had is an error from the socket, `InvalidData`, not an assertion),
+`send` writes through them; `Conn::recv` adds that bytes received and not used, which only a
 handshake's read past its answer leaves (D11), are given first without asking the socket, and
 that the end of input marks the connection `close`. A connection that multiplexes (§4.4) is
 leased by several transfers at once: `Use::Leased(n)` counts them, one more for each that joins
-it and each pushed transfer.
-`Stream` does not rule out a second stream on one `Conn`, which FTP's data connection needs.
+it and each pushed transfer. `Stream` does not rule out a second stream on one `Conn`, which
+FTP's data connection needs.
+
 A QUIC connection dialed straight to its peer is `Transport::Datagram`: its socket alone
 (`Datagrams`), no layers and no `rx`, the QUIC connection reading and writing its datagrams
 itself; the session's `mux::Carrier` is then over it, and asks of it only its socket
 (`Carrier::layers` is bare: `Below::bare`), whether it is alive, and its shutdown's 1 KB drain.
 QUIC through a tunnel (CONNECT-UDP, over TCP or over an HTTP/3 proxy's stream) keeps the
-tunnel's `Stream`, its datagrams going through the tunnel's layers.
+tunnel's `Stream`, its datagrams going through the tunnel's layers. Protocols without a network
+(`file:`, C's PROTOPT_NONETWORK) lease a `Conn` with `Transport::Local`: no socket, no layers,
+never pooled for reuse (released as Close), with an empty `rx` that allocates nothing; the file
+protocol reads the file into the pipeline itself. This keeps one lease-holding path through
+`Done` for every protocol, as C attaches a connection for `file:` too.
 
-Protocols without a network (`file:`, C's PROTOPT_NONETWORK) lease a `Conn` with
-`Transport::Local`: no socket, no layers, never pooled for reuse (released as Close), with an
-empty `rx` that allocates nothing; the file protocol reads the file into the pipeline itself. This
-keeps one lease-holding path through `Done` for every protocol, as C attaches a connection for
-`file:` too.
+`ConnLease::connect` moves the machine of the slot its lease holds on by one event, with the
+step it is given (`ConnectMachine::drive`, or one that ends a race's tunnel), and replaces the
+slot in the lease: `Established(conn)` makes it `Open`, a failure `Failed`, which holds nothing
+open and goes when its lease is released. A race's second setup is held beside the lease
+(§4.2); the connection it makes takes the lease's slot (`ConnLease::adopt`), the first's machine
+given back to be discarded. The `ConnId` and every outstanding lease survive the handshake.
+Send, receive, reuse matching, health checks and upkeep exist only on `Conn`; the setup is
+reached through the lease as its machine (`ConnLease::setup`, `setting_up`), which the lease does
+not speak for. A `Connecting` slot with a matching route counts toward the limits and makes
+`acquire` return `Wait(Multiplexable(id))` when the needle wants PIPEWAIT (C's
+`seen_pending_conn`).
 
-`ConnLease::connect` drives the machine of the slot its lease holds by one event and replaces
-the slot in the lease: `Established(conn)` makes it `Open`, a failure `Failed`, which holds
-nothing open and goes when its lease is released. The `ConnId` and every outstanding lease
-survive the handshake. Send,
-receive, reuse matching, health checks and upkeep exist only on `Conn`; the setup is reached
-through the lease as its machine (`ConnLease::setup`, `setting_up`), which the lease does not
-speak for. A `Connecting` slot with
-a matching route counts toward the limits and makes `acquire` return
-`Wait(Multiplexable(id))` when the needle wants PIPEWAIT (C's `seen_pending_conn`).
-
-### 4.2 Connection setup is a typed pipeline
+### 4.2 Connection setup
 
 ```rust
-pub(crate) enum ConnectMachine {
-    Resolving(Resolving),          // owns its ResolveId; the answer lands here
-    Racing(Eyeballs),              // owns the DnsAnswer and up to 6 Attempts
-    Alpn(AlpnRace),                // owns two whole sub-machines (stage 4/5)
-    Socks(SocksHandshake), Tunnel(TunnelHandshake), Tls(TlsHandshake),
+pub(crate) struct ConnectMachine {     // conn/connect.rs: one setup of one connection
+    number: ConnNumber, route: NetRoute,
+    dial: Dial,                        // Stream | Quic: how it dials the first hop
+    created: Instant, stage: Stage, redials: u8, closer: Closer, settings: ConnSettings,
 }
-impl ConnectMachine {
-    fn drive(self, cx: &mut dyn ConnCx, options: DriveOptions) -> Result<Drove, ConnectError>;
+enum Stage { Resolving(Option<Pending>), Racing(Racing), Dialed(Dialed) }
+struct Racing { eyeballs: Eyeballs, attempts: Vec<Attempt>, last_start: Option<Instant> }
+struct Attempt { remote: Remote, socket: Sock, link: Link }
+enum Link { Connect, Quic(Box<Quic>), Tunnel(Box<H3Proxy>) }   // what decides the attempt
+pub(crate) struct Dialed {             // connected to the first hop, its handshakes to make
+    remote: Remote, stream: Stream, connected_at: Instant, answer: Addresses,
+    target: Option<..>,                // the destination, resolved here for SOCKS4/5
+    socks5_authenticated: bool, made: Made, preface: Option<bool>,
+    quic: Option<Box<Quic>>,           // the origin's, made through a CONNECT-UDP tunnel
+}
+pub(crate) struct Made {               // each handshake made over it, once (Made::with)
+    socks: bool, proxy_tls: bool, tunnel: Option<Tunneled>, preface: bool, tls: bool, quic: bool,
 }
 pub(crate) enum Drove { Connecting(ConnectMachine, Progress), Established(Conn) }
-pub(crate) enum Progress { Trying(SocketAddr), Waiting }
-pub(crate) enum ConnectError { Unresolved, Immediate { .. }, Attempt { remote, local, error } }
+pub(crate) enum Progress { Resolved(Found), Trying { .. }, Failed, Waiting { until },
+                           Resolving { retry }, Dialed, Tunnel { until } }
+
+struct Connecting {                    // multi/state.rs: the transfer's side of a setup
+    lease: ConnLease,                  // the connection's slot, the first setup's machine in it
+    proto: ProtoState, route: NetRoute,
+    setup: Setup,                      // the first's handshake under way
+    https: Option<HttpsConnect>,       // the HTTPS connect filter's race, when it runs one
+    race: Option<Box<Race>>,           // the second setup, its handshake, who leads
+    negotiate: Option<Box<Negotiate>>,
+}
 ```
 
-The enum is the target shape; what is built is a struct with a `Stage { Resolving,
-Racing(Racing), Tunnel(Dialed) }`. Resolving answers what C answers without a resolver backend: an IP literal,
-and the loopback addresses for `localhost` and the names under it. `Eyeballs` holds the `Answer`
-and picks the next address as `cf_ip_ballers_run` does, the families alternating, IPv6 first;
-`IpVersion` limits a name's addresses, never a literal's. `Racing` runs up to six attempts, oldest
-first (`IP_HE_MAX_CONCURRENT_ATTEMPTS`, the oldest closed to make room): the next starts once
-none runs or the happy eyeballs delay (`CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS`, passed on each
-drive) has passed since the last started; a failed attempt is traced and dropped; the first to
-connect wins and the others close. `Progress::Waiting { until }` names when the next attempt is
-due, which the transfer arms as `TimerKind::Eyeballs` and clears when the setup ends. Unit 2600's
-cases are a test of the machine over a manual clock. A drive moves the machine by at most one
-event and returns it, in place in its slot (§3.6). The transfer's step drives it again for as
-long as one call of C's `Curl_conn_connect` would go on (`multi/state.rs`'s `connecting`): through
-a name resolved, an attempt failed or connected at once and a handshake made; a connect under
-way ends the call, as `cf_tcp_connect` returns at once on `EINPROGRESS`, and the attempt is first
-polled at the transfer's next run, so its socket is waited on and announced to the socket
-callback first. A drive traces its attempts in C's words as it makes them ("  Trying …",
-"connect to … from … failed: …"), and the transfer what the drive reports ("Established
-connection to … ", then `failf`'s "Failed to connect to H:P after N ms: …" or "Could not
-resolve host: …"). A reason an attempt gives for failing the transfer (`failed to open
-socket`, a bind's) is let go as the race starts the next attempt, connects, or ends with none
-left (`Curl_reset_fail`), as is what the application's error buffer was told: the reason kept
-is the race's, or none. The machine
-is driven in its lease, the pool not borrowed (§3.6), and reaches the transfer only through its
-`ConnCx`; `DriveOptions` carries the transfer's settings for the drive (the eyeballs delay, the
-scope, the socket options, the names' rules). A transfer whose receiving is paused is not driven (`multistate_connecting`), and the
-connect limit is judged before each drive. A resolved name is reported as `cf_dns_report`
-reports it ("Host H:P was resolved.", then each family's addresses), read back from the
-machine through the pool, and NAMELOOKUP is marked when it resolves. Whether IPv6 works is the
-multi's, asked of its `Net` once as the multi is made (`Net::probe_ipv6`, an IPv6 datagram socket
-opened and closed, as `Curl_probeipv6` in `Curl_multi_handle`) and reached by the drive through
-`ConnCx::ipv6_works`: without it a name is resolved for IPv4 alone, and for IPv6 alone not at
-all (`Unresolved::NoIpv6`, `can_resolve_dns_queries`). An IPv6 attempt's address
-carries C's `conn->scope_id`: `CURLOPT_ADDRESS_SCOPE`, else the destination peer's scope, else,
-for a link-local address, the first non-loopback interface's with a link-local address
-(`Net::link_local_scope`, cf-socket.c's `get_scope_id`), which `Progress::Trying` carries for
-its trace; an attempt that fails at once is traced as tried first, as C opens and traces the
-socket before its connect.
+**One setup** is a `ConnectMachine`, driven in its lease's slot, the pool not borrowed (§3.6),
+reaching the transfer only through its `ConnCx`, `DriveOptions` carrying the transfer's settings
+for the drive (the eyeballs delay, the scope, the socket options, the names' rules, the PROXY
+line). A drive moves it by at most one event and gives it back. The transfer's step drives it
+again for as long as one call of C's `Curl_conn_connect` would go on (`multi/state.rs`'s
+`connecting`): through a name resolved, an attempt failed or connected at once and a handshake
+made; a connect under way ends the call, as `cf_tcp_connect` returns at once on `EINPROGRESS`,
+and the attempt is first polled at the transfer's next run, so its socket is waited on and
+announced to the socket callback first. A transfer whose receiving is paused is not driven
+(`multistate_connecting`), and the connect limit is judged before each drive.
 
-- Each stage owns what the previous stage produced: `Resolving` yields `DnsAnswer`, which
-  builds `Eyeballs`; the winning attempt's socket becomes the `Stream` of the next stage, and
-  every handshake runs over that `Stream`. A handshake whose layer goes on working once it is
-  done (TLS) pushes it on the stream; SOCKS and the HTTP proxy's tunnel, which only pass bytes
-  once connected, are recorded as made on the `Dialed` connection that owns the stream
-  (`Made`, one fact per handshake, the tunnel's with what it is a stream of (`Tunneled`), in
-  the machine's padding, so no byte more for any transfer), not as boxed layers
-  that do nothing. Happy eyeballs never reads DNS sideways (C's
-  `Curl_conn_dns_get_ai`), and the resolve record lives with the machine that started it, not
-  on whichever transfer happens to call.
-- A setup that makes a handshake does not end at the winning attempt: a route through SOCKS
-  or an HTTP proxy that tunnels (`NetRoute::handshakes`), or a transfer that sends the PROXY line
-  (`DriveOptions::haproxy`, the creating transfer's, as the line is not part of the route), has the
-  machine keep its socket as `Stage::Dialed(Dialed)`, with a receive buffer, and return
-  `Progress::Dialed`. The machine does only the I/O of the handshake; the transfer
-  (`multi/state/tunnel.rs`) makes it. It renders the `CONNECT` with the proxy's side of its
-  `Auth`, sends it and reads the answer through its machine's `Dialed` stage (`ConnLease::setting_up`), parses it with
-  `proto::http1::tunnel::Answer`, and delivers each line through its own pipeline as
-  `HeaderOrigin::Connect`, so the report, header handler and auth state are the transfer's to
-  write. It reads until the socket would block or the answer is whole, as C does, and takes
-  stock of the transfer (`progress::update`) as C's byte-at-a-time read does: once for each
-  byte of the answer, the byte after a header line counted before the line is taken in, once
-  for the connection's end, and once each time it returns for more or has the answer. The
-  SOCKS handshake, like C's, takes none. A 407 is answered with another `CONNECT` on the same connection, its body dropped;
-  a 2xx records the tunnel made, and the next handshake follows; the last makes the `Conn`
+- **Resolving** answers what C answers without a resolver backend (an IP literal, and the
+  loopback addresses for `localhost` and the names under it), else asks the resolver through the
+  cache; the record lives with the machine that started it, and happy eyeballs never reads DNS
+  sideways (C's `Curl_conn_dns_get_ai`). A resolved name is reported as `cf_dns_report` reports
+  it ("Host H:P was resolved.", then each family's addresses), read back from the machine through
+  the pool, and NAMELOOKUP is marked when it resolves. Whether IPv6 works is the multi's, asked of
+  its `Net` once as the multi is made (`Net::probe_ipv6`, as `Curl_probeipv6`) and reached through
+  `ConnCx::ipv6_works`: without it a name is resolved for IPv4 alone, and for IPv6 alone not at all
+  (`Unresolved::NoIpv6`).
+- **Racing.** `Eyeballs` holds the `Answer` and picks the next address as `cf_ip_ballers_run`
+  does, the families alternating, IPv6 first; `IpVersion` limits a name's addresses, never a
+  literal's. Up to six attempts run, oldest first (`IP_HE_MAX_CONCURRENT_ATTEMPTS`, the oldest
+  closed to make room): the next starts once none runs or the happy eyeballs delay
+  (`CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS`) has passed since the last started; a failed attempt is
+  traced and dropped; the first to connect wins and the others close. `Progress::Waiting { until }`
+  names when the next attempt is due, which the transfer arms as `TimerKind::Eyeballs` and clears
+  when the race ends. Unit 2600's cases are a test of the machine over a manual clock. A drive
+  traces its attempts in C's words ("  Trying …", "connect to … from … failed: …"), and the
+  transfer what the drive reports ("Established connection to … ", then `failf`'s "Failed to
+  connect to H:P after N ms: …" or "Could not resolve host: …"). A reason an attempt gives for
+  failing the transfer (`failed to open socket`, a bind's) is let go as the race starts the next
+  attempt, connects, or ends with none left (`Curl_reset_fail`): the reason kept is the race's, or
+  none. An IPv6 attempt's address carries C's `conn->scope_id`: `CURLOPT_ADDRESS_SCOPE`, else the
+  destination peer's scope, else, for a link-local address, the first non-loopback interface's
+  (`Net::link_local_scope`, `get_scope_id`), which `Progress::Trying` carries for its trace.
+- **What decides an attempt** is its `Link`, as C's transport table gives each attempt its
+  filter (`cf-ip-happy.c`): a TCP or Unix socket's connect; a QUIC connection's handshake
+  (`Curl_cf_quic_create`); or, to an HTTP/3 proxy, the tunnel over the QUIC connection to it
+  (`Curl_cf_h3_proxy_create`). A QUIC attempt's socket is connected, QUIC's options set on it
+  (ECN, path MTU discovery, GRO; a failure ignored, as C ignores it), and the connection made over
+  a QUIC TLS session and started, its first flight sent, as the attempt starts. The race drives
+  it each time it is checked (`conn/quic.rs`); it wins when its handshake is done and its peer
+  checked, and goes straight to an open connection whose session is `Session::H3`, timed as
+  connected at its first datagram and as through TLS at its handshake. A failed one is traced
+  (`QUIC connect to … failed: …`), its close sent if it failed past saving, and its filters
+  destroyed before its socket closes; its chain reads `[HTTP/3][UDP]`. `Curl_conn_may_http3`'s
+  refusals come first: over a Unix socket, to an origin not over TLS, through a SOCKS proxy. An
+  attempt to an HTTP/3 proxy whose handshake is done becomes a `Link::Tunnel` and races on
+  (`Progress::Tunnel`); the transfer drives the race's tunnels as the race checks its attempts
+  (§ the HTTP/3 tunnel), and the race is won only once one is through.
+- **Dialed.** A setup that makes a handshake does not end at the winning attempt: a route
+  through SOCKS or an HTTP proxy that tunnels (`NetRoute::handshakes`), one secured, or a
+  transfer that sends the PROXY line (`DriveOptions::haproxy`, the creating transfer's, as the
+  line is not part of the route), has the machine keep its socket as `Stage::Dialed`, with a
+  receive buffer, and return `Progress::Dialed`. Each handshake runs over that `Stream`. One whose
+  layer goes on working once it is done (TLS, an HTTP/2 or HTTP/3 proxy's tunnel) pushes it on
+  the stream; SOCKS and the HTTP/1.1 tunnel, which only pass bytes once connected, are recorded
+  as made (`Made`, one fact per handshake, the tunnel's with what it is a stream of,
+  `Tunneled`), not as boxed layers that do nothing. The last makes the `Conn`
   (`ConnLease::handshaken`), keeping what came after the answer, and it is traced as
   established only then.
-- SOCKS likewise (`multi/state/socks.rs`, over the sans-IO `conn::socks::Handshake`). For SOCKS4
-  and SOCKS5, which resolve the destination here, the machine resolves it as it dials, through
-  the same cache, and the `Dialed` stage carries the answer. A failure is `ErrorKind::Proxy` with
-  the `ProxyError` kept for `CURLINFO_PROXY_ERROR`; a SOCKS5 proxy that authenticated the user
-  marks the `Conn`, which alone serves a transfer insisting on it (`CURLAUTH_ONLY`).
-- SOCKS5's GSS-API method is offered where the handle has a GSS-API library and the options
-  allow it. Picked, it is three more states of the same `Handshake` (`conn/socks/gss.rs`): the
-  context is made with the proxy's service (`rcmd`, or the credentials', which a disallowed
-  basic method takes away as C unlinks them) and stepped one RFC 1961 message at a time, then
-  the protection level is asked and read, wrapped by the context or, in NEC's way, as it is. The
-  context lives in the boxed handshake, so nothing grows on `Connecting` or `Conn`; it is
-  dropped with the handshake, or as soon as the proxy grants no protection. C makes the socket
-  blocking for the whole exchange (`Curl_blockread_all`); here each message is sent and read as
-  the socket lets it, the same bytes (`DIVERGENCE.md`). The handshake says what a failed send,
-  read or close means in the message under way, and the connect deadline reached while one is
-  awaited fails its read as C's blocking read does, and a GSS-API failure is traced as C's
-  `failf`s are, the library's words for the call, the step's, then "Unable to negotiate SOCKS5
-  GSS-API context.", the first of them the transfer's reason. Protection granted fails once
-  the request went (`CURLPX_GSSAPI_PROTECTION`), as C does.
-- A SOCKS pre-proxy (`CURLOPT_PRE_PROXY`) sits in front of an HTTP proxy only, set on its
-  `ProxyRoute` through `ProxyRoute::behind`, which asserts it; alone, it is the route's SOCKS
-  proxy. The route then dials the pre-proxy first (`NetRoute::destination`), its SOCKS handshake asks
-  for the HTTP proxy (`NetRoute::socks` gives the leg), and a tunnelling HTTP proxy's `CONNECT`
-  follows over the same `Dialed` stage; a SOCKS5 authentication is kept on `Dialed` and carried
-  to the `Conn`. Reuse compares the pre-proxy too.
-- A new connection sends the PROXY protocol's line over `Dialed`, after any proxy's handshake,
-  if the transfer asks (`multi/state/haproxy.rs`, `cf-haproxy.c`), with the addresses of the
-  socket to the first hop, before it is open and traced as established. Whether it asks is
-  read once, as the setup reaches that stage, as `cf_setup_add_haproxy` reads it: as the
-  attempt wins for a route without a proxy's handshake (`DriveOptions::haproxy`), else as the last of
-  them is made (`ConnectMachine::proxied`); `Dialed` carries the answer to the handshake chosen
-  next, the chain traced and the chain left once up. A reused one sends none, and reuse does
-  not ask, as in C.
-- A proxy that closes the connection on its 407 starts the setup over from resolving
-  (`ConnectMachine::redial`, cf-setup.c's "AGAIN"), counted by the machine, at most 5. Each connection to
-  the proxy counts toward `CURLINFO_NUM_CONNECTS` as it is made.
 - **Handshake order** is decided in one place, `handshake_due` (`multi/state.rs`), from the
-  route, the transfer's PROXY line and what `Dialed::made` records, in cf-setup.c's order
-  (299–359): the eyeballs race, then SOCKS, then the proxy's TLS (stage 4), then the HTTP
-  proxy's `CONNECT`, then the PROXY line, then the origin's TLS. Each handshake, once made,
-  ends with none under way, and the step goes on to the next within the same call, tracing
-  SETUP's `added` line for it; with none left the connection is open. A redial starts a new `Dialed`, with
-  nothing made. The PROXY line goes over `Dialed` before the connection is `Open`, so no `Open`
-  connection exists with it unsent, and a transfer taken out mid-setup gives back a
-  connection that is not open, which closes. The transfer drives each handshake, its I/O over
-  the `Dialed` stream. A driver takes the setup it works on (`SetupMut`: the machine and the
-  handshake under way, borrowed from wherever they are kept) and what the transfer lends it
-  (`Lent`: the route, the request, for the ALPN offered and the pipeline a `CONNECT`'s answer
-  goes through, and the connection's Negotiate with its proxy, which stays the connection's
-  as C's `proxyneg` is the `connectdata`'s). It returns whether to go on at once or wait, or
-  how it failed: its attempt alone, which a race outlives, or the transfer, as running out of
-  memory does; the caller, not the driver, decides what a failed attempt does to a race. TLS
-  is made and moved on over a `Stream` (`tls::put_on`, `tls::shake`), so that an open
-  connection can be upgraded by the same code.
-- **C's filter chain is rendered, not built.** The setup filters (SETUP, DNS, HAPPY-EYEBALLS,
-  HTTP-PROXY, HAPROXY) exist in C only until the chain connects and are then removed
-  (`Curl_conn_remove_setup_filters`, cfilters.c:434–450); here the typed machine stands for
-  them, and `conn/chain.rs` renders the chain C would have at each point for the trace
-  (`cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]`,
-  `connected [0][DNS][SETUP][HAPPY-EYEBALLS][TCP]`, `reduced to [0][TCP]`), allocating nothing. The handshakes made and the stream's layers
-  are C's reduced chain: `[TCP]`, `[SOCKS][TCP]`, `[H1-PROXY][TCP]`, `[H1-PROXY][SOCKS][TCP]` behind
-  a pre-proxy, and `[H2-PROXY][SSL-PROXY][TCP]` for a tunnel through a proxy that speaks
-  HTTP/2. For a SOCKS5 proxy that is not to resolve the name, C adds a second DNS filter
-  for the destination, which the rendered chain shows as `[!DNS][!DNS]` (`--socks5`, and a
-  SOCKS5 pre-proxy; `--socks5-hostname` has one).
-- **Socket open order** is the attempt's, in C's sequence (`cf_socket_open`, `do_connect`):
-  the OPENSOCKET callback, which may change the address, or `Net::open`, a non-blocking socket
-  of the `SocketKind` the route's `Dial` needs (a stream, or a UDP socket for QUIC); the
-  "Trying" trace; on a TCP socket alone, TCP_NODELAY (on by default, url.c:410,
-  cf-socket.c:1322), and keepalive with its idle time, interval and count only while it is
-  on; the SOCKOPT callback
-  (`AlreadyConnected` wins the attempt as it opens, with no connect to check; any other failure
-  closes the socket and is AbortedByCallback); non-blocking, for a socket the application
-  opened; `cf_socket_open() -> 0`; TCP_FASTOPEN_CONNECT, on TCP's; the connect and the local address.
-  `Socket::set`, `set_nonblocking` and `connect` are each one system call. A socket that does
-  not open, or closes as it is set, is traced as C traces it, with neither address known or the
-  local one not, and the setup's failure is the last attempt's kind (`ConnectError::Failed`).
-  The local end is bound between the SOCKOPT callback and non-blocking (`conn/bind.rs`,
-  `bindlocal`), as the route's `LocalBind` says (`CURLOPT_INTERFACE`, `LOCALPORT`,
-  `LOCALPORTRANGE`): an interface by name with `SO_BINDTODEVICE`, else by its address
-  (`Net::interface_address`, `Curl_if2ip`), else a host's, resolved for the connection's family
-  alone through the DNS cache, which keeps no negative entry for it; then the ports of the range
-  in turn. A failure closes the socket as one not opened; an address of the other family fails
-  the attempt as `CouldntConnect`, letting the next address be tried, any other as
-  `InterfaceFailed`.
-- **A QUIC attempt** is a whole QUIC connection over its UDP socket (`cf-ip-happy.c`'s
-  transport table makes each attempt `Curl_cf_quic_create`): the socket is connected, QUIC's
-  options set on it (ECN, path MTU discovery, GRO; a failure ignored, as C ignores it), and the
-  connection made over a QUIC TLS session and started, its first flight sent, as the attempt
-  starts. The race drives it each time it is checked (`conn/quic.rs`, below); it wins when its
-  handshake is done and its peer checked, not when its socket connects, and goes straight to an
-  open connection whose session is `Session::H3`, timed as connected at its first datagram and
-  as through TLS at its handshake. A failed one is traced (`QUIC connect to … failed: …`), its
-  close sent if it failed past saving, and its filters destroyed before its socket closes.
-  QUIC's route has no TLS filter of TCP's; its chain reads `[HTTP/3][UDP]`.
-  `Curl_conn_may_http3`'s refusals come first: over a Unix socket, to an origin not over TLS,
-  through a SOCKS proxy.
-- **Unix sockets.** A transfer over the network with `Sockets::unix` set connects to that
-  socket in place of its host (`url_set_conn_origin_etc`): the route's `via` is a `Peer` at it
-  (`PeerAt::Unix` or `AbstractUnix`, the path as its host, compared exactly), no connect-to entry
-  is read and no proxy is chosen. A SOCKS proxy at `localhost` with a path is at the Unix socket
-  of that path (`conn/proxy.rs`). The setup makes the socket's one address rather than resolving
-  (`Addresses::Unix`; a path its address cannot hold fails as `CouldntResolveHost`), and its
-  attempt opens an `AF_UNIX` socket (`Remote::Unix`, which `Net::open`, `Socket::connect`, the
-  opener hook and `Ends` carry) with none of TCP's options or bind; its filter traces as `UNIX`,
-  its address as the path (nothing for an abstract name) at port 0, and the infos give it no
-  ports.
-- Happy-eyeballs parameters are C's: 25 ms AAAA wait, `happy_eyeballs_timeout` attempt delay, at
-  most 6 concurrent attempts, IPv6 first then alternating. Unit 2600 is ported before a second
-  attempt is implemented.
+  route, the transfer's PROXY line and what `Dialed::made` records, in cf-setup.c's order: the
+  eyeballs race, then SOCKS, then the proxy's TLS, then the HTTP proxy's `CONNECT`, then the
+  PROXY line, then the origin's TLS (or its QUIC through a CONNECT-UDP tunnel). Each handshake,
+  once made, ends with none under way, and the step goes on to the next within the same call,
+  tracing SETUP's `added` line for it; with none left the connection is open. The PROXY line goes
+  before the connection is `Open`, so no `Open` connection exists with it unsent, and a transfer
+  taken out mid-setup gives back a connection that is not open, which closes.
+- **Handshake drivers.** The machine does only a handshake's I/O; the transfer makes it
+  (`multi/state/{socks,tunnel,h2tunnel,haproxy,tls,quictunnel}.rs`, and `h3tunnel.rs` for the
+  HTTP/3 proxy's, which runs in the race). A driver takes the setup it works on (`SetupMut`:
+  the machine and the handshake under way, borrowed from wherever they are kept, the first's or
+  the second's) and what the transfer lends it (`Lent`: the route, the request, for the ALPN
+  offered and the pipeline a `CONNECT`'s answer goes through, and the connection's Negotiate with
+  its proxy). It returns whether to go on at once or wait, or how it failed (`Failure::of`): its
+  attempt alone, which a race outlives, or the transfer, as running out of memory does; the
+  caller, not the driver, decides what a failed attempt does to a race. TLS is made and moved on
+  over a `Stream` (`tls::put_on`, `tls::shake`), so that an open connection can be upgraded by
+  the same code.
+- **The HTTP proxy's tunnel** (`multi/state/tunnel.rs`) renders the `CONNECT` with the proxy's
+  side of its `Auth`, sends it and reads the answer through the machine's `Dialed` stage, parses
+  it with `proto::http1::tunnel::Answer`, and delivers each line through its own pipeline as
+  `HeaderOrigin::Connect`, so the report, header handler and auth state are the transfer's to
+  write. It reads until the socket would block or the answer is whole, as C does, and takes stock
+  of the transfer (`progress::update`) as C's byte-at-a-time read does: once for each byte of the
+  answer, the byte after a header line counted before the line is taken in, once for the
+  connection's end, and once each time it returns for more or has the answer. A 407 is answered
+  with another `CONNECT` on the same connection, its body dropped; a 2xx records the tunnel made.
+  A proxy that closes the connection on its 407 starts the setup over from its addresses
+  (`ConnectMachine::redial`, cf-setup.c's "AGAIN"), at most 5 times; each connection to the proxy
+  counts toward `CURLINFO_NUM_CONNECTS` as it is made.
+- **SOCKS** likewise (`multi/state/socks.rs`, over the sans-IO `conn::socks::Handshake`). For
+  SOCKS4 and SOCKS5, which resolve the destination here, the machine resolves it as it dials,
+  through the same cache, and `Dialed` carries the answer. A failure is `ErrorKind::Proxy` with
+  the `ProxyError` kept for `CURLINFO_PROXY_ERROR`, and the SOCKS handshake, like C's, takes no
+  stock of the transfer; a SOCKS5 proxy that authenticated the user marks the `Conn`, which alone
+  serves a transfer insisting on it (`CURLAUTH_ONLY`). SOCKS5's GSS-API method is offered where
+  the handle has a GSS-API library and the options allow it. Picked, it is three more states of
+  the same `Handshake` (`conn/socks/gss.rs`): the context is made with the proxy's service
+  (`rcmd`, or the credentials', which a disallowed basic method takes away as C unlinks them) and
+  stepped one RFC 1961 message at a time, then the protection level is asked and read, wrapped by
+  the context or, in NEC's way, as it is. The context lives in the boxed handshake and is dropped
+  with it, or as soon as the proxy grants no protection. C makes the socket blocking for the
+  whole exchange (`Curl_blockread_all`); here each message is sent and read as the socket lets
+  it, the same bytes (`DIVERGENCE.md`). The connect deadline reached while a message is awaited
+  fails its read as C's blocking read does; a GSS-API failure is traced as C's `failf`s are, the
+  library's words for the call, the step's, then "Unable to negotiate SOCKS5 GSS-API context.",
+  the first of them the transfer's reason. Protection granted fails once the request went
+  (`CURLPX_GSSAPI_PROTECTION`), as C does.
+- **A SOCKS pre-proxy** (`CURLOPT_PRE_PROXY`) sits in front of an HTTP proxy only, set on its
+  `ProxyRoute` through `ProxyRoute::behind`, which asserts it; alone, it is the route's SOCKS
+  proxy. The route then dials the pre-proxy first (`NetRoute::destination`), its SOCKS handshake
+  asks for the HTTP proxy (`NetRoute::socks` gives the leg), and a tunnelling HTTP proxy's
+  `CONNECT` follows over the same `Dialed` stage; a SOCKS5 authentication is kept on `Dialed` and
+  carried to the `Conn`. Reuse compares the pre-proxy too.
+- **The PROXY line** goes over `Dialed`, after any proxy's handshake, if the transfer asks
+  (`multi/state/haproxy.rs`, `cf-haproxy.c`), with the addresses of the socket to the first hop.
+  Whether it asks is read once, as the setup reaches that stage, as `cf_setup_add_haproxy` reads
+  it: as the attempt wins for a route without a proxy's handshake, else as the last of them is
+  made (`ConnectMachine::proxied`); `Dialed` carries the answer. A reused connection sends none,
+  and reuse does not ask, as in C.
+
+**Two setups at once.** C's HTTPS connect filter races two ballers for an `https://` origin
+asking HTTP/3 (`cf_hc`; its lines are in §2.5). Here the first setup is the
+lease's machine, with its handshake in `Connecting::setup`; the second, made as the race starts
+it (as the first fails, or at the soft or hard ALPN eyeballs timeout), is `Race::second` with
+its handshake in `Race::setup`, sharing the first's resolved answer. Both are driven the same
+way, in C's order (`cf_hc_connect`): the attempt leading (`Race::lead`, `Attempt::{First,
+Second}`) through its connect and then its handshakes, the other beside it as its turn comes
+(`drive_other`), each failure its own attempt's. The pollset covers both attempts' sockets and
+handshakes. The one that makes the connection wins: its machine's `Conn` takes the lease's slot,
+and the loser goes with the HTTPS connect filter, its chain from its setup filter down
+(`cf_hc_ctx_destroy`); an attempt that failed once dialed keeps its connection until then. HTTP/3
+is weighed through an HTTP proxy as anywhere (only SOCKS refuses it, `cf_hc_may_h3`): its attempt
+goes over the proxy's CONNECT-UDP, the other over CONNECT on a connection of its own, and a
+tunnel the proxy refuses fails its attempt, not the transfer.
+
+**C's filter chain is rendered, not built.** The setup filters (SETUP, DNS, HTTPS-CONNECT,
+HAPPY-EYEBALLS, HTTP-PROXY, HAPROXY) exist in C only until the chain connects and are then removed
+(`Curl_conn_remove_setup_filters`); here the typed machines stand for them, and `conn/chain.rs`
+renders the chain C would have at each point for the trace (`cf_setup_connect
+[0][!DNS][!SETUP][!HAPPY-EYEBALLS]`, `connected [0][DNS][SETUP][HAPPY-EYEBALLS][TCP]`, `reduced to
+[0][TCP]`), allocating nothing, from the setup that leads and the route it dials (`Dialing`), or
+from the connection the winner made. The handshakes made and the stream's layers are C's reduced
+chain: `[TCP]`, `[SOCKS][TCP]`, `[H1-PROXY][TCP]`, `[H1-PROXY][SOCKS][TCP]` behind a pre-proxy,
+`[H2-PROXY][SSL-PROXY][TCP]` through a proxy that speaks HTTP/2, `[H3-PROXY][UDP]` through one
+that speaks HTTP/3. For a SOCKS5 proxy that is not to resolve the name, C adds a second DNS filter
+for the destination, which the rendered chain shows as `[!DNS][!DNS]` (`--socks5`, and a SOCKS5
+pre-proxy; `--socks5-hostname` has one).
+
+**Socket open order** is the attempt's, in C's sequence (`cf_socket_open`, `do_connect`): the
+OPENSOCKET callback, which may change the address, or `Net::open`, a non-blocking socket of the
+`SocketKind` the setup's `Dial` needs (a stream, or a UDP socket for QUIC); the "Trying" trace;
+on a TCP socket alone, TCP_NODELAY (on by default), and keepalive with its idle time, interval and
+count only while it is on; the SOCKOPT callback (`AlreadyConnected` wins the attempt as it opens,
+with no connect to check; any other failure closes the socket and is AbortedByCallback);
+non-blocking, for a socket the application opened; `cf_socket_open() -> 0`;
+TCP_FASTOPEN_CONNECT, on TCP's; the connect and the local address. `Socket::set`,
+`set_nonblocking` and `connect` are each one system call. A socket that does not open, or closes
+as it is set, is traced as C traces it, with neither address known or the local one not, and the
+setup's failure is the last attempt's kind (`ConnectError::Failed`); an attempt that fails at
+once is traced as tried first, as C opens and traces the socket before its connect. The local end
+is bound between the SOCKOPT callback and non-blocking (`conn/bind.rs`, `bindlocal`), as the
+route's `LocalBind` says (`CURLOPT_INTERFACE`, `LOCALPORT`, `LOCALPORTRANGE`): an interface by
+name with `SO_BINDTODEVICE`, else by its address (`Net::interface_address`, `Curl_if2ip`), else a
+host's, resolved for the connection's family alone through the DNS cache, which keeps no negative
+entry for it; then the ports of the range in turn. A failure closes the socket as one not opened;
+an address of the other family fails the attempt as `CouldntConnect`, letting the next address be
+tried, any other as `InterfaceFailed`.
+
+**Unix sockets.** A transfer over the network with `Sockets::unix` set connects to that socket in
+place of its host (`url_set_conn_origin_etc`): the route's `via` is a `Peer` at it (`PeerAt::Unix`
+or `AbstractUnix`, the path as its host, compared exactly), no connect-to entry is read and no
+proxy is chosen. A SOCKS proxy at `localhost` with a path is at the Unix socket of that path
+(`conn/proxy.rs`). The setup makes the socket's one address rather than resolving
+(`Addresses::Unix`; a path its address cannot hold fails as `CouldntResolveHost`), and its attempt
+opens an `AF_UNIX` socket (`Remote::Unix`, which `Net::open`, `Socket::connect`, the opener hook
+and `Ends` carry) with none of TCP's options or bind; its filter traces as `UNIX`, its address as
+the path (nothing for an abstract name) at port 0, and the infos give it no ports.
 
 ### 4.3 Established layers
 

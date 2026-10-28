@@ -1033,7 +1033,7 @@ callback a send handle on its own connection, a typed exception to ENGINE's deci
 allows `curl_ws_send` there. It opens with what milestone 5's design review found the
 protocols need, each step leaving behaviour and traces as they are:
 
-65. **A connection's setup apart from its transfer.** **In progress.** Done: the handshake
+65. **A connection's setup apart from its transfer.** **Done.** The handshake
     under way is held in a `Setup` beside the lease, and the drivers run over a borrowed view
     of the leading setup (`SetupMut`) and what the transfer lends them (`Lent`), the TLS one
     over a stream (`tls::put_on`, `tls::shake`) so that it can upgrade an open connection
@@ -1045,9 +1045,8 @@ protocols need, each step leaving behaviour and traces as they are:
     `Transport::Datagram`. Sizes and allocation budgets are unchanged. `Made` is a struct of
     facts; the other attempt is driven as the lead is; `--http3` races through an HTTP proxy
     as C does, its HTTP/3 attempt over CONNECT-UDP, the other over CONNECT on a connection of
-    its own; 64(a)'s race is won once the tunnel is up. To do: FTP's data connection as a
-    second setup; ENGINE §4.1 and §4.2 rewritten
-    whole to the shape built.
+    its own; 64(a)'s race is won once the tunnel is up. FTP's data connection, a second
+    setup of a connection, comes with FTP in milestone 6.
 66. **Types for what flags say.** A layered QUIC connection is a type of its own, its
     datagram path given by its context with no `unreachable!` default; `Conn`'s session an
     enum of none (HTTP/1), not made yet, HTTP/2 and HTTP/3, out for a step; `LayerCx` split

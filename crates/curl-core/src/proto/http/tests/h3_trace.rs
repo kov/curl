@@ -1850,13 +1850,30 @@ fn an_alternative_elsewhere_in_http3_is_dialed_over_quic() {
 }
 
 /// A race that runs out of time with both its attempts under way fails,
-/// both attempts closed with the request: the one out of the lease goes
-/// with the lease's.
+/// both attempts closed with the request, the QUIC one first, as C's
+/// connect filter destroys its attempts in their order
+/// (`cf_hc_ctx_destroy`). They go with the connection, on no transfer's
+/// trace: C's says nothing of their sockets between the request's end
+/// and the connection's close.
 #[test]
 fn a_race_timed_out_closes_both_attempts() {
     let quic_talk = Conversation::replies(&[], false).per_send();
     let tcp_talk = Conversation::replies(&[], false).per_send();
-    let mut m = racing_peer(Peer::Silent, &quic_talk, Peer::Silent, &tcp_talk);
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Silent)
+        .with_datagram_peer(at, Peer::Silent)
+        .with_conversation(at, quic_talk.clone())
+        .with_conversation(at, tcp_talk.clone());
+    let closed = Arc::new(Mutex::new(Vec::new()));
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(Closes(net, closed.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
     let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
     let url = format!("https://127.0.0.1:{PORT}/");
     let ran = get_with(&mut m, e, "/", tcp_talk.clone(), |o| {
@@ -1875,6 +1892,80 @@ fn a_race_timed_out_closes_both_attempts() {
         got.iter().any(|l| l.contains("starting h1")),
         "both ran: {got:#?}"
     );
+    assert_eq!(*closed.lock().unwrap(), [1000, 1001]);
+    let text: Vec<String> = ran
+        .seen
+        .text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    let from = text
+        .iter()
+        .position(|l| l.starts_with("Connection timed out"))
+        .expect("the race runs out");
+    let after: Vec<&str> = text[from..]
+        .iter()
+        .map(String::as_str)
+        .filter(|l| l.starts_with("[0-0] [MULTI]") || l.starts_with("[0-0] closing"))
+        .take(5)
+        .collect();
+    assert_eq!(
+        after,
+        [
+            "[0-0] [MULTI] [CONNECTING] multi_done: status: 28 prem: 1 done: 0",
+            "[0-0] [MULTI] [CONNECTING] multi_done_locked, in use=0",
+            "[0-0] [MULTI] [CONNECTING] multi_done, terminating conn #0 to 127.0.0.1:8990, \
+             forbid=0, close=0, premature=1, conn_multiplex=0",
+            "[0-0] closing connection #0",
+            "[0-0] [MULTI] [CONNECTING] -> [COMPLETED]",
+        ],
+        "{text:#?}"
+    );
+}
+/// A network that keeps the descriptor of each socket it closes, in
+/// order.
+struct Closes(FakeNet, Arc<Mutex<Vec<i32>>>);
+
+impl crate::conn::io::Net for Closes {
+    fn poll(
+        &mut self,
+        sockets: &mut [crate::conn::io::SocketPoll<'_>],
+        fds: &mut [crate::conn::io::PollFd<'_>],
+        timeout: Duration,
+    ) -> std::io::Result<u32> {
+        self.0.poll(sockets, fds, timeout)
+    }
+
+    fn open(
+        &mut self,
+        addr: &crate::conn::io::Remote,
+        kind: crate::conn::io::SocketKind,
+    ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
+        self.0.open(addr, kind)
+    }
+
+    fn close(&mut self, socket: crate::conn::io::Sock) {
+        self.1.lock().unwrap().push(socket.key().get());
+        self.0.close(socket);
+    }
+
+    fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn crate::conn::io::Resolver)) {
+        self.0.with_resolver(f);
+    }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        self.0.link_local_scope()
+    }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.0.interface_address(name, v6, remote_scope, scope_id)
+    }
 }
 
 /// The TCP first attempt fails after the HTTP/3 second failed: the setup

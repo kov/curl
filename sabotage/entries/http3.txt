@@ -862,3 +862,28 @@ witness: curl-core proto::http::tests::h3_trace::a_quic_connection_closes_withou
                 let _ = d.socket().recv(&mut b);
                 Tried::Done
             }
+
+=== a race given up says its attempts' sockets close on the transfer
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_attempts
+--- old
+        let mut close = |m: ConnectMachine| m.close(&mut cx.rest.announcing(me));
+--- new
+        let _ = me;
+        let mut close = |m: ConnectMachine| {
+            m.close(&mut DriveCx {
+                step: cx,
+                kept: None,
+                deadlines: None,
+            });
+        };
+
+=== a race given up closes its TCP attempt before its QUIC one
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_attempts
+--- old
+        if lead == Attempt::Second
+            && let Some(first) = d.lease.fail_setup()
+--- new
+        if lead != Attempt::Second
+            && let Some(first) = d.lease.fail_setup()

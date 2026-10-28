@@ -572,7 +572,8 @@ with the HTTPS connect filter at `connected`, its setup's filters with it (`[SET
 failed. A race given up, failed, timed out or its transfer removed, goes into `Done` with the
 lease, and `multi_done` closes its QUIC attempt, then its TCP one (a leading second's after
 the first, taken out of the lease as given up), the lease's first otherwise closed as the lease
-is given back, and lets the race's answer go once. The dial, TCP or QUIC, is not the
+is given back, all with the connection on no transfer's trace (C's `cf_hc_ctx_destroy`, its
+sockets announced gone), and lets the race's answer go once. The dial, TCP or QUIC, is not the
 route's: the plan's goes to the first's setup as the lease is added, the second's setup is made
 with its own, each machine holds its (`ConnectMachine::dial`) and the connection records the
 winner's (`Conn::dialing`). What depends on it, the socket's filter, the first hop's transport, a

@@ -847,9 +847,11 @@ fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done
     if let Some(proto) = d.proto.as_mut() {
         proto.data_done(cx, &mut d.lease);
     }
-    // A race given up closes its QUIC attempt, then the TCP one: the
-    // lease's first goes as it is given back, unless a TCP second leads,
-    // which goes after it.
+    // A race given up closes its QUIC attempt, then the TCP one, as C's
+    // connect filter destroys its ballers in their order
+    // (`cf_hc_ctx_destroy`): the lease's first goes as it is given back,
+    // unless a TCP second leads, which goes after it. They go with the
+    // connection, on no transfer's trace, their sockets announced gone.
     let raced = d.race.take().map(|race| {
         let Race {
             second,
@@ -857,13 +859,8 @@ fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done
             failed,
             ..
         } = *race;
-        let mut close = |m: ConnectMachine| {
-            m.close(&mut DriveCx {
-                step: cx,
-                kept: None,
-                deadlines: None,
-            });
-        };
+        let me = cx.me;
+        let mut close = |m: ConnectMachine| m.close(&mut cx.rest.announcing(me));
         if let Some(failed) = failed {
             close(failed);
         }

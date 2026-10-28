@@ -1291,6 +1291,104 @@ fn a_silent_quic_peer_gives_way_to_tcp_at_the_soft_timeout() {
     assert_eq!(connect.as_millis(), 100, "{got:#?}");
 }
 
+/// A TCP second that connects a while after it starts leads beside the
+/// QUIC first still running (`cf_hc_connect`): each pass drives the
+/// first, then the second; the pollset holds the first's socket, then the
+/// second's (`cf_hc_adjust_pollset`, the ballers in their order); the
+/// second's connect sets the race's timers; and once it wins, the first
+/// goes with the HTTPS connect filter.
+#[test]
+fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let tcp_talk = tls_hello();
+    let mut m = racing_peer(
+        Peer::Silent,
+        &quic_talk,
+        Peer::AcceptsAfter(Duration::from_millis(50)),
+        &tcp_talk,
+    );
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let ran = h3_race(&mut m, e, &tcp_talk);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let text: Vec<String> = ran
+        .seen
+        .text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    let from = text
+        .iter()
+        .position(|l| l.contains("starting h1"))
+        .expect("the second starts");
+    let to = text
+        .iter()
+        .position(|l| l.contains("using HTTP"))
+        .expect("the transfer goes on");
+    let got = &text[from..=to];
+    let want = expect(
+        "
+        [0-0] [HTTPS-CONNECT] h3 has not seen any data after 100ms, starting h1
+        [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP]
+        [0-0] [SETUP] happy eyeballing to origin 127.0.0.1:8990
+        [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [0-0] [HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
+        [0-0]   Trying 127.0.0.1:8990...
+        [0-0] [TCP] cf_socket_open() -> 0, fd=1001
+        [0-0] [TCP] local address 127.0.0.1 port 40001...
+        [0-0] [HTTPS-CONNECT] connect -> 0, done=0
+        [0-0] [DNS] Curl_conn_connect(block=0) -> 0, done=0
+        [0-0] [UDP] adjust_pollset, !active, POLLIN fd=1000
+        [0-0] [TCP] adjust_pollset, !connected, POLLOUT fd=1001
+        [0-0] [HTTPS-CONNECT] adjust_pollset -> 0, 2 socks
+        [0-0] [MULTI] [CONNECTING] pollset[fd=1000 IN, fd=1001 OUT], timeouts=1
+        [0-0] [TIMER] [TIMEOUT] expires in 9900000us
+        [0-0] [TIMER] [TIMEOUT] gives multi timeout in 9900ms
+        [0-0] [MULTI] [CONNECTING] multi_wait(fds=2, timeout=1000) tinternal=9900
+        [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [0-0] [HTTP/3] progress_ingress(socket)
+        [0-0] [HTTP/3] ingress, recvmmsg -> EAGAIN
+        [0-0] [HTTP/3] egress, collect and send packets, quantum=12000
+        [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [0-0] [TCP] connected on fd=1001
+        [0-0] [HAPPY-EYEBALLS] connect attempt #0 successful
+        [0-0] [HAPPY-EYEBALLS] Connected to 127.0.0.1 (127.0.0.1) port 8990
+        [0-0] [TIMER] [HAPPY_EYEBALLS] cleared
+        [0-0] [SETUP] added SSL filter for origin
+        [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]
+        [0-0] [SSL] cf_connect()
+        [0-0] [TCP] send(len=17) -> 0, 17
+        [0-0] [TCP] recv(len=19) -> 0, 19
+        [0-0] [TCP] send(len=17) -> 0, 17
+        [0-0] [SSL] cf_connect() -> 0, done=1
+        [0-0] [SETUP] query ALPN
+        [0-0] [SSL] query ALPN: returning 'http/1.1'
+        [0-0] [HTTPS-CONNECT] connect -> 0, done=1
+        [0-0] [DNS] Curl_conn_connect(block=0) -> 0, done=1
+        [0-0] [MULTI] [CONNECTING] [PGRS-APPCONNECT] added 150000us
+        [0-0] [MULTI] [CONNECTING] [PGRS-CONNECT] added 150000us
+        [0-0] Established connection to 127.0.0.1 (127.0.0.1 port 8990) from 127.0.0.1 port 40001
+        [0-0] [MULTI] [CONNECTING] connected [0][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]
+        [0-0] [HTTPS-CONNECT] removing connected setup filter
+        [0-0] [HTTPS-CONNECT] destroy
+        [0-0] [SETUP] destroy
+        [0-0] [HAPPY-EYEBALLS] destroy
+        [0-0] [HTTP/3] destroy
+        [0-0] [UDP] destroy
+        [0-0] [UDP] cf_socket_close, fd=1000
+        [0-0] [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
+        [0-0] [SETUP] removing connected setup filter
+        [0-0] [SETUP] destroy
+        [0-0] [MULTI] [CONNECTING] reduced to [0][SSL][TCP]
+        [0-0] [MULTI] [CONNECTING] -> [PROTOCONNECT]
+        [0-0] [MULTI] [PROTOCONNECT] -> [DO]
+        [0-0] [SSL] query ALPN
+        [0-0] [SSL] query ALPN: returning 'http/1.1'
+        [0-0] using HTTP/1.x
+        ",
+    );
+    assert_eq!(got, &want[..], "{got:#?}");
+}
+
 /// Whether `want` are among `got`, in order.
 fn in_order(got: &[String], want: &[String]) -> bool {
     let mut left = got.iter();
@@ -2241,18 +2339,56 @@ fn a_tunnel_an_http3_proxy_never_answers_times_out_as_its_race() {
     let got = lines(
         &ran,
         &[
+            "[H3-PROXY] [0] CONNECT start",
             "[H3-PROXY] [0] -> [",
             "Connection timed out",
             "Proxy CONNECT aborted",
         ],
     );
+    // The `CONNECT` goes once, the attempt waiting on its answer.
     assert_eq!(
         got,
         expect(
-            "[H3-PROXY] [0] -> [connect]
+            "[H3-PROXY] [0] CONNECT start for origin.example:80
+            [H3-PROXY] [0] -> [connect]
             Connection timed out after 10000 milliseconds"
         ),
         "{got:#?}"
+    );
+}
+
+/// A request not tunnelled goes to an HTTP/3 proxy over TCP, as C sends
+/// it (`Curl_http_proxy_transport`): the setup dials TCP to the proxy,
+/// and the GET goes to it over TLS.
+#[test]
+fn a_request_not_tunnelled_goes_to_an_http3_proxy_over_tcp() {
+    let talk = tls_hello();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        o.set_url(Some(b"http://origin.example/p")).unwrap();
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("https://127.0.0.1:{PORT}").into_bytes());
+        proxy.kind = crate::options::ProxyType::Https3;
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"hello");
+    let socket = lines(&ran, &["[TCP] cf_socket_open", "[UDP] cf_socket_open"]);
+    assert_eq!(
+        socket,
+        ["[TCP] cf_socket_open() -> 0, fd=1000"],
+        "{socket:#?}"
     );
 }
 

@@ -1773,6 +1773,52 @@ fn a_refused_tunnel_through_an_http_2_proxy_fails_to_connect() {
     assert_eq!(ran.easy.report().failure(), None, "no message");
 }
 
+/// A 407 through a proxy that speaks HTTP/2 whose challenge Negotiate
+/// with the proxy takes asks again, on a stream of its own, with the
+/// context's answer (`Curl_http_proxy_inspect_tunnel_response`, C's
+/// `newurl` set by `auth_spnego`), and the tunnel is made.
+#[test]
+fn a_negotiate_challenge_through_an_http_2_proxy_asks_again() {
+    use crate::gss::testing::Scripted;
+    static FAKE: crate::http2::fake::FakeH2 = crate::http2::fake::FakeH2;
+    let gss = Scripted::leaked();
+    gss.then_token(b"first").then_token(b"second");
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        h2: Some(&FAKE),
+        gss: Some(gss),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
+    let challenge = b"S\nH 1 0\n:status: 407\nproxy-authenticate: Negotiate Y2hhbGxlbmdl\n\n";
+    let data = [format!("D 3 {} 0\n", response.len()).as_bytes(), response].concat();
+    let replies = [
+        WELCOME.to_vec(),
+        fake::records(challenge).unwrap(),
+        fake::records(b"H 3 0\n:status: 200\n\n").unwrap(),
+        fake::records(&data).unwrap(),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let talk = Conversation::replies(&replies, false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        https_proxy(o, b"http://origin.example/p");
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.kind = crate::options::ProxyType::Https2;
+        proxy.tunnel = true;
+        proxy.auth = crate::options::HttpAuth(crate::options::AuthMethods::NEGOTIATE);
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"ok\n");
+    let sent = String::from_utf8(sent(&talk)).unwrap();
+    assert_eq!(sent.matches(":method: CONNECT").count(), 2, "{sent}");
+    assert!(sent.contains("Negotiate c2Vjb25k"), "{sent}");
+}
+
 /// What the layer above reads of the tunnel's DATA is used of its
 /// stream's window, which the proxy is told of as the session sees fit
 /// (`cf_h2_proxy_recv`'s `nghttp2_session_consume`): a body larger than

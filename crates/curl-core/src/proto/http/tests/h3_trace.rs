@@ -186,8 +186,10 @@ fn a_quic_attempt_is_won_by_its_handshake() {
         [HTTP/3] egress, send collected 2 packets in 2400 bytes
         [HTTP/3] vquic_sendmsg(len=2400, gso=1200, calls=1) -> 0, sent=2400
         [TIMER] [QUIC] set for 5000us
+        [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
         [HAPPY-EYEBALLS] next HAPPY_EYEBALLS timeout in 200ms
         [UDP] adjust_pollset, !active, POLLIN fd=1000
+        [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
         [HTTP/3] fake QUIC session 1 trusts
         [HTTP/3] progress_ingress(socket)
@@ -262,7 +264,9 @@ fn an_unverified_peer_fails_each_attempt_and_the_setup() {
         };
         format!(
             "[HAPPY-EYEBALLS] starting first attempt for ipv{v} -> 0
+            [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
             {next}
+            [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
             fake QUIC peer not verified
             [HTTP/3] ingress, read_pkt -> ERR_FAKE (-502)
             [HTTP/3] start shutdown(err_type=0, err_code=502) -> 5
@@ -1335,10 +1339,13 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0]   Trying 127.0.0.1:8990...
         [0-0] [TCP] cf_socket_open() -> 0, fd=1001
         [0-0] [TCP] local address 127.0.0.1 port 40001...
+        [0-0] [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
         [0-0] [HTTPS-CONNECT] connect -> 0, done=0
         [0-0] [DNS] Curl_conn_connect(block=0) -> 0, done=0
         [0-0] [UDP] adjust_pollset, !active, POLLIN fd=1000
+        [0-0] [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
         [0-0] [TCP] adjust_pollset, !connected, POLLOUT fd=1001
+        [0-0] [HAPPY-EYEBALLS] adjust_pollset -> 0, 2 socks
         [0-0] [HTTPS-CONNECT] adjust_pollset -> 0, 2 socks
         [0-0] [MULTI] [CONNECTING] pollset[fd=1000 IN, fd=1001 OUT], timeouts=1
         [0-0] [TIMER] [TIMEOUT] expires in 9900000us
@@ -1348,6 +1355,7 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [HTTP/3] progress_ingress(socket)
         [0-0] [HTTP/3] ingress, recvmmsg -> EAGAIN
         [0-0] [HTTP/3] egress, collect and send packets, quantum=12000
+        [0-0] [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
         [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
         [0-0] [TCP] connected on fd=1001
         [0-0] [HAPPY-EYEBALLS] connect attempt #0 successful
@@ -1420,10 +1428,9 @@ fn a_tcp_second_leading_answers_for_the_connection() {
             .iter()
             .position(|l| l.contains("pollset[fd="))
             .expect("its pollset is made");
-    // As C's: the first's socket, then the second's TLS filter's and its
-    // socket filter's; C's also has each attempt's HAPPY-EYEBALLS say how
-    // many sockets it put in (`adjust_pollset -> 0, 1 socks`), which ours
-    // does not trace.
+    // As C's: the first's socket and its racing HAPPY-EYEBALLS saying
+    // how many sockets the pollset has, then the second's TLS filter's and
+    // its socket filter's, its HAPPY-EYEBALLS connected and silent.
     let want = expect(
         "
         [0-0] [TCP] recv(len=19) -> 81, 0
@@ -1431,6 +1438,7 @@ fn a_tcp_second_leading_answers_for_the_connection() {
         [0-0] [HTTPS-CONNECT] connect -> 0, done=0
         [0-0] [DNS] Curl_conn_connect(block=0) -> 0, done=0
         [0-0] [UDP] adjust_pollset, !active, POLLIN fd=1000
+        [0-0] [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
         [0-0] [SSL] adjust_pollset, POLLIN fd=1001
         [0-0] [TCP] adjust_pollset, !active, POLLIN fd=1001
         [0-0] [HTTPS-CONNECT] adjust_pollset -> 0, 2 socks

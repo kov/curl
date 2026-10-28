@@ -105,7 +105,8 @@ fn lines(text: &str) -> Vec<String> {
 
 /// The socket at the path is connected to, its address made, not looked
 /// up, and its filter traced as `UNIX`; the transfer's ends are the path
-/// and nothing.
+/// and nothing. The fake's connect is under way as it starts, where a
+/// real one's connects at once, as C's then does with no check traced.
 #[test]
 fn a_unix_socket_is_connected_in_place_of_the_host() {
     let at = unix_at("/tmp/t.sock", false);
@@ -119,6 +120,8 @@ fn a_unix_socket_is_connected_in_place_of_the_host() {
             Trying /tmp/t.sock:0...
             [UNIX] cf_socket_open() -> 0, fd=1000
             [UNIX] local address  port 0...
+            [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
+            [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
             [UNIX] connected on fd=1000
             [HAPPY-EYEBALLS] connect attempt #0 successful
             [HAPPY-EYEBALLS] Connected to /tmp/t.sock (/tmp/t.sock) port 0

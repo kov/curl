@@ -1032,7 +1032,7 @@ impl ConnectMachine {
         // A running attempt that connected wins; one that failed is
         // dropped (`cf_ip_ballers_run`).
         match r.check(cx, component) {
-            Checked::Pending => {}
+            Checked::Pending => r.checked(cx),
             Checked::Won(i) => return self.won(cx, setup, i, now),
             Checked::Failed(i, error) => {
                 let failure = r.attempts.remove(i).fail(cx, component, error)?;
@@ -1233,9 +1233,15 @@ impl ConnectMachine {
                         link: Link::Connect,
                     })
                     .expect("reserved");
+                // Checked with those before it, the new attempt among
+                // them (`goto evaluate`), unless it connected at once.
+                let at_once = connect == Connect::Done;
+                if !at_once {
+                    r.checked(cx);
+                }
                 let tried = Progress::Trying {
                     remote,
-                    at_once: connect == Connect::Done,
+                    at_once,
                     until: r.next_due(delay),
                 };
                 Ok(Drove::Connecting(self, tried))
@@ -1345,6 +1351,9 @@ impl ConnectMachine {
             })
             .expect("reserved");
         // Connected as it started, for early data: won at once.
+        if !done {
+            r.checked(cx);
+        }
         let tried = Progress::Trying {
             remote,
             at_once: done,
@@ -1916,6 +1925,20 @@ impl Racing {
             };
         }
         Checked::Pending
+    }
+
+    /// The attempts were checked and none decided: those running say so
+    /// (`cf_ip_ballers_run`), none having failed inconclusively, to be
+    /// started again.
+    fn checked(&self, cx: &mut dyn ConnCx) {
+        if self.attempts.is_empty() {
+            return;
+        }
+        let ongoing = self.attempts.len();
+        cx.of(
+            Component::HappyEyeballs,
+            format_args!("checked connect attempts: {ongoing} ongoing, 0 inconclusive"),
+        );
     }
 
     /// When the next attempt is due, if an address is left for one.

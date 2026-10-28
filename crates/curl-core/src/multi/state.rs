@@ -1184,6 +1184,9 @@ pub(crate) struct SetupTrace {
     dialed: bool,
     /// What their filter traces as.
     component: Component,
+    /// The leading setup's happy eyeballs filter is not connected yet:
+    /// its attempts race.
+    eyeballs: bool,
     /// An HTTPS connect filter heads the setup.
     https: bool,
 }
@@ -1207,6 +1210,10 @@ impl Run {
                     Some(SetupPoint::Dialed(_))
                 ) || c.lead().is_some_and(|m| m.dial() == Dial::Quic),
                 component: c.socket_component(),
+                eyeballs: matches!(
+                    c.lead().map(ConnectMachine::reached),
+                    Some(SetupPoint::Racing { started: true })
+                ),
                 https: c.https.is_some(),
             }),
             _ => None,
@@ -1255,14 +1262,25 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
             let (wants, last) = all.split_at(all.len() - other);
             (&[][..], wants, last)
         };
-        let udp = |cx: &mut StepCx<'_, H>, sockets: &[(SocketKey, Events)]| {
+        // The happy eyeballs filter over a racing attempt says how many
+        // sockets the pollset has so far (`cf_ip_happy_adjust_pollset`).
+        let eyeballs = |cx: &mut StepCx<'_, H>, n: usize| {
+            let line = format_args!("adjust_pollset -> 0, {n} socks");
+            trace::of(cx, Component::HappyEyeballs, line);
+        };
+        // The QUIC attempt beside the lead, its eyeballs racing while its
+        // handshake is made.
+        let udp = |cx: &mut StepCx<'_, H>, sockets: &[(SocketKey, Events)], n: usize| {
             for &(key, _) in sockets {
                 let fd = key.get();
                 let line = format_args!("adjust_pollset, !active, POLLIN fd={fd}");
                 trace::of(cx, Component::Udp, line);
             }
+            if !sockets.is_empty() {
+                eyeballs(cx, n);
+            }
         };
-        udp(cx, first);
+        udp(cx, first, first.len());
         // The TLS filter puts its socket in for what its session waits
         // for (`Curl_ssl_adjust_pollset`).
         if let (Some(waits), Some(&(key, _))) = (self.tls, wants.first()) {
@@ -1290,6 +1308,7 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
         if let Some(SetupTrace {
             dialed,
             component,
+            eyeballs: racing,
             https,
             ..
         }) = self.setup
@@ -1304,7 +1323,10 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
                     trace::of(cx, component, line);
                 }
             }
-            udp(cx, last);
+            if racing && !wants.is_empty() {
+                eyeballs(cx, first.len() + wants.len());
+            }
+            udp(cx, last, all.len());
             // The HTTPS connect filter, not connected while the setup
             // runs, says how many sockets the pollset has below it
             // (`cf_hc_adjust_pollset`).

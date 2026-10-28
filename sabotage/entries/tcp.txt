@@ -183,3 +183,63 @@ witness: curl-core conn::connect::tests::a_route_over_quic_opens_a_socket_for_da
         let tcp = matches!(remote, Remote::Inet(_)) && kind == SocketKind::Stream;
 --- new
         let tcp = matches!(remote, Remote::Inet(_));
+
+=== a race's attempts checked say nothing of those running
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
+--- old
+            Checked::Pending => r.checked(cx),
+--- new
+            Checked::Pending => {}
+
+=== a new attempt is checked before it is counted among those running
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
+--- old
+                if !at_once {
+                    r.checked(cx);
+                }
+--- new
+                if at_once {
+                    r.checked(cx);
+                }
+
+=== a new QUIC attempt is not counted among those running
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
+--- old
+        if !done {
+            r.checked(cx);
+        }
+--- new
+        if done {
+            r.checked(cx);
+        }
+
+=== a racing QUIC attempt's eyeballs say nothing of the pollset
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_tcp_second_leading_answers_for_the_connection
+--- old
+            if !sockets.is_empty() {
+                eyeballs(cx, n);
+            }
+--- new
+            if sockets.is_empty() {
+                eyeballs(cx, n);
+            }
+
+=== a racing TCP attempt's eyeballs count only its own sockets
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_tcp_second_leads_beside_a_quic_first_until_it_wins
+--- old
+                eyeballs(cx, first.len() + wants.len());
+--- new
+                eyeballs(cx, wants.len());
+
+=== a dialed attempt's eyeballs still say how many sockets they put in
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_tcp_second_leading_answers_for_the_connection
+--- old
+                    Some(SetupPoint::Racing { started: true })
+--- new
+                    Some(_)

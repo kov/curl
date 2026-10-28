@@ -1421,7 +1421,9 @@ fn a_tcp_second_leading_answers_for_the_connection() {
             .position(|l| l.contains("pollset[fd="))
             .expect("its pollset is made");
     // As C's: the first's socket, then the second's TLS filter's and its
-    // socket filter's.
+    // socket filter's; C's also has each attempt's HAPPY-EYEBALLS say how
+    // many sockets it put in (`adjust_pollset -> 0, 1 socks`), which ours
+    // does not trace.
     let want = expect(
         "
         [0-0] [TCP] recv(len=19) -> 81, 0

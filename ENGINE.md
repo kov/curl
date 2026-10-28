@@ -227,8 +227,8 @@ curl-core/src/
     part.rs                  Part, Lower: what every piece of a connection answers of its life
     layer.rs                 Layer, Below, LayerStack, LayerCx; the tests' layers
     mux.rs                   Session, Mux, Carrier: the session a connection multiplexes over
-    quic.rs                  Quic, QuicCx: a QUIC connection over its UDP socket, its
-                             packets batched both ways and its timer
+    quic.rs                  Quic, QuicIo, RecvRoom: a QUIC connection over its UDP
+                             socket, its packets batched both ways and its timer
     tls.rs                   TlsLayer: the layer over a TLS library's session
     shutdown.rs, shutdown/   ShutdownSet, ConnSettings: connections saying goodbye
     chain.rs                 Chain: C's filter chain rendered for the trace from how
@@ -1892,13 +1892,27 @@ wait from now that any multi stepping it arms. Every library call is given the t
 then (`Curl_cf_ngtcp2_io_ctx_update_time`) from the clock the connection was made under, which
 it keeps (`SharedClock`, the multi's one clock, held once): whichever transfer, multi or share
 uses it later, the library is never handed a time before one it had. A fatal error closes the
-connection, its close packet sent at once. The transfer reaches all of this through `QuicCx`,
+connection, its close packet sent at once. The transfer reaches all of this through `LayerCx`,
 and the socket through `QuicIo`, asked for at each call: the socket stays in the connection while
-the library's events reach the transfers. A connection whose datagrams go through a proxy's
-CONNECT-UDP tunnel is made layered, a fact it keeps: each datagram goes to the stream's layers
-on its own (`QuicIo::send_below`), a run cut at its segment size and only a whole datagram sent
-(`vquic_cf_send`), and comes back one per receive into 64 KiB of the room, at most 1000 a pass
-(`recv_below`, `progress_ingress(sub-filters)`); what the layers hold from before is flushed as
+the library's events reach the transfers.
+
+The room a connection on a socket receives in is the multi's (`RecvRoom`, C's `xfer_sockbuf`),
+one per multi, made zeroed at the first receive and lent to one receive at a time: every
+`LayerCx` says what it lends (`recv_room`), the step's and the drive's the multi's room, a
+context over another's that one's, the multi's own work on its pool and its shutdowns the
+multi's as C's admin handle borrows it, and a context with no multi none, the receive then
+making one for the call as C mallocs one with no multi. A second loan while the first is out is
+a receive inside a receive on the room, which nothing makes: it asserts. (`LayerCx` carries the
+room since a connection to an HTTP/3 proxy receives as a layer of the origin's stream, given
+only a `LayerCx`; no QUIC-only context trait sits beside it. Step 66's split of `LayerCx` by
+who needs what keeps the loan with the contexts that reach a multi.) A connection whose
+datagrams go through a proxy's CONNECT-UDP tunnel is made layered, a fact it keeps: each
+datagram goes to the stream's layers on its own (`QuicIo::send_below`), a run cut at its
+segment size and only a whole datagram sent (`vquic_cf_send`), and comes back one per receive
+into a room of its own (`tunnel_inbuf`), C's 64 KiB or the path's largest datagram if larger,
+made zeroed at its first receive and grown as that grows, at most 1000 a pass (`recv_below`,
+`progress_ingress(sub-filters)`): the multi's room is the proxy connection's below it, which
+receives while the origin's receive runs. What the layers hold from before is flushed as
 each egress starts (`flush_below`), as C flushes its filters before it drives them. The
 contexts that reach the layers give these: the request's step through the connection's carrier,
 and the setup's `Over` with `quic::Path::Layers`.
@@ -1922,7 +1936,7 @@ is as its socket is, and input waiting on it is read there and then, alive if th
 (`Curl_cf_ngtcp2_cmn_conn_is_alive`). Its goodbye is the close packet, sent as the pool shuts it
 down (`Curl_cf_ngtcp2_cmn_shutdown`). Neither call has a transfer stepping it: the connection is
 given `quic::Lone`, a context in which every stream is one no transfer has, the receive room is
-made for the call and no timer is armed.
+the one the call lends and no timer is armed.
 
 **Request bodies.** nghttp3 points at a body's bytes until the peer acknowledges them, so the
 binding holds them: chunks of 64 KiB whose room is reserved as each is made, so that what is

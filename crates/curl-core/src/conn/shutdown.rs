@@ -21,6 +21,7 @@ use super::io::{Events, Net, Socket, SocketKey};
 use super::layer::Handshake;
 use super::{Conn, Peer, Route, Transport};
 use crate::components::Component;
+use crate::conn::quic::RecvRoom;
 use crate::time::Instant;
 use crate::trace::{Internal, InternalCx};
 
@@ -97,9 +98,16 @@ impl Shutting {
     /// down yet, then the socket's own, which reads and drops up to 1 KB
     /// so the kernel answers the peer's last bytes with no reset
     /// (`cf_socket_shutdown`). A layer that fails ends it. Said on
-    /// `trace` as C's internal handle says it (`Curl_cshutdn_try_once`).
-    pub(crate) fn try_once(&mut self, now: Instant, trace: Option<&Internal>) -> Tried {
-        let tried = self.run_once(now, trace);
+    /// `trace` as C's internal handle says it (`Curl_cshutdn_try_once`);
+    /// a QUIC connection receives in `room`, the multi's, if the multi
+    /// runs it.
+    pub(crate) fn try_once(
+        &mut self,
+        now: Instant,
+        trace: Option<&Internal>,
+        room: Option<&mut RecvRoom>,
+    ) -> Tried {
+        let tried = self.run_once(now, trace, room);
         if tried == Tried::Done {
             self.finished = true;
         }
@@ -113,8 +121,13 @@ impl Shutting {
         tried
     }
 
-    fn run_once(&mut self, now: Instant, trace: Option<&Internal>) -> Tried {
-        let mut cx = InternalCx { now, trace };
+    fn run_once(
+        &mut self,
+        now: Instant,
+        trace: Option<&Internal>,
+        room: Option<&mut RecvRoom>,
+    ) -> Tried {
+        let mut cx = InternalCx { now, trace, room };
         if !std::mem::replace(&mut self.tried, true) {
             if let Some(t) = trace {
                 t.of(
@@ -168,6 +181,7 @@ impl Shutting {
             let mut cx = InternalCx {
                 now,
                 trace: Some(trace),
+                room: None,
             };
             stream.say_shutdown_pollset(self.shut, &mut cx);
         }
@@ -364,8 +378,8 @@ impl ShutdownSet {
 
     /// Move each shutdown on at `now` (`cshutdn_perform`), closing those
     /// done, and arm the set's deadline at the earliest time left of the
-    /// others.
-    pub(crate) fn perform(&mut self, net: &mut dyn Net, now: Instant) {
+    /// others; a QUIC connection receives in the multi's `room`.
+    pub(crate) fn perform(&mut self, net: &mut dyn Net, now: Instant, room: &mut RecvRoom) {
         if self.conns.is_empty() {
             return;
         }
@@ -375,7 +389,11 @@ impl ShutdownSet {
         let mut i = 0;
         while i < self.conns.len() {
             let trace = self.trace.as_ref();
-            if self.conns[i].shutting.try_once(now, trace) == Tried::Done {
+            if self.conns[i]
+                .shutting
+                .try_once(now, trace, Some(&mut *room))
+                == Tried::Done
+            {
                 let entry = self.conns.remove(i);
                 self.closed(entry, net);
                 continue;
@@ -528,14 +546,17 @@ pub(crate) struct Linger<'a> {
     /// another's (a share's): C caps the set by the multi's pool whichever
     /// pool the connection left.
     pub(crate) multi_pool: Option<u32>,
+    /// The multi's room a QUIC connection's goodbye receives in.
+    pub(crate) room: &'a mut RecvRoom,
 }
 
-/// A network, and the multi's set behind it.
+/// A network, and the multi's set and receive room behind it.
 pub(crate) struct WithSet<'a> {
     pub(crate) net: &'a mut dyn Net,
     pub(crate) set: &'a mut ShutdownSet,
     pub(crate) max_total: Option<NonZeroU32>,
     pub(crate) multi_pool: Option<u32>,
+    pub(crate) room: &'a mut RecvRoom,
 }
 
 impl Exits for WithSet<'_> {
@@ -546,6 +567,7 @@ impl Exits for WithSet<'_> {
                 set: &mut *self.set,
                 max_total: self.max_total,
                 multi_pool: self.multi_pool,
+                room: &mut *self.room,
             }),
         )
     }
@@ -563,7 +585,7 @@ pub(crate) fn discard(
     exits: &mut dyn Exits,
     now: Instant,
 ) {
-    let (net, linger) = exits.parts();
+    let (net, mut linger) = exits.parts();
     // Said on the multi's internal trace, as C says it on its internal
     // handle; a connection a multi closes lets one waiting for room look.
     let trace = linger.as_ref().and_then(|l| l.set.internal().cloned());
@@ -573,7 +595,8 @@ pub(crate) fn discard(
         shutting.close(net, trace.as_ref(), in_multi);
         return;
     }
-    if shutting.try_once(now, trace.as_ref()) == Tried::Done {
+    let room = linger.as_mut().map(|l| &mut *l.room);
+    if shutting.try_once(now, trace.as_ref(), room) == Tried::Done {
         shutting.close(net, trace.as_ref(), in_multi);
         return;
     }

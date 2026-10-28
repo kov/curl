@@ -258,16 +258,23 @@ impl Internal {
 }
 
 /// The context of work done for no transfer: traced on the internal
-/// handle's trace, if there is one, and kept nowhere.
-#[derive(Clone, Copy, Debug)]
+/// handle's trace, if there is one, and kept nowhere; a multi's work
+/// lends the multi's receive room, as C's admin handle borrows its
+/// multi's (`Curl_multi_xfer_sockbuf_borrow`).
+#[derive(Debug)]
 pub(crate) struct InternalCx<'a> {
     pub(crate) now: crate::time::Instant,
     pub(crate) trace: Option<&'a Internal>,
+    pub(crate) room: Option<&'a mut crate::conn::quic::RecvRoom>,
 }
 
 impl crate::conn::layer::LayerCx for InternalCx<'_> {
     fn now(&self) -> crate::time::Instant {
         self.now
+    }
+
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        self.room.as_deref_mut()
     }
 
     fn of(&mut self, component: Component, line: fmt::Arguments<'_>) {

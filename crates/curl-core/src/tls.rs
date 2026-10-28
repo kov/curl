@@ -784,6 +784,10 @@ impl LayerCx for Notes {
         crate::time::Clock::now(&crate::time::ManualClock::new().expect("a clock"))
     }
 
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        None
+    }
+
     fn of(&mut self, _: Component, line: fmt::Arguments<'_>) {
         self.0.push(format!("trace: {line}"));
     }
@@ -844,6 +848,10 @@ impl Default for Kept {
 impl LayerCx for Kept {
     fn now(&self) -> Instant {
         self.notes.now()
+    }
+
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        None
     }
 
     fn of(&mut self, component: Component, line: fmt::Arguments<'_>) {

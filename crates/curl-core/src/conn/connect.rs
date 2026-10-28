@@ -28,10 +28,8 @@ use super::io::{
     Closer, Connect, Events, Family, Net, Queued, Remote, Resolve, ResolveFailure, ResolveId, Sock,
     Socket, SocketKind, SocketOption, SocketPoll, UnixPeer, Waiter,
 };
-#[cfg(test)]
-use super::layer::LayerCx;
-use super::layer::{LayerAnswer, LayerQuery};
-use super::quic::{Quic, QuicCx};
+use super::layer::{LayerAnswer, LayerCx, LayerQuery};
+use super::quic::Quic;
 use super::shutdown::ConnSettings;
 use super::{Conn, ConnNumber, Dial, Dialing, NetRoute, Peer, Route, Stream, Transport, Use};
 use crate::components::Component;
@@ -231,7 +229,7 @@ struct Racing {
 /// (`LayerCx`), the network, and the names kept. A transfer's step
 /// gives one over its own context (`DriveCx`); it is an argument, never
 /// stored.
-pub(crate) trait ConnCx: QuicCx {
+pub(crate) trait ConnCx: LayerCx {
     fn net(&mut self) -> &mut dyn Net;
 
     /// What a QUIC attempt is made with, if the transfer has an HTTP/3
@@ -351,15 +349,10 @@ impl LayerCx for Plain<'_> {
     fn fails_with(&mut self, kind: ErrorKind, _: &[&[u8]]) -> ErrorKind {
         kind
     }
-}
 
-#[cfg(test)]
-impl QuicCx for Plain<'_> {
-    fn take_room(&mut self) -> Result<Vec<u8>, OutOfMemory> {
-        Ok(vec![0; super::quic::RECV_ROOM])
+    fn recv_room(&mut self) -> Option<&mut super::quic::RecvRoom> {
+        None
     }
-
-    fn give_room(&mut self, _: Vec<u8>) {}
 }
 
 #[cfg(test)]

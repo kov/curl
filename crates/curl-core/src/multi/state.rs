@@ -1569,8 +1569,13 @@ impl Attached {
     }
 }
 
-/// A layer working for the stepping transfer traces as it does.
+/// A layer working for the stepping transfer traces as it does, and a
+/// QUIC connection receives in the multi's room.
 impl<H: Host> LayerCx for StepCx<'_, H> {
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        Some(&mut *self.rest.sockbuf)
+    }
+
     fn quic_due(&mut self, wait: Duration) {
         let at = self.rest.clock.now().after(wait);
         self.quic_at = Some(at);
@@ -1723,6 +1728,10 @@ impl LayerCx for HeldSays {
         self.now
     }
 
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        None
+    }
+
     fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
         if self.traces
             && component == Component::Ssls
@@ -1794,19 +1803,6 @@ pub(crate) struct StepCx<'a, H: Host> {
     /// When the QUIC library asked the step to call it again, the
     /// transfer's `QUIC` timer once the step is over.
     pub(crate) quic_at: Option<Instant>,
-}
-
-/// A step's calls into a QUIC connection: the multi's room to receive
-/// in, its clock read again, and the timer the library asks for, set for
-/// the transfer as the step ends.
-impl<H: Host> crate::conn::quic::QuicCx for StepCx<'_, H> {
-    fn take_room(&mut self) -> Result<Vec<u8>, OutOfMemory> {
-        crate::conn::quic::recv_room(std::mem::take(self.rest.sockbuf))
-    }
-
-    fn give_room(&mut self, room: Vec<u8>) {
-        *self.rest.sockbuf = room;
-    }
 }
 
 impl<'a, H: Host> StepCx<'a, H> {

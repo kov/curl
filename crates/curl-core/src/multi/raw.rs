@@ -46,6 +46,10 @@ impl LayerCx for RawCx<'_> {
         self.now
     }
 
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        None
+    }
+
     fn of(&mut self, _: Component, _: fmt::Arguments<'_>) {}
 
     fn of_with(&mut self, _: Component, _: &[&[u8]]) {}

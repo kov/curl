@@ -2,6 +2,7 @@
 //! of calls allowed inside each callback, as types. A method exists on a
 //! context only if C allows that call from that callback.
 
+use crate::conn::quic::RecvRoom;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use std::num::NonZeroU32;
 use std::os::fd::AsRawFd as _;
@@ -13,7 +14,7 @@ use std::time::Duration;
 use crate::components::Component;
 use crate::conn::io::{Events, Net, PollFd, Resolver, Sock, Socket, SocketKey, SocketPoll, Waker};
 use crate::conn::layer::LayerCx;
-use crate::conn::shutdown::{Exits, ShutdownSet, WithSet};
+use crate::conn::shutdown::{Exits, Linger, ShutdownSet, WithSet};
 use crate::conn::threaded::ResolverThreads;
 use crate::conn::{Caches, ConnCx, DnsCache, Home, Names, Opened, Pool};
 use crate::deliver::PauseRequest;
@@ -47,7 +48,7 @@ pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) tls: &'a mut Option<TlsShared>,
     /// The room QUIC's datagrams are received in, lent while a step reads
     /// them.
-    pub(super) sockbuf: &'a mut Vec<u8>,
+    pub(super) sockbuf: &'a mut RecvRoom,
     /// The connections shutting down.
     pub(super) shutdowns: &'a mut ShutdownSet,
     /// The transfer last let look for a connection again.
@@ -171,6 +172,7 @@ impl<H: Host> EngineRest<'_, H> {
             who: SocketFor::Transfer(who),
         };
         let set = &mut *self.shutdowns;
+        let recv = &mut *self.sockbuf;
         let r = match home {
             Home::Multi => {
                 let mut exits = WithSet {
@@ -178,6 +180,7 @@ impl<H: Host> EngineRest<'_, H> {
                     set,
                     max_total,
                     multi_pool: None,
+                    room: recv,
                 };
                 section(&mut self.caches.pool, &mut exits, home)
             }
@@ -198,6 +201,7 @@ impl<H: Host> EngineRest<'_, H> {
                             set,
                             max_total,
                             multi_pool,
+                            room: recv,
                         };
                         section(&mut pool, &mut exits, home)
                     };
@@ -260,22 +264,29 @@ impl<H: Host> EngineRest<'_, H> {
 /// `interval` (`Curl_cpool_upkeep`): `share`'s, if it keeps connections,
 /// under its lock, whose idle connections a failed keep-alive closes
 /// once the lock is let go; else `pool`, the multi's. A connection closed
-/// goes through `net` into the multi's set, as the multi's own work.
+/// goes through `net` into the multi's set, `multi`, as the multi's own
+/// work.
 pub(super) fn upkeep(
     pool: &mut Pool,
     share: Option<(&Share, Option<&dyn ShareLock>)>,
     net: &mut dyn Net,
-    set: &mut ShutdownSet,
-    max_total: Option<NonZeroU32>,
+    multi: Linger<'_>,
     interval: Duration,
     now: Instant,
 ) -> Result<(), OutOfMemory> {
+    let Linger {
+        set,
+        max_total,
+        room,
+        ..
+    } = multi;
     let Some((share, watch)) = share else {
         let mut exits = WithSet {
             net,
             set,
             max_total,
             multi_pool: None,
+            room,
         };
         pool.upkeep(interval, &mut exits, now);
         return Ok(());
@@ -294,6 +305,7 @@ pub(super) fn upkeep(
                 set,
                 max_total,
                 multi_pool,
+                room,
             };
             shared.upkeep(interval, &mut exits, now);
         }
@@ -361,6 +373,10 @@ pub(crate) struct DriveCx<'c, 'a, H: Host> {
 }
 
 impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        LayerCx::recv_room(&mut *self.step)
+    }
+
     fn quic_due(&mut self, wait: Duration) {
         let deadlines = self
             .deadlines
@@ -451,16 +467,6 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
 
     fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx)) {
         LayerCx::tls_sessions(&mut *self.step, f);
-    }
-}
-
-impl<H: Host> crate::conn::quic::QuicCx for DriveCx<'_, '_, H> {
-    fn take_room(&mut self) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
-        crate::conn::quic::recv_room(std::mem::take(self.step.rest.sockbuf))
-    }
-
-    fn give_room(&mut self, room: Vec<u8>) {
-        *self.step.rest.sockbuf = room;
     }
 }
 

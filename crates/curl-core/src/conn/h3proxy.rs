@@ -15,7 +15,7 @@ use super::buf::HeldBytes;
 use super::h2proxy::Answer;
 use super::io::{Events, Recv, Sent, Socket};
 use super::layer::{Alive, Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Part};
-use super::quic::{Quic, QuicCx, QuicIo, recv_room};
+use super::quic::{Quic, QuicIo, RecvRoom};
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::http3::{H3Error, Heard, StreamEvent, StreamId};
@@ -325,8 +325,6 @@ pub(crate) struct H3Proxy {
     /// The tunnel is CONNECT-UDP's, QUIC's datagrams going through it
     /// as capsules (`h3_tunnel_stream.udp`).
     udp: bool,
-    /// The room the connection receives in, kept between calls.
-    room: Vec<u8>,
     /// What a receive or send of the layer failed with, for the
     /// transfer's error.
     failure: Option<ErrorKind>,
@@ -348,7 +346,6 @@ struct Tunnelled<'a> {
     cx: &'a mut dyn LayerCx,
     socket: &'a dyn Socket,
     tunnel: &'a mut Tunnel,
-    room: &'a mut Vec<u8>,
 }
 
 impl LayerCx for Tunnelled<'_> {
@@ -435,15 +432,12 @@ impl LayerCx for Tunnelled<'_> {
     fn quic_due(&mut self, wait: std::time::Duration) {
         self.cx.quic_due(wait);
     }
-}
 
-impl QuicCx for Tunnelled<'_> {
-    fn take_room(&mut self) -> Result<Vec<u8>, OutOfMemory> {
-        recv_room(std::mem::take(self.room))
-    }
-
-    fn give_room(&mut self, room: Vec<u8>) {
-        *self.room = room;
+    /// The transfer's: the connection to the proxy is on a socket, and
+    /// receives in the multi's room as the origin's would
+    /// (`Curl_multi_xfer_sockbuf_borrow`).
+    fn recv_room(&mut self) -> Option<&mut RecvRoom> {
+        self.cx.recv_room()
     }
 }
 
@@ -466,7 +460,6 @@ impl H3Proxy {
             quic,
             tunnel: Tunnel::new(),
             udp,
-            room: Vec::new(),
             failure: None,
         }
     }
@@ -479,15 +472,8 @@ impl H3Proxy {
         socket: &dyn Socket,
         f: impl FnOnce(&mut Quic, &mut dyn QuicIo) -> R,
     ) -> R {
-        let H3Proxy {
-            quic, tunnel, room, ..
-        } = self;
-        let mut over = Tunnelled {
-            cx,
-            socket,
-            tunnel,
-            room,
-        };
+        let H3Proxy { quic, tunnel, .. } = self;
+        let mut over = Tunnelled { cx, socket, tunnel };
         let r = f(quic, &mut over);
         let extend = std::mem::take(&mut self.tunnel.extend);
         if extend > 0

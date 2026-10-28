@@ -212,9 +212,13 @@ witness: curl-core multi::shutdown_tests::the_internal_trace_says_a_shutdown_as_
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::the_internal_trace_says_a_shutdown_as_c_does
 --- old
-        let mut cx = InternalCx { now, trace };
+        let mut cx = InternalCx { now, trace, room };
 --- new
-        let mut cx = InternalCx { now, trace: None };
+        let mut cx = InternalCx {
+            now,
+            trace: None,
+            room,
+        };
 
 === a handle's own multi goes without its callbacks hearing the cleanup
 file: crates/curl-core/src/easy.rs

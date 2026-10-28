@@ -11,7 +11,7 @@
 use super::*;
 use crate::conn::layer::LayerCx;
 use crate::conn::mux::Routes;
-use crate::conn::quic::{Quic, QuicCx, QuicIo, STREAM_WINDOW_INITIAL};
+use crate::conn::quic::{Quic, QuicIo, RecvRoom, STREAM_WINDOW_INITIAL};
 use crate::error::AGAIN_NUMBER;
 use crate::http3::{H3Error, Heard, StreamEvent, StreamId};
 use crate::proto::http2::fields_of;
@@ -168,6 +168,10 @@ struct H3Step<'a, 'c, H: Host> {
 }
 
 impl<H: Host> LayerCx for H3Step<'_, '_, H> {
+    fn recv_room(&mut self) -> Option<&mut RecvRoom> {
+        LayerCx::recv_room(&mut *self.cx)
+    }
+
     fn quic_due(&mut self, wait: std::time::Duration) {
         LayerCx::quic_due(&mut *self.cx, wait);
     }
@@ -289,16 +293,6 @@ impl<H: Host> LayerCx for H3Step<'_, '_, H> {
             return Heard::Failed;
         }
         heard
-    }
-}
-
-impl<H: Host> QuicCx for H3Step<'_, '_, H> {
-    fn take_room(&mut self) -> Result<Vec<u8>, OutOfMemory> {
-        QuicCx::take_room(&mut *self.cx)
-    }
-
-    fn give_room(&mut self, room: Vec<u8>) {
-        QuicCx::give_room(&mut *self.cx, room);
     }
 }
 

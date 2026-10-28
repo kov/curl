@@ -27,7 +27,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc};
 
 use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
-use crate::conn::shutdown::{ShutdownSet, WithSet};
+use crate::conn::shutdown::{Linger, ShutdownSet, WithSet};
 use crate::conn::{AddLimits, Caches, Pool};
 use crate::conn::{ConnId, Home};
 use crate::deliver::{Pause, RecvPause};
@@ -323,7 +323,7 @@ pub struct Multi<H: Host = NoHost> {
     tls: Option<TlsShared>,
     /// The room QUIC's datagrams are received in, lent to one transfer's
     /// step at a time (`xfer_sockbuf`): empty until one asks.
-    sockbuf: Vec<u8>,
+    sockbuf: crate::conn::quic::RecvRoom,
     /// The connections shutting down, whichever pool they left.
     shutdowns: ShutdownSet,
     limits: ConnLimits,
@@ -417,7 +417,7 @@ impl<H: Host> Multi<H> {
             delivering: false,
             caches,
             tls: None,
-            sockbuf: Vec::new(),
+            sockbuf: crate::conn::quic::RecvRoom::Unmade,
             shutdowns: ShutdownSet::default(),
             limits,
             pending_after: None,
@@ -755,7 +755,7 @@ impl<H: Host> Multi<H> {
             life: &mut self.life,
         };
         let mut net = Announcing::multi(&mut *self.net, tell, ev);
-        self.shutdowns.perform(&mut net, now);
+        self.shutdowns.perform(&mut net, now, &mut self.sockbuf);
     }
 
     /// A connection shutting down closed: one transfer waiting for room
@@ -1746,6 +1746,7 @@ impl<H: Host> Multi<H> {
                 set: &mut self.shutdowns,
                 max_total,
                 multi_pool: None,
+                room: &mut self.sockbuf,
             };
             self.caches.pool.network_changed(&mut exits, now);
         }
@@ -1806,8 +1807,12 @@ impl<H: Host> Multi<H> {
                 &mut self.caches.pool,
                 share,
                 &mut net,
-                &mut self.shutdowns,
-                max_total,
+                Linger {
+                    set: &mut self.shutdowns,
+                    max_total,
+                    multi_pool: None,
+                    room: &mut self.sockbuf,
+                },
                 interval,
                 now,
             )
@@ -1844,6 +1849,7 @@ impl<H: Host> Multi<H> {
                 set: &mut self.shutdowns,
                 max_total,
                 multi_pool: None,
+                room: &mut self.sockbuf,
             };
             self.caches.pool.close_idle(&mut exits, now);
         }
@@ -1882,7 +1888,8 @@ impl<H: Host> Multi<H> {
         // `cshutdn_terminate_all`: a pass, then a wait for its sockets,
         // until all are done or the time is spent.
         loop {
-            self.shutdowns.perform(&mut net, self.clock.now());
+            self.shutdowns
+                .perform(&mut net, self.clock.now(), &mut self.sockbuf);
             if self.shutdowns.is_empty() {
                 say(
                     &self.shutdowns,

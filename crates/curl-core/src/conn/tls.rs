@@ -482,6 +482,10 @@ mod tests {
         fn now(&self) -> crate::time::Instant {
             crate::time::Clock::now(&ManualClock::new().unwrap())
         }
+
+        fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+            None
+        }
         fn of(&mut self, _: Component, _: fmt::Arguments<'_>) {}
         fn of_with(&mut self, _: Component, _: &[&[u8]]) {}
         fn info(&mut self, _: fmt::Arguments<'_>) {}

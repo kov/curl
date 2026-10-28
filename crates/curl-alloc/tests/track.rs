@@ -17,6 +17,10 @@ fn main() {
             the_largest_unzeroed_block_leaves_zeroed_ones_out as fn(),
         ),
         (
+            "blocks_of_one_size_are_counted_made_or_grown",
+            blocks_of_one_size_are_counted_made_or_grown,
+        ),
+        (
             "logs_tracked_blocks_and_fails_past_the_limit",
             logs_tracked_blocks_and_fails_past_the_limit,
         ),
@@ -66,6 +70,26 @@ fn the_largest_unzeroed_block_leaves_zeroed_ones_out() {
         "a zeroed block grown, and the inner measure's kept"
     );
     drop((zeroed, filled));
+}
+
+/// Blocks of the size counted are, made zeroed or not or grown to it,
+/// outside an exclusion; others are not; and an inner count leaves the
+/// outer one's as it was.
+fn blocks_of_one_size_are_counted_made_or_grown() {
+    use curl_alloc::try_zeroed;
+    const SIZE: usize = 3000;
+    let ((), n) = track::count_sized(SIZE, || {
+        drop(try_zeroed(SIZE).unwrap());
+        drop(Vec::<u8>::with_capacity(SIZE));
+        drop(Vec::<u8>::with_capacity(SIZE + 1));
+        let mut v = Vec::<u8>::with_capacity(10);
+        v.reserve_exact(SIZE);
+        let ((), inner) = track::count_sized(10, || drop(Vec::<u8>::with_capacity(10)));
+        assert_eq!(inner, 1, "the inner count's own");
+        track::untracked(|| drop(Vec::<u8>::with_capacity(SIZE)));
+        drop(v);
+    });
+    assert_eq!(n, 3, "zeroed, unzeroed and grown, the others left out");
 }
 
 /// Blocks made before tracking or inside an exclusion are not logged;

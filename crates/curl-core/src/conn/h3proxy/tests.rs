@@ -232,11 +232,15 @@ struct Asked {
     calls: Vec<String>,
     yes: bool,
     report: crate::report::TransferReport,
+    room: crate::conn::quic::RecvRoom,
 }
 
 impl LayerCx for Asked {
     fn now(&self) -> Instant {
         crate::time::Clock::now(&crate::time::ManualClock::new().unwrap())
+    }
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        self.yes.then_some(&mut self.room)
     }
     fn of(&mut self, _: Component, line: std::fmt::Arguments<'_>) {
         self.calls.push(format!("of {line}"));
@@ -320,21 +324,22 @@ fn a_call_into_the_proxy_s_connection_is_the_transfer_s() {
             calls: Vec::new(),
             yes,
             report: crate::report::TransferReport::default(),
+            room: crate::conn::quic::RecvRoom::Unmade,
         };
         let report: *const crate::report::TransferReport = &asked.report;
         let mut tunnel = tunnel_on(0);
-        let mut room = Vec::new();
         let mut over = Tunnelled {
             cx: &mut asked,
             socket: &*socket,
             tunnel: &mut tunnel,
-            room: &mut room,
         };
         assert_eq!(over.debugs(), yes);
         assert_eq!(over.verbose(), yes);
         assert_eq!(over.configures_tls(), yes);
         assert_eq!(over.has_tls_sessions(), yes);
         assert_eq!(over.unix_time(), 1_700_000_000);
+        // The proxy's connection receives in the transfer's room.
+        assert_eq!(over.recv_room().is_some(), yes);
         assert!(std::ptr::eq(over.certinfo_report().unwrap(), report));
         let native = crate::tls::TlsNative::new(std::ptr::NonNull::dangling(), None);
         assert_eq!(

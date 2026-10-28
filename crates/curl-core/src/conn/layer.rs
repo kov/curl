@@ -207,6 +207,13 @@ pub(crate) trait LayerCx {
     /// from now, in whole milliseconds (`Curl_expire_set(EXPIRE_QUIC)`):
     /// work done for no transfer has no timer to set.
     fn quic_due(&mut self, _wait: std::time::Duration) {}
+
+    /// The multi's room a QUIC connection on a socket receives in, which
+    /// the call lends (`Curl_multi_xfer_sockbuf_borrow`); none where the
+    /// work has no multi's room to lend, and the receive makes one for
+    /// the call, as C's does with no multi. Every context says which:
+    /// a context over another's lends that one's.
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom>;
 }
 
 /// The context of work done for no transfer: it traces nothing, as C's
@@ -229,6 +236,10 @@ impl LayerCx for Silent {
 
     fn fails_with(&mut self, kind: ErrorKind, _: &[&[u8]]) -> ErrorKind {
         kind
+    }
+
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        None
     }
 }
 

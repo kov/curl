@@ -143,6 +143,10 @@ fn main() {
             "quic_receive_rooms_come_zeroed_from_the_allocator",
             quic_receive_rooms_come_zeroed_from_the_allocator,
         ),
+        (
+            "one_quic_receive_room_per_multi",
+            one_quic_receive_room_per_multi,
+        ),
     ] {
         // The tests whose names hold a filter given, if any is, as libtest.
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {
@@ -1443,27 +1447,28 @@ fn h3_proxy(o: &mut Options) -> Result<(), OutOfMemory> {
     traced(o)
 }
 
+/// The HTTP/3 proxy's connection for a tunnel: its handshake, the
+/// `CONNECT`'s answer, then test 1's reply on the tunnel's stream.
+fn h3_tunnel_script() -> H3Script {
+    let out: &[&[u8]] = &[
+        &[1; 1200],
+        &[2; 1200],
+        &[],
+        &[],
+        &[3; 75],
+        &[],
+        &[4; 150],
+        &[],
+    ];
+    let response = vec![Told::Data(0, REPLY.to_vec())];
+    h3_script(out, vec![h3_connect_answer(), response])
+}
+
 /// A GET of `http://origin.example/1?q` in HTTP/1.1 through the HTTP/3
 /// proxy's tunnel, a stream of the QUIC connection to it
 /// (`cf-ngtcp2-proxy.c`), answered with test 1's reply.
 fn h3_tunnel_scenario() -> Result<Got, OutOfMemory> {
-    h3_scripts(
-        || {
-            let out: &[&[u8]] = &[
-                &[1; 1200],
-                &[2; 1200],
-                &[],
-                &[],
-                &[3; 75],
-                &[],
-                &[4; 150],
-                &[],
-            ];
-            let response = vec![Told::Data(0, REPLY.to_vec())];
-            h3_script(out, vec![h3_connect_answer(), response])
-        },
-        None,
-    );
+    h3_scripts(h3_tunnel_script, None);
     let (clock, net, talk) = quic_server(&[b"server flight", b"connect answer", b"response"]);
     let wire = Wire {
         libraries: fake_h3_libraries(),
@@ -1580,6 +1585,86 @@ fn http3_through_an_http3_proxy_takes_no_refusal_for_success() {
 /// unoptimised build at a connection's first receive, which made the
 /// origin's handshake through a CONNECT-UDP tunnel lose races C's wins.
 /// Nothing else a GET allocates is as large as a room.
+/// Through the tunnel the HTTP/3 proxy at 127.0.0.2:443 makes.
+fn other_h3_proxy(o: &mut Options) -> Result<(), OutOfMemory> {
+    h3_proxy(o)?;
+    o.proxy.make_mut()?.url = Some(b"https://127.0.0.2:443".to_vec_fallible()?);
+    Ok(())
+}
+
+/// GETs of `http://origin.example/1?q` and then `http://other.example/1?q`
+/// in one multi, each through the tunnel of an HTTP/3 proxy of its own,
+/// on a connection of its own, the first's kept in the pool as the
+/// second makes its own: whether both ended well.
+fn two_h3_tunnels_scenario() -> Result<bool, OutOfMemory> {
+    h3_scripts(h3_tunnel_script, Some(h3_tunnel_script));
+    let replies: &[&[u8]] = &[b"server flight", b"connect answer", b"response"];
+    let (clock, net, _talk) = quic_server(replies);
+    let net = track::untracked(|| {
+        let at = std::net::SocketAddr::from(([127, 0, 0, 2], 443));
+        let talk = Conversation::replies(replies, false).per_send();
+        net.with_peer(at, Peer::Accepts).with_conversation(at, talk)
+    });
+    let env = Env {
+        clock: try_box(clock)?,
+        net: try_box(net)?,
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env)?;
+    let mut fine = true;
+    type Set = fn(&mut Options) -> Result<(), OutOfMemory>;
+    let gets: [(&[u8], Set); 2] = [
+        (b"http://origin.example/1?q", h3_proxy),
+        (b"http://other.example/1?q", other_h3_proxy),
+    ];
+    for (url, proxy) in gets {
+        let mut easy = Easy::new();
+        easy.set_libraries(fake_h3_libraries());
+        let o = easy.options_mut();
+        o.set_url(Some(url))?;
+        o.http.user_agent = Some(b"curl/test".to_vec_fallible()?);
+        proxy(o)?;
+        let id = m
+            .add(try_box(easy)?, (), &mut NoEvents)
+            .map_err(|_| OutOfMemory)?;
+        let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents)
+            .expect("the transfer is in the multi");
+        fine &= result.is_ok();
+        m.remove(id, &mut NoEvents).expect("in the multi");
+    }
+    Ok(fine)
+}
+
+/// One room per multi for QUIC to receive in, as C's `xfer_sockbuf`, the
+/// connections to an HTTP/3 proxy borrowing it as the origin's do: two
+/// pooled connections to the proxy make one between them, and an HTTP/3
+/// origin through the proxy's CONNECT-UDP tunnel receives in a room of
+/// its own of C's tunnel's size (`QUIC_TUNNEL_INBUF_SIZE`), leaving the
+/// multi's to the proxy's connection below it.
+fn one_quic_receive_room_per_multi() {
+    let room = curl_os::net::BATCH * curl_os::net::SLOT;
+    fake_h3_libraries();
+    let (fine, rooms) = track::count_sized(room, two_h3_tunnels_scenario);
+    assert!(
+        fine.expect("nothing refused"),
+        "both GETs through the proxy"
+    );
+    assert_eq!(
+        rooms, 1,
+        "receive rooms made for two connections to the proxy"
+    );
+    let (got, rooms) = track::count_sized(room, h3_over_h3_proxy_scenario);
+    assert_eq!(got.expect("nothing refused").result, Ok(()));
+    assert_eq!(rooms, 1, "receive rooms made for HTTP/3 through the proxy");
+    let (got, tunnel_rooms) = track::count_sized(64 * 1024, h3_over_h3_proxy_scenario);
+    assert_eq!(got.expect("nothing refused").result, Ok(()));
+    assert!(
+        tunnel_rooms >= 1,
+        "the tunnelled origin's room is C's 64 KiB, made {tunnel_rooms} times"
+    );
+}
+
 fn quic_receive_rooms_come_zeroed_from_the_allocator() {
     let room = curl_os::net::BATCH * curl_os::net::SLOT;
     fake_h3_libraries();

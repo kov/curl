@@ -796,7 +796,11 @@ fn work_for_no_transfer_is_said_only_on_the_internal_trace() {
     use crate::conn::layer::LayerCx;
     use crate::time::Clock;
     let now = ManualClock::new().unwrap().now();
-    let mut silent = crate::trace::InternalCx { now, trace: None };
+    let mut silent = crate::trace::InternalCx {
+        now,
+        trace: None,
+        room: None,
+    };
     assert!(!silent.verbose());
     silent.info(format_args!("lost"));
     let written = Written::default();
@@ -807,6 +811,7 @@ fn work_for_no_transfer_is_said_only_on_the_internal_trace() {
     let mut said = crate::trace::InternalCx {
         now,
         trace: Some(&trace),
+        room: None,
     };
     assert!(said.verbose());
     said.info(format_args!("said"));

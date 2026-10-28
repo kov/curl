@@ -28,21 +28,55 @@ use crate::trace::{Code, Ip};
 /// chunk).
 const SEND_ROOM: usize = 64 * 1024;
 
-/// The room the datagrams received are read into, lent by the multi
-/// (`Curl_multi_xfer_sockbuf_borrow`).
+/// The room the datagrams a connection on a socket receives are read
+/// into, lent by the multi (`Curl_multi_xfer_sockbuf_borrow`).
 pub(crate) const RECV_ROOM: usize = BATCH * SLOT;
 
-/// `room` to receive in, or one of `RECV_ROOM` bytes in its place if it
-/// is smaller. A new room is zeroed by the allocator, where C's is left
-/// unwritten (`Curl_multi_xfer_sockbuf_borrow`): never filled byte by
-/// byte, which in an unoptimised build costs milliseconds at a
-/// connection's first look at what it received.
-pub(crate) fn recv_room(room: Vec<u8>) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
-    if room.len() >= RECV_ROOM {
-        return Ok(room);
+/// A room of `len` bytes to receive in, zeroed by the allocator, where
+/// C's is left unwritten: never filled byte by byte, which in an
+/// unoptimised build costs milliseconds at a connection's first look at
+/// what it received.
+fn new_room(len: usize) -> Result<Vec<u8>, ErrorKind> {
+    curl_alloc::try_zeroed(len).map_err(|_| ErrorKind::OutOfMemory)
+}
+
+/// The multi's room that connections on a socket receive in
+/// (`xfer_sockbuf`): made at the first receive, then lent to one receive
+/// at a time and given back. One per multi, whatever its connections:
+/// the origin's, a proxy's, or a proxy's under a tunnelled origin's,
+/// which receives while the origin's own receive runs, into a room of
+/// its own (`Quic::ingress`).
+#[derive(Debug, Default)]
+pub(crate) enum RecvRoom {
+    /// No receive has asked yet.
+    #[default]
+    Unmade,
+    Kept(Vec<u8>),
+    /// A receive has it.
+    Lent,
+}
+
+impl RecvRoom {
+    /// The room, lent until [`RecvRoom::give`]. Lending it twice is a
+    /// receive inside a receive on the same room, which nothing does: C
+    /// refuses it (`attempt to borrow xfer_sockbuf when already
+    /// borrowed`), and no input can make one.
+    fn take(&mut self) -> Result<Vec<u8>, ErrorKind> {
+        match std::mem::replace(self, RecvRoom::Lent) {
+            RecvRoom::Kept(room) => Ok(room),
+            RecvRoom::Unmade => new_room(RECV_ROOM).inspect_err(|_| *self = RecvRoom::Unmade),
+            RecvRoom::Lent => panic!("the multi's receive room is lent to one receive at a time"),
+        }
     }
-    drop(room);
-    curl_alloc::try_zeroed(RECV_ROOM)
+
+    /// The room lent, given back.
+    fn give(&mut self, room: Vec<u8>) {
+        assert!(
+            matches!(self, RecvRoom::Lent),
+            "only a room lent is given back"
+        );
+        *self = RecvRoom::Kept(room);
+    }
 }
 
 /// A request stream's first receive window, which its request opens
@@ -55,29 +89,15 @@ const MAX_PACKETS: usize = 1000;
 /// The most a datagram through a tunnel is read into
 /// (`QUIC_TUNNEL_INBUF_SIZE`): more than any datagram's payload.
 const TUNNEL_ROOM: usize = 64 * 1024;
-const _: () = assert!(RECV_ROOM >= TUNNEL_ROOM);
 
 /// The most a packet that closes the connection is
 /// (`NGTCP2_MAX_UDP_PAYLOAD_SIZE`).
 const CLOSE_ROOM: usize = 1200;
 
-/// What QUIC reaches beyond the transfer's trace: the multi's room for
-/// the datagrams it receives, and the transfer's timer for the QUIC
-/// library's (`EXPIRE_QUIC`). What the library tells of a stream reaches
-/// the transfer through `LayerCx::h3_event`.
-pub(crate) trait QuicCx: LayerCx {
-    /// The room to receive in, of at least `RECV_ROOM` bytes, lent until
-    /// it is given back.
-    fn take_room(&mut self) -> Result<Vec<u8>, curl_alloc::OutOfMemory>;
-
-    /// The room lent, given back.
-    fn give_room(&mut self, room: Vec<u8>);
-}
-
-/// A `QuicCx` with the UDP socket the connection goes over, asked for at
-/// each call on it, so that nothing holds it while the library tells the
-/// transfer what it read.
-pub(crate) trait QuicIo: QuicCx {
+/// A `LayerCx` with the UDP socket the connection goes over, asked for
+/// at each call on it, so that nothing holds it while the library tells
+/// the transfer what it read.
+pub(crate) trait QuicIo: LayerCx {
     /// The socket under the connection: its UDP socket, or the one the
     /// tunnel its datagrams go through is over.
     fn socket(&self) -> &dyn Socket;
@@ -127,8 +147,9 @@ pub(crate) fn unrouted(cx: &mut dyn LayerCx, stream: StreamId, event: &StreamEve
 
 /// The context of a call on a connection no transfer is stepping, as its
 /// health is checked or it says goodbye: every stream is one no transfer
-/// has, the room to read into is made for the call, and the library's
-/// timer is set by no one, as C's calls give it no packet context.
+/// has, the room to read into is the one the call lends, and the
+/// library's timer is set by no one, as C's calls give it no packet
+/// context.
 pub(crate) struct Lone<'a> {
     pub(crate) cx: &'a mut dyn LayerCx,
 }
@@ -217,14 +238,10 @@ impl LayerCx for Lone<'_> {
     fn h3_event(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
         unrouted(&mut *self.cx, stream, &event)
     }
-}
 
-impl QuicCx for Lone<'_> {
-    fn take_room(&mut self) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
-        recv_room(Vec::new())
+    fn recv_room(&mut self) -> Option<&mut RecvRoom> {
+        self.cx.recv_room()
     }
-
-    fn give_room(&mut self, _room: Vec<u8>) {}
 }
 
 /// Where a context's datagrams go: the socket an attempt dialed, or the
@@ -238,7 +255,7 @@ pub(crate) enum Path<'a> {
 /// A call's context over `path`: an attempt's, or a connection's that no
 /// transfer is stepping.
 pub(crate) struct Over<'a> {
-    pub(crate) cx: &'a mut dyn QuicCx,
+    pub(crate) cx: &'a mut dyn LayerCx,
     pub(crate) path: Path<'a>,
 }
 
@@ -330,15 +347,9 @@ impl LayerCx for Over<'_> {
     fn h3_event(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
         self.cx.h3_event(stream, event)
     }
-}
 
-impl QuicCx for Over<'_> {
-    fn take_room(&mut self) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
-        self.cx.take_room()
-    }
-
-    fn give_room(&mut self, room: Vec<u8>) {
-        self.cx.give_room(room);
+    fn recv_room(&mut self) -> Option<&mut RecvRoom> {
+        self.cx.recv_room()
     }
 }
 
@@ -496,6 +507,11 @@ pub(crate) struct Quic {
     /// (`Curl_cf_ngtcp2_io_ctx_update_time`), whichever transfer, multi or
     /// share uses it.
     clock: SharedClock,
+    /// The room a connection through a tunnel receives each datagram in
+    /// (`tunnel_inbuf`): its own, as the multi's may be lent to the
+    /// proxy's connection below it; made at its first receive, empty
+    /// until then and for a connection on a socket.
+    tunnel_room: Vec<u8>,
 }
 
 impl std::fmt::Debug for Quic {
@@ -553,6 +569,7 @@ impl Quic {
                 layered,
             },
             clock,
+            tunnel_room: Vec::new(),
         })
     }
 
@@ -1399,25 +1416,44 @@ impl Quic {
             self.state.component,
             format_args!("progress_ingress({from})"),
         );
-        let Ok(mut room) = cx.take_room() else {
-            return Err(ErrorKind::OutOfMemory);
+        if tunnelled {
+            // At least C's 64 KiB, and as large as the path's largest
+            // datagram, grown as that is (`QUIC_TUNNEL_INBUF_SIZE`).
+            let want = TUNNEL_ROOM.max(self.conn.path_max_payload());
+            if self.tunnel_room.len() < want {
+                self.tunnel_room = Vec::new();
+                self.tunnel_room = new_room(want)?;
+            }
+            let mut room = std::mem::take(&mut self.tunnel_room);
+            let r = self.recv_through(cx, &mut room);
+            self.tunnel_room = room;
+            return r;
+        }
+        // The multi's room if the call has one to lend, else one made for
+        // the call, as C's `Curl_multi_xfer_sockbuf_borrow` mallocs one
+        // for a call with no multi.
+        let lent = match cx.recv_room() {
+            Some(lender) => Some(lender.take()?),
+            None => None,
         };
-        let r = if tunnelled {
-            self.recv_through(cx, &mut room)
-        } else {
-            self.recv_packets(cx, &mut room)
+        let borrowed = lent.is_some();
+        let mut room = match lent {
+            Some(room) => room,
+            None => new_room(RECV_ROOM)?,
         };
-        cx.give_room(room);
+        let r = self.recv_packets(cx, &mut room);
+        if borrowed {
+            cx.recv_room()
+                .expect("the context that lent the room takes it back")
+                .give(room);
+        }
         r
     }
 
     /// What the layers below have, a datagram at a time, at most
-    /// `MAX_PACKETS` of them, read into `room` and handed to the library
-    /// (`Curl_cf_ngtcp2_progress_ingress`'s tunnelled branch). The room
-    /// is the size C's is, which no datagram is larger than
-    /// (`QUIC_TUNNEL_INBUF_SIZE`).
-    fn recv_through(&mut self, cx: &mut dyn QuicIo, room: &mut [u8]) -> Result<(), ErrorKind> {
-        let buf = &mut room[..TUNNEL_ROOM];
+    /// `MAX_PACKETS` of them, read into `buf` and handed to the library
+    /// (`Curl_cf_ngtcp2_progress_ingress`'s tunnelled branch).
+    fn recv_through(&mut self, cx: &mut dyn QuicIo, buf: &mut [u8]) -> Result<(), ErrorKind> {
         for _ in 0..MAX_PACKETS {
             let n = match cx.recv_below(buf) {
                 Ok(Recv::Data(n)) => n.get(),
@@ -1737,6 +1773,8 @@ pub(crate) mod tests {
         socket: Scripted,
         /// The layers below, in place of the socket, if set.
         below: Option<Layers>,
+        /// The multi's room it lends.
+        room: RecvRoom,
     }
 
     /// Layers below a connection with no socket, a tunnel's: its sends
@@ -1756,6 +1794,10 @@ pub(crate) mod tests {
     impl LayerCx for Cx {
         fn quic_due(&mut self, wait: Duration) {
             self.due.push(wait);
+        }
+
+        fn recv_room(&mut self) -> Option<&mut RecvRoom> {
+            Some(&mut self.room)
         }
 
         fn now(&self) -> Instant {
@@ -1784,13 +1826,6 @@ pub(crate) mod tests {
             self.lines.push(format!("! {why}"));
             kind
         }
-    }
-
-    impl QuicCx for Cx {
-        fn take_room(&mut self) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
-            Ok(vec![0; RECV_ROOM])
-        }
-        fn give_room(&mut self, _: Vec<u8>) {}
     }
 
     impl QuicIo for Cx {
@@ -1862,6 +1897,7 @@ pub(crate) mod tests {
             due: Vec::new(),
             socket: Scripted::default(),
             below: None,
+            room: RecvRoom::Unmade,
         };
         let shared = SharedClock::new(Box::new(clock)).unwrap();
         (
@@ -2309,6 +2345,41 @@ pub(crate) mod tests {
             cx.lines.last().unwrap(),
             "ingress, recv from tunnel failed: 56"
         );
+    }
+
+    /// A connection through a tunnel receives in a room of its own, C's
+    /// 64 KiB grown to the path's largest datagram (`tunnel_inbuf`), and
+    /// never asks for the multi's, which the proxy's connection below it
+    /// may have lent; one on a socket borrows the multi's and gives it
+    /// back.
+    #[test]
+    fn a_tunnel_receives_in_its_own_room_and_a_socket_in_the_multis() {
+        let script = Script::new();
+        let (mut q, mut cx) = quic_over(&script, true);
+        cx.below = Some(Layers::default());
+        // The proxy's connection has the multi's room.
+        cx.room = RecvRoom::Lent;
+        q.ingress(&mut cx).unwrap();
+        script.lock().unwrap().path_max_payload = 70_000;
+        q.ingress(&mut cx).unwrap();
+        assert_eq!(cx.below.as_ref().unwrap().rooms, [64 * 1024, 70_000]);
+        assert!(matches!(cx.room, RecvRoom::Lent));
+
+        let script = Script::new();
+        let (mut q, mut cx) = quic(&script);
+        q.ingress(&mut cx).unwrap();
+        assert!(matches!(&cx.room, RecvRoom::Kept(room) if room.len() == RECV_ROOM));
+    }
+
+    /// The multi's room goes to one receive at a time: a second is a
+    /// receive inside a receive on it, which nothing makes.
+    #[test]
+    #[should_panic(expected = "lent to one receive at a time")]
+    fn the_multis_room_is_lent_once() {
+        let mut room = RecvRoom::Unmade;
+        let first = room.take().unwrap();
+        drop(room.take());
+        drop(first);
     }
 
     /// The layer under a connection over a tunnel: nothing to read or

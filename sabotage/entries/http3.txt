@@ -913,20 +913,74 @@ file: crates/curl-core/src/conn/quic.rs
 witness: curl-core quic_receive_rooms_come_zeroed_from_the_allocator
 features: test-util,debug-hooks
 --- old
-    drop(room);
-    curl_alloc::try_zeroed(RECV_ROOM)
+    curl_alloc::try_zeroed(len).map_err(|_| ErrorKind::OutOfMemory)
 --- new
-    let mut room = room;
-    room.try_resize(RECV_ROOM, 0)?;
+    let mut room = Vec::new();
+    room.try_resize(len, 0).map_err(|_| ErrorKind::OutOfMemory)?;
     Ok(room)
 
-=== an HTTP/3 proxy connection's receive room is filled byte by byte
+=== an HTTP/3 proxy connection receives in a room of its own, not the multi's
 file: crates/curl-core/src/conn/h3proxy.rs
-witness: curl-core quic_receive_rooms_come_zeroed_from_the_allocator
+witness: curl-core one_quic_receive_room_per_multi
 features: test-util,debug-hooks
 --- old
-        recv_room(std::mem::take(self.room))
+    fn recv_room(&mut self) -> Option<&mut RecvRoom> {
+        self.cx.recv_room()
+    }
 --- new
-        let mut room = std::mem::take(self.room);
-        curl_alloc::TryVec::try_resize(&mut room, 1_536_000, 0)?;
-        Ok(room)
+    fn recv_room(&mut self) -> Option<&mut RecvRoom> {
+        None
+    }
+
+=== a multi's goodbyes receive in rooms of their own, not the multi's
+file: crates/curl-core/src/trace.rs
+witness: curl-core one_quic_receive_room_per_multi
+features: test-util,debug-hooks
+--- old
+        self.room.as_deref_mut()
+--- new
+        None
+
+=== a pooled QUIC connection's check or goodbye receives in a room of its own
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core one_quic_receive_room_per_multi
+features: test-util,debug-hooks
+--- old
+    fn recv_room(&mut self) -> Option<&mut RecvRoom> {
+        self.cx.recv_room()
+    }
+}
+
+/// Where a context's datagrams go
+--- new
+    fn recv_room(&mut self) -> Option<&mut RecvRoom> {
+        None
+    }
+}
+
+/// Where a context's datagrams go
+
+=== a tunnelled QUIC connection receives in a room the multi's size, not C's tunnel's
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core one_quic_receive_room_per_multi
+features: test-util,debug-hooks
+--- old
+            let want = TUNNEL_ROOM.max(self.conn.path_max_payload());
+--- new
+            let want = RECV_ROOM.max(self.conn.path_max_payload());
+
+=== a tunnelled QUIC connection's room stays 64 KiB past the path's largest datagram
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_tunnel_receives_in_its_own_room_and_a_socket_in_the_multis
+--- old
+            let want = TUNNEL_ROOM.max(self.conn.path_max_payload());
+--- new
+            let want = TUNNEL_ROOM;
+
+=== the multi's receive room is lent twice at once
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::the_multis_room_is_lent_once
+--- old
+            RecvRoom::Lent => panic!("the multi's receive room is lent to one receive at a time"),
+--- new
+            RecvRoom::Lent => new_room(RECV_ROOM),

@@ -52,3 +52,12 @@ features: debug-hooks
         }
 --- new
         unzeroed(layout.size());
+
+=== blocks grown to the size counted are left out of the count
+file: crates/curl-alloc/src/track.rs
+witness: curl-alloc blocks_of_one_size_are_counted_made_or_grown
+features: debug-hooks
+--- old
+        sized(new_size);
+--- new
+        sized(0);

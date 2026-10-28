@@ -88,6 +88,9 @@ thread_local! {
     /// The largest block this thread allocated outside [`untracked`]
     /// without the allocator zeroing it, or grew.
     static UNZEROED: Cell<usize> = const { Cell::new(0) };
+    /// The size [`count_sized`] counts the blocks of on this thread, and
+    /// how many it made or grew to it.
+    static SIZED: Cell<(usize, u64)> = const { Cell::new((0, 0)) };
 }
 
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -257,6 +260,17 @@ pub fn largest_unzeroed<R>(f: impl FnOnce() -> R) -> (R, usize) {
     (r, largest)
 }
 
+/// Run `f` and return how many blocks of exactly `size` bytes, not zero,
+/// this thread allocated or grew to in it: for the tests that a buffer
+/// of a size of its own is made as often as C makes it.
+pub fn count_sized<R>(size: usize, f: impl FnOnce() -> R) -> (R, u64) {
+    assert_ne!(size, 0, "a zero-sized block is not allocated");
+    let before = SIZED.with(|s| s.replace((size, 0)));
+    let r = f();
+    let (_, n) = SIZED.with(|s| s.replace(before));
+    (r, n)
+}
+
 /// What [`measure`] saw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Measured {
@@ -407,6 +421,18 @@ fn count() {
     }
 }
 
+/// A block of `size` bytes made or grown.
+fn sized(size: usize) {
+    if !excluded() {
+        SIZED.with(|s| {
+            let (wanted, n) = s.get();
+            if wanted == size {
+                s.set((wanted, n + 1));
+            }
+        });
+    }
+}
+
 /// A block of `size` bytes made or grown without zeroing.
 fn unzeroed(size: usize) {
     if !excluded() {
@@ -469,6 +495,7 @@ impl Tracker {
         unsafe { tag_slot(block).write(if tracked { TRACKED } else { PLAIN }) };
         count();
         hold(signed(layout.size()));
+        sized(layout.size());
         if !zeroed {
             unzeroed(layout.size());
         }
@@ -553,6 +580,7 @@ unsafe impl GlobalAlloc for Tracker {
         let moved = unsafe { q.add(h) };
         count();
         hold(signed(new_size) - signed(layout.size()));
+        sized(new_size);
         unzeroed(new_size);
         if was_tracked {
             log_rust(|l| write!(l, "realloc({}, {new_size}) = {}", Ptr(block), Ptr(moved)));

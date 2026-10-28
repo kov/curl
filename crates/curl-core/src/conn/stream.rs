@@ -59,6 +59,8 @@ pub(crate) struct Stream {
     socket: Sock,
     layers: LayerStack,
     rx: RecvBuf,
+    /// Its socket has received a byte (`got_first_byte`).
+    heard: std::cell::Cell<bool>,
 }
 
 impl Stream {
@@ -67,6 +69,7 @@ impl Stream {
             socket,
             layers: LayerStack::default(),
             rx: RecvBuf::default(),
+            heard: std::cell::Cell::new(false),
         }
     }
 
@@ -95,18 +98,26 @@ impl Stream {
         cx: &mut dyn LayerCx,
         traced: Option<Component>,
     ) -> Result<Handshake, ErrorKind> {
-        self.layers.connect(self.socket.socket(), cx, traced)
+        self.layers
+            .connect(self.socket.socket(), cx, traced, Some(&self.heard))
     }
 
     /// Its layers over its socket, for a handshake that reads and writes
     /// past what was received and not used; the socket's sends and
     /// receives traced as `traced`, if given.
     pub(crate) fn below(&mut self, traced: Option<Component>) -> super::layer::Below<'_> {
-        self.layers.over(self.socket.socket(), traced)
+        self.layers
+            .over(self.socket.socket(), traced, Some(&self.heard))
     }
 
     pub(crate) fn socket(&self) -> &dyn Socket {
         self.socket.socket()
+    }
+
+    /// Its socket has received a byte, as C's socket filter answers how
+    /// long that took once it has (`CF_QUERY_CONNECT_REPLY_MS`).
+    pub(crate) fn heard(&self) -> bool {
+        self.heard.get()
     }
 
     /// The socket, for closing.
@@ -123,7 +134,9 @@ impl Stream {
         max: usize,
         traced: Option<Component>,
     ) -> Result<Recv, RecvFailed> {
-        let below = self.layers.over(self.socket.socket(), traced);
+        let below = self
+            .layers
+            .over(self.socket.socket(), traced, Some(&self.heard));
         self.rx.fill(max, |room| below.recv(cx, room))
     }
 
@@ -136,14 +149,18 @@ impl Stream {
         traced: Option<Component>,
     ) -> io::Result<Sent> {
         self.layers
-            .over(self.socket.socket(), traced)
+            .over(self.socket.socket(), traced, Some(&self.heard))
             .send(cx, bytes)
     }
 
     /// Whether bytes wait where a poll of the socket cannot see them: in
     /// a layer, or received and not used (`Curl_conn_data_pending`).
     pub(crate) fn data_pending(&mut self) -> bool {
-        !self.rx.filled().is_empty() || self.layers.over(self.socket.socket(), None).data_pending()
+        !self.rx.filled().is_empty()
+            || self
+                .layers
+                .over(self.socket.socket(), None, Some(&self.heard))
+                .data_pending()
     }
 
     /// What the transfer is to wait for on the socket, given what it
@@ -169,7 +186,9 @@ impl Stream {
     /// say. Nothing received waits unused on one that is idle: its last
     /// request used everything it read.
     pub(crate) fn is_alive(&mut self, cx: &mut dyn LayerCx) -> Alive {
-        self.layers.over(self.socket.socket(), None).alive(cx)
+        self.layers
+            .over(self.socket.socket(), None, Some(&self.heard))
+            .alive(cx)
     }
 
     /// What was received and not used.

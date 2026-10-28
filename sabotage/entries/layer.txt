@@ -18,7 +18,9 @@ witness: curl-core proto::http::tests::an_exchange_waits_for_what_its_layers_wan
 file: crates/curl-core/src/conn/stream.rs
 witness: curl-core proto::http::tests::bytes_pass_through_the_connection_s_layers
 --- old
-        let below = self.layers.over(self.socket.socket(), traced);
+        let below = self
+            .layers
+            .over(self.socket.socket(), traced, Some(&self.heard));
         self.rx.fill(max, |room| below.recv(cx, room))
 --- new
         let socket = self.socket.socket();
@@ -29,7 +31,7 @@ file: crates/curl-core/src/conn/stream.rs
 witness: curl-core proto::http::tests::bytes_pass_through_the_connection_s_layers
 --- old
         self.layers
-            .over(self.socket.socket(), traced)
+            .over(self.socket.socket(), traced, Some(&self.heard))
             .send(cx, bytes)
 --- new
         self.socket.socket().send(bytes)
@@ -70,9 +72,11 @@ witness: curl-core proto::http::tests::bytes_after_a_tunnel_s_answer_are_read_fi
 file: crates/curl-core/src/conn/stream.rs
 witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
 --- old
-        !self.rx.filled().is_empty() || self.layers.over(self.socket.socket(), None).data_pending()
+        !self.rx.filled().is_empty()
+            || self
 --- new
-        self.layers.over(self.socket.socket(), None).data_pending()
+        false
+            || self
 
 === a socket with something to read and a hang-up is taken for alive
 file: crates/curl-core/src/conn/layer.rs

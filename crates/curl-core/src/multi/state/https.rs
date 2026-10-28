@@ -18,7 +18,7 @@
 
 use super::{Connecting, StepCx};
 use crate::components::Component;
-use crate::conn::{ConnectMachine, Dial, NetRoute};
+use crate::conn::{ConnectMachine, Dial, NetRoute, Reply};
 use crate::conn::{HttpsLookup, address};
 use crate::error::ErrorKind;
 use crate::multi::Host;
@@ -514,14 +514,26 @@ pub(super) fn second_due<H: Host>(
     }
     if elapsed_ms >= soft.as_millis() {
         if !race.replied {
-            let reply = c.lease.setup().and_then(ConnectMachine::reply_ms);
-            race.replied = reply.is_some();
-            let shown = reply.map_or(-1, |ms| i128::try_from(ms).unwrap_or(i128::MAX));
-            trace::of(
-                cx,
-                Component::HappyEyeballs,
-                format_args!("query connect reply: {shown}ms"),
-            );
+            race.replied = match c.lease.setup().map(ConnectMachine::reply) {
+                Some(Reply::Dialed(heard)) => heard,
+                Some(Reply::Racing(reply)) => {
+                    let shown = reply.map_or(-1, |ms| i128::try_from(ms).unwrap_or(i128::MAX));
+                    trace::of(
+                        cx,
+                        Component::HappyEyeballs,
+                        format_args!("query connect reply: {shown}ms"),
+                    );
+                    reply.is_some()
+                }
+                None => {
+                    trace::of(
+                        cx,
+                        Component::HappyEyeballs,
+                        format_args!("query connect reply: -1ms"),
+                    );
+                    false
+                }
+            };
         }
         if !race.replied {
             let soft = soft.as_millis();

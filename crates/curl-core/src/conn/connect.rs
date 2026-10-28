@@ -100,6 +100,18 @@ pub(crate) struct Dialed {
     quic: Option<Box<Quic>>,
 }
 
+/// What a setup says of its peer's answer (`CF_QUERY_CONNECT_REPLY_MS`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reply {
+    /// Racing, its happy eyeballs filter answers, and says so: the
+    /// milliseconds its first QUIC attempt took to hear from its peer, if
+    /// one has.
+    Racing(Option<u128>),
+    /// Dialed, the filter connected, the first hop answers, saying
+    /// nothing: whether it has heard from its peer.
+    Dialed(bool),
+}
+
 /// The handshakes made over a dialed connection, each once, in
 /// cf-setup.c's order: SOCKS's and the tunnel's stay in C's chain as
 /// filters that pass the bytes (`[H1-PROXY][SOCKS][TCP]`); the PROXY
@@ -794,17 +806,27 @@ impl ConnectMachine {
         })
     }
 
-    /// How long after it started the first of its QUIC attempts to hear
-    /// from its peer did, if one has (`cf_ip_ballers_min_reply_ms`).
-    pub(crate) fn reply_ms(&self) -> Option<u128> {
-        let running = match &self.stage {
-            Stage::Racing(r) => &r.attempts[..],
-            Stage::Resolving(_) | Stage::Dialed(_) => &[][..],
-        };
-        running
-            .iter()
-            .filter_map(|a| a.link.quic()?.reply_ms())
-            .min()
+    /// Whether its peer has answered, as C's race asks it
+    /// (`CF_QUERY_CONNECT_REPLY_MS`): while it races, the happy eyeballs
+    /// filter answers how long after it started the first of its QUIC
+    /// attempts to hear from its peer did, if one has
+    /// (`cf_ip_ballers_min_reply_ms`); once the first hop is dialed, the
+    /// filter is connected and passes the question down, to the socket
+    /// that has heard the proxy or not, or to an HTTP/3 proxy's QUIC
+    /// connection.
+    pub(crate) fn reply(&self) -> Reply {
+        match &self.stage {
+            Stage::Racing(r) => Reply::Racing(
+                r.attempts
+                    .iter()
+                    .filter_map(|a| a.link.quic()?.reply_ms())
+                    .min(),
+            ),
+            Stage::Resolving(_) => Reply::Racing(None),
+            Stage::Dialed(d) => Reply::Dialed(
+                d.stream.heard() || d.quic.as_ref().is_some_and(|q| q.first_byte_at().is_some()),
+            ),
+        }
     }
 
     /// How far it got, as C's filter chain shows it.

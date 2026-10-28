@@ -7,6 +7,7 @@
 //! inline, so a stream over TCP, a SOCKS proxy or a tunnel allocates
 //! nothing for its layers.
 
+use std::cell::Cell;
 use std::fmt;
 use std::io;
 use std::time::Duration;
@@ -284,6 +285,9 @@ pub(crate) struct Below<'a> {
     /// traced, and their failures said, as they reach it (`cf_socket_send`,
     /// `cf_socket_recv`); none when the caller says what it needs itself.
     traced: Option<Component>,
+    /// Set as the socket first receives a byte (`got_first_byte`), where
+    /// its stream keeps the fact.
+    heard: Option<&'a Cell<bool>>,
 }
 
 impl<'a> Below<'a> {
@@ -294,6 +298,7 @@ impl<'a> Below<'a> {
             layers,
             socket,
             traced: None,
+            heard: None,
         }
     }
 }
@@ -307,6 +312,7 @@ impl<'a> Below<'a> {
             layers: &mut [],
             socket,
             traced,
+            heard: None,
         }
     }
 }
@@ -338,6 +344,7 @@ impl Below<'_> {
             layers: &mut *self.layers,
             socket: self.socket,
             traced: self.traced,
+            heard: self.heard,
         }
     }
 
@@ -348,6 +355,9 @@ impl Below<'_> {
                 let got = self.socket.recv(buf);
                 if let Err(e) = &got {
                     cx.socket_failed(e);
+                }
+                if let (Ok(Recv::Data(_)), Some(heard)) = (&got, self.heard) {
+                    heard.set(true);
                 }
                 if let Some(component) = self.traced {
                     let (code, n) = match &got {
@@ -472,6 +482,7 @@ impl LayerStack {
         &'a mut self,
         socket: &'a dyn Socket,
         traced: Option<Component>,
+        heard: Option<&'a Cell<bool>>,
     ) -> Below<'a> {
         Below {
             layers: self
@@ -480,6 +491,7 @@ impl LayerStack {
                 .map_or(&mut [], Vec::as_mut_slice),
             socket,
             traced,
+            heard,
         }
     }
 
@@ -500,8 +512,9 @@ impl LayerStack {
         socket: &dyn Socket,
         cx: &mut dyn LayerCx,
         traced: Option<Component>,
+        heard: Option<&Cell<bool>>,
     ) -> Result<Handshake, ErrorKind> {
-        let below = self.over(socket, traced);
+        let below = self.over(socket, traced, heard);
         match below.layers.split_last_mut() {
             Some((top, layers)) => top.connect(cx, Below { layers, ..below }),
             None => Ok(Handshake::Done),
@@ -558,6 +571,7 @@ impl LayerStack {
                 layers: below,
                 socket,
                 traced: None,
+                heard: None,
             };
             // Each layer's end said in its name (`Curl_cshutdn_try_once_idx`).
             let filter = top[0].filter();
@@ -878,6 +892,7 @@ mod tests {
             layers: &mut [],
             socket: &*s,
             traced: None,
+            heard: None,
         };
         assert_eq!(
             below().alive(&mut cx),
@@ -897,6 +912,7 @@ mod tests {
             layers: &mut [],
             socket: &*refused,
             traced: None,
+            heard: None,
         };
         assert_eq!(below.alive(&mut cx), Alive::Dead);
     }
@@ -959,6 +975,7 @@ mod tests {
                 layers: &mut [],
                 socket: &s,
                 traced: None,
+                heard: None,
             };
             below.alive(&mut Silent(ManualClock::new().unwrap().now()))
         };
@@ -996,6 +1013,7 @@ mod tests {
             layers: &mut [],
             socket: &socket,
             traced: None,
+            heard: None,
         };
         let mut cx = Silent(ManualClock::new().unwrap().now());
         assert_eq!(
@@ -1027,6 +1045,7 @@ mod tests {
             layers: &mut holds,
             socket: &*s,
             traced: None,
+            heard: None,
         };
         assert!(below.data_pending());
         let mut empty = [holdback(), upper()];
@@ -1034,6 +1053,7 @@ mod tests {
             layers: &mut empty,
             socket: &*s,
             traced: None,
+            heard: None,
         };
         assert!(!below.data_pending());
     }

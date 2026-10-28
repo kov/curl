@@ -2922,6 +2922,63 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
     assert_eq!(got, want, "{got:#?}");
 }
 
+/// HTTP/3 through an HTTP proxy whose CONNECT-UDP it answers, the
+/// origin then silent: the first attempt's socket has heard the proxy, so
+/// at the soft timeout the race finds it answered, its happy eyeballs
+/// filter connected and silent, and the second starts only at the hard
+/// one. C's tool against a proxy that answers 101 and then says nothing
+/// traces `h3 inconclusive after 200, starting h2` and no `query connect
+/// reply`.
+#[test]
+fn a_connect_udp_tunnel_answered_holds_the_second_to_the_hard_timeout() {
+    use crate::tls::fake::{self, WELCOME};
+    let switched = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\
+                     Upgrade: connect-udp\r\nCapsule-Protocol: ?1\r\n\r\n"
+        .to_vec();
+    let tunnel = b"HTTP/1.1 200 Connection established\r\n\r\n".to_vec();
+    let response = fake::records(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello").unwrap();
+    let silent = Conversation::replies(&[&switched], false).per_send();
+    let talk = Conversation::replies(&[&tunnel, WELCOME, &response], false).per_send();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], UDP_PROXY_PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, silent)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3;
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"hello");
+    let got = lines(
+        &ran,
+        &[
+            "CONNECT-UDP tunnel",
+            "[HTTPS-CONNECT] h3",
+            "[HAPPY-EYEBALLS] query connect reply",
+        ],
+    );
+    let want = expect(
+        "
+        CONNECT-UDP tunnel established, response 101
+        [HTTPS-CONNECT] h3 inconclusive after 200, starting h1
+        ",
+    );
+    assert_eq!(got, want, "{got:#?}");
+}
+
 /// HTTP/3 through an HTTP proxy that refuses CONNECT-UDP and then
 /// CONNECT: both attempts fail once dialed, which fails the race, and
 /// both go with the connection, the CONNECT-UDP one first, on no

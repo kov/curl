@@ -564,8 +564,11 @@ the loser (`ConnLease::adopt`). The second starts as the first fails (`h3
 baller failed`), at the soft timeout (half the eyeballs timeout) if the first's peer has sent
 nothing (`[HAPPY-EYEBALLS] query connect reply: -1ms`, `has not seen any data after 100ms`),
 else at the hard timeout (`inconclusive after 200`), the `ALPN_EYEBALLS` timer armed again for
-what is left of it. A TCP first reports no reply yet (its socket keeps no first byte's time),
-so it gives way at the soft timeout. An attempt that fails while the other runs is let go;
+what is left of it. While the first races, its happy eyeballs filter answers with its QUIC
+attempts' first datagram (`cf_ip_ballers_min_reply_ms`); once its first hop is dialed the
+filter is connected and the question reaches the socket, which has heard from its peer or not,
+untraced: a first through a proxy that answered (a CONNECT-UDP tunnel's `101`) holds the second
+to the hard timeout. An attempt that fails while the other runs is let go;
 once both fail, the setup fails with the first's failure (`ballers[0].result`). The loser goes
 with the HTTPS connect filter at `connected`, its setup's filters with it (`[SETUP] destroy`,
 `[HAPPY-EYEBALLS] destroy` and its attempts'); a first that failed lost its attempts as it

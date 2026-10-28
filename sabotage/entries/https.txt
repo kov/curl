@@ -225,3 +225,19 @@ witness: curl-core proto::http::tests::h3_trace::a_late_quic_peer_wins_after_the
         Second::Started(_) if leads => true,
 --- new
         Second::Started(_) if false => true,
+
+=== a dialed first hop that heard its proxy is not taken for an answer
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_connect_udp_tunnel_answered_holds_the_second_to_the_hard_timeout
+--- old
+                d.stream.heard() ||
+--- new
+                false && d.stream.heard() ||
+
+=== a socket's first byte is not remembered
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core proto::http::tests::h3_trace::a_connect_udp_tunnel_answered_holds_the_second_to_the_hard_timeout
+--- old
+                    heard.set(true);
+--- new
+                    heard.set(false);

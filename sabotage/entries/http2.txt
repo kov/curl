@@ -246,7 +246,7 @@ witness: curl-core proto::http::tests::h2::two_transfers_share_a_connection
                     && let Some(to) = to
                     && to == me
 
-=== a transfer joining a connection makes it a session of its own
+=== a transfer joining a connection checks it as a new one
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core proto::http::tests::h2::two_transfers_share_a_connection
 --- old

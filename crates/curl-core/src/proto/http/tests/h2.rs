@@ -1378,6 +1378,9 @@ fn two_transfers_share_a_connection() {
         text.iter().any(|l| l == "Multiplexed connection found\n"),
         "{text:?}"
     );
+    // The connection is reused: its first request's check is not made
+    // again (`http_check_new_conn`, only on `!conn->bits.reuse`).
+    assert!(!text.iter().any(|l| l == "using HTTP/2\n"), "{text:?}");
 }
 
 /// A transfer taken out of the multi with its stream still open resets

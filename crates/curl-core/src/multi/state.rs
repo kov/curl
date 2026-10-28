@@ -3197,7 +3197,15 @@ fn connect_once<H: Host>(
     // in the same check (`cf_h3_proxy_connect`).
     if let Ok(Connected::Connecting(Progress::Tunnel { until })) = connected {
         connected = match tunnels_drive(&mut c, cx, a) {
-            Ok(Tunnels::Idle) => Ok(Connected::Connecting(Progress::Waiting { until })),
+            Ok(Tunnels::Idle) => {
+                // The attempt runs on, its tunnel asked for: the race says
+                // what it checked, as C's does once the baller's connect
+                // returns.
+                if let Some(m) = c.attempt(a) {
+                    m.checked(cx);
+                }
+                Ok(Connected::Connecting(Progress::Waiting { until }))
+            }
             decided => tunnel_decided(&mut c, a, run, cx, kept.as_ref(), &mut displaced, decided),
         };
     }

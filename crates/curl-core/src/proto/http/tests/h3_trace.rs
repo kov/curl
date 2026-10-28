@@ -2441,6 +2441,7 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
         &[
             "[SETUP] happy eyeballing",
             "[H3-PROXY]",
+            "[HAPPY-EYEBALLS] checked",
             "Establishing",
             "CONNECT",
             "Response Headers",
@@ -2456,6 +2457,7 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
         "[SETUP] happy eyeballing to HTTP/3 proxy localhost:{PORT}
         [H3-PROXY] created, udp_tunnel=0
         [H3-PROXY] fake QUIC session 1
+        [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
         [H3-PROXY] fake QUIC session 1 trusts
         [H3-PROXY] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
         [H3-PROXY] max bidi streams now 100, used 0
@@ -2477,6 +2479,7 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
         CONNECT tunnel established, response 200
         [H3-PROXY] [0] -> [established]
         CONNECT phase completed for HTTP/3 proxy
+        [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
         [READ] client_reset, clear readers
         [H3-PROXY] query ALPN"
     ));

@@ -878,6 +878,15 @@ impl ConnectMachine {
         self.make_quic(cx, local, remote, true)
     }
 
+    /// The race's attempts were checked and none decided: those running
+    /// say so (`cf_ip_ballers_run`), as an attempt whose QUIC connection
+    /// to an HTTP/3 proxy is made goes on to its tunnel.
+    pub(crate) fn checked(&self, cx: &mut dyn LayerCx) {
+        if let Stage::Racing(r) = &self.stage {
+            r.checked(cx);
+        }
+    }
+
     /// The addresses the name resolved to, once it has: held until the
     /// setup is connected, fails or is given up, as C's DNS filter holds
     /// its entry above the connect filters (`cf_dns`), the first hop
@@ -1957,7 +1966,7 @@ impl Racing {
     /// The attempts were checked and none decided: those running say so
     /// (`cf_ip_ballers_run`), none having failed inconclusively, to be
     /// started again.
-    fn checked(&self, cx: &mut dyn ConnCx) {
+    fn checked(&self, cx: &mut dyn LayerCx) {
         if self.attempts.is_empty() {
             return;
         }

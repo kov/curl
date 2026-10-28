@@ -533,7 +533,7 @@ witness: curl-core proto::http::tests::a_transfer_removed_mid_connect_leaves_no_
 --- new
             TransferState::Connecting(mut c) => Done {
                 premature: {
-                    let promoted = c.handshake.is_some();
+                    let promoted = c.setup.handshake.is_some();
                     if promoted {
                         c.lease.handshaken();
                     }
@@ -594,7 +594,7 @@ witness: curl-core proto::http::tests::tls::https_through_an_https_proxy_is_tls_
 --- old
     if proxy_tls && tunnels {
 --- new
-    if proxy_tls && tunnels && made.has(Made::TUNNEL) {
+    if proxy_tls && tunnels && made.tunnel.is_some() {
 
 === a request forwarded to an HTTPS proxy goes without its TLS
 file: crates/curl-core/src/multi/state.rs

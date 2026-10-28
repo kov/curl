@@ -1357,6 +1357,34 @@ fn a_tunnel_through_an_http_2_proxy_is_a_stream() {
     assert!(text.iter().any(|l| l == "using HTTP/1.x\n"), "{text:?}");
 }
 
+/// ALPN off, a proxy asked for in HTTP/2 is still offered it, but the
+/// origin's TLS through its tunnel offers nothing: the proxy's ALPN is
+/// the proxy filter's alone (`cf_ssl_proxy_create`).
+#[test]
+fn https_through_an_http_2_proxy_with_alpn_off_offers_the_origin_nothing() {
+    let (backend, libraries, replies) = h2_proxy(b"S\nH 1 0\n:status: 200\n\n", b"");
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let talk = Conversation::replies(&replies, false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        https_proxy(o, b"https://origin.example/p");
+        o.proxy.make_mut().unwrap().kind = crate::options::ProxyType::Https2;
+        o.tls.options.make_mut().unwrap().alpn = false;
+        o.limits.total = crate::time::TimeLimit::from_millis(300);
+    });
+    assert!(ran.result.is_err(), "the origin never answers");
+    let log = backend.log();
+    assert_eq!(log.sessions, 2, "the proxy's session, then the origin's");
+    assert_eq!(
+        log.name(),
+        b"origin.example",
+        "the last session, the origin's"
+    );
+    assert_eq!(log.alpn, Some(crate::tls::Alpn::None));
+}
+
 /// The request follows an HTTP/2 proxy's `CONNECT`, so once the tunnel
 /// is up what reads it starts over, after the phase is said to be
 /// completed (`cf_h2_proxy_connect`'s `Curl_client_reset`).

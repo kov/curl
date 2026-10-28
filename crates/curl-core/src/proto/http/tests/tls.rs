@@ -153,6 +153,58 @@ fn the_socket_under_a_session_traces_what_the_session_asks_of_it() {
     assert!(!lines.iter().any(|l| l.contains(&plain)), "{lines:?}");
 }
 
+/// A response the session holds more of than a step's eleven reads take
+/// runs the transfer again, and says so as C's does over TLS: the step
+/// stopping short of a read that would block (`sendrecv_dl`), then, while
+/// the session still holds input, the pollset that wants to read
+/// (`multi_adjust_pollset`). C's tool traces the
+/// two lines in that order, 16 times over a 3 MB download from h2o.
+#[test]
+fn a_step_that_stops_with_input_held_marks_the_transfer_dirty_as_c() {
+    let (_, libraries) = tls();
+    let body = vec![b'x'; 20 * fake::RECORD];
+    let mut response =
+        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+    response.extend_from_slice(&body);
+    let [welcome, records] = served(&response);
+    let (mut m, talk, _) = server(&[&welcome, &records], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries.clone());
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"multi");
+    e.set_components(Some(components));
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        let url = format!("https://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.buffer_size = crate::options::BufferSize::clamped(1024);
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), body);
+    let said: Vec<String> = ran
+        .seen
+        .text()
+        .iter()
+        .filter(|l| l.contains("mark as dirty") || l.contains("] pollset["))
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    // Eleven reads of 1024 bytes a step, out of 4096-byte records: the
+    // fourth step ends at a record's end, the session holding nothing and
+    // only the socket more, and C's pollset, which asks the filters and
+    // not the socket, says nothing of it.
+    let stop = "[MULTI] [PERFORMING] sendrecv_dl() no EAGAIN/pending data, mark as dirty";
+    let held = "[MULTI] [PERFORMING] pollset[] has POLLIN, but there is still buffered input -> mark as dirty";
+    let wait = "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=1";
+    let mut want = Vec::new();
+    for step in 1..=7 {
+        want.push(stop);
+        if step != 4 {
+            want.push(held);
+        }
+        want.push(wait);
+    }
+    assert_eq!(said[2..], want, "{said:#?}");
+}
+
 /// A record longer than the transfer's read is given out over as many
 /// reads, from what the session holds, without waiting on the socket,
 /// which has nothing more to say.

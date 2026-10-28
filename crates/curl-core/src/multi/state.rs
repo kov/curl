@@ -2583,6 +2583,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                                 if over_limit(run, cx) {
                                     (TransferState::RateLimiting(x), Wake::Idle)
                                 } else {
+                                    buffered_input(&mut x, cx);
                                     (TransferState::Exchanging(x), Wake::Idle)
                                 }
                             }
@@ -2705,6 +2706,27 @@ fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
 /// timer is armed for when a limit next earns tokens, as the transfer
 /// may need them to go on (`mspeed_check`, `EXPIRE_TOOFAST`). C's state
 /// changes here, before the timer is armed, and each is traced.
+/// An exchange that is to wait for input while its connection holds some
+/// where a poll cannot see it runs again in the next pass, as C's pollset
+/// finds and says (`multi_adjust_pollset`). Only a step that stopped
+/// reading short leaves input held, and it has marked the transfer
+/// already (`ProtoStep::AtReadLimit`), so the mark is C's line here.
+fn buffered_input<H: Host>(x: &mut Attached, cx: &mut StepCx<'_, H>) {
+    let wants = x.proto.interest(StepCx::pause(cx)).contains(Events::IN);
+    if wants && x.lease.get().data_pending() {
+        mstate::trace(
+            cx,
+            format_args!(
+                "pollset[] has POLLIN, but there is still buffered input -> mark as dirty"
+            ),
+        );
+        assert!(
+            cx.rest.dirty.contains(cx.me.index()),
+            "a step that leaves input held runs again"
+        );
+    }
+}
+
 fn over_limit<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> bool {
     match cx.rate_verdict() {
         Verdict::Wait(wait) => {

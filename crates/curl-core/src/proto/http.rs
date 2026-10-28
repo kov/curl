@@ -1974,6 +1974,13 @@ impl Request {
                 return Err(e);
             }
         };
+        if read == Read::Stopped {
+            // The step runs again without waiting on the socket.
+            crate::multi::mstate::trace(
+                cx,
+                format_args!("sendrecv_dl() no EAGAIN/pending data, mark as dirty"),
+            );
+        }
         // The request is over once its response is and nothing more of it
         // is to send (`KEEP_RECV` and `KEEP_SEND` both off).
         if self.sending() {

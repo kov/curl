@@ -1620,10 +1620,12 @@ its session first, an HTTP/2 one pending while it holds what came behind an upgr
 block while data is pending runs the transfer again (`sendrecv_dl` and
 `Curl_conn_data_pending`, through the step's `AtReadLimit` without its trace line). The pollset
 of an exchanging transfer passes through each layer's `adjust_pollset`, top down, unless the
-transfer waits for nothing, as `Curl_conn_adjust_pollset` gates a connected chain. C's other
-run-again, from the pollset (`multi_adjust_pollset`'s "still buffered input -> mark as dirty",
-and its line), is not ported: whether the engine, whose step runs a transfer again on pending
-data, can make a pollset with input buffered is open. The pool's health check asks `is_alive` down the chain, as
+transfer waits for nothing, as `Curl_conn_adjust_pollset` gates a connected chain. Such a step
+traces `sendrecv_dl() no EAGAIN/pending data, mark as dirty`; if the input is still held as
+the exchange goes to wait for more, C's pollset traces `pollset[] has POLLIN, but there is still
+buffered input -> mark as dirty` (`multi_adjust_pollset`), which the step's end traces. Only a
+step that stopped short leaves input held, and it has marked the transfer already, so there
+the mark is asserted, not made. The pool's health check asks `is_alive` down the chain, as
 `Curl_conn_is_alive` does (cf-socket.c:1811–1846, conncache.c:1041–1068), the socket at the
 bottom polled at once: an error or a hang-up is dead, anything to read is input pending, and
 input pending on an idle HTTP/1 connection makes it unhealthy (1701).

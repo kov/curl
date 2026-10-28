@@ -358,3 +358,28 @@ witness: curl-core multi::shutdown_tests::the_socket_callback_reaches_the_tls_ob
             None => lease.holding()?,
 --- new
             None => return None,
+
+=== a step stopping short of a read that would block says nothing
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::tls::a_step_that_stops_with_input_held_marks_the_transfer_dirty_as_c
+--- old
+        if read == Read::Stopped {
+            // The step runs again
+--- new
+        if false {
+            // The step runs again
+
+=== the pollset does not see input a layer holds
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::a_step_that_stops_with_input_held_marks_the_transfer_dirty_as_c
+--- old
+    if wants && x.lease.get().data_pending() {
+--- new
+    if wants && false {
+
+=== a step's end does not look for input held
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::a_step_that_stops_with_input_held_marks_the_transfer_dirty_as_c
+--- old
+                                    buffered_input(&mut x, cx);
+--- new

@@ -887,3 +887,23 @@ witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_at
 --- new
         if lead != Attempt::Second
             && let Some(first) = d.lease.fail_setup()
+
+=== a race's second loser once dialed is discarded on the transfer's trace
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_both_tunnels_fails
+--- old
+            (Some(race), SetupPoint::Dialed(_)) => {
+                let earlier = race.failed.take().expect("a loser kept");
+--- new
+            (Some(race), SetupPoint::Dialed(_)) if false => {
+                let earlier = race.failed.take().expect("a loser kept");
+
+=== a race's two losers once dialed close out of their ballers' order
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_both_tunnels_fails
+--- old
+                    Attempt::First => (lost, earlier),
+                    Attempt::Second => (earlier, lost),
+--- new
+                    Attempt::First => (earlier, lost),
+                    Attempt::Second => (lost, earlier),

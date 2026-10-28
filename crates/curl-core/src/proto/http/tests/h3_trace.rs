@@ -2852,6 +2852,79 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
     assert_eq!(got, want, "{got:#?}");
 }
 
+/// HTTP/3 through an HTTP proxy that refuses CONNECT-UDP and then
+/// CONNECT: both attempts fail once dialed, which fails the race, and
+/// both go with the connection, the CONNECT-UDP one first, on no
+/// transfer's trace: C's tool against such a proxy traces nothing of
+/// either's sockets between the second refusal and the connection's
+/// close.
+#[test]
+fn http3_through_a_proxy_refusing_both_tunnels_fails() {
+    let refused = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec();
+    let first = Conversation::replies(&[&refused], false).per_send();
+    let second = Conversation::replies(&[&refused], false).per_send();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], UDP_PROXY_PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, first)
+        .with_conversation(at, second.clone());
+    let closed = Arc::new(Mutex::new(Vec::new()));
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(Closes(net, closed.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", second, |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3;
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(*closed.lock().unwrap(), [1000, 1001]);
+    let text = ran.seen.text();
+    let from = text
+        .iter()
+        .position(|l| l.contains("CONNECT tunnel failed, response 403"))
+        .expect("the second is refused");
+    let to = text
+        .iter()
+        .position(|l| l.ends_with("closing connection #0\n"))
+        .expect("the connection closes");
+    let between: Vec<&String> = text[from..=to]
+        .iter()
+        .filter(|l| {
+            [
+                "[TCP]",
+                "[HTTPS-CONNECT]",
+                "Curl_multi_will_close",
+                "multi_done",
+                "closing",
+            ]
+            .iter()
+            .any(|n| l.contains(n))
+        })
+        .collect();
+    assert_eq!(
+        between,
+        [
+            "[0-0] [HTTPS-CONNECT] connect, all attempts failed\n",
+            "[0-0] [HTTPS-CONNECT] connect -> 7, done=0\n",
+            "[0-0] [MULTI] [CONNECTING] multi_done: status: 7 prem: 1 done: 0\n",
+            "[0-0] [MULTI] [CONNECTING] multi_done_locked, in use=0\n",
+            "[0-0] [MULTI] [CONNECTING] multi_done, terminating conn #0 to localhost:8990, \
+             forbid=0, close=0, premature=1, conn_multiplex=0\n",
+            "[0-0] closing connection #0\n",
+        ],
+        "{text:#?}"
+    );
+}
+
 /// HTTP/3 alone through an HTTP proxy goes over its CONNECT-UDP
 /// (`http_proxy_create_CONNECTUDP`): the race's attempt is the proxy's,
 /// in TCP; the request asks the proxy at the path naming the origin to

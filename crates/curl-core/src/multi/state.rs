@@ -3327,6 +3327,19 @@ fn attempt_failed<H: Host>(
             (Some(race), SetupPoint::Dialed(_)) if race.failed.is_none() => {
                 race.failed = Some(lost);
             }
+            // Both failed once dialed, which fails the race: both go
+            // with the connection, C's ballers in their order
+            // (`cf_hc_ctx_destroy`), on no transfer's trace.
+            (Some(race), SetupPoint::Dialed(_)) => {
+                let earlier = race.failed.take().expect("a loser kept");
+                let (first, second) = match a {
+                    Attempt::First => (lost, earlier),
+                    Attempt::Second => (earlier, lost),
+                };
+                let me = cx.me;
+                first.close(&mut cx.rest.announcing(me));
+                second.close(&mut cx.rest.announcing(me));
+            }
             _ => lost.discard(&mut DriveCx {
                 step: cx,
                 kept: None,

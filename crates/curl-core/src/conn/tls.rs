@@ -14,6 +14,7 @@ use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use super::io::{Events, Recv, Sent};
 use super::layer::{Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Part};
 use crate::components::Component;
+use crate::conn::layer::LayerCalls as _;
 use crate::error::ErrorKind;
 use crate::tls::{SessionPeer, TlsIo, TlsSession, TlsWait};
 
@@ -483,16 +484,40 @@ mod tests {
             crate::time::Clock::now(&ManualClock::new().unwrap())
         }
 
+        fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
+            None
+        }
+
+        fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+            None
+        }
+
+        fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
+            None
+        }
+
+        fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
+            None
+        }
+
+        fn early_data(&mut self) -> Option<&mut dyn crate::conn::layer::EarlyData> {
+            Some(self)
+        }
+
+        fn quic_timer(&mut self) -> Option<&mut dyn crate::conn::layer::QuicTimer> {
+            None
+        }
+
+        fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
+            None
+        }
+
         fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
             None
         }
-        fn of(&mut self, _: Component, _: fmt::Arguments<'_>) {}
-        fn of_with(&mut self, _: Component, _: &[&[u8]]) {}
-        fn info(&mut self, _: fmt::Arguments<'_>) {}
-        fn info_with(&mut self, _: &[&[u8]]) {}
-        fn fails_with(&mut self, kind: ErrorKind, _: &[&[u8]]) -> ErrorKind {
-            kind
-        }
+    }
+
+    impl crate::conn::layer::EarlyData for Noting {
         fn early_done(&mut self, sent: i64) {
             assert_eq!(self.0.replace(sent), None, "told once");
         }

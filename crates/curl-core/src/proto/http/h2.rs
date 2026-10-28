@@ -13,6 +13,7 @@ use curl_alloc::try_box;
 use super::*;
 use crate::components::Component;
 use crate::conn::RecvFailed;
+use crate::conn::layer::LayerCalls as _;
 use crate::conn::layer::LayerCx;
 use crate::error::AGAIN_NUMBER;
 use crate::http2::{BodyRead, DEFAULT_WEIGHT, Event, Frame, FrameKind, H2Error, Heard, StreamId};

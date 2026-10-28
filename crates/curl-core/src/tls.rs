@@ -22,6 +22,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 use crate::components::Component;
 use crate::conn::Peer;
 use crate::conn::io::{Recv, Sent};
+use crate::conn::layer::LayerCalls as _;
 use crate::conn::layer::{Below, LayerCx};
 use crate::error::ErrorKind;
 use crate::handler::DebugKind;
@@ -580,7 +581,7 @@ impl TlsCx<'_> {
 
     /// The transfer traces to a debug handler (C's `data->set.fdebug`
     /// and `verbose`), which a library's trace of its records is for.
-    pub fn debugs(&self) -> bool {
+    pub fn debugs(&mut self) -> bool {
         self.cx.debugs()
     }
 
@@ -607,7 +608,7 @@ impl TlsCx<'_> {
 
     /// The transfer is verbose (`Curl_trc_is_verbose`): a library with
     /// work to do for its `info` lines, work that can fail, asks first.
-    pub fn verbose(&self) -> bool {
+    pub fn verbose(&mut self) -> bool {
         self.cx.verbose()
     }
 
@@ -664,7 +665,7 @@ impl TlsCx<'_> {
     /// The transfer's application sets each context up itself
     /// (`CURLOPT_SSL_CTX_FUNCTION`): a library makes the context whole,
     /// its trust store too, before it hands it over.
-    pub fn configures_context(&self) -> bool {
+    pub fn configures_context(&mut self) -> bool {
         self.cx.configures_tls()
     }
 
@@ -687,13 +688,13 @@ impl TlsCx<'_> {
 
     /// The time of day, in seconds since 1970 (`time(NULL)`), which a
     /// session's lifetime counts from.
-    pub fn unix_time(&self) -> i64 {
+    pub fn unix_time(&mut self) -> i64 {
         self.cx.unix_time()
     }
 
     /// The transfer has a cache of sessions and the connection keeps its
     /// own there (`Curl_ssl_scache_use`).
-    pub fn caches_sessions(&self) -> bool {
+    pub fn caches_sessions(&mut self) -> bool {
         self.cx.has_tls_sessions() && self.peer.caches()
     }
 
@@ -703,8 +704,8 @@ impl TlsCx<'_> {
         let now = self.cx.unix_time();
         let peer = self.peer;
         let mut taken = None;
-        self.cx.tls_sessions(&mut |cache, cx| {
-            taken = cache.take(peer, now, &mut |line| cx.of(Component::Ssls, line));
+        self.cx.with_tls_sessions(&mut |cache, cx| {
+            taken = cache.take(peer, now, &mut |line| cx.say_line(Component::Ssls, line));
         });
         taken
     }
@@ -719,12 +720,14 @@ impl TlsCx<'_> {
         let now = self.cx.unix_time();
         let peer = self.peer;
         let mut ticket = Some(ticket);
-        self.cx.tls_sessions(&mut |cache, cx| {
+        self.cx.with_tls_sessions(&mut |cache, cx| {
             let ticket = ticket.take().expect("called once");
-            let kept = cache.put(peer, ticket, now, &mut |line| cx.of(Component::Ssls, line));
+            let kept = cache.put(peer, ticket, now, &mut |line| {
+                cx.say_line(Component::Ssls, line);
+            });
             if kept.is_err() {
                 let key = cache::Shown(peer.key());
-                cx.fails(
+                cx.say_failure(
                     ErrorKind::OutOfMemory,
                     format_args!("[SCACHE] failed to add session for {key}, error=27"),
                 );
@@ -745,8 +748,8 @@ impl TlsCx<'_> {
     /// failed (`Curl_ssl_scache_remove_all`).
     pub fn forget_sessions(&mut self) {
         let peer = self.peer;
-        self.cx.tls_sessions(&mut |cache, cx| {
-            cache.remove_all(peer, &mut |line| cx.of(Component::Ssls, line));
+        self.cx.with_tls_sessions(&mut |cache, cx| {
+            cache.remove_all(peer, &mut |line| cx.say_line(Component::Ssls, line));
         });
     }
 }
@@ -784,37 +787,91 @@ impl LayerCx for Notes {
         crate::time::Clock::now(&crate::time::ManualClock::new().expect("a clock"))
     }
 
-    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+    fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
+        Some(self)
+    }
+
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        Some(self)
+    }
+
+    fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
         None
     }
 
-    fn of(&mut self, _: Component, line: fmt::Arguments<'_>) {
+    fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
+        None
+    }
+
+    fn early_data(&mut self) -> Option<&mut dyn crate::conn::layer::EarlyData> {
+        None
+    }
+
+    fn quic_timer(&mut self) -> Option<&mut dyn crate::conn::layer::QuicTimer> {
+        None
+    }
+
+    fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
+        None
+    }
+
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        None
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test's notes, which may allocate as they like"
+)]
+impl crate::conn::layer::Trace for Notes {
+    fn line(&mut self, _: Component, line: fmt::Arguments<'_>) {
         self.0.push(format!("trace: {line}"));
     }
 
-    fn of_with(&mut self, _: Component, parts: &[&[u8]]) {
+    fn line_with(&mut self, _: Component, parts: &[&[u8]]) {
         let line = String::from_utf8(parts.concat()).expect("a test's line is text");
         self.0.push(format!("trace: {line}"));
     }
 
-    fn info(&mut self, line: fmt::Arguments<'_>) {
+    fn info_line(&mut self, line: fmt::Arguments<'_>) {
         self.0.push(format!("info: {line}"));
     }
 
-    fn info_with(&mut self, parts: &[&[u8]]) {
+    fn info_line_with(&mut self, parts: &[&[u8]]) {
         let line = String::from_utf8(parts.concat()).expect("a test's line is text");
         self.0.push(format!("info: {line}"));
     }
 
-    fn fails(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
+    /// Its info lines are noted, but a library asking first is told the
+    /// transfer is not verbose.
+    fn says_info(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test's notes, which may allocate as they like"
+)]
+impl crate::conn::layer::Failures for Notes {
+    fn keep(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
         self.0.push(format!("fail: {kind:?}: {why}"));
         kind
     }
 
-    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+    fn keep_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
         let why = String::from_utf8(parts.concat()).expect("a test's reason is text");
         self.0.push(format!("fail: {kind:?}: {why}"));
         kind
+    }
+
+    fn keep_errno(&mut self, e: &std::io::Error) {
+        self.0.push(format!("errno: {e}"));
     }
 }
 
@@ -850,39 +907,45 @@ impl LayerCx for Kept {
         self.notes.now()
     }
 
-    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+    fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
+        Some(&mut self.notes)
+    }
+
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        Some(&mut self.notes)
+    }
+
+    fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
         None
     }
 
-    fn of(&mut self, component: Component, line: fmt::Arguments<'_>) {
-        self.notes.of(component, line);
+    fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
+        Some(self)
     }
 
-    fn info(&mut self, line: fmt::Arguments<'_>) {
-        self.notes.info(line);
+    fn early_data(&mut self) -> Option<&mut dyn crate::conn::layer::EarlyData> {
+        None
     }
 
-    fn fails(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
-        self.notes.fails(kind, why)
+    fn quic_timer(&mut self) -> Option<&mut dyn crate::conn::layer::QuicTimer> {
+        None
     }
 
-    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
-        self.notes.of_with(component, parts);
+    fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
+        None
     }
 
-    fn info_with(&mut self, parts: &[&[u8]]) {
-        self.notes.info_with(parts);
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        None
     }
+}
 
-    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
-        self.notes.fails_with(kind, parts)
-    }
-
-    fn has_tls_sessions(&self) -> bool {
-        true
-    }
-
-    fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut SessionCache, &mut dyn LayerCx)) {
+#[cfg(any(test, feature = "test-util"))]
+impl crate::conn::layer::TlsSessions for Kept {
+    fn with_cache(
+        &mut self,
+        f: &mut dyn FnMut(&mut SessionCache, &mut dyn crate::conn::layer::SessionSays),
+    ) {
         f(&mut self.sessions, &mut self.notes);
     }
 }

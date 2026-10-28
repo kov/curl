@@ -17,6 +17,7 @@ use super::io::{Events, Recv, Sent, Socket};
 use super::layer::{Alive, Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Part};
 use super::quic::{Quic, QuicIo, RecvRoom};
 use crate::components::Component;
+use crate::conn::layer::LayerCalls as _;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::http3::{H3Error, Heard, StreamEvent, StreamId};
 use crate::text::Text;
@@ -353,84 +354,35 @@ impl LayerCx for Tunnelled<'_> {
         self.cx.now()
     }
 
-    fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
-        self.cx.of(component, line);
+    fn trace(&mut self) -> Option<&mut dyn super::layer::Trace> {
+        self.cx.trace()
     }
 
-    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
-        self.cx.of_with(component, parts);
+    fn failures(&mut self) -> Option<&mut dyn super::layer::Failures> {
+        self.cx.failures()
     }
 
-    fn info(&mut self, line: std::fmt::Arguments<'_>) {
-        self.cx.info(line);
+    fn transfer(&mut self) -> Option<&mut dyn super::layer::ForTransfer> {
+        self.cx.transfer()
     }
 
-    fn info_with(&mut self, parts: &[&[u8]]) {
-        self.cx.info_with(parts);
+    fn tls_sessions(&mut self) -> Option<&mut dyn super::layer::TlsSessions> {
+        self.cx.tls_sessions()
     }
 
-    fn socket_failed(&mut self, e: &io::Error) {
-        self.cx.socket_failed(e);
+    /// The connection to the proxy reports no early data to the
+    /// transfer.
+    fn early_data(&mut self) -> Option<&mut dyn super::layer::EarlyData> {
+        None
     }
 
-    fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
-        self.cx.fails(kind, why)
+    fn quic_timer(&mut self) -> Option<&mut dyn super::layer::QuicTimer> {
+        self.cx.quic_timer()
     }
 
-    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
-        self.cx.fails_with(kind, parts)
-    }
-
-    fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
-        self.cx.bytes(kind, bytes);
-    }
-
-    fn debugs(&self) -> bool {
-        self.cx.debugs()
-    }
-
-    fn verbose(&self) -> bool {
-        self.cx.verbose()
-    }
-
-    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
-        self.cx.certinfo_report()
-    }
-
-    fn tls_verified(&mut self, filter: Component, result: i64) {
-        self.cx.tls_verified(filter, result);
-    }
-
-    fn configures_tls(&self) -> bool {
-        self.cx.configures_tls()
-    }
-
-    fn configure_tls(&mut self, native: crate::tls::TlsNative) -> Result<(), ErrorKind> {
-        self.cx.configure_tls(native)
-    }
-
-    fn pause_recv(&mut self) {
-        self.cx.pause_recv();
-    }
-
-    fn unix_time(&self) -> i64 {
-        self.cx.unix_time()
-    }
-
-    fn has_tls_sessions(&self) -> bool {
-        self.cx.has_tls_sessions()
-    }
-
-    fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx)) {
-        self.cx.tls_sessions(f);
-    }
-
-    fn h3_event(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
-        self.tunnel.heard(&mut *self.cx, stream, event)
-    }
-
-    fn quic_due(&mut self, wait: std::time::Duration) {
-        self.cx.quic_due(wait);
+    /// The tunnel's: its stream is the one stream on the connection.
+    fn h3_streams(&mut self) -> Option<&mut dyn super::layer::H3Streams> {
+        Some(self)
     }
 
     /// The transfer's: the connection to the proxy is on a socket, and
@@ -438,6 +390,12 @@ impl LayerCx for Tunnelled<'_> {
     /// (`Curl_multi_xfer_sockbuf_borrow`).
     fn recv_room(&mut self) -> Option<&mut RecvRoom> {
         self.cx.recv_room()
+    }
+}
+
+impl super::layer::H3Streams for Tunnelled<'_> {
+    fn heard(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
+        self.tunnel.heard(&mut *self.cx, stream, event)
     }
 }
 

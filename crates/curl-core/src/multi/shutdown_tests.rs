@@ -793,7 +793,7 @@ fn a_multi_traces_internally_when_asked() {
 /// on, and says its `infof` lines there, as C's internal handle does.
 #[test]
 fn work_for_no_transfer_is_said_only_on_the_internal_trace() {
-    use crate::conn::layer::LayerCx;
+    use crate::conn::layer::LayerCalls as _;
     use crate::time::Clock;
     let now = ManualClock::new().unwrap().now();
     let mut silent = crate::trace::InternalCx {

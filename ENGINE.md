@@ -1589,12 +1589,19 @@ pub enum Handshake { Done, Waiting }                         // public: a TLS se
 pub(crate) enum Alive { Dead, Alive { input_pending: bool } }
 pub(crate) struct Below<'a> { layers: &'a mut [Box<dyn Layer>], socket: &'a dyn Socket }
 pub(crate) struct LayerStack { layers: Option<Box<Vec<Box<dyn Layer>>>> }   // bottom first
-pub(crate) trait LayerCx {
+pub(crate) trait LayerCx {           // each capability lent or not; no defaults
     fn now(&self) -> Instant;
-    fn of(&mut self, c: Component, line: fmt::Arguments<'_>);   // CURL_TRC_CF
-    fn info(&mut self, line: fmt::Arguments<'_>);                // infof
-    fn socket_failed(&mut self, e: &io::Error) {}                // state.os_errno
+    fn trace(&mut self) -> Option<&mut dyn Trace>;               // CURL_TRC_CF, infof
+    fn failures(&mut self) -> Option<&mut dyn Failures>;         // failf, state.os_errno
+    fn transfer(&mut self) -> Option<&mut dyn ForTransfer>;      // debug, report, SSL_CTX, pause
+    fn tls_sessions(&mut self) -> Option<&mut dyn TlsSessions>;  // the share's or the multi's
+    fn early_data(&mut self) -> Option<&mut dyn EarlyData>;      // Curl_pgrsEarlyData
+    fn quic_timer(&mut self) -> Option<&mut dyn QuicTimer>;      // EXPIRE_QUIC
+    fn h3_streams(&mut self) -> Option<&mut dyn H3Streams>;      // a stream's transfer
+    fn recv_room(&mut self) -> Option<&mut RecvRoom>;            // xfer_sockbuf
 }
+pub(crate) trait LayerCalls: LayerCx { /* of, info, fails, socket_failed, bytes, quic_due,
+    h3_event, ...: each through its capability, nothing where none is lent */ }
 ```
 
 Every piece of a connection is a `Part`, over what lies below it (`Lower`): its setup, what it
@@ -1639,10 +1646,20 @@ input pending on an idle HTTP/1 connection makes it unhealthy (1701).
 
 `LayerCx` is an argument, never stored, which removes C's `CF_DATA_SAVE/RESTORE` and its
 dangling-easy class. Inside a step it is the transfer's (`ConnCx`, §4.7, extends it); a pool
-section has a silent one. A call on the socket that fails, a receive or a send at the bottom of
+section has a silent one (`Silent`). It is split by who needs what: each capability a layer may
+need is a trait of its own, and the context says, with no default, whether it lends it (an
+accessor answering `Some` or `None`). The step's context lends all but the streams; one over
+another's (the drive's over the step's, QUIC's calls over the transfer's) lends that one's, or
+says why not; work for no transfer lends little: the internal handle's trace and the multi's
+room (`InternalCx`), a handle's failures (`RawCx`), or nothing (`Silent`). What a layer calls
+(`LayerCalls`: `of`, `info`, `fails`, `socket_failed`, `bytes`, `quic_due`, `h3_event`, ...)
+asks the capability it needs and is nothing, or the answer of work for no transfer, where none
+is lent; no context writes a call that does nothing. A use of a cache of TLS sessions is given
+less still (`SessionSays`: its lines and its failure), which a share's use under its lock holds
+until the lock is let go. A call on the socket that fails, a receive or a send at the bottom of
 `Below`, or an attempt to connect in the drive, is told to `socket_failed`, which the
-transfer's context keeps in its report as C's socket filter keeps `os_errno` (cf-socket.c), and
-a silent one drops; the report starts over without it with each transfer. A layer asks another layer something only through `query`. Only
+transfer's failures keep in its report as C's socket filter keeps `os_errno` (cf-socket.c), and
+a silent context drops; the report starts over without it with each transfer. A layer asks another layer something only through `query`. Only
 `conn::*` and `multi::wait` call `Net`.
 
 TLS's is the one layer pushed outside the tests (`conn::tls::TlsLayer`, §4.9): pushed by the
@@ -1664,12 +1681,13 @@ answer reaches the TLS handshake first, on both legs. A binding crate cannot imp
 `Layer`, which stays crate-private: the core's `TlsLayer` implements it over the public
 `curl_core::tls::TlsSession` a library makes (§4.9).
 
-`LayerCx` carries what a TLS layer reaches through the transfer: `bytes(kind, data)` for the
-SSL data a handshake and its records make (C's msg callback, `CURLINFO_SSL_DATA_IN`/`OUT`),
-`configure_tls(native)`, the application's context handler (`CURLOPT_SSL_CTX_FUNCTION`),
-called through the transfer's context, and `pause_recv`, a handshake waiting for the
-application (`Curl_xfer_pause_recv`); the silent context of a pool section has none of them, as
-C's internal handle has no debug function and no SSL_CTX callback. A connection's layers are
+The transfer's capability (`ForTransfer`) carries what a TLS layer reaches through the
+transfer: `bytes(kind, data)` for the SSL data a handshake and its records make (C's msg
+callback, `CURLINFO_SSL_DATA_IN`/`OUT`), `configure_tls(native)`, the application's context
+handler (`CURLOPT_SSL_CTX_FUNCTION`), called through the transfer's context, and `pause_recv`,
+a handshake waiting for the application (`Curl_xfer_pause_recv`); the silent context of a pool
+section lends none of it, as C's internal handle has no debug function and no SSL_CTX
+callback. A connection's layers are
 asked from the top (`LayerStack::query`, the first that answers): `LayerQuery::TlsNative` is
 answered by the origin's TLS layer with its library's objects (§4.9), `LayerQuery::Alpn` with
 the protocol its peer chose of the offer, and `LayerQuery::TlsWaits` with what its session
@@ -1897,7 +1915,7 @@ consumed; the connection's window as body data arrives) the binding does inside 
 C does; what C's filter traces or decides is told to the caller as an `http3::Event`, with the
 transfer: the connection's own (`ConnEvent`: the handshake's end, HTTP/3 failing to set up, the
 streams the peer allows), which `Quic` hears, or a stream's (`StreamEvent`, with its id), which
-`Quic` hands to the transfer through `LayerCx::h3_event`, so that neither consumer has a case it
+`Quic` hands to who hears the call's streams (`LayerCx::h3_streams`), so that neither consumer has a case it
 cannot be told. Where C's callbacks act on the connection for the caller (a stream's receive window,
 `cf_ngtcp2_upd_rx_win`), the caller does it once the call returns, which changes nothing on the
 wire before the connection next writes.
@@ -1925,9 +1943,12 @@ context over another's that one's, the multi's own work on its pool and its shut
 multi's as C's admin handle borrows it, and a context with no multi none, the receive then
 making one for the call as C mallocs one with no multi. A second loan while the first is out is
 a receive inside a receive on the room, which nothing makes: it asserts. (`LayerCx` carries the
-room since a connection to an HTTP/3 proxy receives as a layer of the origin's stream, given
-only a `LayerCx`; no QUIC-only context trait sits beside it. Step 66's split of `LayerCx` by
-who needs what keeps the loan with the contexts that reach a multi.) A connection whose
+room, the QUIC timer and the streams' events since a connection to an HTTP/3 proxy works as a
+layer of the origin's stream, given only a `LayerCx`.) The calls on a connection lend what
+they are for: a request's step (`H3Step`) the streams' transfers; a call into the proxy's
+connection (`h3proxy::Tunnelled`) the tunnel, and no early data, which is the origin's; a
+pooled connection's check or goodbye (`quic::Lone`) streams no transfer has and no timer; an
+attempt's (`quic::Over`) the drive's, which lends a timer of its own and no early data. A connection whose
 datagrams go through a proxy's CONNECT-UDP tunnel is made layered, a fact it keeps: each
 datagram goes to the stream's layers on its own (`QuicIo::send_below`), a run cut at its
 segment size and only a whole datagram sent (`vquic_cf_send`), and comes back one per receive
@@ -2598,7 +2619,7 @@ set, cannot load certificate`, 58); an unknown type is 43, as C. The tool's `--c
 **The peer's chain** (`CURLOPT_CERTINFO`, a per-handle bit in `Tls` that the identity does not
 compare) is read first in the peer check (`certinfo.rs`, `ossl_certchain`): each certificate's
 fields as `label:value` lines worded as C's, into a `CertInfo` the transfer's report holds
-(`info.certs`, through `LayerCx::certinfo_report`), so a peer that then fails its check has
+(`info.certs`, through `LayerCalls::certinfo_report`), so a peer that then fails its check has
 been reported all the same, and a chain longer than 100 fails the handshake (35). The report's
 restart clears it. The shim answers `CURLINFO_CERTINFO` with the handle's `struct curl_certinfo`,
 made again only when the chain differs; the tool asks for it whenever `-w` is given, for
@@ -2697,7 +2718,7 @@ before going on (`TlsSession::handshake_early`); a receive first lets it go on w
 it is over each send and receive waits on it. Taken by the peer, the sends after skip the bytes
 that went early, which their caller sends again as it always does after a send that waited
 (asserted); refused, they are all sent. Over, the origin's layer tells the transfer
-(`LayerCx::early_done`), which times its TLS then rather than as the connection is set up and
+(`LayerCalls::early_done`), which times its TLS then rather than as the connection is set up and
 keeps the count, negative if refused (`CURLINFO_EARLYDATA_SENT_T`, `%{tls_earlydata}`; the
 handle's, kept as transfers start over and cleared by a reset). A handshake put off that fails
 fails every use of the connection after with its own error, which the transfer fails with in
@@ -2729,7 +2750,7 @@ each handshake done says `SSLKEYLOGFILE set, all TLS secrets are logged to '<fil
 session's own object. `CURLOPT_SSL_CTX_FUNCTION` is a transfer call-out (api.c's
 `easy_fsslctx`), so it is a `TlsContextHandler` in the TLS options' cold group (the handle's:
 the identity a connection keeps holds none), called through the transfer's context
-(`TlsIo::configure_context`, `LayerCx::configure_tls`) with the context alone; its error fails
+(`TlsIo::configure_context`, `LayerCalls::configure_tls`) with the context alone; its error fails
 the transfer with its kind (`error signaled by SSL ctx callback`). A transfer's handlers reach the
 objects of the origin's connection it holds (`TransferCx::tls_native`, `EventCx`, `NotifyCx` and
 `Multi::tls_native` alike, by id): through the run in its slot, its connection's layers asked
@@ -2820,7 +2841,7 @@ timeout is the race's, not a `CONNECT`'s. A refusal fails the attempt
 (`ConnectMachine::tunnel_failed`): the race goes on to an address left, and with none fails as a
 race does, `Failed to connect … over proxy …` and `CouldntConnect`. A read once the stream is gone
 fails (`RecvError`). The library's timer is asked for through
-`LayerCx::quic_due`, which a layer below the transfer's reaches as the transfer's own QUIC
+`LayerCalls::quic_due`, which a layer below the transfer's reaches as the transfer's own QUIC
 connection does. Requests not tunnelled go to such a proxy over TCP, as C sends them
 (`Curl_http_proxy_transport`). An HTTP/3 origin through an HTTP/3 proxy is QUIC in QUIC: the
 tunnel is CONNECT-UDP's (§ the CONNECT-UDP tunnel), its capsules the stream's DATA, as C's

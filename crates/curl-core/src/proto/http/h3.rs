@@ -17,7 +17,6 @@ use crate::http3::{H3Error, Heard, StreamEvent, StreamId};
 use crate::proto::http2::fields_of;
 use crate::proto::http3::H3Conn;
 use crate::text::Text;
-use crate::tls::TlsNative;
 
 /// The most a stream's receive window opens to
 /// (`H3_STREAM_WINDOW_SIZE_MAX`).
@@ -168,98 +167,49 @@ struct H3Step<'a, 'c, H: Host> {
 }
 
 impl<H: Host> LayerCx for H3Step<'_, '_, H> {
-    fn recv_room(&mut self) -> Option<&mut RecvRoom> {
-        LayerCx::recv_room(&mut *self.cx)
-    }
-
-    fn quic_due(&mut self, wait: std::time::Duration) {
-        LayerCx::quic_due(&mut *self.cx, wait);
-    }
-
     fn now(&self) -> crate::time::Instant {
         self.cx.now()
     }
 
-    fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
-        LayerCx::of(&mut *self.cx, component, line);
+    fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
+        LayerCx::trace(&mut *self.cx)
     }
 
-    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
-        LayerCx::of_with(&mut *self.cx, component, parts);
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        LayerCx::failures(&mut *self.cx)
     }
 
-    fn info(&mut self, line: std::fmt::Arguments<'_>) {
-        LayerCx::info(&mut *self.cx, line);
+    fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
+        LayerCx::transfer(&mut *self.cx)
     }
 
-    fn info_with(&mut self, parts: &[&[u8]]) {
-        LayerCx::info_with(&mut *self.cx, parts);
+    fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
+        LayerCx::tls_sessions(&mut *self.cx)
     }
 
-    fn socket_failed(&mut self, e: &std::io::Error) {
-        LayerCx::socket_failed(&mut *self.cx, e);
+    fn early_data(&mut self) -> Option<&mut dyn crate::conn::layer::EarlyData> {
+        LayerCx::early_data(&mut *self.cx)
     }
 
-    fn early_done(&mut self, sent: i64) {
-        LayerCx::early_done(&mut *self.cx, sent);
+    fn quic_timer(&mut self) -> Option<&mut dyn crate::conn::layer::QuicTimer> {
+        LayerCx::quic_timer(&mut *self.cx)
     }
 
-    fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
-        LayerCx::fails(&mut *self.cx, kind, why)
+    /// The streams' transfers.
+    fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
+        Some(self)
     }
 
-    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
-        LayerCx::fails_with(&mut *self.cx, kind, parts)
+    fn recv_room(&mut self) -> Option<&mut RecvRoom> {
+        LayerCx::recv_room(&mut *self.cx)
     }
+}
 
-    fn bytes(&mut self, kind: DebugKind, bytes: &[u8]) {
-        LayerCx::bytes(&mut *self.cx, kind, bytes);
-    }
-
-    fn debugs(&self) -> bool {
-        LayerCx::debugs(&*self.cx)
-    }
-
-    fn verbose(&self) -> bool {
-        LayerCx::verbose(&*self.cx)
-    }
-
-    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
-        LayerCx::certinfo_report(&mut *self.cx)
-    }
-
-    fn tls_verified(&mut self, filter: Component, result: i64) {
-        LayerCx::tls_verified(&mut *self.cx, filter, result);
-    }
-
-    fn configures_tls(&self) -> bool {
-        LayerCx::configures_tls(&*self.cx)
-    }
-
-    fn configure_tls(&mut self, native: TlsNative) -> Result<(), ErrorKind> {
-        LayerCx::configure_tls(&mut *self.cx, native)
-    }
-
-    fn pause_recv(&mut self) {
-        LayerCx::pause_recv(&mut *self.cx);
-    }
-
-    fn unix_time(&self) -> i64 {
-        LayerCx::unix_time(&*self.cx)
-    }
-
-    fn has_tls_sessions(&self) -> bool {
-        LayerCx::has_tls_sessions(&*self.cx)
-    }
-
-    fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx)) {
-        LayerCx::tls_sessions(&mut *self.cx, f);
-    }
-
+impl<H: Host> crate::conn::layer::H3Streams for H3Step<'_, '_, H> {
     /// What the library told of a stream, handed to its transfer: the
     /// stepping one's own, a sibling's, or none, as C's callbacks find
     /// the stream's transfer by its user data.
-    fn h3_event(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
+    fn heard(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
         // The packet's writer says so, whichever transfer the stream is
         // (`read_pkt_to_send`).
         if let StreamEvent::Blocked = event {

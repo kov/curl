@@ -17,6 +17,7 @@ use super::io::{Events, Recv, Sent};
 use super::layer::{Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery};
 use super::part::Part;
 use crate::components::Component;
+use crate::conn::layer::LayerCalls as _;
 use crate::error::ErrorKind;
 
 /// What each way holds before it waits: four chunks of 16 KiB
@@ -535,20 +536,52 @@ mod tests {
             crate::time::Clock::now(&ManualClock::new().unwrap())
         }
 
+        fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
+            Some(self)
+        }
+
+        fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+            None
+        }
+
+        fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
+            None
+        }
+
+        fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
+            None
+        }
+
+        fn early_data(&mut self) -> Option<&mut dyn crate::conn::layer::EarlyData> {
+            None
+        }
+
+        fn quic_timer(&mut self) -> Option<&mut dyn crate::conn::layer::QuicTimer> {
+            None
+        }
+
+        fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
+            None
+        }
+
         fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
             None
         }
-        fn of(&mut self, _: Component, _: fmt::Arguments<'_>) {}
-        fn of_with(&mut self, _: Component, _: &[&[u8]]) {}
-        fn info(&mut self, line: fmt::Arguments<'_>) {
+    }
+
+    /// Its info lines are noted, its component lines not.
+    impl crate::conn::layer::Trace for Said {
+        fn line(&mut self, _: Component, _: fmt::Arguments<'_>) {}
+        fn line_with(&mut self, _: Component, _: &[&[u8]]) {}
+        fn info_line(&mut self, line: fmt::Arguments<'_>) {
             self.0.push(line.to_string());
         }
-        fn info_with(&mut self, parts: &[&[u8]]) {
+        fn info_line_with(&mut self, parts: &[&[u8]]) {
             self.0
                 .push(String::from_utf8(parts.concat()).expect("a test's line is text"));
         }
-        fn fails_with(&mut self, kind: ErrorKind, _: &[&[u8]]) -> ErrorKind {
-            kind
+        fn says_info(&self) -> bool {
+            false
         }
     }
 

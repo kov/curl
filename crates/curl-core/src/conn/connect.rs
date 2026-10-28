@@ -33,6 +33,7 @@ use super::quic::Quic;
 use super::shutdown::ConnSettings;
 use super::{Conn, ConnNumber, Dial, Dialing, NetRoute, Peer, Route, Stream, Transport, Use};
 use crate::components::Component;
+use crate::conn::layer::LayerCalls as _;
 use crate::error::ErrorKind;
 use crate::handler::Configured;
 use crate::options::{IpVersion, KeepAlive, Sockets};
@@ -350,19 +351,35 @@ impl LayerCx for Plain<'_> {
         self.now
     }
 
-    fn of(&mut self, _: crate::components::Component, _: std::fmt::Arguments<'_>) {}
-
-    fn of_with(&mut self, _: crate::components::Component, _: &[&[u8]]) {}
-
-    fn info(&mut self, _: std::fmt::Arguments<'_>) {}
-
-    fn info_with(&mut self, _: &[&[u8]]) {}
-
-    fn fails_with(&mut self, kind: ErrorKind, _: &[&[u8]]) -> ErrorKind {
-        kind
+    fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
+        None
     }
 
-    fn recv_room(&mut self) -> Option<&mut super::quic::RecvRoom> {
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        None
+    }
+
+    fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
+        None
+    }
+
+    fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
+        None
+    }
+
+    fn early_data(&mut self) -> Option<&mut dyn crate::conn::layer::EarlyData> {
+        None
+    }
+
+    fn quic_timer(&mut self) -> Option<&mut dyn crate::conn::layer::QuicTimer> {
+        None
+    }
+
+    fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
+        None
+    }
+
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
         None
     }
 }

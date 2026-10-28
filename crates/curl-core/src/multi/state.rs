@@ -1597,62 +1597,94 @@ impl Attached {
     }
 }
 
-/// A layer working for the stepping transfer traces as it does, and a
-/// QUIC connection receives in the multi's room.
+/// A layer working for the stepping transfer traces as it does, keeps
+/// its failures and reports to it, and a QUIC connection receives in the
+/// multi's room and sets the transfer's timer. No stream is the step's
+/// own to hear of: a request's call on its connection hears them
+/// (`H3Step`).
 impl<H: Host> LayerCx for StepCx<'_, H> {
-    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
-        Some(&mut *self.rest.sockbuf)
-    }
-
-    fn quic_due(&mut self, wait: Duration) {
-        let at = self.rest.clock.now().after(wait);
-        self.quic_at = Some(at);
-        trace_set(self, TimerKind::Quic, at);
-    }
-
     fn now(&self) -> Instant {
         self.rest.now
     }
 
-    fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
+    fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
+        Some(self)
+    }
+
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        Some(self)
+    }
+
+    fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
+        Some(self)
+    }
+
+    /// A multi always has one.
+    fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
+        Some(self)
+    }
+
+    fn early_data(&mut self) -> Option<&mut dyn crate::conn::layer::EarlyData> {
+        Some(self)
+    }
+
+    fn quic_timer(&mut self) -> Option<&mut dyn crate::conn::layer::QuicTimer> {
+        Some(self)
+    }
+
+    fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
+        None
+    }
+
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        Some(&mut *self.rest.sockbuf)
+    }
+}
+
+impl<H: Host> crate::conn::layer::Trace for StepCx<'_, H> {
+    fn line(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
         trace::of(self, component, line);
     }
 
-    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
+    fn line_with(&mut self, component: Component, parts: &[&[u8]]) {
         trace::of_with(self, component, parts);
     }
 
-    fn info(&mut self, line: std::fmt::Arguments<'_>) {
+    fn info_line(&mut self, line: std::fmt::Arguments<'_>) {
         trace::info(self, line);
     }
 
-    fn info_with(&mut self, parts: &[&[u8]]) {
+    fn info_line_with(&mut self, parts: &[&[u8]]) {
         trace::info_with(self, parts);
     }
 
-    fn socket_failed(&mut self, e: &std::io::Error) {
-        self.report_mut().socket_failed(e);
+    fn says_info(&self) -> bool {
+        self.easy().options().output.verbose
     }
+}
 
-    fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
+impl<H: Host> crate::conn::layer::Failures for StepCx<'_, H> {
+    fn keep(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
         trace::fail(self, kind, why)
     }
 
-    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+    fn keep_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
         trace::fail_with(self, kind, parts)
     }
 
-    fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
+    fn keep_errno(&mut self, e: &std::io::Error) {
+        self.report_mut().socket_failed(e);
+    }
+}
+
+impl<H: Host> crate::conn::layer::ForTransfer for StepCx<'_, H> {
+    fn debug_bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
         trace::bytes(self, kind, bytes);
     }
 
-    fn debugs(&self) -> bool {
+    fn has_debug_handler(&self) -> bool {
         let options = self.easy().options();
         options.callbacks.debug.is_some() && options.output.verbose
-    }
-
-    fn verbose(&self) -> bool {
-        self.easy().options().output.verbose
     }
 
     fn certinfo_report(&mut self) -> Option<&mut TransferReport> {
@@ -1660,14 +1692,7 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
         asked.then(|| self.report_mut())
     }
 
-    fn early_done(&mut self, sent: i64) {
-        self.report_mut().set_earlydata_sent(sent);
-        let now = self.now();
-        let marked = self.report_mut().timings_mut().mark(Timer::AppConnect, now);
-        mstate::marked(self, Timer::AppConnect, marked);
-    }
-
-    fn tls_verified(&mut self, filter: Component, result: i64) {
+    fn peer_verified(&mut self, filter: Component, result: i64) {
         if matches!(filter, Component::SslProxy | Component::H3Proxy) {
             self.report_mut().set_proxy_verify_result(result);
         } else {
@@ -1675,13 +1700,13 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
         }
     }
 
-    fn configures_tls(&self) -> bool {
+    fn has_tls_handler(&self) -> bool {
         self.easy().options().tls.options.context.is_some()
     }
 
     /// The handler is given the context, which the transfer's handlers
     /// reach meanwhile as its connection's (`CURLINFO_TLS_SESSION`).
-    fn configure_tls(&mut self, native: TlsNative) -> Result<(), ErrorKind> {
+    fn hand_tls_context(&mut self, native: TlsNative) -> Result<(), ErrorKind> {
         let Some(handler) = self.easy().options().tls.options.context.clone() else {
             return Ok(());
         };
@@ -1691,30 +1716,45 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
         configured
     }
 
-    fn pause_recv(&mut self) {
+    fn stop_recv(&mut self) {
         let slot = self.rest.tell.slots.get_mut(self.me);
         slot.expect("the stepping transfer").pause.stop_recv();
     }
 
-    fn unix_time(&self) -> i64 {
+    fn seconds_since_1970(&self) -> i64 {
         self.rest.clock.unix_time()
     }
+}
 
-    /// A multi always has one.
-    fn has_tls_sessions(&self) -> bool {
-        true
+impl<H: Host> crate::conn::layer::EarlyData for StepCx<'_, H> {
+    fn early_done(&mut self, sent: i64) {
+        self.report_mut().set_earlydata_sent(sent);
+        let now = self.now();
+        let marked = self.report_mut().timings_mut().mark(Timer::AppConnect, now);
+        mstate::marked(self, Timer::AppConnect, marked);
     }
+}
 
+impl<H: Host> crate::conn::layer::QuicTimer for StepCx<'_, H> {
+    fn due_in(&mut self, wait: Duration) {
+        let at = self.rest.clock.now().after(wait);
+        self.quic_at = Some(at);
+        trace_set(self, TimerKind::Quic, at);
+    }
+}
+
+impl<H: Host> crate::conn::layer::TlsSessions for StepCx<'_, H> {
     /// The share's if it keeps them (`cf_ssl_scache_get`), what it says
     /// held until its lock is let go, as nothing is called out from inside
     /// a share's lock; else the multi's, lent out of the multi for the
     /// call, so the context traces through while `f` holds it.
-    fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx)) {
+    fn with_cache(
+        &mut self,
+        f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn crate::conn::layer::SessionSays),
+    ) {
         use crate::share::watched;
         if let Some(kept) = self.rest.kept(self.me, Kind::SslSessions) {
             let mut held = HeldSays {
-                now: self.rest.now,
-                unix: self.rest.clock.unix_time(),
                 traces: trace::traces(self, Component::Ssls),
                 lines: Vec::new(),
                 failure: None,
@@ -1743,24 +1783,14 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
 /// the use traces and fails with is held, to be said once the lock is let
 /// go. A line it has no memory to hold is not said.
 struct HeldSays {
-    now: Instant,
-    unix: i64,
     /// The transfer traces the cache's lines (`ssls`).
     traces: bool,
     lines: Vec<Vec<u8>>,
     failure: Option<(ErrorKind, Vec<u8>)>,
 }
 
-impl LayerCx for HeldSays {
-    fn now(&self) -> Instant {
-        self.now
-    }
-
-    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
-        None
-    }
-
-    fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
+impl crate::conn::layer::SessionSays for HeldSays {
+    fn say_line(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
         if self.traces
             && component == Component::Ssls
             && let Ok(line) = curl_alloc::try_format(line)
@@ -1771,51 +1801,13 @@ impl LayerCx for HeldSays {
         }
     }
 
-    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
-        if !self.traces || component != Component::Ssls {
-            return;
-        }
-        let mut line = Vec::new();
-        let made = parts
-            .iter()
-            .try_for_each(|part| line.try_extend_from_slice(part));
-        // As for `of`, a line there is no memory for is not said.
-        if made.is_ok() {
-            let _ = self.lines.try_push(line);
-        }
-    }
-
-    fn info(&mut self, _: std::fmt::Arguments<'_>) {}
-
-    fn info_with(&mut self, _: &[&[u8]]) {}
-
-    fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
+    fn say_failure(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
         if self.failure.is_none()
             && let Ok(why) = curl_alloc::try_format(why)
         {
             self.failure = Some((kind, why.into_bytes()));
         }
         kind
-    }
-
-    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
-        if self.failure.is_some() {
-            return kind;
-        }
-        let mut why = Vec::new();
-        // As for `fails`, a reason there is no memory for is not said.
-        if parts
-            .iter()
-            .try_for_each(|p| why.try_extend_from_slice(p))
-            .is_ok()
-        {
-            self.failure = Some((kind, why));
-        }
-        kind
-    }
-
-    fn unix_time(&self) -> i64 {
-        self.unix
     }
 }
 

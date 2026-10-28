@@ -1095,7 +1095,7 @@ impl Session {
 pub(crate) unsafe fn ticket_of(
     ssl: *mut SSL,
     session: *mut SSL_SESSION,
-    io: &TlsCx<'_>,
+    io: &mut TlsCx<'_>,
 ) -> Result<TlsTicket, OutOfMemory> {
     // SAFETY: as the caller says; no pointer, so only the length.
     let len = unsafe { openssl_sys::i2d_SSL_SESSION(session, ptr::null_mut()) };

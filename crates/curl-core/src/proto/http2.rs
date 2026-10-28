@@ -11,6 +11,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::components::Component;
 use crate::conn::io::{Recv, Sent};
+use crate::conn::layer::LayerCalls as _;
 use crate::conn::layer::{Alive, Handshake, LayerCx, Lower as _, Part as ConnPart};
 use crate::conn::mux::{Carrier, Routes};
 use crate::error::ErrorKind;

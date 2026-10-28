@@ -9,6 +9,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use super::connect::{Asked, ConnCx, ConnectError, DriveOptions, Found, Unresolved, lookup_name};
 use super::io::{AF_INET, AF_INET6, Family, InterfaceAddress, Socket, SocketOption, ipv6_scope};
 use crate::components::Component;
+use crate::conn::layer::LayerCalls as _;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::options::LocalBind;
 use crate::text::Text;

@@ -14,6 +14,7 @@ use super::buf::HeldBytes;
 use super::io::{Events, Recv, Sent};
 use super::layer::{Alive, Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Part};
 use crate::components::Component;
+use crate::conn::layer::LayerCalls as _;
 use crate::error::ErrorKind;
 use crate::http2::{
     BodyRead, DEFAULT_WEIGHT, Event, FrameError, H2Error, Heard, Http2, Session, Setting, StreamId,

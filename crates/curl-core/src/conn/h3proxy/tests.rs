@@ -239,72 +239,121 @@ impl LayerCx for Asked {
     fn now(&self) -> Instant {
         crate::time::Clock::now(&crate::time::ManualClock::new().unwrap())
     }
+    fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
+        Some(self)
+    }
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        Some(self)
+    }
+    fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
+        Some(self)
+    }
+    fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
+        if self.yes { Some(self) } else { None }
+    }
+    fn early_data(&mut self) -> Option<&mut dyn crate::conn::layer::EarlyData> {
+        Some(self)
+    }
+    fn quic_timer(&mut self) -> Option<&mut dyn crate::conn::layer::QuicTimer> {
+        Some(self)
+    }
+    fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
+        Some(self)
+    }
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
         self.yes.then_some(&mut self.room)
     }
-    fn of(&mut self, _: Component, line: std::fmt::Arguments<'_>) {
+}
+
+impl crate::conn::layer::Trace for Asked {
+    fn line(&mut self, _: Component, line: std::fmt::Arguments<'_>) {
         self.calls.push(format!("of {line}"));
     }
-    fn info(&mut self, line: std::fmt::Arguments<'_>) {
-        self.calls.push(format!("info {line}"));
-    }
-    fn socket_failed(&mut self, e: &io::Error) {
-        self.calls.push(format!("socket_failed {e}"));
-    }
-    fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
-        self.calls.push(format!("fails {why}"));
-        kind
-    }
-    fn of_with(&mut self, _: Component, parts: &[&[u8]]) {
+    fn line_with(&mut self, _: Component, parts: &[&[u8]]) {
         self.calls
             .push(format!("of {}", String::from_utf8_lossy(&parts.concat())));
     }
-    fn info_with(&mut self, parts: &[&[u8]]) {
+    fn info_line(&mut self, line: std::fmt::Arguments<'_>) {
+        self.calls.push(format!("info {line}"));
+    }
+    fn info_line_with(&mut self, parts: &[&[u8]]) {
         self.calls
             .push(format!("info {}", String::from_utf8_lossy(&parts.concat())));
     }
-    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+    fn says_info(&self) -> bool {
+        self.yes
+    }
+}
+
+impl crate::conn::layer::Failures for Asked {
+    fn keep(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
+        self.calls.push(format!("fails {why}"));
+        kind
+    }
+    fn keep_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
         self.calls.push(format!(
             "fails {}",
             String::from_utf8_lossy(&parts.concat())
         ));
         kind
     }
-    fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
+    fn keep_errno(&mut self, e: &io::Error) {
+        self.calls.push(format!("socket_failed {e}"));
+    }
+}
+
+impl crate::conn::layer::ForTransfer for Asked {
+    fn debug_bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
         self.calls.push(format!("bytes {kind:?} {bytes:?}"));
     }
-    fn debugs(&self) -> bool {
-        self.yes
-    }
-    fn verbose(&self) -> bool {
+    fn has_debug_handler(&self) -> bool {
         self.yes
     }
     fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
         Some(&mut self.report)
     }
-    fn tls_verified(&mut self, filter: Component, result: i64) {
+    fn peer_verified(&mut self, filter: Component, result: i64) {
         self.calls.push(format!("tls_verified {filter:?} {result}"));
     }
-    fn configures_tls(&self) -> bool {
+    fn has_tls_handler(&self) -> bool {
         self.yes
     }
-    fn configure_tls(&mut self, _: crate::tls::TlsNative) -> Result<(), ErrorKind> {
+    fn hand_tls_context(&mut self, _: crate::tls::TlsNative) -> Result<(), ErrorKind> {
         Err(ErrorKind::SslEngineInitfailed)
     }
-    fn pause_recv(&mut self) {
+    fn stop_recv(&mut self) {
         self.calls.push("pause_recv".to_string());
     }
-    fn unix_time(&self) -> i64 {
+    fn seconds_since_1970(&self) -> i64 {
         1_700_000_000
     }
-    fn has_tls_sessions(&self) -> bool {
-        self.yes
-    }
-    fn tls_sessions(&mut self, _: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx)) {
+}
+
+impl crate::conn::layer::TlsSessions for Asked {
+    fn with_cache(
+        &mut self,
+        _: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn crate::conn::layer::SessionSays),
+    ) {
         self.calls.push("tls_sessions".to_string());
     }
-    fn quic_due(&mut self, wait: std::time::Duration) {
+}
+
+impl crate::conn::layer::EarlyData for Asked {
+    fn early_done(&mut self, sent: i64) {
+        self.calls.push(format!("early_done {sent}"));
+    }
+}
+
+impl crate::conn::layer::QuicTimer for Asked {
+    fn due_in(&mut self, wait: std::time::Duration) {
         self.calls.push(format!("quic_due {wait:?}"));
+    }
+}
+
+impl crate::conn::layer::H3Streams for Asked {
+    fn heard(&mut self, stream: StreamId, _: StreamEvent<'_>) -> Heard {
+        self.calls.push(format!("h3_event {}", stream.0));
+        Heard::Failed
     }
 }
 
@@ -351,27 +400,28 @@ fn a_call_into_the_proxy_s_connection_is_the_transfer_s() {
         over.bytes(crate::handler::DebugKind::DataIn, b"in");
         over.tls_verified(Component::H3Proxy, 18);
         over.pause_recv();
-        over.tls_sessions(&mut |_, _| {});
+        over.with_tls_sessions(&mut |_, _| {});
+        // Its early data is not the transfer's.
+        over.early_done(7);
         over.quic_due(std::time::Duration::from_millis(5));
         assert_eq!(
             over.h3_event(StreamId(0), StreamEvent::Data(b"tunnelled")),
             Heard::Fine
         );
-        assert_eq!(
-            asked.calls,
-            [
-                "info said",
-                "socket_failed gone",
-                "bytes DataIn [105, 110]",
-                "tls_verified H3Proxy 18",
-                "pause_recv",
-                "tls_sessions",
+        let sessions = if yes { &["tls_sessions"][..] } else { &[][..] };
+        let calls = [
+            &["info said", "socket_failed gone", "bytes DataIn [105, 110]"][..],
+            &["tls_verified H3Proxy 18", "pause_recv"][..],
+            sessions,
+            &[
                 "quic_due 5ms",
                 "of [cb_h3_proxy_recv_data] [0] DATA len=9, total=9",
                 "of [0] DATA len=9, rx win=32759",
                 "of [0] rx window, extend 32759 (buffered 9) by 491520 bytes",
-            ]
-        );
+            ][..],
+        ]
+        .concat();
+        assert_eq!(asked.calls, calls);
         assert_eq!(tunnel.held(), b"tunnelled");
     }
 }

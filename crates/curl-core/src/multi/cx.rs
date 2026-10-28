@@ -7,11 +7,9 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use std::num::NonZeroU32;
 use std::os::fd::AsRawFd as _;
 
-use std::fmt;
 use std::io;
 use std::time::Duration;
 
-use crate::components::Component;
 use crate::conn::io::{Events, Net, PollFd, Resolver, Sock, Socket, SocketKey, SocketPoll, Waker};
 use crate::conn::layer::LayerCx;
 use crate::conn::shutdown::{Exits, Linger, ShutdownSet, WithSet};
@@ -372,101 +370,54 @@ pub(crate) struct DriveCx<'c, 'a, H: Host> {
     pub(crate) deadlines: Option<&'c mut crate::multi::timers::Deadlines>,
 }
 
+/// The step's, but for its timer, which a QUIC attempt arms in the
+/// transfer's timers; a setup reports no early data, and has no streams
+/// to hear of.
 impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
+    fn now(&self) -> Instant {
+        self.step.now()
+    }
+
+    fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
+        LayerCx::trace(&mut *self.step)
+    }
+
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        LayerCx::failures(&mut *self.step)
+    }
+
+    fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
+        LayerCx::transfer(&mut *self.step)
+    }
+
+    fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
+        LayerCx::tls_sessions(&mut *self.step)
+    }
+
+    fn early_data(&mut self) -> Option<&mut dyn crate::conn::layer::EarlyData> {
+        None
+    }
+
+    fn quic_timer(&mut self) -> Option<&mut dyn crate::conn::layer::QuicTimer> {
+        Some(self)
+    }
+
+    fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
+        None
+    }
+
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
         LayerCx::recv_room(&mut *self.step)
     }
+}
 
-    fn quic_due(&mut self, wait: Duration) {
+impl<H: Host> crate::conn::layer::QuicTimer for DriveCx<'_, '_, H> {
+    fn due_in(&mut self, wait: Duration) {
         let deadlines = self
             .deadlines
             .as_deref_mut()
             .expect("a QUIC attempt is driven with the transfer's timers");
         super::state::arm_quic(deadlines, self.step, wait);
-    }
-
-    fn now(&self) -> Instant {
-        self.step.now()
-    }
-
-    fn of(&mut self, component: Component, line: fmt::Arguments<'_>) {
-        LayerCx::of(&mut *self.step, component, line);
-    }
-
-    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
-        LayerCx::of_with(&mut *self.step, component, parts);
-    }
-
-    fn info(&mut self, line: fmt::Arguments<'_>) {
-        LayerCx::info(&mut *self.step, line);
-    }
-
-    fn info_with(&mut self, parts: &[&[u8]]) {
-        LayerCx::info_with(&mut *self.step, parts);
-    }
-
-    fn socket_failed(&mut self, e: &std::io::Error) {
-        LayerCx::socket_failed(&mut *self.step, e);
-    }
-
-    fn fails(
-        &mut self,
-        kind: crate::error::ErrorKind,
-        why: fmt::Arguments<'_>,
-    ) -> crate::error::ErrorKind {
-        LayerCx::fails(&mut *self.step, kind, why)
-    }
-
-    fn fails_with(
-        &mut self,
-        kind: crate::error::ErrorKind,
-        parts: &[&[u8]],
-    ) -> crate::error::ErrorKind {
-        LayerCx::fails_with(&mut *self.step, kind, parts)
-    }
-
-    fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
-        LayerCx::bytes(&mut *self.step, kind, bytes);
-    }
-
-    fn debugs(&self) -> bool {
-        LayerCx::debugs(&*self.step)
-    }
-
-    fn verbose(&self) -> bool {
-        LayerCx::verbose(&*self.step)
-    }
-
-    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
-        LayerCx::certinfo_report(&mut *self.step)
-    }
-
-    fn tls_verified(&mut self, filter: Component, result: i64) {
-        LayerCx::tls_verified(&mut *self.step, filter, result);
-    }
-
-    fn configures_tls(&self) -> bool {
-        LayerCx::configures_tls(&*self.step)
-    }
-
-    fn configure_tls(&mut self, native: TlsNative) -> Result<(), crate::error::ErrorKind> {
-        LayerCx::configure_tls(&mut *self.step, native)
-    }
-
-    fn pause_recv(&mut self) {
-        LayerCx::pause_recv(&mut *self.step);
-    }
-
-    fn unix_time(&self) -> i64 {
-        LayerCx::unix_time(&*self.step)
-    }
-
-    fn has_tls_sessions(&self) -> bool {
-        LayerCx::has_tls_sessions(&*self.step)
-    }
-
-    fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx)) {
-        LayerCx::tls_sessions(&mut *self.step, f);
     }
 }
 

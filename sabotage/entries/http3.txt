@@ -963,14 +963,14 @@ features: test-util,debug-hooks
     }
 }
 
-/// Where a context's datagrams go
+impl H3Streams for Lone<'_> {
 --- new
     fn recv_room(&mut self) -> Option<&mut RecvRoom> {
         None
     }
 }
 
-/// Where a context's datagrams go
+impl H3Streams for Lone<'_> {
 
 === a tunnelled QUIC connection receives in a room the multi's size, not C's tunnel's
 file: crates/curl-core/src/conn/quic.rs
@@ -1021,3 +1021,27 @@ witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy
                     m.checked(cx);
                 }
 --- new
+
+=== a call into the proxy's connection reports its early data to the transfer
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core conn::h3proxy::tests::a_call_into_the_proxy_s_connection_is_the_transfer_s
+--- old
+    fn early_data(&mut self) -> Option<&mut dyn super::layer::EarlyData> {
+        None
+    }
+--- new
+    fn early_data(&mut self) -> Option<&mut dyn super::layer::EarlyData> {
+        self.cx.early_data()
+    }
+
+=== a call into the proxy's connection hands its streams' events to the transfer
+file: crates/curl-core/src/conn/h3proxy.rs
+witness: curl-core conn::h3proxy::tests::a_call_into_the_proxy_s_connection_is_the_transfer_s
+--- old
+    fn h3_streams(&mut self) -> Option<&mut dyn super::layer::H3Streams> {
+        Some(self)
+    }
+--- new
+    fn h3_streams(&mut self) -> Option<&mut dyn super::layer::H3Streams> {
+        self.cx.h3_streams()
+    }

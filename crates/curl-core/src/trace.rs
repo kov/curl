@@ -273,40 +273,62 @@ impl crate::conn::layer::LayerCx for InternalCx<'_> {
         self.now
     }
 
+    fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
+        self.trace
+            .as_mut()
+            .map(|trace| trace as &mut dyn crate::conn::layer::Trace)
+    }
+
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        None
+    }
+
+    fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
+        None
+    }
+
+    fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
+        None
+    }
+
+    fn early_data(&mut self) -> Option<&mut dyn crate::conn::layer::EarlyData> {
+        None
+    }
+
+    fn quic_timer(&mut self) -> Option<&mut dyn crate::conn::layer::QuicTimer> {
+        None
+    }
+
+    fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
+        None
+    }
+
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
         self.room.as_deref_mut()
     }
+}
 
-    fn of(&mut self, component: Component, line: fmt::Arguments<'_>) {
-        if let Some(trace) = self.trace {
-            trace.of(component, line);
-        }
+/// The internal handle's trace, whose lines are said whatever the
+/// transfer's verbosity.
+impl crate::conn::layer::Trace for &Internal {
+    fn line(&mut self, component: Component, line: fmt::Arguments<'_>) {
+        self.of(component, line);
     }
 
-    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
-        if let Some(trace) = self.trace {
-            trace.of_with(component, parts);
-        }
+    fn line_with(&mut self, component: Component, parts: &[&[u8]]) {
+        self.of_with(component, parts);
     }
 
-    fn info(&mut self, line: fmt::Arguments<'_>) {
-        if let Some(trace) = self.trace {
-            trace.info(line);
-        }
+    fn info_line(&mut self, line: fmt::Arguments<'_>) {
+        self.info(line);
     }
 
-    fn info_with(&mut self, parts: &[&[u8]]) {
-        if let Some(trace) = self.trace {
-            trace.info_with(parts);
-        }
+    fn info_line_with(&mut self, parts: &[&[u8]]) {
+        self.info_with(parts);
     }
 
-    fn fails_with(&mut self, kind: ErrorKind, _: &[&[u8]]) -> ErrorKind {
-        kind
-    }
-
-    fn verbose(&self) -> bool {
-        self.trace.is_some()
+    fn says_info(&self) -> bool {
+        true
     }
 }
 

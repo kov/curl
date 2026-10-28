@@ -13,7 +13,10 @@ use std::time::Duration;
 use curl_alloc::TryVec;
 
 use super::io::{BATCH, Datagram, Events, IO_FAILED, Recv, SLOT, Sent, Socket, TOO_LARGE};
-use super::layer::{Below, LayerCx};
+use super::layer::{
+    Below, EarlyData, Failures, ForTransfer, H3Streams, LayerCalls as _, LayerCx, QuicTimer,
+    TlsSessions, Trace,
+};
 use crate::components::Component;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::http3::{
@@ -159,88 +162,45 @@ impl LayerCx for Lone<'_> {
         self.cx.now()
     }
 
-    fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
-        self.cx.of(component, line);
+    fn trace(&mut self) -> Option<&mut dyn Trace> {
+        self.cx.trace()
     }
 
-    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
-        self.cx.of_with(component, parts);
+    fn failures(&mut self) -> Option<&mut dyn Failures> {
+        self.cx.failures()
     }
 
-    fn info(&mut self, line: std::fmt::Arguments<'_>) {
-        self.cx.info(line);
+    fn transfer(&mut self) -> Option<&mut dyn ForTransfer> {
+        self.cx.transfer()
     }
 
-    fn info_with(&mut self, parts: &[&[u8]]) {
-        self.cx.info_with(parts);
+    fn tls_sessions(&mut self) -> Option<&mut dyn TlsSessions> {
+        self.cx.tls_sessions()
     }
 
-    fn socket_failed(&mut self, e: &io::Error) {
-        self.cx.socket_failed(e);
+    fn early_data(&mut self) -> Option<&mut dyn EarlyData> {
+        self.cx.early_data()
     }
 
-    fn early_done(&mut self, sent: i64) {
-        self.cx.early_done(sent);
+    /// The library's timer is set by no one: C's calls give it no packet
+    /// context.
+    fn quic_timer(&mut self) -> Option<&mut dyn QuicTimer> {
+        None
     }
 
-    fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
-        self.cx.fails(kind, why)
-    }
-
-    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
-        self.cx.fails_with(kind, parts)
-    }
-
-    fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
-        self.cx.bytes(kind, bytes);
-    }
-
-    fn debugs(&self) -> bool {
-        self.cx.debugs()
-    }
-
-    fn verbose(&self) -> bool {
-        self.cx.verbose()
-    }
-
-    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
-        self.cx.certinfo_report()
-    }
-
-    fn tls_verified(&mut self, filter: Component, result: i64) {
-        self.cx.tls_verified(filter, result);
-    }
-
-    fn configures_tls(&self) -> bool {
-        self.cx.configures_tls()
-    }
-
-    fn configure_tls(&mut self, native: crate::tls::TlsNative) -> Result<(), ErrorKind> {
-        self.cx.configure_tls(native)
-    }
-
-    fn pause_recv(&mut self) {
-        self.cx.pause_recv();
-    }
-
-    fn unix_time(&self) -> i64 {
-        self.cx.unix_time()
-    }
-
-    fn has_tls_sessions(&self) -> bool {
-        self.cx.has_tls_sessions()
-    }
-
-    fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx)) {
-        self.cx.tls_sessions(f);
-    }
-
-    fn h3_event(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
-        unrouted(&mut *self.cx, stream, &event)
+    /// Every stream is one no transfer has.
+    fn h3_streams(&mut self) -> Option<&mut dyn H3Streams> {
+        Some(self)
     }
 
     fn recv_room(&mut self) -> Option<&mut RecvRoom> {
         self.cx.recv_room()
+    }
+}
+
+impl H3Streams for Lone<'_> {
+    fn heard(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
+        unrouted(&mut *self.cx, stream, &event)
     }
 }
 
@@ -260,92 +220,36 @@ pub(crate) struct Over<'a> {
 }
 
 impl LayerCx for Over<'_> {
-    fn quic_due(&mut self, wait: Duration) {
-        self.cx.quic_due(wait);
-    }
-
     fn now(&self) -> Instant {
         self.cx.now()
     }
 
-    fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
-        self.cx.of(component, line);
+    fn trace(&mut self) -> Option<&mut dyn Trace> {
+        self.cx.trace()
     }
 
-    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
-        self.cx.of_with(component, parts);
+    fn failures(&mut self) -> Option<&mut dyn Failures> {
+        self.cx.failures()
     }
 
-    fn info(&mut self, line: std::fmt::Arguments<'_>) {
-        self.cx.info(line);
+    fn transfer(&mut self) -> Option<&mut dyn ForTransfer> {
+        self.cx.transfer()
     }
 
-    fn info_with(&mut self, parts: &[&[u8]]) {
-        self.cx.info_with(parts);
+    fn tls_sessions(&mut self) -> Option<&mut dyn TlsSessions> {
+        self.cx.tls_sessions()
     }
 
-    fn socket_failed(&mut self, e: &io::Error) {
-        self.cx.socket_failed(e);
+    fn early_data(&mut self) -> Option<&mut dyn EarlyData> {
+        self.cx.early_data()
     }
 
-    fn early_done(&mut self, sent: i64) {
-        self.cx.early_done(sent);
+    fn quic_timer(&mut self) -> Option<&mut dyn QuicTimer> {
+        self.cx.quic_timer()
     }
 
-    fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
-        self.cx.fails(kind, why)
-    }
-
-    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
-        self.cx.fails_with(kind, parts)
-    }
-
-    fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
-        self.cx.bytes(kind, bytes);
-    }
-
-    fn debugs(&self) -> bool {
-        self.cx.debugs()
-    }
-
-    fn verbose(&self) -> bool {
-        self.cx.verbose()
-    }
-
-    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
-        self.cx.certinfo_report()
-    }
-
-    fn tls_verified(&mut self, filter: Component, result: i64) {
-        self.cx.tls_verified(filter, result);
-    }
-
-    fn configures_tls(&self) -> bool {
-        self.cx.configures_tls()
-    }
-
-    fn configure_tls(&mut self, native: crate::tls::TlsNative) -> Result<(), ErrorKind> {
-        self.cx.configure_tls(native)
-    }
-
-    fn pause_recv(&mut self) {
-        self.cx.pause_recv();
-    }
-
-    fn unix_time(&self) -> i64 {
-        self.cx.unix_time()
-    }
-
-    fn has_tls_sessions(&self) -> bool {
-        self.cx.has_tls_sessions()
-    }
-
-    fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx)) {
-        self.cx.tls_sessions(f);
-    }
-
-    fn h3_event(&mut self, stream: StreamId, event: StreamEvent<'_>) -> Heard {
-        self.cx.h3_event(stream, event)
+    fn h3_streams(&mut self) -> Option<&mut dyn H3Streams> {
+        self.cx.h3_streams()
     }
 
     fn recv_room(&mut self) -> Option<&mut RecvRoom> {
@@ -1792,39 +1696,81 @@ pub(crate) mod tests {
     }
 
     impl LayerCx for Cx {
-        fn quic_due(&mut self, wait: Duration) {
-            self.due.push(wait);
+        fn now(&self) -> Instant {
+            self.clock.now()
+        }
+
+        fn trace(&mut self) -> Option<&mut dyn Trace> {
+            Some(self)
+        }
+
+        fn failures(&mut self) -> Option<&mut dyn Failures> {
+            Some(self)
+        }
+
+        fn transfer(&mut self) -> Option<&mut dyn ForTransfer> {
+            None
+        }
+
+        fn tls_sessions(&mut self) -> Option<&mut dyn TlsSessions> {
+            None
+        }
+
+        fn early_data(&mut self) -> Option<&mut dyn EarlyData> {
+            None
+        }
+
+        fn quic_timer(&mut self) -> Option<&mut dyn QuicTimer> {
+            Some(self)
+        }
+
+        fn h3_streams(&mut self) -> Option<&mut dyn H3Streams> {
+            None
         }
 
         fn recv_room(&mut self) -> Option<&mut RecvRoom> {
             Some(&mut self.room)
         }
+    }
 
-        fn now(&self) -> Instant {
-            self.clock.now()
-        }
-        fn of(&mut self, _: Component, line: std::fmt::Arguments<'_>) {
+    impl Trace for Cx {
+        fn line(&mut self, _: Component, line: std::fmt::Arguments<'_>) {
             self.lines.push(line.to_string());
         }
-        fn of_with(&mut self, _: Component, parts: &[&[u8]]) {
+        fn line_with(&mut self, _: Component, parts: &[&[u8]]) {
             self.lines
                 .push(String::from_utf8(parts.concat()).expect("a test's line is text"));
         }
-        fn info(&mut self, line: std::fmt::Arguments<'_>) {
+        fn info_line(&mut self, line: std::fmt::Arguments<'_>) {
             self.lines.push(format!("* {line}"));
         }
-        fn info_with(&mut self, parts: &[&[u8]]) {
+        fn info_line_with(&mut self, parts: &[&[u8]]) {
             let line = String::from_utf8(parts.concat()).expect("a test's line is text");
             self.lines.push(format!("* {line}"));
         }
-        fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
+        fn says_info(&self) -> bool {
+            false
+        }
+    }
+
+    impl Failures for Cx {
+        fn keep(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
             self.lines.push(format!("! {why}"));
             kind
         }
-        fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+        fn keep_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
             let why = String::from_utf8(parts.concat()).expect("a test's reason is text");
             self.lines.push(format!("! {why}"));
             kind
+        }
+        fn keep_errno(&mut self, e: &std::io::Error) {
+            self.lines.push(format!("errno {e}"));
+        }
+    }
+
+    impl QuicTimer for Cx {
+        fn due_in(&mut self, wait: Duration) {
+            self.due.push(wait);
         }
     }
 

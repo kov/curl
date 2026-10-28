@@ -49,22 +49,24 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::os_errno::a_failed_send_keeps_its_number_until_the_next_transfer
 features: test-util
 --- old
-    fn socket_failed(&mut self, e: &std::io::Error) {
+    fn keep_errno(&mut self, e: &std::io::Error) {
         self.report_mut().socket_failed(e);
     }
 --- new
-    fn socket_failed(&mut self, _e: &std::io::Error) {}
+    fn keep_errno(&mut self, _e: &std::io::Error) {}
 
 === the drive's context drops the number
 file: crates/curl-core/src/multi/cx.rs
 witness: curl-core proto::http::tests::os_errno::a_refused_connect_keeps_its_number
 features: test-util
 --- old
-    fn socket_failed(&mut self, e: &std::io::Error) {
-        LayerCx::socket_failed(&mut *self.step, e);
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        LayerCx::failures(&mut *self.step)
     }
 --- new
-    fn socket_failed(&mut self, _e: &std::io::Error) {}
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        None
+    }
 
 === a new transfer starts with the last one's number
 file: crates/curl-core/src/report.rs

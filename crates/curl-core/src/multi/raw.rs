@@ -9,7 +9,6 @@
 use std::fmt;
 
 use super::{Host, Multi, TransferId};
-use crate::components::Component;
 use crate::conn::RecvFailed;
 use crate::conn::io::{Recv, Sent, SocketKey};
 use crate::conn::layer::LayerCx;
@@ -46,28 +45,50 @@ impl LayerCx for RawCx<'_> {
         self.now
     }
 
-    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+    fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
         None
     }
 
-    fn of(&mut self, _: Component, _: fmt::Arguments<'_>) {}
-
-    fn of_with(&mut self, _: Component, _: &[&[u8]]) {}
-
-    fn info(&mut self, _: fmt::Arguments<'_>) {}
-
-    fn info_with(&mut self, _: &[&[u8]]) {}
-
-    fn socket_failed(&mut self, e: &std::io::Error) {
-        self.easy.report_mut().socket_failed(e);
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        Some(self)
     }
 
-    fn fails(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
+    fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
+        None
+    }
+
+    fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
+        None
+    }
+
+    fn early_data(&mut self) -> Option<&mut dyn crate::conn::layer::EarlyData> {
+        None
+    }
+
+    fn quic_timer(&mut self) -> Option<&mut dyn crate::conn::layer::QuicTimer> {
+        None
+    }
+
+    fn h3_streams(&mut self) -> Option<&mut dyn crate::conn::layer::H3Streams> {
+        None
+    }
+
+    fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
+        None
+    }
+}
+
+impl crate::conn::layer::Failures for RawCx<'_> {
+    fn keep(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
         fail(self.easy, kind, crate::trace::reason(why))
     }
 
-    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+    fn keep_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
         fail(self.easy, kind, crate::trace::reason_with(parts))
+    }
+
+    fn keep_errno(&mut self, e: &std::io::Error) {
+        self.easy.report_mut().socket_failed(e);
     }
 }
 

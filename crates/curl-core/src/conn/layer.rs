@@ -79,146 +79,345 @@ pub(crate) enum LayerAnswer {
     Tunnel(Component),
 }
 
-/// What a layer reaches while it works: the time, and the trace of the
-/// transfer it works for. An argument, never stored. A pool's section,
-/// which works for no transfer, has a silent one.
+/// What a layer reaches while it works: the time, and each capability of
+/// what the work is for, which the context lends or not. An argument,
+/// never stored. Every context says what it lends, with no default: a
+/// context over another's lends that one's, or says why not; a pool's
+/// section, which works for no transfer, lends nothing (`Silent`). What
+/// a layer calls on it (`LayerCalls`) asks the capability it needs, and
+/// is nothing, or the answer of work for no transfer, where none is lent.
 pub(crate) trait LayerCx {
     fn now(&self) -> Instant;
 
-    /// Trace a line of `component`'s, if it is.
-    fn of(&mut self, component: Component, line: fmt::Arguments<'_>);
+    /// The trace the work's lines go to: the transfer's, or the internal
+    /// handle's; none where nothing traces the work.
+    fn trace(&mut self) -> Option<&mut dyn Trace>;
 
-    /// `of` with a line made of `parts`, which need not be text: bytes
-    /// of the peer's or the application's, traced as they are, as C's
-    /// `%s` writes them.
-    fn of_with(&mut self, component: Component, parts: &[&[u8]]);
+    /// What keeps the work's failures: the transfer's error and its
+    /// socket's error number, or a handle's; none where nothing does.
+    fn failures(&mut self) -> Option<&mut dyn Failures>;
 
-    /// A line of the transfer's verbose output (`infof`).
-    fn info(&mut self, line: fmt::Arguments<'_>);
+    /// The transfer the work is for, in what the TLS filter asks of it:
+    /// its debug handler, its report, its TLS context handler, its pause
+    /// and the time of day. None for work done for no transfer.
+    fn transfer(&mut self) -> Option<&mut dyn ForTransfer>;
 
-    /// `info` with a line made of `parts`, which need not be text: bytes
-    /// of the peer's or the application's, traced as they are.
-    fn info_with(&mut self, parts: &[&[u8]]);
+    /// The cache of TLS sessions the work keeps its connection's in: its
+    /// share's or its multi's (`cf_ssl_scache_get`). None for work done
+    /// for no transfer.
+    fn tls_sessions(&mut self) -> Option<&mut dyn TlsSessions>;
 
-    /// A call on the socket failed with `e`: a connect, a send or a
-    /// receive; the transfer keeps its number (`state.os_errno`). Work
-    /// done for no transfer keeps nothing.
-    fn socket_failed(&mut self, _e: &io::Error) {}
+    /// What takes the word that a handshake put off for early data is
+    /// done (`Curl_pgrsEarlyData`): the stepping transfer's report.
+    fn early_data(&mut self) -> Option<&mut dyn EarlyData>;
 
-    /// The origin's TLS handshake, put off for early data, is done
-    /// (`ssl_cf_connect_deferred`): `sent` bytes went early, negative if
-    /// the peer refused them. The transfer times its TLS as done now and
-    /// keeps the count (`Curl_pgrsEarlyData`). Work done for no transfer
-    /// keeps nothing.
-    fn early_done(&mut self, _sent: i64) {}
+    /// The timer a QUIC connection's library is called again by
+    /// (`Curl_expire_set(EXPIRE_QUIC)`): the transfer's.
+    fn quic_timer(&mut self) -> Option<&mut dyn QuicTimer>;
 
-    /// The transfer fails with `kind`, for the reason `why` (`failf`):
-    /// kept if it is the first given, and traced. Work done for no
-    /// transfer says nothing.
-    fn fails(&mut self, kind: ErrorKind, _why: fmt::Arguments<'_>) -> ErrorKind {
-        kind
-    }
-
-    /// `fails` with a reason made of `parts`, which need not be text:
-    /// bytes of the peer's, the application's or the system's, said as
-    /// they are.
-    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind;
-
-    /// Bytes for the transfer's debug handler (`Curl_debug`), if it is
-    /// verbose.
-    fn bytes(&mut self, _kind: crate::handler::DebugKind, _bytes: &[u8]) {}
-
-    /// The transfer traces to a debug handler (C's `data->set.fdebug`
-    /// and `verbose`).
-    fn debugs(&self) -> bool {
-        false
-    }
-
-    /// The transfer is verbose (`Curl_trc_is_verbose`): its `info` lines
-    /// are said. Work done for no transfer says none.
-    fn verbose(&self) -> bool {
-        false
-    }
-
-    /// The report of the transfer, if it asked for its peer's chain
-    /// (`CURLOPT_CERTINFO`). Work done for no transfer reports none.
-    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
-        None
-    }
-
-    /// What the TLS library made of the certificate of the peer the TLS
-    /// filter `filter` talks to, the origin (`SSL`) or an HTTPS proxy
-    /// (`SSL-PROXY`), for the transfer's report
-    /// (`set.ssl.certverifyresult`, `set.proxy_ssl.certverifyresult`).
-    /// Work done for no transfer keeps nothing.
-    fn tls_verified(&mut self, _filter: Component, _result: i64) {}
-
-    /// The transfer has a TLS context handler (`CURLOPT_SSL_CTX_FUNCTION`).
-    fn configures_tls(&self) -> bool {
-        false
-    }
-
-    /// Hand the context in `native` to the transfer's TLS context
-    /// handler; its error, if it gives one. Work done for no transfer has
-    /// none.
-    fn configure_tls(&mut self, _native: crate::tls::TlsNative) -> Result<(), ErrorKind> {
-        Ok(())
-    }
-
-    /// The transfer stops receiving until the application unpauses it
-    /// (`Curl_xfer_pause_recv`). Work done for no transfer has nothing to
-    /// pause.
-    fn pause_recv(&mut self) {}
-
-    /// The time of day, in seconds since 1970 (`time(NULL)`). Work done
-    /// for no transfer reads none.
-    fn unix_time(&self) -> i64 {
-        0
-    }
-
-    /// The transfer has a cache of TLS sessions: its share's, or its
-    /// multi's (`cf_ssl_scache_get`). Work done for no transfer has none.
-    fn has_tls_sessions(&self) -> bool {
-        false
-    }
-
-    /// Run `f` on the transfer's cache of TLS sessions, with this context
-    /// to trace through: the share's under its lock, the application told
-    /// around it (`Curl_ssl_scache_lock`), or the multi's. Work done for
-    /// no transfer has none, and `f` is not run.
-    fn tls_sessions(
-        &mut self,
-        _f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx),
-    ) {
-    }
-
-    /// What a QUIC connection's HTTP/3 library told of one of its
-    /// streams, as it read or wrote for the transfer: the transfer hands
-    /// it to the stream's own (C's callbacks reach the stream's
-    /// transfer). A connect has no streams, and hears it as nothing.
-    fn h3_event(
-        &mut self,
-        _stream: crate::http3::StreamId,
-        _event: crate::http3::StreamEvent<'_>,
-    ) -> crate::http3::Heard {
-        crate::http3::Heard::Fine
-    }
-
-    /// A QUIC connection's library wants to be called again after `wait`
-    /// from now, in whole milliseconds (`Curl_expire_set(EXPIRE_QUIC)`):
-    /// work done for no transfer has no timer to set.
-    fn quic_due(&mut self, _wait: std::time::Duration) {}
+    /// Who hears what a QUIC connection's HTTP/3 library tells of its
+    /// streams, as it reads or writes for the work: a stream's transfer,
+    /// or a tunnel's. Work with no streams has none, and hears it as
+    /// nothing.
+    fn h3_streams(&mut self) -> Option<&mut dyn H3Streams>;
 
     /// The multi's room a QUIC connection on a socket receives in, which
     /// the call lends (`Curl_multi_xfer_sockbuf_borrow`); none where the
     /// work has no multi's room to lend, and the receive makes one for
-    /// the call, as C's does with no multi. Every context says which:
-    /// a context over another's lends that one's.
+    /// the call, as C's does with no multi.
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom>;
 }
 
+/// A trace's lines (`CURL_TRC_CF`, `infof`).
+pub(crate) trait Trace {
+    /// A line of `component`'s, if it is traced.
+    fn line(&mut self, component: Component, line: fmt::Arguments<'_>);
+
+    /// `line` made of `parts`, which need not be text: bytes of the
+    /// peer's or the application's, traced as they are, as C's `%s`
+    /// writes them.
+    fn line_with(&mut self, component: Component, parts: &[&[u8]]);
+
+    /// A line of the verbose output (`infof`).
+    fn info_line(&mut self, line: fmt::Arguments<'_>);
+
+    /// `info_line` made of `parts`, which need not be text.
+    fn info_line_with(&mut self, parts: &[&[u8]]);
+
+    /// Its info lines are said (`Curl_trc_is_verbose`).
+    fn says_info(&self) -> bool;
+}
+
+/// What keeps a failure: the reason, kept if it is the first and said
+/// (`failf`), and the error number of a call on the socket that failed.
+pub(crate) trait Failures {
+    /// Fail with `kind` for the reason `why`; `kind` back.
+    fn keep(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind;
+
+    /// `keep` with a reason made of `parts`, which need not be text:
+    /// bytes of the peer's, the application's or the system's.
+    fn keep_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind;
+
+    /// A connect, send or receive on the socket failed with `e`: its
+    /// number is kept (`state.os_errno`).
+    fn keep_errno(&mut self, e: &io::Error);
+}
+
+/// What the TLS filter asks of the transfer it works for.
+pub(crate) trait ForTransfer {
+    /// Bytes for the debug handler (`Curl_debug`), if it is verbose.
+    fn debug_bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]);
+
+    /// It traces to a debug handler (C's `data->set.fdebug` and
+    /// `verbose`).
+    fn has_debug_handler(&self) -> bool;
+
+    /// Its report, if it asked for its peer's chain (`CURLOPT_CERTINFO`).
+    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport>;
+
+    /// What the TLS library made of the certificate of the peer the TLS
+    /// filter `filter` talks to, the origin (`SSL`) or an HTTPS proxy
+    /// (`SSL-PROXY`), for its report (`set.ssl.certverifyresult`,
+    /// `set.proxy_ssl.certverifyresult`).
+    fn peer_verified(&mut self, filter: Component, result: i64);
+
+    /// It has a TLS context handler (`CURLOPT_SSL_CTX_FUNCTION`).
+    fn has_tls_handler(&self) -> bool;
+
+    /// Hand the context in `native` to its TLS context handler; its
+    /// error, if it gives one.
+    fn hand_tls_context(&mut self, native: crate::tls::TlsNative) -> Result<(), ErrorKind>;
+
+    /// It stops receiving until the application unpauses it
+    /// (`Curl_xfer_pause_recv`).
+    fn stop_recv(&mut self);
+
+    /// The time of day, in seconds since 1970 (`time(NULL)`).
+    fn seconds_since_1970(&self) -> i64;
+}
+
+/// A cache of TLS sessions, and what a use of it says.
+pub(crate) trait TlsSessions {
+    /// Run `f` on the cache, with what says its lines and failure: the
+    /// share's under its lock, the application told around it
+    /// (`Curl_ssl_scache_lock`), or the multi's.
+    fn with_cache(
+        &mut self,
+        f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn SessionSays),
+    );
+}
+
+/// What a use of a cache of TLS sessions says: the cache's lines and the
+/// failure to keep a session.
+pub(crate) trait SessionSays {
+    fn say_line(&mut self, component: Component, line: fmt::Arguments<'_>);
+
+    fn say_failure(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind;
+}
+
+/// A context's own lines and failure say what a use of a cache says.
+impl<T: LayerCx + ?Sized> SessionSays for T {
+    fn say_line(&mut self, component: Component, line: fmt::Arguments<'_>) {
+        self.of(component, line);
+    }
+
+    fn say_failure(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
+        self.fails(kind, why)
+    }
+}
+
+/// What takes the word that a handshake put off for early data is done.
+pub(crate) trait EarlyData {
+    /// `sent` bytes went early, negative if the peer refused them: the
+    /// transfer times its TLS as done now and keeps the count
+    /// (`Curl_pgrsEarlyData`).
+    fn early_done(&mut self, sent: i64);
+}
+
+/// The timer a QUIC connection's library is called again by.
+pub(crate) trait QuicTimer {
+    /// Call it again after `wait` from now, in whole milliseconds.
+    fn due_in(&mut self, wait: Duration);
+}
+
+/// Who hears what a QUIC connection's HTTP/3 library tells of a stream.
+pub(crate) trait H3Streams {
+    /// The library told `event` of `stream` (C's callbacks reach the
+    /// stream's transfer).
+    fn heard(
+        &mut self,
+        stream: crate::http3::StreamId,
+        event: crate::http3::StreamEvent<'_>,
+    ) -> crate::http3::Heard;
+}
+
+/// What a layer calls on its context, each through the capability it
+/// needs: nothing, or the answer of work done for no transfer, where the
+/// context lends none.
+pub(crate) trait LayerCalls: LayerCx {
+    /// Trace a line of `component`'s, if it is.
+    fn of(&mut self, component: Component, line: fmt::Arguments<'_>) {
+        if let Some(trace) = self.trace() {
+            trace.line(component, line);
+        }
+    }
+
+    /// `of` with a line made of `parts`, which need not be text.
+    fn of_with(&mut self, component: Component, parts: &[&[u8]]) {
+        if let Some(trace) = self.trace() {
+            trace.line_with(component, parts);
+        }
+    }
+
+    /// A line of the transfer's verbose output (`infof`).
+    fn info(&mut self, line: fmt::Arguments<'_>) {
+        if let Some(trace) = self.trace() {
+            trace.info_line(line);
+        }
+    }
+
+    /// `info` with a line made of `parts`, which need not be text.
+    fn info_with(&mut self, parts: &[&[u8]]) {
+        if let Some(trace) = self.trace() {
+            trace.info_line_with(parts);
+        }
+    }
+
+    /// The transfer is verbose (`Curl_trc_is_verbose`): its `info` lines
+    /// are said.
+    fn verbose(&mut self) -> bool {
+        self.trace().is_some_and(|trace| trace.says_info())
+    }
+
+    /// A call on the socket failed with `e`: the transfer keeps its
+    /// number (`state.os_errno`).
+    fn socket_failed(&mut self, e: &io::Error) {
+        if let Some(failures) = self.failures() {
+            failures.keep_errno(e);
+        }
+    }
+
+    /// The transfer fails with `kind`, for the reason `why` (`failf`):
+    /// kept if it is the first given, and traced.
+    fn fails(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
+        match self.failures() {
+            Some(failures) => failures.keep(kind, why),
+            None => kind,
+        }
+    }
+
+    /// `fails` with a reason made of `parts`, which need not be text.
+    fn fails_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
+        match self.failures() {
+            Some(failures) => failures.keep_with(kind, parts),
+            None => kind,
+        }
+    }
+
+    /// Bytes for the transfer's debug handler (`Curl_debug`), if it is
+    /// verbose.
+    fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
+        if let Some(transfer) = self.transfer() {
+            transfer.debug_bytes(kind, bytes);
+        }
+    }
+
+    /// The transfer traces to a debug handler.
+    fn debugs(&mut self) -> bool {
+        self.transfer().is_some_and(|t| t.has_debug_handler())
+    }
+
+    /// The report of the transfer, if it asked for its peer's chain.
+    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
+        self.transfer()?.certinfo_report()
+    }
+
+    /// What the TLS library made of the certificate of the peer the TLS
+    /// filter `filter` talks to, for the transfer's report.
+    fn tls_verified(&mut self, filter: Component, result: i64) {
+        if let Some(transfer) = self.transfer() {
+            transfer.peer_verified(filter, result);
+        }
+    }
+
+    /// The transfer has a TLS context handler.
+    fn configures_tls(&mut self) -> bool {
+        self.transfer().is_some_and(|t| t.has_tls_handler())
+    }
+
+    /// Hand the context in `native` to the transfer's TLS context
+    /// handler; its error, if it gives one.
+    fn configure_tls(&mut self, native: crate::tls::TlsNative) -> Result<(), ErrorKind> {
+        match self.transfer() {
+            Some(transfer) => transfer.hand_tls_context(native),
+            None => Ok(()),
+        }
+    }
+
+    /// The transfer stops receiving until the application unpauses it.
+    fn pause_recv(&mut self) {
+        if let Some(transfer) = self.transfer() {
+            transfer.stop_recv();
+        }
+    }
+
+    /// The time of day, in seconds since 1970; none, 0, for work done
+    /// for no transfer.
+    fn unix_time(&mut self) -> i64 {
+        self.transfer().map_or(0, |t| t.seconds_since_1970())
+    }
+
+    /// The work has a cache of TLS sessions.
+    fn has_tls_sessions(&mut self) -> bool {
+        self.tls_sessions().is_some()
+    }
+
+    /// Run `f` on the cache of TLS sessions, if there is one.
+    fn with_tls_sessions(
+        &mut self,
+        f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn SessionSays),
+    ) {
+        if let Some(sessions) = self.tls_sessions() {
+            sessions.with_cache(f);
+        }
+    }
+
+    /// The origin's TLS handshake, put off for early data, is done
+    /// (`ssl_cf_connect_deferred`): `sent` bytes went early, negative if
+    /// the peer refused them.
+    fn early_done(&mut self, sent: i64) {
+        if let Some(early) = self.early_data() {
+            early.early_done(sent);
+        }
+    }
+
+    /// A QUIC connection's library wants to be called again after `wait`
+    /// from now (`Curl_expire_set(EXPIRE_QUIC)`).
+    fn quic_due(&mut self, wait: Duration) {
+        if let Some(timer) = self.quic_timer() {
+            timer.due_in(wait);
+        }
+    }
+
+    /// What a QUIC connection's HTTP/3 library told of one of its
+    /// streams, handed to who hears it; work with no streams hears it as
+    /// nothing.
+    fn h3_event(
+        &mut self,
+        stream: crate::http3::StreamId,
+        event: crate::http3::StreamEvent<'_>,
+    ) -> crate::http3::Heard {
+        match self.h3_streams() {
+            Some(streams) => streams.heard(stream, event),
+            None => crate::http3::Heard::Fine,
+        }
+    }
+}
+
+impl<T: LayerCx + ?Sized> LayerCalls for T {}
+
 /// The context of work done for no transfer: it traces nothing, as C's
-/// internal handle is not traced.
+/// internal handle is not traced, and lends nothing.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Silent(pub(crate) Instant);
 
@@ -227,16 +426,32 @@ impl LayerCx for Silent {
         self.0
     }
 
-    fn of(&mut self, _: Component, _: fmt::Arguments<'_>) {}
+    fn trace(&mut self) -> Option<&mut dyn Trace> {
+        None
+    }
 
-    fn of_with(&mut self, _: Component, _: &[&[u8]]) {}
+    fn failures(&mut self) -> Option<&mut dyn Failures> {
+        None
+    }
 
-    fn info(&mut self, _: fmt::Arguments<'_>) {}
+    fn transfer(&mut self) -> Option<&mut dyn ForTransfer> {
+        None
+    }
 
-    fn info_with(&mut self, _: &[&[u8]]) {}
+    fn tls_sessions(&mut self) -> Option<&mut dyn TlsSessions> {
+        None
+    }
 
-    fn fails_with(&mut self, kind: ErrorKind, _: &[&[u8]]) -> ErrorKind {
-        kind
+    fn early_data(&mut self) -> Option<&mut dyn EarlyData> {
+        None
+    }
+
+    fn quic_timer(&mut self) -> Option<&mut dyn QuicTimer> {
+        None
+    }
+
+    fn h3_streams(&mut self) -> Option<&mut dyn H3Streams> {
+        None
     }
 
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {

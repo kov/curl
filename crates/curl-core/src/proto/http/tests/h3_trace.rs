@@ -2372,6 +2372,87 @@ fn a_transfer_not_asking_for_early_data_sends_none() {
     assert_eq!(ran.easy.report().earlydata_sent(), 0);
 }
 
+/// Two GETs on new connections, by a TLS backend whose QUIC sessions
+/// give their ticket as `at` says: how many the second resumed.
+fn second_resumes(at: crate::tls::fake::QuicTickets) -> usize {
+    let tls = FakeTls::quic_ticketing(at).unwrap();
+    let tls: &'static FakeTls = Box::leak(Box::new(tls));
+    let conn: &[&[u8]] = &[b"server flight", b"response"];
+    // A time of day well past 1970, which a ticket timed by no transfer
+    // would be out of date at.
+    let clock = ManualClock::new().unwrap();
+    clock.set_unix_time(1_700_000_000);
+    let (mut m, _) = quic_peer(clock, &[conn, conn]);
+    for _ in 0..2 {
+        let e = tracing_by(tls, &get_script(b"123456789"));
+        let url = format!("https://localhost:{PORT}/");
+        let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.http.version = crate::options::HttpVersion::Http3Only;
+            o.ip_version = IpVersion::V6;
+            o.limits.reuse.fresh = true;
+        });
+        assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    }
+    tls.log().resumed
+}
+
+/// A QUIC connection's TLS session keeps its ticket in the transfer's
+/// cache, valid by the transfer's time of day, whether it comes as the
+/// handshake ends, in the setup's race, or in a packet read after, in a
+/// request's step; the next connection to the peer resumes it
+/// (`quic_ossl_new_session_cb`, `Curl_ssl_scache_put`).
+#[test]
+fn a_quic_session_ticket_is_kept_in_the_setup_or_the_request() {
+    use crate::tls::fake::QuicTickets;
+    assert_eq!(second_resumes(QuicTickets::AtHandshake), 1);
+    assert_eq!(second_resumes(QuicTickets::After), 1);
+}
+
+/// What the TLS library made of the peer's certificate as a QUIC
+/// handshake ends in the setup's race is the transfer's report, as a
+/// transfer not checking its peer reads it (`CURLINFO_SSL_VERIFYRESULT`
+/// after `-k`; `Curl_vquic_tls_verify_peer`).
+#[test]
+fn a_quic_peer_s_verify_result_is_reported() {
+    let script = get_script(b"123456789");
+    let mut m = quic_server(&[b"server flight", b"response"]);
+    let e = tracing(FakeTls::quic_verifying(20).unwrap(), &script);
+    let ran = h3_get(&mut m, e);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.easy.report().verify_result(), 20);
+}
+
+/// A request's packet the socket fails to send fails the transfer, the
+/// connection saying why as it sends (`vquic_send_packets`' `failf`) in
+/// the request's step.
+#[test]
+fn a_request_the_socket_fails_to_send_says_why() {
+    let (mut m, talks) = quic_peer(
+        ManualClock::new().unwrap(),
+        &[&[b"server flight", b"response"]],
+    );
+    // The first flight goes; the GET's send fails as on a reset.
+    let _ = talks[0].clone().breaking_after(1);
+    let e = tracing(FakeTls::new().unwrap(), &get_script(b"123456789"));
+    let ran = h3_get(&mut m, e);
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::SendError),
+        "{:#?}",
+        ran.seen.text()
+    );
+    // The fake's broken peer fails a send as a closed pipe, EPIPE.
+    let got = lines(&ran, &["sendmsg() returned", "[HTTP/3] [0] OPENED"]);
+    assert_eq!(
+        got[..2],
+        [
+            format!("[HTTP/3] [0] OPENED stream for https://localhost:{PORT}/"),
+            "sendmsg() returned -1 (errno 32)".to_owned(),
+        ]
+    );
+}
+
 /// A script for a tunnel through an HTTP/3 proxy: the handshake's
 /// flights, then the `CONNECT`'s packet, answered by `status`, then the
 /// origin's request's packet, answered with `told`.
@@ -3452,6 +3533,79 @@ fn http3_through_an_http_proxy_goes_over_connect_udp() {
         [READ] client_reset, clear readers"
     ));
     assert_eq!(got, want);
+}
+
+/// The same over a CONNECT-UDP tunnel: a body with as much in flight as
+/// is meant to be waits on what the peer says, not on the room of the
+/// tunnel's socket, as the HTTP/3 filter on top of the tunnel's says
+/// (`cf_ngtcp2_adjust_pollset` above the capsule filter).
+#[test]
+fn a_tunnelled_body_in_flight_waits_for_its_acknowledgement() {
+    let body = vec![b'x'; 100_000];
+    let script = post_script(b"100000\n", 4);
+    {
+        let mut s = script.lock().unwrap();
+        s.on_read[3] = vec![Told::Acked(65_388)];
+        s.timer = Some(std::time::Duration::from_millis(25));
+        s.on_expiry = vec![vec![9; 20]];
+    }
+    let head = b"HTTP/1.1 101 Switching Protocols\r\nCapsule-Protocol: ?1\r\n\r\n".to_vec();
+    let (flight, ack, response) = (
+        capsule(b"server flight"),
+        capsule(b"ack"),
+        capsule(b"response"),
+    );
+    let talk = Conversation::replies(&[&head, &[], &flight, &ack, &ack, &ack, &response], false)
+        .per_send();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], UDP_PROXY_PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.method = Method::Post;
+        o.upload = bytes(&body);
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let said: Vec<String> = ran
+        .seen
+        .text()
+        .iter()
+        .map(|l| {
+            l.trim_end()
+                .split_once("] ")
+                .map_or("", |(_, r)| r)
+                .to_owned()
+        })
+        .filter(|l| {
+            l.starts_with("[HTTP/3] [0] cf_send(len=34612)")
+                || l.starts_with("[MULTI] [PERFORMING] pollset")
+        })
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "[HTTP/3] [0] cf_send(len=34612) -> 81, 0",
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=3",
+            "[HTTP/3] [0] cf_send(len=34612) -> 0, 34612",
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2",
+        ]
+    );
+    let s = script.lock().unwrap();
+    assert_eq!((s.body.bytes.len(), s.body.ended), (100_000, true));
 }
 
 /// The script of the QUIC connection to an HTTP/3 proxy a CONNECT-UDP

@@ -560,6 +560,12 @@ exclude_re = [
     # whether it holds bytes (after such a read), the answer is no, and a
     # wrong yes costs only a pass that reads "would block" again.
     'curl-core/src/tls/fake\.rs:.*: (replace <impl TlsSession for FakeSession>::pending -> bool with (true|false)|delete ! in <impl TlsSession for FakeSession>::pending)$',
+    # A fake QUIC session that does not keep tickets finds none of its
+    # peer's to take, only the ticketing one keeping QUIC tickets; and a
+    # ticket's life past two hours is cut to a TLS 1.3 session's most as
+    # the cache keeps it.
+    'curl-core/src/tls/fake\.rs:.*: replace && with \|\| in <impl TlsBackend for FakeTls>::quic_session$',
+    'curl-core/src/tls/fake\.rs:.*: replace \+ with \* in FakeQuicSession::keep_ticket$',
     # The fake's reading of what a client sent is given whole records by
     # every test; a cut one matters to no core test.
     'curl-core/src/tls/fake\.rs:.*: replace match guard rest\.len\(\) >= HEADER \+ len with true in read_client$',

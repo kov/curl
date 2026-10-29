@@ -96,6 +96,27 @@ fn raw_bytes_need_the_handle_s_own_connection() {
     drop(seen);
 }
 
+/// A raw send the connection fails says why to the handle, which keeps
+/// it as its failure, as C's `failf` outside a transfer does.
+#[test]
+fn a_raw_send_that_fails_says_why() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let _ = talk.clone().breaking_after(0);
+    let mut e = Easy::new();
+    let seen = connect_only(&mut e);
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    assert_eq!(m.send_raw(id, b"x").unwrap(), Err(ErrorKind::SendError));
+    let failure = m.easy(id).unwrap().report().failure().map(<[u8]>::to_vec);
+    let failure = String::from_utf8(failure.unwrap_or_default()).unwrap();
+    assert!(failure.starts_with("Send failure: "), "{failure:?}");
+    m.remove(id, &mut NoEvents).unwrap();
+    drop(seen);
+}
+
 /// In a handle's own multi, as a perform runs it, the connection stays
 /// as the handle comes out; the next transfer closes it if the handle
 /// used it, and leaves it to the multi if not.

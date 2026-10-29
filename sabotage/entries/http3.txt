@@ -1086,3 +1086,73 @@ features: test-util,debug-hooks
     match quic.start(&mut over) {
 --- new
     match { let _ = &mut over; Ok::<bool, ErrorKind>(false) } {
+
+=== a request's step lends its QUIC connection no failures to say
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_request_the_socket_fails_to_send_says_why
+features: test-util,debug-hooks
+--- old
+        LayerCx::failures(&mut *self.cx)
+--- new
+        None
+
+=== a request's step lends its QUIC connection no transfer, its tickets timed at 1970
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_session_ticket_is_kept_in_the_setup_or_the_request
+features: test-util,debug-hooks
+--- old
+        LayerCx::transfer(&mut *self.cx)
+--- new
+        None
+
+=== a request's step lends its QUIC connection no session cache
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_session_ticket_is_kept_in_the_setup_or_the_request
+features: test-util,debug-hooks
+--- old
+        LayerCx::tls_sessions(&mut *self.cx)
+--- new
+        None
+
+=== the setup lends a QUIC attempt no transfer, its peer's verify result unreported
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_peer_s_verify_result_is_reported
+features: test-util,debug-hooks
+--- old
+        LayerCx::transfer(&mut *self.step)
+--- new
+        None
+
+=== the setup lends a QUIC attempt no session cache
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_session_ticket_is_kept_in_the_setup_or_the_request
+features: test-util,debug-hooks
+--- old
+        LayerCx::tls_sessions(&mut *self.step)
+--- new
+        None
+
+=== a raw send's failure is not kept for the handle
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core proto::http::tests::connect_only::a_raw_send_that_fails_says_why
+features: test-util,debug-hooks
+--- old
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        Some(self)
+    }
+--- new
+    fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
+        None
+    }
+
+=== an HTTP/3 session over a tunnel's stream has no say in its transfer's pollset
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::h3_trace::a_tunnelled_body_in_flight_waits_for_its_acknowledgement
+features: test-util,debug-hooks
+--- old
+                    super::mux::Speaks::Made(super::mux::Session::H3(h3conn)) => {
+                        h3conn.adjust_pollset(wanted, h3)
+                    }
+                    _ => wanted,
+--- new
+                    _ => wanted,

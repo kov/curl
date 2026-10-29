@@ -83,8 +83,24 @@ pub struct FakeTls {
     /// data under: the early data it allows, its protocol and its
     /// connection's transport parameters.
     quic_resumes: Option<(usize, Option<Chosen>, &'static [u8])>,
+    /// Each QUIC session resumes a ticket the transfer's cache holds,
+    /// and gives one to keep when this says.
+    quic_tickets: Option<QuicTickets>,
+    /// What each QUIC session's check of its peer says of its
+    /// certificate as the handshake ends, an X509 verify result, if it
+    /// reports one.
+    quic_verify: Option<i64>,
     /// What each session binds a channel with.
     binding: FakeBinding,
+}
+
+/// When a fake QUIC session gives its ticket to keep: as its handshake
+/// ends, or as the connection next reads after it, as a server's
+/// `NewSessionTicket` may come in a later packet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuicTickets {
+    AtHandshake,
+    After,
 }
 
 /// What a fake session binds a channel with, once its handshake is over.
@@ -208,7 +224,27 @@ impl FakeTls {
             early: 0,
             quic_unverified: false,
             quic_resumes: None,
+            quic_tickets: None,
+            quic_verify: None,
             binding: FakeBinding::None,
+        })
+    }
+
+    /// The same, each QUIC session reporting `result` as its check of
+    /// the peer's certificate as its handshake ends, which passes.
+    pub fn quic_verifying(result: i64) -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            quic_verify: Some(result),
+            ..FakeTls::new()?
+        })
+    }
+
+    /// The same, each QUIC session resuming a ticket kept for its peer,
+    /// counted as `resumed`, and giving one to keep as `at` says.
+    pub fn quic_ticketing(at: QuicTickets) -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            quic_tickets: Some(at),
+            ..FakeTls::new()?
         })
     }
 
@@ -325,12 +361,25 @@ impl TlsBackend for FakeTls {
             }
             _ => None,
         };
+        if self.quic_tickets.is_some() && cx.caches_sessions() {
+            let taken = cx.take_session();
+            if taken.as_ref().is_some_and(|t| t.data == TICKET) {
+                self.log
+                    .lock()
+                    .expect("no test panics holding the log")
+                    .resumed += 1;
+            }
+            cx.return_session(taken);
+        }
         try_box(FakeQuicSession {
             log: self.log.clone(),
             number,
             unverified: self.quic_unverified,
             store: false,
             early,
+            tickets: self.quic_tickets,
+            verify: self.quic_verify,
+            handshook: false,
         })
         .map(|b| b as Box<dyn QuicTls>)
         .map_err(|OutOfMemory| ErrorKind::OutOfMemory)
@@ -977,6 +1026,9 @@ pub fn quic_session() -> Result<Box<dyn QuicTls>, OutOfMemory> {
         unverified: false,
         store: false,
         early: None,
+        tickets: None,
+        verify: None,
+        handshook: false,
     };
     try_box(session).map(|b| b as Box<dyn QuicTls>)
 }
@@ -991,6 +1043,28 @@ struct FakeQuicSession {
     store: bool,
     /// The session it resumes, early data allowed under it.
     early: Option<TlsTicket>,
+    /// When it gives a ticket to keep, until it has.
+    tickets: Option<QuicTickets>,
+    /// The verify result it reports, if any.
+    verify: Option<i64>,
+    /// Its handshake is done.
+    handshook: bool,
+}
+
+impl FakeQuicSession {
+    /// Give the transfer's cache a ticket, valid two hours from the
+    /// transfer's time of day, if it is time to.
+    fn keep_ticket(&mut self, cx: &mut TlsCx<'_>, now: QuicTickets) {
+        if self.tickets != Some(now) {
+            return;
+        }
+        self.tickets = None;
+        let mut ticket = Vec::new();
+        if ticket.try_extend_from_slice(TICKET).is_ok() {
+            let until = cx.unix_time() + 7200;
+            cx.keep_session(TlsTicket::new(ticket, TLS1_3, Some(Chosen::H3), 0, until));
+        }
+    }
 }
 
 impl QuicTls for FakeQuicSession {
@@ -1006,6 +1080,9 @@ impl QuicTls for FakeQuicSession {
         if !self.store {
             self.store = true;
             cx.trace(format_args!("fake QUIC session {} trusts", self.number));
+        }
+        if self.handshook {
+            self.keep_ticket(cx, QuicTickets::After);
         }
         Ok(())
     }
@@ -1039,6 +1116,11 @@ impl DriveCall for FakeDrive<'_, '_> {
             return Err(self.cx.fail(ErrorKind::PeerFailedVerification, why));
         }
         self.cx.info(format_args!("fake QUIC peer verified"));
+        if let Some(result) = self.session.verify {
+            self.cx.verified(result);
+        }
+        self.session.handshook = true;
+        self.session.keep_ticket(self.cx, QuicTickets::AtHandshake);
         Ok(())
     }
 

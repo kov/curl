@@ -3618,6 +3618,64 @@ fn http3_through_an_http3_proxy_is_quic_in_quic() {
     assert_eq!(got, want);
 }
 
+/// The origin's QUIC connection over a CONNECT-UDP tunnel, under a
+/// session resumed that allows early data, is connected at once as one
+/// over a socket is: the GET goes as early data, and what the origin
+/// took is reported (`Curl_cf_ngtcp2_cmn_connect` and
+/// `cf_ngtcp2_on_session_reuse` are the same filter's either way). C's
+/// build against h2o's proxy reports the 61 bytes of its GET sent.
+#[test]
+fn early_data_goes_to_an_origin_through_an_http3_proxy() {
+    let proxy = udp_tunnel_script(b"?1");
+    let origin = get_script(b"123456789");
+    let h3 = FakeHttp3::new(proxy.clone());
+    h3.then.lock().unwrap().push_back(origin.clone());
+    let tls = FakeTls::quic_resuming(16384, Some(crate::tls::Chosen::H3), b"params").unwrap();
+    let tls: &'static FakeTls = Box::leak(Box::new(tls));
+    let e = tracing_with(tls, h3);
+    let mut m = quic_server(&[
+        b"server flight",
+        b"connect answer",
+        b"origin flight",
+        b"origin response",
+        b"more",
+        b"more",
+    ]);
+    let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(b"https://origin.example/p")).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.tls.options.make_mut().unwrap().ssl_options = crate::options::SslOptions::EARLYDATA;
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
+        proxy.kind = crate::options::ProxyType::Https3;
+        proxy.tunnel = true;
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"123456789");
+    // The proxy's connection is not asked for early data, the origin's is.
+    assert!(proxy.lock().unwrap().early_params.is_empty());
+    assert_eq!(origin.lock().unwrap().early_params, b"params");
+    let got = lines(
+        &ran,
+        &[
+            "SSL session allows",
+            "[HTTP/3] connect ->",
+            "[HTTP/3] handshake complete",
+            "[HTTP/3] server did",
+            "[MULTI] [CONNECTING] connected [",
+        ],
+    );
+    let want = expect(
+        "SSL session allows 16384 bytes of early data, reusing ALPN 'h3'
+        [HTTP/3] connect -> 0, done=1
+        [MULTI] [CONNECTING] connected [0][DNS][DNS][HTTPS-CONNECT][SETUP][HTTP/3][CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]
+        [HTTP/3] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
+        [HTTP/3] server did accept 75 bytes of early data",
+    );
+    assert_eq!(got, want, "{:#?}", ran.seen.text());
+    assert_eq!(ran.easy.report().earlydata_sent(), 75);
+}
+
 /// An HTTP/3 proxy naming another capsule protocol than RFC 9297's in
 /// its answer to a CONNECT-UDP fails the tunnel, as one over HTTP/2 does
 /// (`Curl_http_proxy_inspect_tunnel_response`).

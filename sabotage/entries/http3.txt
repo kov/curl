@@ -1059,3 +1059,12 @@ witness: curl-core conn::h3proxy::tests::a_quic_call_over_another_context_lends_
     fn quic_timer(&mut self) -> Option<&mut dyn QuicTimer> {
         self.cx.quic_timer()
     }
+
+=== the origin's QUIC connection over a CONNECT-UDP tunnel is started, connected at once for early data
+file: crates/curl-core/src/multi/state/quictunnel.rs
+witness: curl-core proto::http::tests::h3_trace::early_data_goes_to_an_origin_through_an_http3_proxy
+features: test-util,debug-hooks
+--- old
+    match quic.start(&mut over) {
+--- new
+    match { let _ = &mut over; Ok::<bool, ErrorKind>(false) } {

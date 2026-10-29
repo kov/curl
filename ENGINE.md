@@ -2864,8 +2864,9 @@ answer, each datagram a capsule both ways (the codec C's `capsule.c`, a bad caps
 read as C says it; at most four 16 KiB chunks held to read, a capsule taken whole to send, `OUT`
 asked for while some waits); the origin's `Quic` is made layered over the stream's ends
 (`ConnectMachine::tunnel_quic`, the origin's TLS and `Component::Http3` whatever the race made)
-and held by `Handshake::Quic`, its connect driven over the
-layers; done, it rides in `Dialed` (`put_quic`, `Handshook::Quic`) and becomes the connection's HTTP/3
+and held by `Handshake::Quic`, started and its connect driven over the layers as one over a
+socket is (`Quic::start`, then `Quic::connect`), so under a session allowing early data it is
+connected at once and the request goes as early data, reported as over a socket; done, it rides in `Dialed` (`put_quic`, `Handshook::Quic`) and becomes the connection's HTTP/3
 session as the setup ends. The chain is C's: `[HTTP/3][CAPSULE]` on top of the tunnel's filters,
 the capsule filter connected at once, HAPPY-EYEBALLS going with the setup's others,
 `[HTTP/3][CAPSULE][H1-PROXY][TCP]` once reduced, `[HTTP/3][CAPSULE][H3-PROXY][UDP]` through an

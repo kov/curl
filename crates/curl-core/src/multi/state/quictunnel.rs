@@ -10,7 +10,7 @@ use curl_alloc::{OutOfMemory, try_box};
 use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
 use crate::conn::Handshook;
 use crate::conn::capsule::CapsuleLayer;
-use crate::conn::quic::{Over, Path};
+use crate::conn::quic::{Over, Path, Quic};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::multi::cx::DriveCx;
@@ -34,17 +34,42 @@ pub(super) fn start<H: Host>(
         kept: None,
         deadlines: None,
     });
-    let quic = match made {
+    let mut quic = match made {
         Ok(quic) => quic,
         Err(kind) => return Err(Failure::Attempt(kind)),
     };
+    // Its first flight goes over the tunnel; sending early data, it is
+    // connected at once (`Curl_cf_ngtcp2_cmn_connect` with no connection
+    // yet, `cf->connected` set by `cf_ngtcp2_on_session_reuse`).
+    let traced = Some(s.machine.dialing().socket_component());
+    let stream = s.machine.dialed().stream();
+    let mut over = Over {
+        cx,
+        path: Path::Layers(stream.below(traced)),
+    };
+    match quic.start(&mut over) {
+        Ok(false) => {}
+        Ok(true) => {
+            made_over(s, quic);
+            return Ok(Wake::Again);
+        }
+        Err(kind) => return Err(Failure::Attempt(kind)),
+    }
     match try_box(Handshake::Quic(quic)) {
         Ok(h) => {
             *s.handshake = Some(h);
-            Ok(Wake::Again)
+            Ok(Wake::Idle)
         }
         Err(OutOfMemory) => Err(Failure::Transfer(ErrorKind::OutOfMemory)),
     }
+}
+
+/// The origin's QUIC connection over the tunnel is made: the dialed
+/// connection's from now on.
+fn made_over(s: &mut SetupMut<'_>, quic: Box<Quic>) {
+    let dialed = s.machine.dialed();
+    dialed.put_quic(quic);
+    dialed.mark_made(Handshook::Quic);
 }
 
 /// Move the handshake on, its datagrams through the tunnel's layers.
@@ -70,9 +95,7 @@ pub(super) fn step<H: Host>(
             let Some(Handshake::Quic(quic)) = s.handshake.take().map(|h| *h) else {
                 unreachable!("the origin's QUIC handshake was under way");
             };
-            let dialed = s.machine.dialed();
-            dialed.put_quic(quic);
-            dialed.mark_made(Handshook::Quic);
+            made_over(s, quic);
             Ok(Wake::Again)
         }
         Err(kind) => Err(Failure::Attempt(kind)),

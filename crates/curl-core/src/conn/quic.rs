@@ -1537,14 +1537,20 @@ impl State {
                     ));
                 }
                 // What of the early data the peer took is reported, the
-                // handshake's time the connection's as it truly connected.
+                // handshake's time the connection's as it truly connected;
+                // a proxy's is not the transfer's (`CF_TYPE_PROXY`).
                 if let (Some(sent), Some(accepted)) = (self.early, early_data) {
                     let did = if accepted { "" } else { " not" };
                     cx.trace(format_args!(
                         "server did{did} accept {sent} bytes of early data"
                     ));
                     let sent = i64::try_from(sent).unwrap_or(i64::MAX);
-                    cx.early_done(if accepted { sent } else { -sent });
+                    let sent = if accepted { sent } else { -sent };
+                    if self.component == Component::H3Proxy {
+                        cx.proxy_early_done(sent);
+                    } else {
+                        cx.early_done(sent);
+                    }
                 }
                 Heard::Fine
             }

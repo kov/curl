@@ -1727,8 +1727,11 @@ impl<H: Host> crate::conn::layer::ForTransfer for StepCx<'_, H> {
 }
 
 impl<H: Host> crate::conn::layer::EarlyData for StepCx<'_, H> {
-    fn early_done(&mut self, sent: i64) {
+    fn early_sent(&mut self, sent: i64) {
         self.report_mut().set_earlydata_sent(sent);
+    }
+
+    fn connected_late(&mut self) {
         let now = self.now();
         let marked = self.report_mut().timings_mut().mark(Timer::AppConnect, now);
         mstate::marked(self, Timer::AppConnect, marked);

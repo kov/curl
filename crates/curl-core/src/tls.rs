@@ -597,6 +597,12 @@ impl TlsCx<'_> {
         self.cx.early_done(sent);
     }
 
+    /// The same of an HTTP/3 proxy's handshake, which counts the early
+    /// data for the transfer but does not time its TLS.
+    pub(crate) fn proxy_early_done(&mut self, sent: i64) {
+        self.cx.proxy_early_done(sent);
+    }
+
     /// Hand the transfer what the HTTP/3 library told of a stream.
     pub(crate) fn h3_event(
         &mut self,

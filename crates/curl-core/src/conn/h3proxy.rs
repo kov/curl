@@ -370,10 +370,8 @@ impl LayerCx for Tunnelled<'_> {
         self.cx.tls_sessions()
     }
 
-    /// The connection to the proxy reports no early data to the
-    /// transfer.
     fn early_data(&mut self) -> Option<&mut dyn super::layer::EarlyData> {
-        None
+        self.cx.early_data()
     }
 
     fn quic_timer(&mut self) -> Option<&mut dyn super::layer::QuicTimer> {

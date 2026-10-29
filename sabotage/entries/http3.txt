@@ -454,9 +454,9 @@ witness: curl-core proto::http::tests::h3_trace::a_request_goes_as_early_data_un
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core proto::http::tests::h3_trace::a_request_goes_as_early_data_under_a_session_resumed
 --- old
-                    cx.early_done(if accepted { sent } else { -sent });
+                    let sent = if accepted { sent } else { -sent };
 --- new
-                    cx.early_done(sent);
+                    let sent = if accepted { sent } else { sent };
 
 === a QUIC connection sending early data waits for its handshake
 file: crates/curl-core/src/conn/quic.rs
@@ -1022,17 +1022,35 @@ witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy
                 }
 --- new
 
-=== a call into the proxy's connection reports its early data to the transfer
+=== a call into the proxy's connection does not count its early data for the transfer
 file: crates/curl-core/src/conn/h3proxy.rs
 witness: curl-core conn::h3proxy::tests::a_call_into_the_proxy_s_connection_is_the_transfer_s
 --- old
     fn early_data(&mut self) -> Option<&mut dyn super::layer::EarlyData> {
-        None
+        self.cx.early_data()
     }
 --- new
     fn early_data(&mut self) -> Option<&mut dyn super::layer::EarlyData> {
-        self.cx.early_data()
+        None
     }
+
+=== an HTTP/3 proxy's early data times the transfer's TLS
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core proto::http::tests::h3_trace::early_data_goes_to_an_http3_proxy_counted_but_untimed
+features: test-util,debug-hooks
+--- old
+                    if self.component == Component::H3Proxy {
+--- new
+                    if self.component == Component::Http3 {
+
+=== no early data goes to an HTTP/3 proxy
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::early_data_goes_to_an_http3_proxy_counted_but_untimed
+features: test-util,debug-hooks
+--- old
+        let early_data = identity
+--- new
+        let early_data = !proxied && identity
 
 === a call into the proxy's connection hands its streams' events to the transfer
 file: crates/curl-core/src/conn/h3proxy.rs

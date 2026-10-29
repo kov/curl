@@ -1549,8 +1549,7 @@ impl ConnectMachine {
         let (Some(backend), Some(h3)) = (libraries.tls.as_deref(), libraries.h3) else {
             return Err(failed(cx, ErrorKind::QuicConnectError));
         };
-        // To an HTTP/3 proxy, its TLS is the proxy's, and no early data
-        // goes before the tunnel's `CONNECT`.
+        // To an HTTP/3 proxy, its TLS is the proxy's.
         let proxied = !tunnelled && self.route.proxy_over_quic();
         let (identity, origin, via) = if proxied {
             let identity = self.route.proxy_tls().expect("an HTTP/3 proxy speaks TLS");
@@ -1566,13 +1565,13 @@ impl ConnectMachine {
         let kept_for =
             crate::tls::SessionPeer::new(identity, origin, via, backend.id(), super::Dial::Quic)
                 .map_err(oom)?;
-        // Early data, where the transfer asks for it and makes requests
-        // (`conn_cfg->earlydata`, `bits.connect_only`).
-        let early_data = !proxied
-            && identity
-                .options
-                .ssl_options
-                .contains(crate::options::SslOptions::EARLYDATA)
+        // Early data, where the transfer asks for it of this peer and
+        // makes requests (`conn_cfg->earlydata`, `bits.connect_only`): to
+        // an HTTP/3 proxy, the tunnel's `CONNECT` goes as early data.
+        let early_data = identity
+            .options
+            .ssl_options
+            .contains(crate::options::SslOptions::EARLYDATA)
             && making.requests;
         let peer = crate::tls::TlsPeer::of(origin, early_data);
         let tls = {

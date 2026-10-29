@@ -339,8 +339,12 @@ impl crate::conn::layer::TlsSessions for Asked {
 }
 
 impl crate::conn::layer::EarlyData for Asked {
-    fn early_done(&mut self, sent: i64) {
-        self.calls.push(format!("early_done {sent}"));
+    fn early_sent(&mut self, sent: i64) {
+        self.calls.push(format!("early_sent {sent}"));
+    }
+
+    fn connected_late(&mut self) {
+        self.calls.push("connected_late".to_string());
     }
 }
 
@@ -401,8 +405,9 @@ fn a_call_into_the_proxy_s_connection_is_the_transfer_s() {
         over.tls_verified(Component::H3Proxy, 18);
         over.pause_recv();
         over.with_tls_sessions(&mut |_, _| {});
-        // Its early data is not the transfer's.
-        over.early_done(7);
+        // What its handshake sent early is counted for the transfer,
+        // which it does not time (`CF_TYPE_PROXY`).
+        over.proxy_early_done(7);
         over.quic_due(std::time::Duration::from_millis(5));
         assert_eq!(
             over.h3_event(StreamId(0), StreamEvent::Data(b"tunnelled")),
@@ -414,6 +419,7 @@ fn a_call_into_the_proxy_s_connection_is_the_transfer_s() {
             &["tls_verified H3Proxy 18", "pause_recv"][..],
             sessions,
             &[
+                "early_sent 7",
                 "quic_due 5ms",
                 "of [cb_h3_proxy_recv_data] [0] DATA len=9, total=9",
                 "of [0] DATA len=9, rx win=32759",
@@ -712,7 +718,8 @@ fn a_quic_call_over_another_context_lends_its_capabilities() {
             "socket_failed gone",
             "pause_recv",
             "tls_sessions",
-            "early_done 7",
+            "early_sent 7",
+            "connected_late",
             "quic_due 5ms",
             "h3_event 3",
         ]
@@ -729,7 +736,8 @@ fn a_quic_call_over_another_context_lends_its_capabilities() {
             "socket_failed gone",
             "pause_recv",
             "tls_sessions",
-            "early_done 7",
+            "early_sent 7",
+            "connected_late",
             "of [3] quic close(app_error=256) -> 0",
         ]
     );

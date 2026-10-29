@@ -518,8 +518,12 @@ mod tests {
     }
 
     impl crate::conn::layer::EarlyData for Noting {
-        fn early_done(&mut self, sent: i64) {
+        fn early_sent(&mut self, sent: i64) {
             assert_eq!(self.0.replace(sent), None, "told once");
+        }
+
+        fn connected_late(&mut self) {
+            assert!(self.0.is_some(), "told after the count");
         }
     }
 

@@ -229,9 +229,13 @@ impl<T: LayerCx + ?Sized> SessionSays for T {
 /// What takes the word that a handshake put off for early data is done.
 pub(crate) trait EarlyData {
     /// `sent` bytes went early, negative if the peer refused them: the
-    /// transfer times its TLS as done now and keeps the count
+    /// transfer keeps the count, whichever hop's handshake it was
     /// (`Curl_pgrsEarlyData`).
-    fn early_done(&mut self, sent: i64);
+    fn early_sent(&mut self, sent: i64);
+
+    /// The origin's handshake, put off for early data, is done: the
+    /// transfer times its TLS as done now (`TIMER_APPCONNECT`).
+    fn connected_late(&mut self);
 }
 
 /// The timer a QUIC connection's library is called again by.
@@ -387,7 +391,16 @@ pub(crate) trait LayerCalls: LayerCx {
     /// the peer refused them.
     fn early_done(&mut self, sent: i64) {
         if let Some(early) = self.early_data() {
-            early.early_done(sent);
+            early.early_sent(sent);
+            early.connected_late();
+        }
+    }
+
+    /// The same of an HTTP/3 proxy's handshake: the count is kept, the
+    /// transfer's TLS not timed by it (`CF_TYPE_PROXY`).
+    fn proxy_early_done(&mut self, sent: i64) {
+        if let Some(early) = self.early_data() {
+            early.early_sent(sent);
         }
     }
 

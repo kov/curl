@@ -371,8 +371,9 @@ pub(crate) struct DriveCx<'c, 'a, H: Host> {
 }
 
 /// The step's, but for its timer, which a QUIC attempt arms in the
-/// transfer's timers; a setup reports no early data, and has no streams
-/// to hear of.
+/// transfer's timers; a setup has no streams to hear of, and hears no
+/// handshake that sent early data end: such a connection is connected at
+/// once, its handshake ending in the step that drives it on.
 impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
     fn now(&self) -> Instant {
         self.step.now()

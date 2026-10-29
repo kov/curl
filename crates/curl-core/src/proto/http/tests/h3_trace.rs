@@ -3676,6 +3676,88 @@ fn early_data_goes_to_an_origin_through_an_http3_proxy() {
     assert_eq!(ran.easy.report().earlydata_sent(), 75);
 }
 
+/// An HTTP/1.1 GET through an HTTP/3 proxy, the proxy's TLS options
+/// `early`, under a session resumed that allows early data; what the
+/// handle reported of early data before is `before`.
+fn through_h3_proxy_early(early: crate::options::SslOptions, before: i64) -> Ran {
+    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n".to_vec();
+    let script = tunnel_script(b"200", vec![Told::Data(0, response)]);
+    let mut m = quic_server(&[b"server flight", b"connect answer", b"response"]);
+    let tls = FakeTls::quic_resuming(16384, Some(crate::tls::Chosen::H3), b"params").unwrap();
+    let mut e = tracing(tls, &script);
+    e.report_mut().set_earlydata_sent(before);
+    let ran = get_with(
+        &mut m,
+        e,
+        "/",
+        Conversation::replies(&[], false),
+        move |o| {
+            o.set_url(Some(b"http://origin.example/p")).unwrap();
+            // One address to try, so one attempt.
+            o.ip_version = IpVersion::V6;
+            let proxy = o.proxy.make_mut().unwrap();
+            proxy.url = Some(format!("https://localhost:{PORT}").into_bytes());
+            proxy.kind = crate::options::ProxyType::Https3;
+            proxy.tunnel = true;
+            proxy.tls.options.make_mut().unwrap().ssl_options = early;
+        },
+    );
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"ok\n");
+    let params = script.lock().unwrap().early_params.clone();
+    let asked = early.contains(crate::options::SslOptions::EARLYDATA);
+    assert_eq!(params, if asked { &b"params"[..] } else { b"" });
+    ran
+}
+
+/// The connection to an HTTP/3 proxy whose TLS options ask for early
+/// data goes under a session resumed that allows it as the origin's
+/// does: connected at once, the tunnel's `CONNECT` going before the
+/// handshake ends, and what went early counted for the transfer, which
+/// keeps no count from before; the transfer's TLS is not timed by it
+/// (`cf_ngtcp2_on_session_reuse`, `Curl_pgrsEarlyData`, and no
+/// `TIMER_APPCONNECT` for a `CF_TYPE_PROXY` filter). C's build against
+/// h2o's proxy: `[H3-PROXY] connect -> 0, done=1` before `CONNECT
+/// start`, `server did accept 0 bytes of early data`, and an
+/// `CURLINFO_EARLYDATA_SENT_T` of 0 where the transfer before it on the
+/// handle reported 63.
+#[test]
+fn early_data_goes_to_an_http3_proxy_counted_but_untimed() {
+    let none = crate::options::SslOptions::NONE;
+    let early = crate::options::SslOptions::EARLYDATA;
+    let without = through_h3_proxy_early(none, 63);
+    let ran = through_h3_proxy_early(early, 63);
+    let got = lines(
+        &ran,
+        &[
+            "SSL session allows",
+            "[H3-PROXY] connect ->",
+            "[H3-PROXY] [0] CONNECT start",
+            "[H3-PROXY] handshake complete",
+            "[H3-PROXY] server did",
+        ],
+    );
+    let want = expect(
+        "SSL session allows 16384 bytes of early data, reusing ALPN 'h3'
+        [H3-PROXY] connect -> 0, done=1
+        [H3-PROXY] [0] CONNECT start for origin.example:80
+        [H3-PROXY] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
+        [H3-PROXY] server did accept 0 bytes of early data",
+    );
+    assert_eq!(got, want, "{:#?}", ran.seen.text());
+    assert_eq!(ran.easy.report().earlydata_sent(), 0);
+    // Not asking, the count from before stays, as C's does.
+    assert!(lines(&without, &["SSL session allows", "server did"]).is_empty());
+    assert_eq!(without.easy.report().earlydata_sent(), 63);
+    // The transfer's times are those of the same transfer not asking.
+    let timed = |r: &Ran| {
+        let t = r.easy.report().timings();
+        (t.connect(), t.appconnect())
+    };
+    assert_eq!(timed(&ran), timed(&without));
+    assert_eq!(timed(&ran).0, Duration::ZERO);
+}
+
 /// An HTTP/3 proxy naming another capsule protocol than RFC 9297's in
 /// its answer to a CONNECT-UDP fails the tunnel, as one over HTTP/2 does
 /// (`Curl_http_proxy_inspect_tunnel_response`).

@@ -1946,9 +1946,10 @@ a receive inside a receive on the room, which nothing makes: it asserts. (`Layer
 room, the QUIC timer and the streams' events since a connection to an HTTP/3 proxy works as a
 layer of the origin's stream, given only a `LayerCx`.) The calls on a connection lend what
 they are for: a request's step (`H3Step`) the streams' transfers; a call into the proxy's
-connection (`h3proxy::Tunnelled`) the tunnel, and no early data, which is the origin's; a
+connection (`h3proxy::Tunnelled`) the tunnel; a
 pooled connection's check or goodbye (`quic::Lone`) streams no transfer has and no timer; an
-attempt's (`quic::Over`) the drive's, which lends a timer of its own and no early data. A connection whose
+attempt's (`quic::Over`) the drive's, which lends a timer of its own and no early data, since a
+connection sending it is connected at once and its handshake ends past the race. A connection whose
 datagrams go through a proxy's CONNECT-UDP tunnel is made layered, a fact it keeps: each
 datagram goes to the stream's layers on its own (`QuicIo::send_below`), a run cut at its
 segment size and only a whole datagram sent (`vquic_cf_send`), and comes back one per receive
@@ -2732,7 +2733,11 @@ OpenSSL to send early data (`Quic::early_data`, `Connection::set_early_params` a
 made as any other. Sending early data it counts as connected at once, its attempt winning as it
 starts, and the request's bytes taken before the handshake ends are counted; the handshake's
 end tells the transfer whether the peer took them (`Event::HandshakeDone::early_data`,
-`ngtcp2_conn_get_tls_early_data_rejected2`), through the same `early_done`.
+`ngtcp2_conn_get_tls_early_data_rejected2`), through the same `early_done`. A connection to an
+HTTP/3 proxy whose TLS options ask for early data goes the same way, its tunnel's `CONNECT`
+the early data; its handshake's end keeps the count for the transfer but does not time the
+transfer's TLS (`LayerCalls::proxy_early_done`; C's `CF_TYPE_PROXY`), whether it ends as the
+tunnel is driven (`multi/state/h3tunnel.rs`) or in a call into the connection after.
 
 **The key log** (`tls/keylog.rs`, keylog.c): the file `SSLKEYLOGFILE` names, opened to append
 by the shim's first global init (also `curl_easy_init`'s, for a program that made none) and
@@ -2821,8 +2826,9 @@ HTTP/3 (`CURLPROXY_HTTPS3`, `--proxy-http3`): a stream of a QUIC connection to t
 `[H3-PROXY][UDP]` under the race. C makes the H3-PROXY filter the race's attempt, with neither
 HTTP-PROXY nor SSL-PROXY above it, so the setup dials QUIC to the proxy (`Dialing::first_hop_quic`)
 and the race's attempt is a `Quic` of `Component::H3Proxy`, its TLS the proxy's identity
-(`TlsIo::for_proxy`), no early data. The attempt holds the tunnel, as C's H3-PROXY filter
-does (`Link::Tunnel`): once its QUIC handshake is done the machine makes `conn/h3proxy.rs`'s
+(`TlsIo::for_proxy`), early data as the proxy's TLS options say. The attempt holds the tunnel,
+as C's H3-PROXY filter does (`Link::Tunnel`): once its QUIC connection is up (its handshake
+done, or at once for early data) the machine makes `conn/h3proxy.rs`'s
 `H3Proxy` of the connection, the `Quic`, its one stream's `Tunnel` (state, the answer, what came
 on the stream, held as the HTTP/2 tunnel's is, and its window) and the room the library's events
 land in, and the attempt races on. Each of C's flags that say one fact is one field: the

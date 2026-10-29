@@ -35,6 +35,7 @@ mod h3tunnel;
 use h3tunnel::Tunnels;
 mod haproxy;
 mod https;
+mod names;
 mod quictunnel;
 mod socks;
 mod tls;
@@ -2858,6 +2859,11 @@ fn connecting<H: Host>(
     if let Err(kind) = https::connect_call(&mut c, cx) {
         return (TransferState::Connecting(c).fail(kind), Wake::Again);
     }
+    // The chain's first connect reaches the name's DNS filter, which
+    // starts (`cf_dns_start`).
+    if c.lead().is_some_and(ConnectMachine::unasked) {
+        names::started(cx, &c.route);
+    }
     let mut c = c;
     if https::other_leads(&c) {
         c = match drive_other(run, c, cx) {
@@ -3078,6 +3084,9 @@ fn enter_setup<H: Host>(
     let filter = match due {
         Due::Socks(_) => {
             let leg = c.route.socks().expect("through a SOCKS proxy");
+            if leg.version.resolves_locally() {
+                names::target_created(cx, leg.to, leg.version.ip(c.route.ip));
+            }
             let at = port_text(leg.to.port());
             trace::of_with(
                 cx,
@@ -3938,6 +3947,8 @@ fn up<H: Host>(
         }
     }
     https::call_ended(c.https, cx, Ok(true));
+    let route = c.lease.conn().dialing().expect("set up over the network");
+    names::connected(cx, crate::conn::chain::dns_filters(route, head));
     chain_connect_ended(cx, Ok(true));
     // Its TLS is up now, and its socket was when it connected
     // (`Curl_pgrsTime` for `TIMER_APPCONNECT` as the SSL filter connects),
@@ -4987,7 +4998,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
             crate::altsvc::Alpn::H2 => neg.wanted.h2 = true,
             crate::altsvc::Alpn::H3 => neg.wanted.h3 = true,
         }
-        neg.preferred = Some(alpn);
+        neg.alt_svc = Some(crate::proto::http::AltSvcSaid::Prefers(alpn));
     }
     if let Some(speaks) = alt_used {
         let via = via.as_deref().expect("an alternative is the peer");
@@ -5412,6 +5423,9 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
             None => Component::Setup,
         };
         trace::of(cx, first, format_args!("added"));
+        let record = https.is_some_and(|h| h.asks());
+        let wants_quic = proto.negotiation().is_some_and(|n| n.wants_quic());
+        names::chain_set_up(cx, &route, record, wants_quic);
         mstate::trace(cx, format_args!("Curl_conn_setup() -> 0"));
     }
     TransferState::Connecting(Connecting {

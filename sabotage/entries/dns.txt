@@ -456,3 +456,83 @@ witness: curl-core multi::tests::a_resolve_entry_not_utf8_is_traced_as_its_bytes
                 let line = curl_alloc::Lossy(line);
                 let why = format_args!("Could not parse CURLOPT_RESOLVE entry '{line}'");
                 return Err(trace::fail(cx, kind, why));
+
+=== a DNS filter of a connection an alternative service switched to HTTP/3 says it wants TCP
+file: crates/curl-core/src/multi/state/names.rs
+witness: curl-core proto::http::tests::h3_trace::an_alternative_elsewhere_in_http3_is_dialed_over_quic
+features: test-util
+--- old
+    } else if wants_quic {
+        5
+--- new
+    } else if wants_quic {
+        3
+
+=== a DNS filter of a connection asked for HTTP/3 says it wants QUIC
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
+features: test-util
+--- old
+        let wants_quic = proto.negotiation().is_some_and(|n| n.wants_quic());
+--- new
+        let wants_quic = proto.negotiation().is_some_and(|n| n.wanted.h3);
+
+=== the DNS filter of the HTTPS record is not told the chain below connected
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_has_the_record_s_dns_filter_and_the_addresses
+features: test-util
+--- old
+    usize::from(head.record) + 1 + usize::from(resolves_target(route.route))
+--- new
+    1 + usize::from(resolves_target(route.route))
+
+=== the addresses' DNS filter after the HTTPS record's is traced as added
+file: crates/curl-core/src/multi/state/names.rs
+witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_has_the_record_s_dns_filter_and_the_addresses
+features: test-util
+--- old
+    created(cx, queries, first, transport, !record);
+--- new
+    created(cx, queries, first, transport, true);
+
+=== the name's DNS filter is traced as started at every connect of the setup
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_has_the_record_s_dns_filter_and_the_addresses
+features: test-util
+--- old
+    if c.lead().is_some_and(ConnectMachine::unasked) {
+        names::started(cx, &c.route);
+--- new
+    if c.lead().is_some() {
+        names::started(cx, &c.route);
+
+=== a SOCKS target resolved here has no DNS filter of its own
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::setup_trace::a_socks4_target_s_name_has_a_dns_filter_of_its_own
+features: test-util
+--- old
+            if leg.version.resolves_locally() {
+                names::target_created(cx, leg.to, leg.version.ip(c.route.ip));
+--- new
+            if false {
+                names::target_created(cx, leg.to, leg.version.ip(c.route.ip));
+
+=== the DNS and happy eyeballs filters are not traced going with the setup's
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
+features: test-util
+--- old
+            .filter(|&f| is_setup(f))
+    }
+--- new
+            .filter(|&f| is_setup(f) && !matches!(f, Component::Dns | Component::HappyEyeballs))
+    }
+
+=== a Unix socket path too long is reported resolved by its DNS filter
+file: crates/curl-core/src/multi/state/names.rs
+witness: curl-core proto::http::tests::unix_trace::a_path_too_long_is_not_resolved
+features: test-util
+--- old
+    if unix && peer.name().len() < curl_os::net::UNIX_PATH_ROOM {
+--- new
+    if unix {

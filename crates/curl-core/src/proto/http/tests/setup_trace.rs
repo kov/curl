@@ -403,3 +403,57 @@ fn an_https_setup_is_traced_as_c() {
     ));
     assert_eq!(setup_lines(&ran), want);
 }
+
+/// The lines of a run about the DNS filters' own life and the SOCKS
+/// filter's adding.
+fn name_lines(ran: &Ran) -> Vec<String> {
+    let life = [
+        "] created DNS filter for ",
+        "[DNS] added",
+        "] cf_dns_start ",
+        "[DNS] connected filter chain below",
+        "[DNS] removing connected setup filter",
+        "[DNS] destroy",
+        "[SETUP] added SOCKS",
+    ];
+    ran.seen
+        .text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .filter(|l| life.iter().any(|p| l.contains(p)))
+        .collect()
+}
+
+/// Through a SOCKS4 proxy, which is given an address, the origin's name
+/// has a DNS filter of its own, made before the SOCKS filter is added,
+/// asking IPv4 alone and never added to the chain itself; it starts at
+/// the SOCKS handshake's first call, and goes with the proxy's once the
+/// chain is connected. The C build traces the same lines.
+#[test]
+fn a_socks4_target_s_name_has_a_dns_filter_of_its_own() {
+    let talk = Conversation::replies(&[b"\x00\x5a\x00\x00\x00\x00\x00\x00", OK], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    let components = Components::new().unwrap();
+    components.configure(b"setup,dns");
+    e.set_components(Some(components));
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        through_socks(o, "socks4", b"http://localhost:8990/a");
+    });
+    assert_eq!(ran.result, Ok(()));
+    let want = expect(&format!(
+        "[DNS] [A+AAAA] created DNS filter for 127.0.0.1:{PORT}, transport=3
+        [DNS] added
+        [DNS] [A+AAAA] cf_dns_start host 127.0.0.1:{PORT}
+        [DNS] [A] created DNS filter for localhost:8990, transport=3
+        [SETUP] added SOCKS filter to localhost:8990
+        [DNS] [A] cf_dns_start host localhost:8990
+        [DNS] connected filter chain below
+        [DNS] connected filter chain below
+        [DNS] removing connected setup filter
+        [DNS] destroy
+        [DNS] removing connected setup filter
+        [DNS] destroy"
+    ));
+    assert_eq!(name_lines(&ran), want);
+}

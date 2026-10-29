@@ -283,6 +283,7 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Record {
     let at = at.bytes();
     let dns = Component::Dns;
     // The C debug build's line.
+    super::names::record_started(cx, route);
     #[cfg(feature = "debug-hooks")]
     trace::of_with(cx, dns, &[b"[HTTPS] hostip_resolv(", name, at, b")"]);
     let found = cached(route, cx);
@@ -647,7 +648,7 @@ mod tests {
                 Named::H2 => neg.wanted.h2 = true,
                 Named::H3 => neg.wanted.h3 = true,
             }
-            neg.preferred = Some(p);
+            neg.alt_svc = Some(crate::proto::http::AltSvcSaid::Prefers(p));
         }
         Choosing {
             neg,

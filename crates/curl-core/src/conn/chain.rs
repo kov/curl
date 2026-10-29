@@ -46,10 +46,6 @@ const MOST: usize = 14;
 pub(crate) struct Chain {
     filters: [(Component, bool); MOST],
     len: usize,
-    /// The HAPPY-EYEBALLS filter stays until the chain connects, its
-    /// attempt an HTTP/3 proxy's tunnel's or one a CONNECT-UDP tunnel goes
-    /// over, and traces its going.
-    eyeballs_stay: bool,
 }
 
 impl Chain {
@@ -57,7 +53,6 @@ impl Chain {
         Chain {
             filters: [(Component::Tcp, false); MOST],
             len: 0,
-            eyeballs_stay: false,
         }
     }
 
@@ -253,7 +248,6 @@ impl Chain {
             push(Component::H3Proxy);
         }
         push(route.socket_component());
-        chain.eyeballs_stay = h3_proxy || tunnels_udp;
         chain
     }
 
@@ -291,18 +285,20 @@ impl Chain {
     }
 
     /// The setup filters that go once the chain is connected, top first,
-    /// that trace their going: C's DNS and HAPPY-EYEBALLS filters' own
-    /// lines are not traced.
+    /// each tracing its going.
     pub(crate) fn going(&self) -> impl Iterator<Item = Component> + '_ {
         self.filters[..self.len]
             .iter()
             .map(|&(filter, _)| filter)
-            .filter(|&f| {
-                is_setup(f)
-                    && f != Component::Dns
-                    && (f != Component::HappyEyeballs || self.eyeballs_stay)
-            })
+            .filter(|&f| is_setup(f))
     }
+}
+
+/// The DNS filters a chain over `route` holds, headed as `head` says:
+/// the HTTPS record's, the first hop's, and the SOCKS proxy's target's
+/// where it is resolved here.
+pub(crate) fn dns_filters(route: Dialing<'_>, head: Head) -> usize {
+    usize::from(head.record) + 1 + usize::from(resolves_target(route.route))
 }
 
 /// The handshakes whose filters a chain holds.
@@ -585,7 +581,10 @@ mod tests {
             "[0][!DNS][!SETUP][HAPPY-EYEBALLS][H3-PROXY][UDP]"
         );
         let going: Vec<_> = up.going().collect();
-        assert_eq!(going, [Component::Setup, Component::HappyEyeballs]);
+        assert_eq!(
+            going,
+            [Component::Dns, Component::Setup, Component::HappyEyeballs]
+        );
         assert_eq!(up.reduced().to_string(), "[0][H3-PROXY][UDP]");
     }
 
@@ -674,6 +673,7 @@ mod tests {
         assert_eq!(
             going,
             [
+                Component::Dns,
                 Component::Setup,
                 Component::HttpProxy,
                 Component::HappyEyeballs

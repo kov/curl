@@ -47,10 +47,9 @@ witness: curl-core proto::http::tests::setup_trace::a_pre_proxy_s_and_a_tunnel_s
 file: crates/curl-core/src/conn/chain.rs
 witness: curl-core proto::http::tests::setup_trace::a_direct_setup_is_traced_as_c
 --- old
-                    && (f != Component::HappyEyeballs || self.eyeballs_stay)
+            .filter(|&f| is_setup(f))
 --- new
-                    && (f != Component::HappyEyeballs || self.eyeballs_stay)
-                    && f != Component::Setup
+            .filter(|&f| is_setup(f) && f != Component::Setup)
 
 === a connect under way is polled in the call that started it
 file: crates/curl-core/src/multi/state.rs
@@ -99,14 +98,6 @@ witness: curl-core conn::chain::tests::http3_through_connect_udp_is_over_the_tun
 --- new
         if quic {
             push(Component::Http3);
-
-=== the HAPPY-EYEBALLS filter goes untraced once a CONNECT-UDP tunnel is up
-file: crates/curl-core/src/conn/chain.rs
-witness: curl-core conn::chain::tests::http3_through_connect_udp_is_over_the_tunnel_s_filters
---- old
-        chain.eyeballs_stay = h3_proxy || tunnels_udp;
---- new
-        chain.eyeballs_stay = h3_proxy;
 
 === a handshake is marked made twice unseen
 file: crates/curl-core/src/conn/connect.rs

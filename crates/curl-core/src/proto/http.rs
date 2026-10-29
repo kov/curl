@@ -315,10 +315,23 @@ pub(crate) struct Negotiation {
     /// (`h2_prior_knowledge`).
     pub(crate) prior: bool,
     pub(crate) only_10: bool,
-    /// The version an alternative service for the origin itself names,
-    /// which the HTTPS connect filter tries first where it is allowed
-    /// (`preferred`).
-    pub(crate) preferred: Option<crate::altsvc::Alpn>,
+    /// What an alternative service for the origin made of it, if one
+    /// was used.
+    pub(crate) alt_svc: Option<AltSvcSaid>,
+}
+
+/// What an alternative service for the origin made of the versions it
+/// negotiates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AltSvcSaid {
+    /// The origin itself speaks this version too, which the HTTPS connect
+    /// filter tries first where it is allowed (`preferred`).
+    Prefers(crate::altsvc::Alpn),
+    /// The origin was switched to HTTP/3 elsewhere, so its connection
+    /// wants QUIC from the start, as C's then does (`transport_wanted`);
+    /// HTTP/3 asked for otherwise is the HTTPS connect filter's choice,
+    /// over a connection that wants TCP.
+    SwitchedToH3,
 }
 
 impl Negotiation {
@@ -340,13 +353,21 @@ impl Negotiation {
             allowed: allowed.unwrap_or(wanted),
             prior: version == HttpVersion::Http2Prior,
             only_10: version == HttpVersion::Http10,
-            preferred: None,
+            alt_svc: None,
         }
     }
 
     /// The preferred version, if it is allowed.
     pub(crate) fn preferred(&self) -> Option<crate::altsvc::Alpn> {
-        self.preferred.filter(|&p| self.allowed.has(p))
+        match self.alt_svc {
+            Some(AltSvcSaid::Prefers(p)) if self.allowed.has(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// The connection wants QUIC from the start.
+    pub(crate) fn wants_quic(&self) -> bool {
+        self.alt_svc == Some(AltSvcSaid::SwitchedToH3)
     }
 
     /// The HTTPS connect filter's first attempt offers HTTP/1.1 alone: HTTP/2
@@ -701,6 +722,7 @@ impl Request {
             Some(crate::altsvc::Alpn::H3) => {
                 let h3 = only(false, false, true);
                 (self.neg.wanted, self.neg.allowed) = (h3, h3);
+                self.neg.alt_svc = Some(AltSvcSaid::SwitchedToH3);
             }
             None => {}
         }

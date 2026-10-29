@@ -118,7 +118,11 @@ fn a_unix_socket_is_connected_in_place_of_the_host() {
     assert_eq!(
         setup_lines(&ran),
         lines(
-            "[HAPPY-EYEBALLS] init ip ballers for transport 6
+            "[DNS] [A+AAAA] created DNS filter for /tmp/t.sock:0, transport=6
+            [DNS] added
+            [DNS] [A+AAAA] cf_dns_start unix-domain-socket /tmp/t.sock:0
+            [DNS] resolved unix:///tmp/t.sock
+            [HAPPY-EYEBALLS] init ip ballers for transport 6
             [HAPPY-EYEBALLS] want to do more
             [HAPPY-EYEBALLS] check for next AAAA address: none
             [DNS] get 0th result for /tmp/t.sock:0, family=1, dns=1
@@ -134,7 +138,12 @@ fn a_unix_socket_is_connected_in_place_of_the_host() {
             [UNIX] connected on fd=1000
             [HAPPY-EYEBALLS] connect attempt #0 successful
             [HAPPY-EYEBALLS] Connected to /tmp/t.sock (/tmp/t.sock) port 0
+            [DNS] connected filter chain below
             Established connection to /tmp/t.sock (/tmp/t.sock port 0) from  port 0
+            [DNS] removing connected setup filter
+            [DNS] destroy
+            [HAPPY-EYEBALLS] removing connected setup filter
+            [HAPPY-EYEBALLS] destroy
             [UNIX] query ALPN"
         )
     );
@@ -181,14 +190,19 @@ fn an_abstract_name_shows_as_nothing() {
     assert_eq!(ran.result, Ok(()));
     let lines = setup_lines(&ran);
     assert_eq!(
-        lines[3],
+        lines[7],
         "[DNS] get 0th result for t-abs:0, family=1, dns=1"
     );
-    assert_eq!(lines[6], "  Trying :0...");
+    assert_eq!(lines[3], "[DNS] resolved unix://t-abs");
+    assert_eq!(lines[10], "  Trying :0...");
     assert_eq!(
-        lines[lines.len() - 2..],
+        lines[lines.len() - 6..],
         [
             "Established connection to t-abs ( port 0) from  port 0",
+            "[DNS] removing connected setup filter",
+            "[DNS] destroy",
+            "[HAPPY-EYEBALLS] removing connected setup filter",
+            "[HAPPY-EYEBALLS] destroy",
             "[UNIX] query ALPN"
         ]
     );
@@ -231,9 +245,16 @@ fn a_path_too_long_is_not_resolved() {
     assert_eq!(ran.result, Err(ErrorKind::CouldntResolveHost));
     let said = format!("Unix socket path too long: '{long}'");
     assert_eq!(ran.easy.report().failure(), Some(said.as_bytes()));
+    // The name's filter is made and starts, and reports no address.
     assert_eq!(
         setup_lines(&ran),
-        [said, format!("Could not resolve: {long}")]
+        [
+            format!("[DNS] [A+AAAA] created DNS filter for {long}:0, transport=6"),
+            "[DNS] added".to_owned(),
+            format!("[DNS] [A+AAAA] cf_dns_start unix-domain-socket {long}:0"),
+            said,
+            format!("Could not resolve: {long}")
+        ]
     );
 }
 

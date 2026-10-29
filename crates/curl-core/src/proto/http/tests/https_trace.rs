@@ -134,6 +134,8 @@ fn an_https_setup_to_a_name_waits_for_its_record_once() {
         [DNS] cache negative name resolve for localhost:{PORT} type=HTTPS
         [HTTPS-CONNECT] HTTPS-RR not available
         [HTTPS-CONNECT] connect -> 0, done=1
+        [DNS] connected filter chain below
+        [DNS] connected filter chain below
         [HTTPS-CONNECT] removing connected setup filter
         [HTTPS-CONNECT] destroy"
     ));
@@ -518,4 +520,42 @@ fn a_tunnel_says_the_protocol_its_proxy_negotiated() {
         .filter(|l| l.starts_with("CONNECT:"))
         .collect();
     assert_eq!(connect, ["CONNECT: 'http/1.1' negotiated"], "{got:?}");
+}
+
+/// An HTTPS setup to a name has two DNS filters, the record's added
+/// above the addresses', which is not: each made as the chain is set up,
+/// each started as its first connect reaches it, the record's first, and
+/// both told the chain below connected and gone once it is. The C build
+/// traces the same lines (`cf_dns_create`, `cf_dns_start`).
+#[test]
+fn an_https_setup_to_a_name_has_the_record_s_dns_filter_and_the_addresses() {
+    let mut m = tls_server(1);
+    let url = format!("https://localhost:{PORT}/");
+    let e = tracing(b"https-connect,dns");
+    let ran = https_get(&mut m, e, &url, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let starts = [
+        "[DNS] [HTTPS] c",
+        "[DNS] [A] c",
+        "[DNS] added",
+        "[DNS] connected",
+        "[DNS] removing",
+        "[DNS] destroy",
+        "[HTTPS-CONNECT] added",
+    ];
+    let want = expect(&format!(
+        "[HTTPS-CONNECT] added
+        [DNS] [HTTPS] created DNS filter for localhost:{PORT}, transport=3
+        [DNS] added
+        [DNS] [A] created DNS filter for localhost:{PORT}, transport=3
+        [DNS] [HTTPS] cf_dns_start host localhost:{PORT}
+        [DNS] [A] cf_dns_start host localhost:{PORT}
+        [DNS] connected filter chain below
+        [DNS] connected filter chain below
+        [DNS] removing connected setup filter
+        [DNS] destroy
+        [DNS] removing connected setup filter
+        [DNS] destroy"
+    ));
+    assert_eq!(lines(&ran, &starts), want);
 }

@@ -551,14 +551,6 @@ witness: curl-core conn::chain::tests::an_http3_proxy_s_tunnel_is_the_race_s_att
 --- new
             SetupPoint::Dialed(made) if route.proxy_over_quic() && made.socks => {
 
-=== the HAPPY-EYEBALLS filter goes untraced once an HTTP/3 proxy's tunnel is up
-file: crates/curl-core/src/conn/chain.rs
-witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection
---- old
-        chain.eyeballs_stay = h3_proxy || tunnels_udp;
---- new
-        chain.eyeballs_stay = tunnels_udp;
-
 === a run through a tunnel goes in one send
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::a_tunnel_takes_a_datagram_at_a_time

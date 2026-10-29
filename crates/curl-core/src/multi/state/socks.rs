@@ -74,6 +74,9 @@ fn start<H: Host>(
     };
     let leg = lent.route.socks().expect("through a SOCKS proxy");
     let target = leg.to;
+    if version.resolves_locally() {
+        super::names::target_started(cx, target, version.ip(lent.route.ip));
+    }
     let resolved = match found {
         None => Resolved::Remote,
         Some(Ok((answer, found))) => {

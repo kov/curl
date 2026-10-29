@@ -205,7 +205,7 @@ witness: curl-core altsvc::tests::a_file_s_hosts_are_saved_as_they_were_read
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::an_alternative_here_in_http3_is_tried_first
 --- old
-        neg.preferred = Some(alpn);
+        neg.alt_svc = Some(crate::proto::http::AltSvcSaid::Prefers(alpn));
 --- new
 
 === no alternative from HTTP/3 is looked up

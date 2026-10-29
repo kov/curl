@@ -2626,9 +2626,10 @@ fn tracing(mut e: Easy, components: &[u8]) -> Easy {
 /// The race traced as C's happy eyeballs filter traces it: set up, the
 /// next address looked for in each family it asks, each attempt as it
 /// starts, the first or the next, the delay armed for the next while an
-/// address is left, and the winner by its place among those running.
-/// The C build traces the same lines connecting to a silent IPv6 address
-/// and a listening IPv4 one.
+/// address is left, the winner by its place among those running, and
+/// the filter going once the chain is connected. The C build traces the
+/// same lines connecting to a silent IPv6 address and a listening IPv4
+/// one.
 #[test]
 fn the_race_is_traced_as_c_s_happy_eyeballs() {
     let (mut m, clock) = networked();
@@ -2669,6 +2670,8 @@ fn the_race_is_traced_as_c_s_happy_eyeballs() {
             "[HAPPY-EYEBALLS] connect attempt #1 successful\n",
             "[HAPPY-EYEBALLS] Connected to localhost (127.0.0.1) port 4\n",
             "[TIMER] [HAPPY_EYEBALLS] cleared\n",
+            "[HAPPY-EYEBALLS] removing connected setup filter\n",
+            "[HAPPY-EYEBALLS] destroy\n",
         ]
     );
 }
@@ -2730,7 +2733,8 @@ fn dns_lines(m: &mut Multi, url: &str, set: impl FnOnce(&mut Options)) -> Vec<St
 }
 
 /// The DNS component's lines of `lines`, as `dns_lines` keeps them: the
-/// cache's, not the race's questions of the answer (`get Nth result`).
+/// cache's, not the race's questions of the answer (`get Nth result`)
+/// nor the filters' own life, which tests of their own pin.
 fn dns_only(lines: Vec<String>) -> Vec<String> {
     let starts = lines
         .iter()
@@ -2745,12 +2749,29 @@ fn dns_only(lines: Vec<String>) -> Vec<String> {
             (l.starts_with("[DNS]")
                 && !l.contains("] hostip_resolv(")
                 && !l.contains("] Curl_conn_connect(")
-                && !l.starts_with("[DNS] get "))
+                && !l.starts_with("[DNS] get ")
+                && !filter_life(l))
                 || l.starts_with("Hostname")
                 || l.starts_with("Negative")
         })
         .map(|l| l.trim_end().to_owned())
         .collect()
+}
+
+/// A line of a DNS filter's own life: made, added, started, its chain
+/// below connected, and gone (`cf-dns.c`, `cfilters.c`).
+fn filter_life(line: &str) -> bool {
+    [
+        "] created DNS filter for ",
+        "[DNS] added",
+        "] cf_dns_start ",
+        "[DNS] resolved unix://",
+        "[DNS] connected filter chain below",
+        "[DNS] removing connected setup filter",
+        "[DNS] destroy",
+    ]
+    .iter()
+    .any(|p| line.contains(p))
 }
 
 /// A resolver that queues each family as a query of its own and answers
@@ -3032,6 +3053,9 @@ fn the_debug_build_fails_ipv6_resolves_when_asked() {
     assert_eq!(
         lines,
         [
+            "[DNS] [AAAA] created DNS filter for localhost:1, transport=3\n",
+            "[DNS] added\n",
+            "[DNS] [AAAA] cf_dns_start host localhost:1\n",
             "[DNS] [AAAA] hostip_resolv(localhost:1)\n",
             "DEBUG fail ipv6 resolve\n",
             "Could not resolve host: localhost\n",

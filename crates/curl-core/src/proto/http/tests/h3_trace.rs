@@ -147,6 +147,14 @@ fn a_quic_attempt_is_won_by_its_handshake() {
     let mut m = quic_server(&[b"server flight"]);
     let e = tracing(FakeTls::new().unwrap(), &script);
     let ran = h3_get(&mut m, e);
+    // HTTP/3 asked for is the HTTPS connect filter's to choose: the
+    // connection wants TCP, as C's says.
+    let made = ran.seen.text();
+    let made: Vec<_> = made.iter().filter(|l| l.contains("created DNS")).collect();
+    assert!(
+        !made.is_empty() && made.iter().all(|l| l.ends_with(", transport=3\n")),
+        "{made:?}"
+    );
     let got = lines(
         &ran,
         &[
@@ -211,6 +219,8 @@ fn a_quic_attempt_is_won_by_its_handshake() {
         [MULTI] [CONNECTING] [PGRS-APPCONNECT] added 1us
         Established connection to localhost (::1 port {PORT}) from ::1 port 40000
         [MULTI] [CONNECTING] connected [0][DNS][DNS][HTTPS-CONNECT][SETUP][HAPPY-EYEBALLS][HTTP/3][UDP]
+        [HAPPY-EYEBALLS] removing connected setup filter
+        [HAPPY-EYEBALLS] destroy
         [MULTI] [CONNECTING] reduced to [0][HTTP/3][UDP]
         [HTTP/3] query ALPN
         using HTTP/3"
@@ -1363,6 +1373,7 @@ fn a_silent_quic_peer_gives_way_to_tcp_at_the_soft_timeout() {
         [HTTP/3] destroy
         [UDP] destroy
         [SETUP] destroy
+        [HAPPY-EYEBALLS] destroy
         using HTTP/1.x
         ",
     );
@@ -1463,11 +1474,14 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [SETUP] query ALPN
         [0-0] [SSL] query ALPN: returning 'http/1.1'
         [0-0] [HTTPS-CONNECT] connect -> 0, done=1
+        [0-0] [DNS] connected filter chain below
         [0-0] [DNS] Curl_conn_connect(block=0) -> 0, done=1
         [0-0] [MULTI] [CONNECTING] [PGRS-APPCONNECT] added 150000us
         [0-0] [MULTI] [CONNECTING] [PGRS-CONNECT] added 150000us
         [0-0] Established connection to 127.0.0.1 (127.0.0.1 port 8990) from 127.0.0.1 port 40001
         [0-0] [MULTI] [CONNECTING] connected [0][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]
+        [0-0] [DNS] removing connected setup filter
+        [0-0] [DNS] destroy
         [0-0] [HTTPS-CONNECT] removing connected setup filter
         [0-0] [HTTPS-CONNECT] destroy
         [0-0] [SETUP] destroy
@@ -1478,6 +1492,8 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
         [0-0] [SETUP] removing connected setup filter
         [0-0] [SETUP] destroy
+        [0-0] [HAPPY-EYEBALLS] removing connected setup filter
+        [0-0] [HAPPY-EYEBALLS] destroy
         [0-0] [MULTI] [CONNECTING] reduced to [0][SSL][TCP]
         [0-0] [MULTI] [CONNECTING] -> [PROTOCONNECT]
         [0-0] [MULTI] [PROTOCONNECT] -> [DO]
@@ -1695,6 +1711,7 @@ fn a_late_quic_peer_wins_after_the_leading_tcp_attempt_failed() {
         [HTTPS-CONNECT] removing connected setup filter
         [HTTPS-CONNECT] destroy
         [SETUP] destroy
+        [HAPPY-EYEBALLS] destroy
         using HTTP/3
         ",
     );
@@ -1992,6 +2009,10 @@ fn an_alternative_elsewhere_in_http3_is_dialed_over_quic() {
     let text = ran.seen.text();
     let switch = format!("Alt-svc connecting from [h1]127.0.0.1:1 to [h3]127.0.0.1:{PORT}");
     assert!(text.iter().any(|l| l.contains(&switch)), "{text:#?}");
+    // Its connection wants QUIC from the start, as its name's filter says
+    // (`transport_wanted`).
+    let made = format!("[DNS] [A+AAAA] created DNS filter for 127.0.0.1:{PORT}, transport=5\n");
+    assert!(text.iter().any(|l| l.ends_with(&made)), "{text:#?}");
 }
 
 /// A race that runs out of time with both its attempts under way fails,
@@ -3119,6 +3140,7 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
         [TCP] cf_socket_close, fd=1000
         [SETUP] destroy
         [HTTP-PROXY] destroy
+        [HAPPY-EYEBALLS] destroy
         [MULTI] [CONNECTING] reduced to [0][SSL][H1-PROXY][TCP]
         ",
     );

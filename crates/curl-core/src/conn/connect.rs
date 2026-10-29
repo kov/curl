@@ -909,6 +909,12 @@ impl ConnectMachine {
         }
     }
 
+    /// Its destination's name is not asked for yet: the setup's first
+    /// connect is to come.
+    pub(crate) fn unasked(&self) -> bool {
+        matches!(self.stage, Stage::Resolving(None))
+    }
+
     /// How far it got, as C's filter chain shows it.
     pub(crate) fn reached(&self) -> SetupPoint {
         match &self.stage {

@@ -459,8 +459,9 @@ a new connection's setup starts, `happy eyeballing to origin|proxy H:P` as the r
 handshake starts, `retrying connect` with the try's number as a 407 redials, and `removing
 connected setup filter` and `destroy` as the connection is up. `HTTP-PROXY` and `HAPROXY`, setup filters too,
 trace their removal and `destroy` with it, and the tunnel's two filters (`HTTP-PROXY`,
-`H1-PROXY`) their `destroy` as a redial discards them.
-Not traced: the `HAPPY-EYEBALLS` and `DNS` filters' removal and destruction (below), and the
+`H1-PROXY`) their `destroy` as a redial discards them. The `DNS` and `HAPPY-EYEBALLS` filters,
+setup filters as well, go with them in the chain's order (`Chain::going`).
+Not traced: the
 `SOCKS`, `HTTP-PROXY` and `H1-PROXY` components' own lines: SOCKS's state changes, which name
 C's machine's states and source lines where the engine's sans-IO handshake has states of its
 own, and its `adjust pollset in (N)`; the tunnel's `CONNECT`, `installing subfilter`, `connect`,
@@ -494,18 +495,26 @@ path asked for as family 1 and port 0, no IPv6 asked for it): looking for the ne
 (`want to do more`, `check for next AAAA|A address: found|none`, IPv4's asked first unless the
 last attempt was IPv4's), whether one is left once the running attempts are checked, and again as
 the run ends to arm its timer. A race with none running and no address left looks once more and
-finds none before its failure says so. Not traced: the filter's removal and destruction.
+finds none before its failure says so.
 
 `DNS` traces the lookup of the name a connection goes to first, from what the connect machine
 reports (`Found`, `Unresolved`): the cache looked in, found, missing, stale or holding the
 resolver's no; what answered a name it did not have, a shortcut at once or the resolver later as
 the reference build's c-ares does; the answer kept, or the no. The queries are named as the IP
 version and an address's own family make them; the debug build's `hostip_resolv` line comes with
-the `debug-hooks` feature. Not traced: C's DNS filter's own life (`created DNS filter`, `added`,
-`cf_dns_start`, `connected filter chain below`, its removal and destruction), the chain's
+the `debug-hooks` feature. C's DNS filters' own lines (`multi/state/names.rs`) are traced where
+they fall: each `created DNS filter for H:P, transport=T` as the chain is set up, the HTTPS
+record's first and `added`, then the addresses' (`added` only when it is the first), and a
+SOCKS target resolved here's before its SOCKS filter is added; each `cf_dns_start` as the
+first connect reaches it (a Unix socket's with `resolved unix://P`); one `connected filter
+chain below` each as the chain is up. The queries are named from the IP version alone; the
+transport is the connection's wanted one, 6 for a Unix socket, 5 only where an alternative
+service switched the origin to HTTP/3 (`AltSvcSaid::SwitchedToH3`), else 3, HTTP/3 asked for
+otherwise being the HTTPS connect filter's choice over a TCP connection. Not traced: the chain's
 connect result C traces under the top filter's name
 (`Curl_conn_connect(block=0) -> R, done=D`, `filter returned R`), c-ares's polling (the line of each look in the cache as the HTTPS record is polled for, `resolve incomplete`, `still waiting`),
-and a SOCKS proxy's lookup of the destination.
+the async resolver's own lines (`[DNS] [N] shutdown async`, `destroy async`), and a SOCKS
+proxy's lookup of the destination.
 
 The TLS components, as the reference build traces them on the transfer. `SSL` (the origin's
 layer) traces the handshake as it is driven (`cf_connect()`, `ossl_connect, step1|2|3`,
@@ -2405,7 +2414,7 @@ as a query of their own), which the answer, or the failure, carries back to the 
 trace: each query as queued, `queueing query [transfer/id] AAAA name:port`, IPv6's first, and
 each query's addresses as taken, `Host name:port resolved IPv4: ...`, IPv4's first, `(none)` for
 none, in the places C's lines fall among the cache's. They are written, with the rest of the
-lookup's lines, as the answer is taken; the passes between, and C's DNS filter's own lines,
+lookup's lines, as the answer is taken; the passes between, and the resolver's polling lines,
 are not traced, as they are not for the system's resolver either. A name not answered within
 the connect limit times out as "Resolving", not "Connection".
 

@@ -504,3 +504,19 @@ fn a_body_paused_part_way_holds_what_is_left() {
         .collect();
     assert!(lines.contains(&want), "{lines:?}");
 }
+
+/// HTTP's chain of writers is made before any output, its header
+/// collector installed as the connection is set up (`Curl_headers_init`):
+/// a reply of nothing, or a connect refused, still says the output's end,
+/// as the C build does.
+#[test]
+fn an_empty_reply_says_the_output_s_end() {
+    let end = ["[WRITE] [OUT] done", "[WRITE] client_flush() -> 0"];
+    let (_, lines) = written(writing(), b"", |_| {});
+    assert_eq!(lines, end);
+    let (ran, lines) = written(writing(), b"", |o| {
+        o.set_url(Some(b"http://127.0.0.1:9/")).unwrap();
+    });
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(lines, end);
+}

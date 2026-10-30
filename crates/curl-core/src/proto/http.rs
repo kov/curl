@@ -10,7 +10,7 @@ use crate::components::Component;
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::{ConnLease, NetRoute, Peer, ProxyCreds, RecvFailed, Scheme};
 use crate::date::{HttpDate, OutOfRange};
-use crate::deliver::{self, Expect, Pause, Pipeline, Reach, WriteType};
+use crate::deliver::{self, Expect, Pause, Pipeline, WriteType};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
 use crate::idn::Idn;
@@ -662,7 +662,7 @@ impl Request {
         // in Unicode in its ASCII form (`Curl_netrc_scan` of `hostname`).
         let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
         Ok(Request {
-            pipeline: Pipeline::new(Reach::Network),
+            pipeline: Pipeline::collecting(),
             target,
             forward_target: None,
             alt_used: None,

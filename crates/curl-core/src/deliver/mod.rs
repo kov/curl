@@ -47,6 +47,9 @@ pub(crate) struct Pipeline {
     accountant: BodyAccountant,
     out: ClientOut,
     reach: Reach,
+    /// C's chain of writers is made (`req.writer.stack`): by the first
+    /// output, or at once for HTTP. The request's end is said of it only.
+    made: bool,
 }
 
 /// A response's codings to undo, in the order of the chain.
@@ -71,12 +74,24 @@ impl Pipeline {
             accountant: BodyAccountant::default(),
             out: ClientOut::default(),
             reach,
+            made: false,
+        }
+    }
+
+    /// One whose chain is made at once, as HTTP's is: C installs its
+    /// header collector as the connection is set up and as the request
+    /// is made (`Curl_headers_init`).
+    pub(crate) fn collecting() -> Pipeline {
+        Pipeline {
+            made: true,
+            ..Pipeline::new(Reach::Network)
         }
     }
 
     /// The codings, made the first time a decoder is added; the gate
     /// made if `decoder` blows up.
     fn codings_for(&mut self, decoder: &dyn Decoder) -> Result<&mut Codings, ErrorKind> {
+        self.made = true;
         let oom = |_| ErrorKind::OutOfMemory;
         if self.codings.is_none() {
             self.codings = Some(curl_alloc::try_box(Codings::default()).map_err(oom)?);
@@ -137,8 +152,14 @@ impl Pipeline {
         self.out.flush(cx, pausable)
     }
 
-    /// The request's output is over (`Curl_cw_out_done`): what is held
-    /// goes with the request.
+    /// Whether C's chain of writers is made, which the request's end is
+    /// said of.
+    pub(crate) fn made(&self) -> bool {
+        self.made
+    }
+
+    /// The request's output is over (`Curl_cw_out_done`), its chain made:
+    /// what is held goes with the request.
     pub(crate) fn done<H: Host>(cx: &mut StepCx<'_, H>) {
         write_trace(cx, format_args!("[OUT] done"));
         write_trace(cx, format_args!("client_flush() -> 0"));
@@ -215,6 +236,7 @@ impl Pipeline {
         cx: &mut StepCx<'_, H>,
         bytes: &[u8],
     ) -> Result<(), ErrorKind> {
+        self.made = true;
         self.trace_raw(cx, bytes);
         let result = self.decoded(cx, bytes);
         client_write(cx, WriteType::BODY, bytes.len(), result);
@@ -322,6 +344,7 @@ impl Pipeline {
     /// The response ended (`CLIENTWRITE_EOS`): a body of a known size must
     /// be whole. The end is traced as body of no bytes (`cw_raw_write`).
     pub(crate) fn end<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+        self.made = true;
         self.trace_raw(cx, &[]);
         let result = self.ended(cx);
         client_write(cx, WriteType::BODY.eos(), 0, result);
@@ -364,6 +387,7 @@ impl Pipeline {
         line: &[u8],
         origin: HeaderOrigin,
     ) -> Result<(), ErrorKind> {
+        self.made = true;
         if self.reach == Reach::Network {
             let pushed = cx.report_mut().headers_mut().push(line, origin);
             let stored = match origin {
@@ -403,6 +427,7 @@ impl Pipeline {
         line: &[u8],
         upload_done: bool,
     ) -> Result<(), ErrorKind> {
+        self.made = true;
         if upload_done {
             self.accountant.response_started(cx);
         }
@@ -429,6 +454,7 @@ impl Pipeline {
         line: &[u8],
         interim: bool,
     ) -> Result<(), ErrorKind> {
+        self.made = true;
         let origin = match interim {
             true => HeaderOrigin::Interim,
             false => HeaderOrigin::Header,
@@ -446,6 +472,7 @@ impl Pipeline {
         cx: &mut StepCx<'_, H>,
         line: &[u8],
     ) -> Result<(), ErrorKind> {
+        self.made = true;
         let kind = OutKind::Status(HeaderOrigin::Connect);
         let result = self.head_line(cx, line, kind);
         client_write(cx, WriteType::of(kind), line.len(), result);

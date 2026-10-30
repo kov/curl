@@ -434,3 +434,34 @@ witness: curl-core deliver::pause::tests::a_lift_counts_the_end_of_an_asked_paus
             (true, SendPause::Asked) => SendPause::Asked,
 --- new
             (true, SendPause::Asked) => SendPause::Paused,
+
+=== the output's end is said of a chain never made
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::smtp::tests::over_the_wire::an_end_with_nothing_written_says_nothing_of_the_output
+features: test-util
+--- old
+    if d.chain_made() {
+        crate::deliver::Pipeline::done(cx);
+--- new
+    if true {
+        crate::deliver::Pipeline::done(cx);
+
+=== HTTP's chain of writers is taken as unmade once its connect fails
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::write_trace::an_empty_reply_says_the_output_s_end
+--- old
+            TransferState::Connecting(mut c) => TransferState::Done(Done {
+                unconnected_chain: c.proto.pipeline_mut().is_some_and(|p| p.made()),
+--- new
+            TransferState::Connecting(mut c) => TransferState::Done(Done {
+                unconnected_chain: false,
+
+=== HTTP's chain of writers is made only by its first output
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::http::tests::write_trace::an_empty_reply_says_the_output_s_end
+--- old
+        Pipeline {
+            made: true,
+--- new
+        Pipeline {
+            made: false,

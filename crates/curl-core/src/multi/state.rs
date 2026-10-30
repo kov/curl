@@ -528,6 +528,11 @@ pub(crate) struct Done {
     /// The protocol, to say its last of the request; none if it never
     /// connected over the connection.
     proto: Option<ProtoState>,
+    /// Whether the chain of writers of a protocol dropped before it
+    /// connected was made (C's `req.writer.stack`): HTTP's is, its header
+    /// collector installed as the connection is set up. Read only without
+    /// `proto`, whose pipeline says it otherwise (`chain_made`).
+    unconnected_chain: bool,
     result: Result<(), ErrorKind>,
     /// Ended before the request was complete.
     premature: bool,
@@ -558,6 +563,15 @@ enum Ending {
 }
 
 impl Done {
+    /// Whether the request's chain of writers was made, which its end is
+    /// said of (`Curl_cw_out_done`).
+    fn chain_made(&mut self) -> bool {
+        match self.proto.as_mut() {
+            Some(proto) => proto.pipeline_mut().is_some_and(|p| p.made()),
+            None => self.unconnected_chain,
+        }
+    }
+
     /// The next request is to send the body again: a retry always rewinds
     /// it (`Curl_retry_request`), a request the response asks for as the
     /// protocol decided (`Curl_creader_will_rewind`).
@@ -786,7 +800,8 @@ impl TransferState {
                     message: Message::Unread,
                 })
             }
-            TransferState::Connecting(c) => TransferState::Done(Done {
+            TransferState::Connecting(mut c) => TransferState::Done(Done {
+                unconnected_chain: c.proto.pipeline_mut().is_some_and(|p| p.made()),
                 lease: c.lease,
                 proto: None,
                 result: Err(err),
@@ -859,7 +874,8 @@ impl TransferState {
             | TransferState::Pending(_)
             | TransferState::Setup(_)
             | TransferState::Completed(_) => return,
-            TransferState::Connecting(c) => Done {
+            TransferState::Connecting(mut c) => Done {
+                unconnected_chain: c.proto.pipeline_mut().is_some_and(|p| p.made()),
                 lease: c.lease,
                 proto: None,
                 result: Ok(()),
@@ -984,7 +1000,9 @@ fn multi_done<H: Host>(
         d.result = Err(e);
         premature |= is_premature(d.result);
     }
-    crate::deliver::Pipeline::done(cx);
+    if d.chain_made() {
+        crate::deliver::Pipeline::done(cx);
+    }
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
     let now = cx.rest.now;
     let kept = cx.rest.kept(cx.me, Kind::Names);
@@ -1745,6 +1763,7 @@ impl Attached {
         Done {
             lease: self.lease,
             proto: Some(self.proto),
+            unconnected_chain: false,
             result,
             premature,
             reached,

@@ -760,6 +760,41 @@ fn the_setup_is_said_after_the_queue() {
     assert!(queued < set_up && set_up < pooled, "{}", ran.text);
 }
 
+/// A request that wrote nothing for the application says nothing of its
+/// output's end, as C makes its chain of writers at the first write and
+/// `Curl_cw_out_done` says nothing without one; one that wrote says it.
+#[test]
+fn an_end_with_nothing_written_says_nothing_of_the_output() {
+    let talk = Conversation::replies(&[GREETING], false).greeting();
+    let ran = tracing(
+        &mut serving(&[&talk]),
+        &plain(),
+        "smtp://127.0.0.1:PORT/%00",
+        b"write",
+        |_| {},
+    );
+    assert_eq!(ran.result, Err(ErrorKind::UrlMalformat));
+    assert!(!ran.text.contains("[OUT] done"), "{}", ran.text);
+    let ran = tracing(
+        &mut serving(&[]),
+        &plain(),
+        "smtp://127.0.0.1:9/",
+        b"write",
+        |_| {},
+    );
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    assert!(!ran.text.contains("[OUT] done"), "{}", ran.text);
+    let talk = Conversation::replies(&[GREETING, EHLO, b"214 help\r\n"], false).greeting();
+    let ran = tracing(&mut serving(&[&talk]), &plain(), URL, b"write", |_| {});
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert!(
+        ran.text
+            .contains("[WRITE] [OUT] done\n[WRITE] client_flush() -> 0\n"),
+        "{}",
+        ran.text
+    );
+}
+
 /// The lines of `text` from `what` on.
 fn from<'t>(text: &'t str, what: &str) -> Vec<&'t str> {
     text.lines()

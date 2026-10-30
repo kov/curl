@@ -1688,7 +1688,7 @@ fn scheme_options_reach_the_transfer() {
         (ffi::CURLOPT_REDIR_PROTOCOLS_STR, c"HTTP", CURLE_OK),
         (
             ffi::CURLOPT_PROTOCOLS_STR,
-            c"ftps",
+            c"tftp",
             ffi::CURLE_UNSUPPORTED_PROTOCOL,
         ),
         (
@@ -2215,12 +2215,14 @@ fn infos_answer_from_the_report() {
     assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_CONDITION_UNMET), 1);
     assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_SIZE_DOWNLOAD_T), 0);
+    // No FTP transfer, no entry path.
+    assert!(info::<*const c_char>(c, ffi::CURLINFO_FTP_ENTRY_PATH).is_null());
     // An info not answered yet, and one of no type.
     let mut v: c_long = 0;
     // SAFETY: a live handle and a `long` to write.
     unsafe {
         assert_eq!(
-            curl_easy_getinfo(c, ffi::CURLINFO_FTP_ENTRY_PATH, &raw mut v),
+            curl_easy_getinfo(c, ffi::CURLINFO_RTSP_SESSION_ID, &raw mut v),
             CURLE_UNKNOWN_OPTION
         );
         assert_eq!(

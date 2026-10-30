@@ -282,6 +282,11 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO, path_as_is: bool) 
             Some(media) => string(kept(easy, |i| &mut i.content_type, media)),
             None => Value::Ptr(core::ptr::null_mut()),
         },
+        // None until an FTP login said where it started.
+        ffi::CURLINFO_FTP_ENTRY_PATH => match r.ftp_entry_path() {
+            Some(path) => string(kept(easy, |i| &mut i.ftp_entry_path, path)),
+            None => Value::Ptr(core::ptr::null_mut()),
+        },
         // None when no request sent one.
         ffi::CURLINFO_REFERER => match r.referer() {
             Some(referer) => string(kept(easy, |i| &mut i.referer, referer)),

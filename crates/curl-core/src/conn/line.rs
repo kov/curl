@@ -3,8 +3,8 @@
 //! FTP's, IMAP's, POP3's, SMTP's and SSH's state between requests, and
 //! the goodbye each says as the connection shuts down (the scheme's
 //! `disconnect`). The connection holds it as what it speaks, so that it
-//! is one fact with a session: no protocol has both. IMAP's, POP3's
-//! and SMTP's are built, and the test protocol's.
+//! is one fact with a session: no protocol has both. FTP's, IMAP's,
+//! POP3's and SMTP's are built, and the test protocol's.
 
 use super::layer::LayerCx;
 use super::mux::Carrier;
@@ -12,6 +12,10 @@ use super::mux::Carrier;
 /// A protocol's state on its connection.
 #[derive(Debug)]
 pub(crate) enum LineConn {
+    /// FTP's: its back and forth, where it is on the server, how it
+    /// logged in, and the data connection a transfer has open; boxed, as
+    /// it is larger than the others'.
+    Ftp(Box<crate::proto::ftp::FtpConn>),
     /// POP3's: its back and forth, and how it logged in.
     Pop3(crate::proto::pop3::Pop3Conn),
     /// IMAP's: its back and forth, how it logged in, and the mailbox
@@ -33,12 +37,36 @@ impl LineConn {
     /// aborted), is told so and says nothing (`dead_connection`).
     pub(crate) fn goodbye(&mut self, cx: &mut dyn LayerCx, below: Carrier<'_>, dead: bool) {
         match *self {
+            LineConn::Ftp(ref mut p) => p.goodbye(cx, below, dead),
             LineConn::Pop3(ref mut p) => p.goodbye(cx, below, dead),
             LineConn::Imap(ref mut p) => p.goodbye(cx, below, dead),
             LineConn::Smtp(ref mut p) => p.goodbye(cx, below, dead),
             #[cfg(any(test, feature = "test-util"))]
             LineConn::Test(ref mut f) => f.goodbye(cx, below, dead),
         }
+    }
+}
+
+impl LineConn {
+    /// Close what it has open beside the connection, as the connection
+    /// closes: FTP's data connection.
+    pub(crate) fn close(&mut self, net: &mut dyn super::io::Net) {
+        if let LineConn::Ftp(p) = self {
+            p.close(net);
+        }
+    }
+
+    /// The sockets it has open beside the connection, and what each
+    /// waits for, the transfer wanting `wanted` of them.
+    pub(crate) fn side_pollset(
+        &self,
+        wanted: super::io::Events,
+    ) -> impl Iterator<Item = (&dyn super::io::Socket, super::io::Events)> {
+        let ftp = match self {
+            LineConn::Ftp(p) => Some(p.data_pollset(wanted)),
+            _ => None,
+        };
+        ftp.into_iter().flatten()
     }
 }
 

@@ -1,0 +1,23 @@
+=== the data connection outlives the transfer that made it
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_file_is_retrieved_over_a_passive_data_connection
+features: test-util debug-hooks
+--- old
+        if let Some(data) = pc.data.take() {
+            data.discard(cx);
+        }
+    }
+--- new
+        if let Some(data) = pc.data.as_deref() {
+            let _ = data;
+        }
+    }
+
+=== FTP's wait for the server to connect shares the server's time to answer
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::the_accept_wait_outlives_the_answer_time
+features: test-util debug-hooks
+--- old
+            TimerKind::Proto | TimerKind::ServerResponse => 4,
+--- new
+            TimerKind::Proto | TimerKind::ServerResponse | TimerKind::FtpAccept => 4,

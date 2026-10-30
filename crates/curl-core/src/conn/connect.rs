@@ -2297,6 +2297,29 @@ fn resolve(
     resolve_name((peer.shown(), peer.name(), peer.port()), family, cx, setup)
 }
 
+/// The addresses `host` stands for, of the families a resolve in `ip`
+/// asks for, the resolver waited for as C waits for it
+/// (`Curl_resolv_blocking`): FTP's address to offer the server, said as
+/// found in the cache if it was; none if it stands for none.
+pub(crate) fn resolve_blocking(
+    host: &[u8],
+    ip: IpVersion,
+    cx: &mut dyn ConnCx,
+    setup: DriveOptions,
+) -> Result<Option<TryArc<Answer>>, OutOfMemory> {
+    let family = family(ip, cx);
+    match lookup_name((host, host, 0), family, cx, setup, false) {
+        Ok((answer, found)) => {
+            if found == Found::Cached {
+                cx.info_with(&[b"Hostname ", host, b" was found in DNS cache"]);
+            }
+            Ok(Some(answer))
+        }
+        Err(ConnectError::OutOfMemory) => Err(OutOfMemory),
+        Err(_) => Ok(None),
+    }
+}
+
 /// The families a resolve in `ip` asks for: without IPv6 only IPv4's
 /// (`Curl_resolv_dns_queries`).
 fn family(ip: IpVersion, cx: &dyn ConnCx) -> Family {

@@ -1379,6 +1379,7 @@ enum Reason {
     Timeout,
     ConnRefused,
     Http,
+    Ftp,
 }
 
 impl Reason {
@@ -1388,6 +1389,7 @@ impl Reason {
             Reason::Timeout => b": timeout",
             Reason::ConnRefused => b": connection refused",
             Reason::Http => b": HTTP error",
+            Reason::Ftp => b": FTP error",
         }
     }
 }
@@ -1396,8 +1398,8 @@ impl Reason {
 /// `protocol`, would be tried again, if it would (`retrycheck`): a failure
 /// that may pass, a connection refused (the last socket error, `os_errno`,
 /// says why connecting failed) with `--retry-connrefused`, an HTTP response saying
-/// so, or with `--retry-all-errors` any failure. An FTP 4xx (`RETRY_FTP`)
-/// joins with FTP.
+/// so, an FTP failure with a 4xx answer, or with `--retry-all-errors` any
+/// failure.
 fn reason(
     op: &Operation<'_>,
     result: Result<(), ErrorKind>,
@@ -1418,13 +1420,16 @@ fn reason(
     } else if op.retry_connrefused && result == Err(ErrorKind::CouldntConnect) {
         (os_errno.map(OsErrno::kind) == Some(std::io::ErrorKind::ConnectionRefused))
             .then_some(Reason::ConnRefused)
-    } else if (result.is_ok() || failed_http)
-        && output::is_http(protocol)
-        && matches!(code, Some(408 | 429 | 500 | 502 | 503 | 504 | 522 | 524))
-    {
-        Some(Reason::Http)
+    } else if result.is_ok() || failed_http {
+        (output::is_http(protocol)
+            && matches!(code, Some(408 | 429 | 500 | 502 | 503 | 504 | 522 | 524)))
+        .then_some(Reason::Http)
     } else {
-        None
+        // Typically a server that takes only so many users, and not one
+        // more: every 4xx passes.
+        (matches!(protocol, Some(Protocol::Ftp | Protocol::Ftps))
+            && code.is_some_and(|c| c / 100 == 4))
+        .then_some(Reason::Ftp)
     };
     match reason {
         None if result.is_err() && op.retry_all_errors => Some(Reason::AllErrors),
@@ -1768,6 +1773,9 @@ fn setopts(
     if let UrlProto::Http { tls } = config.proto {
         http_setopts(s, op, tls, &run.msgs)?;
     }
+    if config.proto == UrlProto::Ftp {
+        ftp_setopts(s, op)?;
+    }
     if crate::options::has_tls() {
         ssl_ca_setopts(s, op)?;
         ssl_setopts(s, op)?;
@@ -1796,6 +1804,13 @@ fn setopts(
             Ok(())
         },
     )?;
+    let create = if op.ftp_create_dirs { 2 } else { 0 };
+    s.long("CURLOPT_FTP_CREATE_MISSING_DIRS", create, |o| {
+        if op.ftp_create_dirs {
+            o.line.make_mut().map_err(oom)?.ftp.create_dirs = options::CreateDirs::Retry;
+        }
+        Ok(())
+    })?;
     s.offt("CURLOPT_MAXFILESIZE_LARGE", long(op.max_filesize), |o| {
         o.flow
             .set(|g| &mut g.max_filesize, NonZeroU64::new(op.max_filesize))
@@ -2280,6 +2295,8 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
         Some((options::UseSsl::All, 3))
     } else if op.ssl {
         Some((options::UseSsl::Try, 1))
+    } else if op.ssl_control {
+        Some((options::UseSsl::Control, 2))
     } else {
         None
     };
@@ -2649,6 +2666,18 @@ fn transfer_setopts(
         }
         Ok(())
     })?;
+    s.long("CURLOPT_APPEND", i64::from(op.append), |o| {
+        if op.append {
+            o.line.make_mut().map_err(oom)?.ftp.append = true;
+        }
+        Ok(())
+    })?;
+    s.long("CURLOPT_TRANSFERTEXT", i64::from(op.use_ascii), |o| {
+        if op.use_ascii {
+            o.line.make_mut().map_err(oom)?.ftp.ascii = true;
+        }
+        Ok(())
+    })?;
     s.str("CURLOPT_RANGE", op.range.as_deref(), |o| {
         o.range = op.range.as_deref().map(copy).transpose().map_err(oom)?;
         Ok(())
@@ -2733,6 +2762,24 @@ fn transfer_setopts(
         o.crlf = op.crlf;
         Ok(())
     })?;
+    for (name, list, at) in [
+        ("CURLOPT_QUOTE", &op.quote, 0),
+        ("CURLOPT_POSTQUOTE", &op.postquote, 1),
+        ("CURLOPT_PREQUOTE", &op.prequote, 2),
+    ] {
+        s.slist(name, list, |o| {
+            if list.is_empty() {
+                return Ok(());
+            }
+            let line = o.line.make_mut().map_err(oom)?;
+            let to = match at {
+                0 => &mut line.quote,
+                1 => &mut line.postquote,
+                _ => &mut line.prequote,
+            };
+            to.set(list.iter().copied()).map_err(oom)
+        })?;
+    }
     let (condition, time) = match op.time_cond {
         None => (0, 0),
         Some(c) => (
@@ -2799,6 +2846,80 @@ fn buffer_size(limit_rate: u64) -> u64 {
 
 /// The options only a URL the tool takes for HTTP's is given
 /// (`http_setopts`, `cookie_setopts`).
+/// What only FTP takes (`ftp_setopts`).
+fn ftp_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
+    s.str("CURLOPT_FTPPORT", op.ftp_port, |o| {
+        if let Some(port) = op.ftp_port {
+            o.line.make_mut().map_err(oom)?.ftp.port = Some(copy(port).map_err(oom)?);
+        }
+        Ok(())
+    })?;
+    if op.disable_epsv {
+        s.long("CURLOPT_FTP_USE_EPSV", 0, |o| {
+            o.line.make_mut().map_err(oom)?.ftp.use_epsv = false;
+            Ok(())
+        })?;
+    }
+    if op.disable_eprt {
+        s.long("CURLOPT_FTP_USE_EPRT", 0, |o| {
+            o.line.make_mut().map_err(oom)?.ftp.use_eprt = false;
+            Ok(())
+        })?;
+    }
+    if op.ftp_ssl_ccc {
+        let mode = op.ftp_ssl_ccc_mode;
+        s.enumerated("CURLOPT_FTP_SSL_CCC", easysrc::FTP_SSL_CCC, mode, |o| {
+            o.line.make_mut().map_err(oom)?.ftp.ssl_ccc = match mode {
+                2 => options::Ccc::Active,
+                _ => options::Ccc::Passive,
+            };
+            Ok(())
+        })?;
+    }
+    s.str("CURLOPT_FTP_ACCOUNT", op.ftp_account, |o| {
+        if let Some(account) = op.ftp_account {
+            o.line.make_mut().map_err(oom)?.ftp.account = Some(copy(account).map_err(oom)?);
+        }
+        Ok(())
+    })?;
+    let skip = !op.ftp_no_skip_ip;
+    s.long("CURLOPT_FTP_SKIP_PASV_IP", i64::from(skip), |o| {
+        if !skip {
+            o.line.make_mut().map_err(oom)?.ftp.skip_pasv_ip = false;
+        }
+        Ok(())
+    })?;
+    s.long("CURLOPT_FTP_FILEMETHOD", op.ftp_method, |o| {
+        let method = match op.ftp_method {
+            2 => options::FtpMethod::NoCwd,
+            3 => options::FtpMethod::SingleCwd,
+            _ => options::FtpMethod::MultiCwd,
+        };
+        if method != options::FtpMethod::MultiCwd {
+            o.line.make_mut().map_err(oom)?.ftp.method = method;
+        }
+        Ok(())
+    })?;
+    s.str(
+        "CURLOPT_FTP_ALTERNATIVE_TO_USER",
+        op.ftp_alternative_to_user,
+        |o| {
+            if let Some(alt) = op.ftp_alternative_to_user {
+                o.line.make_mut().map_err(oom)?.ftp.alternative_to_user =
+                    Some(copy(alt).map_err(oom)?);
+            }
+            Ok(())
+        },
+    )?;
+    if op.ftp_pret {
+        s.long("CURLOPT_FTP_USE_PRET", 1, |o| {
+            o.line.make_mut().map_err(oom)?.ftp.use_pret = true;
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
 fn http_setopts(
     s: &mut Setopt<'_>,
     op: &Operation<'_>,
@@ -3368,6 +3489,8 @@ fn url_file_name(url: &[u8], msgs: &Messages) -> Result<Vec<u8>, ErrorKind> {
 enum UrlProto {
     /// HTTP, or with `tls` HTTPS.
     Http { tls: bool },
+    /// FTP or FTPS.
+    Ftp,
     /// IPFS or IPNS, which go to a gateway.
     Ipfs(crate::ipfs::Kind),
     /// Another, or none it knows.
@@ -3422,6 +3545,8 @@ fn url_proto(
         UrlProto::Http { tls: false }
     } else if scheme.eq_ignore_ascii_case(b"https") {
         UrlProto::Http { tls: true }
+    } else if scheme.eq_ignore_ascii_case(b"ftp") || scheme.eq_ignore_ascii_case(b"ftps") {
+        UrlProto::Ftp
     } else {
         UrlProto::Other
     };
@@ -3791,6 +3916,19 @@ mod tests {
             reason(&op, failed, http, Some(503), None),
             Some(Reason::Http)
         );
+        // A failed FTP transfer whose last answer was a 4xx; not a 5xx,
+        // nor one that went well, nor HTTP's.
+        let ftp = Some(Protocol::Ftp);
+        let denied = Err(ErrorKind::LoginDenied);
+        assert_eq!(reason(&op, denied, ftp, Some(430), None), Some(Reason::Ftp));
+        let ftps = Some(Protocol::Ftps);
+        assert_eq!(
+            reason(&op, denied, ftps, Some(421), None),
+            Some(Reason::Ftp)
+        );
+        assert_eq!(reason(&op, denied, ftp, Some(530), None), None);
+        assert_eq!(reason(&op, Ok(()), ftp, Some(450), None), None);
+        assert_eq!(reason(&op, denied, http, Some(430), None), None);
         let refused = Err(ErrorKind::CouldntConnect);
         assert_eq!(reason(&op, refused, http, None, None), None);
         // Refused, with `--retry-connrefused`; and not otherwise.

@@ -823,7 +823,7 @@ fn value<'a>(var: Var, facts: &Facts<'a>) -> Value<'a> {
         Var::XferId => r
             .transfer_number()
             .map_or(Value::Number(-1), |n| number(n.get())),
-        Var::FtpEntryPath => Value::Missing,
+        Var::FtpEntryPath => bytes(r.ftp_entry_path()),
         Var::SslVerifyResult => Value::Number(r.verify_result()),
         Var::ProxySslVerifyResult => Value::Number(r.proxy_verify_result()),
         Var::TlsEarlydata => Value::Number(r.earlydata_sent()),

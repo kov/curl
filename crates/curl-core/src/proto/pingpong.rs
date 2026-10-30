@@ -14,10 +14,6 @@
 //! which bytes are traced (`CURLINFO_HEADER_OUT`).
 
 pub(crate) mod drive;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
-)]
 pub(crate) mod ftp;
 pub(crate) mod imap;
 pub(crate) mod pop3;
@@ -298,12 +294,14 @@ impl Pingpong {
 
     /// Whether an answer is still awaited (`pending_resp`): FTP's DONE
     /// reads the one to a command it sent before the transfer ended.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
-    )]
     pub(crate) fn pending_resp(&self) -> bool {
         self.pending
+    }
+
+    /// An answer is awaited, the one a command gave the go-ahead for
+    /// (FTP's to the transfer it lets go, `ftp_initiate_transfer`).
+    pub(crate) fn awaits_answer(&mut self) {
+        self.pending = true;
     }
 
     /// A pass of reads ended neither blocked nor at its most, whether or
@@ -397,10 +395,6 @@ impl Pingpong {
     /// Starts the server's time to answer again at `now`, as FTP does
     /// before it reads the answer that ends a transfer (ftp.c:3604,
     /// ftp.c:3751).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
-    )]
     pub(crate) fn restart_response_timer(&mut self, now: Instant) {
         self.response = now;
     }

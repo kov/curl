@@ -98,6 +98,10 @@ pub struct TransferReport {
     speeds: Speeds,
     headers: HeaderStore,
     filetime: Option<i64>,
+    /// Where the last FTP login started, as its server named it: kept
+    /// over the handle's transfers, as C keeps it in the handle's state
+    /// (`state.most_recent_ftp_entrypath`).
+    ftp_entry_path: Option<curl_alloc::TryArc<Vec<u8>>>,
     /// A time condition ruled the file out (`info.timecond`).
     condition_unmet: bool,
     protocol: Option<Protocol>,
@@ -193,6 +197,7 @@ impl TransferReport {
             proxy_verify_result: self.proxy_verify_result,
             earlydata_sent: self.earlydata_sent,
             transfer: self.transfer,
+            ftp_entry_path: self.ftp_entry_path.clone(),
             ..TransferReport::default()
         }
     }
@@ -240,6 +245,20 @@ impl TransferReport {
 
     pub(crate) fn set_filetime(&mut self, t: i64) {
         self.filetime = Some(t);
+    }
+
+    /// The directory the last FTP login started in
+    /// (`CURLINFO_FTP_ENTRY_PATH`).
+    pub fn ftp_entry_path(&self) -> Option<&[u8]> {
+        self.ftp_entry_path.as_deref().map(Vec::as_slice)
+    }
+
+    pub(crate) fn set_ftp_entry_path(
+        &mut self,
+        path: Vec<u8>,
+    ) -> Result<(), curl_alloc::OutOfMemory> {
+        self.ftp_entry_path = Some(curl_alloc::TryArc::try_new(path)?);
+        Ok(())
     }
 
     /// The time condition was not met, so the file was not transferred,

@@ -168,6 +168,147 @@ pub struct Line {
     /// The flags a message an IMAP upload appends is given
     /// (`CURLOPT_UPLOAD_FLAGS`).
     pub upload_flags: UploadFlags,
+    /// The commands sent before the request's own, those sent just before
+    /// a transfer's data command, and those sent after it
+    /// (`CURLOPT_QUOTE`, `CURLOPT_PREQUOTE`, `CURLOPT_POSTQUOTE`): one
+    /// starting with `*` may fail.
+    pub quote: Lines,
+    pub prequote: Lines,
+    pub postquote: Lines,
+    /// What FTP alone is told.
+    pub ftp: Ftp,
+}
+
+/// What FTP is told (C's `ftp_*` settings).
+#[derive(Debug)]
+pub struct Ftp {
+    /// How a path's directories are reached (`CURLOPT_FTP_FILEMETHOD`).
+    pub method: FtpMethod,
+    /// A passive data connection is asked for with `EPSV` first
+    /// (`CURLOPT_FTP_USE_EPSV`, on by default).
+    pub use_epsv: bool,
+    /// An active one is offered with `EPRT` first (`CURLOPT_FTP_USE_EPRT`,
+    /// on by default).
+    pub use_eprt: bool,
+    /// `PRET` is sent before `PASV` and `EPSV` (`CURLOPT_FTP_USE_PRET`).
+    pub use_pret: bool,
+    /// The address a `PASV` answer gives is not used: the control
+    /// connection's is (`CURLOPT_FTP_SKIP_PASV_IP`, on by default).
+    pub skip_pasv_ip: bool,
+    /// Where an active data connection is offered, as given
+    /// (`CURLOPT_FTPPORT`): none for a passive one.
+    pub port: Option<Vec<u8>>,
+    /// Directories missing on the server are made (`CURLOPT_FTP_CREATE_MISSING_DIRS`).
+    pub create_dirs: CreateDirs,
+    /// The account given when the server asks for one (`ACCT`,
+    /// `CURLOPT_FTP_ACCOUNT`).
+    pub account: Option<Vec<u8>>,
+    /// The command sent in place of `USER` once that is refused
+    /// (`CURLOPT_FTP_ALTERNATIVE_TO_USER`).
+    pub alternative_to_user: Option<Vec<u8>>,
+    /// The command channel goes back to the clear once logged in
+    /// (`CCC`, `CURLOPT_FTP_SSL_CCC`).
+    pub ssl_ccc: Ccc,
+    /// Which `AUTH` is asked first (`CURLOPT_FTPSSLAUTH`).
+    pub ssl_auth: SslAuth,
+    /// How long the server has to connect back to an active data
+    /// connection (`CURLOPT_ACCEPTTIMEOUT_MS`), 60 seconds unless set.
+    pub accept_timeout: Option<TimeLimit>,
+    /// An upload is appended to the file (`APPE`, `CURLOPT_APPEND`).
+    pub append: bool,
+    /// The transfer is in ASCII (`TYPE A`, `CURLOPT_TRANSFERTEXT`).
+    pub ascii: bool,
+    /// The URL's file name is a pattern its matches are transferred for
+    /// (`CURLOPT_WILDCARDMATCH`).
+    pub wildcard: bool,
+}
+
+/// How an FTP path's directories are reached (`CURLFTPMETHOD_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FtpMethod {
+    /// A `CWD` for each (`CURLFTPMETHOD_MULTICWD`, the default).
+    #[default]
+    MultiCwd,
+    /// None: the commands name the whole path (`CURLFTPMETHOD_NOCWD`).
+    NoCwd,
+    /// One `CWD` to the whole directory (`CURLFTPMETHOD_SINGLECWD`).
+    SingleCwd,
+}
+
+/// Whether directories missing on the server are made
+/// (`CURLFTP_CREATE_DIR_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CreateDirs {
+    #[default]
+    No,
+    /// With `MKD` as a `CWD` fails (`CURLFTP_CREATE_DIR`).
+    Create,
+    /// The same, and a `CWD` tried again when `MKD` fails
+    /// (`CURLFTP_CREATE_DIR_RETRY`).
+    Retry,
+}
+
+/// Whether the command channel goes back to the clear (`CURLFTPSSL_CCC_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Ccc {
+    #[default]
+    None,
+    /// `CCC`, the server's close of TLS awaited (`CURLFTPSSL_CCC_PASSIVE`).
+    Passive,
+    /// `CCC`, and the close sent first (`CURLFTPSSL_CCC_ACTIVE`).
+    Active,
+}
+
+/// Which `AUTH` FTP asks for first (`CURLFTPAUTH_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SslAuth {
+    /// `AUTH SSL`, then `AUTH TLS` (`CURLFTPAUTH_DEFAULT`).
+    #[default]
+    Default,
+    /// The same (`CURLFTPAUTH_SSL`).
+    Ssl,
+    /// `AUTH TLS`, then `AUTH SSL` (`CURLFTPAUTH_TLS`).
+    Tls,
+}
+
+impl Ftp {
+    const NONE: Ftp = Ftp {
+        method: FtpMethod::MultiCwd,
+        use_epsv: true,
+        use_eprt: true,
+        use_pret: false,
+        skip_pasv_ip: true,
+        port: None,
+        create_dirs: CreateDirs::No,
+        account: None,
+        alternative_to_user: None,
+        ssl_ccc: Ccc::None,
+        ssl_auth: SslAuth::Default,
+        accept_timeout: None,
+        append: false,
+        ascii: false,
+        wildcard: false,
+    };
+
+    fn try_clone(&self) -> Result<Ftp, OutOfMemory> {
+        Ok(Ftp {
+            method: self.method,
+            use_epsv: self.use_epsv,
+            use_eprt: self.use_eprt,
+            use_pret: self.use_pret,
+            skip_pasv_ip: self.skip_pasv_ip,
+            port: self.port.as_deref().map(copy).transpose()?,
+            create_dirs: self.create_dirs,
+            account: self.account.as_deref().map(copy).transpose()?,
+            alternative_to_user: self.alternative_to_user.as_deref().map(copy).transpose()?,
+            ssl_ccc: self.ssl_ccc,
+            ssl_auth: self.ssl_auth,
+            accept_timeout: self.accept_timeout,
+            append: self.append,
+            ascii: self.ascii,
+            wildcard: self.wildcard,
+        })
+    }
 }
 
 /// The flags an uploaded message is stored with, IMAP's `\Seen` and the
@@ -262,6 +403,10 @@ impl ColdGroup for Line {
         list_only: false,
         server_response: None,
         upload_flags: UploadFlags::SEEN,
+        quote: Lines::NONE,
+        prequote: Lines::NONE,
+        postquote: Lines::NONE,
+        ftp: Ftp::NONE,
     };
 }
 
@@ -278,6 +423,10 @@ impl Line {
             list_only: self.list_only,
             server_response: self.server_response,
             upload_flags: self.upload_flags,
+            quote: self.quote.try_clone()?,
+            prequote: self.prequote.try_clone()?,
+            postquote: self.postquote.try_clone()?,
+            ftp: self.ftp.try_clone()?,
         })
     }
 }
@@ -326,6 +475,10 @@ pub struct Proxy {
     /// The answer to `CONNECT` is not delivered, though its headers are
     /// kept (`CURLOPT_SUPPRESS_CONNECT_HEADERS`).
     pub suppress_connect_headers: bool,
+    /// An FTP URL a proxy is asked for in HTTP says the transfer's type,
+    /// `;type=a` or `;type=i`, unless it says one already
+    /// (`CURLOPT_PROXY_TRANSFER_MODE`).
+    pub transfer_mode: bool,
     /// How a SOCKS5 proxy may authenticate the user
     /// (`CURLOPT_SOCKS5_AUTH`).
     pub socks5_auth: Socks5Auth,
@@ -404,6 +557,7 @@ impl Proxy {
             password: self.password.as_deref().map(copy).transpose()?,
             auth: self.auth,
             suppress_connect_headers: self.suppress_connect_headers,
+            transfer_mode: self.transfer_mode,
             socks5_auth: self.socks5_auth,
             service: self.service.as_deref().map(copy).transpose()?,
             socks5_gssapi_nec: self.socks5_gssapi_nec,
@@ -764,6 +918,7 @@ impl ColdGroup for Proxy {
         password: None,
         auth: HttpAuth::DEFAULT,
         suppress_connect_headers: false,
+        transfer_mode: false,
         socks5_auth: Socks5Auth::DEFAULT,
         service: None,
         socks5_gssapi_nec: false,

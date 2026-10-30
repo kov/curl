@@ -50,6 +50,10 @@ pub(crate) struct Pipeline {
     /// C's chain of writers is made (`req.writer.stack`): by the first
     /// output, or at once for HTTP. The request's end is said of it only.
     made: bool,
+    /// Header lines go to the write handler too, whatever the
+    /// application set: while FTP writes one of its own
+    /// (`client_write_header`).
+    include_all: bool,
 }
 
 /// A response's codings to undo, in the order of the chain.
@@ -75,6 +79,7 @@ impl Pipeline {
             out: ClientOut::default(),
             reach,
             made: false,
+            include_all: false,
         }
     }
 
@@ -147,6 +152,7 @@ impl Pipeline {
                 decoders: content,
                 out: &mut self.out,
                 pausable,
+                include_all: false,
             })?;
         }
         self.out.flush(cx, pausable)
@@ -194,6 +200,7 @@ impl Pipeline {
             decoders,
             out: &mut self.out,
             pausable,
+            include_all: self.include_all,
         };
         match gate {
             Some(gate) => gate.write(kind, bytes, &mut past),
@@ -445,6 +452,25 @@ impl Pipeline {
         result
     }
 
+    /// Deliver a header line FTP makes up for what it found out
+    /// (`Content-Length:`, `Last-Modified:`, `Accept-ranges:`), to the
+    /// write handler as well as the header handler whatever the
+    /// application set, as FTP always did, and not kept for the headers
+    /// API (ftp.c's `client_write_header`).
+    pub(crate) fn included_header<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        line: &[u8],
+    ) -> Result<(), ErrorKind> {
+        self.made = true;
+        let kind = OutKind::Header(HeaderOrigin::Header);
+        self.include_all = true;
+        let result = self.head_line(cx, line, kind);
+        self.include_all = false;
+        client_write(cx, WriteType::of(kind), line.len(), result);
+        result
+    }
+
     /// Deliver a response's status line, of an informational response
     /// (1xx) or not, as a header line the store does not keep
     /// (`CLIENTWRITE_STATUS`).
@@ -613,6 +639,7 @@ struct Past<'p, 'c, H: Host> {
     decoders: &'p mut [Box<dyn Decoder>],
     out: &'p mut ClientOut,
     pausable: bool,
+    include_all: bool,
 }
 
 impl<H: Host> Onward for Past<'_, '_, H> {
@@ -632,7 +659,7 @@ impl<H: Host> Onward for Past<'_, '_, H> {
             OutKind::Info => out.header(cx, bytes, kind, pausable),
             OutKind::Header(_) | OutKind::Status(_) => {
                 // An included line is body, to be held and replayed with it.
-                if cx.easy().options().output.include_header {
+                if self.include_all || cx.easy().options().output.include_header {
                     out.body(cx, bytes, pausable)?;
                 }
                 out.header(cx, bytes, kind, pausable)

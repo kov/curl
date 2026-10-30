@@ -63,13 +63,13 @@ witness: curl-core deliver::tests::a_header_line_goes_out_whole
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::included_header_lines_go_to_the_write_handler_first
 --- old
-                if cx.easy().options().output.include_header {
+                if self.include_all || cx.easy().options().output.include_header {
                     out.body(cx, bytes, pausable)?;
                 }
                 out.header(cx, bytes, kind, pausable)
 --- new
                 out.header(cx, bytes, kind, pausable)?;
-                if cx.easy().options().output.include_header {
+                if self.include_all || cx.easy().options().output.include_header {
                     out.body(cx, bytes, pausable)?;
                 }
                 Ok(())

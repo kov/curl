@@ -70,8 +70,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   and setting the times of files by name, resolving a name to its absolute path, making and
   listing directories, reading standard input unbuffered, making a file's reads nonblocking,
   and pointing standard error at a file.
-- `crates/curl-os/src/net.rs`: opening, setting and connecting sockets, adopting one the
-  application opened, and the machine's host name.
+- `crates/curl-os/src/net.rs`: opening, setting and connecting sockets, listening and
+  accepting on one, adopting one the application opened, and the machine's host name.
 - `crates/curl-os/src/poll.rs`: `poll(2)`.
 - `crates/curl-os/src/wake.rs`: the multi's waker, an eventfd.
 - `crates/curl-os/src/random.rs`: random bytes from the kernel, `getrandom`.

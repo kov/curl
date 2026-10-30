@@ -43,6 +43,9 @@ pub(crate) enum TimerKind {
     TooFast,
     /// The QUIC library's own wait (`EXPIRE_QUIC`).
     Quic,
+    /// FTP's wait for the server to connect to the port it was offered,
+    /// which its state says (`ProtoState::due`, `EXPIRE_FTP_ACCEPT`).
+    FtpAccept,
     /// The HTTPS connect's wait before a second attempt, armed as its
     /// race starts while the attempts are not all known
     /// (`EXPIRE_ALPN_EYEBALLS`).
@@ -59,10 +62,11 @@ pub(crate) enum TimerKind {
 
 impl TimerKind {
     /// The kinds there are.
-    const COUNT: usize = 10;
-    /// The instants they are kept in: one fewer, the 100 wait and the
-    /// server's time to answer sharing one.
-    const STORED: usize = TimerKind::COUNT - 1;
+    const COUNT: usize = 11;
+    /// The instants they are kept in: two fewer, the 100 wait and the
+    /// server's time to answer sharing one, and the wait for the server
+    /// to connect and the HTTPS connect's second attempt another.
+    const STORED: usize = TimerKind::COUNT - 2;
 
     /// The name C's trace gives it (`Curl_trc_timer_name`).
     pub(crate) fn name(self) -> &'static str {
@@ -74,6 +78,7 @@ impl TimerKind {
             TimerKind::Proto => "100_TIMEOUT",
             TimerKind::TooFast => "TOOFAST",
             TimerKind::Quic => "QUIC",
+            TimerKind::FtpAccept => "FTP_ACCEPT",
             TimerKind::AlpnEyeballs => "ALPN_EYEBALLS",
             TimerKind::AsyncName => "ASYNC_NAME",
             TimerKind::ServerResponse => "SERVER_RESPONSE",
@@ -90,6 +95,7 @@ impl TimerKind {
         TimerKind::Proto,
         TimerKind::TooFast,
         TimerKind::Quic,
+        TimerKind::FtpAccept,
         TimerKind::AlpnEyeballs,
         TimerKind::AsyncName,
         TimerKind::ServerResponse,
@@ -103,16 +109,27 @@ impl TimerKind {
     /// Where its instant is kept.
     fn slot(self) -> usize {
         match self {
-            TimerKind::ServerResponse => TimerKind::Proto.ordinal(),
-            k => k.ordinal(),
+            TimerKind::Total => 0,
+            TimerKind::Connect => 1,
+            TimerKind::SpeedCheck => 2,
+            TimerKind::Eyeballs => 3,
+            TimerKind::Proto | TimerKind::ServerResponse => 4,
+            TimerKind::TooFast => 5,
+            TimerKind::Quic => 6,
+            TimerKind::FtpAccept | TimerKind::AlpnEyeballs => 7,
+            TimerKind::AsyncName => 8,
         }
     }
 
-    /// The kind its instant is kept with, if any.
+    /// The kind its instant is kept with, if any: one no request arms
+    /// while the other is armed. HTTP's 100 wait is no line protocol's;
+    /// the HTTPS connect's attempts are over before FTP offers a port.
     fn sharer(self) -> Option<TimerKind> {
         match self {
             TimerKind::Proto => Some(TimerKind::ServerResponse),
             TimerKind::ServerResponse => Some(TimerKind::Proto),
+            TimerKind::FtpAccept => Some(TimerKind::AlpnEyeballs),
+            TimerKind::AlpnEyeballs => Some(TimerKind::FtpAccept),
             _ => None,
         }
     }
@@ -674,6 +691,41 @@ mod tests {
         );
         d.clear(TimerKind::Proto);
         assert_eq!(d.first(), Some(TimerKind::ServerResponse));
+    }
+
+    /// FTP's wait for the server to connect and the server's time to
+    /// answer are kept apart: the answer's, armed at each step, leaves
+    /// the accept's to fire first (test 593).
+    #[test]
+    fn the_accept_wait_outlives_the_answer_time() {
+        let mut d = Deadlines::new(None, None);
+        let now = at_ms(0);
+        d.arm_in(TimerKind::FtpAccept, now, Duration::from_millis(2000));
+        d.arm_in(
+            TimerKind::ServerResponse,
+            now,
+            Duration::from_millis(60_000),
+        );
+        assert_eq!(d.first(), Some(TimerKind::FtpAccept));
+        assert_eq!(d.wake_at(), Some(at_ms(2000)));
+    }
+
+    /// Every kind has an instant of its own but the pairs that share one,
+    /// and each pair shares both ways.
+    #[test]
+    fn only_the_pairs_share_an_instant() {
+        for a in TimerKind::ALL {
+            assert!(a.slot() < TimerKind::STORED, "{a:?}");
+            for b in TimerKind::ALL {
+                if a != b && a.slot() == b.slot() {
+                    assert_eq!(a.sharer(), Some(b), "{a:?} {b:?}");
+                }
+            }
+            if let Some(b) = a.sharer() {
+                assert_eq!(b.sharer(), Some(a));
+                assert_eq!(a.slot(), b.slot());
+            }
+        }
     }
 
     #[test]

@@ -23,7 +23,7 @@ use curl_alloc::{OutOfMemory, try_box};
 use curl_core::conn::io::{Remote, Socket, SocketKey, SocketKind};
 use curl_core::handler::{
     Configured, Handler, PrereqHandler, ResolveStartHandler, SocketCloser, SocketConfigurer,
-    SocketOpener, SocketToSet,
+    SocketOpener, SocketPurpose, SocketToSet,
 };
 use curl_core::multi::{Abort, TransferCx};
 use curl_core::options::Options;
@@ -32,8 +32,8 @@ use curl_core::report::Ends;
 use crate::callbacks::Adapter;
 use crate::easy::ShimEasy;
 use crate::ffi::{
-    self, CURL_SOCKET_BAD, CURL_SOCKOPT_ALREADY_CONNECTED, CURL_SOCKOPT_OK, CURLSOCKTYPE_IPCXN,
-    curl_closesocket_callback, curl_opensocket_callback, curl_prereq_callback,
+    self, CURL_SOCKET_BAD, CURL_SOCKOPT_ALREADY_CONNECTED, CURL_SOCKOPT_OK, CURLSOCKTYPE_ACCEPT,
+    CURLSOCKTYPE_IPCXN, curl_closesocket_callback, curl_opensocket_callback, curl_prereq_callback,
     curl_resolver_start_callback, curl_sockopt_callback,
 };
 
@@ -308,9 +308,13 @@ impl SocketConfigurer for Adapter {
             return Configured::Ok;
         };
         let fd = socket.key().get();
+        let purpose = match socket.purpose() {
+            SocketPurpose::Connect => CURLSOCKTYPE_IPCXN,
+            SocketPurpose::Accept => CURLSOCKTYPE_ACCEPT,
+        };
         // SAFETY: the application's function takes its data, the socket
         // and the purpose.
-        let answer = self.call(cx, || unsafe { f(c.sockopt_data, fd, CURLSOCKTYPE_IPCXN) });
+        let answer = self.call(cx, || unsafe { f(c.sockopt_data, fd, purpose) });
         match answer {
             CURL_SOCKOPT_OK => Configured::Ok,
             CURL_SOCKOPT_ALREADY_CONNECTED => Configured::AlreadyConnected,

@@ -73,10 +73,10 @@ file: crates/curl-core/src/report.rs
 witness: curl-core proto::http::tests::os_errno::a_failed_send_keeps_its_number_until_the_next_transfer
 features: test-util
 --- old
-            transfer: self.transfer,
+            ftp_entry_path: self.ftp_entry_path.clone(),
             ..TransferReport::default()
 --- new
-            transfer: self.transfer,
+            ftp_entry_path: self.ftp_entry_path.clone(),
             os_errno: self.os_errno,
             ..TransferReport::default()
 

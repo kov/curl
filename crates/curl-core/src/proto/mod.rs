@@ -9,6 +9,7 @@
 //! connected.
 
 pub(crate) mod file;
+pub(crate) mod ftp;
 pub(crate) mod http;
 pub(crate) mod http1;
 pub(crate) mod http2;
@@ -92,6 +93,8 @@ pub(crate) enum ProtoState {
     File(Box<file::Request>),
     /// Boxed: it is moved with the transfer's state at every step.
     Http(Box<http::Request>),
+    /// Boxed, as HTTP's.
+    Ftp(Box<ftp::Request>),
     /// Boxed, as HTTP's.
     Pop3(Box<pop3::Request>),
     /// Boxed, as HTTP's.
@@ -218,13 +221,6 @@ pub(crate) enum DoStep {
     Doing,
     /// Its second half to make, in DOING_MORE (`bits.do_more`;
     /// DOMORE_INCOMPLETE there).
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(
-            dead_code,
-            reason = "no protocol built yet has a second half, as FTP will"
-        )
-    )]
     More,
     /// More of it to make within DO, in the next step: what a step took
     /// is timed as the drive reads the clock before it, as C's
@@ -538,6 +534,14 @@ impl ProtoState {
                 curl_alloc::try_box(imap::Request::new(url, true, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
+            b"ftp" => ProtoState::Ftp(
+                curl_alloc::try_box(ftp::Request::new(url, false, before, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
+            b"ftps" if cx.easy().libraries().tls.is_some() => ProtoState::Ftp(
+                curl_alloc::try_box(ftp::Request::new(url, true, before, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
             b"pop3" => ProtoState::Pop3(
                 curl_alloc::try_box(pop3::Request::new(url, false, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
@@ -573,6 +577,7 @@ impl ProtoState {
     pub(crate) fn set_up_said<H: Host>(&self, cx: &mut StepCx<'_, H>) {
         match self {
             ProtoState::Smtp(_) => smtp::Request::set_up_said(cx),
+            ProtoState::Ftp(_) => ftp::Request::set_up_said(cx),
             ProtoState::File(_)
             | ProtoState::Http(_)
             | ProtoState::Pop3(_)
@@ -593,6 +598,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(_) => Ok(None),
             ProtoState::Http(ref r) => Ok(Some(r.network(url, scope, idn)?)),
+            ProtoState::Ftp(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Pop3(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Imap(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Smtp(ref r) => Ok(Some(r.network(url, scope, idn)?)),
@@ -617,6 +623,7 @@ impl ProtoState {
     pub(crate) fn scheme(&self) -> Option<Scheme> {
         match self {
             ProtoState::Http(r) => Some(r.scheme()),
+            ProtoState::Ftp(r) => Some(r.scheme()),
             ProtoState::Pop3(r) => Some(r.scheme()),
             ProtoState::Imap(r) => Some(r.scheme()),
             ProtoState::Smtp(r) => Some(r.scheme()),
@@ -641,6 +648,7 @@ impl ProtoState {
     /// connection (`url_set_conn_login`).
     pub(crate) fn take_login(&mut self) -> Option<Credentials> {
         match self {
+            ProtoState::Ftp(r) => r.take_login(),
             ProtoState::Pop3(r) => r.take_login(),
             ProtoState::Imap(r) => r.take_login(),
             ProtoState::Smtp(r) => r.take_login(),
@@ -652,6 +660,7 @@ impl ProtoState {
     pub(crate) fn secured(&self) -> bool {
         match self {
             ProtoState::Http(r) => r.secured(),
+            ProtoState::Ftp(r) => r.secured(),
             ProtoState::Pop3(r) => r.secured(),
             ProtoState::Imap(r) => r.secured(),
             ProtoState::Smtp(r) => r.secured(),
@@ -659,10 +668,11 @@ impl ProtoState {
         }
     }
 
-    /// The request goes whole to a proxy that sends it on to `url`.
-    pub(crate) fn forward(&mut self, url: &Url) -> Result<(), ErrorKind> {
+    /// The request goes whole to a proxy that sends it on to `url`, an
+    /// FTP URL's type code `ftp_type` added if asked for.
+    pub(crate) fn forward(&mut self, url: &Url, ftp_type: Option<u8>) -> Result<(), ErrorKind> {
         match *self {
-            ProtoState::Http(ref mut r) => r.forward(url),
+            ProtoState::Http(ref mut r) => r.forward(url, ftp_type),
             // Only HTTP's requests are forwarded.
             _ => Ok(()),
         }
@@ -693,6 +703,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(ref mut f) => f.connect(cx, lease),
             ProtoState::Http(ref mut r) => r.connect(cx, lease),
+            ProtoState::Ftp(ref mut r) => r.connect(cx, lease),
             ProtoState::Pop3(ref mut r) => r.connect(cx, lease),
             ProtoState::Imap(ref mut r) => r.connect(cx, lease),
             ProtoState::Smtp(ref mut r) => r.connect(cx, lease),
@@ -718,6 +729,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(ref mut f) => f.make(cx, lease, asked),
             ProtoState::Http(ref mut r) => r.make(cx, lease, asked),
+            ProtoState::Ftp(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Pop3(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Imap(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Smtp(ref mut r) => r.make(cx, lease, asked),
@@ -735,6 +747,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(ref f) => f.waits(phase),
             ProtoState::Http(ref r) => r.waits(phase),
+            ProtoState::Ftp(ref r) => r.waits(phase),
             ProtoState::Pop3(ref r) => r.waits(phase),
             ProtoState::Imap(ref r) => r.waits(phase),
             ProtoState::Smtp(ref r) => r.waits(phase),
@@ -767,6 +780,8 @@ impl ProtoState {
             // A mail's body to send, as the connection's `recv_idx` and
             // `send_idx` say.
             ProtoState::Smtp(ref r) => r.exchanges(),
+            // Data to move over the second connection.
+            ProtoState::Ftp(ref r) => r.exchanges(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => true,
         }
@@ -782,6 +797,7 @@ impl ProtoState {
     pub(crate) fn wants_send(&self, options: &Options) -> bool {
         match *self {
             ProtoState::File(_) | ProtoState::Pop3(_) => false,
+            ProtoState::Ftp(ref r) => r.sending(),
             ProtoState::Imap(ref r) => r.sending(),
             ProtoState::Smtp(ref r) => r.sending(),
             ProtoState::Http(ref r) => r.sending(),
@@ -801,6 +817,7 @@ impl ProtoState {
     pub(crate) fn directions(&self, options: &Options) -> Directions {
         let send = match *self {
             ProtoState::File(_) | ProtoState::Pop3(_) => false,
+            ProtoState::Ftp(ref r) => r.sending(),
             ProtoState::Imap(ref r) => r.sending(),
             ProtoState::Smtp(ref r) => r.sending(),
             ProtoState::Http(ref r) => r.sending(),
@@ -815,14 +832,24 @@ impl ProtoState {
         }
     }
 
+    /// The timer `due` is kept in before DONE: FTP's wait for the server
+    /// to connect (`EXPIRE_FTP_ACCEPT`), HTTP's for a 100 otherwise.
+    pub(crate) fn due_timer(&self) -> crate::multi::timers::TimerKind {
+        match self {
+            ProtoState::Ftp(_) => crate::multi::timers::TimerKind::FtpAccept,
+            _ => crate::multi::timers::TimerKind::Proto,
+        }
+    }
+
     /// When the request wants to look again whatever its socket says: an
-    /// HTTP body's wait for a 100 running out, or IMAP's and SMTP's poll
-    /// in DONE as it awaits its answer.
+    /// HTTP body's wait for a 100 running out, FTP's for the server to
+    /// connect, or a line protocol's poll in DONE as it awaits its answer.
     pub(crate) fn due(&self) -> Option<crate::time::Instant> {
         match self {
             ProtoState::Http(r) => r.due(),
             ProtoState::Imap(r) => r.due(),
             ProtoState::Smtp(r) => r.due(),
+            ProtoState::Ftp(r) => r.due(),
             _ => None,
         }
     }
@@ -878,6 +905,7 @@ impl ProtoState {
         match *self {
             ProtoState::Http(ref mut r) => r.rewind_upload(cx),
             ProtoState::File(_)
+            | ProtoState::Ftp(_)
             | ProtoState::Pop3(_)
             | ProtoState::Imap(_)
             | ProtoState::Smtp(_) => Ok(()),
@@ -894,6 +922,7 @@ impl ProtoState {
             // A write cannot pause it: it never holds.
             ProtoState::File(_) => false,
             ProtoState::Http(ref r) => r.holds_output(),
+            ProtoState::Ftp(ref r) => r.holds_output(),
             ProtoState::Pop3(ref r) => r.holds_output(),
             ProtoState::Imap(ref r) => r.holds_output(),
             ProtoState::Smtp(ref r) => r.holds_output(),
@@ -909,6 +938,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(ref mut f) => Some(f.pipeline_mut()),
             ProtoState::Http(ref mut r) => Some(r.pipeline_mut()),
+            ProtoState::Ftp(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Pop3(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Imap(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Smtp(ref mut r) => Some(r.pipeline_mut()),
@@ -928,6 +958,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(_) => unreachable!("a file request exchanges nothing once made"),
             ProtoState::Http(ref mut r) => r.step(cx, lease),
+            ProtoState::Ftp(ref mut r) => r.step(cx, lease),
             ProtoState::Pop3(ref mut r) => r.step(cx, lease),
             ProtoState::Imap(ref mut r) => r.step(cx, lease),
             ProtoState::Smtp(ref mut r) => r.step(cx, lease),
@@ -952,6 +983,7 @@ impl ProtoState {
     pub(crate) fn interest(&self, pause: Pause) -> Events {
         match *self {
             ProtoState::Http(ref r) => r.interest(pause),
+            ProtoState::Ftp(ref r) => r.interest(pause),
             ProtoState::Pop3(ref r) => r.interest(pause),
             ProtoState::Imap(ref r) => r.interest(pause),
             ProtoState::Smtp(ref r) => r.interest(pause),
@@ -963,6 +995,15 @@ impl ProtoState {
         }
     }
 
+    /// What the made request waits for on a second connection beside its
+    /// own: FTP's data.
+    pub(crate) fn side_interest(&self, pause: Pause) -> Events {
+        match *self {
+            ProtoState::Ftp(ref r) => r.data_wants(pause, true),
+            _ => Events::NONE,
+        }
+    }
+
     /// Whether the request may be made again on a fresh connection, its
     /// reused one having died (`Curl_retry_request`): it got nothing
     /// back, and its protocol answers every request, as HTTP does, or it
@@ -970,6 +1011,7 @@ impl ProtoState {
     pub(crate) fn retryable(&self) -> bool {
         match *self {
             ProtoState::Http(ref r) => r.received_nothing(),
+            ProtoState::Ftp(ref r) => r.received_nothing(),
             ProtoState::Pop3(ref r) => r.received_nothing(),
             ProtoState::Imap(ref r) => r.received_nothing(),
             ProtoState::Smtp(ref r) => r.received_nothing(),
@@ -1092,6 +1134,7 @@ impl ProtoState {
             ProtoState::Http(ref mut r) => {
                 Finish::Done(r.done(cx, lease, result, premature, next, http))
             }
+            ProtoState::Ftp(ref mut r) => r.done(cx, lease, result, premature, exchanged),
             ProtoState::Pop3(ref mut r) => Finish::Done(r.done(cx, lease, result)),
             ProtoState::Imap(ref mut r) => r.done(cx, lease, result, premature, exchanged),
             ProtoState::Smtp(ref mut r) => r.done(cx, lease, result, premature, exchanged),
@@ -1113,7 +1156,8 @@ impl ProtoState {
         match *self {
             ProtoState::Imap(ref mut r) => r.finishing(cx, lease, exchanged),
             ProtoState::Smtp(ref mut r) => r.finishing(cx, lease, exchanged),
-            _ => unreachable!("only IMAP and SMTP await an answer as their request ends"),
+            ProtoState::Ftp(ref mut r) => r.finishing(cx, lease, exchanged),
+            _ => unreachable!("only FTP, IMAP and SMTP await an answer as their request ends"),
         }
     }
 }

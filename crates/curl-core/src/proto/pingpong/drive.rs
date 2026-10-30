@@ -243,6 +243,28 @@ pub(crate) fn runs_done<H: Host>(
     exchanged: bool,
     round: &mut Blocking,
 ) -> Result<(bool, Instant), ErrorKind> {
+    runs_done_said(
+        cx,
+        pp,
+        carrier,
+        limit,
+        exchanged,
+        round,
+        "server response timeout",
+    )
+}
+
+/// `runs_done`, the server's time to answer running out said as `said`:
+/// FTP's own blocking read says it its way (`getftpresponse`).
+pub(crate) fn runs_done_said<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    pp: &Pingpong,
+    carrier: &mut Carrier<'_>,
+    limit: Option<TimeLimit>,
+    exchanged: bool,
+    round: &mut Blocking,
+    said: &str,
+) -> Result<(bool, Instant), ErrorKind> {
     let now = cx.now();
     if let Some(since) = round.polling {
         let ends = poll_ends(cx, pp, limit, since);
@@ -261,7 +283,7 @@ pub(crate) fn runs_done<H: Host>(
         return Err(trace::fail(
             cx,
             ErrorKind::OperationTimedout,
-            format_args!("server response timeout"),
+            format_args!("{said}"),
         ));
     }
     if holds(pp, carrier) || carrier.ready_now(waits(pp)) {

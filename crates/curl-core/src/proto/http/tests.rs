@@ -2194,8 +2194,8 @@ fn built_schemes_are_named_in_any_case() {
     assert_eq!(Protocols::built(b"FILE"), Protocols::of(&["file"]));
     assert_eq!(Protocols::built(b"HTTPS"), Protocols::of(&["https"]));
     for name in [
-        &b"ftps"[..],
-        b"ftp",
+        &b"tftp"[..],
+        b"dict",
         b"goobar",
         b"http ",
         b"",
@@ -2659,14 +2659,14 @@ fn a_netrc_file_is_read_before_the_protocol_is_checked() {
     let file = path.as_os_str().as_encoded_bytes().to_vec();
     let name = String::from_utf8_lossy(&file).into_owned();
     let missing = [&file[..], b".missing"].concat();
-    let ftp = format!("ftp://127.0.0.1:{PORT}/a");
+    let unbuilt = format!("tftp://127.0.0.1:{PORT}/a");
     let unknown = format!("qttp://127.0.0.1:{PORT}/a");
     let local = format!("file://{name}");
     let not_found =
         |host: &str| format!("Could not find host {host} in the {name} file; using defaults\n");
     for (url, mode, netrc, result, said) in [
         (
-            &ftp,
+            &unbuilt,
             NetrcMode::Required,
             &missing,
             Err(ErrorKind::ReadError),
@@ -2680,7 +2680,7 @@ fn a_netrc_file_is_read_before_the_protocol_is_checked() {
             ".netrc error: no such file\n".to_string(),
         ),
         (
-            &ftp,
+            &unbuilt,
             NetrcMode::Required,
             &file,
             Err(ErrorKind::UnsupportedProtocol),
@@ -2705,10 +2705,10 @@ fn a_netrc_file_is_read_before_the_protocol_is_checked() {
         let text = ran.seen.text();
         let at = text.iter().position(|l| *l == said);
         assert!(at.is_some(), "{url} {mode:?}: {text:?}");
-        if result == Err(ErrorKind::UnsupportedProtocol) && url == &ftp {
+        if result == Err(ErrorKind::UnsupportedProtocol) && url == &unbuilt {
             let refused = text
                 .iter()
-                .position(|l| l.starts_with("Protocol \"ftp\" is disabled"));
+                .position(|l| l.starts_with("Protocol \"tftp\" is disabled"));
             assert!(at < refused, "{text:?}");
         }
     }

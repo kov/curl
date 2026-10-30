@@ -1072,6 +1072,10 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   awaiting its answer, where C blocks and arms nothing, is woken by it at its poll's end. It
   shares `Proto`'s instant (`TimerKind::slot`), as no request has both, and arming either
   disarms the other, so the transfer's slot does not grow.
+- `FtpAccept` (EXPIRE_FTP_ACCEPT) is FTP's wait for the server to connect to the port it was
+  offered (`CURLOPT_ACCEPTTIMEOUT_MS`, 60 s by default): derived from the protocol's state as
+  `Proto` is (`ProtoState::due_timer`), apart from `ServerResponse`, which each step arms
+  again. It shares `AlpnEyeballs`' instant, whose attempts are over before a port is offered.
 - `AlpnEyeballs` (EXPIRE_ALPN_EYEBALLS, half the happy eyeballs delay, 100 ms by default) is
   armed as the HTTPS connect filter's attempt starts while its ballers are not complete: with a
   second baller (the race of HTTP/3 against TCP, §2.5), or with the origin's HTTPS-RR answer still
@@ -1390,8 +1394,12 @@ and a line protocol's command do; a POP3 or IMAP body the server ends by closing
 go back to the pool, "left intact", for the next transfer's health check to find dead, as C
 does. A connection that multiplexes (§4.4) is
 leased by several transfers at once: `Use::Leased(n)` counts them, one more for each that joins
-it and each pushed transfer. `Stream` does not rule out a second stream on one `Conn`, which
-FTP's data connection needs.
+it and each pushed transfer. FTP's data connection is a second stream the control connection's
+protocol state holds (`LineConn::Ftp`, `proto::ftp::data::DataConn`): connected through its own
+`ConnectMachine`, or listened for and accepted, with TLS of the control connection's identity
+when protected; its socket joins the transfer's pollset (`ConnSlot::side_pollset`), the
+transfer's end closes it, and the connection's end closes it first if it is still open
+(`conn::shutdown`), so no path leaves it behind its connection.
 
 A QUIC connection dialed straight to its peer is `Transport::Datagram`: its socket alone
 (`Datagrams`), no layers and no `rx`, the QUIC connection reading and writing its datagrams
@@ -1797,9 +1805,9 @@ prior knowledge with nothing between, the session made then; the connection then
 HTTP/2 for good, or HTTP/1. What the connection speaks is one field, `conn::mux::Speaks`: not
 found yet (`Unmade`, as a connection is made, and for good on one no HTTP request found it out
 on), HTTP/1 (`Http1`, no session; a local connection's from the start), a session made (`Made`),
-a protocol's own state with no session (`Line`, `conn/line.rs`'s `LineConn`: what FTP and the
-like keep of the connection between requests, put on as their connect makes it; only the test
-protocol `tcp:`'s is built), or its session out for a step (`Out`, naming the version). A step takes the session off the
+a protocol's own state with no session (`Line`, `conn/line.rs`'s `LineConn`: what FTP, IMAP,
+POP3, SMTP and the test protocol `tcp:` keep of the connection between requests, put on as
+their connect makes it), or its session out for a step (`Out`, naming the version). A step takes the session off the
 connection for the call that drives it and gives it back after (`with_session`, `with_h3`), so
 the lease is free beside it; while it is out the connection reads as having none, and only the
 version taken out is given back. A new session goes only on a connection with none: HTTP/2's
@@ -1972,7 +1980,7 @@ C's messages. No other number of the libraries' crosses: a callback's call into 
 is told as a `Result<(), QuicError>`, printed as C prints its return; a close's type is a
 `CloseKind`, its number said only for the traces, its code read for a TLS alert or a refusal by
 `CloseError`'s own methods; a request refused as the connection closes is
-`SubmitFailed::Closing`. ngtcp2 is linked statically
+`SubmitFailed::Closing`. The ngtcp2 library is linked statically
 from the copy `inventory/measure/deps.py` builds, the version the C oracle uses. The connection
 is made over a TLS session already made (`TlsBackend::quic_session`, a `QuicTls`), which it owns
 and frees first, as C frees its TLS before ngtcp2; ngtcp2's crypto finds the connection through
@@ -3180,8 +3188,8 @@ needs it. It makes the body's size unknown (`Body::size`, C's total length), so 
 chunked, while `Expect: 100-continue` still weighs the client's size, as `addexpect` does.
 SMTP's end of body is the `MailEnd` stage (C's `cr_eob`), after the line conversion: a dot that
 starts a line is doubled, however the reads cut it, and the body ends with CRLF `.` CRLF, or the
-part of it the body's last bytes do not already give. FTP's ASCII line ends become a stage when
-FTP comes.
+part of it the body's last bytes do not already give. FTP's ASCII uploads (`--crlf`,
+`--use-ascii`, `;type=a`) go through the same line conversion (`Body::convert_lines`).
 
 - The request head is rendered into the request's own send buffer, as C's `req.sendbuf` is per
   request, measured first so that it takes one allocation; body bytes are pulled from the `Body`

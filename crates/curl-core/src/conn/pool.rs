@@ -256,6 +256,20 @@ impl ConnSlot {
             .chain(open)
     }
 
+    /// The sockets its protocol has open beside it, and what each waits
+    /// for, the transfer wanting `wanted` of them: FTP's data
+    /// connection.
+    pub(crate) fn side_pollset(
+        &self,
+        wanted: Events,
+    ) -> impl Iterator<Item = (&dyn Socket, Events)> {
+        let line = match self {
+            ConnSlot::Open(conn) => conn.line(),
+            ConnSlot::Connecting(_) | ConnSlot::Failed(_) => None,
+        };
+        line.into_iter().flat_map(move |l| l.side_pollset(wanted))
+    }
+
     /// What a transfer is to wait for on the connection, given what it
     /// wants: its layers' say, once it is up. A transfer wanting nothing
     /// is not asked about, as its layers' sockets would then be ready

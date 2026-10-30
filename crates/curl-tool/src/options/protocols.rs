@@ -138,36 +138,38 @@ mod tests {
         msgs
     }
 
-    /// The library speaks `file`, `http`, `https`, `imap`, `imaps`, `pop3`,
-    /// `pop3s`, `smtp` and `smtps`: every other name is unknown, as test
-    /// 322 checks, and a redirect may go to `http` and `https` by default.
+    /// The library speaks `file`, `ftp`, `ftps`, `http`, `https`, `imap`,
+    /// `imaps`, `pop3`, `pop3s`, `smtp` and `smtps`: every other name is
+    /// unknown, as test 322 checks, and a redirect may go to `http`,
+    /// `https`, `ftp` and `ftps` by default.
     #[test]
-    fn with_file_http_and_mail() {
+    fn with_file_ftp_http_and_mail() {
         let msgs = quiet();
-        let (file, http, https) = (Protocols(1), Protocols(2), Protocols(4));
-        let all = Protocols(511);
-        let webs = Protocols(6);
-        let mail = Protocols(504);
+        let (file, http, https) = (Protocols(1), Protocols(8), Protocols(16));
+        let all = Protocols(2047);
+        let redirects = Protocols(30);
+        let ftp_and_mail = Protocols(2022);
         assert_eq!(Protocols::all(), all);
-        assert_eq!(Protocols::redirect_default(), webs);
+        assert_eq!(Protocols::redirect_default(), redirects);
         for (list, want) in [
             (b"".as_slice(), Ok(all)),
             (b",,=ALL,", Ok(all)),
             (b"FILE", Ok(all)),
             (b"=file", Ok(file)),
-            (b"-file", Ok(Protocols(510))),
-            (b"-file,-HTTP,-https", Ok(mail)),
-            (b"=imaps,+pop3", Ok(Protocols(48))),
-            (b"=smtps,+smtp", Ok(Protocols(384))),
+            (b"-file", Ok(Protocols(2046))),
+            (b"-file,-HTTP,-https", Ok(ftp_and_mail)),
+            (b"=ftp,+ftps", Ok(Protocols(6))),
+            (b"=imaps,+pop3", Ok(Protocols(192))),
+            (b"=smtps,+smtp", Ok(Protocols(1536))),
             (
-                b"-file,-HTTP,-https,-imap,-imaps,-pop3,-pop3s,-smtp,-smtps",
+                b"-file,-ftp,-ftps,-HTTP,-https,-imap,-imaps,-pop3,-pop3s,-smtp,-smtps",
                 Err(ParamError::BadUse),
             ),
             (b"-all,+file", Ok(file)),
             (b"+-http", Err(ParamError::BadUse)),
             (b"=http", Ok(http)),
             (b"=https", Ok(https)),
-            (b"ftps", Err(ParamError::BadUse)),
+            (b"tftp", Err(ParamError::BadUse)),
             (b"all,x", Err(ParamError::BadUse)),
             (b"+", Err(ParamError::BadUse)),
         ] {
@@ -179,7 +181,7 @@ mod tests {
     /// library's own set.
     #[test]
     fn sets_go_to_the_library_by_name() {
-        let (file, http, both) = (Protocols(1), Protocols(2), Protocols(3));
+        let (file, http, both) = (Protocols(1), Protocols(8), Protocols(9));
         assert_eq!(both.list().unwrap(), b"file,http");
         assert_eq!(http.list().unwrap(), b"http");
         assert_eq!(Protocols(0).list().unwrap(), b"");

@@ -698,7 +698,7 @@ impl Request {
     /// `url` without its fragment and credentials, nor its scheme's port,
     /// and with a host it names in Unicode in its ASCII form
     /// (`http_target`).
-    pub(crate) fn forward(&mut self, url: &Url) -> Result<(), ErrorKind> {
+    pub(crate) fn forward(&mut self, url: &Url, ftp_type: Option<u8>) -> Result<(), ErrorKind> {
         let mut url = url.try_clone().map_err(url_error)?;
         for part in [Part::Fragment, Part::User, Part::Password] {
             url.set(part, None, SetOptions::NONE).map_err(url_error)?;
@@ -712,7 +712,21 @@ impl Request {
             no_default_port: true,
             ..GetOptions::NONE
         };
-        self.forward_target = Some(url.get(Part::Url, get).map_err(url_error)?);
+        let mut target = url.get(Part::Url, get).map_err(url_error)?;
+        if let Some(code) = ftp_type {
+            // The type, unless the path says one already.
+            let path = url.get(Part::Path, GetOptions::NONE).map_err(url_error)?;
+            let len = path.len();
+            let present = len >= 7
+                && &path[len - 7..len - 1] == b";type="
+                && matches!(path[len - 1].to_ascii_uppercase(), b'A' | b'D' | b'I');
+            if !present {
+                target
+                    .try_extend_from_slice(&[b';', b't', b'y', b'p', b'e', b'=', code])
+                    .map_err(|_| ErrorKind::OutOfMemory)?;
+            }
+        }
+        self.forward_target = Some(target);
         Ok(())
     }
 

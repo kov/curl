@@ -490,7 +490,10 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
     fn configure_socket(&mut self, socket: &dyn Socket) -> Configured {
         let configurer = self.step.easy().options().sockets.configure.clone();
         match configurer {
-            Some(c) => c.configure(&mut TransferCx::new(&mut *self.step), SocketToSet(socket)),
+            Some(c) => c.configure(
+                &mut TransferCx::new(&mut *self.step),
+                SocketToSet(socket, crate::handler::SocketPurpose::Connect),
+            ),
             None => Configured::Ok,
         }
     }

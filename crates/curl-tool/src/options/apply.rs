@@ -299,6 +299,39 @@ pub(crate) struct Operation<'a> {
     pub(crate) mail_auth: Option<&'a [u8]>,
     /// `--list-only` (C's `dirlistonly`).
     pub(crate) list_only: bool,
+    /// `--quote`'s commands: before the transfer, those after it (a `-`
+    /// first) and those just before its data (a `+` first).
+    pub(crate) quote: Vec<&'a [u8]>,
+    pub(crate) postquote: Vec<&'a [u8]>,
+    pub(crate) prequote: Vec<&'a [u8]>,
+    /// `--append`.
+    pub(crate) append: bool,
+    /// `--use-ascii`.
+    pub(crate) use_ascii: bool,
+    /// `--ftp-port`; `--ftp-pasv` clears it.
+    pub(crate) ftp_port: Option<&'a [u8]>,
+    /// `--disable-epsv`, `--epsv` off.
+    pub(crate) disable_epsv: bool,
+    /// `--disable-eprt`, `--eprt` off.
+    pub(crate) disable_eprt: bool,
+    /// `--ftp-ssl-ccc`, and the mode `--ftp-ssl-ccc-mode` names: 1 for
+    /// passive, 2 for active.
+    pub(crate) ftp_ssl_ccc: bool,
+    pub(crate) ftp_ssl_ccc_mode: i64,
+    /// `--ftp-account`.
+    pub(crate) ftp_account: Option<&'a [u8]>,
+    /// `--ftp-alternative-to-user`.
+    pub(crate) ftp_alternative_to_user: Option<&'a [u8]>,
+    /// `--ftp-skip-pasv-ip`: on unless turned off.
+    pub(crate) ftp_no_skip_ip: bool,
+    /// `--ftp-method`, as `CURLFTPMETHOD_*` numbers it.
+    pub(crate) ftp_method: i64,
+    /// `--ftp-pret`.
+    pub(crate) ftp_pret: bool,
+    /// `--ftp-create-dirs`.
+    pub(crate) ftp_create_dirs: bool,
+    /// `--ftp-ssl-control` (C's `ftp_ssl_control`).
+    pub(crate) ssl_control: bool,
     /// `--ssl`, `--ftp-ssl` (C's `ftp_ssl`): TLS if the server has it.
     pub(crate) ssl: bool,
     /// `--ssl-reqd`, `--ftp-ssl-reqd` (C's `ftp_ssl_reqd`).
@@ -1384,7 +1417,80 @@ pub(crate) fn apply<'a>(
                     b" is an insecure option, consider --ssl-reqd instead",
                 ]);
             }
+            if on && line.current().ssl_control {
+                line.current().ssl_control = false;
+                msgs.warn(&[b"--", spec.long.as_bytes(), b" overrides --ftp-ssl-control"]);
+            }
         }
+        Opt::FtpSslControl => {
+            let on = value.toggle();
+            line.current().ssl_control = on;
+            if on && line.current().ssl {
+                line.current().ssl = false;
+                msgs.warn(&[b"--", spec.long.as_bytes(), b" overrides --ssl"]);
+            }
+        }
+        Opt::Quote => {
+            // `parse_quote`.
+            let text = value.text();
+            let op = line.current();
+            match text.first() {
+                Some(b'-') => op.postquote.try_push(&text[1..])?,
+                Some(b'+') => op.prequote.try_push(&text[1..])?,
+                _ => op.quote.try_push(text)?,
+            }
+        }
+        Opt::Append => line.current().append = value.toggle(),
+        Opt::UseAscii => line.current().use_ascii = value.toggle(),
+        Opt::FtpPort => line.current().ftp_port = Some(non_blank(value.text())?),
+        Opt::FtpPasv => line.current().ftp_port = None,
+        Opt::DisableEpsv => line.current().disable_epsv = value.toggle(),
+        Opt::Epsv => line.current().disable_epsv = !value.toggle(),
+        Opt::DisableEprt => line.current().disable_eprt = value.toggle(),
+        Opt::Eprt => line.current().disable_eprt = !value.toggle(),
+        Opt::FtpSslCcc => {
+            let op = line.current();
+            op.ftp_ssl_ccc = value.toggle();
+            if op.ftp_ssl_ccc_mode == 0 {
+                op.ftp_ssl_ccc_mode = 1;
+            }
+        }
+        Opt::FtpSslCccMode => {
+            // `ftpcccmethod`.
+            let text = value.text();
+            let mode = if text.eq_ignore_ascii_case(b"passive") {
+                1
+            } else if text.eq_ignore_ascii_case(b"active") {
+                2
+            } else {
+                msgs.warn(&[b"unrecognized ftp CCC method '", text, b"', using default"]);
+                1
+            };
+            let op = line.current();
+            op.ftp_ssl_ccc = true;
+            op.ftp_ssl_ccc_mode = mode;
+        }
+        Opt::FtpAccount => line.current().ftp_account = Some(non_blank(value.text())?),
+        Opt::FtpAlternativeToUser => {
+            line.current().ftp_alternative_to_user = Some(non_blank(value.text())?);
+        }
+        Opt::FtpSkipPasvIp => line.current().ftp_no_skip_ip = !value.toggle(),
+        Opt::FtpMethod => {
+            // `ftpfilemethod`.
+            let text = value.text();
+            line.current().ftp_method = if text.eq_ignore_ascii_case(b"singlecwd") {
+                3
+            } else if text.eq_ignore_ascii_case(b"nocwd") {
+                2
+            } else if text.eq_ignore_ascii_case(b"multicwd") {
+                1
+            } else {
+                msgs.warn(&[b"unrecognized ftp file method '", text, b"', using default"]);
+                1
+            };
+        }
+        Opt::FtpPret => line.current().ftp_pret = value.toggle(),
+        Opt::FtpCreateDirs => line.current().ftp_create_dirs = value.toggle(),
         Opt::SslReqd | Opt::FtpSslReqd => line.current().ssl_reqd = value.toggle(),
         Opt::LoginOptions => line.current().login_options = Some(value.text()),
         Opt::SaslAuthzid => {
@@ -1852,10 +1958,7 @@ pub(crate) fn apply<'a>(
             }
             line.global.libcurl = Some(file);
         }
-        Opt::Append
-        | Opt::CompressedSsh
-        | Opt::DisableEprt
-        | Opt::DisableEpsv
+        Opt::CompressedSsh
         | Opt::DnsInterface
         | Opt::DnsIpv4Addr
         | Opt::DnsIpv6Addr
@@ -1864,32 +1967,17 @@ pub(crate) fn apply<'a>(
         | Opt::DohInsecure
         | Opt::DohUrl
         | Opt::Ech
-        | Opt::Eprt
-        | Opt::Epsv
         | Opt::FalseStart
-        | Opt::FtpAccount
-        | Opt::FtpAlternativeToUser
-        | Opt::FtpCreateDirs
-        | Opt::FtpMethod
-        | Opt::FtpPasv
-        | Opt::FtpPort
-        | Opt::FtpPret
-        | Opt::FtpSkipPasvIp
-        | Opt::FtpSslCcc
-        | Opt::FtpSslCccMode
-        | Opt::FtpSslControl
         | Opt::Hostpubmd5
         | Opt::Hostpubsha256
         | Opt::Knownhosts
         | Opt::Ntlm
         | Opt::ProxyNtlm
         | Opt::Pubkey
-        | Opt::Quote
         | Opt::SslSessions
         | Opt::TelnetOption
         | Opt::TftpBlksize
-        | Opt::TftpNoOptions
-        | Opt::UseAscii => line.not_implemented(spec, "--"),
+        | Opt::TftpNoOptions => line.not_implemented(spec, "--"),
     }
     Ok(Flow::Continue)
 }

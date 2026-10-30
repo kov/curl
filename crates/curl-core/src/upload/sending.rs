@@ -68,6 +68,17 @@ impl Sending {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
+        self.send_to(cx, &mut Lease(lease))
+    }
+
+    /// Send the body on to `out`, as [`send`](Self::send) sends it over
+    /// the transfer's connection: FTP's goes over its data connection,
+    /// shut down once the body is all sent.
+    pub(crate) fn send_to<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        out: &mut dyn Outlet<H>,
+    ) -> Result<ProtoStep, ErrorKind> {
         loop {
             if self.at < self.len || (self.eos && !self.eos_sent) {
                 // The read took no more than the send limit allows: a send
@@ -83,7 +94,7 @@ impl Sending {
                 let (n, failed) = if len == 0 {
                     (0, None)
                 } else {
-                    match lease.get().send(cx, piece) {
+                    match out.put(cx, piece) {
                         Ok(Sent::Bytes(n)) => (n.get(), None),
                         Ok(_) => (0, None),
                         Err(_) => (0, Some(ErrorKind::SendError)),
@@ -114,6 +125,9 @@ impl Sending {
                 continue;
             }
             if self.eos {
+                if !out.shut(cx)? {
+                    return Ok(ProtoStep::Blocked);
+                }
                 // All of it sent (`req_set_upload_done`).
                 if cx.mstate() >= MState::Did {
                     cx.mark(Timer::PostTransfer);
@@ -160,5 +174,26 @@ impl Sending {
                 return Ok(ProtoStep::Blocked);
             }
         }
+    }
+}
+
+/// Where a body goes, and what is done there once it is all sent.
+pub(crate) trait Outlet<H: Host> {
+    /// Send from `bytes` what the connection takes now.
+    fn put(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> std::io::Result<Sent>;
+
+    /// The direction shut down once the body is all sent, if it is to be
+    /// (`Curl_xfer_send_shutdown`): whether that is done.
+    fn shut(&mut self, _: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
+        Ok(true)
+    }
+}
+
+/// The transfer's own connection, which a body is not shut down on.
+struct Lease<'l>(&'l mut ConnLease);
+
+impl<H: Host> Outlet<H> for Lease<'_> {
+    fn put(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> std::io::Result<Sent> {
+        self.0.get().send(cx, bytes)
     }
 }

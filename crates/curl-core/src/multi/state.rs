@@ -779,7 +779,7 @@ impl TransferState {
             | TransferState::DoingMore(x)
             | TransferState::Did(x)
             | TransferState::Exchanging(x)
-            | TransferState::RateLimiting(x) => x.proto.due().map(|at| (TimerKind::Proto, at)),
+            | TransferState::RateLimiting(x) => x.proto.due().map(|at| (x.proto.due_timer(), at)),
             TransferState::Done(d) if d.ending == Ending::Waiting => d
                 .proto
                 .as_ref()
@@ -1294,6 +1294,11 @@ impl TransferState {
                     for s in slot.sockets() {
                         set.add(s, events)?;
                     }
+                    // A second connection, set up beside it, waits for
+                    // what its setup does (`ftp_domore_pollset`).
+                    for (s, events) in slot.side_pollset(Events::NONE) {
+                        set.add(s, events)?;
+                    }
                 }
             }
             TransferState::Done(d) if d.ending == Ending::Waiting => {
@@ -1311,6 +1316,11 @@ impl TransferState {
                 if let Some(slot) = pool.slot_of(&x.lease) {
                     let events = slot.adjust_pollset(x.proto.interest(pause), x.proto.h3_sending());
                     for s in slot.sockets() {
+                        set.add(s, events)?;
+                    }
+                    // The data a second connection moves (`Curl_xfer_setup_recv`
+                    // of `SECONDARYSOCKET`).
+                    for (s, events) in slot.side_pollset(x.proto.side_interest(pause)) {
                         set.add(s, events)?;
                     }
                 }
@@ -2993,6 +3003,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
 /// longer waits, so it is not one: C clears it as the wait ends.
 fn timers_cleared<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
     run.deadlines.clear(TimerKind::Proto);
+    run.deadlines.clear(TimerKind::FtpAccept);
     if run.deadlines.any() {
         run.deadlines.clear_all();
         mstate::trace(cx, format_args!("[TIMEOUT] all cleared"));
@@ -3705,7 +3716,7 @@ fn tunnel_decided<H: Host>(
 }
 
 /// What a drive of a setup is told of the transfer's options.
-fn drive_options<H: Host>(cx: &mut StepCx<'_, H>) -> DriveOptions {
+pub(crate) fn drive_options<H: Host>(cx: &mut StepCx<'_, H>) -> DriveOptions {
     let options = cx.easy().options();
     DriveOptions {
         wildcard: cx.easy().wildcard_resolve,
@@ -4405,7 +4416,11 @@ fn up<H: Host>(
 
 /// Why the setup failed, as C traces it (`cf_tcp_connect`,
 /// `is_connected`).
-fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, e: ConnectError) -> ErrorKind {
+pub(crate) fn connect_failed<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    route: &NetRoute,
+    e: ConnectError,
+) -> ErrorKind {
     // The peer connected to: the first proxy, else what a connect-to
     // names in the origin's place, else the origin
     // (`Curl_conn_get_first_peer`).
@@ -5246,8 +5261,8 @@ fn start_leg<H: Host>(
     // allowed; an HTTP, IMAP, POP3 or SMTP request reads it as it is
     // made, any other URL here.
     let reads_own = match &*scheme {
-        b"http" | b"imap" | b"pop3" | b"smtp" => true,
-        b"https" | b"imaps" | b"pop3s" | b"smtps" => cx.easy().libraries().tls.is_some(),
+        b"ftp" | b"http" | b"imap" | b"pop3" | b"smtp" => true,
+        b"ftps" | b"https" | b"imaps" | b"pop3s" | b"smtps" => cx.easy().libraries().tls.is_some(),
         _ => false,
     };
     if (refused || !reads_own)
@@ -5393,7 +5408,35 @@ fn start_leg<H: Host>(
     }
     let origin = match &proxy {
         Some(p) if p.forward => {
-            if let Err(e) = proto.forward(&url) {
+            // A scheme a proxy takes as HTTP is asked of it in HTTP: the
+            // connection's protocol is the proxy's (`conn->scheme`).
+            let ftp = matches!(proto, ProtoState::Ftp(_));
+            // `;type=` as the application's transfer text option says.
+            let ftp_type = (ftp && cx.easy().options().proxy.transfer_mode).then(|| {
+                if cx.easy().options().line.ftp.ascii {
+                    b'a'
+                } else {
+                    b'i'
+                }
+            });
+            if ftp {
+                // The transfer's first request is this one if its origin
+                // is the first one set, as the scheme's own request would
+                // have been made before it was.
+                let first = run.first.as_deref().filter(|f| !std::ptr::eq(*f, &*origin));
+                let before = Before {
+                    first,
+                    method: run.method,
+                    http: &run.http,
+                };
+                match crate::proto::http::Request::new(&url, false, before, cx)
+                    .and_then(|r| curl_alloc::try_box(r).map_err(|_| ErrorKind::OutOfMemory))
+                {
+                    Ok(http) => proto = ProtoState::Http(http),
+                    Err(e) => return TransferState::Init.fail(e),
+                }
+            }
+            if let Err(e) = proto.forward(&url, ftp_type) {
                 return TransferState::Init.fail(e);
             }
             p.peer.clone()
@@ -5478,16 +5521,39 @@ fn route_cold<H: Host>(
         ),
         _ => None,
     };
+    let ftp = match proto {
+        ProtoState::Ftp(_) => {
+            let ftp = &options.line.ftp;
+            Some(crate::conn::FtpSetup {
+                account: ftp.account.as_deref().map(copy_bytes).transpose()?,
+                alternative_to_user: ftp
+                    .alternative_to_user
+                    .as_deref()
+                    .map(copy_bytes)
+                    .transpose()?,
+                ccc: ftp.ssl_ccc,
+            })
+        }
+        _ => None,
+    };
     let cold = crate::conn::RouteCold {
         local,
         login: proto.take_login(),
         upgrade,
         use_ssl,
+        ftp,
     };
     if cold.is_empty() {
         return Ok(None);
     }
     TryArc::try_new(cold).map(Some)
+}
+
+/// A copy of `bytes`.
+fn copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+    let mut v = Vec::new();
+    v.try_extend_from_slice(bytes)?;
+    Ok(v)
 }
 
 /// Whether HTTP/3 may be spoken over `route`, to an origin `secured` or

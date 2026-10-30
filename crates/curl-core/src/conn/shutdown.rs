@@ -235,12 +235,17 @@ impl Shutting {
 /// its shutdown `finished`, its socket's close, and, `in_multi`, that a
 /// transfer waiting for room may find some.
 fn terminate(
-    conn: Conn,
+    mut conn: Conn,
     finished: bool,
     net: &mut dyn Net,
     trace: Option<&Internal>,
     in_multi: bool,
 ) {
+    // What its protocol has open beside it closes with it: FTP's data
+    // connection, if a transfer left one.
+    if let super::mux::Speaks::Line(line) = &mut conn.session {
+        line.close(net);
+    }
     if let Some(t) = trace {
         let force = if finished { "" } else { "force " };
         let n = conn.number.get();

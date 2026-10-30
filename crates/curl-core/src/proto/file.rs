@@ -478,9 +478,9 @@ impl Request {
 /// Where a download starts and how much of it is asked for, in C's
 /// signed offsets: a start below zero counts back from the end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Span {
-    resume: i64,
-    max: Option<i64>,
+pub(crate) struct Span {
+    pub(crate) resume: i64,
+    pub(crate) max: Option<i64>,
     /// The two numbers as read, 0 for one missing.
     from: i64,
     to: i64,
@@ -568,7 +568,7 @@ fn span(ranged: Option<Ranged<'_>>) -> Result<Option<Span>, ErrorKind> {
 
 /// The span of the range asked for, traced as the debug build traces it;
 /// none, the whole file.
-fn span_of<H: Host>(cx: &mut StepCx<'_, H>) -> Result<Span, ErrorKind> {
+pub(crate) fn span_of<H: Host>(cx: &mut StepCx<'_, H>) -> Result<Span, ErrorKind> {
     let span = span(cx.easy().options().ranged())?;
     #[cfg(feature = "debug-hooks")]
     if let Some(span) = span {

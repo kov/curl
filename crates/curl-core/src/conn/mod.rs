@@ -32,7 +32,7 @@ pub(crate) mod tls;
 pub(crate) use connect::{
     Asked, Came, ConnCx, ConnectError, ConnectMachine, DriveOptions, Drove, Found, Handshook,
     MAX_ATTEMPTS, Made, Opened, Progress, QuicMaking, Reply, SocketSetup, Tunneled, Unresolved,
-    queries,
+    queries, resolve_blocking,
 };
 pub(crate) use connect_to::{BadVia, via};
 pub(crate) use dns::{
@@ -257,7 +257,17 @@ impl Route {
                 (Some(have), Some(want)) => have.same(want),
                 (have, want) => have.is_none() && want.is_none(),
             };
+        // An FTP connection serves only a transfer that would set it up the
+        // same way (`Curl_ftp_conns_match`).
+        let ftp_same = match (have.cold.as_deref(), want.cold.as_deref()) {
+            (_, None) | (None, _) => true,
+            (Some(have_cold), Some(want_cold)) => match (&have_cold.ftp, &want_cold.ftp) {
+                (Some(h), Some(w)) => h.serves(w, have_cold.use_ssl, want_cold.use_ssl),
+                _ => true,
+            },
+        };
         proxy.as_ref().map(ProxyRoute::key) == want_proxy.as_ref().map(ProxyRoute::key)
+            && ftp_same
             // TLS made with every setting the transfer's has, or none on
             // both (`url_match_ssl_config`): a transfer that verifies its
             // peer never takes a connection made without.
@@ -333,6 +343,45 @@ pub(crate) struct RouteCold {
     /// How far the transfer asks for TLS (`CURLOPT_USE_SSL`): a transfer
     /// that requires it never reuses a connection not over it.
     pub(crate) use_ssl: crate::options::UseSsl,
+    /// What an FTP connection logged in and set up with, which a
+    /// transfer reusing it must share (`Curl_ftp_conns_match`); none for
+    /// another scheme's.
+    pub(crate) ftp: Option<FtpSetup>,
+}
+
+/// What an FTP connection logged in and set up with, beyond its
+/// credentials.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct FtpSetup {
+    /// The account it gave (`CURLOPT_FTP_ACCOUNT`).
+    pub(crate) account: Option<Vec<u8>>,
+    /// The command sent in place of a refused `USER`
+    /// (`CURLOPT_FTP_ALTERNATIVE_TO_USER`).
+    pub(crate) alternative_to_user: Option<Vec<u8>>,
+    /// Whether, and how, its commands went back to the clear
+    /// (`CURLOPT_FTP_SSL_CCC`).
+    pub(crate) ccc: crate::options::Ccc,
+}
+
+impl FtpSetup {
+    /// Whether a connection set up as `self` serves a transfer that
+    /// would set one up as `want`, the first asking for TLS as `have_ssl`
+    /// and the other as `want_ssl` (`Curl_ftp_conns_match`): the same
+    /// account, alternative and CCC; a transfer that only tries TLS takes
+    /// one that asked for any, else the asking must be the same.
+    pub(crate) fn serves(
+        &self,
+        want: &FtpSetup,
+        have_ssl: crate::options::UseSsl,
+        want_ssl: crate::options::UseSsl,
+    ) -> bool {
+        use crate::options::UseSsl;
+        self == want
+            && match want_ssl {
+                UseSsl::Try => have_ssl != UseSsl::None,
+                _ => want_ssl == have_ssl,
+            }
+    }
 }
 
 impl RouteCold {
@@ -342,6 +391,7 @@ impl RouteCold {
             && self.login.is_none()
             && self.upgrade.is_none()
             && self.use_ssl == crate::options::UseSsl::None
+            && self.ftp.is_none()
     }
 }
 
@@ -1192,6 +1242,25 @@ impl Conn {
         self.number
     }
 
+    /// The address connected to; none without a network.
+    pub(crate) fn remote(&self) -> Option<&io::Remote> {
+        self.remote.as_ref()
+    }
+
+    /// Its stream and the address it reached, for a connection made as a
+    /// protocol's second, which no pool holds (FTP's data connection,
+    /// `SECONDARYSOCKET`): nothing else of it needs closing.
+    pub(crate) fn into_stream(self) -> (Stream, Option<io::Remote>) {
+        let Transport::Stream(stream) = self.transport else {
+            panic!("a second connection is a stream");
+        };
+        assert!(
+            matches!(self.session, mux::Speaks::Unmade),
+            "a second connection speaks nothing of its own"
+        );
+        (stream, self.remote)
+    }
+
     /// The route it was set up over; none without a network.
     pub(crate) fn tcp_route(&self) -> Option<&NetRoute> {
         match &self.route {
@@ -1394,6 +1463,14 @@ impl Conn {
             ));
         }
         line.goodbye(cx, carrier, dead);
+    }
+
+    /// The state its protocol keeps on it, if one does.
+    pub(crate) fn line(&self) -> Option<&line::LineConn> {
+        match &self.session {
+            mux::Speaks::Line(line) => Some(line),
+            _ => None,
+        }
     }
 
     /// A protocol keeps its state on it.
@@ -2144,6 +2221,7 @@ mod tests {
                         login: None,
                         upgrade: None,
                         use_ssl: crate::options::UseSsl::None,
+                        ftp: None,
                     })
                     .unwrap()
                 }),

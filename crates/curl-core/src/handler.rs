@@ -219,7 +219,8 @@ pub trait SocketOpener: Send + Sync {
 }
 
 /// Told of each socket a transfer opens, once the library has set it and
-/// before it connects (`CURLOPT_SOCKOPTFUNCTION`).
+/// before it connects, and of each it accepts from a server
+/// (`CURLOPT_SOCKOPTFUNCTION`).
 pub trait SocketConfigurer: Send + Sync {
     fn configure(&self, cx: &mut TransferCx<'_>, socket: SocketToSet<'_>) -> Configured;
 }
@@ -248,16 +249,32 @@ pub trait ResolveStartHandler: Send + Sync {
 /// A socket as a `SocketConfigurer` is given it: its number, and the
 /// options it may set.
 #[derive(Clone, Copy)]
-pub struct SocketToSet<'a>(pub(crate) &'a dyn Socket);
+pub struct SocketToSet<'a>(pub(crate) &'a dyn Socket, pub(crate) SocketPurpose);
 
 impl SocketToSet<'_> {
     pub fn key(&self) -> SocketKey {
         self.0.key()
     }
 
+    /// What the socket is for.
+    pub fn purpose(&self) -> SocketPurpose {
+        self.1
+    }
+
     pub fn set(&self, option: SocketOption) -> io::Result<()> {
         self.0.set(option)
     }
+}
+
+/// What a socket a `SocketConfigurer` is told of is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SocketPurpose {
+    /// One the transfer connects (`CURLSOCKTYPE_IPCXN`).
+    Connect,
+    /// One the server connected to the port FTP offered it, just
+    /// accepted (`CURLSOCKTYPE_ACCEPT`); what is answered of it beyond an
+    /// abort changes nothing.
+    Accept,
 }
 
 /// What a `SocketConfigurer` made of a socket.

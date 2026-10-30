@@ -189,6 +189,19 @@ pub trait Socket: fmt::Debug + Send {
         Err(io::ErrorKind::Unsupported.into())
     }
 
+    /// Listen on it, bound, for one connection to wait at most, as FTP's
+    /// active data connection does (`listen`); a socket of another kind
+    /// cannot.
+    fn listen(&self) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// The connection waiting on it, listening, accepted as a nonblocking
+    /// socket; none if none waits (`accept4`).
+    fn accept(&self) -> io::Result<Option<Box<dyn Socket>>> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     /// Let go of the descriptor without closing it, for the application's
     /// closer to close: its number.
     fn release(self: Box<Self>) -> SocketKey;
@@ -539,6 +552,18 @@ impl Socket for curl_os::net::TcpSocket {
 
     fn send(&self, buf: &[u8]) -> io::Result<Sent> {
         curl_os::net::TcpSocket::send(self, buf)
+    }
+
+    fn listen(&self) -> io::Result<()> {
+        curl_os::net::TcpSocket::listen(self, 1)
+    }
+
+    fn accept(&self) -> io::Result<Option<Box<dyn Socket>>> {
+        let oom = |_| io::Error::from(io::ErrorKind::OutOfMemory);
+        match curl_os::net::TcpSocket::accept(self)? {
+            Some(s) => Ok(Some(try_box(s).map_err(oom)? as Box<dyn Socket>)),
+            None => Ok(None),
+        }
     }
 
     fn release(self: Box<Self>) -> SocketKey {

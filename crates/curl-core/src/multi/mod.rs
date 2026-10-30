@@ -9,7 +9,7 @@
 
 #[cfg(debug_assertions)]
 mod check;
-mod cx;
+pub(crate) mod cx;
 pub(crate) mod mstate;
 mod notify;
 pub(crate) mod push;
@@ -1240,7 +1240,10 @@ impl<H: Host> Multi<H> {
             Some((kind, at)) => {
                 run.deadlines.arm_in(kind, now, at.since(now));
             }
-            None => run.deadlines.clear(TimerKind::Proto),
+            None => {
+                run.deadlines.clear(TimerKind::Proto);
+                run.deadlines.clear(TimerKind::FtpAccept);
+            }
         }
         // A line protocol's, as the step last drove its back and forth.
         if let Some(at) = cx.server_response_at.take() {

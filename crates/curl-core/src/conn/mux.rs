@@ -158,6 +158,23 @@ pub(super) enum Over<'a> {
     Datagrams(&'a mut Datagrams),
 }
 
+impl<'a> Carrier<'a> {
+    /// What a stream no connection holds carries, its socket's sends and
+    /// receives traced as `socket`'s, its end marked in `close`: FTP's
+    /// data connection.
+    pub(crate) fn over(
+        stream: &'a mut Stream,
+        socket: Component,
+        close: &'a mut bool,
+    ) -> Carrier<'a> {
+        Carrier {
+            over: Over::Stream(stream),
+            socket,
+            close,
+        }
+    }
+}
+
 impl Carrier<'_> {
     /// The stream's layers over its socket, which a QUIC connection
     /// layered over a tunnel sends its datagrams through, or the datagram

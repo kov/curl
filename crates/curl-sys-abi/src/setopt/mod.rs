@@ -31,6 +31,7 @@ use curl_core::options::{
     Resume, ReuseLimits, Schemes, Sockets, TimeCondition, UpkeepInterval, UploadBufferSize,
     UploadFlags, UseSsl, UserHeaders,
 };
+use curl_core::options::{Ccc, CreateDirs, FtpMethod, SslAuth};
 use curl_core::time::TimeLimit;
 
 use crate::callbacks::{self, CCallbacks, CSettings, PostFields};
@@ -406,6 +407,16 @@ fn ssl_version(
 fn time_limit(n: c_long, ms: u64) -> Result<Option<TimeLimit>, Refused> {
     let n = u64::try_from(n).map_err(|_| Refused::Bad)?;
     Ok(TimeLimit::from_millis(n.saturating_mul(ms)))
+}
+
+/// The list of FTP commands `option` sets: those before the transfer,
+/// after it, or just before its data.
+fn quote_list(line: &mut curl_core::options::Line, option: CURLoption) -> &mut Lines {
+    match option {
+        ffi::CURLOPT_QUOTE => &mut line.quote,
+        ffi::CURLOPT_POSTQUOTE => &mut line.postquote,
+        _ => &mut line.prequote,
+    }
 }
 
 /// A resume offset: -1 is the end, below is refused.
@@ -1097,6 +1108,9 @@ fn apply(
         (ffi::CURLOPT_SUPPRESS_CONNECT_HEADERS, Long(n)) => {
             options.proxy.make_mut()?.suppress_connect_headers = n != 0;
         }
+        (ffi::CURLOPT_PROXY_TRANSFER_MODE, Long(n)) => {
+            options.proxy.make_mut()?.transfer_mode = n != 0;
+        }
         (ffi::CURLOPT_NETRC_FILE, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             let value = unsafe { owned(p) }?;
@@ -1151,6 +1165,78 @@ fn apply(
         }
         (ffi::CURLOPT_SASL_IR, Long(n)) => options.line.make_mut()?.sasl_ir = n != 0,
         (ffi::CURLOPT_DIRLISTONLY, Long(n)) => options.line.make_mut()?.list_only = n != 0,
+        (ffi::CURLOPT_APPEND, Long(n)) => options.line.make_mut()?.ftp.append = n != 0,
+        (ffi::CURLOPT_TRANSFERTEXT, Long(n)) => options.line.make_mut()?.ftp.ascii = n != 0,
+        (ffi::CURLOPT_FTP_USE_EPRT, Long(n)) => options.line.make_mut()?.ftp.use_eprt = n != 0,
+        (ffi::CURLOPT_FTP_USE_EPSV, Long(n)) => options.line.make_mut()?.ftp.use_epsv = n != 0,
+        (ffi::CURLOPT_FTP_USE_PRET, Long(n)) => options.line.make_mut()?.ftp.use_pret = n != 0,
+        (ffi::CURLOPT_FTP_SKIP_PASV_IP, Long(n)) => {
+            options.line.make_mut()?.ftp.skip_pasv_ip = n != 0;
+        }
+        (ffi::CURLOPT_FTP_FILEMETHOD, Long(n)) => {
+            options.line.make_mut()?.ftp.method = match n {
+                0 | 1 => FtpMethod::MultiCwd,
+                2 => FtpMethod::NoCwd,
+                3 => FtpMethod::SingleCwd,
+                _ => return Err(Refused::Bad),
+            };
+        }
+        (ffi::CURLOPT_FTP_SSL_CCC, Long(n)) => {
+            options.line.make_mut()?.ftp.ssl_ccc = match n {
+                0 => Ccc::None,
+                1 => Ccc::Passive,
+                2 => Ccc::Active,
+                _ => return Err(Refused::Bad),
+            };
+        }
+        (ffi::CURLOPT_FTPSSLAUTH, Long(n)) => {
+            options.line.make_mut()?.ftp.ssl_auth = match n {
+                0 => SslAuth::Default,
+                1 => SslAuth::Ssl,
+                2 => SslAuth::Tls,
+                _ => return Err(Refused::Bad),
+            };
+        }
+        (ffi::CURLOPT_ACCEPTTIMEOUT_MS, Long(n)) => {
+            let limit = time_limit(n, 1)?;
+            options.line.make_mut()?.ftp.accept_timeout = limit;
+        }
+        (ffi::CURLOPT_FTP_CREATE_MISSING_DIRS, Long(n)) => {
+            options.line.make_mut()?.ftp.create_dirs = match n {
+                0 => CreateDirs::No,
+                1 => CreateDirs::Create,
+                2 => CreateDirs::Retry,
+                _ => return Err(Refused::Bad),
+            };
+        }
+        (ffi::CURLOPT_FTPPORT, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let value = unsafe { owned(p) }?;
+            options.line.set(|g| &mut g.ftp.port, value)?;
+        }
+        (ffi::CURLOPT_FTP_ACCOUNT, Ptr(p)) => {
+            // SAFETY: as above.
+            let value = unsafe { owned(p) }?;
+            options.line.set(|g| &mut g.ftp.account, value)?;
+        }
+        (ffi::CURLOPT_FTP_ALTERNATIVE_TO_USER, Ptr(p)) => {
+            // SAFETY: as above.
+            let value = unsafe { owned(p) }?;
+            options
+                .line
+                .set(|g| &mut g.ftp.alternative_to_user, value)?;
+        }
+        // The application's lists, walked as each transfer sends them.
+        (ffi::CURLOPT_QUOTE | ffi::CURLOPT_POSTQUOTE | ffi::CURLOPT_PREQUOTE, Ptr(p)) => {
+            match slist(p)? {
+                Some(source) => quote_list(options.line.make_mut()?, option).set_source(source)?,
+                None => {
+                    if let Some(line) = options.line.made_mut() {
+                        quote_list(line, option).set([])?;
+                    }
+                }
+            }
+        }
         (ffi::CURLOPT_UPLOAD_FLAGS, Long(n)) => {
             options.line.make_mut()?.upload_flags = upload_flags(n);
         }
@@ -1980,7 +2066,7 @@ mod tests {
             &b"goobar"[..],
             b"http ",
             b" http",
-            b"ftps",
+            b"tftp",
             b"http,all",
             b"http,ft",
         ] {

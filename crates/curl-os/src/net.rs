@@ -730,6 +730,41 @@ impl TcpSocket {
         self.0.shutdown(Shutdown::Write)
     }
 
+    /// Listen on it, bound, for `backlog` connections at most waiting
+    /// (`listen`).
+    pub fn listen(&self, backlog: i32) -> io::Result<()> {
+        // SAFETY: `listen` takes no pointers; the socket is open.
+        checked(unsafe { libc::listen(self.fd().as_raw_fd(), backlog) })?;
+        Ok(())
+    }
+
+    /// The connection waiting on it, listening, accepted as a
+    /// nonblocking, close-on-exec socket; none if none waits
+    /// (`accept4`).
+    pub fn accept(&self) -> io::Result<Option<TcpSocket>> {
+        // SAFETY: a null address and length ask for no peer address;
+        // the socket is open.
+        let fd = unsafe {
+            libc::accept4(
+                self.fd().as_raw_fd(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::WouldBlock {
+                return Ok(None);
+            }
+            return Err(e);
+        }
+        // SAFETY: `fd` was just accepted and is owned by nothing else.
+        Ok(Some(TcpSocket(TcpStream::from(unsafe {
+            OwnedFd::from_raw_fd(fd)
+        }))))
+    }
+
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.0.local_addr()
     }

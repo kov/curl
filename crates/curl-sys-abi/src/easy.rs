@@ -106,6 +106,7 @@ pub(crate) enum PostBody {
 pub(crate) struct StringInfos {
     pub(crate) effective_url: Vec<u8>,
     pub(crate) content_type: Vec<u8>,
+    pub(crate) ftp_entry_path: Vec<u8>,
     pub(crate) redirect_url: Vec<u8>,
     pub(crate) method: Vec<u8>,
     pub(crate) referer: Vec<u8>,

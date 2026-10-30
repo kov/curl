@@ -66,6 +66,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-os/src/env.rs`: reading the environment, its values copied fallibly.
 - `crates/curl-os/src/error.rs`: the text of an operating-system error, `strerror_r` into a
   buffer on the stack.
+- `crates/curl-os/src/fnmatch.rs`: matching a name against a shell pattern, the system's
+  `fnmatch`.
 - `crates/curl-os/src/fs.rs`: opening and closing files, a file's status, removing, renaming
   and setting the times of files by name, resolving a name to its absolute path, making and
   listing directories, reading standard input unbuffered, making a file's reads nonblocking,

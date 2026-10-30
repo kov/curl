@@ -1,6 +1,7 @@
 //! The operating-system interfaces the rest of the code reaches through
 //! safe functions: the process's command line and environment, the
-//! terminal, an error's text, the locale, the local time of day, the user database,
+//! terminal, an error's text, matching a name against a pattern, the
+//! locale, the local time of day, the user database,
 //! random bytes, with `net` sockets, polling, the system's resolver and
 //! the waker, and with `fs` files, their extended attributes and
 //! directories. Linux first; each module says what it needs of the
@@ -10,6 +11,7 @@
 pub mod args;
 pub mod env;
 pub mod error;
+pub mod fnmatch;
 #[cfg(feature = "fs")]
 pub mod fs;
 pub mod locale;

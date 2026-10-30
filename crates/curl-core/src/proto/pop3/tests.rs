@@ -579,6 +579,34 @@ mod over_the_wire {
         assert_eq!(sent, b"CAPA\r\nAUTH PLAIN Ym9zcwB1AHA=\r\nRETR 1\r\n");
     }
 
+    /// A message id or a command that does not decode fails the request
+    /// in DO, after the login, as C reads them in `pop3_do`; the
+    /// connection closes with its QUIT.
+    #[test]
+    fn what_does_not_decode_fails_after_the_login() {
+        let replies: [&[u8]; 5] = [GREETING, CAPA_USER, OK, OK, OK];
+        let undecoded: [(&str, Option<&[u8]>); 3] = [
+            ("pop3://u:p@127.0.0.1:PORT/%00", None),
+            ("pop3://u:p@127.0.0.1:PORT/1%0a", None),
+            (URL, Some(b"LIST%00")),
+        ];
+        for (url, custom) in undecoded {
+            let talk = Conversation::replies(&replies, false).greeting();
+            let mut m = serving(&[&talk]);
+            let url = url.replace("PORT", &PORT.to_string());
+            let ran = transfer(&mut m, &plain(), &url, |o| {
+                o.http.custom.make_mut().unwrap().method = custom.map(<[u8]>::to_vec);
+            });
+            assert_eq!(ran.result, Err(ErrorKind::UrlMalformat), "{url}");
+            drop(m);
+            assert_eq!(
+                talk.received(),
+                b"CAPA\r\nUSER u\r\nPASS p\r\nQUIT\r\n",
+                "{url} {custom:?}"
+            );
+        }
+    }
+
     /// A mechanism cancelled with nothing to fall back on fails the
     /// login.
     #[test]

@@ -239,9 +239,12 @@ pub(crate) struct Request {
     peer: Peer,
     /// The transfer's credentials, until its route takes them.
     credentials: Option<Credentials>,
-    /// The URL's message id, decoded.
+    /// The URL's path, encoded: read in DO.
+    path: Vec<u8>,
+    /// The URL's message id, decoded in DO.
     id: Vec<u8>,
-    /// The application's command, decoded (`CURLOPT_CUSTOMREQUEST`).
+    /// The application's command, decoded in DO
+    /// (`CURLOPT_CUSTOMREQUEST`).
     custom: Option<Vec<u8>>,
     /// The URL's login options, decoded (`state.up.options`).
     url_options: Option<Vec<u8>>,
@@ -271,9 +274,7 @@ type Step = Result<(), ErrorKind>;
 impl Request {
     /// A transfer of `url`, `pop3s` if `secured`: its peer, the
     /// credentials its URL and the application give, a `.netrc`'s if
-    /// asked for, and its message id and command, each decoded
-    /// (`pop3_setup_connection`, `pop3_parse_url_path`,
-    /// `pop3_parse_custom_request`).
+    /// asked for, and its path (`pop3_setup_connection`).
     pub(crate) fn new<H: Host>(
         url: &Url,
         secured: bool,
@@ -316,17 +317,6 @@ impl Request {
             ..GetOptions::NONE
         };
         let path = url.get(Part::Path, encoded).map_err(url_error)?;
-        let id = decode_but_control(path.strip_prefix(b"/").unwrap_or(&path))
-            .map_err(url_error)?
-            .ok_or(ErrorKind::UrlMalformat)?;
-        let custom = match cx.easy().options().http.custom.method.as_deref() {
-            None => None,
-            Some(custom) => Some(
-                decode_but_control(custom)
-                    .map_err(url_error)?
-                    .ok_or(ErrorKind::UrlMalformat)?,
-            ),
-        };
         let decoded = GetOptions {
             url_decode: true,
             ..GetOptions::NONE
@@ -340,8 +330,9 @@ impl Request {
             pipeline: Pipeline::new(Reach::Network),
             peer,
             credentials,
-            id,
-            custom,
+            path,
+            id: Vec::new(),
+            custom: None,
             url_options,
             body: true,
             no_body: cx.easy().options().method == crate::options::Method::Head,
@@ -986,6 +977,25 @@ impl Request {
         }
     }
 
+    /// Read the URL's message id and the application's command, a
+    /// failure to decode either failing the request after the login
+    /// (`pop3_do`'s `pop3_parse_url_path` and
+    /// `pop3_parse_custom_request`).
+    fn read_asked<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Step {
+        self.id = decode_but_control(self.path.strip_prefix(b"/").unwrap_or(&self.path))
+            .map_err(url_error)?
+            .ok_or(ErrorKind::UrlMalformat)?;
+        self.custom = match cx.easy().options().http.custom.method.as_deref() {
+            None => None,
+            Some(custom) => Some(
+                decode_but_control(custom)
+                    .map_err(url_error)?
+                    .ok_or(ErrorKind::UrlMalformat)?,
+            ),
+        };
+        Ok(())
+    }
+
     /// Send the transfer's command (`pop3_perform_command`): `LIST`
     /// without a message id or for a list only, `RETR` with one, or the
     /// application's; its answer has a body if the command's has lines.
@@ -1267,6 +1277,7 @@ impl super::Phases for Request {
     ) -> Result<DoStep, ErrorKind> {
         match asked {
             DoPhase::Do => {
+                self.read_asked(cx)?;
                 // The progress counts from nothing (`pop3_regular_transfer`).
                 crate::progress::reset(cx);
                 trace::debug_info(cx, format_args!("DO phase starts"));

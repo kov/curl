@@ -1840,6 +1840,18 @@ mod tests {
             assert_eq!(upload_flags(n).bits(), bits, "{n:#x}");
         }
         assert_eq!(upload_flags(16), UploadFlags::SEEN);
+        let c = crate::easy::curl_easy_init();
+        // SAFETY: a live handle, and a `long` option.
+        let set = unsafe { curl_easy_setopt(c, ffi::CURLOPT_UPLOAD_FLAGS, 0x105 as c_long) };
+        assert_eq!(set, ffi::CURLE_OK);
+        // SAFETY: a live handle.
+        let easy = unsafe { crate::easy::handle(c) }.expect("live");
+        let flags = easy
+            .with_options(|o| o.line.upload_flags)
+            .expect("reachable");
+        assert_eq!(flags.bits(), 5);
+        // SAFETY: a live handle, not used again.
+        unsafe { crate::easy::curl_easy_cleanup(c) };
     }
 
     /// Negotiate's bit is a method only where the build claims SPNEGO;

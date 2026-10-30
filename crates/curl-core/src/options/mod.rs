@@ -2845,4 +2845,20 @@ mod tests {
         );
         assert_eq!(ContinueWait::clamped(500).get(), Duration::from_millis(500));
     }
+
+    /// Flags are added and taken away as bits: a flag added twice is
+    /// there once, and taking away one that is not there leaves the rest.
+    #[test]
+    fn upload_flags_add_and_take_away_as_bits() {
+        let seen = UploadFlags::SEEN;
+        assert_eq!(seen.or(seen), seen);
+        assert_eq!(seen.or(UploadFlags::DRAFT).bits(), 0x14);
+        assert_eq!(
+            seen.or(UploadFlags::DRAFT).without(seen),
+            UploadFlags::DRAFT
+        );
+        assert_eq!(seen.without(UploadFlags::DRAFT), seen);
+        assert_eq!(UploadFlags::default().bits(), 0x10);
+        assert!(seen.or(UploadFlags::DELETED).contains(UploadFlags::DELETED));
+    }
 }

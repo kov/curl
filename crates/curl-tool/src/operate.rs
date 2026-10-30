@@ -4196,6 +4196,12 @@ mod tests {
                 assert!(!text.contains(&unwanted), "{args:?} has {unwanted}\n{text}");
             }
         }
+        // The flags set are the handle's, not only the program's.
+        let (_, options) = set_up(&["--upload-flags", "answered"]).unwrap();
+        assert!(
+            options.contains("upload_flags: UploadFlags(17)"),
+            "{options}"
+        );
         // For HTTPS, a proxy keeps them without being told to tunnel.
         let (text, _) = set_up_url(&["-x", "http://p:3"], "https://h/").unwrap();
         assert!(text.contains(&headeropt), "{text}");

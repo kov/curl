@@ -170,7 +170,11 @@ fn raw(
                 rx.consume(n);
                 Ok(RawIo::Bytes(n))
             }
-            Ok(Recv::Eof) => Ok(RawIo::Bytes(0)),
+            Ok(Recv::Eof) => {
+                // Closed by the peer: not reused.
+                conn.mark_close();
+                Ok(RawIo::Bytes(0))
+            }
             Ok(Recv::WouldBlock) => Ok(RawIo::WouldBlock),
             Err(RecvFailed::OutOfMemory) => Err(ErrorKind::OutOfMemory),
             Err(RecvFailed::Os(_)) => Err(ErrorKind::RecvError),

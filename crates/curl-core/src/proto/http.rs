@@ -2149,6 +2149,8 @@ impl Request {
                 Ok(Recv::WouldBlock) if lease.get().data_pending() => return Ok(Read::Stopped),
                 Ok(Recv::WouldBlock) => return Ok(Read::Waits),
                 Ok(Recv::Eof) => {
+                    // Closed by the server: not reused (`multi_done`).
+                    lease.get().mark_close();
                     trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
                     // The connection's end stops the sending too
                     // (`Curl_req_stop_send_recv`).

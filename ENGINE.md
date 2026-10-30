@@ -1384,8 +1384,11 @@ One `Stream` type, owned by the setup's `Dialed` stage and then by the `Conn` it
 one read path: `recv(cx, max)` fills `rx` through the layers (`RecvBuf::fill`, where a read that
 reports more than the room it had is an error from the socket, `InvalidData`, not an assertion),
 `send` writes through them; `Conn::recv` adds that bytes received and not used, which only a
-handshake's read past its answer leaves (D11), are given first without asking the socket, and
-that the end of input marks the connection `close`. A connection that multiplexes (§4.4) is
+handshake's read past its answer leaves (D11), are given first without asking the socket. The
+end of input marks the connection `close` only where its protocol closes there, as HTTP's read
+and a line protocol's command do; a POP3 or IMAP body the server ends by closing leaves it to
+go back to the pool, "left intact", for the next transfer's health check to find dead, as C
+does. A connection that multiplexes (§4.4) is
 leased by several transfers at once: `Use::Leased(n)` counts them, one more for each that joins
 it and each pushed transfer. `Stream` does not rule out a second stream on one `Conn`, which
 FTP's data connection needs.
@@ -1701,10 +1704,12 @@ traces `sendrecv_dl() no EAGAIN/pending data, mark as dirty`; if the input is st
 the exchange goes to wait for more, C's pollset traces `pollset[] has POLLIN, but there is still
 buffered input -> mark as dirty` (`multi_adjust_pollset`), which the step's end traces and
 makes, as C's does: a step whose read found nothing can still leave input held, taken in by its
-sends, as an HTTP/3 proxy's connection takes the tunnel's bytes in with its packets. The pool's health check asks `is_alive` down the chain, as
-`Curl_conn_is_alive` does (cf-socket.c:1811–1846, conncache.c:1041–1068), the socket at the
-bottom polled at once: an error or a hang-up is dead, anything to read is input pending, and
-input pending on an idle HTTP/1 connection makes it unhealthy (1701).
+sends, as an HTTP/3 proxy's connection takes the tunnel's bytes in with its packets. The pool's health
+check asks `is_alive` down the chain, as `Curl_conn_is_alive` does (cf-socket.c:1811–1846,
+conncache.c:1041–1068), the socket at the bottom polled at once: an error or a hang-up is dead,
+anything to read is input pending, and input pending on an idle connection that does not
+multiplex makes it unhealthy (1701), said first as C's debug build says it (`connection has no
+transfer but input, not healthy`).
 
 `LayerCx` is an argument, never stored, which removes C's `CF_DATA_SAVE/RESTORE` and its
 dangling-easy class. Inside a step it is the transfer's (`ConnCx`, §4.7, extends it); a pool

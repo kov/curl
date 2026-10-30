@@ -504,6 +504,10 @@ pub(crate) enum PoolNote {
     IdleTooLong { idle_ms: u64, max_ms: u64 },
     /// A match not healthy (`url_match_conn`).
     Dead(ConnNumber),
+    /// A match not multiplexed, alive but with input waiting, which it
+    /// should not have with no transfer on it: said as C's debug build
+    /// says it, before it is found dead (`Curl_cpool_conn_seems_healthy`).
+    InputPending,
     /// A connection that multiplexes, and serves the transfer, has as many
     /// on it as the multi lets it, or as its server takes if `peer`
     /// (`url_match_multiplex_limits`).
@@ -2205,6 +2209,9 @@ fn alive(conn: &mut Conn, now: Instant) -> Result<(), Option<PoolNote>> {
         Alive::Alive {
             input_pending: false,
         } => Ok(()),
+        Alive::Alive {
+            input_pending: true,
+        } if !conn.multiplexes() => Err(Some(PoolNote::InputPending)),
         Alive::Alive {
             input_pending: true,
         }

@@ -143,7 +143,8 @@ impl<'a> Part<Carrier<'a>> for Session {
 
 /// What a session works over: the connection's stream or its datagram
 /// socket, the socket's sends and receives traced as `socket`'s, and the
-/// connection's mark to close, which the stream's end sets.
+/// connection's mark to close, which a protocol sets at the stream's end
+/// if it closes there.
 pub(crate) struct Carrier<'a> {
     pub(super) over: Over<'a>,
     pub(super) socket: Component,
@@ -219,12 +220,13 @@ impl Carrier<'_> {
         if let Some(n) = std::num::NonZeroUsize::new(stream.received().len()) {
             return Ok(Recv::Data(n));
         }
-        let got = stream.recv(cx, max, Some(socket));
-        if let Ok(Recv::Eof) = got {
-            // Shut down by the server, not reused (`multi_done`).
-            *self.close = true;
-        }
-        got
+        stream.recv(cx, max, Some(socket))
+    }
+
+    /// The connection is not to be reused: its server closed it under a
+    /// protocol that closes on its end, as HTTP does.
+    pub(crate) fn mark_close(&mut self) {
+        *self.close = true;
     }
 
     /// Send from `bytes`, which is not empty, what the network takes now.

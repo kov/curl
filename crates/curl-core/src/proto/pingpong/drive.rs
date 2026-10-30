@@ -140,6 +140,8 @@ fn recv<H: Host>(
     match carrier.recv(cx, READ_SIZE) {
         Ok(Recv::WouldBlock) => Ok(None),
         Ok(Recv::Eof) => {
+            // Closed by the server under a command: not reused.
+            carrier.mark_close();
             let e = pp
                 .push(&[])
                 .expect_err("an empty read is the server closing");

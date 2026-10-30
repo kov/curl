@@ -9,13 +9,13 @@ witness: curl-core proto::http::tests::a_body_is_read_no_further_than_its_size
                 usize::try_from(left).map_or(buffer, |_| buffer)
 
 === a connection its peer closed is kept
-file: crates/curl-core/src/conn/mux.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::responses_end_as_c_ends_them
 --- old
-            // Shut down by the server, not reused (`multi_done`).
-            *self.close = true;
+                    // Closed by the server: not reused (`multi_done`).
+                    lease.get().mark_close();
 --- new
-            // Shut down by the server, not reused (`multi_done`).
+                    // Closed by the server: not reused (`multi_done`).
 
 === a held line is dropped at the end
 file: crates/curl-core/src/proto/http.rs

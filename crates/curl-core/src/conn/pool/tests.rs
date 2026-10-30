@@ -955,7 +955,8 @@ fn a_search_closes_what_it_must_not_reuse() {
         clock.now(),
     );
     // Hung up while idle: found dead by the next search, which does not
-    // prune within a second of the last.
+    // prune within a second of the last, the input its end makes said
+    // first, as C's debug build says it.
     net.hang_up(keys[0]);
     net.hang_up(keys[1]);
     clock.advance(Duration::from_millis(10));
@@ -964,8 +965,10 @@ fn a_search_closes_what_it_must_not_reuse() {
     assert_eq!(
         notes,
         [
+            PoolNote::InputPending,
             PoolNote::Dead(ConnNumber(0)),
             PoolNote::Closed(ConnNumber(0)),
+            PoolNote::InputPending,
             PoolNote::Dead(ConnNumber(1)),
             PoolNote::Closed(ConnNumber(1)),
         ]
@@ -1444,6 +1447,9 @@ fn a_connection_moves_bytes_both_ways() {
         Recv::Eof
     ));
     assert_eq!(conn.rx_mut().filled(), b"", "the end adds nothing");
+    // The end marks nothing: the protocol that closes there does.
+    assert!(!conn.close);
+    conn.mark_close();
     pool.release(
         &Home::Multi,
         lease,

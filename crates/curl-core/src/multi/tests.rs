@@ -4085,14 +4085,27 @@ fn connections_are_numbered_in_their_traces() {
         ]
     );
     // Both hang up while idle; the next search, within the second of the
-    // last prune, finds each dead.
+    // last prune, finds each dead, its end the input C's debug build says
+    // an idle connection should not have.
     net.lock().unwrap().hang_up(SocketKey::new(1000));
     net.lock().unwrap().hang_up(SocketKey::new(1001));
     let (c, c_lines) = traced(url);
     m.add(Box::new(c), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
+    let input = "connection has no transfer but input, not healthy\n";
+    let said = trace_of(&c_lines);
+    let said: Vec<_> = if cfg!(feature = "debug-hooks") {
+        assert_eq!([&said[0], &said[3]], [input, input]);
+        said.into_iter()
+            .enumerate()
+            .filter(|(i, _)| *i != 0 && *i != 3)
+            .map(|(_, l)| l)
+            .collect()
+    } else {
+        said
+    };
     assert_eq!(
-        trace_of(&c_lines)[..6],
+        said[..6],
         [
             "Connection 0 seems to be dead, terminating\n",
             "shutting down connection #0\n",

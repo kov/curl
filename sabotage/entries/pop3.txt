@@ -309,3 +309,17 @@ features: test-util
         let credentials = super::request_credentials(cx, gate.trusted(), url, takes)?;
 --- new
         let credentials = super::request_credentials(cx, Some(crate::auth::creds::Trusted::own_url()), url, takes)?;
+
+=== the connection's end marks every protocol's connection for closing
+file: crates/curl-core/src/conn/mux.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_body_ended_by_closing_leaves_the_connection_to_the_pool
+--- old
+        stream.recv(cx, max, Some(socket))
+    }
+--- new
+        let got = stream.recv(cx, max, Some(socket));
+        if let Ok(Recv::Eof) = got {
+            *self.close = true;
+        }
+        got
+    }

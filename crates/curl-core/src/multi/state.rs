@@ -6184,6 +6184,10 @@ fn acquire<H: Host>(
                     format_args!("Connection {n} seems to be dead, terminating"),
                 );
             }
+            PoolNote::InputPending => trace::debug_info(
+                cx,
+                format_args!("connection has no transfer but input, not healthy"),
+            ),
             PoolNote::Closed(n) => trace::info(cx, format_args!("shutting down connection {n}")),
             PoolNote::Unwanted { .. } => unreachable!("said as the search returns"),
             // The server's limit is said with no space before "reached",

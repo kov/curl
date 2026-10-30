@@ -1002,6 +1002,37 @@ mod over_the_wire {
         );
     }
 
+    /// A body the server ends by closing, no dot after it, ends the
+    /// transfer well, and its connection goes back to the pool: C marks
+    /// nothing at the end of input, so it says "left intact", and the
+    /// next transfer's health check finds the connection dead and shuts
+    /// it down gracefully, `QUIT` and all (`cpool_conn_close`, not
+    /// aborted). Measured against the C build.
+    #[test]
+    fn a_body_ended_by_closing_leaves_the_connection_to_the_pool() {
+        let cut = b"+OK here\r\nbody line\r\n";
+        let first = Conversation::replies(&[GREETING, CAPA_USER, OK, OK, cut], true).greeting();
+        let fresh = in_the_clear();
+        let mut m = serving(&[&first, &fresh]);
+        let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+        let ran = transfer(&mut m, &plain(), &url, |_| {});
+        assert_eq!(ran.result, Ok(()));
+        // Its CRLF is held as the marker's start, as C holds it.
+        assert_eq!(ran.body, b"body line");
+        let intact = format!("Connection #0 to host 127.0.0.1:{PORT} left intact");
+        assert!(ran.text.contains(&intact), "{}", ran.text);
+        assert!(!ran.text.contains("shutting down"), "{}", ran.text);
+        let next = transfer(&mut m, &plain(), &url, |_| {});
+        assert_eq!(next.result, Ok(()));
+        let dead = "Connection 0 seems to be dead, terminating\n\
+                    shutting down connection #0\n";
+        assert!(next.text.contains(dead), "{}", next.text);
+        assert_eq!(
+            first.received(),
+            b"CAPA\r\nUSER u\r\nPASS p\r\nRETR 1\r\nQUIT\r\n"
+        );
+    }
+
     /// Retrieve message 1 twice over `m`, the second set as `set` says:
     /// what came of the second.
     fn twice(m: &mut Multi, set: impl FnOnce(&mut Options)) -> Ran {

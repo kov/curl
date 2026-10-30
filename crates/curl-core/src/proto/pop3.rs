@@ -1241,11 +1241,13 @@ impl super::Phases for Request {
             DoPhase::Do => {
                 trace::debug_info(cx, format_args!("DO phase starts"));
                 self.command(cx, lease)?;
-                let done = self.run(cx, lease)?;
-                if done {
+                let ran = self.run(cx, lease);
+                // Said as the state stops, the answer refused or not
+                // (`pop3_perform`).
+                if pop3_of(lease).0.state == State::Stop {
                     trace::debug_info(cx, format_args!("DO phase is complete"));
                 }
-                Ok(if done { DoStep::Did } else { DoStep::Doing })
+                Ok(if ran? { DoStep::Did } else { DoStep::Doing })
             }
             DoPhase::Doing => match self.run(cx, lease) {
                 Err(e) => {

@@ -255,3 +255,21 @@ features: test-util
 --- new
             ProtoState::Http(_) => true,
             ProtoState::Pop3(_) => false,
+
+=== the POP3 state machine reads on past the reply that stopped it
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::lines_past_a_reply_answer_the_next_command
+features: test-util
+--- old
+            if pc.state == State::Stop || !pc.pp.more_data() {
+--- new
+            if pc.state == State::Stop && !pc.pp.more_data() {
+
+=== a refused answer in the first pass of DO says nothing of the phase
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::lines_past_a_reply_answer_the_next_command
+features: test-util
+--- old
+                if pop3_of(lease).0.state == State::Stop {
+--- new
+                if false {

@@ -143,3 +143,12 @@ features: test-util
         if got != READ_SIZE {
 --- new
         if got == READ_SIZE {
+
+=== lines held past a reply wait on the socket
+file: crates/curl-core/src/proto/pingpong/drive.rs
+witness: curl-core proto::pop3::tests::over_the_wire::lines_past_a_reply_answer_the_next_command
+features: test-util
+--- old
+    if carrier.reborrow().data_pending() || pp.unscanned() {
+--- new
+    if carrier.reborrow().data_pending() && pp.unscanned() {

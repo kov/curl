@@ -1224,6 +1224,38 @@ mod over_the_wire {
         }
     }
 
+    /// Lines past the end of a reply wait for the next command, which
+    /// takes the first of them as its answer: the state machine stops at
+    /// the reply that ends its state, and the next step runs on what it
+    /// holds without waiting on the socket (`pop3_statemachine`'s loop,
+    /// `Curl_pp_moredata`). The phase is said done as its state stops,
+    /// the answer refused (`pop3_perform`).
+    #[test]
+    fn lines_past_a_reply_answer_the_next_command() {
+        let (sent, ran) = against(
+            &[GREETING, CAPA_USER, OK, b"+OK\r\n-ERR early\r\n"],
+            URL,
+            |_| {},
+        );
+        assert_eq!(ran.result, Err(ErrorKind::WeirdServerReply), "{}", ran.text);
+        assert!(sent.ends_with(b"PASS p\r\nRETR 1\r\nQUIT\r\n"), "{sent:?}");
+        let after = ran
+            .text
+            .split("DO phase starts\n")
+            .nth(1)
+            .unwrap_or_default();
+        assert!(
+            after.contains("to STOP\nDO phase is complete\n"),
+            "{}",
+            ran.text
+        );
+        assert!(
+            !ran.text.contains("server response timeout"),
+            "{}",
+            ran.text
+        );
+    }
+
     /// An answer is read 900 bytes at a time, at most ten reads a pass,
     /// and a read that comes short ends the pass without another
     /// (`Curl_pp_readresp`): the reads the C build traces for a password's

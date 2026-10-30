@@ -164,51 +164,80 @@ pub(crate) enum Route {
 
 impl Route {
     /// Whether a connection set up for this route may serve a transfer
-    /// that needs `wanted` (`url_match_conn`, `url_match_destination`):
-    /// the same origin through the same peer, and the same addresses
-    /// unless the transfer takes any.
+    /// that needs `wanted` (`url_match_conn`): it reaches what the
+    /// transfer wants, and it is set up as the transfer would set it up.
     pub(crate) fn serves(&self, wanted: &Route) -> bool {
-        match (self, wanted) {
-            (Route::Net(have), Route::Net(want)) => {
-                // Every field by name, so that one added does not compile
-                // until it is compared here or said why not.
-                let NetRoute {
-                    origin,
-                    via,
-                    ip,
-                    proxy,
-                    tls,
-                    local,
-                    delegation,
-                } = have;
-                let NetRoute {
-                    origin: want_origin,
-                    via: want_via,
-                    ip: want_ip,
-                    proxy: want_proxy,
-                    tls: want_tls,
-                    local: want_local,
-                    delegation: want_delegation,
-                } = want;
-                **origin == **want_origin
-                    && delegation == want_delegation
-                    // C compares the detours without their schemes
-                    // (`Curl_peer_same_destination`); each has its
-                    // origin's.
-                    && via.as_deref() == want_via.as_deref()
-                    // A transfer that takes any family takes either.
-                    && (*want_ip == IpVersion::Any || want_ip == ip)
-                    && proxy.as_ref().map(ProxyRoute::key)
-                        == want_proxy.as_ref().map(ProxyRoute::key)
-                    // TLS made with every setting the transfer's has, or
-                    // none on both (`url_match_ssl_config`): a transfer
-                    // that verifies its peer never takes a connection
-                    // made without.
-                    && tls.as_deref() == want_tls.as_deref()
-                    && binds_as(local.as_deref(), want_local.as_deref())
-            }
-            (Route::Local | Route::Net(..), Route::Local | Route::Net(..)) => false,
-        }
+        self.reaches(wanted) && self.suits(wanted)
+    }
+
+    /// The checks that come before C's notes of what the search saw
+    /// (`url_match_connect_config`, `url_match_destination`): bound as the
+    /// transfer binds, over the addresses it takes, through the same
+    /// detour to the same origin.
+    pub(crate) fn reaches(&self, wanted: &Route) -> bool {
+        let (Route::Net(have), Route::Net(want)) = (self, wanted) else {
+            return false;
+        };
+        // Every field by name, here and in `suits`, so that one added
+        // does not compile until it is compared in one or said why not.
+        let NetRoute {
+            origin,
+            via,
+            ip,
+            proxy: _,
+            tls: _,
+            local,
+            delegation: _,
+        } = have;
+        let NetRoute {
+            origin: want_origin,
+            via: want_via,
+            ip: want_ip,
+            proxy: _,
+            tls: _,
+            local: want_local,
+            delegation: _,
+        } = want;
+        // A transfer that takes any family takes either.
+        (*want_ip == IpVersion::Any || want_ip == ip)
+            && binds_as(local.as_deref(), want_local.as_deref())
+            // C compares the detours without their schemes
+            // (`Curl_peer_same_destination`); each has its origin's.
+            && via.as_deref() == want_via.as_deref()
+            && **origin == **want_origin
+    }
+
+    /// The checks after (`url_match_proxy_use`, `url_match_ssl_config`,
+    /// `url_match_auth`): through the same proxy, with TLS made with
+    /// every setting the transfer's has, delegating as it asks.
+    fn suits(&self, wanted: &Route) -> bool {
+        let (Route::Net(have), Route::Net(want)) = (self, wanted) else {
+            return false;
+        };
+        let NetRoute {
+            origin: _,
+            via: _,
+            ip: _,
+            proxy,
+            tls,
+            local: _,
+            delegation,
+        } = have;
+        let NetRoute {
+            origin: _,
+            via: _,
+            ip: _,
+            proxy: want_proxy,
+            tls: want_tls,
+            local: _,
+            delegation: want_delegation,
+        } = want;
+        proxy.as_ref().map(ProxyRoute::key) == want_proxy.as_ref().map(ProxyRoute::key)
+            // TLS made with every setting the transfer's has, or none on
+            // both (`url_match_ssl_config`): a transfer that verifies its
+            // peer never takes a connection made without.
+            && tls.as_deref() == want_tls.as_deref()
+            && delegation == want_delegation
     }
 }
 

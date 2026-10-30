@@ -186,17 +186,17 @@ witness: curl-core conn::tests::peers_compare_as_c_compares_them
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 --- old
-                    && (*want_ip == IpVersion::Any || want_ip == ip)
+        (*want_ip == IpVersion::Any || want_ip == ip)
 --- new
-                    && (want_ip == want_ip)
+        (want_ip == want_ip)
 
 === a connection for one family serves only that family
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 --- old
-                    && (*want_ip == IpVersion::Any || want_ip == ip)
+        (*want_ip == IpVersion::Any || want_ip == ip)
 --- new
-                    && (want_ip == ip)
+        (want_ip == ip)
 
 === the next attempt waits for the last to fail
 file: crates/curl-core/src/conn/connect.rs
@@ -238,9 +238,9 @@ witness: curl-core multi::tests::a_silent_address_gives_way_after_the_eyeballs_d
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core multi::tests::a_connection_serves_only_the_peer_it_goes_through
 --- old
-                    && via.as_deref() == want_via.as_deref()
+            && via.as_deref() == want_via.as_deref()
 --- new
-                    && true
+            && true
 
 === a full pool closes the newest idle connection
 file: crates/curl-core/src/conn/pool.rs
@@ -390,9 +390,9 @@ witness: curl-core conn::pool::tests::room_is_made_by_the_connection_idle_longes
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::tests::routes_compare_every_field
 --- old
-                **origin == **want_origin
+            && **origin == **want_origin
 --- new
-                **origin == **origin
+            && **origin == **origin
 
 === a waiting transfer keeps the IP version it started with
 file: crates/curl-core/src/multi/state.rs

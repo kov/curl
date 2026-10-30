@@ -2066,7 +2066,10 @@ show it as the URL names it. `Url::get_with` converts a host for `CURLU_PUNYCODE
 `CURLU_PUNY2IDN` with the library the shim gives it. `via` is the
 peer a connect-to entry names in the origin's place (C's `via_peer`, `conn/connect_to.rs`),
 none when it names the origin itself; the setup resolves and connects to `via` if there is
-one, and the traces name it where C's do. Matching is `Route::serves`: the same origin by
+one, and the traces name it where C's do. Matching is `Route::serves`, in C's order two
+stages: `reaches` (`url_match_connect_config`, `url_match_destination`), which come before the
+search notes what it saw, then `suits` (`url_match_proxy_use`, `url_match_ssl_config`,
+`url_match_auth`'s delegation). It asks the same origin by
 `Peer`'s `Eq`, which is `Curl_peer_equal` (the host in any case, and the zone by its scope,
 or by its text when it has none), the same `via` or none on both, the same `IpVersion` unless the
 transfer takes any (`url_match_conn`, `url_match_destination`), and an equal `TlsIdentity` or

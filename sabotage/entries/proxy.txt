@@ -5,10 +5,9 @@
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::tests::proxied_routes_match_as_c
 --- old
-                    && proxy.as_ref().map(ProxyRoute::key)
-                        == want_proxy.as_ref().map(ProxyRoute::key)
+        proxy.as_ref().map(ProxyRoute::key) == want_proxy.as_ref().map(ProxyRoute::key)
 --- new
-                    && proxy.is_some() == want_proxy.is_some()
+        proxy.is_some() == want_proxy.is_some()
 
 === HTTP_PROXY in upper case names a proxy
 file: crates/curl-core/src/conn/proxy.rs

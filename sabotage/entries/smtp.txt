@@ -282,3 +282,22 @@ witness: curl-core proto::smtp::tests::the_domain_is_the_url_s_path
     &name[..end]
 --- new
     &name[..]
+
+=== the setup for the connection is said before the transfer leaves the queue
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::smtp::tests::over_the_wire::the_setup_is_said_after_the_queue
+features: test-util
+--- old
+    if started.is_ok() {
+        cx.mark_now(Timer::PostQueue);
+    }
+    if let Ok(Some(proto)) = &started {
+        proto.set_up_said(cx);
+    }
+--- new
+    if let Ok(Some(proto)) = &started {
+        proto.set_up_said(cx);
+    }
+    if started.is_ok() {
+        cx.mark_now(Timer::PostQueue);
+    }

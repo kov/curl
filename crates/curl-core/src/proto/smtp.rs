@@ -293,6 +293,16 @@ pub(crate) struct Request {
 type Step = Result<(), ErrorKind>;
 
 impl Request {
+    /// Its setup for the connection went well (`smtp_setup_connection`'s
+    /// trace).
+    pub(crate) fn set_up_said<H: Host>(cx: &mut StepCx<'_, H>) {
+        trace::of(
+            cx,
+            Component::Smtp,
+            format_args!("smtp_setup_connection() -> 0"),
+        );
+    }
+
     /// A transfer of `url`, `smtps` if `secured`: its peer, the
     /// credentials its URL gives and the application's where `before`
     /// lets them go, a `.netrc`'s if asked for (`smtp_setup_connection`,
@@ -346,11 +356,6 @@ impl Request {
             Err(crate::error::UrlErrorKind::NoOptions) => None,
             Err(e) => return Err(url_error(e)),
         };
-        trace::of(
-            cx,
-            Component::Smtp,
-            format_args!("smtp_setup_connection() -> 0"),
-        );
         Ok(Request {
             pipeline: Pipeline::new(Reach::Network),
             peer,

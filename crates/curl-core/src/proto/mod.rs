@@ -566,6 +566,22 @@ impl ProtoState {
         }))
     }
 
+    /// What the protocol says of its setup for the connection, once the
+    /// transfer is out of the queue (`setup_connection`, which C calls
+    /// as it makes the connection to look for, after POSTQUEUE): only
+    /// SMTP says anything.
+    pub(crate) fn set_up_said<H: Host>(&self, cx: &mut StepCx<'_, H>) {
+        match self {
+            ProtoState::Smtp(_) => smtp::Request::set_up_said(cx),
+            ProtoState::File(_)
+            | ProtoState::Http(_)
+            | ProtoState::Pop3(_)
+            | ProtoState::Imap(_) => {}
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {}
+        }
+    }
+
     /// The peer the request connects to, or none for a protocol that
     /// does its own I/O (C's `PROTOPT_NONETWORK`).
     pub(crate) fn network(

@@ -5224,6 +5224,9 @@ fn start_leg<H: Host>(
     if started.is_ok() {
         cx.mark_now(Timer::PostQueue);
     }
+    if let Ok(Some(proto)) = &started {
+        proto.set_up_said(cx);
+    }
     let proto = match started {
         Ok(Some(proto)) => proto,
         Ok(None) => {

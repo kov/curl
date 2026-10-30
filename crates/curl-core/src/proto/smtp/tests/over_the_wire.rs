@@ -740,6 +740,26 @@ fn the_do_phase_is_traced_as_c_s() {
     );
 }
 
+/// The setup for the connection is said once the transfer is out of the
+/// queue and before a connection is looked for, as C calls
+/// `smtp_setup_connection` from `url_find_or_create_conn`, after
+/// POSTQUEUE.
+#[test]
+fn the_setup_is_said_after_the_queue() {
+    let talk = Conversation::replies(&[GREETING, EHLO, b"214 help\r\n"], false).greeting();
+    let ran = tracing(&mut serving(&[&talk]), &plain(), URL, b"smtp,multi", |_| {});
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let at = |what: &str| {
+        ran.text
+            .find(what)
+            .unwrap_or_else(|| panic!("{what} in {}", ran.text))
+    };
+    let queued = at("[PGRS-POSTQUEUE] set");
+    let set_up = at("[SMTP] smtp_setup_connection() -> 0");
+    let pooled = at("[CPOOL] added connection");
+    assert!(queued < set_up && set_up < pooled, "{}", ran.text);
+}
+
 /// The lines of `text` from `what` on.
 fn from<'t>(text: &'t str, what: &str) -> Vec<&'t str> {
     text.lines()

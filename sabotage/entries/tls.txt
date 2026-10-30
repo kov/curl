@@ -96,7 +96,7 @@ witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_fol
 --- old
         match choose_proxy(cx, &origin, &scheme, via.is_some() || secured || !handed) {
 --- new
-        match choose_proxy(cx, &origin, &scheme, via.is_some() || !handed) {
+        match choose_proxy(cx, &origin, &scheme, via.is_some()) {
 
 === https's default port is HTTP's
 file: crates/curl-core/src/proto/http.rs

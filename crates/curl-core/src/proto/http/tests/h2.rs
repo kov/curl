@@ -1646,6 +1646,47 @@ fn a_transfer_that_pipewaits_joins_the_connection_being_set_up() {
     );
 }
 
+/// A connection being set up to the transfer's origin is a candidate to
+/// wait for before what else the transfer asks is compared: one that
+/// would delegate differently is waited for, and not joined once it is
+/// up (`url_match_conn` notes it after `url_match_destination`, before
+/// `url_match_auth`). The C build waits the same, with the same lines.
+#[test]
+fn a_candidate_is_waited_for_before_its_auth_is_compared() {
+    let ([(a, sa), (b, sb)], _) = h2_pair_added(
+        &[
+            &[b"S\nH 1 0\n:status: 200\n\nD 1 2 1\naa"],
+            &[b"S\nH 1 0\n:status: 200\n\nD 1 2 1\nbb"],
+        ],
+        true,
+        |_| {},
+        |i, o| {
+            if i == 1 {
+                o.http.pipewait = true;
+                o.login.make_mut().unwrap().delegation.always = true;
+            }
+        },
+    );
+    assert_eq!((a, b), (Ok(()), Ok(())));
+    assert_eq!((sa.body(), sb.body()), (b"aa".to_vec(), b"bb".to_vec()));
+    let text = sb.text();
+    assert_eq!(
+        text[..2],
+        [
+            "Connection #0 is not open enough, cannot reuse\n",
+            "Found pending candidate for reuse and CURLOPT_PIPEWAIT is set\n",
+        ],
+        "{text:#?}"
+    );
+    assert!(text.iter().any(|l| l.contains("Trying")), "{text:#?}");
+    assert!(
+        !text
+            .iter()
+            .any(|l| l.contains("Multiplexed connection found")),
+        "{text:#?}"
+    );
+}
+
 /// Without `CURLOPT_PIPEWAIT`, a transfer finding a connection to its
 /// origin still being set up says so, and makes its own.
 #[test]

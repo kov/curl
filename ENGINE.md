@@ -1859,7 +1859,9 @@ up or its first request has not found what it speaks (an `h2c` upgrade unanswere
 found), single-use once it speaks HTTP/1. A transfer that may multiplex and finds a pending one
 says so ("not open enough"), and with `CURLOPT_PIPEWAIT` (which the tool sets for `--parallel`
 unless `--parallel-immediate`) waits in PENDING for it, unless a single-use one to the route,
-with no multiplexing one, says the server does not multiplex (`url_match_result`). A connection
+with no multiplexing one, says the server does not multiplex (`url_match_result`). Each is
+noted once it reaches the transfer's origin (`Route::reaches`), before its proxy, TLS and
+authentication are compared, as C notes it in `url_match_conn`. A connection
 attached, or found single-use, lets one waiting transfer look again, and each one that then gets
 a connection lets the next.
 

@@ -1081,15 +1081,18 @@ impl Pool {
                         Ok(judged(verdict, notes, seen)?.then_some(Took::Lent(id)))
                     }
                     None => {
-                        if route.serves(wanted.route) {
+                        if route.reaches(wanted.route) {
                             seen.multiplex = true;
                         }
                         Ok(None)
                     }
                 };
             }
+            // Noted as soon as it reaches the transfer's origin, before
+            // anything else is compared (`url_match_fully_connected`,
+            // `url_match_multiplex_needs`).
             Some(Place::Leased(leased)) => {
-                if leased.route.serves(wanted.route) {
+                if leased.route.reaches(wanted.route) {
                     match leased.verdict {
                         Verdict::Pending if wanted.multiplex.is_some() => {
                             seen.pending = true;

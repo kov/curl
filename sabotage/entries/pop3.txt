@@ -268,7 +268,7 @@ features: test-util
 === a refused answer in the first pass of DO says nothing of the phase
 file: crates/curl-core/src/proto/pop3.rs
 witness: curl-core proto::pop3::tests::over_the_wire::lines_past_a_reply_answer_the_next_command
-features: test-util
+features: test-util,debug-hooks
 --- old
                 if pop3_of(lease).0.state == State::Stop {
 --- new
@@ -295,7 +295,7 @@ features: test-util
 === a POP3 body read's failure is not said as its pass's end
 file: crates/curl-core/src/proto/pop3.rs
 witness: curl-core proto::pop3::tests::over_the_wire::a_read_failure_is_said_once
-features: test-util
+features: test-util,debug-hooks
 --- old
                 trace::debug_info(cx, format_args!("sendrecv_dl() -> {code}"));
 --- new

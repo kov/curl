@@ -67,27 +67,29 @@ impl Remote {
     }
 
     /// The address as C's traces and infos show it (`ip_quadruple`'s
-    /// `remote_ip`): an IP address, or a Unix socket's path, which for an
-    /// abstract name shows as nothing, as it starts with a zero byte.
+    /// `remote_ip`): an IP address, or a Unix socket's path as
+    /// `unix_path` shows it.
     pub(crate) fn shown_ip(&self) -> crate::text::Text<SHOWN_IP_MAX> {
         let mut shown = crate::text::Text::new();
         match self {
             Remote::Inet(a) => {
                 shown.push_fmt(format_args!("{}", a.ip()));
             }
-            Remote::Unix(u) if u.is_abstract() => {}
-            Remote::Unix(u) => shown.push_clipped(u.path()),
+            Remote::Unix(_) => shown.push_clipped(self.unix_path().unwrap_or_default()),
         }
         shown
     }
 
-    /// The path a Unix socket's address shows, as C's infos show it: an
-    /// abstract name's is empty, as its text starts with a zero byte.
+    /// The path a Unix socket's address shows, as C's traces and infos
+    /// show it: at most the first `SHOWN_IP_MAX` bytes, as C prints it
+    /// into a buffer the size of the longest IP address's text
+    /// (`sockaddr2string` into `MAX_IPADR_LEN`); an abstract name's is
+    /// empty, as its text starts with a zero byte.
     pub fn unix_path(&self) -> Option<&[u8]> {
         match self {
             Remote::Inet(_) => None,
             Remote::Unix(u) if u.is_abstract() => Some(b""),
-            Remote::Unix(u) => Some(u.path()),
+            Remote::Unix(u) => Some(&u.path()[..u.path().len().min(SHOWN_IP_MAX)]),
         }
     }
 
@@ -101,9 +103,11 @@ impl Remote {
     }
 }
 
-/// The longest address `Remote::shown_ip` shows: a Unix socket's path
-/// fills at most `sun_path`, and an IPv6 address is shorter.
-const SHOWN_IP_MAX: usize = 108;
+/// The longest address `Remote::shown_ip` shows: C's buffer for an
+/// address's text less its terminating zero (`MAX_IPADR_LEN`, the size of
+/// `"ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255"`), which holds any IP
+/// address and cuts a Unix socket's path.
+const SHOWN_IP_MAX: usize = 45;
 
 /// A Unix socket connected to: the peer that names it, shared.
 #[derive(Clone, Debug)]

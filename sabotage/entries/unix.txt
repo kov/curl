@@ -67,7 +67,7 @@ witness: curl-core proto::http::tests::unix_trace::a_unix_socket_refused_fails_o
 file: crates/curl-core/src/conn/io.rs
 witness: curl-core proto::http::tests::unix_trace::an_abstract_name_shows_as_nothing
 --- old
-            Remote::Unix(u) if u.is_abstract() => {}
+            Remote::Unix(u) if u.is_abstract() => Some(b""),
 --- new
 
 

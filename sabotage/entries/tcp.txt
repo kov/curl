@@ -324,3 +324,11 @@ witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_ha
                 Component::Udp => 5,
 --- new
                 Component::Udp => 3,
+
+=== a Unix socket's long path shows whole as an address
+file: crates/curl-core/src/conn/io.rs
+witness: curl-core proto::http::tests::unix_trace::a_long_unix_socket_path_shows_cut_as_an_address
+--- old
+            Remote::Unix(u) => Some(&u.path()[..u.path().len().min(SHOWN_IP_MAX)]),
+--- new
+            Remote::Unix(u) => Some(u.path()),

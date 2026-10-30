@@ -400,10 +400,12 @@ impl IpText {
         write!(self, "{ip}").expect("an address fits");
     }
 
-    /// `bytes`, cut short to fit, as C's `msnprintf` cuts them.
+    /// `bytes`, which the core has cut as C's `msnprintf` cuts them
+    /// (`Remote::unix_path`).
     fn bytes(&mut self, bytes: &[u8]) {
-        let n = bytes.len().min(IpText::MAX - 1);
-        self.buf[..n].copy_from_slice(&bytes[..n]);
+        let n = bytes.len();
+        assert!(n < IpText::MAX, "an address's text fits C's buffer");
+        self.buf[..n].copy_from_slice(bytes);
         self.len = n;
     }
 
@@ -475,8 +477,16 @@ mod tests {
         t.ip("::ffff:255.255.255.255".parse().unwrap());
         assert_eq!(read(&mut t), b"::ffff:255.255.255.255");
         let mut t = IpText::new();
-        t.bytes(&[b'p'; 100]);
+        t.bytes(&[b'p'; 45]);
         assert_eq!(read(&mut t), [b'p'; 45]);
+    }
+
+    /// A text longer than C's buffer is a core that did not cut a Unix
+    /// path as C does: it is not handed on cut again here.
+    #[test]
+    #[should_panic(expected = "an address's text fits C's buffer")]
+    fn an_address_too_long_for_c_s_buffer_is_a_bug() {
+        IpText::new().bytes(&[b'p'; 46]);
     }
 
     /// An opener is asked for a TCP stream or, for QUIC, a UDP socket, as

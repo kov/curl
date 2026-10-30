@@ -151,6 +151,39 @@ fn a_unix_socket_is_connected_in_place_of_the_host() {
     assert_eq!((&ends.remote, ends.local), (&at, None));
 }
 
+/// A Unix socket's path longer than the longest IP address's text shows
+/// cut to that length wherever its address shows, as C prints it into a
+/// buffer of that size (`sockaddr2string`, `MAX_IPADR_LEN`): in the
+/// attempt's line, the race's and the connection's, and as the transfer's
+/// address; the path itself is whole where it names the socket. C's tool
+/// against such a path says the same.
+#[test]
+fn a_long_unix_socket_path_shows_cut_as_an_address() {
+    let path = "/tmp/claude-1000/s66d-unix-socket-path-longer-than-forty-five.sock";
+    let cut = &path[..45];
+    let at = unix_at(path, false);
+    let (ran, _) = over(&at, Peer::Accepts, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let shown: Vec<String> = setup_lines(&ran)
+        .into_iter()
+        .filter(|l| {
+            l.starts_with("  Trying ")
+                || l.starts_with("Established")
+                || l.starts_with("[HAPPY-EYEBALLS] Connected to")
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            format!("  Trying {cut}:0..."),
+            format!("[HAPPY-EYEBALLS] Connected to {path} ({cut}) port 0"),
+            format!("Established connection to {path} ({cut} port 0) from  port 0"),
+        ]
+    );
+    let ends = ran.easy.report().primary().expect("the ends");
+    assert_eq!(ends.remote.unix_path(), Some(cut.as_bytes()));
+}
+
 /// A Unix socket refused ends the race as C's does: looking for another
 /// address, its family its own and not IPv4's, it asks for the path's
 /// second address before saying it has no IPv6 one, then again for its

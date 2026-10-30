@@ -345,10 +345,10 @@ witness: curl-sys-abi handle_tests::a_refused_url_is_reported_without_its_creden
 --- new
             ShownUrl::Shown(_) => None,
 
-=== a Unix path handed to the pre-request function overruns C's buffer
-file: crates/curl-sys-abi/src/sockets.rs
-witness: curl-sys-abi sockets::tests::an_address_is_handed_to_the_pre_request_function_as_c_keeps_it
+=== a Unix path shows one byte past C's buffer
+file: crates/curl-core/src/conn/io.rs
+witness: curl-core proto::http::tests::unix_trace::a_long_unix_socket_path_shows_cut_as_an_address
 --- old
-        let n = bytes.len().min(IpText::MAX - 1);
+const SHOWN_IP_MAX: usize = 45;
 --- new
-        let n = bytes.len().min(IpText::MAX);
+const SHOWN_IP_MAX: usize = 46;

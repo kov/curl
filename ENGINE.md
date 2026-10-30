@@ -805,8 +805,11 @@ pub(crate) enum TransferState {
     Pending(Plan),                     // PENDING: no lease, runs only when its time is up
     Setup(Plan),                       // CONNECT from PENDING: let look for a connection again
     Connecting(Connecting),            // holds a lease on a ConnSlot::Connecting
-    ProtoConnect(Attached),            // PROTOCONNECT, PROTOCONNECTING
-    Do(Attached),                      // DO..DOING_MORE
+    ProtoConnect(Attached),            // PROTOCONNECT: one step, never waited in
+    ProtoConnecting(Attached),         // PROTOCONNECTING: the protocol's connect waits
+    Do(Attached),                      // DO
+    Doing(Attached),                   // DOING: the request's first half waits
+    DoingMore(Attached),               // DOING_MORE: its second half waits
     Did(Attached),                     // DID: one step, to Exchanging or, with nothing to exchange, Done
     Exchanging(Attached),              // PERFORMING
     RateLimiting(Attached),            // RATELIMITING: over a speed limit, waits on its timer
@@ -897,7 +900,14 @@ and starts the next leg. The fifth retry of a transfer fails it with SendError.
 
 ### 3.2 Per-request substates
 
-A request's substates belong to its protocol, inside `ProtoState`; the engine sees only
+Before its request is made, a protocol answers `proto::Phases` (`proto/mod.rs`), one trait
+with no defaults that each protocol's state implements and `ProtoState` dispatches over:
+`connect` (C's `connect_it`, then `connecting`) answers `Connect { Done, Waiting }`, `make` is
+asked in a `DoPhase { Do, Doing, More }` and answers the phase it goes on in
+(`DoStep { Did, Doing, More, Piece }`), and `waits(Waiting)` is the pollset of each waiting
+phase, `Waiting::c_default` C's (IN while connecting, OUT while making the request). HTTP and
+`file:` connect at once and make their request in DO; `script:` reads its phases from the
+script's first pieces. A request's substates belong to its protocol, inside `ProtoState`; the engine sees only
 `ProtoStep { Done, Blocked, AtReadLimit }` from a step and asks whether output is held. The HTTP driver
 (`proto/http.rs`) keeps the head being sent (`out`, `sent`), the response's `Stage { Head,
 Body(Body), Done }`, with `Body` the framing decided once at the end of the head (length,
@@ -965,8 +975,10 @@ before DID and none from Done on (§3.6).
 | Pending | Setup | `schedule_pending` (one per call, round robin after `pending_after`, marked dirty): after a connection is given back, after a setup finds or makes one, when a transfer is removed, and when a woken one fails; or its own step finding its time up ("PENDING handle timeout", after the timeout's failure is traced once) |
 | Setup | Connecting / Pending / Completed | the search again, as from setup; past its time, fails with the timeout traced a second time |
 | Connecting | ProtoConnect | the slot became `Open`; not advanced while `recv != Running` |
-| ProtoConnect | Do | the protocol's connect is done (none has one yet) |
-| Do | Do / Did / Done | `ProtoState::do_it` made the request (`DoStep::Made`), or a piece of it (`More`, `file:`'s each piece read or written, C's one call: the step stays in Do, with no progress pass of its own, so the drive's clock read times each piece); prereq callback at DO entry; DID entry marks PRETRANSFER (+POSTTRANSFER if nothing to send); a failure is Done, not premature, before DID |
+| ProtoConnect | Do / ProtoConnecting / Done | over a reused connection, Do at once; else `ProtoState::connect` (`Connect::Done` or `Waiting`); a failure is premature; prereq callback at DO entry |
+| ProtoConnecting | Do / ProtoConnecting / Done | `connect` again, a pass each while `Waiting`; past the connect limit from STARTSINGLE (C's `Curl_is_connecting`), "Operation timed out …", the connection left as it is |
+| Do | Do / Doing / DoingMore / Did / Done | `ProtoState::make(DoPhase::Do)`: `DoStep::Did` made the request, `Doing` or `More` go on in that phase in the same pass, `Piece` (`file:`'s each piece read or written, C's one call: the step stays in Do, with no progress pass of its own, so the drive's clock read times each piece); DID entry marks PRETRANSFER (+POSTTRANSFER if nothing to send); a failure is Done, not premature |
+| Doing / DoingMore | Did / Doing / DoingMore / Done | `make(DoPhase::Doing / More)`, a pass each while it stays; DOING_MORE's `Doing` is DOMORE_GOBACK; a failure is Done, not premature; past the transfer's time, cut short with the connection closed (C's `mstate > MSTATE_DO`) |
 | Did | Exchanging / Done | past its time, fails (C's loop-top `multi_handle_timeout`; `file:` writes its whole upload first); Done at once if the protocol exchanges nothing more (`file:`, C's DID without sockets); an HTTP-family protocol yields once when more than one transfer is alive (C returns CURLM_OK there) |
 | Exchanging | Done | request complete with output not held, or a retry: `next` is Complete or Retry (Follow with redirects); FOLLOW_FAKE writes `report.redirect_url` |
 | connected | Done(Err) | progress callback abort |
@@ -1028,7 +1040,7 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   it.
 - `Proto` is the protocol's own wait, HTTP's for a 100 (EXPIRE_100_TIMEOUT) among them: never
   stored apart from the protocol's state, it is derived after every step from
-  `TransferState::wake_at`, as `Directions` is, and armed or cleared there. One kind serves
+  `TransferState::due`, as `Directions` is, and armed or cleared there. One kind serves
   every protocol, as a transfer runs one at a time.
 - `AlpnEyeballs` (EXPIRE_ALPN_EYEBALLS, half the happy eyeballs delay, 100 ms by default) is
   armed as the HTTPS connect filter's attempt starts while its ballers are not complete: with a
@@ -2941,7 +2953,7 @@ list` lists `dynamic`).
 
 ### 5.1 Receive
 
-A protocol reaches its connection through `StepCx::conn(&lease)`; `do_it`, `step` and `done`
+A protocol reaches its connection through `StepCx::conn(&lease)`; `connect`, `make`, `step` and `done`
 are given the lease the transfer's state holds. Inside an `Exchanging` step of `http:`:
 1. what is left of the request's head is sent (`Conn::send`, traced as HEADER_OUT as it goes);
    the request owns its send buffer, as C's `req.sendbuf` is per request;
@@ -3396,7 +3408,7 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   read behind the head. Once the head has drained, the request is `Sending::HeadSent` until
   the body is next asked for, in a later pass, as C's readers are asked before the send buffer
   is flushed; from then it is `Sending::AwaitingContinue` until a deadline (`continue_wait`),
-  not asking to write, the deadline its `wake_at`. A 100,
+  not asking to write, the deadline its `due`. A 100,
   the deadline ("Done waiting for 100-continue") or keep-sending-on-error opens it. A final
   response of 300 or more before the body has gone, the connection not closing anyway, stops
   the send ("HTTP error before end of send, stop sending", then "abort upload") and the

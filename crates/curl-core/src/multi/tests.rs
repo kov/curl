@@ -4263,6 +4263,148 @@ fn connections_are_reused_within_a_scope() {
     }
 }
 
+/// The states a traced transfer went to, from its multi trace's lines.
+fn states_entered(lines: &TextLines) -> Vec<String> {
+    lines
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|l| l.split_once("] -> ["))
+        .map(|(from, to)| {
+            let from = from.rsplit_once('[').map_or(from, |(_, f)| f);
+            format!("{from}->{}", to.trim_end().trim_end_matches(']'))
+        })
+        .collect()
+}
+
+/// A protocol waits in each of C's phases before its request is made,
+/// each run again in the next pass and moved on within one as it says
+/// (`multistate_protoconnect`, `_protoconnecting`, `_do`, `_doing`,
+/// `_doing_more`): a connect that waits, a request's first half in
+/// DOING and its second in DOING_MORE, and back to the first.
+#[test]
+fn a_protocol_waits_in_c_s_phases() {
+    use crate::options::script::{Piece, Script};
+    let (mut m, _clock) = multi();
+    let (mut e, lines) = traced("script://a");
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"multi");
+    e.set_components(Some(components));
+    e.options_mut().script = Some(
+        Script::new(vec![
+            Piece::ProtoConnecting,
+            Piece::ProtoConnecting,
+            Piece::Doing,
+            Piece::Doing,
+            Piece::DoingMore,
+            Piece::Doing,
+            Piece::DoingMore,
+            Piece::DoingMore,
+        ])
+        .unwrap(),
+    );
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    let mut passes = 0;
+    while messages(&mut m).is_empty() {
+        assert!(passes < 10, "the phases end");
+        m.perform(&mut NoEvents).unwrap();
+        passes += 1;
+    }
+    let entered = states_entered(&lines);
+    let from = entered
+        .iter()
+        .position(|s| s == "PROTOCONNECT->PROTOCONNECTING")
+        .expect("the connect waits");
+    assert_eq!(
+        entered[from..from + 8],
+        [
+            "PROTOCONNECT->PROTOCONNECTING",
+            "PROTOCONNECTING->DO",
+            "DO->DOING",
+            "DOING->DOING_MORE",
+            "DOING_MORE->DOING",
+            "DOING->DOING_MORE",
+            "DOING_MORE->DID",
+            "DID->PERFORMING",
+        ]
+    );
+    // A pass each: the connect's second wait, DOING's second step, and
+    // DOING_MORE's second step; the request made in the fourth.
+    assert_eq!(passes, 4, "the passes the waits took");
+    assert!(m.easy(id).is_some());
+}
+
+/// A reused connection's protocol connected as the connection was
+/// made: a transfer over it goes straight to DO, where one over a fresh
+/// connection waits in PROTOCONNECTING (`multistate_protoconnect`'s
+/// `bits.reuse`), for its socket to be readable.
+#[test]
+fn a_reused_connection_skips_the_protocol_connect() {
+    use crate::options::script::{Piece, Script};
+    let waiting = |e: &mut Easy| {
+        e.options_mut().script = Some(Script::new(vec![Piece::ProtoConnecting]).unwrap());
+    };
+    let (mut m, _clock) = networked();
+    let (first, _) = traced("tcp://127.0.0.1:1/");
+    let first = m.add(Box::new(first), (), &mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
+    assert_eq!(messages(&mut m), [(first.index(), Ok(()), 0)]);
+    let (mut second, _) = traced("tcp://127.0.0.1:1/");
+    waiting(&mut second);
+    let second = m.add(Box::new(second), (), &mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
+    assert_eq!(messages(&mut m), [(second.index(), Ok(()), 0)]);
+
+    let (mut m, _clock) = networked();
+    let (mut fresh, _) = traced("tcp://127.0.0.1:1/");
+    waiting(&mut fresh);
+    m.add(Box::new(fresh), (), &mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
+    perform_and_connect(&mut m);
+    assert_eq!(messages(&mut m), [], "a fresh connection's connect waits");
+    // For the server, by C's default (`mstate_protocol_pollset`).
+    let mut watched = Vec::new();
+    m.sockets(&mut NoEvents, |k, e| watched.push((k.get(), e)))
+        .unwrap();
+    assert_eq!(watched, [(1000, Events::IN)]);
+}
+
+/// A protocol's connect is timed as the connection's is, from the
+/// transfer's start on the connect limit, and fails as an operation
+/// out of time (`multi_handle_timeout`, `Curl_is_connecting`).
+#[test]
+fn a_waiting_protocol_connect_times_out_at_the_connect_limit() {
+    use crate::options::script::{Piece, Script};
+    let (mut m, clock) = networked();
+    let (mut e, lines) = traced("tcp://127.0.0.1:1/");
+    e.options_mut().limits.connect = TimeLimit::from_millis(1500);
+    e.options_mut().script = Some(Script::new(vec![Piece::ProtoConnecting]).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
+    // Its connect's timer is still armed, so an application driving by
+    // the timer wakes it (`EXPIRE_CONNECTTIMEOUT`, set once in SETUP).
+    assert_eq!(m.timeout(), Some(Duration::from_millis(1500)));
+    clock.advance(Duration::from_millis(1499));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [], "within its time");
+    assert_eq!(m.timeout(), Some(Duration::from_millis(1)));
+    clock.advance(Duration::from_millis(1));
+    m.socket_action(SocketEvent::Timeout, &mut NoEvents)
+        .unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::OperationTimedout), 0)]
+    );
+    let trace = trace_of(&lines);
+    assert!(
+        trace.contains(
+            &"Operation timed out after 1500 milliseconds with 0 bytes received\n".to_owned()
+        ),
+        "{trace:?}"
+    );
+}
+
 /// A connection is its own allocation, as C's `connectdata` is, held no
 /// larger than C's (656 bytes); a transfer's lease holds a pointer to it.
 /// A transfer's slot is held by every handle added to a multi, which

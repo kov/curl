@@ -1235,7 +1235,7 @@ impl<H: Host> Multi<H> {
         let now = cx.rest.now;
         // The protocol's own wait is derived from its state, never stored
         // apart from it.
-        match run.state.wake_at() {
+        match run.state.due() {
             Some(at) => {
                 run.deadlines.arm_in(TimerKind::Proto, now, at.since(now));
             }

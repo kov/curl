@@ -71,7 +71,48 @@ pub(crate) fn wants_send(options: &Options) -> bool {
         .any(|p| matches!(p, Piece::Send(_) | Piece::SendAll))
 }
 
+/// A script's phases are its first pieces: each `ProtoConnecting` keeps
+/// the connect waiting a step, each `Doing` and `DoingMore` the request's
+/// making in that phase; the first other piece, or none, ends them.
+impl super::Phases for Player {
+    fn connect<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        _: &mut crate::conn::ConnLease,
+    ) -> Result<super::Connect, ErrorKind> {
+        if !matches!(self.at(cx), Some(Piece::ProtoConnecting)) {
+            return Ok(super::Connect::Done);
+        }
+        self.next += 1;
+        Ok(super::Connect::Waiting)
+    }
+
+    fn make<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        _: &mut crate::conn::ConnLease,
+        _: super::DoPhase,
+    ) -> Result<super::DoStep, ErrorKind> {
+        let made = match self.at(cx) {
+            Some(Piece::Doing) => super::DoStep::Doing,
+            Some(Piece::DoingMore) => super::DoStep::More,
+            _ => return Ok(super::DoStep::Did),
+        };
+        self.next += 1;
+        Ok(made)
+    }
+
+    fn waits(&self, phase: super::Waiting) -> crate::conn::io::Events {
+        phase.c_default()
+    }
+}
+
 impl Player {
+    /// The piece the script is at, if any.
+    fn at<'c, H: Host>(&self, cx: &'c StepCx<'_, H>) -> Option<&'c Piece> {
+        cx.easy().options().script.as_ref()?.get(self.next)
+    }
+
     /// The script has body left to send.
     pub(crate) fn sending(&self, options: &Options) -> bool {
         !self.uploaded && wants_send(options)
@@ -133,6 +174,9 @@ impl Player {
                 Piece::Yield => {
                     self.next += 1;
                     return Ok(ProtoStep::Blocked);
+                }
+                Piece::ProtoConnecting | Piece::Doing | Piece::DoingMore => {
+                    panic!("a script's phases come before its exchange")
                 }
             }
             self.next += 1;

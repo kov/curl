@@ -126,15 +126,106 @@ pub(crate) enum ProtoStep {
     AtReadLimit,
 }
 
-/// Where a step of DO left the request.
+/// Where a protocol's connect over its connection stands (C's
+/// `connect_it` and `connecting`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Connect {
+    /// Connected: on to DO.
+    Done,
+    /// Not yet: waiting in PROTOCONNECTING for what its pollset says.
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(dead_code, reason = "no protocol built yet waits before its request")
+    )]
+    Waiting,
+}
+
+/// The phase a protocol is asked to make its request in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DoPhase {
+    /// DO, the request's start (`do_it`).
+    Do,
+    /// DOING, its rest (`doing`).
+    Doing,
+    /// DOING_MORE, its second half (`do_more`), FTP's once its data
+    /// connection is to be made.
+    More,
+}
+
+/// Where a step of making the request left it; from any phase, the
+/// phase it goes on in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DoStep {
-    /// Made: on to DID.
-    Made,
-    /// More of it to make, in the next step: what a step took is timed
-    /// as the drive reads the clock before it, as C's
-    /// `Curl_pgrsCheck` reads it within the one call.
+    /// Made: on to DID (`dophase_done` without `do_more`; DOMORE_DONE).
+    Did,
+    /// More of its first half to make, in DOING (`!dophase_done`;
+    /// DOMORE_GOBACK from DOING_MORE).
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(dead_code, reason = "no protocol built yet waits before its request")
+    )]
+    Doing,
+    /// Its second half to make, in DOING_MORE (`bits.do_more`;
+    /// DOMORE_INCOMPLETE there).
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(dead_code, reason = "no protocol built yet waits before its request")
+    )]
     More,
+    /// More of it to make within DO, in the next step: what a step took
+    /// is timed as the drive reads the clock before it, as C's
+    /// `Curl_pgrsCheck` reads it within the one call (`file:`'s DO, a
+    /// piece a step). Only DO's step answers it.
+    Piece,
+}
+
+/// A phase a request waits in before it is made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Waiting {
+    /// PROTOCONNECTING.
+    Connecting,
+    /// DOING.
+    Doing,
+    /// DOING_MORE.
+    More,
+}
+
+impl Waiting {
+    /// What C waits for in the phase when the protocol says nothing of
+    /// its own (`mstate_protocol_pollset`, `mstate_do_pollset`,
+    /// `mstate_domore_pollset`): something from the server while it
+    /// connects, to send while it makes the request.
+    pub(crate) fn c_default(self) -> Events {
+        match self {
+            Waiting::Connecting => Events::IN,
+            Waiting::Doing | Waiting::More => Events::OUT,
+        }
+    }
+}
+
+/// What a protocol does before its request is made: its connect over
+/// the connection, its request made in one step or more, and what it
+/// waits for meanwhile (C's `connect_it`, `connecting`, `do_it`,
+/// `doing`, `do_more` and their pollsets). Every protocol answers each,
+/// none by a default.
+pub(crate) trait Phases {
+    /// Connect over the connection, or move the connect on.
+    fn connect<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+    ) -> Result<Connect, ErrorKind>;
+
+    /// Make the request, or move it on, in the phase `asked`.
+    fn make<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        asked: DoPhase,
+    ) -> Result<DoStep, ErrorKind>;
+
+    /// What it waits for on its connection while in `phase`.
+    fn waits(&self, phase: Waiting) -> Events;
 }
 
 /// `credentials` completed or replaced from a `.netrc` file, if the
@@ -349,21 +440,63 @@ impl ProtoState {
         }
     }
 
-    /// Make the request (C's `do_it`) over the connection `lease` holds,
-    /// or a step of it: `file:`'s is the whole transfer, made a piece a
-    /// step; the test protocols have none to make.
-    pub(crate) fn do_it<H: Host>(
+    /// Connect over the connection `lease` holds, or move the connect on
+    /// (C's `connect_it`, then `connecting`); the test protocols but
+    /// `script:` connect at once.
+    pub(crate) fn connect<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
+    ) -> Result<Connect, ErrorKind> {
+        match *self {
+            ProtoState::File(ref mut f) => f.connect(cx, lease),
+            ProtoState::Http(ref mut r) => r.connect(cx, lease),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Script(ref mut p) => p.connect(cx, lease),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall => Ok(Connect::Done),
+            // A `tcp:` connect waits for good while its handle's script
+            // starts with the phase, as a protocol whose server never
+            // answers.
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Tcp => Ok(
+                match cx.easy().options().script.as_ref().and_then(|s| s.get(0)) {
+                    Some(crate::options::script::Piece::ProtoConnecting) => Connect::Waiting,
+                    _ => Connect::Done,
+                },
+            ),
+        }
+    }
+
+    /// Make the request over the connection `lease` holds, or a step of
+    /// it, in the phase `asked` (C's `do_it`, `doing` and `do_more`):
+    /// `file:`'s is the whole transfer, made a piece a step; the test
+    /// protocols but `script:` have none to make.
+    pub(crate) fn make<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        asked: DoPhase,
     ) -> Result<DoStep, ErrorKind> {
         match *self {
-            ProtoState::File(ref mut f) => f.do_it(cx),
-            ProtoState::Http(ref mut r) => r.do_it(cx, lease).map(|()| DoStep::Made),
+            ProtoState::File(ref mut f) => f.make(cx, lease, asked),
+            ProtoState::Http(ref mut r) => r.make(cx, lease, asked),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
-                Ok(DoStep::Made)
-            }
+            ProtoState::Script(ref mut p) => p.make(cx, lease, asked),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => Ok(DoStep::Did),
+        }
+    }
+
+    /// What the request waits for on its connection while in `phase`.
+    pub(crate) fn waits(&self, phase: Waiting) -> Events {
+        match *self {
+            ProtoState::File(ref f) => f.waits(phase),
+            ProtoState::Http(ref r) => r.waits(phase),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Script(ref p) => p.waits(phase),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => phase.c_default(),
         }
     }
 
@@ -426,9 +559,9 @@ impl ProtoState {
 
     /// When the request wants to look again whatever its socket says: an
     /// HTTP body's wait for a 100 running out.
-    pub(crate) fn wake_at(&self) -> Option<crate::time::Instant> {
+    pub(crate) fn due(&self) -> Option<crate::time::Instant> {
         match self {
-            ProtoState::Http(r) => r.wake_at(),
+            ProtoState::Http(r) => r.due(),
             _ => None,
         }
     }

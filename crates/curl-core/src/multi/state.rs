@@ -44,7 +44,7 @@ use crate::components::Component;
 use crate::proto::http::negotiate::Wants as AuthWants;
 use crate::proto::http1::follow;
 use crate::proto::http1::follow::Inherited;
-use crate::proto::{Before, DoStep, Ended, ProtoState, ProtoStep};
+use crate::proto::{Before, Connect, DoPhase, DoStep, Ended, ProtoState, ProtoStep, Waiting};
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
 use crate::text::Text;
 use crate::time::{Instant, TimeLimit};
@@ -127,6 +127,31 @@ impl Run {
             alive: false,
         }
     }
+}
+
+/// The request is about to be made: the application hears of the
+/// connection first, and may stop the request (`multistate_do`'s
+/// `fprereq`, as DO starts); one only connecting too.
+fn enter_do<H: Host>(x: Attached, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
+    match prereq(cx) {
+        Ok(()) => (TransferState::Do(x), Wake::Again),
+        Err(kind) => (
+            TransferState::Done(x.done(Err(kind), false, Reached::Unmade)),
+            Wake::Again,
+        ),
+    }
+}
+
+/// The request is made: about to send, or sent already with no body
+/// (`mstate_enter_did`).
+fn enter_did<H: Host>(x: Attached, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
+    mstate::enter(cx, MState::Did);
+    cx.mark(Timer::PreTransfer);
+    let send = x.proto.wants_send(cx.easy().options());
+    if !send {
+        cx.mark(Timer::PostTransfer);
+    }
+    (TransferState::Did(x), Wake::Again)
 }
 
 /// The application's pre-request handler told of the connection a
@@ -215,11 +240,18 @@ pub(crate) enum TransferState {
     Setup(Plan),
     /// Holding a connection being set up (C's CONNECTING).
     Connecting(Connecting),
-    /// Holding a connection, the protocol connecting over it (C's
+    /// Holding a connection, the protocol to connect over it (C's
     /// PROTOCONNECT).
     ProtoConnect(Attached),
+    /// The protocol's connect under way, waiting for what it waits for
+    /// (PROTOCONNECTING).
+    ProtoConnecting(Attached),
     /// Making its request (DO).
     Do(Attached),
+    /// The first half of its request under way, waiting (DOING).
+    Doing(Attached),
+    /// The second half of its request under way, waiting (DOING_MORE).
+    DoingMore(Attached),
     /// The request is made (DID).
     Did(Attached),
     /// The request and response under way (PERFORMING).
@@ -523,6 +555,10 @@ impl Done {
 enum Reached {
     /// It was not made: DID's times are not taken.
     Unmade,
+    /// It was being made, past DO (DOING or DOING_MORE): DID's times are
+    /// not taken, but a connection it ends early on is in no known state
+    /// (`mstate > MSTATE_DO`).
+    Making,
     /// It was made; any exchange after did not run to its end.
     Made,
     /// Its exchange ran to its end (C's `req.done`): the last progress
@@ -644,7 +680,10 @@ impl TransferState {
     fn attached(&self) -> Option<&Attached> {
         match self {
             TransferState::ProtoConnect(x)
+            | TransferState::ProtoConnecting(x)
             | TransferState::Do(x)
+            | TransferState::Doing(x)
+            | TransferState::DoingMore(x)
             | TransferState::Did(x)
             | TransferState::Exchanging(x)
             | TransferState::RateLimiting(x) => Some(x),
@@ -655,7 +694,10 @@ impl TransferState {
     fn attached_mut(&mut self) -> Option<&mut Attached> {
         match self {
             TransferState::ProtoConnect(x)
+            | TransferState::ProtoConnecting(x)
             | TransferState::Do(x)
+            | TransferState::Doing(x)
+            | TransferState::DoingMore(x)
             | TransferState::Did(x)
             | TransferState::Exchanging(x)
             | TransferState::RateLimiting(x) => Some(x),
@@ -691,11 +733,14 @@ impl TransferState {
     }
 
     /// When the protocol wants to look again whatever its socket says.
-    pub(crate) fn wake_at(&self) -> Option<Instant> {
+    pub(crate) fn due(&self) -> Option<Instant> {
         match self {
-            TransferState::Did(x)
+            TransferState::ProtoConnecting(x)
+            | TransferState::Doing(x)
+            | TransferState::DoingMore(x)
+            | TransferState::Did(x)
             | TransferState::Exchanging(x)
-            | TransferState::RateLimiting(x) => x.proto.wake_at(),
+            | TransferState::RateLimiting(x) => x.proto.due(),
             _ => None,
         }
     }
@@ -721,8 +766,11 @@ impl TransferState {
                 next: AfterRequest::Complete,
                 race: c.race,
             }),
-            TransferState::ProtoConnect(x) | TransferState::Do(x) => {
-                TransferState::Done(x.done(Err(err), true, Reached::Unmade))
+            TransferState::ProtoConnect(x)
+            | TransferState::ProtoConnecting(x)
+            | TransferState::Do(x) => TransferState::Done(x.done(Err(err), true, Reached::Unmade)),
+            TransferState::Doing(x) | TransferState::DoingMore(x) => {
+                TransferState::Done(x.done(Err(err), true, Reached::Making))
             }
             TransferState::Did(x)
             | TransferState::Exchanging(x)
@@ -743,7 +791,10 @@ impl TransferState {
             TransferState::Setup(_) => MState::Connect,
             TransferState::Connecting(_) => MState::Connecting,
             TransferState::ProtoConnect(_) => MState::ProtoConnect,
+            TransferState::ProtoConnecting(_) => MState::ProtoConnecting,
             TransferState::Do(_) => MState::Do,
+            TransferState::Doing(_) => MState::Doing,
+            TransferState::DoingMore(_) => MState::DoingMore,
             TransferState::Did(_) => MState::Did,
             TransferState::Exchanging(_) => MState::Performing,
             TransferState::RateLimiting(_) => MState::RateLimiting,
@@ -778,8 +829,11 @@ impl TransferState {
                 next: AfterRequest::Complete,
                 race: c.race,
             },
-            TransferState::ProtoConnect(x) | TransferState::Do(x) => {
-                x.done(Ok(()), true, Reached::Unmade)
+            TransferState::ProtoConnect(x)
+            | TransferState::ProtoConnecting(x)
+            | TransferState::Do(x) => x.done(Ok(()), true, Reached::Unmade),
+            TransferState::Doing(x) | TransferState::DoingMore(x) => {
+                x.done(Ok(()), true, Reached::Making)
             }
             // Past its request, the connection is in no known state
             // (`curl_multi_remove_handle`'s `streamclose`).
@@ -1109,6 +1163,21 @@ impl TransferState {
                 };
                 for a in order.into_iter().flatten() {
                     attempt_pollset(c, a, &mut set)?;
+                }
+            }
+            TransferState::ProtoConnecting(x)
+            | TransferState::Doing(x)
+            | TransferState::DoingMore(x) => {
+                let phase = match self {
+                    TransferState::ProtoConnecting(_) => Waiting::Connecting,
+                    TransferState::Doing(_) => Waiting::Doing,
+                    _ => Waiting::More,
+                };
+                if let Some(slot) = pool.slot_of(&x.lease) {
+                    let events = slot.adjust_pollset(x.proto.waits(phase), None);
+                    for s in slot.sockets() {
+                        set.add(s, events)?;
+                    }
                 }
             }
             TransferState::Exchanging(x) => {
@@ -2389,16 +2458,52 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             (next, Wake::Again)
         }
         TransferState::Connecting(c) => connecting(run, c, cx),
-        // No protocol connects over its connection yet. The application
-        // hears of the connection first, and may stop the request before
-        // it is made (`multistate_do`); one only connecting too.
-        TransferState::ProtoConnect(x) => match prereq(cx) {
-            Ok(()) => (TransferState::Do(x), Wake::Again),
-            Err(kind) => (
-                TransferState::Done(x.done(Err(kind), false, Reached::Unmade)),
-                Wake::Again,
-            ),
-        },
+        // A reused connection's protocol connected as it was made
+        // (`multistate_protoconnect`, `bits.reuse`).
+        TransferState::ProtoConnect(x) if x.lease.conn().reused() => enter_do(x, cx),
+        TransferState::ProtoConnect(mut x) => {
+            match x
+                .proto
+                .connect(cx, &mut x.lease)
+                .map_err(|e| layer_failed(&x.lease, e))
+            {
+                Ok(Connect::Done) => enter_do(x, cx),
+                Ok(Connect::Waiting) => (TransferState::ProtoConnecting(x), Wake::Again),
+                // Cut short (`multistate_protoconnect`).
+                Err(e) => (
+                    TransferState::Done(x.done(Err(e), true, Reached::Unmade)),
+                    Wake::Again,
+                ),
+            }
+        }
+        // Out of time as the step starts, its connect not done: over, the
+        // time counted from the leg's start (`multi_handle_timeout`,
+        // `Curl_is_connecting`).
+        TransferState::ProtoConnecting(x)
+            if matches!(
+                run.deadlines
+                    .time_left(starts(cx), cx.rest.now, Phase::Connecting),
+                TimeLeft::Expired(_)
+            ) =>
+        {
+            let kind = timed_out(cx, Phase::Connecting, x.proto.sizes_request());
+            (TransferState::ProtoConnecting(x).fail(kind), Wake::Again)
+        }
+        TransferState::ProtoConnecting(mut x) => {
+            match x
+                .proto
+                .connect(cx, &mut x.lease)
+                .map_err(|e| layer_failed(&x.lease, e))
+            {
+                Ok(Connect::Done) => enter_do(x, cx),
+                Ok(Connect::Waiting) => (TransferState::ProtoConnecting(x), Wake::Idle),
+                // Cut short (`multistate_protoconnecting`).
+                Err(e) => (
+                    TransferState::Done(x.done(Err(e), true, Reached::Unmade)),
+                    Wake::Again,
+                ),
+            }
+        }
         // One that only connects is done once it has (`multistate_do`).
         TransferState::Do(x) if !cx.easy().options().connect_only.requests() => (
             TransferState::Done(x.done(Ok(()), false, Reached::Unmade)),
@@ -2406,24 +2511,17 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         ),
         TransferState::Do(mut x) => match x
             .proto
-            .do_it(cx, &mut x.lease)
+            .make(cx, &mut x.lease, DoPhase::Do)
             .map_err(|e| layer_failed(&x.lease, e))
         {
-            Ok(DoStep::More) => {
+            Ok(DoStep::Piece) => {
                 within_do = true;
                 (TransferState::Do(x), Wake::Again)
             }
-            Ok(DoStep::Made) => {
-                // About to send; sent already, with no body
-                // (`mstate_enter_did`).
-                mstate::enter(cx, MState::Did);
-                cx.mark(Timer::PreTransfer);
-                let send = x.proto.wants_send(cx.easy().options());
-                if !send {
-                    cx.mark(Timer::PostTransfer);
-                }
-                (TransferState::Did(x), Wake::Again)
-            }
+            Ok(DoStep::Did) => enter_did(x, cx),
+            // On to its rest, in the same pass (`multistate_do`).
+            Ok(DoStep::Doing) => (TransferState::Doing(x), Wake::Again),
+            Ok(DoStep::More) => (TransferState::DoingMore(x), Wake::Again),
             // A reused connection that died may be the request's
             // trouble: it is made again on a fresh one (`multistate_do`).
             Err(ErrorKind::SendError) if x.lease.conn().reused() => {
@@ -2437,6 +2535,45 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             // A failed request is done with, not cut short (`multistate_do`).
             Err(e) => (
                 TransferState::Done(x.done(Err(e), false, Reached::Unmade)),
+                Wake::Again,
+            ),
+        },
+        // Out of time as the step starts (`multi_handle_timeout`).
+        TransferState::Doing(x) | TransferState::DoingMore(x) if expired(run, cx) => {
+            let kind = timed_out(cx, Phase::Transferring, x.proto.sizes_request());
+            // Either half ends the same: past DO, cut short.
+            (TransferState::Doing(x).fail(kind), Wake::Again)
+        }
+        TransferState::Doing(mut x) => match x
+            .proto
+            .make(cx, &mut x.lease, DoPhase::Doing)
+            .map_err(|e| layer_failed(&x.lease, e))
+        {
+            Ok(DoStep::Did) => enter_did(x, cx),
+            Ok(DoStep::Doing) => (TransferState::Doing(x), Wake::Idle),
+            Ok(DoStep::More) => (TransferState::DoingMore(x), Wake::Again),
+            Ok(DoStep::Piece) => unreachable!("a piece of the request is DO's alone"),
+            // A failed request is done with, not cut short
+            // (`multistate_doing`).
+            Err(e) => (
+                TransferState::Done(x.done(Err(e), false, Reached::Making)),
+                Wake::Again,
+            ),
+        },
+        TransferState::DoingMore(mut x) => match x
+            .proto
+            .make(cx, &mut x.lease, DoPhase::More)
+            .map_err(|e| layer_failed(&x.lease, e))
+        {
+            Ok(DoStep::Did) => enter_did(x, cx),
+            // Back to the first half (DOMORE_GOBACK).
+            Ok(DoStep::Doing) => (TransferState::Doing(x), Wake::Again),
+            Ok(DoStep::More) => (TransferState::DoingMore(x), Wake::Idle),
+            Ok(DoStep::Piece) => unreachable!("a piece of the request is DO's alone"),
+            // A failed request is done with, not cut short
+            // (`multistate_doing_more`).
+            Err(e) => (
+                TransferState::Done(x.done(Err(e), false, Reached::Making)),
                 Wake::Again,
             ),
         },
@@ -2626,7 +2763,11 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 }
                 (next, Wake::Again)
             } else {
-                complete(cx, now, d.reached == Reached::Unmade);
+                complete(
+                    cx,
+                    now,
+                    matches!(d.reached, Reached::Unmade | Reached::Making),
+                );
                 let completed = TransferState::Completed(Completed {
                     outcome: d.result,
                     message: Message::Unread,
@@ -2756,7 +2897,10 @@ fn progress_after_step<H: Host>(
 ) -> (TransferState, Wake) {
     match next {
         mut s @ (TransferState::ProtoConnect(_)
+        | TransferState::ProtoConnecting(_)
         | TransferState::Do(_)
+        | TransferState::Doing(_)
+        | TransferState::DoingMore(_)
         | TransferState::Did(_)
         | TransferState::Exchanging(_)
         | TransferState::RateLimiting(_)) => {

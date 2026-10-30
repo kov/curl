@@ -57,12 +57,12 @@ witness: curl-core proto::file::tests::a_large_file_is_read_in_pieces
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::an_empty_file_is_its_headers
 --- old
-                progress::update(cx, false).map(|()| DoStep::Made)
+                progress::update(cx, false).map(|()| DoStep::Did)
             }
         }
     }
 --- new
-                Ok(DoStep::Made)
+                Ok(DoStep::Did)
             }
         }
     }
@@ -111,10 +111,10 @@ file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_head_request_is_the_headers
 --- old
         if cx.easy().options().method == Method::Head {
-            return Ok(DoStep::Made);
+            return Ok(DoStep::Did);
 --- new
         if cx.easy().options().method == Method::Upload {
-            return Ok(DoStep::Made);
+            return Ok(DoStep::Did);
 
 === a zero byte in the path is a name
 file: crates/curl-core/src/url/encode.rs
@@ -324,10 +324,10 @@ witness: curl-core proto::file::tests::an_upload_is_timed_piece_by_piece
 --- old
         if got.n == 0 {
             self.doing = Doing::Ending { check: false };
-            return Ok(DoStep::More);
+            return Ok(DoStep::Piece);
 --- new
         if got.n == 0 {
-            return progress::update(cx, false).map(|()| DoStep::Made);
+            return progress::update(cx, false).map(|()| DoStep::Did);
 
 === a file transfer's timeout names the size only its progress has
 file: crates/curl-core/src/proto/mod.rs
@@ -349,7 +349,7 @@ witness: curl-core proto::file::tests::a_send_limit_does_not_cut_an_upload_short
         // trailers are asked for.
         if matches!(cx.rate_allowance(crate::progress::rate::Way::Send), Some(..=0)) {
             self.doing = Doing::Ending { check: false };
-            return Ok(DoStep::More);
+            return Ok(DoStep::Piece);
         }
         cx.rate_drain(crate::progress::rate::Way::Send, self.buf.len());
         let got = upload.read(cx, &mut self.buf, false, |_| Ok(Vec::new()));

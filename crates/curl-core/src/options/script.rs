@@ -27,6 +27,15 @@ pub enum Piece {
     /// bytes of each it is given, as a decompressor may make far more than
     /// it reads.
     Expand(usize),
+    /// Before the request: the protocol's connect waits a step
+    /// (PROTOCONNECTING).
+    ProtoConnecting,
+    /// Before the request is made: its first half takes another step
+    /// (DOING), or, in its second half, goes back to it (DOMORE_GOBACK).
+    Doing,
+    /// Before the request is made: its second half takes a step
+    /// (DOING_MORE).
+    DoingMore,
 }
 
 /// The pieces, shared by every copy of the options.

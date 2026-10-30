@@ -76,6 +76,33 @@ enum Doing {
     Ending { check: bool },
 }
 
+/// `file:` opens its file before a connection is leased (`file_connect`,
+/// in `Request::open`), and makes the whole transfer in DO, a piece a
+/// step.
+impl super::Phases for Request {
+    fn connect<H: Host>(
+        &mut self,
+        _: &mut StepCx<'_, H>,
+        _: &mut crate::conn::ConnLease,
+    ) -> Result<super::Connect, ErrorKind> {
+        Ok(super::Connect::Done)
+    }
+
+    fn make<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        _: &mut crate::conn::ConnLease,
+        asked: super::DoPhase,
+    ) -> Result<DoStep, ErrorKind> {
+        assert_eq!(asked, super::DoPhase::Do, "a file is transferred in DO");
+        self.do_it(cx)
+    }
+
+    fn waits(&self, phase: super::Waiting) -> crate::conn::io::Events {
+        phase.c_default()
+    }
+}
+
 impl Request {
     /// The path `url` names, opened to read unless the request is an
     /// upload (`file_connect`). The host is not looked at: the URL's
@@ -140,7 +167,7 @@ impl Request {
                 if check {
                     progress::check(cx, false)?;
                 }
-                progress::update(cx, false).map(|()| DoStep::Made)
+                progress::update(cx, false).map(|()| DoStep::Did)
             }
         }
     }
@@ -169,7 +196,7 @@ impl Request {
         {
             trace::info(cx, format_args!("{unmet}"));
             cx.report_mut().set_condition_unmet();
-            return Ok(DoStep::Made);
+            return Ok(DoStep::Did);
         }
         let mut line = Text::<80>::new();
         if !is_dir {
@@ -187,7 +214,7 @@ impl Request {
         self.pipeline
             .announce_size(cx, u64::try_from(expected).ok());
         if cx.easy().options().method == Method::Head {
-            return Ok(DoStep::Made);
+            return Ok(DoStep::Did);
         }
         let Span {
             mut resume, max, ..
@@ -239,7 +266,7 @@ impl Request {
         }
         if is_dir {
             self.list(cx)?;
-            progress::update(cx, false).map(|()| DoStep::Made)
+            progress::update(cx, false).map(|()| DoStep::Did)
         } else {
             self.read_body(cx, known)
         }
@@ -330,14 +357,14 @@ impl Request {
         let n = read.map_err(|_| ErrorKind::ReadError)?;
         if n == 0 {
             self.doing = Doing::Ending { check: false };
-            return Ok(DoStep::More);
+            return Ok(DoStep::Piece);
         }
         if let Some(left) = &mut left {
             *left -= n as u64;
         }
         self.pipeline.body(cx, &self.buf[..n])?;
         self.doing = Doing::Reading(left);
-        Ok(DoStep::More)
+        Ok(DoStep::Piece)
     }
 
     /// Deliver a directory's names, a line each, but those starting with a
@@ -430,7 +457,7 @@ impl Request {
         let got = got?;
         if got.n == 0 {
             self.doing = Doing::Ending { check: false };
-            return Ok(DoStep::More);
+            return Ok(DoStep::Piece);
         }
         let skipped = usize::try_from(skip).map_or(got.n, |s| s.min(got.n));
         skip -= skipped as u64;
@@ -444,7 +471,7 @@ impl Request {
         } else {
             Doing::Writing { upload, skip }
         };
-        Ok(DoStep::More)
+        Ok(DoStep::Piece)
     }
 }
 

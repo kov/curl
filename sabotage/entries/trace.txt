@@ -243,11 +243,11 @@ witness: curl-core proto::http::tests::multi_trace::a_request_is_traced_through_
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::multi_trace::a_request_is_traced_through_c_s_states
 --- old
-                mstate::enter(cx, MState::Did);
-                cx.mark(Timer::PreTransfer);
+    mstate::enter(cx, MState::Did);
+    cx.mark(Timer::PreTransfer);
 --- new
-                cx.mark(Timer::PreTransfer);
-                mstate::enter(cx, MState::Did);
+    cx.mark(Timer::PreTransfer);
+    mstate::enter(cx, MState::Did);
 
 === a failed request goes through DONE
 file: crates/curl-core/src/multi/state.rs

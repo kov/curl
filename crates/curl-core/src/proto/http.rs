@@ -537,6 +537,33 @@ enum Body {
     Stream,
 }
 
+/// HTTP connects as its connection is set up, and makes its request in
+/// DO's one step (`Curl_protocol_http`: no `connect_it`, `connecting`,
+/// `doing` or `do_more`).
+impl super::Phases for Request {
+    fn connect<H: Host>(
+        &mut self,
+        _: &mut StepCx<'_, H>,
+        _: &mut ConnLease,
+    ) -> Result<super::Connect, ErrorKind> {
+        Ok(super::Connect::Done)
+    }
+
+    fn make<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        asked: super::DoPhase,
+    ) -> Result<super::DoStep, ErrorKind> {
+        assert_eq!(asked, super::DoPhase::Do, "HTTP's request is made in DO");
+        self.do_it(cx, lease).map(|()| super::DoStep::Did)
+    }
+
+    fn waits(&self, phase: super::Waiting) -> Events {
+        phase.c_default()
+    }
+}
+
 impl Request {
     /// What it may speak, as C negotiates it.
     pub(crate) fn negotiation(&self) -> Negotiation {
@@ -913,7 +940,7 @@ impl Request {
     }
 
     /// When a body waiting for a 100 is sent anyway.
-    pub(crate) fn wake_at(&self) -> Option<Instant> {
+    pub(crate) fn due(&self) -> Option<Instant> {
         match self.outgoing {
             Sending::AwaitingContinue(until) => Some(until),
             _ => None,

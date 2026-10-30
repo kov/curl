@@ -812,3 +812,45 @@ witness: curl-core proto::http::tests::h3_trace::a_tunnel_s_input_taken_in_as_th
 }
 
 /// Whether the speed limits
+
+=== a reused connection's protocol connects again
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_reused_connection_skips_the_protocol_connect
+--- old
+        TransferState::ProtoConnect(x) if x.lease.conn().reused() => enter_do(x, cx),
+--- new
+        TransferState::ProtoConnect(x) if false => enter_do(x, cx),
+
+=== a waiting protocol connect is timed on the transfer limit
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_waiting_protocol_connect_times_out_at_the_connect_limit
+--- old
+                    .time_left(starts(cx), cx.rest.now, Phase::Connecting),
+--- new
+                    .time_left(starts(cx), cx.rest.now, Phase::Transferring),
+
+=== DOING runs again in the same pass
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_protocol_waits_in_c_s_phases
+--- old
+            Ok(DoStep::Doing) => (TransferState::Doing(x), Wake::Idle),
+--- new
+            Ok(DoStep::Doing) => (TransferState::Doing(x), Wake::Again),
+
+=== DOMORE_GOBACK stays in DOING_MORE
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_protocol_waits_in_c_s_phases
+--- old
+            // Back to the first half (DOMORE_GOBACK).
+            Ok(DoStep::Doing) => (TransferState::Doing(x), Wake::Again),
+--- new
+            // Back to the first half (DOMORE_GOBACK).
+            Ok(DoStep::Doing) => (TransferState::DoingMore(x), Wake::Again),
+
+=== a protocol connect waits to send
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core multi::tests::a_reused_connection_skips_the_protocol_connect
+--- old
+            Waiting::Connecting => Events::IN,
+--- new
+            Waiting::Connecting => Events::OUT,

@@ -465,6 +465,14 @@ fn helo_follows_a_refused_ehlo() {
         ran.text
     );
 
+    // TLS only tried: HELO in the clear.
+    let talk = Conversation::replies(&[GREETING, refused, OK, b"214 help\r\n"], false).greeting();
+    let ran = transfer(&mut serving(&[&talk]), URL, |o| {
+        o.line.make_mut().unwrap().use_ssl = UseSsl::Try;
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(received(&talk), "EHLO 900\r\nHELO 900\r\nHELP\r\n");
+
     // TLS required over a clear connection: no HELO.
     let talk = Conversation::replies(&[GREETING, refused], false).greeting();
     let ran = transfer(&mut serving(&[&talk]), URL, |o| {
@@ -551,6 +559,16 @@ fn sasl_continues_on_334() {
         |_| {},
     );
     assert_eq!(ran.result, Err(ErrorKind::LoginDenied));
+    // Refused after the whole login went with its first line.
+    let plain_ehlo: &[u8] = b"250-hi\r\n250 AUTH PLAIN\r\n";
+    let talk = Conversation::replies(&[GREETING, plain_ehlo, b"535 bad\r\n"], false).greeting();
+    let ran = transfer(
+        &mut serving(&[&talk]),
+        "smtp://u:p@127.0.0.1:PORT/900",
+        |o| o.line.make_mut().unwrap().sasl_ir = true,
+    );
+    assert_eq!(ran.result, Err(ErrorKind::LoginDenied));
+    assert_eq!(received(&talk), "EHLO 900\r\nAUTH PLAIN AHUAcA==\r\n");
 }
 
 /// A server that offers STARTTLS and says go ahead, `after` with it.

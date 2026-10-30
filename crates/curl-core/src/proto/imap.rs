@@ -6,7 +6,7 @@
 //! an `APPEND` of what the transfer uploads, or the application's own.
 //! A `FETCH`'s body is the literal its answer announces, `{N}` bytes,
 //! read to its size and no further; the tagged answer after it, or after
-//! an `APPEND`'s body, is read as the transfer ends.
+//! an `APPEND`'s body, is read in DONE, as C's `imap_done` reads it.
 
 use std::num::NonZeroU32;
 
@@ -15,7 +15,7 @@ use curl_alloc::{TryArc, TryVec as _};
 use super::pingpong::Pingpong;
 use super::pingpong::drive::{self, Read};
 use super::pingpong::imap::{Continuations, Imap, ImapReply, Tag, Untagged, literal};
-use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
+use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
 use crate::auth::creds::{CredentialGate, Credentials, Takes};
 use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl, SaslError};
 use crate::conn::io::{Events, Recv, Sent};
@@ -190,7 +190,7 @@ struct Asked {
     custom_params: Option<Vec<u8>>,
 }
 
-/// The answer the transfer's end reads, after the body (`imap_done`).
+/// The answer DONE reads, after the body (`imap_done`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Final {
     /// None: nothing was fetched or appended.
@@ -244,9 +244,9 @@ pub(crate) struct Request {
     receiving: Option<u64>,
     /// The `APPEND`'s body, while it goes (`KEEP_SEND`).
     sending: Option<Box<Sending>>,
-    /// The answer the transfer's end reads, and what came of it.
+    /// The answer DONE reads, and where its blocking drive's round is.
     last: Final,
-    finished: Option<Result<(), ErrorKind>>,
+    round: drive::Blocking,
     /// The request ran to its end (`req.done`).
     received: bool,
     /// The `APPEND`'s body is all sent (`upload_done`): the server's
@@ -339,7 +339,7 @@ impl Request {
             receiving: None,
             sending: None,
             last: Final::None,
-            finished: None,
+            round: drive::Blocking::default(),
             received: false,
             upload_done: false,
             due: None,
@@ -400,10 +400,9 @@ impl Request {
     }
 
     /// Whether the request, once made, has anything more to do over the
-    /// connection: a literal to read, a body to send, or the answer after
-    /// either to read.
+    /// connection before DONE: a literal to read or a body to send.
     pub(crate) fn exchanges(&self) -> bool {
-        !self.nothing_after || self.last != Final::None
+        !self.nothing_after
     }
 
     /// Whether the `APPEND`'s body has more to send.
@@ -425,8 +424,6 @@ impl Request {
             } else {
                 Events::OUT
             }
-        } else if self.last != Final::None && self.finished.is_none() {
-            self.wants
         } else {
             Events::NONE
         }
@@ -434,25 +431,53 @@ impl Request {
 
     /// The transfer is over (`imap_done`): one that failed or was cut
     /// short leaves its connection to close; one that fetched or appended
-    /// fails as the answer after its body said.
+    /// reads the answer after its body, the empty line that ends an
+    /// `APPEND` sent first, and fails as it says. `exchanged` is C's
+    /// `req.done`, which the progress checked meanwhile reads.
     pub(crate) fn done<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
         result: Result<(), ErrorKind>,
         premature: bool,
-    ) -> Result<(), ErrorKind> {
+        exchanged: bool,
+    ) -> Finish {
         if result.is_err() || premature {
             crate::multi::mstate::trace(cx, format_args!("IMAP done, not finalizing transfer"));
             lease.get().mark_close();
-            return result;
+            return Finish::Done(result);
         }
-        self.finished.unwrap_or(Ok(()))
+        let (pc, mut carrier) = imap_of(lease);
+        match self.last {
+            Final::None => return Finish::Done(Ok(())),
+            Final::Fetch => set_state(cx, pc, State::FetchFinal),
+            Final::Append => {
+                if let Err(e) = drive::send(cx, &mut pc.pp, &mut carrier, None, &[]) {
+                    return Finish::Done(Err(e));
+                }
+                set_state(cx, pc, State::AppendFinal);
+            }
+        }
+        self.finishing(cx, lease, exchanged)
     }
 
-    /// The exchange after the request (`Curl_sendrecv`, then `imap_done`):
-    /// the literal read to its size, or the body sent, then the answer
-    /// after it read.
+    /// Read on the answer `done` awaits (`imap_block_statemach`), as far
+    /// as the connection lets it now.
+    pub(crate) fn finishing<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        exchanged: bool,
+    ) -> Finish {
+        match self.run_done(cx, lease, exchanged) {
+            Ok(true) => Finish::Done(Ok(())),
+            Ok(false) => Finish::Waiting,
+            Err(e) => Finish::Done(Err(e)),
+        }
+    }
+
+    /// The exchange after the request (`Curl_sendrecv`): the literal read
+    /// to its size, or the body sent.
     pub(crate) fn step<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -483,22 +508,7 @@ impl Request {
             return Ok(ProtoStep::Blocked);
         }
         self.received = true;
-        if self.last == Final::None || self.finished.is_some() {
-            return Ok(ProtoStep::Done);
-        }
-        match self.finish(cx, lease) {
-            Ok(false) => Ok(ProtoStep::Blocked),
-            Ok(true) => {
-                self.finished = Some(Ok(()));
-                Ok(ProtoStep::Done)
-            }
-            // The answer's failure is the transfer's end's
-            // (`imap_done`): the request ran to its end.
-            Err(e) => {
-                self.finished = Some(Err(e));
-                Ok(ProtoStep::Done)
-            }
-        }
+        Ok(ProtoStep::Done)
     }
 
     /// Read the literal on, at most as many reads as a step makes, none
@@ -675,27 +685,6 @@ impl Request {
         }
     }
 
-    /// Read the answer after the body, the empty line that ends an
-    /// `APPEND` sent first (`imap_done`): whether it came.
-    fn finish<H: Host>(
-        &mut self,
-        cx: &mut StepCx<'_, H>,
-        lease: &mut ConnLease,
-    ) -> Result<bool, ErrorKind> {
-        let (pc, mut carrier) = imap_of(lease);
-        if pc.state == State::Stop {
-            match self.last {
-                Final::Fetch => set_state(cx, pc, State::FetchFinal),
-                Final::Append => {
-                    drive::send(cx, &mut pc.pp, &mut carrier, None, &[])?;
-                    set_state(cx, pc, State::AppendFinal);
-                }
-                Final::None => return Ok(true),
-            }
-        }
-        self.run(cx, lease)
-    }
-
     /// The connection's IMAP state, set up the first time
     /// (`imap_connect`): the URL's or the application's login options
     /// read, the greeting awaited, tagged `*`.
@@ -757,6 +746,36 @@ impl Request {
             self.due = None;
         }
         Ok(stopped)
+    }
+
+    /// Run the back and forth on in DONE, as C's blocking drive runs it
+    /// (`imap_block_statemach`) but without waiting: whether it stopped.
+    fn run_done<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        exchanged: bool,
+    ) -> Result<bool, ErrorKind> {
+        let limit = cx.easy().options().line.server_response;
+        let (pc, mut carrier) = imap_of(lease);
+        loop {
+            let round = &mut self.round;
+            let (runs, due) = drive::runs_done(cx, &pc.pp, &mut carrier, limit, exchanged, round)?;
+            self.due = Some(due);
+            if runs {
+                self.machine(cx, pc, &mut carrier)?;
+            }
+            self.wants = drive::waits(&pc.pp);
+            if pc.state == State::Stop {
+                self.due = None;
+                return Ok(true);
+            }
+            // C loops at once on what it holds; what the socket brings
+            // wakes the transfer.
+            if !runs || !drive::holds(&pc.pp, &mut carrier) {
+                return Ok(false);
+            }
+        }
     }
 
     /// The state machine (`imap_pp_statemachine`).

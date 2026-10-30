@@ -814,7 +814,7 @@ pub(crate) enum TransferState {
     Did(Attached),                     // DID: one step, to Exchanging or, with nothing to exchange, Done
     Exchanging(Attached),              // PERFORMING
     RateLimiting(Attached),            // RATELIMITING: over a speed limit, waits on its timer
-    Done(Done),                        // multi_done pending; always holds the lease
+    Done(Done),                        // multi_done pending or awaiting the protocol's answer; holds the lease
     Completed(Completed),              // terminal until remove
 }
 type Origin = TryArc<Peer>;          // the request's peer, shared with its connection's route
@@ -828,7 +828,9 @@ pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, route: NetRo
 pub(crate) struct Attached { lease: ConnLease, proto: ProtoState, origin: Option<Origin> }
 pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>, result: Result<(), ErrorKind>,
                          premature: bool, reached: Reached, origin: Option<Origin>,
-                         next: AfterRequest }
+                         next: AfterRequest, ending: Ending }
+enum Ending { Ahead, Waiting, Cut }   // multi_done not begun; its protocol's done awaits an answer;
+                                      // that wait given up (failed or removed), the connection closing
 enum Reached { Unmade, Made, Exchanged }  // DID's times taken; the exchange ran to its end
 pub(crate) enum AfterRequest { Complete, Retry, Follow { location: Vec<u8>, code: u16 } }
                                                   // the protocol's `exchanged` decides it
@@ -888,7 +890,14 @@ retry of a transfer fails it with SendError.
   protocol `done` if past PROTOCONNECT, `pgrs_done` if past CONNECTING, then
   `pool.release(lease, verdict)` — and goes to `Completed`. Because `Done` owns the lease until
   that last step, a connection can never return to the pool before the protocol has finished
-  with it. Output still held at `Done` is that of a failed request and is dropped with the
+  with it. A protocol's `done` may await its last answer (`proto::Finish::Waiting`), as IMAP's
+  after a FETCH or an APPEND, which C reads blocking (`imap_block_statemach`): the `Done` step
+  then rests, `Ending::Waiting`, its head (the "multi_done" line, the premature verdict) run
+  once, waiting for what the protocol's `waits(Waiting::Done)` and `due` say, and each wake
+  runs `finishing` until it is over; no progress pass follows its steps, as none follows C's
+  call. A failure meanwhile (a dead multi) or a removal gives the wait up (`Ending::Cut`), the
+  connection closed. The others of the multi go on meanwhile, where C's wait stalls them
+  (DIVERGENCE.md). Output still held at `Done` is that of a failed request and is dropped with the
   protocol; a request that succeeds reaches `Done` only with nothing held (§3.2).
 - **A failure without a connection** (Init's setup) goes straight to `Completed`. A failure
   holding a lease, from `Connecting` on, goes through `Done { result: Err(..), premature: true
@@ -910,7 +919,9 @@ with no defaults that each protocol's state implements and `ProtoState` dispatch
 `connect` (C's `connect_it`, then `connecting`) answers `Connect { Done, Waiting }`, `make` is
 asked in a `DoPhase { Do, Doing, More }` and answers the phase it goes on in
 (`DoStep { Did, Doing, More, Piece }`), and `waits(Waiting)` is the pollset of each waiting
-phase, `Waiting::c_default` C's (IN while connecting, OUT while making the request). HTTP and
+phase, `Waiting::c_default` C's (IN while connecting, OUT while making the request, nothing in
+DONE, where C blocks); `ProtoState::done` answers a `Finish { Done(result), Waiting }`, and
+`finishing` reads on what it awaits (§3.1). HTTP and
 `file:` connect at once and make their request in DO; `script:` reads its phases from the
 script's first pieces. A request's substates belong to its protocol, inside `ProtoState`; the engine sees only
 `ProtoStep { Done, Blocked, AtReadLimit }` from a step and asks whether output is held. The HTTP driver
@@ -988,7 +999,7 @@ before DID and none from Done on (§3.6).
 | Exchanging | Done | request complete with output not held, or a retry: `next` is Complete or Retry (Follow with redirects); FOLLOW_FAKE writes `report.redirect_url` |
 | connected | Done(Err) | progress callback abort |
 | any live | fail | an error, a timeout, `remove`, or a dead multi (AbortedByCallback) |
-| Done | (leg) / Completed | `multi_done`'s order; Retry (and Follow) start the next leg |
+| Done | (leg) / Completed / Done | `multi_done`'s order; Retry (and Follow) start the next leg; rests while the protocol's `done` awaits its answer |
 | Completed{Unread} | Completed{Read} | `info_read` |
 
 "Setup" is not a resting state: C's SETUP and CONNECT always run in the same pass, so they are
@@ -3425,15 +3436,19 @@ protocol's phases (the drive, below).
 - **IMAP's transfer ends with an answer.** A FETCH's literal (`{N}`) is the body, what came
   with its line written at once and the rest read to its size and no further (`Expect::max`);
   the tagged answer after it, or after an APPEND's body and the empty line that ends it, is
-  read in PERFORMING once the body is done (C reads it blocking in `imap_done`), and its
-  refusal is the transfer's result, the request having run to its end, so the connection is
-  kept. Whether a transfer goes from DID to PERFORMING is the connection's `recv_idx` as C
-  leaves it: a transfer that set up nothing (a FETCH whose literal came whole, `-I`) leaves
-  the next one that sets up nothing to go to DONE (`ImapConn::no_socket`). An APPEND's body
-  is read as the send limit allows and sent as C's request buffer sends it (`xfer_send`),
-  its end taking the post-transfer time and starting the response's time for the answer
-  (`req_set_upload_done`). Credentials go to a redirect's other host only as HTTP's do
-  (`CredentialGate`).
+  read in DONE, after `multi_done` begins, as C's `imap_done` reads it, and its refusal is the
+  transfer's result, so the connection is kept. C reads it blocking; the drive's `runs_done`
+  is C's blocking `Curl_pp_statemach` made rounds of a wait (`drive::Blocking`): each starts
+  with the time to answer ("server response timeout", the transfer's own limit among it),
+  polls at most a second, then checks the progress as C does after each poll, and runs the
+  step if the poll found it ready; no timer is armed for C to hear of. Whether a transfer goes
+  from DID to PERFORMING is the connection's `recv_idx` as C leaves it: a transfer that set
+  up nothing (a FETCH whose literal came whole, `-I`) goes to DONE, and leaves the next one
+  that sets up nothing to go there too (`ImapConn::no_socket`); output the application paused
+  is delivered in PERFORMING first, where C goes to DONE and drops it. An APPEND's body is
+  read as the send limit allows and sent as C's request buffer sends it (`xfer_send`), its end
+  taking the post-transfer time; the answer's first line starts the response's time. Credentials go to a redirect's other host only as
+  HTTP's do (`CredentialGate`).
 - **STARTTLS** upgrades in place (`multi::state::tls::upgrade`): the origin's session, made
   with the route's upgrade settings and offering no ALPN, goes on the carrier's stream once,
   and each call moves its handshake on; the protocol then asks for its capabilities again.

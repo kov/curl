@@ -194,7 +194,7 @@ fn request() -> Request {
         receiving: None,
         sending: None,
         last: Final::None,
-        finished: None,
+        round: drive::Blocking::default(),
         received: false,
         upload_done: false,
         due: None,

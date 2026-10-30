@@ -619,9 +619,11 @@ fn the_application_s_login_stays_with_the_first_host() {
 }
 
 /// A transfer goes from DID to PERFORMING while the connection has a
-/// socket to exchange on, as C's `recv_idx` says: one after a transfer
-/// that set up nothing (a FETCH whose literal came whole) goes to DONE,
-/// one on a fresh connection does not (`multistate_did`).
+/// socket to exchange on, as C's `recv_idx` says: a FETCH whose literal
+/// came whole sets up nothing and goes to DONE, which reads the answer
+/// after it once `multi_done` has begun, as C's `imap_done` does; one
+/// after it that sets up nothing goes to DONE too, one on a fresh
+/// connection does not (`multistate_did`).
 #[test]
 fn a_transfer_after_one_that_set_up_nothing_goes_to_done() {
     let fetched = b"* 1 FETCH (BODY[] {2}\r\nhi)\r\nA004 OK\r\n";
@@ -635,9 +637,15 @@ fn a_transfer_after_one_that_set_up_nothing_goes_to_done() {
     let ran = tracing(&mut m, &plain(), FETCH_URL, b"multi", |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.body, b"hi");
-    // The answer after the literal is read in PERFORMING, where C goes
-    // to DONE and reads it there, blocking (DIVERGENCE.md).
-    assert!(ran.text.contains("[DID] -> [PERFORMING]"), "{}", ran.text);
+    let text = &ran.text;
+    assert!(text.contains("[DID] -> [DONE]"), "{text}");
+    assert!(!text.contains("[PERFORMING]"), "{text}");
+    if cfg!(feature = "debug-hooks") {
+        let done = text.find("[MULTI] [DONE] multi_done: status: 0 prem: 0 done: 0");
+        let last = text.find("state change from STOP to FETCH_FINAL");
+        let stop = text.find("state change from FETCH_FINAL to STOP");
+        assert!(done.is_some() && last > done && stop > last, "{text}");
+    }
     let list = "imap://u:p@127.0.0.1:PORT/";
     let ran = tracing(&mut m, &plain(), list, b"multi", |_| {});
     assert_eq!(ran.result, Ok(()));
@@ -1261,10 +1269,17 @@ fn an_append_s_body_is_sent_and_timed_as_c_s() {
                     [MULTI] [PERFORMING] [PGRS-POSTRANSFER] added";
         assert!(text.contains(sent), "{text}");
     }
-    let done = text.find("upload completely sent off: 5 bytes\n");
-    let started = text.find("[MULTI] [PERFORMING] [PGRS-STARTTRANSFER]");
-    assert!(done.is_some() && started > done, "{text}");
+    // The answer is read in DONE, after `multi_done` begins, as C's
+    // `imap_done` reads it: its first line starts the response's time.
+    let sent = text.find("upload completely sent off: 5 bytes\n");
+    let done = text.find("[MULTI] [DONE] multi_done: status: 0 prem: 0 done: 0");
+    let started = text.find("[MULTI] [DONE] [PGRS-STARTTRANSFER]");
+    assert!(sent.is_some() && done > sent && started > done, "{text}");
     assert!(!text.contains("[DID] [PGRS-POSTRANSFER]"), "{text}");
+    if cfg!(feature = "debug-hooks") {
+        let last = text.find("state change from STOP to APPEND_FINAL");
+        assert!(last > done && started > last, "{text}");
+    }
 
     // A FETCH sends nothing after DID, which takes the time.
     let talk = fetching(&[]);
@@ -1419,4 +1434,156 @@ fn an_append_s_body_keeps_to_the_send_limit() {
     }
     assert!(ran.text.contains("[RLIMIT] waiting"), "{}", ran.text);
     assert!(ran.total.as_millis() >= 2000, "{:?}", ran.total);
+}
+
+/// What the server says to an `APPEND` of "hello", its tagged answer the
+/// fifth reply, which the held peer gives only once let.
+fn appending() -> Conversation {
+    Conversation::replies(
+        &[GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"A003 OK\r\n"],
+        false,
+    )
+    .greeting()
+    .held()
+}
+
+fn hello(o: &mut Options) {
+    o.method = Method::Upload;
+    o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"hello".to_vec()).unwrap());
+}
+
+/// An `APPEND`'s answer is awaited in DONE without stalling the multi's
+/// other transfers. C reads it blocking in `imap_done`, so a transfer
+/// beside it waits for it: measured with `curl -Z` against a server that
+/// answers a second late, C's `LIST` beside the `APPEND` took 1.003 s,
+/// ours 1.5 ms (DIVERGENCE.md). The same goes for a `FETCH` beside it.
+#[test]
+fn an_answer_awaited_in_done_stalls_no_other_transfer() {
+    let append = appending();
+    append.allow(4);
+    // The second connection's tags are `B`'s.
+    let list = second_connection();
+    let mut m = serving(&[&append, &list]);
+    let url = "imap://u:p@127.0.0.1:PORT/Sent";
+    let (appender, text) = added(&mut m, url, b"multi", Body(Arc::default()), hello);
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+    assert!(said.contains("[PERFORMING] -> [DONE]"), "{said}");
+    assert!(m.info_read().is_none(), "the APPEND's answer is awaited");
+    let (fetcher, _) = added(&mut m, FETCH_URL, b"", Body(Arc::default()), |_| {});
+    let fetched = drive_to_completion(&mut m, fetcher, &mut NoEvents).unwrap();
+    assert_eq!(fetched, Ok(()));
+    assert!(m.info_read().is_none(), "the APPEND still waits");
+    append.allow(5);
+    let appended = drive_to_completion(&mut m, appender, &mut NoEvents).unwrap();
+    assert_eq!(appended, Ok(()));
+}
+
+/// An answer awaited in DONE that does not come in time fails the
+/// transfer as C's blocking drive fails it, "server response timeout".
+#[test]
+fn an_answer_awaited_in_done_times_out_as_the_server_s() {
+    let append = appending();
+    append.allow(4);
+    let mut m = serving(&[&append]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/Sent", |o| {
+        hello(o);
+        o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(2500);
+    });
+    assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+    assert!(ran.text.contains("server response timeout"), "{}", ran.text);
+    let total = ran.total.as_millis();
+    assert!((2500..2600).contains(&total), "{total} ms");
+}
+
+/// A transfer taken out of the multi as DONE awaits its answer ends
+/// there: the wait given up, and its connection, left within an answer,
+/// closed rather than kept.
+#[test]
+fn a_transfer_removed_as_its_answer_is_awaited_closes_its_connection() {
+    let append = appending();
+    append.allow(4);
+    let mut m = serving(&[&append]);
+    let url = "imap://u:p@127.0.0.1:PORT/Sent";
+    let (id, text) = added(&mut m, url, b"", Body(Arc::default()), hello);
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(m.info_read().is_none(), "the answer is awaited");
+    m.remove(id, &mut NoEvents).unwrap();
+    let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+    assert!(said.contains("closing connection #0"), "{said}");
+}
+
+/// Under a send limit, an `APPEND` of 5000 bytes at 1000 a second takes
+/// C's 4 s: its answer is read in DONE, past the limit's last wait
+/// (measured against the C build: 4.0 s).
+#[test]
+fn an_append_under_a_send_limit_takes_c_s_time() {
+    let talk = Conversation::replies(
+        &[GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"A003 OK\r\n"],
+        false,
+    )
+    .greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/Sent", |o| {
+        o.method = Method::Upload;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 5000]).unwrap());
+        o.flow.make_mut().unwrap().max_send_speed = std::num::NonZeroU64::new(1000);
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let total = ran.total.as_millis();
+    assert!((4000..4100).contains(&total), "{total} ms");
+}
+
+/// A timer handler that aborts the multi once told to.
+#[derive(Default)]
+struct AbortsTimer {
+    armed: bool,
+}
+
+impl crate::multi::MultiEvents<crate::multi::NoHost> for AbortsTimer {
+    fn timer(
+        &mut self,
+        _: &mut crate::multi::EventCx<'_, crate::multi::NoHost>,
+        _: crate::multi::TimerChange,
+    ) -> Result<(), crate::multi::Abort> {
+        if self.armed {
+            return Err(crate::multi::Abort);
+        }
+        Ok(())
+    }
+
+    fn wants_timer(&self) -> bool {
+        true
+    }
+}
+
+/// A multi a callback aborts as a transfer's DONE awaits its answer
+/// fails the transfer there: the wait given up, its connection, left
+/// within an answer, closed.
+#[test]
+fn a_dead_multi_ends_an_answer_awaited_in_done() {
+    let append = appending();
+    append.allow(4);
+    let mut m = serving(&[&append]);
+    let url = "imap://u:p@127.0.0.1:PORT/Sent";
+    let (id, text) = added(&mut m, url, b"", Body(Arc::default()), hello);
+    let mut ev = AbortsTimer::default();
+    for _ in 0..20 {
+        let _ = m.perform(&mut ev);
+    }
+    assert!(m.info_read().is_none(), "the answer is awaited");
+    ev.armed = true;
+    let ended = crate::multi::drive_within(&mut m, id, 10, &mut ev);
+    ev.armed = false;
+    let ended = match ended {
+        Ok(ended) => ended,
+        Err(_) => crate::multi::drive_within(&mut m, id, 10, &mut ev).unwrap(),
+    };
+    assert_eq!(ended, Err(ErrorKind::AbortedByCallback));
+    let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+    assert!(said.contains("closing connection #0"), "{said}");
 }

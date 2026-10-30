@@ -394,10 +394,12 @@ witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_at
 --- old
                 next: AfterRequest::Complete,
                 race: c.race,
+                ending: Ending::Ahead,
             }),
 --- new
                 next: AfterRequest::Complete,
                 race: None,
+                ending: Ending::Ahead,
             }),
 
 === an HTTP/3 second is polled before the TCP first it races

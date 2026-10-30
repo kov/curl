@@ -239,13 +239,16 @@ pub(crate) enum Waiting {
     Doing,
     /// DOING_MORE.
     More,
+    /// DONE, the protocol's last answer of the request awaited, which C
+    /// reads blocking in its `done`.
+    Done,
 }
 
 impl Waiting {
     /// What C waits for in the phase when the protocol says nothing of
     /// its own (`mstate_protocol_pollset`, `mstate_do_pollset`,
     /// `mstate_domore_pollset`): something from the server while it
-    /// connects, to send while it makes the request.
+    /// connects, to send while it makes the request, nothing in DONE.
     #[cfg_attr(
         not(any(test, feature = "test-util")),
         expect(dead_code, reason = "the protocols built say what they wait for")
@@ -254,8 +257,20 @@ impl Waiting {
         match self {
             Waiting::Connecting => Events::IN,
             Waiting::Doing | Waiting::More => Events::OUT,
+            Waiting::Done => Events::NONE,
         }
     }
+}
+
+/// Where a protocol's end of a request stands (C's `done`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Finish {
+    /// Over, with this result.
+    Done(Result<(), ErrorKind>),
+    /// Its last answer is awaited, as the protocol's `waits(Waiting::Done)`
+    /// and `due` say: C blocks on it (`imap_block_statemach`); the
+    /// transfer waits in DONE instead, the others going on.
+    Waiting,
 }
 
 /// What a protocol does before its request is made: its connect over
@@ -931,7 +946,10 @@ impl ProtoState {
 
     /// The request is over, with `result` so far, and `next` to follow it
     /// (C's `done`): what the protocol says of it, and what HTTP's next
-    /// request takes from it into `http`.
+    /// request takes from it into `http`; or that it awaits its last
+    /// answer, which [`ProtoState::finishing`] reads on. `exchanged` is
+    /// C's `req.done`: the exchange ran to its end.
+    #[expect(clippy::too_many_arguments, reason = "C's done and what it reads")]
     pub(crate) fn done<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -940,16 +958,32 @@ impl ProtoState {
         premature: bool,
         next: &AfterRequest,
         http: &mut Inherited,
-    ) -> Result<(), ErrorKind> {
+        exchanged: bool,
+    ) -> Finish {
         match *self {
-            ProtoState::Http(ref mut r) => r.done(cx, lease, result, premature, next, http),
-            ProtoState::Pop3(ref mut r) => r.done(cx, lease, result),
-            ProtoState::Imap(ref mut r) => r.done(cx, lease, result, premature),
-            ProtoState::File(_) => result,
+            ProtoState::Http(ref mut r) => {
+                Finish::Done(r.done(cx, lease, result, premature, next, http))
+            }
+            ProtoState::Pop3(ref mut r) => Finish::Done(r.done(cx, lease, result)),
+            ProtoState::Imap(ref mut r) => r.done(cx, lease, result, premature, exchanged),
+            ProtoState::File(_) => Finish::Done(result),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
-                result
+                Finish::Done(result)
             }
+        }
+    }
+
+    /// Read on the last answer its `done` awaits.
+    pub(crate) fn finishing<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        exchanged: bool,
+    ) -> Finish {
+        match *self {
+            ProtoState::Imap(ref mut r) => r.finishing(cx, lease, exchanged),
+            _ => unreachable!("only IMAP awaits an answer as its request ends"),
         }
     }
 }

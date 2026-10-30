@@ -538,6 +538,23 @@ pub(crate) struct Done {
     /// The race its setup ran, if it failed racing: its attempt out of
     /// the lease goes with the lease's.
     race: Option<Box<Race>>,
+    /// How far its end is.
+    ending: Ending,
+}
+
+/// How far a request's end (`multi_done`) is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ending {
+    /// Not begun.
+    Ahead,
+    /// Begun, its protocol's `done` awaiting the last answer, which C
+    /// reads blocking (`imap_block_statemach`): the transfer waits in
+    /// DONE for what the protocol waits for.
+    Waiting,
+    /// Begun, and the protocol's wait given up, the transfer failed or
+    /// taken out of the multi meanwhile: its connection, left within an
+    /// answer, closes.
+    Cut,
 }
 
 impl Done {
@@ -716,6 +733,11 @@ impl TransferState {
         self.attached().is_some_and(|x| x.proto.holds_output())
     }
 
+    /// Whether its request's end waits for its protocol's last answer.
+    pub(crate) fn awaits_end(&self) -> bool {
+        matches!(self, TransferState::Done(d) if d.ending == Ending::Waiting)
+    }
+
     pub(crate) fn is_completed(&self) -> bool {
         matches!(self, TransferState::Completed(_))
     }
@@ -741,6 +763,9 @@ impl TransferState {
             | TransferState::Did(x)
             | TransferState::Exchanging(x)
             | TransferState::RateLimiting(x) => x.proto.due(),
+            TransferState::Done(d) if d.ending == Ending::Waiting => {
+                d.proto.as_ref().and_then(ProtoState::due)
+            }
             _ => None,
         }
     }
@@ -765,6 +790,7 @@ impl TransferState {
                 origin: Some(c.route.origin),
                 next: AfterRequest::Complete,
                 race: c.race,
+                ending: Ending::Ahead,
             }),
             TransferState::ProtoConnect(x)
             | TransferState::ProtoConnecting(x)
@@ -776,6 +802,15 @@ impl TransferState {
             | TransferState::Exchanging(x)
             | TransferState::RateLimiting(x) => {
                 TransferState::Done(x.done(Err(err), true, Reached::Made))
+            }
+            // Its protocol's wait is given up, the first failure kept.
+            TransferState::Done(mut d) if d.ending == Ending::Waiting => {
+                d.lease.get().mark_close();
+                d.ending = Ending::Cut;
+                if d.result.is_ok() {
+                    d.result = Err(err);
+                }
+                TransferState::Done(d)
             }
             s @ (TransferState::Done(_) | TransferState::Completed(_)) => s,
         }
@@ -828,6 +863,7 @@ impl TransferState {
                 origin: Some(c.route.origin),
                 next: AfterRequest::Complete,
                 race: c.race,
+                ending: Ending::Ahead,
             },
             TransferState::ProtoConnect(x)
             | TransferState::ProtoConnecting(x)
@@ -840,13 +876,22 @@ impl TransferState {
             TransferState::Did(x)
             | TransferState::Exchanging(x)
             | TransferState::RateLimiting(x) => x.done(Ok(()), true, Reached::Made),
-            TransferState::Done(_) => {
-                unreachable!("a request's end is run by the step that reaches it")
+            // Taken out as its protocol awaits its last answer: the wait
+            // is given up, the end premature, so the connection closes.
+            TransferState::Done(mut d) => {
+                assert_eq!(
+                    d.ending,
+                    Ending::Waiting,
+                    "a request's end is run by the step that reaches it"
+                );
+                d.premature = true;
+                d.ending = Ending::Cut;
+                d
             }
         };
         // C drops what `multi_done` says as the handle leaves: an abort
         // the progress handler asks for has nothing left to stop.
-        let _ended = multi_done(cx, http, done);
+        let _ended = multi_done(cx, http, done).ok();
     }
 }
 
@@ -861,30 +906,67 @@ struct RequestEnd {
 
 /// The request is over, whole, failed or taken out of the multi
 /// (`multi_done`): the protocol says its last, the progress its last,
-/// the output and the request end, and the connection goes back.
-fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done) -> RequestEnd {
+/// the output and the request end, and the connection goes back. A
+/// protocol that awaits its last answer leaves it waiting in DONE,
+/// given back to be run again as what it waits for comes.
+#[expect(
+    clippy::result_large_err,
+    reason = "the waiting end goes back to the transfer's state, which holds it whole"
+)]
+fn multi_done<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    http: &mut Inherited,
+    mut d: Done,
+) -> Result<RequestEnd, Done> {
     // A key's connection is in its place outside a step, as a removed
     // transfer's is.
     cx.rest.caches.pool.check_out(&mut d.lease);
     // Whether the request was cut short is decided by how it ended, not
     // by the protocol's last word, which comes first.
     let mut premature = d.premature || is_premature(d.result);
-    // A failure other than its stream's closes an HTTP/2 connection,
-    // which outlives a request otherwise (`multistate_performing`'s
-    // `streamclose`).
-    if d.result.is_err_and(|e| e != ErrorKind::Http2Stream) && d.lease.multiplexes() {
-        d.lease.get().mark_close();
-    }
-    mstate::trace(
-        cx,
-        format_args!(
-            "multi_done: status: {} prem: {} done: 0",
-            trace::Code(d.result),
-            u8::from(premature)
-        ),
-    );
-    if let Some(proto) = d.proto.as_mut() {
-        d.result = proto.done(cx, &mut d.lease, d.result, premature, &d.next, http);
+    let exchanged = d.reached == Reached::Exchanged;
+    match d.ending {
+        Ending::Ahead => {
+            // A failure other than its stream's closes an HTTP/2
+            // connection, which outlives a request otherwise
+            // (`multistate_performing`'s `streamclose`).
+            if d.result.is_err_and(|e| e != ErrorKind::Http2Stream) && d.lease.multiplexes() {
+                d.lease.get().mark_close();
+            }
+            mstate::trace(
+                cx,
+                format_args!(
+                    "multi_done: status: {} prem: {} done: 0",
+                    trace::Code(d.result),
+                    u8::from(premature)
+                ),
+            );
+            if let Some(proto) = d.proto.as_mut() {
+                match proto.done(
+                    cx,
+                    &mut d.lease,
+                    d.result,
+                    premature,
+                    &d.next,
+                    http,
+                    exchanged,
+                ) {
+                    crate::proto::Finish::Done(result) => d.result = result,
+                    crate::proto::Finish::Waiting => {
+                        d.ending = Ending::Waiting;
+                        return Err(d);
+                    }
+                }
+            }
+        }
+        Ending::Waiting => {
+            let proto = d.proto.as_mut().expect("only a protocol waits as it ends");
+            match proto.finishing(cx, &mut d.lease, exchanged) {
+                crate::proto::Finish::Done(result) => d.result = result,
+                crate::proto::Finish::Waiting => return Err(d),
+            }
+        }
+        Ending::Cut => {}
     }
     // A last progress pass, unless the transfer never connected (C's
     // `mstate > MSTATE_CONNECTING`) or a callback aborted already: a
@@ -942,12 +1024,12 @@ fn multi_done<H: Host>(cx: &mut StepCx<'_, H>, http: &mut Inherited, mut d: Done
         d.origin.as_ref(),
         raced.is_some(),
     );
-    RequestEnd {
+    Ok(RequestEnd {
         proto: d.proto,
         result: d.result,
         reached: d.reached,
         next: d.next,
-    }
+    })
 }
 
 /// HTTP/3's session said how many transfers connection `number` takes,
@@ -1175,6 +1257,15 @@ impl TransferState {
                 };
                 if let Some(slot) = pool.slot_of(&x.lease) {
                     let events = slot.adjust_pollset(x.proto.waits(phase), None);
+                    for s in slot.sockets() {
+                        set.add(s, events)?;
+                    }
+                }
+            }
+            TransferState::Done(d) if d.ending == Ending::Waiting => {
+                let proto = d.proto.as_ref().expect("only a protocol waits as it ends");
+                if let Some(slot) = pool.slot_of(&d.lease) {
+                    let events = slot.adjust_pollset(proto.waits(Waiting::Done), None);
                     for s in slot.sockets() {
                         set.add(s, events)?;
                     }
@@ -1655,6 +1746,7 @@ impl Attached {
             origin: self.origin,
             next: AfterRequest::Complete,
             race: None,
+            ending: Ending::Ahead,
         }
     }
 
@@ -2597,7 +2689,10 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             let kind = timed_out(cx, Phase::Transferring, x.proto.sizes_request());
             (TransferState::Did(x).fail(kind), Wake::Again)
         }
-        TransferState::Did(x) if !x.proto.exchanges() => (
+        // Output the application paused is still held, and delivered in
+        // PERFORMING: C goes to DONE and drops it, the transfer reported
+        // a success (an open question, MILESTONES step 70).
+        TransferState::Did(x) if !x.proto.exchanges() && !x.proto.holds_output() => (
             TransferState::Done(x.done(Ok(()), false, Reached::Made)),
             Wake::Again,
         ),
@@ -2737,8 +2832,12 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 }
             }
         }
-        TransferState::Done(d) => {
-            let mut d = multi_done(cx, &mut run.http, d);
+        TransferState::Done(d) => 'done: {
+            let mut d = match multi_done(cx, &mut run.http, d) {
+                Ok(ended) => ended,
+                // Its protocol awaits its last answer.
+                Err(waiting) => break 'done (TransferState::Done(waiting), Wake::Idle),
+            };
             // Held output went with the request; a pause the application
             // asked for stays.
             let pause = cx.pause_mut();
@@ -2925,7 +3024,9 @@ fn progress_after_step<H: Host>(
                 Err(e) => (s.fail(e), Wake::Again),
             }
         }
-        TransferState::Done(d) if d.result.is_ok() => {
+        // Once begun, the end runs on as C's within `multi_done`, with no
+        // pass of its loop's.
+        TransferState::Done(d) if d.result.is_ok() && d.ending == Ending::Ahead => {
             match progress::update(cx, d.reached == Reached::Exchanged) {
                 Ok(()) => (TransferState::Done(d), wake),
                 // An abort ends the request early, closing its connection.

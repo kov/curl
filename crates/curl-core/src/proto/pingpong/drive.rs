@@ -216,6 +216,86 @@ pub(crate) fn runs<H: Host>(
     Ok((carrier.ready_now(waits(pp)), due))
 }
 
+/// Where C's blocking drive is in its round (`Curl_pp_statemach` with
+/// `block`): polling since an instant, or about to start a round.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Blocking {
+    polling: Option<Instant>,
+}
+
+/// What C's blocking drive does each time round, for a protocol's DONE
+/// (`Curl_pp_statemach` with `block`, as `imap_block_statemach` loops on
+/// it), without blocking. A round starts with the server's time to
+/// answer, the transfer's own limit among it, failing once out; then
+/// polls, at once if bytes are held, at most a second or what is left of
+/// that time; then the progress is checked (`Curl_pgrsCheck`, `exchanged`
+/// being its `req.done`), and the step runs if the poll found it ready.
+/// The poll is the transfer's wait: called again before it ends, nothing
+/// happens. No timer is armed for C to hear of; the instant given is when
+/// the poll ends, for the transfer to look again then.
+pub(crate) fn runs_done<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    pp: &Pingpong,
+    carrier: &mut Carrier<'_>,
+    limit: Option<TimeLimit>,
+    exchanged: bool,
+    round: &mut Blocking,
+) -> Result<(bool, Instant), ErrorKind> {
+    let now = cx.now();
+    if let Some(since) = round.polling {
+        let ends = poll_ends(cx, pp, limit, since);
+        let ready = holds(pp, carrier) || carrier.ready_now(waits(pp));
+        if !ready && now < ends {
+            return Ok((false, ends));
+        }
+        round.polling = None;
+        crate::progress::check(cx, exchanged)?;
+        if ready {
+            return Ok((true, now));
+        }
+    }
+    let left = cx.time_left();
+    if pp.time_left(now, limit, left) == ResponseTime::Out {
+        return Err(trace::fail(
+            cx,
+            ErrorKind::OperationTimedout,
+            format_args!("server response timeout"),
+        ));
+    }
+    if holds(pp, carrier) || carrier.ready_now(waits(pp)) {
+        crate::progress::check(cx, exchanged)?;
+        return Ok((true, now));
+    }
+    round.polling = Some(now);
+    Ok((false, poll_ends(cx, pp, limit, now)))
+}
+
+/// When a poll of C's blocking drive started at `since` ends: a second
+/// on, or once the server's time to answer is out if that is sooner
+/// (`interval_ms`).
+fn poll_ends<H: Host>(
+    cx: &StepCx<'_, H>,
+    pp: &Pingpong,
+    limit: Option<TimeLimit>,
+    since: Instant,
+) -> Instant {
+    let left = cx.time_left();
+    match pp.time_left(since, limit, left) {
+        ResponseTime::Left(left) => since.after(left.min(BLOCKING_POLL)),
+        ResponseTime::Out => since,
+    }
+}
+
+/// Whether bytes wait where a poll cannot see them, or are held unread:
+/// the step has something to do without waiting on the connection.
+pub(crate) fn holds(pp: &Pingpong, carrier: &mut Carrier<'_>) -> bool {
+    carrier.reborrow().data_pending() || pp.unscanned()
+}
+
+/// The longest C's blocking drive polls before it checks the progress
+/// again (`Curl_pp_statemach`'s `interval_ms`).
+const BLOCKING_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// What a back and forth waits for on its connection (`Curl_pp_pollset`).
 pub(crate) fn waits(pp: &Pingpong) -> Events {
     match pp.wants() {

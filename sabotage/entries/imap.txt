@@ -30,9 +30,13 @@ file: crates/curl-core/src/proto/imap.rs
 witness: curl-core proto::imap::tests::over_the_wire::a_fetch_s_final_answer_refused_fails_the_transfer
 features: test-util
 --- old
-        self.finished.unwrap_or(Ok(()))
+            Ok(true) => Finish::Done(Ok(())),
+            Ok(false) => Finish::Waiting,
+            Err(e) => Finish::Done(Err(e)),
 --- new
-        Ok(())
+            Ok(true) => Finish::Done(Ok(())),
+            Ok(false) => Finish::Waiting,
+            Err(_) => Finish::Done(Ok(())),
 
 === a custom command's literal still to come has no answer read after it
 file: crates/curl-core/src/proto/imap.rs
@@ -96,3 +100,64 @@ features: test-util,debug-hooks
             let room = match cx.rate_allowance(Way::Send) {
 --- new
             let room = match None::<i64> {
+
+=== an answer after a FETCH's body is read before multi_done begins
+file: crates/curl-core/src/proto/imap.rs
+witness: curl-core proto::imap::tests::over_the_wire::a_transfer_after_one_that_set_up_nothing_goes_to_done
+features: test-util
+--- old
+        !self.nothing_after
+    }
+--- new
+        !self.nothing_after || self.last != Final::None
+    }
+
+=== a request's end awaiting its protocol's answer stalls the multi
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::imap::tests::over_the_wire::an_answer_awaited_in_done_stalls_no_other_transfer
+features: test-util
+--- old
+                Err(waiting) => break 'done (TransferState::Done(waiting), Wake::Idle),
+--- new
+                Err(waiting) => break 'done (TransferState::Done(waiting), Wake::Again),
+
+=== the answer awaited in DONE has no time limit
+file: crates/curl-core/src/proto/pingpong/drive.rs
+witness: curl-core proto::imap::tests::over_the_wire::an_answer_awaited_in_done_times_out_as_the_server_s
+features: test-util
+--- old
+    if pp.time_left(now, limit, left) == ResponseTime::Out {
+--- new
+    if false && pp.time_left(now, limit, left) == ResponseTime::Out {
+
+=== a transfer removed as its answer is awaited keeps its connection
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::imap::tests::over_the_wire::a_transfer_removed_as_its_answer_is_awaited_closes_its_connection
+features: test-util
+--- old
+                d.premature = true;
+                d.ending = Ending::Cut;
+--- new
+                d.ending = Ending::Cut;
+
+=== a transfer that fails as its answer is awaited waits on
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::imap::tests::over_the_wire::a_dead_multi_ends_an_answer_awaited_in_done
+features: test-util
+--- old
+                d.lease.get().mark_close();
+                d.ending = Ending::Cut;
+--- new
+                d.lease.get().mark_close();
+
+=== an APPEND's answer under a send limit waits the limit out again
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::imap::tests::over_the_wire::an_append_under_a_send_limit_takes_c_s_time
+features: test-util
+--- old
+        TransferState::Did(x) => (TransferState::Exchanging(x), Wake::Again),
+--- new
+        TransferState::Did(x) => (TransferState::Exchanging(x), Wake::Again),
+        TransferState::Done(d) if d.ending == Ending::Waiting && over_limit(run, cx) => {
+            (TransferState::Done(d), Wake::Idle)
+        }

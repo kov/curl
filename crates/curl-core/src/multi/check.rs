@@ -39,8 +39,9 @@ impl<H: Host> Multi<H> {
             {
                 own_leases += 1;
             }
+            // Only a protocol awaiting its last answer rests in Done.
             assert!(
-                !matches!(run.state, TransferState::Done(_)),
+                !matches!(run.state, TransferState::Done(_)) || run.state.awaits_end(),
                 "{id:?} rests in Done"
             );
             // The trace's state says PENDING exactly while the transfer

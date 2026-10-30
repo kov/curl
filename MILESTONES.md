@@ -1101,7 +1101,9 @@ protocols need, each step leaving behaviour and traces as they are:
     query, read in DO; LIST, SELECT kept on the connection with its UIDVALIDITY, FETCH and
     its literal, SEARCH, `-X` commands and their literals, and APPEND of an upload or of a
     MIME tree as a mail message (`MimeReader::mail`, C's `MIMESTRATEGY_MAIL`, which SMTP
-    shares), with its flags; the answer after a FETCH or an APPEND read as the transfer ends;
+    shares), with its flags; the answer after a FETCH or an APPEND read in DONE, as C's
+    `imap_done` reads it but without stalling the multi (`proto::Finish`, which FTP's DONE
+    takes too);
     LOGOUT as the connection's goodbye. The application's login goes to a redirect's other
     host only as HTTP's does. The tool's `--upload-flags` and the C ABI's
     `CURLOPT_UPLOAD_FLAGS`. Every IMAP test both legs run passes but 677, which fails on

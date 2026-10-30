@@ -4405,6 +4405,52 @@ fn a_waiting_protocol_connect_times_out_at_the_connect_limit() {
     );
 }
 
+/// A request whose first or second half waits does so to send
+/// (`mstate_do_pollset`, `mstate_domore_pollset`), and is timed on the
+/// transfer's limit; out of time past DO, it fails and its connection,
+/// in no known state, is closed (`multi_handle_timeout`'s `mstate >
+/// MSTATE_DO`).
+#[test]
+fn a_request_waiting_to_be_made_times_out_closing_its_connection() {
+    use crate::options::script::{Piece, Script};
+    for piece in [Piece::Doing, Piece::DoingMore] {
+        let (mut m, clock) = networked();
+        let (mut e, lines) = traced("tcp://127.0.0.1:1/");
+        e.options_mut().limits.total = TimeLimit::from_millis(1000);
+        e.options_mut().script = Some(Script::new(vec![piece]).unwrap());
+        let components = crate::components::Components::new().unwrap();
+        components.configure(b"multi");
+        e.set_components(Some(components));
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        perform_and_connect(&mut m);
+        let mut watched = Vec::new();
+        m.sockets(&mut NoEvents, |k, e| watched.push((k.get(), e)))
+            .unwrap();
+        assert_eq!(watched, [(1000, Events::OUT)]);
+        assert_eq!(m.timeout(), Some(Duration::from_millis(1000)));
+        clock.advance(Duration::from_millis(1000));
+        m.socket_action(SocketEvent::Timeout, &mut NoEvents)
+            .unwrap();
+        assert_eq!(
+            messages(&mut m),
+            [(id.index(), Err(ErrorKind::OperationTimedout), 0)]
+        );
+        let trace = trace_of(&lines);
+        assert!(
+            trace.contains(
+                &"Operation timed out after 1000 milliseconds with 0 bytes received\n".to_owned()
+            ),
+            "{trace:?}"
+        );
+        // Marked for closing as it failed past DO (`streamclose`).
+        let done = "multi_done, terminating conn #0 to 127.0.0.1:1, forbid=0, close=1, premature=1";
+        let at = trace.iter().position(|l| l.contains(done));
+        assert!(at.is_some(), "{trace:?}");
+        let next = at.and_then(|i| trace.get(i + 1)).map(String::as_str);
+        assert_eq!(next, Some("closing connection #0\n"), "{trace:?}");
+    }
+}
+
 /// A connection is its own allocation, as C's `connectdata` is, held no
 /// larger than C's (656 bytes); a transfer's lease holds a pointer to it.
 /// A transfer's slot is held by every handle added to a multi, which

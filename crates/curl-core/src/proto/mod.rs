@@ -162,6 +162,23 @@ fn tcp_connect<H: Host>(
     })
 }
 
+/// `tcp:`'s request, as its handle's script says: made at once, or
+/// for good in DOING or DOING_MORE if the script has that phase, as a
+/// protocol whose server never answers.
+#[cfg(any(test, feature = "test-util"))]
+fn tcp_make<H: Host>(cx: &StepCx<'_, H>) -> DoStep {
+    use crate::options::script::Piece;
+    let Some(script) = cx.easy().options().script.as_ref() else {
+        return DoStep::Did;
+    };
+    let mut pieces = (0..).map_while(|i| script.get(i));
+    match pieces.find(|p| matches!(p, Piece::Doing | Piece::DoingMore)) {
+        Some(Piece::Doing) => DoStep::Doing,
+        Some(_) => DoStep::More,
+        None => DoStep::Did,
+    }
+}
+
 /// Where a protocol's connect over its connection stands (C's
 /// `connect_it` and `connecting`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -231,6 +248,10 @@ impl Waiting {
     /// its own (`mstate_protocol_pollset`, `mstate_do_pollset`,
     /// `mstate_domore_pollset`): something from the server while it
     /// connects, to send while it makes the request.
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(dead_code, reason = "no protocol built yet waits before its request")
+    )]
     pub(crate) fn c_default(self) -> Events {
         match self {
             Waiting::Connecting => Events::IN,
@@ -512,7 +533,9 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => p.make(cx, lease, asked),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => Ok(DoStep::Did),
+            ProtoState::Null | ProtoState::Stall => Ok(DoStep::Did),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Tcp => Ok(tcp_make(cx)),
         }
     }
 

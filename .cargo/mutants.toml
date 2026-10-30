@@ -260,9 +260,15 @@ exclude_re = [
     # `c_long` is 64 bits here, so every time fits it; the clamps serve
     # the targets where it is 32.
     'curl-sys-abi/src/getinfo\.rs:.*: replace < with (==|>|<=) in long_time$',
+    # DOING and DOING_MORE wait for the same by C's default, and no
+    # protocol built tells them apart: DOING taken for DOING_MORE asks the
+    # same of the socket.
+    'multi/state\.rs:.*: delete match arm TransferState::Doing\(_\) in TransferState::pollset$',
+    # `script:` connects locally: its connection has no socket to wait on.
+    'proto/script\.rs:.*: replace <impl super::Phases for Player>::waits -> .* with Default::default\(\)$',
     # Reservation sizes: a wrong one only changes how often the vector
     # grows.
-    'auth/creds\.rs:.*: replace (\+ with \*|\* with (\+|/)) in Secret::basic$',
+    'auth/creds\.rs:.*: replace (\+ with \*|\* with (\+|/)) in Secret<.a>::basic$',
     'proto/http1/request\.rs:.*: replace - with \+ in render_h1$',
     'url/mod\.rs:.*: replace \+ with \* in Url::whole$',
     'curl-sys-abi/src/(headers|getinfo)\.rs:.*: replace \+ with (-|\*) in (HeaderOut::show|effective_url)$',

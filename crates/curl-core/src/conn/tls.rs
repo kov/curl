@@ -16,7 +16,7 @@ use super::layer::{Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Pa
 use crate::components::Component;
 use crate::conn::layer::LayerCalls as _;
 use crate::error::ErrorKind;
-use crate::tls::{SessionPeer, TlsIo, TlsSession, TlsWait};
+use crate::tls::{OwnSessions, SessionPeer, TlsIo, TlsSession, TlsTicket, TlsWait};
 
 pub(crate) struct TlsLayer {
     session: Box<dyn TlsSession>,
@@ -26,6 +26,8 @@ pub(crate) struct TlsLayer {
     early: Vec<u8>,
     /// Who the session's tickets are kept for.
     peer: SessionPeer,
+    /// What it keeps of its sessions apart from the cache.
+    own: OwnSessions,
     /// The filter C's chain holds for it: the origin's (`SSL`) or an
     /// HTTPS proxy's (`SSL-PROXY`).
     filter: Component,
@@ -53,12 +55,14 @@ enum Deferral {
 
 impl TlsLayer {
     /// The layer over a connection that received `early` and has not
-    /// used it, its sessions kept for `peer`, the filter `filter` of C's
-    /// chain: `SSL` for the origin's, `SSL-PROXY` for an HTTPS proxy's.
+    /// used it, its sessions kept for `peer` and as `own` says, the
+    /// filter `filter` of C's chain: `SSL` for the origin's, `SSL-PROXY`
+    /// for an HTTPS proxy's.
     pub(crate) fn boxed(
         session: Box<dyn TlsSession>,
         early: Vec<u8>,
         peer: SessionPeer,
+        own: OwnSessions,
         filter: Component,
     ) -> Result<Box<dyn Layer>, OutOfMemory> {
         assert!(
@@ -69,6 +73,7 @@ impl TlsLayer {
             session,
             early,
             peer,
+            own,
             filter,
             deferral: Deferral::None,
         })?)
@@ -84,10 +89,11 @@ impl TlsLayer {
             session,
             early,
             peer,
+            own,
             filter,
             ..
         } = self;
-        let io = TlsIo::new(below, cx, early, *filter, peer);
+        let io = TlsIo::new(below, cx, early, *filter, peer, own);
         (&mut **session, io)
     }
 
@@ -99,6 +105,7 @@ impl TlsLayer {
             session,
             early,
             peer,
+            own,
             filter,
             deferral,
         } = self;
@@ -108,7 +115,7 @@ impl TlsLayer {
             Deferral::None | Deferral::Skipping { .. } => return Ok(true),
             Deferral::Awaiting { .. } => unreachable!("given its early data first"),
         };
-        let mut io = TlsIo::new(below, cx, early, *filter, peer);
+        let mut io = TlsIo::new(below, cx, early, *filter, peer, own);
         let shaken = session.handshake_early(&mut io, bytes);
         match shaken {
             Ok(Handshake::Waiting) => Ok(false),
@@ -326,6 +333,12 @@ impl Layer for TlsLayer {
     ) -> Option<Result<Option<Vec<u8>>, ErrorKind>> {
         (self.filter == Component::Ssl).then(|| self.session.channel_binding(notes))
     }
+
+    fn latest_session(&self) -> Option<&TlsTicket> {
+        (self.filter == Component::Ssl)
+            .then(|| self.own.latest())
+            .flatten()
+    }
 }
 
 #[cfg(test)]
@@ -382,6 +395,7 @@ mod tests {
                 try_box(session).unwrap(),
                 early.to_vec(),
                 peer,
+                crate::tls::OwnSessions::default(),
                 Component::Ssl,
             )
             .unwrap();
@@ -398,6 +412,7 @@ mod tests {
                 try_box(Holding(false, w)).unwrap(),
                 Vec::new(),
                 peer,
+                crate::tls::OwnSessions::default(),
                 Component::Ssl,
             )
             .unwrap();
@@ -538,7 +553,14 @@ mod tests {
         let socket = crate::conn::io::dial(&mut net, at);
         let peer = crate::tls::SessionPeer::testing();
         let session = try_box(session).unwrap();
-        let mut layers = [TlsLayer::boxed(session, Vec::new(), peer, Component::Ssl).unwrap()];
+        let mut layers = [TlsLayer::boxed(
+            session,
+            Vec::new(),
+            peer,
+            OwnSessions::default(),
+            Component::Ssl,
+        )
+        .unwrap()];
         let (top, rest) = layers.split_last_mut().unwrap();
         let mut cx = Noting(None);
         let shaken = top.connect(&mut cx, Below::new(rest, &*socket));

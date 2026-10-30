@@ -71,6 +71,19 @@ impl TlsTicket {
         }
     }
 
+    /// A copy of it (`Curl_ssl_session_dup`).
+    pub(crate) fn try_clone(&self) -> Result<TlsTicket, OutOfMemory> {
+        let mut data = Vec::new();
+        data.try_extend_from_slice(&self.data)?;
+        let mut quic_params = Vec::new();
+        quic_params.try_extend_from_slice(&self.quic_params)?;
+        Ok(TlsTicket {
+            data,
+            quic_params,
+            ..*self
+        })
+    }
+
     fn expired(&self, now: i64) -> bool {
         self.valid_until > 0 && self.valid_until < now
     }

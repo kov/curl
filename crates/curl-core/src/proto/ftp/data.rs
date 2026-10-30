@@ -23,13 +23,15 @@ use crate::tls::{Handshake, TlsIdentity};
 use crate::trace;
 
 /// What the data's TLS is made with and for: the control connection's
-/// peers, for the servers that insist the data's session is the control
-/// connection's, reused (`cf_setup_connect`).
+/// settings and peers, and its latest session, which the data's resumes
+/// first, for the servers that insist the data's session is the control
+/// connection's (`ossl_init_session_and_alpns`).
 #[derive(Debug)]
 pub(crate) struct DataTls {
     pub(crate) identity: TryArc<TlsIdentity>,
     pub(crate) origin: TryArc<Peer>,
     pub(crate) via: Option<TryArc<Peer>>,
+    pub(crate) resume: Option<crate::tls::TlsTicket>,
 }
 
 /// The data connection.
@@ -253,14 +255,15 @@ impl DataConn {
                     return Ok(Reached::Up);
                 }
                 Phase::Up { mut stream, .. } => {
-                    let tls = self.tls.as_ref().expect("only protected data shakes hands");
+                    let tls = self.tls.as_mut().expect("only protected data shakes hands");
                     let mut close = false;
                     let mut carrier = Carrier::over(&mut stream, self.socket, &mut close);
-                    let shook = crate::multi::state::tls::upgrade(
+                    let shook = crate::multi::state::tls::upgrade_resuming(
                         &mut carrier,
                         &tls.identity,
                         &tls.origin,
                         tls.via.as_deref(),
+                        tls.resume.take(),
                         cx,
                     );
                     match shook {

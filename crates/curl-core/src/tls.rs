@@ -515,6 +515,38 @@ pub struct TlsCx<'a> {
     component: Component,
     /// Who the connection's sessions are kept for.
     peer: &'a SessionPeer,
+    /// What the connection keeps of its sessions apart from the cache,
+    /// for a session over a stream.
+    own: Option<&'a mut OwnSessions>,
+}
+
+/// What a connection's TLS keeps of its sessions apart from the cache
+/// (C's `connssl->session`): FTP's control connection keeps a copy of its
+/// latest, for its data connections to resume, as servers may insist
+/// they do (`Curl_ossl_add_session`'s duplicate); a data connection is
+/// given that one (`Curl_ssl_get_cf_session`).
+#[derive(Debug, Default)]
+pub(crate) struct OwnSessions {
+    /// A copy of each session kept is held as `latest`.
+    keeps_latest: bool,
+    latest: Option<TlsTicket>,
+    given: Option<TlsTicket>,
+}
+
+impl OwnSessions {
+    /// Keeping its latest, and given `given` to resume first.
+    pub(crate) fn new(keeps_latest: bool, given: Option<TlsTicket>) -> OwnSessions {
+        OwnSessions {
+            keeps_latest,
+            latest: None,
+            given,
+        }
+    }
+
+    /// The latest session kept, if it keeps a copy.
+    pub(crate) fn latest(&self) -> Option<&TlsTicket> {
+        self.latest.as_ref()
+    }
 }
 
 impl<'a> std::ops::Deref for TlsIo<'a> {
@@ -704,6 +736,13 @@ impl TlsCx<'_> {
         self.cx.has_tls_sessions() && self.peer.caches()
     }
 
+    /// The session of the connection this one serves, FTP's control
+    /// connection's, to resume before any of the cache's
+    /// (`Curl_ssl_get_cf_session`): given once.
+    pub fn take_given_session(&mut self) -> Option<TlsTicket> {
+        self.own.as_deref_mut().and_then(|own| own.given.take())
+    }
+
     /// A session to resume, taken from the transfer's cache
     /// (`Curl_ssl_scache_take`).
     pub fn take_session(&mut self) -> Option<TlsTicket> {
@@ -722,6 +761,13 @@ impl TlsCx<'_> {
     pub fn keep_session(&mut self, ticket: TlsTicket) {
         if !self.peer.caches() {
             return;
+        }
+        // Out of memory, the copy is not kept and the cache's is
+        // (`Curl_ssl_session_dup`).
+        if let Some(own) = self.own.as_deref_mut().filter(|own| own.keeps_latest)
+            && let Ok(copy) = ticket.try_clone()
+        {
+            own.latest = Some(copy);
         }
         let now = self.cx.unix_time();
         let peer = self.peer;
@@ -767,11 +813,15 @@ impl<'a> TlsIo<'a> {
         early: &'a mut Vec<u8>,
         component: Component,
         peer: &'a SessionPeer,
+        own: &'a mut OwnSessions,
     ) -> TlsIo<'a> {
         TlsIo {
             below,
             early,
-            cx: TlsCx::new(cx, component, peer),
+            cx: TlsCx {
+                own: Some(own),
+                ..TlsCx::new(cx, component, peer)
+            },
         }
     }
 }
@@ -1009,6 +1059,7 @@ impl<'a> TlsCx<'a> {
             cx,
             component,
             peer,
+            own: None,
         }
     }
 }

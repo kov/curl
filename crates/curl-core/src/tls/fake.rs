@@ -151,8 +151,12 @@ pub struct FakeLog {
     /// The number of the state the last session was handed, counting
     /// from 1 in the order they were made.
     pub state: usize,
-    /// Sessions that resumed a ticket the transfer's cache held.
+    /// Sessions that resumed a ticket, the transfer's cache's or one
+    /// given.
     pub resumed: usize,
+    /// Of those, the sessions that resumed the ticket given them, their
+    /// control connection's.
+    pub resumed_given: usize,
     /// What the last session offered by ALPN.
     pub alpn: Option<Alpn>,
 }
@@ -214,6 +218,7 @@ impl FakeTls {
             states_dropped: 0,
             state: 0,
             resumed: 0,
+            resumed_given: 0,
             alpn: None,
         };
         Ok(FakeTls {
@@ -636,7 +641,14 @@ impl TlsSession for FakeSession {
             if io.configures_context() {
                 io.configure_context(TlsNative::new(NonNull::from(&self.out).cast(), None))?;
             }
-            if self.tickets && io.caches_sessions() {
+            // A session given, its control connection's, is resumed
+            // before the cache's, as OpenSSL's is.
+            let given = io.take_given_session();
+            if given.as_ref().is_some_and(|t| t.data == TICKET) {
+                let mut log = self.log();
+                log.resumed += 1;
+                log.resumed_given += 1;
+            } else if self.tickets && io.caches_sessions() {
                 let taken = io.take_session();
                 if let Some(t) = taken.as_ref().filter(|t| t.data == TICKET) {
                     self.log().resumed += 1;

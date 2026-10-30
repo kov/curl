@@ -297,6 +297,15 @@ impl Carrier<'_> {
         };
         stream.query(super::layer::LayerQuery::TlsWaits).is_some()
     }
+
+    /// The latest session of the origin's TLS, if it keeps a copy: FTP's
+    /// control connection's.
+    pub(crate) fn latest_session(&self) -> Option<&crate::tls::TlsTicket> {
+        match &self.over {
+            Over::Stream(stream) => stream.latest_session(),
+            Over::Datagrams(_) => None,
+        }
+    }
 }
 
 impl Lower for Carrier<'_> {

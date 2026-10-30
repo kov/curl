@@ -1788,7 +1788,7 @@ impl Request {
                 ));
             }
         };
-        self.data_setup(cx, pc, host, port)?;
+        self.data_setup(cx, pc, carrier, host, port)?;
         self.do_more = true;
         set_state(cx, pc, State::Stop);
         Ok(())
@@ -1801,6 +1801,7 @@ impl Request {
         &mut self,
         cx: &mut StepCx<'_, H>,
         pc: &mut FtpConn,
+        carrier: &Carrier<'_>,
         host: Vec<u8>,
         port: u16,
     ) -> Step {
@@ -1823,7 +1824,7 @@ impl Request {
             None => None,
         };
         route.tls = None;
-        let tls = self.data_tls(pc)?;
+        let tls = self.data_tls(pc, carrier)?;
         let mut said = Vec::new();
         said.try_extend_from_slice(b"Connecting to ")
             .and_then(|()| said.try_extend_from_slice(origin.name()))
@@ -3119,7 +3120,7 @@ impl Request {
             set_state(cx, pc, State::Stop);
             return Err(e);
         }
-        let tls = match self.data_tls(pc) {
+        let tls = match self.data_tls(pc, carrier) {
             Ok(tls) => tls,
             Err(e) => {
                 close_socket(cx, sock);
@@ -3474,8 +3475,9 @@ impl Request {
     }
 
     /// What the data's TLS is made with, if it is protected: the control
-    /// connection's identity and peers.
-    fn data_tls(&self, pc: &FtpConn) -> Result<Option<DataTls>, ErrorKind> {
+    /// connection's identity and peers, and a copy of its latest session
+    /// to resume, as servers may insist (`Curl_ssl_get_cf_session`).
+    fn data_tls(&self, pc: &FtpConn, carrier: &Carrier<'_>) -> Result<Option<DataTls>, ErrorKind> {
         if !pc.data_tls {
             return Ok(None);
         }
@@ -3489,10 +3491,16 @@ impl Request {
             .clone()
             .or_else(|| control.route.cold.as_ref().and_then(|c| c.upgrade.clone()));
         let identity = identity.ok_or(ErrorKind::NotBuiltIn)?;
+        let resume = carrier
+            .latest_session()
+            .map(crate::tls::TlsTicket::try_clone)
+            .transpose()
+            .map_err(|_| ErrorKind::OutOfMemory)?;
         Ok(Some(DataTls {
             identity,
             origin: control.route.origin.clone(),
             via: control.route.via.clone(),
+            resume,
         }))
     }
 }

@@ -41,3 +41,21 @@ features: test-util debug-hooks
                             cx.report_mut().count_connect();
 --- new
                             let _ = cx.report_mut();
+
+=== FTP's control connection keeps no copy of its latest TLS session
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::ftp::tests::a_protected_data_connection_resumes_its_control_connection_s_session
+features: test-util debug-hooks
+--- old
+let keeps_latest = to.side == TlsSide::Origin && to.peer.scheme().ftp_family();
+--- new
+let keeps_latest = false;
+
+=== the data connection's TLS is not given its control connection's session
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core proto::ftp::tests::a_protected_data_connection_resumes_its_control_connection_s_session
+features: test-util debug-hooks
+--- old
+                        tls.resume.take(),
+--- new
+                        None,

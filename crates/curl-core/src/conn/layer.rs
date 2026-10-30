@@ -500,6 +500,12 @@ pub(crate) trait Layer: for<'a> Part<Below<'a>> + Send + fmt::Debug {
     ) -> Option<Result<Option<Vec<u8>>, ErrorKind>> {
         None
     }
+
+    /// The latest session of the origin's TLS, if this layer is it and
+    /// keeps a copy (`Curl_ssl_get_cf_session`).
+    fn latest_session(&self) -> Option<&crate::tls::TlsTicket> {
+        None
+    }
 }
 
 /// The layers below one, then the socket: the stack split at the layer
@@ -778,6 +784,16 @@ impl LayerStack {
             .flat_map(|l| l.iter())
             .rev()
             .find_map(|layer| layer.channel_binding(notes))
+    }
+
+    /// The latest session of the origin's TLS, if a layer is it and keeps
+    /// a copy.
+    pub(crate) fn latest_session(&self) -> Option<&crate::tls::TlsTicket> {
+        self.layers
+            .iter()
+            .flat_map(|l| l.iter())
+            .rev()
+            .find_map(|layer| layer.latest_session())
     }
 
     /// Shut its layers down over `socket` from the top, past the `shut`

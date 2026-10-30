@@ -15,7 +15,9 @@ use crate::conn::{Dial, Handshook, Peer, Stream};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::options::{ProxyType, SslOptions, TlsMaxVersion, TlsMinVersion, TlsOptions};
-use crate::tls::{Alpn, Handshake as Shake, SessionPeer, TlsIdentity, TlsPeer, TlsShared};
+use crate::tls::{
+    Alpn, Handshake as Shake, OwnSessions, SessionPeer, TlsIdentity, TlsPeer, TlsShared, TlsTicket,
+};
 use crate::trace;
 
 /// Whose TLS a handshake makes: the origin's (C's `SSL` filter) or an
@@ -105,7 +107,7 @@ pub(super) fn start<H: Host>(
         via,
         alpn,
     };
-    put_on(s.machine.dialed().stream(), &to, cx)?;
+    put_on(s.machine.dialed().stream(), &to, None, cx)?;
     match try_box(Handshake::Tls(side)) {
         Ok(h) => {
             *s.handshake = Some(h);
@@ -127,10 +129,12 @@ pub(super) struct TlsFor<'a> {
 
 /// A session for `to` is made and its layer put on `stream`, taking the
 /// bytes the stream received and did not use, which follow a proxy's
-/// answer: over a connection being set up, or one open, upgraded.
+/// answer: over a connection being set up, or one open, upgraded. It
+/// resumes `given` before any session of the cache's.
 pub(super) fn put_on<H: Host>(
     stream: &mut Stream,
     to: &TlsFor<'_>,
+    given: Option<TlsTicket>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), Failure> {
     // Held apart from the handle, as the multi's state is borrowed too.
@@ -173,9 +177,13 @@ pub(super) fn put_on<H: Host>(
             return Err(Failure::Transfer(ErrorKind::OutOfMemory));
         }
     };
+    // FTP's origin keeps a copy of its latest session, for its data
+    // connections (`Curl_ossl_add_session`, `CURLPROTO_FTP`).
+    let keeps_latest = to.side == TlsSide::Origin && to.peer.scheme().ftp_family();
+    let own = OwnSessions::new(keeps_latest, given);
     let filter = to.side.filter();
     stream
-        .push_over_received(|early| TlsLayer::boxed(session, early, kept_for, filter))
+        .push_over_received(|early| TlsLayer::boxed(session, early, kept_for, own, filter))
         .map_err(|OutOfMemory| Failure::Transfer(ErrorKind::OutOfMemory))
 }
 
@@ -192,6 +200,19 @@ pub(crate) fn upgrade<H: Host>(
     via: Option<&Peer>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Shake, ErrorKind> {
+    upgrade_resuming(carrier, identity, peer, via, None, cx)
+}
+
+/// The same, the session made resuming `given`, its control connection's
+/// session, before any of the cache's: FTP's data connection's.
+pub(crate) fn upgrade_resuming<H: Host>(
+    carrier: &mut crate::conn::mux::Carrier<'_>,
+    identity: &TryArc<TlsIdentity>,
+    peer: &Peer,
+    via: Option<&Peer>,
+    given: Option<TlsTicket>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Shake, ErrorKind> {
     let traced = Some(carrier.socket_component());
     if !carrier.over_tls() {
         let to = TlsFor {
@@ -201,7 +222,7 @@ pub(crate) fn upgrade<H: Host>(
             via,
             alpn: Alpn::None,
         };
-        put_on(carrier.stream_mut(), &to, cx).map_err(|f| match f {
+        put_on(carrier.stream_mut(), &to, given, cx).map_err(|f| match f {
             Failure::Attempt(kind) | Failure::Transfer(kind) => kind,
         })?;
     }

@@ -844,6 +844,11 @@ impl Scheme {
         self.0.name
     }
 
+    /// Whether it is FTP's or FTPS's (`CURLPROTO_FTP`'s family).
+    pub(crate) fn ftp_family(self) -> bool {
+        self.0.family == Some(crate::url::schemes::Protocol::Ftp)
+    }
+
     /// Whether a connection is kept for another transfer once done
     /// (`PROTOPT_CONN_REUSE`).
     pub(crate) fn reuse(self) -> bool {

@@ -150,6 +150,7 @@ witness: curl-core an_https_get_stays_within_its_allocation_budget
             session,
             early,
             peer,
+            own,
             filter,
             deferral: Deferral::None,
         })?)
@@ -160,6 +161,7 @@ witness: curl-core an_https_get_stays_within_its_allocation_budget
             session,
             early,
             peer,
+            own,
             filter,
             deferral: Deferral::None,
         })?)

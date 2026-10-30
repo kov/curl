@@ -1397,7 +1397,8 @@ leased by several transfers at once: `Use::Leased(n)` counts them, one more for 
 it and each pushed transfer. FTP's data connection is a second stream the control connection's
 protocol state holds (`LineConn::Ftp`, `proto::ftp::data::DataConn`): connected through its own
 `ConnectMachine`, or listened for and accepted, with TLS of the control connection's identity
-when protected; its socket joins the transfer's pollset (`ConnSlot::side_pollset`), the
+when protected, resuming first the copy of its latest session the control connection's TLS
+layer keeps (`tls::OwnSessions`, C's `connssl->session`), as servers may insist on; its socket joins the transfer's pollset (`ConnSlot::side_pollset`), the
 transfer's end closes it, and the connection's end closes it first if it is still open
 (`conn::shutdown`), so no path leaves it behind its connection.
 
@@ -2763,8 +2764,8 @@ With `CURLOPT_SSL_VERIFYSTATUS` (`--cert-status`) the session asks for a stapled
 and `ocsp.rs` checks it as `verifystatus` does: there, successful, signed by the verified chain
 against the context's store, naming the peer's certificate, current within five minutes' skew,
 and good; each shortfall is 91 in C's words. A resumed session is not checked, as in C; a
-transfer that checks the status resumes none, so only a session C's FTP data connection
-borrows would be. `CURLOPT_ISSUERCERT` or its blob then names the
+transfer that checks the status resumes none from the cache, so only the control connection's
+session an FTP data connection resumes would be. `CURLOPT_ISSUERCERT` or its blob then names the
 certificate that must have issued the peer's (`ossl_check_issuer`): 83 if it cannot be read or
 did not, said only when the peer is verified. The pinned key comes last.
 

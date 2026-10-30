@@ -182,6 +182,11 @@ impl Stream {
         self.layers.channel_binding(notes)
     }
 
+    /// The latest session of the origin's TLS, if it keeps a copy.
+    pub(crate) fn latest_session(&self) -> Option<&crate::tls::TlsTicket> {
+        self.layers.latest_session()
+    }
+
     /// Whether the connection seems usable, as its layers and its socket
     /// say. Nothing received waits unused on one that is idle: its last
     /// request used everything it read.

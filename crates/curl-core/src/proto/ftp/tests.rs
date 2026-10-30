@@ -1,6 +1,7 @@
 //! Transfers over a fake server: the login, a file retrieved over a
 //! passive data connection, a refused file, the data connection closed
-//! with its control connection, and an answer awaited in DONE.
+//! with its control connection, an answer awaited in DONE, and a
+//! protected data connection resuming its control connection's session.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -10,6 +11,7 @@ use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::handler::{DebugHandler, DebugKind, Handler, Write, WriteHandler};
 use crate::id::ArenaPolicy;
+use crate::libraries::{Libraries, Library, SharedLibraries};
 use crate::multi::{Env, Multi, NoEvents, TransferCx, TransferId, drive_to_completion};
 use crate::options::Options;
 use crate::time::ManualClock;
@@ -132,8 +134,21 @@ fn counting(control: &[&Conversation], data: &[&Conversation]) -> (Multi, Counte
 /// A transfer of `url` (`PORT` in it replaced) added to `m`, its body and
 /// its trace kept.
 fn added(m: &mut Multi, url: &str, set: impl FnOnce(&mut Options)) -> (TransferId, Body, Text) {
+    added_with(m, url, None, set)
+}
+
+/// The same, the transfer given `libraries` if any.
+fn added_with(
+    m: &mut Multi,
+    url: &str,
+    libraries: Option<SharedLibraries>,
+    set: impl FnOnce(&mut Options),
+) -> (TransferId, Body, Text) {
     let url = url.replace("PORT", &PORT.to_string());
     let mut e = Easy::new();
+    if let Some(libraries) = libraries {
+        e.set_libraries(libraries);
+    }
     let traced = crate::components::Components::new().unwrap();
     traced.configure(b"multi");
     e.set_components(Some(traced));
@@ -279,4 +294,46 @@ fn an_answer_awaited_in_done_stalls_no_other_transfer() {
     first.allow(LOGIN_AND_SETUP.len() + 2);
     let result = drive_to_completion(&mut m, waiting, &mut NoEvents).unwrap();
     assert_eq!(result, Ok(()));
+}
+
+/// A protected data connection resumes its control connection's latest
+/// session, not one the cache holds, as servers that insist the data's
+/// session is the control connection's need (`Curl_ssl_get_cf_session`).
+#[test]
+fn a_protected_data_connection_resumes_its_control_connection_s_session() {
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let control = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"213 5\r\n"),
+        tls(b"150 here\r\n226 done\r\n"),
+    ];
+    let control: Vec<&[u8]> = control.iter().map(Vec::as_slice).collect();
+    let control = Conversation::replies(&control, false).per_send();
+    let file = [WELCOME.to_vec(), tls(b"hello")];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    let file = Conversation::replies(&file, true).per_send();
+    let mut m = serving(&[&control], &[&file]);
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let url = "ftps://127.0.0.1:PORT/f";
+    let (id, body, text) = added_with(&mut m, url, Some(libraries), |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let log = backend.log();
+    assert_eq!(log.handshakes, 2, "{}", text.text());
+    assert_eq!((log.resumed, log.resumed_given), (1, 1), "{}", text.text());
 }

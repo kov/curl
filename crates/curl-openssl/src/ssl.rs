@@ -643,11 +643,19 @@ impl Session {
                 }
             }
         }
-        // A session the cache kept for the peer is resumed, unless the
-        // peer's status is to be checked, which a resumed one would not
-        // send (`ossl_init_session_and_alpns`).
+        // FTP's data connection resumes its control connection's session
+        // first, as servers may insist it does; else a session the cache
+        // kept for the peer is resumed, unless the peer's status is to be
+        // checked, which a resumed one would not send
+        // (`ossl_init_session_and_alpns`).
         self.reused = false;
-        if io.caches_sessions() && !options.verify_status {
+        if let Some(given) = io.take_given_session() {
+            self.resume(ssl, &given, io);
+            if self.reused {
+                io.trace(format_args!("applied SSL session from control connection"));
+            }
+        }
+        if !self.reused && io.caches_sessions() && !options.verify_status {
             let taken = io.take_session();
             if let Some(t) = taken.as_ref().filter(|t| !t.data.is_empty()) {
                 self.resume(ssl, t, io);

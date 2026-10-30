@@ -1427,9 +1427,9 @@ witness: curl-core proto::http::tests::the_wait_for_a_100_starts_once_a_pause_en
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_netrc_file_is_read_before_the_protocol_is_checked
 --- old
-    if (refused || !http)
+    if (refused || !reads_own)
 --- new
-    if false && (refused || !http)
+    if false && (refused || !reads_own)
 
 === an answered challenge is held to the redirect protocols
 file: crates/curl-core/src/multi/state.rs

@@ -392,6 +392,34 @@ impl Pipeline {
         result
     }
 
+    /// Deliver a line of a line protocol's answer, which is no header:
+    /// to the header handler alone, whether or not headers are included
+    /// in the output, and not kept for the headers API
+    /// (`CLIENTWRITE_INFO`). It starts the response's time only once the
+    /// request's body is sent, as C counts it (`cw_download_write`).
+    pub(crate) fn info<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        line: &[u8],
+        upload_done: bool,
+    ) -> Result<(), ErrorKind> {
+        if upload_done {
+            self.accountant.response_started(cx);
+        }
+        let result = self.onward(cx, OutKind::Info, line);
+        write_trace(
+            cx,
+            format_args!(
+                "download_write header(type={}, blen={}) -> {}",
+                WriteType::of(OutKind::Info),
+                line.len(),
+                Code(result)
+            ),
+        );
+        client_write(cx, WriteType::of(OutKind::Info), line.len(), result);
+        result
+    }
+
     /// Deliver a response's status line, of an informational response
     /// (1xx) or not, as a header line the store does not keep
     /// (`CLIENTWRITE_STATUS`).
@@ -496,6 +524,7 @@ pub(crate) struct WriteType(u16);
 
 impl WriteType {
     pub(crate) const BODY: WriteType = WriteType(1);
+    const INFO: u16 = 1 << 1;
     const HEADER: u16 = 1 << 2;
     const STATUS: u16 = 1 << 3;
     const CONNECT: u16 = 1 << 4;
@@ -512,6 +541,7 @@ impl WriteType {
         };
         match kind {
             OutKind::Body => Self::BODY,
+            OutKind::Info => WriteType(Self::INFO),
             OutKind::Header(o) => WriteType(Self::HEADER | origin(o)),
             OutKind::Status(o) => WriteType(Self::HEADER | Self::STATUS | origin(o)),
         }
@@ -571,6 +601,8 @@ impl<H: Host> Onward for Past<'_, '_, H> {
         let (cx, out, pausable) = (&mut *self.cx, &mut *self.out, self.pausable);
         match kind {
             OutKind::Body => decode::run(self.decoders, bytes, &mut Client { cx, out, pausable }),
+            // Never body, whatever is included (`cw_out_write`).
+            OutKind::Info => out.header(cx, bytes, kind, pausable),
             OutKind::Header(_) | OutKind::Status(_) => {
                 // An included line is body, to be held and replayed with it.
                 if cx.easy().options().output.include_header {
@@ -851,7 +883,7 @@ fn buffering<H: Host>(cx: &mut StepCx<'_, H>, len: usize, held: usize) {
 fn wrote<H: Host>(cx: &mut StepCx<'_, H>, kind: OutKind, len: usize, w: Write) {
     let (what, otype) = match kind {
         OutKind::Body => ("body", 1),
-        OutKind::Header(_) | OutKind::Status(_) => ("header", 3),
+        OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => ("header", 3),
     };
     let took: u64 = match w {
         Write::Accepted => len as u64,
@@ -876,7 +908,9 @@ fn deliver<H: Host>(
 ) -> Result<usize, ErrorKind> {
     match kind {
         OutKind::Body => deliver_body(cx, bytes, pausable),
-        OutKind::Header(origin) | OutKind::Status(origin) => {
+        OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => {
+            // A line protocol's lines are told as a head's.
+            let origin = kind.origin().unwrap_or(HeaderOrigin::Header);
             let Some(handler) = cx.easy().options().callbacks.header.clone() else {
                 return Ok(bytes.len());
             };

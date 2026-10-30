@@ -1917,6 +1917,18 @@ fn setopts(
         }
     }
     // `mail_and_sasl_setopts`.
+    s.str("CURLOPT_SASL_AUTHZID", op.sasl_authzid, |o| {
+        if let Some(authzid) = op.sasl_authzid {
+            o.login.make_mut().map_err(oom)?.authzid = Some(copy(authzid).map_err(oom)?);
+        }
+        Ok(())
+    })?;
+    s.long("CURLOPT_SASL_IR", i64::from(op.sasl_ir), |o| {
+        if op.sasl_ir {
+            o.line.make_mut().map_err(oom)?.sasl_ir = true;
+        }
+        Ok(())
+    })?;
     if op.create_file_mode != 0 {
         s.long(
             "CURLOPT_NEW_FILE_PERMS",
@@ -2243,6 +2255,19 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
         })?;
     }
     string_setopt(s, "CURLOPT_SSLENGINE", tls.engine, |t| &mut t.engine)?;
+    let use_ssl = if op.ssl_reqd {
+        Some((options::UseSsl::All, 3))
+    } else if op.ssl {
+        Some((options::UseSsl::Try, 1))
+    } else {
+        None
+    };
+    if let Some((level, value)) = use_ssl {
+        s.enumerated("CURLOPT_USE_SSL", easysrc::USE_SSL, value, |o| {
+            o.line.make_mut().map_err(oom)?.use_ssl = level;
+            Ok(())
+        })?;
+    }
     if tls.no_alpn {
         s.long("CURLOPT_SSL_ENABLE_ALPN", 0, |o| {
             o.tls.options.make_mut().map_err(oom)?.alpn = false;
@@ -2471,6 +2496,12 @@ fn credentials_and_headers(
         }
         Ok(())
     })?;
+    s.str("CURLOPT_LOGIN_OPTIONS", op.login_options, |o| {
+        if let Some(given) = op.login_options {
+            o.line.make_mut().map_err(oom)?.login_options = Some(copy(given).map_err(oom)?);
+        }
+        Ok(())
+    })?;
     // A user given without a password has had one asked for.
     let user = op.user.as_deref();
     s.str("CURLOPT_USERPWD", user, |o| {
@@ -2564,6 +2595,12 @@ fn transfer_setopts(
     s.long("CURLOPT_UPLOAD", i64::from(config.upload), |o| {
         if config.upload {
             o.method = Method::Upload;
+        }
+        Ok(())
+    })?;
+    s.long("CURLOPT_DIRLISTONLY", i64::from(op.list_only), |o| {
+        if op.list_only {
+            o.line.make_mut().map_err(oom)?.list_only = true;
         }
         Ok(())
     })?;
@@ -3533,6 +3570,20 @@ pub(crate) struct Linked {
 impl Linked {
     pub(crate) fn new() -> Result<Linked, OutOfMemory> {
         let keylog = SharedKeyLog::new()?;
+        // The debug build's random numbers are `CURL_ENTROPY`'s, if it is
+        // set, one sequence for the run (`randit`).
+        #[cfg(feature = "debug-hooks")]
+        let entropy = curl_os::env::var(b"CURL_ENTROPY")?
+            .map(|given| curl_core::libraries::ForcedEntropy::seeded(&given))
+            .transpose()?;
+        let random =
+            || -> Result<Option<Library<dyn curl_core::libraries::Random>>, OutOfMemory> {
+                #[cfg(feature = "debug-hooks")]
+                if let Some(entropy) = &entropy {
+                    return Ok(Some(Library::Owned(try_box(entropy.clone())?)));
+                }
+                Ok(None)
+            };
         let with = |gss| -> Result<SharedLibraries, OutOfMemory> {
             use curl_core::coding::{Coding, Decoders};
             let tls: Box<dyn curl_core::tls::TlsBackend> =
@@ -3549,6 +3600,7 @@ impl Linked {
                 idn: Some(&curl_idn2::IDN2),
                 h2: Some(&curl_nghttp2::NGHTTP2),
                 h3: Some(&curl_ngtcp2::NGTCP2),
+                random: random()?,
             })
         };
         Ok(Linked {

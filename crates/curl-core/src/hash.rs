@@ -255,24 +255,36 @@ impl Hash for Sha256 {
 /// `key` (`Curl_hmacit` with `Curl_HMAC_SHA256`): a key longer than a
 /// block is hashed first.
 pub(crate) fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    hmac::<Sha256>(key, parts)
+}
+
+/// HMAC over MD5, likewise (`Curl_HMAC_MD5`), its 16 bytes.
+pub(crate) fn hmac_md5(key: &[u8], parts: &[&[u8]]) -> [u8; 16] {
+    let mut out = [0; 16];
+    out.copy_from_slice(&hmac::<Md5>(key, parts)[..16]);
+    out
+}
+
+/// HMAC over `H`, whose blocks are 64 bytes, as MD5's and SHA-256's are.
+fn hmac<H: Hash>(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     const BLOCK: usize = 64;
     let mut padded = [0u8; BLOCK];
     if key.len() > BLOCK {
-        let mut hashed = Sha256::default();
+        let mut hashed = H::default();
         hashed.update(key);
-        padded[..32].copy_from_slice(&hashed.finish());
+        padded[..H::LEN].copy_from_slice(&hashed.finish()[..H::LEN]);
     } else {
         padded[..key.len()].copy_from_slice(key);
     }
-    let mut inner = Sha256::default();
+    let mut inner = H::default();
     inner.update(&padded.map(|b| b ^ 0x36));
     for part in parts {
         inner.update(part);
     }
     let inner = inner.finish();
-    let mut outer = Sha256::default();
+    let mut outer = H::default();
     outer.update(&padded.map(|b| b ^ 0x5c));
-    outer.update(&inner);
+    outer.update(&inner[..H::LEN]);
     outer.finish()
 }
 

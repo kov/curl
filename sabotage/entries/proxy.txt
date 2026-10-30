@@ -216,9 +216,9 @@ witness: curl-core proto::http::tests::a_socks5_proxy_logs_the_user_in_and_conne
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::http::tests::an_unauthenticated_socks5_connection_serves_no_transfer_insisting
 --- old
-        self.route.serves(wanted) && (!insists || self.socks5_authenticated)
+            && (!insists || self.socks5_authenticated)
 --- new
-        self.route.serves(wanted)
+            && true
 
 === a SOCKS5 proxy asking for the user and password is not given them
 file: crates/curl-core/src/conn/socks.rs

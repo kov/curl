@@ -86,8 +86,11 @@ pub(super) fn start<H: Host>(
             .is_some_and(|p| p.kind == ProxyType::Https2);
     // HTTP/1.0 alone is offered as `http/1.0` and `http/1.1`
     // (`alpn_get_spec`).
+    // A scheme that is not HTTP's offers none (`PROTOPT_ALPN`).
+    let offers = side == TlsSide::Proxy || peer.scheme().offers_alpn();
     let alpn = match (cx.easy().options().tls.options.alpn || proxy_h2, side) {
         (false, _) => Alpn::None,
+        (true, TlsSide::Origin) if !offers => Alpn::None,
         (true, TlsSide::Proxy) if proxy_h2 => Alpn::H2Http11,
         (true, TlsSide::Proxy) => Alpn::Http11,
         (true, TlsSide::Origin) if only_10 && versions.h1 => Alpn::Http10,
@@ -174,6 +177,41 @@ pub(super) fn put_on<H: Host>(
     stream
         .push_over_received(|early| TlsLayer::boxed(session, early, kept_for, filter))
         .map_err(|OutOfMemory| Failure::Transfer(ErrorKind::OutOfMemory))
+}
+
+/// Upgrade an open connection to TLS in place (STARTTLS,
+/// `Curl_ssl_cfilter_add` then `Curl_conn_connect`): the session for
+/// `peer`, through `via` if a connect-to names it, made with `identity`
+/// and offering no ALPN, goes on its stream the first time, taking what
+/// was received after the server's go-ahead; each call moves the
+/// handshake on as far as the socket lets it.
+pub(crate) fn upgrade<H: Host>(
+    carrier: &mut crate::conn::mux::Carrier<'_>,
+    identity: &TryArc<TlsIdentity>,
+    peer: &Peer,
+    via: Option<&Peer>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Shake, ErrorKind> {
+    let traced = Some(carrier.socket_component());
+    if !carrier.over_tls() {
+        let to = TlsFor {
+            side: TlsSide::Origin,
+            identity,
+            peer,
+            via,
+            alpn: Alpn::None,
+        };
+        put_on(carrier.stream_mut(), &to, cx).map_err(|f| match f {
+            Failure::Attempt(kind) | Failure::Transfer(kind) => kind,
+        })?;
+    }
+    shake(
+        carrier.stream_mut(),
+        TlsSide::Origin,
+        &identity.options,
+        traced,
+        cx,
+    )
 }
 
 /// Move the handshake on, as far as the socket lets it (`shake`).

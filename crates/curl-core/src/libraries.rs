@@ -44,6 +44,62 @@ pub struct Libraries {
     /// The HTTP/3 library, if any: without it, HTTP/3 is not built in, as
     /// in a C build without ngtcp2.
     pub h3: Option<&'static dyn Http3>,
+    /// Where random bytes come from in place of the system, if anywhere:
+    /// the debug build's `CURL_ENTROPY` numbers.
+    pub random: Option<Library<dyn Random>>,
+}
+
+/// A source of random bytes, standing in for the system's.
+pub trait Random: Send + Sync {
+    /// Whether it stands in now: if not, the system's are drawn.
+    fn active(&self) -> bool {
+        true
+    }
+
+    /// Fill `bytes`.
+    fn fill(&self, bytes: &mut [u8]) -> std::io::Result<()>;
+}
+
+impl fmt::Debug for dyn Random {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Random")
+    }
+}
+
+/// The numbers C's debug build draws its random bytes from when
+/// `CURL_ENTROPY` is set (`randit`): the variable's first four bytes,
+/// big-endian, then one more at each draw of four bytes, each laid out
+/// in the machine's order. Clones draw from the one sequence, as C's is
+/// the process's.
+#[cfg(feature = "debug-hooks")]
+#[derive(Clone, Debug)]
+pub struct ForcedEntropy {
+    next: TryArc<std::sync::Mutex<u32>>,
+}
+
+#[cfg(feature = "debug-hooks")]
+impl ForcedEntropy {
+    /// The sequence `given`, the variable's value, seeds.
+    pub fn seeded(given: &[u8]) -> Result<ForcedEntropy, OutOfMemory> {
+        let mut seed = [0u8; 4];
+        let n = given.len().min(4);
+        seed[..n].copy_from_slice(&given[..n]);
+        Ok(ForcedEntropy {
+            next: TryArc::try_new(std::sync::Mutex::new(u32::from_be_bytes(seed)))?,
+        })
+    }
+}
+
+#[cfg(feature = "debug-hooks")]
+impl Random for ForcedEntropy {
+    fn fill(&self, bytes: &mut [u8]) -> std::io::Result<()> {
+        let mut next = self.next.lock().expect("no draw panics");
+        for chunk in bytes.chunks_mut(4) {
+            chunk.copy_from_slice(&next.to_ne_bytes()[..chunk.len()]);
+            *next = next.wrapping_add(1);
+        }
+        Ok(())
+    }
 }
 
 impl Libraries {
@@ -55,7 +111,16 @@ impl Libraries {
         idn: None,
         h2: None,
         h3: None,
+        random: None,
     };
+
+    /// Random bytes into `bytes`: the stand-in's, or the system's.
+    pub(crate) fn random(&self, bytes: &mut [u8]) -> std::io::Result<()> {
+        match &self.random {
+            Some(r) if r.active() => r.fill(bytes),
+            _ => curl_os::random::fill(bytes),
+        }
+    }
 }
 
 /// A library `Libraries` names: one the process keeps for good, or one
@@ -209,7 +274,7 @@ mod tests {
         let printed = format!("{libraries:?}");
         assert!(
             printed.ends_with(
-                "ed25519: Some(Ed25519), tls: None, gss: None, idn: None, h2: None, h3: None }"
+                "ed25519: Some(Ed25519), tls: None, gss: None, idn: None, h2: None, h3: None, random: None }"
             ),
             "{printed}"
         );

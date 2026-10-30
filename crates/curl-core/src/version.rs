@@ -223,7 +223,13 @@ static VERSION: VersionInfo = VersionInfo {
     timestamp: curlver::TIMESTAMP,
     host: HOST,
     features: FEATURES,
-    protocols: &[Protocol::File, Protocol::Http, Protocol::Https],
+    protocols: &[
+        Protocol::File,
+        Protocol::Http,
+        Protocol::Https,
+        Protocol::Pop3,
+        Protocol::Pop3s,
+    ],
 };
 
 #[cfg(target_os = "linux")]
@@ -243,7 +249,7 @@ mod tests {
     #[test]
     fn protocols_are_named_by_their_schemes() {
         let names: Vec<_> = version().protocols.iter().map(|p| p.name()).collect();
-        assert_eq!(names, ["file", "http", "https"]);
+        assert_eq!(names, ["file", "http", "https", "pop3", "pop3s"]);
         for &p in version().protocols {
             assert_eq!(Protocol::of_scheme(p.name().as_bytes()), Some(p));
         }

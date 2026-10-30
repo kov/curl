@@ -20,13 +20,16 @@ pub(crate) enum OutKind {
     Header(HeaderOrigin),
     /// The header handler, a status line (`CLIENTWRITE_STATUS`).
     Status(HeaderOrigin),
+    /// The header handler, a line of a line protocol's answer, which is
+    /// of no head (`CLIENTWRITE_INFO`).
+    Info,
 }
 
 impl OutKind {
     /// Whose head a line is of; none for body.
     pub(crate) fn origin(self) -> Option<HeaderOrigin> {
         match self {
-            OutKind::Body => None,
+            OutKind::Body | OutKind::Info => None,
             OutKind::Header(origin) | OutKind::Status(origin) => Some(origin),
         }
     }

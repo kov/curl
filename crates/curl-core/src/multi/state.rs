@@ -38,7 +38,7 @@ mod https;
 mod names;
 mod quictunnel;
 mod socks;
-mod tls;
+pub(crate) mod tls;
 mod tunnel;
 use crate::components::Component;
 use crate::proto::http::negotiate::Wants as AuthWants;
@@ -2128,6 +2128,18 @@ impl<H: Host> StepCx<'_, H> {
             Phase::Transferring,
         );
         matches!(left, TimeLeft::Expired(_))
+    }
+
+    /// What is left of the transfer's time, as of the step's start: its
+    /// connect limit counts before DO (`Curl_timeleft_ms`).
+    pub(crate) fn time_left(&self) -> TimeLeft {
+        let limits = self.easy().options().limits;
+        let phase = if self.mstate() < MState::Do {
+            Phase::Connecting
+        } else {
+            Phase::Transferring
+        };
+        Deadlines::new(limits.total, limits.connect).time_left(starts(self), self.now(), phase)
     }
 
     /// The calendar time, read now (`time(NULL)`).
@@ -5016,14 +5028,14 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         return TransferState::Init.fail(trace::fail_with(cx, kind, &why));
     }
     // C reads a `.netrc` before it checks the protocol is built and
-    // allowed; an HTTP request reads it as it is made, any other URL
-    // here.
-    let http = match &*scheme {
-        b"http" => true,
-        b"https" => cx.easy().libraries().tls.is_some(),
+    // allowed; an HTTP or POP3 request reads it as it is made, any other
+    // URL here.
+    let reads_own = match &*scheme {
+        b"http" | b"pop3" => true,
+        b"https" | b"pop3s" => cx.easy().libraries().tls.is_some(),
         _ => false,
     };
-    if (refused || !http)
+    if (refused || !reads_own)
         && let Err(kind) = crate::proto::netrc_before_protocol(&url, cx)
     {
         return TransferState::Init.fail(kind);
@@ -5127,7 +5139,10 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     let proxy = if over_unix {
         None
     } else {
-        match choose_proxy(cx, &origin, &scheme, via.is_some() || secured) {
+        // A scheme not of HTTP's family, nor one a proxy takes as HTTP,
+        // cannot be handed to an HTTP proxy (`PROTOPT_PROXY_AS_HTTP`).
+        let handed = origin.scheme().proxies_as_http();
+        match choose_proxy(cx, &origin, &scheme, via.is_some() || secured || !handed) {
             Ok(proxy) => proxy,
             Err(e) => return TransferState::Init.fail(e),
         }
@@ -5176,16 +5191,14 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     } else {
         None
     };
-    // The local end each socket binds, which a connection must share to
-    // serve it (`conn->interface_opts`, `localport`, `localportrange`).
-    let bind = &cx.easy().options().sockets.local;
-    let cold = match bind.binds().then(|| bind.try_clone()) {
-        None => None,
-        Some(Ok(local)) => match TryArc::try_new(crate::conn::RouteCold { local }) {
-            Ok(cold) => Some(cold),
-            Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
-        },
-        Some(Err(OutOfMemory)) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
+    // What few routes have: the local end each socket binds, which a
+    // connection must share to serve it (`conn->interface_opts`,
+    // `localport`, `localportrange`); the credentials a scheme that logs
+    // in once per connection logs in with; the TLS a connection not over
+    // it may be upgraded to, and how far TLS is asked for.
+    let cold = match route_cold(cx, &mut proto, secured) {
+        Ok(cold) => cold,
+        Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
     let route = NetRoute {
         origin,
@@ -5217,6 +5230,38 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         dial = Dial::Quic;
     }
     setup(cx, Plan { proto, route, dial })
+}
+
+/// What of the route for `proto`, `secured` or not, few routes have
+/// (`RouteCold`), or none if none of it is there. The credentials of a
+/// scheme that logs in once per connection move from the request to it,
+/// their one owner (`url_set_conn_login`).
+fn route_cold<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    proto: &mut ProtoState,
+    secured: bool,
+) -> Result<Option<TryArc<crate::conn::RouteCold>>, OutOfMemory> {
+    let options = cx.easy().options();
+    let local = options.sockets.local.try_clone()?;
+    let use_ssl = options.line.use_ssl;
+    let reuses_tls = proto.scheme().is_some_and(crate::conn::Scheme::reuses_tls);
+    let tls = cx.easy().libraries().tls.as_deref();
+    let upgrade = match tls {
+        Some(tls) if !secured && (reuses_tls || use_ssl.may()) => Some(
+            crate::tls::TlsIdentity::of(&options.tls, tls.ca_defaults())?,
+        ),
+        _ => None,
+    };
+    let cold = crate::conn::RouteCold {
+        local,
+        login: proto.take_login(),
+        upgrade,
+        use_ssl,
+    };
+    if cold.is_empty() {
+        return Ok(None);
+    }
+    TryArc::try_new(cold).map(Some)
 }
 
 /// Whether HTTP/3 may be spoken over `route`, to an origin `secured` or
@@ -5353,8 +5398,8 @@ fn choose_proxy<H: Host>(
         return Ok(Some(ProxyRoute::new(kind, peer, creds, false, auth_only)));
     }
     // A request goes to an HTTP proxy whole, unless it is asked to
-    // tunnel, or reaches the origin through another peer, or is secured;
-    // HTTP's schemes are the only ones here.
+    // tunnel, or reaches the origin through another peer, or is secured,
+    // or is of a scheme an HTTP proxy cannot be handed (`tunnels`).
     let tunnel = cx.easy().options().proxy.tunnel || tunnels;
     let route = ProxyRoute::new(kind, peer, creds, !tunnel, auth_only);
     let route = match pre {

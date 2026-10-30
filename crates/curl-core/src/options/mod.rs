@@ -91,6 +91,9 @@ pub struct Options {
     /// Who the transfer authenticates as.
     pub login: Cold<Login>,
     pub netrc: Cold<Netrc>,
+    /// What the line protocols (FTP, IMAP, POP3, SMTP) are told, which
+    /// few transfers set.
+    pub line: Cold<Line>,
     pub proxy: Cold<Proxy>,
     pub schemes: Cold<Schemes>,
     pub http: Http,
@@ -126,6 +129,84 @@ pub struct Login {
     /// Whether a GSS-API context hands the user's credentials on to the
     /// peer (`CURLOPT_GSSAPI_DELEGATION`).
     pub delegation: Delegation,
+    /// The identity a SASL login acts for, in place of the user's own
+    /// (`CURLOPT_SASL_AUTHZID`).
+    pub authzid: Option<Vec<u8>>,
+}
+
+/// What the line protocols are told (C's `use_ssl`, `STRING_OPTIONS`,
+/// `sasl_ir`, `list_only` and `server_response_timeout`).
+#[derive(Debug)]
+pub struct Line {
+    /// Whether, and how insistently, a connection that starts in the
+    /// clear is upgraded to TLS (`CURLOPT_USE_SSL`).
+    pub use_ssl: UseSsl,
+    /// The login options, `AUTH=` and the like, in place of the URL's
+    /// (`CURLOPT_LOGIN_OPTIONS`).
+    pub login_options: Option<Vec<u8>>,
+    /// A SASL login sends its first response with its command
+    /// (`CURLOPT_SASL_IR`).
+    pub sasl_ir: bool,
+    /// A listing is asked for by names alone, or a message's by its
+    /// number (`CURLOPT_DIRLISTONLY`).
+    pub list_only: bool,
+    /// How long a server has to answer a command, in place of 60 seconds
+    /// (`CURLOPT_SERVER_RESPONSE_TIMEOUT`).
+    pub server_response: Option<TimeLimit>,
+}
+
+/// Whether a connection that starts in the clear is upgraded to TLS
+/// (`CURLOPT_USE_SSL`), each level asking more than the one before.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum UseSsl {
+    /// Never (`CURLUSESSL_NONE`).
+    #[default]
+    None,
+    /// If the server offers it, going on in the clear if not
+    /// (`CURLUSESSL_TRY`).
+    Try,
+    /// Required for the commands, FTP's data aside
+    /// (`CURLUSESSL_CONTROL`).
+    Control,
+    /// Required for everything (`CURLUSESSL_ALL`).
+    All,
+}
+
+impl UseSsl {
+    /// The connection may be upgraded: it is reused only made with the
+    /// same TLS settings (`url_match_conn`'s `may_tls`).
+    pub(crate) fn may(self) -> bool {
+        self > UseSsl::None
+    }
+
+    /// The connection must be over TLS: one in the clear is never reused
+    /// (`require_tls`).
+    pub(crate) fn requires(self) -> bool {
+        self >= UseSsl::Control
+    }
+}
+
+impl ColdGroup for Line {
+    const UNSET: &'static Line = &Line::NONE;
+    const NONE: Line = Line {
+        use_ssl: UseSsl::None,
+        login_options: None,
+        sasl_ir: false,
+        list_only: false,
+        server_response: None,
+    };
+}
+
+impl Line {
+    fn try_clone(&self) -> Result<Line, OutOfMemory> {
+        Ok(Line {
+            use_ssl: self.use_ssl,
+            login_options: self.login_options.as_deref().map(copy).transpose()?,
+            sasl_ir: self.sasl_ir,
+            list_only: self.list_only,
+            server_response: self.server_response,
+        })
+    }
 }
 
 /// Whether a GSS-API context delegates the user's credentials to the
@@ -364,6 +445,7 @@ impl Login {
             bearer: self.bearer.as_deref().map(copy).transpose()?,
             service: self.service.as_deref().map(copy).transpose()?,
             delegation: self.delegation,
+            authzid: self.authzid.as_deref().map(copy).transpose()?,
         })
     }
 }
@@ -470,6 +552,7 @@ impl Options {
                     file: netrc.file.as_deref().map(copy).transpose()?,
                 })
             })?,
+            line: self.line.try_clone(Line::try_clone)?,
             proxy: self.proxy.try_clone(Proxy::try_clone)?,
             schemes: self.schemes.try_clone(|s| Ok(*s))?,
             sockets: self.sockets.try_clone(Sockets::try_clone)?,
@@ -585,6 +668,7 @@ impl ColdGroup for Login {
             by_policy: false,
             always: false,
         },
+        authzid: None,
     };
 }
 

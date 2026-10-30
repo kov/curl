@@ -10,7 +10,7 @@ use crate::conn::Peer;
 use crate::error::UrlErrorKind;
 use crate::netrc::Found;
 use crate::options::{Login, NetrcMode};
-use crate::url::{GetOptions, Part, Url, decode_but_zero};
+use crate::url::{GetOptions, Part, Url, decode_but_control, decode_but_zero};
 
 /// Whether what the application said for the first origin may go to the
 /// one the request is for: the only way to the tokens that let a custom
@@ -75,6 +75,7 @@ pub(crate) struct Answered {
     password: Vec<u8>,
     bearer: Vec<u8>,
     service: Vec<u8>,
+    authzid: Vec<u8>,
 }
 
 /// The user and password a request authenticates with, decoded (C's
@@ -88,6 +89,9 @@ pub(crate) struct Credentials {
     /// The service the origin is authenticated as, empty for the
     /// protocol's (`sasl_service`).
     service: Vec<u8>,
+    /// The identity a SASL login acts for, empty for the user's own
+    /// (`sasl_authzid`).
+    authzid: Vec<u8>,
     source: Source,
     trusted: Trusted,
 }
@@ -112,8 +116,39 @@ pub(crate) enum NetrcLookup<'c> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CredentialsError {
     OutOfMemory,
-    /// One decodes to a zero byte: "error extracting credentials from URL".
+    /// One decodes to a byte the scheme does not take, a zero byte or for
+    /// most a control byte: "error extracting credentials from URL".
     Malformed,
+    /// The application's user or password has a control byte, which the
+    /// scheme does not take: "control code detected in credentials"
+    /// (`CURLE_BAD_FUNCTION_ARGUMENT`).
+    Control,
+}
+
+/// Which bytes a scheme takes in a user and a password: any but zero,
+/// for those whose flags say so (`PROTOPT_USERPWDCTRL`, HTTP's), or no
+/// control byte.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Takes {
+    ControlBytes,
+    NoControlBytes,
+}
+
+impl Takes {
+    /// What `scheme`'s flags say it takes; a scheme libcurl does not know
+    /// takes none, as its flags are none.
+    pub(crate) fn of(scheme: Option<crate::conn::Scheme>) -> Takes {
+        if scheme.is_some_and(crate::conn::Scheme::takes_control_bytes) {
+            Takes::ControlBytes
+        } else {
+            Takes::NoControlBytes
+        }
+    }
+
+    /// Whether `bytes` has none it refuses (`str_has_ctrl`).
+    pub(crate) fn allows(self, bytes: &[u8]) -> bool {
+        self == Takes::ControlBytes || !bytes.iter().any(|&b| b < 0x20)
+    }
 }
 
 impl From<OutOfMemory> for CredentialsError {
@@ -131,9 +166,10 @@ impl Credentials {
         login: &Login,
         trusted: Option<Trusted>,
         url: &Url,
+        takes: Takes,
     ) -> Result<Option<Credentials>, CredentialsError> {
         let (mut user, mut password, mut bearer) = (None, None, Vec::new());
-        let mut service = Vec::new();
+        let (mut service, mut authzid) = (Vec::new(), Vec::new());
         if let Some(trusted) = trusted {
             user = login.user.as_deref().map(copy).transpose()?;
             password = login.password.as_deref().map(copy).transpose()?;
@@ -149,21 +185,38 @@ impl Credentials {
                 .map(copy)
                 .transpose()?
                 .unwrap_or_default();
+            authzid = login
+                .authzid
+                .as_deref()
+                .map(copy)
+                .transpose()?
+                .unwrap_or_default();
+            // `url_set_data_creds`: the application's, checked whole.
+            let given = [user.as_deref(), password.as_deref()];
+            if !given.iter().flatten().all(|g| takes.allows(g)) {
+                return Err(CredentialsError::Control);
+            }
             if let Some(user) = user.take_if(|u| !u.is_empty()) {
                 return Ok(Some(Credentials {
                     user,
                     password: password.unwrap_or_default(),
                     bearer,
                     service,
+                    authzid,
                     source: Source::Options,
                     trusted,
                 }));
             }
         }
-        if let Some((url_user, url_password)) = Self::of_url(url)? {
+        if let Some((url_user, url_password)) = Self::of_url(url, takes)? {
             user = url_user.or(user);
             password = url_password.or(password);
-        } else if user.is_none() && password.is_none() && bearer.is_empty() && service.is_empty() {
+        } else if user.is_none()
+            && password.is_none()
+            && bearer.is_empty()
+            && service.is_empty()
+            && authzid.is_empty()
+        {
             return Ok(None);
         }
         // What the login left blank merged with the URL is the URL's,
@@ -173,6 +226,7 @@ impl Credentials {
             password: password.unwrap_or_default(),
             bearer,
             service,
+            authzid,
             source: Source::Url,
             // A login gets this far only trusted; the URL's own always.
             trusted: trusted.unwrap_or_else(Trusted::own_url),
@@ -187,6 +241,7 @@ impl Credentials {
             password: password.to_vec(),
             bearer: bearer.to_vec(),
             service: Vec::new(),
+            authzid: Vec::new(),
             source: Source::Options,
             trusted: Trusted::own_url(),
         }
@@ -222,28 +277,36 @@ impl Credentials {
     /// of theirs, a token kept (`Curl_creds_merge`). The entry is for the
     /// request's own host, so goes there wherever the transfer started.
     pub(crate) fn with_netrc(credentials: Option<Credentials>, found: Found) -> Credentials {
-        let (bearer, service) =
-            credentials.map_or_else(Default::default, |c| (c.bearer, c.service));
+        let (bearer, service, authzid) =
+            credentials.map_or_else(Default::default, |c| (c.bearer, c.service, c.authzid));
         Credentials {
             user: found.user,
             password: found.password,
             bearer,
             service,
+            authzid,
             source: Source::Netrc,
             trusted: Trusted::own_url(),
         }
     }
 
     /// What `url` carries, if it has a user or a password: decoded,
-    /// rejecting a zero byte (HTTP allows other control bytes,
-    /// `PROTOPT_USERPWDCTRL`).
+    /// rejecting a zero byte, and a control byte where the scheme `takes`
+    /// none (HTTP takes them, `PROTOPT_USERPWDCTRL`).
     #[expect(
         clippy::type_complexity,
         reason = "a user and a password, each there or not"
     )]
-    fn of_url(url: &Url) -> Result<Option<(Option<Vec<u8>>, Option<Vec<u8>>)>, CredentialsError> {
+    fn of_url(
+        url: &Url,
+        takes: Takes,
+    ) -> Result<Option<(Option<Vec<u8>>, Option<Vec<u8>>)>, CredentialsError> {
+        let decode = match takes {
+            Takes::ControlBytes => decode_but_zero,
+            Takes::NoControlBytes => decode_but_control,
+        };
         let part = |what, missing| match url.get(what, GetOptions::NONE) {
-            Ok(raw) => match decode_but_zero(&raw) {
+            Ok(raw) => match decode(&raw) {
                 Ok(Some(decoded)) => Ok(Some(decoded)),
                 Ok(None) => Err(CredentialsError::Malformed),
                 Err(_) => Err(CredentialsError::OutOfMemory),
@@ -260,6 +323,17 @@ impl Credentials {
         Ok(Some((user, password)))
     }
 
+    /// Whether `other` authenticates as these do, compared in constant
+    /// time: the user, the password, the token, the identity acted for
+    /// and the service (`Curl_creds_same`).
+    pub(crate) fn same(&self, other: &Credentials) -> bool {
+        same_secret(&self.user, &other.user)
+            & same_secret(&self.password, &other.password)
+            & same_secret(&self.bearer, &other.bearer)
+            & same_secret(&self.authzid, &other.authzid)
+            & same_secret(&self.service, &other.service)
+    }
+
     pub(crate) fn user(&self) -> &[u8] {
         &self.user
     }
@@ -271,6 +345,7 @@ impl Credentials {
             password: &self.password,
             bearer: &self.bearer,
             service: &self.service,
+            authzid: &self.authzid,
         }
     }
 
@@ -288,6 +363,7 @@ pub(crate) struct Secret<'a> {
     password: &'a [u8],
     bearer: &'a [u8],
     service: &'a [u8],
+    authzid: &'a [u8],
 }
 
 impl<'a> Secret<'a> {
@@ -299,6 +375,7 @@ impl<'a> Secret<'a> {
             password,
             bearer: &[],
             service,
+            authzid: &[],
         }
     }
 
@@ -330,6 +407,17 @@ impl<'a> Secret<'a> {
         (!self.service.is_empty()).then_some(self.service)
     }
 
+    /// The identity a SASL login acts for, empty for the user's own.
+    pub(crate) fn authzid(&self) -> &'a [u8] {
+        self.authzid
+    }
+
+    /// The same, with an OAuth 2.0 token.
+    #[cfg(test)]
+    pub(crate) fn with_bearer(self, bearer: &'a [u8]) -> Secret<'a> {
+        Secret { bearer, ..self }
+    }
+
     /// These, kept to tell whether a Digest challenge answered with them
     /// is answered with others.
     pub(crate) fn answered(&self) -> Result<Answered, OutOfMemory> {
@@ -338,6 +426,7 @@ impl<'a> Secret<'a> {
             password: copy(self.password)?,
             bearer: copy(self.bearer)?,
             service: copy(self.service)?,
+            authzid: copy(self.authzid)?,
         })
     }
 
@@ -348,6 +437,7 @@ impl<'a> Secret<'a> {
             & same_secret(self.password, &answered.password)
             & same_secret(self.bearer, &answered.bearer)
             & same_secret(self.service, &answered.service)
+            & same_secret(self.authzid, &answered.authzid)
     }
 
     /// `user:password` in base64, what `Authorization: Basic` carries;
@@ -399,7 +489,78 @@ mod tests {
     ) -> Result<Option<(Vec<u8>, Vec<u8>, Source)>, CredentialsError> {
         let url = Url::parse(url.as_bytes(), ParseOptions::NONE).unwrap();
         let trusted = trusted.then(Trusted::own_url);
-        Ok(Credentials::for_request(login, trusted, &url)?.map(|c| (c.user, c.password, c.source)))
+        Ok(
+            Credentials::for_request(login, trusted, &url, Takes::ControlBytes)?
+                .map(|c| (c.user, c.password, c.source)),
+        )
+    }
+
+    /// A scheme without `PROTOPT_USERPWDCTRL` takes no control byte in
+    /// a user or a password: the URL's is malformed (test 894), the
+    /// application's refused; HTTP's takes them, but a zero byte.
+    #[test]
+    fn control_bytes_are_refused_where_the_scheme_takes_none() {
+        let take = |login: &Login, url: &str, takes| {
+            let url = Url::parse(url.as_bytes(), ParseOptions::NONE).unwrap();
+            Credentials::for_request(login, Some(Trusted::own_url()), &url, takes)
+                .map(|c| c.is_some())
+        };
+        let cr = "pop3://us%0der:p@h/";
+        assert_eq!(
+            take(&Login::default(), cr, Takes::NoControlBytes),
+            Err(CredentialsError::Malformed)
+        );
+        assert_eq!(take(&Login::default(), cr, Takes::ControlBytes), Ok(true));
+        let zero = "pop3://us%00er:p@h/";
+        assert_eq!(
+            take(&Login::default(), zero, Takes::ControlBytes),
+            Err(CredentialsError::Malformed)
+        );
+        let login = Login {
+            user: Some(b"a\rb".to_vec()),
+            ..Login::default()
+        };
+        assert_eq!(
+            take(&login, "pop3://h/", Takes::NoControlBytes),
+            Err(CredentialsError::Control)
+        );
+        assert_eq!(take(&login, "pop3://h/", Takes::ControlBytes), Ok(true));
+        assert_eq!(
+            Takes::of(crate::conn::Scheme::named(b"pop3")),
+            Takes::NoControlBytes
+        );
+        assert_eq!(
+            Takes::of(crate::conn::Scheme::named(b"http")),
+            Takes::ControlBytes
+        );
+    }
+
+    /// A SASL identity to act for comes with the application's
+    /// credentials, and alone makes them.
+    #[test]
+    fn the_authzid_is_the_login_s() {
+        let login = Login {
+            authzid: Some(b"ursel".to_vec()),
+            ..Login::default()
+        };
+        let url = Url::parse(b"pop3://kurt:x@h/", ParseOptions::NONE).unwrap();
+        let c = Credentials::for_request(
+            &login,
+            Some(Trusted::own_url()),
+            &url,
+            Takes::NoControlBytes,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(c.secret().authzid(), b"ursel");
+        let url = Url::parse(b"pop3://h/", ParseOptions::NONE).unwrap();
+        let alone = Credentials::for_request(
+            &login,
+            Some(Trusted::own_url()),
+            &url,
+            Takes::NoControlBytes,
+        );
+        assert!(alone.unwrap().is_some());
     }
 
     /// As C's `url_set_data_creds` composes them: the login's user wins
@@ -472,7 +633,7 @@ mod tests {
         let bearer = |trusted: bool, url: &str| {
             let url = Url::parse(url.as_bytes(), ParseOptions::NONE).unwrap();
             let trusted = trusted.then(Trusted::own_url);
-            Credentials::for_request(&token, trusted, &url)
+            Credentials::for_request(&token, trusted, &url, Takes::ControlBytes)
                 .unwrap()
                 .map(|c| (c.user, c.bearer))
         };
@@ -495,6 +656,7 @@ mod tests {
             password: password.to_vec(),
             bearer: Vec::new(),
             service: Vec::new(),
+            authzid: Vec::new(),
             source,
             trusted: Trusted::own_url(),
         };
@@ -526,13 +688,14 @@ mod tests {
             ..Login::default()
         };
         let url = Url::parse(b"http://h/", ParseOptions::NONE).unwrap();
-        let c = Credentials::for_request(&login, Some(Trusted::own_url()), &url)
-            .unwrap()
-            .expect("credentials");
+        let c =
+            Credentials::for_request(&login, Some(Trusted::own_url()), &url, Takes::ControlBytes)
+                .unwrap()
+                .expect("credentials");
         assert_eq!(c.secret().service(), Some(&b"web"[..]));
         assert_eq!(c.secret().user(), b"");
         assert!(
-            Credentials::for_request(&login, None, &url)
+            Credentials::for_request(&login, None, &url, Takes::ControlBytes)
                 .unwrap()
                 .is_none()
         );
@@ -540,9 +703,10 @@ mod tests {
             service: Some(b"other".to_vec()),
             ..Login::default()
         };
-        let d = Credentials::for_request(&other, Some(Trusted::own_url()), &url)
-            .unwrap()
-            .unwrap();
+        let d =
+            Credentials::for_request(&other, Some(Trusted::own_url()), &url, Takes::ControlBytes)
+                .unwrap()
+                .unwrap();
         assert!(!d.secret().answers_as(&c.secret().answered().unwrap()));
         assert!(c.secret().answers_as(&c.secret().answered().unwrap()));
         let found = Found {

@@ -13,9 +13,22 @@
 //! the writer's buffer ([`Pingpong::command`]) and its first send says
 //! which bytes are traced (`CURLINFO_HEADER_OUT`).
 
+pub(crate) mod drive;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
+)]
 pub(crate) mod ftp;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
+)]
 pub(crate) mod imap;
 pub(crate) mod pop3;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
+)]
 pub(crate) mod smtp;
 #[cfg(test)]
 mod tests;
@@ -54,8 +67,16 @@ pub(crate) const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 /// zero for none (ftp.c's `if(result || !ftpcode)`, smtp.c's
 /// `if(!smtpcode)`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
+)]
 pub(crate) struct ReplyCode(u32);
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
+)]
 impl ReplyCode {
     pub(crate) fn get(self) -> u32 {
         self.0
@@ -70,6 +91,7 @@ impl ReplyCode {
 pub(crate) struct ReplySize(usize);
 
 impl ReplySize {
+    #[cfg_attr(not(test), expect(dead_code, reason = "FTP is yet to be built on it"))]
     pub(crate) fn get(self) -> usize {
         self.0
     }
@@ -221,6 +243,10 @@ pub(crate) struct Pingpong {
     /// When the server's time to answer started: the last command fully
     /// sent, or the start (`pp->response`).
     response: Instant,
+    /// An answer is awaited: from the start, and from each command built,
+    /// until a pass of reads ends without the connection blocking it
+    /// (`pending_resp`).
+    pending: bool,
 }
 
 impl Pingpong {
@@ -234,7 +260,25 @@ impl Pingpong {
             send: Vec::new(),
             sent: Sent::Idle,
             response: now,
+            pending: true,
         }
+    }
+
+    /// Whether an answer is still awaited (`pending_resp`): FTP's DONE
+    /// reads the one to a command it sent before the transfer ended.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
+    )]
+    pub(crate) fn pending_resp(&self) -> bool {
+        self.pending
+    }
+
+    /// A pass of reads ended neither blocked nor at its most, whether or
+    /// not it found a reply: nothing more is awaited (`Curl_pp_readresp`'s
+    /// end).
+    pub(crate) fn reads_ended(&mut self) {
+        self.pending = false;
     }
 
     /// Takes the bytes of one read (`Curl_pp_readresp`'s read). A read is
@@ -321,6 +365,10 @@ impl Pingpong {
     /// Starts the server's time to answer again at `now`, as FTP does
     /// before it reads the answer that ends a transfer (ftp.c:3604,
     /// ftp.c:3751).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
+    )]
     pub(crate) fn restart_response_timer(&mut self, now: Instant) {
         self.response = now;
     }
@@ -373,6 +421,10 @@ impl Pingpong {
 
     /// Everything held of the answer, a reply's line given out included
     /// (C's `recvbuf`, which ftp.c:470 looks at).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
+    )]
     pub(crate) fn held(&self) -> &[u8] {
         match self.scan {
             Scan::Failed(_) => &[],
@@ -425,6 +477,7 @@ impl Pingpong {
             self.send.try_extend_from_slice(part)?;
         }
         self.send.try_extend_from_slice(b"\r\n")?;
+        self.pending = true;
         Ok(Unsent { pp: self })
     }
 

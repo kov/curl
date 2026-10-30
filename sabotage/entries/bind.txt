@@ -53,9 +53,9 @@ witness: curl-core conn::tests::bound_routes_match_as_c
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::bind_trace::a_name_binds_to_its_interface
 --- old
-    let local = match bind.binds().then(|| bind.try_clone()) {
+    let local = options.sockets.local.try_clone()?;
 --- new
-    let local = match false.then(|| bind.try_clone()) {
+    let local = crate::options::LocalBind::NONE;
 
 === an interface not UTF-8 is said lossily as it fails to bind
 file: crates/curl-core/src/conn/bind.rs

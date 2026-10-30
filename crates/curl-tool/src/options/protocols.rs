@@ -138,15 +138,16 @@ mod tests {
         msgs
     }
 
-    /// The library speaks `file`, `http` and `https`: every other name is
-    /// unknown, as test 322 checks, and a redirect may go to `http` and
-    /// `https` by default.
+    /// The library speaks `file`, `http`, `https`, `pop3` and `pop3s`:
+    /// every other name is unknown, as test 322 checks, and a redirect
+    /// may go to `http` and `https` by default.
     #[test]
-    fn with_file_and_http() {
+    fn with_file_http_and_pop3() {
         let msgs = quiet();
         let (file, http, https) = (Protocols(1), Protocols(2), Protocols(4));
-        let all = Protocols(7);
+        let all = Protocols(31);
         let webs = Protocols(6);
+        let mail = Protocols(24);
         assert_eq!(Protocols::all(), all);
         assert_eq!(Protocols::redirect_default(), webs);
         for (list, want) in [
@@ -154,8 +155,9 @@ mod tests {
             (b",,=ALL,", Ok(all)),
             (b"FILE", Ok(all)),
             (b"=file", Ok(file)),
-            (b"-file", Ok(webs)),
-            (b"-file,-HTTP,-https", Err(ParamError::BadUse)),
+            (b"-file", Ok(Protocols(30))),
+            (b"-file,-HTTP,-https", Ok(mail)),
+            (b"-file,-HTTP,-https,-pop3,-pop3s", Err(ParamError::BadUse)),
             (b"-all,+file", Ok(file)),
             (b"+-http", Err(ParamError::BadUse)),
             (b"=http", Ok(http)),

@@ -49,13 +49,6 @@ pub(crate) enum Speaks {
     Made(Session),
     /// No session, but a protocol's own state: what FTP and the like
     /// keep of the connection, and their goodbye.
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(
-            dead_code,
-            reason = "no protocol built yet keeps state on its connection"
-        )
-    )]
     Line(Box<super::line::LineConn>),
     /// Its session, of `version`, taken out for a step to drive beside
     /// the connection, and given back after. Read as no session, as the
@@ -247,6 +240,43 @@ impl Carrier<'_> {
     /// The bytes received and not used yet.
     pub(crate) fn rx_mut(&mut self) -> &mut RecvBuf {
         self.stream().rx_mut()
+    }
+
+    /// Whether its socket is ready now for `events`, polled without
+    /// waiting (`Curl_socket_check` with no time): a failed poll is
+    /// readiness, for the read or write after to say why.
+    pub(crate) fn ready_now(&mut self, events: super::io::Events) -> bool {
+        let socket = match &self.over {
+            Over::Stream(stream) => stream.socket(),
+            Over::Datagrams(datagrams) => datagrams.socket(),
+        };
+        let mut watch = [super::io::SocketPoll::new(socket, events)];
+        match super::io::poll_together(&mut watch, &mut [], std::time::Duration::ZERO) {
+            Ok(_) => !watch[0].revents().is_empty(),
+            Err(_) => true,
+        }
+    }
+
+    /// The stream it is, for a layer to go on it as the connection is
+    /// upgraded to TLS (STARTTLS).
+    pub(crate) fn stream_mut(&mut self) -> &mut Stream {
+        self.stream()
+    }
+
+    /// What its socket's sends and receives are traced as.
+    pub(crate) fn socket_component(&self) -> Component {
+        self.socket
+    }
+
+    /// Whether the origin's bytes go through TLS now, as its layers say,
+    /// not as its route was made: a connection upgraded to TLS does; a
+    /// proxy's tunnel's TLS is not counted (`Curl_conn_is_ssl`).
+    pub(crate) fn over_tls(&self) -> bool {
+        let Over::Stream(stream) = &self.over else {
+            // QUIC's datagrams are always under TLS.
+            return true;
+        };
+        stream.query(super::layer::LayerQuery::TlsWaits).is_some()
     }
 }
 

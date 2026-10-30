@@ -50,14 +50,14 @@ file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_header_line_goes_out_whole
 --- old
         OutKind::Body => deliver_body(cx, bytes, pausable),
-        OutKind::Header(origin) | OutKind::Status(origin) => {
+        OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => {
 --- new
         OutKind::Body => deliver_body(cx, bytes, pausable),
         OutKind::Header(_) | OutKind::Status(_) if bytes.len() > MAX_WRITE => {
             deliver(cx, kind, &bytes[..MAX_WRITE], pausable)?;
             deliver(cx, kind, &bytes[MAX_WRITE..], pausable)
         }
-        OutKind::Header(origin) | OutKind::Status(origin) => {
+        OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => {
 
 === an included header line reaches the header handler first
 file: crates/curl-core/src/deliver/mod.rs

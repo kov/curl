@@ -855,6 +855,10 @@ struct Wire {
     /// The peer answers each send with its next reply, not each
     /// request's head: a handshake whose messages have no blank line.
     per_send: bool,
+    /// The peer speaks first: its first reply is there before anything
+    /// is sent, a line protocol's greeting, and each send after is
+    /// answered with the next.
+    greets: bool,
     /// The sends it was given.
     sends: usize,
     /// Sends still to be refused as would-block, though the socket polls
@@ -896,7 +900,9 @@ const ENDLESS_READS: usize = 20_000;
 impl Wire {
     /// The peer has a request's head to answer with its next reply.
     fn answering(&self) -> bool {
-        let asked = if self.per_send {
+        let asked = if self.greets {
+            self.sends + 1
+        } else if self.per_send {
             self.sends
         } else {
             self.heads()
@@ -959,6 +965,16 @@ impl Conversation {
             .lock()
             .expect("no test panics holding the wire")
             .per_send = true;
+        self
+    }
+
+    /// The same peer, speaking first: a greeting before anything is
+    /// sent, then a reply to each send.
+    pub fn greeting(self) -> Conversation {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .greets = true;
         self
     }
 

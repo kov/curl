@@ -28,7 +28,7 @@ use curl_core::hsts::LoadError as CacheLoadError;
 use curl_core::options::{
     BufferSize, ColdGroup, ConnectOnly, ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion,
     IpVersion, Lines, LowSpeed, MaxRedirects, Method, Options, PostRedir, Protocols, ProxyType,
-    Resume, ReuseLimits, Schemes, Sockets, TimeCondition, UpkeepInterval, UploadBufferSize,
+    Resume, ReuseLimits, Schemes, Sockets, TimeCondition, UpkeepInterval, UploadBufferSize, UseSsl,
     UserHeaders,
 };
 use curl_core::time::TimeLimit;
@@ -1106,6 +1106,36 @@ fn apply(
             // SAFETY: as above.
             let value = unsafe { owned(p) }?;
             options.login.set(|g| &mut g.bearer, value)?;
+        }
+        (ffi::CURLOPT_SASL_AUTHZID, Ptr(p)) => {
+            // SAFETY: as above.
+            let value = unsafe { owned(p) }?;
+            options.login.set(|g| &mut g.authzid, value)?;
+        }
+        (ffi::CURLOPT_LOGIN_OPTIONS, Ptr(p)) => {
+            // SAFETY: as above.
+            let value = unsafe { owned(p) }?;
+            options.line.set(|g| &mut g.login_options, value)?;
+        }
+        (ffi::CURLOPT_USE_SSL, Long(n)) => {
+            let level = match n {
+                0 => UseSsl::None,
+                1 => UseSsl::Try,
+                2 => UseSsl::Control,
+                3 => UseSsl::All,
+                _ => return Err(Refused::Bad),
+            };
+            options.line.make_mut()?.use_ssl = level;
+        }
+        (ffi::CURLOPT_SASL_IR, Long(n)) => options.line.make_mut()?.sasl_ir = n != 0,
+        (ffi::CURLOPT_DIRLISTONLY, Long(n)) => options.line.make_mut()?.list_only = n != 0,
+        (ffi::CURLOPT_SERVER_RESPONSE_TIMEOUT, Long(n)) => {
+            let limit = time_limit(n, 1000)?;
+            options.line.set(|g| &mut g.server_response, limit)?;
+        }
+        (ffi::CURLOPT_SERVER_RESPONSE_TIMEOUT_MS, Long(n)) => {
+            let limit = time_limit(n, 1)?;
+            options.line.set(|g| &mut g.server_response, limit)?;
         }
         (ffi::CURLOPT_CUSTOMREQUEST, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.

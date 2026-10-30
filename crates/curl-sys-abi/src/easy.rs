@@ -570,8 +570,17 @@ const fn libraries_with(
         idn: Some(IDN),
         h2: Some(&curl_nghttp2::NGHTTP2),
         h3: Some(&curl_ngtcp2::NGTCP2),
+        random: RANDOM,
     }
 }
+
+/// The debug build's random numbers, `CURL_ENTROPY`'s when it is set.
+#[cfg(feature = "debug-hooks")]
+const RANDOM: Option<curl_core::libraries::Library<dyn curl_core::libraries::Random>> = Some(
+    curl_core::libraries::Library::Static(&crate::root::ROOT_ENTROPY),
+);
+#[cfg(not(feature = "debug-hooks"))]
+const RANDOM: Option<curl_core::libraries::Library<dyn curl_core::libraries::Random>> = None;
 
 /// What converts host names, for the handles and the URL API alike.
 pub(crate) const IDN: &dyn curl_core::idn::Idn = &curl_idn2::IDN2;

@@ -776,3 +776,18 @@ fn what_follows_a_reply_is_what_its_read_held() {
     }
     assert_eq!(empty, 3);
 }
+
+/// An answer is awaited from the start and from each command built, until
+/// a pass of reads ends (`pending_resp`).
+#[test]
+fn an_answer_is_pending_from_each_command_to_the_end_of_a_read() {
+    let mut pp = Pingpong::new(Instant::EPOCH);
+    assert!(pp.pending_resp());
+    pp.reads_ended();
+    assert!(!pp.pending_resp());
+    let unsent = pp.command(None, &[b"NOOP"]).unwrap();
+    let _wrote = unsent.wrote(6, Instant::EPOCH);
+    assert!(pp.pending_resp());
+    pp.reads_ended();
+    assert!(!pp.pending_resp());
+}

@@ -303,9 +303,10 @@ witness: curl-core proto::http::tests::h3_trace::an_http3_connection_serves_a_tr
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::http::tests::h3_trace::an_http3_connection_serves_a_transfer_that_asks_for_no_version
 --- old
-        self.route.serves(wanted) && (!insists || self.socks5_authenticated)
+            && (!insists || self.socks5_authenticated)
 --- new
-        self.route.serves(wanted) && (!insists || self.socks5_authenticated) && self.dial == Dial::Stream
+            && (!insists || self.socks5_authenticated)
+            && self.dial == Dial::Stream
 
 === a connection passed over for its version is said after the transfer's own is added
 file: crates/curl-core/src/multi/state.rs

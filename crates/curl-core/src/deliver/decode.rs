@@ -136,6 +136,6 @@ impl Gate {
 fn piece(kind: OutKind, len: usize) -> usize {
     match kind {
         OutKind::Body => len.min(GATE_PIECE),
-        OutKind::Header(_) | OutKind::Status(_) => len,
+        OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => len,
     }
 }

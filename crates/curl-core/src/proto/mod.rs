@@ -1,7 +1,8 @@
 //! The protocols a transfer can speak, each a state the transfer holds
 //! while it exchanges data.
 //!
-//! `file:`, `http:` and, with a TLS library, `https:` are built in. Tests have three more, networkless: `null:`, which
+//! `file:`, `http:`, `pop3:` and, with a TLS library, `https:` and
+//! `pop3s:` are built in. Tests have three more, networkless: `null:`, which
 //! completes at once, `stall:`, which never does, and `script:`, which
 //! delivers the pieces of its transfer's `Options::script`; and `tcp:`,
 //! which connects to its URL's host and port and completes once
@@ -12,17 +13,14 @@ pub(crate) mod http;
 pub(crate) mod http1;
 pub(crate) mod http2;
 pub(crate) mod http3;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the line protocols' steps are yet to drive it")
-)]
 pub(crate) mod pingpong;
+pub(crate) mod pop3;
 #[cfg(any(test, feature = "test-util"))]
 mod script;
 
 use std::num::NonZeroU32;
 
-use crate::auth::creds::{Credentials, CredentialsError, NetrcLookup, Trusted};
+use crate::auth::creds::{Credentials, CredentialsError, NetrcLookup, Takes, Trusted};
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Directions, Pause, Pipeline};
@@ -92,6 +90,8 @@ pub(crate) enum ProtoState {
     File(Box<file::Request>),
     /// Boxed: it is moved with the transfer's state at every step.
     Http(Box<http::Request>),
+    /// Boxed, as HTTP's.
+    Pop3(Box<pop3::Request>),
     #[cfg(any(test, feature = "test-util"))]
     Null,
     #[cfg(any(test, feature = "test-util"))]
@@ -186,10 +186,6 @@ pub(crate) enum Connect {
     /// Connected: on to DO.
     Done,
     /// Not yet: waiting in PROTOCONNECTING for what its pollset says.
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "no protocol built yet waits before its request")
-    )]
     Waiting,
 }
 
@@ -213,16 +209,15 @@ pub(crate) enum DoStep {
     Did,
     /// More of its first half to make, in DOING (`!dophase_done`;
     /// DOMORE_GOBACK from DOING_MORE).
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "no protocol built yet waits before its request")
-    )]
     Doing,
     /// Its second half to make, in DOING_MORE (`bits.do_more`;
     /// DOMORE_INCOMPLETE there).
     #[cfg_attr(
         not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "no protocol built yet waits before its request")
+        expect(
+            dead_code,
+            reason = "no protocol built yet has a second half, as FTP will"
+        )
     )]
     More,
     /// More of it to make within DO, in the next step: what a step took
@@ -250,7 +245,7 @@ impl Waiting {
     /// connects, to send while it makes the request.
     #[cfg_attr(
         not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "no protocol built yet waits before its request")
+        expect(dead_code, reason = "the protocols built say what they wait for")
     )]
     pub(crate) fn c_default(self) -> Events {
         match self {
@@ -286,10 +281,12 @@ pub(crate) trait Phases {
 }
 
 /// `credentials` completed or replaced from a `.netrc` file, if the
-/// options ask for one and leave room for it (`url_set_data_creds_netrc`).
+/// options ask for one and leave room for it (`url_set_data_creds_netrc`):
+/// an entry with a byte the scheme `takes` not fails the transfer.
 pub(crate) fn with_netrc<H: Host>(
     credentials: Option<Credentials>,
     host: &[u8],
+    takes: Takes,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Option<Credentials>, ErrorKind> {
     let copy = |bytes: &[u8]| {
@@ -321,6 +318,13 @@ pub(crate) fn with_netrc<H: Host>(
         }
     };
     match found {
+        Ok(found) if !takes.allows(&found.user) || !takes.allows(&found.password) => {
+            Err(trace::fail(
+                cx,
+                ErrorKind::ReadError,
+                format_args!("control code detected in .netrc credentials"),
+            ))
+        }
         Ok(found) => Ok(Some(Credentials::with_netrc(credentials, found))),
         Err(NetrcError::OutOfMemory) => Err(ErrorKind::OutOfMemory),
         Err(e) if e == NetrcError::NoMatch || mode == NetrcMode::Optional => {
@@ -360,18 +364,9 @@ pub(crate) fn netrc_before_protocol<H: Host>(
     url: &Url,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
-    let login = &cx.easy().options().login;
-    let credentials = match Credentials::for_request(login, Some(Trusted::own_url()), url) {
-        Ok(credentials) => credentials,
-        Err(CredentialsError::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
-        Err(CredentialsError::Malformed) => {
-            return Err(trace::fail(
-                cx,
-                ErrorKind::UrlMalformat,
-                format_args!("error extracting credentials from URL"),
-            ));
-        }
-    };
+    let scheme = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;
+    let takes = Takes::of(Scheme::named(&scheme));
+    let credentials = request_credentials(cx, Some(Trusted::own_url()), url, takes)?;
     // The host as C's origin holds it: none for `file:///`, an IPv6
     // address without its brackets.
     let host = match url.get(Part::Host, GetOptions::NONE) {
@@ -383,7 +378,34 @@ pub(crate) fn netrc_before_protocol<H: Host>(
         .strip_prefix(b"[")
         .and_then(|h| h.strip_suffix(b"]"))
         .unwrap_or(&host);
-    with_netrc(credentials, bare, cx).map(drop)
+    with_netrc(credentials, bare, takes, cx).map(drop)
+}
+
+/// What a request to `url` authenticates with, as the application and
+/// the URL say, the application's if `trusted` lets them go there; failed
+/// as C fails it where a byte the scheme `takes` not is in them
+/// (`url_set_data_creds`).
+pub(crate) fn request_credentials<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    trusted: Option<Trusted>,
+    url: &Url,
+    takes: Takes,
+) -> Result<Option<Credentials>, ErrorKind> {
+    let login = &cx.easy().options().login;
+    match Credentials::for_request(login, trusted, url, takes) {
+        Ok(credentials) => Ok(credentials),
+        Err(CredentialsError::OutOfMemory) => Err(ErrorKind::OutOfMemory),
+        Err(CredentialsError::Malformed) => Err(trace::fail(
+            cx,
+            ErrorKind::UrlMalformat,
+            format_args!("error extracting credentials from URL"),
+        )),
+        Err(CredentialsError::Control) => Err(trace::fail(
+            cx,
+            ErrorKind::BadFunctionArgument,
+            format_args!("control code detected in credentials"),
+        )),
+    }
 }
 
 /// The tests' own schemes, which `ProtoState::start` knows beside
@@ -427,6 +449,14 @@ impl ProtoState {
                 curl_alloc::try_box(http::Request::new(url, true, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
+            b"pop3" => ProtoState::Pop3(
+                curl_alloc::try_box(pop3::Request::new(url, false, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
+            b"pop3s" if cx.easy().libraries().tls.is_some() => ProtoState::Pop3(
+                curl_alloc::try_box(pop3::Request::new(url, true, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
             #[cfg(any(test, feature = "test-util"))]
             b"null" => ProtoState::Null,
             #[cfg(any(test, feature = "test-util"))]
@@ -450,6 +480,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(_) => Ok(None),
             ProtoState::Http(ref r) => Ok(Some(r.network(url, scope, idn)?)),
+            ProtoState::Pop3(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
             #[cfg(any(test, feature = "test-util"))]
@@ -466,10 +497,33 @@ impl ProtoState {
         }
     }
 
+    /// The scheme of libcurl's the request is of; none for the tests'
+    /// own.
+    pub(crate) fn scheme(&self) -> Option<Scheme> {
+        match self {
+            ProtoState::Http(r) => Some(r.scheme()),
+            ProtoState::Pop3(r) => Some(r.scheme()),
+            ProtoState::File(_) => Scheme::named(b"file"),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+        }
+    }
+
+    /// The credentials a connection made for the request logs in with
+    /// once, taken from it for the route, if its scheme logs in per
+    /// connection (`url_set_conn_login`).
+    pub(crate) fn take_login(&mut self) -> Option<Credentials> {
+        match self {
+            ProtoState::Pop3(r) => r.take_login(),
+            _ => None,
+        }
+    }
+
     /// The request goes over TLS (C's `PROTOPT_SSL`).
     pub(crate) fn secured(&self) -> bool {
         match self {
             ProtoState::Http(r) => r.secured(),
+            ProtoState::Pop3(r) => r.secured(),
             _ => false,
         }
     }
@@ -508,6 +562,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(ref mut f) => f.connect(cx, lease),
             ProtoState::Http(ref mut r) => r.connect(cx, lease),
+            ProtoState::Pop3(ref mut r) => r.connect(cx, lease),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => p.connect(cx, lease),
             #[cfg(any(test, feature = "test-util"))]
@@ -530,6 +585,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(ref mut f) => f.make(cx, lease, asked),
             ProtoState::Http(ref mut r) => r.make(cx, lease, asked),
+            ProtoState::Pop3(ref mut r) => r.make(cx, lease, asked),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => p.make(cx, lease, asked),
             #[cfg(any(test, feature = "test-util"))]
@@ -544,6 +600,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(ref f) => f.waits(phase),
             ProtoState::Http(ref r) => r.waits(phase),
+            ProtoState::Pop3(ref r) => r.waits(phase),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.waits(phase),
             #[cfg(any(test, feature = "test-util"))]
@@ -564,6 +621,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(_) => false,
             ProtoState::Http(_) => true,
+            ProtoState::Pop3(ref r) => r.exchanges(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => true,
         }
@@ -578,7 +636,7 @@ impl ProtoState {
     )]
     pub(crate) fn wants_send(&self, options: &Options) -> bool {
         match *self {
-            ProtoState::File(_) => false,
+            ProtoState::File(_) | ProtoState::Pop3(_) => false,
             ProtoState::Http(ref r) => r.sending(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(_) => script::wants_send(options),
@@ -595,7 +653,7 @@ impl ProtoState {
     )]
     pub(crate) fn directions(&self, options: &Options) -> Directions {
         let send = match *self {
-            ProtoState::File(_) => false,
+            ProtoState::File(_) | ProtoState::Pop3(_) => false,
             ProtoState::Http(ref r) => r.sending(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.sending(options),
@@ -613,6 +671,7 @@ impl ProtoState {
     pub(crate) fn due(&self) -> Option<crate::time::Instant> {
         match self {
             ProtoState::Http(r) => r.due(),
+            ProtoState::Pop3(r) => r.due(),
             _ => None,
         }
     }
@@ -667,7 +726,7 @@ impl ProtoState {
     ) -> Result<(), ErrorKind> {
         match *self {
             ProtoState::Http(ref mut r) => r.rewind_upload(cx),
-            ProtoState::File(_) => Ok(()),
+            ProtoState::File(_) | ProtoState::Pop3(_) => Ok(()),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
                 Ok(())
@@ -681,6 +740,7 @@ impl ProtoState {
             // A write cannot pause it: it never holds.
             ProtoState::File(_) => false,
             ProtoState::Http(ref r) => r.holds_output(),
+            ProtoState::Pop3(ref r) => r.holds_output(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.holds_output(),
             #[cfg(any(test, feature = "test-util"))]
@@ -693,6 +753,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(ref mut f) => Some(f.pipeline_mut()),
             ProtoState::Http(ref mut r) => Some(r.pipeline_mut()),
+            ProtoState::Pop3(ref mut r) => Some(r.pipeline_mut()),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => Some(p.pipeline_mut()),
             #[cfg(any(test, feature = "test-util"))]
@@ -709,6 +770,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(_) => unreachable!("a file request exchanges nothing once made"),
             ProtoState::Http(ref mut r) => r.step(cx, lease),
+            ProtoState::Pop3(ref mut r) => r.step(cx, lease),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Tcp => Ok(ProtoStep::Done),
             #[cfg(any(test, feature = "test-util"))]
@@ -730,6 +792,7 @@ impl ProtoState {
     pub(crate) fn interest(&self, pause: Pause) -> Events {
         match *self {
             ProtoState::Http(ref r) => r.interest(pause),
+            ProtoState::Pop3(ref r) => r.interest(pause),
             ProtoState::File(_) => Events::NONE,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
@@ -744,7 +807,7 @@ impl ProtoState {
     pub(crate) fn retryable(&self) -> bool {
         match *self {
             ProtoState::Http(ref r) => r.received_nothing(),
-            ProtoState::File(_) => false,
+            ProtoState::File(_) | ProtoState::Pop3(_) => false,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
         }
@@ -840,6 +903,7 @@ impl ProtoState {
     ) -> Result<(), ErrorKind> {
         match *self {
             ProtoState::Http(ref mut r) => r.done(cx, lease, result, premature, next, http),
+            ProtoState::Pop3(ref mut r) => r.done(cx, lease, result),
             ProtoState::File(_) => result,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {

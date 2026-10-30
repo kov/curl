@@ -281,6 +281,18 @@ pub(crate) struct Operation<'a> {
     pub(crate) user: Option<Cow<'a, [u8]>>,
     /// `--oauth2-bearer`.
     pub(crate) bearer: Option<&'a [u8]>,
+    /// `--login-options`.
+    pub(crate) login_options: Option<&'a [u8]>,
+    /// `--sasl-authzid`.
+    pub(crate) sasl_authzid: Option<&'a [u8]>,
+    /// `--sasl-ir`.
+    pub(crate) sasl_ir: bool,
+    /// `--list-only` (C's `dirlistonly`).
+    pub(crate) list_only: bool,
+    /// `--ssl`, `--ftp-ssl` (C's `ftp_ssl`): TLS if the server has it.
+    pub(crate) ssl: bool,
+    /// `--ssl-reqd`, `--ftp-ssl-reqd` (C's `ftp_ssl_reqd`).
+    pub(crate) ssl_reqd: bool,
     /// The TLS options.
     pub(crate) tls: Tls<'a>,
     /// `--netrc`: the file is required.
@@ -1352,6 +1364,28 @@ pub(crate) fn apply<'a>(
             }
         }
         Opt::Netrc => line.current().netrc = value.toggle(),
+        Opt::Ssl | Opt::FtpSsl => {
+            let on = value.toggle();
+            line.current().ssl = on;
+            if on {
+                msgs.warn(&[
+                    b"--",
+                    spec.long.as_bytes(),
+                    b" is an insecure option, consider --ssl-reqd instead",
+                ]);
+            }
+        }
+        Opt::SslReqd | Opt::FtpSslReqd => line.current().ssl_reqd = value.toggle(),
+        Opt::LoginOptions => line.current().login_options = Some(value.text()),
+        Opt::SaslAuthzid => {
+            let text = value.text();
+            if text.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            line.current().sasl_authzid = Some(text);
+        }
+        Opt::SaslIr => line.current().sasl_ir = value.toggle(),
+        Opt::ListOnly => line.current().list_only = value.toggle(),
         Opt::NetrcOptional => line.current().netrc_optional = value.toggle(),
         Opt::NetrcFile => {
             let file = value.text();
@@ -1814,16 +1848,12 @@ pub(crate) fn apply<'a>(
         | Opt::FtpPort
         | Opt::FtpPret
         | Opt::FtpSkipPasvIp
-        | Opt::FtpSsl
         | Opt::FtpSslCcc
         | Opt::FtpSslCccMode
         | Opt::FtpSslControl
-        | Opt::FtpSslReqd
         | Opt::Hostpubmd5
         | Opt::Hostpubsha256
         | Opt::Knownhosts
-        | Opt::ListOnly
-        | Opt::LoginOptions
         | Opt::MailAuth
         | Opt::MailFrom
         | Opt::MailRcpt
@@ -1832,10 +1862,6 @@ pub(crate) fn apply<'a>(
         | Opt::ProxyNtlm
         | Opt::Pubkey
         | Opt::Quote
-        | Opt::SaslAuthzid
-        | Opt::SaslIr
-        | Opt::Ssl
-        | Opt::SslReqd
         | Opt::SslSessions
         | Opt::TelnetOption
         | Opt::TftpBlksize

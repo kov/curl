@@ -237,11 +237,33 @@ impl Route {
             cold: _,
             delegation: want_delegation,
         } = want;
+        let scheme = want.origin.scheme();
+        // A connection over TLS from the start serves a transfer not, of
+        // its family, that may reuse TLS, made with the settings that
+        // transfer would upgrade with (`url_match_ssl_use`).
+        let tls_reused = want_tls.is_none()
+            && tls.is_some()
+            && scheme.reuses_tls()
+            && tls.as_deref() == want.upgrade();
+        // The TLS a transfer may upgrade to is made with every setting
+        // the connection's is, which it was made with or would upgrade
+        // with (`url_match_ssl_config` with `may_tls`).
+        let upgrade_same =
+            !want.use_ssl().may() || tls.as_deref().or(have.upgrade()) == want.upgrade();
+        // A connection logged in once serves only the same credentials
+        // (`url_match_auth`).
+        let login_same = !scheme.logs_in_per_connection()
+            || match (have.login(), want.login()) {
+                (Some(have), Some(want)) => have.same(want),
+                (have, want) => have.is_none() && want.is_none(),
+            };
         proxy.as_ref().map(ProxyRoute::key) == want_proxy.as_ref().map(ProxyRoute::key)
             // TLS made with every setting the transfer's has, or none on
             // both (`url_match_ssl_config`): a transfer that verifies its
             // peer never takes a connection made without.
-            && tls.as_deref() == want_tls.as_deref()
+            && (tls.as_deref() == want_tls.as_deref() || tls_reused)
+            && upgrade_same
+            && login_same
             && delegation == want_delegation
     }
 }
@@ -299,6 +321,28 @@ pub(crate) struct RouteCold {
     /// What each socket's local end is bound to, if anything (C's
     /// `interface_opts`, `localport`, `localportrange`).
     pub(crate) local: crate::options::LocalBind,
+    /// The credentials the connection logs in with once, for a scheme
+    /// that logs in per connection, its first transfer's (`conn->creds`);
+    /// a transfer reusing it must have the same (`url_match_auth`).
+    pub(crate) login: Option<crate::auth::creds::Credentials>,
+    /// The TLS a connection not over it from the start is upgraded to,
+    /// or may be: made with the transfer's settings, which a transfer
+    /// reusing it must share (C's `ssl_config` for `may_tls`, or for a
+    /// scheme that may reuse TLS, `PROTOPT_SSL_REUSE`).
+    pub(crate) upgrade: Option<TryArc<crate::tls::TlsIdentity>>,
+    /// How far the transfer asks for TLS (`CURLOPT_USE_SSL`): a transfer
+    /// that requires it never reuses a connection not over it.
+    pub(crate) use_ssl: crate::options::UseSsl,
+}
+
+impl RouteCold {
+    /// Whether it holds nothing a route without it does not.
+    pub(crate) fn is_empty(&self) -> bool {
+        !self.local.binds()
+            && self.login.is_none()
+            && self.upgrade.is_none()
+            && self.use_ssl == crate::options::UseSsl::None
+    }
 }
 
 /// A network route as one attempt dials it: how the connection to its
@@ -374,6 +418,25 @@ impl NetRoute {
     /// What each socket's local end is bound to, if anything.
     pub(crate) fn local(&self) -> Option<&crate::options::LocalBind> {
         self.cold.as_deref().map(|c| &c.local).filter(|l| l.binds())
+    }
+
+    /// The credentials a connection over it logs in with once, if its
+    /// scheme does.
+    pub(crate) fn login(&self) -> Option<&crate::auth::creds::Credentials> {
+        self.cold.as_deref().and_then(|c| c.login.as_ref())
+    }
+
+    /// The TLS settings a connection over it is upgraded with, if it may
+    /// be.
+    pub(crate) fn upgrade(&self) -> Option<&crate::tls::TlsIdentity> {
+        self.cold.as_deref().and_then(|c| c.upgrade.as_deref())
+    }
+
+    /// How far the transfer asks for TLS.
+    pub(crate) fn use_ssl(&self) -> crate::options::UseSsl {
+        self.cold
+            .as_deref()
+            .map_or(crate::options::UseSsl::None, |c| c.use_ssl)
     }
 
     /// The peer connected to (`Curl_conn_get_first_peer`): the first
@@ -734,6 +797,51 @@ impl Scheme {
     /// (`PROTOPT_CONN_REUSE`).
     pub(crate) fn reuse(self) -> bool {
         self.0.flags.conn_reuse
+    }
+
+    /// Whether a request of it may be handed whole to an HTTP proxy: one
+    /// of HTTP's family, or one a proxy takes as HTTP, and not one that
+    /// must tunnel (`Curl_proxy_init_conn`). The tests' own schemes are
+    /// handed, as HTTP's are.
+    pub(crate) fn proxies_as_http(self) -> bool {
+        use crate::url::schemes::Protocol;
+        let flags = self.0.flags;
+        let http = match self.0.family {
+            Some(Protocol::Http | Protocol::Ws) => true,
+            Some(_) => false,
+            None => self.0.protocol.is_none(),
+        };
+        !flags.http_proxy_tunnel && (http || flags.proxy_as_http)
+    }
+
+    /// Whether its user and password may hold control bytes
+    /// (`PROTOPT_USERPWDCTRL`).
+    pub(crate) fn takes_control_bytes(self) -> bool {
+        self.0.flags.user_password_ctrl
+    }
+
+    /// Whether it is over TLS from the start (`PROTOPT_SSL`).
+    pub(crate) fn over_tls(self) -> bool {
+        self.0.flags.ssl
+    }
+
+    /// Whether, not over TLS itself, it may take a TLS connection of its
+    /// family (`PROTOPT_SSL_REUSE`): the line protocols, which upgrade.
+    pub(crate) fn reuses_tls(self) -> bool {
+        self.0.flags.ssl_reuse
+    }
+
+    /// Whether its TLS offers ALPN (`PROTOPT_ALPN`): HTTPS's does, and
+    /// the tests' own schemes', which stand in for it.
+    pub(crate) fn offers_alpn(self) -> bool {
+        self.0.protocol.is_none() || self.0.flags.alpn
+    }
+
+    /// Whether a connection logs in once, with the credentials of the
+    /// transfer that made it, rather than per request
+    /// (`PROTOPT_CREDSPERREQUEST` unset).
+    pub(crate) fn logs_in_per_connection(self) -> bool {
+        self.0.protocol.is_some() && !self.0.flags.creds_per_request
     }
 
     /// Whether a connection made for this scheme may serve a transfer of
@@ -1289,14 +1397,21 @@ impl Conn {
     }
 
     /// A protocol keeps its state on it.
-    #[cfg(any(test, feature = "test-util"))]
     pub(crate) fn keeps_line(&self) -> bool {
         matches!(self.session, mux::Speaks::Line(_))
     }
 
+    /// The state its protocol keeps on it, if one does, and what that
+    /// works over, borrowed apart for a step to drive both.
+    pub(crate) fn line_mut(&mut self) -> Option<(&mut line::LineConn, mux::Carrier<'_>)> {
+        match self.speaks_over() {
+            (mux::Speaks::Line(line), Some(carrier)) => Some((&mut **line, carrier)),
+            _ => None,
+        }
+    }
+
     /// The protocol `line` keeps its state on it, as its first request
     /// connects.
-    #[cfg(any(test, feature = "test-util"))]
     pub(crate) fn put_line(&mut self, line: Box<line::LineConn>) {
         assert!(
             matches!(self.session, mux::Speaks::Unmade),
@@ -1426,12 +1541,36 @@ impl Conn {
         matches!(&self.route, Route::Net(NetRoute { proxy: Some(p), .. }) if p.tunnels())
     }
 
-    /// Whether any of it is TLS, the origin's or an HTTPS proxy's
-    /// (`Curl_conn_is_ssl`).
+    /// Whether any of it is TLS now, the origin's or an HTTPS proxy's,
+    /// as its layers say: one upgraded to TLS is.
     pub(crate) fn over_tls(&self) -> bool {
+        match &self.transport {
+            Transport::Stream(stream) => {
+                stream.query(layer::LayerQuery::TlsWaits).is_some()
+                    || stream.query(layer::LayerQuery::ProxyTlsWaits).is_some()
+            }
+            // QUIC is always under TLS.
+            Transport::Datagram(_) => true,
+            Transport::Local => false,
+        }
+    }
+
+    /// Whether the origin's bytes go through TLS now, as its layers say,
+    /// a proxy's tunnel's TLS not counted (`Curl_conn_is_ssl`, which
+    /// stops at the tunnel).
+    pub(crate) fn origin_tls(&self) -> bool {
+        match &self.transport {
+            Transport::Stream(stream) => stream.query(layer::LayerQuery::TlsWaits).is_some(),
+            Transport::Datagram(_) => true,
+            Transport::Local => false,
+        }
+    }
+
+    /// The route it was made for.
+    pub(crate) fn net_route(&self) -> Option<&NetRoute> {
         match &self.route {
-            Route::Net(t) => t.tls.is_some() || t.proxy.as_ref().is_some_and(|p| p.tls().is_some()),
-            Route::Local => false,
+            Route::Net(t) => Some(t),
+            Route::Local => None,
         }
     }
 
@@ -1453,7 +1592,29 @@ impl Conn {
             }
             Route::Net(_) | Route::Local => false,
         };
-        self.route.serves(wanted) && (!insists || self.socks5_authenticated)
+        self.route.serves(wanted)
+            && (!insists || self.socks5_authenticated)
+            && self.tls_serves(wanted)
+    }
+
+    /// Whether, as its layers are now, it serves a transfer of a scheme
+    /// that may upgrade to TLS (`url_match_ssl_use`): one upgraded is
+    /// reused with the settings it was upgraded with; one not is not
+    /// reused by a transfer that requires TLS.
+    fn tls_serves(&self, wanted: &Route) -> bool {
+        let (Route::Net(have), Route::Net(want)) = (&self.route, wanted) else {
+            return true;
+        };
+        if want.tls.is_some() || have.tls.is_some() || !want.origin.scheme().reuses_tls() {
+            // Over TLS from the start, or never upgraded: the route's to
+            // say.
+            return true;
+        }
+        if self.origin_tls() {
+            want.origin.scheme().reuses_tls() && have.upgrade() == want.upgrade()
+        } else {
+            !want.use_ssl().requires()
+        }
     }
 
     /// HTTP Negotiate on it, if a request negotiated.
@@ -1950,9 +2111,15 @@ mod tests {
                 ip: IpVersion::Any,
                 proxy: None,
                 tls: None,
-                cold: local
-                    .binds()
-                    .then(|| TryArc::try_new(RouteCold { local }).unwrap()),
+                cold: local.binds().then(|| {
+                    TryArc::try_new(RouteCold {
+                        local,
+                        login: None,
+                        upgrade: None,
+                        use_ssl: crate::options::UseSsl::None,
+                    })
+                    .unwrap()
+                }),
                 delegation: Default::default(),
             })
         };

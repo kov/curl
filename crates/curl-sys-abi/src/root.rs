@@ -100,6 +100,29 @@ pub(crate) fn forced_entropy() -> Option<u32> {
     Some(next)
 }
 
+/// The handles' random numbers in the debug build: `CURL_ENTROPY`'s
+/// sequence, the root's, if it is set, or else the system's.
+#[cfg(feature = "debug-hooks")]
+pub(crate) struct RootEntropy;
+
+#[cfg(feature = "debug-hooks")]
+pub(crate) static ROOT_ENTROPY: RootEntropy = RootEntropy;
+
+#[cfg(feature = "debug-hooks")]
+impl curl_core::libraries::Random for RootEntropy {
+    fn active(&self) -> bool {
+        forced_entropy_set()
+    }
+
+    fn fill(&self, bytes: &mut [u8]) -> std::io::Result<()> {
+        for chunk in bytes.chunks_mut(4) {
+            let n = forced_entropy().expect("set, as checked");
+            chunk.copy_from_slice(&n.to_ne_bytes()[..chunk.len()]);
+        }
+        Ok(())
+    }
+}
+
 /// Which components trace, for every handle of the process
 /// (`curl_global_trace`): part of the root, beside it only because the
 /// handles read it without the root's lock. It outlives

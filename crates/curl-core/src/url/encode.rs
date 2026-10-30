@@ -178,7 +178,7 @@ pub(super) fn uppercase_hex(out: &mut Bytes, s: &[u8]) -> Result<(), UrlErrorKin
 
 /// `s` with `%xx` escapes decoded, rejecting control bytes whether escaped
 /// or not (`Curl_urldecode` with `REJECT_CTRL`). `None` on such a byte.
-pub(super) fn decode(s: &[u8]) -> Result<Option<Bytes>, UrlErrorKind> {
+pub(crate) fn decode(s: &[u8]) -> Result<Option<Bytes>, UrlErrorKind> {
     decode_rejecting(s, |b| b < 0x20)
 }
 

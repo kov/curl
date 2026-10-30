@@ -1,0 +1,53 @@
+=== bytes after the STLS go-ahead are taken as if under TLS
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::bytes_after_the_stls_go_ahead_are_refused
+features: test-util
+--- old
+        if pc.pp.after_reply().is_some_and(|after| !after.is_empty()) {
+--- new
+        if false {
+
+=== a connection upgraded to TLS gets no TLS layer
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::pop3::tests::over_the_wire::stls_upgrades_the_connection_before_the_login
+features: test-util
+--- old
+    if !carrier.over_tls() {
+--- new
+    if false {
+
+=== a connection logged in once serves another user's transfer
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_connection_is_reused_only_by_the_same_login_and_tls
+features: test-util
+--- old
+        let login_same = !scheme.logs_in_per_connection()
+--- new
+        let login_same = true || !scheme.logs_in_per_connection()
+
+=== a connection in the clear serves a transfer that requires TLS
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_connection_is_reused_only_by_the_same_login_and_tls
+features: test-util
+--- old
+            !want.use_ssl().requires()
+--- new
+            true
+
+=== a dot the server stuffed reaches the body
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::a_stuffed_dot_is_taken_out
+features: test-util
+--- old
+                        strip_dot = true;
+--- new
+                        strip_dot = false;
+
+=== a control byte in a URL's user reaches a scheme that takes none
+file: crates/curl-core/src/auth/creds.rs
+witness: curl-core auth::creds::tests::control_bytes_are_refused_where_the_scheme_takes_none
+features: test-util
+--- old
+            Takes::NoControlBytes => decode_but_control,
+--- new
+            Takes::NoControlBytes => decode_but_zero,

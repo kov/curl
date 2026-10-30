@@ -3,8 +3,8 @@
 //! FTP's, IMAP's, POP3's, SMTP's and SSH's state between requests, and
 //! the goodbye each says as the connection shuts down (the scheme's
 //! `disconnect`). The connection holds it as what it speaks, so that it
-//! is one fact with a session: no protocol has both. None is built yet
-//! but the test protocol's.
+//! is one fact with a session: no protocol has both. POP3's is built,
+//! and the test protocol's.
 
 use super::layer::LayerCx;
 use super::mux::Carrier;
@@ -12,6 +12,8 @@ use super::mux::Carrier;
 /// A protocol's state on its connection.
 #[derive(Debug)]
 pub(crate) enum LineConn {
+    /// POP3's: its back and forth, and how it logged in.
+    Pop3(crate::proto::pop3::Pop3Conn),
     /// `tcp:`'s, which says a goodbye of its own.
     #[cfg(any(test, feature = "test-util"))]
     Test(Farewell),
@@ -23,12 +25,9 @@ impl LineConn {
     /// sent as the connection takes it now, its answer never waited on.
     /// A connection `dead`, whose state no one knows (a transfer on it
     /// aborted), is told so and says nothing (`dead_connection`).
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(unused_variables, reason = "no protocol built yet says one")
-    )]
     pub(crate) fn goodbye(&mut self, cx: &mut dyn LayerCx, below: Carrier<'_>, dead: bool) {
         match *self {
+            LineConn::Pop3(ref mut p) => p.goodbye(cx, below, dead),
             #[cfg(any(test, feature = "test-util"))]
             LineConn::Test(ref mut f) => f.goodbye(cx, below, dead),
         }

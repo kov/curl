@@ -39,7 +39,7 @@ use super::http1::request::{
     self, Accepted, Authorization, Conditional, Forwarding, RangeLine, RequestHead, SentIn, Typed,
 };
 use super::{Before, Ended, ProtoStep};
-use crate::auth::creds::{CredentialGate, Credentials, CredentialsError, Secret, Trusted};
+use crate::auth::creds::{CredentialGate, Credentials, Secret, Takes, Trusted};
 use crate::auth::http::{AuthAct, AuthRequest, Offered, Output, OutputError, Side};
 use crate::options::AuthMethods;
 use std::num::{NonZeroU32, NonZeroUsize};
@@ -59,7 +59,7 @@ use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, L
 /// The most reads one step makes (`sendrecv_dl`: the first and
 /// `maxloops`' ten more), so a peer that sends faster than it is read
 /// cannot keep the step from returning.
-const MAX_READS: usize = 11;
+pub(super) const MAX_READS: usize = 11;
 
 /// A body larger than this asks `Expect: 100-continue` on HTTP/1.1.
 const EXPECT_100_THRESHOLD: u64 = 1024 * 1024;
@@ -654,21 +654,13 @@ impl Request {
                 CredentialGate::new(first, &peer, other_hosts)
             }
         };
-        let login = &cx.easy().options().login;
-        let credentials = match Credentials::for_request(login, gate.trusted(), url) {
-            Ok(credentials) => credentials,
-            Err(CredentialsError::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
-            Err(CredentialsError::Malformed) => {
-                return Err(trace::fail(
-                    cx,
-                    ErrorKind::UrlMalformat,
-                    format_args!("error extracting credentials from URL"),
-                ));
-            }
-        };
+        // HTTP's user and password take control bytes
+        // (`PROTOPT_USERPWDCTRL`).
+        let takes = Takes::ControlBytes;
+        let credentials = super::request_credentials(cx, gate.trusted(), url, takes)?;
         // By the host's name: an IPv6 address without its brackets, a name
         // in Unicode in its ASCII form (`Curl_netrc_scan` of `hostname`).
-        let credentials = super::with_netrc(credentials, peer.name(), cx)?;
+        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
         Ok(Request {
             pipeline: Pipeline::new(Reach::Network),
             target,
@@ -779,6 +771,11 @@ impl Request {
             .map_err(|_| ErrorKind::OutOfMemory)?;
         let (scheme, port) = (self.peer.scheme(), self.peer.port());
         super::url_peer((scheme, host, port), url, scope, idn)
+    }
+
+    /// Its scheme, `http` or `https`.
+    pub(crate) fn scheme(&self) -> Scheme {
+        self.peer.scheme()
     }
 
     /// It goes over TLS: its scheme is `https` (C's `PROTOPT_SSL`).

@@ -227,6 +227,8 @@ static VERSION: VersionInfo = VersionInfo {
         Protocol::File,
         Protocol::Http,
         Protocol::Https,
+        Protocol::Imap,
+        Protocol::Imaps,
         Protocol::Pop3,
         Protocol::Pop3s,
     ],
@@ -249,7 +251,10 @@ mod tests {
     #[test]
     fn protocols_are_named_by_their_schemes() {
         let names: Vec<_> = version().protocols.iter().map(|p| p.name()).collect();
-        assert_eq!(names, ["file", "http", "https", "pop3", "pop3s"]);
+        assert_eq!(
+            names,
+            ["file", "http", "https", "imap", "imaps", "pop3", "pop3s"]
+        );
         for &p in version().protocols {
             assert_eq!(Protocol::of_scheme(p.name().as_bytes()), Some(p));
         }

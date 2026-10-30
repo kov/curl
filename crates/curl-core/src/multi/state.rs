@@ -5044,8 +5044,8 @@ fn start_leg<H: Host>(
     // allowed; an HTTP or POP3 request reads it as it is made, any other
     // URL here.
     let reads_own = match &*scheme {
-        b"http" | b"pop3" => true,
-        b"https" | b"pop3s" => cx.easy().libraries().tls.is_some(),
+        b"http" | b"imap" | b"pop3" => true,
+        b"https" | b"imaps" | b"pop3s" => cx.easy().libraries().tls.is_some(),
         _ => false,
     };
     if (refused || !reads_own)

@@ -1127,7 +1127,7 @@ fn sasl_failed<H: Host>(cx: &mut StepCx<'_, H>, e: SaslError) -> ErrorKind {
 /// The message of a SASL answer, `line` after its first two bytes and
 /// the blanks after them, without the blanks and line end at its end;
 /// nothing of a line no longer than two (`pop3_get_message`).
-fn server_message(line: &[u8]) -> &[u8] {
+pub(super) fn server_message(line: &[u8]) -> &[u8] {
     if line.len() <= 2 {
         return &[];
     }

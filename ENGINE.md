@@ -3415,7 +3415,17 @@ protocol's phases (the drive, below).
   it runs out as the step's due, and runs the step without waiting while bytes are held or
   the socket already polls ready (`Carrier::ready_now`). The connection's protocol state is
   its `LineConn` (POP3's `Pop3Conn`: its `Pingpong`, state, SASL and what CAPA offered, and a
-  key to the route's cold group for its credentials); a transfer's is its `ProtoState`.
+  key to the route's cold group for its credentials; IMAP's `ImapConn` also its tag count and
+  the mailbox selected); a transfer's is its `ProtoState`.
+- **IMAP's transfer ends with an answer.** A FETCH's literal (`{N}`) is the body, what came
+  with its line written at once and the rest read to its size and no further (`Expect::max`);
+  the tagged answer after it, or after an APPEND's body and the empty line that ends it, is
+  read in PERFORMING once the body is done (C reads it blocking in `imap_done`), and its
+  refusal is the transfer's result, the request having run to its end, so the connection is
+  kept. Whether a transfer goes from DID to PERFORMING is the connection's `recv_idx` as C
+  leaves it: a transfer that set up nothing (a FETCH whose literal came whole, `-I`) leaves
+  the next one that sets up nothing to go to DONE (`ImapConn::no_socket`). Credentials go to
+  a redirect's other host only as HTTP's do (`CredentialGate`).
 - **STARTTLS** upgrades in place (`multi::state::tls::upgrade`): the origin's session, made
   with the route's upgrade settings and offering no ALPN, goes on the carrier's stream once,
   and each call moves its handshake on; the protocol then asks for its capabilities again.

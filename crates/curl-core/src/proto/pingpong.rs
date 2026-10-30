@@ -19,10 +19,6 @@ pub(crate) mod drive;
     expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
 )]
 pub(crate) mod ftp;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
-)]
 pub(crate) mod imap;
 pub(crate) mod pop3;
 #[cfg_attr(
@@ -420,11 +416,7 @@ impl Pingpong {
     }
 
     /// Everything held of the answer, a reply's line given out included
-    /// (C's `recvbuf`, which ftp.c:470 looks at).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
-    )]
+    /// (C's `recvbuf`, which ftp.c:470 and imap.c:1013 look at).
     pub(crate) fn held(&self) -> &[u8] {
         match self.scan {
             Scan::Failed(_) => &[],

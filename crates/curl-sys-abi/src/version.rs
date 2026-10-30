@@ -294,7 +294,10 @@ mod tests {
     fn protocols_reach_the_c_struct() {
         let want: Vec<_> = version().protocols.iter().map(|p| p.name()).collect();
         assert_eq!(names(info().protocols), want);
-        assert_eq!(want, ["file", "http", "https", "pop3", "pop3s"]);
+        assert_eq!(
+            want,
+            ["file", "http", "https", "imap", "imaps", "pop3", "pop3s"]
+        );
     }
 
     /// HTTP/3's two libraries are named together in `quic_version`, as

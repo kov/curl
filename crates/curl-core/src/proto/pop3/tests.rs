@@ -671,4 +671,130 @@ mod over_the_wire {
         assert_eq!(ran.body, b"hello\r\n.dot\r\n");
         assert!(talk.received().starts_with(b"FAKETLS HELLO"));
     }
+
+    /// A connection upgraded by STLS serves a transfer requiring TLS made
+    /// with the same settings, without a login again, and not one whose
+    /// TLS would be made otherwise.
+    #[test]
+    fn an_upgraded_connection_serves_only_the_same_tls_settings() {
+        let tls = |plain: &[u8]| fake::records(plain).unwrap();
+        let replies = [
+            GREETING.to_vec(),
+            CAPA.to_vec(),
+            OK.to_vec(),
+            WELCOME.to_vec(),
+            tls(b"+OK\r\nUSER\r\n.\r\n"),
+            tls(OK),
+            tls(OK),
+            tls(MESSAGE),
+            tls(MESSAGE),
+        ];
+        let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+        let upgraded = Conversation::replies(&replies, false).greeting();
+        let other = upgrading(b"");
+        let mut m = serving(&[&upgraded, &other]);
+        let libraries = with_tls();
+        let required = |o: &mut Options| o.line.make_mut().unwrap().use_ssl = UseSsl::All;
+        assert_eq!(retrieve(&mut m, &libraries, required).0, Ok(()));
+        let before = upgraded.received().len();
+        assert_eq!(
+            retrieve(&mut m, &libraries, required),
+            (Ok(()), b"hello\r\n.dot\r\n".to_vec())
+        );
+        let retr = tls(b"RETR 1\r\n");
+        assert_eq!(upgraded.received()[before..], retr[..], "reused, logged in");
+        assert_eq!(other.received(), b"");
+        let (result, _) = retrieve(&mut m, &libraries, |o| {
+            required(o);
+            o.tls.verify_peer = false;
+        });
+        assert_eq!(result, Ok(()));
+        assert!(other.received().starts_with(b"CAPA\r\nSTLS\r\n"));
+    }
+
+    /// A connection over TLS from the start serves a transfer of its
+    /// family that may reuse TLS, and asks for it.
+    #[test]
+    fn a_pop3s_connection_serves_a_pop3_transfer() {
+        let tls = |plain: &[u8]| fake::records(plain).unwrap();
+        let replies = [
+            WELCOME.to_vec(),
+            tls(GREETING),
+            tls(CAPA_USER),
+            tls(OK),
+            tls(OK),
+            tls(MESSAGE),
+            tls(MESSAGE),
+        ];
+        let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+        let secure = Conversation::replies(&replies, false).per_send();
+        let mut m = serving(&[&secure]);
+        let libraries = with_tls();
+        let url = format!("pop3s://u:p@127.0.0.1:{PORT}/1");
+        assert_eq!(transfer(&mut m, &libraries, &url, |_| {}).result, Ok(()));
+        let before = secure.received().len();
+        let (result, body) = retrieve(&mut m, &libraries, |o| {
+            o.line.make_mut().unwrap().use_ssl = UseSsl::All;
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(body, b"hello\r\n.dot\r\n");
+        assert_eq!(secure.received()[before..], tls(b"RETR 1\r\n")[..]);
+    }
+
+    /// A connection that logged in as no one serves no transfer with
+    /// credentials.
+    #[test]
+    fn a_connection_without_a_login_serves_none_with_one() {
+        let anonymous = Conversation::replies(&[GREETING, CAPA_USER, MESSAGE], false).greeting();
+        let named = in_the_clear();
+        let mut m = serving(&[&anonymous, &named]);
+        let url = format!("pop3://127.0.0.1:{PORT}/1");
+        assert_eq!(transfer(&mut m, &plain(), &url, |_| {}).result, Ok(()));
+        assert_eq!(anonymous.received(), b"CAPA\r\nRETR 1\r\n");
+        assert_eq!(retrieve(&mut m, &plain(), |_| {}).0, Ok(()));
+        assert_eq!(named.received(), b"CAPA\r\nUSER u\r\nPASS p\r\nRETR 1\r\n");
+    }
+
+    /// A `.netrc` entry logs in where the URL names no one, but not one
+    /// with a control byte, which POP3 takes in no credentials.
+    #[test]
+    fn a_netrc_entry_logs_in_without_control_bytes() {
+        use crate::options::NetrcMode;
+        let path =
+            std::env::temp_dir().join(format!("curl-core-pop3-netrc-{}", std::process::id()));
+        let file = path.as_os_str().as_encoded_bytes().to_vec();
+        let netrc = |o: &mut Options| {
+            o.netrc.make_mut().unwrap().mode = NetrcMode::Required;
+            o.netrc.make_mut().unwrap().file = Some(file.clone());
+        };
+        let anonymous = "pop3://127.0.0.1:PORT/1";
+        std::fs::write(&path, b"machine 127.0.0.1 login nu password np\n").unwrap();
+        let (sent, ran) = against(&[GREETING, CAPA_USER, OK, OK, MESSAGE], anonymous, netrc);
+        assert_eq!(ran.result, Ok(()));
+        assert_eq!(sent, b"CAPA\r\nUSER nu\r\nPASS np\r\nRETR 1\r\n");
+        for entry in [
+            &b"machine 127.0.0.1 login nu password \"n\\rp\"\n"[..],
+            b"machine 127.0.0.1 login \"n\\ru\" password np\n",
+        ] {
+            std::fs::write(&path, entry).unwrap();
+            let (sent, ran) = against(&[GREETING], anonymous, netrc);
+            assert_eq!(ran.result, Err(ErrorKind::ReadError));
+            assert_eq!(sent, b"");
+            assert!(
+                ran.text
+                    .contains("control code detected in .netrc credentials"),
+                "{}",
+                ran.text
+            );
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// Without a TLS library, `pop3s` is a protocol the build leaves out.
+    #[test]
+    fn pop3s_needs_a_tls_library() {
+        let (sent, ran) = against(&[GREETING], "pop3s://u:p@127.0.0.1:PORT/1", |_| {});
+        assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
+        assert_eq!(sent, b"");
+    }
 }

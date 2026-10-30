@@ -1758,6 +1758,33 @@ mod tests {
         Peer::new(HTTP, host.to_vec(), port, zone.map(<[u8]>::to_vec))
     }
 
+    /// What each scheme's flags in C's table say of it: control bytes in
+    /// its credentials, TLS from the start, a TLS connection reused, ALPN
+    /// offered, a login per connection, a request handed whole to an HTTP
+    /// proxy.
+    #[test]
+    fn schemes_say_what_c_s_flags_say() {
+        let says = |name: &[u8]| {
+            let s = Scheme::named(name).unwrap();
+            [
+                s.takes_control_bytes(),
+                s.over_tls(),
+                s.reuses_tls(),
+                s.offers_alpn(),
+                s.logs_in_per_connection(),
+                s.proxies_as_http(),
+            ]
+        };
+        let (t, f) = (true, false);
+        assert_eq!(says(b"http"), [t, f, f, f, f, t]);
+        assert_eq!(says(b"https"), [t, t, f, t, f, f]);
+        assert_eq!(says(b"ws"), [t, f, f, f, f, f]);
+        assert_eq!(says(b"pop3"), [f, f, t, f, t, f]);
+        assert_eq!(says(b"pop3s"), [f, t, f, f, t, f]);
+        assert_eq!(says(b"ftp"), [f, f, t, f, t, t]);
+        assert_eq!(says(b"gopher"), [f, f, f, f, t, f]);
+    }
+
     /// A Unix socket is the same as another of the same path, in the same
     /// namespace, its path's case told apart, and never a host of that
     /// name (`peer_same_hostname`).

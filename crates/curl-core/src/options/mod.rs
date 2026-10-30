@@ -2585,6 +2585,15 @@ mod tests {
 
     /// A protocol's schemes are its rows of the table, each its own bit:
     /// HTTP's one, SOCKS's five, none of another protocol's.
+    /// TLS may be added to a connection at any level but none, and is
+    /// required from `CURLUSESSL_CONTROL` on.
+    #[test]
+    fn the_tls_levels_say_may_and_requires_as_c() {
+        let levels = [UseSsl::None, UseSsl::Try, UseSsl::Control, UseSsl::All];
+        assert_eq!(levels.map(UseSsl::may), [false, true, true, true]);
+        assert_eq!(levels.map(UseSsl::requires), [false, false, true, true]);
+    }
+
     #[test]
     fn a_protocol_names_its_schemes() {
         use crate::version::Protocol;

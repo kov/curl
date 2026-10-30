@@ -262,6 +262,49 @@ pub(crate) mod testing {
 mod tests {
     use super::*;
 
+    /// `CURL_ENTROPY`'s numbers: its first four bytes big-endian, one
+    /// more each four bytes drawn, each in the machine's order; a stand-in
+    /// that is not active leaves the system's bytes, and one that is
+    /// prints as what it is.
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn random_bytes_come_from_the_active_stand_in() {
+        struct Off;
+        impl Random for Off {
+            fn active(&self) -> bool {
+                false
+            }
+            fn fill(&self, bytes: &mut [u8]) -> std::io::Result<()> {
+                bytes.fill(0xaa);
+                Ok(())
+            }
+        }
+        let forced = ForcedEntropy::seeded(b"12345678").unwrap();
+        assert!(forced.active());
+        let libraries = Libraries {
+            random: Some(Library::Owned(Box::new(forced))),
+            ..Libraries::NONE
+        };
+        let mut drawn = [0u8; 10];
+        libraries.random(&mut drawn).unwrap();
+        let mut want = Vec::new();
+        for n in 0x3132_3334u32..0x3132_3337 {
+            want.extend_from_slice(&n.to_ne_bytes());
+        }
+        assert_eq!(drawn, want[..10]);
+        let mut next = [0u8; 4];
+        libraries.random(&mut next).unwrap();
+        assert_eq!(next, 0x3132_3337u32.to_ne_bytes());
+        assert!(format!("{libraries:?}").ends_with("random: Some(Random) }"));
+        let off = Libraries {
+            random: Some(Library::Owned(Box::new(Off))),
+            ..Libraries::NONE
+        };
+        let mut a = [0xaau8; 32];
+        off.random(&mut a).unwrap();
+        assert_ne!(a, [0xaa; 32], "the system's bytes");
+    }
+
     /// A handle's libraries print the signer by what it does, whichever
     /// library it is.
     #[test]

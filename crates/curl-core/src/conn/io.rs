@@ -856,9 +856,12 @@ struct Wire {
     /// request's head: a handshake whose messages have no blank line.
     per_send: bool,
     /// The peer speaks first: its first reply is there before anything
-    /// is sent, a line protocol's greeting, and each send after is
-    /// answered with the next.
+    /// is sent, a line protocol's greeting, and each send after that ends
+    /// a line with CRLF is answered with the next (a fake TLS handshake's
+    /// last flight ends with a bare LF, and has no answer).
     greets: bool,
+    /// The sends that ended with CRLF.
+    lines: usize,
     /// The sends it was given.
     sends: usize,
     /// Sends still to be refused as would-block, though the socket polls
@@ -901,7 +904,7 @@ impl Wire {
     /// The peer has a request's head to answer with its next reply.
     fn answering(&self) -> bool {
         let asked = if self.greets {
-            self.sends + 1
+            self.lines + 1
         } else if self.per_send {
             self.sends
         } else {
@@ -969,7 +972,7 @@ impl Conversation {
     }
 
     /// The same peer, speaking first: a greeting before anything is
-    /// sent, then a reply to each send.
+    /// sent, then a reply to each send that ends a line with CRLF.
     pub fn greeting(self) -> Conversation {
         self.0
             .lock()
@@ -1897,6 +1900,9 @@ impl Socket for FakeSocket {
             .try_extend_from_slice(buf)
             .map_err(|_| io::ErrorKind::OutOfMemory)?;
         wire.sends += 1;
+        if buf.ends_with(b"\r\n") {
+            wire.lines += 1;
+        }
         if wire.hang_up_unanswered
             && wire.answered == wire.replies.len()
             && wire.heads() > wire.answered

@@ -2133,6 +2133,71 @@ mod tests {
     /// without (`url_match_ssl_use`, `url_match_ssl_config`): a transfer
     /// that verifies its peer never takes a connection that did not, nor
     /// the other way round (the CVE-2021-22924 class).
+    /// An FTP connection serves only a transfer that would set it up the
+    /// same way: the same account, alternative to `USER` and CCC, and TLS
+    /// asked for alike, a transfer that only tries TLS taking one that
+    /// asked for any (`Curl_ftp_conns_match`); one of another scheme's
+    /// setup is not compared. A transfer that does not ask for TLS takes a
+    /// connection whatever TLS it would have upgraded to
+    /// (`url_match_ssl_config` without `may_tls`).
+    #[test]
+    fn ftp_connections_serve_transfers_set_up_alike() {
+        use crate::options::{Ccc, Tls, UseSsl};
+        use crate::tls::TlsIdentity;
+        let route = |ftp: Option<FtpSetup>, use_ssl, upgrade: Option<&Tls>| {
+            Route::Net(NetRoute {
+                origin: TryArc::try_new(Peer::new(
+                    Scheme::of("ftp"),
+                    b"f.example".to_vec(),
+                    21,
+                    None,
+                ))
+                .unwrap(),
+                via: None,
+                ip: IpVersion::Any,
+                proxy: None,
+                tls: None,
+                cold: Some(
+                    TryArc::try_new(RouteCold {
+                        local: crate::options::LocalBind::NONE,
+                        login: None,
+                        upgrade: upgrade.map(|t| TlsIdentity::of(t, Default::default()).unwrap()),
+                        use_ssl,
+                        ftp,
+                    })
+                    .unwrap(),
+                ),
+                delegation: Default::default(),
+            })
+        };
+        let setup = |account: Option<&[u8]>, alternative: Option<&[u8]>, ccc| FtpSetup {
+            account: account.map(<[u8]>::to_vec),
+            alternative_to_user: alternative.map(<[u8]>::to_vec),
+            ccc,
+        };
+        let plain = || setup(None, None, Ccc::None);
+        let ftp = |s: FtpSetup, use_ssl| route(Some(s), use_ssl, None);
+        let have = ftp(plain(), UseSsl::None);
+        assert!(have.serves(&ftp(plain(), UseSsl::None)));
+        assert!(!have.serves(&ftp(setup(Some(b"a"), None, Ccc::None), UseSsl::None)));
+        assert!(!have.serves(&ftp(setup(None, Some(b"alt"), Ccc::None), UseSsl::None)));
+        assert!(!have.serves(&ftp(setup(None, None, Ccc::Passive), UseSsl::None)));
+        // TLS asked for alike, or only tried over a connection that asked.
+        let all = ftp(plain(), UseSsl::All);
+        assert!(all.serves(&ftp(plain(), UseSsl::Try)));
+        assert!(all.serves(&ftp(plain(), UseSsl::All)));
+        assert!(!all.serves(&ftp(plain(), UseSsl::Control)));
+        assert!(!have.serves(&ftp(plain(), UseSsl::Try)));
+        assert!(!ftp(plain(), UseSsl::Try).serves(&all));
+        // Without an FTP setup on either side, none is compared.
+        assert!(route(None, UseSsl::None, None).serves(&have));
+        assert!(have.serves(&route(None, UseSsl::None, None)));
+        // A connection that would have upgraded serves a transfer that
+        // asks for no TLS.
+        let upgrading = route(Some(plain()), UseSsl::None, Some(&Tls::default()));
+        assert!(upgrading.serves(&have));
+    }
+
     #[test]
     fn routes_compare_their_tls() {
         use crate::options::Tls;

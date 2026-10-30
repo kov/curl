@@ -59,3 +59,11 @@ features: test-util debug-hooks
                         tls.resume.take(),
 --- new
                         None,
+
+=== an FTP connection serves a transfer however it would set the connection up
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::ftp_connections_serve_transfers_set_up_alike
+--- old
+                (Some(h), Some(w)) => h.serves(w, have_cold.use_ssl, want_cold.use_ssl),
+--- new
+                (Some(_), Some(_)) => true,

@@ -1587,3 +1587,41 @@ fn a_dead_multi_ends_an_answer_awaited_in_done() {
     let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
     assert!(said.contains("closing connection #0"), "{said}");
 }
+
+impl crate::handler::TextSink for Text {
+    fn write(&self, text: &[u8]) {
+        self.0.lock().unwrap().extend_from_slice(text);
+    }
+}
+
+/// The lines of the meter a transfer of `url` over `talk` draws.
+fn meter(talk: &Conversation, url: &str) -> Vec<String> {
+    let mut m = serving(&[talk]);
+    let drawn = Text::default();
+    let ran = transfer(&mut m, &plain(), url, |o| {
+        o.progress = crate::options::Progress::Meter;
+        o.callbacks.stderr = Some(Handler::text(drawn.clone()).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let drawn = String::from_utf8(drawn.0.lock().unwrap().clone()).unwrap();
+    drawn
+        .split(['\r', '\n'])
+        .filter(|l| !l.is_empty())
+        .skip(2)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The meter starts over as the request is made (`imap_regular_transfer`'s
+/// `Curl_pgrsReset`), drawn again at once: a `LIST` draws C's five lines
+/// of nothing (`curl -o /dev/null imap://...` against the C build), a
+/// `FETCH` whose literal came whole, which goes from DID to DONE without
+/// its request done, C's two.
+#[test]
+fn the_meter_starts_over_as_the_request_is_made() {
+    let zeros = "  0      0   0      0   0      0      0      0                              0";
+    let talk =
+        Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, b"A003 OK\r\n"], false).greeting();
+    assert_eq!(meter(&talk, "imap://u:p@127.0.0.1:PORT/"), [zeros; 5]);
+    assert_eq!(meter(&fetching(&[]), FETCH_URL), [zeros; 2]);
+}

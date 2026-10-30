@@ -1271,6 +1271,8 @@ impl super::Phases for Request {
     ) -> Result<DoStep, ErrorKind> {
         match asked {
             DoPhase::Do => {
+                // The progress counts from nothing (`pop3_regular_transfer`).
+                crate::progress::reset(cx);
                 trace::debug_info(cx, format_args!("DO phase starts"));
                 self.command(cx, lease)?;
                 let ran = self.run(cx, lease);

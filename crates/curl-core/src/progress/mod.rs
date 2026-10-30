@@ -170,6 +170,15 @@ fn per_second(bytes: u64, us: u64) -> u64 {
     u64::try_from(per).unwrap_or(u64::MAX)
 }
 
+/// The request's counts start from nothing again, its sizes unknown, and
+/// its speed measured from scratch, the next pass showing the progress
+/// (`Curl_pgrsReset`, as a line protocol's request starts).
+pub(crate) fn reset<H: Host>(cx: &mut StepCx<'_, H>) {
+    let (speedometer, report) = cx.progress_parts();
+    report.sizes_mut().new_request();
+    speedometer.start_over();
+}
+
 /// Take stock of the transfer and tell the application, by its handler or
 /// the meter (`Curl_pgrsUpdate`). A handler's abort is AbortedByCallback
 /// ("Callback aborted").

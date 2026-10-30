@@ -1959,6 +1959,8 @@ impl super::Phases for Request {
         match asked {
             DoPhase::Do => {
                 self.read_asked(cx)?;
+                // The progress counts from nothing (`imap_regular_transfer`).
+                crate::progress::reset(cx);
                 trace::debug_info(cx, format_args!("DO phase starts"));
                 self.perform(cx, lease)?;
                 let ran = self.run(cx, lease);

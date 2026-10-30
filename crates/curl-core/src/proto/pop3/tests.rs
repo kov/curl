@@ -1470,4 +1470,41 @@ mod over_the_wire {
             assert!(!has(refused), "{unrestricted}");
         }
     }
+
+    /// Takes what the meter draws.
+    #[derive(Clone, Default)]
+    struct Drawn(Arc<Mutex<Vec<u8>>>);
+
+    impl crate::handler::TextSink for Drawn {
+        fn write(&self, text: &[u8]) {
+            self.0.lock().unwrap().extend_from_slice(text);
+        }
+    }
+
+    /// The meter starts over as the request is made
+    /// (`pop3_regular_transfer`'s `Curl_pgrsReset`), drawn again at once:
+    /// a `RETR` draws C's two lines of nothing, then its three with the
+    /// body (`curl -o /dev/null pop3://...` against the C build).
+    #[test]
+    fn the_meter_starts_over_as_the_request_is_made() {
+        // The body comes after the request is made, as from C's server.
+        let talk = in_the_clear().late_replies();
+        let mut m = serving(&[&talk]);
+        let drawn = Drawn::default();
+        let (result, _) = retrieve(&mut m, &plain(), |o| {
+            o.progress = crate::options::Progress::Meter;
+            o.callbacks.stderr = Some(Handler::text(drawn.clone()).unwrap());
+        });
+        assert_eq!(result, Ok(()));
+        let drawn = String::from_utf8(drawn.0.lock().unwrap().clone()).unwrap();
+        let lines: Vec<&str> = drawn
+            .split(['\r', '\n'])
+            .filter(|l| !l.is_empty())
+            .skip(2)
+            .collect();
+        let zeros = "  0      0   0      0   0      0      0      0                              0";
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert_eq!(lines[..2], [zeros; 2]);
+        assert!(lines[2..].iter().all(|l| l.starts_with("100")), "{lines:?}");
+    }
 }

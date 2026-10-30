@@ -3447,7 +3447,9 @@ protocol's phases (the drive, below).
   that sets up nothing to go there too (`ImapConn::no_socket`); output the application paused
   is delivered in PERFORMING first, where C goes to DONE and drops it. An APPEND's body is
   read as the send limit allows and sent as C's request buffer sends it (`xfer_send`), its end
-  taking the post-transfer time; the answer's first line starts the response's time. Credentials go to a redirect's other host only as
+  taking the post-transfer time; the answer's first line starts the response's time. The
+  request's progress starts over as it is made (`progress::reset`, C's `Curl_pgrsReset` in
+  `imap_regular_transfer`, and POP3's). Credentials go to a redirect's other host only as
   HTTP's do (`CredentialGate`).
 - **STARTTLS** upgrades in place (`multi::state::tls::upgrade`): the origin's session, made
   with the route's upgrade settings and offering no ALPN, goes on the carrier's stream once,

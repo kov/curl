@@ -266,3 +266,21 @@ witness: curl-core proto::http::tests::tls::a_transfer_removed_mid_response_hear
         let done = match self {
 --- new
         let done = match self {
+
+=== an IMAP request's progress goes on from before it was made
+file: crates/curl-core/src/proto/imap.rs
+witness: curl-core proto::imap::tests::over_the_wire::the_meter_starts_over_as_the_request_is_made
+features: test-util
+--- old
+                // The progress counts from nothing (`imap_regular_transfer`).
+                crate::progress::reset(cx);
+--- new
+
+=== a POP3 request's progress goes on from before it was made
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::the_meter_starts_over_as_the_request_is_made
+features: test-util
+--- old
+                // The progress counts from nothing (`pop3_regular_transfer`).
+                crate::progress::reset(cx);
+--- new

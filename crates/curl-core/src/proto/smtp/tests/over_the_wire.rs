@@ -893,6 +893,17 @@ fn added(
     components: &[u8],
     set: impl FnOnce(&mut Options),
 ) -> (crate::multi::TransferId, Text) {
+    added_writing(m, url, components, Body(Arc::default()), set)
+}
+
+/// A transfer added to `m`, its body given to `writer`, its trace kept.
+fn added_writing(
+    m: &mut Multi,
+    url: &str,
+    components: &[u8],
+    writer: impl WriteHandler + 'static,
+    set: impl FnOnce(&mut Options),
+) -> (crate::multi::TransferId, Text) {
     let url = url.replace("PORT", &PORT.to_string());
     let mut e = Easy::new();
     e.set_libraries(plain());
@@ -903,7 +914,7 @@ fn added(
     let o = e.options_mut();
     o.set_url(Some(url.as_bytes())).unwrap();
     o.output.verbose = true;
-    o.callbacks.write = Some(Handler::write(Body(Arc::default())).unwrap());
+    o.callbacks.write = Some(Handler::write(writer).unwrap());
     o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
     set(o);
     (m.add(Box::new(e), (), &mut NoEvents).unwrap(), text)
@@ -1211,6 +1222,124 @@ fn an_answer_awaited_in_done_checks_the_progress_once_a_poll() {
     assert_eq!(after, before);
 }
 
+/// An initial response the line has no room for (`AUTH `, the
+/// mechanism, a space and CRLF in 512 bytes) waits for the server to ask
+/// for it; one that fits goes with `AUTH`.
+#[test]
+fn an_initial_response_too_long_for_the_line_waits_to_be_asked() {
+    let ehlo: &[u8] = b"250-hi\r\n250 AUTH PLAIN\r\n";
+    for (user, asked) in [(70, false), (373, true)] {
+        let mut replies = vec![GREETING, ehlo];
+        if asked {
+            replies.push(b"334 \r\n");
+        }
+        replies.extend_from_slice(&[b"235 in\r\n", b"214 help\r\n"]);
+        let talk = Conversation::replies(&replies, false).greeting();
+        let user = "u".repeat(user);
+        let url = format!("smtp://{user}:ppp@127.0.0.1:PORT/900");
+        let ran = transfer(&mut serving(&[&talk]), &url, |o| {
+            o.line.make_mut().unwrap().sasl_ir = true;
+        });
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        let mut plain = vec![0];
+        plain.extend_from_slice(user.as_bytes());
+        plain.push(0);
+        plain.extend_from_slice(b"ppp");
+        let mut initial = Vec::new();
+        crate::base64::encode(plain.iter().copied(), plain.len(), &mut initial).unwrap();
+        let initial = String::from_utf8(initial).unwrap();
+        assert_eq!(initial.len(), if asked { 504 } else { 100 });
+        let auth = if asked {
+            format!("AUTH PLAIN\r\n{initial}\r\n")
+        } else {
+            format!("AUTH PLAIN {initial}\r\n")
+        };
+        assert_eq!(received(&talk), format!("EHLO 900\r\n{auth}HELP\r\n"));
+    }
+}
+
+/// Takes the body, pausing at its first piece.
+#[derive(Clone, Default)]
+struct PausesOnce {
+    got: Arc<Mutex<Vec<u8>>>,
+    paused: Arc<crate::test_cell::Cell<bool>>,
+}
+
+impl WriteHandler for PausesOnce {
+    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        if !self.paused.replace(true) {
+            return Write::Pause;
+        }
+        self.got.lock().unwrap().extend_from_slice(body);
+        Write::Took(body.len())
+    }
+}
+
+/// A command's answer whose writer paused holds the transfer open until
+/// it is delivered (`Curl_cwriter_is_paused`).
+#[test]
+fn a_paused_body_holds_the_transfer_open() {
+    use crate::deliver::PauseRequest;
+    let talk = Conversation::replies(&[GREETING, EHLO, b"214 help\r\n"], false).greeting();
+    let mut m = serving(&[&talk]);
+    let writer = PausesOnce::default();
+    let (id, _) = added_writing(&mut m, URL, b"", writer.clone(), |_| {});
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(writer.paused.get(), "paused");
+    assert!(m.info_read().is_none(), "not over while output is held");
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    assert_eq!(*writer.got.lock().unwrap(), b"214 help\r\n");
+}
+
+/// What the transfers of `m` wait for on their sockets.
+fn waits(m: &mut Multi) -> Vec<crate::conn::io::Events> {
+    let mut seen = Vec::new();
+    m.sockets(&mut NoEvents, |_, events| seen.push(events))
+        .unwrap();
+    seen
+}
+
+/// A mail's body that the socket takes no more of waits to send, and
+/// with its sending paused, on nothing.
+#[test]
+fn a_body_still_to_send_waits_on_its_socket_unless_paused() {
+    use crate::conn::io::Events;
+    use crate::deliver::PauseRequest;
+    // EHLO, MAIL, RCPT and DATA go; the body does not.
+    let talk = mailing(&[]).stalling_sends_after(4, usize::MAX);
+    let mut m = serving(&[&talk]);
+    let (id, _) = added(&mut m, URL, b"", mail(b"hello"));
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(received(&talk).ends_with("DATA\r\n"), "{}", received(&talk));
+    assert_eq!(waits(&mut m), [Events::OUT]);
+    m.pause(id, PauseRequest::SEND, &mut NoEvents).unwrap();
+    assert_eq!(waits(&mut m), []);
+}
+
+/// A transfer taken out of the multi as DONE awaits its answer ends
+/// there: the wait given up, and its connection, left within an answer,
+/// closed rather than kept.
+#[test]
+fn a_transfer_removed_as_its_answer_is_awaited_closes_its_connection() {
+    let mailer = mailing(&[]).held();
+    mailer.allow(5);
+    let mut m = serving(&[&mailer]);
+    let (id, text) = added(&mut m, URL, b"", mail(b"hello"));
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(m.info_read().is_none(), "the answer is awaited");
+    m.remove(id, &mut NoEvents).unwrap();
+    let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+    assert!(said.contains("closing connection #0"), "{said}");
+}
+
 /// A mail taken out of the multi with its body still to send ends
 /// there: the answer `smtp_done` would await for it given up, its
 /// connection, left within the body, closed.
@@ -1227,4 +1356,53 @@ fn a_mail_removed_with_its_body_unsent_closes_its_connection() {
     let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
     assert!(said.contains("closing connection #0"), "{said}");
     assert!(!received(&talk).ends_with(".\r\n"), "{}", received(&talk));
+}
+
+/// A timer handler that aborts the multi once told to.
+#[derive(Default)]
+struct AbortsTimer {
+    armed: bool,
+}
+
+impl crate::multi::MultiEvents<crate::multi::NoHost> for AbortsTimer {
+    fn timer(
+        &mut self,
+        _: &mut crate::multi::EventCx<'_, crate::multi::NoHost>,
+        _: crate::multi::TimerChange,
+    ) -> Result<(), crate::multi::Abort> {
+        if self.armed {
+            return Err(crate::multi::Abort);
+        }
+        Ok(())
+    }
+
+    fn wants_timer(&self) -> bool {
+        true
+    }
+}
+
+/// A multi a callback aborts as a transfer's DONE awaits its answer
+/// fails the transfer there: the wait given up, its connection, left
+/// within an answer, closed.
+#[test]
+fn a_dead_multi_ends_an_answer_awaited_in_done() {
+    let mailer = mailing(&[]).held();
+    mailer.allow(5);
+    let mut m = serving(&[&mailer]);
+    let (id, text) = added(&mut m, URL, b"", mail(b"hello"));
+    let mut ev = AbortsTimer::default();
+    for _ in 0..20 {
+        let _ = m.perform(&mut ev);
+    }
+    assert!(m.info_read().is_none(), "the answer is awaited");
+    ev.armed = true;
+    let ended = crate::multi::drive_within(&mut m, id, 10, &mut ev);
+    ev.armed = false;
+    let ended = match ended {
+        Ok(ended) => ended,
+        Err(_) => crate::multi::drive_within(&mut m, id, 10, &mut ev).unwrap(),
+    };
+    assert_eq!(ended, Err(ErrorKind::AbortedByCallback));
+    let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+    assert!(said.contains("closing connection #0"), "{said}");
 }

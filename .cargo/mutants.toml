@@ -739,7 +739,7 @@ exclude_re = [
     'curl-core/src/conn/quic\.rs:.*: replace < with <= in Quic::ingress_through$',
     # SASL's and POP3's first bits: `1 << 0` and `1 >> 0` are both 1.
     'curl-core/src/auth/sasl\.rs:19:.*: replace << with >>$',
-    'curl-core/src/proto/pop3\.rs:46:.*: replace << with >>$',
+    'curl-core/src/proto/pop3\.rs:45:.*: replace << with >>$',
     # The room reserved for the hex: one wrong only makes the fallible
     # pushes grow the buffer.
     'curl-core/src/auth/sasl\.rs:.*: replace \* with (\+|/) in hex$',
@@ -767,15 +767,10 @@ exclude_re = [
     # both 1. IMAP's SASL bit (`1 << 1`, or 0 mutated) is never asked of:
     # only the clear-text bit decides whether LOGIN goes, which a SASL
     # preference and none both lack.
-    'curl-core/src/options/mod\.rs:168:.*: replace << with >>$',
-    'curl-core/src/proto/imap\.rs:5[34]:.*: replace << with >>$',
+    'curl-core/src/options/mod\.rs:180:.*: replace << with >>$',
+    'curl-core/src/proto/imap\.rs:5[12]:.*: replace << with >>$',
     # LOGOUT's line in a larger room is the same line.
-    'curl-core/src/proto/imap\.rs:166:40: replace \+ with \* in ImapConn::goodbye$',
-    # With no answer to read after the body, the step is done before the
-    # wait is asked for; and the answer read for no final command is
-    # none, the state having stopped.
-    'curl-core/src/proto/imap\.rs:425:.*: replace && with \|\| in Request::interest$',
-    'curl-core/src/proto/imap\.rs:483:.*: replace \|\| with && in Request::step$',
+    'curl-core/src/proto/imap\.rs:164:40: replace \+ with \* in ImapConn::goodbye$',
     # Whether a send that took all the bytes but did not end the body
     # counts as the end's: the size is known, so the end is read with the
     # last bytes, never alone after them.
@@ -788,17 +783,22 @@ exclude_re = [
     # Stopping at the end of a reply with more held: the drive runs the
     # step again at once on what is held (`Curl_pp_moredata`); reading on
     # without more held finds nothing and stops as before.
-    'curl-core/src/proto/imap\.rs:862:.*: delete ! in Request::machine$',
+    'curl-core/src/proto/imap\.rs:788:.*: delete ! in Request::machine$',
     # `AUTH=` and nothing after it decodes to no mechanism either way.
-    'curl-core/src/proto/imap\.rs:925:.*: replace > with >= in Request::capability_resp$',
+    'curl-core/src/proto/imap\.rs:851:.*: replace > with >= in Request::capability_resp$',
     # The query is read only when the URL names a mailbox and no message:
     # without a mailbox it lists, and a message is fetched, the query
     # unread either way (`imap_perform`).
-    'curl-core/src/proto/imap\.rs:1153:.*: replace && with \|\| in Request::read_asked$',
+    'curl-core/src/proto/imap\.rs:1082:.*: replace && with \|\| in Request::read_asked$',
     # A literal with nothing of it after its line hands the body nothing.
-    'curl-core/src/proto/imap\.rs:1346:.*: replace > with >= in Request::listsearch$',
+    'curl-core/src/proto/imap\.rs:1266:.*: replace > with >= in Request::listsearch$',
     # Set after the command's last send: a retry is decided on a send's
     # failure, before it, or on a body's read, after the answer's line
     # was counted.
-    'curl-core/src/proto/pop3\.rs:1036:.*: delete ! in Request::command$',
+    'curl-core/src/proto/pop3\.rs:1034:.*: delete ! in Request::command$',
+    # The mechanism used is forgotten as EHLO or HELO greets the server,
+    # which happens only before a login on the connection: at its start
+    # and after STARTTLS. None is used yet either way (`smtp_perform_ehlo`
+    # clears `authused` the same).
+    'curl-core/src/auth/sasl\.rs:.*: replace Sasl::forget_used with \(\)$',
 ]

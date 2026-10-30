@@ -137,33 +137,16 @@ const FEATURES: &[Feature] = &[
     Feature::Zstd,
 ];
 
-/// A URL scheme the build can transfer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Protocol {
-    File,
-    Http,
-    /// HTTP over TLS, which the tool and the C ABI give every handle.
-    Https,
-}
+pub use crate::url::schemes::Protocol;
 
 impl Protocol {
-    /// The protocol of `scheme`, in lowercase, if the build has it.
+    /// The protocol of `scheme`, in lowercase, if this build has it: one
+    /// of `version().protocols`.
     pub fn of_scheme(scheme: &[u8]) -> Option<Protocol> {
-        match scheme {
-            b"file" => Some(Protocol::File),
-            b"http" => Some(Protocol::Http),
-            b"https" => Some(Protocol::Https),
-            _ => None,
-        }
-    }
-
-    /// The scheme, in lowercase.
-    pub fn name(self) -> &'static str {
-        match self {
-            Protocol::File => "file",
-            Protocol::Http => "http",
-            Protocol::Https => "https",
-        }
+        let known = crate::url::schemes::KNOWN
+            .iter()
+            .find(|k| k.name.as_bytes() == scheme)?;
+        known.protocol.filter(|p| VERSION.protocols.contains(p))
     }
 }
 

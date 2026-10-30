@@ -264,7 +264,7 @@ fn parsed_by(
     let host = String::from_utf8(p.peer.shown().to_vec()).unwrap();
     Ok((
         p.kind,
-        format!("{}://{host}", p.peer.scheme().name),
+        format!("{}://{host}", p.peer.scheme().name()),
         p.peer.port(),
     ))
 }
@@ -472,7 +472,7 @@ proptest! {
         // With TLS, an HTTPS proxy is one by its scheme.
         if let Ok(parsed) = parse(&text, kind, port, true) {
             prop_assert_eq!(
-                parsed.peer.scheme().name == "https",
+                parsed.peer.scheme().name() == "https",
                 matches!(
                     parsed.kind,
                     ProxyType::Https | ProxyType::Https2 | ProxyType::Https3

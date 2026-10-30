@@ -797,10 +797,7 @@ mod tests {
     use crate::conn::Peer;
 
     fn target(proxy: &[u8], origin: &[u8]) -> (String, String) {
-        let http = crate::conn::Scheme {
-            name: "http",
-            reuse: true,
-        };
+        let http = crate::conn::Scheme::HTTP;
         let peer = |host: &[u8], port| Peer::new(http, host.to_vec(), port, None);
         let (mut authority, mut path) = (Vec::new(), Vec::new());
         udp_target(

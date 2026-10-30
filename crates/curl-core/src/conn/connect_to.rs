@@ -166,10 +166,7 @@ mod tests {
     use super::*;
     use crate::conn::Scheme;
 
-    const HTTP: Scheme = Scheme {
-        name: "http",
-        reuse: true,
-    };
+    const HTTP: Scheme = Scheme::HTTP;
 
     fn peer(host: &str, port: u16) -> Peer {
         Peer::new(HTTP, host.as_bytes().to_vec(), port, None)

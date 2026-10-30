@@ -634,7 +634,7 @@ impl Request {
         if self.stream().id.is_none() {
             // The head goes whole, before any of the body (`h2_submit`).
             let custom = self.custom_method(cx);
-            let scheme = self.peer.scheme().name.as_bytes();
+            let scheme = self.peer.scheme().name().as_bytes();
             let fields = fields_of(&self.out[start..start + head], custom.as_deref(), scheme)?;
             let pairs = fields.pairs().map_err(|_| ErrorKind::OutOfMemory)?;
             let body = self.body.is_some();
@@ -1762,7 +1762,7 @@ impl Request {
         };
         let same = url
             .get(Part::Scheme, GetOptions::NONE)
-            .is_ok_and(|s| s.eq_ignore_ascii_case(self.peer.scheme().name.as_bytes()))
+            .is_ok_and(|s| s.eq_ignore_ascii_case(self.peer.scheme().name().as_bytes()))
             && url
                 .get(Part::Host, GetOptions::NONE)
                 .is_ok_and(|h| h.eq_ignore_ascii_case(self.peer.shown()))

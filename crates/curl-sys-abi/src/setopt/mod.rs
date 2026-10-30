@@ -269,43 +269,16 @@ fn http_version(n: c_long) -> Result<HttpVersion, Refused> {
 /// options take it: a bit no scheme has is ignored, and the bit SOCKS
 /// shares names all its schemes.
 fn protocol_mask(mask: c_long) -> Protocols {
-    const BITS: &[(u32, &[&str])] = &[
-        (0, &["http"]),
-        (1, &["https"]),
-        (2, &["ftp"]),
-        (3, &["ftps"]),
-        (4, &["scp"]),
-        (5, &["sftp"]),
-        (6, &["telnet"]),
-        (7, &["ldap"]),
-        (8, &["ldaps"]),
-        (9, &["dict"]),
-        (10, &["file"]),
-        (11, &["tftp"]),
-        (12, &["imap"]),
-        (13, &["imaps"]),
-        (14, &["pop3"]),
-        (15, &["pop3s"]),
-        (16, &["smtp"]),
-        (17, &["smtps"]),
-        (18, &["rtsp"]),
-        (25, &["gopher"]),
-        (28, &["mqtt"]),
-        (29, &["gophers"]),
-        (30, &["ws"]),
-        (31, &["wss"]),
-        (32, &["mqtts"]),
-        (33, &["socks", "socks4", "socks4a", "socks5", "socks5h"]),
-    ];
     // Widened as C widens it to `curl_prot_t`: a negative one sets all.
     #[allow(
         clippy::useless_conversion,
         reason = "a `long` is 32 bits on some targets"
     )]
     let mask = i64::from(mask);
-    BITS.iter()
-        .filter(|(bit, _)| mask & 1 << bit != 0)
-        .map(|(_, names)| Protocols::of(names).expect("libcurl knows them"))
+    curl_core::version::Protocol::ALL
+        .into_iter()
+        .filter(|p| mask & crate::protocols::BITS[p.index()] != 0)
+        .map(Protocols::of_protocol)
         .fold(Protocols::NONE, Protocols::union)
 }
 

@@ -313,10 +313,7 @@ impl ProtoState {
                     .ok()
                     .and_then(|p| p.parse().ok())
                     .ok_or(ErrorKind::UrlMalformat)?;
-                let scheme = Scheme {
-                    name: "tcp",
-                    reuse: true,
-                };
+                let scheme = Scheme::own(&crate::conn::TCP_SCHEME);
                 Ok(Some(url_peer((scheme, host, port), url, scope, idn)?))
             }
         }

@@ -212,7 +212,7 @@ impl HttpsConnect {
     /// `https` origin with ALPN on, which no proxy forwards to
     /// (`Curl_cf_https_setup`).
     pub(super) fn heading(route: &NetRoute, alpn: bool) -> Option<HttpsConnect> {
-        let https = route.origin.scheme().name == "https";
+        let https = route.origin.scheme().name() == "https";
         let forwarded = route.proxy.as_ref().is_some_and(|p| p.forward);
         if !https || forwarded || !alpn {
             return None;

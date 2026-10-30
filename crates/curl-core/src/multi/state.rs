@@ -5375,7 +5375,7 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
         Ok(Acquired::New(lease)) => lease,
         Ok(Acquired::Reused(lease)) => {
             let route = &plan.route;
-            let name = route.origin.scheme().name;
+            let name = route.origin.scheme().name();
             let (to, host): (&[u8], _) = match &route.proxy {
                 Some(proxy) => (b": connection with proxy ", proxy.peer.shown()),
                 None => (b": connection with host ", route.origin.name()),

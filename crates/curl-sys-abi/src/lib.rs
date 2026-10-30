@@ -36,6 +36,7 @@ mod headers;
 mod mime;
 mod multi;
 mod printf;
+mod protocols;
 mod push;
 mod root;
 mod setopt;

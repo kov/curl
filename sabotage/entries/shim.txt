@@ -311,9 +311,9 @@ witness: curl-sys-abi handle_tests::no_body_outlasts_a_method_that_does_not_clea
 file: crates/curl-sys-abi/src/getinfo.rs
 witness: curl-sys-abi handle_tests::infos_answer_from_the_report
 --- old
-        Protocol::File => c"file",
+    crate::protocols::NAMES[p.index()]
 --- new
-        Protocol::File => c"http",
+    crate::protocols::NAMES[0]
 
 === CURLOPT_COOKIELIST takes a line longer than C takes
 file: crates/curl-sys-abi/src/setopt/mod.rs

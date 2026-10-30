@@ -1991,6 +1991,15 @@ impl Protocols {
         crate::url::known_index(lower).map(|bit| Protocols(1 << bit))
     }
 
+    /// The schemes of `protocol`: SOCKS's five for SOCKS.
+    pub fn of_protocol(protocol: crate::version::Protocol) -> Protocols {
+        crate::url::schemes::KNOWN
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| k.protocol == Some(protocol))
+            .fold(Protocols::NONE, |set, (bit, _)| Protocols(set.0 | 1 << bit))
+    }
+
     /// Those in either.
     pub const fn union(self, other: Protocols) -> Protocols {
         Protocols(self.0 | other.0)
@@ -2489,6 +2498,26 @@ pub enum Progress {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A protocol's schemes are its rows of the table, each its own bit:
+    /// HTTP's one, SOCKS's five, none of another protocol's.
+    #[test]
+    fn a_protocol_names_its_schemes() {
+        use crate::version::Protocol;
+        assert_eq!(
+            Protocols::of_protocol(Protocol::Http),
+            Protocols::of(&["http"]).unwrap()
+        );
+        let socks = ["socks", "socks4", "socks4a", "socks5", "socks5h"];
+        assert_eq!(
+            Protocols::of_protocol(Protocol::Socks),
+            Protocols::of(&socks).unwrap()
+        );
+        assert_eq!(
+            Protocols::of_protocol(Protocol::Https).union(Protocols::of_protocol(Protocol::Http)),
+            Protocols::of(&["http", "https"]).unwrap()
+        );
+    }
 
     /// A copy keeps the lists of addresses and peers given for names.
     #[test]

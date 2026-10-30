@@ -399,7 +399,7 @@ fn of_scheme(scheme: &[u8], kind: ProxyType) -> Option<ProxyType> {
 }
 
 const fn scheme(name: &'static str) -> Scheme {
-    Scheme { name, reuse: true }
+    Scheme::of(name)
 }
 
 /// The scheme of a proxy of type `kind`.
@@ -414,24 +414,10 @@ fn scheme_of(kind: ProxyType) -> Scheme {
     }
 }
 
-/// The scheme a proxy URL names, one `of_scheme` takes.
+/// The scheme a proxy URL names, one `of_scheme` took: each is a row of
+/// the table.
 fn scheme_named(name: &[u8]) -> Scheme {
-    let is = |n: &[u8]| name.eq_ignore_ascii_case(n);
-    if is(b"https") {
-        scheme("https")
-    } else if is(b"http") {
-        scheme("http")
-    } else if is(b"socks5h") {
-        scheme("socks5h")
-    } else if is(b"socks5") {
-        scheme("socks5")
-    } else if is(b"socks4a") {
-        scheme("socks4a")
-    } else if is(b"socks") {
-        scheme("socks")
-    } else {
-        scheme("socks4")
-    }
+    Scheme::named(name).expect("a proxy's scheme is one libcurl knows")
 }
 
 /// The port of a proxy of type `kind` whose URL names none.

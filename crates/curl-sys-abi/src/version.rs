@@ -65,11 +65,7 @@ const MAX_PROTOCOLS: usize = 32;
 
 /// A protocol's name, as `curl_version_info_data` lists it.
 fn c_protocol(p: Protocol) -> &'static CStr {
-    match p {
-        Protocol::File => c"file",
-        Protocol::Http => c"http",
-        Protocol::Https => c"https",
-    }
+    crate::protocols::NAMES[p.index()]
 }
 
 static PROTOCOL_NAMES: OnceLock<CList<{ MAX_PROTOCOLS + 1 }>> = OnceLock::new();

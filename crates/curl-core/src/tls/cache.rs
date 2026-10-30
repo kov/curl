@@ -645,7 +645,7 @@ fn write_key(
         }
     };
     let o: &TlsOptions = &identity.options;
-    w(out, format_args!("{}:", origin.scheme().name));
+    w(out, format_args!("{}:", origin.scheme().name()));
     out.bytes(origin.name());
     w(out, format_args!(":{}:KEY-V3", origin.port()));
     // TCP's adds nothing (`ssl_peer_key_add_transport`).

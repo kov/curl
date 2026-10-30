@@ -78,14 +78,8 @@ enum BodyKind {
 }
 
 /// HTTP, as the connection layer knows it, and HTTP over TLS.
-const HTTP: Scheme = Scheme {
-    name: "http",
-    reuse: true,
-};
-pub(crate) const HTTPS: Scheme = Scheme {
-    name: "https",
-    reuse: true,
-};
+const HTTP: Scheme = Scheme::HTTP;
+pub(crate) const HTTPS: Scheme = Scheme::HTTPS;
 
 /// The HTTP versions a request may speak (`CURL_HTTP_V1x`, `CURL_HTTP_V2x`,
 /// `CURL_HTTP_V3x`).

@@ -52,6 +52,9 @@ use crate::idn::{Idn, IdnFailure};
 use crate::options::{IpVersion, ProxyType};
 use crate::report::ResponseVersion;
 use crate::tls::TlsIdentity;
+#[cfg(any(test, feature = "test-util"))]
+use crate::url::schemes::Flags;
+use crate::url::schemes::{self, Known};
 
 pub(crate) use self::buf::RecvBuf;
 /// How the tests' layer shuts down, for `Multi::linger_connections`.
@@ -637,15 +640,69 @@ impl PartialEq for Destination<'_> {
     }
 }
 
-/// The protocol a connection speaks, as reuse sees it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Scheme {
+/// The scheme a connection's peer is spoken to with: its row in the
+/// table of those libcurl knows (C's `struct Curl_scheme`), or a test's
+/// own. Two are the same scheme by name.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Scheme(&'static Known);
+
+impl PartialEq for Scheme {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.name == other.0.name
+    }
+}
+
+impl Eq for Scheme {}
+
+impl Scheme {
+    pub(crate) const HTTP: Scheme = Scheme::of("http");
+    pub(crate) const HTTPS: Scheme = Scheme::of("https");
+
+    /// The scheme `name`, lowercase, which libcurl must know: a name it
+    /// does not fails the build where this is a constant.
+    pub(crate) const fn of(name: &str) -> Scheme {
+        match crate::url::known_index(name.as_bytes()) {
+            Some(i) => Scheme(&schemes::KNOWN[i]),
+            None => panic!("a scheme libcurl does not know"),
+        }
+    }
+
+    /// The scheme `name`, in any case, if libcurl knows it.
+    pub(crate) fn named(name: &[u8]) -> Option<Scheme> {
+        crate::url::known(name).map(Scheme)
+    }
+
+    /// A scheme of the tests' own, which libcurl's table does not have.
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) const fn own(row: &'static Known) -> Scheme {
+        Scheme(row)
+    }
+
     /// Its name, as "Reusing existing tcp: connection" names it.
-    pub(crate) name: &'static str,
+    pub(crate) fn name(self) -> &'static str {
+        self.0.name
+    }
+
     /// Whether a connection is kept for another transfer once done
     /// (`PROTOPT_CONN_REUSE`).
-    pub(crate) reuse: bool,
+    pub(crate) fn reuse(self) -> bool {
+        self.0.flags.conn_reuse
+    }
 }
+
+/// The tests' scheme `tcp:`, which connects and completes.
+#[cfg(any(test, feature = "test-util"))]
+pub(crate) static TCP_SCHEME: Known = Known {
+    name: "tcp",
+    protocol: None,
+    family: None,
+    default_port: 0,
+    flags: Flags {
+        conn_reuse: true,
+        ..Flags::NONE
+    },
+    built: false,
+};
 
 /// Who a connection talks to (C's `struct Curl_peer`): the scheme, the
 /// host as the URL names it, the port and the IPv6 zone. The transfer
@@ -1419,10 +1476,7 @@ enum Use {
 mod tests {
     use super::*;
 
-    const HTTP: Scheme = Scheme {
-        name: "http",
-        reuse: true,
-    };
+    const HTTP: Scheme = Scheme::HTTP;
 
     fn peer(host: &[u8], port: u16, zone: Option<&[u8]>) -> Peer {
         Peer::new(HTTP, host.to_vec(), port, zone.map(<[u8]>::to_vec))
@@ -1504,10 +1558,7 @@ mod tests {
             peer(b"example.com", 80, None),
             peer(b"example.org", 80, None)
         );
-        let other = Scheme {
-            name: "tcp",
-            reuse: true,
-        };
+        let other = Scheme::own(&crate::conn::TCP_SCHEME);
         let tcp = Peer::new(other, b"example.com".to_vec(), 80, None);
         assert_ne!(tcp, peer(b"example.com", 80, None));
         let v6 = |zone| peer(b"[fe80::1]", 80, zone);

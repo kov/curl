@@ -133,22 +133,14 @@ pub(crate) fn auth_mask(methods: AuthMethods, spnego: bool) -> c_long {
 }
 
 fn proto_bit(p: Protocol) -> c_long {
-    match p {
-        Protocol::File => ffi::CURLPROTO_FILE,
-        Protocol::Http => ffi::CURLPROTO_HTTP,
-        Protocol::Https => ffi::CURLPROTO_HTTPS,
-    }
+    crate::protocols::BITS[p.index()] as c_long
 }
 
 /// The name of `p`'s scheme, as C's scheme table spells it
 /// (`Curl_scheme_http`'s `name`): one string for the process, as the
 /// application may compare its address.
 fn scheme_name(p: Protocol) -> &'static CStr {
-    match p {
-        Protocol::File => c"file",
-        Protocol::Http => c"http",
-        Protocol::Https => c"https",
-    }
+    crate::protocols::NAMES[p.index()]
 }
 
 /// `text` with a zero byte after it, as C reads it.

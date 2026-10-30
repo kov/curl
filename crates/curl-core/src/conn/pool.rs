@@ -1515,7 +1515,7 @@ impl Pool {
         let keeps = |conn: &Conn| {
             matches!(&conn.route, Route::Net(tcp)
                 // One only connected is the handle's, whatever its protocol.
-                if tcp.origin.scheme().reuse || finish.reserve)
+                if tcp.origin.scheme().reuse() || finish.reserve)
                 // An HTTP/2 connection outlives a stream cut short
                 // (`Curl_conn_is_multiplex`).
                 && (!finish.premature || conn.multiplexes())

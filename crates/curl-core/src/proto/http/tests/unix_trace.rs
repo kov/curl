@@ -21,10 +21,7 @@ fn tracing() -> Easy {
 
 /// The Unix socket at `path`, or of the abstract name.
 fn unix_at(path: &str, abstract_name: bool) -> Remote {
-    let scheme = Scheme {
-        name: "http",
-        reuse: true,
-    };
+    let scheme = Scheme::HTTP;
     let peer = Host::unix(scheme, path.as_bytes().to_vec(), 0, abstract_name);
     Remote::Unix(UnixPeer::of(curl_alloc::TryArc::try_new(peer).unwrap()))
 }

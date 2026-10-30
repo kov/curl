@@ -161,8 +161,8 @@ curl-core/src/
   version.rs                 the features and protocols this build reports
   time.rs                    Instant, TimeLimit, Clock, SystemClock, ManualClock (test-util)
   id/                        Arena<T>, ArenaPolicy, Key<T>, TransferId; C's mid order (generated)
-  url/                       Url and its parts; urlapi.c-compatible parser (host, path, encode,
-                             schemes)
+  url/                       Url and its parts; urlapi.c-compatible parser (host, path, encode);
+                             schemes.rs, the scheme table and `Protocol` (generated)
   options/                   typed config groups: Network, Http, Output, Limits, Callbacks…,
                              the seldom-set ones in `Cold<T>`; script.rs: what the test
                              protocol `script:` plays (test-util)
@@ -2029,8 +2029,7 @@ pub struct Route {
 ```
 
 Built so far: `enum Route { Local, Net(NetRoute) }`, with `NetRoute { origin, via, ip, proxy, tls }`. `Peer` is C's
-`struct Curl_peer`: the `Scheme` (the protocol's name and whether it keeps connections,
-`PROTOPT_CONN_REUSE`), the host as the URL names it, the port, the IPv6 zone and its scope (a
+`struct Curl_peer`: the `Scheme` (its row in the scheme table, below), the host as the URL names it, the port, the IPv6 zone and its scope (a
 numeric zone as it is, a name as its interface's index by `if_nametoindex`, one naming no
 interface none; `CURLOPT_ADDRESS_SCOPE` replaces the zone on the URL's peer), made once per
 leg and shared by the transfer, as its origin, and the connection it sets up. A host the URL,
@@ -2076,6 +2075,16 @@ an `https` origin, which never goes whole) is set up with `CONNECT` (`multi/stat
 (`conn/socks.rs`, driven from `multi/state/socks.rs`), over the connection to the proxy the
 setup dialed. An HTTPS proxy (`https://`, refused as `NotBuiltIn` without a TLS library)
 speaks TLS before anything else goes to it (§4.9).
+
+**The scheme table is generated** (`gen/schemes.py`) from `lib/protocol.c`'s `Curl_scheme_*`
+rows and `lib/protocol.h`: each scheme's name, its `Protocol` and family (the protocol without
+TLS: `imaps`'s is IMAP), its default port, C's `PROTOPT_*` flags as named bools (a flag the
+generator does not know fails it) and whether the reference build has it. `Protocol` is
+`version::Protocol`, public and `#[non_exhaustive]`, without C's bits; the shim's
+`CURLPROTO_*` bit and scheme name for each are generated beside it (`curl-sys-abi`'s
+`protocols.rs`). A `Scheme` is a row of that table, the tests' own schemes rows of theirs; two
+are equal by name. What this build implements stays written by hand: `ProtoState::start` and
+`version().protocols`.
 
 `Route` is computed once per leg from the `Target` and options and never mutated. Matching is
 `candidate.route.reusable_for(&needle)`: `Eq` on each sub-struct plus the deliberate

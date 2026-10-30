@@ -974,10 +974,7 @@ mod tests {
         out
     }
 
-    const HTTP: Scheme = Scheme {
-        name: "http",
-        reuse: true,
-    };
+    const HTTP: Scheme = Scheme::HTTP;
 
     fn peer(host: &[u8]) -> Peer {
         Peer::new(HTTP, host.to_vec(), PORT, None)
@@ -1267,10 +1264,7 @@ mod tests {
     #[test]
     fn the_same_origin_is_the_same_wholly() {
         let at = |scheme, host: &[u8], port| Peer::new(scheme, host.to_vec(), port, None);
-        let other = Scheme {
-            name: "https",
-            reuse: true,
-        };
+        let other = Scheme::HTTPS;
         let here = at(HTTP, b"Example.COM", 80);
         let same = |p: &Peer| CredentialGate::new(&here, p, false).same_origin().is_some();
         assert!(same(&at(HTTP, b"example.com", 80)));

@@ -6,6 +6,7 @@ use crate::conn::{DnsCache, DriveOptions, Limit, NetRoute, Scheme};
 
 use crate::options::IpVersion;
 use crate::time::{Clock as _, ManualClock};
+use crate::url::schemes::{Flags, Known};
 use curl_alloc::TryArc;
 
 /// No limit: with no transfers, nothing to guess one from.
@@ -14,9 +15,26 @@ const UNLIMITED: Limit = Limit {
     attached: 0,
 };
 
-const TCP: Scheme = Scheme {
-    name: "tcp",
-    reuse: true,
+const TCP: Scheme = Scheme::own(&crate::conn::TCP_SCHEME);
+
+/// A scheme of the tests' that keeps its connections, not `tcp:`.
+static OTHER: Known = Known {
+    name: "other",
+    flags: Flags {
+        conn_reuse: true,
+        ..Flags::NONE
+    },
+    ..ONCE
+};
+
+/// A scheme of the tests' that keeps no connection.
+static ONCE: Known = Known {
+    name: "once",
+    protocol: None,
+    family: None,
+    default_port: 0,
+    flags: Flags::NONE,
+    built: false,
 };
 
 /// Drive the setup of `lease` with C's happy eyeballs delay and nothing
@@ -378,10 +396,7 @@ fn a_new_connection_waits_for_room_within_the_limits() {
         &mut net,
         clock.now(),
     );
-    let other = Scheme {
-        name: "other",
-        reuse: true,
-    };
+    let other = Scheme::own(&OTHER);
     let Acquired::New(d) = try_new(
         &mut pool,
         &mut net,
@@ -698,10 +713,7 @@ fn a_finished_connection_is_kept_for_an_equal_route() {
     );
     assert_eq!((pool.len(), net.open_sockets()), (0, 0));
     // A protocol that keeps no connection closes it.
-    let once = Scheme {
-        name: "once",
-        reuse: false,
-    };
+    let once = Scheme::own(&ONCE);
     let route = to(once, b"127.0.0.1", 1);
     let mut lease = new(&mut pool, &Home::Multi, route, &mut net, now);
     up(&mut lease, &mut net, now);
@@ -1531,10 +1543,7 @@ fn a_reserved_connection_is_its_handle_s_alone() {
     let (mut net, clock) = net();
     let now = clock.now();
     let mut pool = Pool::new().unwrap();
-    let once = Scheme {
-        name: "once",
-        reuse: false,
-    };
+    let once = Scheme::own(&ONCE);
     let mut lease = new(
         &mut pool,
         &Home::Multi,

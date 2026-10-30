@@ -1252,10 +1252,7 @@ mod tests {
     use crate::conn::Scheme;
     use crate::url::ParseOptions;
 
-    const HTTP: Scheme = Scheme {
-        name: "http",
-        reuse: true,
-    };
+    const HTTP: Scheme = Scheme::HTTP;
 
     /// A user and a password.
     type Pair = (Vec<u8>, Vec<u8>);

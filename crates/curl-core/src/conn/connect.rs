@@ -2605,10 +2605,7 @@ mod tests {
             let peer = FakePeer::RefusesAfter(Duration::from_millis(fail_ms));
             net = net.with_peer(SocketAddr::new(a, 123), peer);
         }
-        let scheme = Scheme {
-            name: "http",
-            reuse: true,
-        };
+        let scheme = Scheme::HTTP;
         let peer = Peer::new(scheme, b"abc.test".to_vec(), 123, None);
         let route = NetRoute {
             origin: TryArc::try_new(peer).unwrap(),
@@ -2704,10 +2701,7 @@ mod tests {
         let clock = ManualClock::new().unwrap();
         let mut net =
             FakeNet::new(clock.clone()).with_late_name("late.test", &[[127, 0, 0, 1].into()], late);
-        let scheme = Scheme {
-            name: "http",
-            reuse: true,
-        };
+        let scheme = Scheme::HTTP;
         let peer = Peer::new(scheme, b"late.test".to_vec(), 123, None);
         let route = NetRoute {
             origin: TryArc::try_new(peer).unwrap(),
@@ -2764,10 +2758,7 @@ mod tests {
                 .with_name("quic.test", &[at])
                 .with_peer(SocketAddr::new(at, 443), FakePeer::Silent)
                 .with_conversation(SocketAddr::new(at, 443), wire.clone());
-            let scheme = Scheme {
-                name: "https",
-                reuse: true,
-            };
+            let scheme = Scheme::HTTPS;
             let peer = Peer::new(scheme, b"quic.test".to_vec(), 443, None);
             let route = NetRoute {
                 origin: TryArc::try_new(peer).unwrap(),
@@ -2881,10 +2872,7 @@ mod tests {
         let mut net = FakeNet::new(clock.clone())
             .with_peer(silent, FakePeer::Silent)
             .with_peer(up, FakePeer::AcceptsAfter(Duration::from_millis(10)));
-        let scheme = Scheme {
-            name: "http",
-            reuse: true,
-        };
+        let scheme = Scheme::HTTP;
         let peer = Peer::new(scheme, b"localhost".to_vec(), 5, None);
         let route = NetRoute {
             origin: TryArc::try_new(peer).unwrap(),

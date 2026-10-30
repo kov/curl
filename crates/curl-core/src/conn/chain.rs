@@ -370,10 +370,7 @@ mod tests {
     /// still to be made over the same connection.
     #[test]
     fn a_handshake_made_shows_connected() {
-        let scheme = Scheme {
-            name: "http",
-            reuse: true,
-        };
+        let scheme = Scheme::HTTP;
         let route = NetRoute {
             origin: TryArc::try_new(Peer::new(scheme, b"o.test".to_vec(), 80, None)).unwrap(),
             via: None,
@@ -444,10 +441,7 @@ mod tests {
     /// chain shows it.
     #[test]
     fn an_https_proxy_s_tls_made_shows_connected() {
-        let scheme = Scheme {
-            name: "http",
-            reuse: true,
-        };
+        let scheme = Scheme::HTTP;
         let peer =
             |name: &[u8], port| TryArc::try_new(Peer::new(scheme, name.to_vec(), port, None));
         let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
@@ -517,10 +511,7 @@ mod tests {
     /// HTTP-PROXY or SSL-PROXY.
     #[test]
     fn an_http3_proxy_s_tunnel_is_the_race_s_attempt() {
-        let scheme = Scheme {
-            name: "http",
-            reuse: true,
-        };
+        let scheme = Scheme::HTTP;
         let peer =
             |name: &[u8], port| TryArc::try_new(Peer::new(scheme, name.to_vec(), port, None));
         let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
@@ -595,10 +586,7 @@ mod tests {
     /// stay (`Curl_cf_quic_insert_after`).
     #[test]
     fn http3_through_connect_udp_is_over_the_tunnel_s_filters() {
-        let scheme = Scheme {
-            name: "https",
-            reuse: true,
-        };
+        let scheme = Scheme::HTTPS;
         let peer =
             |name: &[u8], port| TryArc::try_new(Peer::new(scheme, name.to_vec(), port, None));
         let proxy = crate::conn::ProxyRoute::new(

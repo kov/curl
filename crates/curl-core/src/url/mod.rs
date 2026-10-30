@@ -17,7 +17,7 @@ pub(crate) use host::{is_ip_address, pton4, pton6};
 mod host;
 mod path;
 #[rustfmt::skip]
-mod schemes;
+pub(crate) mod schemes;
 #[cfg(test)]
 #[rustfmt::skip]
 mod c_tests;
@@ -308,7 +308,7 @@ pub(crate) fn has_scheme(url: &[u8]) -> bool {
 }
 
 /// The scheme `name` if libcurl knows it, built in or not.
-fn known(name: &[u8]) -> Option<&'static schemes::Known> {
+pub(crate) fn known(name: &[u8]) -> Option<&'static schemes::Known> {
     schemes::KNOWN
         .iter()
         .find(|k| k.name.as_bytes().eq_ignore_ascii_case(name))
@@ -515,7 +515,7 @@ impl Url {
             .scheme
             .as_ref()
             .and_then(|s| known(&s.name))
-            .is_some_and(|k| k.url_options);
+            .is_some_and(|k| k.flags.url_options);
         // `Curl_parse_login_details`: the password runs from the first `:`,
         // the options from the first `;`, each to the other or the end.
         let colon = login.iter().position(|&b| b == b':');
@@ -1061,7 +1061,7 @@ impl Url {
         let options = self
             .options
             .as_deref()
-            .filter(|_| known.is_none_or(|k| k.url_options));
+            .filter(|_| known.is_none_or(|k| k.flags.url_options));
         let shown_host = if host.first() == Some(&b'[') {
             match &self.zone_id {
                 Some(zone) => {

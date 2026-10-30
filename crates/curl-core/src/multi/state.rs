@@ -5441,6 +5441,10 @@ fn start_leg<H: Host>(
             if let Err(e) = proto.forward(&url, ftp_type) {
                 return TransferState::Init.fail(e);
             }
+            // What the transfer says it spoke is the proxy's scheme
+            // (`info.conn_scheme`, from `conn->scheme`).
+            let spoken = Protocol::of_scheme(p.peer.scheme().name().as_bytes());
+            cx.report_mut().set_protocol(spoken);
             p.peer.clone()
         }
         _ => origin,

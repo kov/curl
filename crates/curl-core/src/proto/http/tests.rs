@@ -4127,6 +4127,23 @@ fn a_forwarded_ftp_url_carries_its_credentials() {
     }
 }
 
+/// A transfer handed whole to a proxy says it spoke the proxy's scheme
+/// (`CURLINFO_SCHEME`, from `conn->scheme`), so an FTP URL asked of an
+/// HTTP proxy reports HTTP, whose headers the tool then shows (test 79).
+#[test]
+fn a_forwarded_transfer_speaks_the_proxy_s_scheme() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"ftp://origin.example/a")).unwrap();
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        ran.easy.report().protocol(),
+        Some(crate::version::Protocol::Http)
+    );
+}
+
 /// A request whose connection goes to another peer, by a connect-to
 /// entry, tunnels through the proxy rather than being handed to it whole
 /// (`Curl_init_proxy`: "With connect-to, we always tunnel").

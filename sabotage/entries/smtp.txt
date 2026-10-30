@@ -353,3 +353,12 @@ features: test-util
         };
 --- new
         let ended = multi_done(cx, http, done).map_err(drop);
+
+=== DONE reads an endless answer to a mail in one pass, stalling the multi
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::an_endless_answer_in_done_is_read_ten_reads_a_pass
+features: test-util
+--- old
+            if !runs || !drive::holds(&pc.pp, &mut carrier) {
+--- new
+            if !runs && !drive::holds(&pc.pp, &mut carrier) {

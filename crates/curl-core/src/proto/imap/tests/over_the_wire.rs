@@ -1680,6 +1680,33 @@ fn an_answer_a_layer_holds_is_read_on_at_once_in_done() {
     assert!(!done.contains("multi_wait"), "{}", ran.text);
 }
 
+/// An APPEND's answer awaited in DONE that goes on and on is read ten
+/// reads a pass, the multi's other transfers going on between, as the
+/// answer is awaited without stalling them (`MAX_READS`).
+#[test]
+fn an_endless_answer_in_done_is_read_ten_reads_a_pass() {
+    let talk = Conversation::replies(
+        &[GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"* "],
+        false,
+    )
+    .greeting()
+    .endless(std::time::Duration::from_millis(1));
+    let mut m = serving(&[&talk]);
+    let url = "imap://u:p@127.0.0.1:PORT/Sent";
+    let (_, text) = added(&mut m, url, b"", Body(Arc::default()), hello);
+    let mut passes = 0;
+    while m.info_read().is_none() {
+        let reads = talk.endless_reads();
+        m.perform(&mut NoEvents).unwrap();
+        let read = talk.endless_reads() - reads;
+        assert!(read <= 10, "{read} reads in a pass");
+        passes += 1;
+        assert!(passes < 100, "the transfer ends");
+    }
+    let said = text_of(&text);
+    assert!(talk.endless_reads() > 10, "{said}");
+}
+
 /// A timer handler that aborts the multi once told to.
 #[derive(Default)]
 struct AbortsTimer {

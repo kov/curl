@@ -1570,3 +1570,26 @@ fn a_command_done_in_doing_says_so_once() {
     );
     assert_eq!(said[last..], end, "{}", ran.text);
 }
+
+/// An answer awaited in DONE that goes on and on is read ten reads a
+/// pass, the multi's other transfers going on between, as the answer
+/// is awaited without stalling them (`MAX_READS`).
+#[test]
+fn an_endless_answer_in_done_is_read_ten_reads_a_pass() {
+    let talk = Conversation::replies(&[GREETING, EHLO, OK, OK, GO, b"250-"], false)
+        .greeting()
+        .endless(std::time::Duration::from_millis(1));
+    let mut m = serving(&[&talk]);
+    let (_, text) = added(&mut m, URL, b"", mail(b"hello"));
+    let mut passes = 0;
+    while m.info_read().is_none() {
+        let reads = talk.endless_reads();
+        m.perform(&mut NoEvents).unwrap();
+        let read = talk.endless_reads() - reads;
+        assert!(read <= 10, "{read} reads in a pass");
+        passes += 1;
+        assert!(passes < 100, "the transfer ends");
+    }
+    let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+    assert!(talk.endless_reads() > 10, "{said}");
+}

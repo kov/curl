@@ -177,7 +177,7 @@ exclude_re = [
     # Joining parts whose bits cannot overlap: `|` and `^` agree.
     'url/host\.rs:.*: replace \| with \^ in (ipv4|pton6)$',
     'url/encode\.rs:.*: replace \| with \^ in (escaped_byte|decode)$',
-    'proto/http1/auth\.rs:.*: replace \| with \^ in base64$',
+    'curl-core/src/base64\.rs:.*: replace \| with \^ in encode$',
     'curl-os/src/net\.rs:.*: replace \| with \^ in (connect|open)$',
     'curl-sys-abi/src/sockets\.rs:.*: replace \| with \^ in SockaddrEx::tcp$',
     'curl-os/src/fs\.rs:.*: replace \| with \^ in (open|open_write)$',

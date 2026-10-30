@@ -18,7 +18,7 @@ use crate::gss::{
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::Delegation;
-use crate::proto::http1::auth::{Answered, Secret, Side, base64};
+use crate::proto::http1::auth::{Answered, Secret, Side};
 use crate::trace;
 
 /// What a connection keeps of Negotiate (C's `conn->http_negotiate_state`,
@@ -264,7 +264,9 @@ pub(crate) fn output<H: Host>(
         let made = value
             .try_reserve_exact(side.token.len().div_ceil(3) * 4)
             .map_err(|_| OutOfMemory)
-            .and_then(|()| base64(side.token.iter().copied(), side.token.len(), &mut value));
+            .and_then(|()| {
+                crate::base64::encode(side.token.iter().copied(), side.token.len(), &mut value)
+            });
         if made.is_err() {
             side.token = Vec::new();
             return Err(ErrorKind::OutOfMemory);

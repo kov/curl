@@ -16,7 +16,6 @@ use crate::libraries::{ED25519_KEY_LEN, ED25519_SIGNATURE_LEN, Ed25519, Ed25519E
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::{MessageSignature, SignatureAlgorithm};
-use crate::proto::http1::auth::base64;
 use crate::proto::http1::request::UserHeaders;
 use crate::trace;
 
@@ -332,7 +331,7 @@ fn signed(request: &Request<'_>, notes: &mut Vec<Vec<u8>>) -> Result<Option<Vec<
     let mut signature = Part::new();
     let mut encoded = Vec::new();
     let mac = mac.bytes();
-    base64(mac.iter().copied(), mac.len(), &mut encoded)?;
+    crate::base64::encode(mac.iter().copied(), mac.len(), &mut encoded)?;
     signature.put(&[LABEL, b"=:", &encoded, b":"])?;
     let mut input = Part::new();
     input.put(&[LABEL, b"=", &params.0])?;

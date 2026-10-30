@@ -1127,7 +1127,7 @@ impl<'a> Secret<'a> {
         out.try_reserve_exact(len.div_ceil(3) * 4)
             .map_err(|_| OutOfMemory)?;
         let bytes = self.user.iter().chain(b":").chain(self.password).copied();
-        base64(bytes, len, &mut out)?;
+        crate::base64::encode(bytes, len, &mut out)?;
         Ok(Some(out))
     }
 }
@@ -1142,32 +1142,6 @@ fn copy(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
 /// the first difference (`Curl_timestrcmp`).
 fn same_secret(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0, |d, (x, y)| d | (x ^ y)) == 0
-}
-
-const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-/// `len` bytes from `bytes` in base64 with padding, into `out`.
-pub(crate) fn base64(
-    mut bytes: impl Iterator<Item = u8>,
-    len: usize,
-    out: &mut Vec<u8>,
-) -> Result<(), OutOfMemory> {
-    for _ in 0..len.div_ceil(3) {
-        let group = [bytes.next(), bytes.next(), bytes.next()];
-        let n = group
-            .iter()
-            .fold(0u32, |n, b| n << 8 | u32::from(b.unwrap_or(0)));
-        let have = group.iter().filter(|b| b.is_some()).count();
-        for i in 0..4 {
-            let c = if i <= have {
-                ALPHABET[(n >> (18 - 6 * i) & 0x3f) as usize]
-            } else {
-                b'='
-            };
-            out.try_push(c)?;
-        }
-    }
-    Ok(())
 }
 
 /// Any request's view of authenticating, for the properties of what

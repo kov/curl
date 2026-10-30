@@ -24,7 +24,7 @@ fn scripted() -> (&'static Scripted, SharedLibraries) {
 /// `bytes` in base64.
 fn b64(bytes: &[u8]) -> String {
     let mut out = Vec::new();
-    crate::proto::http1::auth::base64(bytes.iter().copied(), bytes.len(), &mut out).unwrap();
+    crate::base64::encode(bytes.iter().copied(), bytes.len(), &mut out).unwrap();
     String::from_utf8(out).unwrap()
 }
 

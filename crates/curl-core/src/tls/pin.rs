@@ -75,7 +75,7 @@ fn matches(pinned: &[u8], spki: &[u8], say: &mut dyn FnMut(Said<'_>)) -> Result<
         let digest = sha.finish();
         let mut hash = Vec::new();
         hash.try_reserve_exact(44).map_err(|_| OutOfMemory)?;
-        crate::proto::http1::auth::base64(digest.iter().copied(), 32, &mut hash)?;
+        crate::base64::encode(digest.iter().copied(), 32, &mut hash)?;
         say(Said::Hash(&hash));
         let mut rest = Some(pinned);
         while let Some(list) = rest.filter(|r| r.starts_with(b"sha256//")) {
@@ -172,7 +172,7 @@ mod tests {
         let mut sha = Sha256::default();
         sha.update(spki);
         let mut out = Vec::new();
-        crate::proto::http1::auth::base64(sha.finish().iter().copied(), 32, &mut out).unwrap();
+        crate::base64::encode(sha.finish().iter().copied(), 32, &mut out).unwrap();
         out
     }
 
@@ -230,7 +230,7 @@ mod tests {
 
     fn pem(der: &[u8], line_end: &str) -> Vec<u8> {
         let mut b64 = Vec::new();
-        crate::proto::http1::auth::base64(der.iter().copied(), der.len(), &mut b64).unwrap();
+        crate::base64::encode(der.iter().copied(), der.len(), &mut b64).unwrap();
         let mut text = format!("junk\n-----BEGIN PUBLIC KEY-----{line_end}");
         for line in b64.chunks(16) {
             text.push_str(std::str::from_utf8(line).unwrap());

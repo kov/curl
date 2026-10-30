@@ -1,4 +1,5 @@
-//! Base64 as C's `curlx_base64_decode` reads it, and base64url as
+//! Base64 as C's `curlx_base64_decode` reads it and
+//! `curlx_base64_encode` writes it, and base64url as
 //! `curlx_base64url_encode` writes it.
 
 use curl_alloc::{OutOfMemory, TryVec as _};
@@ -43,6 +44,33 @@ pub(crate) fn decode(text: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
         out.try_extend_from_slice(&bytes[1..4 - pads])?;
     }
     Ok(Some(out))
+}
+
+const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// `len` bytes from `bytes` in base64 with padding, into `out`, as
+/// `curlx_base64_encode` writes them.
+pub(crate) fn encode(
+    mut bytes: impl Iterator<Item = u8>,
+    len: usize,
+    out: &mut Vec<u8>,
+) -> Result<(), OutOfMemory> {
+    for _ in 0..len.div_ceil(3) {
+        let group = [bytes.next(), bytes.next(), bytes.next()];
+        let n = group
+            .iter()
+            .fold(0u32, |n, b| n << 8 | u32::from(b.unwrap_or(0)));
+        let have = group.iter().filter(|b| b.is_some()).count();
+        for i in 0..4 {
+            let c = if i <= have {
+                ALPHABET[(n >> (18 - 6 * i) & 0x3f) as usize]
+            } else {
+                b'='
+            };
+            out.try_push(c)?;
+        }
+    }
+    Ok(())
 }
 
 /// `bytes` in base64url without padding, as `curlx_base64url_encode`

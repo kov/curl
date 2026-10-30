@@ -86,3 +86,30 @@ features: test-util
             // (`multistate_doing`).
             Err(e) => (
                 TransferState::Done(x.done(Err(e), true, Reached::Making)),
+
+=== a POP3 request whose answer was read is made again after a reset
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_reset_after_the_answer_is_not_retried
+features: test-util
+--- old
+        self.header_bytes == 0 && self.pipeline.bytecount() == 0
+--- new
+        self.pipeline.bytecount() == 0
+
+=== a POP3 request asked for no body is made again on a fresh connection
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_command_wanting_no_body_is_not_retried
+features: test-util
+--- old
+            no_body: cx.easy().options().method == crate::options::Method::Head,
+--- new
+            no_body: false,
+
+=== a retry of a protocol without HTTP's follow is announced as another request
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_command_a_reused_connection_cannot_send_is_retried
+features: test-util
+--- old
+        matches!(self, ProtoState::Http(_))
+--- new
+        true

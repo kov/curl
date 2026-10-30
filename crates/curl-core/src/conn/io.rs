@@ -852,6 +852,9 @@ struct Wire {
     hang_up_unanswered: bool,
     /// The peer closed, whatever it was saying.
     hung_up: bool,
+    /// Once its last reply is read, a read fails as on a connection the
+    /// peer reset.
+    resets: bool,
     /// The peer answers each send with its next reply, not each
     /// request's head: a handshake whose messages have no blank line.
     per_send: bool,
@@ -927,7 +930,8 @@ impl Wire {
     fn readable(&self) -> bool {
         self.hung_up
             || self.answering()
-            || (self.answered == self.replies.len() && (self.then_close || self.endless.is_some()))
+            || (self.answered == self.replies.len()
+                && (self.then_close || self.resets || self.endless.is_some()))
     }
 }
 
@@ -1081,6 +1085,16 @@ impl Conversation {
             .lock()
             .expect("no test panics holding the wire")
             .endless_reads
+    }
+
+    /// The same peer, resetting the connection once its last reply is
+    /// read: the next read fails (`ECONNRESET`).
+    pub fn resetting(self) -> Conversation {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .resets = true;
+        self
     }
 
     /// The same peer, closing the connection when a request comes that
@@ -1840,6 +1854,9 @@ impl Socket for FakeSocket {
             let n = std::num::NonZeroUsize::new(buf.len()).expect("checked above");
             return Ok(Recv::Data(n));
         }
+        if wire.resets {
+            return Err(io::Error::from_raw_os_error(libc_errno::ECONNRESET));
+        }
         Ok(if wire.then_close {
             Recv::Eof
         } else {
@@ -1918,6 +1935,7 @@ impl Socket for FakeSocket {
 mod libc_errno {
     pub(super) const ECONNREFUSED: i32 = 111;
     pub(super) const EPIPE: i32 = 32;
+    pub(super) const ECONNRESET: i32 = 104;
     pub(super) const EADDRINUSE: i32 = 98;
     pub(super) const EINVAL: i32 = 22;
     pub(super) const ENODEV: i32 = 19;

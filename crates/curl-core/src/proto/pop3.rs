@@ -248,8 +248,14 @@ pub(crate) struct Request {
     url_options: Option<Vec<u8>>,
     /// The answer has a body to deliver (`PPTRANSFER_BODY`).
     body: bool,
+    /// No body is wanted (`req.no_body`): the application's `NOBODY`
+    /// until the command goes, then whether the command's answer has
+    /// none.
+    no_body: bool,
     /// The body is still being read (`KEEP_RECV`).
     receiving: bool,
+    /// The body was read to its end (`req.done`).
+    received: bool,
     eob: Eob,
     /// When the server's time to answer runs out.
     due: Option<Instant>,
@@ -331,7 +337,9 @@ impl Request {
             custom,
             url_options,
             body: true,
+            no_body: cx.easy().options().method == crate::options::Method::Head,
             receiving: false,
+            received: false,
             eob: Eob::default(),
             due: None,
             via: None,
@@ -375,6 +383,14 @@ impl Request {
 
     pub(crate) fn holds_output(&self) -> bool {
         self.pipeline.holds_output()
+    }
+
+    /// Whether nothing came back for the request, which waits for a body
+    /// it has not read to its end: one that may be made again on a fresh
+    /// connection, its reused one having died (`Curl_retry_request` for a
+    /// scheme outside HTTP's, `req.bytecount + req.headerbytecount`).
+    pub(crate) fn received_nothing(&self) -> bool {
+        self.header_bytes == 0 && self.pipeline.bytecount() == 0 && !self.no_body && !self.received
     }
 
     /// The body is still being read.
@@ -422,6 +438,7 @@ impl Request {
         let mut reads = 0;
         loop {
             if !self.receiving {
+                self.received = true;
                 return Ok(ProtoStep::Done);
             }
             if cx.pause().recv_paused() {
@@ -986,6 +1003,7 @@ impl Request {
             )?;
         }
         set_state(cx, pc, State::Command);
+        self.no_body = !multiline;
         if !multiline {
             self.body = false;
         }

@@ -2434,7 +2434,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 Ok(url) => {
                     mstate::enter(cx, MState::Setup);
                     cx.mark(Timer::StartOp);
-                    start_leg(run, cx, url)
+                    start_leg(run, cx, url, false)
                 }
                 Err(kind) => TransferState::Init.fail(kind),
             };
@@ -4831,7 +4831,9 @@ fn follow_leg<H: Host>(
 }
 
 /// A request is to be made again: its URL parsed anew, as the follow of a
-/// retry does (`Curl_http_follow`, `FOLLOW_RETRY`), and a leg started.
+/// retry does (`Curl_http_follow`, `FOLLOW_RETRY`), and a leg started. A
+/// protocol without HTTP's follow is simply connected for again, its URL
+/// as it was, nothing said and nothing counted (`multi_follow`).
 fn retry_leg<H: Host>(
     run: &mut Run,
     cx: &mut StepCx<'_, H>,
@@ -4846,6 +4848,10 @@ fn retry_leg<H: Host>(
         }
         Err(UrlRefused::Failed(kind)) => return TransferState::Init.fail(kind),
     };
+    if !proto.follows() {
+        mstate::enter(cx, MState::Setup);
+        return start_leg(run, cx, url, true);
+    }
     let shown = match url.get(Part::Url, GetOptions::NONE) {
         Ok(shown) => shown,
         Err(e) => return TransferState::Init.fail(url_error(e)),
@@ -4884,7 +4890,7 @@ fn next_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transfe
     sizes.download_expected = None;
     sizes.upload_expected = None;
     mstate::enter(cx, MState::Setup);
-    start_leg(run, cx, url)
+    start_leg(run, cx, url, false)
 }
 
 /// An `http` URL to a host the HSTS cache says to reach only over HTTPS
@@ -4960,8 +4966,15 @@ fn retry_request<H: Host>(
 
 /// C's SETUP and CONNECT, which always run in one pass, for each request
 /// of a transfer: the leg's timers, the protocol and a connection for
-/// `url`, then the protocol connects over it.
-fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> TransferState {
+/// `url`, then the protocol connects over it. `rewinding` says a retry
+/// asked for the readers to be rewound and nothing since did, as C's
+/// `rewind_read` is left by a retry no follow handles.
+fn start_leg<H: Host>(
+    run: &mut Run,
+    cx: &mut StepCx<'_, H>,
+    mut url: Url,
+    rewinding: bool,
+) -> TransferState {
     // Cookies are counted from nothing for each request
     // (`Curl_req_hard_reset`).
     cx.easy_mut().set_cookies = 0;
@@ -4978,7 +4991,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     }
     mstate::enter(cx, MState::Connect);
     // The request starts from nothing (`Curl_req_hard_reset`).
-    upload::trace_reset(cx, false);
+    upload::trace_reset(cx, rewinding);
     cx.mark_now(Timer::PostQueue);
     // Counted from nothing for each request (`Curl_init_do`).
     let (speedometer, report) = cx.progress_parts();

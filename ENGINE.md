@@ -873,12 +873,16 @@ armed, the application's CONNECT_TO list read again from its source (as C walks 
 connection it sets up; the header lists are read again as each request and each `CONNECT` is
 built), POSTQUEUE, the URL read back into `Run::url`, the protocol and a connection.
 `Curl_retry_request` is the engine's: a request that got nothing back over a reused connection
-(`ProtoState::retryable`: HTTP with no head line and no body byte), at the end of the exchange,
-on a receive error, or on a send error at DO, closes the connection and goes to
-`Done { next: Retry }`; the protocol's `done` then says no "Empty reply" (C's
-`conn->bits.retry`), and the Done step parses `Run::url` again, traces "Issue another request to
-this URL", counts a new request in the header store, marks REDIRECT, clears the expected sizes
-and starts the next leg. The fifth retry of a transfer fails it with SendError.
+(`ProtoState::retryable`: HTTP with no head line and no body byte; a line protocol with no reply
+byte read for the request, C's `headerbytecount`, and no body byte, that wants a body and has not
+read it whole, C's `!no_body && !done`), at the end of the exchange, on a receive error, or on a
+send error at DO, closes the connection and goes to `Done { next: Retry }`; the protocol's
+`done` then says no "Empty reply" (C's `conn->bits.retry`), and the Done step parses `Run::url`
+again. For HTTP, whose `follow` makes the next request (`ProtoState::follows`), it traces "Issue
+another request to this URL", counts a new request in the header store, marks REDIRECT, clears
+the expected sizes and starts the next leg; any other protocol's next leg starts at once, its
+readers' reset traced as one a rewind waits on (`multi_follow` with no `follow`). The fifth
+retry of a transfer fails it with SendError.
 
 - **The lease is released in exactly one place**: the `Done` step runs C's `multi_done` order —
   protocol `done` if past PROTOCONNECT, `pgrs_done` if past CONNECTING, then

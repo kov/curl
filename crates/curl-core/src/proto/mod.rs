@@ -803,14 +803,23 @@ impl ProtoState {
 
     /// Whether the request may be made again on a fresh connection, its
     /// reused one having died (`Curl_retry_request`): it got nothing
-    /// back, and its protocol answers every request, as HTTP does.
+    /// back, and its protocol answers every request, as HTTP does, or it
+    /// waits for a body it has not had.
     pub(crate) fn retryable(&self) -> bool {
         match *self {
             ProtoState::Http(ref r) => r.received_nothing(),
-            ProtoState::File(_) | ProtoState::Pop3(_) => false,
+            ProtoState::Pop3(ref r) => r.received_nothing(),
+            ProtoState::File(_) => false,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
         }
+    }
+
+    /// Whether the protocol follows a request with another of its own
+    /// making, as HTTP does (its `follow` handler): a retry of any other
+    /// is the same URL connected for again (`multi_follow`).
+    pub(crate) fn follows(&self) -> bool {
+        matches!(self, ProtoState::Http(_))
     }
 
     /// What an HTTP request may speak, as C negotiates it; none for

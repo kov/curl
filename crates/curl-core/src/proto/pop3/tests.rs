@@ -887,4 +887,134 @@ mod over_the_wire {
             ran.text
         );
     }
+
+    /// Retrieve message 1 twice over `m`, the second set as `set` says:
+    /// what came of the second.
+    fn twice(m: &mut Multi, set: impl FnOnce(&mut Options)) -> Ran {
+        let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+        let first = transfer(m, &plain(), &url, |_| {});
+        assert_eq!(first.result, Ok(()));
+        transfer(m, &plain(), &url, set)
+    }
+
+    /// A server whose connection breaks once the first transfer is over:
+    /// a send after its first four fails.
+    fn breaking() -> Conversation {
+        Conversation::replies(&[GREETING, CAPA_USER, OK, OK, MESSAGE], false)
+            .greeting()
+            .breaking_after(4)
+    }
+
+    /// A reused connection whose peer is gone fails the command's send:
+    /// the request, which nothing came back for, is made again on a fresh
+    /// connection, as a retry of a protocol without HTTP's follow is,
+    /// nothing said of another request (`multistate_do`,
+    /// `Curl_retry_request`, `multi_follow`).
+    #[test]
+    fn a_command_a_reused_connection_cannot_send_is_retried() {
+        let first = breaking();
+        let fresh = in_the_clear();
+        let mut m = serving(&[&first, &fresh]);
+        let ran = twice(&mut m, |_| {});
+        assert_eq!(ran.result, Ok(()));
+        assert_eq!(ran.body, b"hello\r\n.dot\r\n");
+        assert_eq!(fresh.received(), b"CAPA\r\nUSER u\r\nPASS p\r\nRETR 1\r\n");
+        let retried = "Connection died, retrying a fresh connect (retry count: 1)";
+        assert!(ran.text.contains(retried), "{}", ran.text);
+        assert!(!ran.text.contains("Issue another request"), "{}", ran.text);
+    }
+
+    /// No body wanted (`NOBODY`), the request is not made again: C's
+    /// `req.no_body` stands until the command is sent.
+    #[test]
+    fn a_command_wanting_no_body_is_not_retried() {
+        let first = breaking();
+        let fresh = in_the_clear();
+        let mut m = serving(&[&first, &fresh]);
+        let ran = twice(&mut m, |o| o.method = crate::options::Method::Head);
+        assert_eq!(ran.result, Err(ErrorKind::SendError));
+        assert_eq!(fresh.received(), b"");
+        assert!(!ran.text.contains("Connection died"), "{}", ran.text);
+    }
+
+    /// A reused connection reset once the command's answer came, before
+    /// any of its body: the answer's line was read (`headerbytecount`),
+    /// so the request is not made again, and the read's failure stands.
+    #[test]
+    fn a_reset_after_the_answer_is_not_retried() {
+        let replies: [&[u8]; 6] = [GREETING, CAPA_USER, OK, OK, MESSAGE, b"+OK 9 octets\r\n"];
+        let first = Conversation::replies(&replies, false)
+            .greeting()
+            .resetting();
+        let fresh = in_the_clear();
+        let mut m = serving(&[&first, &fresh]);
+        let ran = twice(&mut m, |_| {});
+        assert_eq!(ran.result, Err(ErrorKind::RecvError));
+        assert_eq!(fresh.received(), b"");
+        assert!(!ran.text.contains("Connection died"), "{}", ran.text);
+    }
+
+    /// A read that fails, during the login or the body, fails the
+    /// transfer, said once: by the socket, as C's socket filter says it,
+    /// or else by the protocol, for a layer that failed without saying
+    /// why (the fake TLS library's record it cannot read).
+    #[test]
+    fn a_read_failure_is_said_once() {
+        let tls = |plain: &[u8]| fake::records(plain).unwrap();
+        let garbage: &[u8] = b"not a record";
+        let mut body = tls(b"+OK 9 octets\r\nhel");
+        body.extend_from_slice(garbage);
+        let secure = [
+            WELCOME.to_vec(),
+            tls(GREETING),
+            tls(CAPA_USER),
+            tls(OK),
+            tls(OK),
+            body,
+        ];
+        let secure: Vec<&[u8]> = secure.iter().map(Vec::as_slice).collect();
+        let mut login = secure[..2].to_vec();
+        login.push(garbage);
+        let plain_body: [&[u8]; 5] = [GREETING, CAPA_USER, OK, OK, b"+OK 9 octets\r\nhel"];
+        let cases = [
+            (
+                Conversation::replies(&[GREETING], false)
+                    .greeting()
+                    .resetting(),
+                "pop3",
+                false,
+            ),
+            (
+                Conversation::replies(&plain_body, false)
+                    .greeting()
+                    .resetting(),
+                "pop3",
+                true,
+            ),
+            (
+                Conversation::replies(&login, false).per_send(),
+                "pop3s",
+                false,
+            ),
+            (
+                Conversation::replies(&secure, false).per_send(),
+                "pop3s",
+                true,
+            ),
+        ];
+        for (talk, scheme, has_body) in cases {
+            let mut m = serving(&[&talk]);
+            let url = format!("{scheme}://u:p@127.0.0.1:{PORT}/1");
+            let ran = transfer(&mut m, &with_tls(), &url, |_| {});
+            assert_eq!(ran.result, Err(ErrorKind::RecvError), "{}", ran.text);
+            let body: &[u8] = if has_body { b"hel" } else { b"" };
+            assert_eq!(ran.body, body);
+            let failures = ran
+                .text
+                .lines()
+                .filter(|l| l.starts_with("Recv failure: "))
+                .count();
+            assert_eq!(failures, 1, "{scheme}: {}", ran.text);
+        }
+    }
 }

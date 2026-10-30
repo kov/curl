@@ -314,7 +314,7 @@ features: test-util
 === a mail body's source is read again before what was held is given
 file: crates/curl-core/src/upload/chain.rs
 witness: curl-core proto::smtp::tests::over_the_wire::a_body_s_added_dots_are_given_before_the_source_is_read_again
-features: test-util
+features: test-util,debug-hooks
 --- old
         if !self.read_eos && self.held().is_empty() {
 --- new

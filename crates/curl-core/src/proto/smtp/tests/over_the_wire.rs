@@ -345,6 +345,41 @@ fn the_body_s_end_is_traced_as_c_s() {
     }
 }
 
+/// A body whose added dots outgrow a read is given over the reads
+/// after, the source read again only once what was held is given, and
+/// ended only once the source is: C's trace, read for read (measured
+/// against the C build with the same body).
+#[test]
+fn a_body_s_added_dots_are_given_before_the_source_is_read_again() {
+    let body = b".x\r\n".repeat(17500);
+    let talk = mailing(&[]);
+    let ran = tracing(&mut serving(&[&talk]), &plain(), URL, b"smtp", mail(&body));
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let sent = talk.received();
+    let data = sent.windows(6).position(|w| w == b"DATA\r\n").unwrap() + 6;
+    let mut want = b"..x\r\n".repeat(17500);
+    want.extend_from_slice(b".\r\nQUIT\r\n");
+    assert!(sent[data..] == want[..], "{} bytes sent", sent.len() - data);
+    let eob: Vec<&str> = ran
+        .text
+        .lines()
+        .filter(|l| l.contains("cr_eob") || l.contains("mail body"))
+        .collect();
+    let want: Vec<&str> = [
+        "[SMTP] cr_eob_read, next_read(len=65536) -> 0, 65536 eos=0",
+        "cr_eob_read(65536) -> 0, 65536, 0",
+        "cr_eob_read(65536) -> 0, 16384, 0",
+        "[SMTP] cr_eob_read, next_read(len=65536) -> 0, 4464 eos=1",
+        "[SMTP] auto-ending mail body with '\\r\\n.\\r\\n'",
+        "[SMTP] mail body complete, returning EOS",
+        "cr_eob_read(65536) -> 0, 5583, 1",
+    ]
+    .into_iter()
+    .filter(|l| cfg!(feature = "debug-hooks") || l.starts_with("[SMTP]"))
+    .collect();
+    assert_eq!(eob, want, "{}", ran.text);
+}
+
 /// An address with a line's end in it is refused before any command
 /// goes with it.
 #[test]

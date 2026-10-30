@@ -301,3 +301,31 @@ features: test-util
     if started.is_ok() {
         cx.mark_now(Timer::PostQueue);
     }
+
+=== a mail body is ended before its source is
+file: crates/curl-core/src/upload/chain.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_body_s_added_dots_are_given_before_the_source_is_read_again
+features: test-util
+--- old
+        if self.read_eos && !self.ended {
+--- new
+        if !self.ended {
+
+=== a mail body's source is read again before what was held is given
+file: crates/curl-core/src/upload/chain.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_body_s_added_dots_are_given_before_the_source_is_read_again
+features: test-util
+--- old
+        if !self.read_eos && self.held().is_empty() {
+--- new
+        if !self.read_eos {
+
+=== a mail body's end is said once what was held is given, the source still going
+file: crates/curl-core/src/upload/chain.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_body_s_added_dots_are_given_before_the_source_is_read_again
+features: test-util
+--- old
+        if self.read_eos && self.held().is_empty() {
+--- new
+        if self.held().is_empty() {
+

@@ -488,6 +488,30 @@ mod tests {
         }
     }
 
+    /// What a read stuffs is reserved at once, so its pushes, which
+    /// expect the room, never grow the buffer.
+    #[test]
+    fn a_read_s_room_is_reserved_before_it_is_stuffed() {
+        let mut stage = MailEnd::default();
+        let read = b"a\r\n.b\r\n.c";
+        stage.stuff(read).unwrap();
+        assert_eq!(stage.held(), b"a\r\n..b\r\n..c");
+        assert_eq!(stage.buf.capacity(), read.len() + 2);
+    }
+
+    /// What was given is let go of before more is taken: the buffer
+    /// holds only what is still to give.
+    #[test]
+    fn what_was_given_is_let_go_of() {
+        let mut stage = MailEnd::default();
+        let mut dest = [0; 64];
+        stage.stuff(b"first.\r\n").unwrap();
+        assert_eq!(stage.give(&mut dest), 8);
+        stage.stuff(b"second.").unwrap();
+        assert_eq!(stage.buf, b"second.");
+        assert_eq!(stage.held(), b"second.");
+    }
+
     /// However the body comes and however little room each read has, its
     /// dots are escaped as RFC 5321 says and it ends as C ends it.
     #[test]

@@ -149,15 +149,3 @@ features: test-util
                 d.ending = Ending::Cut;
 --- new
                 d.lease.get().mark_close();
-
-=== an APPEND's answer under a send limit waits the limit out again
-file: crates/curl-core/src/multi/state.rs
-witness: curl-core proto::imap::tests::over_the_wire::an_append_under_a_send_limit_takes_c_s_time
-features: test-util
---- old
-        TransferState::Did(x) => (TransferState::Exchanging(x), Wake::Again),
---- new
-        TransferState::Did(x) => (TransferState::Exchanging(x), Wake::Again),
-        TransferState::Done(d) if d.ending == Ending::Waiting && over_limit(run, cx) => {
-            (TransferState::Done(d), Wake::Idle)
-        }

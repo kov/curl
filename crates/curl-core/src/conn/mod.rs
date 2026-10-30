@@ -93,6 +93,12 @@ impl ConnNumber {
     pub fn get(self) -> u64 {
         self.0
     }
+
+    /// The number `n`, for tests outside the pool that hands them out.
+    #[cfg(test)]
+    pub(crate) fn for_tests(n: u64) -> ConnNumber {
+        ConnNumber(n)
+    }
 }
 
 /// A transfer's number in the pool it joined, counting from 0 in the

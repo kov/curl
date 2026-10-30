@@ -1,0 +1,108 @@
+# The line protocols' reader and writer (lib/pingpong.c): where a reply
+# ends, what is held and how much, what is traced as sent, and when the
+# server's time to answer starts.
+
+=== an FTP line of three digits ends a reply without the space after them
+file: crates/curl-core/src/proto/pingpong/ftp.rs
+witness: curl-core proto::pingpong::tests::a_multi_line_reply_ends_at_the_first_code_and_space
+--- old
+            [a, b, c, b' ', ..] if [a, b, c].iter().all(|d| d.is_ascii_digit()) => {
+--- new
+            [a, b, c, _, ..] if [a, b, c].iter().all(|d| d.is_ascii_digit()) => {
+
+=== an SMTP code alone on a line of five bytes ends no reply
+file: crates/curl-core/src/proto/pingpong/smtp.rs
+witness: curl-core proto::pingpong::smtp::tests::a_bare_code_ends_a_reply_on_a_line_of_five
+--- old
+        if fourth == b' ' || line.len() == 5 {
+--- new
+        if fourth == b' ' {
+
+=== an IMAP untagged name ends its line one byte before the LF
+file: crates/curl-core/src/proto/pingpong/imap.rs
+witness: curl-core proto::pingpong::imap::tests::untagged_responses_end_one_where_the_state_reads_them
+--- old
+        && (rest.get(name.len()) == Some(&b' ') || rest.len() == name.len() + 2)
+--- new
+        && (rest.get(name.len()) == Some(&b' ') || rest.len() == name.len() + 1)
+
+=== what is held may reach 64 KiB, its zero byte not counted
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::what_is_held_is_capped_short_of_64_kib
+--- old
+        if self.recv.len() + read.len() + 1 > BUFFER_MAX {
+--- new
+        if self.recv.len() + read.len() > BUFFER_MAX {
+
+=== the reply's line counts against the cap on the read after it
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::the_cap_counts_what_is_held_once_the_reply_line_goes
+--- old
+                // The final line goes before what is read is added to it.
+                self.recv.clear();
+--- new
+                if n + read.len() + 1 > BUFFER_MAX {
+                    return Err(self.fail(ReadError::TooLarge));
+                }
+                self.recv.clear();
+
+=== a read is taken while what followed a reply waits to be read
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::a_read_waits_for_the_lines_held
+--- old
+            Scan::Reply(n) if n == self.recv.len() => {
+--- new
+            Scan::Reply(_) => {
+
+=== a zero byte in a whole line is let through
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::a_nul_in_a_whole_line_fails_for_good
+--- old
+        if self.recv[..length].contains(&0) {
+--- new
+        if self.recv[..length - 1].contains(&b'\n') {
+
+=== nothing is told to follow a reply
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::bytes_after_a_starttls_reply_are_told
+--- old
+            Scan::Reply(n) => Some(&self.recv[n..]),
+--- new
+            Scan::Reply(_) => Some(&self.recv[self.recv.len()..]),
+
+=== a reply's size goes on counting the bytes read for the reply before
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::a_reply_found_in_held_bytes_has_read_nothing
+--- old
+                let size = ReplySize(std::mem::take(&mut self.pushed));
+--- new
+                let size = ReplySize(self.pushed);
+
+=== a command may reach 64 KiB, its zero byte not counted
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::a_command_is_capped_short_of_64_kib
+--- old
+        if len + 1 > BUFFER_MAX {
+--- new
+        if len > BUFFER_MAX {
+
+=== the whole command is traced, not what the first send wrote
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::only_the_first_send_is_traced
+--- old
+        pp.sent_up_to(n, now);
+        &pp.send[..n]
+--- new
+        pp.sent_up_to(n, now);
+        &pp.send[..]
+
+=== the server's time to answer starts at every send of a command
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::the_time_to_answer_runs_from_the_last_command_sent_whole
+--- old
+        if sent < self.send.len() {
+            self.sent = Sent::Partly(sent);
+--- new
+        if sent < self.send.len() {
+            self.sent = Sent::Partly(sent);
+            self.response = now;

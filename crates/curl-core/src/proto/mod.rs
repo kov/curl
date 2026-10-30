@@ -12,6 +12,11 @@ pub(crate) mod http;
 pub(crate) mod http1;
 pub(crate) mod http2;
 pub(crate) mod http3;
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the line protocols' steps are yet to drive it")
+)]
+pub(crate) mod pingpong;
 #[cfg(any(test, feature = "test-util"))]
 mod script;
 

@@ -116,6 +116,17 @@ not a difference: it is tracked in `MILESTONES.md`.
   `an_unanswered_message_fails_its_read_when_the_time_is_out`
   (`crates/curl-core/src/proto/http/tests/socks_gss.rs`).
 
+- **IMAP's answer after a FETCH or an APPEND is read in PERFORMING.** C reads the tagged answer
+  that follows a fetched literal, or an APPEND's body and its empty line, in `imap_done`,
+  blocking (`imap_block_statemach`), so every other transfer of the multi waits on the server.
+  Here the transfer reads it without blocking once the body is done, before its DONE. The bytes
+  on the wire and the result are C's; the trace differs where C has nothing left to exchange
+  after DO: a FETCH whose literal came whole with its line goes from DID to PERFORMING, where C
+  goes to DONE (`Curl_xfer_setup_nop`), and C's "state change ... to FETCH_FINAL" follows its
+  `multi_done` line where ours precedes it. Pinned by
+  `a_transfer_after_one_that_set_up_nothing_goes_to_done`
+  (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`).
+
 ## Bodies C cannot send again
 
 - **A form part of nothing is sent again.** A part given a name but no content

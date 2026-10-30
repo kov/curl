@@ -628,6 +628,9 @@ fn a_transfer_after_one_that_set_up_nothing_goes_to_done() {
     let ran = tracing(&mut m, &plain(), FETCH_URL, b"multi", |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.body, b"hi");
+    // The answer after the literal is read in PERFORMING, where C goes
+    // to DONE and reads it there, blocking (DIVERGENCE.md).
+    assert!(ran.text.contains("[DID] -> [PERFORMING]"), "{}", ran.text);
     let list = "imap://u:p@127.0.0.1:PORT/";
     let ran = tracing(&mut m, &plain(), list, b"multi", |_| {});
     assert_eq!(ran.result, Ok(()));
@@ -641,4 +644,82 @@ fn a_transfer_after_one_that_set_up_nothing_goes_to_done() {
     let ran = tracing(&mut m, &plain(), list, b"multi", |_| {});
     assert_eq!(ran.result, Ok(()));
     assert!(ran.text.contains("[DID] -> [PERFORMING]"), "{}", ran.text);
+}
+
+/// `imaps` speaks TLS from the start, asks no STARTTLS of a server that
+/// offers it, and offers nothing by ALPN, as only HTTP's schemes do
+/// (`PROTOPT_ALPN`).
+#[test]
+fn imaps_speaks_tls_from_the_start() {
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let replies = [
+        WELCOME.to_vec(),
+        tls(GREETING),
+        tls(CAPABILITY),
+        tls(LOGGED_IN),
+        tls(SELECTED),
+        tls(FETCHED),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let talk = Conversation::replies(&replies, false).per_send();
+    let mut m = serving(&[&talk]);
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let url = "imaps://u:p@127.0.0.1:PORT/INBOX;MAILINDEX=1";
+    let ran = transfer(&mut m, &libraries, url, |o| {
+        o.line.make_mut().unwrap().use_ssl = UseSsl::All;
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(ran.body, b"hello world");
+    let said = talk.received();
+    assert!(said.starts_with(b"FAKETLS HELLO"), "{said:?}");
+    let login = fake::records(b"A002 LOGIN u p\r\n").unwrap();
+    assert!(said.windows(login.len()).any(|w| w == login), "{said:?}");
+    assert!(!said.windows(8).any(|w| w == b"STARTTLS"), "{said:?}");
+    assert_eq!(backend.log().alpn, Some(crate::tls::Alpn::None));
+}
+
+/// Without a TLS library, `imaps` is a protocol the build leaves out.
+#[test]
+fn imaps_needs_a_tls_library() {
+    let talk = Conversation::replies(&[GREETING], false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imaps://u:p@127.0.0.1:PORT/", |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
+    assert_eq!(talk.received(), b"");
+}
+
+/// A reused connection whose peer is gone fails the command's send: the
+/// request, which nothing came back for, is made again on a fresh
+/// connection, logged in and selecting anew (`Curl_retry_request`).
+#[test]
+fn a_command_a_reused_connection_cannot_send_is_retried() {
+    let first = fetching(&[]).breaking_after(4);
+    // The second connection: its tags are B's.
+    let fresh = Conversation::replies(
+        &[
+            GREETING,
+            b"* CAPABILITY IMAP4rev1\r\nB001 OK\r\n",
+            b"B002 OK\r\n",
+            b"* OK [UIDVALIDITY 7] ok\r\nB003 OK\r\n",
+            b"* 1 FETCH (BODY[] {2}\r\nhi)\r\nB004 OK\r\n",
+        ],
+        false,
+    )
+    .greeting();
+    let mut m = serving(&[&first, &fresh]);
+    assert_eq!(transfer(&mut m, &plain(), FETCH_URL, |_| {}).result, Ok(()));
+    let ran = transfer(&mut m, &plain(), FETCH_URL, |_| {});
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(ran.body, b"hi");
+    assert_eq!(
+        fresh.received(),
+        b"B001 CAPABILITY\r\nB002 LOGIN u p\r\nB003 SELECT INBOX\r\nB004 FETCH 1 BODY[]\r\n"
+    );
+    let retried = "Connection died, retrying a fresh connect (retry count: 1)";
+    assert!(ran.text.contains(retried), "{}", ran.text);
 }

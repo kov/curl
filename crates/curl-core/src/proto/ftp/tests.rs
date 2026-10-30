@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::conn::io::{Conversation, FakeNet, Peer as Net};
 use crate::easy::Easy;
+use crate::error::ErrorKind;
 use crate::handler::{DebugHandler, DebugKind, Handler, Write, WriteHandler};
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, TransferCx, TransferId, drive_to_completion};
@@ -200,6 +201,26 @@ fn a_file_is_retrieved_over_a_passive_data_connection() {
     assert_eq!(*body.0.lock().unwrap(), b"hello");
     assert_eq!(received(&talk), COMMANDS);
     assert_eq!(net.open(), 1, "the control connection alone");
+}
+
+/// A file the server refuses fails the transfer though DONE, which finds
+/// nothing wrong with the connection, goes well: the transfer's failure
+/// stands over DONE's result (`multi_done`'s callers keep theirs).
+#[test]
+fn a_refused_file_fails_though_done_goes_well() {
+    let talk = control(&[b"550 no such file\r\n"]);
+    let file = Conversation::replies(&[], false);
+    let mut m = serving(&[&talk], &[&file]);
+    let (id, body, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(
+        result,
+        Err(ErrorKind::RemoteFileNotFound),
+        "{}",
+        text.text()
+    );
+    assert!(body.0.lock().unwrap().is_empty());
+    assert_eq!(received(&talk), COMMANDS);
 }
 
 /// The data connection is the control connection's: a multi that goes

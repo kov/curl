@@ -1,3 +1,14 @@
+=== a transfer's failure is lost to a DONE that goes well
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::ftp::tests::a_refused_file_fails_though_done_goes_well
+features: test-util debug-hooks
+--- old
+                    // (`multi_done`'s callers: `if(!result) result = rc`).
+                    crate::proto::Finish::Done(result) => d.result = d.result.and(result),
+--- new
+                    // (`multi_done`'s callers: `if(!result) result = rc`).
+                    crate::proto::Finish::Done(result) => d.result = result,
+
 === the data connection outlives the transfer that made it
 file: crates/curl-core/src/proto/ftp.rs
 witness: curl-core proto::ftp::tests::a_file_is_retrieved_over_a_passive_data_connection

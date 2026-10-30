@@ -983,7 +983,9 @@ fn multi_done<H: Host>(
                     http,
                     exchanged,
                 ) {
-                    crate::proto::Finish::Done(result) => d.result = result,
+                    // The transfer's own failure stands over DONE's
+                    // (`multi_done`'s callers: `if(!result) result = rc`).
+                    crate::proto::Finish::Done(result) => d.result = d.result.and(result),
                     crate::proto::Finish::Waiting => {
                         d.ending = Ending::Waiting;
                         return Err(d);
@@ -994,7 +996,7 @@ fn multi_done<H: Host>(
         Ending::Waiting => {
             let proto = d.proto.as_mut().expect("only a protocol waits as it ends");
             match proto.finishing(cx, &mut d.lease, exchanged) {
-                crate::proto::Finish::Done(result) => d.result = result,
+                crate::proto::Finish::Done(result) => d.result = d.result.and(result),
                 crate::proto::Finish::Waiting => return Err(d),
             }
         }

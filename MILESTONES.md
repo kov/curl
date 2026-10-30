@@ -1069,8 +1069,9 @@ protocols need, each step leaving behaviour and traces as they are:
     proxy's answer is; FTP's CCC removes the TLS layer after its goodbye. In progress: the
     reader and writer are built (`proto::pingpong`, ENGINE §5.7), with what ends each
     protocol's reply, C's limits, the bytes read past a reply, the traces' bytes and the time
-    to answer, driven by no step yet. To do, on step 67's phases: the drive over a connection,
-    and STARTTLS, `AUTH TLS` and CCC.
+    to answer, driven by no step yet. To do, on step 67's phases: the drive over a connection
+    (with C's `pending_resp`, which FTP's DONE reads and the drive's reads set and clear), and
+    STARTTLS, `AUTH TLS` and CCC.
 
 SCP and SFTP hand libssh the socket, as C does (`SSH_OPTIONS_FD`): bytes a proxy's tunnel or a
 SOCKS answer left in the stream's buffer would be lost to it, so the hand-over is refused while

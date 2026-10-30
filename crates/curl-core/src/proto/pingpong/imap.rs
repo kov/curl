@@ -196,14 +196,16 @@ pub(crate) fn literal(line: &[u8]) -> Option<u64> {
 }
 
 /// Where the first `{` outside a quoted string is, a backslash in one
-/// escaping the byte after it (`imap_find_literal`).
+/// escaping the byte after it (`imap_find_literal`). C escapes nothing
+/// with a backslash that ends the line; skipping past the end instead
+/// finds nothing all the same.
 fn find_literal(line: &[u8]) -> Option<usize> {
     let mut quoted = false;
     let mut at = 0;
     while at < line.len() {
         let b = line[at];
         if quoted {
-            if b == b'\\' && at + 1 < line.len() {
+            if b == b'\\' {
                 at += 2;
                 continue;
             }
@@ -355,6 +357,11 @@ mod tests {
         assert_eq!(literal(b"* 1 FETCH (BODY[TEXT] {2021}\r\n"), Some(2021));
         assert_eq!(literal(b"{0}"), Some(0));
         assert_eq!(literal(b"* 1 FETCH (X \"{9}\" {4}\r\n"), Some(4));
+        assert_eq!(literal(b"\"ab{9}\" {4}"), Some(4));
+        // An escaped quote leaves the string open.
+        assert_eq!(literal(b"\"\\\"{9}"), None);
+        assert_eq!(literal(b"\"a\\\"{9}"), None);
+        assert_eq!(literal(b"\"a\\"), None);
         // A backslash escapes the quote after it.
         assert_eq!(literal(b"\"a\\\"{9}\" {5}"), Some(5));
         // Only the first `{` outside quotes counts.

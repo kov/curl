@@ -666,6 +666,52 @@ fn the_time_to_answer_runs_from_the_last_command_sent_whole() {
 }
 
 #[test]
+fn held_bytes_not_looked_through_are_told_apart_from_a_partial_line() {
+    // C's `overflow`, by which Curl_pp_statemach runs the step at once
+    // (pingpong.c:86), against `Curl_pp_moredata`.
+    let mut pp = Pingpong::new(Instant::EPOCH);
+    assert!(!pp.unscanned());
+    pp.push(b"* 1 FETCH (BODY {2}\r\nab)\r\nA001 OK\r\n")
+        .unwrap();
+    assert!(pp.unscanned());
+    let fetch = Imap {
+        tag: Tag::command(crate::conn::ConnNumber::for_tests(0), 1),
+        untagged: Untagged::Named(b"FETCH"),
+        continuations: Continuations::Unexpected,
+    };
+    assert!(matches!(pp.next(&fetch), Ok(Event::Reply { .. })));
+    assert!(pp.unscanned());
+    // imap.c:1447: what is left after the literal is still to be read.
+    pp.consume_after_reply(2);
+    assert_eq!(pp.after_reply(), None);
+    assert!(pp.unscanned());
+    assert_eq!(pp.next(&fetch), Ok(Event::Line(&b")\r\n"[..])));
+    assert!(pp.unscanned());
+    assert!(matches!(pp.next(&fetch), Ok(Event::Reply { .. })));
+    assert!(!pp.unscanned());
+    // pingpong.c:337: a partial line looked through is not.
+    pp.push(b"A002 O").unwrap();
+    assert!(pp.unscanned());
+    assert_eq!(pp.next(&fetch), Ok(Event::NeedMore));
+    assert!(!pp.unscanned());
+    assert!(pp.more_data());
+    // Nor anything after a failure.
+    assert_eq!(pp.push(b""), Err(ReadError::Closed));
+    assert!(!pp.unscanned());
+}
+
+#[test]
+fn ftp_restarts_the_time_to_answer() {
+    // ftp.c:3751: the answer ending a transfer is waited for from now.
+    let mut pp = Pingpong::new(at(0));
+    pp.restart_response_timer(at(50_000));
+    assert_eq!(
+        pp.time_left(at(50_000), None, TimeLeft::Unlimited),
+        ResponseTime::Left(RESPONSE_TIMEOUT)
+    );
+}
+
+#[test]
 fn a_nul_says_what_c_says() {
     assert_eq!(
         ReadError::Nul.reason(),

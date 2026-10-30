@@ -242,17 +242,17 @@ impl Pingpong {
     /// after a reply nothing followed, as C reads only then; an empty read
     /// is the server closing.
     pub(crate) fn push(&mut self, read: &[u8]) -> Result<(), ReadError> {
-        match self.scan {
-            Scan::Failed(e) => return Err(e),
-            Scan::Starved => {}
-            Scan::Reply(n) if n == self.recv.len() => {
-                // The final line goes before what is read is added to it.
-                self.recv.clear();
-                self.scan = Scan::Starved;
-            }
-            Scan::Unscanned | Scan::Line(_) | Scan::Reply(_) => {
-                panic!("a read pushed while held lines wait to be read")
-            }
+        if let Scan::Failed(e) = self.scan {
+            return Err(e);
+        }
+        assert!(
+            !self.unscanned(),
+            "a read pushed while held lines wait to be read"
+        );
+        if let Scan::Reply(_) = self.scan {
+            // The final line goes before what is read is added to it.
+            self.recv.clear();
+            self.scan = Scan::Starved;
         }
         if read.is_empty() {
             return Err(self.fail(ReadError::Closed));
@@ -266,6 +266,7 @@ impl Pingpong {
             return Err(self.fail(ReadError::OutOfMemory));
         }
         self.pushed += read.len();
+        self.scan = Scan::Unscanned;
         Ok(())
     }
 
@@ -303,6 +304,27 @@ impl Pingpong {
         }
     }
 
+    /// Whether bytes are held that [`next`](Self::next) has not looked
+    /// through yet (C's `overflow`, by which `Curl_pp_statemach` runs the
+    /// step without waiting on the connection): what followed a reply,
+    /// what is left after bytes were taken from it, or what followed a
+    /// line given out. A partial line looked through is not, though
+    /// [`more_data`](Self::more_data) counts it.
+    pub(crate) fn unscanned(&self) -> bool {
+        match self.scan {
+            Scan::Unscanned | Scan::Line(_) => true,
+            Scan::Reply(n) => self.recv.len() > n,
+            Scan::Starved | Scan::Failed(_) => false,
+        }
+    }
+
+    /// Starts the server's time to answer again at `now`, as FTP does
+    /// before it reads the answer that ends a transfer (ftp.c:3604,
+    /// ftp.c:3751).
+    pub(crate) fn restart_response_timer(&mut self, now: Instant) {
+        self.response = now;
+    }
+
     fn fail(&mut self, e: ReadError) -> ReadError {
         self.scan = Scan::Failed(e);
         e
@@ -318,7 +340,8 @@ impl Pingpong {
     }
 
     /// What was read past the end of the reply just given out (C's
-    /// `overflow`). A server that sends anything after its answer to
+    /// `overflow` as the reply is found; [`unscanned`](Self::unscanned)
+    /// says what it becomes once bytes are taken from it). A server that sends anything after its answer to
     /// `STARTTLS`, `STLS` or `AUTH TLS` is refused (`WEIRD_SERVER_REPLY`,
     /// smtp.c:1177, ftp.c:3209), as those bytes were not sent under TLS;
     /// an IMAP literal and a POP3 body begin in it.

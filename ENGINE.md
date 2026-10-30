@@ -3308,9 +3308,12 @@ server's time to answer runs from. No step drives it yet.
   C does, before the step acts on it. Only LF ends a line. A read is taken only once nothing
   whole is held, as C reads only with no `overflow`; a push otherwise is a bug, and panics.
 - **The reply's line stays until the next call** (`reply_line`, C's `nfinal`), and what was
-  read past it is `after_reply` (C's `overflow`): STARTTLS, `STLS` and `AUTH TLS` refuse a
-  reply anything follows; an IMAP literal or a POP3 body is taken from it
-  (`consume_after_reply`), the rest read on as lines.
+  read past it is `after_reply` (C's `overflow` as the reply is found): STARTTLS, `STLS` and
+  `AUTH TLS` refuse a reply anything follows; an IMAP literal or a POP3 body is taken from it
+  (`consume_after_reply`), the rest read on as lines. `unscanned` is C's `overflow` as the
+  step polls it: bytes held and not looked through, which run the step without waiting on the
+  connection; a partial line looked through is not, though `more_data` counts it. FTP
+  restarts the time to answer before the answer ending a transfer (`restart_response_timer`).
 - **Limits are C's.** What is held, plus the read and a zero byte, stays within 64 KiB
   (`TooLarge`), the reply's line dropped first; a whole line with a zero byte is
   `WeirdServerReply`; an empty read is `RecvError`. Each failure is final: every later call

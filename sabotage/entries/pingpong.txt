@@ -38,21 +38,40 @@ witness: curl-core proto::pingpong::tests::what_is_held_is_capped_short_of_64_ki
 file: crates/curl-core/src/proto/pingpong.rs
 witness: curl-core proto::pingpong::tests::the_cap_counts_what_is_held_once_the_reply_line_goes
 --- old
-                // The final line goes before what is read is added to it.
-                self.recv.clear();
+            // The final line goes before what is read is added to it.
+            self.recv.clear();
 --- new
-                if n + read.len() + 1 > BUFFER_MAX {
-                    return Err(self.fail(ReadError::TooLarge));
-                }
-                self.recv.clear();
+            if self.recv.len() + read.len() + 1 > BUFFER_MAX {
+                return Err(self.fail(ReadError::TooLarge));
+            }
+            self.recv.clear();
 
 === a read is taken while what followed a reply waits to be read
 file: crates/curl-core/src/proto/pingpong.rs
 witness: curl-core proto::pingpong::tests::a_read_waits_for_the_lines_held
 --- old
-            Scan::Reply(n) if n == self.recv.len() => {
+            Scan::Reply(n) => self.recv.len() > n,
 --- new
-            Scan::Reply(_) => {
+            Scan::Reply(_) => false,
+
+=== what is left after bytes taken from a reply waits for the connection
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::held_bytes_not_looked_through_are_told_apart_from_a_partial_line
+--- old
+            Scan::Unscanned | Scan::Line(_) => true,
+--- new
+            Scan::Line(_) => true,
+            Scan::Unscanned => false,
+
+=== FTP's restart leaves the time to answer running from the last command
+file: crates/curl-core/src/proto/pingpong.rs
+witness: curl-core proto::pingpong::tests::ftp_restarts_the_time_to_answer
+--- old
+    pub(crate) fn restart_response_timer(&mut self, now: Instant) {
+        self.response = now;
+--- new
+    pub(crate) fn restart_response_timer(&mut self, now: Instant) {
+        let _ = now;
 
 === a zero byte in a whole line is let through
 file: crates/curl-core/src/proto/pingpong.rs

@@ -203,8 +203,12 @@ impl Route {
             && binds_as(local.as_deref(), want_local.as_deref())
             // C compares the detours without their schemes
             // (`Curl_peer_same_destination`); each has its origin's.
-            && via.as_deref() == want_via.as_deref()
-            && **origin == **want_origin
+            && match (via.as_deref(), want_via.as_deref()) {
+                (Some(have), Some(want)) => have.same_destination(want),
+                (have, want) => have.is_none() && want.is_none(),
+            }
+            && origin.scheme().serves(want_origin.scheme())
+            && origin.same_destination(want_origin)
     }
 
     /// The checks after (`url_match_proxy_use`, `url_match_ssl_config`,
@@ -718,6 +722,19 @@ impl Scheme {
     pub(crate) fn reuse(self) -> bool {
         self.0.flags.conn_reuse
     }
+
+    /// Whether a connection made for this scheme may serve a transfer of
+    /// `wanted` (`url_match_destination`): the same scheme, or one whose
+    /// protocol is this one's family, as an IMAPS connection serves IMAP
+    /// and never the reverse. A scheme C does not know serves only
+    /// itself.
+    pub(crate) fn serves(self, wanted: Scheme) -> bool {
+        self == wanted
+            || self
+                .0
+                .family
+                .is_some_and(|family| wanted.0.protocol == Some(family))
+    }
 }
 
 /// The tests' scheme `tcp:`, which connects and completes.
@@ -943,11 +960,23 @@ impl Peer {
 /// The same peer (`Curl_peer_equal`): the same scheme, port and IPv6
 /// zone, and the same host in any case.
 impl PartialEq for Peer {
+    /// The same scheme to the same destination (`Curl_peer_equal`).
     fn eq(&self, other: &Peer) -> bool {
+        self.scheme == other.scheme && self.same_destination(other)
+    }
+}
+
+impl Eq for Peer {}
+
+impl Peer {
+    /// Whether the two are one place, whatever their schemes
+    /// (`Curl_peer_same_destination`).
+    pub(crate) fn same_destination(&self, other: &Peer) -> bool {
         // Every field by name, so that one added does not compile until it
         // is compared here or said why not.
         let Peer {
-            scheme,
+            // The destination's alone; `eq` compares it.
+            scheme: _,
             // Compared as its name, below.
             host: _,
             ascii: _,
@@ -956,18 +985,13 @@ impl PartialEq for Peer {
             scope,
             at,
         } = self;
-        *scheme == other.scheme
-            && *port == other.port
+        *port == other.port
             && *at == other.at
             && self.same_name(other)
             && *scope == other.scope
             && (*scope != 0 || *zone == other.zone)
     }
-}
 
-impl Eq for Peer {}
-
-impl Peer {
     /// Whether connections to the two count toward one per-host limit:
     /// C's `destination`, `host:port` in lowercase, an IPv6 address in
     /// brackets with its scope; the scheme and a zone's name aside.
@@ -1772,6 +1796,52 @@ mod tests {
         ] {
             assert!(!have.serves(&other), "{field}");
         }
+    }
+
+    /// A connection reaches a transfer of another scheme only if its own
+    /// scheme's family is the transfer's protocol, through a detour to
+    /// the same place whatever its scheme (`url_match_destination`): an
+    /// HTTPS or IMAPS one reaches HTTP or IMAP, never the reverse, nor
+    /// another family. HTTP's then takes no TLS connection, its TLS
+    /// settings being none.
+    #[test]
+    fn a_connection_reaches_transfers_of_its_family() {
+        let route = |scheme: &str, via: bool| {
+            let scheme = Scheme::of(scheme);
+            let arc = |host: &[u8]| TryArc::try_new(Peer::new(scheme, host.to_vec(), 80, None));
+            Route::Net(NetRoute {
+                origin: arc(b"o.example").unwrap(),
+                via: via.then(|| arc(b"v.example").unwrap()),
+                ip: IpVersion::Any,
+                proxy: None,
+                tls: None,
+                local: None,
+                delegation: Default::default(),
+            })
+        };
+        for via in [false, true] {
+            for (have, want, reaches) in [
+                ("https", "http", true),
+                ("http", "https", false),
+                ("imaps", "imap", true),
+                ("imap", "imaps", false),
+                ("https", "imap", false),
+                ("imaps", "http", false),
+                ("ftps", "ftp", true),
+            ] {
+                assert_eq!(
+                    route(have, via).reaches(&route(want, via)),
+                    reaches,
+                    "{have} for {want}, via {via}"
+                );
+            }
+        }
+        let mut https = route("https", false);
+        let Route::Net(r) = &mut https else {
+            unreachable!()
+        };
+        r.tls = Some(crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap());
+        assert!(!https.serves(&route("http", false)), "TLS for none");
     }
 
     /// A connection made with TLS serves only a transfer whose TLS has

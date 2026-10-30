@@ -238,9 +238,11 @@ witness: curl-core multi::tests::a_silent_address_gives_way_after_the_eyeballs_d
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core multi::tests::a_connection_serves_only_the_peer_it_goes_through
 --- old
-            && via.as_deref() == want_via.as_deref()
+                (Some(have), Some(want)) => have.same_destination(want),
+                (have, want) => have.is_none() && want.is_none(),
 --- new
-            && true
+                (Some(_), Some(_)) => true,
+                (have, want) => have.is_none() && want.is_none(),
 
 === a full pool closes the newest idle connection
 file: crates/curl-core/src/conn/pool.rs
@@ -390,9 +392,9 @@ witness: curl-core conn::pool::tests::room_is_made_by_the_connection_idle_longes
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::tests::routes_compare_every_field
 --- old
-            && **origin == **want_origin
+            && origin.same_destination(want_origin)
 --- new
-            && **origin == **origin
+            && origin.same_destination(origin)
 
 === a waiting transfer keeps the IP version it started with
 file: crates/curl-core/src/multi/state.rs
@@ -805,3 +807,27 @@ witness: curl-core proto::http::tests::h2::a_candidate_is_waited_for_before_its_
                 if leased.route.reaches(wanted.route) {
 --- new
                 if leased.route.serves(wanted.route) {
+
+=== a transfer of a family reaches its secure scheme's connection
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::a_connection_reaches_transfers_of_its_family
+--- old
+            && origin.scheme().serves(want_origin.scheme())
+--- new
+            && want_origin.scheme().serves(origin.scheme())
+
+=== a connection of any scheme reaches a transfer
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::a_connection_reaches_transfers_of_its_family
+--- old
+            && origin.scheme().serves(want_origin.scheme())
+--- new
+            && true
+
+=== a detour is compared with its origin's scheme
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::a_connection_reaches_transfers_of_its_family
+--- old
+                (Some(have), Some(want)) => have.same_destination(want),
+--- new
+                (Some(have), Some(want)) => have == want,

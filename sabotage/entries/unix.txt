@@ -13,12 +13,10 @@ witness: curl-core conn::tests::unix_sockets_are_told_apart_as_c_tells_them
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::tests::unix_sockets_are_told_apart_as_c_tells_them
 --- old
-        *scheme == other.scheme
-            && *port == other.port
+        *port == other.port
             && *at == other.at
 --- new
-        *scheme == other.scheme
-            && *port == other.port
+        *port == other.port
             && (*at == other.at || *at != PeerAt::AbstractUnix)
 
 === a proxy is gone through over a Unix socket

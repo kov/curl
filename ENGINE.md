@@ -2071,14 +2071,20 @@ none when it names the origin itself; the setup resolves and connects to `via` i
 one, and the traces name it where C's do. Matching is `Route::serves`, in C's order two
 stages: `reaches` (`url_match_connect_config`, `url_match_destination`), which come before the
 search notes what it saw, then `suits` (`url_match_proxy_use`, `url_match_ssl_config`,
-`url_match_auth`'s delegation). It asks the same origin by
-`Peer`'s `Eq`, which is `Curl_peer_equal` (the host in any case, and the zone by its scope,
-or by its text when it has none), the same `via` or none on both, the same `IpVersion` unless the
+`url_match_auth`'s delegation). It asks the same origin by `Peer::same_destination`, which is
+`Curl_peer_same_destination` (the host in any case, and the zone by its scope, or by its text
+when it has none), of the same scheme or of one whose protocol is the connection's scheme's
+family (`Scheme::serves`, from the generated table: an HTTPS or IMAPS connection reaches an
+HTTP or IMAP transfer, never the reverse), the same `via` by its destination or none on both,
+the same `IpVersion` unless the
 transfer takes any (`url_match_conn`, `url_match_destination`), and an equal `TlsIdentity` or
 none on both (`url_match_ssl_use`, `url_match_ssl_config`), and the same local end
 (`url_match_connect_config`): the same interface as written, or none on both, and the same
-ports when the transfer names an interface or a port. An `https` peer is not an `http` one,
-its scheme being part of `Peer`'s `Eq`, so plain HTTP never takes a TLS connection. It,
+ports when the transfer names an interface or a port. Plain HTTP never takes an HTTPS
+connection that reaches it: its TLS settings are none, the connection's are not, as C's
+`url_match_ssl_use` refuses it for lack of `PROTOPT_SSL_REUSE`. `Peer`'s `Eq` is
+`Curl_peer_equal`, the scheme and the destination, which the credential gate, Digest and
+Negotiate's binding compare. It,
 `ProxyRoute`'s key, `Peer`'s `Eq` and `TlsIdentity`'s `eq` destructure every field without `..`,
 so a field added later does not compile until it is compared; the exceptions are named where
 they are made (the transfer's `IpVersion::Any`; `auth_only`, which `Conn::serves` checks against

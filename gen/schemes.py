@@ -184,7 +184,6 @@ pub(crate) struct Known {{
     pub(crate) protocol: Option<Protocol>,
     /// Its protocol without TLS (C's `family`): an `imaps` connection
     /// may serve `imap`.
-    #[expect(dead_code, reason = "the pool's reuse reads it once it tells families apart")]
     pub(crate) family: Option<Protocol>,
     pub(crate) default_port: u16,
     pub(crate) flags: Flags,

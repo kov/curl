@@ -281,6 +281,62 @@ fn a_bodyless_request_blocked_at_once_is_sent_again_before_it_waits() {
     );
 }
 
+/// A request with no body sent short at once is sent on at once, once:
+/// C's buffer flushed after its direct send, then the rest waits
+/// (`Curl_req_send`, `req_send_buffer_flush`).
+#[test]
+fn a_bodyless_request_sent_short_at_once_is_sent_on_once() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let talk = talk.taking(std::num::NonZeroUsize::new(10).unwrap());
+    let ran = get_with(&mut m, tracing_tcp(), "/p", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let n = ran.request.len();
+    let lines = lines(&ran);
+    assert_eq!(
+        lines[..7],
+        [
+            format!("sending last upload chunk of {n} bytes"),
+            format!("[TCP] send(len={n}) -> 0, 10"),
+            format!("Curl_xfer_send(len={n}, eos=1) -> 0, 10"),
+            format!("sending last upload chunk of {} bytes", n - 10),
+            format!("[TCP] send(len={}) -> 0, 10", n - 10),
+            format!("Curl_xfer_send(len={}, eos=1) -> 0, 10", n - 10),
+            format!("Curl_req_flush(len={}) -> EAGAIN", n - 20),
+        ],
+        "{lines:#?}"
+    );
+}
+
+/// What C does not send at once, it buffers and flushes once: a request
+/// chunked though it has no body, or one whose head is larger than the
+/// upload buffer, blocked at its first send, waits at once.
+#[test]
+fn a_request_c_buffers_blocked_at_once_waits_at_once() {
+    let after_first_send = |name: &str, set: &dyn Fn(&mut Options)| {
+        let (mut m, talk, _) = server(&[OK], false);
+        let talk = talk.stalling_sends(2);
+        let ran = get_with(&mut m, tracing_tcp(), "/p", talk, set);
+        assert_eq!(ran.result, Ok(()), "{name}");
+        let lines = lines(&ran);
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with("Curl_xfer_send("))
+            .unwrap_or_else(|| panic!("{name}: {lines:#?}"));
+        assert!(
+            lines[at + 1].starts_with("Curl_req_flush(len="),
+            "{name}: {lines:#?}"
+        );
+    };
+    after_first_send("chunked", &|o| {
+        o.http.headers = UserHeaders::new([&b"Transfer-Encoding: chunked"[..]]).unwrap();
+    });
+    let big = format!("X-Big: {}", "b".repeat(17_000));
+    after_first_send("big", &|o| {
+        o.limits.upload_buffer = crate::options::UploadBufferSize::clamped(16_384);
+        o.http.headers = UserHeaders::new([big.as_bytes()]).unwrap();
+    });
+}
+
 /// Any other failure in the head fails the reads, and then the pass:
 /// here a line without a colon (`sendrecv_dl`, `Curl_sendrecv`).
 #[test]

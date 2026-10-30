@@ -678,9 +678,15 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::debug_lines::a_bodyless_request_blocked_at_once_is_sent_again_before_it_waits
 features: debug-hooks
 --- old
-                    && std::mem::take(direct)
+            if n == 0 {
+                if direct {
+                    continue;
+                }
 --- new
-                    && std::mem::take(direct) && false
+            if n == 0 {
+                if false {
+                    continue;
+                }
 
 === a request with a body blocked at once is sent again
 file: crates/curl-core/src/proto/http.rs
@@ -690,3 +696,31 @@ features: debug-hooks
             direct: nothing_to_read && head_len <= upload_buffer,
 --- new
             direct: true,
+
+=== a bodyless request sent short at once waits for the rest
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_bodyless_request_sent_short_at_once_is_sent_on_once
+features: debug-hooks
+--- old
+            if direct && n < len {
+                continue;
+            }
+--- new
+
+=== a bodyless request chunked is sent at once
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_request_c_buffers_blocked_at_once_waits_at_once
+features: debug-hooks
+--- old
+        let nothing_to_read = !chunked && self.body.as_ref().is_none_or(|b| b.size() == Some(0));
+--- new
+        let nothing_to_read = self.body.as_ref().is_none_or(|b| b.size() == Some(0));
+
+=== a head larger than the upload buffer is sent at once
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_request_c_buffers_blocked_at_once_waits_at_once
+features: debug-hooks
+--- old
+            direct: nothing_to_read && head_len <= upload_buffer,
+--- new
+            direct: nothing_to_read,

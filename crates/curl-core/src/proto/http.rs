@@ -1893,13 +1893,15 @@ impl Request {
             if let Some(kind) = failed {
                 return Err(kind);
             }
+            // A request sent at once that went short is put in C's buffer
+            // and flushed, a second send at once (`Curl_req_send`,
+            // `Curl_req_send_more`); any later short send waits.
+            let direct = match &mut self.outgoing {
+                Sending::Head { direct, .. } => std::mem::take(direct),
+                _ => false,
+            };
             if n == 0 {
-                // Nothing of a request sent at once went: C puts it in its
-                // buffer and flushes that, a second send (`Curl_req_send`,
-                // `Curl_req_send_more`).
-                if let Sending::Head { direct, .. } = &mut self.outgoing
-                    && std::mem::take(direct)
-                {
+                if direct {
                     continue;
                 }
                 // Nothing went: what is left waits (`req_flush`).
@@ -1942,6 +1944,9 @@ impl Request {
                         return Ok(false);
                     }
                 };
+            }
+            if direct && n < len {
+                continue;
             }
             if n < len || (self.sent == end && end < self.filled) {
                 // A short send, or one cut short by the send limit: the

@@ -4092,6 +4092,41 @@ fn a_forwarding_proxy_gets_the_whole_url() {
     assert!(ran.seen.text().contains(&left), "{:?}", ran.seen.text());
 }
 
+/// An FTP URL handed to a proxy keeps its user and password, and carries
+/// the application's where it names none, URL-encoded (`http_target`):
+/// only an HTTP URL's are left out (tests 208, 299).
+#[test]
+fn a_forwarded_ftp_url_carries_its_credentials() {
+    for (url, user, start) in [
+        (
+            &b"ftp://u:p@origin.example/a"[..],
+            None,
+            "GET ftp://u:p@origin.example/a HTTP/1.1\r\nHost: origin.example:21\r\n\
+             Authorization: Basic dTpw\r\n",
+        ),
+        (
+            b"ftp://origin.example/a",
+            Some(&b"a b"[..]),
+            "GET ftp://a%20b:c@origin.example/a HTTP/1.1\r\nHost: origin.example:21\r\n\
+             Authorization: Basic YSBiOmM=\r\n",
+        ),
+    ] {
+        let (mut m, talk, _) = server(&[OK], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            o.set_url(Some(url)).unwrap();
+            if let Some(user) = user {
+                let login = o.login.make_mut().unwrap();
+                login.user = Some(user.to_vec());
+                login.password = Some(b"c".to_vec());
+            }
+            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        });
+        assert_eq!(ran.result, Ok(()));
+        let text = String::from_utf8_lossy(&ran.request).into_owned();
+        assert!(text.starts_with(start), "{text}");
+    }
+}
+
 /// A request whose connection goes to another peer, by a connect-to
 /// entry, tunnels through the proxy rather than being handed to it whole
 /// (`Curl_init_proxy`: "With connect-to, we always tunnel").

@@ -343,6 +343,11 @@ impl Credentials {
         self.source == Source::Netrc
     }
 
+    /// Whether they are the URL's own (`CREDS_URL`).
+    pub(crate) fn given_in_url(&self) -> bool {
+        self.source == Source::Url
+    }
+
     /// What these authenticate with.
     pub(crate) fn secret(&self) -> Secret<'_> {
         Secret {

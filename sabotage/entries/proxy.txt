@@ -29,9 +29,10 @@ witness: curl-core conn::proxy::tests::the_no_proxy_list_names_hosts_as_c
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_forwarding_proxy_gets_the_whole_url
 --- old
-        for part in [Part::Fragment, Part::User, Part::Password] {
+        url.set(Part::Fragment, None, SetOptions::NONE)
+            .map_err(url_error)?;
 --- new
-        for part in [Part::User, Part::Password] {
+        let _ = (Part::Fragment, SetOptions::NONE);
 
 === a forwarded request does not ask to keep the proxy's connection
 file: crates/curl-core/src/proto/http1/request.rs
@@ -803,3 +804,12 @@ witness: curl-core conn::buf::tests::held_bytes_come_out_in_order_and_what_was_t
             self.bytes.copy_within(self.taken.., 0);
 --- new
             let _ = 0;
+
+=== a forwarded URL of another scheme leaves out the application's credentials
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_forwarded_ftp_url_carries_its_credentials
+features: test-util
+--- old
+        } else if let Some(login) = self.credentials.as_ref().filter(|c| !c.given_in_url()) {
+--- new
+        } else if let Some(login) = self.credentials.as_ref().filter(|_| false) {

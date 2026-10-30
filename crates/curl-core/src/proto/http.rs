@@ -700,12 +700,32 @@ impl Request {
     /// (`http_target`).
     pub(crate) fn forward(&mut self, url: &Url, ftp_type: Option<u8>) -> Result<(), ErrorKind> {
         let mut url = url.try_clone().map_err(url_error)?;
-        for part in [Part::Fragment, Part::User, Part::Password] {
-            url.set(part, None, SetOptions::NONE).map_err(url_error)?;
-        }
         if self.peer.converted() {
             let host = Some(self.peer.name());
             url.set(Part::Host, host, SetOptions::NONE)
+                .map_err(url_error)?;
+        }
+        url.set(Part::Fragment, None, SetOptions::NONE)
+            .map_err(url_error)?;
+        let scheme = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;
+        if scheme == b"http" {
+            // An HTTP URL's user and password are not sent to the proxy.
+            for part in [Part::User, Part::Password] {
+                url.set(part, None, SetOptions::NONE).map_err(url_error)?;
+            }
+        } else if let Some(login) = self.credentials.as_ref().filter(|c| !c.given_in_url()) {
+            // Any other's carries the credentials, those set apart from
+            // the URL put into it.
+            let encoded = SetOptions {
+                parse: crate::url::ParseOptions {
+                    url_encode: true,
+                    ..crate::url::ParseOptions::NONE
+                },
+                ..SetOptions::NONE
+            };
+            let secret = login.secret();
+            url.set(Part::User, Some(secret.user()), encoded)
+                .and_then(|()| url.set(Part::Password, Some(secret.password()), encoded))
                 .map_err(url_error)?;
         }
         let get = GetOptions {

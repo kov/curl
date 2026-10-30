@@ -1528,3 +1528,27 @@ features: test-util
     if let Some(found) = proto.netrc_login() {
 --- new
     if let Some(found) = proto.netrc_login().filter(|_| false) {
+
+=== the application's credentials are written into a redirect's URL
+file: crates/curl-core/src/auth/creds.rs
+witness: curl-core proto::http::tests::multi_trace::a_request_says_the_credentials_the_last_one_set_out_with
+features: test-util
+--- old
+        self.source == Source::Netrc
+--- new
+        true
+
+=== a .netrc file's password goes into a redirect's URL unencoded
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::multi_trace::a_netrc_login_is_the_url_s_for_a_redirect
+features: test-util
+--- old
+    if let Some(found) = proto.netrc_login() {
+        let encoded = crate::url::SetOptions {
+            parse: crate::url::ParseOptions {
+                url_encode: true,
+--- new
+    if let Some(found) = proto.netrc_login() {
+        let encoded = crate::url::SetOptions {
+            parse: crate::url::ParseOptions {
+                url_encode: false,

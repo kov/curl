@@ -161,15 +161,3 @@ features: test-util
         ResponseTime::Left(left) => cx.server_response_in(left),
 --- new
         ResponseTime::Left(_) => {}
-
-=== the server's time to answer is cleared as the transfer's step ends
-file: crates/curl-core/src/multi/mod.rs
-witness: curl-core proto::imap::tests::over_the_wire::the_server_s_time_to_answer_is_its_own_timer
-features: test-util
---- old
-            None => run.deadlines.clear(TimerKind::Proto),
---- new
-            None => {
-                run.deadlines.clear(TimerKind::Proto);
-                run.deadlines.clear(TimerKind::ServerResponse);
-            }

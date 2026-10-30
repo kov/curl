@@ -56,6 +56,12 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # A `Done` that does not await its protocol's answer never outlasts the
+    # step it is entered in: the guards that tell it from a waiting one
+    # in `due`, `fail`, `pollset` and the checker's `awaits_end` are never
+    # asked of one, so making them always true changes nothing observable.
+    "multi/state\\.rs:.*replace match guard d\\.ending == Ending::Waiting with true in TransferState::(due|fail|pollset)",
+    "multi/state\\.rs:.*replace TransferState::awaits_end -> bool with true",
     # The kernel writes one `UDP_GRO` message to a datagram; `IP_TOS` only
     # to an IPv4 socket and `IPV6_TCLASS` only to an IPv6 one, each asked
     # for by the socket's family; and a control message's length counts its

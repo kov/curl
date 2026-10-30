@@ -320,6 +320,14 @@ fn a_request_says_the_credentials_the_last_one_set_out_with() {
         o.login.make_mut().unwrap().authzid = Some(b"az".to_vec());
     });
     assert_eq!(ran.result, Ok(()));
+    // The application's credentials stay out of the redirect's URL: only
+    // a `.netrc` file's are written into it.
+    let issued = ran.seen.text();
+    let issued = issued.iter().find(|l| l.contains("Issue another request"));
+    assert!(
+        issued.is_some_and(|l| l.contains("'http://127.0.0.1:")),
+        "{issued:?}"
+    );
     assert_eq!(
         creds(&multi_lines(&ran)),
         expect(
@@ -371,7 +379,7 @@ fn a_request_says_the_credentials_the_last_one_set_out_with() {
 #[test]
 fn a_netrc_login_is_the_url_s_for_a_redirect() {
     let path = std::env::temp_dir().join(format!("curl-core-follow-netrc-{}", std::process::id()));
-    std::fs::write(&path, b"machine 127.0.0.1 login nu password np\n").unwrap();
+    std::fs::write(&path, b"machine 127.0.0.1 login nu password n@p\n").unwrap();
     let file = path.as_os_str().as_encoded_bytes().to_vec();
     let moved = b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\n\r\n";
     let (mut m, talk, _) = server(&[moved, OK], false);
@@ -387,7 +395,7 @@ fn a_netrc_login_is_the_url_s_for_a_redirect() {
     assert_eq!(count("[NETRC] scanning"), 1, "{text:?}");
     assert_eq!(count("transfer credentials"), 1, "{text:?}");
     assert_eq!(
-        count("Issue another request to this URL: 'http://nu:np@127.0.0.1:"),
+        count("Issue another request to this URL: 'http://nu:n%40p@127.0.0.1:"),
         1,
         "{text:?}"
     );

@@ -381,7 +381,7 @@ witness: curl-core proto::http::tests::tls::a_step_that_stops_with_input_held_ma
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::tls::a_step_that_stops_with_input_held_marks_the_transfer_dirty_as_c
 --- old
-                                    buffered_input(&mut x, cx);
+                                    buffered_input(&mut x, None, cx);
 --- new
 
 === an HTTPS proxy's early data is counted as the transfer's

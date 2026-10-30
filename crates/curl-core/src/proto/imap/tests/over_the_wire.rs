@@ -1656,6 +1656,30 @@ fn an_append_under_a_send_limit_takes_c_s_time() {
     assert!((4000..4100).contains(&total), "{total} ms");
 }
 
+/// An `APPEND`'s answer that a layer holds, where a poll cannot see it,
+/// is read on at once in DONE: C's blocking drive loops on what is held
+/// (`Curl_conn_data_pending`), and no wait for the socket, which has
+/// nothing more, comes between.
+#[test]
+fn an_answer_a_layer_holds_is_read_on_at_once_in_done() {
+    use crate::conn::layer::testing::holdback;
+    let talk = Conversation::replies(
+        &[GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"A003 OK\r\n"],
+        false,
+    )
+    .greeting();
+    let mut m = serving(&[&talk]);
+    let url = "imap://u:p@127.0.0.1:PORT/Sent";
+    let ran = tracing(&mut m, &plain(), url, b"multi", |o| {
+        hello(o);
+        o.layer = Some(holdback);
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let done = &ran.text[ran.text.find("-> [DONE]").unwrap()..];
+    assert!(done.contains("[DONE] -> [COMPLETED]"), "{}", ran.text);
+    assert!(!done.contains("multi_wait"), "{}", ran.text);
+}
+
 /// A timer handler that aborts the multi once told to.
 #[derive(Default)]
 struct AbortsTimer {

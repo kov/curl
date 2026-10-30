@@ -161,3 +161,12 @@ features: test-util
         ResponseTime::Left(left) => cx.server_response_in(left),
 --- new
         ResponseTime::Left(_) => {}
+
+=== DONE's poll ends each time the transfer runs before it is over
+file: crates/curl-core/src/proto/pingpong/drive.rs
+witness: curl-core proto::smtp::tests::over_the_wire::an_answer_awaited_in_done_checks_the_progress_once_a_poll
+features: test-util
+--- old
+        if !ready && now < ends {
+--- new
+        if !ready && now > ends {

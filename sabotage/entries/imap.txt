@@ -158,3 +158,12 @@ features: test-util
             recv: !pc.no_socket,
 --- new
             recv: true,
+
+=== DONE waits on the socket for an APPEND's answer a layer holds
+file: crates/curl-core/src/proto/imap.rs
+witness: curl-core proto::imap::tests::over_the_wire::an_answer_a_layer_holds_is_read_on_at_once_in_done
+features: test-util
+--- old
+            if !runs || !drive::holds(&pc.pp, &mut carrier) {
+--- new
+            if !runs || true {

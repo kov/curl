@@ -1145,3 +1145,68 @@ fn bytes_after_a_transfer_s_answer_wait_for_the_next() {
     assert_eq!(second.result, Ok(()), "{}", second.text);
     assert_eq!(second.body, b"214 b\r\n");
 }
+
+/// The answer to a mail's body that a layer holds, where a poll cannot
+/// see it, is read on at once in DONE: C's blocking drive loops on what
+/// is held (`Curl_conn_data_pending`), and no wait for the socket, which
+/// has nothing more, comes between.
+#[test]
+fn an_answer_a_layer_holds_is_read_on_at_once_in_done() {
+    use crate::conn::layer::testing::holdback;
+    let talk = mailing(&[]);
+    let mut m = serving(&[&talk]);
+    let ran = tracing(&mut m, &plain(), URL, b"multi", |o| {
+        mail(b"x")(o);
+        o.layer = Some(holdback);
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(ran.code, Some(250));
+    let done = &ran.text[ran.text.find("-> [DONE]").unwrap()..];
+    assert!(done.contains("[DONE] -> [COMPLETED]"), "{}", ran.text);
+    assert!(!done.contains("multi_wait"), "{}", ran.text);
+}
+
+/// Counts the calls of the progress handler.
+#[derive(Clone, Default)]
+struct ProgressCount(Arc<Mutex<usize>>);
+
+impl crate::handler::ProgressHandler for ProgressCount {
+    fn progress(
+        &self,
+        _: &mut TransferCx<'_>,
+        _: crate::handler::ProgressNow,
+    ) -> crate::handler::ProgressVerdict {
+        *self.0.lock().unwrap() += 1;
+        crate::handler::ProgressVerdict::Continue
+    }
+}
+
+/// The transfer run again as DONE awaits its answer, before the poll
+/// C's blocking drive makes is over and with nothing to read, goes on
+/// waiting: the progress is checked once the poll ends, as C checks it
+/// after each poll (`Curl_pp_statemach`), not each time it is run.
+#[test]
+fn an_answer_awaited_in_done_checks_the_progress_once_a_poll() {
+    let mailer = mailing(&[]).held();
+    mailer.allow(5);
+    let mut m = serving(&[&mailer]);
+    let calls = ProgressCount::default();
+    let handler = calls.clone();
+    let (_, text) = added(&mut m, URL, b"multi", |o| {
+        mail(b"hello")(o);
+        o.progress =
+            crate::options::Progress::Handler(crate::handler::Handler::progress(handler).unwrap());
+    });
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+    assert!(said.contains("[PERFORMING] -> [DONE]"), "{said}");
+    let before = *calls.0.lock().unwrap();
+    assert!(before > 0, "the handler is called");
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let after = *calls.0.lock().unwrap();
+    assert_eq!(after, before);
+}

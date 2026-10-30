@@ -3408,7 +3408,9 @@ protocol's phases (the drive, below).
 - **The drive** (`proto/pingpong/drive.rs`): `send` sends a command and traces what its first
   send wrote as HEADER_OUT, `flush` the rest; `read` reads up to `MAX_READS` × `READ_SIZE` a
   pass, traces each line as HEADER_IN and delivers it to the header handler as INFO
-  (`Pipeline::info`, C's `CLIENTWRITE_INFO`), counting it in the header bytes; `runs` fails
+  (`Pipeline::info`, C's `CLIENTWRITE_INFO`), counting it in the header bytes; a line starts
+  the response's time only once the request's sending is done (`upload_done`), which a
+  command's never is, so POP3 marks it with its body alone; `runs` fails
   the transfer once the time to answer is out ("server response timeout"), gives the instant
   it runs out as the step's due, and runs the step without waiting while bytes are held or
   the socket already polls ready (`Carrier::ready_now`). The connection's protocol state is

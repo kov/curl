@@ -393,11 +393,6 @@ impl Request {
         self.header_bytes == 0 && self.pipeline.bytecount() == 0 && !self.no_body && !self.received
     }
 
-    /// The body is still being read.
-    pub(crate) fn exchanges(&self) -> bool {
-        self.receiving
-    }
-
     /// When the server's time to answer runs out, while it is awaited.
     pub(crate) fn due(&self) -> Option<Instant> {
         self.due
@@ -607,7 +602,10 @@ impl Request {
                 &ends,
                 &mut self.pipeline,
                 &mut self.header_bytes,
-                true,
+                // A command is sent beside the request's sending, which
+                // never ends: the server's lines start no response's time
+                // (`upload_done` stays unset).
+                false,
             )?;
             let Read::Reply(code, _) = read else {
                 return Ok(());

@@ -1114,6 +1114,32 @@ mod over_the_wire {
         }
     }
 
+    /// The server's lines start no response's time: a command answered
+    /// with no body marks none, where a body marks it as it comes, as the
+    /// C build's `-w %{time_starttransfer}` has it (`cw_download_write`,
+    /// with `upload_done` never set).
+    #[test]
+    fn only_a_body_starts_the_response_s_time() {
+        let marked = |custom: &[u8], last: &[u8]| {
+            let talk =
+                Conversation::replies(&[GREETING, CAPA_USER, OK, OK, last], false).greeting();
+            let mut m = serving(&[&talk]);
+            let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+            let ran = tracing(&mut m, &plain(), &url, b"multi", |o| {
+                o.http.custom.make_mut().unwrap().method = Some(custom.to_vec());
+            });
+            assert_eq!(ran.result, Ok(()), "{}", ran.text);
+            assert!(
+                ran.text.contains("[MULTI] [DID] -> [PERFORMING]"),
+                "{}",
+                ran.text
+            );
+            ran.text.contains("[PGRS-STARTTRANSFER]")
+        };
+        assert!(!marked(b"DELE", OK));
+        assert!(marked(b"RETR", MESSAGE));
+    }
+
     /// The back and forth reads only once the socket says something
     /// came: a server that has said nothing is not read (C's
     /// `Curl_socket_check` before `Curl_pp_readresp`).
@@ -1179,6 +1205,23 @@ mod over_the_wire {
         m.sockets(&mut NoEvents, |_, events| seen.push(events))
             .unwrap();
         seen
+    }
+
+    /// Takes the body, pausing at its first piece.
+    #[derive(Clone, Default)]
+    struct PausesOnce {
+        got: Arc<Mutex<Vec<u8>>>,
+        paused: Arc<crate::test_cell::Cell<bool>>,
+    }
+
+    impl WriteHandler for PausesOnce {
+        fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+            if !self.paused.replace(true) {
+                return Write::Pause;
+            }
+            self.got.lock().unwrap().extend_from_slice(body);
+            Write::Took(body.len())
+        }
     }
 
     /// An answer is read 900 bytes at a time, at most ten reads a pass,
@@ -1266,6 +1309,26 @@ mod over_the_wire {
         assert_eq!(waits(&mut m), [Events::IN]);
         m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
         assert_eq!(waits(&mut m), []);
+    }
+
+    /// A body whose writer paused holds the transfer open until it is
+    /// delivered (`Curl_cwriter_is_paused`).
+    #[test]
+    fn a_paused_body_holds_the_transfer_open() {
+        use crate::deliver::PauseRequest;
+        let talk = in_the_clear();
+        let mut m = serving(&[&talk]);
+        let writer = PausesOnce::default();
+        let (id, _) = added(&mut m, &plain(), b"", writer.clone(), |_| {});
+        for _ in 0..20 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        assert!(writer.paused.get(), "paused");
+        assert!(m.info_read().is_none(), "not over while output is held");
+        m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Ok(()));
+        assert_eq!(*writer.got.lock().unwrap(), b"hello\r\n.dot\r\n");
     }
 
     /// POP3S offers nothing by ALPN: only HTTP's schemes do

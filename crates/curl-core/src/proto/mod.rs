@@ -620,8 +620,10 @@ impl ProtoState {
     pub(crate) fn exchanges(&self) -> bool {
         match *self {
             ProtoState::File(_) => false,
-            ProtoState::Http(_) => true,
-            ProtoState::Pop3(ref r) => r.exchanges(),
+            // POP3 never says its transfer has no socket, so the
+            // connection's stays its to receive on (`recv_idx`), body or
+            // not.
+            ProtoState::Http(_) | ProtoState::Pop3(_) => true,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => true,
         }

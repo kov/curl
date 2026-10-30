@@ -225,3 +225,33 @@ features: test-util
         Some(tls) if !secured && (reuses_tls || use_ssl.may()) => Some(
 --- new
         Some(tls) if !secured || (reuses_tls || use_ssl.may()) => Some(
+
+=== a POP3 transfer ends while its paused body is held
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_paused_body_holds_the_transfer_open
+features: test-util
+--- old
+        self.pipeline.holds_output()
+--- new
+        false
+
+=== POP3's server lines start the response's time
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::only_a_body_starts_the_response_s_time
+features: test-util
+--- old
+                // (`upload_done` stays unset).
+                false,
+--- new
+                // (`upload_done` stays unset).
+                true,
+
+=== a POP3 command without a body skips the perform state
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::pop3::tests::over_the_wire::only_a_body_starts_the_response_s_time
+features: test-util
+--- old
+            ProtoState::Http(_) | ProtoState::Pop3(_) => true,
+--- new
+            ProtoState::Http(_) => true,
+            ProtoState::Pop3(_) => false,

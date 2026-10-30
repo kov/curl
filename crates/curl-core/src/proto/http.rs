@@ -1945,7 +1945,8 @@ impl Request {
                     }
                 };
             }
-            if direct && n < len {
+            // Short: no more than `len` goes.
+            if direct && n != len {
                 continue;
             }
             if n < len || (self.sent == end && end < self.filled) {

@@ -722,4 +722,7 @@ exclude_re = [
     # missing or with both, an HTTPS proxy in a version is accepted alike.
     'curl-tool/src/options/parse\.rs:.*: replace claims_proxy_http -> bool with true$',
     'curl-tool/src/options/parse\.rs:.*: replace && with \|\| in claims_proxy_http$',
+    # A tunnel's room remade at the size it already has is zeroed scratch
+    # the same as the one it replaces: what is read into it is the same.
+    'curl-core/src/conn/quic\.rs:.*: replace < with <= in Quic::ingress_through$',
 ]

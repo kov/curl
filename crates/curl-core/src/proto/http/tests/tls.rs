@@ -1389,6 +1389,51 @@ fn early_data_is_cut_at_what_the_session_allows() {
     assert_eq!(got.easy.report().earlydata_sent(), 10);
 }
 
+/// Early data to an HTTPS proxy goes as to an origin, its request in the
+/// proxy's resumed session's hello and the proxy's acceptance said, but
+/// is not the transfer's: neither counted nor timed, as C reports early
+/// data and the TLS time of the origin's filter alone
+/// (`ssl_cf_connect_deferred`'s `Curl_ssl_cf_is_proxy` and
+/// `Curl_cft_ssl` tests).
+#[test]
+fn early_data_to_an_https_proxy_is_neither_counted_nor_timed() {
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::early(16384).unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let [_, response] = served(OK);
+    let first = answering(1).remove(0);
+    let second = Conversation::replies(&[fake::EARLY_OK, &response], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let run = |m: &mut Multi, talk: &Conversation| {
+        let mut e = Easy::new();
+        e.set_libraries(libraries.clone());
+        get_with(m, e, "/", talk.clone(), |o| {
+            https_proxy(o, b"http://origin.example/p");
+            o.limits.reuse.fresh = true;
+            let proxy = o.proxy.make_mut().unwrap();
+            proxy.tls.options.make_mut().unwrap().ssl_options =
+                crate::options::SslOptions::EARLYDATA;
+        })
+    };
+    assert_eq!(run(&mut m, &first).result, Ok(()));
+    let got = run(&mut m, &second);
+    assert_eq!(got.result, Ok(()), "{:?}", got.seen.text());
+    assert_eq!(backend.log().resumed, 1);
+    let get = "GET http://origin.example/p HTTP/1.1\r\nHost: origin.example\r\n";
+    let wire = String::from_utf8(sent(&second)).unwrap();
+    let early = wire.strip_prefix("FAKETLS HELLO\r\n\r\n");
+    assert!(early.is_some_and(|w| w.starts_with(get)), "{wire}");
+    let n = wire.find("FAKETLS FINISHED").unwrap() - HELLO.len();
+    let accepted = format!("Server accepted {n} bytes of TLS early data.");
+    assert!(said(&got, &accepted), "{:?}", got.seen.text());
+    let report = got.easy.report();
+    assert_eq!(report.earlydata_sent(), 0, "the proxy's, not counted");
+    assert_eq!(report.timings().appconnect(), Duration::ZERO, "nor timed");
+}
+
 /// A transfer that does not ask sends none, its handshake not put off.
 #[test]
 fn without_asking_no_early_data_goes() {

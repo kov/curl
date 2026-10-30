@@ -383,3 +383,11 @@ witness: curl-core proto::http::tests::tls::a_step_that_stops_with_input_held_ma
 --- old
                                     buffered_input(&mut x, cx);
 --- new
+
+=== an HTTPS proxy's early data is counted as the transfer's
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core proto::http::tests::tls::early_data_to_an_https_proxy_is_neither_counted_nor_timed
+--- old
+                let origin = *filter == Component::Ssl;
+--- new
+                let origin = true;

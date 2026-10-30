@@ -287,6 +287,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) sasl_authzid: Option<&'a [u8]>,
     /// `--sasl-ir`.
     pub(crate) sasl_ir: bool,
+    /// `--upload-flags`: seen only, unless changed.
+    pub(crate) upload_flags: curl_core::options::UploadFlags,
     /// `--list-only` (C's `dirlistonly`).
     pub(crate) list_only: bool,
     /// `--ssl`, `--ftp-ssl` (C's `ftp_ssl`): TLS if the server has it.
@@ -1385,6 +1387,10 @@ pub(crate) fn apply<'a>(
             line.current().sasl_authzid = Some(text);
         }
         Opt::SaslIr => line.current().sasl_ir = value.toggle(),
+        Opt::UploadFlags => {
+            let op = line.current();
+            op.upload_flags = upload_flags(op.upload_flags, value.text())?;
+        }
         Opt::ListOnly => line.current().list_only = value.toggle(),
         Opt::NetrcOptional => line.current().netrc_optional = value.toggle(),
         Opt::NetrcFile => {
@@ -1866,10 +1872,41 @@ pub(crate) fn apply<'a>(
         | Opt::TelnetOption
         | Opt::TftpBlksize
         | Opt::TftpNoOptions
-        | Opt::UploadFlags
         | Opt::UseAscii => line.not_implemented(spec, "--"),
     }
     Ok(Flow::Continue)
+}
+
+/// `--upload-flags`' argument applied to `flags`: names separated by
+/// commas, each set, or cleared after a `-`; any other name fails the
+/// option (`parse_upload_flags`).
+fn upload_flags(
+    mut flags: curl_core::options::UploadFlags,
+    text: &[u8],
+) -> Result<curl_core::options::UploadFlags, ParamError> {
+    use curl_core::options::UploadFlags;
+    const NAMES: [(&[u8], UploadFlags); 5] = [
+        (b"answered", UploadFlags::ANSWERED),
+        (b"deleted", UploadFlags::DELETED),
+        (b"draft", UploadFlags::DRAFT),
+        (b"flagged", UploadFlags::FLAGGED),
+        (b"seen", UploadFlags::SEEN),
+    ];
+    for name in text.split(|&b| b == b',') {
+        let (negate, name) = match name.strip_prefix(b"-") {
+            Some(name) => (true, name),
+            None => (false, name),
+        };
+        let Some(&(_, flag)) = NAMES.iter().find(|(n, _)| *n == name) else {
+            return Err(ParamError::OptionUnknown);
+        };
+        flags = if negate {
+            flags.without(flag)
+        } else {
+            flags.or(flag)
+        };
+    }
+    Ok(flags)
 }
 
 /// `--delegation`'s argument, in any case; anything else is warned of

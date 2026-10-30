@@ -2022,6 +2022,13 @@ fn setopts(
         })?;
         s.ptr("CURLOPT_SOCKOPTDATA", Object, nothing)?;
     }
+    let flags = op.upload_flags;
+    s.long("CURLOPT_UPLOAD_FLAGS", i64::from(flags.bits()), |o| {
+        if flags != o.line.upload_flags {
+            o.line.make_mut().map_err(oom)?.upload_flags = flags;
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -4133,6 +4140,17 @@ mod tests {
                 vec![],
             ),
             (&["--crlf"], vec![line("CURLOPT_CRLF, 1L")], vec![]),
+            (
+                &["--upload-flags", "-seen,answered"],
+                vec![line("CURLOPT_UPLOAD_FLAGS, 1L")],
+                vec![],
+            ),
+            (
+                &["--upload-flags", "-seen"],
+                vec![line("CURLOPT_UPLOAD_FLAGS, 0L")],
+                vec![],
+            ),
+            (&[], vec![], vec!["UPLOAD_FLAGS".to_owned()]),
             (&[], vec![], vec!["CRLF".to_owned()]),
             (
                 &["--mptcp"],

@@ -795,6 +795,42 @@ mod tests {
         }
     }
 
+    /// `--upload-flags` sets and clears flags by name from seen alone,
+    /// each option on what the one before left; an unknown name, or an
+    /// empty one, fails it (`parse_upload_flags`).
+    #[test]
+    fn reads_upload_flags_as_c() {
+        use curl_core::options::UploadFlags;
+        let l = line(&["x"]);
+        assert_eq!(l.operations[0].upload_flags, UploadFlags::SEEN);
+        let l = line(&["--upload-flags", "answered,-seen,draft", "x"]);
+        assert_eq!(
+            l.operations[0].upload_flags,
+            UploadFlags::ANSWERED.or(UploadFlags::DRAFT)
+        );
+        let l = line(&[
+            "--upload-flags",
+            "flagged",
+            "--upload-flags",
+            "deleted",
+            "x",
+        ]);
+        assert_eq!(
+            l.operations[0].upload_flags,
+            UploadFlags::SEEN
+                .or(UploadFlags::FLAGGED)
+                .or(UploadFlags::DELETED)
+        );
+        for bad in ["Seen", "seen,", "", "-", "answered,bogus", "seenx"] {
+            let mut failed = false;
+            crate::msgs::captured(|mut msgs| {
+                let argv: &'static [OsString] = Vec::leak(argv(&["--upload-flags", bad, "x"]));
+                failed = parse_args(argv, &mut msgs, &mut |_, _| {}).is_err();
+            });
+            assert!(failed, "{bad:?}");
+        }
+    }
+
     /// `--negotiate` needs a library claiming SPNEGO to be turned on,
     /// `--proxy-negotiate` even to be turned off, as C checks
     /// `feature_spnego`; the GSS-API options are read as C reads them,

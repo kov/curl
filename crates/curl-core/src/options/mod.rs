@@ -135,7 +135,7 @@ pub struct Login {
 }
 
 /// What the line protocols are told (C's `use_ssl`, `STRING_OPTIONS`,
-/// `sasl_ir`, `list_only` and `server_response_timeout`).
+/// `sasl_ir`, `list_only`, `server_response_timeout` and `upload_flags`).
 #[derive(Debug)]
 pub struct Line {
     /// Whether, and how insistently, a connection that starts in the
@@ -153,6 +153,57 @@ pub struct Line {
     /// How long a server has to answer a command, in place of 60 seconds
     /// (`CURLOPT_SERVER_RESPONSE_TIMEOUT`).
     pub server_response: Option<TimeLimit>,
+    /// The flags a message an IMAP upload appends is given
+    /// (`CURLOPT_UPLOAD_FLAGS`).
+    pub upload_flags: UploadFlags,
+}
+
+/// The flags an uploaded message is stored with, IMAP's `\Seen` and the
+/// like (`CURLULFLAG_*`): seen only, unless set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UploadFlags(u8);
+
+impl UploadFlags {
+    pub const NONE: UploadFlags = UploadFlags(0);
+    pub const ANSWERED: UploadFlags = UploadFlags(1 << 0);
+    pub const DELETED: UploadFlags = UploadFlags(1 << 1);
+    pub const DRAFT: UploadFlags = UploadFlags(1 << 2);
+    pub const FLAGGED: UploadFlags = UploadFlags(1 << 3);
+    pub const SEEN: UploadFlags = UploadFlags(1 << 4);
+
+    /// The flags of `bits`, any others among them kept and never read,
+    /// as C keeps them.
+    pub const fn from_bits(bits: u8) -> UploadFlags {
+        UploadFlags(bits)
+    }
+
+    /// Its bits.
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// These and `other`.
+    #[must_use]
+    pub const fn or(self, other: UploadFlags) -> UploadFlags {
+        UploadFlags(self.0 | other.0)
+    }
+
+    /// These without `other`.
+    #[must_use]
+    pub const fn without(self, other: UploadFlags) -> UploadFlags {
+        UploadFlags(self.0 & !other.0)
+    }
+
+    /// Whether all of `other` is among these.
+    pub const fn contains(self, other: UploadFlags) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl Default for UploadFlags {
+    fn default() -> UploadFlags {
+        UploadFlags::SEEN
+    }
 }
 
 /// Whether a connection that starts in the clear is upgraded to TLS
@@ -194,6 +245,7 @@ impl ColdGroup for Line {
         sasl_ir: false,
         list_only: false,
         server_response: None,
+        upload_flags: UploadFlags::SEEN,
     };
 }
 
@@ -205,6 +257,7 @@ impl Line {
             sasl_ir: self.sasl_ir,
             list_only: self.list_only,
             server_response: self.server_response,
+            upload_flags: self.upload_flags,
         })
     }
 }

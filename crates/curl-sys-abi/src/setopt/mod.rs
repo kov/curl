@@ -28,8 +28,8 @@ use curl_core::hsts::LoadError as CacheLoadError;
 use curl_core::options::{
     BufferSize, ColdGroup, ConnectOnly, ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion,
     IpVersion, Lines, LowSpeed, MaxRedirects, Method, Options, PostRedir, Protocols, ProxyType,
-    Resume, ReuseLimits, Schemes, Sockets, TimeCondition, UpkeepInterval, UploadBufferSize, UseSsl,
-    UserHeaders,
+    Resume, ReuseLimits, Schemes, Sockets, TimeCondition, UpkeepInterval, UploadBufferSize,
+    UploadFlags, UseSsl, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -1129,6 +1129,9 @@ fn apply(
         }
         (ffi::CURLOPT_SASL_IR, Long(n)) => options.line.make_mut()?.sasl_ir = n != 0,
         (ffi::CURLOPT_DIRLISTONLY, Long(n)) => options.line.make_mut()?.list_only = n != 0,
+        (ffi::CURLOPT_UPLOAD_FLAGS, Long(n)) => {
+            options.line.make_mut()?.upload_flags = upload_flags(n);
+        }
         (ffi::CURLOPT_SERVER_RESPONSE_TIMEOUT, Long(n)) => {
             let limit = time_limit(n, 1000)?;
             options.line.set(|g| &mut g.server_response, limit)?;
@@ -1812,9 +1815,32 @@ fn cookie_command(
 }
 const _: ffi::proto::curl_easy_setopt = curl_easy_setopt;
 
+/// `CURLOPT_UPLOAD_FLAGS`' value: its low byte, whatever the rest, as
+/// setopt.c keeps it (`(unsigned char)arg`).
+fn upload_flags(n: c_long) -> UploadFlags {
+    UploadFlags::from_bits(n.to_le_bytes()[0])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The flags are the value's low byte, any bits past the five C
+    /// names kept.
+    #[test]
+    fn reads_upload_flags_as_c() {
+        for (n, bits) in [
+            (16, 16),
+            (0, 0),
+            (0x1f, 0x1f),
+            (0x1ff, 0xff),
+            (0x100, 0),
+            (-1, 0xff),
+        ] {
+            assert_eq!(upload_flags(n).bits(), bits, "{n:#x}");
+        }
+        assert_eq!(upload_flags(16), UploadFlags::SEEN);
+    }
 
     /// Negotiate's bit is a method only where the build claims SPNEGO;
     /// elsewhere it is dropped as NTLM's is, alone not built in, and

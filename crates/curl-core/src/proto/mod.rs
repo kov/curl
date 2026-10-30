@@ -126,6 +126,42 @@ pub(crate) enum ProtoStep {
     AtReadLimit,
 }
 
+/// `tcp:`'s connect, as its handle's script says: a goodbye in it is
+/// kept on the connection, as FTP keeps its state there; and it waits
+/// for good if the script has the phase, as a protocol whose server
+/// never answers.
+#[cfg(any(test, feature = "test-util"))]
+fn tcp_connect<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    lease: &mut ConnLease,
+) -> Result<Connect, ErrorKind> {
+    use crate::options::script::Piece;
+    use curl_alloc::TryVec as _;
+    let Some(script) = cx.easy().options().script.as_ref() else {
+        return Ok(Connect::Done);
+    };
+    let mut pieces = (0..).map_while(|i| script.get(i));
+    let goodbye = pieces.clone().find_map(|p| match p {
+        Piece::Goodbye(bytes) => Some(bytes),
+        _ => None,
+    });
+    if let Some(bytes) = goodbye
+        && !lease.get().keeps_line()
+    {
+        let mut said = Vec::new();
+        said.try_extend_from_slice(bytes)
+            .map_err(|_| ErrorKind::OutOfMemory)?;
+        let line = crate::conn::line::LineConn::Test(crate::conn::line::Farewell(said));
+        let line = curl_alloc::try_box(line).map_err(|_| ErrorKind::OutOfMemory)?;
+        lease.get().put_line(line);
+    }
+    Ok(if pieces.any(|p| matches!(p, Piece::ProtoConnecting)) {
+        Connect::Waiting
+    } else {
+        Connect::Done
+    })
+}
+
 /// Where a protocol's connect over its connection stands (C's
 /// `connect_it` and `connecting`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -455,16 +491,8 @@ impl ProtoState {
             ProtoState::Script(ref mut p) => p.connect(cx, lease),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall => Ok(Connect::Done),
-            // A `tcp:` connect waits for good while its handle's script
-            // starts with the phase, as a protocol whose server never
-            // answers.
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Tcp => Ok(
-                match cx.easy().options().script.as_ref().and_then(|s| s.get(0)) {
-                    Some(crate::options::script::Piece::ProtoConnecting) => Connect::Waiting,
-                    _ => Connect::Done,
-                },
-            ),
+            ProtoState::Tcp => tcp_connect(cx, lease),
         }
     }
 

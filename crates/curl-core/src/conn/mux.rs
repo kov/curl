@@ -47,6 +47,16 @@ pub(crate) enum Speaks {
     Http1,
     /// The session it multiplexes over, HTTP/2's or HTTP/3's.
     Made(Session),
+    /// No session, but a protocol's own state: what FTP and the like
+    /// keep of the connection, and their goodbye.
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(
+            dead_code,
+            reason = "no protocol built yet keeps state on its connection"
+        )
+    )]
+    Line(Box<super::line::LineConn>),
     /// Its session, of `version`, taken out for a step to drive beside
     /// the connection, and given back after. Read as no session, as the
     /// step holds it.
@@ -65,14 +75,14 @@ impl Speaks {
     pub(crate) fn session(&self) -> Option<&Session> {
         match self {
             Speaks::Made(session) => Some(session),
-            Speaks::Unmade | Speaks::Http1 | Speaks::Out(_) => None,
+            Speaks::Unmade | Speaks::Http1 | Speaks::Line(_) | Speaks::Out(_) => None,
         }
     }
 
     pub(crate) fn session_mut(&mut self) -> Option<&mut Session> {
         match self {
             Speaks::Made(session) => Some(session),
-            Speaks::Unmade | Speaks::Http1 | Speaks::Out(_) => None,
+            Speaks::Unmade | Speaks::Http1 | Speaks::Line(_) | Speaks::Out(_) => None,
         }
     }
 }

@@ -55,6 +55,9 @@ pub(crate) struct Shutting {
     started_ms: u64,
     /// It was tried once at least: its start was said.
     tried: bool,
+    /// Its protocol said goodbye, or was told the connection is dead
+    /// (`bits.shutdown_handler`): asked once, whatever comes after.
+    said: bool,
     /// A try finished it, its layers done, failed or out of time
     /// (`bits.shutdown_filters`): its close is no forced one.
     finished: bool,
@@ -78,7 +81,18 @@ impl Shutting {
             shut: 0,
             started_ms,
             tried: false,
+            said: false,
             finished: false,
+        }
+    }
+
+    /// Its protocol's goodbye, unless said already
+    /// (`cshutdn_run_conn_handler`); `dead` if no one knows what state
+    /// the connection is in.
+    fn say_goodbye(&mut self, cx: &mut InternalCx<'_>, dead: bool) {
+        if !std::mem::replace(&mut self.said, true) {
+            let trace = cx.trace;
+            self.conn.protocol_goodbye(cx, trace, dead);
         }
     }
 
@@ -141,7 +155,9 @@ impl Shutting {
             }
             return Tried::Done;
         }
-        // A session says goodbye first (`cf_h2_shutdown`).
+        // Its protocol says goodbye first, once; then a session, each try
+        // (`cshutdn_run_once`, `cf_h2_shutdown`).
+        self.say_goodbye(&mut cx, false);
         self.conn.goodbye(&mut cx);
         match &mut self.conn.transport {
             Transport::Stream(stream) => match stream.shutdown(&mut cx, &mut self.shut) {
@@ -161,6 +177,25 @@ impl Shutting {
     /// waiting for room may find some.
     pub(crate) fn close(self, net: &mut dyn Net, trace: Option<&Internal>, in_multi: bool) {
         terminate(self.conn, self.finished, net, trace, in_multi);
+    }
+
+    /// Close it at once as `close` does, its use unknown: its protocol,
+    /// told so, says no goodbye (`Curl_cshutdn_terminate` of an aborted
+    /// transfer's connection, `dead_connection`).
+    fn abandon(
+        mut self,
+        now: Instant,
+        net: &mut dyn Net,
+        trace: Option<&Internal>,
+        in_multi: bool,
+    ) {
+        let mut cx = InternalCx {
+            now,
+            trace,
+            room: None,
+        };
+        self.say_goodbye(&mut cx, true);
+        self.close(net, trace, in_multi);
     }
 
     /// What it waits on while it shuts down: what its layers not shut down
@@ -592,7 +627,7 @@ pub(crate) fn discard(
     let in_multi = linger.is_some();
     let mut shutting = Shutting::start(conn, now);
     if aborted {
-        shutting.close(net, trace.as_ref(), in_multi);
+        shutting.abandon(now, net, trace.as_ref(), in_multi);
         return;
     }
     let room = linger.as_mut().map(|l| &mut *l.room);

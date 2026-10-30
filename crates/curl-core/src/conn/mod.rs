@@ -17,6 +17,7 @@ pub(crate) mod h2proxy;
 pub(crate) mod h3proxy;
 pub mod io;
 pub(crate) mod layer;
+pub(crate) mod line;
 pub(crate) mod mux;
 pub(crate) mod part;
 pub(crate) mod pool;
@@ -1150,8 +1151,8 @@ impl Conn {
         self.split().1.expect("a local connection moves no bytes")
     }
 
-    /// Its session, and what it works over, borrowed apart.
-    fn split(&mut self) -> (Option<&mut mux::Session>, Option<mux::Carrier<'_>>) {
+    /// What it speaks, and what that works over, borrowed apart.
+    fn speaks_over(&mut self) -> (&mut mux::Speaks, Option<mux::Carrier<'_>>) {
         let socket = self.socket_component();
         let Conn {
             transport,
@@ -1172,7 +1173,13 @@ impl Conn {
             }),
             Transport::Local => None,
         };
-        (session.session_mut(), carrier)
+        (session, carrier)
+    }
+
+    /// Its session, if any, and what it works over.
+    fn split(&mut self) -> (Option<&mut mux::Session>, Option<mux::Carrier<'_>>) {
+        let (speaks, carrier) = self.speaks_over();
+        (speaks.session_mut(), carrier)
     }
 
     /// Whether it seems usable, asked of its pieces from the top: its
@@ -1188,6 +1195,48 @@ impl Conn {
             (Some(session), Some(carrier)) => session.is_alive(cx, carrier),
             (None, Some(carrier)) => carrier.alive(cx),
         }
+    }
+
+    /// Its protocol's goodbye, once as it shuts down, before its session
+    /// and layers say theirs (`cshutdn_run_conn_handler`); `dead` if no
+    /// one knows what state it is in. Said on `trace` as C's debug build
+    /// says it, for a protocol that has one.
+    pub(crate) fn protocol_goodbye(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        trace: Option<&crate::trace::Internal>,
+        dead: bool,
+    ) {
+        let n = self.number.get();
+        let (mux::Speaks::Line(line), Some(carrier)) = self.speaks_over() else {
+            return;
+        };
+        if cfg!(feature = "debug-hooks")
+            && let Some(t) = trace
+        {
+            t.info(format_args!(
+                "connection #{n}, shutdown protocol handler (aborted={})",
+                u8::from(dead)
+            ));
+        }
+        line.goodbye(cx, carrier, dead);
+    }
+
+    /// A protocol keeps its state on it.
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) fn keeps_line(&self) -> bool {
+        matches!(self.session, mux::Speaks::Line(_))
+    }
+
+    /// The protocol `line` keeps its state on it, as its first request
+    /// connects.
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) fn put_line(&mut self, line: Box<line::LineConn>) {
+        assert!(
+            matches!(self.session, mux::Speaks::Unmade),
+            "one protocol's state per connection"
+        );
+        self.session = mux::Speaks::Line(line);
     }
 
     /// Say goodbye from the top as it shuts down: its session's, which

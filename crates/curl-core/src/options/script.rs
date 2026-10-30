@@ -36,6 +36,9 @@ pub enum Piece {
     /// Before the request is made: its second half takes a step
     /// (DOING_MORE).
     DoingMore,
+    /// `tcp:` keeps state on its connection as it connects, which says
+    /// these bytes as the connection shuts down.
+    Goodbye(Vec<u8>),
 }
 
 /// The pieces, shared by every copy of the options.

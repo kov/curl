@@ -1363,3 +1363,111 @@ fn the_socket_callback_reaches_the_tls_objects_of_a_transfer_past_its_connect() 
         ev.0
     );
 }
+
+/// A multi whose connections to port 1 talk over `talks`, in turn, each
+/// given a layer whose shutdown waits as `linger` says.
+fn talking(talks: &[Conversation], linger: Linger) -> (Multi, Wire, ManualClock) {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], 1));
+    let mut net = FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts);
+    for talk in talks {
+        net = net.with_conversation(at, talk.clone());
+    }
+    let wire = Wire(Arc::new(Mutex::new(Wired {
+        net,
+        closed: Vec::new(),
+        close_takes: None,
+    })));
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(wire.clone()),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    m.linger_connections(Some(linger));
+    (m, wire, clock)
+}
+
+/// A `tcp:` transfer whose protocol keeps a goodbye on its connection,
+/// closed once it is done; its script's `more` after.
+fn saying_goodbye(more: Vec<crate::options::script::Piece>) -> Box<Easy> {
+    use crate::options::script::{Piece, Script};
+    let mut e = Easy::new();
+    e.options_mut()
+        .set_url(Some(b"tcp://127.0.0.1:1/"))
+        .unwrap();
+    e.options_mut().limits.reuse.forbid = true;
+    let mut pieces = vec![Piece::Goodbye(b"BYE\r\n".to_vec())];
+    pieces.extend(more);
+    e.options_mut().script = Some(Script::new(pieces).unwrap());
+    Box::new(e)
+}
+
+/// A protocol says its goodbye once as its connection shuts down, before
+/// its layers do (the test layer sends nothing once it shuts down, as
+/// TLS after its close_notify), however many tries their shutdown takes
+/// in the set (`cshutdn_run_conn_handler`, `bits.shutdown_handler`).
+#[test]
+fn a_protocol_says_its_goodbye_once() {
+    let talk = Conversation::replies(&[], false);
+    let (mut m, wire, _clock) = talking(std::slice::from_ref(&talk), Linger::Passes(2));
+    let components = crate::components::Components::new().unwrap();
+    components.set(
+        crate::components::Component::Multi,
+        crate::components::Level::Info,
+    );
+    let written = Written::default();
+    m.trace_internally_to(
+        components,
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
+    let mut ev = Rec::default();
+    let id = m.add(saying_goodbye(vec![]), (), &mut ev).unwrap();
+    by_perform(&mut m, id, &mut ev);
+    assert_eq!(talk.received(), b"BYE\r\n", "said as the shutdown started");
+    assert_eq!(m.shutdowns.len(), 1, "its layer waits");
+    for _ in 0..3 {
+        m.perform(&mut ev).unwrap();
+    }
+    assert_eq!(m.shutdowns.len(), 0);
+    assert_eq!(wire.closed(), [1000]);
+    assert_eq!(talk.received(), b"BYE\r\n", "said once");
+    // The test layer sends nothing as it shuts down, so a goodbye asked
+    // again shows only in the debug build's line for each ask.
+    let asked = written.lines();
+    let asked: Vec<_> = asked
+        .iter()
+        .filter(|l| l.contains("protocol handler"))
+        .collect();
+    if cfg!(feature = "debug-hooks") {
+        assert_eq!(
+            asked,
+            ["* connection #0, shutdown protocol handler (aborted=0)"]
+        );
+    } else {
+        assert!(asked.is_empty(), "{asked:?}");
+    }
+}
+
+/// A connection whose transfer ended early is in no state anyone knows:
+/// its protocol is told so, and says no goodbye (`dead_connection`), as
+/// the connection closes at once.
+#[test]
+fn a_protocol_says_no_goodbye_on_a_dead_connection() {
+    use crate::options::script::Piece;
+    let talk = Conversation::replies(&[], false);
+    let (mut m, wire, clock) = talking(std::slice::from_ref(&talk), Linger::Passes(2));
+    let mut ev = Rec::default();
+    let mut e = saying_goodbye(vec![Piece::ProtoConnecting]);
+    e.options_mut().limits.connect = crate::time::TimeLimit::from_millis(100);
+    let id = m.add(e, (), &mut ev).unwrap();
+    for _ in 0..3 {
+        m.perform(&mut ev).unwrap();
+    }
+    clock.advance(Duration::from_millis(100));
+    by_perform(&mut m, id, &mut ev);
+    assert_eq!(m.shutdowns.len(), 0, "closed at once");
+    assert_eq!(wire.closed(), [1000]);
+    assert_eq!(talk.received(), b"");
+}

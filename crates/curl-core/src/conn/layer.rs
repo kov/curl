@@ -865,7 +865,7 @@ pub enum Linger {
 
 /// A layer whose shutdown waits, as TLS's does for the peer's
 /// close_notify: what arms a closing connection before TLS can. It passes
-/// the bytes, and while it shuts down waits to read.
+/// the bytes, and while it shuts down waits to read and sends nothing.
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Debug)]
 pub(crate) struct Lingering {
@@ -916,7 +916,12 @@ impl Layer for Lingering {
         below.recv(cx, buf)
     }
 
+    /// Nothing more goes once it shuts down, as nothing goes over TLS
+    /// after its close_notify.
     fn send(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, bytes: &[u8]) -> io::Result<Sent> {
+        if self.shutting {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
         below.send(cx, bytes)
     }
 }

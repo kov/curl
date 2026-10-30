@@ -234,6 +234,7 @@ curl-core/src/
     part.rs                  Part, Lower: what every piece of a connection answers of its life
     layer.rs                 Layer, Below, LayerStack, LayerCx; the tests' layers
     mux.rs                   Session, Mux, Carrier: the session a connection multiplexes over
+    line.rs                  LineConn: a protocol's own state on a connection, its goodbye
     quic.rs                  Quic, QuicIo, RecvRoom: a QUIC connection over its UDP
                              socket or a tunnel's layers, its packets batched both
                              ways and its timer
@@ -1340,7 +1341,8 @@ pub(crate) struct Conn {
                                        // said so, or the peer closed (EOF read)
     settings: ConnSettings,            // what it keeps of the creating transfer's settings
     negotiate: Option<Box<Negotiate>>, // its Negotiate with its proxy (C's proxyneg)
-    session: mux::Speaks,              // Unmade | Http1 | Made(Session) | Out(SessionVersion)
+    session: mux::Speaks,              // Unmade | Http1 | Made(Session) | Line(Box<LineConn>)
+                                       // | Out(SessionVersion)
 }
 pub(crate) struct Stream {             // conn/stream.rs
     socket: Sock,                      // the socket and the closer it was opened with (§4.6)
@@ -1757,7 +1759,9 @@ prior knowledge with nothing between, the session made then; the connection then
 HTTP/2 for good, or HTTP/1. What the connection speaks is one field, `conn::mux::Speaks`: not
 found yet (`Unmade`, as a connection is made, and for good on one no HTTP request found it out
 on), HTTP/1 (`Http1`, no session; a local connection's from the start), a session made (`Made`),
-or its session out for a step (`Out`, naming the version). A step takes the session off the
+a protocol's own state with no session (`Line`, `conn/line.rs`'s `LineConn`: what FTP and the
+like keep of the connection between requests, put on as their connect makes it; only the test
+protocol `tcp:`'s is built), or its session out for a step (`Out`, naming the version). A step takes the session off the
 connection for the call that drives it and gives it back after (`with_session`, `with_h3`), so
 the lease is free beside it; while it is out the connection reads as having none, and only the
 version taken out is given back. A new session goes only on a connection with none: HTTP/2's
@@ -2923,6 +2927,13 @@ session as the setup ends. The chain is C's: `[HTTP/3][CAPSULE]` on top of the t
 the capsule filter connected at once, HAPPY-EYEBALLS going with the setup's others,
 `[HTTP/3][CAPSULE][H1-PROXY][TCP]` once reduced, `[HTTP/3][CAPSULE][H3-PROXY][UDP]` through an
 HTTP/3 proxy.
+
+**A protocol's goodbye.** A connection a protocol keeps state on (`Speaks::Line`) says the
+protocol's goodbye as its shutdown starts, once (`Shutting::said`, C's
+`bits.shutdown_handler`), before its session and layers say theirs, which go on try by try
+(`cshutdn_run_once`). It is sent as the connection takes it then and its answer is never
+waited for: the shutdown set, not the goodbye, holds the connection. A connection discarded as
+its transfer aborted tells the protocol it is dead, and nothing is said (`dead_connection`).
 
 **Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the
 multi's `ShutdownSet` until the peer's goodbye or the connection's 2 s. OpenSSL's is

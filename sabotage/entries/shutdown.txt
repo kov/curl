@@ -5,10 +5,10 @@ file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core multi::shutdown_tests::an_aborted_transfer_s_connection_closes_at_once
 --- old
     if aborted {
-        shutting.close(net, trace.as_ref(), in_multi);
+        shutting.abandon(now, net, trace.as_ref(), in_multi);
 --- new
     if false {
-        shutting.close(net, trace.as_ref(), in_multi);
+        shutting.abandon(now, net, trace.as_ref(), in_multi);
 
 === a connection whose shutdown waits is closed instead of kept
 file: crates/curl-core/src/conn/shutdown.rs
@@ -298,3 +298,35 @@ witness: curl-core multi::shutdown_tests::a_handler_hearing_the_socket_callback_
         Err(ErrorKind::BadFunctionArgument)
 --- new
         Ok(())
+
+=== a protocol says its goodbye at every try
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_protocol_says_its_goodbye_once
+features: debug-hooks
+--- old
+        if !std::mem::replace(&mut self.said, true) {
+--- new
+        if { self.said = true; true } {
+
+=== a dead connection's protocol says its goodbye
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_protocol_says_no_goodbye_on_a_dead_connection
+--- old
+        self.say_goodbye(&mut cx, true);
+--- new
+        self.say_goodbye(&mut cx, false);
+
+=== a protocol says its goodbye after its layers shut down
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_protocol_says_its_goodbye_once
+--- old
+        self.say_goodbye(&mut cx, false);
+        self.conn.goodbye(&mut cx);
+        match &mut self.conn.transport {
+            Transport::Stream(stream) => match stream.shutdown(&mut cx, &mut self.shut) {
+                Ok(Handshake::Waiting) => Tried::Waiting,
+--- new
+        self.conn.goodbye(&mut cx);
+        match &mut self.conn.transport {
+            Transport::Stream(stream) => match stream.shutdown(&mut cx, &mut self.shut) {
+                Ok(Handshake::Waiting) => { self.say_goodbye(&mut cx, false); Tried::Waiting }

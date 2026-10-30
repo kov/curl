@@ -336,12 +336,23 @@ impl Pingpong {
             self.recv = Vec::new();
             return Err(self.fail(ReadError::TooLarge));
         }
-        if self.recv.try_extend_from_slice(read).is_err() {
+        if self.recv.try_extend_from_slice(read).is_err() || self.recv.try_reserve(1).is_err() {
             return Err(self.fail(ReadError::OutOfMemory));
         }
+        self.zero_end();
         self.pushed += read.len();
         self.scan = Scan::Unscanned;
         Ok(())
+    }
+
+    /// A zero byte just past what is held, in room each push reserves,
+    /// as C's buffer keeps one (`curlx_dyn_addn`): a line handed to the
+    /// application last in the buffer reads as a C string, which callers
+    /// of the header function compare with `strcmp` (test 753).
+    fn zero_end(&mut self) {
+        if let Some(end) = self.recv.spare_capacity_mut().first_mut() {
+            end.write(0);
+        }
     }
 
     /// The next line of the answer held, and whether `ends` says it ends
@@ -351,6 +362,7 @@ impl Pingpong {
             Scan::Failed(e) => return Err(e),
             Scan::Line(n) | Scan::Reply(n) => {
                 self.recv.drain(..n);
+                self.zero_end();
             }
             Scan::Starved | Scan::Unscanned => {}
         }
@@ -438,6 +450,7 @@ impl Pingpong {
             "more taken after the reply than was read"
         );
         self.recv.drain(..line + n);
+        self.zero_end();
         self.scan = if self.recv.is_empty() {
             Scan::Starved
         } else {

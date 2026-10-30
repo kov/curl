@@ -77,6 +77,7 @@ struct Ran {
     result: Result<(), ErrorKind>,
     body: Vec<u8>,
     text: String,
+    total: std::time::Duration,
 }
 
 /// A verbose transfer of `url` (`PORT` in it replaced) over `m`, set as
@@ -115,10 +116,16 @@ fn tracing(
     set(o);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(m, id, &mut NoEvents).unwrap();
-    m.remove(id, &mut NoEvents).unwrap();
+    let removed = m.remove(id, &mut NoEvents).unwrap();
+    let total = removed.easy.report().timings().total();
     let body = body.lock().unwrap().clone();
     let text = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
-    Ran { result, body, text }
+    Ran {
+        result,
+        body,
+        text,
+        total,
+    }
 }
 
 const GREETING: &[u8] = b"* OK ready\r\n";
@@ -724,6 +731,497 @@ fn a_command_a_reused_connection_cannot_send_is_retried() {
     assert!(ran.text.contains(retried), "{}", ran.text);
 }
 
+/// Whether `needle` is among `hay`'s bytes.
+fn has(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// A login the URL asks to make by SASL alone, or one the server has
+/// disabled, is not made in the clear when SASL has no way
+/// (`imap_perform_authentication`).
+#[test]
+fn a_login_only_by_sasl_or_disabled_is_not_made_in_clear() {
+    for (url, capability) in [
+        (
+            "imap://u;AUTH=PLAIN:p@127.0.0.1:PORT/",
+            &b"* CAPABILITY IMAP4rev1\r\nA001 OK\r\n"[..],
+        ),
+        (
+            "imap://u:p@127.0.0.1:PORT/",
+            b"* CAPABILITY IMAP4rev1 LOGINDISABLED\r\nA001 OK\r\n",
+        ),
+    ] {
+        let talk = Conversation::replies(&[GREETING, capability], false).greeting();
+        let mut m = serving(&[&talk]);
+        let ran = transfer(&mut m, &plain(), url, |_| {});
+        assert_eq!(ran.result, Err(ErrorKind::LoginDenied), "{url}");
+        let said = talk.received();
+        assert!(said.starts_with(b"A001 CAPABILITY\r\n"), "{said:?}");
+        assert!(!has(&said, b"LOGIN u"), "{said:?}");
+    }
+}
+
+/// A mechanism cancelled with no other to try falls back to LOGIN,
+/// unless the server has disabled it (`imap_state_auth_resp`).
+#[test]
+fn a_cancelled_mechanism_falls_back_to_the_login_unless_disabled() {
+    let cram = b"* CAPABILITY IMAP4rev1 AUTH=CRAM-MD5\r\nA001 OK\r\n";
+    let replies: [&[u8]; 6] = [
+        GREETING,
+        cram,
+        b"+ Rubbish\r\n",
+        b"A002 NO cancelled\r\n",
+        b"A003 OK\r\n",
+        b"* LIST () \"/\" x\r\nA004 OK\r\n",
+    ];
+    let talk = Conversation::replies(&replies, false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/", |_| {});
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(
+        talk.received(),
+        b"A001 CAPABILITY\r\nA002 AUTHENTICATE CRAM-MD5\r\n*\r\nA003 LOGIN u p\r\nA004 LIST \"\" *\r\n"
+    );
+
+    let disabled = b"* CAPABILITY IMAP4rev1 LOGINDISABLED AUTH=CRAM-MD5\r\nA001 OK\r\n";
+    let talk =
+        Conversation::replies(&[GREETING, disabled, replies[2], replies[3]], false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/", |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::LoginDenied));
+    assert!(
+        ran.text.contains("Authentication cancelled"),
+        "{}",
+        ran.text
+    );
+    assert!(!has(&talk.received(), b"LOGIN u"));
+}
+
+/// The server's time to answer a command wakes the transfer as it runs
+/// out, from the transfer's whole time once the request is being made
+/// (`Curl_pp_state_timeleft_ms`).
+#[test]
+fn a_server_that_does_not_answer_in_time_times_out() {
+    let talk = Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN], false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), FETCH_URL, |o| {
+        o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(2500);
+        o.limits.connect = crate::time::TimeLimit::from_millis(1000);
+    });
+    assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+    assert!(has(&talk.received(), b"A003 SELECT INBOX\r\n"));
+    assert!(ran.text.contains("server response timeout"), "{}", ran.text);
+    let total = ran.total.as_millis();
+    assert!((2500..2600).contains(&total), "{total} ms");
+}
+
+/// The server a retried request goes to the second time: its tags are
+/// connection #1's.
+fn second_connection() -> Conversation {
+    Conversation::replies(
+        &[
+            GREETING,
+            b"* CAPABILITY IMAP4rev1\r\nB001 OK\r\n",
+            b"B002 OK\r\n",
+            b"* OK [UIDVALIDITY 7] ok\r\nB003 OK\r\n",
+            b"* 1 FETCH (BODY[] {2}\r\nhi)\r\nB004 OK\r\n",
+        ],
+        false,
+    )
+    .greeting()
+}
+
+/// No body wanted (`NOBODY`), a command a dead reused connection cannot
+/// send is not made again.
+#[test]
+fn a_command_wanting_no_body_is_not_retried() {
+    let first = fetching(&[]).breaking_after(4);
+    let fresh = second_connection();
+    let mut m = serving(&[&first, &fresh]);
+    assert_eq!(transfer(&mut m, &plain(), FETCH_URL, |_| {}).result, Ok(()));
+    let ran = transfer(&mut m, &plain(), FETCH_URL, |o| o.method = Method::Head);
+    assert_eq!(ran.result, Err(ErrorKind::SendError));
+    assert_eq!(fresh.received(), b"");
+    assert!(!ran.text.contains("Connection died"), "{}", ran.text);
+}
+
+/// Takes the body, pausing at its first piece.
+#[derive(Clone, Default)]
+struct PausesOnce {
+    got: Arc<Mutex<Vec<u8>>>,
+    paused: Arc<crate::test_cell::Cell<bool>>,
+}
+
+impl WriteHandler for PausesOnce {
+    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        if !self.paused.replace(true) {
+            return Write::Pause;
+        }
+        self.got.lock().unwrap().extend_from_slice(body);
+        Write::Took(body.len())
+    }
+}
+
+/// A transfer of `url` added to `m` and not driven, set as `set` says,
+/// its body kept by `writer` and its trace's text, the `components`
+/// named traced too, in the `Text`.
+fn added(
+    m: &mut Multi,
+    url: &str,
+    components: &[u8],
+    writer: impl WriteHandler + 'static,
+    set: impl FnOnce(&mut Options),
+) -> (crate::multi::TransferId, Text) {
+    let url = url.replace("PORT", &PORT.to_string());
+    let mut e = Easy::new();
+    e.set_libraries(plain());
+    let traced = crate::components::Components::new().unwrap();
+    traced.configure(components);
+    e.set_components(Some(traced));
+    let text = Text::default();
+    let o = e.options_mut();
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.output.verbose = true;
+    o.callbacks.write = Some(Handler::write(writer).unwrap());
+    o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+    set(o);
+    (m.add(Box::new(e), (), &mut NoEvents).unwrap(), text)
+}
+
+/// What the transfers of `m` wait for on their sockets.
+fn waits(m: &mut Multi) -> Vec<crate::conn::io::Events> {
+    let mut seen = Vec::new();
+    m.sockets(&mut NoEvents, |_, events| seen.push(events))
+        .unwrap();
+    seen
+}
+
+/// The trace's text so far.
+fn text_of(text: &Text) -> String {
+    String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned()
+}
+
+/// A body whose writer paused holds the transfer open until it is
+/// delivered (`Curl_cwriter_is_paused`).
+#[test]
+fn a_paused_body_holds_the_transfer_open() {
+    use crate::deliver::PauseRequest;
+    let talk = fetching(&[]);
+    let mut m = serving(&[&talk]);
+    let writer = PausesOnce::default();
+    let (id, _) = added(&mut m, FETCH_URL, b"", writer.clone(), |_| {});
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(writer.paused.get(), "paused");
+    assert!(m.info_read().is_none(), "not over while output is held");
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    assert_eq!(*writer.got.lock().unwrap(), b"hello world");
+}
+
+/// A literal larger than any read, with no end in sight.
+fn endless_literal() -> Conversation {
+    Conversation::replies(
+        &[
+            GREETING,
+            CAPABILITY,
+            LOGGED_IN,
+            SELECTED,
+            b"* 1 FETCH (BODY[] {100000000}\r\n",
+        ],
+        false,
+    )
+    .greeting()
+    .endless(std::time::Duration::from_millis(1))
+}
+
+const MARK_DIRTY: &str =
+    "[MULTI] [PERFORMING] sendrecv_dl() no EAGAIN/pending data, mark as dirty\n";
+
+/// A body step reads at most eleven times, and is run again at once
+/// (`sendrecv_dl`'s `maxloops`).
+#[test]
+fn a_body_step_reads_eleven_times_at_most() {
+    let talk = endless_literal();
+    let mut m = serving(&[&talk]);
+    let (_, text) = added(&mut m, FETCH_URL, b"multi", Body(Arc::default()), |_| {});
+    while talk.endless_reads() == 0 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    for _ in 0..3 {
+        let reads = talk.endless_reads();
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(talk.endless_reads() - reads, 11);
+        assert_eq!(m.timeout(), Some(std::time::Duration::ZERO));
+    }
+    // The body's first pass, and the three after it.
+    let text = text_of(&text);
+    assert_eq!(text.matches(MARK_DIRTY).count(), 4, "{text}");
+}
+
+/// Body bytes a layer holds, where a poll cannot see them, have the
+/// step itself run the transfer again at once (`sendrecv_dl`'s
+/// `data_pending`).
+#[test]
+fn body_bytes_a_layer_holds_are_read_without_waiting() {
+    use crate::conn::layer::testing::holdback;
+    let talk = endless_literal();
+    let mut m = serving(&[&talk]);
+    let (_, text) = added(&mut m, FETCH_URL, b"multi", Body(Arc::default()), |o| {
+        o.layer = Some(holdback);
+    });
+    while talk.endless_reads() < 3 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let text = text_of(&text);
+    assert!(text.contains(MARK_DIRTY), "{text}");
+}
+
+/// A literal not yet whole waits to read its socket, and paused, on
+/// nothing.
+#[test]
+fn a_literal_to_come_waits_on_its_socket_unless_paused() {
+    use crate::conn::io::Events;
+    use crate::deliver::PauseRequest;
+    let partly = b"* 1 FETCH (BODY[] {11}\r\nhel";
+    let talk = Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, SELECTED, partly], false)
+        .greeting();
+    let mut m = serving(&[&talk]);
+    let (id, _) = added(&mut m, FETCH_URL, b"", Body(Arc::default()), |_| {});
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(has(&talk.received(), b"A004 FETCH 1 BODY[]\r\n"));
+    assert_ne!(m.timeout(), Some(std::time::Duration::ZERO));
+    assert_eq!(waits(&mut m), [Events::IN]);
+    m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
+    assert_eq!(waits(&mut m), []);
+}
+
+/// A literal's read that fails fails the transfer, said once: by the
+/// socket, as C's socket filter says it, or else by the protocol, for a
+/// layer that failed without saying why.
+#[test]
+fn a_literal_s_read_failure_is_said_once() {
+    let partly: &[u8] = b"* 1 FETCH (BODY[] {11}\r\nhel";
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let mut body = tls(partly);
+    body.extend_from_slice(b"not a record");
+    let secure = [
+        WELCOME.to_vec(),
+        tls(GREETING),
+        tls(CAPABILITY),
+        tls(LOGGED_IN),
+        tls(SELECTED),
+        body,
+    ];
+    let secure: Vec<&[u8]> = secure.iter().map(Vec::as_slice).collect();
+    let cases = [
+        (
+            Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, SELECTED, partly], false)
+                .greeting()
+                .resetting(),
+            "imap",
+        ),
+        (Conversation::replies(&secure, false).per_send(), "imaps"),
+    ];
+    for (talk, scheme) in cases {
+        let mut m = serving(&[&talk]);
+        let url = format!("{scheme}://u:p@127.0.0.1:PORT/INBOX;MAILINDEX=1");
+        let ran = transfer(&mut m, &with_tls(), &url, |_| {});
+        assert_eq!(ran.result, Err(ErrorKind::RecvError), "{}", ran.text);
+        assert_eq!(ran.body, b"hel");
+        let failures = ran
+            .text
+            .lines()
+            .filter(|l| l.starts_with("Recv failure: "))
+            .count();
+        assert_eq!(failures, 1, "{scheme}: {}", ran.text);
+    }
+}
+
+/// A literal the server ends the connection inside of is a partial
+/// file: the literal's size is the response's (`Curl_xfer_setup_recv`).
+#[test]
+fn a_literal_cut_short_is_a_partial_file() {
+    let partly: &[u8] = b"* 1 FETCH (BODY[] {11}\r\nhello";
+    let talk = Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, SELECTED, partly], true)
+        .greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), FETCH_URL, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::PartialFile), "{}", ran.text);
+    assert!(
+        ran.text.contains("end of response with 6 bytes missing"),
+        "{}",
+        ran.text
+    );
+}
+
+/// STARTTLS refused fails a transfer requiring TLS; one only trying it
+/// logs in in the clear (`imap_state_starttls_resp`).
+#[test]
+fn starttls_refused() {
+    let no = b"A002 NO\r\n";
+    let talk = Conversation::replies(&[GREETING, CAPABILITY, no], false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &with_tls(), "imap://u:p@127.0.0.1:PORT/", |o| {
+        o.line.make_mut().unwrap().use_ssl = UseSsl::All;
+    });
+    assert_eq!(ran.result, Err(ErrorKind::UseSslFailed));
+    assert!(ran.text.contains("STARTTLS denied"), "{}", ran.text);
+
+    let listed = b"* LIST () \"/\" x\r\nA004 OK\r\n";
+    let talk = Conversation::replies(&[GREETING, CAPABILITY, no, b"A003 OK\r\n", listed], false)
+        .greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &with_tls(), "imap://u:p@127.0.0.1:PORT/", |o| {
+        o.line.make_mut().unwrap().use_ssl = UseSsl::Try;
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        talk.received(),
+        b"A001 CAPABILITY\r\nA002 STARTTLS\r\nA003 LOGIN u p\r\nA004 LIST \"\" *\r\n"
+    );
+}
+
+/// A continuation answers no command but AUTHENTICATE and APPEND; to
+/// the application's command it is a line like any other
+/// (`imap_endofresp`).
+#[test]
+fn a_continuation_answers_only_what_waits_for_one() {
+    let talk =
+        Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, b"+ what\r\n"], false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/", |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::WeirdServerReply));
+    assert!(
+        ran.text.contains("Unexpected continuation response"),
+        "{}",
+        ran.text
+    );
+
+    let noop = b"+ what\r\nA003 OK\r\n";
+    let talk = Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, noop], false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/", |o| {
+        o.http.custom.make_mut().unwrap().method = Some(b"NOOP".to_vec());
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert!(ran.body.is_empty());
+}
+
+/// The URL chooses the command: a mailbox alone lists it, a UID fetches
+/// by it, and the application's command on a mailbox selects it first
+/// (`imap_perform`); a custom FETCH of many messages writes none of
+/// their lines (`is_custom_fetch_listing`).
+#[test]
+fn the_url_chooses_the_command() {
+    let listed = b"* LIST () \"/\" INBOX/a\r\nA003 OK\r\n";
+    let talk = Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, listed], false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/INBOX", |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.body, b"* LIST () \"/\" INBOX/a\r\n");
+    assert!(talk.received().ends_with(b"A003 LIST \"INBOX\" *\r\n"));
+
+    let by_uid = b"* 1 FETCH (UID 1 BODY[] {2}\r\nhi)\r\nA004 OK\r\n";
+    let talk = Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, SELECTED, by_uid], false)
+        .greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(
+        &mut m,
+        &plain(),
+        "imap://u:p@127.0.0.1:PORT/INBOX;UID=1",
+        |_| {},
+    );
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.body, b"hi");
+    assert!(
+        talk.received()
+            .ends_with(b"A003 SELECT INBOX\r\nA004 UID FETCH 1 BODY[]\r\n")
+    );
+
+    let flags = b"* 1 FETCH (FLAGS (\\Seen))\r\n* 2 FETCH (FLAGS ())\r\nA004 OK\r\n";
+    let talk = Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, SELECTED, flags], false)
+        .greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/INBOX", |o| {
+        o.http.custom.make_mut().unwrap().method = Some(b"FETCH 1:2 (FLAGS)".to_vec());
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert!(ran.body.is_empty(), "{:?}", ran.body);
+    assert!(
+        talk.received()
+            .ends_with(b"A003 SELECT INBOX\r\nA004 FETCH 1:2 (FLAGS)\r\n")
+    );
+}
+
+/// The mailbox selected on a connection is known by its name, INBOX by
+/// any case of it (`imap_perform`'s `selected`).
+#[test]
+fn the_selected_mailbox_is_known_by_name() {
+    let again = |tag: &str| format!("* 1 FETCH (BODY[] {{2}}\r\nhi)\r\n{tag} OK\r\n").into_bytes();
+    let (a005, a007, a008) = (again("A005"), again("A007"), again("A008"));
+    let selected = b"* OK [UIDVALIDITY 7] ok\r\nA006 OK\r\n";
+    let talk = fetching(&[&a005, selected, &a007, &a008]);
+    let mut m = serving(&[&talk]);
+    for mailbox in ["Sent", "Sent", "INBOX", "inbox"] {
+        let url = format!("imap://u:p@127.0.0.1:PORT/{mailbox};MAILINDEX=1");
+        let ran = transfer(&mut m, &plain(), &url, |_| {});
+        assert_eq!(ran.result, Ok(()), "{mailbox}: {}", ran.text);
+    }
+    assert_eq!(
+        talk.received(),
+        b"A001 CAPABILITY\r\nA002 LOGIN u p\r\nA003 SELECT Sent\r\nA004 FETCH 1 BODY[]\r\n\
+          A005 FETCH 1 BODY[]\r\nA006 SELECT INBOX\r\nA007 FETCH 1 BODY[]\r\nA008 FETCH 1 BODY[]\r\n"
+    );
+}
+
+/// A tree of one part, its boundary all `A`s.
+fn mail_tree() -> UploadSource {
+    use crate::mime::{Boundary, Content, Mime, Part};
+    let mut m = Mime::new(Boundary::draw(|| Ok::<_, std::convert::Infallible>(0)).unwrap());
+    m.add(Part {
+        content: Content::Bytes(curl_alloc::TryArc::try_new(b"hi".to_vec()).unwrap()),
+        ..Part::default()
+    })
+    .unwrap();
+    let tree = curl_alloc::TryArc::try_new(m).unwrap();
+    UploadSource::Mime(Handler::mime(crate::mime::Fixed::new(tree)).unwrap())
+}
+
+/// A POST of bytes appends nothing; a MIME POST appends the tree as a
+/// mail message (`imap_do`'s `state.upload || IS_MIME_POST`).
+#[test]
+fn only_a_mime_post_is_appended() {
+    let listed = b"* LIST () \"/\" Sent/a\r\nA003 OK\r\n";
+    let talk = Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, listed], false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/Sent", |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"hello".to_vec()).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(talk.received().ends_with(b"A003 LIST \"Sent\" *\r\n"));
+
+    let talk = Conversation::replies(
+        &[GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"A003 OK\r\n"],
+        false,
+    )
+    .greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/Sent", |o| {
+        o.method = Method::Post;
+        o.upload = mail_tree();
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let said = talk.received();
+    assert!(has(&said, b"A003 APPEND Sent (\\Seen) {"), "{said:?}");
+    assert!(has(&said, b"Mime-Version: 1.0\r\n"), "{said:?}");
+}
+
 /// An APPEND's body is sent as C's request sends it: each send traced,
 /// one the socket refuses waiting, its end said, and the time the request
 /// was sent taken then, not at DID; the server's answer after it starts
@@ -807,4 +1305,86 @@ fn an_empty_append_says_the_request_is_sent() {
         "{}",
         ran.text
     );
+}
+
+/// The debug build says each change of state, once, and the DO phase's
+/// end as its state stops (`imap_state`, `imap_perform`).
+#[test]
+fn the_debug_build_says_each_change_of_state() {
+    if !cfg!(feature = "debug-hooks") {
+        return;
+    }
+    let talk = fetching(&[]);
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), FETCH_URL, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let changes: Vec<&str> = ran
+        .text
+        .lines()
+        .filter_map(|l| l.split_once(" state change from ").map(|(_, c)| c))
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            "STOP to SERVERGREET",
+            "SERVERGREET to CAPABILITY",
+            "CAPABILITY to LOGIN",
+            "LOGIN to STOP",
+            "STOP to SELECT",
+            "SELECT to FETCH",
+            "FETCH to STOP",
+            "STOP to FETCH_FINAL",
+            "FETCH_FINAL to STOP",
+        ]
+    );
+    assert_eq!(
+        ran.text.matches("DO phase is complete\n").count(),
+        1,
+        "{}",
+        ran.text
+    );
+}
+
+/// A body larger than the upload buffer goes a buffer at a time, its
+/// last send saying the end; a send the socket takes short of says what
+/// is left and sends it after (`xfer_send`, `req_flush`).
+#[test]
+fn an_append_s_body_goes_a_buffer_and_a_send_at_a_time() {
+    let replies: [&[u8]; 5] = [GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"A003 OK\r\n"];
+    let big = vec![b'x'; 40_000];
+    let talk = Conversation::replies(&replies, false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/Sent", |o| {
+        o.method = Method::Upload;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(big.clone()).unwrap());
+        o.limits.upload_buffer = crate::options::UploadBufferSize::clamped(16_384);
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let mut want = b"A003 APPEND Sent (\\Seen) {40000}\r\n".to_vec();
+    want.extend_from_slice(&big);
+    want.extend_from_slice(b"\r\n");
+    assert!(talk.received().ends_with(&want));
+    if cfg!(feature = "debug-hooks") {
+        let first = "Curl_xfer_send(len=16384, eos=0) -> 0, 16384\n";
+        assert!(ran.text.contains(first), "{}", ran.text);
+    }
+    assert!(ran.text.contains("upload completely sent off: 40000 bytes"));
+
+    let talk = Conversation::replies(&replies, false)
+        .greeting()
+        .taking(NonZeroUsize::new(2).unwrap());
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/Sent", |o| {
+        o.method = Method::Upload;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"hello".to_vec()).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert!(
+        talk.received()
+            .ends_with(b"A003 APPEND Sent (\\Seen) {5}\r\nhello\r\n")
+    );
+    if cfg!(feature = "debug-hooks") {
+        let short = "Curl_xfer_send(len=5, eos=1) -> 0, 2\nCurl_req_flush(len=3) -> EAGAIN\n";
+        assert!(ran.text.contains(short), "{}", ran.text);
+    }
 }

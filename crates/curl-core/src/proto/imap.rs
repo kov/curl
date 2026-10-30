@@ -1390,10 +1390,7 @@ impl Request {
             return false;
         };
         let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
-        // C gives up on digits that end the string.
-        if digits > 0 && digits == rest.len() {
-            return false;
-        }
+        // Digits that end the string are no listing, as C gives up on them.
         matches!(rest.get(digits), Some(b':' | b','))
     }
 

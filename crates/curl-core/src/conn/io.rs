@@ -976,7 +976,8 @@ impl Conversation {
     }
 
     /// The same peer, speaking first: a greeting before anything is
-    /// sent, then a reply to each send that ends a line with CRLF.
+    /// sent, then a reply to each send that ends a line with CRLF, however
+    /// the sends before it split the line.
     pub fn greeting(self) -> Conversation {
         self.0
             .lock()
@@ -1917,7 +1918,7 @@ impl Socket for FakeSocket {
             .try_extend_from_slice(buf)
             .map_err(|_| io::ErrorKind::OutOfMemory)?;
         wire.sends += 1;
-        if buf.ends_with(b"\r\n") {
+        if wire.received.ends_with(b"\r\n") {
             wire.lines += 1;
         }
         if wire.hang_up_unanswered

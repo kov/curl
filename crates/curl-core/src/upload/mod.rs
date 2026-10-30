@@ -3,6 +3,7 @@
 //! by the protocol.
 
 pub(crate) mod chain;
+pub(crate) mod sending;
 #[cfg(test)]
 mod tests;
 

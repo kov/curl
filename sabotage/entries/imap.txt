@@ -75,7 +75,7 @@ features: test-util
         self.nothing_after = false;
 
 === an APPEND's body all sent takes no post-transfer time
-file: crates/curl-core/src/proto/imap.rs
+file: crates/curl-core/src/upload/sending.rs
 witness: curl-core proto::imap::tests::over_the_wire::an_append_s_body_is_sent_and_timed_as_c_s
 features: test-util,debug-hooks
 --- old
@@ -88,12 +88,12 @@ file: crates/curl-core/src/proto/imap.rs
 witness: curl-core proto::imap::tests::over_the_wire::an_append_s_body_is_sent_and_timed_as_c_s
 features: test-util
 --- old
-                self.upload_done = true;
+            self.upload_done = true;
 --- new
-                self.upload_done = false;
+            self.upload_done = false;
 
 === an APPEND's body is read past the send limit
-file: crates/curl-core/src/proto/imap.rs
+file: crates/curl-core/src/upload/sending.rs
 witness: curl-core proto::imap::tests::over_the_wire::an_append_s_body_keeps_to_the_send_limit
 features: test-util,debug-hooks
 --- old

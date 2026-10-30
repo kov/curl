@@ -773,12 +773,12 @@ exclude_re = [
     # Whether a send that took all the bytes but did not end the body
     # counts as the end's: the size is known, so the end is read with the
     # last bytes, never alone after them.
-    'curl-core/src/proto/imap\.rs:609:.*: replace && with \|\| in Request::send_body$',
+    'curl-core/src/upload/sending\.rs:103:.*: replace && with \|\| in Sending::send$',
     # A read that came with no end yet, stopping the step instead of
     # sending at once: the socket polls writable and the next step sends
     # the same bytes; one that ended with nothing likewise sends the end
     # a step later.
-    'curl-core/src/proto/imap\.rs:649:.*: (replace (==|&&) with (!=|\|\|)|delete !) in Request::send_body$',
+    'curl-core/src/upload/sending\.rs:158:.*: (replace (==|&&) with (!=|\|\|)|delete !) in Sending::send$',
     # Stopping at the end of a reply with more held: the drive runs the
     # step again at once on what is held (`Curl_pp_moredata`); reading on
     # without more held finds nothing and stops as before.

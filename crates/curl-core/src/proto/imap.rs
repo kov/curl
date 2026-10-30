@@ -18,7 +18,7 @@ use super::pingpong::imap::{Continuations, Imap, ImapReply, Tag, Untagged, liter
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
 use crate::auth::creds::{CredentialGate, Credentials, Takes};
 use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl, SaslError};
-use crate::conn::io::{Events, Recv, Sent};
+use crate::conn::io::{Events, Recv};
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
 use crate::conn::{ConnLease, ConnNumber, Peer, RecvFailed, RouteCold, Scheme};
@@ -26,15 +26,13 @@ use crate::deliver::{self, Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::idn::Idn;
 use crate::multi::Host;
-use crate::multi::mstate::MState;
 use crate::multi::state::StepCx;
 use crate::options::{Method, UploadFlags, UploadSource, UseSsl};
 use crate::progress::rate::Way;
-use crate::report::Timer;
 use crate::time::Instant;
 use crate::trace;
 use crate::upload::chain::Body;
-use crate::upload::{self, Upload};
+use crate::upload::{self, Upload, sending::Sending};
 use crate::url::{GetOptions, Part, Url, decode_but_control};
 
 /// IMAP's SASL (`saslimap`): an initial response of any length.
@@ -199,25 +197,6 @@ enum Final {
     Fetch,
     /// An `APPEND`'s, once an empty line ends the command.
     Append,
-}
-
-/// An `APPEND`'s body as it goes out: what was read of it and not sent.
-#[derive(Debug)]
-struct Sending {
-    body: Body,
-    buf: Vec<u8>,
-    /// The bytes of `buf` read and not sent, from `at` to `len`.
-    at: usize,
-    len: usize,
-    /// The source said its end (`eos_read`).
-    eos: bool,
-    /// The send that ends the body has gone (`eos_sent`).
-    eos_sent: bool,
-    /// The body's bytes sent (`writebytecount`).
-    sent: u64,
-    /// The body was first read: the send limit runs from then
-    /// (`reader_started`).
-    read_started: bool,
 }
 
 /// An IMAP transfer (`struct IMAP`, and what C's request keeps of it).
@@ -589,100 +568,12 @@ impl Request {
         let Some(sending) = self.sending.as_deref_mut() else {
             return Ok(ProtoStep::Done);
         };
-        loop {
-            if sending.at < sending.len || (sending.eos && !sending.eos_sent) {
-                // The read took no more than the send limit allows: a send
-                // of it is never cut by the limit (`xfer_send`).
-                let piece = &sending.buf[sending.at..sending.len];
-                let len = piece.len();
-                let eos = sending.eos;
-                if eos {
-                    trace::debug_info(cx, format_args!("sending last upload chunk of {len} bytes"));
-                }
-                // The end said with nothing left to send sends nothing
-                // (`xfer_send` of no bytes).
-                let (n, failed) = if len == 0 {
-                    (0, None)
-                } else {
-                    match lease.get().send(cx, piece) {
-                        Ok(Sent::Bytes(n)) => (n.get(), None),
-                        Ok(_) => (0, None),
-                        Err(_) => (0, Some(ErrorKind::SendError)),
-                    }
-                };
-                let code = failed.map_or(0, ErrorKind::number);
-                trace::debug_info(
-                    cx,
-                    format_args!(
-                        "Curl_xfer_send(len={len}, eos={}) -> {code}, {n}",
-                        u8::from(eos)
-                    ),
-                );
-                if let Some(kind) = failed {
-                    return Err(kind);
-                }
-                if eos && n == len {
-                    sending.eos_sent = true;
-                }
-                upload::sent(cx, &piece[..n]);
-                sending.at += n;
-                sending.sent += n as u64;
-                if n < len {
-                    let left = len - n;
-                    trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
-                    return Ok(ProtoStep::Blocked);
-                }
-                continue;
-            }
-            if sending.eos {
-                // All of it sent (`req_set_upload_done`).
-                if cx.mstate() >= MState::Did {
-                    cx.mark(Timer::PostTransfer);
-                }
-                let n = sending.sent;
-                if n > 0 {
-                    trace::info(cx, format_args!("upload completely sent off: {n} bytes"));
-                } else {
-                    trace::info(cx, format_args!("Request completely sent off"));
-                }
-                self.sending = None;
-                self.upload_done = true;
-                return Ok(ProtoStep::Done);
-            }
-            if cx.pause().send_paused() {
-                return Ok(ProtoStep::Blocked);
-            }
-            if !sending.read_started {
-                sending.read_started = true;
-                cx.rate_start(Way::Send, None);
-            }
-            // Under a send limit, no more than it allows, and nothing once
-            // it is spent (`Curl_client_read`).
-            let room = match cx.rate_allowance(Way::Send) {
-                Some(..=0) => {
-                    let nothing = Ok(upload::Readout { n: 0, eos: false });
-                    upload::client_read(cx, sending.buf.len(), &nothing);
-                    return Ok(ProtoStep::Blocked);
-                }
-                Some(allowed) => sending
-                    .buf
-                    .len()
-                    .min(usize::try_from(allowed).unwrap_or(usize::MAX)),
-                None => sending.buf.len(),
-            };
-            let got = sending
-                .body
-                .read(cx, &mut sending.buf[..room], true, |_| Ok(Vec::new()));
-            upload::client_read(cx, room, &got);
-            let got = got?;
-            sending.at = 0;
-            sending.len = got.n;
-            sending.eos = got.eos;
-            if got.n == 0 && !got.eos {
-                // Paused by its handler.
-                return Ok(ProtoStep::Blocked);
-            }
+        let step = sending.send(cx, lease)?;
+        if step == ProtoStep::Done {
+            self.sending = None;
+            self.upload_done = true;
         }
+        Ok(step)
     }
 
     /// The connection's IMAP state, set up the first time
@@ -1299,23 +1190,7 @@ impl Request {
         let size_text =
             curl_alloc::try_format(format_args!("{size}")).map_err(|_| ErrorKind::OutOfMemory)?;
         let room = cx.easy().options().limits.upload_buffer.get();
-        let mut buf = Vec::new();
-        buf.try_reserve_exact(room)
-            .map_err(|_| ErrorKind::OutOfMemory)?;
-        super::http::zeros(&mut buf, room).map_err(|_| ErrorKind::OutOfMemory)?;
-        self.sending = Some(
-            curl_alloc::try_box(Sending {
-                body,
-                buf,
-                at: 0,
-                len: 0,
-                eos: false,
-                eos_sent: false,
-                sent: 0,
-                read_started: false,
-            })
-            .map_err(|_| ErrorKind::OutOfMemory)?,
-        );
+        self.sending = Some(Sending::new(body, room)?);
         let (pc, mut carrier) = imap_of(lease);
         let tag = pc.next_tag();
         drive::send(
@@ -1347,7 +1222,7 @@ impl Request {
         if code != ImapReply::Continuation {
             return Err(ErrorKind::UploadFailed);
         }
-        let size = self.sending.as_ref().and_then(|s| s.body.size());
+        let size = self.sending.as_ref().and_then(|s| s.body().size());
         upload::announce_size(cx, size);
         // Sent, the answer read in DONE (`Curl_xfer_setup_send`).
         let ways = crate::deliver::Directions {

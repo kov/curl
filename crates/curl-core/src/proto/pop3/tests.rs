@@ -1036,7 +1036,8 @@ mod over_the_wire {
             // A body's read failing ends its pass of `sendrecv_dl`, as C's
             // debug build says.
             let said = ran.text.contains("sendrecv_dl() -> 56\n");
-            assert_eq!(said, has_body, "{scheme}: {}", ran.text);
+            let debug = cfg!(feature = "debug-hooks");
+            assert_eq!(said, has_body && debug, "{scheme}: {}", ran.text);
         }
     }
 
@@ -1243,16 +1244,19 @@ mod over_the_wire {
         );
         assert_eq!(ran.result, Err(ErrorKind::WeirdServerReply), "{}", ran.text);
         assert!(sent.ends_with(b"PASS p\r\nRETR 1\r\nQUIT\r\n"), "{sent:?}");
-        let after = ran
-            .text
-            .split("DO phase starts\n")
-            .nth(1)
-            .unwrap_or_default();
-        assert!(
-            after.contains("to STOP\nDO phase is complete\n"),
-            "{}",
-            ran.text
-        );
+        // As C's debug build says it.
+        if cfg!(feature = "debug-hooks") {
+            let after = ran
+                .text
+                .split("DO phase starts\n")
+                .nth(1)
+                .unwrap_or_default();
+            assert!(
+                after.contains("to STOP\nDO phase is complete\n"),
+                "{}",
+                ran.text
+            );
+        }
         assert!(
             !ran.text.contains("server response timeout"),
             "{}",

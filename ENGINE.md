@@ -252,6 +252,9 @@ curl-core/src/
                              request's head read back into fields
     http3.rs                 H3Conn: a connection's HTTP/3 session
     script.rs                the test protocol `script:` (test-util)
+    pingpong.rs, pingpong/   Pingpong: the line protocols' reader and writer (pingpong.c),
+                             sans-IO; ftp.rs, imap.rs, pop3.rs, smtp.rs: where each one's
+                             reply ends
     http1/                   the parsers and the renderer, sans-IO, which import nothing of
                              the driver: request.rs, response.rs, framing.rs, chunked.rs
                              (decoder and encoder), fields.rs, follow.rs (where a
@@ -3291,6 +3294,41 @@ DO, so `Did` goes straight to `Done`.
   checked; a last update ends DO.
 - Files are opened, renamed and removed and directories listed through `curl_os::fs`, which
   copies neither the path nor an entry's name.
+
+### 5.7 The line protocols' reader and writer
+
+`proto/pingpong.rs` is `lib/pingpong.c` for FTP, IMAP, POP3 and SMTP, sans-IO: one
+`Pingpong` per connection holds the answer read, the command being sent and the instant the
+server's time to answer runs from. No step drives it yet.
+- **Reading is one event per call.** `push` takes one read (a driver asks for `READ_SIZE`,
+  900, at most `MAX_READS` times a pass, so that what follows a reply is what C holds);
+  `next(&ends)` gives `NeedMore`, a `Line` that ends no reply, or the `Reply` line with what
+  the protocol's `Ends` reads in it and its `ReplySize` (bytes pushed since the last reply).
+  Each line goes out raw, its LF included, for the step to trace as HEADER_IN and deliver as
+  C does, before the step acts on it. Only LF ends a line. A read is taken only once nothing
+  whole is held, as C reads only with no `overflow`; a push otherwise is a bug, and panics.
+- **The reply's line stays until the next call** (`reply_line`, C's `nfinal`), and what was
+  read past it is `after_reply` (C's `overflow`): STARTTLS, `STLS` and `AUTH TLS` refuse a
+  reply anything follows; an IMAP literal or a POP3 body is taken from it
+  (`consume_after_reply`), the rest read on as lines.
+- **Limits are C's.** What is held, plus the read and a zero byte, stays within 64 KiB
+  (`TooLarge`), the reply's line dropped first; a whole line with a zero byte is
+  `WeirdServerReply`; an empty read is `RecvError`. Each failure is final: every later call
+  gives it again. Lines that end no reply go as they are read, so a reply of many lines has
+  no limit.
+- **What ends a reply is the protocol's, per line, in its state**: `ftp::Ftp` (three digits
+  and a space, any code), `smtp::Smtp { continuations }` (a code and a space or a line of five
+  bytes; `250-` lines in EHLO and custom commands; a server's 1 reads as 0), `pop3::Pop3
+  { capa }` (`-ERR` first; each CAPA line to the dot; `+OK`, other `+` lines), `imap::Imap`
+  (the `Tag`, then the untagged responses and continuations the state reads, a stray
+  continuation its own reply for the step to fail on). A code of 0 is a reply, which C's steps
+  take for none. `imap::literal` reads a line's `{N}`.
+- **A command is built whole** (`command`: the prefix and a space, the parts, CRLF; within
+  64 KiB with its zero byte), and its first send says what is traced as HEADER_OUT
+  (`Unsent::wrote`: what it wrote, even nothing); the rest is flushed (`unsent`, `flushed`)
+  untraced, `wants` saying to write meanwhile. The time to answer
+  (`time_left`, the server-response limit or 60 s, or the transfer's if less) runs from the
+  last command sent whole; what arrives does not move it.
 
 ## 6. HTTP/1.x
 

@@ -1066,7 +1066,11 @@ protocols need, each step leaving behaviour and traces as they are:
     FTP, IMAP, POP3 and SMTP (C's pingpong), at the trust boundary. STARTTLS (and FTP's
     `AUTH TLS`) upgrades an open connection only when no bytes follow the reply, failing
     `WEIRD_SERVER_REPLY` as C does (tests 980 to 983), never by handing them to TLS as a
-    proxy's answer is; FTP's CCC removes the TLS layer after its goodbye.
+    proxy's answer is; FTP's CCC removes the TLS layer after its goodbye. In progress: the
+    reader and writer are built (`proto::pingpong`, ENGINE §5.7), with what ends each
+    protocol's reply, C's limits, the bytes read past a reply, the traces' bytes and the time
+    to answer, driven by no step yet. To do, on step 67's phases: the drive over a connection,
+    and STARTTLS, `AUTH TLS` and CCC.
 
 SCP and SFTP hand libssh the socket, as C does (`SSH_OPTIONS_FD`): bytes a proxy's tunnel or a
 SOCKS answer left in the stream's buffer would be lost to it, so the hand-over is refused while

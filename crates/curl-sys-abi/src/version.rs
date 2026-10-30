@@ -91,6 +91,7 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::Idn => (c"IDN", crate::ffi::CURL_VERSION_IDN),
         Feature::Ipv6 => (c"IPv6", crate::ffi::CURL_VERSION_IPV6),
         Feature::Kerberos => (c"Kerberos", crate::ffi::CURL_VERSION_KERBEROS5),
+        Feature::Largefile => (c"Largefile", crate::ffi::CURL_VERSION_LARGEFILE),
         Feature::Libz => (c"libz", crate::ffi::CURL_VERSION_LIBZ),
         // A name alone, without a bit, as in C.
         Feature::ProxyHttp3 => (c"proxy-HTTP3", 0),
@@ -352,6 +353,7 @@ mod tests {
             (true, "IDN", ffi::CURL_VERSION_IDN),
             (true, "IPv6", ffi::CURL_VERSION_IPV6),
             (true, "Kerberos", ffi::CURL_VERSION_KERBEROS5),
+            (true, "Largefile", ffi::CURL_VERSION_LARGEFILE),
             (true, "libz", ffi::CURL_VERSION_LIBZ),
             (true, "proxy-HTTP3", 0),
             (true, "PSL", ffi::CURL_VERSION_PSL),

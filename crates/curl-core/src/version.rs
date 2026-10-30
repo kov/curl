@@ -56,6 +56,9 @@ pub enum Feature {
     Ipv6,
     /// Kerberos 5 by GSS-API, as SOCKS5's GSS-API method uses it.
     Kerberos,
+    /// Files, sizes and offsets past 2 GiB: every one is 64 bits (C's
+    /// `curl_off_t` wider than 32).
+    Largefile,
     /// The `deflate` and `gzip` content codings are undone by zlib, which
     /// the tool and the C ABI give every handle.
     Libz,
@@ -98,6 +101,7 @@ impl Feature {
             Feature::Idn => "IDN",
             Feature::Ipv6 => "IPv6",
             Feature::Kerberos => "Kerberos",
+            Feature::Largefile => "Largefile",
             Feature::Libz => "libz",
             Feature::ProxyHttp3 => "proxy-HTTP3",
             Feature::Psl => "PSL",
@@ -127,6 +131,7 @@ const FEATURES: &[Feature] = &[
     Feature::Idn,
     Feature::Ipv6,
     Feature::Kerberos,
+    Feature::Largefile,
     Feature::Libz,
     Feature::ProxyHttp3,
     Feature::Psl,

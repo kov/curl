@@ -397,6 +397,26 @@ pub fn interface_index(name: &[u8]) -> Option<NonZeroU32> {
     NonZeroU32::new(index)
 }
 
+/// The machine's host name (`gethostname`), read into `buf`: as much of
+/// it as fits with its terminator, up to that terminator; `None` if the
+/// system cannot say it.
+pub fn host_name(buf: &mut [u8]) -> Option<&[u8]> {
+    if buf.is_empty() {
+        return None;
+    }
+    // SAFETY: `buf` is valid for writes of its whole length, which the
+    // call is told and writes no further than.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    // A name cut to fit may lack its terminator (`name[namelen - 1]`).
+    let last = buf.len() - 1;
+    buf[last] = 0;
+    let n = buf.iter().position(|&b| b == 0).expect("terminated");
+    Some(&buf[..n])
+}
+
 /// The scope of the first interface that is up, is not loopback, and has
 /// a link-local IPv6 address, for a link-local address given without one
 /// (cf-socket.c's `get_scope_id`); `None` if there is none, or the list
@@ -1094,6 +1114,22 @@ mod tests {
         s.set(SocketOption::NoDelay)?;
         let state = s.connect(addr)?;
         Ok((s, state))
+    }
+
+    /// The host name is the kernel's, and a buffer too small for it gets
+    /// none of it, or a cut that ends inside it, never past its end.
+    #[test]
+    fn the_host_name_is_the_kernel_s() {
+        let kernel = std::fs::read("/proc/sys/kernel/hostname").unwrap();
+        let kernel = kernel.strip_suffix(b"\n").unwrap_or(&kernel);
+        let mut buf = [0xffu8; 1025];
+        assert_eq!(host_name(&mut buf), Some(kernel));
+        let mut short = [0xffu8; 2];
+        match host_name(&mut short) {
+            None => {}
+            Some(cut) => assert!(cut.len() <= 1 && kernel.starts_with(cut), "{cut:?}"),
+        }
+        assert_eq!(host_name(&mut []), None);
     }
 
     /// The int value of option `name` at `level` on `s`.

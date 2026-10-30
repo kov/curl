@@ -149,3 +149,12 @@ features: test-util
                 d.ending = Ending::Cut;
 --- new
                 d.lease.get().mark_close();
+
+=== a FETCH whose literal came whole says it is set up to read it
+file: crates/curl-core/src/proto/imap.rs
+witness: curl-core proto::imap::tests::over_the_wire::the_request_says_what_it_is_set_up_to_move
+features: test-util
+--- old
+            recv: !pc.no_socket,
+--- new
+            recv: true,

@@ -1349,6 +1349,12 @@ impl Request {
         }
         let size = self.sending.as_ref().and_then(|s| s.body.size());
         upload::announce_size(cx, size);
+        // Sent, the answer read in DONE (`Curl_xfer_setup_send`).
+        let ways = crate::deliver::Directions {
+            recv: false,
+            send: true,
+        };
+        crate::multi::mstate::xfer_setup(cx, ways);
         self.last = Final::Append;
         pc.no_socket = false;
         set_state(cx, pc, State::Stop);
@@ -1390,7 +1396,7 @@ impl Request {
             }
             let size = size.saturating_add(len as u64);
             self.pipeline.announce_size(cx, Some(size));
-            self.receive(pc, size);
+            self.receive(cx, pc, size);
             // A literal still to come is fetched, its answer after it
             // read as the transfer ends (`imap_done`'s `maxdownload`).
             if self.receiving.is_some() && self.asked.custom.is_some() {
@@ -1433,8 +1439,13 @@ impl Request {
     /// The literal's `size` bytes of body are to be read, as many as
     /// are delivered already counted (`maxdownload`): none left, nothing
     /// is (`Curl_xfer_setup_nop`).
-    fn receive(&mut self, pc: &mut ImapConn, size: u64) {
+    fn receive<H: Host>(&mut self, cx: &mut StepCx<'_, H>, pc: &mut ImapConn, size: u64) {
         pc.no_socket = self.pipeline.bytecount() == size;
+        let ways = crate::deliver::Directions {
+            recv: !pc.no_socket,
+            send: false,
+        };
+        crate::multi::mstate::xfer_setup(cx, ways);
         if !pc.no_socket {
             self.pipeline.expect(Expect {
                 size: Some(size),
@@ -1543,7 +1554,7 @@ impl Request {
                 format_args!("Written {chunk} bytes, {left} bytes are left for transfer"),
             );
         }
-        self.receive(pc, size);
+        self.receive(cx, pc, size);
         set_state(cx, pc, State::Stop);
         Ok(())
     }
@@ -1966,7 +1977,7 @@ impl super::Phases for Request {
                 if !ran? {
                     return Ok(DoStep::Doing);
                 }
-                self.dophase_done(lease);
+                self.dophase_done(cx, lease);
                 Ok(DoStep::Did)
             }
             DoPhase::Doing => match self.run(cx, lease) {
@@ -1975,7 +1986,7 @@ impl super::Phases for Request {
                     Err(e)
                 }
                 Ok(true) => {
-                    self.dophase_done(lease);
+                    self.dophase_done(cx, lease);
                     trace::debug_info(cx, format_args!("DO phase is complete"));
                     Ok(DoStep::Did)
                 }
@@ -1995,9 +2006,10 @@ impl Request {
     /// transfers nothing after it. Whether anything is exchanged after
     /// it is the connection's to say, as what the transfers on it set up
     /// last.
-    fn dophase_done(&mut self, lease: &mut ConnLease) {
+    fn dophase_done<H: Host>(&mut self, cx: &mut StepCx<'_, H>, lease: &mut ConnLease) {
         let (pc, _) = imap_of(lease);
         if self.no_body {
+            crate::multi::mstate::xfer_setup(cx, crate::deliver::Directions::default());
             pc.no_socket = true;
             self.receiving = None;
             self.sending = None;

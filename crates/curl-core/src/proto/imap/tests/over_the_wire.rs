@@ -650,6 +650,56 @@ fn the_server_s_time_to_answer_is_its_own_timer() {
     assert!(text.contains("[COMPLETED] [TIMEOUT] all cleared"), "{text}");
 }
 
+/// What the request is set up to move once made is said as C's
+/// `xfer_setup` says it: nothing for a FETCH whose literal came whole
+/// with its line, the body to send for an APPEND, nothing for a request
+/// that wants no body. In DO or DOING, as the answer comes.
+#[test]
+fn the_request_says_what_it_is_set_up_to_move() {
+    let setups = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter_map(|l| l.find("xfer_setup").map(|at| l[at..].to_owned()))
+            .collect()
+    };
+    let ran = tracing(
+        &mut serving(&[&fetching(&[])]),
+        &plain(),
+        FETCH_URL,
+        b"multi",
+        |_| {},
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(setups(&ran.text), ["xfer_setup: recv_idx=-1, send_idx=-1"]);
+    let talk = Conversation::replies(
+        &[GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"A003 OK\r\n"],
+        false,
+    )
+    .greeting();
+    let ran = tracing(
+        &mut serving(&[&talk]),
+        &plain(),
+        "imap://u:p@127.0.0.1:PORT/Sent",
+        b"multi",
+        |o| {
+            o.method = Method::Upload;
+            o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"hi".to_vec()).unwrap());
+        },
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(setups(&ran.text), ["xfer_setup: recv_idx=-1, send_idx=0"]);
+    let talk =
+        Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, b"A003 OK\r\n"], false).greeting();
+    let ran = tracing(
+        &mut serving(&[&talk]),
+        &plain(),
+        "imap://u:p@127.0.0.1:PORT/",
+        b"multi",
+        |o| o.method = Method::Head,
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(setups(&ran.text), ["xfer_setup: recv_idx=-1, send_idx=-1"]);
+}
+
 /// A transfer goes from DID to PERFORMING while the connection has a
 /// socket to exchange on, as C's `recv_idx` says: a FETCH whose literal
 /// came whole sets up nothing and goes to DONE, which reads the answer

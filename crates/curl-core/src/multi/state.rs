@@ -5125,7 +5125,6 @@ fn start_leg<H: Host>(
     mstate::enter(cx, MState::Connect);
     // The request starts from nothing (`Curl_req_hard_reset`).
     upload::trace_reset(cx, rewinding);
-    cx.mark_now(Timer::PostQueue);
     // Counted from nothing for each request (`Curl_init_do`).
     let (speedometer, report) = cx.progress_parts();
     report.sizes_mut().new_request();
@@ -5196,6 +5195,12 @@ fn start_leg<H: Host>(
         };
         ProtoState::start(&scheme, &url, before, cx)
     };
+    // Out of the queue once the request knows its origin and its
+    // credentials, before its protocol is checked and a connection looked
+    // for (`Curl_connect`, after `url_set_data_origin_and_creds`).
+    if started.is_ok() {
+        cx.mark_now(Timer::PostQueue);
+    }
     let proto = match started {
         Ok(Some(proto)) => proto,
         Ok(None) => {
@@ -5232,7 +5237,9 @@ fn start_leg<H: Host>(
                 }
                 Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
             };
-            // A connection without a network has its name at once.
+            // It moves nothing over a socket (`Curl_xfer_setup_nop`), and
+            // has its name at once.
+            mstate::xfer_setup(cx, Directions::default());
             cx.mark(Timer::NameLookup);
             return TransferState::ProtoConnect(Attached {
                 lease,

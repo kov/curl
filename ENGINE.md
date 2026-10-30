@@ -426,15 +426,20 @@ again as it adds a filter and as it starts over), `connected [0][…]` and `redu
 the connection is up, and `failed to connect [0][…]` before `connect failed -> N`, for a failed
 race and a failed handshake alike; `Curl_multi_will_close fd=N` as a drive closes a socket
 (`DriveCx`), which a socket a connection keeps is not: C closes it on its internal handle, which
-says it on the internal trace.
+says it on the internal trace. As a leg starts, its `.netrc` step's lines (`[NETRC] scanning`,
+`netrc: using credentials for`) and `transfer credentials:`, which says the credentials the
+handle's last request set out with (C's `state.creds` before the new ones replace it, kept on
+the `Easy` as `Shown`, through `reset`), except where a file was asked for and the credentials
+leave it nothing to change; then POSTQUEUE. `xfer_setup: recv_idx=…, send_idx=…` is said where
+C sets the request up (`Curl_xfer_setup_*`): HTTP's request, both ways, before its body is read;
+a file's connect, neither; POP3's body, and IMAP's literal, APPEND and request without a body.
 A transfer's pollset is traced wherever C makes one (`Curl_multi_pollset`): `pollset[…],
 timeouts=N` (`paused S/R (r/w)` for an empty one), for each transfer the multi works on (neither
 completed nor PENDING) as `wait` and `sockets` (`curl_multi_fdset`, `curl_multi_waitfds`)
 collect them, and for the transfer event handling assesses, after each run and as it is taken
 out; then `wait`'s `multi_wait(fds=N, timeout=T) tinternal=I` on the last of them, after the
 multi's own timeout is read, the waker counted in `fds` as it is watched (§3.6). A socket
-action traces `multi_run_dirty` as it comes to each dirty transfer. Not traced: the credentials
-line (`Curl_creds_trace`), `xfer_setup` and `[TIMEOUT]`; event mode's socket-hash
+action traces `multi_run_dirty` as it comes to each dirty transfer. Not traced: event mode's socket-hash
 lines (`ev new entry`, `ev entry … added transfer`, `ev update`, `ev update call`, `ev last user
 gone`), which count the readers, writers and owners of C's socket hash entries, a bookkeeping the
 engine's `SocketTable` does not keep in that form. A transfer let out of PENDING enters CONNECT
@@ -872,7 +877,8 @@ back is traced there, before the timer is armed, among its `[RLIMIT]` lines.
 the option's URL parsed) and `start_leg` for the first request: `Starts::single`, the limits
 armed, the application's CONNECT_TO list read again from its source (as C walks it for each
 connection it sets up; the header lists are read again as each request and each `CONNECT` is
-built), POSTQUEUE, the URL read back into `Run::url`, the protocol and a connection.
+built), the URL read back into `Run::url`, the protocol with its credentials, POSTQUEUE, and a
+connection.
 `Curl_retry_request` is the engine's: a request that got nothing back over a reused connection
 (`ProtoState::retryable`: HTTP with no head line and no body byte; a line protocol with no reply
 byte read for the request, C's `headerbytecount`, and no body byte, that wants a body and has not
@@ -3323,7 +3329,7 @@ pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree besi
 
 `Timings` holds per-leg sums (each at least 1 µs, one STARTTRANSFER per leg) plus points
 (REDIRECT) and is written by the engine as C's set points occur: STARTOP at Init, STARTSINGLE per
-leg, POSTQUEUE at acquire, NAMELOOKUP at the first answer, CONNECT/APPCONNECT from the connect
+leg, POSTQUEUE once the protocol has its credentials, NAMELOOKUP at the first answer, CONNECT/APPCONNECT from the connect
 machine's stats event, PRETRANSFER at DID, POSTTRANSFER at DID with nothing to send or at upload
 done, STARTTRANSFER at the first non-CONNECT client write, TOTAL every progress pass and at
 completion; a jump to completion from before DID marks PRE, POST and START together.

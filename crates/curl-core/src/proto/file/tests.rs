@@ -1356,3 +1356,27 @@ fn an_upload_is_written_no_further_than_its_size() {
     assert_eq!(run(e).0, Ok(()));
     assert_eq!(s.read("f"), b"abcde");
 }
+
+/// A file moves nothing over a socket, said as C's `xfer_setup` says it
+/// once the file is open, and the request says the credentials it set
+/// out from, none for the first (`Curl_xfer_setup_nop`,
+/// `url_set_data_creds_netrc`).
+#[test]
+fn a_file_says_it_is_set_up_to_move_nothing() {
+    let s = Scratch::new("setup");
+    s.file("small", b"hello", Y2K_NOON);
+    let (mut e, _) = easy(&s.url("small"));
+    let lines = traced(&mut e, b"multi");
+    let (r, _) = run(e);
+    assert_eq!(r, Ok(()));
+    let lines = lines.0.lock().unwrap().clone();
+    let at = |needle: &str| lines.iter().position(|l| l.starts_with(needle));
+    let creds = at("[MULTI] [CONNECT] transfer credentials: -").expect("said");
+    let queued = at("[MULTI] [CONNECT] [PGRS-POSTQUEUE] set").expect("marked");
+    let setup = at("[MULTI] [CONNECT] xfer_setup: recv_idx=-1, send_idx=-1").expect("said");
+    let named = at("[MULTI] [CONNECT] [PGRS-NAMELOOKUP]").expect("marked");
+    assert!(
+        creds < queued && queued < setup && setup < named,
+        "{lines:?}"
+    );
+}

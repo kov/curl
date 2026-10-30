@@ -52,6 +52,7 @@ const WHOLE_START: &str = "[MULTI] [INIT] added to multi, mid=1, running=1, tota
     [MULTI] [SETUP] [PGRS-STARTOP] set
     [MULTI] [SETUP] [PGRS-STARTSINGLE] set
     [MULTI] [SETUP] -> [CONNECT]
+    [MULTI] [CONNECT] transfer credentials: -
     [MULTI] [CONNECT] [PGRS-POSTQUEUE] set
     [MULTI] [CONNECT] [CPOOL] added connection 0. The cache now contains 1 members
     [MULTI] [CONNECT] Curl_conn_setup() -> 0
@@ -74,6 +75,7 @@ fn a_request_is_traced_through_c_s_states() {
         [MULTI] [CONNECTING] reduced to [0][TCP]
         [MULTI] [CONNECTING] -> [PROTOCONNECT]
         [MULTI] [PROTOCONNECT] -> [DO]
+        [MULTI] [DO] xfer_setup: recv_idx=0, send_idx=0
         [MULTI] [DO] -> [DID]
         [MULTI] [DID] [PGRS-PRETRANSFER] added Nus
         [MULTI] [DID] [PGRS-POSTRANSFER] added Nus
@@ -111,10 +113,12 @@ fn a_redirect_starts_over_from_setup() {
             [MULTI] [PERFORMING] -> [SETUP]
             [MULTI] [SETUP] [PGRS-STARTSINGLE] set
             [MULTI] [SETUP] -> [CONNECT]
+            [MULTI] [CONNECT] transfer credentials: -
             [MULTI] [CONNECT] [PGRS-POSTQUEUE] set
             [MULTI] [CONNECT] -> [CONNECTING]
             [MULTI] [CONNECTING] -> [PROTOCONNECT]
             [MULTI] [PROTOCONNECT] -> [DO]
+            [MULTI] [DO] xfer_setup: recv_idx=0, send_idx=0
             [MULTI] [DO] -> [DID]
             [MULTI] [DID] [PGRS-PRETRANSFER] added Nus
             [MULTI] [DID] [PGRS-POSTRANSFER] added Nus
@@ -291,3 +295,73 @@ fn a_response_that_closes_is_traced_as_closing() {
     );
     assert!(multi_lines(&ran).contains(&want), "{:?}", multi_lines(&ran));
 }
+
+/// Each request says, as it starts, the credentials the handle's last
+/// request set out with, as C traces its `state.creds` before it takes
+/// the new ones: none for the first, the application's for a redirect
+/// after it. With a `.netrc` asked for, credentials the file would not
+/// change are not said (`url_set_data_creds_netrc`), and an entry found
+/// is said to be used.
+#[test]
+fn a_request_says_the_credentials_the_last_one_set_out_with() {
+    let creds = |lines: &[String]| -> Vec<String> {
+        lines
+            .iter()
+            .filter(|l| l.contains("credentials"))
+            .cloned()
+            .collect()
+    };
+    let moved = b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[moved, OK], false);
+    let ran = get_with(&mut m, tracing_multi(), "/", talk, |o| {
+        o.http.follow = Follow::All;
+        o.http.unrestricted_auth = true;
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.login.make_mut().unwrap().authzid = Some(b"az".to_vec());
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        creds(&multi_lines(&ran)),
+        expect(
+            "[MULTI] [CONNECT] transfer credentials: -
+            [MULTI] [CONNECT] transfer credentials: user=u, passwd=***, sasl_authzid=az, \
+             oauth_bearer=, source=2"
+        )
+    );
+
+    let path = std::env::temp_dir().join(format!("curl-core-trace-netrc-{}", std::process::id()));
+    std::fs::write(&path, b"machine 127.0.0.1 login nu password np\n").unwrap();
+    let file = path.as_os_str().as_encoded_bytes().to_vec();
+    let netrc = |o: &mut Options, login: bool| {
+        o.netrc.make_mut().unwrap().mode = crate::options::NetrcMode::Optional;
+        o.netrc.make_mut().unwrap().file = Some(file.clone());
+        if login {
+            *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
+        }
+    };
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get_with(&mut m, tracing_multi(), "/", talk, |o| netrc(o, true));
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(creds(&multi_lines(&ran)), Vec::<String>::new());
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get_with(&mut m, tracing_multi(), "/", talk, |o| netrc(o, false));
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(ran.result, Ok(()));
+    let scanned = format!(
+        "[MULTI] [CONNECT] [NETRC] scanning '{}' for host '127.0.0.1' user ''",
+        path.display()
+    );
+    assert_eq!(
+        creds(&multi_lines(&ran)),
+        [
+            "[MULTI] [CONNECT] netrc: using credentials for 127.0.0.1 as nu".to_owned(),
+            "[MULTI] [CONNECT] transfer credentials: -".to_owned(),
+        ]
+    );
+    assert!(
+        multi_lines(&ran).contains(&scanned),
+        "{:?}",
+        multi_lines(&ran)
+    );
+}
+

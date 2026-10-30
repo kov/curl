@@ -1668,6 +1668,14 @@ impl Request {
         let head =
             HeadParser::with_aliases(exchange, aliases).map_err(|_| ErrorKind::OutOfMemory)?;
         self.head = Some(head);
+        // Both ways, whatever the request (`Curl_xfer_setup_sendrecv`).
+        crate::multi::mstate::xfer_setup(
+            cx,
+            crate::deliver::Directions {
+                recv: true,
+                send: true,
+            },
+        );
         // A body held for a 100 is not read behind the head, but C asks
         // its readers for it, the 100's wait among them, so its send limit
         // starts now.

@@ -355,6 +355,54 @@ impl Credentials {
     }
 }
 
+/// What C's trace says of a request's credentials (`Curl_creds_trace`):
+/// the user and the identity acted for as they are, whether there is a
+/// password or a token, and where they came from.
+#[derive(Debug)]
+pub(crate) struct Shown {
+    user: Vec<u8>,
+    password: bool,
+    authzid: Vec<u8>,
+    bearer: bool,
+    source: Source,
+}
+
+impl Shown {
+    pub(crate) fn of(c: &Credentials) -> Result<Shown, OutOfMemory> {
+        Ok(Shown {
+            user: copy(&c.user)?,
+            password: !c.password.is_empty(),
+            authzid: copy(&c.authzid)?,
+            bearer: !c.bearer.is_empty(),
+            source: c.source,
+        })
+    }
+
+    /// The line's parts after its `msg: `: the user, `***` for a password
+    /// there is, the identity, `***` for a token, and C's number for the
+    /// source (`CREDS_*`).
+    pub(crate) fn parts(&self) -> [&[u8]; 10] {
+        let secret = |there: bool| -> &'static [u8] { if there { b"***" } else { b"" } };
+        let source: &'static [u8] = match self.source {
+            Source::Url => b"1",
+            Source::Options => b"2",
+            Source::Netrc => b"3",
+        };
+        [
+            b"user=",
+            &self.user,
+            b", passwd=",
+            secret(self.password),
+            b", sasl_authzid=",
+            &self.authzid,
+            b", oauth_bearer=",
+            secret(self.bearer),
+            b", source=",
+            source,
+        ]
+    }
+}
+
 /// What a request authenticates with to one peer: a user and a password,
 /// a token and the service it is authenticated as, each empty for none.
 #[derive(Clone, Copy, Debug)]

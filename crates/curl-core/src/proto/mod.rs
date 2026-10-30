@@ -316,9 +316,31 @@ pub(crate) fn with_netrc<H: Host>(
     let netrc = &cx.easy().options().netrc;
     let mode = netrc.mode;
     let user = match Credentials::netrc_lookup(credentials.as_ref(), mode) {
-        NetrcLookup::No => return Ok(credentials),
+        // Credentials a file would not change are taken as they are,
+        // said only where no file is asked for.
+        NetrcLookup::No => {
+            let says = mode == NetrcMode::Ignored;
+            return set_out_with(credentials, says, cx);
+        }
         NetrcLookup::For(user) => user.map(copy).transpose()?,
     };
+    // The file's name is copied out of the options only to be said.
+    if trace::traces(cx, crate::components::Component::Multi) {
+        let file = netrc.file.as_deref().map(copy).transpose()?;
+        crate::multi::mstate::trace_with(
+            cx,
+            &[
+                b"[NETRC] scanning '",
+                file.as_deref().unwrap_or(b"(nil)"),
+                b"' for host '",
+                host,
+                b"' user '",
+                user.as_deref().unwrap_or_default(),
+                b"'",
+            ],
+        );
+    }
+    let netrc = &cx.easy().options().netrc;
     let path = match &netrc.file {
         Some(file) => Some(copy(file)?),
         None => netrc::default_path().map_err(|_| ErrorKind::OutOfMemory)?,
@@ -343,7 +365,13 @@ pub(crate) fn with_netrc<H: Host>(
                 format_args!("control code detected in .netrc credentials"),
             ))
         }
-        Ok(found) => Ok(Some(Credentials::with_netrc(credentials, found))),
+        Ok(found) => {
+            crate::multi::mstate::trace_with(
+                cx,
+                &[b"netrc: using credentials for ", host, b" as ", &found.user],
+            );
+            set_out_with(Some(Credentials::with_netrc(credentials, found)), true, cx)
+        }
         Err(NetrcError::OutOfMemory) => Err(ErrorKind::OutOfMemory),
         Err(e) if e == NetrcError::NoMatch || mode == NetrcMode::Optional => {
             let file = match &cx.easy().options().netrc.file {
@@ -360,7 +388,7 @@ pub(crate) fn with_netrc<H: Host>(
                     b" file; using defaults",
                 ],
             );
-            Ok(credentials)
+            set_out_with(credentials, true, cx)
         }
         Err(e) => Err(trace::fail(
             cx,
@@ -368,6 +396,37 @@ pub(crate) fn with_netrc<H: Host>(
             format_args!(".netrc error: {}", e.text()),
         )),
     }
+}
+
+/// The request sets out with `credentials`: said, if C's `.netrc` step
+/// `says` so, as the handle's last request set out (`state.creds` as
+/// `url_set_data_creds_netrc` traces it, before it takes these), then
+/// kept for the next to say.
+fn set_out_with<H: Host>(
+    credentials: Option<Credentials>,
+    says: bool,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Option<Credentials>, ErrorKind> {
+    // Taken out, as these replace it.
+    let before = cx.easy_mut().shown_credentials.take();
+    if says {
+        const MSG: &[u8] = b"transfer credentials: ";
+        match &before {
+            None => crate::multi::mstate::trace_with(cx, &[MSG, b"-"]),
+            Some(shown) => {
+                let mut line = [MSG; 11];
+                line[1..].copy_from_slice(&shown.parts());
+                crate::multi::mstate::trace_with(cx, &line);
+            }
+        }
+    }
+    let shown = credentials
+        .as_ref()
+        .map(crate::auth::creds::Shown::of)
+        .transpose()
+        .map_err(|_| ErrorKind::OutOfMemory)?;
+    cx.easy_mut().shown_credentials = shown;
+    Ok(credentials)
 }
 
 /// C's `.netrc` step for a URL that no HTTP request is made for: one of

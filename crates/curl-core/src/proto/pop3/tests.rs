@@ -349,6 +349,23 @@ mod over_the_wire {
         assert!(text.contains("[COMPLETED] [TIMEOUT] all cleared"), "{text}");
     }
 
+    /// A retrieval is set up to read its body, said as C's `xfer_setup`
+    /// says it.
+    #[test]
+    fn a_retrieval_says_it_is_set_up_to_read() {
+        let talk = in_the_clear();
+        let mut m = serving(&[&talk]);
+        let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+        let ran = tracing(&mut m, &plain(), &url, b"multi", |_| {});
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        let setups: Vec<&str> = ran
+            .text
+            .lines()
+            .filter_map(|l| l.find("xfer_setup").map(|at| &l[at..]))
+            .collect();
+        assert_eq!(setups, ["xfer_setup: recv_idx=0, send_idx=-1"]);
+    }
+
     #[test]
     fn a_message_is_retrieved_after_a_clear_text_login() {
         let talk = in_the_clear();

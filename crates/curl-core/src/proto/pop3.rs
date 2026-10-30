@@ -1039,6 +1039,14 @@ impl Request {
         }
         self.eob = Eob::after_ok();
         if self.body {
+            // Read, for as long as the body is (`Curl_xfer_setup_recv`).
+            crate::multi::mstate::xfer_setup(
+                cx,
+                crate::deliver::Directions {
+                    recv: true,
+                    send: false,
+                },
+            );
             self.receiving = true;
             let after = pc.pp.after_reply().unwrap_or_default();
             let n = after.len();

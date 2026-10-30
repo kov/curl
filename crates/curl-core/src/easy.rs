@@ -59,6 +59,10 @@ pub struct Easy {
     /// the application. Past `MAX_SET_PER_REQUEST`, no cookie of any kind
     /// is stored until the next request starts.
     pub(crate) set_cookies: u8,
+    /// The credentials the handle's last request set out with, as the
+    /// next request's trace says them before it takes its own (C's
+    /// `state.creds`, kept until the handle is closed, through `reset`).
+    pub(crate) shown_credentials: Option<crate::auth::creds::Shown>,
     /// The connection the handle's transfer had last, in the pool of its
     /// multi or its share: the one its next search tries first, and the
     /// one a transfer that only connected sends and receives on
@@ -233,6 +237,7 @@ impl Easy {
                 None => None,
             },
             set_cookies: 0,
+            shown_credentials: None,
             last_conn: None,
             caches: None,
             share: None,

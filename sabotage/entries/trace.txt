@@ -750,3 +750,30 @@ witness: curl-core proto::http::tests::tls::a_handshake_put_off_that_fails_fails
                     Err(_) => (0, Some(ErrorKind::SendError)),
 --- new
                     Err(e) => (0, Some(trace::fail_with(cx, ErrorKind::SendError, &[b"Send failure: ", curl_os::error::ErrorText::of(&e).as_bytes()]))),
+
+=== a request's credentials are forgotten before the next request says them
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::http::tests::multi_trace::a_request_says_the_credentials_the_last_one_set_out_with
+features: test-util
+--- old
+    cx.easy_mut().shown_credentials = shown;
+--- new
+    drop(shown);
+
+=== credentials a .netrc file would not change are said
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::http::tests::multi_trace::a_request_says_the_credentials_the_last_one_set_out_with
+features: test-util
+--- old
+            let says = mode == NetrcMode::Ignored;
+--- new
+            let says = true;
+
+=== a file says it is set up to move bytes over a socket it has not
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::file::tests::a_file_says_it_is_set_up_to_move_nothing
+features: test-util
+--- old
+            mstate::xfer_setup(cx, Directions::default());
+--- new
+            mstate::xfer_setup(cx, Directions { recv: true, send: false });

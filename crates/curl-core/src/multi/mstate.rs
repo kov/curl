@@ -64,6 +64,18 @@ pub(crate) fn trace<H: Host>(cx: &mut StepCx<'_, H>, args: std::fmt::Arguments<'
     }
 }
 
+/// The request is set up to move bytes the `ways` given over the
+/// connection's first socket, said as C says it (`xfer_setup`, its
+/// `recv_idx` and `send_idx`, -1 for a way not taken).
+pub(crate) fn xfer_setup<H: Host>(cx: &mut StepCx<'_, H>, ways: crate::deliver::Directions) {
+    let index = |taken: bool| if taken { 0 } else { -1 };
+    let (recv, send) = (index(ways.recv), index(ways.send));
+    trace(
+        cx,
+        format_args!("xfer_setup: recv_idx={recv}, send_idx={send}"),
+    );
+}
+
 /// `trace` with a line made of `parts`, which need not be text.
 pub(crate) fn trace_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
     if trace::traces(cx, Component::Multi) {

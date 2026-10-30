@@ -80,13 +80,6 @@ pub(crate) struct Before<'r> {
 
 /// A protocol's state for one transfer.
 #[derive(Debug)]
-#[cfg_attr(
-    any(test, feature = "test-util"),
-    expect(
-        clippy::large_enum_variant,
-        reason = "the large one is the test protocols' player, not in the product"
-    )
-)]
 pub(crate) enum ProtoState {
     /// Boxed, as HTTP's: it is moved with the transfer's state at every
     /// step, and a `file:` transfer's DO is a step a piece.
@@ -105,8 +98,9 @@ pub(crate) enum ProtoState {
     Null,
     #[cfg(any(test, feature = "test-util"))]
     Stall,
+    /// Boxed, as HTTP's.
     #[cfg(any(test, feature = "test-util"))]
-    Script(script::Player),
+    Script(Box<script::Player>),
     #[cfg(any(test, feature = "test-util"))]
     Tcp,
 }
@@ -563,7 +557,10 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             b"stall" => ProtoState::Stall,
             #[cfg(any(test, feature = "test-util"))]
-            b"script" => ProtoState::Script(script::Player::default()),
+            b"script" => ProtoState::Script(
+                curl_alloc::try_box(script::Player::default())
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
             #[cfg(any(test, feature = "test-util"))]
             b"tcp" => ProtoState::Tcp,
             _ => return Ok(None),

@@ -941,10 +941,6 @@ struct RequestEnd {
 /// the output and the request end, and the connection goes back. A
 /// protocol that awaits its last answer leaves it waiting in DONE,
 /// given back to be run again as what it waits for comes.
-#[expect(
-    clippy::result_large_err,
-    reason = "the waiting end goes back to the transfer's state, which holds it whole"
-)]
 fn multi_done<H: Host>(
     cx: &mut StepCx<'_, H>,
     http: &mut Inherited,

@@ -15,7 +15,7 @@ use super::buf::HeldBytes;
 use super::h2proxy::Answer;
 use super::io::{Events, Recv, Sent, Socket};
 use super::layer::{Alive, Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, Part};
-use super::quic::{Quic, QuicIo, RecvRoom};
+use super::quic::{Quic, QuicIo, RecvRoom, SocketIo, Via};
 use crate::components::Component;
 use crate::conn::layer::LayerCalls as _;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
@@ -397,7 +397,14 @@ impl super::layer::H3Streams for Tunnelled<'_> {
     }
 }
 
+/// The connection to the proxy is on its own socket.
 impl QuicIo for Tunnelled<'_> {
+    fn via(&mut self) -> Via<'_> {
+        Via::Socket(self)
+    }
+}
+
+impl SocketIo for Tunnelled<'_> {
     fn socket(&self) -> &dyn Socket {
         self.socket
     }

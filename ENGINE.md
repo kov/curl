@@ -228,7 +228,8 @@ curl-core/src/
     layer.rs                 Layer, Below, LayerStack, LayerCx; the tests' layers
     mux.rs                   Session, Mux, Carrier: the session a connection multiplexes over
     quic.rs                  Quic, QuicIo, RecvRoom: a QUIC connection over its UDP
-                             socket, its packets batched both ways and its timer
+                             socket or a tunnel's layers, its packets batched both
+                             ways and its timer
     tls.rs                   TlsLayer: the layer over a TLS library's session
     shutdown.rs, shutdown/   ShutdownSet, ConnSettings: connections saying goodbye
     chain.rs                 Chain: C's filter chain rendered for the trace from how
@@ -1945,8 +1946,8 @@ then (`Curl_cf_ngtcp2_io_ctx_update_time`) from the clock the connection was mad
 it keeps (`SharedClock`, the multi's one clock, held once): whichever transfer, multi or share
 uses it later, the library is never handed a time before one it had. A fatal error closes the
 connection, its close packet sent at once. The transfer reaches all of this through `LayerCx`,
-and the socket through `QuicIo`, asked for at each call: the socket stays in the connection while
-the library's events reach the transfers.
+and where the datagrams go through `QuicIo`, asked for at each call: the socket stays in the
+connection while the library's events reach the transfers.
 
 The room a connection on a socket receives in is the multi's (`RecvRoom`, C's `xfer_sockbuf`),
 one per multi, made zeroed at the first receive and lent to one receive at a time: every
@@ -1961,17 +1962,22 @@ they are for: a request's step (`H3Step`) the streams' transfers; a call into th
 connection (`h3proxy::Tunnelled`) the tunnel; a
 pooled connection's check or goodbye (`quic::Lone`) streams no transfer has and no timer; an
 attempt's (`quic::Over`) the drive's, which lends a timer of its own and no early data, since a
-connection sending it is connected at once and its handshake ends past the race. A connection whose
-datagrams go through a proxy's CONNECT-UDP tunnel is made layered, a fact it keeps: each
-datagram goes to the stream's layers on its own (`QuicIo::send_below`), a run cut at its
+connection sending it is connected at once and its handshake ends past the race. Where a call's
+datagrams go is the call's context's to say, the connection holding no flag of it:
+`QuicIo::via` gives the context back as a `SocketIo`, which reaches the connection's own UDP
+socket, or a `LayersIo`, which reaches the layers of a stream, the one fact behind the choice
+being the connection's transport for an open connection (`Transport::Datagram` or `Stream`,
+`Carrier::quic_call` for a pooled connection's check and goodbye, `Conn::datagram_socket` for
+a request's step) and the attempt's kind for a handshake (the race's socket, or the tunnel's
+stream in `multi/state/quictunnel.rs`); `Over` is either, by what it is over. A connection
+whose datagrams go through a proxy's CONNECT-UDP tunnel sends each datagram to the stream's
+layers on its own (`LayersIo::send_below`), a run cut at its
 segment size and only a whole datagram sent (`vquic_cf_send`), and comes back one per receive
 into a room of its own (`tunnel_inbuf`), C's 64 KiB or the path's largest datagram if larger,
 made zeroed at its first receive and grown as that grows, at most 1000 a pass (`recv_below`,
 `progress_ingress(sub-filters)`): the multi's room is the proxy connection's below it, which
 receives while the origin's receive runs. What the layers hold from before is flushed as
-each egress starts (`flush_below`), as C flushes its filters before it drives them. The
-contexts that reach the layers give these: the request's step through the connection's carrier,
-and the setup's `Over` with `quic::Path::Layers`.
+each egress starts (`flush_below`), as C flushes its filters before it drives them.
 
 **A request's stream.** `proto/http/h3.rs` is C's `h3_stream_ctx` and `cf_ngtcp2_send` and
 `_recv`, in their order: each call reads what came first, sends after, and sets the timer, the
@@ -2880,9 +2886,10 @@ setup's next handshake is `Due::Quic` in place of the origin's TLS (`multi/state
 `conn/capsule.rs`'s `CapsuleLayer` goes on the stream, seeded with what the proxy sent after its
 answer, each datagram a capsule both ways (the codec C's `capsule.c`, a bad capsule failing the
 read as C says it; at most four 16 KiB chunks held to read, a capsule taken whole to send, `OUT`
-asked for while some waits); the origin's `Quic` is made layered over the stream's ends
+asked for while some waits); the origin's `Quic` is made for the stream's ends
 (`ConnectMachine::tunnel_quic`, the origin's TLS and `Component::Http3` whatever the race made)
-and held by `Handshake::Quic`, started and its connect driven over the layers as one over a
+and held by `Handshake::Quic`, started and its connect driven over the layers, each call's
+context an `Over` the stream's layers, as one over a
 socket is (`Quic::start`, then `Quic::connect`), so under a session allowing early data it is
 connected at once and the request goes as early data, reported as over a socket; done, it rides in `Dialed` (`put_quic`, `Handshook::Quic`) and becomes the connection's HTTP/3
 session as the setup ends. The chain is C's: `[HTTP/3][CAPSULE]` on top of the tunnel's filters,

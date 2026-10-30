@@ -1058,12 +1058,13 @@ impl Conn {
         self.session = mux::Speaks::Http1;
     }
 
-    /// The socket under it, if it has a network.
-    pub(crate) fn stream_socket(&self) -> Option<&dyn io::Socket> {
+    /// Its own datagram socket, which a QUIC connection dialed to its
+    /// peer sends on; none for one over a stream, which a QUIC
+    /// connection layered over a tunnel sends through.
+    pub(crate) fn datagram_socket(&self) -> Option<&dyn io::Socket> {
         match &self.transport {
-            Transport::Stream(stream) => Some(stream.socket()),
             Transport::Datagram(datagrams) => Some(datagrams.socket()),
-            Transport::Local => None,
+            Transport::Stream(_) | Transport::Local => None,
         }
     }
 

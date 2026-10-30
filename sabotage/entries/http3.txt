@@ -221,7 +221,7 @@ witness: curl-core conn::quic::tests::idle_past_the_peer_s_timeout_or_shut_down_
 file: crates/curl-core/src/proto/http3.rs
 witness: curl-core proto::http::tests::h3_trace::an_idle_connection_closes_saying_goodbye
 --- old
-        Ok(match self.quic.close(&mut over) {
+        Ok(match below.quic_call(&mut lone, |io| quic.close(io)) {
 --- new
         Ok(match true {
 
@@ -571,14 +571,43 @@ witness: curl-core conn::quic::tests::a_tunnel_s_short_send_fails_and_a_blocked_
 --- new
                 Ok(Sent::Bytes(n)) => sent += n.get(),
 
-=== a layered connection sends on its socket all the same
-file: crates/curl-core/src/conn/quic.rs
-witness: curl-core conn::quic::tests::a_tunnel_takes_a_datagram_at_a_time
+=== a layered connection's goodbye goes on the stream's socket
+file: crates/curl-core/src/conn/mux.rs
+witness: curl-core proto::http::tests::h3_trace::a_tunnelled_connection_says_goodbye_through_its_layers
 --- old
-        if self.state.layered {
-            return self.send_through(cx, len, gso);
-        }
+            Over::Stream(stream) => f(&mut super::quic::Over {
+                cx,
+                on: stream.below(Some(self.socket)),
+            }),
 --- new
+            Over::Stream(stream) => f(&mut super::quic::Over {
+                cx,
+                on: stream.socket(),
+            }),
+
+=== a direct connection's check and goodbye go through layers
+file: crates/curl-core/src/conn/mux.rs
+witness: curl-core proto::http::tests::h3_trace::a_direct_connection_is_checked_and_closed_over_its_socket
+--- old
+            Over::Datagrams(datagrams) => f(&mut super::quic::Over {
+                cx,
+                on: datagrams.socket(),
+            }),
+--- new
+            Over::Datagrams(datagrams) => f(&mut super::quic::Over {
+                cx,
+                on: datagrams.below(Some(self.socket)),
+            }),
+
+=== a transfer's step on a direct connection goes through layers
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_get_over_http3_is_answered
+--- old
+        if self.lease.conn().datagram_socket().is_some() {
+            Via::Socket(self)
+--- new
+        if false {
+            Via::Socket(self)
 
 === a tunnel's datagrams are read one per call
 file: crates/curl-core/src/conn/quic.rs
@@ -601,12 +630,12 @@ witness: curl-core conn::quic::tests::a_tunnel_gives_a_datagram_at_a_time
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::a_tunnel_takes_a_datagram_at_a_time
 --- old
-        if self.state.layered {
-            cx.flush_below()?;
+        if let Via::Layers(below) = cx.via() {
+            below.flush_below()?;
         }
 --- new
-        if self.state.layered {
-            let _ = cx;
+        if let Via::Layers(below) = cx.via() {
+            let _ = below;
         }
 
 === the capsules that came with the proxy's answer are dropped
@@ -635,16 +664,16 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is
         let proxied = self.route.proxy_over_quic();
 
 === the origin's QUIC through an HTTP/3 proxy sends on the socket, not through the tunnel
-file: crates/curl-core/src/conn/connect.rs
+file: crates/curl-core/src/multi/state/quictunnel.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
 --- old
-            component,
-            tunnelled,
-        )
+        on: stream.below(traced),
+    };
+    match quic.connect(&mut over) {
 --- new
-            component,
-            false,
-        )
+        on: stream.socket(),
+    };
+    match quic.connect(&mut over) {
 
 === the chain through an HTTP/3 proxy shows the origin's TLS for QUIC's
 file: crates/curl-core/src/conn/chain.rs
@@ -764,7 +793,7 @@ witness: curl-core a_tunnel_through_an_http3_proxy_survives_every_allocation_fai
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core http3_through_an_http3_proxy_survives_every_allocation_failing
 --- old
-        sent.map_err(|_| below.failure().unwrap_or(ErrorKind::SendError))
+        sent.map_err(|_| self.on.failure().unwrap_or(ErrorKind::SendError))
 --- new
         sent.map_err(|_| ErrorKind::SendError)
 
@@ -969,17 +998,17 @@ file: crates/curl-core/src/conn/quic.rs
 witness: curl-core one_quic_receive_room_per_multi
 features: test-util,debug-hooks
 --- old
-            let want = TUNNEL_ROOM.max(self.conn.path_max_payload());
+        let want = TUNNEL_ROOM.max(self.conn.path_max_payload());
 --- new
-            let want = RECV_ROOM.max(self.conn.path_max_payload());
+        let want = RECV_ROOM.max(self.conn.path_max_payload());
 
 === a tunnelled QUIC connection's room stays 64 KiB past the path's largest datagram
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::a_tunnel_receives_in_its_own_room_and_a_socket_in_the_multis
 --- old
-            let want = TUNNEL_ROOM.max(self.conn.path_max_payload());
+        let want = TUNNEL_ROOM.max(self.conn.path_max_payload());
 --- new
-            let want = TUNNEL_ROOM;
+        let want = TUNNEL_ROOM;
 
 === the multi's receive room is lent twice at once
 file: crates/curl-core/src/conn/quic.rs

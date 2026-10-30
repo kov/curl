@@ -456,7 +456,7 @@ fn proxy(script: &Arc<Mutex<Script>>) -> (H3Proxy, ManualClock) {
         crate::tls::SessionPeer::new(&identity, &origin, None, &"test", crate::conn::Dial::Quic)
             .unwrap();
     let shared = SharedClock::new(Box::new(clock.clone())).unwrap();
-    let quic = Quic::new(conn, peer, remote, shared, H3P, false).unwrap();
+    let quic = Quic::new(conn, peer, remote, shared, H3P).unwrap();
     (H3Proxy::new(Box::new(quic), false), clock)
 }
 
@@ -679,7 +679,7 @@ fn a_send_into_the_tunnel_is_the_stream_s_body() {
 #[test]
 fn a_quic_call_over_another_context_lends_its_capabilities() {
     use crate::conn::io::{Conversation, FakeNet, Peer};
-    use crate::conn::quic::{Lone, Over, Path};
+    use crate::conn::quic::{Lone, Over};
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
     let mut net = FakeNet::new(crate::time::ManualClock::new().unwrap())
         .with_peer(at, Peer::Accepts)
@@ -708,7 +708,7 @@ fn a_quic_call_over_another_context_lends_its_capabilities() {
     let mut over_asked = asked();
     let mut over = Over {
         cx: &mut over_asked,
-        path: Path::Socket(&*socket),
+        on: &*socket,
     };
     assert_eq!(each(&mut over), (Heard::Failed, true));
     assert_eq!(

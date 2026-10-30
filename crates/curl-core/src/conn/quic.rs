@@ -97,35 +97,44 @@ const TUNNEL_ROOM: usize = 64 * 1024;
 /// (`NGTCP2_MAX_UDP_PAYLOAD_SIZE`).
 const CLOSE_ROOM: usize = 1200;
 
-/// A `LayerCx` with the UDP socket the connection goes over, asked for
-/// at each call on it, so that nothing holds it while the library tells
-/// the transfer what it read.
+/// The `LayerCx` of a call on a QUIC connection, which says where the
+/// connection's datagrams go: the context knows, from the connection's
+/// transport or the attempt's kind, and the connection asks it at each
+/// send and receive, so that nothing holds the way while the library
+/// tells the transfer what it read.
 pub(crate) trait QuicIo: LayerCx {
-    /// The socket under the connection: its UDP socket, or the one the
-    /// tunnel its datagrams go through is over.
-    fn socket(&self) -> &dyn Socket;
+    /// The context, as one over a socket or over layers.
+    fn via(&mut self) -> Via<'_>;
+}
 
+/// Where a call's datagrams go: the context itself, as the context of a
+/// connection on a UDP socket of its own, or of one layered over a
+/// tunnel's stream (`qctx->sockfd == CURL_SOCKET_BAD`).
+pub(crate) enum Via<'a> {
+    Socket(&'a mut dyn SocketIo),
+    Layers(&'a mut dyn LayersIo),
+}
+
+/// The context of a call on a connection over its own UDP socket.
+pub(crate) trait SocketIo: QuicIo {
+    /// The socket.
+    fn socket(&self) -> &dyn Socket;
+}
+
+/// The context of a call on a connection layered over a tunnel, whose
+/// datagrams go through the layers below it.
+pub(crate) trait LayersIo: QuicIo {
     /// Send `datagram` through the layers below
-    /// (`Curl_conn_cf_send(cf->next)`), for a connection layered over a
-    /// tunnel; only a context that reaches them is given one.
-    fn send_below(&mut self, datagram: &[u8]) -> Result<Sent, ErrorKind> {
-        let _ = datagram;
-        unreachable!("a QUIC connection over its socket sends through it")
-    }
+    /// (`Curl_conn_cf_send(cf->next)`).
+    fn send_below(&mut self, datagram: &[u8]) -> Result<Sent, ErrorKind>;
 
     /// Receive a datagram into `buf` from the layers below
-    /// (`Curl_conn_cf_recv(cf->next)`), for a connection layered over a
-    /// tunnel.
-    fn recv_below(&mut self, buf: &mut [u8]) -> Result<Recv, ErrorKind> {
-        let _ = buf;
-        unreachable!("a QUIC connection over its socket receives from it")
-    }
+    /// (`Curl_conn_cf_recv(cf->next)`).
+    fn recv_below(&mut self, buf: &mut [u8]) -> Result<Recv, ErrorKind>;
 
     /// Send on what the layers below hold from datagrams before
-    /// (`Curl_conn_flush`), for a connection layered over a tunnel.
-    fn flush_below(&mut self) -> Result<(), ErrorKind> {
-        unreachable!("a QUIC connection over its socket holds nothing below")
-    }
+    /// (`Curl_conn_flush`).
+    fn flush_below(&mut self) -> Result<(), ErrorKind>;
 }
 
 /// An event of a stream no transfer has, as C's callbacks hear one whose
@@ -204,22 +213,16 @@ impl H3Streams for Lone<'_> {
     }
 }
 
-/// Where a context's datagrams go: the socket an attempt dialed, or the
-/// layers of a connection's stream, which a connection layered over a
-/// tunnel sends through.
-pub(crate) enum Path<'a> {
-    Socket(&'a dyn Socket),
-    Layers(Below<'a>),
-}
-
-/// A call's context over `path`: an attempt's, or a connection's that no
-/// transfer is stepping.
-pub(crate) struct Over<'a> {
+/// A call's context on what its datagrams go `on`: the socket an
+/// attempt dialed, or a connection's own (`&dyn Socket`); or the layers
+/// of a connection's stream, for one layered over a tunnel (`Below`). An
+/// attempt's, or a connection's that no transfer is stepping.
+pub(crate) struct Over<'a, W> {
     pub(crate) cx: &'a mut dyn LayerCx,
-    pub(crate) path: Path<'a>,
+    pub(crate) on: W,
 }
 
-impl LayerCx for Over<'_> {
+impl<W> LayerCx for Over<'_, W> {
     fn now(&self) -> Instant {
         self.cx.now()
     }
@@ -257,38 +260,40 @@ impl LayerCx for Over<'_> {
     }
 }
 
-impl QuicIo for Over<'_> {
-    fn socket(&self) -> &dyn Socket {
-        match &self.path {
-            Path::Socket(socket) => *socket,
-            Path::Layers(below) => below.socket(),
-        }
+impl QuicIo for Over<'_, &dyn Socket> {
+    fn via(&mut self) -> Via<'_> {
+        Via::Socket(self)
     }
+}
 
+impl SocketIo for Over<'_, &dyn Socket> {
+    fn socket(&self) -> &dyn Socket {
+        self.on
+    }
+}
+
+impl QuicIo for Over<'_, Below<'_>> {
+    fn via(&mut self) -> Via<'_> {
+        Via::Layers(self)
+    }
+}
+
+impl LayersIo for Over<'_, Below<'_>> {
     fn send_below(&mut self, datagram: &[u8]) -> Result<Sent, ErrorKind> {
-        let Path::Layers(below) = &mut self.path else {
-            unreachable!("a layered connection is called over its layers");
-        };
-        let sent = below.reborrow().send(&mut *self.cx, datagram);
-        sent.map_err(|_| below.failure().unwrap_or(ErrorKind::SendError))
+        let sent = self.on.reborrow().send(&mut *self.cx, datagram);
+        sent.map_err(|_| self.on.failure().unwrap_or(ErrorKind::SendError))
     }
 
     fn recv_below(&mut self, buf: &mut [u8]) -> Result<Recv, ErrorKind> {
-        let Path::Layers(below) = &mut self.path else {
-            unreachable!("a layered connection is called over its layers");
-        };
-        let got = below.reborrow().recv(&mut *self.cx, buf);
-        got.map_err(|_| below.failure().unwrap_or(ErrorKind::RecvError))
+        let got = self.on.reborrow().recv(&mut *self.cx, buf);
+        got.map_err(|_| self.on.failure().unwrap_or(ErrorKind::RecvError))
     }
 
     fn flush_below(&mut self) -> Result<(), ErrorKind> {
-        let Path::Layers(below) = &mut self.path else {
-            unreachable!("a layered connection is called over its layers");
-        };
-        let flushed = below.reborrow().flush(&mut *self.cx);
+        let flushed = self.on.reborrow().flush(&mut *self.cx);
         flushed
             .map(|_| ())
-            .map_err(|_| below.failure().unwrap_or(ErrorKind::SendError))
+            .map_err(|_| self.on.failure().unwrap_or(ErrorKind::SendError))
     }
 }
 
@@ -382,10 +387,6 @@ struct State {
     /// Early data is sent: this much of the request went before the
     /// handshake was done (`use_earlydata`, `earlydata_skip`).
     early: Option<usize>,
-    /// Its datagrams go through the layers below it, a CONNECT-UDP
-    /// tunnel's, not on a socket of its own
-    /// (`qctx->sockfd == CURL_SOCKET_BAD`).
-    layered: bool,
 }
 
 /// What a session resumed says of the early data a connection may send
@@ -430,15 +431,13 @@ impl std::fmt::Debug for Quic {
 impl Quic {
     /// The connection `conn`, to `remote`, whose TLS's sessions are kept
     /// for `peer`, its connect started now on `clock`, traced as
-    /// `component`'s, its datagrams through the layers below if
-    /// `layered`.
+    /// `component`'s. Where its datagrams go each call's context says.
     pub(crate) fn new(
         conn: Box<dyn Connection>,
         peer: SessionPeer,
         remote: SocketAddr,
         clock: SharedClock,
         component: Component,
-        layered: bool,
     ) -> Result<Quic, curl_alloc::OutOfMemory> {
         let now = clock.now();
         let mut bytes = Vec::new();
@@ -470,7 +469,6 @@ impl Quic {
                 last_io: now,
                 component,
                 early: None,
-                layered,
             },
             clock,
             tunnel_room: Vec::new(),
@@ -1004,8 +1002,8 @@ impl Quic {
     pub(crate) fn egress(&mut self, cx: &mut dyn QuicIo) -> Result<(), ErrorKind> {
         // What the tunnel's layers hold goes first, as C flushes the
         // filters before it drives them (`Curl_conn_needs_flush`).
-        if self.state.layered {
-            cx.flush_below()?;
+        if let Via::Layers(below) = cx.via() {
+            below.flush_below()?;
         }
         match self.flush(cx) {
             Ok(()) => {}
@@ -1164,13 +1162,10 @@ impl Quic {
         len: usize,
         gso: usize,
     ) -> (usize, Result<(), Stop>) {
-        if self.state.layered {
-            return self.send_through(cx, len, gso);
-        }
-        if self.out.no_gso && len > gso {
-            self.send_apart(cx, len, gso)
-        } else {
-            self.send_run(cx, len, gso)
+        match cx.via() {
+            Via::Layers(below) => self.send_through(below, len, gso),
+            Via::Socket(on) if self.out.no_gso && len > gso => self.send_apart(on, len, gso),
+            Via::Socket(on) => self.send_run(on, len, gso),
         }
     }
 
@@ -1180,7 +1175,7 @@ impl Quic {
     /// `send_packet_no_gso_cf`).
     fn send_through(
         &mut self,
-        cx: &mut dyn QuicIo,
+        cx: &mut dyn LayersIo,
         len: usize,
         gso: usize,
     ) -> (usize, Result<(), Stop>) {
@@ -1223,7 +1218,7 @@ impl Quic {
     /// bytes (`do_sendmsg`).
     fn send_run(
         &mut self,
-        cx: &mut dyn QuicIo,
+        cx: &mut dyn SocketIo,
         len: usize,
         gso: usize,
     ) -> (usize, Result<(), Stop>) {
@@ -1275,7 +1270,7 @@ impl Quic {
     /// (`send_packet_no_gso`).
     fn send_apart(
         &mut self,
-        cx: &mut dyn QuicIo,
+        cx: &mut dyn SocketIo,
         len: usize,
         gso: usize,
     ) -> (usize, Result<(), Stop>) {
@@ -1314,25 +1309,39 @@ impl Quic {
             let Quic { conn, peer, .. } = self;
             conn.before_recv(&mut TlsCx::new(cx, component, peer))?;
         }
-        let tunnelled = self.state.layered;
-        let from = if tunnelled { "sub-filters" } else { "socket" };
+        match cx.via() {
+            Via::Layers(below) => self.ingress_through(below),
+            Via::Socket(on) => self.ingress_socket(on),
+        }
+    }
+
+    /// What the layers below have, read into the connection's own room
+    /// (`Curl_cf_ngtcp2_progress_ingress`'s tunnelled branch).
+    fn ingress_through(&mut self, cx: &mut dyn LayersIo) -> Result<(), ErrorKind> {
         cx.of(
             self.state.component,
-            format_args!("progress_ingress({from})"),
+            format_args!("progress_ingress(sub-filters)"),
         );
-        if tunnelled {
-            // At least C's 64 KiB, and as large as the path's largest
-            // datagram, grown as that is (`QUIC_TUNNEL_INBUF_SIZE`).
-            let want = TUNNEL_ROOM.max(self.conn.path_max_payload());
-            if self.tunnel_room.len() < want {
-                self.tunnel_room = Vec::new();
-                self.tunnel_room = new_room(want)?;
-            }
-            let mut room = std::mem::take(&mut self.tunnel_room);
-            let r = self.recv_through(cx, &mut room);
-            self.tunnel_room = room;
-            return r;
+        // At least C's 64 KiB, and as large as the path's largest
+        // datagram, grown as that is (`QUIC_TUNNEL_INBUF_SIZE`).
+        let want = TUNNEL_ROOM.max(self.conn.path_max_payload());
+        if self.tunnel_room.len() < want {
+            self.tunnel_room = Vec::new();
+            self.tunnel_room = new_room(want)?;
         }
+        let mut room = std::mem::take(&mut self.tunnel_room);
+        let r = self.recv_through(cx, &mut room);
+        self.tunnel_room = room;
+        r
+    }
+
+    /// What the socket has, read into the room the call lends or one
+    /// made for it.
+    fn ingress_socket(&mut self, cx: &mut dyn SocketIo) -> Result<(), ErrorKind> {
+        cx.of(
+            self.state.component,
+            format_args!("progress_ingress(socket)"),
+        );
         // The multi's room if the call has one to lend, else one made for
         // the call, as C's `Curl_multi_xfer_sockbuf_borrow` mallocs one
         // for a call with no multi.
@@ -1357,7 +1366,7 @@ impl Quic {
     /// What the layers below have, a datagram at a time, at most
     /// `MAX_PACKETS` of them, read into `buf` and handed to the library
     /// (`Curl_cf_ngtcp2_progress_ingress`'s tunnelled branch).
-    fn recv_through(&mut self, cx: &mut dyn QuicIo, buf: &mut [u8]) -> Result<(), ErrorKind> {
+    fn recv_through(&mut self, cx: &mut dyn LayersIo, buf: &mut [u8]) -> Result<(), ErrorKind> {
         for _ in 0..MAX_PACKETS {
             let n = match cx.recv_below(buf) {
                 Ok(Recv::Data(n)) => n.get(),
@@ -1388,7 +1397,7 @@ impl Quic {
 
     /// What the socket has, at most `MAX_PACKETS` packets of it, read
     /// into `room` and handed to the library (`recvmmsg_packets`).
-    fn recv_packets(&mut self, cx: &mut dyn QuicIo, room: &mut [u8]) -> Result<(), ErrorKind> {
+    fn recv_packets(&mut self, cx: &mut dyn SocketIo, room: &mut [u8]) -> Result<(), ErrorKind> {
         let mut got = [Datagram::default(); BATCH];
         let (mut total, mut packets, mut calls) = (0usize, 0usize, 0usize);
         let mut first = None;
@@ -1780,11 +1789,24 @@ pub(crate) mod tests {
         }
     }
 
+    /// Its datagrams go through the layers it has, else on its socket.
     impl QuicIo for Cx {
+        fn via(&mut self) -> Via<'_> {
+            if self.below.is_some() {
+                Via::Layers(self)
+            } else {
+                Via::Socket(self)
+            }
+        }
+    }
+
+    impl SocketIo for Cx {
         fn socket(&self) -> &dyn Socket {
             &self.socket
         }
+    }
 
+    impl LayersIo for Cx {
         fn send_below(&mut self, datagram: &[u8]) -> Result<Sent, ErrorKind> {
             let below = self.below.as_mut().unwrap();
             let all = Sent::Bytes(std::num::NonZeroUsize::new(datagram.len()).unwrap());
@@ -1820,7 +1842,8 @@ pub(crate) mod tests {
         quic_over(script, false)
     }
 
-    /// `quic`, its datagrams through the context's layers if `layered`.
+    /// `quic`, its context with layers its datagrams go through if
+    /// `layered`.
     fn quic_over(script: &Arc<Mutex<Script>>, layered: bool) -> (Quic, Cx) {
         let clock = ManualClock::new().unwrap();
         let remote = SocketAddr::from(([127, 0, 0, 1], 443));
@@ -1848,12 +1871,12 @@ pub(crate) mod tests {
             lines: Vec::new(),
             due: Vec::new(),
             socket: Scripted::default(),
-            below: None,
+            below: layered.then(Layers::default),
             room: RecvRoom::Unmade,
         };
         let shared = SharedClock::new(Box::new(clock)).unwrap();
         (
-            Quic::new(conn, peer, remote, shared, Component::Http3, layered).unwrap(),
+            Quic::new(conn, peer, remote, shared, Component::Http3).unwrap(),
             cx,
         )
     }
@@ -2368,7 +2391,7 @@ pub(crate) mod tests {
         let socket = Scripted::default();
         let mut over = Over {
             cx: &mut cx,
-            path: Path::Layers(Below::new(&mut layers, &socket)),
+            on: Below::new(&mut layers, &socket),
         };
         assert_eq!(over.flush_below(), Err(ErrorKind::SendError));
         assert_eq!(*flushes.lock().unwrap(), 1);

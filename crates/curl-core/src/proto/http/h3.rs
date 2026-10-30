@@ -11,7 +11,7 @@
 use super::*;
 use crate::conn::layer::LayerCx;
 use crate::conn::mux::Routes;
-use crate::conn::quic::{Quic, QuicIo, RecvRoom, STREAM_WINDOW_INITIAL};
+use crate::conn::quic::{LayersIo, Quic, QuicIo, RecvRoom, STREAM_WINDOW_INITIAL, SocketIo, Via};
 use crate::error::AGAIN_NUMBER;
 use crate::http3::{H3Error, Heard, StreamEvent, StreamId};
 use crate::proto::http2::fields_of;
@@ -246,14 +246,28 @@ impl<H: Host> crate::conn::layer::H3Streams for H3Step<'_, '_, H> {
     }
 }
 
+/// The connection's transport says where its datagrams go: on its own
+/// socket, or through the layers of the stream it is layered over.
 impl<H: Host> QuicIo for H3Step<'_, '_, H> {
+    fn via(&mut self) -> Via<'_> {
+        if self.lease.conn().datagram_socket().is_some() {
+            Via::Socket(self)
+        } else {
+            Via::Layers(self)
+        }
+    }
+}
+
+impl<H: Host> SocketIo for H3Step<'_, '_, H> {
     fn socket(&self) -> &dyn crate::conn::io::Socket {
         self.lease
             .conn()
-            .stream_socket()
-            .expect("a QUIC connection over its socket")
+            .datagram_socket()
+            .expect("asked of a QUIC connection over its own socket")
     }
+}
 
+impl<H: Host> LayersIo for H3Step<'_, '_, H> {
     fn send_below(&mut self, datagram: &[u8]) -> Result<crate::conn::io::Sent, ErrorKind> {
         let sent = self
             .lease

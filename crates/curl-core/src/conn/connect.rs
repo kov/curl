@@ -1470,7 +1470,7 @@ impl ConnectMachine {
         let started = made.and_then(|mut quic| {
             let mut over = crate::conn::quic::Over {
                 cx: &mut *cx,
-                path: crate::conn::quic::Path::Socket(socket.socket()),
+                on: socket.socket(),
             };
             let done = quic.start(&mut over)?;
             Ok((quic, done))
@@ -1625,15 +1625,8 @@ impl ConnectMachine {
                 return Err(failed(cx, kind));
             }
         };
-        let mut quic = Quic::new(
-            conn,
-            kept_for,
-            remote,
-            making.clock.clone(),
-            component,
-            tunnelled,
-        )
-        .map_err(oom)?;
+        let mut quic =
+            Quic::new(conn, kept_for, remote, making.clock.clone(), component).map_err(oom)?;
         if let Some(ticket) = early {
             match quic.early_data(cx, &ticket) {
                 Ok(()) => {}
@@ -2039,7 +2032,7 @@ impl Racing {
                 Link::Quic(quic) => {
                     let mut over = crate::conn::quic::Over {
                         cx: &mut *cx,
-                        path: crate::conn::quic::Path::Socket(socket),
+                        on: socket,
                     };
                     match quic.connect(&mut over) {
                         Ok(true) => return Checked::Won(i),

@@ -918,6 +918,77 @@ fn an_idle_connection_closes_saying_goodbye() {
     assert_eq!(&sent[before..], b"CLOSE", "the close, and nothing else");
 }
 
+/// A connection dialed straight is checked before reuse over its own
+/// socket, not through layers, its transport saying so: what came late
+/// on it is read from the socket in a batch's room, not a tunnel's
+/// datagram room, the library failing it so that it is not reused; and
+/// the next connection, which its transfer forbids reusing, says goodbye
+/// on its socket (`Curl_cf_ngtcp2_cmn_conn_is_alive`,
+/// `Curl_cf_ngtcp2_cmn_shutdown`, the same call's context).
+#[test]
+fn a_direct_connection_is_checked_and_closed_over_its_socket() {
+    let script = get_script(b"123456789");
+    // After the response, one more packet goes, whose answer comes late.
+    script.lock().unwrap().out.extend([vec![4; 20], vec![]]);
+    let clock = ManualClock::new().unwrap();
+    let (mut m, talks) = quic_peer(
+        clock.clone(),
+        &[
+            &[b"server flight", b"response", b"late"],
+            &[b"server flight", b"response"],
+        ],
+    );
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    assert_eq!(h3_get(&mut m, e).result, Ok(()));
+    #[derive(Clone, Default)]
+    struct Written(Arc<Mutex<Vec<u8>>>);
+    impl crate::handler::TextSink for Written {
+        fn write(&self, text: &[u8]) {
+            self.0.lock().unwrap().extend_from_slice(text);
+        }
+    }
+    let components = crate::components::Components::new().unwrap();
+    components.set(
+        crate::components::Component::Http3,
+        crate::components::Level::Info,
+    );
+    let written = Written::default();
+    m.trace_internally_to(
+        components,
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
+    let (reads, _) = talks[0].reads();
+    script.lock().unwrap().read_fails = Some(-502);
+    // Idle long enough to be checked (`Curl_conn_seems_dead`).
+    clock.advance(std::time::Duration::from_secs(2));
+    let e = tracing(FakeTls::new().unwrap(), &get_script(b"abc"));
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", Conversation::replies(&[], false), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.ip_version = IpVersion::Any;
+        o.limits.reuse.forbid = true;
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(ran.seen.body(), b"abc");
+    let (after, room) = talks[0].reads();
+    assert!(after > reads, "the check read what came late");
+    // A batch read off the socket, not one datagram of a tunnel's 64 KiB.
+    assert_eq!(room, 96_000, "a batch's room");
+    assert!(
+        talks[1].received().ends_with(b"CLOSE"),
+        "the second said goodbye"
+    );
+    // The goodbye, on the multi's internal trace, went on the socket.
+    let text = String::from_utf8(written.0.lock().unwrap().clone()).unwrap();
+    let sent: Vec<&str> = text.lines().filter(|l| l.contains("vquic_")).collect();
+    assert_eq!(
+        sent,
+        ["* [HTTP/3] vquic_sendmsg(len=5, gso=5, calls=1) -> 0, sent=5"],
+        "{text}"
+    );
+}
+
 /// The script of `get_script`, then the same again for a second
 /// connection, whose response is `body`.
 fn twice(script: &Arc<Mutex<Script>>, body: &[u8]) {
@@ -3555,6 +3626,71 @@ fn http3_through_an_http_proxy_goes_over_connect_udp() {
         [READ] client_reset, clear readers"
     ));
     assert_eq!(got, want);
+}
+
+/// A QUIC connection layered over a CONNECT-UDP tunnel says goodbye
+/// through the tunnel's layers, its transport saying so: the packet that
+/// closes it goes as a capsule, not on a socket, as the multi's internal
+/// trace says (`Curl_cf_ngtcp2_cmn_shutdown`, `vquic_send_packets` with
+/// `qctx->sockfd == CURL_SOCKET_BAD`).
+#[test]
+fn a_tunnelled_connection_says_goodbye_through_its_layers() {
+    #[derive(Clone, Default)]
+    struct Written(Arc<Mutex<Vec<u8>>>);
+    impl crate::handler::TextSink for Written {
+        fn write(&self, text: &[u8]) {
+            self.0.lock().unwrap().extend_from_slice(text);
+        }
+    }
+    let script = get_script(b"123456789");
+    let head = b"HTTP/1.1 101 Switching Protocols\r\nCapsule-Protocol: ?1\r\n\r\n".to_vec();
+    let flight = capsule(b"server flight");
+    let response = capsule(b"response");
+    let talk = Conversation::replies(&[&head, &[], &flight, &response], false).per_send();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], UDP_PROXY_PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let components = crate::components::Components::new().unwrap();
+    components.set(
+        crate::components::Component::Http3,
+        crate::components::Level::Info,
+    );
+    let written = Written::default();
+    m.trace_internally_to(
+        components,
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
+    let e = tracing(FakeTls::new().unwrap(), &script);
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = crate::options::HttpVersion::Http3Only;
+        o.limits.reuse.forbid = true;
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("http://127.0.0.1:{UDP_PROXY_PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert!(
+        talk.received().ends_with(&capsule(b"CLOSE")),
+        "the goodbye went as a capsule"
+    );
+    let text = String::from_utf8(written.0.lock().unwrap().clone()).unwrap();
+    // One datagram goes below untraced, as C's `send_packet_no_gso_cf`
+    // traces only a run cut into several; never a socket's send.
+    assert!(
+        text.contains("* [HTTP/3] shutdown completely sent off, done")
+            && !text.contains("vquic_sendmsg"),
+        "{text}"
+    );
 }
 
 /// The same over a CONNECT-UDP tunnel: a body with as much in flight as

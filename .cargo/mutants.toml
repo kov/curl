@@ -701,9 +701,6 @@ exclude_re = [
     'curl-core/src/conn/capsule\.rs:.*: replace \+ with \* in CapsuleLayer::take$',
     # The tunnel's Debug is for a reader of a panic, not the transfer.
     'curl-core/src/conn/h3proxy\.rs:.*: replace <impl std::fmt::Debug for H3Proxy>::fmt -> std::fmt::Result with Ok\(Default::default\(\)\)$',
-    # A connection on its own socket never asks to flush layers below:
-    # the default is unreachable, as is any value in its place.
-    'curl-core/src/conn/quic\.rs:.*: replace QuicIo::flush_below -> Result<\(\), ErrorKind> with Ok\(\(\)\)$',
     # The room a call into the proxy's connection reads in is scratch: one
     # made again, or remade at the same size, reads the same.
     'curl-core/src/conn/h3proxy\.rs:.*: replace < with <= in <impl QuicCx for Tunnelled<._>>::take_room$',

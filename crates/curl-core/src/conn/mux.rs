@@ -166,6 +166,27 @@ impl Carrier<'_> {
         }
     }
 
+    /// Run `f` in the context of a call on a QUIC connection over it,
+    /// `cx`'s, its datagrams going where the transport says: on the
+    /// datagram socket of one dialed straight, or through the stream's
+    /// layers for one layered over a tunnel.
+    pub(crate) fn quic_call<R>(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        f: impl FnOnce(&mut dyn super::quic::QuicIo) -> R,
+    ) -> R {
+        match &mut self.over {
+            Over::Stream(stream) => f(&mut super::quic::Over {
+                cx,
+                on: stream.below(Some(self.socket)),
+            }),
+            Over::Datagrams(datagrams) => f(&mut super::quic::Over {
+                cx,
+                on: datagrams.socket(),
+            }),
+        }
+    }
+
     /// The same, for one call that leaves it to the caller after.
     pub(crate) fn reborrow(&mut self) -> Carrier<'_> {
         Carrier {

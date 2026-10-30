@@ -10,7 +10,7 @@ use curl_alloc::{OutOfMemory, try_box};
 use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
 use crate::conn::Handshook;
 use crate::conn::capsule::CapsuleLayer;
-use crate::conn::quic::{Over, Path, Quic};
+use crate::conn::quic::{Over, Quic};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::multi::cx::DriveCx;
@@ -45,7 +45,7 @@ pub(super) fn start<H: Host>(
     let stream = s.machine.dialed().stream();
     let mut over = Over {
         cx,
-        path: Path::Layers(stream.below(traced)),
+        on: stream.below(traced),
     };
     match quic.start(&mut over) {
         Ok(false) => {}
@@ -87,7 +87,7 @@ pub(super) fn step<H: Host>(
     let stream = s.machine.dialed().stream();
     let mut over = Over {
         cx,
-        path: Path::Layers(stream.below(traced)),
+        on: stream.below(traced),
     };
     match quic.connect(&mut over) {
         Ok(false) => Ok(Wake::Idle),

@@ -1047,16 +1047,15 @@ protocols need, each step leaving behaviour and traces as they are:
     as C does, its HTTP/3 attempt over CONNECT-UDP, the other over CONNECT on a connection of
     its own; 64(a)'s race is won once the tunnel is up. FTP's data connection, a second
     setup of a connection, comes with FTP in milestone 6.
-66. **Types for what flags say.** A layered QUIC connection is a type of its own, its
-    datagram path given by its context with no `unreachable!` default; `Conn`'s session an
-    enum of none (HTTP/1), not made yet, HTTP/2 and HTTP/3, out for a step; `LayerCx` split
-    by who needs what, its no-op defaults gone; HTTP/3's connection and stream events apart;
-    its stream and tunnel state one fact per field; the HTTP/3 library seam's failures typed,
-    as HTTP/2's are. Done: HTTP/3's events apart, its stream and tunnel state one fact per
-    field and its seam's failures typed; `Conn`'s session is `mux::Speaks` (`Unmade`, `Http1`,
-    `Made`, `Out`); `LayerCx` lends each capability through an accessor every context answers,
-    with no default, and what a layer calls (`LayerCalls`) goes through it. To do: the layered
-    QUIC connection.
+66. **Types for what flags say.** **Done.** The context of a layered connection's calls is a
+    type of its own: a QUIC connection holds no flag of where its datagrams go, and each
+    call's context says it (`QuicIo::via`, a `SocketIo` or a `LayersIo`, no `unreachable!`
+    default), from the connection's transport for an open connection and the attempt's kind
+    for a handshake. `Conn`'s session is `mux::Speaks` (`Unmade`, `Http1`, `Made`, `Out`);
+    `LayerCx` lends each capability through an accessor every context answers, with no
+    default, and what a layer calls (`LayerCalls`) goes through it; HTTP/3's connection and
+    stream events are apart, its stream and tunnel state one fact per field and its library
+    seam's failures typed, as HTTP/2's are. Sizes and allocation budgets are unchanged.
 67. **The protocol phases.** Connect and connecting, doing and do-more with their pollsets
     and timeouts, a phase-shaped protocol state; per-connection protocol state one boxed
     `Part` carrying the disconnect goodbye; reuse that tells protocol families, STARTTLS and

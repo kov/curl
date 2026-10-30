@@ -191,6 +191,13 @@ curl-core/src/
                              SharedKeyLog;
                              fake.rs: FakeTls (test-util)
   hash.rs                    MD5, SHA-256 and SHA-512/256, for Digest
+  base64.rs                  base64 both ways and base64url (curlx/base64.c)
+  auth.rs, auth/             authenticating, as lib/vauth and its callers: creds.rs, who a
+                             request authenticates as (Credentials, Secret) and the gate
+                             (CredentialGate, Trusted, SameOrigin); digest.rs, Digest's
+                             challenge and response; http.rs, how HTTP picks a method from a
+                             peer's challenges (Auth, PeerAuth, Challenges, AuthAct), sans-IO,
+                             which HTTP/1's head parser reads into
   save.rs                    a file written whole under a name of its own, then renamed
   multi/
     mod.rs                   Multi<H>, Host, Slot, ConnLimits, the public API
@@ -259,8 +266,7 @@ curl-core/src/
     http1/                   the parsers and the renderer, sans-IO, which import nothing of
                              the driver: request.rs, response.rs, framing.rs, chunked.rs
                              (decoder and encoder), fields.rs, follow.rs (where a
-                             `Location:` leads, HTTP's `Inherited`); auth.rs (Basic, Bearer, the challenges a
-                             head reads), digest.rs; tunnel.rs, CONNECT and the proxy's
+                             `Location:` leads, HTTP's `Inherited`); tunnel.rs, CONNECT and the proxy's
                              answer; fixture.rs, the test cases' sections (tests)
   untrusted.rs, test_cell.rs input for the never-panics properties; a Cell for handlers (tests)
 ```

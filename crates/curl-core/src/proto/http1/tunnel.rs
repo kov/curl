@@ -13,7 +13,8 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use super::chunked::{ChunkDecoder, ChunkError};
 use super::fields::{self, BadLine};
 use super::framing::value_of;
-use super::request::{Trusted, UserHeaders};
+use super::request::UserHeaders;
+use crate::auth::creds::Trusted;
 
 /// The longest line of an answer (`DYN_PROXY_CONNECT_HEADERS`).
 const MAX_LINE: usize = 16384;

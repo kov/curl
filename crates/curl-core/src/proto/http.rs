@@ -31,18 +31,16 @@ use crate::upload::chain;
 use crate::upload::{self, Upload};
 use crate::url::{GetOptions, Part, SetOptions, Url};
 
-use super::http1::auth::{
-    AuthAct, AuthRequest, Credentials, CredentialsError, Offered, Output, OutputError, Secret, Side,
-};
 use super::http1::chunked::{ChunkDecoder, ChunkError, ChunkEvent};
 use super::http1::fields;
 use super::http1::follow::{self, Inherited};
 use super::http1::framing::{self, Asked, CodingStep, CodingTale, Framing, Left, Unsent};
 use super::http1::request::{
-    self, Accepted, Authorization, Conditional, CredentialGate, Forwarding, RangeLine, RequestHead,
-    SentIn, Typed,
+    self, Accepted, Authorization, Conditional, Forwarding, RangeLine, RequestHead, SentIn, Typed,
 };
 use super::{Before, Ended, ProtoStep};
+use crate::auth::creds::{CredentialGate, Credentials, CredentialsError, Secret, Trusted};
+use crate::auth::http::{AuthAct, AuthRequest, Offered, Output, OutputError, Side};
 use crate::options::AuthMethods;
 use std::num::{NonZeroU32, NonZeroUsize};
 
@@ -570,7 +568,7 @@ impl Request {
     }
 
     /// Credentials may go to the request's origin.
-    pub(crate) fn trusted(&self) -> Option<request::Trusted> {
+    pub(crate) fn trusted(&self) -> Option<Trusted> {
         self.gate.trusted()
     }
 
@@ -2372,7 +2370,7 @@ impl Request {
             };
             if let Some((side, credentials, peer)) = challenged {
                 let value = fields::header_value(line.bytes).unwrap_or(&[]);
-                for challenge in super::http1::auth::negotiate_challenges(value) {
+                for challenge in crate::auth::http::negotiate_challenges(value) {
                     let (kept, tls) = lease.get().negotiate_over();
                     let request = negotiate::Request {
                         gss,

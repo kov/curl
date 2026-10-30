@@ -9,6 +9,8 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
+use crate::auth::creds::{Answered, Secret};
+use crate::auth::http::Side;
 use crate::conn::{Conn, Peer};
 use crate::error::ErrorKind;
 use crate::gss::{
@@ -18,7 +20,6 @@ use crate::gss::{
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::Delegation;
-use crate::proto::http1::auth::{Answered, Secret, Side};
 use crate::trace;
 
 /// What a connection keeps of Negotiate (C's `conn->http_negotiate_state`,

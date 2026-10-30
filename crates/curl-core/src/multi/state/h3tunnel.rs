@@ -8,13 +8,13 @@
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::{Lent, StepCx};
+use crate::auth::http::Side;
 use crate::components::Component;
 use crate::conn::ConnectMachine;
 use crate::conn::h3proxy::{H3Proxy, TunnelState};
 use crate::conn::io::Socket;
 use crate::error::ErrorKind;
 use crate::multi::Host;
-use crate::proto::http1::auth::Side;
 use crate::proto::http2::{connect_udp_fields, fields_of};
 use crate::text::Text;
 use crate::trace;

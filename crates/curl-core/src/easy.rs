@@ -7,6 +7,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use crate::altsvc::{AltSvc, AltSvcCtrl};
+use crate::auth::http::Auth;
 use crate::coding::Decoders;
 use crate::components::Components;
 use crate::conn::ConnId;
@@ -20,7 +21,6 @@ use crate::libraries::{Libraries, SharedLibraries};
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode};
 use crate::multi::{EventTable, drive_by_events_with};
 use crate::options::{Lines, Options};
-use crate::proto::http1::auth::Auth;
 use crate::report::TransferReport;
 use crate::save;
 

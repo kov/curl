@@ -67,7 +67,7 @@ exclude_re = [
     # Negotiate's output is done whenever it returns a request to send (a
     # token went: `CURL_NEGO_AUTH_DONE`), so `!done` alone already makes
     # its probe false.
-    'curl-core/src/proto/http1/auth\.rs:.*: delete ! in PeerAuth::negotiated$',
+    'curl-core/src/auth/http\.rs:.*: delete ! in PeerAuth::negotiated$',
     # The build claims SPNEGO: asking whether it does is always true.
     'curl-sys-abi/src/getinfo\.rs:.*: replace spnego -> bool with true$',
     'curl-tool/src/options/parse\.rs:.*: replace claims_spnego -> bool with true$',
@@ -262,7 +262,7 @@ exclude_re = [
     'curl-sys-abi/src/getinfo\.rs:.*: replace < with (==|>|<=) in long_time$',
     # Reservation sizes: a wrong one only changes how often the vector
     # grows.
-    'proto/http1/auth\.rs:.*: replace (\+ with \*|\* with (\+|/)) in Credentials::basic$',
+    'auth/creds\.rs:.*: replace (\+ with \*|\* with (\+|/)) in Secret::basic$',
     'proto/http1/request\.rs:.*: replace - with \+ in render_h1$',
     'url/mod\.rs:.*: replace \+ with \* in Url::whole$',
     'curl-sys-abi/src/(headers|getinfo)\.rs:.*: replace \+ with (-|\*) in (HeaderOut::show|effective_url)$',

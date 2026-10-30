@@ -13,9 +13,9 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::fields;
 use super::response::{HttpVersion, Status};
+use crate::auth::http::{AuthAct, AuthAsked, Heard, HeardNote, Offered, Side};
 use crate::date::{self, BadDate};
 use crate::options::{AuthMethods, Resume, TimeCondition, Unmet};
-use crate::proto::http1::auth::{AuthAct, AuthAsked, Heard, HeardNote, Offered, Side};
 
 /// The most transfer codings a response may stack (`MAX_ENCODE_STACK`).
 const MAX_CODINGS: u8 = 5;
@@ -952,8 +952,8 @@ pub(crate) mod arbitrary {
     use proptest::prelude::*;
 
     use super::{Asked, Left, NonZeroU64, Unsent};
+    use crate::auth::http::arbitrary::auth_asked;
     use crate::options::{Condition, Resume, TimeCondition};
-    use crate::proto::http1::auth::arbitrary::auth_asked;
 
     /// A count, small or of any size C's `curl_off_t` holds.
     fn count() -> impl Strategy<Value = u64> {

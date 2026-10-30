@@ -17,7 +17,7 @@ const ASKED: Asked = Asked {
     fail_on_error: false,
     resume_from: None,
     follow: false,
-    auth: crate::proto::http1::auth::AuthAsked::DEFAULT,
+    auth: crate::auth::http::AuthAsked::DEFAULT,
     http_proxy: false,
     forwarded: false,
     time_condition: None,
@@ -1072,9 +1072,9 @@ proptest! {
 /// some, much or an unknown amount left to send. Four are reached.
 #[test]
 fn a_line_never_needs_more_than_four_notes() {
+    use crate::auth::http::AuthAsked;
+    use crate::auth::http::arbitrary::{BASIC, PROBE};
     use crate::options::{Condition, TimeCondition};
-    use crate::proto::http1::auth::AuthAsked;
-    use crate::proto::http1::auth::arbitrary::{BASIC, PROBE};
     use crate::proto::http1::framing::Left;
 
     let statuses: [&[u8]; 4] = [

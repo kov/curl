@@ -10,13 +10,14 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
+use crate::auth::creds::SameOrigin;
 use crate::cookie::{Jar, LoadError, Source, Suffixes};
 use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::handler::Handler;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
-use crate::proto::http1::request::{SameOrigin, UserHeaders};
+use crate::proto::http1::request::UserHeaders;
 use crate::share::{Kind, ShareLock};
 use crate::trace;
 

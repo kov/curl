@@ -7,6 +7,11 @@
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
+use crate::auth::creds::{CredentialGate, Secret};
+use crate::auth::http::{
+    self as auth, AuthAct, AuthRequest, Challenges, HeardNote, Offered, Output, OutputError,
+    PeerAsked, Side,
+};
 use crate::components::Component;
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::layer::LayerQuery;
@@ -19,13 +24,9 @@ use crate::options::ProxyType;
 use crate::progress;
 use crate::proto::ProtoState;
 use crate::proto::http::negotiate;
-use crate::proto::http1::auth::{
-    self, AuthAct, AuthRequest, Challenges, HeardNote, Offered, Output, OutputError, PeerAsked,
-    Secret, Side,
-};
 use crate::proto::http1::fields::{self, MAX_HEADERS};
 use crate::proto::http1::framing::Note as HeadNote;
-use crate::proto::http1::request::{CredentialGate, decimal};
+use crate::proto::http1::request::decimal;
 use crate::proto::http1::tunnel::{Answer, AnswerError, Applied, ConnectRequest, Read, UdpTarget};
 use crate::text::Text;
 use crate::tls::Chosen;

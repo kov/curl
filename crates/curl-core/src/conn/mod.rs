@@ -445,8 +445,8 @@ pub(crate) struct ProxyCreds {
 
 impl ProxyCreds {
     /// What the proxy is authenticated with.
-    pub(crate) fn secret(&self) -> crate::proto::http1::auth::Secret<'_> {
-        crate::proto::http1::auth::Secret::new(&self.user, &self.password, &self.service)
+    pub(crate) fn secret(&self) -> crate::auth::creds::Secret<'_> {
+        crate::auth::creds::Secret::new(&self.user, &self.password, &self.service)
     }
 }
 
@@ -1378,8 +1378,8 @@ impl Conn {
     /// on it, which the application's forbidding its reuse does not close
     /// (`multi_conn_should_close`).
     pub(crate) fn negotiating(&self) -> bool {
+        use crate::auth::http::Side;
         use crate::proto::http::negotiate::State;
-        use crate::proto::http1::auth::Side;
         self.negotiate.as_ref().is_some_and(|n| {
             n.state(Side::Host) == State::Recv || n.state(Side::Proxy) == State::Recv
         })

@@ -22,6 +22,7 @@ mod script;
 
 use std::num::NonZeroU32;
 
+use crate::auth::creds::{Credentials, CredentialsError, NetrcLookup, Trusted};
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Directions, Pause, Pipeline};
@@ -33,9 +34,7 @@ use crate::multi::state::{AfterRequest, StepCx};
 use crate::netrc::{self, NetrcError};
 use crate::options::NetrcMode;
 use crate::options::{Method, Options};
-use crate::proto::http1::auth::{Credentials, CredentialsError, NetrcLookup};
 use crate::proto::http1::follow::Inherited;
-use crate::proto::http1::request::Trusted;
 use crate::trace;
 use crate::url::{GetOptions, Part, Url};
 use curl_alloc::TryVec as _;

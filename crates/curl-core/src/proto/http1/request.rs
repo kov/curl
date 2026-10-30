@@ -3,8 +3,8 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
+use crate::auth::creds::{CredentialGate, SameOrigin, Trusted};
 use crate::coding::{Coding, Decoders};
-use crate::conn::Peer;
 use crate::date::HttpDate;
 use crate::error::ErrorKind;
 use crate::handler::{Handler, LineSource};
@@ -68,60 +68,6 @@ impl SentIn {
     /// (`httpversion >= 20`).
     pub(crate) fn framed(self) -> bool {
         matches!(self, SentIn::Http2 | SentIn::Http3)
-    }
-}
-
-/// Whether what the application said for the first origin may go to the
-/// one the request is for: the only way to the tokens that let a custom
-/// Host, an Authorization or a Cookie into a request.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct CredentialGate {
-    same: bool,
-    trusted: bool,
-}
-
-/// The request is for the origin the transfer started with.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct SameOrigin(());
-
-/// Credentials may go to the request's origin (`Curl_auth_allowed_to_host`).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Trusted(());
-
-impl Trusted {
-    /// Credentials the request's own URL carries go to its origin, which
-    /// they were given for, wherever the transfer started
-    /// (`url_set_data_creds`); so do those a `.netrc` entry gives for
-    /// its host.
-    pub(crate) fn own_url() -> Trusted {
-        Trusted(())
-    }
-}
-
-impl CredentialGate {
-    /// The gate for the transfer's first request.
-    pub(crate) const FIRST: CredentialGate = CredentialGate {
-        same: true,
-        trusted: true,
-    };
-
-    /// The gate for a request to `now` in a transfer that started at
-    /// `initial`; `other_hosts` lets credentials follow it anywhere
-    /// (`CURLOPT_UNRESTRICTED_AUTH`).
-    pub(crate) fn new(initial: &Peer, now: &Peer, other_hosts: bool) -> CredentialGate {
-        let same = initial == now;
-        CredentialGate {
-            same,
-            trusted: same || other_hosts,
-        }
-    }
-
-    pub(crate) fn same_origin(&self) -> Option<SameOrigin> {
-        self.same.then_some(SameOrigin(()))
-    }
-
-    pub(crate) fn trusted(&self) -> Option<Trusted> {
-        self.trusted.then_some(Trusted(()))
     }
 }
 
@@ -929,6 +875,7 @@ fn connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conn::Peer;
     use crate::conn::Scheme;
 
     const PORT: u16 = 8990;

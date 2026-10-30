@@ -1,6 +1,6 @@
 use super::*;
-use crate::proto::http1::auth::{Challenges, PeerAsked};
-use crate::proto::http1::request::CredentialGate;
+use crate::auth::creds::CredentialGate;
+use crate::auth::http::{Challenges, PeerAsked};
 
 /// Every line `input` gives out, each applied, until the answer ends or
 /// the input runs out; the head's end with `auth_problem`.
@@ -573,7 +573,7 @@ proptest::proptest! {
             whole_lines(),
         ],
         cuts in crate::untrusted::cuts(),
-        asked in crate::proto::http1::auth::arbitrary::peer_asked(),
+        asked in crate::auth::http::arbitrary::peer_asked(),
     ) {
         let whole = drive(&[&answer], &asked);
         let pieces = crate::untrusted::pieces(&answer, &cuts);

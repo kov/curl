@@ -7,13 +7,13 @@
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
+use crate::auth::http::{self as auth, Challenges, HeardNote, Side};
 use crate::components::Component;
 use crate::conn::h2proxy::{H2Proxy, TunnelState};
 use crate::conn::{Handshook, Tunneled};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::proto::http::negotiate;
-use crate::proto::http1::auth::{self, Challenges, HeardNote, Side};
 use crate::proto::http1::framing::Note as HeadNote;
 use crate::proto::http2::{connect_udp_fields, fields_of};
 use crate::trace;

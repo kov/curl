@@ -764,12 +764,12 @@ exclude_re = [
     'curl-core/src/options/mod\.rs:168:.*: replace << with >>$',
     'curl-core/src/proto/imap\.rs:5[34]:.*: replace << with >>$',
     # LOGOUT's line in a larger room is the same line.
-    'curl-core/src/proto/imap\.rs:.*: replace \+ with \* in ImapConn::goodbye$',
+    'curl-core/src/proto/imap\.rs:166:40: replace \+ with \* in ImapConn::goodbye$',
     # With no answer to read after the body, the step is done before the
     # wait is asked for; and the answer read for no final command is
     # none, the state having stopped.
-    'curl-core/src/proto/imap\.rs:.*: replace && with \|\| in Request::interest$',
-    'curl-core/src/proto/imap\.rs:.*: replace \|\| with && in Request::step$',
+    'curl-core/src/proto/imap\.rs:425:.*: replace && with \|\| in Request::interest$',
+    'curl-core/src/proto/imap\.rs:483:.*: replace \|\| with && in Request::step$',
     # Whether a send that took all the bytes but did not end the body
     # counts as the end's: the size is known, so the end is read with the
     # last bytes, never alone after them.
@@ -784,15 +784,15 @@ exclude_re = [
     # without more held finds nothing and stops as before.
     'curl-core/src/proto/imap\.rs:862:.*: delete ! in Request::machine$',
     # `AUTH=` and nothing after it decodes to no mechanism either way.
-    'curl-core/src/proto/imap\.rs:.*: replace > with >= in Request::capability_resp$',
+    'curl-core/src/proto/imap\.rs:925:.*: replace > with >= in Request::capability_resp$',
     # The query is read only when the URL names a mailbox and no message:
     # without a mailbox it lists, and a message is fetched, the query
     # unread either way (`imap_perform`).
-    'curl-core/src/proto/imap\.rs:.*: replace && with \|\| in Request::read_asked$',
+    'curl-core/src/proto/imap\.rs:1153:.*: replace && with \|\| in Request::read_asked$',
     # A literal with nothing of it after its line hands the body nothing.
-    'curl-core/src/proto/imap\.rs:.*: replace > with >= in Request::listsearch$',
+    'curl-core/src/proto/imap\.rs:1346:.*: replace > with >= in Request::listsearch$',
     # Set after the command's last send: a retry is decided on a send's
     # failure, before it, or on a body's read, after the answer's line
     # was counted.
-    'curl-core/src/proto/pop3\.rs:.*: delete ! in Request::command$',
+    'curl-core/src/proto/pop3\.rs:1036:.*: delete ! in Request::command$',
 ]

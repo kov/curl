@@ -1500,10 +1500,10 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_body_held_for_a_100_earns_from_the_head
 --- old
             if read
-                && self.sent < self.filled
+                && self.sent != self.filled
 --- new
             if false
-                && self.sent < self.filled
+                && self.sent != self.filled
 
 === a custom method not UTF-8 is traced lossily as it sticks across a redirect
 file: crates/curl-core/src/proto/http.rs

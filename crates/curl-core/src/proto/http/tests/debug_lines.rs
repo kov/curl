@@ -357,6 +357,66 @@ fn a_bad_head_fails_the_reads_and_the_pass() {
     );
 }
 
+/// A POST of `body` bytes under a send limit of `rate`, over a socket
+/// taking at most `takes` bytes a send, performed `passes` times on a
+/// clock that stands still: the TCP sends it traced, and what the peer
+/// was sent.
+fn limited_post(body: usize, rate: u64, takes: usize, passes: usize) -> (Vec<String>, Vec<u8>) {
+    let (mut m, talk, _clock) = server(&[], false);
+    let talk = talk.taking(std::num::NonZeroUsize::new(takes).unwrap());
+    let seen = Seen::default();
+    let mut e = tracing_tcp();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.method = Method::Post;
+    o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; body]).unwrap());
+    o.flow.make_mut().unwrap().max_send_speed = NonZeroU64::new(rate);
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..passes {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let sends = seen
+        .of("text")
+        .into_iter()
+        .map(|l| String::from_utf8(l).unwrap().trim_end().to_owned())
+        .filter(|l| l.starts_with("[TCP] send("))
+        .collect();
+    (sends, talk.received())
+}
+
+/// A send limit cuts a send to the head and a second's worth of the
+/// body behind it, the head not counted, whatever of the head went
+/// before; under the limit, what is left goes whole, nothing past it
+/// (`xfer_send`'s `max_send_speed`).
+#[test]
+fn a_send_limit_cuts_the_body_behind_the_head_alone() {
+    // The head and 100 bytes of the body, however long the head.
+    let (sends, wire) = limited_post(1000, 100, 100_000, 5);
+    let head = wire.len() - after_head(&wire);
+    assert_eq!(after_head(&wire), 100, "{sends:?}");
+    assert_eq!(
+        sends[0],
+        format!("[TCP] send(len={}) -> 0, {}", head + 100, head + 100)
+    );
+    // Under the limit, the rest goes in pieces, each asking for all that
+    // is left and no more, a pass at a time, until the peer has it all.
+    let (sends, wire) = limited_post(900, 1000, 64, 40);
+    assert_eq!(after_head(&wire), 900, "{sends:?}");
+    assert!(wire.ends_with(&[b'x'; 900]), "{sends:?}");
+    let total = wire.len();
+    let want: Vec<String> = (0..total)
+        .step_by(64)
+        .map(|sent| {
+            let left = total - sent;
+            format!("[TCP] send(len={left}) -> 0, {}", left.min(64))
+        })
+        .collect();
+    assert_eq!(sends, want);
+}
+
 /// What a send limit cuts short, and what a send that would block
 /// leaves, is said as what is left behind what went (`req_flush`): the
 /// body earned over the wait for a 100 goes a second's worth a pass,

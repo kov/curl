@@ -1761,9 +1761,9 @@ impl Request {
         while self.sending() {
             // With some of the body still waiting, more is read behind it
             // first while there is room (`Curl_req_send_more` fills before
-            // it flushes).
+            // it flushes). What went never passes what was read.
             if read
-                && self.sent < self.filled
+                && self.sent != self.filled
                 && self.filled < self.out.len()
                 && !cx.pause().send_paused()
                 && matches!(
@@ -1833,10 +1833,11 @@ impl Request {
             };
             let body = self.filled - self.sent - head;
             let end = match cx.easy().options().flow.max_send_speed {
-                Some(max) if body as u64 > max.get() => {
-                    self.sent + head + usize::try_from(max.get()).expect("under a length")
+                Some(max) => {
+                    let most = usize::try_from(max.get()).unwrap_or(usize::MAX);
+                    self.sent + head + body.min(most)
                 }
-                _ => self.filled,
+                None => self.filled,
             };
             // All that is left of the request, read to its end
             // (`xfer_send`'s `eos`).
@@ -1852,10 +1853,11 @@ impl Request {
             if eos {
                 trace::debug_info(cx, format_args!("sending last upload chunk of {len} bytes"));
             }
-            let said = cx.easy().report().reasons();
             // The socket traces the send, and says why it failed, as it
-            // reaches it (`cf_socket_send`); a layer may say why too. Over
-            // HTTP/2 or 3 the stream takes it (`cf_h2_send`, `cf_ngtcp2_send`).
+            // reaches it (`cf_socket_send`); a layer that fails says why
+            // or not, as it would, and nothing here adds to it
+            // (`Curl_xfer_send`). Over HTTP/2 or 3 the stream takes it
+            // (`cf_h2_send`, `cf_ngtcp2_send`).
             let streamed = match self.wire {
                 Wire::H1 => None,
                 Wire::H2(_) => Some(self.h2_send(cx, lease, end, eos)),
@@ -1871,14 +1873,7 @@ impl Request {
                 match sent {
                     Ok(Sent::Bytes(n)) => (n.get(), None),
                     Ok(_) => (0, None),
-                    Err(_) if cx.easy().report().reasons() > said => {
-                        (0, Some(ErrorKind::SendError))
-                    }
-                    Err(e) => {
-                        let why = curl_os::error::ErrorText::of(&e);
-                        let said: [&[u8]; 2] = [b"Send failure: ", why.as_bytes()];
-                        (0, Some(trace::fail_with(cx, ErrorKind::SendError, &said)))
-                    }
+                    Err(_) => (0, Some(ErrorKind::SendError)),
                 }
             };
             let code = failed.map_or(0, ErrorKind::number);

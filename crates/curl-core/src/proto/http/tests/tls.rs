@@ -1447,7 +1447,9 @@ fn without_asking_no_early_data_goes() {
 }
 
 /// A handshake put off that fails as the request lets it go on fails the
-/// transfer with the handshake's error, not the send's.
+/// transfer with the handshake's error, not the send's; the send adds no
+/// reason of its own to the session's, here none (`Curl_xfer_send` says
+/// nothing).
 #[test]
 fn a_handshake_put_off_that_fails_fails_the_transfer_with_its_error() {
     let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::early(16384).unwrap()));
@@ -1466,6 +1468,12 @@ fn a_handshake_put_off_that_fails_fails_the_transfer_with_its_error() {
     assert_eq!(get_tls(&mut m, &libraries, "/", first, set).result, Ok(()));
     let got = get_tls(&mut m, &libraries, "/", second, set);
     assert_eq!(got.result, Err(ErrorKind::SslConnectError));
+    let text = got.seen.text();
+    assert!(
+        text.iter().any(|l| l.starts_with("using HTTP/1.x")),
+        "{text:#?}"
+    );
+    assert!(!text.iter().any(|l| l.contains("failure")), "{text:#?}");
 }
 
 /// Plain HTTP through an HTTPS proxy asked for in HTTP/2 offers the

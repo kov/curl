@@ -724,3 +724,29 @@ features: debug-hooks
             direct: nothing_to_read && head_len <= upload_buffer,
 --- new
             direct: nothing_to_read,
+
+=== a send under a send limit counts the head against it
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_send_limit_cuts_the_body_behind_the_head_alone
+features: debug-hooks
+--- old
+                    self.sent + head + body.min(most)
+--- new
+                    self.sent + body.min(most)
+
+=== a send limit weighs what was sent as body still to go
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_send_limit_cuts_the_body_behind_the_head_alone
+features: debug-hooks
+--- old
+            let body = self.filled - self.sent - head;
+--- new
+            let body = self.filled - head;
+
+=== a failed send says a reason of its own
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::tls::a_handshake_put_off_that_fails_fails_the_transfer_with_its_error
+--- old
+                    Err(_) => (0, Some(ErrorKind::SendError)),
+--- new
+                    Err(e) => (0, Some(trace::fail_with(cx, ErrorKind::SendError, &[b"Send failure: ", curl_os::error::ErrorText::of(&e).as_bytes()]))),

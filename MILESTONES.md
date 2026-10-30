@@ -1056,11 +1056,21 @@ protocols need, each step leaving behaviour and traces as they are:
     default, and what a layer calls (`LayerCalls`) goes through it; HTTP/3's connection and
     stream events are apart, its stream and tunnel state one fact per field and its library
     seam's failures typed, as HTTP/2's are. Sizes and allocation budgets are unchanged.
-67. **The protocol phases.** Connect and connecting, doing and do-more with their pollsets
-    and timeouts, a phase-shaped protocol state; per-connection protocol state one boxed
-    `Part` carrying the disconnect goodbye; reuse that tells protocol families, STARTTLS and
-    per-connection credentials apart, with FTP's own rules; the scheme table generated with
-    its flags; auth out of `proto/http1`.
+67. **The protocol phases.** **Done.** A protocol answers `proto::Phases` (connect, make,
+    waits; no defaults), and the transfer waits in C's PROTOCONNECTING, DOING and DOING_MORE,
+    each with C's default pollset, PROTOCONNECTING timed on the connect limit from
+    STARTSINGLE; a reused connection skips the protocol's connect, and the pre-request
+    handler is asked as DO starts. A protocol's own connection state is `Speaks::Line`
+    (`conn::line::LineConn`), whose goodbye the shutdown says once, before the session and
+    layers, never waited on, and not on a dead connection. The scheme table, each scheme's
+    protocol, family and flags, is generated (`gen/schemes.py`), `version::Protocol` with it;
+    a connection reaches transfers of its protocol family (`Scheme::serves`), and the search
+    notes a candidate as soon as it reaches the origin, as C's `url_match_conn` does. Auth is
+    `auth` (credentials, Digest, HTTP's picking), base64 its own module. HTTP and `file:`
+    answer each phase at once, so their traces, sizes and allocation budgets are unchanged.
+    The reuse facts no built protocol sets yet (the STARTTLS level, per-connection
+    credentials for a scheme without `PROTOPT_CREDSPERREQUEST`, FTP's account, alternative
+    user and CCC, SSH's keys) come with step 68's STARTTLS and the protocols that set them.
 68. **One reader for the line protocols.** A sans-IO response reader and command writer for
     FTP, IMAP, POP3 and SMTP (C's pingpong), at the trust boundary. STARTTLS (and FTP's
     `AUTH TLS`) upgrades an open connection only when no bytes follow the reply, failing
@@ -1070,7 +1080,11 @@ protocols need, each step leaving behaviour and traces as they are:
     protocol's reply, C's limits, the bytes read past a reply, the traces' bytes and the time
     to answer, driven by no step yet. To do, on step 67's phases: the drive over a connection
     (with C's `pending_resp`, which FTP's DONE reads and the drive's reads set and clear), and
-    STARTTLS, `AUTH TLS` and CCC.
+    STARTTLS, `AUTH TLS` and CCC, with the reuse rules they need (`url_match_ssl_use`'s
+    `require_tls`, `url_match_ssl_config`'s `may_tls`, from `CURLOPT_USE_SSL`; whether the
+    connection is TLS read live from its layers, as STARTTLS adds TLS and CCC takes it away;
+    per-connection credentials and FTP's `Curl_ftp_conns_match`), in a route group taking
+    over `local`'s pointer so that the slot does not grow.
 
 SCP and SFTP hand libssh the socket, as C does (`SSH_OPTIONS_FD`): bytes a proxy's tunnel or a
 SOCKS answer left in the stream's buffer would be lost to it, so the hand-over is refused while

@@ -974,7 +974,7 @@ fn a_direct_connection_is_checked_and_closed_over_its_socket() {
     let (after, room) = talks[0].reads();
     assert!(after > reads, "the check read what came late");
     // A batch read off the socket, not one datagram of a tunnel's 64 KiB.
-    assert_eq!(room, 96_000, "a batch's room");
+    assert_eq!(room, crate::conn::io::SLOT, "a batch's room");
     assert!(
         talks[1].received().ends_with(b"CLOSE"),
         "the second said goodbye"

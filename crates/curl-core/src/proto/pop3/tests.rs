@@ -595,6 +595,31 @@ mod over_the_wire {
         );
     }
 
+    /// Each change of SASL's state is said after the command that makes
+    /// it, a cancel's too, as C changes it after sending
+    /// (`Curl_sasl_start`, `Curl_sasl_continue`).
+    #[test]
+    fn sasl_s_changes_of_state_follow_their_commands() {
+        let capa = b"+OK\r\nSASL CRAM-MD5\r\n.\r\n";
+        let replies: [&[u8]; 4] = [GREETING, capa, b"+ Rubbish\r\n", b"-ERR\r\n"];
+        let said = crate::proto::pingpong::Said::default();
+        let (_, ran) = against(&replies, URL, |o| {
+            o.callbacks.debug = Some(Handler::debug(said.clone()).unwrap());
+        });
+        assert_eq!(ran.result, Err(ErrorKind::LoginDenied));
+        let want: Vec<&str> = [
+            "> CAPA",
+            "> AUTH CRAM-MD5",
+            "SASL STOP to CRAMMD5",
+            "> *",
+            "SASL CRAMMD5 to CANCEL",
+        ]
+        .into_iter()
+        .filter(|l| cfg!(feature = "debug-hooks") || !l.starts_with("SASL"))
+        .collect();
+        assert_eq!(said.sasl(), want);
+    }
+
     /// A server that refuses CAPA is taken to log users in in the clear;
     /// one whose CAPA offers no way leaves nothing to log in with.
     #[test]

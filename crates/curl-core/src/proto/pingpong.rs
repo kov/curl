@@ -25,6 +25,54 @@ pub(crate) mod smtp;
 #[cfg(test)]
 mod tests;
 
+/// The trace's text and the commands sent, `> ` before each, in the order
+/// they went: for the line protocols' tests of what is said around a
+/// command.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct Said(pub(crate) std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+#[cfg(test)]
+impl crate::handler::DebugHandler for Said {
+    fn debug(
+        &self,
+        _: &mut crate::multi::TransferCx<'_>,
+        kind: crate::handler::DebugKind,
+        data: &[u8],
+    ) {
+        let mut said = self.0.lock().unwrap();
+        match kind {
+            crate::handler::DebugKind::Text => said.extend_from_slice(data),
+            crate::handler::DebugKind::HeaderOut => {
+                said.extend_from_slice(b"> ");
+                said.extend_from_slice(data);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+impl Said {
+    /// Its lines that say a command or a change of SASL's state, the
+    /// latter without the pointer C's line names.
+    pub(crate) fn sasl(&self) -> Vec<String> {
+        let said = String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned();
+        said.lines()
+            .filter_map(|l| {
+                if l.starts_with("> ") {
+                    Some(l.to_owned())
+                } else if l.starts_with("SASL ") {
+                    l.split_once(" state change from ")
+                        .map(|(_, c)| format!("SASL {c}"))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _};

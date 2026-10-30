@@ -915,7 +915,7 @@ impl Request {
         carrier: &mut Carrier<'_>,
         send: sasl::Send,
     ) -> Step {
-        match send {
+        let sent = match send {
             sasl::Send::Auth { mech, initial } => match initial {
                 None => drive::send(cx, &mut pc.pp, carrier, None, &[b"AUTH ", mech.as_bytes()]),
                 Some(ir) => {
@@ -931,7 +931,10 @@ impl Request {
             },
             sasl::Send::Continue(resp) => drive::send(cx, &mut pc.pp, carrier, None, &[&resp]),
             sasl::Send::Cancel => drive::send(cx, &mut pc.pp, carrier, None, &[b"*"]),
-        }
+        };
+        // The exchange moves on once its command is sent.
+        self.sasl_step(cx, pc, |sasl, sx| sasl.sent(sx, sent.is_ok()));
+        sent
     }
 
     /// An answer in the SASL exchange (`smtp_state_auth_resp`).

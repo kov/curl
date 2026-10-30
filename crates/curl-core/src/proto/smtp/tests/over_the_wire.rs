@@ -571,6 +571,45 @@ fn sasl_continues_on_334() {
     assert_eq!(received(&talk), "EHLO 900\r\nAUTH PLAIN AHUAcA==\r\n");
 }
 
+/// Each change of SASL's state is said after the command that makes it,
+/// as C changes it after sending (`Curl_sasl_start`,
+/// `Curl_sasl_continue`).
+#[test]
+fn sasl_s_changes_of_state_follow_their_commands() {
+    let ehlo: &[u8] = b"250-hi\r\n250 AUTH LOGIN\r\n";
+    let replies = [
+        GREETING,
+        ehlo,
+        b"334 VXNlcm5hbWU6\r\n",
+        b"334 UGFzc3dvcmQ6\r\n",
+        b"235 in\r\n",
+        b"214 help\r\n",
+    ];
+    let talk = Conversation::replies(&replies, false).greeting();
+    let said = crate::proto::pingpong::Said::default();
+    let ran = transfer(
+        &mut serving(&[&talk]),
+        "smtp://u:p@127.0.0.1:PORT/900",
+        |o| o.callbacks.debug = Some(Handler::debug(said.clone()).unwrap()),
+    );
+    assert_eq!(ran.result, Ok(()));
+    let want: Vec<&str> = [
+        "> EHLO 900",
+        "> AUTH LOGIN",
+        "SASL STOP to LOGIN",
+        "> dQ==",
+        "SASL LOGIN to LOGIN_PASSWD",
+        "> cA==",
+        "SASL LOGIN_PASSWD to FINAL",
+        "SASL FINAL to STOP",
+        "> HELP",
+    ]
+    .into_iter()
+    .filter(|l| cfg!(feature = "debug-hooks") || !l.starts_with("SASL"))
+    .collect();
+    assert_eq!(said.sasl(), want);
+}
+
 /// A server that offers STARTTLS and says go ahead, `after` with it.
 fn upgrading(after: &[u8]) -> Conversation {
     let mut go_ahead = b"220 go\r\n".to_vec();

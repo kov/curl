@@ -851,6 +851,42 @@ fn a_login_only_by_sasl_or_disabled_is_not_made_in_clear() {
     }
 }
 
+/// Each change of SASL's state is said after the command that makes it,
+/// a cancel's too, as C changes it after sending (`Curl_sasl_start`,
+/// `Curl_sasl_continue`).
+#[test]
+fn sasl_s_changes_of_state_follow_their_commands() {
+    let cram = b"* CAPABILITY IMAP4rev1 AUTH=CRAM-MD5\r\nA001 OK\r\n";
+    let replies: [&[u8]; 6] = [
+        GREETING,
+        cram,
+        b"+ Rubbish\r\n",
+        b"A002 NO cancelled\r\n",
+        b"A003 OK\r\n",
+        b"* LIST () \"/\" x\r\nA004 OK\r\n",
+    ];
+    let talk = Conversation::replies(&replies, false).greeting();
+    let mut m = serving(&[&talk]);
+    let said = crate::proto::pingpong::Said::default();
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/", |o| {
+        o.callbacks.debug = Some(Handler::debug(said.clone()).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let want: Vec<&str> = [
+        "> A001 CAPABILITY",
+        "> A002 AUTHENTICATE CRAM-MD5",
+        "SASL STOP to CRAMMD5",
+        "> *",
+        "SASL CRAMMD5 to CANCEL",
+        "> A003 LOGIN u p",
+        "> A004 LIST \"\" *",
+    ]
+    .into_iter()
+    .filter(|l| cfg!(feature = "debug-hooks") || !l.starts_with("SASL"))
+    .collect();
+    assert_eq!(said.sasl(), want);
+}
+
 /// A mechanism cancelled with no other to try falls back to LOGIN,
 /// unless the server has disabled it (`imap_state_auth_resp`).
 #[test]

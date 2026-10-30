@@ -33,6 +33,40 @@ fn b64(text: &[u8]) -> Vec<u8> {
     base64(text).unwrap()
 }
 
+/// `start` and `step`, what each asks then sent as a protocol sends it.
+trait Sent {
+    fn start_sent(&mut self, cx: &mut Ctx<'_>, force_ir: bool) -> Result<Progress, SaslError>;
+    fn step_sent(
+        &mut self,
+        cx: &mut Ctx<'_>,
+        code: Code,
+        message: &[u8],
+    ) -> Result<Progress, SaslError>;
+}
+
+impl Sent for Sasl {
+    fn start_sent(&mut self, cx: &mut Ctx<'_>, force_ir: bool) -> Result<Progress, SaslError> {
+        let progress = self.start(cx, force_ir);
+        if let Ok(Progress::Sends(_)) = progress {
+            self.sent(cx, true);
+        }
+        progress
+    }
+
+    fn step_sent(
+        &mut self,
+        cx: &mut Ctx<'_>,
+        code: Code,
+        message: &[u8],
+    ) -> Result<Progress, SaslError> {
+        let progress = self.step(cx, code, message);
+        if let Ok(Progress::Sends(_)) = progress {
+            self.sent(cx, true);
+        }
+        progress
+    }
+}
+
 #[test]
 fn a_mechanism_s_name_ends_where_a_word_does() {
     assert_eq!(decode_mech(b"PLAIN"), Some((Mechs::PLAIN, 5)));
@@ -68,7 +102,7 @@ fn cram_md5_answers_an_empty_challenge() {
     let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
     sasl.offers(Mechs::CRAM_MD5);
     with_cx(Some(creds), 110, &[], |cx| {
-        let auth = sasl.start(cx, false).unwrap();
+        let auth = sasl.start_sent(cx, false).unwrap();
         assert_eq!(
             auth,
             Progress::Sends(Send::Auth {
@@ -76,14 +110,17 @@ fn cram_md5_answers_an_empty_challenge() {
                 initial: None
             })
         );
-        let next = sasl.step(cx, Code::Continue, b"").unwrap();
+        let next = sasl.step_sent(cx, Code::Continue, b"").unwrap();
         assert_eq!(
             next,
             Progress::Sends(Send::Continue(b64(
                 b"user 5c8db03f04cec0f43bcb060023914190"
             )))
         );
-        assert_eq!(sasl.step(cx, Code::Final, b"").unwrap(), Progress::Done);
+        assert_eq!(
+            sasl.step_sent(cx, Code::Final, b"").unwrap(),
+            Progress::Done
+        );
     });
 }
 
@@ -94,20 +131,20 @@ fn a_challenge_not_in_base64_cancels_and_another_mechanism_follows() {
     let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
     sasl.offers(Mechs::CRAM_MD5.or(Mechs::PLAIN));
     with_cx(Some(creds), 110, &[], |cx| {
-        sasl.start(cx, false).unwrap();
+        sasl.start_sent(cx, false).unwrap();
         assert_eq!(
-            sasl.step(cx, Code::Continue, b"Rubbish").unwrap(),
+            sasl.step_sent(cx, Code::Continue, b"Rubbish").unwrap(),
             Progress::Sends(Send::Cancel)
         );
         assert_eq!(
-            sasl.step(cx, Code::Other, b"").unwrap(),
+            sasl.step_sent(cx, Code::Other, b"").unwrap(),
             Progress::Sends(Send::Auth {
                 mech: "PLAIN",
                 initial: None
             })
         );
         assert_eq!(
-            sasl.step(cx, Code::Continue, b"").unwrap(),
+            sasl.step_sent(cx, Code::Continue, b"").unwrap(),
             Progress::Sends(Send::Continue(b64(b"\0user\0secret")))
         );
     });
@@ -123,8 +160,8 @@ fn digest_md5_answers_as_c_s_debug_build_does() {
         b"realm=\"curl\",nonce=\"5300d17a1d695bd411e4cdf96f9548c23ced6175\",algorithm=md5-sess,qop=\"auth\"",
     );
     with_cx(Some(creds), 110, b"4321532163217321", |cx| {
-        sasl.start(cx, false).unwrap();
-        let resp = sasl.step(cx, Code::Continue, &chlg).unwrap();
+        sasl.start_sent(cx, false).unwrap();
+        let resp = sasl.step_sent(cx, Code::Continue, &chlg).unwrap();
         let want = b64(
             b"username=\"user\",realm=\"curl\",nonce=\"5300d17a1d695bd411e4cdf96f9548c23ced6175\",cnonce=\"34333231353332313633323137333231\",nc=\"00000001\",digest-uri=\"pop/127.0.0.1\",response=18315548c7f3a37e716fa8e90dfab9b6,qop=auth",
         );
@@ -132,10 +169,13 @@ fn digest_md5_answers_as_c_s_debug_build_does() {
         // The server's `rspauth` is answered with an empty line.
         let rspauth = b64(b"rspauth=fecb36b7086e0b95d906459efa8cc29e");
         assert_eq!(
-            sasl.step(cx, Code::Continue, &rspauth).unwrap(),
+            sasl.step_sent(cx, Code::Continue, &rspauth).unwrap(),
             Progress::Sends(Send::Continue(Vec::new()))
         );
-        assert_eq!(sasl.step(cx, Code::Final, b"").unwrap(), Progress::Done);
+        assert_eq!(
+            sasl.step_sent(cx, Code::Final, b"").unwrap(),
+            Progress::Done
+        );
     });
 }
 
@@ -165,7 +205,7 @@ fn an_initial_response_too_long_is_left_for_the_continuation() {
     with_cx(Some(creds), 110, &[], |cx| {
         cx.sasl_ir = true;
         assert_eq!(
-            sasl.start(cx, false).unwrap(),
+            sasl.start_sent(cx, false).unwrap(),
             Progress::Sends(Send::Auth {
                 mech: "PLAIN",
                 initial: None
@@ -251,7 +291,7 @@ fn the_strongest_mechanism_both_ends_allow_is_chosen() {
         sasl.preferred = all;
         sasl.offers(offered);
         with_cx(Some(creds), 110, &[0; 16], |cx| {
-            sasl.start(cx, false).unwrap()
+            sasl.start_sent(cx, false).unwrap()
         })
     };
     let pw = Secret::new(b"user", b"secret", b"");
@@ -292,8 +332,8 @@ fn an_initial_response_is_each_mechanism_s_first_message() {
         sasl.offers(offered);
         with_cx(Some(creds), 110, &[], |cx| {
             cx.sasl_ir = asked;
-            let first = sasl.start(cx, forced).unwrap();
-            (first, sasl.step(cx, Code::Final, b""))
+            let first = sasl.start_sent(cx, forced).unwrap();
+            (first, sasl.step_sent(cx, Code::Final, b""))
         })
     };
     let pw = Secret::new(b"user", b"secret", b"");
@@ -346,7 +386,7 @@ fn an_initial_response_may_be_the_limit_long() {
         sasl.offers(Mechs::PLAIN);
         with_cx(Some(creds), 110, &[], |cx| {
             cx.sasl_ir = true;
-            sasl.start(cx, false).unwrap()
+            sasl.start_sent(cx, false).unwrap()
         })
     };
     // Two zero bytes and the user: 180 bytes.
@@ -373,7 +413,7 @@ fn no_limit_takes_any_initial_response() {
     with_cx(Some(creds), 143, &[], |cx| {
         cx.sasl_ir = true;
         assert_eq!(
-            sasl.start(cx, false).unwrap(),
+            sasl.start_sent(cx, false).unwrap(),
             auth("PLAIN", Some(b"\0u\0p"))
         );
     });
@@ -386,10 +426,19 @@ fn login_answers_the_user_then_the_password() {
     let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
     sasl.offers(Mechs::LOGIN);
     with_cx(Some(creds), 110, &[], |cx| {
-        assert_eq!(sasl.start(cx, false).unwrap(), auth("LOGIN", None));
-        assert_eq!(sasl.step(cx, Code::Continue, b"").unwrap(), cont(b"user"));
-        assert_eq!(sasl.step(cx, Code::Continue, b"").unwrap(), cont(b"secret"));
-        assert_eq!(sasl.step(cx, Code::Final, b"").unwrap(), Progress::Done);
+        assert_eq!(sasl.start_sent(cx, false).unwrap(), auth("LOGIN", None));
+        assert_eq!(
+            sasl.step_sent(cx, Code::Continue, b"").unwrap(),
+            cont(b"user")
+        );
+        assert_eq!(
+            sasl.step_sent(cx, Code::Continue, b"").unwrap(),
+            cont(b"secret")
+        );
+        assert_eq!(
+            sasl.step_sent(cx, Code::Final, b"").unwrap(),
+            Progress::Done
+        );
     });
 }
 
@@ -401,9 +450,15 @@ fn external_answers_with_the_user() {
     assert!(sasl.url_auth(b"EXTERNAL"));
     sasl.offers(Mechs::EXTERNAL);
     with_cx(Some(creds), 110, &[], |cx| {
-        assert_eq!(sasl.start(cx, false).unwrap(), auth("EXTERNAL", None));
-        assert_eq!(sasl.step(cx, Code::Continue, b"").unwrap(), cont(b"user"));
-        assert_eq!(sasl.step(cx, Code::Final, b"").unwrap(), Progress::Done);
+        assert_eq!(sasl.start_sent(cx, false).unwrap(), auth("EXTERNAL", None));
+        assert_eq!(
+            sasl.step_sent(cx, Code::Continue, b"").unwrap(),
+            cont(b"user")
+        );
+        assert_eq!(
+            sasl.step_sent(cx, Code::Final, b"").unwrap(),
+            Progress::Done
+        );
     });
 }
 
@@ -416,32 +471,41 @@ fn the_bearer_s_mechanisms_answer_their_prompts() {
     let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
     sasl.offers(Mechs::XOAUTH2);
     with_cx(Some(bearer), 80, &[], |cx| {
-        assert_eq!(sasl.start(cx, false).unwrap(), auth("XOAUTH2", None));
+        assert_eq!(sasl.start_sent(cx, false).unwrap(), auth("XOAUTH2", None));
         assert_eq!(
-            sasl.step(cx, Code::Continue, b"").unwrap(),
+            sasl.step_sent(cx, Code::Continue, b"").unwrap(),
             cont(b"user=user\x01auth=Bearer tok\x01\x01")
         );
-        assert_eq!(sasl.step(cx, Code::Final, b"").unwrap(), Progress::Done);
+        assert_eq!(
+            sasl.step_sent(cx, Code::Final, b"").unwrap(),
+            Progress::Done
+        );
     });
     let msg: &[u8] = b"n,a=user,\x01host=127.0.0.1\x01auth=Bearer tok\x01\x01";
     let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
     sasl.offers(Mechs::OAUTHBEARER);
     with_cx(Some(bearer), 80, &[], |cx| {
-        assert_eq!(sasl.start(cx, false).unwrap(), auth("OAUTHBEARER", None));
-        assert_eq!(sasl.step(cx, Code::Continue, b"").unwrap(), cont(msg));
         assert_eq!(
-            sasl.step(cx, Code::Continue, b"eyJzdGF0dXMiOiI0MDEifQ==")
+            sasl.start_sent(cx, false).unwrap(),
+            auth("OAUTHBEARER", None)
+        );
+        assert_eq!(sasl.step_sent(cx, Code::Continue, b"").unwrap(), cont(msg));
+        assert_eq!(
+            sasl.step_sent(cx, Code::Continue, b"eyJzdGF0dXMiOiI0MDEifQ==")
                 .unwrap(),
             cont(b"\x01")
         );
-        assert_eq!(sasl.step(cx, Code::Other, b""), Err(SaslError::Denied));
+        assert_eq!(sasl.step_sent(cx, Code::Other, b""), Err(SaslError::Denied));
     });
     let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
     sasl.offers(Mechs::OAUTHBEARER);
     with_cx(Some(bearer), 80, &[], |cx| {
-        sasl.start(cx, false).unwrap();
-        sasl.step(cx, Code::Continue, b"").unwrap();
-        assert_eq!(sasl.step(cx, Code::Final, b"").unwrap(), Progress::Done);
+        sasl.start_sent(cx, false).unwrap();
+        sasl.step_sent(cx, Code::Continue, b"").unwrap();
+        assert_eq!(
+            sasl.step_sent(cx, Code::Final, b"").unwrap(),
+            Progress::Done
+        );
     });
 }
 
@@ -452,15 +516,18 @@ fn a_refusal_denies_the_login() {
     let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
     sasl.offers(Mechs::LOGIN);
     with_cx(Some(creds), 110, &[], |cx| {
-        sasl.start(cx, false).unwrap();
-        assert_eq!(sasl.step(cx, Code::Other, b""), Err(SaslError::Denied));
+        sasl.start_sent(cx, false).unwrap();
+        assert_eq!(sasl.step_sent(cx, Code::Other, b""), Err(SaslError::Denied));
     });
     let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
     sasl.offers(Mechs::PLAIN);
     with_cx(Some(creds), 110, &[], |cx| {
         cx.sasl_ir = true;
-        sasl.start(cx, false).unwrap();
-        assert_eq!(sasl.step(cx, Code::Continue, b""), Err(SaslError::Denied));
+        sasl.start_sent(cx, false).unwrap();
+        assert_eq!(
+            sasl.step_sent(cx, Code::Continue, b""),
+            Err(SaslError::Denied)
+        );
     });
 }
 
@@ -472,13 +539,13 @@ fn nothing_preferred_or_offered_is_no_sasl() {
     sasl.offers(Mechs::PLAIN);
     sasl.prefer_none();
     with_cx(Some(creds), 110, &[], |cx| {
-        assert_eq!(sasl.start(cx, false).unwrap(), Progress::Idle);
+        assert_eq!(sasl.start_sent(cx, false).unwrap(), Progress::Idle);
     });
     let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
     sasl.offers(Mechs::PLAIN);
     sasl.forget_offers();
     with_cx(Some(creds), 110, &[], |cx| {
-        assert_eq!(sasl.start(cx, false).unwrap(), Progress::Idle);
+        assert_eq!(sasl.start_sent(cx, false).unwrap(), Progress::Idle);
     });
 }
 
@@ -515,10 +582,10 @@ fn each_change_of_state_is_said_by_c_s_names() {
     let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
     sasl.offers(Mechs::LOGIN);
     let ((), said) = with_said(Some(creds), |cx| {
-        sasl.start(cx, false).unwrap();
-        sasl.step(cx, Code::Continue, b"").unwrap();
-        sasl.step(cx, Code::Continue, b"").unwrap();
-        sasl.step(cx, Code::Final, b"").unwrap();
+        sasl.start_sent(cx, false).unwrap();
+        sasl.step_sent(cx, Code::Continue, b"").unwrap();
+        sasl.step_sent(cx, Code::Continue, b"").unwrap();
+        sasl.step_sent(cx, Code::Final, b"").unwrap();
         // Already stopped: nothing changes, nothing is said.
         sasl.set_state(cx, State::Stop);
     });
@@ -555,6 +622,55 @@ fn each_change_of_state_is_said_by_c_s_names() {
     for (state, name) in names {
         assert_eq!(state.name(), name);
     }
+}
+
+/// A step's change of state comes once the protocol has sent its
+/// command, as C changes state after `sendauth`, `contauth` and
+/// `cancelauth`: the trace says the command first. A mechanism whose
+/// first command could not be sent is not started; a later command moves
+/// the exchange on all the same.
+#[test]
+fn a_change_of_state_comes_once_its_command_is_sent() {
+    let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
+    sasl.offers(Mechs::LOGIN);
+    let ((), said) = with_said(Some(Secret::new(b"user", b"secret", b"")), |cx| {
+        assert_eq!(sasl.start(cx, false).unwrap(), auth("LOGIN", None));
+        assert_eq!(sasl.state, State::Stop);
+        sasl.sent(cx, true);
+        assert_eq!(sasl.state, State::Login);
+        assert_eq!(sasl.step(cx, Code::Continue, b"").unwrap(), cont(b"user"));
+        assert_eq!(sasl.state, State::Login);
+        sasl.sent(cx, false);
+        assert_eq!(sasl.state, State::LoginPasswd);
+    });
+    let changes: Vec<&str> = said.iter().map(|(_, line)| line.as_str()).collect();
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    assert!(changes[0].ends_with("from STOP to LOGIN"), "{changes:?}");
+    assert!(
+        changes[1].ends_with("from LOGIN to LOGIN_PASSWD"),
+        "{changes:?}"
+    );
+    let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
+    sasl.offers(Mechs::LOGIN);
+    let ((), said) = with_said(Some(Secret::new(b"user", b"secret", b"")), |cx| {
+        sasl.start(cx, false).unwrap();
+        sasl.sent(cx, false);
+        assert_eq!(sasl.state, State::Stop);
+    });
+    assert!(said.is_empty(), "{said:?}");
+}
+
+/// A protocol that takes a step before saying the last one's command went
+/// is wrong, and stops loudly.
+#[test]
+#[should_panic(expected = "the protocol said the last step's command went")]
+fn a_step_before_the_last_command_went_panics() {
+    let mut sasl = Sasl::new(&POP, AuthMethods::BASIC);
+    sasl.offers(Mechs::LOGIN);
+    with_cx(Some(Secret::new(b"user", b"secret", b"")), 110, &[], |cx| {
+        sasl.start(cx, false).unwrap();
+        assert!(sasl.step(cx, Code::Continue, b"").is_err());
+    });
 }
 
 /// Why no mechanism was chosen, said as C says it.

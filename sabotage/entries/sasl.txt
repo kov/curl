@@ -1,0 +1,33 @@
+=== a mechanism's first change of state is said before its command
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core proto::smtp::tests::over_the_wire::sasl_s_changes_of_state_follow_their_commands
+features: test-util,debug-hooks
+--- old
+        self.unsent = Some(Unsent { state, first: true });
+--- new
+        self.set_state(cx, state);
+        self.unsent = Some(Unsent { state, first: true });
+
+=== a later step's change of state is said before its command
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core proto::imap::tests::over_the_wire::sasl_s_changes_of_state_follow_their_commands
+features: test-util,debug-hooks
+--- old
+        self.unsent = Some(Unsent {
+            state,
+            first: false,
+        });
+--- new
+        self.set_state(cx, state);
+        self.unsent = Some(Unsent {
+            state,
+            first: false,
+        });
+
+=== a mechanism whose first command could not be sent is started all the same
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::a_change_of_state_comes_once_its_command_is_sent
+--- old
+        if ok || !unsent.first {
+--- new
+        if ok || unsent.first {

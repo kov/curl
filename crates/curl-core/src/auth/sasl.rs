@@ -130,7 +130,8 @@ pub(crate) enum Send {
 pub(crate) enum Progress {
     /// No mechanism could be chosen (`SASL_IDLE`).
     Idle,
-    /// A step was taken; `send` goes now (`SASL_INPROGRESS`).
+    /// A step was taken; `send` goes now, and the protocol then says it
+    /// went with `Sasl::sent` (`SASL_INPROGRESS`).
     Sends(Send),
     /// The exchange is over: logged in (`SASL_DONE`).
     Done,
@@ -247,11 +248,25 @@ impl Ctx<'_> {
     }
 }
 
+/// Where a step that asked for a send goes once its command is sent: C
+/// changes state after `sendauth`, `contauth` or `cancelauth`.
+#[derive(Clone, Copy, Debug)]
+struct Unsent {
+    state: State,
+    /// The step started a mechanism, which stays where it was if its
+    /// command could not be sent (`Curl_sasl_start` returns before
+    /// `sasl_state`); a later step's state changes either way
+    /// (`Curl_sasl_continue`).
+    first: bool,
+}
+
 /// A connection's SASL (`struct SASL`).
 #[derive(Debug)]
 pub(crate) struct Sasl {
     params: &'static Params,
     state: State,
+    /// The state the step the protocol is sending goes to.
+    unsent: Option<Unsent>,
     /// The mechanism in use (`curmech`).
     current: Option<&'static str>,
     /// What the server offers (`authmechs`).
@@ -294,6 +309,7 @@ impl Sasl {
         Sasl {
             params,
             state: State::Stop,
+            unsent: None,
             current: None,
             offered: Mechs::NONE,
             preferred,
@@ -387,6 +403,10 @@ impl Sasl {
         cx: &mut Ctx<'_>,
         force_ir: bool,
     ) -> Result<Progress, SaslError> {
+        assert!(
+            self.unsent.is_none(),
+            "the protocol said the last step's command went"
+        );
         self.force_ir = force_ir;
         self.used = Mechs::NONE;
         let enabled = self.offered.and(self.preferred);
@@ -455,8 +475,18 @@ impl Sasl {
             initial = None;
         }
         let state = if initial.is_some() { then } else { first };
-        self.set_state(cx, state);
+        self.unsent = Some(Unsent { state, first: true });
         Ok(Progress::Sends(Send::Auth { mech, initial }))
+    }
+
+    /// The protocol sent what the last step asked, or failed to (`ok`
+    /// false): the exchange goes where the step said, traced after the
+    /// command as C traces it.
+    pub(crate) fn sent(&mut self, cx: &mut Ctx<'_>, ok: bool) {
+        let unsent = self.unsent.take().expect("the last step asked for a send");
+        if ok || !unsent.first {
+            self.set_state(cx, unsent.state);
+        }
     }
 
     /// Take the server's answer to the last step, `code` and its
@@ -468,6 +498,10 @@ impl Sasl {
         code: Code,
         message: &[u8],
     ) -> Result<Progress, SaslError> {
+        assert!(
+            self.unsent.is_none(),
+            "the protocol said the last step's command went"
+        );
         if self.state == State::Final {
             self.set_state(cx, State::Stop);
             return if code == Code::Final {
@@ -533,17 +567,15 @@ impl Sasl {
             }
             State::Final => unreachable!("answered above"),
         };
-        match resp {
-            None => {
-                self.set_state(cx, State::Cancel);
-                Ok(Progress::Sends(Send::Cancel))
-            }
-            Some(resp) => {
-                let encoded = base64(&resp)?;
-                self.set_state(cx, next);
-                Ok(Progress::Sends(Send::Continue(encoded)))
-            }
-        }
+        let (state, send) = match resp {
+            None => (State::Cancel, Send::Cancel),
+            Some(resp) => (next, Send::Continue(base64(&resp)?)),
+        };
+        self.unsent = Some(Unsent {
+            state,
+            first: false,
+        });
+        Ok(Progress::Sends(send))
     }
 
     /// Why no mechanism could be chosen, said as C says it, the login then

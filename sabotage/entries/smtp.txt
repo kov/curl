@@ -1,0 +1,24 @@
+=== a mail body ending with a line's dot ends without that dot doubled
+file: crates/curl-core/src/upload/chain.rs
+witness: curl-core upload::chain::tests::a_mail_s_end_is_the_line_its_body_calls_for
+--- old
+            DOT_AT_START => b".\r\n.\r\n",
+--- new
+            DOT_AT_START => MAIL_END,
+
+=== a dot that starts a line of a mail body goes undoubled
+file: crates/curl-core/src/upload/chain.rs
+witness: curl-core upload::chain::tests::a_mail_s_dots_are_escaped_however_its_reads_cut_it
+--- old
+                self.buf.try_push(b'.').expect("reserved");
+                self.matched = 0;
+--- new
+                self.matched = 0;
+
+=== a read of a mail body with a line's end in it goes on unchanged
+file: crates/curl-core/src/upload/chain.rs
+witness: curl-core upload::chain::tests::a_mail_s_dots_are_escaped_however_its_reads_cut_it
+--- old
+        self.matched == 0 && !read.contains(&MAIL_END[0])
+--- new
+        self.matched == 0

@@ -29,10 +29,184 @@ pub(crate) struct Body {
 struct Chain {
     /// `CURL_CR_TRANSFER_ENCODE`: HTTP/1's chunks (`cr_chunked`).
     chunks: Option<ChunkEncoder>,
+    /// `CURL_CR_CONTENT_ENCODE`, first in its phase: a mail's dots
+    /// escaped and its end marked (`cr-smtp-eob`), reading from the
+    /// conversion below it; boxed, as the conversion is.
+    mail: Option<Box<MailEnd>>,
     /// `CURL_CR_CONTENT_ENCODE`: each lone LF sent as CRLF
     /// (`cr-lineconv`); boxed, as few bodies are converted and every
     /// transfer's state holds its body inline.
     lines: Option<Box<LineConv>>,
+}
+
+/// A stage's read of the one below it.
+type Stage<'s, H> = dyn FnMut(&mut StepCx<'_, H>, &mut [u8]) -> Result<Readout, ErrorKind> + 's;
+
+/// What ends an SMTP mail body: CRLF, a dot, CRLF (`SMTP_EOB`).
+const MAIL_END: &[u8; 5] = b"\r\n.\r\n";
+
+/// How much of [`MAIL_END`] is matched before a dot is added: a line's
+/// start and its dot (`SMTP_EOB_FIND_LEN`).
+const DOT_AT_START: usize = 3;
+
+/// A mail body as SMTP's `DATA` sends it (`cr_eob_read`): a dot that
+/// starts a line doubled, and the body ended with a line of a single
+/// dot, after a CRLF of its own unless the body ends with one. What it
+/// gives that it changed waits in its buffer for the reads after; a read
+/// with nothing to change goes on as it is.
+#[derive(Debug)]
+pub(crate) struct MailEnd {
+    /// What was changed and not yet given, from `at` on.
+    buf: Vec<u8>,
+    at: usize,
+    /// How much of [`MAIL_END`] the bytes so far end with (`n_eob`): the
+    /// body's first byte starts a line, as if after a CRLF.
+    matched: usize,
+    /// The source ended (`read_eos`).
+    read_eos: bool,
+    /// The end's line was added (`processed_eos`).
+    ended: bool,
+    /// The end was given (`eos`).
+    eos: bool,
+}
+
+impl Default for MailEnd {
+    fn default() -> MailEnd {
+        MailEnd {
+            buf: Vec::new(),
+            at: 0,
+            matched: 2,
+            read_eos: false,
+            ended: false,
+            eos: false,
+        }
+    }
+}
+
+impl MailEnd {
+    /// Read into `dest`, which is not empty, from `below` changed.
+    fn read<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        below: &mut Stage<'_, H>,
+        dest: &mut [u8],
+    ) -> Result<Readout, ErrorKind> {
+        let len = dest.len();
+        if !self.read_eos && self.held().is_empty() {
+            let got = below(cx, dest);
+            let (code, n, eos) = match &got {
+                Ok(got) => (trace::Code(Ok(())), got.n, got.eos),
+                Err(e) => (trace::Code(Err(*e)), 0, false),
+            };
+            let eos = u8::from(eos);
+            trace::of(
+                cx,
+                Component::Smtp,
+                format_args!("cr_eob_read, next_read(len={len}) -> {code}, {n} eos={eos}"),
+            );
+            let got = got?;
+            self.read_eos = got.eos;
+            let read = &dest[..got.n];
+            if !read.is_empty() {
+                if self.passes(read) {
+                    // Nothing matched and no line's end to start a match:
+                    // given as it came, its end said with the next read.
+                    return Ok(Readout {
+                        n: got.n,
+                        eos: false,
+                    });
+                }
+                self.stuff(read).map_err(|_| ErrorKind::OutOfMemory)?;
+            }
+        }
+        if self.read_eos && !self.ended {
+            trace::of(
+                cx,
+                Component::Smtp,
+                format_args!("auto-ending mail body with '\\r\\n.\\r\\n'"),
+            );
+            self.end().map_err(|_| ErrorKind::OutOfMemory)?;
+        }
+        let n = self.give(dest);
+        if self.read_eos && self.held().is_empty() {
+            trace::of(
+                cx,
+                Component::Smtp,
+                format_args!("mail body complete, returning EOS"),
+            );
+            self.eos = true;
+        }
+        let eos = u8::from(self.eos);
+        trace::debug_info(cx, format_args!("cr_eob_read({len}) -> 0, {n}, {eos}"));
+        Ok(Readout { n, eos: self.eos })
+    }
+
+    /// What it holds to give.
+    fn held(&self) -> &[u8] {
+        &self.buf[self.at..]
+    }
+
+    /// Whether `read` goes on unchanged: no part of the end is matched
+    /// and nothing in it starts one.
+    fn passes(&self, read: &[u8]) -> bool {
+        self.matched == 0 && !read.contains(&MAIL_END[0])
+    }
+
+    /// Take `read` into the buffer, a dot added before what follows a
+    /// line's starting dot.
+    fn stuff(&mut self, read: &[u8]) -> Result<(), OutOfMemory> {
+        self.compact();
+        let dots = read.iter().filter(|&&b| b == b'.').count();
+        self.buf
+            .try_reserve(read.len() + dots)
+            .map_err(|_| OutOfMemory)?;
+        for &b in read {
+            if self.matched >= DOT_AT_START {
+                self.buf.try_push(b'.').expect("reserved");
+                self.matched = 0;
+            }
+            if b != MAIL_END[self.matched] {
+                self.matched = 0;
+            }
+            if b == MAIL_END[self.matched] {
+                self.matched += 1;
+            }
+            self.buf.try_push(b).expect("reserved");
+        }
+        Ok(())
+    }
+
+    /// Add the line that ends the body: the rest of the end after a CRLF
+    /// or an empty body, the line's dot doubled first after a line that
+    /// starts with one, or the whole end.
+    fn end(&mut self) -> Result<(), OutOfMemory> {
+        self.compact();
+        let end: &[u8] = match self.matched {
+            2 => &MAIL_END[2..],
+            DOT_AT_START => b".\r\n.\r\n",
+            _ => MAIL_END,
+        };
+        self.buf.try_extend_from_slice(end)?;
+        self.ended = true;
+        Ok(())
+    }
+
+    /// Give what it holds into `dest`, as much as fits.
+    fn give(&mut self, dest: &mut [u8]) -> usize {
+        let held = self.held();
+        let n = held.len().min(dest.len());
+        dest[..n].copy_from_slice(&held[..n]);
+        self.at += n;
+        n
+    }
+
+    /// The buffer emptied of what was given.
+    fn compact(&mut self) {
+        if self.at == self.buf.len() {
+            self.buf.clear();
+            self.at = 0;
+        }
+    }
 }
 
 /// The line ends of a body converted, each LF not after a CR sent as CRLF
@@ -146,13 +320,21 @@ impl Body {
         Ok(())
     }
 
+    /// Sent as a mail's body to SMTP's `DATA`: its dots escaped and its
+    /// end marked, above any conversion (`cr_eob_add`).
+    #[expect(dead_code, reason = "SMTP is yet to be built on it")]
+    pub(crate) fn end_as_mail(&mut self) -> Result<(), OutOfMemory> {
+        self.chain.mail = Some(try_box(MailEnd::default())?);
+        Ok(())
+    }
+
     /// Its size as sent, where known (`Curl_creader_total_length`): a
-    /// conversion makes it unknown.
+    /// conversion or a mail's escaping makes it unknown.
     pub(crate) fn size(&self) -> Option<u64> {
-        match self.chain.lines {
-            Some(_) => None,
-            None => self.upload.size(),
+        if self.chain.lines.is_some() || self.chain.mail.is_some() {
+            return None;
         }
+        self.upload.size()
     }
 
     /// The source.
@@ -174,11 +356,19 @@ impl Body {
         pausable: bool,
         trailers: Trailers<H>,
     ) -> Result<Readout, ErrorKind> {
-        let Chain { chunks, lines } = &mut self.chain;
+        let Chain {
+            chunks,
+            mail,
+            lines,
+        } = &mut self.chain;
         let upload = &mut self.upload;
-        let mut below = |cx: &mut StepCx<'_, H>, dest: &mut [u8]| match lines {
+        let mut source = |cx: &mut StepCx<'_, H>, dest: &mut [u8]| match lines {
             Some(lines) => lines.read(cx, upload, dest, pausable),
             None => upload.read(cx, dest, pausable),
+        };
+        let mut below = |cx: &mut StepCx<'_, H>, dest: &mut [u8]| match mail {
+            Some(mail) => mail.read(cx, &mut source, dest),
+            None => source(cx, dest),
         };
         let Some(chunks) = chunks else {
             return below(cx, dest);
@@ -228,5 +418,97 @@ impl Body {
         }
         let (n, eos) = chunks.take(dest);
         Ok(Readout { n, eos })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `body` read through a mail's end in pieces of `cut` bytes, each
+    /// given back into room for `room`.
+    fn ended(body: &[u8], cut: usize, room: usize) -> Vec<u8> {
+        let mut stage = MailEnd::default();
+        let mut out = Vec::new();
+        let mut dest = vec![0; room];
+        let mut drain = |stage: &mut MailEnd, out: &mut Vec<u8>| {
+            while !stage.held().is_empty() {
+                let n = stage.give(&mut dest);
+                out.extend_from_slice(&dest[..n]);
+            }
+        };
+        for piece in body.chunks(cut) {
+            if stage.passes(piece) {
+                out.extend_from_slice(piece);
+                continue;
+            }
+            stage.stuff(piece).unwrap();
+            drain(&mut stage, &mut out);
+        }
+        stage.end().unwrap();
+        drain(&mut stage, &mut out);
+        out
+    }
+
+    /// What RFC 5321 makes of `body` (section 4.5.2), as C ends it: each
+    /// dot that starts a line doubled, then a line of a single dot, after
+    /// a CRLF unless the body is empty or ends with one.
+    fn stuffed(body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut line_start = true;
+        for (i, &b) in body.iter().enumerate() {
+            if b == b'.' && line_start {
+                out.push(b'.');
+            }
+            out.push(b);
+            line_start = b == b'\n' && i > 0 && body[i - 1] == b'\r';
+        }
+        if !body.is_empty() && !body.ends_with(b"\r\n") {
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(b".\r\n");
+        out
+    }
+
+    #[test]
+    fn a_mail_s_end_is_the_line_its_body_calls_for() {
+        for (body, want) in [
+            (&b""[..], &b".\r\n"[..]),
+            (b"a", b"a\r\n.\r\n"),
+            (b"a\r\n", b"a\r\n.\r\n"),
+            (b"a\r", b"a\r\r\n.\r\n"),
+            (b"a\n", b"a\n\r\n.\r\n"),
+            (b".", b"..\r\n.\r\n"),
+            (b"a\r\n.", b"a\r\n..\r\n.\r\n"),
+            (b".a\r\n", b"..a\r\n.\r\n"),
+            (b"\r\n.\r\n", b"\r\n..\r\n.\r\n"),
+            (b"a\n.b", b"a\n.b\r\n.\r\n"),
+            (b"a\r\n..b", b"a\r\n...b\r\n.\r\n"),
+        ] {
+            assert_eq!(ended(body, body.len().max(1), 64), want, "{body:?}");
+        }
+    }
+
+    /// However the body comes and however little room each read has, its
+    /// dots are escaped as RFC 5321 says and it ends as C ends it.
+    #[test]
+    fn a_mail_s_dots_are_escaped_however_its_reads_cut_it() {
+        let bodies: [&[u8]; 7] = [
+            b"line\r\n.dot\r\n..two\r\nend.\r\n.",
+            b".\r\n.\r\n.\r\n",
+            b"\r\r\n.\n.\r.\r\n.x",
+            b"no line ends at all",
+            b"\r\n\r\n\r\n",
+            b"x\r\n.",
+            b"x\r\n.\r",
+        ];
+        for body in bodies {
+            let want = stuffed(body);
+            for cut in 1..=body.len() {
+                for room in [1, 2, 3, 7, 64] {
+                    assert_eq!(ended(body, cut, room), want, "{body:?} {cut} {room}");
+                }
+            }
+        }
     }
 }

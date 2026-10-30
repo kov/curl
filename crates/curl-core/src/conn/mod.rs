@@ -245,11 +245,12 @@ impl Route {
             && tls.is_some()
             && scheme.reuses_tls()
             && tls.as_deref() == want.upgrade();
-        // The TLS a transfer may upgrade to is made with every setting
-        // the connection's is, which it was made with or would upgrade
-        // with (`url_match_ssl_config` with `may_tls`).
-        let upgrade_same =
-            !want.use_ssl().may() || tls.as_deref().or(have.upgrade()) == want.upgrade();
+        // The TLS a transfer may upgrade to, or is made with from the
+        // start, is made with every setting the connection's is, which it
+        // was made with or would upgrade with (`url_match_ssl_config`
+        // with `may_tls`).
+        let upgrade_same = !want.use_ssl().may()
+            || tls.as_deref().or(have.upgrade()) == want_tls.as_deref().or(want.upgrade());
         // A connection logged in once serves only the same credentials
         // (`url_match_auth`).
         let login_same = !scheme.logs_in_per_connection()

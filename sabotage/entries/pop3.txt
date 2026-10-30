@@ -333,3 +333,12 @@ features: test-util
                     buffered_input(&mut x, Some(Waiting::Connecting), cx);
 --- new
                 Ok(Connect::Waiting) => {
+
+=== a connection over TLS from the start serves no transfer of its scheme requiring TLS
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_pop3s_connection_serves_a_pop3s_transfer_requiring_tls
+features: test-util
+--- old
+            || tls.as_deref().or(have.upgrade()) == want_tls.as_deref().or(want.upgrade());
+--- new
+            || tls.as_deref().or(have.upgrade()) == want.upgrade();

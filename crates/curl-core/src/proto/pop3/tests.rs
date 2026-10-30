@@ -890,6 +890,35 @@ mod over_the_wire {
         assert_eq!(secure.received()[before..], tls(b"RETR 1\r\n")[..]);
     }
 
+    /// A connection over TLS from the start serves a transfer of its own
+    /// scheme that requires TLS, its TLS made with that transfer's
+    /// settings (`url_match_ssl_config`), as an FTPS one does (test 407).
+    #[test]
+    fn a_pop3s_connection_serves_a_pop3s_transfer_requiring_tls() {
+        let tls = |plain: &[u8]| fake::records(plain).unwrap();
+        let replies = [
+            WELCOME.to_vec(),
+            tls(GREETING),
+            tls(CAPA_USER),
+            tls(OK),
+            tls(OK),
+            tls(MESSAGE),
+            tls(MESSAGE),
+        ];
+        let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+        let secure = Conversation::replies(&replies, false).per_send();
+        let mut m = serving(&[&secure]);
+        let libraries = with_tls();
+        let url = format!("pop3s://u:p@127.0.0.1:{PORT}/1");
+        let required = |o: &mut Options| o.line.make_mut().unwrap().use_ssl = UseSsl::All;
+        assert_eq!(transfer(&mut m, &libraries, &url, required).result, Ok(()));
+        let before = secure.received().len();
+        let ran = transfer(&mut m, &libraries, &url, required);
+        assert_eq!(ran.result, Ok(()));
+        assert_eq!(ran.body, b"hello\r\n.dot\r\n");
+        assert_eq!(secure.received()[before..], tls(b"RETR 1\r\n")[..]);
+    }
+
     /// A connection that logged in as no one serves no transfer with
     /// credentials.
     #[test]

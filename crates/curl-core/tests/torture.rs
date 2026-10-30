@@ -80,6 +80,10 @@ fn main() {
             a_get_stays_within_its_allocation_budget,
         ),
         (
+            "a_get_with_a_tls_library_allocates_as_one_without",
+            a_get_with_a_tls_library_allocates_as_one_without,
+        ),
+        (
             "an_https_get_survives_every_allocation_failing",
             an_https_get_survives_every_allocation_failing,
         ),
@@ -967,6 +971,28 @@ fn a_get_stays_within_its_allocation_budget() {
         n <= GET_BUDGET,
         "a plain GET made {n} allocations, over its {GET_BUDGET}"
     );
+}
+
+/// A plain GET from a handle with a TLS library makes the same
+/// allocations as one without: no scheme of HTTP's upgrades to TLS, so
+/// its route keeps no settings to upgrade with (`route_cold`).
+fn a_get_with_a_tls_library_allocates_as_one_without() {
+    let (clock, net, talk) = test_1_server();
+    let (got, without) = track::count_allocations(|| get(clock, net, &talk));
+    assert_eq!(got.expect("nothing refused").result, Ok(()));
+    let libraries = fake_tls();
+    let (clock, net, talk) = test_1_server();
+    let (got, with) = track::count_allocations(|| {
+        let wire = Wire {
+            libraries,
+            sent: <[u8]>::to_vec,
+            refused_as: None,
+            trace_all: false,
+        };
+        get_over(clock, net, &talk, (URL, REQUEST), |_| Ok(()), wire)
+    });
+    assert_eq!(got.expect("nothing refused").result, Ok(()));
+    assert_eq!(with, without, "allocations with a TLS library and without");
 }
 
 /// A GET by HTTP/2's prior knowledge from a server whose response's

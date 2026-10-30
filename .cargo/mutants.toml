@@ -750,4 +750,11 @@ exclude_re = [
     # An answer with nothing after it hands the scan no bytes, which it
     # writes nothing of.
     'curl-core/src/proto/pop3\.rs:.*: replace > with >= in Request::command_resp$',
+    # Which phase's limits bound the server's time to answer: before DO,
+    # the transfer's own check of its connect limit, made with the same
+    # step start, fails it at the instant the back and forth would, and
+    # its timer wakes it then; in DO, a connect limit spent would have
+    # failed that check in the state before (`multi_handle_timeout`, run
+    # for pending transfers too).
+    'curl-core/src/multi/state\.rs:.*: replace < with (==|<=) in StepCx<.*>::time_left$',
 ]

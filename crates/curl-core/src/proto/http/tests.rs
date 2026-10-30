@@ -4092,6 +4092,26 @@ fn a_forwarding_proxy_gets_the_whole_url() {
     assert!(ran.seen.text().contains(&left), "{:?}", ran.seen.text());
 }
 
+/// A request whose connection goes to another peer, by a connect-to
+/// entry, tunnels through the proxy rather than being handed to it whole
+/// (`Curl_init_proxy`: "With connect-to, we always tunnel").
+#[test]
+fn a_connect_to_entry_tunnels_through_a_proxy() {
+    let tunnel: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
+    let (mut m, talk, _) = server(&[tunnel, OK], false);
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        let entry = format!("origin.example:80:127.0.0.1:{PORT}");
+        o.connect_to.set([entry.as_bytes()]).unwrap();
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let sent = String::from_utf8_lossy(&talk.received()).into_owned();
+    let connect = format!("CONNECT 127.0.0.1:{PORT} HTTP/1.1\r\n");
+    assert!(sent.starts_with(&connect), "{sent}");
+    assert!(sent.contains("\r\n\r\nGET /a HTTP/1.1\r\n"), "{sent}");
+}
+
 const PROXY_CHALLENGE: &[u8] = b"HTTP/1.1 407 Who\r\n\
     Proxy-Authenticate: Basic realm=\"p\"\r\nContent-Length: 0\r\n\r\n";
 

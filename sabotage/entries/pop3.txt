@@ -113,3 +113,115 @@ features: test-util
         matches!(self, ProtoState::Http(_))
 --- new
         true
+
+=== a connection upgraded by STLS serves a transfer that would make TLS otherwise
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::pop3::tests::over_the_wire::an_upgraded_connection_serves_a_transfer_not_asking_for_tls_alike
+features: test-util
+--- old
+want.origin.scheme().reuses_tls() && have.upgrade() == want.upgrade()
+--- new
+want.origin.scheme().reuses_tls() || have.upgrade() == want.upgrade()
+
+=== a POP3 route keeps no TLS settings to upgrade with unless asked for TLS
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::pop3::tests::over_the_wire::an_upgraded_connection_serves_a_transfer_not_asking_for_tls_alike
+features: test-util
+--- old
+        Some(tls) if !secured && (reuses_tls || use_ssl.may()) => Some(
+--- new
+        Some(tls) if !secured && (reuses_tls && use_ssl.may()) => Some(
+
+=== a POP3 transfer goes to an HTTP proxy without a tunnel
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::pop3::tests::over_the_wire::pop3_tunnels_through_an_http_proxy
+features: test-util
+--- old
+        match choose_proxy(cx, &origin, &scheme, via.is_some() || secured || !handed) {
+--- new
+        match choose_proxy(cx, &origin, &scheme, (via.is_some() || secured) && !handed) {
+
+=== POP3's server lines are written as headers, not information
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::pop3::tests::over_the_wire::the_server_s_lines_are_written_as_information
+features: test-util
+--- old
+    const INFO: u16 = 1 << 1;
+--- new
+    const INFO: u16 = 1 >> 1;
+
+=== the back and forth reads a socket that has said nothing
+file: crates/curl-core/src/conn/mux.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_silent_server_is_not_read
+features: test-util
+--- old
+            Ok(_) => !watch[0].revents().is_empty(),
+--- new
+            Ok(_) => true,
+
+=== a POP3 transfer is not woken when the server's time to answer runs out
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::pop3::tests::over_the_wire::the_time_to_answer_wakes_the_transfer_and_outlives_the_connect_s
+features: test-util
+--- old
+            ProtoState::Pop3(r) => r.due(),
+--- new
+            ProtoState::Pop3(r) => r.due().filter(|_| false),
+
+=== the connect's time limit bounds the request's whole making
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::pop3::tests::over_the_wire::the_time_to_answer_wakes_the_transfer_and_outlives_the_connect_s
+features: test-util
+--- old
+        let phase = if self.mstate() < MState::Do {
+--- new
+        let phase = if self.mstate() > MState::Do {
+
+=== a POP3 body step reads without a limit
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_body_step_reads_eleven_times_at_most
+features: test-util
+--- old
+            reads += 1;
+            let said = cx.easy().report().reasons();
+            match lease.get().recv(cx, max) {
+--- new
+            reads *= 1;
+            let said = cx.easy().report().reasons();
+            match lease.get().recv(cx, max) {
+
+=== a POP3 body that would block runs again at once
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_body_to_come_waits_on_its_socket_unless_paused
+features: test-util
+--- old
+                Ok(Recv::WouldBlock) if lease.get().data_pending() => {
+--- new
+                Ok(Recv::WouldBlock) if true => {
+
+=== a paused POP3 body still waits on its socket
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_body_to_come_waits_on_its_socket_unless_paused
+features: test-util
+--- old
+        if self.receiving && !pause.recv_paused() {
+--- new
+        if self.receiving || !pause.recv_paused() {
+
+=== POP3S offers HTTP's protocols by ALPN
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::pop3::tests::over_the_wire::pop3s_offers_no_alpn
+features: test-util
+--- old
+        (true, TlsSide::Origin) if !offers => Alpn::None,
+--- new
+        (true, TlsSide::Origin) if false => Alpn::None,
+
+=== an HTTP route keeps TLS settings to upgrade with
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core a_get_with_a_tls_library_allocates_as_one_without
+features: test-util
+--- old
+        Some(tls) if !secured && (reuses_tls || use_ssl.may()) => Some(
+--- new
+        Some(tls) if !secured || (reuses_tls || use_ssl.may()) => Some(

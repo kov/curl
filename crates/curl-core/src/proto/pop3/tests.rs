@@ -234,6 +234,8 @@ mod over_the_wire {
         body: Vec<u8>,
         headers: Vec<u8>,
         text: String,
+        /// How long it took, start to end.
+        total: std::time::Duration,
     }
 
     /// A verbose transfer of `url` over `m`, set as `set` says.
@@ -243,8 +245,22 @@ mod over_the_wire {
         url: &str,
         set: impl FnOnce(&mut Options),
     ) -> Ran {
+        tracing(m, libraries, url, b"", set)
+    }
+
+    /// The same, the `components` named traced too.
+    fn tracing(
+        m: &mut Multi,
+        libraries: &SharedLibraries,
+        url: &str,
+        components: &[u8],
+        set: impl FnOnce(&mut Options),
+    ) -> Ran {
         let mut e = Easy::new();
         e.set_libraries(libraries.clone());
+        let traced = crate::components::Components::new().unwrap();
+        traced.configure(components);
+        e.set_components(Some(traced));
         let body = Arc::new(Mutex::new(Vec::new()));
         let seen = Seen::default();
         let o = e.options_mut();
@@ -257,7 +273,8 @@ mod over_the_wire {
         set(o);
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         let result = drive_to_completion(m, id, &mut NoEvents).unwrap();
-        m.remove(id, &mut NoEvents).unwrap();
+        let removed = m.remove(id, &mut NoEvents).unwrap();
+        let total = removed.easy.report().timings().total();
         let body = body.lock().unwrap().clone();
         let (headers, text) = seen.0.lock().unwrap().clone();
         Ran {
@@ -265,6 +282,7 @@ mod over_the_wire {
             body,
             headers,
             text: String::from_utf8_lossy(&text).into_owned(),
+            total,
         }
     }
 
@@ -1016,5 +1034,265 @@ mod over_the_wire {
                 .count();
             assert_eq!(failures, 1, "{scheme}: {}", ran.text);
         }
+    }
+
+    /// A connection upgraded by STLS serves a transfer that does not ask
+    /// for TLS, of its family, only if that transfer would make TLS with
+    /// the same settings (`url_match_ssl_use`'s
+    /// `Curl_ssl_conn_config_match`).
+    #[test]
+    fn an_upgraded_connection_serves_a_transfer_not_asking_for_tls_alike() {
+        let tls = |plain: &[u8]| fake::records(plain).unwrap();
+        let replies = [
+            GREETING.to_vec(),
+            CAPA.to_vec(),
+            OK.to_vec(),
+            WELCOME.to_vec(),
+            tls(b"+OK\r\nUSER\r\n.\r\n"),
+            tls(OK),
+            tls(OK),
+            tls(MESSAGE),
+            tls(MESSAGE),
+        ];
+        let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+        let upgraded = Conversation::replies(&replies, false).greeting();
+        let clear = in_the_clear();
+        let mut m = serving(&[&upgraded, &clear]);
+        let libraries = with_tls();
+        let required = |o: &mut Options| o.line.make_mut().unwrap().use_ssl = UseSsl::All;
+        assert_eq!(retrieve(&mut m, &libraries, required).0, Ok(()));
+        let before = upgraded.received().len();
+        assert_eq!(
+            retrieve(&mut m, &libraries, |_| {}),
+            (Ok(()), b"hello\r\n.dot\r\n".to_vec())
+        );
+        assert_eq!(upgraded.received()[before..], tls(b"RETR 1\r\n")[..]);
+        assert_eq!(clear.received(), b"");
+        let (result, _) = retrieve(&mut m, &libraries, |o| o.tls.verify_peer = false);
+        assert_eq!(result, Ok(()));
+        assert_eq!(clear.received(), b"CAPA\r\nUSER u\r\nPASS p\r\nRETR 1\r\n");
+    }
+
+    /// A POP3 transfer through an HTTP proxy tunnels: an HTTP proxy
+    /// cannot be handed a POP3 request (`Curl_init_proxy`).
+    #[test]
+    fn pop3_tunnels_through_an_http_proxy() {
+        let mut tunnel = b"HTTP/1.1 200 Connection established\r\n\r\n".to_vec();
+        tunnel.extend_from_slice(GREETING);
+        let replies: [&[u8]; 5] = [&tunnel, CAPA_USER, OK, OK, MESSAGE];
+        let talk = Conversation::replies(&replies, false).per_send();
+        let mut m = serving(&[&talk]);
+        let url = format!("pop3://u:p@pop.example:{PORT}/1");
+        let ran = transfer(&mut m, &plain(), &url, |o| {
+            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        });
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        assert_eq!(ran.body, b"hello\r\n.dot\r\n");
+        let sent = talk.received();
+        let connect = format!("CONNECT pop.example:{PORT} HTTP/1.1\r\n");
+        assert!(sent.starts_with(connect.as_bytes()), "{sent:?}");
+        let commands = b"\r\n\r\nCAPA\r\nUSER u\r\nPASS p\r\nRETR 1\r\n";
+        assert!(sent.ends_with(commands), "{sent:?}");
+    }
+
+    /// Each line the server says is written to the application as
+    /// information, not a header (`CLIENTWRITE_INFO`, type 2), as the C
+    /// build's write trace has it.
+    #[test]
+    fn the_server_s_lines_are_written_as_information() {
+        let talk = in_the_clear();
+        let mut m = serving(&[&talk]);
+        let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+        let ran = tracing(&mut m, &plain(), &url, b"write", |_| {});
+        assert_eq!(ran.result, Ok(()));
+        for line in [
+            "[WRITE] download_write header(type=2, blen=11) -> 0",
+            "[WRITE] client_write(type=2, len=11) -> 0",
+            "[WRITE] client_write(type=2, len=14) -> 0",
+        ] {
+            assert!(ran.text.lines().any(|l| l == line), "{line}: {}", ran.text);
+        }
+    }
+
+    /// The back and forth reads only once the socket says something
+    /// came: a server that has said nothing is not read (C's
+    /// `Curl_socket_check` before `Curl_pp_readresp`).
+    #[test]
+    fn a_silent_server_is_not_read() {
+        let talk = Conversation::replies(&[GREETING], false).greeting().held();
+        let mut m = serving(&[&talk]);
+        let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+        let ran = tracing(&mut m, &plain(), &url, b"tcp", |o| {
+            o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(1000);
+        });
+        assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+        assert!(ran.text.contains("server response timeout"), "{}", ran.text);
+        assert!(!ran.text.contains("[TCP] recv("), "{}", ran.text);
+    }
+
+    /// The server's time to answer wakes the transfer as it runs out,
+    /// and runs from the transfer's whole time once the request is being
+    /// made, not from the connect's (`Curl_pp_state_timeleft_ms`,
+    /// `Curl_timeleft_ms`).
+    #[test]
+    fn the_time_to_answer_wakes_the_transfer_and_outlives_the_connect_s() {
+        let (sent, ran) = against(&[GREETING, CAPA_USER, OK, OK], URL, |o| {
+            o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(2500);
+            o.limits.connect = crate::time::TimeLimit::from_millis(1000);
+        });
+        assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+        assert!(sent.ends_with(b"RETR 1\r\nQUIT\r\n"), "{sent:?}");
+        assert!(ran.text.contains("server response timeout"), "{}", ran.text);
+        let total = ran.total.as_millis();
+        assert!((2500..2600).contains(&total), "{total} ms");
+    }
+
+    /// A transfer of message 1 as `u:p` added to `m` and not driven, set
+    /// as `set` says, its body kept by `writer` and its trace's text in
+    /// the `Seen`.
+    fn added(
+        m: &mut Multi,
+        libraries: &SharedLibraries,
+        components: &[u8],
+        writer: impl WriteHandler + 'static,
+        set: impl FnOnce(&mut Options),
+    ) -> (crate::multi::TransferId, Seen) {
+        let mut e = Easy::new();
+        e.set_libraries(libraries.clone());
+        let traced = crate::components::Components::new().unwrap();
+        traced.configure(components);
+        e.set_components(Some(traced));
+        let seen = Seen::default();
+        let o = e.options_mut();
+        let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.output.verbose = true;
+        o.callbacks.write = Some(Handler::write(writer).unwrap());
+        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        set(o);
+        (m.add(Box::new(e), (), &mut NoEvents).unwrap(), seen)
+    }
+
+    /// What the transfers of `m` wait for on their sockets.
+    fn waits(m: &mut Multi) -> Vec<crate::conn::io::Events> {
+        let mut seen = Vec::new();
+        m.sockets(&mut NoEvents, |_, events| seen.push(events))
+            .unwrap();
+        seen
+    }
+
+    /// An answer is read 900 bytes at a time, at most ten reads a pass,
+    /// and a read that comes short ends the pass without another
+    /// (`Curl_pp_readresp`): the reads the C build traces for a password's
+    /// answer after many lines that end no reply.
+    #[test]
+    fn a_long_answer_is_read_ten_reads_a_pass() {
+        let mut pass = Vec::new();
+        for i in 0..120 {
+            pass.extend_from_slice(format!("X-JUNK-{i:03} {}\r\n", "y".repeat(85)).as_bytes());
+        }
+        pass.extend_from_slice(OK);
+        let replies: [&[u8]; 5] = [GREETING, CAPA_USER, OK, &pass, b"+OK deleted\r\n"];
+        let talk = Conversation::replies(&replies, false).greeting();
+        let mut m = serving(&[&talk]);
+        let (id, seen) = added(&mut m, &plain(), b"tcp", Body(Arc::default()), |o| {
+            o.http.custom.make_mut().unwrap().method = Some(b"DELE".to_vec());
+        });
+        let reads = |seen: &Seen| {
+            let text = seen.0.lock().unwrap().1.clone();
+            String::from_utf8_lossy(&text)
+                .matches("[TCP] recv(")
+                .count()
+        };
+        let mut passes = Vec::new();
+        for _ in 0..100 {
+            let before = reads(&seen);
+            m.perform(&mut NoEvents).unwrap();
+            passes.push(reads(&seen) - before);
+            if m.info_read().is_some() {
+                break;
+            }
+        }
+        assert!(passes.contains(&10), "{passes:?}");
+        assert!(passes.iter().all(|&n| n <= 10), "{passes:?}");
+        m.remove(id, &mut NoEvents).unwrap();
+        let text = seen.0.lock().unwrap().1.clone();
+        let reads: Vec<&str> = std::str::from_utf8(&text)
+            .unwrap()
+            .lines()
+            .filter_map(|l| l.strip_prefix("[TCP] recv("))
+            .collect();
+        let mut want = vec!["len=900) -> 0, 11", "len=900) -> 0, 14", "len=900) -> 0, 5"];
+        want.extend(std::iter::repeat_n("len=900) -> 0, 900", 13));
+        want.extend(["len=900) -> 0, 65", "len=900) -> 0, 13"]);
+        assert_eq!(reads, want);
+    }
+
+    /// A body step reads at most eleven times, and is run again at once
+    /// (`sendrecv_dl`'s `maxloops`).
+    #[test]
+    fn a_body_step_reads_eleven_times_at_most() {
+        let talk = Conversation::replies(&[GREETING, CAPA_USER, OK, OK, OK], false)
+            .greeting()
+            .endless(std::time::Duration::from_millis(1));
+        let mut m = serving(&[&talk]);
+        added(&mut m, &plain(), b"", Body(Arc::default()), |_| {});
+        while talk.endless_reads() == 0 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        for _ in 0..3 {
+            let reads = talk.endless_reads();
+            m.perform(&mut NoEvents).unwrap();
+            assert_eq!(talk.endless_reads() - reads, 11);
+            assert_eq!(m.timeout(), Some(std::time::Duration::ZERO));
+        }
+    }
+
+    /// A body not yet whole waits to read its socket, and paused, on
+    /// nothing (`Curl_pp_pollset`'s body half, `KEEP_RECV`).
+    #[test]
+    fn a_body_to_come_waits_on_its_socket_unless_paused() {
+        use crate::conn::io::Events;
+        use crate::deliver::PauseRequest;
+        let talk =
+            Conversation::replies(&[GREETING, CAPA_USER, OK, OK, b"+OK\r\nhel"], false).greeting();
+        let mut m = serving(&[&talk]);
+        let (id, _) = added(&mut m, &plain(), b"", Body(Arc::default()), |_| {});
+        for _ in 0..20 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        assert_eq!(talk.received(), b"CAPA\r\nUSER u\r\nPASS p\r\nRETR 1\r\n");
+        assert_ne!(m.timeout(), Some(std::time::Duration::ZERO));
+        assert_eq!(waits(&mut m), [Events::IN]);
+        m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
+        assert_eq!(waits(&mut m), []);
+    }
+
+    /// POP3S offers nothing by ALPN: only HTTP's schemes do
+    /// (`PROTOPT_ALPN`).
+    #[test]
+    fn pop3s_offers_no_alpn() {
+        let tls = |plain: &[u8]| fake::records(plain).unwrap();
+        let replies = [
+            WELCOME.to_vec(),
+            tls(GREETING),
+            tls(CAPA_USER),
+            tls(OK),
+            tls(OK),
+            tls(MESSAGE),
+        ];
+        let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+        let talk = Conversation::replies(&replies, false).per_send();
+        let mut m = serving(&[&talk]);
+        let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+        let libraries = SharedLibraries::new(Libraries {
+            tls: Some(Library::Static(backend)),
+            ..Libraries::NONE
+        })
+        .unwrap();
+        let url = format!("pop3s://u:p@127.0.0.1:{PORT}/1");
+        let ran = transfer(&mut m, &libraries, &url, |_| {});
+        assert_eq!(ran.result, Ok(()));
+        assert_eq!(backend.log().alpn, Some(crate::tls::Alpn::None));
     }
 }

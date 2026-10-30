@@ -125,3 +125,21 @@ witness: curl-core proto::pingpong::tests::the_time_to_answer_runs_from_the_last
         if sent < self.send.len() {
             self.sent = Sent::Partly(sent);
             self.response = now;
+
+=== a pass of the back and forth reads without a limit
+file: crates/curl-core/src/proto/pingpong/drive.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_long_answer_is_read_ten_reads_a_pass
+features: test-util
+--- old
+            reads_left -= 1;
+--- new
+            reads_left += 1;
+
+=== a short read of the answer leads to another read
+file: crates/curl-core/src/proto/pingpong/drive.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_long_answer_is_read_ten_reads_a_pass
+features: test-util
+--- old
+        if got != READ_SIZE {
+--- new
+        if got == READ_SIZE {

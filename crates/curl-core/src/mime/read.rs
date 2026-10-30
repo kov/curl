@@ -75,6 +75,28 @@ pub(crate) enum Escape {
     Backslash,
 }
 
+/// What a tree is made into (`enum mimestrategy`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Strategy {
+    /// An HTTP request's body, the tree's own headers the request's, its
+    /// names quoted as `Escape` says (`MIMESTRATEGY_FORM`).
+    Form(Escape),
+    /// A mail message: plain text left untyped wherever it is, each other
+    /// typed part that is no tree said to be 8bit, names quoted with
+    /// backslashes (`MIMESTRATEGY_MAIL`).
+    Mail,
+}
+
+impl Strategy {
+    /// How names are quoted.
+    fn escaping(self) -> Escape {
+        match self {
+            Strategy::Form(escaping) => escaping,
+            Strategy::Mail => Escape::Backslash,
+        }
+    }
+}
+
 /// Why a reader could not be made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MakeError {
@@ -420,9 +442,10 @@ fn prepare<'u>(
     content_type: Option<&[u8]>,
     disposition: Option<&[u8]>,
     user: &dyn Fn(&[u8]) -> Option<&'u [u8]>,
-    escaping: Escape,
+    strategy: Strategy,
     depth: usize,
 ) -> Result<(), MakeError> {
+    let (escaping, mail) = (strategy.escaping(), strategy == Strategy::Mail);
     let depth = depth + 1;
     if depth > MAX_LEVELS {
         return Err(MakeError::TooLarge);
@@ -449,7 +472,7 @@ fn prepare<'u>(
     if boundary.is_none()
         && custom.is_none()
         && type_is(content_type, b"text/plain")
-        && part.filename.is_none()
+        && (mail || part.filename.is_none())
     {
         content_type = None;
     }
@@ -463,18 +486,25 @@ fn prepare<'u>(
         };
         c.head.try_push(l)?;
     }
-    if user(b"Content-Transfer-Encoding").is_none()
-        && let Some(e) = part.encoder
-    {
-        c.head
-            .try_push(line(&[b"Content-Transfer-Encoding: ", e.name()])?)?;
+    if user(b"Content-Transfer-Encoding").is_none() {
+        // A mail's typed part that is not a tree goes as it is.
+        let leaf = !matches!(part.content, ContentRef::Parts(_));
+        let encoding = match part.encoder {
+            Some(e) => Some(e.name()),
+            None if mail && leaf && content_type.is_some() => Some(&b"8bit"[..]),
+            None => None,
+        };
+        if let Some(encoding) = encoding {
+            c.head
+                .try_push(line(&[b"Content-Transfer-Encoding: ", encoding])?)?;
+        }
     }
     if let (ContentRef::Parts(m), Some(sub)) = (part.content, c.src.sub.as_mut()) {
         let disposition =
             type_is(content_type, b"multipart/form-data").then_some(&b"form-data"[..]);
         for (p, pc) in m.parts.iter().zip(&mut sub.parts) {
             let own = |name: &[u8]| search(p.headers.iter().map(Vec::as_slice), name);
-            prepare(PartRef::of(p), pc, None, disposition, &own, escaping, depth)?;
+            prepare(PartRef::of(p), pc, None, disposition, &own, strategy, depth)?;
         }
     }
     Ok(())
@@ -1234,6 +1264,9 @@ pub(crate) struct MimeReader {
     /// The tree's own headers are the request's, not the body's
     /// (`MIME_BODY_ONLY`).
     body_only: bool,
+    /// The lines the tree's top part gives as its own after those made
+    /// for it: a mail's, the request's (`curl_mime_headers`).
+    top_user: Vec<Vec<u8>>,
     top: PartCursor,
     size: Option<u64>,
     /// Bytes given since the start or the last rewind (`read_len`).
@@ -1254,31 +1287,51 @@ impl MimeReader {
         request: &UserHeaders,
         escaping: Escape,
     ) -> Result<MimeReader, MakeError> {
-        MimeReader::make(mime, request, escaping, true)
+        MimeReader::make(mime, request, Strategy::Form(escaping), true)
     }
 
-    /// A reader of `mime`, its headers made for `request`, that gives
-    /// them first unless `body_only`.
+    /// A reader of `mime` as a mail message whole, the request's lines
+    /// its own headers after those made for it and a `Mime-Version`
+    /// unless the request has one (`MIMESTRATEGY_MAIL`, as IMAP's and
+    /// SMTP's uploads make it).
+    pub(crate) fn mail(mime: TryArc<Mime>, request: &UserHeaders) -> Result<MimeReader, MakeError> {
+        MimeReader::make(mime, request, Strategy::Mail, false)
+    }
+
+    /// A reader of `mime`, its headers made for `request` as `strategy`
+    /// says, that gives them first unless `body_only`.
     fn make(
         mime: TryArc<Mime>,
         request: &UserHeaders,
-        escaping: Escape,
+        strategy: Strategy,
         body_only: bool,
     ) -> Result<MimeReader, MakeError> {
-        let top_ref = |mime| {
-            let mut top = PartRef::top(mime);
-            top.body_only = body_only;
-            top
+        let mail = strategy == Strategy::Mail;
+        let mut top_user = Vec::new();
+        if mail {
+            for l in request.lines() {
+                let mut own = Vec::new();
+                own.try_extend_from_slice(l)?;
+                top_user.try_push(own)?;
+            }
+        }
+        let top_ref = |mime| PartRef {
+            body_only,
+            user: &top_user,
+            ..PartRef::top(mime)
         };
         let mut top = cursor(top_ref(&mime), 0)?;
         // The application's Content-Type types the body, which is a form
-        // unless it says otherwise.
+        // unless it says otherwise; a mail's is a tree's own.
         let given = request.line_replacing(b"Content-Type").map(|l| {
             let value = l.get(13..).unwrap_or(b"");
             let spaces = value.iter().take_while(|&&b| b == b' ').count();
             &value[spaces..]
         });
-        let content_type = given.or(Some(b"multipart/form-data"));
+        let content_type = match strategy {
+            Strategy::Form(_) => given.or(Some(b"multipart/form-data")),
+            Strategy::Mail => None,
+        };
         let user = |name: &[u8]| search(request.lines(), name);
         prepare(
             top_ref(&mime),
@@ -1286,13 +1339,17 @@ impl MimeReader {
             content_type,
             None,
             &user,
-            escaping,
+            strategy,
             0,
         )?;
+        if mail && !request.replaces(b"Mime-Version") {
+            top.head.try_push(line(&[b"Mime-Version: 1.0"])?)?;
+        }
         let size = part_size(top_ref(&mime), &mut top);
         Ok(MimeReader {
             mime,
             body_only,
+            top_user,
             top,
             size,
             read: 0,
@@ -1335,10 +1392,10 @@ impl MimeReader {
     fn mime_read(&mut self, buf: &mut [u8], calls: &mut dyn Calls) -> Got {
         loop {
             let mut hasread = false;
-            let top = PartRef::top(&self.mime);
             let top = PartRef {
                 body_only: self.body_only,
-                ..top
+                user: &self.top_user,
+                ..PartRef::top(&self.mime)
             };
             let got = readback_part(top, &mut self.top, buf, &mut hasread, calls);
             if got != Got::Stop {
@@ -1535,6 +1592,7 @@ impl MimeReader {
     fn restart(&mut self, calls: &mut dyn Calls) -> bool {
         let top = PartRef {
             body_only: self.body_only,
+            user: &self.top_user,
             ..PartRef::top(&self.mime)
         };
         let ok = rewind_part(top, &mut self.top, calls);
@@ -1599,8 +1657,13 @@ pub(crate) fn read_whole(
     mime: TryArc<Mime>,
     out: &mut dyn FnMut(&[u8]) -> usize,
 ) -> Result<(), ErrorKind> {
-    let mut reader =
-        MimeReader::make(mime, &UserHeaders::NONE, Escape::Form, false).map_err(MakeError::kind)?;
+    let mut reader = MimeReader::make(
+        mime,
+        &UserHeaders::NONE,
+        Strategy::Form(Escape::Form),
+        false,
+    )
+    .map_err(MakeError::kind)?;
     let mut buf = [0u8; 8192];
     loop {
         match reader.mime_read(&mut buf, &mut NoCalls) {
@@ -1637,7 +1700,13 @@ pub(crate) mod testing {
         /// A reader of the tree whole, its headers first, as
         /// `read_whole` makes it.
         pub(crate) fn whole_for_test(mime: TryArc<Mime>) -> MimeReader {
-            MimeReader::make(mime, &UserHeaders::NONE, Escape::Form, false).unwrap()
+            MimeReader::make(
+                mime,
+                &UserHeaders::NONE,
+                Strategy::Form(Escape::Form),
+                false,
+            )
+            .unwrap()
         }
     }
 }

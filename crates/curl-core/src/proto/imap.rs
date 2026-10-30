@@ -1184,7 +1184,12 @@ impl Request {
                 format_args!("Cannot APPEND without a mailbox."),
             ));
         };
-        let upload = Upload::open(cx)?;
+        // A tree goes as a mail message (`MIMESTRATEGY_MAIL`).
+        let upload = if matches!(cx.easy().options().upload, UploadSource::Mime(_)) {
+            Upload::open_mail(cx)?
+        } else {
+            Upload::open(cx)?
+        };
         upload.trace_set(cx);
         let converts = cx.easy().options().crlf;
         let mut body = Body::new(upload);

@@ -11,8 +11,8 @@ use curl_alloc::{TryArc, try_box};
 use crate::components::Component;
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, Handler, LentBytes, Read, ReadHandler, Rewind};
-use crate::mime::MimeError;
 use crate::mime::read::{Escape, MakeError, MimeReader};
+use crate::mime::{Mime, MimeError};
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
 use crate::options::UploadSource;
@@ -74,9 +74,23 @@ impl Upload {
         request: &UserHeaders,
         escaping: Escape,
     ) -> Result<Upload, MakeError> {
+        Upload::made(source, |mime| MimeReader::new(mime, request, escaping))
+    }
+
+    /// The body `source` gives as a mail message, a tree whole with the
+    /// request's lines its own headers (`MIMESTRATEGY_MAIL`).
+    pub(crate) fn mail(source: &UploadSource, request: &UserHeaders) -> Result<Upload, MakeError> {
+        Upload::made(source, |mime| MimeReader::mail(mime, request))
+    }
+
+    /// The body `source` gives, a tree read by the reader `reader` makes.
+    fn made(
+        source: &UploadSource,
+        reader: impl FnOnce(TryArc<Mime>) -> Result<MimeReader, MakeError>,
+    ) -> Result<Upload, MakeError> {
         let source = match source {
             UploadSource::Mime(tree) => match tree.mime() {
-                Ok(Some(mime)) => Source::Mime(try_box(MimeReader::new(mime, request, escaping)?)?),
+                Ok(Some(mime)) => Source::Mime(try_box(reader(mime)?)?),
                 // Nothing to send: an empty body (C's unbound part).
                 Ok(None) => Source::None,
                 Err(MimeError::OutOfMemory) => return Err(MakeError::OutOfMemory),
@@ -162,6 +176,16 @@ impl Upload {
         let escaping = cx.easy().options().mime_escape();
         let mut upload =
             Upload::new(&source, &UserHeaders::NONE, escaping).map_err(MakeError::kind)?;
+        upload.start(cx)?;
+        Ok(upload)
+    }
+
+    /// The body of the transfer as a mail message, ready to be read
+    /// (`Curl_creader_set_mime` after `MIMESTRATEGY_MAIL`).
+    pub(crate) fn open_mail<H: Host>(cx: &mut StepCx<'_, H>) -> Result<Upload, ErrorKind> {
+        let source = cx.easy().options().upload.clone();
+        let mut upload =
+            Upload::mail(&source, &cx.easy().options().http.headers).map_err(MakeError::kind)?;
         upload.start(cx)?;
         Ok(upload)
     }

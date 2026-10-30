@@ -1095,6 +1095,18 @@ protocols need, each step leaving behaviour and traces as they are:
     through the `Random` library hook, which the debug build's `CURL_ENTROPY` fills as C's
     does. Every POP3 test both legs run passes; GSSAPI, SCRAM and NTLM SASL wait (NTLM is
     out of scope), as do 445, 983 and 1407, which need gopher and FTP.
+70. **IMAP.** **Done.** `imap://` and `imaps://` (`proto::imap`, after `lib/imap.c`): the
+    greeting and PREAUTH, CAPABILITY, STARTTLS, SASL with SASL-IR and LOGIN with its atoms
+    quoted; the URL's mailbox, UIDVALIDITY, UID, MAILINDEX, SECTION and PARTIAL and its
+    query, read in DO; LIST, SELECT kept on the connection with its UIDVALIDITY, FETCH and
+    its literal, SEARCH, `-X` commands and their literals, and APPEND of an upload or of a
+    MIME tree as a mail message (`MimeReader::mail`, C's `MIMESTRATEGY_MAIL`, which SMTP
+    shares), with its flags; the answer after a FETCH or an APPEND read as the transfer ends;
+    LOGOUT as the connection's goodbye. The application's login goes to a redirect's other
+    host only as HTTP's does. The tool's `--upload-flags` and the C ABI's
+    `CURLOPT_UPLOAD_FLAGS`. Every IMAP test both legs run passes but 677, which fails on
+    the C leg too; 445, 1420 and 1560 wait on gopher, FTP and SMTP, and NTLM is out of
+    scope.
 
 SCP and SFTP hand libssh the socket, as C does (`SSH_OPTIONS_FD`): bytes a proxy's tunnel or a
 SOCKS answer left in the stream's buffer would be lost to it, so the hand-over is refused while

@@ -290,6 +290,107 @@ fn backslash_quoting_refuses_a_line_break() {
     assert_eq!(r.err(), Some(MakeError::BadName));
 }
 
+/// A mail message whole: its own head a mixed tree's, then a
+/// `Mime-Version`, then the request's lines; plain text never typed, any
+/// other leaf said to be 8bit, a file an attachment named with
+/// backslashes (`MIMESTRATEGY_MAIL`, test 647).
+#[test]
+fn a_mail_message_is_read_whole_with_the_request_s_lines() {
+    let mail = |m: Mime, request: &UserHeaders| {
+        let mut r = MimeReader::mail(TryArc::try_new(m).unwrap(), request).unwrap();
+        let body = all(&mut r, &mut Script::default());
+        assert_eq!(r.size(), Some(body.len() as u64));
+        String::from_utf8(body).unwrap()
+    };
+    let html = Part {
+        mime_type: Some(b"text/html".to_vec()),
+        content: bytes(b"<b>"),
+        ..Part::default()
+    };
+    let plain = Part {
+        content: bytes(b"plain"),
+        ..Part::default()
+    };
+    let alternative = Part {
+        mime_type: Some(b"multipart/alternative".to_vec()),
+        content: Content::Parts(tree([html, plain])),
+        ..Part::default()
+    };
+    let file = Part {
+        filename: Some(b"a\"b.txt".to_vec()),
+        content: bytes(b"f"),
+        ..Part::default()
+    };
+    let make = || tree([alternative_clone(&alternative), file_clone(&file)]);
+    let request = UserHeaders::new([&b"Date: today"[..], b"Subject: hi"]).unwrap();
+    let text = mail(make(), &request);
+    let line = std::str::from_utf8(LINE).unwrap();
+    let want = format!(
+        "Content-Type: multipart/mixed; boundary={line}\r\n\
+         Mime-Version: 1.0\r\n\
+         Date: today\r\n\
+         Subject: hi\r\n\r\n\
+         --{line}\r\n\
+         Content-Type: multipart/alternative; boundary={line}\r\n\r\n\
+         --{line}\r\n\
+         Content-Type: text/html\r\n\
+         Content-Transfer-Encoding: 8bit\r\n\r\n\
+         <b>\r\n\
+         --{line}\r\n\r\n\
+         plain\r\n\
+         --{line}--\r\n\r\n\
+         --{line}\r\n\
+         Content-Disposition: attachment; filename=\"a\\\"b.txt\"\r\n\r\n\
+         f\r\n\
+         --{line}--\r\n"
+    );
+    assert_eq!(text, want);
+    // The request's own type and version stand in the library's, its
+    // type not said twice.
+    let request = UserHeaders::new([
+        &b"Content-Type: multipart/related"[..],
+        b"MIME-Version: 2.0",
+    ])
+    .unwrap();
+    let text = mail(make(), &request);
+    assert!(
+        text.starts_with(&format!(
+            "Content-Type: multipart/related; boundary={line}\r\nMIME-Version: 2.0\r\n\r\n"
+        )),
+        "{text}"
+    );
+}
+
+fn alternative_clone(p: &Part) -> Part {
+    let Content::Parts(m) = &p.content else {
+        unreachable!()
+    };
+    let parts = m.parts.iter().map(|q| Part {
+        mime_type: q.mime_type.clone(),
+        content: match &q.content {
+            Content::Bytes(b) => bytes(b),
+            _ => unreachable!(),
+        },
+        ..Part::default()
+    });
+    Part {
+        mime_type: p.mime_type.clone(),
+        content: Content::Parts(tree(parts.collect::<Vec<_>>())),
+        ..Part::default()
+    }
+}
+
+fn file_clone(p: &Part) -> Part {
+    let Content::Bytes(b) = &p.content else {
+        unreachable!()
+    };
+    Part {
+        filename: p.filename.clone(),
+        content: bytes(b),
+        ..Part::default()
+    }
+}
+
 /// Subparts are a `multipart/mixed` part with a boundary of their own,
 /// their named parts attachments.
 #[test]

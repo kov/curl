@@ -3211,8 +3211,13 @@ pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree besi
   (`Curl_mime_prepare_headers`) are computed when the reader is made: `Content-Disposition`
   (`form-data` inside a `multipart/form-data`, else `attachment` for a named part), the type
   given or guessed from the file name's extension, `Content-Transfer-Encoding` for an encoder,
-  names escaped as `CURLOPT_MIME_OPTIONS` asks (C's form or mail table). Strategy is Form; Mail
-  comes with SMTP. More than 40 levels is TooLarge.
+  names escaped as `CURLOPT_MIME_OPTIONS` asks (C's form or mail table). More than 40 levels
+  is TooLarge. A mail (`MimeReader::mail`, `Upload::open_mail`, C's `MIMESTRATEGY_MAIL`, for
+  IMAP's APPEND and SMTP) is the tree whole: its top part's headers in the body, a
+  `multipart/mixed` unless the request's `Content-Type` says otherwise, then `Mime-Version:
+  1.0` unless the request has one, then the request's lines as the top part's own
+  (`curl_mime_headers`); plain text is untyped even with a file name, any other typed leaf
+  `8bit`, and names are quoted with backslashes.
 - **The top part is the body, its headers the request's.** As C's `MIME_BODY_ONLY`, the body is
   the boundaries and parts; the top part's headers (`Content-Type: multipart/form-data;
   boundary=…`, the application's own `Content-Type` value in place of the type) go in the

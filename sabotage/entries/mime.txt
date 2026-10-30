@@ -220,9 +220,13 @@ witness: curl-core a_file_part_s_long_name_is_read_without_a_copy
 file: crates/curl-core/src/mime/read.rs
 witness: curl-core mime::tests::a_tree_read_whole_starts_with_its_headers
 --- old
-        MimeReader::make(mime, &UserHeaders::NONE, Escape::Form, false).map_err(MakeError::kind)?;
+        false,
+    )
+    .map_err(MakeError::kind)?;
 --- new
-        MimeReader::make(mime, &UserHeaders::NONE, Escape::Form, true).map_err(MakeError::kind)?;
+        true,
+    )
+    .map_err(MakeError::kind)?;
 
 === a pause a part keeps is not given: the handler is called again before the unpause
 file: crates/curl-core/src/mime/read.rs
@@ -249,3 +253,30 @@ witness: curl-core mime::tests::an_unpause_lifts_a_pause_only_the_reader_keeps
 --- new
     pub(crate) fn keep(&mut self) -> Lifts {
         self.kept = false;
+
+=== a mail's plain text file part is typed
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_mail_message_is_read_whole_with_the_request_s_lines
+features: test-util
+--- old
+        && (mail || part.filename.is_none())
+--- new
+        && part.filename.is_none()
+
+=== a mail's typed leaf goes without its 8bit encoding
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_mail_message_is_read_whole_with_the_request_s_lines
+features: test-util
+--- old
+            None if mail && leaf && content_type.is_some() => Some(&b"8bit"[..]),
+--- new
+            None if false && leaf && content_type.is_some() => Some(&b"8bit"[..]),
+
+=== a mail says its MIME version though the request says one
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_mail_message_is_read_whole_with_the_request_s_lines
+features: test-util
+--- old
+        if mail && !request.replaces(b"Mime-Version") {
+--- new
+        if mail {

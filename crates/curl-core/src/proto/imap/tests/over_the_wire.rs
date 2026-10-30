@@ -618,6 +618,38 @@ fn the_application_s_login_stays_with_the_first_host() {
     }
 }
 
+/// The server's time to answer is its own timer, `SERVER_RESPONSE`,
+/// set as the greeting is awaited and each time the back and forth is
+/// driven, and still armed as the transfer completes
+/// (`Curl_pp_statemach`).
+#[test]
+fn the_server_s_time_to_answer_is_its_own_timer() {
+    let talk =
+        Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, b"A003 OK\r\n"], false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = tracing(
+        &mut m,
+        &plain(),
+        "imap://u:p@127.0.0.1:PORT/",
+        b"timer,multi",
+        |o| {
+            o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(2500);
+        },
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let text = &ran.text;
+    // First as the greeting is awaited, with all of the time left.
+    let first = text.lines().find(|l| l.contains("[SERVER_RESPONSE]"));
+    let set = "[TIMER] [SERVER_RESPONSE] set for 2500000us";
+    assert_eq!(first, Some(set), "{text}");
+    assert!(
+        text.contains("[TIMER] [SERVER_RESPONSE] expires in"),
+        "{text}"
+    );
+    assert!(!text.contains("100_TIMEOUT"), "{text}");
+    assert!(text.contains("[COMPLETED] [TIMEOUT] all cleared"), "{text}");
+}
+
 /// A transfer goes from DID to PERFORMING while the connection has a
 /// socket to exchange on, as C's `recv_idx` says: a FETCH whose literal
 /// came whole sets up nothing and goes to DONE, which reads the answer

@@ -252,7 +252,7 @@ pub(crate) struct Request {
     /// The `APPEND`'s body is all sent (`upload_done`): the server's
     /// lines from here start the response's time.
     upload_done: bool,
-    /// When the server's time to answer runs out.
+    /// When DONE, as it awaits its answer, looks again.
     due: Option<Instant>,
     /// The peer a connect-to entry names in the origin's place, which TLS
     /// is made with as the connection is upgraded.
@@ -394,7 +394,7 @@ impl Request {
         self.header_bytes == 0 && self.pipeline.bytecount() == 0 && !self.no_body && !self.received
     }
 
-    /// When the server's time to answer runs out, while it is awaited.
+    /// When DONE, as it awaits its answer, looks again: its poll's end.
     pub(crate) fn due(&self) -> Option<Instant> {
         self.due
     }
@@ -735,17 +735,11 @@ impl Request {
         let limit = cx.easy().options().line.server_response;
         self.via = lease.conn().net_route().and_then(|r| r.via.clone());
         let (pc, mut carrier) = imap_of(lease);
-        let (runs, due) = drive::runs(cx, &pc.pp, &mut carrier, limit)?;
-        self.due = Some(due);
-        if runs {
+        if drive::runs(cx, &pc.pp, &mut carrier, limit)? {
             self.machine(cx, pc, &mut carrier)?;
         }
         self.wants = drive::waits(&pc.pp);
-        let stopped = pc.state == State::Stop;
-        if stopped {
-            self.due = None;
-        }
-        Ok(stopped)
+        Ok(pc.state == State::Stop)
     }
 
     /// Run the back and forth on in DONE, as C's blocking drive runs it

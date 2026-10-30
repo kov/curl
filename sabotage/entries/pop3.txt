@@ -160,13 +160,13 @@ features: test-util
             Ok(_) => true,
 
 === a POP3 transfer is not woken when the server's time to answer runs out
-file: crates/curl-core/src/proto/mod.rs
+file: crates/curl-core/src/multi/mod.rs
 witness: curl-core proto::pop3::tests::over_the_wire::the_time_to_answer_wakes_the_transfer_and_outlives_the_connect_s
 features: test-util
 --- old
-            ProtoState::Pop3(r) => r.due(),
+        if let Some(at) = cx.server_response_at.take() {
 --- new
-            ProtoState::Pop3(r) => r.due().filter(|_| false),
+        if let Some(at) = cx.server_response_at.take().filter(|_| false) {
 
 === the connect's time limit bounds the request's whole making
 file: crates/curl-core/src/multi/state.rs

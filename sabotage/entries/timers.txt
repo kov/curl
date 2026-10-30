@@ -206,3 +206,12 @@ witness: curl-core proto::http::tests::tcp_trace::the_race_s_timer_stays_armed_w
         Some(at) => eyeballs_due(run, cx, at),
         None => run.deadlines.clear(TimerKind::Eyeballs),
     }
+
+=== the 100 wait and the server's time to answer are both armed in one instant
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::two_kinds_that_share_an_instant_are_never_both_armed
+--- old
+        if let Some(sharer) = kind.sharer() {
+            self.set &= !sharer.bit();
+        }
+--- new

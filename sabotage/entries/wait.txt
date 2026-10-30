@@ -268,7 +268,7 @@ witness: curl-core easy::tests::a_perform_s_multi_has_a_waker
 file: crates/curl-core/src/multi/timers.rs
 witness: curl-core proto::http::tests::timer_trace::a_leg_arms_its_limits_and_the_race_clears_its_timer
 --- old
-        all.sort_unstable_by_key(|armed| armed.map(|(at, k)| (at, k.slot())));
+        all.sort_unstable_by_key(|armed| armed.map(|(at, k)| (at, k.ordinal())));
 --- new
         let _ = &mut all;
 

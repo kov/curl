@@ -754,18 +754,23 @@ impl TransferState {
         }
     }
 
-    /// When the protocol wants to look again whatever its socket says.
-    pub(crate) fn due(&self) -> Option<Instant> {
+    /// When the protocol wants to look again whatever its socket says,
+    /// and the timer that wakes it: HTTP's wait for a 100, or a line
+    /// protocol's DONE as it awaits its answer, whose wake C has no timer
+    /// for (it blocks), so it is the server's time to answer's.
+    pub(crate) fn due(&self) -> Option<(TimerKind, Instant)> {
         match self {
             TransferState::ProtoConnecting(x)
             | TransferState::Doing(x)
             | TransferState::DoingMore(x)
             | TransferState::Did(x)
             | TransferState::Exchanging(x)
-            | TransferState::RateLimiting(x) => x.proto.due(),
-            TransferState::Done(d) if d.ending == Ending::Waiting => {
-                d.proto.as_ref().and_then(ProtoState::due)
-            }
+            | TransferState::RateLimiting(x) => x.proto.due().map(|at| (TimerKind::Proto, at)),
+            TransferState::Done(d) if d.ending == Ending::Waiting => d
+                .proto
+                .as_ref()
+                .and_then(ProtoState::due)
+                .map(|at| (TimerKind::ServerResponse, at)),
             _ => None,
         }
     }
@@ -1900,6 +1905,28 @@ impl<H: Host> crate::conn::layer::EarlyData for StepCx<'_, H> {
     }
 }
 
+impl<H: Host> StepCx<'_, H> {
+    /// The server has `left` to answer, in whole milliseconds, from now:
+    /// the `SERVER_RESPONSE` timer is armed for it as the step ends, and
+    /// said to be now (`Curl_expire`, as `Curl_pp_statemach` drives
+    /// without blocking).
+    pub(crate) fn server_response_in(&mut self, left: Duration) {
+        let ms = left.as_millis();
+        let at = self
+            .now()
+            .after(Duration::from_millis(u64::try_from(ms).unwrap_or(u64::MAX)));
+        self.server_response_at = Some(at);
+        if trace::traces(self, Component::Timer) {
+            let us = ms.saturating_mul(1000);
+            trace_timer(
+                self,
+                TimerKind::ServerResponse,
+                format_args!("set for {us}us"),
+            );
+        }
+    }
+}
+
 impl<H: Host> crate::conn::layer::QuicTimer for StepCx<'_, H> {
     fn due_in(&mut self, wait: Duration) {
         let at = self.rest.clock.now().after(wait);
@@ -1988,6 +2015,10 @@ pub(crate) struct StepCx<'a, H: Host> {
     /// When the QUIC library asked the step to call it again, the
     /// transfer's `QUIC` timer once the step is over.
     pub(crate) quic_at: Option<Instant>,
+    /// When the server's time to answer runs out, as the step's line
+    /// protocol last drove its back and forth: the transfer's
+    /// `SERVER_RESPONSE` timer once the step is over.
+    pub(crate) server_response_at: Option<Instant>,
 }
 
 impl<'a, H: Host> StepCx<'a, H> {
@@ -2003,6 +2034,7 @@ impl<'a, H: Host> StepCx<'a, H> {
             rest,
             lent: None,
             quic_at: None,
+            server_response_at: None,
         }
     }
 }

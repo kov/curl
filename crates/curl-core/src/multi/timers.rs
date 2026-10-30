@@ -36,8 +36,8 @@ pub(crate) enum TimerKind {
     SpeedCheck,
     /// The next connect attempt is due (`EXPIRE_HAPPY_EYEBALLS`).
     Eyeballs,
-    /// The protocol's own wait, which its state says
-    /// (`ProtoState::wake_at`): HTTP's for a 100 (`EXPIRE_100_TIMEOUT`).
+    /// HTTP's wait for a 100, which its state says (`ProtoState::due`,
+    /// `EXPIRE_100_TIMEOUT`).
     Proto,
     /// A speed limit's wait, or its next tokens (`EXPIRE_TOOFAST`).
     TooFast,
@@ -50,13 +50,21 @@ pub(crate) enum TimerKind {
     /// The resolver's next try at starting a thread for queries that
     /// wait for one (`EXPIRE_ASYNC_NAME`).
     AsyncName,
+    /// A line protocol's server's time to answer, armed each time its
+    /// back and forth is driven (`EXPIRE_SERVER_RESPONSE`, set by
+    /// `Curl_pp_statemach`). It shares HTTP's 100 wait's instant, as no
+    /// request has both: arming one disarms the other.
+    ServerResponse,
 }
 
 impl TimerKind {
-    const COUNT: usize = 9;
+    /// The kinds there are.
+    const COUNT: usize = 10;
+    /// The instants they are kept in: one fewer, the 100 wait and the
+    /// server's time to answer sharing one.
+    const STORED: usize = TimerKind::COUNT - 1;
 
-    /// The name C's trace gives it (`Curl_trc_timer_name`). The
-    /// protocol's own wait is HTTP's for a 100, the only one there is.
+    /// The name C's trace gives it (`Curl_trc_timer_name`).
     pub(crate) fn name(self) -> &'static str {
         match self {
             TimerKind::Total => "TIMEOUT",
@@ -68,6 +76,7 @@ impl TimerKind {
             TimerKind::Quic => "QUIC",
             TimerKind::AlpnEyeballs => "ALPN_EYEBALLS",
             TimerKind::AsyncName => "ASYNC_NAME",
+            TimerKind::ServerResponse => "SERVER_RESPONSE",
         }
     }
 
@@ -83,14 +92,33 @@ impl TimerKind {
         TimerKind::Quic,
         TimerKind::AlpnEyeballs,
         TimerKind::AsyncName,
+        TimerKind::ServerResponse,
     ];
 
-    fn slot(self) -> usize {
+    /// Its place in `ALL`.
+    fn ordinal(self) -> usize {
         self as usize
     }
 
+    /// Where its instant is kept.
+    fn slot(self) -> usize {
+        match self {
+            TimerKind::ServerResponse => TimerKind::Proto.ordinal(),
+            k => k.ordinal(),
+        }
+    }
+
+    /// The kind its instant is kept with, if any.
+    fn sharer(self) -> Option<TimerKind> {
+        match self {
+            TimerKind::Proto => Some(TimerKind::ServerResponse),
+            TimerKind::ServerResponse => Some(TimerKind::Proto),
+            _ => None,
+        }
+    }
+
     fn bit(self) -> u16 {
-        1 << self.slot()
+        1 << self.ordinal()
     }
 }
 
@@ -123,8 +151,8 @@ pub(crate) struct Deadlines {
     /// When each timer fires, if its bit is in `set`. A timer stays
     /// armed until an expiry pass at or after its instant, even once it
     /// is in the past. Kept apart from the bits, as every transfer's slot
-    /// holds them.
-    at: [Instant; TimerKind::COUNT],
+    /// holds them; two kinds that share an instant are never both set.
+    at: [Instant; TimerKind::STORED],
     set: u16,
 }
 
@@ -134,7 +162,7 @@ impl Deadlines {
         Deadlines {
             total,
             connect,
-            at: [Instant::EPOCH; TimerKind::COUNT],
+            at: [Instant::EPOCH; TimerKind::STORED],
             set: 0,
         }
     }
@@ -158,14 +186,18 @@ impl Deadlines {
         [total, connect]
     }
 
-    /// Arm `kind` to fire `wait` after `now`, replacing its last arming.
-    /// Returns when it fires.
+    /// Arm `kind` to fire `wait` after `now`, replacing its last arming
+    /// and disarming the kind it shares its instant with. Returns when it
+    /// fires.
     pub(crate) fn arm_in(&mut self, kind: TimerKind, now: Instant, wait: Duration) -> Instant {
         // C counts in whole milliseconds.
         let ms =
             Duration::from_millis(u64::try_from(wait.min(MAX_WAIT).as_millis()).expect("capped"));
         let at = now.after(ms);
         self.at[kind.slot()] = at;
+        if let Some(sharer) = kind.sharer() {
+            self.set &= !sharer.bit();
+        }
         self.set |= kind.bit();
         at
     }
@@ -194,7 +226,7 @@ impl Deadlines {
     /// order (`timeouts.first` and its list), with when each fires.
     pub(crate) fn in_order(&self) -> impl Iterator<Item = (Instant, TimerKind)> + Clone + use<> {
         let mut all = TimerKind::ALL.map(|k| self.armed(k).map(|at| (at, k)));
-        all.sort_unstable_by_key(|armed| armed.map(|(at, k)| (at, k.slot())));
+        all.sort_unstable_by_key(|armed| armed.map(|(at, k)| (at, k.ordinal())));
         all.into_iter().flatten()
     }
 
@@ -616,6 +648,32 @@ mod tests {
             Duration::from_millis(1)
         );
         assert_eq!(wait_ms(us(12, 0), us(11, 0)), Duration::ZERO);
+    }
+
+    /// HTTP's wait for a 100 and the server's time to answer keep one
+    /// instant: arming either disarms the other, so neither fires at the
+    /// other's time.
+    #[test]
+    fn two_kinds_that_share_an_instant_are_never_both_armed() {
+        let mut d = Deadlines::new(None, None);
+        let now = at_ms(0);
+        d.arm_in(
+            TimerKind::ServerResponse,
+            now,
+            Duration::from_millis(60_000),
+        );
+        d.arm_in(TimerKind::Proto, now, Duration::from_millis(1000));
+        assert_eq!(
+            d.in_order().collect::<Vec<_>>(),
+            [(at_ms(1000), TimerKind::Proto)]
+        );
+        d.arm_in(TimerKind::ServerResponse, now, Duration::from_millis(500));
+        assert_eq!(
+            d.in_order().collect::<Vec<_>>(),
+            [(at_ms(500), TimerKind::ServerResponse)]
+        );
+        d.clear(TimerKind::Proto);
+        assert_eq!(d.first(), Some(TimerKind::ServerResponse));
     }
 
     #[test]

@@ -1233,13 +1233,19 @@ impl<H: Host> Multi<H> {
             state::step(&mut run, &mut cx) == Wake::Again
         } {}
         let now = cx.rest.now;
-        // The protocol's own wait is derived from its state, never stored
-        // apart from it.
+        // HTTP's wait for a 100 is derived from its state, never stored
+        // apart from it; the server's time to answer stays armed until it
+        // fires or the transfer completes, as C never clears it.
         match run.state.due() {
-            Some(at) => {
-                run.deadlines.arm_in(TimerKind::Proto, now, at.since(now));
+            Some((kind, at)) => {
+                run.deadlines.arm_in(kind, now, at.since(now));
             }
             None => run.deadlines.clear(TimerKind::Proto),
+        }
+        // A line protocol's, as the step last drove its back and forth.
+        if let Some(at) = cx.server_response_at.take() {
+            run.deadlines
+                .arm_in(TimerKind::ServerResponse, now, at.since(now));
         }
         // The QUIC library's, as the step's last call asked for it.
         if let Some(at) = cx.quic_at.take() {

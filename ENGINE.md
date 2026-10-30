@@ -479,10 +479,9 @@ own, and its `adjust pollset in (N)`; the tunnel's `CONNECT`, `installing subfil
 `CONNECT send`/`receive`/`response`, `new tunnel state` and its header lines, which follow C's
 two filters (HTTP-PROXY installing H1-PROXY) and its byte-at-a-time read of the answer.
 
-`TIMER` names each of a transfer's timers by C's `expire_id` (`TimerKind::name`; the protocol's
-own wait is HTTP's for a 100, the only one there is) where C arms or clears it: the leg's limits
-as it starts, the low-speed check, the rate limits, the next connect attempt and the wait for a
-100, each with what is left of its wait read from the clock as it is traced; the race's timer as
+`TIMER` names each of a transfer's timers by C's `expire_id` (`TimerKind::name`) where C arms or
+clears it: the leg's limits as it starts, the low-speed check, the rate limits, the next connect
+attempt, the wait for a 100 and a line protocol's server's time to answer, each with what is left of its wait read from the clock as it is traced; the race's timer as
 its attempt connects and the 100's as it comes, runs out or the body ends. The first timer due
 is named as a socket action fires it; a perform fires it silently, as C's does. With the
 multi's lines on, each armed timer's `[X] expires in Nus` follows its transfer's pollset line,
@@ -1054,10 +1053,17 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   end of a receive/send pass always since `Starts::single` (transfer.c:382-393).
 - `MultiPending` is not a kind: C declares EXPIRE_MULTI_PENDING (urldata.h:498) and never arms
   it.
-- `Proto` is the protocol's own wait, HTTP's for a 100 (EXPIRE_100_TIMEOUT) among them: never
-  stored apart from the protocol's state, it is derived after every step from
-  `TransferState::due`, as `Directions` is, and armed or cleared there. One kind serves
-  every protocol, as a transfer runs one at a time.
+- `Proto` is HTTP's wait for a 100 (EXPIRE_100_TIMEOUT): never stored apart from the
+  protocol's state, it is derived after every step from `TransferState::due`, as `Directions`
+  is, and armed or cleared there.
+- `ServerResponse` (EXPIRE_SERVER_RESPONSE) is a line protocol's server's time to answer: each
+  time `pingpong::drive::runs` drives the back and forth it sets it for what is left
+  (`StepCx::server_response_in`, traced `set for` as C's `Curl_pp_statemach` does), armed as the
+  step ends. Like C's it is never cleared: it lasts until it fires or the transfer completes, so
+  a POP3 body's PERFORMING still lists it and COMPLETED says `[TIMEOUT] all cleared`. A DONE
+  awaiting its answer, where C blocks and arms nothing, is woken by it at its poll's end. It
+  shares `Proto`'s instant (`TimerKind::slot`), as no request has both, and arming either
+  disarms the other, so the transfer's slot does not grow.
 - `AlpnEyeballs` (EXPIRE_ALPN_EYEBALLS, half the happy eyeballs delay, 100 ms by default) is
   armed as the HTTPS connect filter's attempt starts while its ballers are not complete: with a
   second baller (the race of HTTP/3 against TCP, §2.5), or with the origin's HTTPS-RR answer still

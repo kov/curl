@@ -707,11 +707,11 @@ impl ProtoState {
     }
 
     /// When the request wants to look again whatever its socket says: an
-    /// HTTP body's wait for a 100 running out.
+    /// HTTP body's wait for a 100 running out, or IMAP's poll in DONE
+    /// as it awaits its answer.
     pub(crate) fn due(&self) -> Option<crate::time::Instant> {
         match self {
             ProtoState::Http(r) => r.due(),
-            ProtoState::Pop3(r) => r.due(),
             ProtoState::Imap(r) => r.due(),
             _ => None,
         }

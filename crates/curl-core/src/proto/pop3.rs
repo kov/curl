@@ -25,7 +25,6 @@ use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::UseSsl;
 use crate::progress::rate::Way;
-use crate::time::Instant;
 use crate::trace;
 use crate::url::{GetOptions, Part, Url, decode_but_control};
 
@@ -257,8 +256,6 @@ pub(crate) struct Request {
     /// The body was read to its end (`req.done`).
     received: bool,
     eob: Eob,
-    /// When the server's time to answer runs out.
-    due: Option<Instant>,
     /// The peer a connect-to entry names in the origin's place, which TLS
     /// is made with as the connection is upgraded.
     via: Option<TryArc<Peer>>,
@@ -351,7 +348,6 @@ impl Request {
             receiving: false,
             received: false,
             eob: Eob::default(),
-            due: None,
             via: None,
             wants: Events::IN,
             header_bytes: 0,
@@ -401,11 +397,6 @@ impl Request {
     /// scheme outside HTTP's, `req.bytecount + req.headerbytecount`).
     pub(crate) fn received_nothing(&self) -> bool {
         self.header_bytes == 0 && self.pipeline.bytecount() == 0 && !self.no_body && !self.received
-    }
-
-    /// When the server's time to answer runs out, while it is awaited.
-    pub(crate) fn due(&self) -> Option<Instant> {
-        self.due
     }
 
     /// What the body waits for on the connection's socket.
@@ -571,17 +562,11 @@ impl Request {
         let limit = cx.easy().options().line.server_response;
         self.via = lease.conn().net_route().and_then(|r| r.via.clone());
         let (pc, mut carrier) = pop3_of(lease);
-        let (runs, due) = drive::runs(cx, &pc.pp, &mut carrier, limit)?;
-        self.due = Some(due);
-        if runs {
+        if drive::runs(cx, &pc.pp, &mut carrier, limit)? {
             self.machine(cx, pc, &mut carrier)?;
         }
         self.wants = drive::waits(&pc.pp);
-        let stopped = pc.state == State::Stop;
-        if stopped {
-            self.due = None;
-        }
-        Ok(stopped)
+        Ok(pc.state == State::Stop)
     }
 
     /// The state machine (`pop3_statemachine`).

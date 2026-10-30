@@ -568,9 +568,9 @@ witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
 --- old
-                run.deadlines.arm_in(TimerKind::Proto, now, at.since(now));
+                run.deadlines.arm_in(kind, now, at.since(now));
 --- new
-                let _ = at;
+                let _ = (kind, at);
                 run.deadlines.clear(TimerKind::Proto);
 
 === a trailer without a space after its colon is sent

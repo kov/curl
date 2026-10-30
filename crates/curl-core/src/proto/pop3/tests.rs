@@ -323,6 +323,32 @@ mod over_the_wire {
         Conversation::replies(&[GREETING, CAPA, OK, OK, MESSAGE], false).greeting()
     }
 
+    /// The server's time to answer is its own timer, `SERVER_RESPONSE`,
+    /// set for what is left of it each time the back and forth is
+    /// driven, and still armed as the transfer completes, as C's
+    /// `Curl_pp_statemach` sets it and never clears it.
+    #[test]
+    fn the_server_s_time_to_answer_is_its_own_timer() {
+        let talk = in_the_clear();
+        let mut m = serving(&[&talk]);
+        let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+        let ran = tracing(&mut m, &plain(), &url, b"timer,multi", |o| {
+            o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(2500);
+        });
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        let text = &ran.text;
+        // First as the greeting is awaited, with all of the time left.
+        let first = text.lines().find(|l| l.contains("[SERVER_RESPONSE]"));
+        let set = "[TIMER] [SERVER_RESPONSE] set for 2500000us";
+        assert_eq!(first, Some(set), "{text}");
+        assert!(
+            text.contains("[TIMER] [SERVER_RESPONSE] expires in"),
+            "{text}"
+        );
+        assert!(!text.contains("100_TIMEOUT"), "{text}");
+        assert!(text.contains("[COMPLETED] [TIMEOUT] all cleared"), "{text}");
+    }
+
     #[test]
     fn a_message_is_retrieved_after_a_clear_text_login() {
         let talk = in_the_clear();

@@ -1248,6 +1248,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
         terminal,
         bar: bar.as_ref(),
         stdin: stdin.as_ref(),
+        urlnum: given.num,
     };
     // An interface the library refuses for its syntax fails the transfer
     // as it is set, in the library's words (`setstropt_interface`, and
@@ -1634,6 +1635,8 @@ struct Config<'a> {
     bar: Option<&'a Bar>,
     /// Standard input, for `-T .`.
     stdin: Option<&'a nonblocking::Stdin>,
+    /// Which of the URLs given it is, from 0 (`per->urlnum`).
+    urlnum: u64,
 }
 
 /// The `--cookie` strings as one (`cookie_setopts`): `;` between them,
@@ -1779,6 +1782,19 @@ fn setopts(
     if crate::options::has_tls() {
         ssl_ca_setopts(s, op)?;
         ssl_setopts(s, op)?;
+        // A debug build's first URL goes without TLS, if asked
+        // (`CURL_DBG_NO_USE_SSL_ON_FIRST`), as a test needs a connection
+        // in the clear beside one over TLS.
+        let first = config.urlnum == 0;
+        if cfg!(feature = "debug-hooks")
+            && first
+            && curl_os::env::is_set(b"CURL_DBG_NO_USE_SSL_ON_FIRST")
+        {
+            s.enumerated("CURLOPT_USE_SSL", easysrc::USE_SSL, 0, |o| {
+                o.line.make_mut().map_err(oom)?.use_ssl = options::UseSsl::None;
+                Ok(())
+            })?;
+        }
     }
     // `dns_and_network_setopts`.
     s.str("CURLOPT_INTERFACE", op.interface, |o| {
@@ -4142,6 +4158,7 @@ mod tests {
             terminal: false,
             bar: None,
             stdin: None,
+            urlnum: 0,
         };
         let mut easy = Easy::new();
         {

@@ -1996,3 +1996,77 @@ fn hsts_and_alt_svc_files_are_read_and_written() {
         "{alt}"
     );
 }
+
+/// A POP3 server that offers `STLS` and refuses it, agreeing to all else
+/// for as long as
+/// the test runs: what each connection was sent, a line each, in the
+/// order the connections came.
+#[cfg(feature = "debug-hooks")]
+fn pop3_server_refusing_tls() -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+) {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let all = heard.clone();
+    std::thread::spawn(move || {
+        for peer in listener.incoming() {
+            let mut peer = peer.unwrap();
+            let at = {
+                let mut all = all.lock().unwrap();
+                all.push(Vec::new());
+                all.len() - 1
+            };
+            let all = all.clone();
+            std::thread::spawn(move || {
+                peer.write_all(b"+OK hi\r\n").unwrap();
+                let lines = BufReader::new(peer.try_clone().unwrap()).lines();
+                for line in lines.map_while(Result::ok) {
+                    let answer: &[u8] = match line.as_str() {
+                        "STLS" => b"-ERR no\r\n",
+                        "CAPA" => b"+OK\r\nSTLS\r\n.\r\n",
+                        "LIST" => b"+OK\r\n.\r\n",
+                        _ => b"+OK\r\n",
+                    };
+                    all.lock().unwrap()[at].push(line);
+                    if peer.write_all(answer).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    (addr, heard)
+}
+
+/// The debug build's `CURL_DBG_NO_USE_SSL_ON_FIRST` takes the first URL
+/// in the clear though TLS is required (`config2setopts`), and the next
+/// asks for TLS on a connection of its own (pytest's test_31_13).
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn the_first_url_goes_in_the_clear_if_asked() {
+    let s = Scratch::new("nosslfirst");
+    let (addr, heard) = pop3_server_refusing_tls();
+    let url = format!("pop3://{addr}/");
+    let w = "%{urlnum} %{exitcode}\n";
+    let args = [
+        "-s",
+        "--ssl-reqd",
+        "-w",
+        w,
+        "-o",
+        "out",
+        "-o",
+        "out",
+        &url,
+        &url,
+    ];
+    let r = curl_env(&s, &args, &[("CURL_DBG_NO_USE_SSL_ON_FIRST", "1")]);
+    assert_eq!(r.stdout, b"0 0\n1 64\n", "{}", r.stderr);
+    let heard = heard.lock().unwrap();
+    assert_eq!(heard.len(), 2, "{heard:?}");
+    assert!(!heard[0].iter().any(|l| l == "STLS"), "{heard:?}");
+    assert!(heard[1].iter().any(|l| l == "STLS"), "{heard:?}");
+}

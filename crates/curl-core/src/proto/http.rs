@@ -427,8 +427,16 @@ enum Sending {
     /// Nothing yet: the request is not made (before DO).
     Idle,
     /// The head goes, `left` bytes of it still to, ahead of anything
-    /// else in the buffer; `then` is what follows it.
-    Head { left: NonZeroUsize, then: AfterHead },
+    /// else in the buffer; `then` is what follows it. `direct` while
+    /// none of it has been tried and the request is one C sends at
+    /// once, with no body to read and the head within a buffer: a send
+    /// that takes none of it is tried again at once, as C puts what is
+    /// left in its buffer and flushes it (`Curl_req_send`).
+    Head {
+        left: NonZeroUsize,
+        then: AfterHead,
+        direct: bool,
+    },
     /// The head has gone, its body announced with `Expect:
     /// 100-continue`: the wait for the 100 starts as the body is next
     /// asked for (`EXP100_SENDING_REQUEST`, the request all sent).
@@ -1631,9 +1639,14 @@ impl Request {
             None => None,
         };
         self.body_sent = 0;
+        // C sends a request with nothing to read for its body (a reader
+        // whose length is 0, `Curl_creader_total_length`) at once if its
+        // head fits a buffer (`sendbuf.chunk_size`, the upload buffer).
+        let nothing_to_read = !chunked && self.body.as_ref().is_none_or(|b| b.size() == Some(0));
         self.outgoing = Sending::Head {
             left: NonZeroUsize::new(head_len).expect("a head is never empty"),
             then,
+            direct: nothing_to_read && head_len <= upload_buffer,
         };
         let aliases = &cx.easy().options().http.custom.aliases_200;
         let head =
@@ -1881,6 +1894,14 @@ impl Request {
                 return Err(kind);
             }
             if n == 0 {
+                // Nothing of a request sent at once went: C puts it in its
+                // buffer and flushes that, a second send (`Curl_req_send`,
+                // `Curl_req_send_more`).
+                if let Sending::Head { direct, .. } = &mut self.outgoing
+                    && std::mem::take(direct)
+                {
+                    continue;
+                }
                 // Nothing went: what is left waits (`req_flush`).
                 let left = self.filled - self.sent;
                 trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
@@ -1903,9 +1924,13 @@ impl Request {
             cx.report_mut().sizes_mut().request += n as u64;
             self.body_sent += (n - head) as u64;
             self.sent += n;
-            if let Sending::Head { left, then } = self.outgoing {
+            if let Sending::Head { left, then, .. } = self.outgoing {
                 self.outgoing = match (NonZeroUsize::new(left.get() - head), then) {
-                    (Some(left), then) => Sending::Head { left, then },
+                    (Some(left), then) => Sending::Head {
+                        left,
+                        then,
+                        direct: false,
+                    },
                     (None, AfterHead::Body(reading)) => Sending::Body(reading),
                     // The head has gone: the wait for a 100 starts when
                     // the body is next asked for, not in this send

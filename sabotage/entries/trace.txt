@@ -672,3 +672,21 @@ witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_ha
 --- new
         } else if self.first_hop_quic() && false {
             crate::components::Component::Udp
+
+=== a bodyless request blocked at once waits without its second send
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_bodyless_request_blocked_at_once_is_sent_again_before_it_waits
+features: debug-hooks
+--- old
+                    && std::mem::take(direct)
+--- new
+                    && std::mem::take(direct) && false
+
+=== a request with a body blocked at once is sent again
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_blocked_send_leaves_the_rest_buffered
+features: debug-hooks
+--- old
+            direct: nothing_to_read && head_len <= upload_buffer,
+--- new
+            direct: true,

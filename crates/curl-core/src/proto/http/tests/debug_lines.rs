@@ -248,6 +248,39 @@ fn a_blocked_send_leaves_the_rest_buffered() {
     );
 }
 
+/// A request with no body whose first send would block is sent again at
+/// once, as C puts what it sent at once in its buffer and flushes that;
+/// only then does what is left wait (`Curl_req_send`'s direct send,
+/// `Curl_req_send_more`, `req_flush`). C's debug build says the same of
+/// TLS early data, which takes nothing until the handshake ends.
+#[test]
+fn a_bodyless_request_blocked_at_once_is_sent_again_before_it_waits() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let talk = talk.stalling_sends(2);
+    let ran = get_with(&mut m, tracing_tcp(), "/p", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let n = ran.request.len();
+    let lines = lines(&ran);
+    let once = [
+        format!("sending last upload chunk of {n} bytes"),
+        format!("[TCP] send(len={n}) -> 81, 0"),
+        format!("Curl_xfer_send(len={n}, eos=1) -> 0, 0"),
+    ];
+    assert_eq!(
+        lines[..8],
+        [
+            &once[..],
+            &once[..],
+            &[
+                format!("Curl_req_flush(len={n}) -> EAGAIN"),
+                "[TCP] recv(len=16384) -> 81, 0".to_owned(),
+            ],
+        ]
+        .concat(),
+        "{lines:#?}"
+    );
+}
+
 /// Any other failure in the head fails the reads, and then the pass:
 /// here a line without a colon (`sendrecv_dl`, `Curl_sendrecv`).
 #[test]

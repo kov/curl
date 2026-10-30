@@ -645,15 +645,44 @@ mod over_the_wire {
         assert_eq!(talk.received(), b"CAPA\r\nUSER u\r\nPASS p\r\nRETR 1\r\n");
     }
 
-    /// A server that does not answer in time fails the transfer.
+    /// One transfer of `URL` against a server answering `replies`, after
+    /// its greeting: what it was sent once the multi is gone, its
+    /// connection's goodbye included, and what came of it.
+    fn against_to_the_end(replies: &[&[u8]], set: impl FnOnce(&mut Options)) -> (Vec<u8>, Ran) {
+        let talk = Conversation::replies(replies, false).greeting();
+        let mut m = serving(&[&talk]);
+        let url = URL.replace("PORT", &PORT.to_string());
+        let ran = transfer(&mut m, &plain(), &url, set);
+        drop(m);
+        (talk.received(), ran)
+    }
+
+    /// A server that does not answer the login in time fails the
+    /// transfer, cut short in PROTOCONNECTING: its connection is closed
+    /// without a `QUIT` (`multistate_protoconnecting`'s premature
+    /// `multi_done`), as the C build does.
     #[test]
     fn a_server_that_does_not_answer_times_out() {
-        let (sent, ran) = against(&[GREETING], URL, |o| {
+        let (sent, ran) = against_to_the_end(&[GREETING], |o| {
             o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(1000);
         });
         assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
         assert_eq!(sent, b"CAPA\r\n");
         assert!(ran.text.contains("server response timeout"), "{}", ran.text);
+        assert!(ran.text.contains("closing connection #0"), "{}", ran.text);
+    }
+
+    /// The transfer's own time running out while the command waits for
+    /// its answer cuts it short: no `QUIT` (`multi_handle_timeout`'s
+    /// premature `multi_done`), as the C build does.
+    #[test]
+    fn a_transfer_out_of_time_says_no_quit() {
+        let (sent, ran) = against_to_the_end(&[GREETING, CAPA_USER, OK, OK], |o| {
+            o.limits.total = crate::time::TimeLimit::from_millis(1000);
+        });
+        assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+        assert_eq!(sent, b"CAPA\r\nUSER u\r\nPASS p\r\nRETR 1\r\n");
+        assert!(ran.text.contains("closing connection #0"), "{}", ran.text);
     }
 
     /// `pop3s` speaks TLS from the start.
@@ -824,16 +853,23 @@ mod over_the_wire {
         assert_eq!(auth_line(181), "AUTH PLAIN\r");
     }
 
-    /// A server that does not answer the command in time fails it too.
+    /// A server that does not answer the command in time fails it too,
+    /// in DOING, which is not cut short: the connection is shut down
+    /// with a `QUIT` (`multistate_doing`'s `multi_done`, not premature),
+    /// as the C build does.
     #[test]
     fn a_server_that_does_not_answer_the_command_times_out() {
-        let (sent, ran) = against(&[GREETING, CAPA_USER, OK, OK], URL, |o| {
+        let (sent, ran) = against_to_the_end(&[GREETING, CAPA_USER, OK, OK], |o| {
             o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(1000);
         });
         assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
-        let pass = b"PASS p\r\nRETR 1\r\n";
-        assert!(sent.windows(pass.len()).any(|w| w == pass), "{sent:?}");
+        assert_eq!(sent, b"CAPA\r\nUSER u\r\nPASS p\r\nRETR 1\r\nQUIT\r\n");
         assert!(ran.text.contains("server response timeout"), "{}", ran.text);
+        assert!(
+            ran.text.contains("shutting down connection #0"),
+            "{}",
+            ran.text
+        );
     }
 
     /// A server that closes before it answers fails the read, said as C

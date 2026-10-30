@@ -51,3 +51,38 @@ features: test-util
             Takes::NoControlBytes => decode_but_control,
 --- new
             Takes::NoControlBytes => decode_but_zero,
+
+=== a login cut short by the server's silence says QUIT on its way out
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_server_that_does_not_answer_times_out
+features: test-util
+--- old
+                // Cut short (`multistate_protoconnecting`).
+                Err(e) => (
+                    TransferState::Done(x.done(Err(e), true, Reached::Unmade)),
+--- new
+                // Cut short (`multistate_protoconnecting`).
+                Err(e) => (
+                    TransferState::Done(x.done(Err(e), false, Reached::Unmade)),
+
+=== a transfer out of time while its command waits says QUIT on its way out
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_transfer_out_of_time_says_no_quit
+features: test-util
+--- old
+                TransferState::Done(x.done(Err(err), true, Reached::Making))
+--- new
+                TransferState::Done(x.done(Err(err), false, Reached::Making))
+
+=== a command the server did not answer in time leaves without QUIT
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_server_that_does_not_answer_the_command_times_out
+features: test-util
+--- old
+            // (`multistate_doing`).
+            Err(e) => (
+                TransferState::Done(x.done(Err(e), false, Reached::Making)),
+--- new
+            // (`multistate_doing`).
+            Err(e) => (
+                TransferState::Done(x.done(Err(e), true, Reached::Making)),

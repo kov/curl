@@ -524,13 +524,15 @@ witness: curl-core proto::http::tests::a_connection_is_not_open_until_its_proxy_
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_transfer_removed_mid_connect_leaves_no_connection_to_reuse
 --- old
-            TransferState::Connecting(c) => Done {
+            TransferState::Connecting(mut c) => Done {
+                unconnected_chain: c.proto.pipeline_mut().is_some_and(|p| p.made()),
                 lease: c.lease,
                 proto: None,
                 result: Ok(()),
                 premature: true,
 --- new
             TransferState::Connecting(mut c) => Done {
+                unconnected_chain: c.proto.pipeline_mut().is_some_and(|p| p.made()),
                 premature: {
                     let promoted = c.setup.handshake.is_some();
                     if promoted {

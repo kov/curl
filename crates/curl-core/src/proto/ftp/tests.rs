@@ -189,7 +189,7 @@ const COMMANDS: &str = "USER anonymous\r\nPASS ftp@example.com\r\nPWD\r\nEPSV\r\
                         SIZE f\r\nRETR f\r\n";
 
 /// The data connection goes as the transfer ends, its control connection
-/// kept for the next.
+/// kept for the next; each is counted as one the transfer made.
 #[test]
 fn a_file_is_retrieved_over_a_passive_data_connection() {
     let talk = control(&[b"150 here\r\n226 done\r\n"]);
@@ -201,6 +201,9 @@ fn a_file_is_retrieved_over_a_passive_data_connection() {
     assert_eq!(*body.0.lock().unwrap(), b"hello");
     assert_eq!(received(&talk), COMMANDS);
     assert_eq!(net.open(), 1, "the control connection alone");
+    // Both connections are the transfer's (`CURLINFO_NUM_CONNECTS`).
+    let removed = m.remove(id, &mut NoEvents).unwrap();
+    assert_eq!(removed.easy.report().connects(), 2);
 }
 
 /// A file the server refuses fails the transfer though DONE, which finds

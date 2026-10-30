@@ -170,6 +170,9 @@ impl DataConn {
                         Ok(Drove::Established(conn)) => {
                             let (stream, remote) = conn.into_stream();
                             established(cx, host, remote.as_ref(), &stream);
+                            // Counted as the transfer's connections are
+                            // (`cf_ip_happy_connect`'s `numconnects`).
+                            cx.report_mut().count_connect();
                             let stream = match curl_alloc::try_box_or_back(stream) {
                                 Ok(stream) => stream,
                                 Err(stream) => {

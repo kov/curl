@@ -32,3 +32,12 @@ features: test-util debug-hooks
             TimerKind::Proto | TimerKind::ServerResponse => 4,
 --- new
             TimerKind::Proto | TimerKind::ServerResponse | TimerKind::FtpAccept => 4,
+
+=== the data connection is not counted among the transfer's connections
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core proto::ftp::tests::a_file_is_retrieved_over_a_passive_data_connection
+features: test-util debug-hooks
+--- old
+                            cx.report_mut().count_connect();
+--- new
+                            let _ = cx.report_mut();

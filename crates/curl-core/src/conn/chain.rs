@@ -377,7 +377,7 @@ mod tests {
             ip: IpVersion::Any,
             proxy: None,
             tls: None,
-            local: None,
+            cold: None,
             delegation: Default::default(),
         };
         let route = &route;
@@ -460,7 +460,7 @@ mod tests {
             ip: IpVersion::Any,
             proxy: Some(proxy),
             tls: None,
-            local: None,
+            cold: None,
             delegation: Default::default(),
         };
         let shown = |made, under_way| {
@@ -530,7 +530,7 @@ mod tests {
             ip: IpVersion::Any,
             proxy: Some(proxy),
             tls: None,
-            local: None,
+            cold: None,
             delegation: Default::default(),
         };
         let route = &route;
@@ -603,7 +603,7 @@ mod tests {
             ip: IpVersion::Any,
             proxy: Some(proxy),
             tls: Some(tls),
-            local: None,
+            cold: None,
             delegation: Default::default(),
         };
         let route = &route;

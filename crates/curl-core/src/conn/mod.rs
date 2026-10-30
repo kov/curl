@@ -186,7 +186,7 @@ impl Route {
             ip,
             proxy: _,
             tls: _,
-            local,
+            cold: _,
             delegation: _,
         } = have;
         let NetRoute {
@@ -195,12 +195,12 @@ impl Route {
             ip: want_ip,
             proxy: _,
             tls: _,
-            local: want_local,
+            cold: _,
             delegation: _,
         } = want;
         // A transfer that takes any family takes either.
         (*want_ip == IpVersion::Any || want_ip == ip)
-            && binds_as(local.as_deref(), want_local.as_deref())
+            && binds_as(have.local(), want.local())
             // C compares the detours without their schemes
             // (`Curl_peer_same_destination`); each has its origin's.
             && match (via.as_deref(), want_via.as_deref()) {
@@ -224,7 +224,8 @@ impl Route {
             ip: _,
             proxy,
             tls,
-            local: _,
+            // Compared field by field in `reaches`.
+            cold: _,
             delegation,
         } = have;
         let NetRoute {
@@ -233,7 +234,7 @@ impl Route {
             ip: _,
             proxy: want_proxy,
             tls: want_tls,
-            local: _,
+            cold: _,
             delegation: want_delegation,
         } = want;
         proxy.as_ref().map(ProxyRoute::key) == want_proxy.as_ref().map(ProxyRoute::key)
@@ -283,14 +284,21 @@ pub(crate) struct NetRoute {
     /// Shared with the connection set up for it, as every connection's
     /// slot holds its route inline.
     pub(crate) tls: Option<TryArc<crate::tls::TlsIdentity>>,
-    /// What each socket's local end is bound to, if anything (C's
-    /// `interface_opts`, `localport`, `localportrange`): shared, as few
-    /// routes bind and every connection's slot holds its route inline.
-    pub(crate) local: Option<TryArc<crate::options::LocalBind>>,
+    /// What few routes have: shared, as every connection's slot holds
+    /// its route inline. None for none of it.
+    pub(crate) cold: Option<TryArc<RouteCold>>,
     /// How far GSS-API contexts over it delegate the user's credentials
     /// (`conn->gssapi_delegation`): a transfer reusing it must ask the
     /// same (`url_match_auth`).
     pub(crate) delegation: crate::options::Delegation,
+}
+
+/// What of a network route few have.
+#[derive(Debug)]
+pub(crate) struct RouteCold {
+    /// What each socket's local end is bound to, if anything (C's
+    /// `interface_opts`, `localport`, `localportrange`).
+    pub(crate) local: crate::options::LocalBind,
 }
 
 /// A network route as one attempt dials it: how the connection to its
@@ -363,6 +371,11 @@ pub(crate) enum Dial {
 }
 
 impl NetRoute {
+    /// What each socket's local end is bound to, if anything.
+    pub(crate) fn local(&self) -> Option<&crate::options::LocalBind> {
+        self.cold.as_deref().map(|c| &c.local).filter(|l| l.binds())
+    }
+
     /// The peer connected to (`Curl_conn_get_first_peer`): the first
     /// proxy, if the route has one.
     pub(crate) fn destination(&self) -> &Peer {
@@ -1608,7 +1621,7 @@ mod tests {
                 ip: IpVersion::Any,
                 proxy: None,
                 tls: None,
-                local: None,
+                cold: None,
                 delegation: Default::default(),
             })
         };
@@ -1629,7 +1642,7 @@ mod tests {
             ip: IpVersion::Any,
             proxy: None,
             tls: None,
-            local: None,
+            cold: None,
             delegation: Default::default(),
         };
         let dialed = |dial| {
@@ -1724,7 +1737,7 @@ mod tests {
                 proxy: proxy
                     .map(|host| ProxyRoute::new(ProxyType::Socks5, arc(host), None, false, false)),
                 tls: None,
-                local: None,
+                cold: None,
                 delegation: Default::default(),
             })
         };
@@ -1815,7 +1828,7 @@ mod tests {
                 ip: IpVersion::Any,
                 proxy: None,
                 tls: None,
-                local: None,
+                cold: None,
                 delegation: Default::default(),
             })
         };
@@ -1860,7 +1873,7 @@ mod tests {
                 ip: IpVersion::Any,
                 proxy: None,
                 tls: tls.map(|t| TlsIdentity::of(t, Default::default()).unwrap()),
-                local: None,
+                cold: None,
                 delegation: Default::default(),
             })
         };
@@ -1913,7 +1926,7 @@ mod tests {
                 false,
             )),
             tls: None,
-            local: None,
+            cold: None,
             delegation: Default::default(),
         })
     }
@@ -1937,7 +1950,9 @@ mod tests {
                 ip: IpVersion::Any,
                 proxy: None,
                 tls: None,
-                local: local.binds().then(|| TryArc::try_new(local).unwrap()),
+                cold: local
+                    .binds()
+                    .then(|| TryArc::try_new(RouteCold { local }).unwrap()),
                 delegation: Default::default(),
             })
         };
@@ -1970,7 +1985,7 @@ mod tests {
             ip: IpVersion::Any,
             proxy: None,
             tls: None,
-            local: None,
+            cold: None,
             delegation: Default::default(),
         });
         let route = via_proxy(b"proxy.example", None, true);

@@ -1313,12 +1313,15 @@ impl ConnectMachine {
         // The local end bound, as the route says, for the address's
         // family, TCP's alone (`bindlocal`); a failure closes the socket,
         // and one for the family alone lets the next address be tried.
-        if let (Some(local), Remote::Inet(at)) = (self.route.local.clone(), &remote) {
+        let cold = self.route.cold.clone();
+        if let (Some(local), Remote::Inet(at)) = (cold.as_deref().map(|c| &c.local), &remote)
+            && local.binds()
+        {
             let scope = setup
                 .scope
                 .or(self.route.destination().scope())
                 .map_or(0, NonZeroU32::get);
-            if let Err(failed) = bind_local(cx, &*socket, *at, &local, scope, setup) {
+            if let Err(failed) = bind_local(cx, &*socket, *at, local, scope, setup) {
                 cx.net().close(Sock::new(socket, self.closer.clone()));
                 if failed == BindFailed::OutOfMemory {
                     return Err(ConnectError::OutOfMemory);
@@ -2613,7 +2616,7 @@ mod tests {
             ip,
             proxy: None,
             tls: None,
-            local: None,
+            cold: None,
             delegation: Default::default(),
         };
         let mut m = ConnectMachine::new(
@@ -2709,7 +2712,7 @@ mod tests {
             ip: IpVersion::Any,
             proxy: None,
             tls: None,
-            local: None,
+            cold: None,
             delegation: Default::default(),
         };
         let m = ConnectMachine::new(
@@ -2766,7 +2769,7 @@ mod tests {
                 ip: IpVersion::Any,
                 proxy: None,
                 tls: None,
-                local: None,
+                cold: None,
                 delegation: Default::default(),
             };
             let mut m = Some(ConnectMachine::new(
@@ -2880,7 +2883,7 @@ mod tests {
             ip: IpVersion::Any,
             proxy: None,
             tls: None,
-            local: None,
+            cold: None,
             delegation: Default::default(),
         };
         let mut m = ConnectMachine::new(

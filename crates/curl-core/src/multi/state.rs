@@ -5179,10 +5179,10 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     // The local end each socket binds, which a connection must share to
     // serve it (`conn->interface_opts`, `localport`, `localportrange`).
     let bind = &cx.easy().options().sockets.local;
-    let local = match bind.binds().then(|| bind.try_clone()) {
+    let cold = match bind.binds().then(|| bind.try_clone()) {
         None => None,
-        Some(Ok(bind)) => match TryArc::try_new(bind) {
-            Ok(bind) => Some(bind),
+        Some(Ok(local)) => match TryArc::try_new(crate::conn::RouteCold { local }) {
+            Ok(cold) => Some(cold),
             Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
         },
         Some(Err(OutOfMemory)) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
@@ -5193,7 +5193,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         ip: cx.easy().options().ip_version,
         proxy,
         tls,
-        local,
+        cold,
         // Compared for any protocol, as C compares it (`url_match_auth`).
         delegation: cx.easy().options().login.delegation,
     };

@@ -135,9 +135,21 @@ pub struct Login {
 }
 
 /// What the line protocols are told (C's `use_ssl`, `STRING_OPTIONS`,
-/// `sasl_ir`, `list_only`, `server_response_timeout` and `upload_flags`).
+/// `sasl_ir`, `list_only`, `server_response_timeout`, `upload_flags`
+/// and SMTP's mail options).
 #[derive(Debug)]
 pub struct Line {
+    /// The mail's sender, given in `MAIL FROM` (`CURLOPT_MAIL_FROM`).
+    pub mail_from: Option<Vec<u8>>,
+    /// The mail's recipients, each given in a `RCPT TO`, or the
+    /// mailboxes a command asks about (`CURLOPT_MAIL_RCPT`).
+    pub mail_rcpt: Lines,
+    /// A mail goes to the recipients the server takes, if it takes any,
+    /// though it refuses others (`CURLOPT_MAIL_RCPT_ALLOWFAILS`).
+    pub mail_rcpt_allowfails: bool,
+    /// Who the mail is submitted for, given in `MAIL FROM`'s `AUTH=`
+    /// once logged in (`CURLOPT_MAIL_AUTH`).
+    pub mail_auth: Option<Vec<u8>>,
     /// Whether, and how insistently, a connection that starts in the
     /// clear is upgraded to TLS (`CURLOPT_USE_SSL`).
     pub use_ssl: UseSsl,
@@ -240,6 +252,10 @@ impl UseSsl {
 impl ColdGroup for Line {
     const UNSET: &'static Line = &Line::NONE;
     const NONE: Line = Line {
+        mail_from: None,
+        mail_rcpt: Lines::NONE,
+        mail_rcpt_allowfails: false,
+        mail_auth: None,
         use_ssl: UseSsl::None,
         login_options: None,
         sasl_ir: false,
@@ -252,6 +268,10 @@ impl ColdGroup for Line {
 impl Line {
     fn try_clone(&self) -> Result<Line, OutOfMemory> {
         Ok(Line {
+            mail_from: self.mail_from.as_deref().map(copy).transpose()?,
+            mail_rcpt: self.mail_rcpt.try_clone()?,
+            mail_rcpt_allowfails: self.mail_rcpt_allowfails,
+            mail_auth: self.mail_auth.as_deref().map(copy).transpose()?,
             use_ssl: self.use_ssl,
             login_options: self.login_options.as_deref().map(copy).transpose()?,
             sasl_ir: self.sasl_ir,
@@ -2675,6 +2695,22 @@ mod tests {
         assert!(copy.resolve.entries().eq([&b"a:1:127.0.0.1"[..]]));
         assert_eq!(copy.resolve.stamp(), o.resolve.stamp());
         assert!(copy.connect_to.iter().eq([&b"::b:2"[..]]));
+    }
+
+    /// A copy keeps the mail's sender, recipients and submitter.
+    #[test]
+    fn a_copy_keeps_the_mail_options() {
+        let mut o = Options::default();
+        let line = o.line.make_mut().unwrap();
+        line.mail_from = Some(b"f@a".to_vec());
+        line.mail_rcpt.set([&b"r@b"[..], b"s@c"]).unwrap();
+        line.mail_rcpt_allowfails = true;
+        line.mail_auth = Some(b"u@d".to_vec());
+        let copy = o.try_clone().unwrap();
+        assert_eq!(copy.line.mail_from.as_deref(), Some(&b"f@a"[..]));
+        assert!(copy.line.mail_rcpt.iter().eq([&b"r@b"[..], b"s@c"]));
+        assert!(copy.line.mail_rcpt_allowfails);
+        assert_eq!(copy.line.mail_auth.as_deref(), Some(&b"u@d"[..]));
     }
 
     /// A copy keeps the proxy, the login and the cookies' options.

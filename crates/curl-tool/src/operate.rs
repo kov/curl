@@ -1917,18 +1917,31 @@ fn setopts(
         }
     }
     // `mail_and_sasl_setopts`.
-    s.str("CURLOPT_SASL_AUTHZID", op.sasl_authzid, |o| {
-        if let Some(authzid) = op.sasl_authzid {
-            o.login.make_mut().map_err(oom)?.authzid = Some(copy(authzid).map_err(oom)?);
+    s.str("CURLOPT_MAIL_FROM", op.mail_from, |o| {
+        if let Some(from) = op.mail_from {
+            o.line.make_mut().map_err(oom)?.mail_from = Some(copy(from).map_err(oom)?);
         }
         Ok(())
     })?;
-    s.long("CURLOPT_SASL_IR", i64::from(op.sasl_ir), |o| {
-        if op.sasl_ir {
-            o.line.make_mut().map_err(oom)?.sasl_ir = true;
-        }
-        Ok(())
-    })?;
+    if !op.mail_rcpt.is_empty() {
+        s.slist("CURLOPT_MAIL_RCPT", &op.mail_rcpt, |o| {
+            let line = o.line.make_mut().map_err(oom)?;
+            line.mail_rcpt
+                .set(op.mail_rcpt.iter().copied())
+                .map_err(oom)
+        })?;
+    }
+    s.long(
+        "CURLOPT_MAIL_RCPT_ALLOWFAILS",
+        i64::from(op.mail_rcpt_allowfails),
+        |o| {
+            if op.mail_rcpt_allowfails {
+                o.line.make_mut().map_err(oom)?.mail_rcpt_allowfails = true;
+            }
+            Ok(())
+        },
+    )?;
+    mail_auth_and_sasl(s, op)?;
     if op.create_file_mode != 0 {
         s.long(
             "CURLOPT_NEW_FILE_PERMS",
@@ -1967,8 +1980,9 @@ fn setopts(
             Ok(())
         })?;
     }
-    // Set twice, as config2setopts.c sets it.
+    // Set twice, as config2setopts.c sets it, and these too.
     gss_delegation(s, op, run.claims)?;
+    mail_auth_and_sasl(s, op)?;
     if let Some(path) = op.unix_socket {
         let name = if op.abstract_unix_socket {
             "CURLOPT_ABSTRACT_UNIX_SOCKET"
@@ -2355,6 +2369,30 @@ fn gss_delegation(s: &mut Setopt<'_>, op: &Operation<'_>, claims: Claims) -> Res
     let value = i64::from(d.by_policy) | i64::from(d.always) << 1;
     s.long("CURLOPT_GSSAPI_DELEGATION", value, |o| {
         o.login.make_mut().map_err(oom)?.delegation = d;
+        Ok(())
+    })
+}
+
+/// The mail's submitter and SASL's identity and initial response, which
+/// config2setopts.c sets in `mail_and_sasl_setopts` and again in
+/// `misc_setopts`.
+fn mail_auth_and_sasl(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
+    s.str("CURLOPT_MAIL_AUTH", op.mail_auth, |o| {
+        if let Some(auth) = op.mail_auth {
+            o.line.make_mut().map_err(oom)?.mail_auth = Some(copy(auth).map_err(oom)?);
+        }
+        Ok(())
+    })?;
+    s.str("CURLOPT_SASL_AUTHZID", op.sasl_authzid, |o| {
+        if let Some(authzid) = op.sasl_authzid {
+            o.login.make_mut().map_err(oom)?.authzid = Some(copy(authzid).map_err(oom)?);
+        }
+        Ok(())
+    })?;
+    s.long("CURLOPT_SASL_IR", i64::from(op.sasl_ir), |o| {
+        if op.sasl_ir {
+            o.line.make_mut().map_err(oom)?.sasl_ir = true;
+        }
         Ok(())
     })
 }
@@ -4202,6 +4240,49 @@ mod tests {
             options.contains("upload_flags: UploadFlags(17)"),
             "{options}"
         );
+        // The mail's options, the submitter and SASL's set twice, as C's
+        // tool writes them; and set on the handle.
+        let mail = [
+            "--mail-from",
+            "f@x",
+            "--mail-rcpt",
+            "r1@x",
+            "--mail-rcpt",
+            "r2@x",
+            "--mail-rcpt-allowfails",
+            "--mail-auth",
+            "au@x",
+            "--sasl-ir",
+        ];
+        let (text, options) = set_up_url(&mail, "smtp://h/").unwrap();
+        let twice = [
+            line("CURLOPT_MAIL_AUTH, \"au@x\""),
+            line("CURLOPT_SASL_IR, 1L"),
+        ]
+        .concat();
+        let want = [
+            line("CURLOPT_MAIL_FROM, \"f@x\""),
+            line("CURLOPT_MAIL_RCPT, slist1"),
+            line("CURLOPT_MAIL_RCPT_ALLOWFAILS, 1L"),
+            twice.clone(),
+        ]
+        .concat();
+        assert!(text.contains(&want), "{text}");
+        assert_eq!(text.matches(&twice).count(), 2, "{text}");
+        assert!(
+            text.contains("slist1 = curl_slist_append(slist1, \"r1@x\");\n"),
+            "{text}"
+        );
+        for set in [
+            "mail_from: Some([102, 64, 120])",
+            "mail_rcpt_allowfails: true",
+            "mail_auth: Some([97, 117, 64, 120])",
+            "[114, 49, 64, 120], [114, 50, 64, 120]",
+        ] {
+            assert!(options.contains(set), "{set}: {options}");
+        }
+        let (text, _) = set_up_url(&[], "smtp://h/").unwrap();
+        assert!(!text.contains("MAIL"), "{text}");
         // For HTTPS, a proxy keeps them without being told to tunnel.
         let (text, _) = set_up_url(&["-x", "http://p:3"], "https://h/").unwrap();
         assert!(text.contains(&headeropt), "{text}");

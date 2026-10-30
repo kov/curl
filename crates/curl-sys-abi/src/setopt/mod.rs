@@ -1127,6 +1127,28 @@ fn apply(
             };
             options.line.make_mut()?.use_ssl = level;
         }
+        (ffi::CURLOPT_MAIL_FROM, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let value = unsafe { owned(p) }?;
+            options.line.set(|g| &mut g.mail_from, value)?;
+        }
+        (ffi::CURLOPT_MAIL_AUTH, Ptr(p)) => {
+            // SAFETY: as above.
+            let value = unsafe { owned(p) }?;
+            options.line.set(|g| &mut g.mail_auth, value)?;
+        }
+        // The application's list, walked as each mail is sent.
+        (ffi::CURLOPT_MAIL_RCPT, Ptr(p)) => match slist(p)? {
+            Some(source) => options.line.make_mut()?.mail_rcpt.set_source(source)?,
+            None => {
+                if let Some(line) = options.line.made_mut() {
+                    line.mail_rcpt.set([])?;
+                }
+            }
+        },
+        (ffi::CURLOPT_MAIL_RCPT_ALLOWFAILS, Long(n)) => {
+            options.line.make_mut()?.mail_rcpt_allowfails = n != 0;
+        }
         (ffi::CURLOPT_SASL_IR, Long(n)) => options.line.make_mut()?.sasl_ir = n != 0,
         (ffi::CURLOPT_DIRLISTONLY, Long(n)) => options.line.make_mut()?.list_only = n != 0,
         (ffi::CURLOPT_UPLOAD_FLAGS, Long(n)) => {

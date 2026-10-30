@@ -289,6 +289,14 @@ pub(crate) struct Operation<'a> {
     pub(crate) sasl_ir: bool,
     /// `--upload-flags`: seen only, unless changed.
     pub(crate) upload_flags: curl_core::options::UploadFlags,
+    /// `--mail-from`.
+    pub(crate) mail_from: Option<&'a [u8]>,
+    /// `--mail-rcpt`, in the order given.
+    pub(crate) mail_rcpt: Vec<&'a [u8]>,
+    /// `--mail-rcpt-allowfails`.
+    pub(crate) mail_rcpt_allowfails: bool,
+    /// `--mail-auth`.
+    pub(crate) mail_auth: Option<&'a [u8]>,
     /// `--list-only` (C's `dirlistonly`).
     pub(crate) list_only: bool,
     /// `--ssl`, `--ftp-ssl` (C's `ftp_ssl`): TLS if the server has it.
@@ -1387,6 +1395,19 @@ pub(crate) fn apply<'a>(
             line.current().sasl_authzid = Some(text);
         }
         Opt::SaslIr => line.current().sasl_ir = value.toggle(),
+        Opt::MailFrom | Opt::MailAuth => {
+            let text = value.text();
+            if text.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            let op = line.current();
+            match spec.opt {
+                Opt::MailFrom => op.mail_from = Some(text),
+                _ => op.mail_auth = Some(text),
+            }
+        }
+        Opt::MailRcpt => line.current().mail_rcpt.try_push(value.text())?,
+        Opt::MailRcptAllowfails => line.current().mail_rcpt_allowfails = value.toggle(),
         Opt::UploadFlags => {
             let op = line.current();
             op.upload_flags = upload_flags(op.upload_flags, value.text())?;
@@ -1860,10 +1881,6 @@ pub(crate) fn apply<'a>(
         | Opt::Hostpubmd5
         | Opt::Hostpubsha256
         | Opt::Knownhosts
-        | Opt::MailAuth
-        | Opt::MailFrom
-        | Opt::MailRcpt
-        | Opt::MailRcptAllowfails
         | Opt::Ntlm
         | Opt::ProxyNtlm
         | Opt::Pubkey

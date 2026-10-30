@@ -6917,3 +6917,59 @@ fn multi_handles_and_old_socket_calls() {
         curl_multi_cleanup(m);
     }
 }
+
+/// SMTP's options reach the handle: the sender and the submitter as
+/// strings, the recipients as the application's list, walked again as
+/// each mail is sent, and whether refused ones are let pass.
+#[test]
+fn the_mail_options_reach_the_handle() {
+    let c = curl_easy_init();
+    let mail = |c| {
+        options(c, |o| {
+            let l = &o.line;
+            let rcpt: Vec<_> = l.mail_rcpt.iter().map(<[u8]>::to_vec).collect();
+            (
+                l.mail_from.clone(),
+                rcpt,
+                l.mail_rcpt_allowfails,
+                l.mail_auth.clone(),
+            )
+        })
+    };
+    assert_eq!(mail(c), (None, vec![], false, None));
+    let from = c"<f@a>";
+    let auth = c"u@b";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_MAIL_FROM, from.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_MAIL_AUTH, auth.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_MAIL_RCPT_ALLOWFAILS, 2), CURLE_OK);
+    let mut list = ptr::null_mut();
+    for line in [c"r@c", c"s@d"] {
+        // SAFETY: a list made here, and a C string.
+        list = unsafe { crate::strings::curl_slist_append(list, line.as_ptr()) };
+    }
+    assert_eq!(pointer(c, ffi::CURLOPT_MAIL_RCPT, list), CURLE_OK);
+    let rcpt = vec![b"r@c".to_vec(), b"s@d".to_vec()];
+    assert_eq!(
+        mail(c),
+        (Some(b"<f@a>".to_vec()), rcpt, true, Some(b"u@b".to_vec()))
+    );
+    assert_eq!(long(c, ffi::CURLOPT_MAIL_RCPT_ALLOWFAILS, 0), CURLE_OK);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_MAIL_RCPT, ptr::null_mut::<c_char>()),
+        CURLE_OK
+    );
+    // SAFETY: the list made above, which the handle no longer keeps.
+    unsafe { crate::strings::curl_slist_free_all(list) };
+    for o in [ffi::CURLOPT_MAIL_FROM, ffi::CURLOPT_MAIL_AUTH] {
+        assert_eq!(pointer(c, o, ptr::null_mut::<c_char>()), CURLE_OK);
+    }
+    assert_eq!(mail(c), (None, vec![], false, None));
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}

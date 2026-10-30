@@ -87,10 +87,10 @@ witness: curl-sys-abi setopt::tests::reads_delegation_as_c
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool operate::tests::writes_gss_options_as_c
 --- old
-    // Set twice, as config2setopts.c sets it.
+    // Set twice, as config2setopts.c sets it, and these too.
     gss_delegation(s, op, run.claims)?;
 --- new
-    // Set twice, as config2setopts.c sets it.
+    // Set twice, as config2setopts.c sets it, and these too.
 
 === the tool gives the library Negotiate though it does not claim SPNEGO
 file: crates/curl-tool/src/operate.rs

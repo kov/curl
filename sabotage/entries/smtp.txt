@@ -22,3 +22,28 @@ witness: curl-core upload::chain::tests::a_mail_s_dots_are_escaped_however_its_r
         self.matched == 0 && !read.contains(&MAIL_END[0])
 --- new
         self.matched == 0
+
+=== a copy of the options loses the mail's recipients
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core options::tests::a_copy_keeps_the_mail_options
+--- old
+            mail_rcpt: self.mail_rcpt.try_clone()?,
+--- new
+            mail_rcpt: Lines::NONE,
+
+=== the shim drops the application's list of recipients
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::the_mail_options_reach_the_handle
+--- old
+            Some(source) => options.line.make_mut()?.mail_rcpt.set_source(source)?,
+--- new
+            Some(_) => {}
+
+=== `--libcurl` writes the mail's submitter and SASL's options once, though config2setopts.c sets them twice
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::writes_what_c_writes
+--- old
+    gss_delegation(s, op, run.claims)?;
+    mail_auth_and_sasl(s, op)?;
+--- new
+    gss_delegation(s, op, run.claims)?;

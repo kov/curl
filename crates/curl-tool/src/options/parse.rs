@@ -831,6 +831,42 @@ mod tests {
         }
     }
 
+    /// The mail's options: each recipient added in turn, the sender and
+    /// the submitter refused blank, as C's `getstr` with `DENY_BLANK`.
+    #[test]
+    fn reads_the_mail_options_as_c() {
+        let l = line(&[
+            "--mail-rcpt",
+            "a@b",
+            "--mail-from",
+            "f@g",
+            "--mail-rcpt",
+            "c@d",
+            "--mail-auth",
+            "u@v",
+            "--mail-rcpt-allowfails",
+            "x",
+        ]);
+        let op = &l.operations[0];
+        assert_eq!(op.mail_rcpt, [&b"a@b"[..], b"c@d"]);
+        assert_eq!(op.mail_from, Some(&b"f@g"[..]));
+        assert_eq!(op.mail_auth, Some(&b"u@v"[..]));
+        assert!(op.mail_rcpt_allowfails);
+        let l = line(&["--mail-rcpt-allowfails", "--no-mail-rcpt-allowfails", "x"]);
+        assert!(!l.operations[0].mail_rcpt_allowfails);
+        for blank in ["--mail-from", "--mail-auth"] {
+            let mut failed = false;
+            crate::msgs::captured(|mut msgs| {
+                let argv: &'static [OsString] = Vec::leak(argv(&[blank, "", "x"]));
+                failed = parse_args(argv, &mut msgs, &mut |_, _| {}).is_err();
+            });
+            assert!(failed, "{blank}");
+        }
+        // A blank recipient is kept, as C's `add2list` keeps it.
+        let l = line(&["--mail-rcpt", "", "x"]);
+        assert_eq!(l.operations[0].mail_rcpt, [&b""[..]]);
+    }
+
     /// `--negotiate` needs a library claiming SPNEGO to be turned on,
     /// `--proxy-negotiate` even to be turned off, as C checks
     /// `feature_spnego`; the GSS-API options are read as C reads them,

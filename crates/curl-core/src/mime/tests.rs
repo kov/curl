@@ -300,6 +300,9 @@ fn a_mail_message_is_read_whole_with_the_request_s_lines() {
         let mut r = MimeReader::mail(TryArc::try_new(m).unwrap(), request).unwrap();
         let body = all(&mut r, &mut Script::default());
         assert_eq!(r.size(), Some(body.len() as u64));
+        // Started over, it reads the same, the request's lines again.
+        assert!(r.restart_for_test(&mut Script::default()));
+        assert_eq!(all(&mut r, &mut Script::default()), body);
         String::from_utf8(body).unwrap()
     };
     let html = Part {

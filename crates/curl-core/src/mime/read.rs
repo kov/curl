@@ -1590,9 +1590,9 @@ impl MimeReader {
     /// Start the body over (`cr_mime_cntrl`'s rewind): whether it could
     /// be.
     fn restart(&mut self, calls: &mut dyn Calls) -> bool {
+        // A rewind reads none of the part's headers.
         let top = PartRef {
             body_only: self.body_only,
-            user: &self.top_user,
             ..PartRef::top(&self.mime)
         };
         let ok = rewind_part(top, &mut self.top, calls);

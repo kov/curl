@@ -78,6 +78,8 @@ struct Ran {
     body: Vec<u8>,
     text: String,
     code: Option<u16>,
+    /// How long it took, start to end.
+    total: std::time::Duration,
 }
 
 /// A verbose transfer of `url` (`PORT` in it replaced) over `m`, set as
@@ -108,6 +110,7 @@ fn tracing(
     let result = drive_to_completion(m, id, &mut NoEvents).unwrap();
     let removed = m.remove(id, &mut NoEvents).unwrap();
     let code = removed.easy.report().response_code();
+    let total = removed.easy.report().timings().total();
     let body = body.lock().unwrap().clone();
     let text = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
     Ran {
@@ -115,6 +118,7 @@ fn tracing(
         body,
         text,
         code,
+        total,
     }
 }
 
@@ -904,4 +908,205 @@ fn an_answer_awaited_in_done_stalls_no_other_transfer() {
     mailer.allow(6);
     let sent = drive_to_completion(&mut m, sender, &mut NoEvents).unwrap();
     assert_eq!(sent, Ok(()));
+}
+
+/// `smtps` speaks TLS from the start and asks no STARTTLS of a server
+/// that offers it.
+#[test]
+fn smtps_speaks_tls_from_the_start() {
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let replies = [
+        WELCOME.to_vec(),
+        tls(GREETING),
+        tls(STARTTLS_EHLO),
+        tls(b"214 help\r\n"),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let talk = Conversation::replies(&replies, false).per_send();
+    let mut m = serving(&[&talk]);
+    let ran = tracing(
+        &mut m,
+        &with_tls(),
+        "smtps://127.0.0.1:PORT/900",
+        b"",
+        |_| {},
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(ran.body, b"214 help\r\n");
+    let said = talk.received();
+    assert!(said.starts_with(b"FAKETLS HELLO"), "{said:?}");
+    let help = tls(b"HELP\r\n");
+    assert!(said.windows(help.len()).any(|w| w == help), "{said:?}");
+    assert!(!said.windows(8).any(|w| w == b"STARTTLS"), "{said:?}");
+}
+
+/// Without a TLS library, `smtps` is a protocol the build leaves out.
+#[test]
+fn smtps_needs_a_tls_library() {
+    let talk = Conversation::replies(&[GREETING], false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, "smtps://127.0.0.1:PORT/900", |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
+    assert_eq!(talk.received(), b"");
+}
+
+/// The server a command retried goes to the second time.
+fn helping_again() -> Conversation {
+    Conversation::replies(&[GREETING, EHLO, b"214 again\r\n"], false).greeting()
+}
+
+/// A server that helps once, gone after its second send.
+fn helping_once() -> Conversation {
+    Conversation::replies(&[GREETING, EHLO, b"214 help\r\n"], false)
+        .greeting()
+        .breaking_after(2)
+}
+
+/// A reused connection whose peer is gone fails the command's send: the
+/// request, which nothing came back for, is made again on a fresh
+/// connection, greeting anew (`Curl_retry_request`).
+#[test]
+fn a_command_a_reused_connection_cannot_send_is_retried() {
+    let first = helping_once();
+    let fresh = helping_again();
+    let mut m = serving(&[&first, &fresh]);
+    assert_eq!(transfer(&mut m, URL, |_| {}).result, Ok(()));
+    let ran = transfer(&mut m, URL, |_| {});
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(ran.body, b"214 again\r\n");
+    assert_eq!(received(&fresh), "EHLO 900\r\nHELP\r\n");
+    let retried = "Connection died, retrying a fresh connect (retry count: 1)";
+    assert!(ran.text.contains(retried), "{}", ran.text);
+}
+
+/// No body wanted (`NOBODY`), a command a dead reused connection cannot
+/// send is not made again.
+#[test]
+fn a_command_wanting_no_body_is_not_retried() {
+    let first = helping_once();
+    let fresh = helping_again();
+    let mut m = serving(&[&first, &fresh]);
+    assert_eq!(transfer(&mut m, URL, |_| {}).result, Ok(()));
+    let ran = transfer(&mut m, URL, |o| o.method = Method::Head);
+    assert_eq!(ran.result, Err(ErrorKind::SendError));
+    assert_eq!(fresh.received(), b"");
+    assert!(!ran.text.contains("Connection died"), "{}", ran.text);
+}
+
+/// A mail whose envelope was answered over a reused connection that then
+/// dies is not made again: something came back for it.
+#[test]
+fn a_mail_answered_before_its_connection_died_is_not_retried() {
+    let first = mailing(&[OK, OK, GO]).breaking_after(8);
+    let fresh = mailing(&[]);
+    let mut m = serving(&[&first, &fresh]);
+    assert_eq!(transfer(&mut m, URL, mail(b"x")).result, Ok(()));
+    let ran = transfer(&mut m, URL, mail(b"x"));
+    assert_eq!(ran.result, Err(ErrorKind::SendError), "{}", ran.text);
+    assert_eq!(fresh.received(), b"");
+    assert!(!ran.text.contains("Connection died"), "{}", ran.text);
+}
+
+/// The answer to a mail's body awaited in DONE that does not come in
+/// time fails the transfer as C's blocking drive fails it, "server
+/// response timeout".
+#[test]
+fn an_answer_awaited_in_done_times_out_as_the_server_s() {
+    let mailer = mailing(&[]).held();
+    mailer.allow(5);
+    let mut m = serving(&[&mailer]);
+    let ran = transfer(&mut m, URL, |o| {
+        mail(b"hello")(o);
+        o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(2500);
+    });
+    assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+    assert!(ran.text.contains("server response timeout"), "{}", ran.text);
+    let total = ran.total.as_millis();
+    assert!((2500..2600).contains(&total), "{total} ms");
+}
+
+/// Under a send limit, the body is read and sent a second's worth at a
+/// time, the transfer waiting between.
+#[test]
+fn a_mail_s_body_keeps_to_the_send_limit() {
+    let talk = mailing(&[]);
+    let mut m = serving(&[&talk]);
+    let ran = tracing(&mut m, &plain(), URL, b"multi", |o| {
+        mail(&[b'x'; 2500])(o);
+        o.flow.make_mut().unwrap().max_send_speed = std::num::NonZeroU64::new(1000);
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert!(talk.received().ends_with(b"xxx\r\n.\r\n"));
+    assert!(ran.text.contains("[RLIMIT] waiting"), "{}", ran.text);
+    assert!(ran.total.as_millis() >= 2000, "{:?}", ran.total);
+}
+
+/// What a request is set up to move once made is said as C's
+/// `xfer_setup` says it: the body to send for a mail, its sending ending
+/// in PERFORMING; a command sets up nothing, its sending over at DID.
+#[test]
+fn the_request_says_what_it_is_set_up_to_move() {
+    let said = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|l| l.contains("xfer_setup") || l.contains("PGRS-POSTRANSFER"))
+            .map(|l| l.split(" added ").next().unwrap().to_owned())
+            .collect()
+    };
+    let talk = mailing(&[]);
+    let ran = tracing(&mut serving(&[&talk]), &plain(), URL, b"multi", mail(b"x"));
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(
+        said(&ran.text),
+        [
+            "[MULTI] [DOING] xfer_setup: recv_idx=-1, send_idx=0",
+            "[MULTI] [PERFORMING] [PGRS-POSTRANSFER]",
+        ],
+        "{}",
+        ran.text
+    );
+    let talk = Conversation::replies(&[GREETING, EHLO, b"252 maybe\r\n"], false).greeting();
+    let ran = tracing(&mut serving(&[&talk]), &plain(), URL, b"multi", |o| {
+        o.line
+            .make_mut()
+            .unwrap()
+            .mail_rcpt
+            .set([&b"r@b"[..]])
+            .unwrap();
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(
+        said(&ran.text),
+        ["[MULTI] [DID] [PGRS-POSTRANSFER]"],
+        "{}",
+        ran.text
+    );
+}
+
+/// A server that offers no AUTH is not logged in to, whatever
+/// credentials the transfer has: the mail goes.
+#[test]
+fn credentials_without_auth_offered_log_in_nowhere() {
+    let talk = mailing(&[]);
+    let ran = transfer(
+        &mut serving(&[&talk]),
+        "smtp://u:p@127.0.0.1:PORT/900",
+        mail(b"x"),
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert!(received(&talk).starts_with("EHLO 900\r\nMAIL FROM:"));
+}
+
+/// A reply and the next one in one read: the first transfer stops at its
+/// answer, and what follows it waits for the next transfer over the
+/// connection (`Curl_pp_moredata`).
+#[test]
+fn bytes_after_a_transfer_s_answer_wait_for_the_next() {
+    let talk = Conversation::replies(&[GREETING, EHLO, b"214 a\r\n214 b\r\n"], false).greeting();
+    let mut m = serving(&[&talk]);
+    let first = transfer(&mut m, URL, |_| {});
+    assert_eq!(first.result, Ok(()), "{}", first.text);
+    assert_eq!(first.body, b"214 a\r\n");
+    let second = transfer(&mut m, URL, |_| {});
+    assert_eq!(second.result, Ok(()), "{}", second.text);
+    assert_eq!(second.body, b"214 b\r\n");
 }

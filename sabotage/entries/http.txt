@@ -1519,3 +1519,12 @@ witness: curl-core proto::http::tests::a_custom_method_not_utf8_is_traced_as_its
 --- new
         let custom = curl_alloc::Lossy(custom);
         Some(trace::line(format_args!("Stick to {custom} instead of GET")))
+
+=== a .netrc file's credentials stay out of the URL a redirect resolves against
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::multi_trace::a_netrc_login_is_the_url_s_for_a_redirect
+features: test-util
+--- old
+    if let Some(found) = proto.netrc_login() {
+--- new
+    if let Some(found) = proto.netrc_login().filter(|_| false) {

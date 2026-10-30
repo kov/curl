@@ -365,3 +365,35 @@ fn a_request_says_the_credentials_the_last_one_set_out_with() {
     );
 }
 
+/// Credentials a `.netrc` file gave are the URL's for a redirect on the
+/// same origin (C writes them into `state.uh`): the next request has
+/// them from its URL, and a file that is optional is not read again.
+#[test]
+fn a_netrc_login_is_the_url_s_for_a_redirect() {
+    let path = std::env::temp_dir().join(format!("curl-core-follow-netrc-{}", std::process::id()));
+    std::fs::write(&path, b"machine 127.0.0.1 login nu password np\n").unwrap();
+    let file = path.as_os_str().as_encoded_bytes().to_vec();
+    let moved = b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[moved, OK], false);
+    let ran = get_with(&mut m, tracing_multi(), "/", talk, |o| {
+        o.http.follow = Follow::All;
+        o.netrc.make_mut().unwrap().mode = crate::options::NetrcMode::Optional;
+        o.netrc.make_mut().unwrap().file = Some(file.clone());
+    });
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(ran.result, Ok(()));
+    let text = ran.seen.text();
+    let count = |needle: &str| text.iter().filter(|l| l.contains(needle)).count();
+    assert_eq!(count("[NETRC] scanning"), 1, "{text:?}");
+    assert_eq!(count("transfer credentials"), 1, "{text:?}");
+    assert_eq!(
+        count("Issue another request to this URL: 'http://nu:np@127.0.0.1:"),
+        1,
+        "{text:?}"
+    );
+    assert_eq!(
+        count("Server auth using Basic with user 'nu'"),
+        2,
+        "{text:?}"
+    );
+}

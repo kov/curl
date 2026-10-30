@@ -4900,10 +4900,28 @@ fn follow_leg<H: Host>(
     let options = cx.easy().options();
     let path_as_is = options.url_rules.path_as_is;
     let max = options.http.max_redirects.get();
-    let base = match request_url(run, cx) {
+    let mut base = match request_url(run, cx) {
         Ok(base) => base,
         Err(e) => return TransferState::Init.fail(e),
     };
+    // A `.netrc` file's credentials are the URL's from here, so that a
+    // redirect on the same origin carries them as its own.
+    if let Some(found) = proto.netrc_login() {
+        let encoded = crate::url::SetOptions {
+            parse: crate::url::ParseOptions {
+                url_encode: true,
+                ..crate::url::ParseOptions::NONE
+            },
+            ..crate::url::SetOptions::NONE
+        };
+        let secret = found.secret();
+        let set = base
+            .set(Part::User, Some(secret.user()), encoded)
+            .and_then(|()| base.set(Part::Password, Some(secret.password()), encoded));
+        if let Err(e) = set {
+            return TransferState::Init.fail(url_error(e));
+        }
+    }
     if let Some(max) = max
         && cx.report_mut().redirects() >= u32::from(max)
     {

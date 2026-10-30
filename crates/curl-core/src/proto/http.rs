@@ -773,6 +773,11 @@ impl Request {
         super::url_peer((scheme, host, port), url, scope, idn)
     }
 
+    /// The credentials it authenticates with.
+    pub(crate) fn login(&self) -> Option<&Credentials> {
+        self.credentials.as_ref()
+    }
+
     /// Its scheme, `http` or `https`.
     pub(crate) fn scheme(&self) -> Scheme {
         self.peer.scheme()

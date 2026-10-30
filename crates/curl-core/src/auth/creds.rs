@@ -338,6 +338,11 @@ impl Credentials {
         &self.user
     }
 
+    /// They are a `.netrc` file's.
+    pub(crate) fn found_in_netrc(&self) -> bool {
+        self.source == Source::Netrc
+    }
+
     /// What these authenticate with.
     pub(crate) fn secret(&self) -> Secret<'_> {
         Secret {

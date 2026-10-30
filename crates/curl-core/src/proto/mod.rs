@@ -920,6 +920,16 @@ impl ProtoState {
         }
     }
 
+    /// The credentials an HTTP request found in a `.netrc` file, which
+    /// C writes into the URL a redirect is resolved against
+    /// (`url_set_data_creds_netrc`, into `state.uh`).
+    pub(crate) fn netrc_login(&self) -> Option<&Credentials> {
+        match self {
+            ProtoState::Http(r) => r.login().filter(|c| c.found_in_netrc()),
+            _ => None,
+        }
+    }
+
     /// Whether the protocol follows a request with another of its own
     /// making, as HTTP does (its `follow` handler): a retry of any other
     /// is the same URL connected for again (`multi_follow`).

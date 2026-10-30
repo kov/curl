@@ -1352,19 +1352,19 @@ fn domain(path: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 /// place if set, none if too long for it.
 fn host_name(buf: &mut [u8; HOSTNAME_MAX + 1]) -> Option<&[u8]> {
     #[cfg(feature = "debug-hooks")]
-    let forced = curl_os::env::is_set(b"CURL_GETHOSTNAME");
-    #[cfg(not(feature = "debug-hooks"))]
-    let forced = false;
-    let name = if forced {
-        let name = curl_os::env::var_into(b"CURL_GETHOSTNAME", buf)?;
-        if name.len() > HOSTNAME_MAX {
-            return None;
-        }
-        name
-    } else {
-        curl_os::net::host_name(buf)?
-    };
-    Some(machine(name))
+    if curl_os::env::is_set(b"CURL_GETHOSTNAME") {
+        let name = fits(curl_os::env::var_into(b"CURL_GETHOSTNAME", buf)?)?;
+        return Some(machine(name));
+    }
+    Some(machine(curl_os::net::host_name(buf)?))
+}
+
+/// The name `CURL_GETHOSTNAME` gives, read into a buffer one longer than
+/// the longest name: none if it filled it, as C's copy of it needs room
+/// for its NUL (`Curl_gethostname`).
+#[cfg(feature = "debug-hooks")]
+fn fits(name: &[u8]) -> Option<&[u8]> {
+    (name.len() <= HOSTNAME_MAX).then_some(name)
 }
 
 /// A host's name without its domain: up to its first dot.

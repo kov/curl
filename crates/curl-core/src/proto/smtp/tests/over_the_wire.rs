@@ -1406,3 +1406,167 @@ fn a_dead_multi_ends_an_answer_awaited_in_done() {
     let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
     assert!(said.contains("closing connection #0"), "{said}");
 }
+
+/// EHLO without a domain in the URL's path gives the machine's name, up
+/// to its first dot (`Curl_gethostname`).
+#[test]
+fn ehlo_without_a_path_gives_the_machine_s_name() {
+    let mut buf = [0; 256];
+    let name = curl_os::net::host_name(&mut buf).expect("the machine has a name");
+    let name = String::from_utf8_lossy(name.split(|&b| b == b'.').next().unwrap()).into_owned();
+    let talk = Conversation::replies(&[GREETING, EHLO, b"214 help\r\n"], false).greeting();
+    let ran = transfer(&mut serving(&[&talk]), "smtp://127.0.0.1:PORT", |_| {});
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(received(&talk), format!("EHLO {name}\r\nHELP\r\n"));
+}
+
+/// VRFY says SMTPUTF8 for a mailbox whose host is in UTF-8 where the
+/// server offers it; an application's command of the recipient says it
+/// only for EXPN (`smtp_perform_command`).
+#[test]
+fn a_command_says_smtputf8_as_c_s_does() {
+    let utf8_ehlo: &[u8] = b"250-hi\r\n250 SMTPUTF8\r\n";
+    for (custom, rcpt, offered, sent) in [
+        (None, "r@b", true, "VRFY r@b"),
+        (None, "r@\u{fc}.b", true, "VRFY r@\u{fc}.b SMTPUTF8"),
+        (None, "r@\u{fc}.b", false, "VRFY r@\u{fc}.b"),
+        (Some("EXPN"), "list", true, "EXPN list SMTPUTF8"),
+        (Some("EXPN"), "list", false, "EXPN list"),
+        (Some("NOOP"), "list", true, "NOOP list"),
+    ] {
+        let ehlo = if offered { utf8_ehlo } else { EHLO };
+        let talk = Conversation::replies(&[GREETING, ehlo, b"250 ok\r\n"], false).greeting();
+        let ran = transfer(&mut serving(&[&talk]), URL, |o| {
+            o.line
+                .make_mut()
+                .unwrap()
+                .mail_rcpt
+                .set([rcpt.as_bytes()])
+                .unwrap();
+            if let Some(custom) = custom {
+                o.http.custom.make_mut().unwrap().method = Some(custom.as_bytes().to_vec());
+            }
+        });
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        assert_eq!(received(&talk), format!("EHLO 900\r\n{sent}\r\n"));
+    }
+}
+
+/// The submitter's mailbox in UTF-8 has MAIL FROM say SMTPUTF8 where the
+/// server offers it, though the sender's is in ASCII.
+#[test]
+fn a_submitter_in_utf8_says_smtputf8() {
+    let ehlo: &[u8] = b"250-hi\r\n250-SMTPUTF8\r\n250 AUTH PLAIN\r\n";
+    for (auth, says) in [("s@t", false), ("s@\u{fc}.t", true)] {
+        let talk = Conversation::replies(&[GREETING, ehlo, b"235 in\r\n", OK, OK, GO, OK], false)
+            .greeting();
+        let ran = transfer(
+            &mut serving(&[&talk]),
+            "smtp://u:p@127.0.0.1:PORT/900",
+            |o| {
+                mail(b"x")(o);
+                let line = o.line.make_mut().unwrap();
+                line.mail_auth = Some(auth.as_bytes().to_vec());
+                line.sasl_ir = true;
+            },
+        );
+        assert_eq!(ran.result, Ok(()), "{}", ran.text);
+        let said = received(&talk);
+        let mail = said.lines().find(|l| l.starts_with("MAIL")).unwrap();
+        assert_eq!(mail.ends_with(" SMTPUTF8"), says, "{mail}");
+    }
+}
+
+/// A body's bare line ends go as they are unless conversion is asked
+/// for.
+#[test]
+fn a_body_s_line_ends_are_converted_only_when_asked() {
+    let talk = mailing(&[]);
+    let ran = transfer(&mut serving(&[&talk]), URL, mail(b"a\n.b\n"));
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert!(
+        received(&talk).ends_with("DATA\r\na\n.b\n\r\n.\r\n"),
+        "{}",
+        received(&talk)
+    );
+}
+
+/// A MIME POST to recipients is a mail; a POST of bytes is a command
+/// (`smtp_do`'s `state.upload || IS_MIME_POST`).
+#[test]
+fn only_a_mime_post_is_mailed() {
+    use crate::mime::{Boundary, Content, Mime, Part};
+    let rcpt = |o: &mut Options| {
+        let line = o.line.make_mut().unwrap();
+        line.mail_from = Some(b"f@a".to_vec());
+        line.mail_rcpt.set([&b"r@b"[..]]).unwrap();
+    };
+    let talk = Conversation::replies(&[GREETING, EHLO, b"250 ok\r\n"], false).greeting();
+    let ran = transfer(&mut serving(&[&talk]), URL, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"hello".to_vec()).unwrap());
+        rcpt(o);
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert_eq!(received(&talk), "EHLO 900\r\nVRFY r@b\r\n");
+
+    let talk = mailing(&[]);
+    let ran = transfer(&mut serving(&[&talk]), URL, |o| {
+        let mut m = Mime::new(Boundary::draw(|| Ok::<_, std::convert::Infallible>(0)).unwrap());
+        m.add(Part {
+            content: Content::Bytes(curl_alloc::TryArc::try_new(b"hi".to_vec()).unwrap()),
+            ..Part::default()
+        })
+        .unwrap();
+        let tree = curl_alloc::TryArc::try_new(m).unwrap();
+        o.method = Method::Post;
+        o.upload = UploadSource::Mime(Handler::mime(crate::mime::Fixed::new(tree)).unwrap());
+        rcpt(o);
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let said = received(&talk);
+    assert!(said.contains("DATA\r\n"), "{said}");
+    assert!(said.contains("Mime-Version: 1.0\r\n"), "{said}");
+}
+
+/// A command whose answer comes after DO's first look is done in DOING,
+/// and a request that wants no body sets up nothing there, once, as C's
+/// `smtp_dophase_done` runs only once the state stops.
+#[test]
+fn a_command_done_in_doing_says_so_once() {
+    let talk = Conversation::replies(&[GREETING, EHLO, b"252 maybe\r\n"], false)
+        .greeting()
+        .late_replies();
+    let ran = tracing(&mut serving(&[&talk]), &plain(), URL, b"multi,smtp", |o| {
+        o.method = Method::Head;
+        o.line
+            .make_mut()
+            .unwrap()
+            .mail_rcpt
+            .set([&b"r@b"[..]])
+            .unwrap();
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let said: Vec<&str> = ran
+        .text
+        .lines()
+        .filter(|l| l.contains("xfer_setup") || l.contains("smtp_doing") || l.contains("DO phase"))
+        .collect();
+    let end: Vec<&str> = [
+        "[MULTI] [DOING] xfer_setup: recv_idx=-1, send_idx=-1",
+        "DO phase is complete",
+        "[SMTP] smtp_doing() -> 0, done=1",
+    ]
+    .into_iter()
+    .filter(|l| cfg!(feature = "debug-hooks") || l.starts_with('['))
+    .collect();
+    let last = said.len().checked_sub(end.len()).expect("the end is said");
+    assert!(
+        said[..last]
+            .iter()
+            .all(|l| *l == "[SMTP] smtp_doing() -> 0, done=0"),
+        "{}",
+        ran.text
+    );
+    assert_eq!(said[last..], end, "{}", ran.text);
+}

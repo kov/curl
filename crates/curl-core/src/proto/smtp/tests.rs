@@ -140,4 +140,22 @@ fn the_states_have_c_s_names() {
     }
 }
 
+/// A name the debug build's `CURL_GETHOSTNAME` forces is taken while it
+/// leaves room for C's NUL in the buffer it is read into.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_forced_host_name_fits_its_buffer_or_is_none() {
+    let longest = [b'h'; HOSTNAME_MAX];
+    assert_eq!(fits(&longest), Some(&longest[..]));
+    assert_eq!(fits(&[b'h'; HOSTNAME_MAX + 1]), None);
+}
+
+/// The domain EHLO gives is the machine's name, up to its first dot,
+/// when the URL's path names none.
+#[test]
+fn the_domain_is_the_machine_s_name_without_a_path() {
+    assert_eq!(machine(b"box.example.com"), b"box");
+    assert_eq!(machine(b"box"), b"box");
+}
+
 mod over_the_wire;

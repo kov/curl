@@ -1593,3 +1593,24 @@ fn an_endless_answer_in_done_is_read_ten_reads_a_pass() {
     let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
     assert!(talk.endless_reads() > 10, "{said}");
 }
+
+/// A command whose answer has not come waits in DOING for its socket to
+/// be readable (`smtp_pollset`).
+#[test]
+fn a_command_s_answer_to_come_waits_on_its_socket() {
+    use crate::conn::io::Events;
+    let talk = mailing(&[]).held();
+    talk.allow(2);
+    let mut m = serving(&[&talk]);
+    let (_, text) = added(&mut m, URL, b"multi", mail(b"hello"));
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+    assert!(said.contains("[DO] -> [DOING]"), "{said}");
+    assert!(
+        received(&talk).starts_with("EHLO 900\r\nMAIL FROM:"),
+        "{said}"
+    );
+    assert_eq!(waits(&mut m), [Events::IN]);
+}

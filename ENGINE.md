@@ -2052,7 +2052,12 @@ pub struct Route {
 }
 ```
 
-Built so far: `enum Route { Local, Net(NetRoute) }`, with `NetRoute { origin, via, ip, proxy, tls }`. `Peer` is C's
+Built so far: `enum Route { Local, Net(NetRoute) }`, with `NetRoute { origin, via, ip, proxy, tls,
+cold, delegation }`; `cold` is `RouteCold { local, login, upgrade, use_ssl }` behind one shared
+pointer, none when a route has none of it, as few do: the local end, the credentials a
+connection logs in with for a scheme without `PROTOPT_CREDSPERREQUEST` (moved there from the
+request, which then holds none), the settings a STARTTLS upgrade's TLS is made with, and the
+`CURLOPT_USE_SSL` level. `Peer` is C's
 `struct Curl_peer`: the `Scheme` (its row in the scheme table, below), the host as the URL names it, the port, the IPv6 zone and its scope (a
 numeric zone as it is, a name as its interface's index by `if_nametoindex`, one naming no
 interface none; `CURLOPT_ADDRESS_SCOPE` replaces the zone on the URL's peer), made once per
@@ -2080,7 +2085,12 @@ the same `IpVersion` unless the
 transfer takes any (`url_match_conn`, `url_match_destination`), and an equal `TlsIdentity` or
 none on both (`url_match_ssl_use`, `url_match_ssl_config`), and the same local end
 (`url_match_connect_config`): the same interface as written, or none on both, and the same
-ports when the transfer names an interface or a port. Plain HTTP never takes an HTTPS
+ports when the transfer names an interface or a port. A line protocol's connection
+(`suits`) is reused only by the same credentials, compared in constant time
+(`url_match_auth`, `Curl_creds_same`), and by the same upgrade settings when either side may
+upgrade or the scheme has `PROTOPT_SSL_REUSE`; `Conn::serves` reads whether the connection
+is under the origin's TLS from its layers, as STARTTLS adds one, and refuses one in the
+clear to a transfer that requires TLS (`url_match_ssl_use`'s `require_tls`). Plain HTTP never takes an HTTPS
 connection that reaches it: its TLS settings are none, the connection's are not, as C's
 `url_match_ssl_use` refuses it for lack of `PROTOPT_SSL_REUSE`. `Peer`'s `Eq` is
 `Curl_peer_equal`, the scheme and the destination, which the credential gate, Digest and
@@ -3355,7 +3365,8 @@ DO, so `Did` goes straight to `Done`.
 
 `proto/pingpong.rs` is `lib/pingpong.c` for FTP, IMAP, POP3 and SMTP, sans-IO: one
 `Pingpong` per connection holds the answer read, the command being sent and the instant the
-server's time to answer runs from. No step drives it yet.
+server's time to answer runs from. `pingpong::drive` runs it over a connection, for a
+protocol's phases (the drive, below).
 - **Reading is one event per call.** `push` takes one read (a driver asks for `READ_SIZE`,
   900, at most `MAX_READS` times a pass, so that what follows a reply is what C holds);
   `next(&ends)` gives `NeedMore`, a `Line` that ends no reply, or the `Reply` line with what
@@ -3388,6 +3399,21 @@ server's time to answer runs from. No step drives it yet.
   untraced, `wants` saying to write meanwhile. The time to answer
   (`time_left`, the server-response limit or 60 s, or the transfer's if less) runs from the
   last command sent whole; what arrives does not move it.
+- **`pending_resp` is C's**: set at init and by each command, cleared as a read that found a
+  reply ends (`reads_ended`); FTP's DONE reads it.
+- **The drive** (`proto/pingpong/drive.rs`): `send` sends a command and traces what its first
+  send wrote as HEADER_OUT, `flush` the rest; `read` reads up to `MAX_READS` × `READ_SIZE` a
+  pass, traces each line as HEADER_IN and delivers it to the header handler as INFO
+  (`Pipeline::info`, C's `CLIENTWRITE_INFO`), counting it in the header bytes; `runs` fails
+  the transfer once the time to answer is out ("server response timeout"), gives the instant
+  it runs out as the step's due, and runs the step without waiting while bytes are held or
+  the socket already polls ready (`Carrier::ready_now`). The connection's protocol state is
+  its `LineConn` (POP3's `Pop3Conn`: its `Pingpong`, state, SASL and what CAPA offered, and a
+  key to the route's cold group for its credentials); a transfer's is its `ProtoState`.
+- **STARTTLS** upgrades in place (`multi::state::tls::upgrade`): the origin's session, made
+  with the route's upgrade settings and offering no ALPN, goes on the carrier's stream once,
+  and each call moves its handshake on; the protocol then asks for its capabilities again.
+  A reply anything follows is refused first (`WeirdServerReply`).
 
 ## 6. HTTP/1.x
 

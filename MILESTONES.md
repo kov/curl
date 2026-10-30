@@ -1025,8 +1025,8 @@ fail; 25 errors are vsftpd's (milestone 6).
 ## Milestone 6: the other protocols
 
 Status: **to do**. SCOPE stage 6, in groups, each through the test servers `runtests.pl`
-starts: FTP and FTPS (the data connection a second chain beside the control connection's);
-IMAP, POP3 and SMTP with STARTTLS; SCP and SFTP through libssh, the SSH library distributions
+starts: POP3, IMAP and SMTP with STARTTLS; FTP and FTPS (the data connection a second chain
+beside the control connection's); SCP and SFTP through libssh, the SSH library distributions
 build with, with a C oracle built against it; then LDAP, MQTT, WebSocket, DICT, Gopher,
 RTSP, SMB, TELNET and TFTP. NTLM stays out of scope (SCOPE.md). WebSocket's step lends a write
 callback a send handle on its own connection, a typed exception to ENGINE's decision 9, as C
@@ -1071,20 +1071,30 @@ protocols need, each step leaving behaviour and traces as they are:
     The reuse facts no built protocol sets yet (the STARTTLS level, per-connection
     credentials for a scheme without `PROTOPT_CREDSPERREQUEST`, FTP's account, alternative
     user and CCC, SSH's keys) come with step 68's STARTTLS and the protocols that set them.
-68. **One reader for the line protocols.** A sans-IO response reader and command writer for
-    FTP, IMAP, POP3 and SMTP (C's pingpong), at the trust boundary. STARTTLS (and FTP's
-    `AUTH TLS`) upgrades an open connection only when no bytes follow the reply, failing
-    `WEIRD_SERVER_REPLY` as C does (tests 980 to 983), never by handing them to TLS as a
-    proxy's answer is; FTP's CCC removes the TLS layer after its goodbye. In progress: the
-    reader and writer are built (`proto::pingpong`, ENGINE §5.7), with what ends each
-    protocol's reply, C's limits, the bytes read past a reply, the traces' bytes and the time
-    to answer, driven by no step yet. To do, on step 67's phases: the drive over a connection
-    (with C's `pending_resp`, which FTP's DONE reads and the drive's reads set and clear), and
-    STARTTLS, `AUTH TLS` and CCC, with the reuse rules they need (`url_match_ssl_use`'s
-    `require_tls`, `url_match_ssl_config`'s `may_tls`, from `CURLOPT_USE_SSL`; whether the
-    connection is TLS read live from its layers, as STARTTLS adds TLS and CCC takes it away;
-    per-connection credentials and FTP's `Curl_ftp_conns_match`), in a route group taking
-    over `local`'s pointer so that the slot does not grow.
+68. **One reader for the line protocols.** **Done.** A sans-IO response reader and command
+    writer for FTP, IMAP, POP3 and SMTP (C's pingpong, `proto::pingpong`, ENGINE §5.7), at
+    the trust boundary, with what ends each protocol's reply, C's limits, the bytes read past
+    a reply, the traces' bytes and the time to answer; and its drive over a connection on
+    step 67's phases (`pingpong::drive`), with C's `pending_resp`, set by each command and
+    cleared as a read ends. STARTTLS upgrades an open connection in place
+    (`tls::upgrade`) only when no bytes follow the reply, failing `WEIRD_SERVER_REPLY` as C
+    does (test 982), never by handing them to TLS as a proxy's answer is. The reuse rules
+    live in the route's cold group (`RouteCold`), which took over `local`'s pointer so the
+    slot did not grow: `url_match_ssl_use`'s `require_tls` and `url_match_ssl_config`'s
+    `may_tls` from `CURLOPT_USE_SSL`, with the settings an upgrade's TLS is made with;
+    whether the connection is TLS, read live from its layers; and the credentials a
+    connection logged in with, for a scheme without `PROTOPT_CREDSPERREQUEST`. FTP's
+    `AUTH TLS`, CCC (which removes the TLS layer after its goodbye) and
+    `Curl_ftp_conns_match` come with FTP.
+69. **POP3.** **Done.** `pop3://` and `pop3s://` (`proto::pop3`, after `lib/pop3.c`): the
+    greeting, CAPA, STLS, APOP, USER and PASS, and SASL (`auth::sasl`, after
+    `curl_sasl.c`: EXTERNAL, DIGEST-MD5, CRAM-MD5, OAUTHBEARER, XOAUTH2, PLAIN, LOGIN);
+    the command with `-X` and `-I`, the body's end and its stuffed dots; QUIT as the
+    connection's goodbye. The tool's `--ssl`, `--ssl-reqd`, `--login-options`, `--sasl-ir`,
+    `--sasl-authzid` and `--list-only`, and the C ABI's options for them. Random bytes come
+    through the `Random` library hook, which the debug build's `CURL_ENTROPY` fills as C's
+    does. Every POP3 test both legs run passes; GSSAPI, SCRAM and NTLM SASL wait (NTLM is
+    out of scope), as do 445, 983 and 1407, which need gopher and FTP.
 
 SCP and SFTP hand libssh the socket, as C does (`SSH_OPTIONS_FD`): bytes a proxy's tunnel or a
 SOCKS answer left in the stream's buffer would be lost to it, so the hand-over is refused while

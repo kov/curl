@@ -116,21 +116,26 @@ not a difference: it is tracked in `MILESTONES.md`.
   `an_unanswered_message_fails_its_read_when_the_time_is_out`
   (`crates/curl-core/src/proto/http/tests/socks_gss.rs`).
 
-- **IMAP's answer after a FETCH or an APPEND, and SMTP's after a mail's body, are awaited
-  without stalling the multi.** C reads the tagged answer that follows a fetched literal, or an
-  APPEND's body and its empty line, in `imap_done`, and the answer to a mail's body and its
-  end-of-data dot in `smtp_done`, blocking (`imap_block_statemach`, `smtp_block_statemach`),
-  so every other transfer of the multi waits on the server. Here the transfer waits in DONE
+- **IMAP's answer after a FETCH or an APPEND, SMTP's after a mail's body, and FTP's after a
+  transfer's data and after each command that follows it, are awaited without stalling the
+  multi.** C reads the tagged answer that follows a fetched literal, or an APPEND's body and its
+  empty line, in `imap_done`, the answer to a mail's body and its end-of-data dot in
+  `smtp_done`, and FTP's 226 and the answers to `-Q -command`s in `ftp_done`, blocking
+  (`imap_block_statemach`, `smtp_block_statemach`, `getftpresponse`, `ftp_sendquote`), so every
+  other transfer of the multi waits on the server. Here the transfer waits in DONE
   for what the answer's read waits for, the others going on meanwhile; the bytes on the wire,
   the trace but for the wait's pollset lines, the progress meter, the timing and the result
   are C's. Measured against the C build with `curl -Z` and a server that answers a second
   late: C's `LIST` beside an APPEND took 1.003 s, ours 1.5 ms; C's `VRFY` beside a mail, to a
-  server that greets half a second late, took 1.005 s, ours 0.504 s. Blocking here, as for
-  the goodbye on a closing connection (POP3's and SMTP's `QUIT`, IMAP's `LOGOUT`, which C
-  waits on and the shutdown here does not), is an open question; the non-blocking path is
+  server that greets half a second late, took 1.005 s, ours 0.504 s; measured 2026-10-30, C's
+  FTP download beside one whose 226 comes a second after its data, from a server greeting it
+  half a second late, took 1.051 s, ours 0.551 s. Blocking here, as for
+  the goodbye on a closing connection (FTP's, POP3's and SMTP's `QUIT`, IMAP's `LOGOUT`, which
+  C waits on and the shutdown here does not), is an open question; the non-blocking path is
   taken until it is decided. Pinned by `an_answer_awaited_in_done_stalls_no_other_transfer`
-  (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs` and
-  `crates/curl-core/src/proto/smtp/tests/over_the_wire.rs`).
+  (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`,
+  `crates/curl-core/src/proto/smtp/tests/over_the_wire.rs` and
+  `crates/curl-core/src/proto/ftp/tests.rs`).
 
 ## Bodies C cannot send again
 

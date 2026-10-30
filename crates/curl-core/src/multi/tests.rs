@@ -4335,6 +4335,64 @@ fn a_protocol_waits_in_c_s_phases() {
     assert!(m.easy(id).is_some());
 }
 
+/// Notes each call of the progress handler among the trace's lines.
+#[derive(Clone)]
+struct ProgressNoted(TextLines);
+
+impl crate::handler::ProgressHandler for ProgressNoted {
+    fn progress(
+        &self,
+        _: &mut TransferCx<'_>,
+        _: crate::handler::ProgressNow,
+    ) -> crate::handler::ProgressVerdict {
+        self.0.0.lock().unwrap().push("PROGRESS\n".to_owned());
+        crate::handler::ProgressVerdict::Continue
+    }
+}
+
+/// A step that changes the transfer's state says so before the progress
+/// pass that ends it, as C's switch changes state (`multistate`) before
+/// its loop's pass (`is_finished`): the meter is drawn after the line.
+#[test]
+fn a_change_of_state_is_said_before_the_progress_pass() {
+    use crate::options::script::{Piece, Script};
+    let (mut m, _clock) = multi();
+    let (mut e, lines) = traced("script://a");
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"multi");
+    e.set_components(Some(components));
+    let o = e.options_mut();
+    o.script = Some(Script::new(vec![Piece::ProtoConnecting, Piece::Doing]).unwrap());
+    o.progress = crate::options::Progress::Handler(
+        crate::handler::Handler::progress(ProgressNoted(lines.clone())).unwrap(),
+    );
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    let mut passes = 0;
+    while messages(&mut m).is_empty() {
+        assert!(passes < 10, "the phases end");
+        m.perform(&mut NoEvents).unwrap();
+        passes += 1;
+    }
+    let seen = lines.0.lock().unwrap().clone();
+    let after = |change: &str| {
+        let at = seen
+            .iter()
+            .position(|l| l.ends_with(&format!("{change}\n")))
+            .unwrap_or_else(|| panic!("{change} in {seen:#?}"));
+        seen[at + 1].as_str()
+    };
+    for change in [
+        "[CONNECT] -> [PROTOCONNECT]",
+        "[PROTOCONNECT] -> [PROTOCONNECTING]",
+        "[PROTOCONNECTING] -> [DO]",
+        "[DO] -> [DOING]",
+        "[DID] -> [PERFORMING]",
+        "[PERFORMING] -> [DONE]",
+    ] {
+        assert_eq!(after(change), "PROGRESS\n", "{change} in {seen:#?}");
+    }
+}
+
 /// A reused connection's protocol connected as the connection was
 /// made: a transfer over it goes straight to DO, where one over a fresh
 /// connection waits in PROTOCONNECTING (`multistate_protoconnect`'s

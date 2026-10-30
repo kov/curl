@@ -3355,7 +3355,8 @@ over the last five one-second records. The handler is called, or the meter drawn
 - after every receive/send pass, with the low-speed check unless the request is done or either
   direction is paused; while `LowSpeed` is set the check re-arms `SpeedCheck` for a second;
 - after every step that went well while holding a connection (the tail of `multi_runsingle`'s
-  loop), with held output a handler unpaused replayed at once. Every C state from CONNECT on
+  loop), with held output a handler unpaused replayed at once; the state the step went to is
+  traced first, as C's switch changes state before `is_finished`. Every C state from CONNECT on
   that holds a connection is a step of its own, so the counts are C's: file:// pins them,
   two before DO and three after it; a piece of DO is not a C state, and has none;
 - in `file:`'s DO, after each piece, with the low-speed check, at the start of the step after

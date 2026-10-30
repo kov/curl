@@ -2923,6 +2923,11 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
     let (next, wake) = if within_do {
         (next, wake)
     } else {
+        // C's switch changes the state before its loop's progress pass
+        // (`is_finished`), so the change is traced ahead of the meter.
+        if let Some(state) = next.c_state() {
+            mstate::enter(cx, state);
+        }
         progress_after_step(next, wake, cx)
     };
     if next.is_completed() {

@@ -284,3 +284,15 @@ features: test-util
                 // The progress counts from nothing (`pop3_regular_transfer`).
                 crate::progress::reset(cx);
 --- new
+
+=== a step's change of state is said after its progress pass, the meter drawn ahead of the line
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_change_of_state_is_said_before_the_progress_pass
+features: test-util,debug-hooks
+--- old
+        if let Some(state) = next.c_state() {
+            mstate::enter(cx, state);
+        }
+        progress_after_step(next, wake, cx)
+--- new
+        progress_after_step(next, wake, cx)

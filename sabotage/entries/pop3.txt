@@ -273,3 +273,30 @@ features: test-util
                 if pop3_of(lease).0.state == State::Stop {
 --- new
                 if false {
+
+=== a POP3 body waits on its socket while a layer holds its bytes
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::body_bytes_a_layer_holds_are_read_without_waiting
+features: test-util
+--- old
+                Ok(Recv::WouldBlock) if lease.get().data_pending() => {
+--- new
+                Ok(Recv::WouldBlock) if false => {
+
+=== a POP3 body pass stopped at its read limit says nothing of it
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_body_step_reads_eleven_times_at_most
+features: test-util
+--- old
+            Ok(ProtoStep::AtReadLimit) => crate::multi::mstate::trace(
+--- new
+            Ok(ProtoStep::Blocked) => crate::multi::mstate::trace(
+
+=== a POP3 body read's failure is not said as its pass's end
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_read_failure_is_said_once
+features: test-util
+--- old
+                trace::debug_info(cx, format_args!("sendrecv_dl() -> {code}"));
+--- new
+                trace::debug_info(cx, format_args!("sendrecv_dl() => {code}"));

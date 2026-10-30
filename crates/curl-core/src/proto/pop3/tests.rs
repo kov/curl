@@ -1033,6 +1033,10 @@ mod over_the_wire {
                 .filter(|l| l.starts_with("Recv failure: "))
                 .count();
             assert_eq!(failures, 1, "{scheme}: {}", ran.text);
+            // A body's read failing ends its pass of `sendrecv_dl`, as C's
+            // debug build says.
+            let said = ran.text.contains("sendrecv_dl() -> 56\n");
+            assert_eq!(said, has_body, "{scheme}: {}", ran.text);
         }
     }
 
@@ -1303,15 +1307,15 @@ mod over_the_wire {
         assert_eq!(reads, want);
     }
 
-    /// A body step reads at most eleven times, and is run again at once
-    /// (`sendrecv_dl`'s `maxloops`).
+    /// A body step reads at most eleven times, and is run again at once,
+    /// as C's debug build says (`sendrecv_dl`'s `maxloops`).
     #[test]
     fn a_body_step_reads_eleven_times_at_most() {
         let talk = Conversation::replies(&[GREETING, CAPA_USER, OK, OK, OK], false)
             .greeting()
             .endless(std::time::Duration::from_millis(1));
         let mut m = serving(&[&talk]);
-        added(&mut m, &plain(), b"", Body(Arc::default()), |_| {});
+        let (_, seen) = added(&mut m, &plain(), b"multi", Body(Arc::default()), |_| {});
         while talk.endless_reads() == 0 {
             m.perform(&mut NoEvents).unwrap();
         }
@@ -1321,6 +1325,10 @@ mod over_the_wire {
             assert_eq!(talk.endless_reads() - reads, 11);
             assert_eq!(m.timeout(), Some(std::time::Duration::ZERO));
         }
+        let text = String::from_utf8(seen.0.lock().unwrap().1.clone()).unwrap();
+        let line = "[MULTI] [PERFORMING] sendrecv_dl() no EAGAIN/pending data, mark as dirty\n";
+        // The body's first pass, and the three after it.
+        assert_eq!(text.matches(line).count(), 4, "{text}");
     }
 
     /// A body not yet whole waits to read its socket, and paused, on
@@ -1341,6 +1349,28 @@ mod over_the_wire {
         assert_eq!(waits(&mut m), [Events::IN]);
         m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
         assert_eq!(waits(&mut m), []);
+    }
+
+    /// Body bytes a layer holds, where a poll cannot see them, have the
+    /// step itself run the transfer again at once, as C's debug build
+    /// says, not only the pollset that finds them after
+    /// (`sendrecv_dl`'s `data_pending`, and `multi_adjust_pollset`'s).
+    #[test]
+    fn body_bytes_a_layer_holds_are_read_without_waiting() {
+        use crate::conn::layer::testing::holdback;
+        let talk = Conversation::replies(&[GREETING, CAPA_USER, OK, OK, OK], false)
+            .greeting()
+            .endless(std::time::Duration::from_millis(1));
+        let mut m = serving(&[&talk]);
+        let (_, seen) = added(&mut m, &plain(), b"multi", Body(Arc::default()), |o| {
+            o.layer = Some(holdback);
+        });
+        while talk.endless_reads() < 3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        let text = String::from_utf8(seen.0.lock().unwrap().1.clone()).unwrap();
+        let line = "[MULTI] [PERFORMING] sendrecv_dl() no EAGAIN/pending data, mark as dirty\n";
+        assert!(text.contains(line), "{text}");
     }
 
     /// A body whose writer paused holds the transfer open until it is

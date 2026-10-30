@@ -422,14 +422,36 @@ impl Request {
         result
     }
 
-    /// Read the body on, at most as many reads as a step makes
-    /// (`sendrecv_dl`), through the end-of-body scan.
+    /// Read the body on, at most as many reads as a step makes, through
+    /// the end-of-body scan, said as C's debug build says a pass of
+    /// `sendrecv_dl` stopped short or failed.
     pub(crate) fn step<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
         self.pipeline.flush(cx)?;
+        let read = self.read_body(cx, lease);
+        match read {
+            Ok(ProtoStep::AtReadLimit) => crate::multi::mstate::trace(
+                cx,
+                format_args!("sendrecv_dl() no EAGAIN/pending data, mark as dirty"),
+            ),
+            Err(e) => {
+                let code = e.number();
+                trace::debug_info(cx, format_args!("sendrecv_dl() -> {code}"));
+            }
+            Ok(_) => {}
+        }
+        read
+    }
+
+    /// The reads of a step (`sendrecv_dl`).
+    fn read_body<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+    ) -> Result<ProtoStep, ErrorKind> {
         let mut reads = 0;
         loop {
             if !self.receiving {

@@ -723,3 +723,88 @@ fn a_command_a_reused_connection_cannot_send_is_retried() {
     let retried = "Connection died, retrying a fresh connect (retry count: 1)";
     assert!(ran.text.contains(retried), "{}", ran.text);
 }
+
+/// An APPEND's body is sent as C's request sends it: each send traced,
+/// one the socket refuses waiting, its end said, and the time the request
+/// was sent taken then, not at DID; the server's answer after it starts
+/// the response's time (`xfer_send`, `req_set_upload_done`).
+#[test]
+fn an_append_s_body_is_sent_and_timed_as_c_s() {
+    let talk = Conversation::replies(
+        &[GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"A003 OK\r\n"],
+        false,
+    )
+    .greeting()
+    .stalling_sends_after(3, 1);
+    let mut m = serving(&[&talk]);
+    let ran = tracing(
+        &mut m,
+        &plain(),
+        "imap://u:p@127.0.0.1:PORT/Sent",
+        b"multi",
+        |o| {
+            o.method = Method::Upload;
+            o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"hello".to_vec()).unwrap());
+        },
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert!(
+        talk.received()
+            .ends_with(b"A003 APPEND Sent (\\Seen) {5}\r\nhello\r\n")
+    );
+    let text = &ran.text;
+    if cfg!(feature = "debug-hooks") {
+        let sends = "sending last upload chunk of 5 bytes\n\
+                     Curl_xfer_send(len=5, eos=1) -> 0, 0\n\
+                     Curl_req_flush(len=5) -> EAGAIN\n";
+        assert!(text.contains(sends), "{text}");
+        let sent = "sending last upload chunk of 5 bytes\n\
+                    Curl_xfer_send(len=5, eos=1) -> 0, 5\n\
+                    [MULTI] [PERFORMING] [PGRS-POSTRANSFER] added";
+        assert!(text.contains(sent), "{text}");
+    }
+    let done = text.find("upload completely sent off: 5 bytes\n");
+    let started = text.find("[MULTI] [PERFORMING] [PGRS-STARTTRANSFER]");
+    assert!(done.is_some() && started > done, "{text}");
+    assert!(!text.contains("[DID] [PGRS-POSTRANSFER]"), "{text}");
+
+    // A FETCH sends nothing after DID, which takes the time.
+    let talk = fetching(&[]);
+    let mut m = serving(&[&talk]);
+    let ran = tracing(&mut m, &plain(), FETCH_URL, b"multi", |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert!(
+        ran.text.contains("[DID] [PGRS-POSTRANSFER]"),
+        "{}",
+        ran.text
+    );
+}
+
+/// An empty APPEND sends its end alone, and says the request is sent.
+#[test]
+fn an_empty_append_says_the_request_is_sent() {
+    let talk = Conversation::replies(
+        &[GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"A003 OK\r\n"],
+        false,
+    )
+    .greeting();
+    let mut m = serving(&[&talk]);
+    let ran = transfer(&mut m, &plain(), "imap://u:p@127.0.0.1:PORT/Sent", |o| {
+        o.method = Method::Upload;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(Vec::new()).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert!(
+        talk.received()
+            .ends_with(b"A003 APPEND Sent (\\Seen) {0}\r\n\r\n")
+    );
+    if cfg!(feature = "debug-hooks") {
+        let end = "sending last upload chunk of 0 bytes\nCurl_xfer_send(len=0, eos=1) -> 0, 0\n";
+        assert!(ran.text.contains(end), "{}", ran.text);
+    }
+    assert!(
+        ran.text.contains("Request completely sent off\n"),
+        "{}",
+        ran.text
+    );
+}

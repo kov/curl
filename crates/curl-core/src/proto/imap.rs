@@ -26,9 +26,11 @@ use crate::deliver::{self, Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::idn::Idn;
 use crate::multi::Host;
+use crate::multi::mstate::MState;
 use crate::multi::state::StepCx;
 use crate::options::{Method, UploadFlags, UploadSource, UseSsl};
 use crate::progress::rate::Way;
+use crate::report::Timer;
 use crate::time::Instant;
 use crate::trace;
 use crate::upload::chain::Body;
@@ -207,8 +209,12 @@ struct Sending {
     /// The bytes of `buf` read and not sent, from `at` to `len`.
     at: usize,
     len: usize,
-    /// The source said its end.
+    /// The source said its end (`eos_read`).
     eos: bool,
+    /// The send that ends the body has gone (`eos_sent`).
+    eos_sent: bool,
+    /// The body's bytes sent (`writebytecount`).
+    sent: u64,
 }
 
 /// An IMAP transfer (`struct IMAP`, and what C's request keeps of it).
@@ -240,6 +246,9 @@ pub(crate) struct Request {
     finished: Option<Result<(), ErrorKind>>,
     /// The request ran to its end (`req.done`).
     received: bool,
+    /// The `APPEND`'s body is all sent (`upload_done`): the server's
+    /// lines from here start the response's time.
+    upload_done: bool,
     /// When the server's time to answer runs out.
     due: Option<Instant>,
     /// The peer a connect-to entry names in the origin's place, which TLS
@@ -329,6 +338,7 @@ impl Request {
             last: Final::None,
             finished: None,
             received: false,
+            upload_done: false,
             due: None,
             via: None,
             wants: Events::IN,
@@ -567,20 +577,61 @@ impl Request {
             return Ok(ProtoStep::Done);
         };
         loop {
-            if sending.at < sending.len {
+            if sending.at < sending.len || (sending.eos && !sending.eos_sent) {
                 let piece = &sending.buf[sending.at..sending.len];
-                match lease.get().send(cx, piece) {
-                    Ok(Sent::Bytes(n)) => {
-                        upload::sent(cx, &piece[..n.get()]);
-                        sending.at += n.get();
-                        continue;
-                    }
-                    Ok(Sent::WouldBlock) => return Ok(ProtoStep::Blocked),
-                    Err(_) => return Err(ErrorKind::SendError),
+                let len = piece.len();
+                let eos = sending.eos;
+                if eos {
+                    trace::debug_info(cx, format_args!("sending last upload chunk of {len} bytes"));
                 }
+                // The end said with nothing left to send sends nothing
+                // (`xfer_send` of no bytes).
+                let (n, failed) = if len == 0 {
+                    (0, None)
+                } else {
+                    match lease.get().send(cx, piece) {
+                        Ok(Sent::Bytes(n)) => (n.get(), None),
+                        Ok(_) => (0, None),
+                        Err(_) => (0, Some(ErrorKind::SendError)),
+                    }
+                };
+                let code = failed.map_or(0, ErrorKind::number);
+                trace::debug_info(
+                    cx,
+                    format_args!(
+                        "Curl_xfer_send(len={len}, eos={}) -> {code}, {n}",
+                        u8::from(eos)
+                    ),
+                );
+                if let Some(kind) = failed {
+                    return Err(kind);
+                }
+                if eos && n == len {
+                    sending.eos_sent = true;
+                }
+                upload::sent(cx, &piece[..n]);
+                sending.at += n;
+                sending.sent += n as u64;
+                if n < len {
+                    let left = len - n;
+                    trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
+                    return Ok(ProtoStep::Blocked);
+                }
+                continue;
             }
             if sending.eos {
+                // All of it sent (`req_set_upload_done`).
+                if cx.mstate() >= MState::Did {
+                    cx.mark(Timer::PostTransfer);
+                }
+                let n = sending.sent;
+                if n > 0 {
+                    trace::info(cx, format_args!("upload completely sent off: {n} bytes"));
+                } else {
+                    trace::info(cx, format_args!("Request completely sent off"));
+                }
                 self.sending = None;
+                self.upload_done = true;
                 return Ok(ProtoStep::Done);
             }
             if cx.pause().send_paused() {
@@ -755,10 +806,10 @@ impl Request {
                 &ends,
                 &mut self.pipeline,
                 &mut self.header_bytes,
-                // A command is sent beside the request's sending, which
-                // never ends: the server's lines start no response's time
-                // (`upload_done` stays unset).
-                false,
+                // The server's lines start the response's time once an
+                // `APPEND`'s body is all sent (`upload_done`); before, a
+                // command is sent beside a request that sends nothing.
+                self.upload_done,
             )?;
             let Read::Reply(code, _) = read else {
                 return Ok(());
@@ -1224,6 +1275,8 @@ impl Request {
                 at: 0,
                 len: 0,
                 eos: false,
+                eos_sent: false,
+                sent: 0,
             })
             .map_err(|_| ErrorKind::OutOfMemory)?,
         );

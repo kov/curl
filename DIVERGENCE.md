@@ -122,8 +122,9 @@ not a difference: it is tracked in `MILESTONES.md`.
   Here the transfer reads it without blocking once the body is done, before its DONE. The bytes
   on the wire and the result are C's; the trace differs where C has nothing left to exchange
   after DO: a FETCH whose literal came whole with its line goes from DID to PERFORMING, where C
-  goes to DONE (`Curl_xfer_setup_nop`), and C's "state change ... to FETCH_FINAL" follows its
-  `multi_done` line where ours precedes it. Pinned by
+  goes to DONE (`Curl_xfer_setup_nop`), and C's "state change ... to FETCH_FINAL" or
+  "... to APPEND_FINAL", and the response's start time an APPEND's answer takes, follow its
+  `multi_done` line where ours precede it. Pinned by
   `a_transfer_after_one_that_set_up_nothing_goes_to_done`
   (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`).
 

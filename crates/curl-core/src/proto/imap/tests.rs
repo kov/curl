@@ -196,6 +196,7 @@ fn request() -> Request {
         last: Final::None,
         finished: None,
         received: false,
+        upload_done: false,
         due: None,
         via: None,
         wants: Events::IN,

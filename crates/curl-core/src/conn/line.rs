@@ -3,8 +3,8 @@
 //! FTP's, IMAP's, POP3's, SMTP's and SSH's state between requests, and
 //! the goodbye each says as the connection shuts down (the scheme's
 //! `disconnect`). The connection holds it as what it speaks, so that it
-//! is one fact with a session: no protocol has both. IMAP's and POP3's
-//! are built, and the test protocol's.
+//! is one fact with a session: no protocol has both. IMAP's, POP3's
+//! and SMTP's are built, and the test protocol's.
 
 use super::layer::LayerCx;
 use super::mux::Carrier;
@@ -17,6 +17,9 @@ pub(crate) enum LineConn {
     /// IMAP's: its back and forth, how it logged in, and the mailbox
     /// it selected.
     Imap(crate::proto::imap::ImapConn),
+    /// SMTP's: its back and forth, what the server offered, how it
+    /// logged in, and the name it greets the server with.
+    Smtp(crate::proto::smtp::SmtpConn),
     /// `tcp:`'s, which says a goodbye of its own.
     #[cfg(any(test, feature = "test-util"))]
     Test(Farewell),
@@ -32,6 +35,7 @@ impl LineConn {
         match *self {
             LineConn::Pop3(ref mut p) => p.goodbye(cx, below, dead),
             LineConn::Imap(ref mut p) => p.goodbye(cx, below, dead),
+            LineConn::Smtp(ref mut p) => p.goodbye(cx, below, dead),
             #[cfg(any(test, feature = "test-util"))]
             LineConn::Test(ref mut f) => f.goodbye(cx, below, dead),
         }

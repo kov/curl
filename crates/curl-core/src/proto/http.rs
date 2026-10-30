@@ -1645,6 +1645,7 @@ impl Request {
                 *cx.readers_mut() = upload.pausing().map(|client| upload::Readers {
                     chunked,
                     exp100: announced,
+                    mail: false,
                     lines: converts,
                     client,
                 });

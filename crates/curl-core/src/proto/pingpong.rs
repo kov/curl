@@ -21,10 +21,6 @@ pub(crate) mod drive;
 pub(crate) mod ftp;
 pub(crate) mod imap;
 pub(crate) mod pop3;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
-)]
 pub(crate) mod smtp;
 #[cfg(test)]
 mod tests;
@@ -63,16 +59,8 @@ pub(crate) const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 /// zero for none (ftp.c's `if(result || !ftpcode)`, smtp.c's
 /// `if(!smtpcode)`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
-)]
 pub(crate) struct ReplyCode(u32);
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "FTP, IMAP and SMTP are yet to be built on it")
-)]
 impl ReplyCode {
     pub(crate) fn get(self) -> u32 {
         self.0

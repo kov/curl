@@ -432,7 +432,8 @@ handle's last request set out with (C's `state.creds` before the new ones replac
 the `Easy` as `Shown`, through `reset`), except where a file was asked for and the credentials
 leave it nothing to change; then POSTQUEUE. `xfer_setup: recv_idx=…, send_idx=…` is said where
 C sets the request up (`Curl_xfer_setup_*`): HTTP's request, both ways, before its body is read;
-a file's connect, neither; POP3's body, and IMAP's literal, APPEND and request without a body.
+a file's connect, neither; POP3's body, IMAP's literal, APPEND and request without a body, and
+SMTP's mail body and request without one.
 A transfer's pollset is traced wherever C makes one (`Curl_multi_pollset`): `pollset[…],
 timeouts=N` (`paused S/R (r/w)` for an empty one), for each transfer the multi works on (neither
 completed nor PENDING) as `wait` and `sockets` (`curl_multi_fdset`, `curl_multi_waitfds`)
@@ -896,7 +897,8 @@ retry of a transfer fails it with SendError.
   `pool.release(lease, verdict)` — and goes to `Completed`. Because `Done` owns the lease until
   that last step, a connection can never return to the pool before the protocol has finished
   with it. A protocol's `done` may await its last answer (`proto::Finish::Waiting`), as IMAP's
-  after a FETCH or an APPEND, which C reads blocking (`imap_block_statemach`): the `Done` step
+  after a FETCH or an APPEND, and SMTP's after a mail's body, which C reads blocking
+  (`imap_block_statemach`, `smtp_block_statemach`): the `Done` step
   then rests, `Ending::Waiting`, its head (the "multi_done" line, the premature verdict) run
   once, waiting for what the protocol's `waits(Waiting::Done)` and `due` say, and each wake
   runs `finishing` until it is over; no progress pass follows its steps, as none follows C's
@@ -3167,7 +3169,10 @@ goes as CRLF, a CR ending one read carried to the next; a read with no LF passes
 with an LF is converted into the stage's buffer, boxed and grown fallibly as only such a body
 needs it. It makes the body's size unknown (`Body::size`, C's total length), so HTTP sends it
 chunked, while `Expect: 100-continue` still weighs the client's size, as `addexpect` does.
-SMTP's dot-stuffing and FTP's ASCII line ends become stages when those protocols come.
+SMTP's end of body is the `MailEnd` stage (C's `cr_eob`), after the line conversion: a dot that
+starts a line is doubled, however the reads cut it, and the body ends with CRLF `.` CRLF, or the
+part of it the body's last bytes do not already give. FTP's ASCII line ends become a stage when
+FTP comes.
 
 - The request head is rendered into the request's own send buffer, as C's `req.sendbuf` is per
   request, measured first so that it takes one allocation; body bytes are pulled from the `Body`
@@ -3444,7 +3449,9 @@ protocol's phases (the drive, below).
   the socket already polls ready (`Carrier::ready_now`). The connection's protocol state is
   its `LineConn` (POP3's `Pop3Conn`: its `Pingpong`, state, SASL and what CAPA offered, and a
   key to the route's cold group for its credentials; IMAP's `ImapConn` also its tag count and
-  the mailbox selected); a transfer's is its `ProtoState`.
+  the mailbox selected; SMTP's `SmtpConn` what EHLO offered and the domain it greets with);
+  a transfer's is its `ProtoState`. Its goodbye (`QUIT`, `LOGOUT`) is sent as the connection
+  shuts down, its answer not waited on.
 - **IMAP's transfer ends with an answer.** A FETCH's literal (`{N}`) is the body, what came
   with its line written at once and the rest read to its size and no further (`Expect::max`);
   the tagged answer after it, or after an APPEND's body and the empty line that ends it, is
@@ -3461,8 +3468,22 @@ protocol's phases (the drive, below).
   read as the send limit allows and sent as C's request buffer sends it (`xfer_send`), its end
   taking the post-transfer time; the answer's first line starts the response's time. The
   request's progress starts over as it is made (`progress::reset`, C's `Curl_pgrsReset` in
-  `imap_regular_transfer`, and POP3's). Credentials go to a redirect's other host only as
-  HTTP's do (`CredentialGate`).
+  `imap_regular_transfer`, and POP3's and SMTP's). Credentials go to a redirect's other host
+  only as HTTP's do (`CredentialGate`).
+- **SMTP's transfer is a mail or a command.** The connection greets the server with `EHLO`, or
+  `HELO` where EHLO is refused and TLS is not required or already there, then STARTTLS and EHLO
+  again where TLS is asked for, then SASL where the server offers AUTH. An upload or a MIME
+  post with recipients is a mail: `MAIL FROM` (the submitter's `AUTH=` once SASL logged in,
+  `SIZE=` where offered and known, `SMTPUTF8` where offered and a mailbox needs it), a `RCPT
+  TO` for each recipient, `DATA`, then the body through the `MailEnd` stage, sent as IMAP's
+  APPEND is; the answer to it is read in DONE as IMAP's is, anything but 250 failing the
+  transfer with the connection kept. Anything else is a command: `VRFY` of each recipient,
+  the application's command of each, or it or `HELP` alone, each line of its answer the body.
+  Mailboxes are read as `smtp_parse_address` reads them, the host IDN-converted where it can
+  be; one with a CR or LF is refused before any command goes. The connection keeps, as C's
+  `recv_idx` does, whether the last transfer set up nothing after its request
+  (`SmtpConn::no_socket`), and a reuse says C's let-go of the connection it made to compare
+  (`smtp_disconnect(), finished`).
 - **STARTTLS** upgrades in place (`multi::state::tls::upgrade`): the origin's session, made
   with the route's upgrade settings and offering no ALPN, goes on the carrier's stream once,
   and each call moves its handshake on; the protocol then asks for its capabilities again.

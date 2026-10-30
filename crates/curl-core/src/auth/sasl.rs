@@ -320,6 +320,17 @@ impl Sasl {
         self.used = Mechs::NONE;
     }
 
+    /// No mechanism is used, what the server offers kept: SMTP's `HELO`,
+    /// which logs in with none (`authused`).
+    pub(crate) fn forget_used(&mut self) {
+        self.used = Mechs::NONE;
+    }
+
+    /// Whether a mechanism was used to log in (`authused`).
+    pub(crate) fn used_any(&self) -> bool {
+        self.used != Mechs::NONE
+    }
+
     /// The server offers `mechs` too.
     pub(crate) fn offers(&mut self, mechs: Mechs) {
         self.offered = self.offered.or(mechs);

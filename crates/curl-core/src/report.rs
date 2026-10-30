@@ -101,9 +101,11 @@ pub struct TransferReport {
     /// A time condition ruled the file out (`info.timecond`).
     condition_unmet: bool,
     protocol: Option<Protocol>,
-    /// The last status line's code and version (`info.httpcode`,
-    /// `info.httpversion`).
-    response: Option<(u16, ResponseVersion)>,
+    /// The last response's code, a status line's or a line protocol's
+    /// reply's (`info.httpcode`).
+    response_code: Option<u16>,
+    /// The last status line's version (`info.httpversion`).
+    response_version: Option<ResponseVersion>,
     /// How long the last response to say asked to wait before trying
     /// again, at most six hours (`info.retry_after`).
     retry_after: Option<Duration>,
@@ -264,16 +266,22 @@ impl TransferReport {
     /// The code of the last response, interim ones included
     /// (`CURLINFO_RESPONSE_CODE`).
     pub fn response_code(&self) -> Option<u16> {
-        self.response.map(|(code, _)| code)
+        self.response_code
     }
 
     /// The HTTP version of the last response (`CURLINFO_HTTP_VERSION`).
     pub fn response_version(&self) -> Option<ResponseVersion> {
-        self.response.map(|(_, version)| version)
+        self.response_version
     }
 
     pub(crate) fn set_response(&mut self, code: u16, version: ResponseVersion) {
-        self.response = Some((code, version));
+        self.response_code = Some(code);
+        self.response_version = Some(version);
+    }
+
+    /// A line protocol's reply's code, which says no HTTP version.
+    pub(crate) fn set_reply_code(&mut self, code: u16) {
+        self.response_code = Some(code);
     }
 
     /// The media type of the last response that gave one

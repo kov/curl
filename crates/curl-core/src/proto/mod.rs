@@ -1,8 +1,8 @@
 //! The protocols a transfer can speak, each a state the transfer holds
 //! while it exchanges data.
 //!
-//! `file:`, `http:`, `imap:`, `pop3:` and, with a TLS library, `https:`,
-//! `imaps:` and `pop3s:` are built in. Tests have three more, networkless: `null:`, which
+//! `file:`, `http:`, `imap:`, `pop3:`, `smtp:` and, with a TLS library,
+//! `https:`, `imaps:`, `pop3s:` and `smtps:` are built in. Tests have three more, networkless: `null:`, which
 //! completes at once, `stall:`, which never does, and `script:`, which
 //! delivers the pieces of its transfer's `Options::script`; and `tcp:`,
 //! which connects to its URL's host and port and completes once
@@ -18,6 +18,7 @@ pub(crate) mod pingpong;
 pub(crate) mod pop3;
 #[cfg(any(test, feature = "test-util"))]
 mod script;
+pub(crate) mod smtp;
 
 use std::num::NonZeroU32;
 
@@ -95,6 +96,8 @@ pub(crate) enum ProtoState {
     Pop3(Box<pop3::Request>),
     /// Boxed, as HTTP's.
     Imap(Box<imap::Request>),
+    /// Boxed, as HTTP's.
+    Smtp(Box<smtp::Request>),
     #[cfg(any(test, feature = "test-util"))]
     Null,
     #[cfg(any(test, feature = "test-util"))]
@@ -268,7 +271,8 @@ pub(crate) enum Finish {
     /// Over, with this result.
     Done(Result<(), ErrorKind>),
     /// Its last answer is awaited, as the protocol's `waits(Waiting::Done)`
-    /// and `due` say: C blocks on it (`imap_block_statemach`); the
+    /// and `due` say: C blocks on it (`imap_block_statemach`,
+    /// `smtp_block_statemach`); the
     /// transfer waits in DONE instead, the others going on.
     Waiting,
 }
@@ -542,6 +546,14 @@ impl ProtoState {
                 curl_alloc::try_box(pop3::Request::new(url, true, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
+            b"smtp" => ProtoState::Smtp(
+                curl_alloc::try_box(smtp::Request::new(url, false, before, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
+            b"smtps" if cx.easy().libraries().tls.is_some() => ProtoState::Smtp(
+                curl_alloc::try_box(smtp::Request::new(url, true, before, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
             #[cfg(any(test, feature = "test-util"))]
             b"null" => ProtoState::Null,
             #[cfg(any(test, feature = "test-util"))]
@@ -567,6 +579,7 @@ impl ProtoState {
             ProtoState::Http(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Pop3(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Imap(ref r) => Ok(Some(r.network(url, scope, idn)?)),
+            ProtoState::Smtp(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
             #[cfg(any(test, feature = "test-util"))]
@@ -590,9 +603,20 @@ impl ProtoState {
             ProtoState::Http(r) => Some(r.scheme()),
             ProtoState::Pop3(r) => Some(r.scheme()),
             ProtoState::Imap(r) => Some(r.scheme()),
+            ProtoState::Smtp(r) => Some(r.scheme()),
             ProtoState::File(_) => Scheme::named(b"file"),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+        }
+    }
+
+    /// An idle connection is taken for the request: the one C made for
+    /// it to compare with is let go, its disconnect handler run on it
+    /// (`url_find_or_create_conn`, `Curl_conn_free`). Only SMTP's says
+    /// anything there.
+    pub(crate) fn reused<H: Host>(&self, cx: &mut StepCx<'_, H>) {
+        if let ProtoState::Smtp(_) = self {
+            smtp::let_go_unused(cx);
         }
     }
 
@@ -603,6 +627,7 @@ impl ProtoState {
         match self {
             ProtoState::Pop3(r) => r.take_login(),
             ProtoState::Imap(r) => r.take_login(),
+            ProtoState::Smtp(r) => r.take_login(),
             _ => None,
         }
     }
@@ -613,6 +638,7 @@ impl ProtoState {
             ProtoState::Http(r) => r.secured(),
             ProtoState::Pop3(r) => r.secured(),
             ProtoState::Imap(r) => r.secured(),
+            ProtoState::Smtp(r) => r.secured(),
             _ => false,
         }
     }
@@ -653,6 +679,7 @@ impl ProtoState {
             ProtoState::Http(ref mut r) => r.connect(cx, lease),
             ProtoState::Pop3(ref mut r) => r.connect(cx, lease),
             ProtoState::Imap(ref mut r) => r.connect(cx, lease),
+            ProtoState::Smtp(ref mut r) => r.connect(cx, lease),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => p.connect(cx, lease),
             #[cfg(any(test, feature = "test-util"))]
@@ -677,6 +704,7 @@ impl ProtoState {
             ProtoState::Http(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Pop3(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Imap(ref mut r) => r.make(cx, lease, asked),
+            ProtoState::Smtp(ref mut r) => r.make(cx, lease, asked),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => p.make(cx, lease, asked),
             #[cfg(any(test, feature = "test-util"))]
@@ -693,6 +721,7 @@ impl ProtoState {
             ProtoState::Http(ref r) => r.waits(phase),
             ProtoState::Pop3(ref r) => r.waits(phase),
             ProtoState::Imap(ref r) => r.waits(phase),
+            ProtoState::Smtp(ref r) => r.waits(phase),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.waits(phase),
             #[cfg(any(test, feature = "test-util"))]
@@ -719,6 +748,9 @@ impl ProtoState {
             // A literal to read, a body to send, or the answer after
             // either (`imap_done`'s FETCH_FINAL and APPEND_FINAL).
             ProtoState::Imap(ref r) => r.exchanges(),
+            // A mail's body to send, as the connection's `recv_idx` and
+            // `send_idx` say.
+            ProtoState::Smtp(ref r) => r.exchanges(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => true,
         }
@@ -735,6 +767,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(_) | ProtoState::Pop3(_) => false,
             ProtoState::Imap(ref r) => r.sending(),
+            ProtoState::Smtp(ref r) => r.sending(),
             ProtoState::Http(ref r) => r.sending(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(_) => script::wants_send(options),
@@ -753,6 +786,7 @@ impl ProtoState {
         let send = match *self {
             ProtoState::File(_) | ProtoState::Pop3(_) => false,
             ProtoState::Imap(ref r) => r.sending(),
+            ProtoState::Smtp(ref r) => r.sending(),
             ProtoState::Http(ref r) => r.sending(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.sending(options),
@@ -766,12 +800,13 @@ impl ProtoState {
     }
 
     /// When the request wants to look again whatever its socket says: an
-    /// HTTP body's wait for a 100 running out, or IMAP's poll in DONE
-    /// as it awaits its answer.
+    /// HTTP body's wait for a 100 running out, or IMAP's and SMTP's poll
+    /// in DONE as it awaits its answer.
     pub(crate) fn due(&self) -> Option<crate::time::Instant> {
         match self {
             ProtoState::Http(r) => r.due(),
             ProtoState::Imap(r) => r.due(),
+            ProtoState::Smtp(r) => r.due(),
             _ => None,
         }
     }
@@ -826,7 +861,10 @@ impl ProtoState {
     ) -> Result<(), ErrorKind> {
         match *self {
             ProtoState::Http(ref mut r) => r.rewind_upload(cx),
-            ProtoState::File(_) | ProtoState::Pop3(_) | ProtoState::Imap(_) => Ok(()),
+            ProtoState::File(_)
+            | ProtoState::Pop3(_)
+            | ProtoState::Imap(_)
+            | ProtoState::Smtp(_) => Ok(()),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
                 Ok(())
@@ -842,6 +880,7 @@ impl ProtoState {
             ProtoState::Http(ref r) => r.holds_output(),
             ProtoState::Pop3(ref r) => r.holds_output(),
             ProtoState::Imap(ref r) => r.holds_output(),
+            ProtoState::Smtp(ref r) => r.holds_output(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.holds_output(),
             #[cfg(any(test, feature = "test-util"))]
@@ -856,6 +895,7 @@ impl ProtoState {
             ProtoState::Http(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Pop3(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Imap(ref mut r) => Some(r.pipeline_mut()),
+            ProtoState::Smtp(ref mut r) => Some(r.pipeline_mut()),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => Some(p.pipeline_mut()),
             #[cfg(any(test, feature = "test-util"))]
@@ -874,6 +914,7 @@ impl ProtoState {
             ProtoState::Http(ref mut r) => r.step(cx, lease),
             ProtoState::Pop3(ref mut r) => r.step(cx, lease),
             ProtoState::Imap(ref mut r) => r.step(cx, lease),
+            ProtoState::Smtp(ref mut r) => r.step(cx, lease),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Tcp => Ok(ProtoStep::Done),
             #[cfg(any(test, feature = "test-util"))]
@@ -897,6 +938,7 @@ impl ProtoState {
             ProtoState::Http(ref r) => r.interest(pause),
             ProtoState::Pop3(ref r) => r.interest(pause),
             ProtoState::Imap(ref r) => r.interest(pause),
+            ProtoState::Smtp(ref r) => r.interest(pause),
             ProtoState::File(_) => Events::NONE,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
@@ -914,6 +956,7 @@ impl ProtoState {
             ProtoState::Http(ref r) => r.received_nothing(),
             ProtoState::Pop3(ref r) => r.received_nothing(),
             ProtoState::Imap(ref r) => r.received_nothing(),
+            ProtoState::Smtp(ref r) => r.received_nothing(),
             ProtoState::File(_) => false,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
@@ -1035,6 +1078,7 @@ impl ProtoState {
             }
             ProtoState::Pop3(ref mut r) => Finish::Done(r.done(cx, lease, result)),
             ProtoState::Imap(ref mut r) => r.done(cx, lease, result, premature, exchanged),
+            ProtoState::Smtp(ref mut r) => r.done(cx, lease, result, premature, exchanged),
             ProtoState::File(_) => Finish::Done(result),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
@@ -1052,7 +1096,8 @@ impl ProtoState {
     ) -> Finish {
         match *self {
             ProtoState::Imap(ref mut r) => r.finishing(cx, lease, exchanged),
-            _ => unreachable!("only IMAP awaits an answer as its request ends"),
+            ProtoState::Smtp(ref mut r) => r.finishing(cx, lease, exchanged),
+            _ => unreachable!("only IMAP and SMTP await an answer as their request ends"),
         }
     }
 }

@@ -47,3 +47,238 @@ witness: curl-tool operate::tests::writes_what_c_writes
     mail_auth_and_sasl(s, op)?;
 --- new
     gss_delegation(s, op, run.claims)?;
+
+=== an address with a line's end in it is sent, starting another command
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::an_address_with_a_line_end_is_refused
+features: test-util
+--- old
+    if given.iter().any(|&b| b == b'\r' || b == b'\n') {
+--- new
+    if given.iter().any(|&b| b == b'\0') {
+
+=== the server offering SIZE goes unseen, no mail saying its size
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_mail_is_sent_with_its_envelope_and_its_end
+features: test-util
+--- old
+        } else if starts(b"SIZE") {
+--- new
+        } else if starts(b"SIZES") {
+
+=== an empty mail says its size of nothing
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_body_is_ended_as_its_last_bytes_call_for
+features: test-util
+--- old
+        let size_text = match size.filter(|&n| n > 0 && pc.size_offered) {
+--- new
+        let size_text = match size.filter(|_| pc.size_offered) {
+
+=== SMTPUTF8 is said for a mailbox in ASCII
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::smtputf8_is_said_for_a_mailbox_in_utf8
+features: test-util
+--- old
+                utf8 = pc.utf8_offered && mailbox.in_utf8();
+                mailbox.bracketed()?
+--- new
+                utf8 = pc.utf8_offered;
+                mailbox.bracketed()?
+
+=== SMTPUTF8 is said to a server that does not offer it
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::smtputf8_is_said_for_a_mailbox_in_utf8
+features: test-util
+--- old
+                utf8 = pc.utf8_offered && mailbox.in_utf8();
+                mailbox.bracketed()?
+--- new
+                utf8 = mailbox.in_utf8();
+                mailbox.bracketed()?
+
+=== a recipient in UTF-8 says nothing of it
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::smtputf8_is_said_for_a_mailbox_in_utf8
+features: test-util
+--- old
+                .any(|rcpt| !rcpt.is_ascii());
+--- new
+                .any(|rcpt| rcpt.is_empty());
+
+=== the submitter goes with MAIL FROM though nobody logged in
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_login_by_sasl_lets_the_submitter_go
+features: test-util
+--- old
+            Some(given) if pc.sasl.used_any() => Some(if given.is_empty() {
+--- new
+            Some(given) => Some(if given.is_empty() {
+
+=== the last recipient refused passes though none was taken
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_refused_recipient_fails_the_mail_unless_let_pass
+features: test-util
+--- old
+        if !self.rcpt_had_ok {
+--- new
+        if self.rcpt_had_ok && !self.rcpt_had_ok {
+
+=== a refused recipient fails the mail though refused ones are let pass
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_refused_recipient_fails_the_mail_unless_let_pass
+features: test-util
+--- old
+            if !cx.easy().options().line.mail_rcpt_allowfails {
+--- new
+            if cx.easy().options().line.mail_rcpt_allowfails || code > 0 {
+
+=== a 553 to a command for no recipient is taken as its answer
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_command_s_answer_is_the_body
+features: test-util
+--- old
+        let refused = code / 100 != 2 && code != 1 && !(has_rcpt && code == 553);
+--- new
+        let refused = code / 100 != 2 && code != 1 && code != 553;
+
+=== a refused answer to the mail's body passes
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::the_answer_to_the_body_is_read_in_done
+features: test-util
+--- old
+                    if code != 250 {
+--- new
+                    if code / 100 != 2 && code / 100 != 5 {
+
+=== a refused EHLO fails where TLS is only tried, HELO never sent
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::helo_follows_a_refused_ehlo
+features: test-util
+--- old
+            if use_ssl <= UseSsl::Try || carrier.over_tls() {
+--- new
+            if use_ssl < UseSsl::Try {
+
+=== a refused EHLO falls back to HELO where TLS is required
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::helo_follows_a_refused_ehlo
+features: test-util
+--- old
+            if use_ssl <= UseSsl::Try || carrier.over_tls() {
+--- new
+            if use_ssl <= UseSsl::All || carrier.over_tls() {
+
+=== bytes after STARTTLS's go-ahead are read as if sent under TLS
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::bytes_after_the_starttls_go_ahead_are_refused
+features: test-util
+--- old
+        if pc.pp.after_reply().is_some_and(|after| !after.is_empty()) {
+--- new
+        if pc.pp.after_reply().is_some_and(|after| after.len() > 64) {
+
+=== a STARTTLS refused fails though TLS is only tried
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::starttls_refused_or_not_offered
+features: test-util
+--- old
+            if cx.easy().options().line.use_ssl != UseSsl::Try {
+--- new
+            if cx.easy().options().line.use_ssl != UseSsl::None {
+
+=== a connection closing says no QUIT
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_mail_is_sent_with_its_envelope_and_its_end
+features: test-util
+--- old
+        if dead || self.pp.needs_flush() {
+            return;
+        }
+        // What does not go now is not said.
+        let _sent = below.send(cx, b"QUIT\r\n");
+--- new
+        if dead || !self.pp.needs_flush() {
+            return;
+        }
+        // What does not go now is not said.
+        let _sent = below.send(cx, b"QUIT\r\n");
+
+=== a command's answer is written though no body is wanted
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_command_wanting_no_body_writes_none
+features: test-util
+--- old
+        if !self.no_body {
+            let line = pc.pp.reply_line().expect("a reply was given out");
+--- new
+        if self.rcpt < usize::MAX {
+            let line = pc.pp.reply_line().expect("a reply was given out");
+
+=== a command after one that set up nothing goes on to PERFORMING
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::what_the_last_transfer_set_up_stays_with_the_connection
+features: test-util
+--- old
+        self.nothing_after = pc.no_socket;
+--- new
+        self.nothing_after = self.no_body;
+
+=== the needle connection C lets go at a reuse goes unsaid
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::smtp::tests::over_the_wire::what_the_last_transfer_set_up_stays_with_the_connection
+features: test-util
+--- old
+            plan.proto.reused(cx);
+--- new
+
+=== the answer to a mail's body is awaited blocking, stalling the multi
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::an_answer_awaited_in_done_stalls_no_other_transfer
+features: test-util
+--- old
+            if !runs || !drive::holds(&pc.pp, &mut carrier) {
+                return Ok(false);
+            }
+--- new
+            if !runs && pc.state == State::Ehlo {
+                return Ok(false);
+            }
+
+=== a refused login by SASL passes
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::over_the_wire::sasl_continues_on_334
+features: test-util
+--- old
+            235 => Code::Final,
+            334 => Code::Continue,
+            _ => Code::Other,
+--- new
+            235 | 535 => Code::Final,
+            334 => Code::Continue,
+            _ => Code::Other,
+
+=== a mailbox splits at its last @, not its first
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::a_mailbox_is_read_as_c_reads_it
+--- old
+    if let Some(at) = local.iter().position(|&b| b == b'@') {
+--- new
+    if let Some(at) = local.iter().rposition(|&b| b == b'@') {
+
+=== the EHLO domain keeps the URL's slash
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::the_domain_is_the_url_s_path
+--- old
+    let path = path.get(1..).unwrap_or_default();
+--- new
+    let path = path.get(0..).unwrap_or_default();
+
+=== the machine's name greets the server with its domain
+file: crates/curl-core/src/proto/smtp.rs
+witness: curl-core proto::smtp::tests::the_domain_is_the_url_s_path
+--- old
+    let end = name.iter().position(|&b| b == b'.').unwrap_or(name.len());
+    &name[..end]
+--- new
+    &name[..]

@@ -418,14 +418,17 @@ impl Upload {
 
 /// The readers C stacks for a request's body (`data->req.reader.stack`)
 /// whose source can pause it, from the network's side: the chunk stage,
-/// the 100's wait, then the source. Set as the request's body is, and let
-/// go with C's stack (`Curl_client_reset`).
+/// the 100's wait, a mail's end, then the source. Set as the request's
+/// body is, and let go with C's stack (`Curl_client_reset`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Readers {
     pub(crate) chunked: bool,
     /// The head said `Expect: 100-continue`: C's reader for it stays for
     /// the request, the 100 come or not.
     pub(crate) exp100: bool,
+    /// The body is a mail's, its dots escaped and its end marked
+    /// (`cr-smtp-eob`).
+    pub(crate) mail: bool,
     /// The body's line ends are converted (`cr-lineconv`).
     pub(crate) lines: bool,
     pub(crate) client: Pausing,
@@ -451,6 +454,7 @@ impl Readers {
         let stack = [
             self.chunked.then_some("chunked"),
             self.exp100.then_some("cr-exp100"),
+            self.mail.then_some("cr-smtp-eob"),
             self.lines.then_some("cr-lineconv"),
             Some(client),
         ];

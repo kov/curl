@@ -131,6 +131,7 @@ features: test-util
         let stack = [
             self.chunked.then_some("chunked"),
             self.exp100.then_some("cr-exp100"),
+            self.mail.then_some("cr-smtp-eob"),
             self.lines.then_some("cr-lineconv"),
             Some(client),
         ];
@@ -138,6 +139,7 @@ features: test-util
         let stack = [
             Some(client),
             self.lines.then_some("cr-lineconv"),
+            self.mail.then_some("cr-smtp-eob"),
             self.exp100.then_some("cr-exp100"),
             self.chunked.then_some("chunked"),
         ];

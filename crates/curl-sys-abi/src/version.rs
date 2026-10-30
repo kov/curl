@@ -296,7 +296,9 @@ mod tests {
         assert_eq!(names(info().protocols), want);
         assert_eq!(
             want,
-            ["file", "http", "https", "imap", "imaps", "pop3", "pop3s"]
+            [
+                "file", "http", "https", "imap", "imaps", "pop3", "pop3s", "smtp", "smtps"
+            ]
         );
     }
 

@@ -322,7 +322,6 @@ impl Body {
 
     /// Sent as a mail's body to SMTP's `DATA`: its dots escaped and its
     /// end marked, above any conversion (`cr_eob_add`).
-    #[expect(dead_code, reason = "SMTP is yet to be built on it")]
     pub(crate) fn end_as_mail(&mut self) -> Result<(), OutOfMemory> {
         self.chain.mail = Some(try_box(MailEnd::default())?);
         Ok(())

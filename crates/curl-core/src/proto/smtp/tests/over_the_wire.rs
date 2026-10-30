@@ -1210,3 +1210,21 @@ fn an_answer_awaited_in_done_checks_the_progress_once_a_poll() {
     let after = *calls.0.lock().unwrap();
     assert_eq!(after, before);
 }
+
+/// A mail taken out of the multi with its body still to send ends
+/// there: the answer `smtp_done` would await for it given up, its
+/// connection, left within the body, closed.
+#[test]
+fn a_mail_removed_with_its_body_unsent_closes_its_connection() {
+    let talk = mailing(&[]).stalling_sends_after(4, usize::MAX);
+    let mut m = serving(&[&talk]);
+    let (id, text) = added(&mut m, URL, b"", mail(b"hello"));
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(received(&talk).ends_with("DATA\r\n"), "{}", received(&talk));
+    m.remove(id, &mut NoEvents).unwrap();
+    let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+    assert!(said.contains("closing connection #0"), "{said}");
+    assert!(!received(&talk).ends_with(".\r\n"), "{}", received(&talk));
+}

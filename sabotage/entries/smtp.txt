@@ -337,3 +337,19 @@ features: test-util
             if !runs || !drive::holds(&pc.pp, &mut carrier) {
 --- new
             if !runs || true {
+
+=== a mail taken out mid-body drops the end it began, its connection unreleased
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::smtp::tests::over_the_wire::a_mail_removed_with_its_body_unsent_closes_its_connection
+features: test-util
+--- old
+        let ended = match multi_done(cx, http, done) {
+            Err(mut waiting) => {
+                waiting.premature = true;
+                waiting.ending = Ending::Cut;
+                multi_done(cx, http, waiting)
+            }
+            ended => ended,
+        };
+--- new
+        let ended = multi_done(cx, http, done).map_err(drop);

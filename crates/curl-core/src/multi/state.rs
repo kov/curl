@@ -910,9 +910,20 @@ impl TransferState {
                 d
             }
         };
+        // A protocol whose end awaits its last answer even for a request
+        // cut short (`smtp_done` after a mail's body, sent or not) has the
+        // wait given up at once, as for one taken out as it waited.
+        let ended = match multi_done(cx, http, done) {
+            Err(mut waiting) => {
+                waiting.premature = true;
+                waiting.ending = Ending::Cut;
+                multi_done(cx, http, waiting)
+            }
+            ended => ended,
+        };
         // C drops what `multi_done` says as the handle leaves: an abort
         // the progress handler asks for has nothing left to stop.
-        let _ended = multi_done(cx, http, done).ok();
+        assert!(ended.is_ok(), "an end given up awaits nothing");
     }
 }
 

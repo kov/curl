@@ -67,3 +67,12 @@ witness: curl-core conn::tests::ftp_connections_serve_transfers_set_up_alike
                 (Some(h), Some(w)) => h.serves(w, have_cold.use_ssl, want_cold.use_ssl),
 --- new
                 (Some(_), Some(_)) => true,
+
+=== an FTP connection keeps no login for the reuse match
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::ftp::tests::a_connection_logged_in_serves_no_other_user
+features: test-util debug-hooks
+--- old
+            ProtoState::Ftp(r) => r.take_login(),
+--- new
+            ProtoState::Ftp(_) => None,

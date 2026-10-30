@@ -337,3 +337,39 @@ fn a_protected_data_connection_resumes_its_control_connection_s_session() {
     assert_eq!(log.handshakes, 2, "{}", text.text());
     assert_eq!((log.resumed, log.resumed_given), (1, 1), "{}", text.text());
 }
+
+/// A connection logged in as one user serves no transfer as another: it
+/// keeps its credentials for the reuse match (`url_set_conn_login`).
+#[test]
+fn a_connection_logged_in_serves_no_other_user() {
+    let first = control(&[b"150 here\r\n226 done\r\n"]);
+    let second = control(&[b"150 here\r\n226 done\r\n"]);
+    let (one, two) = (data(b"hello"), data(b"world"));
+    let mut m = serving(&[&first, &second], &[&one, &two]);
+    for user in ["a", "b"] {
+        let url = format!("ftp://{user}:p@127.0.0.1:PORT/f");
+        let (id, _, text) = added(&mut m, &url, |_| {});
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Ok(()), "{}", text.text());
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+    assert!(received(&first).starts_with("USER a\r\n"));
+    assert!(received(&second).starts_with("USER b\r\n"));
+}
+
+/// FTPS is built only with a TLS library: without one its scheme is
+/// unsupported, as C's table has it only with SSL.
+#[test]
+fn ftps_wants_a_tls_library() {
+    let talk = control(&[]);
+    let mut m = serving(&[&talk], &[]);
+    let (id, _, text) = added(&mut m, "ftps://127.0.0.1:PORT/f", |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(
+        result,
+        Err(ErrorKind::UnsupportedProtocol),
+        "{}",
+        text.text()
+    );
+    assert!(talk.received().is_empty());
+}

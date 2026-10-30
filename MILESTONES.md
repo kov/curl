@@ -1109,6 +1109,17 @@ protocols need, each step leaving behaviour and traces as they are:
     `CURLOPT_UPLOAD_FLAGS`. Every IMAP test both legs run passes but 677, which fails on
     the C leg too; 445, 1420 and 1560 wait on gopher, FTP and SMTP, and NTLM is out of
     scope.
+71. **SMTP.** **Done.** `smtp://` and `smtps://` (`proto::smtp`, after `lib/smtp.c`): the
+    greeting, EHLO and its capabilities with HELO as its fallback, STARTTLS and EHLO again,
+    SASL; a mail's MAIL FROM (AUTH=, SIZE=, SMTPUTF8), a RCPT TO for each recipient with
+    `--mail-rcpt-allowfails`, DATA and the body through the end-of-body stage (`MailEnd`,
+    C's `cr_eob`), of an upload or of a MIME tree as a mail message; VRFY, EXPN and `-X`
+    commands, their answers the body; mailboxes parsed as C parses them, their hosts
+    IDN-converted, one with a CR or LF refused; the answer to the body read in DONE without
+    stalling the multi, as IMAP's; QUIT as the connection's goodbye. The tool's `--mail-from`,
+    `--mail-rcpt`, `--mail-rcpt-allowfails` and `--mail-auth`, and the C ABI's options for
+    them. Every SMTP, IMAP and POP3 test both legs run passes; 1406, 1407 and 1420 wait on
+    FTP, 3227 is a unit test of C's, and NTLM is out of scope.
 
 SCP and SFTP hand libssh the socket, as C does (`SSH_OPTIONS_FD`): bytes a proxy's tunnel or a
 SOCKS answer left in the stream's buffer would be lost to it, so the hand-over is refused while

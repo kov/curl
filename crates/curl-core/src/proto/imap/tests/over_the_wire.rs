@@ -1388,3 +1388,35 @@ fn an_append_s_body_goes_a_buffer_and_a_send_at_a_time() {
         assert!(ran.text.contains(short), "{}", ran.text);
     }
 }
+
+/// Under a send limit, the body is read and sent a second's worth at a
+/// time, the transfer waiting between (`Curl_client_read`, `xfer_send`,
+/// `mspeed_check`).
+#[test]
+fn an_append_s_body_keeps_to_the_send_limit() {
+    let replies: [&[u8]; 5] = [GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"A003 OK\r\n"];
+    let talk = Conversation::replies(&replies, false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = tracing(
+        &mut m,
+        &plain(),
+        "imap://u:p@127.0.0.1:PORT/Sent",
+        b"multi",
+        |o| {
+            o.method = Method::Upload;
+            o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 2500]).unwrap());
+            o.flow.make_mut().unwrap().max_send_speed = std::num::NonZeroU64::new(1000);
+        },
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    assert!(talk.received().ends_with(b"xxx\r\n"));
+    if cfg!(feature = "debug-hooks") {
+        let whole = "Curl_xfer_send(len=1000, eos=0) -> 0, 1000\n";
+        assert_eq!(ran.text.matches(whole).count(), 2, "{}", ran.text);
+        let last =
+            "sending last upload chunk of 500 bytes\nCurl_xfer_send(len=500, eos=1) -> 0, 500\n";
+        assert!(ran.text.contains(last), "{}", ran.text);
+    }
+    assert!(ran.text.contains("[RLIMIT] waiting"), "{}", ran.text);
+    assert!(ran.total.as_millis() >= 2000, "{:?}", ran.total);
+}

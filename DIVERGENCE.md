@@ -124,7 +124,11 @@ not a difference: it is tracked in `MILESTONES.md`.
   after DO: a FETCH whose literal came whole with its line goes from DID to PERFORMING, where C
   goes to DONE (`Curl_xfer_setup_nop`), and C's "state change ... to FETCH_FINAL" or
   "... to APPEND_FINAL", and the response's start time an APPEND's answer takes, follow its
-  `multi_done` line where ours precede it. Pinned by
+  `multi_done` line where ours precede it. Two more follow from PERFORMING lasting longer: the
+  progress meter of a whole-literal FETCH ends at 100% where C's ends at zeros, and under
+  `--limit-rate` an APPEND waits out the send limit once more before reading its answer, a
+  second more than C at 1000 bytes a second (measured 2026-10-30 against the C build: 5.0 s
+  against 4.0 s for 5000 bytes). Pinned by
   `a_transfer_after_one_that_set_up_nothing_goes_to_done`
   (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`).
 

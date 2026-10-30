@@ -215,6 +215,9 @@ struct Sending {
     eos_sent: bool,
     /// The body's bytes sent (`writebytecount`).
     sent: u64,
+    /// The body was first read: the send limit runs from then
+    /// (`reader_started`).
+    read_started: bool,
 }
 
 /// An IMAP transfer (`struct IMAP`, and what C's request keeps of it).
@@ -578,6 +581,8 @@ impl Request {
         };
         loop {
             if sending.at < sending.len || (sending.eos && !sending.eos_sent) {
+                // The read took no more than the send limit allows: a send
+                // of it is never cut by the limit (`xfer_send`).
                 let piece = &sending.buf[sending.at..sending.len];
                 let len = piece.len();
                 let eos = sending.eos;
@@ -637,10 +642,27 @@ impl Request {
             if cx.pause().send_paused() {
                 return Ok(ProtoStep::Blocked);
             }
-            let room = sending.buf.len();
+            if !sending.read_started {
+                sending.read_started = true;
+                cx.rate_start(Way::Send, None);
+            }
+            // Under a send limit, no more than it allows, and nothing once
+            // it is spent (`Curl_client_read`).
+            let room = match cx.rate_allowance(Way::Send) {
+                Some(..=0) => {
+                    let nothing = Ok(upload::Readout { n: 0, eos: false });
+                    upload::client_read(cx, sending.buf.len(), &nothing);
+                    return Ok(ProtoStep::Blocked);
+                }
+                Some(allowed) => sending
+                    .buf
+                    .len()
+                    .min(usize::try_from(allowed).unwrap_or(usize::MAX)),
+                None => sending.buf.len(),
+            };
             let got = sending
                 .body
-                .read(cx, &mut sending.buf, true, |_| Ok(Vec::new()));
+                .read(cx, &mut sending.buf[..room], true, |_| Ok(Vec::new()));
             upload::client_read(cx, room, &got);
             let got = got?;
             sending.at = 0;
@@ -1277,6 +1299,7 @@ impl Request {
                 eos: false,
                 eos_sent: false,
                 sent: 0,
+                read_started: false,
             })
             .map_err(|_| ErrorKind::OutOfMemory)?,
         );

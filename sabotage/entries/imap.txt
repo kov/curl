@@ -87,3 +87,12 @@ features: test-util
                 self.upload_done = true;
 --- new
                 self.upload_done = false;
+
+=== an APPEND's body is read past the send limit
+file: crates/curl-core/src/proto/imap.rs
+witness: curl-core proto::imap::tests::over_the_wire::an_append_s_body_keeps_to_the_send_limit
+features: test-util,debug-hooks
+--- old
+            let room = match cx.rate_allowance(Way::Send) {
+--- new
+            let room = match None::<i64> {

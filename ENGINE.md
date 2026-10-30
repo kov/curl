@@ -3429,8 +3429,11 @@ protocol's phases (the drive, below).
   refusal is the transfer's result, the request having run to its end, so the connection is
   kept. Whether a transfer goes from DID to PERFORMING is the connection's `recv_idx` as C
   leaves it: a transfer that set up nothing (a FETCH whose literal came whole, `-I`) leaves
-  the next one that sets up nothing to go to DONE (`ImapConn::no_socket`). Credentials go to
-  a redirect's other host only as HTTP's do (`CredentialGate`).
+  the next one that sets up nothing to go to DONE (`ImapConn::no_socket`). An APPEND's body
+  is read as the send limit allows and sent as C's request buffer sends it (`xfer_send`),
+  its end taking the post-transfer time and starting the response's time for the answer
+  (`req_set_upload_done`). Credentials go to a redirect's other host only as HTTP's do
+  (`CredentialGate`).
 - **STARTTLS** upgrades in place (`multi::state::tls::upgrade`): the origin's session, made
   with the route's upgrade settings and offering no ALPN, goes on the carrier's stream once,
   and each call moves its handshake on; the protocol then asks for its capabilities again.

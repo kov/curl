@@ -1131,7 +1131,8 @@ protocols need, each step leaving behaviour and traces as they are:
     multi, as IMAP's and SMTP's. The tool's FTP options and the C ABI's. Every FTP and FTPS test
     both legs run passes but those of what is left: the data connection through a SOCKS or
     HTTP proxy (564, 706, 707, 711 to 715, 1631, 1632, 1745), wildcard matching and its list
-    parser (574 to 576, 1113, 1114, 1162, 1163, 2805), and CCC; then vsftpd's pytest suite.
+    parser (574 to 576, 1113, 1114, 1162, 1163, 2805), and CCC. vsftpd's pytest suite
+    (test_30, test_31) passes but its wildcard test, test_30_13.
 
 SCP and SFTP hand libssh the socket, as C does (`SSH_OPTIONS_FD`): bytes a proxy's tunnel or a
 SOCKS answer left in the stream's buffer would be lost to it, so the hand-over is refused while

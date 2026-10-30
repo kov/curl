@@ -300,3 +300,12 @@ features: test-util
                 trace::debug_info(cx, format_args!("sendrecv_dl() -> {code}"));
 --- new
                 trace::debug_info(cx, format_args!("sendrecv_dl() => {code}"));
+
+=== the application's login follows a redirect to another host
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::the_application_s_login_stays_with_the_first_host
+features: test-util
+--- old
+        let credentials = super::request_credentials(cx, gate.trusted(), url, takes)?;
+--- new
+        let credentials = super::request_credentials(cx, Some(crate::auth::creds::Trusted::own_url()), url, takes)?;

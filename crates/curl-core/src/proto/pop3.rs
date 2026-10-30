@@ -11,7 +11,7 @@ use super::pingpong::Pingpong;
 use super::pingpong::drive::{self, Read};
 use super::pingpong::pop3::{Pop3, Pop3Reply};
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
-use crate::auth::creds::{Credentials, Takes, Trusted};
+use crate::auth::creds::{CredentialGate, Credentials, Takes};
 use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl, SaslError};
 use crate::conn::io::{Events, Recv};
 use crate::conn::line::LineConn;
@@ -280,6 +280,7 @@ impl Request {
     pub(crate) fn new<H: Host>(
         url: &Url,
         secured: bool,
+        before: super::Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
         let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
@@ -301,8 +302,17 @@ impl Request {
         let scope = cx.easy().options().address_scope;
         let idn = cx.easy().libraries().idn;
         let peer = super::url_peer((scheme, host, port), url, scope, idn)?;
+        // The application's login goes to a redirect's other host only
+        // as HTTP's does (`Curl_auth_allowed_to_host`).
+        let gate = match before.first {
+            None => CredentialGate::FIRST,
+            Some(first) => {
+                let other_hosts = cx.easy().options().http.unrestricted_auth;
+                CredentialGate::new(first, &peer, other_hosts)
+            }
+        };
         let takes = Takes::of(Some(scheme));
-        let credentials = super::request_credentials(cx, Some(Trusted::own_url()), url, takes)?;
+        let credentials = super::request_credentials(cx, gate.trusted(), url, takes)?;
         let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
         let encoded = GetOptions {
             url_encode: true,

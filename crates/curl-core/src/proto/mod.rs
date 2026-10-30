@@ -461,11 +461,11 @@ impl ProtoState {
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"pop3" => ProtoState::Pop3(
-                curl_alloc::try_box(pop3::Request::new(url, false, cx)?)
+                curl_alloc::try_box(pop3::Request::new(url, false, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"pop3s" if cx.easy().libraries().tls.is_some() => ProtoState::Pop3(
-                curl_alloc::try_box(pop3::Request::new(url, true, cx)?)
+                curl_alloc::try_box(pop3::Request::new(url, true, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             #[cfg(any(test, feature = "test-util"))]

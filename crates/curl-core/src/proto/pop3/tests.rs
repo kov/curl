@@ -1420,4 +1420,50 @@ mod over_the_wire {
         assert_eq!(ran.result, Ok(()));
         assert_eq!(backend.log().alpn, Some(crate::tls::Alpn::None));
     }
+
+    /// A redirect from HTTP to another host takes the application's
+    /// login there only if it lets it go anywhere; the redirect's own
+    /// user goes all the same (`Curl_auth_allowed_to_host`).
+    #[test]
+    fn the_application_s_login_stays_with_the_first_host() {
+        use crate::options::{Follow, Login, Protocols};
+        for unrestricted in [false, true] {
+            let location = format!("pop3://v@other.test:{PORT}/1");
+            let moved = format!(
+                "HTTP/1.1 302 Moved\r\nLocation: {location}\r\nConnection: close\r\n\
+                 Content-Length: 0\r\n\r\n"
+            );
+            let http = Conversation::new(moved.as_bytes(), true);
+            let capa = b"+OK\r\nSASL PLAIN\r\n.\r\n";
+            let pop3 =
+                Conversation::replies(&[GREETING, capa, b"+ \r\n", OK, MESSAGE], false).greeting();
+            let mut m = serving(&[&http, &pop3]);
+            let entry = format!("other.test:{PORT}:127.0.0.1");
+            let url = format!("http://127.0.0.1:{PORT}/a");
+            let ran = transfer(&mut m, &plain(), &url, |o| {
+                o.http.follow = Follow::All;
+                o.http.unrestricted_auth = unrestricted;
+                o.schemes.make_mut().unwrap().redirect = Protocols::of(&["pop3"]).unwrap();
+                o.resolve.set([entry.as_bytes()]).unwrap();
+                *o.login.make_mut().unwrap() = Login::from_pair(b"user:secret").unwrap();
+            });
+            assert_eq!(ran.result, Ok(()), "{}", ran.text);
+            assert_eq!(ran.body, b"hello\r\n.dot\r\n");
+            let said = pop3.received();
+            // PLAIN: the authorization identity, the user and the
+            // password, each after a zero byte.
+            let (want, refused) = if unrestricted {
+                ("AHVzZXIAc2VjcmV0", "AHYA")
+            } else {
+                ("AHYA", "AHVzZXIAc2VjcmV0")
+            };
+            let has = |what: &str| said.windows(what.len()).any(|w| w == what.as_bytes());
+            assert!(
+                has(want),
+                "{unrestricted}: {}",
+                String::from_utf8_lossy(&said)
+            );
+            assert!(!has(refused), "{unrestricted}");
+        }
+    }
 }

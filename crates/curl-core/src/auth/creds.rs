@@ -418,6 +418,12 @@ impl<'a> Secret<'a> {
         Secret { bearer, ..self }
     }
 
+    /// The same, acting for `authzid`.
+    #[cfg(test)]
+    pub(crate) fn with_authzid(self, authzid: &'a [u8]) -> Secret<'a> {
+        Secret { authzid, ..self }
+    }
+
     /// These, kept to tell whether a Digest challenge answered with them
     /// is answered with others.
     pub(crate) fn answered(&self) -> Result<Answered, OutOfMemory> {

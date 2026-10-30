@@ -38,7 +38,7 @@ impl Mechs {
         Mechs(self.0 & m.0)
     }
 
-    fn or(self, m: Mechs) -> Mechs {
+    pub(crate) fn or(self, m: Mechs) -> Mechs {
         Mechs(self.0 | m.0)
     }
 

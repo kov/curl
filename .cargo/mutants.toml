@@ -731,4 +731,23 @@ exclude_re = [
     # A tunnel's room remade at the size it already has is zeroed scratch
     # the same as the one it replaces: what is read into it is the same.
     'curl-core/src/conn/quic\.rs:.*: replace < with <= in Quic::ingress_through$',
+    # SASL's and POP3's first bits: `1 << 0` and `1 >> 0` are both 1.
+    'curl-core/src/auth/sasl\.rs:19:.*: replace << with >>$',
+    'curl-core/src/proto/pop3\.rs:46:.*: replace << with >>$',
+    # The room reserved for the hex: one wrong only makes the fallible
+    # pushes grow the buffer.
+    'curl-core/src/auth/sasl\.rs:.*: replace \* with (\+|/) in hex$',
+    # An escape as a quoted value's last byte before its end: skipped or
+    # not, the loop leaves the value unterminated either way.
+    'curl-core/src/auth/sasl\.rs:.*: replace < with <= in digest_value$',
+    'curl-core/src/auth/sasl\.rs:.*: replace \+ with \* in digest_value$',
+    # The end-of-body scan's guards against nothing to write: each mutant
+    # writes an empty slice, or an empty prefix of the marker, where the
+    # original writes nothing; `prev` reaches 0 by the strip only for the
+    # first bytes, where `last` is already 0.
+    'curl-core/src/proto/pop3\.rs:.*: replace > with >= in Eob::write$',
+    'curl-core/src/proto/pop3\.rs:.*: replace - with (\+|/) in Eob::write$',
+    # An answer with nothing after it hands the scan no bytes, which it
+    # writes nothing of.
+    'curl-core/src/proto/pop3\.rs:.*: replace > with >= in Request::command_resp$',
 ]

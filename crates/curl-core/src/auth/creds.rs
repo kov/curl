@@ -539,6 +539,10 @@ mod tests {
             Takes::of(crate::conn::Scheme::named(b"http")),
             Takes::ControlBytes
         );
+        // Only the bytes below a space are control bytes (`str_has_ctrl`).
+        assert!(Takes::NoControlBytes.allows(b"a b\x7f\xff"));
+        assert!(!Takes::NoControlBytes.allows(b"a\x1fb"));
+        assert!(Takes::ControlBytes.allows(b"a\x1fb"));
     }
 
     /// A SASL identity to act for comes with the application's

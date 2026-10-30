@@ -317,6 +317,12 @@ mod over_the_wire {
         assert_eq!(result, Ok(()));
         assert_eq!(body, b"hello\r\n.dot\r\n");
         assert_eq!(talk.received(), b"CAPA\r\nUSER u\r\nPASS p\r\nRETR 1\r\n");
+        // The connection says QUIT as it closes.
+        drop(m);
+        assert_eq!(
+            talk.received(),
+            b"CAPA\r\nUSER u\r\nPASS p\r\nRETR 1\r\nQUIT\r\n"
+        );
     }
 
     /// A server that upgrades to TLS on `STLS`, then logs the user in
@@ -796,5 +802,53 @@ mod over_the_wire {
         let (sent, ran) = against(&[GREETING], "pop3s://u:p@127.0.0.1:PORT/1", |_| {});
         assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
         assert_eq!(sent, b"");
+    }
+
+    /// `AUTH`, the mechanism, a space, the initial response and CRLF fit
+    /// POP3's line of 255: a response that would not goes after the
+    /// server's prompt.
+    #[test]
+    fn an_initial_response_fits_pop3_s_line() {
+        let capa = b"+OK\r\nSASL PLAIN\r\n.\r\n";
+        let auth_line = |user_len: usize| {
+            let url = format!("pop3://{}:@127.0.0.1:PORT/1", "u".repeat(user_len));
+            let (sent, _) = against(&[GREETING, capa, OK, MESSAGE], &url, |o| {
+                o.line.make_mut().unwrap().sasl_ir = true;
+            });
+            let line = sent.split(|&b| b == b'\n').nth(1).unwrap().to_vec();
+            String::from_utf8(line).unwrap()
+        };
+        // Two zero bytes and 178: 180 bytes, 240 encoded, 245 with PLAIN.
+        assert_eq!(auth_line(178).len(), "AUTH PLAIN ".len() + 240 + 1);
+        // 183 bytes, 244 encoded: 249, over 247.
+        assert_eq!(auth_line(181), "AUTH PLAIN\r");
+    }
+
+    /// A server that does not answer the command in time fails it too.
+    #[test]
+    fn a_server_that_does_not_answer_the_command_times_out() {
+        let (sent, ran) = against(&[GREETING, CAPA_USER, OK, OK], URL, |o| {
+            o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(1000);
+        });
+        assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+        let pass = b"PASS p\r\nRETR 1\r\n";
+        assert!(sent.windows(pass.len()).any(|w| w == pass), "{sent:?}");
+        assert!(ran.text.contains("server response timeout"), "{}", ran.text);
+    }
+
+    /// A server that closes before it answers fails the read, said as C
+    /// says it.
+    #[test]
+    fn a_server_that_closes_fails_the_read() {
+        let talk = Conversation::replies(&[GREETING], true).greeting();
+        let mut m = serving(&[&talk]);
+        let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+        let ran = transfer(&mut m, &plain(), &url, |_| {});
+        assert_eq!(ran.result, Err(ErrorKind::RecvError));
+        assert!(
+            ran.text.contains("response reading failed (errno: 0)"),
+            "{}",
+            ran.text
+        );
     }
 }

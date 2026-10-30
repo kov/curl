@@ -359,6 +359,26 @@ fn an_initial_response_may_be_the_limit_long() {
     assert_eq!(start(&[b'u'; 179]), auth("PLAIN", None));
 }
 
+/// A protocol whose limit is none sends any initial response.
+#[test]
+fn no_limit_takes_any_initial_response() {
+    static UNLIMITED: Params = Params {
+        service: "imap",
+        max_ir: 0,
+        default: Mechs::DEFAULT,
+    };
+    let creds = Secret::new(b"u", b"p", b"");
+    let mut sasl = Sasl::new(&UNLIMITED, AuthMethods::BASIC);
+    sasl.offers(Mechs::PLAIN);
+    with_cx(Some(creds), 143, &[], |cx| {
+        cx.sasl_ir = true;
+        assert_eq!(
+            sasl.start(cx, false).unwrap(),
+            auth("PLAIN", Some(b"\0u\0p"))
+        );
+    });
+}
+
 /// LOGIN sends the user, then the password, each to its own prompt.
 #[test]
 fn login_answers_the_user_then_the_password() {

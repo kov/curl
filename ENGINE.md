@@ -1704,12 +1704,16 @@ traces `sendrecv_dl() no EAGAIN/pending data, mark as dirty`; if the input is st
 the exchange goes to wait for more, C's pollset traces `pollset[] has POLLIN, but there is still
 buffered input -> mark as dirty` (`multi_adjust_pollset`), which the step's end traces and
 makes, as C's does: a step whose read found nothing can still leave input held, taken in by its
-sends, as an HTTP/3 proxy's connection takes the tunnel's bytes in with its packets. The pool's health
-check asks `is_alive` down the chain, as `Curl_conn_is_alive` does (cf-socket.c:1811–1846,
-conncache.c:1041–1068), the socket at the bottom polled at once: an error or a hang-up is dead,
-anything to read is input pending, and input pending on an idle connection that does not
-multiplex makes it unhealthy (1701), said first as C's debug build says it (`connection has no
-transfer but input, not healthy`).
+sends, as an HTTP/3 proxy's connection takes the tunnel's bytes in with its packets. A transfer
+waiting in PROTOCONNECTING, DOING or DOING_MORE is marked the same way when its protocol's
+pollset waits for input (before the layers adjust it) and its receiving is not over its limit,
+as C's adjusts every state's pollset: a line protocol's answer a TLS record left inside the
+library is read in the next pass, not after a wait. The pool's health check asks `is_alive`
+down the chain, as `Curl_conn_is_alive` does (cf-socket.c:1811–1846, conncache.c:1041–1068), the
+socket at the bottom polled at once: an error or a hang-up is dead, anything to read is input
+pending, and input pending on an idle connection that does not multiplex makes it unhealthy
+(1701), said first as C's debug build says it (`connection has no transfer but input, not
+healthy`).
 
 `LayerCx` is an argument, never stored, which removes C's `CF_DATA_SAVE/RESTORE` and its
 dangling-easy class. Inside a step it is the transfer's (`ConnCx`, §4.7, extends it); a pool

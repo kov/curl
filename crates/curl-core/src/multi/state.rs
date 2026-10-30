@@ -2662,7 +2662,10 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 .map_err(|e| layer_failed(&x.lease, e))
             {
                 Ok(Connect::Done) => enter_do(x, cx),
-                Ok(Connect::Waiting) => (TransferState::ProtoConnecting(x), Wake::Idle),
+                Ok(Connect::Waiting) => {
+                    buffered_input(&mut x, Some(Waiting::Connecting), cx);
+                    (TransferState::ProtoConnecting(x), Wake::Idle)
+                }
                 // Cut short (`multistate_protoconnecting`).
                 Err(e) => (
                     TransferState::Done(x.done(Err(e), true, Reached::Unmade)),
@@ -2716,7 +2719,10 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             .map_err(|e| layer_failed(&x.lease, e))
         {
             Ok(DoStep::Did) => enter_did(x, cx),
-            Ok(DoStep::Doing) => (TransferState::Doing(x), Wake::Idle),
+            Ok(DoStep::Doing) => {
+                buffered_input(&mut x, Some(Waiting::Doing), cx);
+                (TransferState::Doing(x), Wake::Idle)
+            }
             Ok(DoStep::More) => (TransferState::DoingMore(x), Wake::Again),
             Ok(DoStep::Piece) => unreachable!("a piece of the request is DO's alone"),
             // A failed request is done with, not cut short
@@ -2734,7 +2740,10 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             Ok(DoStep::Did) => enter_did(x, cx),
             // Back to the first half (DOMORE_GOBACK).
             Ok(DoStep::Doing) => (TransferState::Doing(x), Wake::Again),
-            Ok(DoStep::More) => (TransferState::DoingMore(x), Wake::Idle),
+            Ok(DoStep::More) => {
+                buffered_input(&mut x, Some(Waiting::More), cx);
+                (TransferState::DoingMore(x), Wake::Idle)
+            }
             Ok(DoStep::Piece) => unreachable!("a piece of the request is DO's alone"),
             // A failed request is done with, not cut short
             // (`multistate_doing_more`).
@@ -2885,7 +2894,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                                 if over_limit(run, cx) {
                                     (TransferState::RateLimiting(x), Wake::Idle)
                                 } else {
-                                    buffered_input(&mut x, cx);
+                                    buffered_input(&mut x, None, cx);
                                     (TransferState::Exchanging(x), Wake::Idle)
                                 }
                             }
@@ -3016,14 +3025,22 @@ fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
     )
 }
 
-/// An exchange that is to wait for input while its connection holds some
-/// where a poll cannot see it runs again in the next pass, as C's pollset
-/// finds, says and marks it (`multi_adjust_pollset`). A step that stopped
-/// reading short has marked it already (`ProtoStep::AtReadLimit`); one
-/// whose read found nothing can still leave input held, taken in by its
-/// sends, as a QUIC connection's are with its packets.
-fn buffered_input<H: Host>(x: &mut Attached, cx: &mut StepCx<'_, H>) {
-    let wants = x.proto.interest(StepCx::pause(cx)).contains(Events::IN);
+/// A transfer that is to wait for input, as its protocol says for its
+/// exchange or for the `phase` it waits in, while its connection holds
+/// some where a poll cannot see it runs again in the next pass, as C's
+/// pollset finds, says and marks it (`multi_adjust_pollset`): in
+/// PERFORMING, and in PROTOCONNECTING, DOING and DOING_MORE, which wait
+/// on the protocol's own pollset before the layers adjust it, unless its
+/// receiving is over its limit. A step that stopped reading short has
+/// marked it already (`ProtoStep::AtReadLimit`); one whose read found
+/// nothing can still leave input held, taken in by its sends, as a QUIC
+/// connection's are with its packets.
+fn buffered_input<H: Host>(x: &mut Attached, phase: Option<Waiting>, cx: &mut StepCx<'_, H>) {
+    let wants = match phase {
+        Some(phase) => x.proto.waits(phase),
+        None => x.proto.interest(StepCx::pause(cx)),
+    };
+    let wants = wants.contains(Events::IN) && !matches!(cx.rate_allowance(Way::Recv), Some(..=0));
     if wants && x.lease.get().data_pending() {
         mstate::trace(
             cx,

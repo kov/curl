@@ -323,3 +323,13 @@ witness: curl-core proto::pop3::tests::over_the_wire::a_body_ended_by_closing_le
         }
         got
     }
+
+=== bytes a layer holds as the login waits leave the transfer waiting on its socket
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::pop3::tests::over_the_wire::answers_a_layer_holds_are_read_without_waiting
+features: test-util
+--- old
+                Ok(Connect::Waiting) => {
+                    buffered_input(&mut x, Some(Waiting::Connecting), cx);
+--- new
+                Ok(Connect::Waiting) => {

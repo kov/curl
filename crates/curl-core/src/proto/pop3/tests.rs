@@ -1504,6 +1504,33 @@ mod over_the_wire {
         assert!(text.contains(line), "{text}");
     }
 
+    /// Bytes a layer holds while the login waits for its answers, where
+    /// a poll cannot see them, run the transfer again in the next pass, as
+    /// C's pollset finds and says them in PROTOCONNECTING, DOING and
+    /// DOING_MORE as in PERFORMING (`multi_adjust_pollset`): the transfer
+    /// never waits on its socket for them.
+    #[test]
+    fn answers_a_layer_holds_are_read_without_waiting() {
+        use crate::conn::layer::testing::holdback;
+        let talk = in_the_clear();
+        let mut m = serving(&[&talk]);
+        let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
+        let ran = tracing(&mut m, &plain(), &url, b"multi", |o| {
+            o.layer = Some(holdback);
+        });
+        assert_eq!(ran.result, Ok(()));
+        assert_eq!(ran.body, b"hello\r\n.dot\r\n");
+        assert!(
+            ran.total < std::time::Duration::from_millis(1),
+            "{:?} {}",
+            ran.total,
+            ran.text
+        );
+        let line = "[MULTI] [PROTOCONNECTING] pollset[] has POLLIN, but there is still \
+                    buffered input -> mark as dirty\n";
+        assert!(ran.text.contains(line), "{}", ran.text);
+    }
+
     /// A body whose writer paused holds the transfer open until it is
     /// delivered (`Curl_cwriter_is_paused`).
     #[test]

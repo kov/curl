@@ -825,4 +825,7 @@ exclude_re = [
     # A connection only made is reached from outside any callback, so its
     # sends never wait for the connection: this one cannot be called.
     'curl-core/src/multi/raw\.rs:.*: replace <impl crate::proto::ws::Wire for RawWire<.*>>::send_all -> Result<\(\), ErrorKind> with Ok\(\(\)\)$',
+    # The calls a multi's event makes on a transfer only trace its lines
+    # (`info_outside`): no handler is given them, so none starts a frame.
+    'curl-core/src/multi/cx\.rs:.*: replace <impl TransferCalls for EventCalls<.*>>::ws_start_frame -> Result<\(\), ErrorKind> with Ok\(\(\)\)$',
 ]

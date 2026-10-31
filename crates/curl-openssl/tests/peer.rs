@@ -74,6 +74,8 @@ mod store;
 mod torture;
 #[path = "peer/waits.rs"]
 mod waits;
+#[path = "peer/ws.rs"]
+mod ws;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker;
@@ -178,6 +180,7 @@ fn main() {
     .chain(store::TESTS.iter().copied())
     .chain(torture::TESTS.iter().copied())
     .chain(waits::TESTS.iter().copied())
+    .chain(ws::TESTS.iter().copied())
     {
         // The tests whose names hold a filter given, if any is, as libtest.
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {

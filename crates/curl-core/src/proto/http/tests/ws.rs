@@ -233,3 +233,49 @@ fn wss_needs_a_tls_library() {
     // A 101 and the end of the connection: an empty reply (test 2300).
     assert_eq!(ws(b"", |_| {}).result, Err(ErrorKind::GotNothing));
 }
+
+/// In callback mode the WebSocket traces as it does connect-only, in
+/// C's words: the switch, the frames decoded and passed to the writer,
+/// the pong answering a ping and its flush.
+#[test]
+fn callback_mode_traces_its_frames_as_c_does() {
+    let mut e = Easy::new();
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"ws");
+    e.set_components(Some(components));
+    let mut reply = SWITCH.to_vec();
+    reply.extend_from_slice(b"\x89\x02hi\x81\x01x");
+    let (mut m, talk, _) = server(&[&reply], true);
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        let url = format!("ws://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let ws: Vec<String> = ran
+        .seen
+        .text()
+        .into_iter()
+        .filter(|l| l.starts_with("[WS] "))
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    // The bytes after the 101 are written before the switch is said
+    // done, as C's `Curl_ws_accept` writes them.
+    assert_eq!(
+        ws,
+        [
+            "[WS] WS, using chunk size 65535",
+            "[WS] Received 101, switch to WebSocket",
+            "[WS] decoded head [PING payload=0/2]",
+            "[WS] auto PONG to [PING payload=0/2]",
+            "[WS] passed 2 bytes payload, 0 remain",
+            "[WS] decoded passing [PING payload=2/2]",
+            "[WS] decoded head [TEXT payload=0/1]",
+            "[WS] passed 1 bytes payload, 0 remain",
+            "[WS] decoded passing [TEXT payload=1/1]",
+            "[WS] WS-ENC: sending [PONG payload=0/2]",
+            "[WS] WS-ENC: buffered [PONG payload=2/2]",
+            "[WS] flushed 8 bytes",
+            "[WS] websocket established, callback mode",
+        ]
+    );
+}

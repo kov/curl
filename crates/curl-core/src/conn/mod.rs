@@ -1562,8 +1562,11 @@ impl Conn {
 
     /// Its WebSocket, if it switched to one.
     pub(crate) fn ws(&self) -> Option<&crate::proto::ws::WsConn> {
-        match self.line() {
-            Some(line::LineConn::Ws(ws)) => Some(ws),
+        match &self.session {
+            mux::Speaks::Line(line) => match &**line {
+                line::LineConn::Ws(ws) => Some(ws),
+                _ => None,
+            },
             _ => None,
         }
     }

@@ -822,6 +822,7 @@ exclude_re = [
     # and so are a frame's flags for C: or and xor of them are one value.
     'curl-core/src/proto/ws/frame\.rs:.*: replace \| with \^ in (send_byte|Encoder::add_frame)$',
     'curl-sys-abi/src/ws\.rs:.*: replace \| with \^ in c_frame$',
+    'curl-core/src/proto/ws\.rs:.*: replace \| with \^ in c_args$',
     # A connection only made is reached from outside any callback, so its
     # sends never wait for the connection: this one cannot be called.
     'curl-core/src/multi/raw\.rs:.*: replace <impl crate::proto::ws::Wire for RawWire<.*>>::send_all -> Result<\(\), ErrorKind> with Ok\(\(\)\)$',

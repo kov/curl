@@ -1078,3 +1078,71 @@ fn a_receive_fills_its_buffer_from_more_than_one_chunk() {
     assert_eq!(&buf[..frame.len], b"def");
     assert_eq!((frame.offset, frame.bytes_left), (3, 0));
 }
+
+/// A ping that comes a byte at a time is handed on as it comes, as C's
+/// is, and answered once its last byte is in: the pong is of that piece.
+#[test]
+fn a_ping_in_pieces_is_answered_at_its_last() {
+    let mut rec = Rec {
+        piece: Some(1),
+        ..Rec::default()
+    };
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    rec.incoming = b"\x89\x02hi\x81\x01x".to_vec();
+    let mut buf = [0u8; 16];
+    let frame = ws.recv(&mut rec, &mut buf, true).unwrap();
+    assert_eq!(frame.kind, ft(FrameKind::Ping, false));
+    assert_eq!((&buf[..frame.len], frame.bytes_left), (&b"h"[..], 1));
+    assert!(!ws.pending());
+    let frame = ws.recv(&mut rec, &mut buf, true).unwrap();
+    assert_eq!(
+        frame.kind,
+        ft(FrameKind::Text, false),
+        "the ping's end taken"
+    );
+    assert_eq!(&buf[..frame.len], b"x");
+    assert!(ws.pending());
+}
+
+/// A frame started while one is under way is refused with C's reason.
+#[test]
+fn a_frame_started_over_another_says_why() {
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    let binary = SendFlags {
+        kind: Some(FrameKind::Binary),
+        more: false,
+    };
+    assert_eq!(ws.start_frame(&mut rec, binary, 2), Ok(()));
+    assert_eq!(
+        ws.start_frame(&mut rec, binary, 2),
+        Err(ErrorKind::SendError)
+    );
+    assert_eq!(rec.failed, ["[WS] previous frame not finished"]);
+}
+
+/// With no pong waiting, a receive sends nothing of what the send
+/// buffer holds: only a pong added is flushed after it, as C's.
+#[test]
+fn a_receive_flushes_only_for_a_pong() {
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    ws.sendbuf.write(b"zz").unwrap();
+    rec.incoming = b"\x81\x01x".to_vec();
+    ws.recv(&mut rec, &mut [0u8; 4], true).unwrap();
+    ws.send_pending(&mut rec, false);
+    assert_eq!(rec.sent, b"");
+}
+
+/// A continuation's head is traced by its name, as C's.
+#[test]
+fn a_continuation_is_traced_as_cont() {
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    rec.incoming = b"\x01\x01a\x80\x01b".to_vec();
+    let mut buf = [0u8; 4];
+    ws.recv(&mut rec, &mut buf, true).unwrap();
+    ws.recv(&mut rec, &mut buf, true).unwrap();
+    let head = "[WS] decoded head [CONT payload=0/1]";
+    assert!(rec.lines.iter().any(|l| l == head), "{:#?}", rec.lines);
+}

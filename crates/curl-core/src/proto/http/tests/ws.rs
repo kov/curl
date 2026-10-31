@@ -426,19 +426,30 @@ fn follows_on(writes: &[MetaWrite], total: u64) {
     assert_eq!(at, total);
 }
 
-/// A frame that comes in pieces is written as it comes, each piece told
-/// where in the frame it is; a ping in pieces is answered once whole,
-/// by a pong of its last piece, as C answers it.
+/// A frame that comes a byte at a time is written as it comes, each
+/// piece told where in the frame it is. A ping in pieces is written but
+/// for its last, which a pong answers, of that piece alone, as C's.
 #[test]
 fn a_frame_in_pieces_is_written_as_it_comes() {
-    let (ran, writes) = in_pieces(b"\x81\x05hello\x89\x02hi", 3, false);
+    use crate::ws::FrameKind;
+    let (ran, writes) = in_pieces(b"\x81\x05hello\x89\x02hi", 1, false);
     assert_eq!(ran.result, Ok(()));
-    assert!(writes.len() > 1, "{writes:?}");
-    let body: Vec<u8> = writes.iter().flat_map(|(b, _)| b.clone()).collect();
-    assert_eq!(body, b"hello");
-    follows_on(&writes, 5);
+    let of = |kind| -> Vec<MetaWrite> {
+        writes
+            .iter()
+            .filter(|(_, m)| m.is_some_and(|m| m.kind.kind == kind))
+            .cloned()
+            .collect()
+    };
+    let text = of(FrameKind::Text);
+    assert_eq!(text.len(), 5, "{writes:?}");
+    follows_on(&text, 5);
+    let ping = of(FrameKind::Ping);
+    assert_eq!(ping.len(), 1, "{writes:?}");
+    assert_eq!(ping[0].0, b"h");
     let sent = frames_sent(&ran);
-    assert_eq!(&sent[..2], [0x8a, 0x80 | (sent[1] & 0x7f)]);
+    assert_eq!(&sent[..2], [0x8a, 0x81], "{sent:x?}");
+    assert_eq!(sent[6] ^ sent[2], b'i');
 }
 
 /// A frame longer than the stage holds, paused at its first piece,

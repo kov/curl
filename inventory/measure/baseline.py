@@ -11,6 +11,10 @@ inventory/baseline.{json,md}.
 the threaded resolver in place of c-ares (SCOPE.md): build/c-threaded,
 inventory/baseline-threaded.{json,md}.
 
+`--libssh` does the same for the third, the reference build with libssh in
+place of libssh2, the SSH library the rewrite binds (SCOPE.md):
+build/c-libssh, inventory/baseline-libssh.{json,md}.
+
 This is a measurement, not a derivation from source, so inventory/gen/all.py
 does not run it: rerun it with `--run` when the C tree or the build
 configuration changes.
@@ -91,6 +95,11 @@ THREADED = Oracle(ROOT / "build" / "c-threaded", "baseline-threaded",
                   "C threaded-resolver baseline", "--threaded",
                   {**CMAKE_ARGS, "ENABLE_ARES": "OFF",
                    "ENABLE_THREADED_RESOLVER": "ON"})
+# The SSH library distributions build libcurl with, in place of libssh2.
+LIBSSH = Oracle(ROOT / "build" / "c-libssh", "baseline-libssh",
+                "C libssh baseline", "--libssh",
+                {**CMAKE_ARGS, "CURL_USE_LIBSSH2": "OFF",
+                 "CURL_USE_LIBSSH": "ON"})
 
 
 def run(oracle):
@@ -143,7 +152,8 @@ def exports(oracle):
 
 
 def main():
-    oracle = THREADED if "--threaded" in sys.argv[1:] else REFERENCE
+    oracle = (THREADED if "--threaded" in sys.argv[1:]
+              else LIBSSH if "--libssh" in sys.argv[1:] else REFERENCE)
     if "--run" in sys.argv[1:]:
         run(oracle)
     meta = json.loads((oracle.results / "run.json").read_text())

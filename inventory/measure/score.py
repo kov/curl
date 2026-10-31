@@ -24,6 +24,13 @@ library, with the threaded resolver, against the second C oracle
 (baseline.py --threaded): build/c-threaded's programs, compared with
 inventory/baseline-threaded.json, laid out in build/rust-threaded.
 
+`--libssh` scores the same build as the default leg against the third C
+oracle (baseline.py --libssh), whose SSH library is the one the rewrite
+binds: build/c-libssh's programs, compared with
+inventory/baseline-libssh.json, laid out in build/rust-libssh. Its SCP and
+SFTP results are the ones that count; the default leg's C reference
+speaks SSH through libssh2.
+
 `--report` re-reads the stored results without running anything.
 """
 
@@ -81,6 +88,9 @@ THREADED = Leg(baseline.THREADED, ROOT / "build" / "rust-threaded",
                ROOT / "build" / "target-threaded",
                DEBUG_HOOKS + ("curl-sys-abi/threaded-resolver",
                               "curl-tool/threaded-resolver"))
+# The default leg's build, against the C build with libssh.
+LIBSSH = Leg(baseline.LIBSSH, ROOT / "build" / "rust-libssh",
+             ROOT / "build" / "target", DEBUG_HOOKS)
 
 
 def git(*args):
@@ -343,9 +353,10 @@ def main():
     ap.add_argument("--lib", choices=["rust", "c", "stub"], default="rust")
     ap.add_argument("--tool", choices=["rust", "c"], default="rust")
     ap.add_argument("--threaded", action="store_true")
+    ap.add_argument("--libssh", action="store_true")
     ap.add_argument("--report", action="store_true")
     args = ap.parse_args()
-    leg = THREADED if args.threaded else RUST
+    leg = THREADED if args.threaded else LIBSSH if args.libssh else RUST
     if not args.report:
         commit = common.c_commit()
         c_build = leg.oracle.build

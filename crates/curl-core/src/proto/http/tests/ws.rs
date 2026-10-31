@@ -66,12 +66,15 @@ fn a_frame_cut_short_by_the_end_fails() {
     );
 }
 
-/// A server that answers the request's head with the 101 and the next
-/// thing sent, the upload's frame, with a close, then closes.
-fn upload_server() -> (Multi, Conversation) {
+/// A server that answers the request's head with the 101, and the
+/// upload's `sends`th send after it with a close, then closes.
+fn upload_server(sends: usize) -> (Multi, Conversation) {
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
-    let talk = Conversation::replies(&[SWITCH, b"\x88\x00"], true).per_send();
+    let mut replies: Vec<&[u8]> = vec![SWITCH];
+    replies.extend(std::iter::repeat_n(&b""[..], sends - 1));
+    replies.push(b"\x88\x00");
+    let talk = Conversation::replies(&replies, true).per_send();
     let net = FakeNet::new(clock.clone())
         .with_peer(at, Peer::Accepts)
         .with_conversation(at, talk.clone());
@@ -101,7 +104,7 @@ fn unmasked(sent: &[u8]) -> (u8, Vec<u8>) {
 /// An upload after the 101 goes as a binary frame of what was read.
 #[test]
 fn an_upload_goes_as_binary_frames() {
-    let (mut m, talk) = upload_server();
+    let (mut m, talk) = upload_server(1);
     let ran = get(&mut m, "/", talk, |o| {
         let url = format!("ws://127.0.0.1:{PORT}/");
         o.set_url(Some(url.as_bytes())).unwrap();
@@ -136,7 +139,7 @@ impl crate::handler::ReadHandler for Framing {
 /// sent as the frame it named rather than as binary.
 #[test]
 fn a_read_handler_starts_its_own_frame() {
-    let (mut m, talk) = upload_server();
+    let (mut m, talk) = upload_server(1);
     let ran = get(&mut m, "/", talk, |o| {
         let url = format!("ws://127.0.0.1:{PORT}/");
         o.set_url(Some(url.as_bytes())).unwrap();
@@ -278,4 +281,171 @@ fn callback_mode_traces_its_frames_as_c_does() {
             "[WS] websocket established, callback mode",
         ]
     );
+}
+
+/// A read handler that plays its script: each call starts the frames it
+/// names (`curl_ws_start_frame`) and then gives its bytes, or says the
+/// end when it has none.
+struct Scripted(std::sync::Mutex<Vec<(Option<u64>, &'static [u8])>>);
+
+impl crate::handler::ReadHandler for Scripted {
+    fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
+        let mut script = self.0.lock().unwrap();
+        if script.is_empty() {
+            return crate::handler::Read::Eof;
+        }
+        let (start, bytes) = script.remove(0);
+        if let Some(len) = start {
+            let text = crate::ws::SendFlags {
+                kind: Some(crate::ws::FrameKind::Text),
+                more: false,
+            };
+            cx.ws_start_frame(text, len).unwrap();
+        }
+        match std::num::NonZeroUsize::new(bytes.len()) {
+            Some(n) => {
+                buf[..bytes.len()].copy_from_slice(bytes);
+                crate::handler::Read::Data(n)
+            }
+            None => crate::handler::Read::Eof,
+        }
+    }
+}
+
+/// A ws:// upload by `script`, its read component traced.
+fn upload(script: Vec<(Option<u64>, &'static [u8])>) -> (Ran, Vec<String>) {
+    let sends = script.len();
+    let (mut m, talk) = upload_server(sends);
+    let mut e = Easy::new();
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"read");
+    e.set_components(Some(components));
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        let url = format!("ws://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.method = Method::Upload;
+        o.upload = UploadSource::Read {
+            handler: Handler::read(Scripted(std::sync::Mutex::new(script))).unwrap(),
+            rewind: None,
+            size: None,
+        };
+    });
+    let reads = ran
+        .seen
+        .text()
+        .into_iter()
+        .filter(|l| l.starts_with("[READ] cr_ws_read("))
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    (ran, reads)
+}
+
+/// A frame the handler starts takes its payload from the reads after,
+/// each no longer than what the frame still owes, until it is whole.
+#[test]
+fn a_started_frame_takes_the_reads_after_it() {
+    let (ran, reads) = upload(vec![(Some(10), b"hello"), (None, b"world")]);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(unmasked(frames_sent(&ran)), (0x81, b"helloworld".to_vec()));
+    // Each read, with payload still to come, says no end.
+    assert_eq!(reads.len(), 2, "{reads:#?}");
+    assert!(reads.iter().all(|l| l.ends_with("eos=0")), "{reads:#?}");
+}
+
+/// A handler that starts a frame and says its end in the same call is
+/// asked again: the end is the frame's payload's to come
+/// (`Curl_creader_clear_eos`).
+#[test]
+fn a_frame_started_at_the_end_asks_for_its_payload() {
+    let (ran, _) = upload(vec![(Some(5), b""), (None, b"hello")]);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(unmasked(frames_sent(&ran)), (0x81, b"hello".to_vec()));
+}
+
+/// A transfer of `ws://` whose server's bytes come `n` at a time, its
+/// writes and their meta recorded, a first write paused if `pause`.
+fn in_pieces(frames: &[u8], n: usize, pause: bool) -> (Ran, Vec<MetaWrite>) {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let mut reply = SWITCH.to_vec();
+    reply.extend_from_slice(frames);
+    let talk =
+        Conversation::replies(&[&reply], true).giving(std::num::NonZeroUsize::new(n).unwrap());
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let handler = MetaWrites::default();
+    handler.paused.set(!pause);
+    let mut e = Easy::new();
+    let o = e.options_mut();
+    o.set_url(Some(format!("ws://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.callbacks.write = Some(Handler::write(handler.clone()).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    let mut result = None;
+    for _ in 0..10_000 {
+        m.perform(&mut NoEvents).unwrap();
+        if let Some(msg) = m.info_read() {
+            result = Some(msg.result);
+            break;
+        }
+        m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    }
+    let easy = m.remove(id, &mut NoEvents).unwrap().easy;
+    let ran = Ran {
+        result: result.expect("the transfer ends"),
+        request: talk.received(),
+        seen: Seen::default(),
+        easy: *easy,
+    };
+    let got = handler.got.lock().unwrap().clone();
+    (ran, got)
+}
+
+/// Each write's meta follows on from the last's within its frame: its
+/// offset is what came before, what is left what is still to come.
+fn follows_on(writes: &[MetaWrite], total: u64) {
+    let mut at = 0;
+    for (bytes, meta) in writes {
+        let meta = meta.expect("a frame's meta");
+        assert_eq!(meta.offset, at, "{writes:?}");
+        at += bytes.len() as u64;
+        assert_eq!(meta.bytes_left, total - at, "{writes:?}");
+    }
+    assert_eq!(at, total);
+}
+
+/// A frame that comes in pieces is written as it comes, each piece told
+/// where in the frame it is; a ping in pieces is answered once whole,
+/// by a pong of its last piece, as C answers it.
+#[test]
+fn a_frame_in_pieces_is_written_as_it_comes() {
+    let (ran, writes) = in_pieces(b"\x81\x05hello\x89\x02hi", 3, false);
+    assert_eq!(ran.result, Ok(()));
+    assert!(writes.len() > 1, "{writes:?}");
+    let body: Vec<u8> = writes.iter().flat_map(|(b, _)| b.clone()).collect();
+    assert_eq!(body, b"hello");
+    follows_on(&writes, 5);
+    let sent = frames_sent(&ran);
+    assert_eq!(&sent[..2], [0x8a, 0x80 | (sent[1] & 0x7f)]);
+}
+
+/// A frame longer than the stage holds, paused at its first piece,
+/// goes on from there once unpaused, each piece's meta its own.
+#[test]
+fn a_long_frame_paused_goes_on_where_it_stopped() {
+    let mut frame = b"\x82\x7f\0\0\0\0\0\x01\x11\x70".to_vec();
+    frame.extend(std::iter::repeat_n(b'z', 70_000));
+    let (ran, writes) = in_pieces(&frame, 16_384, true);
+    assert_eq!(ran.result, Ok(()));
+    assert!(writes.len() > 1, "{}", writes.len());
+    follows_on(&writes, 70_000);
 }

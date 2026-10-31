@@ -817,4 +817,12 @@ exclude_re = [
     # and after STARTTLS. None is used yet either way (`smtp_perform_ehlo`
     # clears `authused` the same).
     'curl-core/src/auth/sasl\.rs:.*: replace Sasl::forget_used with \(\)$',
+    # A WebSocket frame's first byte and length byte are joined from bits
+    # that never overlap (an opcode and FIN, a length under 126 and MASK),
+    # and so are a frame's flags for C: or and xor of them are one value.
+    'curl-core/src/proto/ws/frame\.rs:.*: replace \| with \^ in (send_byte|Encoder::add_frame)$',
+    'curl-sys-abi/src/ws\.rs:.*: replace \| with \^ in c_frame$',
+    # A connection only made is reached from outside any callback, so its
+    # sends never wait for the connection: this one cannot be called.
+    'curl-core/src/multi/raw\.rs:.*: replace <impl crate::proto::ws::Wire for RawWire<.*>>::send_all -> Result<\(\), ErrorKind> with Ok\(\(\)\)$',
 ]

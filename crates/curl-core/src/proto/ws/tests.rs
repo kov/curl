@@ -1024,3 +1024,31 @@ fn a_chunk_as_long_as_the_debug_limit_goes_whole() {
     assert_eq!(ws.flush(&mut rec, false), Ok(()));
     assert_eq!(rec.sent, b"abcdefgh");
 }
+
+/// A send buffer with room left in its chunk takes the pong at a flush,
+/// behind what it holds, though the connection takes nothing yet.
+#[test]
+fn a_send_buffer_with_room_takes_the_pong() {
+    let mut rec = Rec {
+        takes: Some(0),
+        ..Rec::default()
+    };
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    ws.sendbuf = ChunkQueue::new(16, 2);
+    ws.sendbuf.write(&[0; 3]).unwrap();
+    ws.add_pong(b"p");
+    assert_eq!(ws.flush(&mut rec, false), Err(Stop::Again));
+    assert!(!ws.pending(), "the pong went into the buffer");
+    assert_eq!(ws.sendbuf.len(), 3 + 6 + 1);
+}
+
+/// The debug build's sizes are decimal numbers of at most a MiB, as C
+/// reads them (`curlx_str_number`); anything else is not one.
+#[test]
+fn debug_sizes_are_at_most_a_mib() {
+    assert_eq!(curl_number(b"1048576", DEBUG_MAX), Some(1_048_576));
+    assert_eq!(curl_number(b"1048577", DEBUG_MAX), None);
+    assert_eq!(curl_number(b"12x", DEBUG_MAX), Some(12));
+    assert_eq!(curl_number(b"x12", DEBUG_MAX), None);
+    assert_eq!(curl_number(b"", DEBUG_MAX), None);
+}

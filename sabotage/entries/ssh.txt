@@ -60,3 +60,35 @@ witness: curl-core proto::ssh::tests::a_directory_is_listed
         let link = attrs.flags & Attrs::PERMISSIONS != 0 && attrs.permissions & S_IFMT == S_IFLNK;
 --- new
         let link = attrs.flags & Attrs::PERMISSIONS != 0 && attrs.permissions & S_IFMT == 0;
+
+=== a connection is reused whatever key files it was made with
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::ssh::tests::a_connection_is_reused_only_with_the_same_key_files
+--- old
+            (Some(h), Some(w)) => h.same(w),
+--- new
+            (Some(_), Some(_)) => true,
+
+=== the directories of an upload are made again for as long as the file is refused
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::missing_directories_are_made_once
+--- old
+            if missing && create_dirs && self.path().len() > 1 && !sc.second_create_dirs {
+--- new
+            if missing && create_dirs && self.path().len() > 1 && sc.slash < 64 {
+
+=== any MD5 fingerprint is taken
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::the_host_key_s_fingerprints_are_checked
+--- old
+            if !found.eq_ignore_ascii_case(&want) {
+--- new
+            if found.is_empty() {
+
+=== a key the handler would add to the known-hosts file is not added
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::the_known_hosts_file_and_the_key_handler_decide
+--- old
+            KeyVerdict::FineAddToFile => sc.session().update_known_hosts() == Rc::Ok,
+--- new
+            KeyVerdict::FineAddToFile => true,

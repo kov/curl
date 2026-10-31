@@ -35,6 +35,12 @@ struct World {
     password: Vec<u8>,
     /// Each call the state machine made of note, in order.
     calls: Vec<String>,
+    /// What the known-hosts file says of the server's key.
+    known: Option<KnownHosts>,
+    /// The keyboard-interactive login asks one question, the password.
+    asks: bool,
+    /// Every file opened to write is refused as missing.
+    refuses_writes: bool,
 }
 
 impl World {
@@ -177,9 +183,17 @@ impl Session for FakeSession {
         })
     }
     fn known_host(&mut self) -> (KnownHosts, Option<Result<KnownKey, Failed>>) {
-        (KnownHosts::NotFound, None)
+        let known = self.w().known.unwrap_or(KnownHosts::NotFound);
+        let key = (known != KnownHosts::NotFound).then(|| {
+            Ok(KnownKey {
+                base64: Some(b"BBBB".to_vec()),
+                kind: KeyType::Ed25519,
+            })
+        });
+        (known, key)
     }
     fn update_known_hosts(&mut self) -> Rc {
+        self.w().call("update_known_hosts", &[]);
         Rc::Ok
     }
     fn auth_none(&mut self) -> Auth {
@@ -206,13 +220,24 @@ impl Session for FakeSession {
         Auth::Denied
     }
     fn auth_kbdint(&mut self) -> Auth {
-        Auth::Denied
+        let mut w = self.w();
+        if !w.asks {
+            return Auth::Denied;
+        }
+        w.call("auth_kbdint", &[]);
+        // Asked, then answered right: done.
+        match w.calls.iter().rfind(|c| c.starts_with("kbdint_answer")) {
+            None => Auth::Info,
+            Some(a) if a.as_bytes().ends_with(&w.password) => Auth::Success,
+            Some(_) => Auth::Denied,
+        }
     }
     fn kbdint_prompts(&mut self) -> i32 {
-        0
+        1
     }
-    fn kbdint_answer(&mut self, _: u32, _: &[u8]) -> i32 {
-        -1
+    fn kbdint_answer(&mut self, _: u32, answer: &[u8]) -> i32 {
+        self.w().call("kbdint_answer", &[answer]);
+        0
     }
     fn auth_password(&mut self, password: &[u8]) -> Auth {
         let mut w = self.w();
@@ -412,6 +437,11 @@ impl Session for FakeSession {
     fn open(&mut self, path: &[u8], mode: OpenMode, _: u32) -> bool {
         let mut w = self.w();
         w.call("open", &[path]);
+        if mode != OpenMode::Read && w.refuses_writes {
+            drop(w);
+            self.error = SSH_FX_NO_SUCH_FILE;
+            return false;
+        }
         let at = match (w.file(path), mode) {
             (Some(at), OpenMode::Truncate) => {
                 w.files[at].1.clear();
@@ -526,7 +556,12 @@ impl DebugHandler for Text {
 /// A fake world with `files` in the home directory, offering the public
 /// key and password logins, the password `secret`.
 fn world(files: &[(&str, &str)]) -> Arc<Mutex<World>> {
-    Arc::new(Mutex::new(World {
+    world_with(files, |_| {})
+}
+
+/// The same, `set` changing it.
+fn world_with(files: &[(&str, &str)], set: impl FnOnce(&mut World)) -> Arc<Mutex<World>> {
+    let mut w = World {
         files: files
             .iter()
             .map(|(p, b)| (p.as_bytes().to_vec(), b.as_bytes().to_vec()))
@@ -534,7 +569,9 @@ fn world(files: &[(&str, &str)]) -> Arc<Mutex<World>> {
         methods: Methods::PUBLICKEY | Methods::PASSWORD,
         password: b"secret".to_vec(),
         ..World::default()
-    }))
+    };
+    set(&mut w);
+    Arc::new(Mutex::new(w))
 }
 
 /// A multi whose server at `port` takes `talk`.
@@ -598,9 +635,17 @@ fn run(
     url: &str,
     set: impl FnOnce(&mut Options),
 ) -> (Result<(), ErrorKind>, Vec<u8>, String, Vec<String>) {
-    let w = world(files);
+    run_in(&world(files), url, set)
+}
+
+/// The same over `w`.
+fn run_in(
+    w: &Arc<Mutex<World>>,
+    url: &str,
+    set: impl FnOnce(&mut Options),
+) -> (Result<(), ErrorKind>, Vec<u8>, String, Vec<String>) {
     let mut m = serving(PORT, &silent());
-    let (id, body, text) = added(&mut m, &w, url, set);
+    let (id, body, text) = added(&mut m, w, url, set);
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     m.remove(id, &mut NoEvents).unwrap();
     drop(m);
@@ -859,4 +904,189 @@ fn the_socket_is_handed_over_past_a_socks_grant() {
     assert_eq!(result, Ok(()), "{said}");
     assert_eq!(*body.0.lock().unwrap(), b"via socks");
     assert!(w.lock().unwrap().calls.contains(&"set_socket".to_owned()));
+}
+
+/// A connection serves a later transfer only if it found the same key
+/// files (`ssh_config_matches`).
+#[test]
+fn a_connection_is_reused_only_with_the_same_key_files() {
+    let connects = |second_key: &'static [u8]| {
+        let w = world(&[("/home/u/f", "x")]);
+        let mut m = serving(PORT, &silent());
+        for key in [&b"/keys/id"[..], second_key] {
+            let (id, body, text) = added(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+                o.ssh.make_mut().unwrap().private_key = Some(key.to_vec());
+            });
+            let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+            assert_eq!(result, Ok(()), "{}", text.text());
+            assert_eq!(*body.0.lock().unwrap(), b"x");
+            m.remove(id, &mut NoEvents).unwrap();
+        }
+        drop(m);
+        let calls = w.lock().unwrap().calls.clone();
+        calls.iter().filter(|c| *c == "connect").count()
+    };
+    assert_eq!(connects(b"/keys/id"), 1);
+    assert_eq!(connects(b"/keys/other"), 2);
+}
+
+/// The server's key is checked against the SHA-256 fingerprint given, as
+/// base64 without its padding, else the MD5 one, in hex.
+#[test]
+fn the_host_key_s_fingerprints_are_checked() {
+    let fingerprinted = |set: fn(&mut crate::options::Ssh)| {
+        run(
+            &[("/home/u/f", "x")],
+            "sftp://u@127.0.0.1:PORT/~/f",
+            move |o| set(o.ssh.make_mut().unwrap()),
+        )
+    };
+    let (result, _, said, _) = fingerprinted(|s| {
+        s.host_key_sha256 = Some(b"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE".to_vec())
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        said.contains("SSH SHA256 fingerprint: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\n"),
+        "{said}"
+    );
+    let (result, _, said, _) =
+        fingerprinted(|s| s.host_key_sha256 = Some(b"AAAAAAAAAAAAAAAAAAAA".to_vec()));
+    assert_eq!(result, Err(ErrorKind::PeerFailedVerification), "{said}");
+    assert!(
+        said.contains("Denied establishing ssh session: mismatch SHA256 fingerprint."),
+        "{said}"
+    );
+    let (result, _, said, _) =
+        fingerprinted(|s| s.host_key_md5 = Some(b"02020202020202020202020202020202".to_vec()));
+    assert_eq!(result, Ok(()), "{said}");
+    let (result, _, said, _) =
+        fingerprinted(|s| s.host_key_md5 = Some(b"03020202020202020202020202020202".to_vec()));
+    assert_eq!(result, Err(ErrorKind::PeerFailedVerification), "{said}");
+    assert!(
+        said.contains("Denied establishing ssh session: mismatch MD5 fingerprint."),
+        "{said}"
+    );
+}
+
+/// Decides as it was made to, keeping how the keys compared.
+struct Decides(crate::handler::KeyVerdict, Arc<Mutex<Vec<KeyMatch>>>);
+
+impl crate::handler::SshKeyHandler for Decides {
+    fn check(
+        &self,
+        _: &mut TransferCx<'_>,
+        known: Option<crate::handler::HostKey<'_>>,
+        found: crate::handler::HostKey<'_>,
+        matched: KeyMatch,
+    ) -> crate::handler::KeyVerdict {
+        assert_eq!(found.base64, b"AAAA");
+        assert_eq!(known.is_some(), matched != KeyMatch::Missing);
+        self.1.lock().unwrap().push(matched);
+        self.0
+    }
+}
+
+/// With a known-hosts file, a key it has is fine and one it lacks is
+/// not; a key handler decides either way, and a key it would have added
+/// is added to the file.
+#[test]
+fn the_known_hosts_file_and_the_key_handler_decide() {
+    use crate::handler::KeyVerdict as V;
+    let checked = |known: KnownHosts, verdict: Option<V>| {
+        let w = world_with(&[("/home/u/f", "x")], |w| w.known = Some(known));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let handler =
+            verdict.map(|v| crate::handler::Handler::ssh_key(Decides(v, seen.clone())).unwrap());
+        let (result, _, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+            let ssh = o.ssh.make_mut().unwrap();
+            ssh.known_hosts = Some(b"/kh".to_vec());
+            ssh.key_handler = handler;
+        });
+        let seen = seen.lock().unwrap().clone();
+        (result, said, calls, seen)
+    };
+    let (result, said, _, _) = checked(KnownHosts::Ok, None);
+    assert_eq!(result, Ok(()), "{said}");
+    let (result, said, _, _) = checked(KnownHosts::NotFound, None);
+    assert_eq!(result, Err(ErrorKind::PeerFailedVerification), "{said}");
+    let (result, said, _, seen) = checked(KnownHosts::NotFound, Some(V::Fine));
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(seen, [KeyMatch::Missing]);
+    let (result, said, _, seen) = checked(KnownHosts::Changed, Some(V::Reject));
+    assert_eq!(result, Err(ErrorKind::PeerFailedVerification), "{said}");
+    assert_eq!(seen, [KeyMatch::Mismatch]);
+    let (result, said, calls, _) = checked(KnownHosts::NotFound, Some(V::FineAddToFile));
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        calls.contains(&"update_known_hosts".to_owned()),
+        "{calls:?}"
+    );
+}
+
+/// The keyboard-interactive login answers its one question with the
+/// password.
+#[test]
+fn the_keyboard_interactive_login_answers_with_the_password() {
+    let w = world_with(&[("/home/u/f", "x")], |w| {
+        w.methods = Methods::INTERACTIVE;
+        w.asks = true;
+    });
+    let (result, body, said, calls) = run_in(&w, "sftp://u:secret@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(body, b"x");
+    assert!(
+        said.contains("completed keyboard interactive authentication\n"),
+        "{said}"
+    );
+    assert!(
+        calls.contains(&"kbdint_answer secret".to_owned()),
+        "{calls:?}"
+    );
+}
+
+/// An upload whose file cannot be opened makes the directories up to it
+/// once, then fails if the file still cannot be opened, where C's
+/// libssh code would make them again for ever.
+#[test]
+fn missing_directories_are_made_once() {
+    let w = world_with(&[], |w| w.refuses_writes = true);
+    let (result, _, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/a/b/f", |o| {
+        o.method = crate::options::Method::Upload;
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"up".to_vec()).unwrap(),
+        );
+        o.line.make_mut().unwrap().ftp.create_dirs = CreateDirs::Create;
+    });
+    assert_eq!(result, Err(ErrorKind::RemoteFileNotFound), "{said}");
+    let tried: Vec<_> = calls
+        .iter()
+        .filter(|c| c.starts_with("open") || c.starts_with("mkdir"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        tried,
+        [
+            "open /home/u/a/b/f",
+            "mkdir /home",
+            "mkdir /home/u",
+            "mkdir /home/u/a",
+            "mkdir /home/u/a/b",
+            "open /home/u/a/b/f",
+        ]
+    );
+}
+
+/// An upload goes to the file, made if it is not there.
+#[test]
+fn an_sftp_file_is_uploaded() {
+    let w = world(&[]);
+    let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        o.method = crate::options::Method::Upload;
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"uploaded".to_vec()).unwrap(),
+        );
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    let w = w.lock().unwrap();
+    assert_eq!(w.files, [(b"/home/u/f".to_vec(), b"uploaded".to_vec())]);
 }

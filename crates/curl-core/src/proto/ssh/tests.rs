@@ -46,8 +46,12 @@ struct World {
     /// So many of SFTP's reads, and of its renames, wait first.
     read_waits: usize,
     rename_waits: usize,
-    /// SFTP's writes fail.
+    /// SFTP's writes fail; and so many of its reads, from the
+    /// `reads_fail_from`th of the world's on (counted from 1).
     writes_fail: bool,
+    reads_fail: usize,
+    reads_fail_from: usize,
+    reads: usize,
     /// The private key's login is refused.
     key_refused: bool,
     /// The calls, by name, whose first answer is to wait.
@@ -662,6 +666,13 @@ impl Session for FakeSession {
                 assert!(self.reading.is_some(), "a read begun");
                 return Aio::Again;
             }
+            w.reads += 1;
+            if w.reads >= w.reads_fail_from && w.reads_fail > 0 {
+                w.reads_fail -= 1;
+                w.call("read fails", &[]);
+                self.reading = None;
+                return Aio::Error;
+            }
         }
         let len = self.reading.take().expect("a read begun");
         let open = self.file.as_mut().unwrap();
@@ -791,7 +802,7 @@ fn added_with_tls(
     let mut e = Easy::new();
     if world.lock().unwrap().trace_ssh {
         let c = crate::components::Components::new().unwrap();
-        c.configure(b"ssh");
+        c.configure(b"ssh,multi");
         e.set_components(Some(c));
     }
     e.set_libraries(
@@ -1520,6 +1531,82 @@ fn a_read_that_waits_is_taken_after_its_wait() {
     assert_eq!(waits, 2);
 }
 
+/// An SFTP download whose first read fails on a reused connection, with
+/// nothing received, is made again on a fresh one (`Curl_retry_request`),
+/// its post-quote run once, after the download made again, not after the
+/// one given up. An upload whose write fails so is not made again, as C
+/// retries no upload outside HTTP.
+#[test]
+fn a_download_that_gets_nothing_on_a_reused_connection_is_made_again() {
+    let connects = |w: &Arc<Mutex<World>>| {
+        w.lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|c| *c == "connect")
+            .count()
+    };
+    let w = world_with(&[("/home/u/f", "x"), ("/home/u/g", "y")], |w| {
+        w.reads_fail = 1;
+        // The first transfer reads its one byte once, its size known.
+        w.reads_fail_from = 2;
+    });
+    let mut m = serving(PORT, &silent());
+    let (result, body, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!((result, body), (Ok(()), b"x".to_vec()), "{said}");
+    let (result, body, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/g", |o| {
+        let line = o.line.make_mut().unwrap();
+        line.postquote
+            .set([&b"rename /home/u/g /home/u/h"[..]])
+            .unwrap();
+    });
+    assert_eq!((result, body), (Ok(()), b"y".to_vec()), "{said}");
+    drop(m);
+    assert_eq!(
+        connects(&w),
+        2,
+        "made again on a fresh connection: {:?}",
+        w.lock().unwrap().calls
+    );
+    let calls = w.lock().unwrap().calls.clone();
+    let renames = calls.iter().filter(|c| c.starts_with("rename ")).count();
+    assert_eq!(renames, 1, "{calls:?}");
+    assert!(calls.contains(&"read fails".to_owned()), "{calls:?}");
+
+    let w = world_with(&[("/home/u/f", "x")], |_| {});
+    let mut m = serving(PORT, &silent());
+    let (result, _, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    w.lock().unwrap().writes_fail = true;
+    let (result, _, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/up", |o| {
+        uploads(o, b"z");
+    });
+    assert!(result.is_err(), "{said}");
+    drop(m);
+    assert_eq!(connects(&w), 1, "an upload is not made again");
+
+    // A download that got some of its body before its read failed is not
+    // made again: its files say no size, so each is read to its end.
+    let w = world_with(&[("/home/u/f", "x"), ("/home/u/g", "y")], |w| {
+        w.no_size_flag = true;
+        w.reads_fail = 1;
+        // The first transfer's byte and its end, then the second's byte.
+        w.reads_fail_from = 4;
+    });
+    let mut m = serving(PORT, &silent());
+    let (result, _, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    let (result, body, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/g", |_| {});
+    assert!(result.is_err(), "{said}");
+    assert_eq!(body, b"y");
+    drop(m);
+    assert_eq!(
+        connects(&w),
+        1,
+        "a download that got bytes is not made again"
+    );
+}
+
 /// A command after the transfer that waits is waited on as the transfer
 /// ends, and the next transfer finds its connection.
 #[test]
@@ -1987,7 +2074,27 @@ fn the_ssh_trace_says_what_its_pollset_waits_for() {
     // pollset hears the live session, unsaid.
     let quiet = said(|w| w.waiting = vec!["connect", "connect"]);
     assert!(quiet.contains("connect -> EAGAIN"), "{quiet}");
-    assert!(!quiet.contains("pollset"), "{quiet}");
+    assert!(!quiet.contains("[SSH] pollset"), "{quiet}");
+    // What the multi waits on is what was said: both ways, then a read,
+    // then the live session's input, though it asked for nothing.
+    let polled = |said: &str| -> Vec<String> {
+        said.lines()
+            .filter(|l| l.contains("[PROTOCONNECTING] pollset[fd="))
+            .map(str::to_owned)
+            .collect()
+    };
+    assert!(
+        polled(&waiting)
+            .iter()
+            .any(|l| l.contains(" IN") && l.contains("OUT")),
+        "{waiting}"
+    );
+    assert!(
+        polled(&quiet)
+            .iter()
+            .any(|l| l.contains("pollset[fd=1000 IN]")),
+        "{quiet}"
+    );
 }
 
 /// An SCP channel's close that waits is waited on as the upload ends.

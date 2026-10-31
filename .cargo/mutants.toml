@@ -868,4 +868,11 @@ exclude_re = [
     # passed on, delivers nothing.
     'curl-core/src/proto/tftp\.rs:.*: replace \+ with \* in Request::fill$',
     'curl-core/src/proto/tftp\.rs:.*: replace > with >= in Request::receive$',
+    # The SSH pollset's flags are IN as bit 0 and OUT as bit 1: no bit is
+    # in both, so or-ing and xor-ing them make the same number.
+    'curl-core/src/multi/state\.rs:.*: replace \| with \^ in PollsetTrace<T>::trace$',
+    # An SSH request is not live only once its session is freed, which
+    # marks the connection to close and ends the transfer in that step:
+    # no pollset is asked of it after.
+    'curl-core/src/proto/ssh/mod\.rs:.*: replace match guard self\.live with true in Request::pollset$',
 ]

@@ -1210,12 +1210,15 @@ fn the_address_port_offers_is_resolved_as_c_resolves_it() {
 
     let control = Conversation::replies(&ACTIVE_LOGIN_AND_SETUP[..4], false).greeting();
     let (mut m, _) = serving_active(&[&control], &[]);
-    let (id, _, text) = added(&mut m, URL, |o| {
+    let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"multi,dns", |o| {
         o.line.make_mut().unwrap().ftp.port = Some(b"bogus.invalid".to_vec());
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let said = text.text();
     assert_eq!(result, Err(ErrorKind::CouldntResolveHost), "{said}");
+    // Asked of the resolver, which found nothing: started, as C says it.
+    let looked = at_in(&said, "[DNS] cache lookup bogus.invalid:0 queries=");
+    at_in(&said[looked..], "] hostip_resolv started -> 81\n");
     let any = at_in(&said, "Could not resolve host: bogus.invalid");
     let port = at_in(
         &said,

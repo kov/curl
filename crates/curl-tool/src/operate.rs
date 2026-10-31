@@ -4701,6 +4701,10 @@ mod tests {
             text.contains("CURLOPT_SSH_KNOWNHOSTS, \"/dev/null\""),
             "{text}"
         );
+        // Nothing kept: it is worked out, one under the home directory
+        // if no other is found.
+        let (text, _) = set_up_with(&[], "sftp://h/", Claims::of_build(), |_| {}).unwrap();
+        assert!(text.contains("CURLOPT_SSH_KNOWNHOSTS, \""), "{text}");
     }
 
     /// With no known-hosts file given or found, one under `$HOME` is set

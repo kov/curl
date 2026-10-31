@@ -2950,6 +2950,17 @@ fn ssh_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
     let found;
     let known = match op.knownhosts {
         Some(known) => Some(known),
+        // Worked out by an earlier transfer.
+        None if op.knownhosts_default.borrow().is_some() => {
+            found = op
+                .knownhosts_default
+                .borrow()
+                .as_deref()
+                .map(copy)
+                .transpose()
+                .map_err(oom)?;
+            found.as_deref()
+        }
         None => {
             let env = |var: &str| {
                 Ok(curl_os::env::var(var.as_bytes())?
@@ -2965,6 +2976,10 @@ fn ssh_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
             let checked = [op.hostpubmd5.is_some(), op.hostpubsha256.is_some()];
             let home = curl_os::env::var(b"HOME").map_err(oom)?;
             found = known_hosts_default(path, checked, home.as_deref()).map_err(oom)?;
+            // Kept for the next transfer, as C keeps any it sets.
+            if let Some(default) = found.as_deref() {
+                *op.knownhosts_default.borrow_mut() = Some(copy(default).map_err(oom)?);
+            }
             found.as_deref()
         }
     };
@@ -4668,6 +4683,24 @@ mod tests {
         let (text, _) = set_up_url(&["--hostpubmd5", md5], "sftp://h/").unwrap();
         assert!(text.contains(&format!("CURLOPT_SSH_HOST_PUBLIC_KEY_MD5, \"{md5}\"")));
         assert!(set_up_url(&["--hostpubmd5", &md5[1..]], "sftp://h/").is_none());
+    }
+
+    /// The known-hosts file an earlier SSH transfer worked out is the one
+    /// the next is given, not looked for again; one given wins.
+    #[test]
+    fn the_known_hosts_default_is_worked_out_once() {
+        let kept = |op: &mut Operation<'_>| {
+            *op.knownhosts_default.borrow_mut() = Some(b"/kept/known_hosts".to_vec());
+        };
+        let (text, _) = set_up_with(&[], "sftp://h/", Claims::of_build(), kept).unwrap();
+        let line = "curl_easy_setopt(curl, CURLOPT_SSH_KNOWNHOSTS, \"/kept/known_hosts\");";
+        assert!(text.contains(line), "{text}");
+        let args = ["--knownhosts", "/dev/null"];
+        let (text, _) = set_up_with(&args, "sftp://h/", Claims::of_build(), kept).unwrap();
+        assert!(
+            text.contains("CURLOPT_SSH_KNOWNHOSTS, \"/dev/null\""),
+            "{text}"
+        );
     }
 
     /// With no known-hosts file given or found, one under `$HOME` is set

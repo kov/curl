@@ -344,6 +344,10 @@ pub(crate) struct Operation<'a> {
     pub(crate) hostpubsha256: Option<&'a [u8]>,
     /// `--knownhosts`, a file that exists.
     pub(crate) knownhosts: Option<&'a [u8]>,
+    /// The known-hosts file worked out when none is given, by the first
+    /// SSH transfer that needs one and kept for the rest
+    /// (`config->knownhosts`, stored "to avoid repeated checks").
+    pub(crate) knownhosts_default: std::cell::RefCell<Option<Vec<u8>>>,
     /// `--compressed-ssh`.
     pub(crate) ssh_compression: bool,
     /// `--ftp-ssl-control` (C's `ftp_ssl_control`).

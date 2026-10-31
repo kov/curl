@@ -1483,3 +1483,11 @@ witness: curl-tool a_resumed_upload_seeks_standard_input_if_it_can
 --- new
         match file.seek(SeekFrom::Start(offset)) {
             Ok(_) => Err(SeekFailed::CantSeek),
+
+=== each SSH transfer looks for the known-hosts file again
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::the_known_hosts_default_is_worked_out_once
+--- old
+        None if op.knownhosts_default.borrow().is_some() => {
+--- new
+        None if false => {

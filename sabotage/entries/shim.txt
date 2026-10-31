@@ -352,3 +352,15 @@ witness: curl-core proto::http::tests::unix_trace::a_long_unix_socket_path_shows
 const SHOWN_IP_MAX: usize = 45;
 --- new
 const SHOWN_IP_MAX: usize = 46;
+
+=== the host key function, libssh2's alone, is known to a libssh build
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi setopt::tests::takes_the_ssh_options_as_c_s_libssh_build
+--- old
+            return Err(Refused::Unknown);
+        }
+        (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
+--- new
+            return Err(Refused::NotBuiltIn);
+        }
+        (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {

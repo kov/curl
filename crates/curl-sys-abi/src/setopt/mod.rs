@@ -1526,6 +1526,10 @@ fn apply(
             callbacks::sync_ssh_key(options, me, ccb)?;
         }
         (ffi::CURLOPT_SSH_KEYDATA, Ptr(p)) => ccb.ssh_key_data = p,
+        // libssh2's alone in C: a build with libssh does not know them.
+        (ffi::CURLOPT_SSH_HOSTKEYFUNCTION | ffi::CURLOPT_SSH_HOSTKEYDATA, _) => {
+            return Err(Refused::Unknown);
+        }
         (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
             // SAFETY: the application passes a function of the option's
             // type, or NULL.
@@ -2000,6 +2004,49 @@ fn upload_flags(n: c_long) -> UploadFlags {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The SSH options are taken as C's libssh build takes them: a
+    /// directory's mode up to 0777, and the host key function and its
+    /// data, libssh2's, unknown.
+    #[test]
+    fn takes_the_ssh_options_as_c_s_libssh_build() {
+        let c = crate::easy::curl_easy_init();
+        let long = |option, n: c_long| {
+            // SAFETY: a live handle, and a `long` option.
+            unsafe { curl_easy_setopt(c, option, n) }
+        };
+        let pointer = |option| {
+            // SAFETY: a live handle, and an option NULL may be given.
+            unsafe { curl_easy_setopt(c, option, core::ptr::null_mut::<c_void>()) }
+        };
+        let answers = [
+            long(ffi::CURLOPT_NEW_DIRECTORY_PERMS, 0o755),
+            long(ffi::CURLOPT_NEW_DIRECTORY_PERMS, 0o1000),
+            long(ffi::CURLOPT_SSH_AUTH_TYPES, -1),
+            pointer(ffi::CURLOPT_SSH_KEYFUNCTION),
+            pointer(ffi::CURLOPT_SSH_HOSTKEYFUNCTION),
+            pointer(ffi::CURLOPT_SSH_HOSTKEYDATA),
+        ];
+        assert_eq!(
+            answers,
+            [
+                CURLE_OK,
+                CURLE_BAD_FUNCTION_ARGUMENT,
+                CURLE_OK,
+                CURLE_OK,
+                CURLE_UNKNOWN_OPTION,
+                CURLE_UNKNOWN_OPTION,
+            ]
+        );
+        // SAFETY: a live handle.
+        let easy = unsafe { crate::easy::handle(c) }.expect("live");
+        let mode = easy
+            .with_options(|o| o.ssh.new_directory_mode.bits())
+            .expect("reachable");
+        assert_eq!(mode, 0o755);
+        // SAFETY: a live handle, not used again.
+        unsafe { crate::easy::curl_easy_cleanup(c) };
+    }
 
     /// The flags are the value's low byte, any bits past the five C
     /// names kept.

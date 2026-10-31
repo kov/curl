@@ -233,4 +233,4 @@ unsafe extern "C" {
 }
 
 /// How many values and layouts `csrc/layout.c` gives.
-pub(crate) const LAYOUT_LEN: usize = 55;
+pub(crate) const LAYOUT_LEN: usize = 63;

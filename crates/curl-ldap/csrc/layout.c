@@ -32,7 +32,11 @@ const int64_t curl_ldap_values[] = {
   SBIOD(sbiod_io), SBIOD(sbiod_pvt), SBIOD(sbiod_next),
   (int64_t)sizeof(Sockbuf_IO), SBIO(sbi_setup), SBIO(sbi_remove),
   SBIO(sbi_ctrl), SBIO(sbi_read), SBIO(sbi_write), SBIO(sbi_close),
+  /* The codes the core names (curl_core::ldap::Code, UrlError). */
+  LDAP_PROTOCOL_ERROR, LDAP_SIZELIMIT_EXCEEDED, LDAP_SASL_BIND_IN_PROGRESS,
+  LDAP_INVALID_CREDENTIALS, LDAP_INSUFFICIENT_ACCESS, LDAP_NO_MEMORY,
+  LDAP_NO_RESULTS_RETURNED, LDAP_URL_ERR_BADURL,
 };
 
 _Static_assert(sizeof(curl_ldap_values) / sizeof(curl_ldap_values[0])
-               == 55, "src/sys.rs's LAYOUT_LEN");
+               == 63, "src/sys.rs's LAYOUT_LEN");

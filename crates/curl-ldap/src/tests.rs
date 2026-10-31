@@ -67,6 +67,14 @@ fn the_declarations_are_the_headers() {
         n(offset_of!(Sockbuf_IO, sbi_read)),
         n(offset_of!(Sockbuf_IO, sbi_write)),
         n(offset_of!(Sockbuf_IO, sbi_close)),
+        Code::PROTOCOL_ERROR.0.into(),
+        Code::SIZELIMIT_EXCEEDED.0.into(),
+        Code::SASL_BIND_IN_PROGRESS.0.into(),
+        Code::INVALID_CREDENTIALS.0.into(),
+        Code::INSUFFICIENT_ACCESS.0.into(),
+        Code::NO_MEMORY.0.into(),
+        Code::NO_RESULTS_RETURNED.0.into(),
+        UrlError::BAD_URL.0.into(),
     ];
     // SAFETY: a table of `LAYOUT_LEN` numbers C defines, read only.
     let theirs = unsafe { curl_ldap_values };

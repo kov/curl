@@ -240,6 +240,24 @@ fn the_http_methods_choose_mechanisms() {
     );
 }
 
+/// The codes are the library's numbers, as its header has them (the
+/// binding's tests compare them with it).
+#[test]
+fn the_codes_are_the_library_s_numbers() {
+    let codes = [
+        Code::SUCCESS,
+        Code::PROTOCOL_ERROR,
+        Code::SIZELIMIT_EXCEEDED,
+        Code::SASL_BIND_IN_PROGRESS,
+        Code::INVALID_CREDENTIALS,
+        Code::INSUFFICIENT_ACCESS,
+        Code::NO_MEMORY,
+        Code::NO_RESULTS_RETURNED,
+    ];
+    assert_eq!(codes.map(|c| c.0), [0, 2, 4, 14, 49, 50, -10, -14]);
+    assert_eq!((UrlError::MEM.0, UrlError::BAD_URL.0), (1, 5));
+}
+
 /// The codes C maps are mapped; any other is the caller's error.
 #[test]
 fn library_codes_map_as_c_maps_them() {
@@ -395,6 +413,13 @@ struct World {
     starttls: Code,
     /// The library makes no session, this its code.
     refuse: Option<Code>,
+    /// STARTTLS is not sent, this the library's code.
+    starttls_unsent: Option<Code>,
+    /// The root's entry's code, and the result of the search for it.
+    root: Code,
+    root_found: Code,
+    /// So many asks for an answer find none yet.
+    late: usize,
 }
 
 impl Default for World {
@@ -408,6 +433,10 @@ impl Default for World {
             found: Code::SUCCESS,
             starttls: Code::SUCCESS,
             refuse: None,
+            starttls_unsent: None,
+            root: Code::NO_RESULTS_RETURNED,
+            root_found: Code::SUCCESS,
+            late: 0,
         }
     }
 }
@@ -486,6 +515,9 @@ struct Answer {
     kind: Kind,
     code: Code,
     cred: Option<Vec<u8>>,
+    /// Its credentials cannot be read, the library's code: a failed
+    /// simple bind's, as libldap reads one.
+    unread: Option<Code>,
     dn: Vec<u8>,
     attrs: Vec<(Vec<u8>, Vec<Vec<u8>>)>,
     at: usize,
@@ -497,6 +529,7 @@ impl Answer {
             kind,
             code,
             cred: None,
+            unread: None,
             dn: Vec::new(),
             attrs: Vec::new(),
             at: 0,
@@ -507,6 +540,23 @@ impl Answer {
 impl FakeSession {
     fn call(&self, said: String) {
         self.world.lock().unwrap().calls.push(said);
+    }
+
+    /// Once wired, each message goes through the wire as a line, as
+    /// the library's would.
+    fn put(&self, wire: &mut dyn Wire, said: &str) {
+        if !self.wired {
+            return;
+        }
+        let line = format!("{said}\n");
+        let mut rest = line.as_bytes();
+        while !rest.is_empty() {
+            match wire.send(rest) {
+                Ok(0) => return self.call("sent none".into()),
+                Ok(n) => rest = &rest[n..],
+                Err(e) => return self.call(format!("send failed {:?}", e.kind())),
+            }
+        }
     }
 
     fn sent(&mut self, answers: Vec<Answer>) -> MsgId {
@@ -532,7 +582,8 @@ impl Session for FakeSession {
         self.call("no referrals".into());
     }
 
-    fn set_max_incoming(&mut self, _: usize) -> bool {
+    fn set_max_incoming(&mut self, max: usize) -> bool {
+        self.call(format!("max {max}"));
         true
     }
 
@@ -547,7 +598,7 @@ impl Session for FakeSession {
 
     fn bind(
         &mut self,
-        _: &mut dyn Wire,
+        wire: &mut dyn Wire,
         dn: Option<&[u8]>,
         mech: Mech<'_>,
         cred: Option<&[u8]>,
@@ -561,7 +612,9 @@ impl Session for FakeSession {
                     .binds
                     .pop_front()
                     .unwrap_or(Code::SUCCESS);
-                ("simple".to_string(), Answer::of(Kind::Bind, code))
+                let mut a = Answer::of(Kind::Bind, code);
+                a.unread = (code != Code::SUCCESS).then_some(code);
+                ("simple".to_string(), a)
             }
             Mech::Null => ("null".to_string(), Answer::of(Kind::Bind, Code(0x07))),
             Mech::Sasl(m) => {
@@ -572,12 +625,14 @@ impl Session for FakeSession {
                 (format!("sasl {}", String::from_utf8_lossy(m)), a)
             }
         };
-        self.call(format!("bind {} {said} {}", shown(dn), shown(cred)));
+        let said = format!("bind {} {said} {}", shown(dn), shown(cred));
+        self.put(wire, &said);
+        self.call(said);
         Ok(self.sent(vec![answer]))
     }
 
-    fn search(&mut self, _: &mut dyn Wire, search: &Search) -> Result<MsgId, Code> {
-        self.call(format!(
+    fn search(&mut self, wire: &mut dyn Wire, search: &Search) -> Result<MsgId, Code> {
+        let said = format!(
             "search {} {} {} {:?}",
             shown(search.dn.as_deref()),
             search.scope,
@@ -586,16 +641,18 @@ impl Session for FakeSession {
                 .iter()
                 .map(|a| String::from_utf8_lossy(a).into_owned())
                 .collect::<Vec<_>>()),
-        ));
+        );
+        self.put(wire, &said);
+        self.call(said);
         let w = self.world.lock().unwrap();
         let mut answers = Vec::new();
         let asks_mechs =
             search.attrs.as_deref() == Some(&[b"supportedSASLMechanisms".to_vec()][..]);
         if asks_mechs {
-            let mut root = Answer::of(Kind::SearchEntry, Code::NO_RESULTS_RETURNED);
+            let mut root = Answer::of(Kind::SearchEntry, w.root);
             root.attrs = vec![(b"supportedSASLMechanisms".to_vec(), w.mechs.clone())];
             answers.push(root);
-            answers.push(Answer::of(Kind::SearchResult, Code::SUCCESS));
+            answers.push(Answer::of(Kind::SearchResult, w.root_found));
         } else {
             for (dn, attrs) in &w.entries {
                 let mut e = Answer::of(Kind::SearchEntry, Code::NO_RESULTS_RETURNED);
@@ -609,7 +666,11 @@ impl Session for FakeSession {
         Ok(self.sent(answers))
     }
 
-    fn start_tls(&mut self, _: &mut dyn Wire) -> Result<MsgId, Code> {
+    fn start_tls(&mut self, wire: &mut dyn Wire) -> Result<MsgId, Code> {
+        if let Some(code) = self.world.lock().unwrap().starttls_unsent {
+            return Err(code);
+        }
+        self.put(wire, "starttls");
         self.call("starttls".into());
         let code = self.world.lock().unwrap().starttls;
         Ok(self.sent(vec![Answer::of(Kind::Extended, code)]))
@@ -617,11 +678,32 @@ impl Session for FakeSession {
 
     fn result<'s>(
         &'s mut self,
-        _: &mut dyn Wire,
+        wire: &mut dyn Wire,
         id: MsgId,
     ) -> Result<Option<Box<dyn Message + 's>>, Code> {
+        {
+            let mut w = self.world.lock().unwrap();
+            if w.late > 0 {
+                w.late -= 1;
+                return Ok(None);
+            }
+        }
         match self.answers.front() {
             Some((at, _)) if *at == id => {
+                // Once wired, each answer is a byte `A` the server sent,
+                // read through the wire.
+                if self.wired {
+                    let pending = wire.pending();
+                    let mut byte = [0];
+                    match wire.recv(&mut byte) {
+                        Ok(1) if byte == *b"A" => self.call(format!("read, pending {pending}")),
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+                        other => {
+                            self.call(format!("read {other:?} {byte:?}"));
+                            return Err(Code(-1));
+                        }
+                    }
+                }
                 let (_, a) = self.answers.pop_front().unwrap();
                 Ok(Some(Box::new(a)))
             }
@@ -634,7 +716,8 @@ impl Session for FakeSession {
         self.answers.retain(|(at, _)| *at != id);
     }
 
-    fn unbind(&mut self, _: &mut dyn Wire) {
+    fn unbind(&mut self, wire: &mut dyn Wire) {
+        self.put(wire, "unbind");
         self.call("unbind".into());
     }
 }
@@ -649,7 +732,10 @@ impl Message for Answer {
     }
 
     fn bind_result(&mut self) -> Result<Option<Vec<u8>>, Code> {
-        Ok(self.cred.clone())
+        match self.unread {
+            Some(code) => Err(code),
+            None => Ok(self.cred.clone()),
+        }
     }
 
     fn dn(&mut self) -> Result<&[u8], Code> {
@@ -704,20 +790,57 @@ struct Ran {
     result: Result<(), ErrorKind>,
     body: Vec<u8>,
     said: String,
+    /// The multi's own trace, as its connections shut down.
+    internal: String,
     calls: Vec<String>,
+}
+
+/// Collects the multi's own trace.
+#[derive(Clone, Default)]
+struct Internal(Arc<Mutex<Vec<u8>>>);
+
+impl crate::handler::TextSink for Internal {
+    fn write(&self, text: &[u8]) {
+        self.0.lock().unwrap().extend_from_slice(text);
+    }
 }
 
 /// Run `url` over a world `world` sets, the transfer as `set` sets it.
 fn run(url: &str, world: impl FnOnce(&mut World), set: impl FnOnce(&mut Options)) -> Ran {
+    // A peer that speaks first, unread: the socket stays readable, as
+    // the fake library reads none of it.
+    let talk = Conversation::replies(&[b"unread"], false).greeting();
+    run_over(url, None, talk, world, set)
+}
+
+/// The same with `tls` as the TLS library, the peer `talk`.
+fn run_over(
+    url: &str,
+    tls: Option<crate::libraries::Library<dyn crate::tls::TlsBackend>>,
+    talk: Conversation,
+    world: impl FnOnce(&mut World),
+    set: impl FnOnce(&mut Options),
+) -> Ran {
+    run_driven(url, tls, talk, world, set, |m, id| {
+        drive_to_completion(m, id, &mut NoEvents).unwrap()
+    })
+}
+
+/// The same, the transfer driven by `drive` to its result.
+fn run_driven(
+    url: &str,
+    tls: Option<crate::libraries::Library<dyn crate::tls::TlsBackend>>,
+    talk: Conversation,
+    world: impl FnOnce(&mut World),
+    set: impl FnOnce(&mut Options),
+    drive: impl FnOnce(&mut Multi, crate::multi::TransferId) -> Result<(), ErrorKind>,
+) -> Ran {
     let mut w = World::default();
     world(&mut w);
     let w = Arc::new(Mutex::new(w));
     let ldap: &'static FakeLdap = Box::leak(Box::new(FakeLdap(w.clone())));
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
-    // A peer that speaks first, unread: the socket stays readable, as
-    // the fake library reads none of it.
-    let talk = Conversation::replies(&[b"unread"], false).greeting();
     let net = FakeNet::new(clock.clone())
         .with_peer(at, Net::Accepts)
         .with_conversation(at, talk);
@@ -728,10 +851,21 @@ fn run(url: &str, world: impl FnOnce(&mut World), set: impl FnOnce(&mut Options)
         waker: None,
     };
     let mut m: Multi = Multi::new(env).unwrap();
+    let internal = Internal::default();
+    let components = crate::components::Components::new().unwrap();
+    components.set(
+        crate::components::Component::Multi,
+        crate::components::Level::Info,
+    );
+    m.trace_internally_to(
+        components,
+        crate::handler::Handler::text(internal.clone()).unwrap(),
+    );
     let mut e = Easy::new();
     e.set_libraries(
         SharedLibraries::new(Libraries {
             ldap: Some(ldap),
+            tls,
             ..Libraries::NONE
         })
         .unwrap(),
@@ -747,16 +881,18 @@ fn run(url: &str, world: impl FnOnce(&mut World), set: impl FnOnce(&mut Options)
     o.callbacks.debug = Some(crate::handler::Handler::debug(text.clone()).unwrap());
     set(o);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let result = drive(&mut m, id);
     m.remove(id, &mut NoEvents).unwrap();
     drop(m);
     let calls = w.lock().unwrap().calls.clone();
     let body = body.0.lock().unwrap().clone();
     let said = String::from_utf8_lossy(&text.0.lock().unwrap()).into_owned();
+    let internal = String::from_utf8_lossy(&internal.0.lock().unwrap()).into_owned();
     Ran {
         result,
         body,
         said,
+        internal,
         calls,
     }
 }
@@ -806,12 +942,14 @@ fn an_anonymous_search_binds_as_no_one() {
             "session ldap ldap://127.0.0.1:8389",
             "version 3",
             "no referrals",
+            "max 262144",
             "bind - simple ",
             "search dc=x 2 (cn=*) Some([\"cn\"])",
             "unbind",
         ]
     );
     assert_eq!(ran.body, b"DN: cn=a,dc=x\n\tcn: a\n\n\n");
+    debug_said(&ran.internal, "shutdown protocol handler (aborted=0)");
     debug_said(&ran.said, "state change from STOP to BIND");
     debug_said(&ran.said, "state change from BIND to STOP");
 }
@@ -821,7 +959,7 @@ fn an_anonymous_search_binds_as_no_one() {
 fn a_user_binds_with_the_password() {
     let ran = run(URL, one_entry, |o| credentials(o, b"cn=me:pw"));
     assert_eq!(ran.result, Ok(()), "{}", ran.said);
-    assert_eq!(ran.calls[3], "bind cn=me simple pw");
+    assert_eq!(ran.calls[4], "bind cn=me simple pw");
 }
 
 /// A refused bind is the login's failure with credentials, a bind's
@@ -856,7 +994,7 @@ fn a_protocol_error_binds_again_in_version_2() {
     );
     assert_eq!(ran.result, Ok(()), "{}", ran.said);
     assert_eq!(
-        &ran.calls[3..6],
+        &ran.calls[4..7],
         ["bind - simple ", "version 2", "bind - simple "]
     );
     debug_said(&ran.said, "state change from BIND to BINDV2");
@@ -889,7 +1027,7 @@ fn a_sasl_bind_asks_for_the_mechanisms_first() {
     );
     assert_eq!(ran.result, Ok(()), "{}", ran.said);
     assert_eq!(
-        &ran.calls[3..6],
+        &ran.calls[4..7],
         [
             "search  0 (objectclass=*) Some([\"supportedSASLMechanisms\"])",
             "bind - sasl PLAIN \\0u\\0p",
@@ -1017,7 +1155,7 @@ fn a_refused_starttls_goes_on_only_if_tls_was_tried() {
         |o| use_ssl(o, UseSsl::Try),
     );
     assert_eq!(ran.result, Ok(()), "{}", ran.said);
-    assert_eq!(&ran.calls[3..5], ["starttls", "bind - simple "]);
+    assert_eq!(&ran.calls[4..6], ["starttls", "bind - simple "]);
     let ran = run(URL, |w| w.starttls = refused, |o| use_ssl(o, UseSsl::All));
     assert_eq!(ran.result, Err(ErrorKind::UseSslFailed));
     assert!(
@@ -1085,5 +1223,333 @@ fn a_session_not_made_fails_the_connect() {
             .contains("LDAP local: Cannot connect to ldap://127.0.0.1:8389, Other"),
         "{}",
         ran.said
+    );
+}
+
+/// `ldaps:` needs a TLS library as well as LDAP's: without one it is
+/// disabled; with one the session is made once TLS is on, for `ldaps`.
+#[test]
+fn ldaps_wants_a_tls_library_too() {
+    let ran = run("ldaps://127.0.0.1:PORT/dc=x", |_| {}, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
+    assert!(ran.calls.is_empty(), "{:?}", ran.calls);
+    assert!(
+        ran.said.contains("Protocol \"ldaps\" is disabled"),
+        "{}",
+        ran.said
+    );
+    use crate::tls::fake::FakeTls;
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    let tls = crate::libraries::Library::Static(backend as &dyn crate::tls::TlsBackend);
+    // The bind's answer and the search's result, through TLS.
+    let ran = run_over(
+        "ldaps://127.0.0.1:PORT/dc=x",
+        Some(tls),
+        welcome_then(2),
+        |_| {},
+        |_| {},
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+    assert_eq!(backend.log().handshakes, 1, "the connection's TLS");
+    assert_eq!(ran.calls[0], "session ldaps ldaps://127.0.0.1:8389");
+    assert!(
+        ran.calls.iter().any(|c| c.starts_with("search")),
+        "{:?}",
+        ran.calls
+    );
+}
+
+/// The server's answers in fake TLS records, `n` answers of a byte `A`
+/// each, sent right after its handshake's.
+fn welcome_then(n: usize) -> Conversation {
+    use crate::tls::fake::{WELCOME, records};
+    let answers = records(&vec![b'A'; n]).unwrap();
+    Conversation::replies(&[&[WELCOME, &answers[..]].concat()], false).per_send()
+}
+
+fn fake_tls() -> (
+    &'static crate::tls::fake::FakeTls,
+    crate::libraries::Library<dyn crate::tls::TlsBackend>,
+) {
+    let backend: &'static crate::tls::fake::FakeTls =
+        Box::leak(Box::new(crate::tls::fake::FakeTls::new().unwrap()));
+    (
+        backend,
+        crate::libraries::Library::Static(backend as &dyn crate::tls::TlsBackend),
+    )
+}
+
+/// Over TLS the session reads and writes through the connection's
+/// layers: what it sends reaches the server through TLS, each answer
+/// is read back through it, and bytes TLS holds are said pending.
+#[test]
+fn over_tls_the_session_uses_the_connection_s_layers() {
+    let (_, tls) = fake_tls();
+    let talk = welcome_then(3);
+    let ran = run_over(
+        URL.replace("ldap:", "ldaps:").as_str(),
+        Some(tls),
+        talk.clone(),
+        one_entry,
+        |_| {},
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+    assert_eq!(ran.body, b"DN: cn=a,dc=x\n\tcn: a\n\n\n");
+    let reads: Vec<_> = ran.calls.iter().filter(|c| c.starts_with("read")).collect();
+    // The first read finds nothing in TLS yet; the record it decrypts
+    // holds the answers after.
+    assert_eq!(
+        reads,
+        [
+            "read, pending false",
+            "read, pending true",
+            "read, pending true"
+        ]
+    );
+    let sent = crate::tls::fake::read_client(&talk.received()).unwrap();
+    let sent = String::from_utf8_lossy(&sent);
+    assert!(
+        sent.contains("bind - simple \nsearch dc=x 2 (cn=*)"),
+        "{sent}"
+    );
+}
+
+/// STARTTLS accepted: the connection is upgraded, said established again
+/// as C says it, and the session then works through TLS, binding only
+/// with credentials.
+#[test]
+fn an_accepted_starttls_upgrades_the_connection() {
+    for (login, answers) in [(false, 2), (true, 3)] {
+        let (backend, tls) = fake_tls();
+        let ran = run_over(URL, Some(tls), welcome_then(answers), one_entry, |o| {
+            use_ssl(o, UseSsl::All);
+            if login {
+                credentials(o, b"u:p");
+            }
+        });
+        assert_eq!(ran.result, Ok(()), "{}", ran.said);
+        assert_eq!(backend.log().handshakes, 1);
+        assert_eq!(
+            ran.said.matches("Established connection").count(),
+            2,
+            "{}",
+            ran.said
+        );
+        let binds = ran.calls.iter().filter(|c| c.starts_with("bind")).count();
+        assert_eq!(binds, usize::from(login), "{:?}", ran.calls);
+        // STARTTLS's own answer came in the clear.
+        let reads = ran.calls.iter().filter(|c| c.starts_with("read")).count();
+        assert_eq!(reads, answers, "{:?}", ran.calls);
+        assert_eq!(ran.body, b"DN: cn=a,dc=x\n\tcn: a\n\n\n");
+        debug_said(&ran.said, "state change from STARTTLS to TLS");
+    }
+}
+
+/// Pauses its first write, then takes them all.
+#[derive(Clone, Default)]
+struct PausesFirst {
+    took: Arc<Mutex<Vec<u8>>>,
+    paused: Arc<Mutex<bool>>,
+}
+
+impl WriteHandler for PausesFirst {
+    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Writes {
+        if !std::mem::replace(&mut *self.paused.lock().unwrap(), true) {
+            return Writes::Pause;
+        }
+        self.took.lock().unwrap().extend_from_slice(body);
+        Writes::Took(body.len())
+    }
+}
+
+/// A paused write holds the entry: the transfer waits on nothing and
+/// does not end while it is held, and once unpaused delivers it whole.
+#[test]
+fn a_paused_write_holds_the_answer() {
+    use crate::deliver::PauseRequest;
+    let writer = PausesFirst::default();
+    let w = writer.clone();
+    let ran = run_driven(
+        URL,
+        None,
+        Conversation::replies(&[b"unread"], false).greeting(),
+        one_entry,
+        |o| o.callbacks.write = Some(crate::handler::Handler::write(w).unwrap()),
+        |m, id| {
+            for _ in 0..10 {
+                m.perform(&mut NoEvents).unwrap();
+            }
+            assert!(m.info_read().is_none(), "not over while output is held");
+            let mut waits = Vec::new();
+            m.sockets(&mut NoEvents, |_, events| waits.push(events))
+                .unwrap();
+            assert!(
+                waits.iter().all(|e| *e == crate::conn::io::Events::NONE),
+                "{waits:?}"
+            );
+            m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+            drive_to_completion(m, id, &mut NoEvents).unwrap()
+        },
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+    assert_eq!(
+        *writer.took.lock().unwrap(),
+        b"DN: cn=a,dc=x\n\tcn: a\n\n\n"
+    );
+}
+
+/// STARTTLS the library could not send: with `--ssl` the bind goes on in
+/// the clear, with `--ssl-reqd` the transfer fails.
+#[test]
+fn an_unsent_starttls_goes_on_only_if_tls_was_tried() {
+    let ran = run(
+        URL,
+        |w| {
+            one_entry(w);
+            w.starttls_unsent = Some(Code(-1))
+        },
+        |o| use_ssl(o, UseSsl::Try),
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+    assert!(
+        ran.calls.iter().any(|c| c.starts_with("bind")),
+        "{:?}",
+        ran.calls
+    );
+    let ran = run(
+        URL,
+        |w| w.starttls_unsent = Some(Code(-1)),
+        |o| use_ssl(o, UseSsl::All),
+    );
+    assert_eq!(ran.result, Err(ErrorKind::UseSslFailed));
+    assert!(
+        !ran.calls.iter().any(|c| c.starts_with("bind")),
+        "{:?}",
+        ran.calls
+    );
+}
+
+/// The root's entry is taken with no results or success said of it,
+/// refused with any other; its search's size limit is said, as too many
+/// mechanisms, and the login goes on.
+#[test]
+fn the_root_s_answer_is_checked_as_c_checks_it() {
+    let sasl = |o: &mut Options| {
+        credentials(o, b"u:p");
+        login_options(o, b"AUTH=PLAIN")
+    };
+    for (root, want) in [
+        (Code::NO_RESULTS_RETURNED, Ok(())),
+        (Code::SUCCESS, Ok(())),
+        (Code(1), Err(ErrorKind::LoginDenied)),
+    ] {
+        let ran = run(
+            URL,
+            |w| {
+                w.mechs = vec![b"PLAIN".to_vec()];
+                w.root = root
+            },
+            sasl,
+        );
+        assert_eq!(ran.result, want, "{root:?}: {}", ran.said);
+    }
+    let ran = run(
+        URL,
+        |w| {
+            w.mechs = vec![b"PLAIN".to_vec()];
+            w.root_found = Code::SIZELIMIT_EXCEEDED
+        },
+        sasl,
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+    assert!(
+        ran.said.contains("Too many authentication mechanisms"),
+        "{}",
+        ran.said
+    );
+    let ran = run(URL, |w| w.mechs = vec![b"PLAIN".to_vec()], sasl);
+    assert!(
+        !ran.said.contains("Too many authentication mechanisms"),
+        "{}",
+        ran.said
+    );
+}
+
+/// A failed simple bind's answer is not read for credentials: its code
+/// is the failure, as C's.
+#[test]
+fn a_failed_bind_s_answer_is_not_read() {
+    let ran = run(URL, |w| w.binds = [Code(53)].into(), |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::LdapCannotBind));
+    assert!(
+        !ran.said.contains("ldap_parse_sasl_bind_result"),
+        "{}",
+        ran.said
+    );
+}
+
+/// An answer not come yet leaves the connect waiting on its socket.
+#[test]
+fn an_answer_not_come_waits_on_the_socket() {
+    let ran = run_driven(
+        URL,
+        None,
+        Conversation::replies(&[b"unread"], false).greeting(),
+        |w| {
+            one_entry(w);
+            w.late = 3
+        },
+        |_| {},
+        |m, id| {
+            // Each pass asks once: past the TCP connect, it waits to read.
+            let mut seen = Vec::new();
+            for _ in 0..3 {
+                m.perform(&mut NoEvents).unwrap();
+                m.sockets(&mut NoEvents, |_, events| seen.push(events))
+                    .unwrap();
+            }
+            assert!(seen.contains(&crate::conn::io::Events::IN), "{seen:?}");
+            drive_to_completion(m, id, &mut NoEvents).unwrap()
+        },
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+}
+
+/// STARTTLS done, a mechanism asked for: the mechanisms are asked
+/// through TLS before SASL's bind.
+#[test]
+fn after_starttls_sasl_asks_for_the_mechanisms() {
+    let (_, tls) = fake_tls();
+    // The root's entry and result, the bind's answer, the entry and result.
+    let ran = run_over(
+        URL,
+        Some(tls),
+        welcome_then(5),
+        |w| {
+            one_entry(w);
+            w.mechs = vec![b"PLAIN".to_vec()]
+        },
+        |o| {
+            use_ssl(o, UseSsl::All);
+            credentials(o, b"u:p");
+            login_options(o, b"AUTH=PLAIN");
+        },
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+    let after: Vec<_> = ran
+        .calls
+        .iter()
+        .skip_while(|c| *c != "starttls")
+        .filter(|c| !c.starts_with("read"))
+        .take(4)
+        .collect();
+    assert_eq!(
+        after,
+        [
+            "starttls",
+            "search  0 (objectclass=*) Some([\"supportedSASLMechanisms\"])",
+            "bind - sasl PLAIN \\0u\\0p",
+            "search dc=x 2 (cn=*) Some([\"cn\"])",
+        ]
     );
 }

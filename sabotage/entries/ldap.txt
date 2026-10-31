@@ -76,3 +76,20 @@ witness: curl-core proto::ldap::tests::a_search_cut_short_is_abandoned
             };
         }
         Finish::Done(result)
+
+=== ldaps is built without a TLS library
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::ldap::tests::ldaps_wants_a_tls_library_too
+--- old
+                if cx.easy().libraries().ldap.is_some() && cx.easy().libraries().tls.is_some() =>
+--- new
+                if cx.easy().libraries().ldap.is_some() =>
+
+=== a paused LDAP transfer waits to read
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::a_paused_write_holds_the_answer
+--- old
+        if self.receiving && !pause.recv_paused() {
+--- new
+        if self.receiving {
+

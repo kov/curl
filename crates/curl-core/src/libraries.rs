@@ -322,7 +322,7 @@ mod tests {
         let printed = format!("{libraries:?}");
         assert!(
             printed.ends_with(
-                "ed25519: Some(Ed25519), tls: None, gss: None, idn: None, h2: None, h3: None, random: None }"
+                "ed25519: Some(Ed25519), tls: None, gss: None, idn: None, h2: None, h3: None, ssh: None, random: None }"
             ),
             "{printed}"
         );

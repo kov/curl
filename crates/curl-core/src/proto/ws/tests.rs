@@ -200,6 +200,14 @@ fn a_refused_frame_says_why_as_c_does() {
             "[WS] fragmented message interrupted by new BINARY msg",
         ),
         (
+            b"\x01\x00\x82\x00",
+            "[WS] fragmented message interrupted by new BINARY msg",
+        ),
+        (
+            b"\x02\x00\x01\x00",
+            "[WS] fragmented message interrupted by new TEXT msg",
+        ),
+        (
             b"\x82\x7f\x80\x00\x00\x00\x00\x00\x00\x00",
             "[WS] frame length longer than 63 bits not supported",
         ),

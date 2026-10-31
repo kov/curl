@@ -35,6 +35,8 @@ fn a_ping_delivered_is_answered_with_a_pong() {
     assert_eq!(sent.len(), 8, "{sent:x?}");
     assert_eq!(&sent[..2], [0x8a, 0x82]);
     let mask = &sent[2..6];
+    // Drawn from the system's random bytes: all four zero once in 2^32.
+    assert_ne!(mask, [0; 4], "the mask is drawn");
     let payload: Vec<u8> = sent[6..].iter().zip(mask).map(|(b, m)| b ^ m).collect();
     assert_eq!(payload, b"hi");
     assert_eq!(ran.seen.body(), b"x");

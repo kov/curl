@@ -820,9 +820,13 @@ exclude_re = [
     # A WebSocket frame's first byte and length byte are joined from bits
     # that never overlap (an opcode and FIN, a length under 126 and MASK),
     # and so are a frame's flags for C: or and xor of them are one value.
-    'curl-core/src/proto/ws/frame\.rs:.*: replace \| with \^ in (send_byte|Encoder::add_frame)$',
+    'curl-core/src/proto/ws/frame\.rs:.*: replace \| with \^ in (first_byte|send_byte|Encoder::add_frame)$',
     'curl-sys-abi/src/ws\.rs:.*: replace \| with \^ in c_frame$',
     'curl-core/src/proto/ws\.rs:.*: replace \| with \^ in c_args$',
+    # Not waiting for the socket to take more leaves a WebSocket's blocking
+    # send trying again at once: the bytes it sends and what it answers
+    # are the same, only the time between its tries changes.
+    'curl-core/src/conn/mux\.rs:.*: replace Carrier<.*>::wait_writable -> std::io::Result<\(\)> with Ok\(\(\)\)$',
     # Only when a WebSocket's buffer lets go of its taken bytes changes:
     # what it holds and where its chunk is are the same either way.
     'curl-core/src/proto/ws/queue\.rs:.*: replace >= with < in ChunkQueue::skip$',

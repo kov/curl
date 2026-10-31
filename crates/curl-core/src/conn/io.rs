@@ -2395,6 +2395,33 @@ mod tests {
         assert!(fds[0].revents().contains(Events::IN));
     }
 
+    /// A real socket bound listens and accepts a connection once one
+    /// waits; a socket of another kind does neither.
+    #[test]
+    fn a_real_socket_listens_and_accepts() {
+        let mut net = SystemNet::default();
+        let any = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
+        let socket = net.open(&Remote::Inet(any), SocketKind::Stream).unwrap();
+        socket.bind(any).unwrap();
+        socket.listen().unwrap();
+        assert!(socket.accept().unwrap().is_none(), "none waits yet");
+        let peer = std::net::TcpStream::connect(socket.local_addr().unwrap()).unwrap();
+        let mut sockets = [SocketPoll::new(&*socket, Events::IN)];
+        net.poll(&mut sockets, &mut [], Duration::from_secs(5))
+            .unwrap();
+        let accepted = socket.accept().unwrap().expect("the connection waiting");
+        assert_eq!(accepted.peer_addr().unwrap(), peer.local_addr().unwrap());
+        net.close(Sock::new(accepted, Closer::System));
+        net.close(Sock::new(socket, Closer::System));
+        let udp = net.open(&Remote::Inet(any), SocketKind::Datagram).unwrap();
+        assert_eq!(udp.listen().unwrap_err().kind(), io::ErrorKind::Unsupported);
+        assert_eq!(
+            udp.accept().err().map(|e| e.kind()),
+            Some(io::ErrorKind::Unsupported)
+        );
+        net.close(Sock::new(udp, Closer::System));
+    }
+
     /// A real socket and a descriptor polled together each get their own
     /// events back.
     #[test]
@@ -2456,6 +2483,41 @@ mod tests {
         let at = SocketAddr::from(([127, 0, 0, 1], 1));
         let mut net = FakeNet::new(clock).with_peer(at, Peer::Accepts);
         drop(Sock::new(dial(&mut net, at), Closer::System));
+    }
+
+    /// A fake listening socket is readable only once its incoming
+    /// connection is due, and accepts it then, from where it comes.
+    #[test]
+    fn a_fake_listener_is_ready_when_its_connection_comes() {
+        use crate::time::Clock as _;
+        let clock = crate::time::ManualClock::new().unwrap();
+        let ip = IpAddr::from([127, 0, 0, 1]);
+        let from = SocketAddr::from((ip, 20));
+        let talk = Conversation::replies(&[b"x"], true);
+        let after = Duration::from_millis(5);
+        let mut net = FakeNet::new(clock.clone()).with_incoming(ip, from, &talk, after);
+        let any = SocketAddr::from((ip, 0));
+        let s = net.open(&Remote::Inet(any), SocketKind::Stream).unwrap();
+        s.bind(any).unwrap();
+        s.listen().unwrap();
+        let due = clock.now().after(after);
+        assert!(matches!(
+            s.readiness(),
+            Readiness::Known { now: Events::NONE, later: Some(at) } if at == due
+        ));
+        assert!(s.accept().unwrap().is_none(), "not yet");
+        clock.advance(after);
+        assert!(matches!(
+            s.readiness(),
+            Readiness::Known {
+                now: Events::IN,
+                later: None
+            }
+        ));
+        let accepted = s.accept().unwrap().expect("due now");
+        assert_eq!(accepted.peer_addr().unwrap(), from);
+        net.close(Sock::new(accepted, Closer::System));
+        net.close(Sock::new(s, Closer::System));
     }
 
     /// Fake sockets get the lowest free number, and a fake peer's answer

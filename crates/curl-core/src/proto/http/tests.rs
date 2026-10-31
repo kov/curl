@@ -4104,6 +4104,13 @@ fn a_forwarded_ftp_url_carries_its_credentials() {
             "GET ftp://u:p@origin.example/a HTTP/1.1\r\nHost: origin.example:21\r\n\
              Authorization: Basic dTpw\r\n",
         ),
+        // The URL's own kept as it spells them, not encoded again.
+        (
+            b"ftp://a%7eb%3d:p@origin.example/a",
+            None,
+            "GET ftp://a%7eb%3d:p@origin.example/a HTTP/1.1\r\nHost: origin.example:21\r\n\
+             Authorization: Basic YX5iPTpw\r\n",
+        ),
         (
             b"ftp://origin.example/a",
             Some(&b"a b"[..]),

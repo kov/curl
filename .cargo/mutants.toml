@@ -696,6 +696,10 @@ exclude_re = [
     # settles; one settles only when lending it ran out of memory, and
     # then serves its transfer alone either way.
     'curl-core/src/conn/pool\.rs:.*: replace match guard settled && !conn\.is_h2\(\) with true in Verdict::of$',
+    # An HTTP/2 or HTTP/3 session reads what waits on its connection as
+    # it checks it, and says it alive with nothing pending or dead: a
+    # connection that multiplexes never reaches the guard with input.
+    'curl-core/src/conn/pool\.rs:.*: replace match guard !conn\.multiplexes\(\) with true in alive$',
     # Taking a connection out of its place for a step matters only to a
     # transfer whose step uses it: a connecting transfer's is never in a
     # place yet, and a done one's step updates its progress alone, its

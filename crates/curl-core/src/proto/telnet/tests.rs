@@ -74,6 +74,9 @@ fn known_options_are_read() {
     assert_eq!((s.wsx, s.wsy), (80, 24));
     assert!(s.us.contains(&TELOPT_NAWS) && s.us.contains(&TELOPT_TTYPE));
     assert_eq!(s.us_off, [TELOPT_BINARY]);
+    // The largest window is taken.
+    let s = settings(None, &[b"WS=65535x65535"]);
+    assert_eq!((s.wsx, s.wsy), (65535, 65535));
     // BINARY=1, or a value that is no number, leaves binary on.
     for keep in [&b"BINARY=1"[..], b"BINARY=x"] {
         assert!(settings(None, &[keep]).us_off.is_empty(), "{keep:?}");
@@ -89,8 +92,11 @@ fn bad_options_are_refused() {
         let refused = Settings::read(None, [bad]).unwrap_err();
         assert_eq!(refused, (Refused::Syntax, Some(bad)), "{bad:?}");
     }
-    let refused = Settings::read(None, [&b"TTYPF=a"[..]]).unwrap_err();
-    assert_eq!(refused.0, Refused::Unknown { said: false });
+    // A name of a known one's length, but not its name.
+    for unknown in [&b"TTYPF=a"[..], b"XDISPLOX=a", b"NEW_ENX=a", b"WZ=1x2"] {
+        let refused = Settings::read(None, [unknown]).unwrap_err();
+        assert_eq!(refused.0, Refused::Unknown { said: false }, "{unknown:?}");
+    }
     let refused = Settings::read(None, [&b"COLOR=red"[..]]).unwrap_err();
     assert_eq!(refused.0, Refused::Unknown { said: false });
     let refused = Settings::read(None, [&b"NOSUCH=1"[..]]).unwrap_err();
@@ -216,8 +222,8 @@ fn negotiation_answers_the_server() {
     tn.receive(&mut w, &[IAC, DO, TELOPT_BINARY, IAC, WONT, TELOPT_SGA])
         .unwrap();
     assert!(w.sent.is_empty());
-    assert_eq!(tn.us[usize::from(TELOPT_BINARY)], YES);
-    assert_eq!(tn.him[usize::from(TELOPT_SGA)], NO);
+    assert_eq!(tn.us[usize::from(TELOPT_BINARY)], Side::Yes);
+    assert_eq!(tn.him[usize::from(TELOPT_SGA)], Side::No);
     // Then a DONT turns it off, said.
     tn.receive(&mut w, &[IAC, DONT, TELOPT_BINARY]).unwrap();
     assert_eq!(w.sent, [IAC, WONT, TELOPT_BINARY]);
@@ -618,5 +624,96 @@ proptest::proptest! {
         user in proptest::option::of(proptest::collection::vec(0u8.., 0..300)),
     ) {
         let _ = Settings::read(user.as_deref(), options.iter().map(Vec::as_slice));
+    }
+}
+
+/// How much room each read of the input had, and what it gives: the
+/// first read too much.
+struct Claims {
+    rooms: std::sync::Arc<Mutex<Vec<usize>>>,
+    over: bool,
+}
+
+impl ReadHandler for Claims {
+    fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
+        self.rooms.lock().unwrap().push(buf.len());
+        if self.over {
+            return Read::Data(std::num::NonZeroUsize::new(buf.len() + 1).unwrap());
+        }
+        Read::Eof
+    }
+}
+
+/// The input is read 4 KiB at a time, as C's buffer holds; one that says
+/// it gave more than that fails the transfer.
+#[test]
+fn the_input_is_read_into_c_s_buffer() {
+    for over in [false, true] {
+        let rooms = std::sync::Arc::default();
+        let input = Claims {
+            rooms: std::sync::Arc::clone(&rooms),
+            over,
+        };
+        let input = Handler::read(input).unwrap();
+        let talk = Conversation::replies(&[b"hi"], true).greeting();
+        let (said, ran) = against(talk, "telnet://127.0.0.1:PORT", |o| {
+            o.small.make_mut().unwrap().input = Some(input);
+        });
+        assert_eq!(rooms.lock().unwrap()[0], 4096);
+        if over {
+            assert_eq!(ran.result, Some(Err(ErrorKind::ReadError)), "{}", ran.text);
+            assert!(said.is_empty(), "{said:?}");
+        } else {
+            assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        }
+    }
+}
+
+/// An option without a name is said by its number, in the transfer's
+/// trace.
+#[test]
+fn an_unnamed_option_is_traced_by_number() {
+    let talk = Conversation::replies(&[&[IAC, DO, 200]], true).greeting();
+    let (said, ran) = telnet(talk, &[], |_| {});
+    assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+    assert!(said.starts_with(&[IAC, WONT, 200]), "{said:?}");
+    assert!(ran.text.contains("RCVD DO 200\n"), "{}", ran.text);
+    assert!(ran.text.contains("SENT WONT 200\n"), "{}", ran.text);
+}
+
+/// While the exchange goes on the transfer waits for the server's bytes,
+/// or for room to send what is unsent, and is run again within a pass's
+/// interval whatever the socket says.
+#[test]
+fn the_exchange_waits_on_its_socket_and_its_interval() {
+    use crate::libraries::{Libraries, SharedLibraries};
+    use crate::multi::NoEvents;
+    for stalled in [false, true] {
+        // An option to refuse, the refusal to send.
+        let mut talk = Conversation::replies(&[&[IAC, DO, 200]], false).greeting();
+        if stalled {
+            talk = talk.stalling_sends_after(0, 1000);
+        }
+        let mut m = crate::proto::raw::wire::serving(&[&talk]);
+        let mut e = crate::easy::Easy::new();
+        e.set_libraries(SharedLibraries::new(Libraries::NONE).unwrap());
+        let o = e.options_mut();
+        o.set_url(Some(
+            format!("telnet://127.0.0.1:{}", crate::proto::raw::wire::PORT).as_bytes(),
+        ))
+        .unwrap();
+        o.small.make_mut().unwrap().input =
+            Some(Handler::read(Input(Mutex::new(Vec::new()))).unwrap());
+        m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        for _ in 0..5 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        let mut seen = Vec::new();
+        m.sockets(&mut NoEvents, |_, events| seen.push(events))
+            .unwrap();
+        let want = if stalled { Events::OUT } else { Events::IN };
+        assert_eq!(seen, [want], "stalled {stalled}");
+        let wait = m.timeout().expect("a pass to come");
+        assert!(wait <= std::time::Duration::from_millis(100), "{wait:?}");
     }
 }

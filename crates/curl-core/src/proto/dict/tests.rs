@@ -157,6 +157,133 @@ fn a_connection_is_not_reused() {
     assert!(!two.received().is_empty());
 }
 
+/// A lookup added to `m`, its trace kept.
+fn looked_up(
+    m: &mut crate::multi::Multi,
+    set: impl FnOnce(&mut crate::options::Options),
+) -> std::sync::Arc<std::sync::Mutex<String>> {
+    use crate::handler::{DebugHandler, DebugKind, Handler};
+    use crate::libraries::{Libraries, SharedLibraries};
+    use crate::multi::{NoEvents, TransferCx};
+    #[derive(Clone, Default)]
+    struct Text(std::sync::Arc<std::sync::Mutex<String>>);
+    impl DebugHandler for Text {
+        fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+            if kind == DebugKind::Text {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push_str(&String::from_utf8_lossy(data));
+            }
+        }
+    }
+    let text = Text::default();
+    let mut e = crate::easy::Easy::new();
+    e.set_libraries(SharedLibraries::new(Libraries::NONE).unwrap());
+    let traced = crate::components::Components::new().unwrap();
+    traced.configure(b"multi");
+    e.set_components(Some(traced));
+    let o = e.options_mut();
+    let url = format!("dict://127.0.0.1:{}/d:basic", crate::proto::raw::wire::PORT);
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+    set(o);
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    text.0
+}
+
+const DIRTY: &str = "[MULTI] [PERFORMING] sendrecv_dl() no EAGAIN/pending data, mark as dirty\n";
+
+/// An answer that never ends is read a pass of C's reads at a time, the
+/// transfer then run again at once, as C's debug build says.
+#[test]
+fn an_endless_answer_is_read_a_pass_at_a_time() {
+    use crate::multi::NoEvents;
+    let talk = Conversation::new(b"", false)
+        .per_send()
+        .endless(std::time::Duration::from_millis(1));
+    let mut m = serving(&[&talk]);
+    let text = looked_up(&mut m, |_| {});
+    while talk.endless_reads() < 3 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let reads = talk.endless_reads();
+    assert!(reads <= crate::proto::http::MAX_READS, "{reads}");
+    let text = text.lock().unwrap();
+    assert!(text.contains(DIRTY), "{text}");
+}
+
+/// Bytes a layer holds, where a poll cannot see them, are read without
+/// waiting on the socket; a socket with nothing to read, and no layer
+/// holding any, is waited on.
+#[test]
+fn held_bytes_are_read_and_an_empty_socket_waited_on() {
+    use crate::multi::NoEvents;
+    let talk = Conversation::new(ANSWER, true).per_send();
+    let ran = transfer(
+        &mut serving(&[&talk]),
+        "dict://127.0.0.1:PORT/d:basic",
+        |o| {
+            o.layer = Some(crate::conn::layer::testing::holdback);
+        },
+    );
+    assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+    assert_eq!(ran.body, ANSWER);
+    // Run again at once, as C's debug build says.
+    let talk = Conversation::new(b"partial", false).per_send();
+    let mut m = serving(&[&talk]);
+    let text = looked_up(&mut m, |o| {
+        o.layer = Some(crate::conn::layer::testing::holdback);
+    });
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let text = text.lock().unwrap().clone();
+    assert!(text.contains(DIRTY), "{text}");
+    let talk = Conversation::new(b"partial", false).per_send();
+    let mut m = serving(&[&talk]);
+    let text = looked_up(&mut m, |_| {});
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert_ne!(m.timeout(), Some(std::time::Duration::ZERO));
+    let text = text.lock().unwrap();
+    assert!(!text.contains(DIRTY), "{text}");
+}
+
+/// A connection reset while the answer is read fails the transfer, said
+/// as the socket says it.
+#[test]
+fn a_reset_answer_fails_with_the_socket_s_reason() {
+    let talk = Conversation::new(b"part", false).per_send().resetting();
+    let (_, ran) = against(talk, "dict://127.0.0.1:PORT/d:basic", |_| {});
+    assert_eq!(ran.result, Some(Err(ErrorKind::RecvError)), "{}", ran.text);
+    // Said once, by the layer that saw it.
+    let said = ran.text.matches("Recv failure: Connection reset by peer\n");
+    assert_eq!(said.count(), 1, "{}", ran.text);
+}
+
+/// A request the connection takes a piece at a time goes whole in one
+/// pass, while the connection takes it.
+#[test]
+fn a_request_in_pieces_goes_in_one_pass() {
+    use crate::multi::NoEvents;
+    let five = std::num::NonZeroUsize::new(5).unwrap();
+    let talk = Conversation::new(b"", false).per_send().taking(five);
+    let mut m = serving(&[&talk]);
+    looked_up(&mut m, |_| {});
+    let version = crate::version::version().version;
+    let want = format!("CLIENT libcurl {version}\r\nDEFINE ! basic\r\nQUIT\r\n");
+    for _ in 0..3 {
+        m.perform(&mut NoEvents).unwrap();
+        if !talk.received().is_empty() {
+            break;
+        }
+    }
+    assert_eq!(String::from_utf8_lossy(&talk.received()), want);
+}
+
 proptest::proptest! {
     #![proptest_config(crate::untrusted::config(512))]
 

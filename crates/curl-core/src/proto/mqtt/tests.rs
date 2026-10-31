@@ -70,10 +70,9 @@ fn a_login_too_long_is_refused() {
 /// length is looked at, as C checks them; one of exactly that size is not.
 #[test]
 fn a_connect_past_the_largest_message_is_refused_first() {
-    let mut n = MAX_MESSAGE - 64;
-    while connect_len(n, 0) < MAX_MESSAGE {
-        n += 1;
-    }
+    // A type byte, four of length, ten of variable header, the id's two
+    // and its own, and the user's two.
+    let n = MAX_MESSAGE - 1 - 4 - 10 - 2 - CLIENT_ID_LEN - 2;
     assert_eq!(connect_len(n, 0), MAX_MESSAGE);
     let huge = vec![0u8; n + 1];
     assert_eq!(
@@ -103,6 +102,46 @@ fn subscribe_and_publish_packets() {
     let topic = vec![b'A'; 300];
     let long = subscribe_packet(&topic, 1).unwrap();
     assert_eq!(long[1..3], [0xb1, 0x02]);
+    // The topic's length, in two bytes.
+    assert_eq!(long[5..7], [0x01, 0x2c]);
+    assert_eq!(long.len(), 3 + 2 + 2 + 300 + 1);
+    let long = publish_packet(&topic, b"p").unwrap();
+    assert_eq!(long[1..5], [0xaf, 0x02, 0x01, 0x2c]);
+    assert_eq!(long.len(), 3 + 2 + 300 + 1);
+}
+
+/// A PUBLISH whose length leaves room for its header is made; one a
+/// byte longer is refused (`mqtt_publish`).
+#[test]
+fn a_publish_past_the_largest_message_is_refused() {
+    // Four bytes of length and one of type.
+    let most = MAX_MESSAGE - 4 - 1;
+    let payload = vec![0u8; most - 2 - 1];
+    assert_eq!(publish_packet(b"t", &payload).unwrap().len(), MAX_MESSAGE);
+    let payload = vec![0u8; most - 2];
+    assert_eq!(publish_packet(b"t", &payload), Err(ErrorKind::TooLarge));
+}
+
+/// The CONNECT's length is the packet's: a type byte, the length's
+/// bytes, ten of variable header, the id's and the login's.
+#[test]
+fn a_connect_is_as_long_as_its_length_says() {
+    for (user, password) in [
+        (&b""[..], &b""[..]),
+        (b"u", b""),
+        (b"", b"p"),
+        (b"user", b"secret"),
+        (&[b'a'; 200][..], b"p"),
+    ] {
+        let packet = connect_packet(ID, user, password).unwrap();
+        assert_eq!(connect_len(user.len(), password.len()), packet.len());
+    }
+    assert_eq!(connect_len(0, 0), 1 + 1 + 10 + 2 + CLIENT_ID_LEN);
+    assert_eq!(connect_len(1, 1), 1 + 1 + 10 + 2 + CLIENT_ID_LEN + 3 + 3);
+    assert_eq!(
+        connect_len(200, 0),
+        1 + 2 + 10 + 2 + CLIENT_ID_LEN + 2 + 200
+    );
 }
 
 const CONNACK: &[u8] = b"\x20\x02\x00\x00";
@@ -418,4 +457,17 @@ fn mqtts_needs_a_tls_library() {
         ran.text
     );
     assert!(said.is_empty());
+}
+
+/// A connection reset while a packet is read fails the transfer, the
+/// reason said once, by the layer that saw it.
+#[test]
+fn a_reset_fails_with_the_socket_s_reason() {
+    let talk = Conversation::replies(&[CONNACK, SUBACK], false)
+        .per_send()
+        .resetting();
+    let (_, ran) = against(talk, "mqtt://127.0.0.1:PORT/topic", |_| {});
+    assert_eq!(ran.result, Some(Err(ErrorKind::RecvError)), "{}", ran.text);
+    let said = ran.text.matches("Recv failure: Connection reset by peer\n");
+    assert_eq!(said.count(), 1, "{}", ran.text);
 }

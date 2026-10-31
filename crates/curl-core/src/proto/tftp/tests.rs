@@ -46,6 +46,11 @@ fn an_oack_is_read() {
     let (got, _) = oack(b"tsize\0x\0", 512, false);
     assert_eq!(got.unwrap().tsize, None);
     assert_eq!(oack(b"", 512, false).0.unwrap().blksize, BLKSIZE_DEFAULT);
+    // The bounds themselves are taken.
+    let (got, _) = oack(b"blksize\x0065464\0", 65464, false);
+    assert_eq!(got.unwrap().blksize, 65464);
+    let (got, _) = oack(b"blksize\x008\0", 512, false);
+    assert_eq!(got.unwrap().blksize, 8);
 }
 
 /// An OACK cut short, or with a block size C cannot take, is refused,
@@ -411,4 +416,108 @@ mod over_the_wire {
         );
         assert!(said.is_empty(), "{said:?}");
     }
+
+    /// What the paused writer took, and whether it paused yet.
+    #[derive(Clone, Default)]
+    struct PausesFirst {
+        took: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        paused: std::sync::Arc<crate::test_cell::Cell<bool>>,
+    }
+
+    impl crate::handler::WriteHandler for PausesFirst {
+        fn write(
+            &self,
+            _: &mut crate::multi::TransferCx<'_>,
+            body: &[u8],
+        ) -> crate::handler::Write {
+            if !self.paused.replace(true) {
+                return crate::handler::Write::Pause;
+            }
+            self.took.lock().unwrap().extend_from_slice(body);
+            crate::handler::Write::Took(body.len())
+        }
+    }
+
+    /// A TFTP transfer, unlimited in time, on `m`.
+    fn added(
+        m: &mut crate::multi::Multi,
+        set: impl FnOnce(&mut Options),
+    ) -> crate::multi::TransferId {
+        use crate::libraries::{Libraries, SharedLibraries};
+        let mut e = crate::easy::Easy::new();
+        e.set_libraries(SharedLibraries::new(Libraries::NONE).unwrap());
+        let o = e.options_mut();
+        o.set_url(Some(format!("tftp://127.0.0.1:{PORT}/f").as_bytes()))
+            .unwrap();
+        o.limits.total = crate::time::TimeLimit::from_millis(0);
+        set(o);
+        m.add(Box::new(e), (), &mut crate::multi::NoEvents).unwrap()
+    }
+
+    /// Output a paused writer holds keeps the transfer from ending, the
+    /// exchange over or not, until it is taken.
+    #[test]
+    fn a_paused_block_is_held_until_taken() {
+        use crate::deliver::PauseRequest;
+        use crate::multi::{NoEvents, drive_to_completion};
+        let talk = Conversation::replies(&[&data(1, b"abc")], false).per_send();
+        let mut m = crate::proto::raw::wire::serving(&[&talk]);
+        let writer = PausesFirst::default();
+        let w = writer.clone();
+        let id = added(&mut m, |o| {
+            o.callbacks.write = Some(crate::handler::Handler::write(w).unwrap());
+        });
+        for _ in 0..10 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        assert_eq!(
+            talk.received(),
+            [RRQ6, &ack(1)].concat(),
+            "the exchange is over"
+        );
+        assert!(m.info_read().is_none(), "not over while output is held");
+        m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Ok(()));
+        assert_eq!(*writer.took.lock().unwrap(), b"abc");
+    }
+
+    /// Waiting for an answer, the transfer asks to be run again a second
+    /// after it last looked, for a time-out the socket cannot tell.
+    #[test]
+    fn an_answer_is_waited_for_a_second_at_a_time() {
+        use crate::multi::NoEvents;
+        let talk = Conversation::replies(&[], false).per_send();
+        let mut m = crate::proto::raw::wire::serving(&[&talk]);
+        added(&mut m, |_| {});
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(talk.received(), RRQ6);
+        assert_eq!(m.timeout(), Some(std::time::Duration::from_secs(1)));
+    }
+
+    /// The retries are set from the time left: within an hour, a fifth
+    /// of its seconds, each of what is left of them; an hour or more is
+    /// taken as fifteen seconds.
+    #[test]
+    fn the_retries_follow_the_time_left() {
+        for (ms, said) in [
+            (3_599_000, "Total 3599000, retry 71 maxtry 50"),
+            (3_600_000, "Total 3600000, retry 5 maxtry 3"),
+            (14_000, "Total 14000, retry 4 maxtry 3"),
+            (499, "Total 499, retry 1 maxtry 3"),
+        ] {
+            let (_, ran) = fetch(&[&data(1, b"")], |o| {
+                o.limits.total = crate::time::TimeLimit::from_millis(ms);
+                o.limits.connect = crate::time::TimeLimit::from_millis(ms);
+            });
+            assert!(
+                ran.text
+                    .contains(&format!("set timeouts for state 0; {said}\n")),
+                "{ms}: {}",
+                ran.text
+            );
+        }
+    }
+
+    const RRQ6: &[u8] = b"\0\x01f\0octet\0tsize\x000\0blksize\x00512\0timeout\x006\0";
 }

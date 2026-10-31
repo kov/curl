@@ -1006,8 +1006,8 @@ impl ProtoState {
             ProtoState::Ftp(ref r) => r.exchanges(),
             // Its body to read or send.
             ProtoState::Ssh(ref r) => r.exchanges(),
-            ProtoState::Dict(ref r) => r.exchanges(),
-            ProtoState::Gopher(ref r) => r.exchanges(),
+            // The answer, read from DO on.
+            ProtoState::Dict(_) | ProtoState::Gopher(_) => true,
             // All of it is in DOING, as C sets nothing up to exchange.
             ProtoState::Mqtt(_) | ProtoState::Telnet(_) | ProtoState::Tftp(_) => false,
             #[cfg(any(test, feature = "test-util"))]
@@ -1272,9 +1272,8 @@ impl ProtoState {
             ProtoState::Dict(ref r) => r.interest(pause),
             ProtoState::Gopher(ref r) => r.interest(pause),
             ProtoState::Mqtt(ref r) => r.interest(pause),
-            ProtoState::Telnet(ref r) => r.interest(pause),
-            ProtoState::Tftp(ref r) => r.interest(pause),
-            ProtoState::File(_) => Events::NONE,
+            // TELNET's and TFTP's exchanges are over once their DO is.
+            ProtoState::File(_) | ProtoState::Telnet(_) | ProtoState::Tftp(_) => Events::NONE,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
                 Events::NONE
@@ -1317,12 +1316,14 @@ impl ProtoState {
             ProtoState::Imap(ref r) => r.received_nothing(),
             ProtoState::Smtp(ref r) => r.received_nothing(),
             ProtoState::Ssh(ref r) => r.received_nothing(),
-            ProtoState::Dict(ref r) => r.received_nothing(),
-            ProtoState::Gopher(ref r) => r.received_nothing(),
             ProtoState::Mqtt(ref r) => r.received_nothing(),
             ProtoState::Telnet(ref r) => r.received_nothing(),
-            ProtoState::Tftp(ref r) => r.received_nothing(),
-            ProtoState::File(_) => false,
+            // An answer read to the close, or TFTP's, leaves no connection
+            // to reuse.
+            ProtoState::File(_)
+            | ProtoState::Dict(_)
+            | ProtoState::Gopher(_)
+            | ProtoState::Tftp(_) => false,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
         }

@@ -2,7 +2,7 @@
 file: crates/curl-core/src/proto/tftp.rs
 witness: curl-core proto::tftp::tests::a_bad_oack_is_refused
 --- old
-        if name_len + 1 >= p.len() {
+        if name_len == p.len() {
 --- new
         if false {
 

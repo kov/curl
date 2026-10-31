@@ -130,28 +130,19 @@ impl Request {
         self.pipeline.holds_output()
     }
 
-    /// Whether nothing came back for it, as `Curl_retry_request` reads a
-    /// transfer outside HTTP.
-    pub(crate) fn received_nothing(&self) -> bool {
-        self.pipeline.bytecount() == 0 && !self.answer.received()
-    }
-
     /// Whether the request has more to send.
     pub(crate) fn sending(&self) -> bool {
         !self.out.is_sent()
     }
 
-    /// What the answer waits for on the connection's socket.
+    /// What the answer waits for on the connection's socket: it is read
+    /// from DO on, and the transfer ends once it is read whole.
     pub(crate) fn interest(&self, pause: Pause) -> Events {
-        if self.answer.receiving() && !pause.recv_paused() {
-            Events::IN
-        } else {
+        if pause.recv_paused() {
             Events::NONE
+        } else {
+            Events::IN
         }
-    }
-
-    pub(crate) fn exchanges(&self) -> bool {
-        self.answer.receiving() || self.answer.received()
     }
 
     pub(crate) fn step<H: Host>(
@@ -159,9 +150,6 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
-        if !self.answer.receiving() {
-            return Ok(ProtoStep::Done);
-        }
         self.answer.read(cx, lease, &mut self.pipeline)
     }
 

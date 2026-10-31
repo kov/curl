@@ -18,7 +18,7 @@ use super::dict::{peer_of, renetwork};
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
 use crate::conn::io::{Events, Remote};
 use crate::conn::{ConnLease, Peer, Scheme};
-use crate::deliver::{Pause, Pipeline, Reach};
+use crate::deliver::{Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::idn::Idn;
 use crate::multi::Host;
@@ -183,7 +183,7 @@ pub(crate) fn parse_oack(
         // `tftp_option_get`: the name and the value, each ended within
         // the packet.
         let name_len = strnlen(p);
-        if name_len + 1 >= p.len() {
+        if name_len == p.len() {
             return Err(OackRefused::Malformed);
         }
         let rest = &p[name_len + 1..];
@@ -401,17 +401,9 @@ impl Request {
         self.pipeline.holds_output()
     }
 
-    pub(crate) fn received_nothing(&self) -> bool {
-        self.pipeline.bytecount() == 0
-    }
-
     /// TFTP exchanges nothing once its DO is done.
     pub(crate) fn step(&mut self) -> ProtoStep {
         ProtoStep::Done
-    }
-
-    pub(crate) fn interest(&self, _: Pause) -> Events {
-        Events::NONE
     }
 
     /// When DOING looks again whatever the socket says, to see whether

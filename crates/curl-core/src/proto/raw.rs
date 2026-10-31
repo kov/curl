@@ -141,8 +141,6 @@ pub(crate) fn xfer_recv<H: Host>(
 pub(crate) struct ToClose {
     /// It is being read (`KEEP_RECV`).
     receiving: bool,
-    /// It was read to its end (`req.done`).
-    received: bool,
 }
 
 impl ToClose {
@@ -156,16 +154,6 @@ impl ToClose {
             },
         );
         self.receiving = true;
-    }
-
-    /// It is being read.
-    pub(crate) fn receiving(&self) -> bool {
-        self.receiving
-    }
-
-    /// It was read to its end.
-    pub(crate) fn received(&self) -> bool {
-        self.received
     }
 
     /// Read what the connection has into `pipeline` as body, as many
@@ -202,7 +190,6 @@ impl ToClose {
         let mut reads = 0;
         loop {
             if !self.receiving {
-                self.received = true;
                 return Ok(ProtoStep::Done);
             }
             if cx.pause().recv_paused() {

@@ -20,7 +20,7 @@ use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
 use crate::auth::creds::{CredentialGate, Credentials, Takes};
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
-use crate::deliver::{Pause, Pipeline, Reach};
+use crate::deliver::{Pipeline, Reach};
 use crate::error::ErrorKind;
 use crate::handler::Read;
 use crate::idn::Idn;
@@ -130,14 +130,21 @@ fn telcmd(x: u32) -> Option<&'static str> {
         .copied()
 }
 
-/// What an option's side is (RFC 1143's states).
+/// What is wanted of an option, by the application or for a
+/// suboption.
 const NO: u8 = 0;
 const YES: u8 = 1;
-const WANTYES: u8 = 2;
-const WANTNO: u8 = 3;
-/// What is queued behind it.
-const EMPTY: u8 = 0;
-const OPPOSITE: u8 = 1;
+
+/// Where an option stands on one side (RFC 1143's states). C asks only
+/// to enable options, never to disable one, so neither RFC 1143's
+/// WANTNO nor its queue ever arises: only these three.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    No,
+    Yes,
+    /// Asked for, not yet answered.
+    WantYes,
+}
 
 /// Where the reader is in the server's bytes (`TelnetReceive`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,11 +195,9 @@ pub(crate) struct Settings {
 pub(crate) struct Telnet {
     please_negotiate: bool,
     already_negotiated: bool,
-    us: [u8; 256],
-    usq: [u8; 256],
+    us: [Side; 256],
     us_preferred: [u8; 256],
-    him: [u8; 256],
-    himq: [u8; 256],
+    him: [Side; 256],
     him_preferred: [u8; 256],
     subnegotiation: [u8; 256],
     ttype: Option<Vec<u8>>,
@@ -327,11 +332,9 @@ impl Telnet {
         let mut tn = Telnet {
             please_negotiate: false,
             already_negotiated: false,
-            us: [NO; 256],
-            usq: [EMPTY; 256],
+            us: [Side::No; 256],
             us_preferred: [NO; 256],
-            him: [NO; 256],
-            himq: [EMPTY; 256],
+            him: [Side::No; 256],
             him_preferred: [NO; 256],
             subnegotiation: [NO; 256],
             ttype: settings.ttype,
@@ -381,10 +384,10 @@ impl Telnet {
                 continue;
             }
             if self.us_preferred[usize::from(i)] == YES {
-                self.set_local_option(wire, i, YES);
+                self.ask_local(wire, i);
             }
             if self.him_preferred[usize::from(i)] == YES {
-                self.set_remote_option(wire, i, YES);
+                self.ask_remote(wire, i);
             }
         }
     }
@@ -398,177 +401,93 @@ impl Telnet {
         print_option(wire, "SENT", cmd, option);
     }
 
-    fn set_remote_option(&mut self, wire: &mut dyn Wire, option: u8, newstate: u8) {
+    /// Ask the server to enable `option` (`set_remote_option` with
+    /// `CURL_YES`, the only way C calls it): asked once, as the
+    /// negotiation starts, when it is enabled already or not at all,
+    /// never half way, so C's queued cases do not arise.
+    fn ask_remote(&mut self, wire: &mut dyn Wire, option: u8) {
         let o = usize::from(option);
-        if newstate == YES {
-            match self.him[o] {
-                NO => {
-                    self.him[o] = WANTYES;
-                    self.send_negotiation(wire, DO, option);
-                }
-                WANTNO if self.himq[o] == EMPTY => self.himq[o] = OPPOSITE,
-                WANTYES if self.himq[o] == OPPOSITE => self.himq[o] = EMPTY,
-                _ => {}
-            }
-        } else {
-            match self.him[o] {
-                YES => {
-                    self.him[o] = WANTNO;
-                    self.send_negotiation(wire, DONT, option);
-                }
-                WANTNO if self.himq[o] == OPPOSITE => self.himq[o] = EMPTY,
-                WANTYES if self.himq[o] == EMPTY => self.himq[o] = OPPOSITE,
-                _ => {}
-            }
+        if self.him[o] == Side::No {
+            self.him[o] = Side::WantYes;
+            self.send_negotiation(wire, DO, option);
         }
     }
 
-    fn set_local_option(&mut self, wire: &mut dyn Wire, option: u8, newstate: u8) {
+    /// Offer to enable `option` here (`set_local_option` with
+    /// `CURL_YES`), as `ask_remote` asks.
+    fn ask_local(&mut self, wire: &mut dyn Wire, option: u8) {
         let o = usize::from(option);
-        if newstate == YES {
-            match self.us[o] {
-                NO => {
-                    self.us[o] = WANTYES;
-                    self.send_negotiation(wire, WILL, option);
-                }
-                WANTNO if self.usq[o] == EMPTY => self.usq[o] = OPPOSITE,
-                WANTYES if self.usq[o] == OPPOSITE => self.usq[o] = EMPTY,
-                _ => {}
-            }
-        } else {
-            match self.us[o] {
-                YES => {
-                    self.us[o] = WANTNO;
-                    self.send_negotiation(wire, WONT, option);
-                }
-                WANTNO if self.usq[o] == OPPOSITE => self.usq[o] = EMPTY,
-                WANTYES if self.usq[o] == EMPTY => self.usq[o] = OPPOSITE,
-                _ => {}
-            }
+        if self.us[o] == Side::No {
+            self.us[o] = Side::WantYes;
+            self.send_negotiation(wire, WILL, option);
         }
     }
 
     fn rec_will(&mut self, wire: &mut dyn Wire, option: u8) {
         let o = usize::from(option);
         match self.him[o] {
-            NO => {
+            Side::No => {
                 if self.him_preferred[o] == YES {
-                    self.him[o] = YES;
+                    self.him[o] = Side::Yes;
                     self.send_negotiation(wire, DO, option);
                 } else {
                     self.send_negotiation(wire, DONT, option);
                 }
             }
-            WANTNO => {
-                // DONT answered by WILL.
-                if self.himq[o] == EMPTY {
-                    self.him[o] = NO;
-                } else {
-                    self.him[o] = YES;
-                    self.himq[o] = EMPTY;
-                }
-            }
-            WANTYES => {
-                if self.himq[o] == EMPTY {
-                    self.him[o] = YES;
-                } else {
-                    self.him[o] = WANTNO;
-                    self.himq[o] = EMPTY;
-                    self.send_negotiation(wire, DONT, option);
-                }
-            }
-            _ => {}
+            Side::WantYes => self.him[o] = Side::Yes,
+            Side::Yes => {}
         }
     }
 
     fn rec_wont(&mut self, wire: &mut dyn Wire, option: u8) {
         let o = usize::from(option);
         match self.him[o] {
-            YES => {
-                self.him[o] = NO;
+            Side::Yes => {
+                self.him[o] = Side::No;
                 self.send_negotiation(wire, DONT, option);
             }
-            WANTNO => {
-                if self.himq[o] == EMPTY {
-                    self.him[o] = NO;
-                } else {
-                    self.him[o] = WANTYES;
-                    self.himq[o] = EMPTY;
-                    self.send_negotiation(wire, DO, option);
-                }
-            }
-            WANTYES => {
-                self.him[o] = NO;
-                self.himq[o] = EMPTY;
-            }
-            _ => {}
+            Side::WantYes => self.him[o] = Side::No,
+            Side::No => {}
         }
     }
 
     fn rec_do(&mut self, wire: &mut dyn Wire, option: u8) {
         let o = usize::from(option);
         match self.us[o] {
-            NO => {
+            Side::No => {
                 if self.us_preferred[o] == YES {
-                    self.us[o] = YES;
+                    self.us[o] = Side::Yes;
                     self.send_negotiation(wire, WILL, option);
                     if self.subnegotiation[o] == YES {
                         self.send_suboption(wire, option);
                     }
                 } else if self.subnegotiation[o] == YES {
-                    self.us[o] = YES;
+                    self.us[o] = Side::Yes;
                     self.send_negotiation(wire, WILL, option);
                     self.send_suboption(wire, option);
                 } else {
                     self.send_negotiation(wire, WONT, option);
                 }
             }
-            WANTNO => {
-                // DONT answered by WILL.
-                if self.usq[o] == EMPTY {
-                    self.us[o] = NO;
-                } else {
-                    self.us[o] = YES;
-                    self.usq[o] = EMPTY;
+            Side::WantYes => {
+                self.us[o] = Side::Yes;
+                if self.subnegotiation[o] == YES {
+                    self.send_suboption(wire, option);
                 }
             }
-            WANTYES => {
-                if self.usq[o] == EMPTY {
-                    self.us[o] = YES;
-                    if self.subnegotiation[o] == YES {
-                        self.send_suboption(wire, option);
-                    }
-                } else {
-                    self.us[o] = WANTNO;
-                    self.usq[o] = EMPTY;
-                    self.send_negotiation(wire, WONT, option);
-                }
-            }
-            _ => {}
+            Side::Yes => {}
         }
     }
 
     fn rec_dont(&mut self, wire: &mut dyn Wire, option: u8) {
         let o = usize::from(option);
         match self.us[o] {
-            YES => {
-                self.us[o] = NO;
+            Side::Yes => {
+                self.us[o] = Side::No;
                 self.send_negotiation(wire, WONT, option);
             }
-            WANTNO => {
-                if self.usq[o] == EMPTY {
-                    self.us[o] = NO;
-                } else {
-                    self.us[o] = WANTYES;
-                    self.usq[o] = EMPTY;
-                    self.send_negotiation(wire, WILL, option);
-                }
-            }
-            WANTYES => {
-                self.us[o] = NO;
-                self.usq[o] = EMPTY;
-            }
-            _ => {}
+            Side::WantYes => self.us[o] = Side::No,
+            Side::No => {}
         }
     }
 
@@ -988,10 +907,6 @@ impl Request {
     /// TELNET exchanges nothing once its DO is done.
     pub(crate) fn step(&mut self) -> ProtoStep {
         ProtoStep::Done
-    }
-
-    pub(crate) fn interest(&self, _: Pause) -> Events {
-        Events::NONE
     }
 
     /// When the next pass runs whatever the socket says.

@@ -278,21 +278,20 @@ impl Carrier<'_> {
     }
 
     /// Wait up to `timeout` for the socket to take more
-    /// (`SOCKET_WRITABLE`): whether it will. A socket without a
-    /// descriptor says what it is ready for now, not waited on.
-    pub(crate) fn wait_writable(&self, timeout: std::time::Duration) -> std::io::Result<bool> {
+    /// (`SOCKET_WRITABLE`), whether it does or the time runs out: only a
+    /// failed wait is an answer, as C's caller sends again either way. A
+    /// socket without a descriptor is not waited on.
+    pub(crate) fn wait_writable(&self, timeout: std::time::Duration) -> std::io::Result<()> {
         use super::io::{Events, Readiness};
         let socket = match &self.over {
             Over::Stream(stream) => stream.socket(),
             Over::Datagrams(datagrams) => datagrams.socket(),
         };
-        match socket.readiness() {
-            Readiness::Poll(fd) => {
-                let mut one = [curl_os::poll::PollFd::new(fd, Events::OUT)];
-                Ok(curl_os::poll::poll(&mut one, timeout)? > 0)
-            }
-            Readiness::Known { now, .. } => Ok(now.contains(Events::OUT)),
+        if let Readiness::Poll(fd) = socket.readiness() {
+            let mut one = [curl_os::poll::PollFd::new(fd, Events::OUT)];
+            curl_os::poll::poll(&mut one, timeout)?;
         }
+        Ok(())
     }
 
     /// The connection is not to be reused: its server closed it under a

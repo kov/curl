@@ -158,10 +158,12 @@ impl Session for FakeSession {
     fn set_known_hosts(&mut self, _: &[u8]) -> Result<(), Refused> {
         Ok(())
     }
-    fn set_port(&mut self, _: u16) -> Result<(), Refused> {
+    fn set_port(&mut self, port: u16) -> Result<(), Refused> {
+        self.w().call("set_port", &[port.to_string().as_bytes()]);
         Ok(())
     }
     fn set_compression(&mut self) -> Result<(), Refused> {
+        self.w().call("set_compression", &[]);
         Ok(())
     }
     fn import_pubkey_file(&mut self, file: &[u8]) -> Result<(), Refused> {
@@ -709,6 +711,7 @@ fn an_sftp_file_is_downloaded() {
         "set_host 127.0.0.1",
         "set_socket",
         "set_user u",
+        "set_port 8022",
         "import_pubkey_file /keys/id.pub",
         "connect",
         "import_privkey_file /keys/id",
@@ -717,6 +720,36 @@ fn an_sftp_file_is_downloaded() {
         "disconnect",
     ];
     assert_eq!(calls, want);
+}
+
+/// Compression is asked of the library when the transfer asks for it.
+#[test]
+fn compression_is_asked_for_when_wanted() {
+    for wanted in [false, true] {
+        let (result, _, said, calls) =
+            run(&[("/home/u/f", "x")], "sftp://u@127.0.0.1:PORT/~/f", |o| {
+                o.ssh.make_mut().unwrap().compression = wanted
+            });
+        assert_eq!(result, Ok(()), "{said}");
+        assert_eq!(calls.contains(&"set_compression".to_owned()), wanted);
+    }
+}
+
+/// The default private key is the first of `~/.ssh/id_rsa`,
+/// `~/.ssh/id_dsa`, `id_rsa` and `id_dsa` there is, else none.
+#[test]
+fn the_default_private_key_is_the_first_there_is() {
+    let there = |names: &'static [&'static [u8]]| {
+        move |f: &[u8]| -> Result<bool, ErrorKind> { Ok(names.contains(&f)) }
+    };
+    let first = |home: Option<&[u8]>, names| super::first_private_key(home, there(names)).unwrap();
+    let all: &[&[u8]] = &[b"/h/.ssh/id_rsa", b"/h/.ssh/id_dsa", b"id_rsa", b"id_dsa"];
+    assert_eq!(first(Some(b"/h"), all), b"/h/.ssh/id_rsa");
+    assert_eq!(first(Some(b"/h"), &all[1..]), b"/h/.ssh/id_dsa");
+    assert_eq!(first(Some(b"/h"), &all[2..]), b"id_rsa");
+    assert_eq!(first(None, all), b"id_rsa");
+    assert_eq!(first(Some(b"/h"), &all[3..]), b"id_dsa");
+    assert_eq!(first(Some(b"/h"), &[]), b"");
 }
 
 /// An SCP download reads the size the server offers.
@@ -781,6 +814,8 @@ fn quote_commands_run_before_the_transfer() {
                     &b"rename /home/u/a \"/home/u/b\""[..],
                     b"*rm /home/u/gone",
                     b"chmod 644 /home/u/b",
+                    b"chgrp 12 /home/u/b",
+                    b"chown 34 /home/u/b",
                     b"mkdir /home/u/d",
                     b"ln /home/u/b /home/u/l",
                 ])
@@ -801,6 +836,8 @@ fn quote_commands_run_before_the_transfer() {
             "rename /home/u/a /home/u/b",
             "unlink /home/u/gone",
             "setstat /home/u/b Permissions(420)",
+            "setstat /home/u/b Gid(12)",
+            "setstat /home/u/b Uid(34)",
             "mkdir /home/u/d",
             "symlink /home/u/l /home/u/b",
             "open /home/u/b",
@@ -834,6 +871,12 @@ fn a_failing_quote_command_fails_the_transfer() {
     assert_eq!(result, Err(ErrorKind::QuoteError), "{said}");
     assert!(
         said.contains("Suspicious data after the command line\n"),
+        "{said}"
+    );
+    let (result, _, said, _) = quoted(b"rm \"/home/u/f");
+    assert_eq!(result, Err(ErrorKind::QuoteError), "{said}");
+    assert!(
+        said.contains("Syntax error: Bad first parameter\n"),
         "{said}"
     );
     let (result, _, said, _) = quoted(b"chmod 99999 /home/u/f");

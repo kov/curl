@@ -110,11 +110,21 @@ impl Keys {
 /// The first of the default private key files that exists, or empty:
 /// `~/.ssh/id_rsa`, `~/.ssh/id_dsa`, then `id_rsa` and `id_dsa` here.
 fn default_private_key() -> Result<Vec<u8>, ErrorKind> {
-    let oom = |_| ErrorKind::OutOfMemory;
-    if let Some(home) = curl_os::env::var(b"HOME").map_err(oom)? {
+    let home = curl_os::env::var(b"HOME").map_err(|_| ErrorKind::OutOfMemory)?;
+    first_private_key(home.as_deref(), exists)
+}
+
+/// The first of the default private key files under `home`, then here,
+/// that `exists` says is there, or empty (`default_private_key`).
+fn first_private_key(
+    home: Option<&[u8]>,
+    exists: impl Fn(&[u8]) -> Result<bool, ErrorKind>,
+) -> Result<Vec<u8>, ErrorKind> {
+    if let Some(home) = home {
         for name in [&b"/.ssh/id_rsa"[..], b"/.ssh/id_dsa"] {
-            let mut file = copy(&home)?;
-            file.try_extend_from_slice(name).map_err(oom)?;
+            let mut file = copy(home)?;
+            file.try_extend_from_slice(name)
+                .map_err(|_| ErrorKind::OutOfMemory)?;
             if exists(&file)? {
                 return Ok(file);
             }

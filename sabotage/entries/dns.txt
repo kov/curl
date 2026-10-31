@@ -278,20 +278,20 @@ witness: curl-core multi::tests::a_resolve_that_never_answers_times_out_as_resol
                     Some(SetupPoint::Resolving) => "Connection",
 
 === the threaded resolver's queries are traced IPv6's first, as queued
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::a_queued_resolve_is_traced_as_c_s_threaded_resolver
 --- old
-        for (queued, query) in [(q.v6, "AAAA"), (q.v4, "A")] {
+    for (queued, query) in [(q.v6, "AAAA"), (q.v4, "A")] {
 --- new
-        for (queued, query) in [(q.v4, "A"), (q.v6, "AAAA")] {
+    for (queued, query) in [(q.v4, "A"), (q.v6, "AAAA")] {
 
 === the threaded resolver's answers are traced IPv4's first, as taken
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::a_queued_resolve_is_traced_as_c_s_threaded_resolver
 --- old
-        for (queued, v6) in [(q.v4, false), (q.v6, true)] {
+    for (queued, v6) in [(q.v4, false), (q.v6, true)] {
 --- new
-        for (queued, v6) in [(q.v6, true), (q.v4, false)] {
+    for (queued, v6) in [(q.v6, true), (q.v4, false)] {
 
 === a queued resolve that fails traces its queries' empty answers
 file: crates/curl-core/src/multi/state.rs
@@ -546,3 +546,35 @@ witness: curl-core conn::connect::tests::a_bare_address_is_not_resolved
 --- new
     if let Some(ip) = literal(name).filter(IpAddr::is_ipv4) {
         addrs.try_push(ip)?;
+
+=== a blocking resolve does not say the threaded resolver's queries
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it
+--- old
+        say_queued(xfer, q, name, at, &mut |parts| cx.of_with(dns, parts));
+--- new
+        let _ = (xfer, q);
+
+=== a blocking resolve does not say the threaded resolver's answers
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it
+--- old
+                    say_answered(q, name, at, addrs, &mut |parts| cx.of_with(dns, parts));
+--- new
+                    let _ = (q, addrs);
+
+=== a failed blocking resolve does not say the threaded resolver's answers
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it
+--- old
+                say_answered(q, name, at, &[], &mut |parts| cx.of_with(dns, parts));
+--- new
+                let _ = q;
+
+=== a failed blocking resolve forgets what the resolver queued
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it
+--- old
+            Some(Found::Resolved(Asked::Resolver(*queued)))
+--- new
+            Some(Found::Resolved(Asked::Resolver(queued.and(None))))

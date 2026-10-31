@@ -461,6 +461,14 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         self.step.rest.ipv6_works
     }
 
+    fn transfer_number(&self) -> u64 {
+        self.step
+            .easy()
+            .report()
+            .transfer_number()
+            .map_or(0, |n| n.get())
+    }
+
     fn fails_ipv6_resolves(&self) -> bool {
         self.step.rest.fail_ipv6
     }

@@ -285,6 +285,10 @@ pub(crate) trait ConnCx: LayerCx {
     /// Tell the application a resolve starts, if it asked to hear of
     /// it: it may stop it (`Curl_resolv_announce_start`).
     fn announce_resolve(&mut self) -> Result<(), ConnectError>;
+
+    /// The number of the transfer the setup is for, as its lines name
+    /// it, 0 before it has one.
+    fn transfer_number(&self) -> u64;
 }
 
 /// What a QUIC attempt is made with: the transfer's libraries, what its
@@ -401,6 +405,10 @@ impl ConnCx for Plain<'_> {
 
     fn ipv6_works(&self) -> bool {
         true
+    }
+
+    fn transfer_number(&self) -> u64 {
+        0
     }
 
     fn fails_ipv6_resolves(&self) -> bool {
@@ -2352,6 +2360,9 @@ pub(crate) fn resolve_blocking(
     let found = match &looked {
         Ok((_, found)) => Some(*found),
         Err(ConnectError::Unresolved(Unresolved::Negative)) => None,
+        Err(ConnectError::Unresolved(Unresolved::Resolver { queued, .. })) => {
+            Some(Found::Resolved(Asked::Resolver(*queued)))
+        }
         Err(ConnectError::Unresolved(_)) => Some(Found::Resolved(Asked::Resolver(None))),
         Err(ConnectError::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
         Err(ConnectError::Aborted) => return Err(ErrorKind::AbortedByCallback),
@@ -2376,6 +2387,14 @@ pub(crate) fn resolve_blocking(
     let rest =
         crate::text::Text::<64>::clipped(format_args!(" queries={queries} -> {code} {not}found")).0;
     cx.of_with(dns, &[b"cache lookup ", name, at, rest.bytes()]);
+    let queued = match found {
+        Some(Found::Stale(Asked::Resolver(q)) | Found::Resolved(Asked::Resolver(q))) => q,
+        _ => None,
+    };
+    if let Some(q) = queued {
+        let xfer = cx.transfer_number();
+        say_queued(xfer, q, name, at, &mut |parts| cx.of_with(dns, parts));
+    }
     if found == Some(Found::Cached) {
         cx.info_with(&[b"Hostname ", name, b" was found in DNS cache"]);
     }
@@ -2390,6 +2409,10 @@ pub(crate) fn resolve_blocking(
                     dns,
                     format_args!("[{queries}] hostip_resolv started -> {started}"),
                 );
+                if let Some(q) = queued {
+                    let addrs = answer.addrs();
+                    say_answered(q, name, at, addrs, &mut |parts| cx.of_with(dns, parts));
+                }
                 // Only an answer had at once is said to be kept: one the
                 // resolver gives is waited for without a word
                 // (`Curl_resolv_blocking`).
@@ -2415,6 +2438,9 @@ pub(crate) fn resolve_blocking(
                     format_args!("[{queries}] hostip_resolv started -> {AGAIN_NUMBER}"),
                 );
             }
+            if let Some(q) = queued {
+                say_answered(q, name, at, &[], &mut |parts| cx.of_with(dns, parts));
+            }
             // With the resolver's reason, if it gives one, as the
             // reference build's c-ares does (`ares_strerror`).
             match why {
@@ -2433,6 +2459,62 @@ pub(crate) fn resolve_blocking(
             Ok(None)
         }
         Err(_) => unreachable!("handled above"),
+    }
+}
+
+/// The threaded resolver's queries for `name` at `at`, as `q` queued
+/// them for transfer `xfer`, IPv6's first, each line given to `say`
+/// (`async_thrdd_query`).
+pub(crate) fn say_queued(
+    xfer: u64,
+    q: Queued,
+    name: &[u8],
+    at: &[u8],
+    say: &mut dyn FnMut(&[&[u8]]),
+) {
+    let id = q.id.get();
+    for (queued, query) in [(q.v6, "AAAA"), (q.v4, "A")] {
+        if queued {
+            let ids =
+                crate::text::Text::<80>::clipped(format_args!("queueing query [{xfer}/{id}] ")).0;
+            say(&[ids.bytes(), query.as_bytes(), b" ", name, at]);
+        }
+    }
+}
+
+/// The threaded resolver's answers to the queries `q` queued for `name`
+/// at `at`: each query's addresses of its family, of `addrs`, IPv4's
+/// taken first, each line given to `say` (`async_thrdd_check_done`).
+pub(crate) fn say_answered(
+    q: Queued,
+    name: &[u8],
+    at: &[u8],
+    addrs: &[IpAddr],
+    say: &mut dyn FnMut(&[&[u8]]),
+) {
+    for (queued, v6) in [(q.v4, false), (q.v6, true)] {
+        if queued {
+            let (addrs, c) = (OfFamily(addrs, v6), if v6 { '6' } else { '4' });
+            let mut line = Line::new();
+            line.raw(b"Host ").raw(name).raw(at);
+            line.text(format_args!(" resolved IPv{c}: {addrs}"));
+            say(&[line.bytes()]);
+        }
+    }
+}
+
+/// The addresses of a family, IPv6 if `.1`, among `.0`, as the threaded
+/// resolver says them: in order, or `(none)`.
+pub(crate) struct OfFamily<'a>(pub(crate) &'a [IpAddr], pub(crate) bool);
+
+impl std::fmt::Display for OfFamily<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut of = self.0.iter().filter(|a| a.is_ipv6() == self.1);
+        let Some(first) = of.next() else {
+            return f.write_str("(none)");
+        };
+        first.fmt(f)?;
+        of.try_for_each(|a| write!(f, ", {a}"))
     }
 }
 

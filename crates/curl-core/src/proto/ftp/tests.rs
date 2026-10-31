@@ -1105,9 +1105,19 @@ fn serving_active_after(
     data: &[&Conversation],
     after: std::time::Duration,
 ) -> (Multi, Counted) {
+    serving_active_with(control, data, after, |net| net)
+}
+
+/// The same, the network made as `more` makes it.
+fn serving_active_with(
+    control: &[&Conversation],
+    data: &[&Conversation],
+    after: std::time::Duration,
+    more: impl FnOnce(FakeNet) -> FakeNet,
+) -> (Multi, Counted) {
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
-    let mut net = FakeNet::new(clock.clone()).with_peer(at, Net::Accepts);
+    let mut net = more(FakeNet::new(clock.clone()).with_peer(at, Net::Accepts));
     for c in control {
         net = net.with_conversation(at, (*c).clone());
     }
@@ -1278,6 +1288,60 @@ fn the_address_port_offers_is_resolved_as_c_resolves_it() {
         "failed to resolve the address provided to PORT: bogus.invalid",
     );
     assert!(any < port, "{said}");
+}
+
+/// The address `PORT` offers, resolved by a resolver that queues a
+/// query for each family as C's threaded one does, is said as that
+/// resolver says it, whether found or not: its queries queued, then each
+/// family's answer (`async_thrdd_query`, `async_thrdd_check_done`).
+#[test]
+fn the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it() {
+    let late = crate::conn::io::Late::new();
+    let names = |net: FakeNet| {
+        net.with_late_name("port.test", &[[127, 0, 0, 1].into()], &late)
+            .with_late_name("gone.test", &[], &late)
+            .without_reasons()
+    };
+    let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n226 done\r\n");
+    let control = Conversation::replies(&replies, false).greeting();
+    let data = Conversation::replies(&[b"hello"], true).greeting();
+    let (mut m, _) = serving_active_with(&[&control], &[&data], ACCEPT_AFTER, names);
+    let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"multi,dns", |o| {
+        o.line.make_mut().unwrap().ftp.port = Some(b"port.test".to_vec());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    let looked = at_in(&said, "[DNS] cache lookup port.test:0 queries=");
+    let after = &said[looked..];
+    let queued_v6 = at_in(after, "] AAAA port.test:0\n");
+    let queued_v4 = at_in(after, "] A port.test:0\n");
+    let started = at_in(after, "] hostip_resolv started -> 81\n");
+    let v4 = at_in(after, "[DNS] Host port.test:0 resolved IPv4: 127.0.0.1\n");
+    let v6 = at_in(after, "[DNS] Host port.test:0 resolved IPv6: (none)\n");
+    assert!(
+        after[..queued_v6].ends_with("[DNS] queueing query [0/1"),
+        "{said}"
+    );
+    assert!(queued_v6 < queued_v4 && queued_v4 < started, "{said}");
+    assert!(started < v4 && v4 < v6, "{said}");
+
+    let control = Conversation::replies(&ACTIVE_LOGIN_AND_SETUP[..4], false).greeting();
+    let (mut m, _) = serving_active_with(&[&control], &[], ACCEPT_AFTER, names);
+    let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"multi,dns", |o| {
+        o.line.make_mut().unwrap().ftp.port = Some(b"gone.test".to_vec());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Err(ErrorKind::CouldntResolveHost), "{said}");
+    let looked = at_in(&said, "[DNS] cache lookup gone.test:0 queries=");
+    let after = &said[looked..];
+    let queued = at_in(after, "] A gone.test:0\n");
+    let started = at_in(after, "] hostip_resolv started -> 81\n");
+    let v4 = at_in(after, "[DNS] Host gone.test:0 resolved IPv4: (none)\n");
+    let failed = at_in(after, "Could not resolve host: gone.test\n");
+    assert!(queued < started && started < v4 && v4 < failed, "{said}");
 }
 
 /// Where `line` is in `said`, which must hold it.

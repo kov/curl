@@ -4278,20 +4278,11 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, found: Option
         Found::Stale(Asked::Resolver(Some(q))) | Found::Resolved(Asked::Resolver(Some(q))),
     ) = found
     {
-        // The threaded resolver's queries, IPv6's queued first
-        // (`async_thrdd_query`).
         let xfer = cx.easy().report().transfer_number().map_or(0, |n| n.get());
-        let id = q.id.get();
-        for (queued, query) in [(q.v6, "AAAA"), (q.v4, "A")] {
-            if queued {
-                let ids = Text::<80>::clipped(format_args!("queueing query [{xfer}/{id}] ")).0;
-                trace::of_with(
-                    cx,
-                    Component::Dns,
-                    &[ids.bytes(), query.as_bytes(), b" ", name, at],
-                );
-            }
-        }
+        let dns = Component::Dns;
+        crate::conn::say_queued(xfer, q, name, at, &mut |parts| {
+            trace::of_with(cx, dns, parts);
+        });
     }
     if found == Some(Found::Cached) {
         trace::info_with(cx, &[b"Hostname ", name, b" was found in DNS cache"]);
@@ -4374,18 +4365,10 @@ fn trace_resolved<H: Host>(
         dns,
         format_args!("[{queries}] hostip_resolv started -> {code}"),
     );
-    // The threaded resolver's answers, each query's addresses of its
-    // family, IPv4's taken first (`async_thrdd_check_done`).
     if let Ok(Asked::Resolver(Some(q))) | Err(Some(q)) = asked {
-        for (queued, v6) in [(q.v4, false), (q.v6, true)] {
-            if queued {
-                let (addrs, c) = (Family(addrs, v6), if v6 { '6' } else { '4' });
-                let mut line = trace::Line::new();
-                line.raw(b"Host ").raw(name).raw(at);
-                line.text(format_args!(" resolved IPv{c}: {addrs}"));
-                trace::of_with(cx, dns, &[line.bytes()]);
-            }
-        }
+        crate::conn::say_answered(q, name, at, addrs, &mut |parts| {
+            trace::of_with(cx, dns, parts);
+        });
     }
     if asked.is_err() {
         return;
@@ -4844,23 +4827,14 @@ fn report_resolved<H: Host>(cx: &mut StepCx<'_, H>, answer: &Answer, port: u16) 
         cx,
         &[b"Host ", answer.name(), at.bytes(), b" was resolved."],
     );
-    trace::info(cx, format_args!("IPv6: {}", Family(answer.addrs(), true)));
-    trace::info(cx, format_args!("IPv4: {}", Family(answer.addrs(), false)));
-}
-
-/// The addresses of one family, IPv6 if `1`, comma-separated; `(none)`
-/// for none.
-struct Family<'a>(&'a [IpAddr], bool);
-
-impl std::fmt::Display for Family<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut of = self.0.iter().filter(|a| a.is_ipv6() == self.1);
-        let Some(first) = of.next() else {
-            return f.write_str("(none)");
-        };
-        first.fmt(f)?;
-        of.try_for_each(|a| write!(f, ", {a}"))
-    }
+    trace::info(
+        cx,
+        format_args!("IPv6: {}", crate::conn::OfFamily(answer.addrs(), true)),
+    );
+    trace::info(
+        cx,
+        format_args!("IPv4: {}", crate::conn::OfFamily(answer.addrs(), false)),
+    );
 }
 
 /// The request ran out of time, with what it received of how much if

@@ -195,6 +195,10 @@ exclude_re = [
     'proto/ftp\.rs:.*: replace \| with \^ in Request::pasv_resp$',
     'curl-sys-abi/src/sockets\.rs:.*: replace \| with \^ in SockaddrEx::tcp$',
     'curl-os/src/fs\.rs:.*: replace \| with \^ in (open|open_write)$',
+    # An FTP exchange waits for nothing on its control connection, its
+    # bytes being the data connection's: `interest` is already
+    # `Events::NONE`, the default.
+    'proto/ftp\.rs:.*: replace Request::interest -> Events with Default::default\(\)$',
     # 0x80 is in no list of invalid bytes, so it stays allowed either way.
     'url/host\.rs:.*: replace < with <= in invalid_host_byte$',
     # `ipv4` is only given a host that starts with a digit, so it never

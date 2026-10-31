@@ -2322,3 +2322,455 @@ fn directories_are_entered_and_made_as_c_does() {
     );
     assert_eq!(sent, "CWD a\r\nMKD a\r\nCWD a\r\n");
 }
+
+/// `AUTH` refused is asked once more of the other kind, `SSL` first
+/// unless `TLS` is asked to be; refused twice, the login goes on in the
+/// clear if TLS is only tried, and fails if it is required; an answer
+/// with more after it, which was not under TLS, is refused
+/// (`ftp_state_auth_resp`).
+#[test]
+fn a_refused_auth_is_asked_again_then_given_up_as_c_does() {
+    use crate::options::{SslAuth, UseSsl};
+    use crate::tls::fake::FakeTls;
+    let run = |replies: &[&'static [u8]], use_ssl: UseSsl, auth: SslAuth| {
+        let control = Conversation::replies(replies, false).greeting();
+        let file = data(b"hello");
+        let mut m = serving(&[&control], &[&file]);
+        let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing().unwrap()));
+        let libraries = SharedLibraries::new(Libraries {
+            tls: Some(Library::Static(backend)),
+            ..Libraries::NONE
+        })
+        .unwrap();
+        let (id, body, text) = added_with(&mut m, URL, Some(libraries), |o| {
+            let line = o.line.make_mut().unwrap();
+            line.use_ssl = use_ssl;
+            line.ftp.ssl_auth = auth;
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let got = body.0.lock().unwrap().clone();
+        (result, got, received(&control), text.text())
+    };
+    let mut refused: Vec<&'static [u8]> = vec![b"220 hi\r\n", b"500 no\r\n", b"500 no\r\n"];
+    refused.extend_from_slice(&LOGIN_AND_SETUP[1..]);
+    refused.push(b"150 here\r\n226 done\r\n");
+    // Tried: on in the clear.
+    let (result, got, sent, said) = run(&refused, UseSsl::Try, SslAuth::Default);
+    assert_eq!((result, got), (Ok(()), b"hello".to_vec()), "{said}");
+    assert_eq!(sent, format!("AUTH SSL\r\nAUTH TLS\r\n{COMMANDS}"));
+    let (result, _, sent, said) = run(&refused, UseSsl::Try, SslAuth::Ssl);
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(sent.starts_with("AUTH SSL\r\nAUTH TLS\r\nUSER"), "{sent}");
+    let (result, _, sent, said) = run(&refused, UseSsl::Try, SslAuth::Tls);
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(sent.starts_with("AUTH TLS\r\nAUTH SSL\r\nUSER"), "{sent}");
+    // Required: no login in the clear.
+    for required in [UseSsl::Control, UseSsl::All] {
+        let (result, _, sent, said) = run(&refused, required, SslAuth::Default);
+        assert_eq!(result, Err(ErrorKind::UseSslFailed), "{said}");
+        assert_eq!(sent, "AUTH SSL\r\nAUTH TLS\r\n");
+    }
+    // Taken, but with an answer after it in the same read.
+    let (result, _, sent, said) = run(
+        &[b"220 hi\r\n", b"234 go on\r\n220 more\r\n"],
+        UseSsl::Try,
+        SslAuth::Default,
+    );
+    assert_eq!(result, Err(ErrorKind::WeirdServerReply), "{said}");
+    assert_eq!(sent, "AUTH SSL\r\n");
+}
+
+/// `AUTH` taken with 234 or 334 puts TLS on the control connection and
+/// logs in over it, `PBSZ` and `PROT` asked after; a `PROT` refused
+/// leaves the data in the clear when TLS is only tried
+/// (`ftp_state_auth_resp`, `ftp_state_prot_resp`).
+#[test]
+fn an_auth_taken_puts_tls_on_the_control_connection() {
+    use crate::options::UseSsl;
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    for taken in [&b"234 go on\r\n"[..], b"334 go on\r\n"] {
+        let control = [
+            b"220 hi\r\n".to_vec(),
+            taken.to_vec(),
+            WELCOME.to_vec(),
+            tls(b"331 password?\r\n"),
+            tls(b"230 in\r\n"),
+            tls(b"200 PBSZ\r\n"),
+            tls(b"500 no PROT\r\n"),
+            tls(b"257 \"/\" is it\r\n"),
+            tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+            tls(b"200 binary\r\n"),
+            tls(b"213 5\r\n"),
+            tls(b"150 here\r\n226 done\r\n"),
+        ];
+        let control: Vec<&[u8]> = control.iter().map(Vec::as_slice).collect();
+        let control = Conversation::replies(&control, false).per_send().greeting();
+        let file = data(b"hello");
+        let mut m = serving(&[&control], &[&file]);
+        let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing().unwrap()));
+        let libraries = SharedLibraries::new(Libraries {
+            tls: Some(Library::Static(backend)),
+            ..Libraries::NONE
+        })
+        .unwrap();
+        let (id, body, text) = added_with(&mut m, URL, Some(libraries), |o| {
+            o.line.make_mut().unwrap().use_ssl = UseSsl::Try;
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let said = text.text();
+        assert_eq!(result, Ok(()), "{said}");
+        assert_eq!(*body.0.lock().unwrap(), b"hello", "{said}");
+        assert!(control.received().starts_with(b"AUTH SSL\r\n"), "{said}");
+        assert_eq!(backend.log().handshakes, 1, "{said}");
+    }
+}
+
+/// An active download offers its socket with `EPRT`, unless told not
+/// to, and with `PORT` once `EPRT` is refused, each byte of the address
+/// and of the port's two halves a number; a `PORT` refused fails
+/// (`ftp_state_use_port`, `ftp_state_port_resp`).
+#[test]
+fn an_active_offer_falls_back_from_eprt_to_port() {
+    let run = |offer: &[&'static [u8]], eprt: bool, port: &[u8]| {
+        let mut replies: Vec<&'static [u8]> = ACTIVE_LOGIN_AND_SETUP[..4].to_vec();
+        replies.extend_from_slice(offer);
+        replies.extend_from_slice(&[b"200 binary\r\n", b"213 5\r\n", b"150 here\r\n226 done\r\n"]);
+        let control = Conversation::replies(&replies, false).greeting();
+        // The first socket offered, to be given up, takes one too.
+        let unused = Conversation::replies(&[b"hello"], true).greeting();
+        let data = Conversation::replies(&[b"hello"], true).greeting();
+        let first: &[&Conversation] = if offer.len() > 1 {
+            &[&unused, &data]
+        } else {
+            &[&data]
+        };
+        let (mut m, _) = serving_active(&[&control], first);
+        let (id, body, text) = added(&mut m, URL, |o| {
+            let ftp = &mut o.line.make_mut().unwrap().ftp;
+            ftp.port = Some(port.to_vec());
+            ftp.use_eprt = eprt;
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let got = body.0.lock().unwrap().clone();
+        let sent = received(&control);
+        let after_pwd = sent.split_once("PWD\r\n").unwrap().1.to_owned();
+        (result, got, after_pwd, text.text())
+    };
+    let ok: &[u8] = b"200 ok\r\n";
+    let no: &[u8] = b"500 no\r\n";
+    let (result, got, sent, said) = run(&[no, ok], true, b"-");
+    assert_eq!((result, got), (Ok(()), b"hello".to_vec()), "{said}");
+    assert!(said.contains("disabling EPRT usage"), "{said}");
+    assert!(
+        sent.starts_with("EPRT |1|127.0.0.1|40001|\r\nPORT 127,0,0,1,156,67\r\nTYPE I\r\n"),
+        "{sent}"
+    );
+    let (result, _, sent, said) = run(&[ok], false, b"-");
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        sent.starts_with("PORT 127,0,0,1,156,65\r\nTYPE I\r\n"),
+        "{sent}"
+    );
+    // A range's port, its halves both above 0.
+    let (result, _, sent, said) = run(&[ok], false, b"127.0.0.1:2305");
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(sent.starts_with("PORT 127,0,0,1,9,1\r\n"), "{sent}");
+    let (result, _, sent, said) = run(&[no, no], true, b"-");
+    assert_eq!(result, Err(ErrorKind::FtpPortFailed), "{said}");
+    assert!(said.contains("Failed to do PORT"), "{said}");
+    assert!(
+        sent.starts_with("EPRT |1|127.0.0.1|40001|\r\nPORT "),
+        "{sent}"
+    );
+}
+
+/// The active socket binds to the first port of its range not in use;
+/// with none left it fails (`ftp_port_bind_socket`).
+#[test]
+fn an_active_socket_binds_the_first_free_port_of_its_range() {
+    let run = |in_use: &[u16]| {
+        let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+        replies.push(b"150 here\r\n226 done\r\n");
+        let control = Conversation::replies(&replies, false).greeting();
+        let data = Conversation::replies(&[b"hello"], true).greeting();
+        let clock = ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+        let mut net = FakeNet::new(clock.clone())
+            .with_peer(at, Net::Accepts)
+            .with_conversation(at, control.clone())
+            .with_incoming(at.ip(), ACTIVE_FROM, &data, ACCEPT_AFTER);
+        for &p in in_use {
+            net = net.with_port_in_use(p);
+        }
+        let env = Env {
+            clock: Box::new(clock),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m = Multi::new(env).unwrap();
+        let (id, _, text) = added(&mut m, URL, |o| {
+            o.line.make_mut().unwrap().ftp.port = Some(b"127.0.0.1:5000-5002".to_vec());
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        (result, received(&control), text.text())
+    };
+    let (result, sent, said) = run(&[]);
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(sent.contains("EPRT |1|127.0.0.1|5000|\r\n"), "{sent}");
+    let (result, sent, said) = run(&[5000, 5001]);
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(sent.contains("EPRT |1|127.0.0.1|5002|\r\n"), "{sent}");
+    assert!(said.contains("from 127.0.0.1 port 5002"), "{said}");
+    let (result, sent, said) = run(&[5000, 5001, 5002]);
+    assert_eq!(result, Err(ErrorKind::FtpPortFailed), "{said}");
+    assert!(said.contains("bind() failed, ran out of ports"), "{said}");
+    assert!(!sent.contains("EPRT"), "{sent}");
+}
+
+/// Over IPv6 the active socket is offered with `EPRT` even when told
+/// not to use it, as `PORT` names IPv4 addresses alone
+/// (`ftp_state_use_port`).
+#[test]
+fn an_active_offer_over_ipv6_is_always_eprt() {
+    let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n226 done\r\n");
+    let control = Conversation::replies(&replies, false).greeting();
+    let data = Conversation::replies(&[b"hello"], true).greeting();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, PORT));
+    let from = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 20));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Net::Accepts)
+        .with_conversation(at, control.clone())
+        .with_incoming(at.ip(), from, &data, ACCEPT_AFTER)
+        // The address offered is looked up bare, which the fake's
+        // resolver knows only by name.
+        .with_name("::1", &[at.ip()]);
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let (id, body, text) = added(&mut m, "ftp://[::1]:PORT/f", |o| {
+        let ftp = &mut o.line.make_mut().unwrap().ftp;
+        ftp.port = Some(b"-".to_vec());
+        ftp.use_eprt = false;
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let sent = received(&control);
+    assert!(
+        sent.contains("PWD\r\nEPRT |2|::1|40001|\r\nTYPE I\r\n"),
+        "{sent}"
+    );
+}
+
+/// Over IPv6 an `EPRT` refused leaves no command to offer the socket
+/// with, `PORT` naming IPv4 addresses alone: the transfer waits for an
+/// answer all the same, as C's does, and fails in the server's time to
+/// give one (`ftp_state_use_port`).
+#[test]
+fn an_eprt_refused_over_ipv6_waits_for_an_answer_in_vain() {
+    let mut replies = ACTIVE_LOGIN_AND_SETUP[..4].to_vec();
+    replies.push(b"500 no EPRT\r\n");
+    let control = Conversation::replies(&replies, false).greeting();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Net::Accepts)
+        .with_conversation(at, control.clone())
+        .with_name("::1", &[at.ip()]);
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let (id, _, text) = added(&mut m, "ftp://[::1]:PORT/f", |o| {
+        o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
+        o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(2000);
+    });
+    let mut result = None;
+    for _ in 0..200 {
+        m.wait(
+            &mut [],
+            std::time::Duration::from_secs(1),
+            crate::multi::WaitMode::Poll,
+            &mut NoEvents,
+        )
+        .unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        if let Some(done) = m.info_read() {
+            assert_eq!(done.id, id);
+            result = Some(done.result);
+            break;
+        }
+    }
+    let said = text.text();
+    assert_eq!(result, Some(Err(ErrorKind::OperationTimedout)), "{said}");
+    assert!(said.contains("disabling EPRT usage"), "{said}");
+    let sent = received(&control);
+    assert!(sent.ends_with("PWD\r\nEPRT |2|::1|40001|\r\n"), "{sent}");
+}
+
+/// The sockets the multi's transfers wait on, and for what.
+fn waits(m: &mut Multi) -> Vec<(i32, crate::conn::io::Events)> {
+    let mut waits = Vec::new();
+    m.sockets(&mut NoEvents, |key, events| waits.push((key.get(), events)))
+        .unwrap();
+    waits.sort_by_key(|&(key, _)| key);
+    waits
+}
+
+/// What the exchange waits for: an upload's data connection to take
+/// more, unless its sending is paused; a download's to give more, unless
+/// its receiving is; and, the data moved, DONE the control connection's
+/// verdict, by when the server is to give it (`ftp_pollset`,
+/// `Curl_xfer_pollset` of the second socket).
+#[test]
+fn an_exchange_waits_on_what_it_moves() {
+    use crate::conn::io::Events;
+    use crate::deliver::PauseRequest;
+    let (control_fd, data_fd) = (1000, 1001);
+    // An upload whose data connection takes nothing yet.
+    let talk = logged_in(&[
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"200 type\r\n",
+        b"150 go on\r\n226 stored\r\n",
+    ]);
+    let file = Conversation::replies(&[], false).stalling_sends(1000);
+    let mut m = serving(&[&talk], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |o| {
+        o.method = crate::options::Method::Upload;
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"upload".to_vec()).unwrap(),
+        );
+    });
+    for _ in 0..30 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(received(&talk).ends_with("STOR f\r\n"), "{}", text.text());
+    assert_eq!(waits(&mut m), [(data_fd, Events::OUT)], "{}", text.text());
+    m.pause(
+        id,
+        PauseRequest {
+            recv: false,
+            send: true,
+        },
+        &mut NoEvents,
+    )
+    .unwrap();
+    assert_eq!(waits(&mut m), [], "{}", text.text());
+    drop(m);
+    // A download whose data connection gives nothing yet, then its
+    // verdict awaited once it has given all.
+    let mut replies = LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n");
+    let talk = Conversation::replies(&replies, false).greeting();
+    let file = Conversation::replies(&[b"hello"], true).greeting().held();
+    let mut m = serving(&[&talk], &[&file]);
+    let (id, body, text) = added(&mut m, URL, |o| {
+        o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(3000);
+    });
+    for _ in 0..30 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(received(&talk).ends_with("RETR f\r\n"), "{}", text.text());
+    assert_eq!(waits(&mut m), [(data_fd, Events::IN)], "{}", text.text());
+    m.pause(
+        id,
+        PauseRequest {
+            recv: true,
+            send: false,
+        },
+        &mut NoEvents,
+    )
+    .unwrap();
+    assert_eq!(waits(&mut m), [], "{}", text.text());
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    file.allow(1);
+    for _ in 0..30 {
+        m.wait(
+            &mut [],
+            std::time::Duration::ZERO,
+            crate::multi::WaitMode::Poll,
+            &mut NoEvents,
+        )
+        .unwrap();
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let said = text.text();
+    assert_eq!(*body.0.lock().unwrap(), b"hello", "{said}");
+    assert!(said.contains("[PERFORMING] -> [DONE]"), "{said}");
+    assert_eq!(waits(&mut m), [(control_fd, Events::IN)], "{said}");
+    // Looked at again within a second, as C's blocking read polls in
+    // intervals of one, not at the server's time to answer.
+    let wake = m.timeout().expect("DONE waits for its answer");
+    assert_eq!(wake, std::time::Duration::from_secs(1));
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Err(ErrorKind::OperationTimedout), "{}", text.text());
+}
+
+/// A download is done sending once it is made, an upload once its body
+/// is sent; and a request with nothing to move goes from DID straight to
+/// DONE (`mstate_enter_did`, `multistate_did`).
+#[test]
+fn a_request_moves_on_from_did_as_c_s_does() {
+    let download = control(&[b"150 here\r\n226 done\r\n"]);
+    let file = data(b"hello");
+    let mut m = serving(&[&download], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(said.contains("[DID] [PGRS-POSTRANSFER] added"), "{said}");
+    assert!(said.contains("[DID] -> [PERFORMING]"), "{said}");
+    let upload = logged_in(&[
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"200 type\r\n",
+        b"150 go on\r\n226 stored\r\n",
+    ]);
+    let file = Conversation::replies(&[], false);
+    let mut m = serving(&[&upload], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |o| {
+        o.method = crate::options::Method::Upload;
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"x".to_vec()).unwrap(),
+        );
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(!said.contains("[DID] [PGRS-POSTRANSFER]"), "{said}");
+    assert!(
+        said.contains("[PERFORMING] [PGRS-POSTRANSFER] added"),
+        "{said}"
+    );
+    let head = Conversation::replies(
+        &[
+            b"220 hi\r\n",
+            b"331 password?\r\n",
+            b"230 in\r\n",
+            b"257 \"/\" is it\r\n",
+            b"200 binary\r\n",
+            b"213 5\r\n",
+            b"350 ranges\r\n",
+        ],
+        false,
+    )
+    .greeting();
+    let mut m = serving(&[&head], &[]);
+    let (id, _, text) = added(&mut m, URL, |o| o.method = crate::options::Method::Head);
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(said.contains("[DID] -> [DONE]"), "{said}");
+    assert!(!said.contains("[PERFORMING]"), "{said}");
+}

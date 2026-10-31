@@ -275,9 +275,14 @@ fn what_a_request_cannot_go_without_or_with_is_refused() {
 /// head that is no RTP is too much (RFC 2326, section 4.4).
 #[test]
 fn a_response_without_a_length_has_no_body() {
-    let (ran, _) = rtsp(&[b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\nxyz"], |_| {});
-    assert_eq!(ran.result, Ok(()));
-    assert_eq!(ran.seen.body(), b"");
+    // An OPTIONS has none anyway; a DESCRIBE has one only if sized.
+    for request in [RtspRequest::Options, RtspRequest::Describe] {
+        let (ran, _) = rtsp(&[b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\nxyz"], |o| {
+            o.small.make_mut().unwrap().rtsp_request = request;
+        });
+        assert_eq!(ran.result, Ok(()), "{request:?}");
+        assert_eq!(ran.seen.body(), b"", "{request:?}");
+    }
 }
 
 /// A body cut short by the connection's end is a partial file; a head

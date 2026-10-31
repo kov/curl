@@ -122,6 +122,29 @@ fn blanks_read_as_c_reads_them() {
     );
 }
 
+/// A time's parts may hold dots, and no other punctuation, as C's parser
+/// reads them.
+#[test]
+fn a_time_reads_as_c_reads_it() {
+    let time = |line: &[u8]| {
+        let l = read(line, line.len());
+        let time = l.files().front().map(|e| e.info().time.to_vec());
+        (l.error(), time)
+    };
+    assert_eq!(
+        time(b"-rw-r--r-- 1 u g 5 Jan. 17. 11:01 n\r\n"),
+        (None, Some(b"Jan. 17. 11:01".to_vec()))
+    );
+    assert_eq!(
+        time(b"-rw-r--r-- 1 u g 5 Jan 17 11.01 n\r\n"),
+        (None, Some(b"Jan 17 11.01".to_vec()))
+    );
+    assert_eq!(
+        time(b"-rw-r--r-- 1 u g 5 Jan, 17 11:01 n\r\n"),
+        (Some(ErrorKind::FtpBadFileList), None)
+    );
+}
+
 #[test]
 fn a_unix_listing_reads_as_c_reads_it() {
     let l = read(UNIX, UNIX.len());

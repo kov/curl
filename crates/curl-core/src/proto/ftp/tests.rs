@@ -1360,3 +1360,368 @@ fn a_file_past_the_maximum_size_fails() {
     assert_eq!(run(6), (Ok(()), b"hello".to_vec()));
     assert_eq!(run(4), (Err(ErrorKind::FilesizeExceeded), vec![]));
 }
+
+/// Where a download resumes against the file's size: past its end fails,
+/// at its end gets nothing, and a range of the last bytes restarts where
+/// they start (`ftp_state_retr`).
+#[test]
+fn a_resume_is_checked_against_the_file_s_size() {
+    let run = |set: &dyn Fn(&mut Options), then: &[&'static [u8]], file: &'static [u8]| {
+        let mut replies: Vec<&'static [u8]> = vec![
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 binary\r\n",
+            b"213 5\r\n",
+        ];
+        replies.extend_from_slice(then);
+        let control = logged_in(&replies);
+        let file = data(file);
+        let mut m = serving(&[&control], &[&file]);
+        let (id, body, text) = added(&mut m, URL, |o| set(o));
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let got = body.0.lock().unwrap().clone();
+        (result, received(&control), got, text.text())
+    };
+    let at = |n: u64| {
+        move |o: &mut Options| {
+            o.resume = Some(crate::options::Resume::At(
+                std::num::NonZeroU64::new(n).unwrap(),
+            ));
+        }
+    };
+    let range = |r: &'static [u8]| move |o: &mut Options| o.range = Some(r.to_vec());
+
+    let (result, sent, got, said) = run(&at(6), &[], b"");
+    assert_eq!(result, Err(ErrorKind::BadDownloadResume), "{said}");
+    assert!(
+        said.contains("Offset (6) was beyond file size (5)"),
+        "{said}"
+    );
+    assert!(sent.ends_with("SIZE f\r\n"), "{sent}");
+    assert_eq!(got, b"");
+
+    let (result, sent, got, said) = run(&at(5), &[], b"");
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        said.contains("File already completely downloaded"),
+        "{said}"
+    );
+    assert!(sent.ends_with("SIZE f\r\n"), "{sent}");
+    assert_eq!(got, b"");
+
+    let (result, sent, got, said) = run(
+        &range(b"-3"),
+        &[b"350 restarting\r\n", b"150 here\r\n226 done\r\n"],
+        b"llo",
+    );
+    assert_eq!(result, Ok(()), "{said}");
+    // A range's end not checked, the transfer is aborted, as in test 1057.
+    assert!(
+        sent.ends_with("SIZE f\r\nREST 2\r\nRETR f\r\nABOR\r\n"),
+        "{sent}"
+    );
+    assert_eq!(got, b"llo");
+
+    let (result, _, _, said) = run(
+        &range(b"-3"),
+        &[b"350 restarting\r\n", b"150 here\r\n226 done\r\n"],
+        b"ll",
+    );
+    assert_eq!(result, Err(ErrorKind::PartialFile), "{said}");
+
+    let (result, sent, _, said) = run(&range(b"-6"), &[], b"");
+    assert_eq!(result, Err(ErrorKind::BadDownloadResume), "{said}");
+    assert!(
+        said.contains("Offset (-6) was beyond file size (5)"),
+        "{said}"
+    );
+    // The range's ABOR still said, as C says it.
+    assert!(sent.ends_with("SIZE f\r\nABOR\r\n"), "{sent}");
+
+    let (result, sent, _, said) = run(
+        &range(b"-5"),
+        &[b"350 restarting\r\n", b"150 here\r\n226 done\r\n"],
+        b"hello",
+    );
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        sent.ends_with("SIZE f\r\nREST 0\r\nRETR f\r\nABOR\r\n"),
+        "{sent}"
+    );
+
+    let (result, _, _, said) = run(
+        &at(2),
+        &[b"350 restarting\r\n", b"150 here\r\n226 done\r\n"],
+        b"ll",
+    );
+    assert_eq!(result, Err(ErrorKind::PartialFile), "{said}");
+}
+
+/// An upload resumed at an offset appends what is past it with no SIZE
+/// asked, and one resumed at the end of nothing stored stores it all
+/// (`ftp_state_ul_setup`).
+#[test]
+fn an_upload_resumed_at_an_offset_appends_past_it() {
+    let run = |resume, then: &[&'static [u8]]| {
+        let mut replies: Vec<&'static [u8]> = vec![
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 binary\r\n",
+        ];
+        replies.extend_from_slice(then);
+        let control = logged_in(&replies);
+        let file = Conversation::replies(&[], false);
+        let mut m = serving(&[&control], &[&file]);
+        let (id, _, text) = added(&mut m, URL, |o| {
+            o.method = crate::options::Method::Upload;
+            o.resume = Some(resume);
+            o.upload = crate::options::UploadSource::Bytes(
+                curl_alloc::TryArc::try_new(b"upload".to_vec()).unwrap(),
+            );
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Ok(()), "{}", text.text());
+        (received(&control), file.received())
+    };
+    let two = crate::options::Resume::At(std::num::NonZeroU64::new(2).unwrap());
+    let (sent, stored) = run(two, &[b"150 go on\r\n226 stored\r\n"]);
+    assert!(sent.ends_with("TYPE I\r\nAPPE f\r\n"), "{sent}");
+    assert_eq!(stored, b"load");
+    let (sent, stored) = run(
+        crate::options::Resume::AtEnd,
+        &[b"213 0\r\n", b"150 go on\r\n226 stored\r\n"],
+    );
+    assert!(sent.ends_with("TYPE I\r\nSIZE f\r\nSTOR f\r\n"), "{sent}");
+    assert_eq!(stored, b"upload");
+}
+
+/// An active download offering an address it names resolves it, saying
+/// so only if the resolver's cache held it (`ftp_port_resolve_host`,
+/// `Curl_resolv_blocking`).
+#[test]
+fn an_active_download_resolves_the_address_it_offers() {
+    let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n226 done\r\n");
+    let control = Conversation::replies(&replies, false).greeting();
+    let data = Conversation::replies(&[b"hello"], true).greeting();
+    let (mut m, _) = serving_active(&[&control], &[&data]);
+    let (id, body, text) = added(&mut m, URL, |o| {
+        o.line.make_mut().unwrap().ftp.port = Some(b"127.0.0.1".to_vec());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    // Not cached: the control connection's lookup was for its port.
+    assert!(!said.contains("was found in DNS cache"), "{said}");
+    assert!(
+        received(&control).contains("EPRT |1|127.0.0.1|40001|\r\n"),
+        "{}",
+        received(&control)
+    );
+}
+
+/// A transfer given up while it waits for the server to connect closes
+/// the listening socket, none left open once the multi is gone
+/// (`ftp_done`, `close_secondarysocket`).
+#[test]
+fn a_transfer_given_up_closes_its_listening_socket() {
+    let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n");
+    let control = Conversation::replies(&replies, false).greeting();
+    let (mut m, counted) = serving_active(&[&control], &[]);
+    let (id, _, text) = added(&mut m, URL, |o| {
+        o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
+    });
+    for _ in 0..30 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let said = text.text();
+    assert!(received(&control).ends_with("RETR f\r\n"), "{said}");
+    assert_eq!(counted.open(), 2, "the control connection and the listener");
+    m.remove(id, &mut NoEvents).unwrap();
+    drop(m);
+    assert_eq!(counted.open(), 0, "{said}");
+}
+
+/// The size a download expects: the one SIZE gave, else the one in the
+/// 150 or 125 that starts it, none for ASCII or with content lengths
+/// ignored, and at most a range's (`ftp_state_get_resp`).
+#[test]
+fn a_download_expects_the_size_it_was_told() {
+    let run = |url: &str, size: &'static [u8], start: &'static [u8], set: &dyn Fn(&mut Options)| {
+        // No SIZE is asked for ASCII or with content lengths ignored.
+        let mut replies: Vec<&'static [u8]> = vec![
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 type\r\n",
+        ];
+        if !size.is_empty() {
+            replies.push(size);
+        }
+        replies.push(start);
+        let control = logged_in(&replies);
+        let file = data(b"hello");
+        let mut m = serving(&[&control], &[&file]);
+        let (id, _, text) = added(&mut m, url, |o| set(o));
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        (result, text.text())
+    };
+    let none = |_: &mut Options| {};
+    let size_of = |said: &str| {
+        said.lines()
+            .find_map(|l| l.strip_prefix("Getting file with size: "))
+            .map(str::to_owned)
+    };
+    let told = b"150 Opening BINARY connection for f (5 bytes)\r\n226 done\r\n";
+    let told_more = b"150 Opening BINARY connection for f (7 bytes)\r\n226 done\r\n";
+
+    // No SIZE: the 150's.
+    let (result, said) = run(URL, b"500 no\r\n", told, &none);
+    assert_eq!(
+        (result, size_of(&said)),
+        (Ok(()), Some("5".into())),
+        "{said}"
+    );
+    let (result, said) = run(URL, b"500 no\r\n", told_more, &none);
+    assert_eq!(result, Err(ErrorKind::PartialFile), "{said}");
+    // The same from a 125.
+    let (result, said) = run(
+        URL,
+        b"500 no\r\n",
+        b"125 Opening (5 bytes)\r\n226 done\r\n",
+        &none,
+    );
+    assert_eq!(
+        (result, size_of(&said)),
+        (Ok(()), Some("5".into())),
+        "{said}"
+    );
+    // SIZE's, whatever the 150 says; but SIZE's 0 or less is no size.
+    let (result, said) = run(URL, b"213 5\r\n", told_more, &none);
+    assert_eq!(
+        (result, size_of(&said)),
+        (Ok(()), Some("5".into())),
+        "{said}"
+    );
+    let (result, said) = run(URL, b"213 0\r\n", told, &none);
+    assert_eq!(
+        (result, size_of(&said)),
+        (Ok(()), Some("5".into())),
+        "{said}"
+    );
+    let (_, said) = run(URL, b"213 1\r\n", told, &none);
+    assert_eq!(size_of(&said), Some("1".into()), "{said}");
+    // ASCII sizes are not the bytes that come.
+    let ascii = "ftp://127.0.0.1:PORT/f;type=a";
+    let (result, said) = run(ascii, b"", told_more, &none);
+    assert_eq!(
+        (result, size_of(&said)),
+        (Ok(()), Some("-1".into())),
+        "{said}"
+    );
+    // Content lengths ignored: the 150's is not read.
+    let ignore = |o: &mut Options| o.http.ignore_content_length = true;
+    let (result, said) = run(URL, b"", told_more, &ignore);
+    assert_eq!(
+        (result, size_of(&said)),
+        (Ok(()), Some("-1".into())),
+        "{said}"
+    );
+    // A range's end: at most its size.
+    let range = |o: &mut Options| o.range = Some(b"0-1".to_vec());
+    let (_, said) = run(URL, b"500 no\r\n", told, &range);
+    assert_eq!(size_of(&said), Some("2".into()), "{said}");
+    assert!(said.contains("Maxdownload = 2"), "{said}");
+    let range = |o: &mut Options| o.range = Some(b"0-9".to_vec());
+    let (_, said) = run(URL, b"500 no\r\n", told, &range);
+    assert_eq!(size_of(&said), Some("5".into()), "{said}");
+    assert!(said.contains("Maxdownload = 10"), "{said}");
+    let (_, said) = run(URL, b"500 no\r\n", told, &none);
+    assert!(said.contains("Maxdownload = -1"), "{said}");
+}
+
+/// A listing reads no size, says none, and a 450 to it is no failure;
+/// a 550 fails a file as not found and a listing as not retrieved
+/// (`ftp_state_get_resp`).
+#[test]
+fn a_listing_s_answers_are_read_as_c_reads_them() {
+    let run = |url: &str, answer: &'static [u8]| {
+        let mut replies: Vec<&'static [u8]> = vec![
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 type\r\n",
+        ];
+        if url.ends_with("/f") {
+            replies.push(b"213 5\r\n");
+        } else {
+            replies.insert(0, b"250 there\r\n");
+        }
+        replies.push(answer);
+        let control = logged_in(&replies);
+        let list = data(b"hello");
+        let mut m = serving(&[&control], &[&list]);
+        let (id, body, text) = added(&mut m, url, |_| {});
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let got = body.0.lock().unwrap().clone();
+        (result, got, text.text())
+    };
+    let dir = "ftp://127.0.0.1:PORT/d/";
+    let (result, got, said) = run(dir, b"150 Here (7 bytes)\r\n226 done\r\n");
+    assert_eq!((result, got), (Ok(()), b"hello".to_vec()), "{said}");
+    assert!(!said.contains("Getting file with size"), "{said}");
+    let (result, got, said) = run(dir, b"450 no files\r\n");
+    assert_eq!((result, got), (Ok(()), vec![]), "{said}");
+    let (result, _, said) = run(dir, b"550 no\r\n");
+    assert_eq!(result, Err(ErrorKind::FtpCouldntRetrFile), "{said}");
+    assert!(said.contains("RETR response: 550"), "{said}");
+    let (result, _, said) = run(URL, b"550 no\r\n");
+    assert_eq!(result, Err(ErrorKind::RemoteFileNotFound), "{said}");
+    let (result, _, said) = run(URL, b"450 busy\r\n");
+    assert_eq!(result, Err(ErrorKind::FtpCouldntRetrFile), "{said}");
+}
+
+/// An upload refused fails with the server's code; one appended to an
+/// empty body, or a body converted for ASCII or CRLF, is sent as such
+/// (`ftp_state_stor_resp`, `ftp_state_ul_setup`).
+#[test]
+fn an_upload_is_sent_as_its_options_say() {
+    let run = |url: &str, body: &[u8], answer: &'static [u8], set: &dyn Fn(&mut Options)| {
+        let control = logged_in(&[
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 type\r\n",
+            answer,
+        ]);
+        let file = Conversation::replies(&[], false);
+        let mut m = serving(&[&control], &[&file]);
+        let (id, _, text) = added(&mut m, url, |o| {
+            o.method = crate::options::Method::Upload;
+            o.upload = crate::options::UploadSource::Bytes(
+                curl_alloc::TryArc::try_new(body.to_vec()).unwrap(),
+            );
+            set(o);
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        (result, received(&control), file.received(), text.text())
+    };
+    let none = |_: &mut Options| {};
+    let stored = b"150 go on\r\n226 stored\r\n";
+    let (result, _, _, said) = run(URL, b"x", b"553 not allowed\r\n", &none);
+    assert_eq!(result, Err(ErrorKind::UploadFailed), "{said}");
+    assert!(said.contains("Failed FTP upload: 553"), "{said}");
+    let append = |o: &mut Options| o.line.make_mut().unwrap().ftp.append = true;
+    let (result, sent, _, said) = run(URL, b"", stored, &append);
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(sent.ends_with("APPE f\r\n"), "{sent}");
+    let (result, _, got, said) = run(URL, b"a\nb", stored, &none);
+    assert_eq!((result, got), (Ok(()), b"a\nb".to_vec()), "{said}");
+    let crlf = |o: &mut Options| o.crlf = true;
+    let (result, _, got, said) = run(URL, b"a\nb", stored, &crlf);
+    assert_eq!((result, got), (Ok(()), b"a\r\nb".to_vec()), "{said}");
+    let ascii = "ftp://127.0.0.1:PORT/f;type=a";
+    let (result, sent, got, said) = run(ascii, b"a\nb", stored, &none);
+    assert_eq!((result, got), (Ok(()), b"a\r\nb".to_vec()), "{said}");
+    assert!(sent.ends_with("TYPE A\r\nSTOR f\r\n"), "{sent}");
+    let six = crate::options::Resume::At(std::num::NonZeroU64::new(6).unwrap());
+    let at_end = |o: &mut Options| o.resume = Some(six);
+    let (result, sent, got, said) = run(URL, b"upload", b"", &at_end);
+    assert_eq!((result, got), (Ok(()), vec![]), "{said}");
+    assert!(said.contains("File already completely uploaded"), "{said}");
+    assert!(sent.ends_with("TYPE I\r\n"), "{sent}");
+}

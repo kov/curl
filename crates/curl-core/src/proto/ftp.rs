@@ -2070,12 +2070,9 @@ impl Request {
             None => trace::info(cx, format_args!("ftp server does not support SIZE")),
             Some(size) => {
                 let size = i64::try_from(size).unwrap_or(i64::MAX);
-                let beyond = if self.resume_from < 0 {
-                    size < -self.resume_from
-                } else {
-                    size < self.resume_from
-                };
-                if beyond {
+                // From the start or from the end, as far in as the file
+                // goes at most.
+                if size < self.resume_from.saturating_abs() {
                     let from = self.resume_from;
                     return Err(trace::fail(
                         cx,

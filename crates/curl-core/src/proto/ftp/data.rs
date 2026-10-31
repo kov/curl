@@ -59,8 +59,13 @@ enum Phase {
         sock: Sock,
         deadline: crate::time::Instant,
     },
-    /// Connected, its TLS made if `shaken`.
-    Up { stream: Box<Stream>, shaken: bool },
+    /// Connected, its TLS made if `shaken`; until then, the peer it is
+    /// said to be connected to once it is made.
+    Up {
+        stream: Box<Stream>,
+        shaken: bool,
+        peer: Option<Remote>,
+    },
 }
 
 /// How far a data connection has come.
@@ -253,26 +258,15 @@ impl DataConn {
                         }
                     }
                     let stream = Stream::new(sock);
-                    // Said as the connect of the second socket says it
-                    // (`conn_connect_trace`).
-                    established(cx, host, peer.as_ref(), &stream);
-                    let stream = match curl_alloc::try_box_or_back(stream) {
-                        Ok(stream) => stream,
-                        Err(stream) => {
-                            close_in(cx, stream.into_socket());
-                            return Err(ErrorKind::OutOfMemory);
-                        }
-                    };
-                    self.phase = Some(Phase::Up {
-                        stream,
-                        shaken: self.tls.is_none(),
-                    });
+                    self.up_with(cx, host, stream, peer)?;
                 }
                 up @ Phase::Up { shaken: true, .. } => {
                     self.phase = Some(up);
                     return Ok(Reached::Up);
                 }
-                Phase::Up { mut stream, .. } => {
+                Phase::Up {
+                    mut stream, peer, ..
+                } => {
                     let tls = self.tls.as_mut().expect("only protected data shakes hands");
                     let mut close = false;
                     let mut carrier = Carrier::over(&mut stream, self.socket, &mut close);
@@ -286,15 +280,20 @@ impl DataConn {
                     );
                     match shook {
                         Ok(Handshake::Done) => {
+                            // Said once all of it is connected, its TLS
+                            // too (`conn_connect_trace`).
+                            established(cx, host, peer.as_ref(), &stream);
                             self.phase = Some(Phase::Up {
                                 stream,
                                 shaken: true,
+                                peer: None,
                             });
                         }
                         Ok(Handshake::Waiting) => {
                             self.phase = Some(Phase::Up {
                                 stream,
                                 shaken: false,
+                                peer,
                             });
                             return Ok(Reached::Ip);
                         }
@@ -308,8 +307,8 @@ impl DataConn {
         }
     }
 
-    /// The connection `conn` is up, its proxies' handshakes made: said as
-    /// C says it, and counted; its TLS follows if the data is protected.
+    /// The connection `conn` is up, its proxies' handshakes made, and
+    /// counted; its TLS follows if the data is protected.
     fn up<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -317,10 +316,26 @@ impl DataConn {
         conn: crate::conn::Conn,
     ) -> Result<(), ErrorKind> {
         let (stream, remote) = conn.into_stream();
-        established(cx, host, remote.as_ref(), &stream);
         // Counted as the transfer's connections are
         // (`cf_ip_happy_connect`'s `numconnects`).
         cx.report_mut().count_connect();
+        self.up_with(cx, host, stream, remote)
+    }
+
+    /// The connection `stream` to `peer` is up: said as C says it once
+    /// all of it is connected, at once unless its TLS is still to be
+    /// made (`conn_connect_trace`).
+    fn up_with<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        host: &[u8],
+        stream: Stream,
+        peer: Option<Remote>,
+    ) -> Result<(), ErrorKind> {
+        let shaken = self.tls.is_none();
+        if shaken {
+            established(cx, host, peer.as_ref(), &stream);
+        }
         let stream = match curl_alloc::try_box_or_back(stream) {
             Ok(stream) => stream,
             Err(stream) => {
@@ -328,9 +343,11 @@ impl DataConn {
                 return Err(ErrorKind::OutOfMemory);
             }
         };
+        let peer = if shaken { None } else { peer };
         self.phase = Some(Phase::Up {
             stream,
-            shaken: self.tls.is_none(),
+            shaken,
+            peer,
         });
         Ok(())
     }
@@ -360,7 +377,7 @@ impl DataConn {
         let (racing, up) = match self.phase.as_ref() {
             Some(Phase::Connecting(m, side)) => (Some(side.pollset(m)), None),
             Some(Phase::Listening { sock, .. }) => (None, Some((sock.socket(), Events::IN))),
-            Some(Phase::Up { stream, shaken }) => {
+            Some(Phase::Up { stream, shaken, .. }) => {
                 let events = match self.shut {
                     Some(shut) => stream.shutdown_pollset(shut),
                     // A handshake waits for what its layer says.

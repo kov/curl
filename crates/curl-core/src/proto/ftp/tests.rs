@@ -420,8 +420,11 @@ fn a_data_connection_s_handshake_stalls_no_other_transfer() {
     for _ in 0..40 {
         m.perform(&mut NoEvents).unwrap();
     }
+    // Connected, but not said to be until its TLS is made too, as C says
+    // it once all of it is (`conn_connect_trace`).
     let said = text.text();
-    assert!(said.contains("Established 2nd connection"), "{said}");
+    assert!(said.contains("Connecting to 127.0.0.1"), "{said}");
+    assert!(!said.contains("Established 2nd connection"), "{said}");
     assert_eq!(fake::read_client(&file.received()).unwrap(), fake::HELLO);
     assert!(m.info_read().is_none(), "the handshake waits");
     let (beside, other, _) = added(&mut m, URL, |_| {});
@@ -433,6 +436,12 @@ fn a_data_connection_s_handshake_stalls_no_other_transfer() {
     let result = drive_to_completion(&mut m, waiting, &mut NoEvents).unwrap();
     assert_eq!(result, Ok(()), "{}", text.text());
     assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let said = text.text();
+    assert_eq!(
+        said.matches("Established 2nd connection").count(),
+        1,
+        "{said}"
+    );
 }
 
 /// A protected data connection resumes its control connection's latest

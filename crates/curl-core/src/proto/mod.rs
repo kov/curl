@@ -2,7 +2,7 @@
 //! while it exchanges data.
 //!
 //! `dict:`, `file:`, `ftp:`, `gopher:`, `http:`, `imap:`, `mqtt:`,
-//! `pop3:`, `smtp:`, `telnet:`, with a TLS library `ftps:`, `gophers:`, `https:`,
+//! `pop3:`, `smtp:`, `telnet:`, `tftp:`, with a TLS library `ftps:`, `gophers:`, `https:`,
 //! `imaps:`, `mqtts:`, `pop3s:` and `smtps:`, and with an SSH library
 //! `scp:` and `sftp:` are built in. Tests have three more, networkless: `null:`, which
 //! completes at once, `stall:`, which never does, and `script:`, which
@@ -28,6 +28,7 @@ mod script;
 pub(crate) mod smtp;
 pub(crate) mod ssh;
 pub(crate) mod telnet;
+pub(crate) mod tftp;
 pub(crate) mod ws;
 
 use std::num::NonZeroU32;
@@ -115,6 +116,8 @@ pub(crate) enum ProtoState {
     Mqtt(Box<mqtt::Request>),
     /// Boxed, as HTTP's.
     Telnet(Box<telnet::Request>),
+    /// Boxed, as HTTP's.
+    Tftp(Box<tftp::Request>),
     #[cfg(any(test, feature = "test-util"))]
     Null,
     #[cfg(any(test, feature = "test-util"))]
@@ -521,7 +524,8 @@ impl SetupLend for ProtoState {
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)
             | ProtoState::Mqtt(_)
-            | ProtoState::Telnet(_) => CredentialGate::FIRST.trusted(),
+            | ProtoState::Telnet(_)
+            | ProtoState::Tftp(_) => CredentialGate::FIRST.trusted(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
                 CredentialGate::FIRST.trusted()
@@ -542,6 +546,7 @@ impl SetupLend for ProtoState {
             ProtoState::Gopher(r) => r.pipeline_mut(),
             ProtoState::Mqtt(r) => r.pipeline_mut(),
             ProtoState::Telnet(r) => r.pipeline_mut(),
+            ProtoState::Tftp(r) => r.pipeline_mut(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(p) => p.pipeline_mut(),
             #[cfg(any(test, feature = "test-util"))]
@@ -563,7 +568,8 @@ impl SetupLend for ProtoState {
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)
             | ProtoState::Mqtt(_)
-            | ProtoState::Telnet(_) => None,
+            | ProtoState::Telnet(_)
+            | ProtoState::Tftp(_) => None,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
         }
@@ -581,7 +587,8 @@ impl SetupLend for ProtoState {
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)
             | ProtoState::Mqtt(_)
-            | ProtoState::Telnet(_) => None,
+            | ProtoState::Telnet(_)
+            | ProtoState::Tftp(_) => None,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
         }
@@ -698,6 +705,10 @@ impl ProtoState {
                 curl_alloc::try_box(telnet::Request::new(url, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
+            b"tftp" => ProtoState::Tftp(
+                curl_alloc::try_box(tftp::Request::new(url, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
             #[cfg(any(test, feature = "test-util"))]
             b"null" => ProtoState::Null,
             #[cfg(any(test, feature = "test-util"))]
@@ -729,7 +740,8 @@ impl ProtoState {
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)
             | ProtoState::Mqtt(_)
-            | ProtoState::Telnet(_) => {}
+            | ProtoState::Telnet(_)
+            | ProtoState::Tftp(_) => {}
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {}
         }
@@ -755,6 +767,7 @@ impl ProtoState {
             ProtoState::Gopher(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Mqtt(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Telnet(ref r) => Ok(Some(r.network(url, scope, idn)?)),
+            ProtoState::Tftp(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
             #[cfg(any(test, feature = "test-util"))]
@@ -785,6 +798,7 @@ impl ProtoState {
             ProtoState::Gopher(r) => Some(r.scheme()),
             ProtoState::Mqtt(r) => Some(r.scheme()),
             ProtoState::Telnet(r) => Some(r.scheme()),
+            ProtoState::Tftp(r) => Some(r.scheme()),
             ProtoState::File(_) => Scheme::named(b"file"),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
@@ -902,6 +916,7 @@ impl ProtoState {
             ProtoState::Gopher(ref mut r) => r.connect(cx, lease),
             ProtoState::Mqtt(ref mut r) => r.connect(cx, lease),
             ProtoState::Telnet(ref mut r) => r.connect(cx, lease),
+            ProtoState::Tftp(ref mut r) => r.connect(cx, lease),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => p.connect(cx, lease),
             #[cfg(any(test, feature = "test-util"))]
@@ -933,6 +948,7 @@ impl ProtoState {
             ProtoState::Gopher(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Mqtt(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Telnet(ref mut r) => r.make(cx, lease, asked),
+            ProtoState::Tftp(ref mut r) => r.make(cx, lease, asked),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => p.make(cx, lease, asked),
             #[cfg(any(test, feature = "test-util"))]
@@ -956,6 +972,7 @@ impl ProtoState {
             ProtoState::Gopher(ref r) => r.waits(phase),
             ProtoState::Mqtt(ref r) => r.waits(phase),
             ProtoState::Telnet(ref r) => r.waits(phase),
+            ProtoState::Tftp(ref r) => r.waits(phase),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.waits(phase),
             #[cfg(any(test, feature = "test-util"))]
@@ -992,7 +1009,7 @@ impl ProtoState {
             ProtoState::Dict(ref r) => r.exchanges(),
             ProtoState::Gopher(ref r) => r.exchanges(),
             // All of it is in DOING, as C sets nothing up to exchange.
-            ProtoState::Mqtt(_) | ProtoState::Telnet(_) => false,
+            ProtoState::Mqtt(_) | ProtoState::Telnet(_) | ProtoState::Tftp(_) => false,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => true,
         }
@@ -1010,7 +1027,8 @@ impl ProtoState {
             ProtoState::File(_)
             | ProtoState::Pop3(_)
             | ProtoState::Mqtt(_)
-            | ProtoState::Telnet(_) => false,
+            | ProtoState::Telnet(_)
+            | ProtoState::Tftp(_) => false,
             ProtoState::Ftp(ref r) => r.sending(),
             ProtoState::Imap(ref r) => r.sending(),
             ProtoState::Smtp(ref r) => r.sending(),
@@ -1036,7 +1054,8 @@ impl ProtoState {
             ProtoState::File(_)
             | ProtoState::Pop3(_)
             | ProtoState::Mqtt(_)
-            | ProtoState::Telnet(_) => false,
+            | ProtoState::Telnet(_)
+            | ProtoState::Tftp(_) => false,
             ProtoState::Ftp(ref r) => r.sending(),
             ProtoState::Imap(ref r) => r.sending(),
             ProtoState::Smtp(ref r) => r.sending(),
@@ -1064,6 +1083,12 @@ impl ProtoState {
         }
     }
 
+    /// The request sends datagrams of its own, over a UDP socket that
+    /// connects to no peer: TFTP's (`TRNSPRT_UDP`).
+    pub(crate) fn sends_datagrams(&self) -> bool {
+        matches!(self, ProtoState::Tftp(_))
+    }
+
     /// The request's DOING runs out of time itself, with its own reason:
     /// TELNET's loop, which C runs within DO, where the multi does not
     /// look at the time.
@@ -1081,6 +1106,7 @@ impl ProtoState {
             ProtoState::Smtp(r) => r.due(),
             ProtoState::Ftp(r) => r.due(),
             ProtoState::Telnet(r) => r.due(),
+            ProtoState::Tftp(r) => r.due(),
             _ => None,
         }
     }
@@ -1144,7 +1170,8 @@ impl ProtoState {
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)
             | ProtoState::Mqtt(_)
-            | ProtoState::Telnet(_) => Ok(()),
+            | ProtoState::Telnet(_)
+            | ProtoState::Tftp(_) => Ok(()),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
                 Ok(())
@@ -1167,6 +1194,7 @@ impl ProtoState {
             ProtoState::Gopher(ref r) => r.holds_output(),
             ProtoState::Mqtt(ref r) => r.holds_output(),
             ProtoState::Telnet(ref r) => r.holds_output(),
+            ProtoState::Tftp(ref r) => r.holds_output(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.holds_output(),
             #[cfg(any(test, feature = "test-util"))]
@@ -1188,6 +1216,7 @@ impl ProtoState {
             ProtoState::Gopher(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Mqtt(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Telnet(ref mut r) => Some(r.pipeline_mut()),
+            ProtoState::Tftp(ref mut r) => Some(r.pipeline_mut()),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => Some(p.pipeline_mut()),
             #[cfg(any(test, feature = "test-util"))]
@@ -1213,6 +1242,7 @@ impl ProtoState {
             ProtoState::Gopher(ref mut r) => r.step(cx, lease),
             ProtoState::Mqtt(ref mut r) => Ok(r.step()),
             ProtoState::Telnet(ref mut r) => Ok(r.step()),
+            ProtoState::Tftp(ref mut r) => Ok(r.step()),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Tcp => Ok(ProtoStep::Done),
             #[cfg(any(test, feature = "test-util"))]
@@ -1243,6 +1273,7 @@ impl ProtoState {
             ProtoState::Gopher(ref r) => r.interest(pause),
             ProtoState::Mqtt(ref r) => r.interest(pause),
             ProtoState::Telnet(ref r) => r.interest(pause),
+            ProtoState::Tftp(ref r) => r.interest(pause),
             ProtoState::File(_) => Events::NONE,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
@@ -1290,6 +1321,7 @@ impl ProtoState {
             ProtoState::Gopher(ref r) => r.received_nothing(),
             ProtoState::Mqtt(ref r) => r.received_nothing(),
             ProtoState::Telnet(ref r) => r.received_nothing(),
+            ProtoState::Tftp(ref r) => r.received_nothing(),
             ProtoState::File(_) => false,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
@@ -1419,6 +1451,9 @@ impl ProtoState {
             | ProtoState::Gopher(_)
             | ProtoState::Mqtt(_)
             | ProtoState::Telnet(_) => Finish::Done(result),
+            // Its exchange's error, if it ended badly and nothing failed
+            // before (`tftp_done`).
+            ProtoState::Tftp(ref r) => Finish::Done(result.and(r.failed())),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
                 Finish::Done(result)

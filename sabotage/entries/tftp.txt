@@ -1,0 +1,39 @@
+=== an OACK's option without its value is read
+file: crates/curl-core/src/proto/tftp.rs
+witness: curl-core proto::tftp::tests::a_bad_oack_is_refused
+--- old
+        if name_len + 1 >= p.len() {
+--- new
+        if name_len >= p.len() {
+
+=== an OACK's value without its end is read
+file: crates/curl-core/src/proto/tftp.rs
+witness: curl-core proto::tftp::tests::a_bad_oack_is_refused
+--- old
+        if value_len == rest.len() {
+--- new
+        if false {
+
+=== a block size past the one asked for is taken
+file: crates/curl-core/src/proto/tftp.rs
+witness: curl-core proto::tftp::tests::a_bad_oack_is_refused
+--- old
+            if blksize > requested as u64 {
+--- new
+            if false {
+
+=== a file name past the first packet's room is sent
+file: crates/curl-core/src/proto/tftp.rs
+witness: curl-core proto::tftp::tests::the_first_packet_is_made_as_c_makes_it
+--- old
+    if filename.len() + mode.len() + 4 > blksize {
+--- new
+    if filename.len() + mode.len() > blksize {
+
+=== options past the default block's room are sent
+file: crates/curl-core/src/proto/tftp.rs
+witness: curl-core proto::tftp::tests::the_first_packet_is_made_as_c_makes_it
+--- old
+        if blksize <= at || option.len() + 1 > blksize - at {
+--- new
+        if blksize <= at {

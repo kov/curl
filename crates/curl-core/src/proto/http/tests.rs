@@ -2194,7 +2194,7 @@ fn built_schemes_are_named_in_any_case() {
     assert_eq!(Protocols::built(b"FILE"), Protocols::of(&["file"]));
     assert_eq!(Protocols::built(b"HTTPS"), Protocols::of(&["https"]));
     for name in [
-        &b"tftp"[..],
+        &b"rtsp"[..],
         b"ldap",
         b"goobar",
         b"http ",
@@ -2659,7 +2659,7 @@ fn a_netrc_file_is_read_before_the_protocol_is_checked() {
     let file = path.as_os_str().as_encoded_bytes().to_vec();
     let name = String::from_utf8_lossy(&file).into_owned();
     let missing = [&file[..], b".missing"].concat();
-    let unbuilt = format!("tftp://127.0.0.1:{PORT}/a");
+    let unbuilt = format!("rtsp://127.0.0.1:{PORT}/a");
     let unknown = format!("qttp://127.0.0.1:{PORT}/a");
     let local = format!("file://{name}");
     let not_found =
@@ -2708,7 +2708,7 @@ fn a_netrc_file_is_read_before_the_protocol_is_checked() {
         if result == Err(ErrorKind::UnsupportedProtocol) && url == &unbuilt {
             let refused = text
                 .iter()
-                .position(|l| l.starts_with("Protocol \"tftp\" is disabled"));
+                .position(|l| l.starts_with("Protocol \"rtsp\" is disabled"));
             assert!(at < refused, "{text:?}");
         }
     }

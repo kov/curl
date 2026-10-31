@@ -463,7 +463,7 @@ impl Dialing<'_> {
     pub(crate) fn socket_component(&self) -> crate::components::Component {
         if self.route.destination().is_unix() {
             crate::components::Component::Unix
-        } else if self.first_hop_quic() {
+        } else if self.first_hop_quic() || self.dial == Dial::Udp {
             crate::components::Component::Udp
         } else {
             crate::components::Component::Tcp
@@ -479,6 +479,9 @@ pub(crate) enum Dial {
     Stream,
     /// QUIC over UDP (`TRNSPRT_QUIC`).
     Quic,
+    /// Datagrams of the request's own, TFTP's, the socket bound but
+    /// connected to no peer (`TRNSPRT_UDP`).
+    Udp,
 }
 
 impl NetRoute {
@@ -869,6 +872,12 @@ impl Scheme {
     /// (`PROTOPT_CONN_REUSE`).
     pub(crate) fn reuse(self) -> bool {
         self.0.flags.conn_reuse
+    }
+
+    /// Whether its bytes cannot go through a TCP tunnel: TFTP's, which
+    /// are datagrams (`PROTOPT_NOTCPPROXY`).
+    pub(crate) fn no_tcp_proxy(self) -> bool {
+        self.0.flags.no_tcp_proxy
     }
 
     /// Whether its library is handed the connection's socket, to read and
@@ -1836,6 +1845,10 @@ impl Conn {
     /// The connection's end here, as its socket says; none without a
     /// network, or if the system does not say.
     pub(crate) fn local(&self) -> Option<SocketAddr> {
+        // A socket that never connects is not asked (`set_local_ip`).
+        if self.dial == Dial::Udp {
+            return None;
+        }
         match &self.transport {
             Transport::Stream(stream) => stream.local_addr(),
             Transport::Datagram(datagrams) => datagrams.local_addr(),

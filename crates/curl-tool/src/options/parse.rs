@@ -1272,9 +1272,10 @@ mod tests {
         );
         assert_eq!(run(&["x", "--remove-on-error"]), Ok((1, None, None)));
         assert_eq!(
-            run(&["x", "--tftp-no-options"]),
-            Ok((1, Some("tftp-no-options"), None))
+            run(&["x", "--false-start"]),
+            Ok((1, Some("false-start"), None))
         );
+        assert_eq!(run(&["x", "--tftp-no-options"]), Ok((1, None, None)));
         assert_eq!(run(&["-T", ".", "x"]), Ok((1, None, None)));
         assert_eq!(run(&["-w", "%time{%Y}", "x"]), Ok((1, None, None)));
         assert_eq!(run(&["-w", "%{url}", "x"]), Ok((1, None, None)));

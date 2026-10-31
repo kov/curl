@@ -1182,6 +1182,13 @@ protocols need, each step leaving behaviour and traces as they are:
     input without `-T`, as C's does; C's loop a round a pass in DOING, with its time-out and
     its counts; `curl -V`. Every TELNET test both legs run passes (1326, 1327, 1452, 1548,
     1714, 3555); 445 needs LDAP and RTSP, on the C leg only.
+79. **TFTP.** **Done.** `tftp://` (`proto::tftp`, after `lib/tftp.c`) over an unconnected UDP
+    socket (`Dial::Udp`, `Socket::send_to` and `recv_from`): RRQ and WRQ with the mode and the
+    `tsize`, `blksize` and `timeout` options, `--tftp-blksize` and `--tftp-no-options` and their
+    C ABI options; the OACK read and checked, blocks acknowledged and sent, resent on C's
+    time-outs, the server's address pinned; the server's errors as C's codes; `curl -V`. Every
+    TFTP test both legs run passes (271, 283 to 286, 332, 1007, 1009, 1049, 1093, 1094, 1099,
+    1238, 1242, 1243, 1453, 2002 to 2004).
 
 ## Milestone 7: shared state
 

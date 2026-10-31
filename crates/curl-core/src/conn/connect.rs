@@ -1273,7 +1273,7 @@ impl ConnectMachine {
                 "determined scope_id={scope} for link-local address from local interface"
             ));
         }
-        let kind = if self.dialing().first_hop_quic() {
+        let kind = if self.dialing().first_hop_quic() || self.dial == super::Dial::Udp {
             SocketKind::Datagram
         } else {
             SocketKind::Stream
@@ -1338,13 +1338,15 @@ impl ConnectMachine {
             return self.not_opened(cx, Some(&remote), kind, error);
         }
         cx.of(component, format_args!("cf_socket_open() -> 0, fd={fd}"));
-        if kind == SocketKind::Datagram {
+        if kind == SocketKind::Datagram && self.dial != super::Dial::Udp {
             return self.quic_attempt(cx, socket, remote, delay);
         }
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("an attempt is made in a race");
         };
-        if connected {
+        // A socket of datagrams the request sends itself connects to no
+        // peer: it is up as it opens (`cf_udp_connect`).
+        if connected || self.dial == super::Dial::Udp {
             // The application connected it: it won as it opened, with no
             // connect to check.
             let socket = Sock::new(socket, self.closer.clone());
@@ -1818,6 +1820,13 @@ impl ConnectMachine {
             self.created,
             self.settings,
         );
+        // The request's own datagrams go to the socket as they are.
+        if self.dial == super::Dial::Udp {
+            let datagrams = Transport::Datagram(super::Datagrams::new(won.socket));
+            return Ok(Drove::Established(Self::conn(
+                made, datagrams, won.remote, at,
+            )));
+        }
         let Some(h3) = h3 else {
             #[cfg_attr(
                 not(any(test, feature = "test-util")),
@@ -2867,6 +2876,7 @@ mod tests {
                     ];
                     assert_eq!(options, quic);
                 }
+                crate::conn::Dial::Udp => unreachable!("not tried"),
             }
         }
     }

@@ -195,6 +195,22 @@ pub trait Socket: fmt::Debug + Send {
         Err(io::ErrorKind::Unsupported.into())
     }
 
+    /// Send `buf` as one datagram to `to`, as an unconnected UDP socket
+    /// does (`sendto`): how many bytes went. A socket of another kind
+    /// cannot.
+    fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
+        let _ = (buf, to);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// Receive one datagram into `buf`, which is not empty, and whom it
+    /// came from, as an unconnected UDP socket does (`recvfrom`); none if
+    /// none waits. A socket of another kind cannot.
+    fn recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        let _ = buf;
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     /// Listen on it, bound, for one connection to wait at most, as FTP's
     /// active data connection does (`listen`); a socket of another kind
     /// cannot.
@@ -636,6 +652,14 @@ impl Socket for curl_os::net::UdpSocket {
 
     fn recv_batch(&self, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> io::Result<usize> {
         curl_os::net::UdpSocket::recv_batch(self, buf, slot, out)
+    }
+
+    fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
+        curl_os::net::UdpSocket::send_to(self, buf, to)
+    }
+
+    fn recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        curl_os::net::UdpSocket::recv_from(self, buf)
     }
 
     fn release(self: Box<Self>) -> SocketKey {

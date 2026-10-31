@@ -667,10 +667,10 @@ witness: curl-core proto::http::tests::traced_bytes_with_the_ids_keep_a_zero_byt
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
 --- old
-        } else if self.first_hop_quic() {
+        } else if self.first_hop_quic() || self.dial == Dial::Udp {
             crate::components::Component::Udp
 --- new
-        } else if self.first_hop_quic() && false {
+        } else if self.dial == Dial::Udp {
             crate::components::Component::Udp
 
 === a bodyless request blocked at once waits without its second send

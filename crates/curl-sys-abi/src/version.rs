@@ -306,7 +306,7 @@ mod tests {
             [
                 "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap",
                 "imaps", "mqtt", "mqtts", "pop3", "pop3s", "scp", "sftp", "smtp", "smtps",
-                "telnet", "ws", "wss",
+                "telnet", "tftp", "ws", "wss",
             ]
         );
     }

@@ -1966,6 +1966,13 @@ fn setopts(
             })?;
         }
     }
+    if op.tftp_blksize != 0 {
+        s.long("CURLOPT_TFTP_BLKSIZE", long(op.tftp_blksize), |o| {
+            let size = options::TftpBlockSize::clamped(op.tftp_blksize);
+            o.small.make_mut().map_err(oom)?.tftp_blksize = Some(size);
+            Ok(())
+        })?;
+    }
     // `mail_and_sasl_setopts`.
     s.str("CURLOPT_MAIL_FROM", op.mail_from, |o| {
         if let Some(from) = op.mail_from {
@@ -2056,6 +2063,16 @@ fn setopts(
                 .set_default_protocol(Some(d.protocol.name().as_bytes()))
                 .map_err(oom),
             None => Ok(()),
+        },
+    )?;
+    s.long(
+        "CURLOPT_TFTP_NO_OPTIONS",
+        i64::from(op.tftp_no_options),
+        |o| {
+            if op.tftp_no_options {
+                o.small.make_mut().map_err(oom)?.tftp_no_options = true;
+            }
+            Ok(())
         },
     )?;
     // A delay of C's default is not set.

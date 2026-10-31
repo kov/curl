@@ -203,6 +203,13 @@ fn start<H: Host>(
     cx: &mut StepCx<'_, H>,
     udp: bool,
 ) -> Result<Box<Handshake>, ErrorKind> {
+    // Datagrams of the request's own cannot go through it (`tunnel_init`).
+    let scheme = lent.route.origin.scheme();
+    if scheme.no_tcp_proxy() {
+        let name = scheme.name();
+        let why = format_args!("{name} cannot be done over CONNECT");
+        return Err(trace::fail(cx, ErrorKind::UnsupportedProtocol, why));
+    }
     let ConnectHead {
         head: request,
         authorized,

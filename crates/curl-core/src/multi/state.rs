@@ -5738,6 +5738,11 @@ fn start_leg<H: Host>(
         // (`cf_hc_set_baller1`).
         dial = Dial::Quic;
     }
+    // TFTP sends its own datagrams, straight to its peer; through a
+    // proxy, the tunnel refuses it (`TRNSPRT_UDP`, `tunnel_init`).
+    if proto.sends_datagrams() && route.proxy.is_none() {
+        dial = Dial::Udp;
+    }
     if run.wildcard_match {
         proto.give_wildcard(&mut run.wildcard);
     }

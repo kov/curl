@@ -839,6 +839,33 @@ impl UdpSocket {
         sent(self.0.send(buf))
     }
 
+    /// Send `buf` as one datagram to `to`, the socket not connected
+    /// (`sendto`): how many bytes went, or the system's error as it is.
+    /// A signal interrupting it sends again.
+    pub fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
+        loop {
+            match self.0.send_to(buf, to) {
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                got => return got,
+            }
+        }
+    }
+
+    /// Receive one datagram into `buf`, which must not be empty, and
+    /// whom it came from (`recvfrom`): as much of it as fits, an empty one
+    /// too; none if none waits. A signal interrupting it receives again.
+    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        assert!(!buf.is_empty(), "a receive needs room");
+        loop {
+            match self.0.recv_from(buf) {
+                Ok(got) => return Ok(Some(got)),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Send `buf`, which must not be empty, as datagrams of `segment`
     /// bytes each, the last what is left: one `sendmsg`, the kernel
     /// cutting it (`UDP_SEGMENT`) if it is longer than one (`do_sendmsg`).

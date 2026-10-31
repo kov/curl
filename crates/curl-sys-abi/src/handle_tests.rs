@@ -1688,7 +1688,7 @@ fn scheme_options_reach_the_transfer() {
         (ffi::CURLOPT_REDIR_PROTOCOLS_STR, c"HTTP", CURLE_OK),
         (
             ffi::CURLOPT_PROTOCOLS_STR,
-            c"tftp",
+            c"rtsp",
             ffi::CURLE_UNSUPPORTED_PROTOCOL,
         ),
         (
@@ -1969,7 +1969,23 @@ fn callback_options_install_their_adapters() {
 #[test]
 fn ids_are_told_apart_as_c_tells_them() {
     let c = curl_easy_init();
-    assert_eq!(long(c, ffi::CURLOPT_TFTP_BLKSIZE, 512), CURLE_NOT_BUILT_IN);
+    assert_eq!(
+        long(c, ffi::CURLOPT_RTSP_CLIENT_CSEQ, 1),
+        CURLE_NOT_BUILT_IN
+    );
+    // TFTP's block size is brought within its bounds; below 0 is refused.
+    let blksize = |c| options(c, |o| o.small.tftp_blksize.map(|b| b.get()));
+    assert_eq!(long(c, ffi::CURLOPT_TFTP_BLKSIZE, 7), CURLE_OK);
+    assert_eq!(blksize(c), Some(8));
+    assert_eq!(long(c, ffi::CURLOPT_TFTP_BLKSIZE, 100_000), CURLE_OK);
+    assert_eq!(blksize(c), Some(65464));
+    assert_eq!(
+        long(c, ffi::CURLOPT_TFTP_BLKSIZE, -1),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(blksize(c), Some(65464));
+    assert_eq!(long(c, ffi::CURLOPT_TFTP_NO_OPTIONS, 1), CURLE_OK);
+    assert!(options(c, |o| o.small.tftp_no_options));
     for unknown in [9999, 10999, 50000] {
         assert_eq!(
             long(c, CURLoption(unknown), 0),

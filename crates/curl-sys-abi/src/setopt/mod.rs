@@ -31,7 +31,7 @@ use curl_core::options::{
     Resume, ReuseLimits, Schemes, Sockets, TimeCondition, UpkeepInterval, UploadBufferSize,
     UploadFlags, UseSsl, UserHeaders,
 };
-use curl_core::options::{Ccc, CreateDirs, FtpMethod, SslAuth};
+use curl_core::options::{Ccc, CreateDirs, FtpMethod, SslAuth, TftpBlockSize};
 use curl_core::time::TimeLimit;
 
 use crate::callbacks::{self, CCallbacks, CSettings, PostFields};
@@ -1201,6 +1201,16 @@ fn apply(
                 }
             }
         },
+        // Brought within TFTP's bounds, 0 among them (`value_range`).
+        (ffi::CURLOPT_TFTP_BLKSIZE, Long(n)) => {
+            let n = u64::try_from(n).map_err(|_| Refused::Bad)?;
+            options.small.make_mut()?.tftp_blksize = Some(TftpBlockSize::clamped(n));
+        }
+        (ffi::CURLOPT_TFTP_NO_OPTIONS, Long(n)) => {
+            if n != 0 || options.small.made_mut().is_some() {
+                options.small.make_mut()?.tftp_no_options = n != 0;
+            }
+        }
         // The application's list, walked as each TELNET transfer starts.
         (ffi::CURLOPT_TELNETOPTIONS, Ptr(p)) => match slist(p)? {
             Some(source) => options.small.make_mut()?.telnet.set_source(source)?,
@@ -2274,7 +2284,7 @@ mod tests {
             &b"goobar"[..],
             b"http ",
             b" http",
-            b"tftp",
+            b"rtsp",
             b"http,all",
             b"http,ft",
         ] {

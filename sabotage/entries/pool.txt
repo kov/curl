@@ -648,11 +648,11 @@ witness: curl-core a_get_survives_every_allocation_failing
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::a_route_over_quic_opens_a_socket_for_datagrams
 --- old
-        let kind = if self.dialing().first_hop_quic() {
+        let kind = if self.dialing().first_hop_quic() || self.dial == super::Dial::Udp {
             SocketKind::Datagram
 --- new
-        let kind = if self.dialing().first_hop_quic() {
-            SocketKind::Stream
+        let kind = if self.dial == super::Dial::Udp {
+            SocketKind::Datagram
 
 === the upkeep pings a connection an interval and a millisecond after its last
 file: crates/curl-core/src/conn/mod.rs

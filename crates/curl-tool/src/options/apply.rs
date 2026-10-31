@@ -295,6 +295,10 @@ pub(crate) struct Operation<'a> {
     pub(crate) mail_rcpt: Vec<&'a [u8]>,
     /// `--telnet-option`, in the order given.
     pub(crate) telnet_options: Vec<&'a [u8]>,
+    /// `--tftp-blksize`; 0 for none.
+    pub(crate) tftp_blksize: u64,
+    /// `--tftp-no-options`.
+    pub(crate) tftp_no_options: bool,
     /// `--mail-rcpt-allowfails`.
     pub(crate) mail_rcpt_allowfails: bool,
     /// `--mail-auth`.
@@ -1526,6 +1530,8 @@ pub(crate) fn apply<'a>(
         }
         Opt::MailRcpt => line.current().mail_rcpt.try_push(value.text())?,
         Opt::TelnetOption => line.current().telnet_options.try_push(value.text())?,
+        Opt::TftpBlksize => line.current().tftp_blksize = value.number(),
+        Opt::TftpNoOptions => line.current().tftp_no_options = value.toggle(),
         Opt::MailRcptAllowfails => line.current().mail_rcpt_allowfails = value.toggle(),
         Opt::UploadFlags => {
             let op = line.current();
@@ -1997,9 +2003,7 @@ pub(crate) fn apply<'a>(
         | Opt::FalseStart
         | Opt::Ntlm
         | Opt::ProxyNtlm
-        | Opt::SslSessions
-        | Opt::TftpBlksize
-        | Opt::TftpNoOptions => line.not_implemented(spec, "--"),
+        | Opt::SslSessions => line.not_implemented(spec, "--"),
     }
     Ok(Flow::Continue)
 }

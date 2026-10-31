@@ -1106,10 +1106,10 @@ mod tests {
             )
         );
         assert_eq!(
-            why(b"TFTP://x/"),
+            why(b"RTSP://x/"),
             (
                 ErrorKind::UnsupportedProtocol,
-                "Protocol \"tftp\" is disabled".into()
+                "Protocol \"rtsp\" is disabled".into()
             )
         );
         let bad = b"file://h st/";

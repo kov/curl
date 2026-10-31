@@ -280,6 +280,8 @@ curl-core/src/
                              DOING
     telnet.rs                TELNET (telnet.c): the options, the negotiation, the server's
                              bytes read, and the loop of rounds in DOING
+    tftp.rs                  TFTP (tftp.c): its packets, made and read, and the machine of
+                             blocks, answers and time-outs over an unconnected UDP socket
     pingpong.rs, pingpong/   Pingpong: the line protocols' reader and writer (pingpong.c),
                              sans-IO; ftp.rs, imap.rs, pop3.rs, smtp.rs: where each one's
                              reply ends
@@ -1648,11 +1650,14 @@ pre-proxy; `--socks5-hostname` has one).
 
 **Socket open order** is the attempt's, in C's sequence (`cf_socket_open`, `do_connect`): the
 OPENSOCKET callback, which may change the address, or `Net::open`, a non-blocking socket of the
-`SocketKind` the setup's `Dial` needs (a stream, or a UDP socket for QUIC); the "Trying" trace;
+`SocketKind` the setup's `Dial` needs (a stream, or a UDP socket for QUIC and for TFTP's
+`Dial::Udp`); the "Trying" trace;
 on a TCP socket alone, TCP_NODELAY (on by default), and keepalive with its idle time, interval and
 count only while it is on; the SOCKOPT callback (`AlreadyConnected` wins the attempt as it opens,
 with no connect to check; any other failure closes the socket and is AbortedByCallback);
-non-blocking, for a socket the application opened; `cf_socket_open() -> 0`;
+non-blocking, for a socket the application opened; `cf_socket_open() -> 0`; for `Dial::Udp`,
+nothing more: the socket connects to no peer and wins as it opens, the connection's transport
+its datagrams, its local end never asked (`cf_udp_connect`, `set_local_ip`);
 TCP_FASTOPEN_CONNECT, on TCP's; the connect and the local address. `Socket::set`,
 `set_nonblocking` and `connect` are each one system call. A socket that does not open, or closes
 as it is set, is traced as C traces it, with neither address known or the local one not, and the
@@ -3629,6 +3634,26 @@ with C's own time check, "Time-out", and a progress update; the engine's timeout
 leaves TELNET's DOING to it (`times_itself`), as C's multi never sees that time pass. The
 bytes read count as downloaded twice, once read and once delivered, as C counts them. The
 server closing ends the transfer, and so does an input that aborts.
+
+### 5.12 TFTP
+
+`proto/tftp.rs` is `lib/tftp.c`. Its plan dials `Dial::Udp`: one UDP socket, bound as the
+transfer asks or else to any address of the peer's family by the connect phase, connected to
+no peer, its connection marked to close. The connect phase sizes the packets for the block size
+asked (`Small::tftp_blksize`), and sets the retries to the time left (`tftp_set_timeouts`). DO
+sends RRQ or WRQ with the file name, the mode (`;mode=` of the path, else `CURLOPT_TRANSFERTEXT`)
+and, unless `Small::tftp_no_options`, the size, block size and time-out options, then looks once;
+DOING looks again, when the socket is readable or a second after the last look (`due`), and
+checks the speed. A look is C's `tftp_multi_statemach`: a time-out past the retry interval drives
+the machine, else one datagram read (`Socket::recv_from`), its sender pinned on the first and
+any other refused, a DATA block delivered if it is the next, an ERROR's code kept, an OACK's
+options read (`parse_oack`) and checked against what was asked. The machine is C's: START sends
+or resends the request, RX acknowledges each block and ends on a short one, TX reads each block
+from the upload and ends after a short one is acknowledged; each resends on a time-out until the
+retries run out. Every packet goes with `Socket::send_to`, untraced, as C's `sendto`. The
+exchange's error, if any, is the transfer's at DONE (`tftp_translate_code`). A datagram's opcode
+is taken as an event whatever it is, as C takes it. Through a proxy, the CONNECT tunnel refuses
+the scheme (`PROTOPT_NOTCPPROXY`).
 
 ## 6. HTTP/1.x
 

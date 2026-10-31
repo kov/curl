@@ -1,6 +1,6 @@
 //! What the C libraries bound beside the core do for a handle: the
-//! content codings they undo, the signatures they make, the TLS they
-//! speak and the GSS-API they authenticate with. The core links none of
+//! content codings they undo, the signatures they make, the TLS and SSH
+//! they speak and the GSS-API they authenticate with. The core links none of
 //! them; whoever builds a handle (the shim, the tool) gives it a
 //! `SharedLibraries` naming what its build has: a static the process
 //! keeps for good, or a `Libraries` its owner shares with its handles.
@@ -15,6 +15,7 @@ use crate::gss::Gss;
 use crate::http2::Http2;
 use crate::http3::Http3;
 use crate::idn::Idn;
+use crate::ssh::Ssh;
 use crate::tls::TlsBackend;
 
 /// The libraries a handle uses. A handle without any is given
@@ -44,6 +45,9 @@ pub struct Libraries {
     /// The HTTP/3 library, if any: without it, HTTP/3 is not built in, as
     /// in a C build without ngtcp2.
     pub h3: Option<&'static dyn Http3>,
+    /// The SSH library, if any: without it, SCP and SFTP are not built
+    /// in, as in a C build without libssh.
+    pub ssh: Option<&'static dyn Ssh>,
     /// Where random bytes come from in place of the system, if anywhere:
     /// the debug build's `CURL_ENTROPY` numbers.
     pub random: Option<Library<dyn Random>>,
@@ -111,6 +115,7 @@ impl Libraries {
         idn: None,
         h2: None,
         h3: None,
+        ssh: None,
         random: None,
     };
 

@@ -125,6 +125,7 @@ static LIBZ: OnceLock<CBuf<32>> = OnceLock::new();
 static BROTLI: OnceLock<CBuf<32>> = OnceLock::new();
 static ZSTD: OnceLock<CBuf<32>> = OnceLock::new();
 static QUIC: OnceLock<CBuf<64>> = OnceLock::new();
+static LIBSSH: OnceLock<CBuf<64>> = OnceLock::new();
 static INFO: OnceLock<Data> = OnceLock::new();
 
 /// The build's CA bundle and directory, as `curl_version_info` gives
@@ -173,6 +174,8 @@ fn info() -> &'static curl_version_info_data {
     let brotli = BROTLI.get_or_init(|| cbuf(format_args!("brotli/{}", curl_brotli::version())));
     let zstd = ZSTD.get_or_init(|| cbuf(format_args!("zstd/{}", curl_zstd::version())));
     let quic = QUIC.get_or_init(|| cbuf(format_args!("{}", curl_ngtcp2::version())));
+    // Named, as C's `Curl_ssh_version` names it.
+    let libssh = LIBSSH.get_or_init(|| cbuf(format_args!("libssh/{}", curl_libssh::version())));
     &INFO
         .get_or_init(|| {
             Data(curl_version_info_data {
@@ -192,7 +195,7 @@ fn info() -> &'static curl_version_info_data {
                 ares_num: 0,
                 libidn: curl_idn2::version_c().as_ptr(),
                 iconv_ver_num: 0,
-                libssh_version: ptr::null(),
+                libssh_version: libssh.as_ptr(),
                 brotli_ver_num: curl_brotli::version_number(),
                 brotli_version: brotli.as_ptr(),
                 nghttp2_ver_num: curl_nghttp2::version_number(),
@@ -222,11 +225,13 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let zstd = Library("zstd", curl_zstd::version());
             let idn = Library("libidn2", curl_idn2::version());
             let psl = Library("libpsl", curl_psl::version());
+            let ssh = Library("libssh", curl_libssh::version());
             let h2 = Library("nghttp2", curl_nghttp2::version());
             let h3 = curl_ngtcp2::version();
             let gss = Library("mit-krb5", curl_gssapi::version());
-            let libraries: [&dyn fmt::Display; 9] =
-                [&ssl, &zlib, &brotli, &zstd, &idn, &psl, &h2, &h3, &gss];
+            let libraries: [&dyn fmt::Display; 10] = [
+                &ssl, &zlib, &brotli, &zstd, &idn, &psl, &ssh, &h2, &h3, &gss,
+            ];
             cbuf(format_args!("{}", version().components(&libraries)))
         })
         .as_ptr()
@@ -269,7 +274,7 @@ mod tests {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libidn2/{} libpsl/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -277,6 +282,7 @@ mod tests {
             curl_zstd::version(),
             curl_idn2::version(),
             curl_psl::version(),
+            curl_libssh::version(),
             curl_nghttp2::version(),
             curl_ngtcp2::ngtcp2_version(),
             curl_ngtcp2::nghttp3_version(),

@@ -3785,6 +3785,7 @@ impl Linked {
                 idn: Some(&curl_idn2::IDN2),
                 h2: Some(&curl_nghttp2::NGHTTP2),
                 h3: Some(&curl_ngtcp2::NGTCP2),
+                ssh: Some(&curl_libssh::LIBSSH),
                 random: random()?,
             })
         };

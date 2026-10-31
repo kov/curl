@@ -1120,19 +1120,20 @@ protocols need, each step leaving behaviour and traces as they are:
     `--mail-rcpt`, `--mail-rcpt-allowfails` and `--mail-auth`, and the C ABI's options for
     them. Every SMTP, IMAP and POP3 test both legs run passes; 1406, 1407 and 1420 wait on
     FTP, 3227 is a unit test of C's, and NTLM is out of scope.
-72. **FTP and FTPS.** **In progress.** `ftp://` and `ftps://` (`proto::ftp`, after
-    `lib/ftp.c`): the login with ACCT and the alternative to USER, PWD and the entry path, the
-    three CWD methods and `--ftp-create-dirs`, the quote commands, TYPE, SIZE, MDTM, REST, time
+72. **FTP and FTPS.** **Done.** `ftp://` and `ftps://` (`proto::ftp`, after `lib/ftp.c`):
+    the login with ACCT and the alternative to USER, PWD and the entry path, the three CWD
+    methods and `--ftp-create-dirs`, the quote commands, TYPE, SIZE, MDTM, REST, time
     conditions, ranges and resumes, RETR, STOR, APPE, LIST and NLST; the data connection
     passive (EPSV, PASV, `--ftp-skip-pasv-ip`, PRET) or active (EPRT, PORT, `--ftp-port`, its
-    accept timed by `FtpAccept`), held by the control connection's state; FTPS from the start
-    or by AUTH TLS or SSL, with PBSZ and PROT; reuse by `Curl_ftp_conns_match`; an FTP URL asked
-    of a forwarding HTTP proxy; DONE's 226 and `-Q -command` answers read without stalling the
-    multi, as IMAP's and SMTP's. The tool's FTP options and the C ABI's. Every FTP and FTPS test
-    both legs run passes but those of what is left: the data connection through a SOCKS or
-    HTTP proxy (564, 706, 707, 711 to 715, 1631, 1632, 1745), wildcard matching and its list
-    parser (574 to 576, 1113, 1114, 1162, 1163, 2805), and CCC. vsftpd's pytest suite
-    (test_30, test_31) passes but its wildcard test, test_30_13.
+    accept timed by `FtpAccept`), held by the control connection's state, and through a SOCKS
+    or HTTP proxy; FTPS from the start or by AUTH TLS or SSL, with PBSZ and PROT, and CCC,
+    passive or active, clearing the control connection's TLS after its close_notify within
+    the shutdown's time; reuse by `Curl_ftp_conns_match`; an FTP URL asked of a forwarding
+    HTTP proxy; DONE's 226 and `-Q -command` answers read without stalling the multi, as
+    IMAP's and SMTP's; wildcard downloads (`CURLOPT_WILDCARDMATCH`), the listing read by C's
+    parser's rules and matched by `fnmatch` or the application's matcher, with the chunk
+    callbacks. The tool's FTP options and the C ABI's. Every FTP and FTPS test both legs run
+    passes, and vsftpd's pytest suite (test_30, test_31) passes whole.
 
 SCP and SFTP hand libssh the socket, as C does (`SSH_OPTIONS_FD`): bytes a proxy's tunnel or a
 SOCKS answer left in the stream's buffer would be lost to it, so the hand-over is refused while

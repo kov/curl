@@ -545,3 +545,82 @@ fn every_split_point_reads_the_same() {
         }
     }
 }
+
+/// A pong waits while a frame's payload is under way, and goes with the
+/// flush after its last byte, behind it.
+#[test]
+fn a_pong_waits_for_the_frame_under_way() {
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    assert_eq!(
+        ws.send(&mut rec, b"ab", FrameLen::Total(4), text(), false),
+        Ok(2)
+    );
+    ws.add_pong(b"p");
+    assert_eq!(ws.flush(&mut rec, false), Ok(()));
+    assert!(ws.pending(), "no pong inside a frame");
+    assert_eq!(rec.sent.len(), 8);
+    assert_eq!(
+        ws.send(&mut rec, b"cd", FrameLen::These, text(), false),
+        Ok(2)
+    );
+    assert_eq!(ws.flush(&mut rec, false), Ok(()));
+    assert!(!ws.pending());
+    assert_eq!(rec.sent.len(), 10 + 7);
+    assert_eq!(&rec.sent[10..12], [0x8a, 0x81]);
+}
+
+/// A flush with room in the send buffer adds the pong waiting, even with
+/// nothing else to send.
+#[test]
+fn a_flush_sends_the_pong_waiting() {
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    ws.add_pong(b"hi");
+    assert_eq!(ws.flush(&mut rec, false), Ok(()));
+    assert!(!ws.pending());
+    assert_eq!(&rec.sent[..2], [0x8a, 0x82]);
+    assert_eq!(rec.sent.len(), 8);
+}
+
+/// The debug test build's `CURL_WS_CHUNK_EAGAIN` sends at most that many
+/// bytes at a flush, the rest waiting as if the connection blocked.
+#[test]
+fn a_debug_chunk_limit_cuts_each_flush() {
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    ws.debugging.chunk_eagain = 4;
+    ws.add_pong(b"hi");
+    assert_eq!(ws.flush(&mut rec, false), Err(Stop::Again));
+    assert_eq!(rec.sent.len(), 4);
+    assert_eq!(ws.flush(&mut rec, false), Ok(()), "the last 4 fit");
+    assert_eq!(rec.sent.len(), 8);
+    ws.debugging.chunk_eagain = 8;
+    ws.add_pong(b"hi");
+    assert_eq!(
+        ws.flush(&mut rec, false),
+        Ok(()),
+        "a flush that fits goes whole"
+    );
+    assert_eq!(rec.sent.len(), 16);
+}
+
+/// A frame's trace says NON-FINAL of a fragment, and nothing of the
+/// last frame of a message, as C's does.
+#[test]
+fn a_fragment_is_traced_as_non_final() {
+    let mut dec = Decoder::default();
+    let mut q = ChunkQueue::new(CHUNK_SIZE, 1);
+    let mut frames = Frames::default();
+    q.write(b"\x01\x01a\x80\x01b").unwrap();
+    while let Ok(Passed::Frame) = dec.pass(&mut q, &mut frames) {}
+    let heads: Vec<&String> = frames
+        .rec
+        .lines
+        .iter()
+        .filter(|l| l.contains("decoded head"))
+        .collect();
+    assert_eq!(heads.len(), 2, "{:?}", frames.rec.lines);
+    assert!(heads[0].contains("NON-FINAL"), "{heads:?}");
+    assert!(!heads[1].contains("NON-FINAL"), "{heads:?}");
+}

@@ -2028,3 +2028,113 @@ fn the_entry_path_is_reported_after_reuse() {
         text.text()
     );
 }
+
+/// The login's other ways: an account when the server asks for one, and
+/// the application's command in place of `USER` when it is refused; a
+/// control byte in either refused, as it would end the command
+/// (`ftp_state_user_resp`, `ftp_has_ctrl`).
+#[test]
+fn a_login_takes_an_account_or_an_alternative() {
+    let run = |replies: &[&'static [u8]], set: &dyn Fn(&mut crate::options::Ftp)| {
+        let mut all: Vec<&'static [u8]> = vec![b"220 hi\r\n"];
+        all.extend_from_slice(replies);
+        let control = Conversation::replies(&all, false).greeting();
+        let mut m = serving(&[&control], &[]);
+        let (id, _, text) = added(&mut m, URL, |o| {
+            o.method = crate::options::Method::Head;
+            set(&mut o.line.make_mut().unwrap().ftp);
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        (result, received(&control), text.text())
+    };
+    let rest: [&'static [u8]; 4] = [
+        b"257 \"/\" is it\r\n",
+        b"200 binary\r\n",
+        b"213 5\r\n",
+        b"350 restarting\r\n",
+    ];
+    let account =
+        |a: &'static [u8]| move |f: &mut crate::options::Ftp| f.account = Some(a.to_vec());
+    let mut asks: Vec<&'static [u8]> =
+        vec![b"331 password?\r\n", b"332 account?\r\n", b"230 in\r\n"];
+    asks.extend_from_slice(&rest);
+    let (result, sent, said) = run(&asks, &account(b"my acct"));
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        sent.starts_with("USER anonymous\r\nPASS ftp@example.com\r\nACCT my acct\r\nPWD\r\n"),
+        "{sent}"
+    );
+    let (result, _, said) = run(&asks[..2], &|_| {});
+    assert_eq!(result, Err(ErrorKind::LoginDenied), "{said}");
+    assert!(said.contains("ACCT requested but none available"), "{said}");
+    for bad in [&b"a\x01b"[..], b"a\x1fb", b"\x00"] {
+        let bad: &'static [u8] = Box::leak(bad.to_vec().into_boxed_slice());
+        let (result, sent, said) = run(&asks[..2], &account(bad));
+        assert_eq!(result, Err(ErrorKind::BadFunctionArgument), "{said}");
+        assert!(said.contains("Control byte in FTP account"), "{said}");
+        assert!(!sent.contains("ACCT"), "{sent}");
+    }
+
+    let alternative = |a: &'static [u8]| {
+        move |f: &mut crate::options::Ftp| f.alternative_to_user = Some(a.to_vec())
+    };
+    let mut refused: Vec<&'static [u8]> = vec![b"530 no\r\n", b"230 in\r\n"];
+    refused.extend_from_slice(&rest);
+    let (result, sent, said) = run(&refused, &alternative(b"SITE login"));
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        sent.starts_with("USER anonymous\r\nSITE login\r\nPWD\r\n"),
+        "{sent}"
+    );
+    let (result, sent, said) = run(
+        &[b"530 no\r\n", b"530 still no\r\n"],
+        &alternative(b"SITE login"),
+    );
+    assert_eq!(result, Err(ErrorKind::LoginDenied), "{said}");
+    assert!(said.contains("Access denied: 530"), "{said}");
+    assert!(sent.ends_with("SITE login\r\n"), "{sent}");
+    let (result, _, said) = run(&[b"530 no\r\n"], &alternative(b"SITE\x0alogin"));
+    assert_eq!(result, Err(ErrorKind::BadFunctionArgument), "{said}");
+    assert!(
+        said.contains("Control byte in FTP alternative-to-user command"),
+        "{said}"
+    );
+    let (result, _, said) = run(&[b"530 no\r\n"], &|_| {});
+    assert_eq!(result, Err(ErrorKind::LoginDenied), "{said}");
+}
+
+/// While an active transfer waits for the server to connect, an answer
+/// on the control connection ends the wait: a refusal fails the accept,
+/// another answer is weird (`ftp_check_ctrl_on_data_wait`).
+#[test]
+fn an_answer_while_waiting_to_be_connected_ends_the_wait() {
+    let run = |answer: &'static [u8]| {
+        let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+        replies.push(answer);
+        let control = Conversation::replies(&replies, false).greeting();
+        let (mut m, _) = serving_active(&[&control], &[]);
+        let (id, _, text) = added(&mut m, URL, |o| {
+            o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        (result, text.text())
+    };
+    // The 150 says go on; what follows it before the server connects
+    // ends the wait.
+    let (result, said) = run(b"150 here\r\n425 cannot connect\r\n");
+    assert_eq!(result, Err(ErrorKind::FtpAcceptFailed), "{said}");
+    assert!(
+        said.contains("Ctrl conn has data while waiting for data conn"),
+        "{said}"
+    );
+    assert!(said.contains("FTP code: 425"), "{said}");
+    let (result, said) = run(b"150 here\r\n399 odd\r\n");
+    assert_eq!(result, Err(ErrorKind::WeirdServerReply), "{said}");
+    assert!(said.contains("FTP code: 399"), "{said}");
+    // The verdict read ahead of the data: the wait goes on, here until
+    // the transfer's time is up.
+    let (result, said) = run(b"150 here\r\n226 done\r\n");
+    assert_eq!(result, Err(ErrorKind::OperationTimedout), "{said}");
+    assert!(said.contains("Got 226 before data activity"), "{said}");
+    assert!(!said.contains("FTP code"), "{said}");
+}

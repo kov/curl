@@ -536,3 +536,13 @@ features: test-util
     if unix && peer.name().len() < curl_os::net::UNIX_PATH_ROOM {
 --- new
     if unix {
+
+=== a bare IPv6 address is asked of the resolver
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::a_bare_address_is_not_resolved
+--- old
+    if let Some(ip) = literal(name) {
+        addrs.try_push(ip)?;
+--- new
+    if let Some(ip) = literal(name).filter(IpAddr::is_ipv4) {
+        addrs.try_push(ip)?;

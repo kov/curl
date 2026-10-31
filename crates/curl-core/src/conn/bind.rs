@@ -262,23 +262,6 @@ fn resolve_host(
     // The port as a line shows it after the name, and the queries asked.
     let at = Text::<8>::clipped(format_args!(":{port}")).0;
     let at = at.bytes();
-    // An IPv6 address is a host as a URL shows it in brackets.
-    let bare_v6 = std::str::from_utf8(host)
-        .ok()
-        .is_some_and(|h| h.parse::<Ipv6Addr>().is_ok());
-    let bracketed: Text<64>;
-    let shown = if bare_v6 {
-        bracketed = {
-            let mut b = Text::new();
-            b.push_clipped(b"[");
-            b.push_clipped(host);
-            b.push_clipped(b"]");
-            b
-        };
-        bracketed.bytes()
-    } else {
-        host
-    };
     let dns = Component::Dns;
     // The C debug build's line.
     #[cfg(feature = "debug-hooks")]
@@ -293,7 +276,7 @@ fn resolve_host(
             b")",
         ],
     );
-    let looked = lookup_name((shown, host, port), family, cx, setup, false);
+    let looked = lookup_name((host, port), family, cx, setup, false);
     if let Err(ConnectError::Unresolved(Unresolved::DebugFailIpv6)) = looked {
         cx.info(format_args!("DEBUG fail ipv6 resolve"));
         cx.fail_with(&[b"Could not resolve host: ", name]);

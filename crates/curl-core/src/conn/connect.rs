@@ -1112,8 +1112,7 @@ impl ConnectMachine {
                         let looked = match pending {
                             None => {
                                 let family = family(self.route.ip, cx);
-                                let shown = peer.shown();
-                                lookup_start((shown, name, port), family, cx, setup, true)?
+                                lookup_start((name, port), family, cx, setup, true)?
                             }
                             Some(p) => {
                                 let id = p.id;
@@ -2303,7 +2302,7 @@ fn resolve(
     setup: DriveOptions,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
     let family = family(ip, cx);
-    resolve_name((peer.shown(), peer.name(), peer.port()), family, cx, setup)
+    resolve_name((peer.name(), peer.port()), family, cx, setup)
 }
 
 /// The addresses `host` stands for, of the families a resolve in `ip`
@@ -2317,7 +2316,7 @@ pub(crate) fn resolve_blocking(
     setup: DriveOptions,
 ) -> Result<Option<TryArc<Answer>>, OutOfMemory> {
     let family = family(ip, cx);
-    match lookup_name((host, host, 0), family, cx, setup, false) {
+    match lookup_name((host, 0), family, cx, setup, false) {
         Ok((answer, found)) => {
             if found == Found::Cached {
                 cx.info_with(&[b"Hostname ", host, b" was found in DNS cache"]);
@@ -2339,16 +2338,16 @@ fn family(ip: IpVersion, cx: &dyn ConnCx) -> Family {
     }
 }
 
-/// The addresses of `family` the host `shown` stands for, as a URL shows
-/// it, `name` without brackets, for a connection to `port`: from the
-/// cache, a shortcut or the resolver, kept in the cache (`hostip_resolv`).
+/// The addresses of `family` the host `name` stands for, without
+/// brackets, for a connection to `port`: from the cache, a shortcut or
+/// the resolver, kept in the cache (`hostip_resolv`).
 pub(super) fn resolve_name(
-    (shown, name, port): (&[u8], &[u8], u16),
+    (name, port): (&[u8], u16),
     family: Family,
     cx: &mut dyn ConnCx,
     setup: DriveOptions,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
-    lookup_name((shown, name, port), family, cx, setup, true)
+    lookup_name((name, port), family, cx, setup, true)
 }
 
 /// `resolve_name`, keeping that the name does not exist only if
@@ -2356,13 +2355,13 @@ pub(super) fn resolve_name(
 /// (`Curl_dnscache_add_negative`); a resolver that answers later is
 /// waited for, as C waits for these (`Curl_resolv_blocking`).
 pub(super) fn lookup_name(
-    (shown, name, port): (&[u8], &[u8], u16),
+    (name, port): (&[u8], u16),
     family: Family,
     cx: &mut dyn ConnCx,
     setup: DriveOptions,
     keep_negative: bool,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
-    match lookup_start((shown, name, port), family, cx, setup, keep_negative)? {
+    match lookup_start((name, port), family, cx, setup, keep_negative)? {
         Looked::Found(answer, found) => Ok((answer, found)),
         Looked::Pending(pending) => {
             let id = pending.id;
@@ -2430,7 +2429,7 @@ impl Pending {
 /// A lookup started: the cache, then the shortcuts, then the resolver,
 /// whose answer may come later (`hostip_resolv_start`).
 pub(super) fn lookup_start(
-    (shown, name, port): (&[u8], &[u8], u16),
+    (name, port): (&[u8], u16),
     family: Family,
     cx: &mut dyn ConnCx,
     setup: DriveOptions,
@@ -2455,7 +2454,7 @@ pub(super) fn lookup_start(
         Lookup::Missing => Found::Resolved,
     };
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
-    if let Some(answer) = shortcut(shown, name).map_err(oom)? {
+    if let Some(answer) = shortcut(name).map_err(oom)? {
         // Told though no resolver is asked, as C tells it.
         cx.announce_resolve()?;
         let answer = TryArc::try_new(answer).map_err(oom)?;
@@ -2541,16 +2540,15 @@ pub(super) fn settle(
     Ok((answer, found(Asked::Resolver(queued))))
 }
 
-/// The addresses `host`, as the URL names it, stands for without asking
-/// a resolver (`hostip_resolv_start`'s shortcuts): an address itself, or
-/// the loopback addresses for `localhost` and the names under it (RFC
-/// 6761). None for any other name, which a resolver must find. The answer
-/// is for `name`, the host without brackets.
-fn shortcut(host: &[u8], name: &[u8]) -> Result<Option<Answer>, OutOfMemory> {
+/// The addresses `name`, a host without brackets, stands for without
+/// asking a resolver (`hostip_resolv_start`'s shortcuts): an address
+/// itself, or the loopback addresses for `localhost` and the names under
+/// it (RFC 6761). None for any other name, which a resolver must find.
+fn shortcut(name: &[u8]) -> Result<Option<Answer>, OutOfMemory> {
     let mut addrs = Vec::new();
-    if let Some(ip) = literal(host) {
+    if let Some(ip) = literal(name) {
         addrs.try_push(ip)?;
-    } else if is_localhost(host) {
+    } else if is_localhost(name) {
         addrs.try_push(IpAddr::V6(Ipv6Addr::LOCALHOST))?;
         addrs.try_push(IpAddr::V4(Ipv4Addr::LOCALHOST))?;
     } else {
@@ -2580,8 +2578,6 @@ fn is_localhost(host: &[u8]) -> bool {
         || (host.len() > tail.len() && host[host.len() - tail.len()..].eq_ignore_ascii_case(tail))
 }
 
-/// `host` as an address if it is one, as the URL holds it: an IPv4
-/// address dotted, an IPv6 one in brackets.
 /// C's name for the address queries a resolve of `peer`'s name in `ip`
 /// makes (`Curl_resolv_query_str`), with IPv6 working or not: an
 /// address's own family is always asked for (`cf_dns_start`).
@@ -2591,7 +2587,7 @@ pub(crate) fn queries(peer: &Peer, ip: IpVersion, ipv6_works: bool) -> &'static 
         IpVersion::V4 => (true, false),
         IpVersion::V6 => (false, true),
     };
-    match literal(peer.shown()) {
+    match literal(peer.name()) {
         Some(IpAddr::V4(_)) => a = true,
         Some(IpAddr::V6(_)) => aaaa = true,
         None => {}
@@ -2603,12 +2599,11 @@ pub(crate) fn queries(peer: &Peer, ip: IpVersion, ipv6_works: bool) -> &'static 
     }
 }
 
-fn literal(host: &[u8]) -> Option<IpAddr> {
-    let text = std::str::from_utf8(host).ok()?;
-    if let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
-        return inner.parse::<Ipv6Addr>().ok().map(IpAddr::V6);
-    }
-    text.parse::<std::net::Ipv4Addr>().ok().map(IpAddr::V4)
+/// `name`, a host without brackets, as an address if it is one: IPv4
+/// dotted, or IPv6 without a zone (`Curl_is_ipaddr`, whose
+/// `inet_pton` takes no zone either).
+fn literal(name: &[u8]) -> Option<IpAddr> {
+    std::str::from_utf8(name).ok()?.parse().ok()
 }
 
 #[cfg(test)]
@@ -3044,16 +3039,16 @@ mod tests {
         ] {
             assert!(!is_localhost(name), "{name:?}");
         }
-        let answer = shortcut(b"localhost", b"localhost").unwrap().unwrap();
+        let answer = shortcut(b"localhost").unwrap().unwrap();
         let loopback = [
             IpAddr::V6(Ipv6Addr::LOCALHOST),
             IpAddr::V4(Ipv4Addr::LOCALHOST),
         ];
         assert_eq!((answer.addrs(), answer.resolved()), (&loopback[..], true));
-        let answer = shortcut(b"[::1]", b"::1").unwrap().unwrap();
+        let answer = shortcut(b"::1").unwrap().unwrap();
         assert_eq!((answer.addrs(), answer.resolved()), (&loopback[..1], false));
         assert_eq!(answer.name(), b"::1");
-        assert!(shortcut(b"example.com", b"example.com").unwrap().is_none());
+        assert!(shortcut(b"example.com").unwrap().is_none());
     }
 
     /// Attempts alternate the families, IPv6 first, each family in the
@@ -3106,11 +3101,50 @@ mod tests {
         assert!(!e.more());
     }
 
+    /// An address named bare, as FTP's `PORT` names its own, is its own
+    /// answer, the resolver never asked (`hostip_resolv_start`'s
+    /// `Curl_is_ipaddr`): this network's resolver knows no name.
+    #[test]
+    fn a_bare_address_is_not_resolved() {
+        let clock = ManualClock::new().unwrap();
+        let mut net = FakeNet::new(clock.clone());
+        let setup = DriveOptions {
+            wildcard: false,
+            max_age: Some(Duration::from_secs(60)),
+            delay: Duration::from_millis(200),
+            scope: None,
+            socket: SocketSetup::PLAIN,
+            haproxy: false,
+            layer: None,
+            linger: None,
+        };
+        for (host, ip) in [("::1", "::1"), ("127.0.0.1", "127.0.0.1")] {
+            let mut cx = Plain {
+                net: &mut net,
+                dns: &mut DnsCache::default(),
+                now: clock.now(),
+            };
+            let answer = resolve_blocking(host.as_bytes(), IpVersion::Any, &mut cx, setup).unwrap();
+            let answer = answer.unwrap_or_else(|| panic!("{host} resolved"));
+            assert_eq!(answer.addrs(), [ip.parse::<IpAddr>().unwrap()]);
+        }
+        let mut cx = Plain {
+            net: &mut net,
+            dns: &mut DnsCache::default(),
+            now: clock.now(),
+        };
+        let named = resolve_blocking(b"example.com", IpVersion::Any, &mut cx, setup).unwrap();
+        assert!(named.is_none(), "a name is the resolver's");
+    }
+
     #[test]
     fn literals_are_addresses() {
         assert_eq!(literal(b"127.0.0.1"), Some(IpAddr::from([127, 0, 0, 1])));
-        assert_eq!(literal(b"[::1]"), Some(IpAddr::V6(Ipv6Addr::LOCALHOST)));
-        assert_eq!(literal(b"::1"), None, "the URL keeps the brackets");
+        assert_eq!(literal(b"::1"), Some(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        let mapped = "::ffff:1.2.3.4".parse().unwrap();
+        assert_eq!(literal(b"::ffff:1.2.3.4"), Some(IpAddr::V6(mapped)));
+        assert_eq!(literal(b"[::1]"), None, "a name has no brackets");
+        assert_eq!(literal(b"fe80::1%eth0"), None, "a zone is resolved");
         assert_eq!(literal(b"[127.0.0.1]"), None);
         assert_eq!(literal(b"example.com"), None);
         assert_eq!(literal(b"localhost"), None);

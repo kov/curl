@@ -155,12 +155,23 @@ fn added_with(
 fn added_easy(
     m: &mut Multi,
     url: &str,
+    e: Easy,
+    set: impl FnOnce(&mut Options),
+) -> (TransferId, Body, Text) {
+    added_tracing(m, url, e, b"multi", set)
+}
+
+/// The same, `components` traced.
+fn added_tracing(
+    m: &mut Multi,
+    url: &str,
     mut e: Easy,
+    components: &[u8],
     set: impl FnOnce(&mut Options),
 ) -> (TransferId, Body, Text) {
     let url = url.replace("PORT", &PORT.to_string());
     let traced = crate::components::Components::new().unwrap();
-    traced.configure(b"multi");
+    traced.configure(components);
     e.set_components(Some(traced));
     let body = Body::default();
     let text = Text::default();
@@ -1520,7 +1531,7 @@ fn an_active_download_resolves_the_address_it_offers() {
 }
 
 /// A transfer given up while it waits for the server to connect closes
-/// the listening socket, none left open once the multi is gone
+/// the listening socket, and the control connection, being premature
 /// (`ftp_done`, `close_secondarysocket`).
 #[test]
 fn a_transfer_given_up_closes_its_listening_socket() {
@@ -1538,8 +1549,12 @@ fn a_transfer_given_up_closes_its_listening_socket() {
     assert!(received(&control).ends_with("RETR f\r\n"), "{said}");
     assert_eq!(counted.open(), 2, "the control connection and the listener");
     m.remove(id, &mut NoEvents).unwrap();
-    drop(m);
+    // Given up, the control connection is not kept either.
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
     assert_eq!(counted.open(), 0, "{said}");
+    drop(m);
 }
 
 /// The size a download expects: the one SIZE gave, else the one in the
@@ -1724,4 +1739,246 @@ fn an_upload_is_sent_as_its_options_say() {
     assert_eq!((result, got), (Ok(()), vec![]), "{said}");
     assert!(said.contains("File already completely uploaded"), "{said}");
     assert!(sent.ends_with("TYPE I\r\n"), "{sent}");
+}
+
+/// The server's verdict on a download: 226 or 250 is success, 552 a
+/// full disk, anything else a file not all moved (`ftp_done`).
+#[test]
+fn a_transfer_s_verdict_is_read_as_c_reads_it() {
+    // The verdict comes with the 150, as the fake server answers each
+    // command once.
+    let run = |verdict: &[u8]| {
+        let reply = [&b"150 here\r\n"[..], verdict].concat();
+        let control = control(&[&reply]);
+        let file = data(b"hello");
+        let mut m = serving(&[&control], &[&file]);
+        let (id, _, text) = added(&mut m, URL, |_| {});
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        (result, text.text())
+    };
+    assert_eq!(run(b"226 done\r\n").0, Ok(()));
+    assert_eq!(run(b"250 done\r\n").0, Ok(()));
+    let (result, said) = run(b"552 full\r\n");
+    assert_eq!(result, Err(ErrorKind::RemoteDiskFull), "{said}");
+    assert!(said.contains("Exceeded storage allocation"), "{said}");
+    let (result, said) = run(b"451 aborted\r\n");
+    assert_eq!(result, Err(ErrorKind::PartialFile), "{said}");
+    assert!(said.contains("server did not report OK, got 451"), "{said}");
+}
+
+/// A verdict that never comes fails the transfer in the server's time,
+/// the control connection said to look dead, as nothing of it came, and
+/// closed (`ftp_done`, `getftpresponse`).
+#[test]
+fn a_verdict_that_never_comes_times_out() {
+    let run = || {
+        let control = control(&[b"150 here\r\n"]);
+        let file = data(b"hello");
+        let mut m = serving(&[&control], &[&file]);
+        let (id, _, text) = added(&mut m, URL, |_| {});
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        (result, text.text())
+    };
+    let (result, said) = run();
+    assert_eq!(result, Err(ErrorKind::OperationTimedout), "{said}");
+    assert!(said.contains("control connection looks dead"), "{said}");
+    assert!(
+        said.contains("closing connection #0") || said.contains("shutting down connection #0"),
+        "{said}"
+    );
+}
+
+/// A connection is kept for the next transfer after one that went well,
+/// in the directory it was left in, and after a file the server has not
+/// got; a failure of the connection's own closes it (`ftp_done`,
+/// `ftp_done_path`, `ftp_done_status`).
+#[test]
+fn a_connection_is_kept_as_c_keeps_it() {
+    let run = |first: &[&'static [u8]], second_reuses: bool| {
+        let mut replies: Vec<&'static [u8]> = vec![
+            b"220 hi\r\n",
+            b"331 password?\r\n",
+            b"230 in\r\n",
+            b"257 \"/\" is it\r\n",
+            b"250 in d\r\n",
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 binary\r\n",
+            b"213 5\r\n",
+        ];
+        replies.extend_from_slice(first);
+        let again: &[&'static [u8]] = &[
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"213 5\r\n",
+            b"150 here\r\n226 done\r\n",
+        ];
+        if second_reuses {
+            replies.extend_from_slice(again);
+        }
+        let one = Conversation::replies(&replies, false).greeting();
+        let mut fresh: Vec<&'static [u8]> = vec![
+            b"220 hi\r\n",
+            b"331 password?\r\n",
+            b"230 in\r\n",
+            b"257 \"/\" is it\r\n",
+            b"250 in d\r\n",
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 binary\r\n",
+        ];
+        fresh.extend_from_slice(&again[1..]);
+        let two = Conversation::replies(&fresh, false).greeting();
+        let (a, b) = (data(b"hello"), data(b"hello"));
+        let mut m = serving(&[&one, &two], &[&a, &b]);
+        let mut results = Vec::new();
+        let mut said = String::new();
+        for _ in 0..2 {
+            let (id, _, text) = added(&mut m, "ftp://127.0.0.1:PORT/d/f", |_| {});
+            results.push(drive_to_completion(&mut m, id, &mut NoEvents).unwrap());
+            said.push_str(&text.text());
+            m.remove(id, &mut NoEvents).unwrap();
+        }
+        (results, received(&one), received(&two), said)
+    };
+    // Success: the second goes on the same connection, no CWD again.
+    let (results, one, two, said) = run(&[b"150 here\r\n226 done\r\n"], true);
+    assert_eq!(results, [Ok(()), Ok(())], "{said}");
+    assert!(
+        said.contains("Remembering we are in directory \"d/\""),
+        "{said}"
+    );
+    assert!(
+        said.contains("Request has same path as previous transfer"),
+        "{said}"
+    );
+    assert!(
+        one.ends_with("RETR f\r\nEPSV\r\nSIZE f\r\nRETR f\r\n"),
+        "{one}"
+    );
+    assert_eq!(two, "", "{said}");
+    // A file not there: the same.
+    let (results, one, two, said) = run(&[b"550 not here\r\n"], true);
+    assert_eq!(
+        results,
+        [Err(ErrorKind::RemoteFileNotFound), Ok(())],
+        "{said}"
+    );
+    assert!(
+        one.ends_with("RETR f\r\nEPSV\r\nSIZE f\r\nRETR f\r\n"),
+        "{one}"
+    );
+    assert_eq!(two, "", "{said}");
+    // A verdict not read: the connection goes, the next logs in again.
+    let (results, _, two, said) = run(&[b"150 here\r\n"], false);
+    assert_eq!(
+        results,
+        [Err(ErrorKind::OperationTimedout), Ok(())],
+        "{said}"
+    );
+    assert!(two.starts_with("USER anonymous\r\n"), "{two}");
+    assert!(two.contains("CWD d\r\n"), "{two}");
+}
+
+/// A failure that leaves the control connection's state unknown, such as
+/// a command before the transfer refused, closes it: the next transfer
+/// logs in again (`ftp_done`, "FTP ended with bad error code").
+#[test]
+fn a_bad_failure_closes_the_control_connection() {
+    let one = logged_in(&[
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"200 binary\r\n",
+        b"500 no SITE\r\n",
+    ]);
+    let two = control(&[b"150 here\r\n226 done\r\n"]);
+    let (a, b) = (data(b""), data(b"hello"));
+    let mut m = serving(&[&one, &two], &[&a, &b]);
+    let (id, _, text) = added(&mut m, URL, |o| {
+        o.line
+            .make_mut()
+            .unwrap()
+            .prequote
+            .set([&b"SITE x"[..]])
+            .unwrap();
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Err(ErrorKind::QuoteError), "{}", text.text());
+    m.remove(id, &mut NoEvents).unwrap();
+    let (id, _, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert!(
+        received(&two).starts_with("USER anonymous\r\n"),
+        "{}",
+        received(&two)
+    );
+}
+
+/// The FTP component traces each change of state by C's names for them,
+/// none for a state set again, and the transfer's start once
+/// (`_ftp_state`, `ftp_initiate_transfer`).
+#[test]
+fn the_states_are_traced_by_c_s_names() {
+    let control = control(&[b"150 here\r\n226 done\r\n"]);
+    let file = data(b"hello");
+    let mut m = serving(&[&control], &[&file]);
+    let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"ftp", |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    let states: Vec<&str> = said
+        .lines()
+        .filter_map(|l| l.strip_prefix("[FTP] "))
+        .filter(|l| l.contains("] -> ["))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            "[STOP] -> [WAIT220]",
+            "[WAIT220] -> [USER]",
+            "[USER] -> [PASS]",
+            "[PASS] -> [PWD]",
+            "[PWD] -> [STOP]",
+            "[STOP] -> [PASV]",
+            "[PASV] -> [STOP]",
+            "[STOP] -> [RETR_TYPE]",
+            "[RETR_TYPE] -> [RETR_SIZE]",
+            "[RETR_SIZE] -> [RETR]",
+            "[RETR] -> [STOP]",
+        ],
+        "{said}"
+    );
+    assert_eq!(said.matches("ftp_initiate_transfer()").count(), 1, "{said}");
+}
+
+/// An upload resumed further in than one read reaches skips its body in
+/// reads of 4 KiB, and fails if the body ends first (`ftp_state_ul_setup`).
+#[test]
+fn an_upload_resumed_far_in_skips_its_body_in_pieces() {
+    let body: Vec<u8> = (0..6000u32).map(|i| (i % 251) as u8).collect();
+    let run = |from: u64, then: &[&'static [u8]]| {
+        let mut replies: Vec<&'static [u8]> = vec![
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 binary\r\n",
+        ];
+        replies.extend_from_slice(then);
+        let control = logged_in(&replies);
+        let file = Conversation::replies(&[], false);
+        let mut m = serving(&[&control], &[&file]);
+        let (id, _, text) = added(&mut m, URL, |o| {
+            o.method = crate::options::Method::Upload;
+            o.resume = Some(crate::options::Resume::At(
+                std::num::NonZeroU64::new(from).unwrap(),
+            ));
+            o.upload = crate::options::UploadSource::Bytes(
+                curl_alloc::TryArc::try_new(body.clone()).unwrap(),
+            );
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        (result, file.received(), text.text())
+    };
+    let (result, stored, said) = run(5000, &[b"150 go on\r\n226 stored\r\n"]);
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(stored, body[5000..]);
+    let (result, stored, said) = run(7000, &[]);
+    assert_eq!(result, Err(ErrorKind::FtpCouldntUseRest), "{said}");
+    assert!(said.contains("Failed to read data"), "{said}");
+    assert_eq!(stored, b"");
 }

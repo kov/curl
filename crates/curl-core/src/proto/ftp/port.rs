@@ -126,6 +126,8 @@ mod tests {
         assert_eq!(parse(b"1.2.3.4:5000"), spec(Some(b"1.2.3.4"), 5000, 5000));
         assert_eq!(parse(b"host:5000-5010"), spec(Some(b"host"), 5000, 5010));
         assert_eq!(parse(b":7000"), spec(None, 7000, 7000));
+        assert_eq!(parse(b":65535"), spec(None, 65535, 65535));
+        assert_eq!(parse(b":65536"), spec(None, 0, 0));
         assert_eq!(parse(b"[::1]:7000-7001"), spec(Some(b"::1"), 7000, 7001));
     }
 

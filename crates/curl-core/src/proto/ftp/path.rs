@@ -202,10 +202,15 @@ mod tests {
         assert_eq!(split("f", m), (vec![], Some("f".into())));
     }
 
-    /// No `CWD`: the whole path is the file, unless it ends in a slash.
+    /// No `CWD`: the whole path is the file, unless it ends in a slash;
+    /// one that starts at the root is absolute, and DONE remembers no
+    /// directory for it.
     #[test]
     fn nocwd_takes_the_path_as_the_file() {
         let m = FtpMethod::NoCwd;
+        assert!(Path::parse(b"/a/f", m).unwrap().absolute());
+        assert!(!Path::parse(b"a/f", m).unwrap().absolute());
+        assert!(!Path::parse(b"", m).unwrap().absolute());
         assert_eq!(split("a/b/c", m), (vec![], Some("a/b/c".into())));
         assert_eq!(split("a/b/", m), (vec![], None));
         assert_eq!(split("", m), (vec![], None));
@@ -226,6 +231,9 @@ mod tests {
         );
         let deep = "a/".repeat(999);
         assert!(Path::parse(deep.as_bytes(), m).is_ok());
+        // Slashes are what count, not the bytes between them.
+        let long = "a".repeat(2000);
+        assert!(Path::parse(long.as_bytes(), m).is_ok());
         // Only the default method counts them.
         let deep = "a/".repeat(1000);
         assert!(Path::parse(deep.as_bytes(), FtpMethod::SingleCwd).is_ok());

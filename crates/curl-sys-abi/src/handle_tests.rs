@@ -6975,3 +6975,85 @@ fn the_mail_options_reach_the_handle() {
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }
+
+/// The wildcard download's options: the switch, and an adapter for each
+/// function set, its data kept beside it; a copy of the handle has them,
+/// and a reset drops them (`Curl_init_userdefined`).
+#[test]
+fn the_wildcard_options_are_kept_copied_and_reset() {
+    unsafe extern "C" fn begin(_: *const c_void, _: *mut c_void, _: c_int) -> c_long {
+        0
+    }
+    unsafe extern "C" fn end(_: *mut c_void) -> c_long {
+        0
+    }
+    unsafe extern "C" fn matches(_: *mut c_void, _: *const c_char, _: *const c_char) -> c_int {
+        0
+    }
+    type Begin = unsafe extern "C" fn(*const c_void, *mut c_void, c_int) -> c_long;
+    type End = unsafe extern "C" fn(*mut c_void) -> c_long;
+    type Matches = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> c_int;
+    let installed = |c| {
+        options(c, |o| {
+            let ftp = &o.line.ftp;
+            [
+                ftp.wildcard,
+                ftp.chunk_begin.is_some(),
+                ftp.chunk_end.is_some(),
+                ftp.fnmatch.is_some(),
+            ]
+        })
+    };
+    let c = curl_easy_init();
+    assert_eq!(installed(c), [false; 4]);
+    assert_eq!(long(c, ffi::CURLOPT_WILDCARDMATCH, 1), CURLE_OK);
+    assert_eq!(installed(c), [true, false, false, false]);
+    let mut chunk = 0u8;
+    let mut matching = 0u8;
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_CHUNK_DATA, &raw mut chunk),
+        CURLE_OK
+    );
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_FNMATCH_DATA, &raw mut matching),
+        CURLE_OK
+    );
+    let fs = [
+        (ffi::CURLOPT_CHUNK_BGN_FUNCTION, begin as Begin as *const ()),
+        (ffi::CURLOPT_CHUNK_END_FUNCTION, end as End as *const ()),
+        (
+            ffi::CURLOPT_FNMATCH_FUNCTION,
+            matches as Matches as *const (),
+        ),
+    ];
+    for (o, f) in fs {
+        assert_eq!(function(c, o, f), CURLE_OK);
+    }
+    assert_eq!(installed(c), [true; 4]);
+    // SAFETY: a live handle.
+    let d = unsafe { easy::curl_easy_duphandle(c) };
+    assert!(!d.is_null());
+    assert_eq!(installed(d), [true; 4]);
+    // SAFETY: both live handles.
+    let (kept, copied) = unsafe { (easy::handle(c), easy::handle(d)) };
+    let (kept, copied) = (kept.unwrap().wildcard(), copied.unwrap().wildcard());
+    assert_eq!(copied.chunk_data, (&raw mut chunk).cast::<c_void>());
+    assert_eq!(copied.fnmatch_data, kept.fnmatch_data);
+    assert_eq!(
+        function(d, ffi::CURLOPT_CHUNK_END_FUNCTION, ptr::null()),
+        CURLE_OK
+    );
+    assert_eq!(installed(d), [true, true, false, true]);
+    assert_eq!(installed(c), [true; 4]);
+    // SAFETY: a live handle.
+    unsafe { easy::curl_easy_reset(c) };
+    assert_eq!(installed(c), [false; 4]);
+    // SAFETY: a live handle.
+    let reset = unsafe { easy::handle(c) }.unwrap().wildcard();
+    assert!(reset.chunk_data.is_null() && reset.fnmatch.is_none());
+    // SAFETY: live handles, not used again.
+    unsafe {
+        curl_easy_cleanup(c);
+        curl_easy_cleanup(d);
+    }
+}

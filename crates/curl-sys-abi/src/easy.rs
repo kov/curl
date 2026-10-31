@@ -68,6 +68,9 @@ pub(crate) struct ShimEasy {
     /// The application's HSTS functions and data, made the first time
     /// one is set: few handles set any.
     hsts: OnceCell<Box<Cell<callbacks::CHsts>>>,
+    /// The application's wildcard download functions and data, made the
+    /// first time one is set: few handles set any.
+    wildcard: OnceCell<Box<Cell<callbacks::CWildcard>>>,
     /// What `CURLINFO_TLS_SSL_PTR` and `CURLINFO_TLS_SESSION` point to
     /// (C's `data->tsi`).
     pub(crate) tsi: UnsafeCell<ffi::curl_tlssessioninfo>,
@@ -140,6 +143,7 @@ struct CSide {
     sockets: Option<CSockets>,
     tls: Option<CTls>,
     hsts: Option<callbacks::CHsts>,
+    wildcard: Option<callbacks::CWildcard>,
 }
 
 impl CSide {
@@ -155,6 +159,7 @@ impl CSide {
             sockets: None,
             tls: None,
             hsts: None,
+            wildcard: None,
         }
     }
 }
@@ -191,6 +196,9 @@ impl ShimEasy {
         }
         if let Some(hsts) = c.hsts {
             shim.hsts_room()?.set(hsts);
+        }
+        if let Some(wildcard) = c.wildcard {
+            shim.wildcard_room()?.set(wildcard);
         }
         let shim = NonNull::from(Box::leak(shim));
         // SAFETY: just made, and reached only through this pointer.
@@ -284,7 +292,24 @@ impl ShimEasy {
         callbacks::install_defaults(options, me, &set, &ccb)?;
         crate::sockets::sync(options, me, &shim.sockets())?;
         callbacks::sync_hsts(options, me, &shim.hsts())?;
+        callbacks::sync_wildcard(options, me, &shim.wildcard())?;
         crate::tls::sync(options, me, &shim.tls())
+    }
+
+    /// The application's wildcard download functions and data.
+    pub(crate) fn wildcard(&self) -> callbacks::CWildcard {
+        self.wildcard
+            .get()
+            .map_or(callbacks::CWildcard::NONE, |c| c.get())
+    }
+
+    /// Room for them, made now if not yet.
+    pub(crate) fn wildcard_room(&self) -> Result<&Cell<callbacks::CWildcard>, OutOfMemory> {
+        if self.wildcard.get().is_none() {
+            let made = try_box(Cell::new(callbacks::CWildcard::NONE))?;
+            assert!(self.wildcard.set(made).is_ok(), "not made yet");
+        }
+        Ok(self.wildcard.get().expect("made above"))
     }
 
     /// The application's HSTS functions and data.
@@ -379,6 +404,7 @@ impl ShimEasy {
             posted: OnceCell::new(),
             sockets: OnceCell::new(),
             hsts: OnceCell::new(),
+            wildcard: OnceCell::new(),
             tls: OnceCell::new(),
             tsi: UnsafeCell::new(ffi::curl_tlssessioninfo {
                 backend: ffi::CURLSSLBACKEND_NONE,
@@ -688,6 +714,7 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
         sockets: easy.sockets.get().map(|c| c.get()),
         tls: easy.tls.get().map(|c| c.get()),
         hsts: easy.hsts.get().map(|c| c.get()),
+        wildcard: easy.wildcard.get().map(|c| c.get()),
     };
     let Ok(dup) = ShimEasy::homeless(c) else {
         return ptr::null_mut();
@@ -806,6 +833,9 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
     }
     if let Some(sockets) = easy.sockets.get() {
         sockets.set(CSockets::NONE);
+    }
+    if let Some(wildcard) = easy.wildcard.get() {
+        wildcard.set(callbacks::CWildcard::NONE);
     }
     if let Some(hsts) = easy.hsts.get() {
         hsts.set(callbacks::CHsts::NONE);

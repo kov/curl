@@ -14,7 +14,8 @@ use core::ptr::{self, NonNull};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
 use curl_core::handler::{
-    DebugHandler, DebugKind, Handler, HeaderHandler, HeaderOrigin, LentBytes, ProgressHandler,
+    ChunkBegin, ChunkBeginHandler, ChunkEndHandler, DebugHandler, DebugKind, FileInfo, FileType,
+    FnMatchHandler, Handler, HeaderHandler, HeaderOrigin, LentBytes, Matched, ProgressHandler,
     ProgressNow, ProgressVerdict, Read, ReadHandler, Rewind, RewindFailed, TextSink,
     TrailerHandler, TrailerLines, Trailers, Write, WriteHandler,
 };
@@ -67,6 +68,29 @@ pub(crate) struct CCallbacks {
     pub(crate) trailer_data: *mut c_void,
     /// Where text goes without a debug function (`CURLOPT_STDERR`).
     pub(crate) stderr: *mut libc::FILE,
+}
+
+/// The application's wildcard download functions and data, as setopt
+/// left them.
+#[derive(Clone, Copy)]
+pub(crate) struct CWildcard {
+    pub(crate) chunk_bgn: ffi::curl_chunk_bgn_callback,
+    pub(crate) chunk_end: ffi::curl_chunk_end_callback,
+    /// Given to both (`CURLOPT_CHUNK_DATA`).
+    pub(crate) chunk_data: *mut c_void,
+    pub(crate) fnmatch: ffi::curl_fnmatch_callback,
+    pub(crate) fnmatch_data: *mut c_void,
+}
+
+impl CWildcard {
+    /// None set, as a new handle has.
+    pub(crate) const NONE: CWildcard = CWildcard {
+        chunk_bgn: None,
+        chunk_end: None,
+        chunk_data: ptr::null_mut(),
+        fnmatch: None,
+        fnmatch_data: ptr::null_mut(),
+    };
 }
 
 /// The application's HSTS functions and data, as setopt left them.
@@ -284,6 +308,37 @@ pub(crate) fn sync_hsts(
 }
 
 /// The trailer adapter, while there is a trailer function.
+/// The wildcard download's adapters, one for each function set, made
+/// again for `easy`, as for the HSTS functions.
+pub(crate) fn sync_wildcard(
+    options: &mut Options,
+    easy: NonNull<ShimEasy>,
+    c: &CWildcard,
+) -> Result<(), OutOfMemory> {
+    let none = c.chunk_bgn.is_none() && c.chunk_end.is_none() && c.fnmatch.is_none();
+    let Some(line) = (match options.line.made_mut() {
+        Some(made) => Some(made),
+        None if none => None,
+        None => Some(options.line.make_mut()?),
+    }) else {
+        return Ok(());
+    };
+    let ftp = &mut line.ftp;
+    ftp.chunk_begin = match c.chunk_bgn {
+        Some(_) => Some(Handler::chunk_begin(Adapter(easy))?),
+        None => None,
+    };
+    ftp.chunk_end = match c.chunk_end {
+        Some(_) => Some(Handler::chunk_end(Adapter(easy))?),
+        None => None,
+    };
+    ftp.fnmatch = match c.fnmatch {
+        Some(_) => Some(Handler::fnmatch(Adapter(easy))?),
+        None => None,
+    };
+    Ok(())
+}
+
 pub(crate) fn sync_trailer(
     options: &mut Options,
     easy: NonNull<ShimEasy>,
@@ -684,6 +739,154 @@ impl TrailerHandler for Adapter {
         } else {
             Trailers::Abort
         }
+    }
+}
+
+/// `text`'s bytes and a zero byte after them, at `at` in `buf`: where
+/// they start, and `at` moved past them.
+fn put_c_string(buf: &mut [u8], at: &mut usize, text: &[u8]) -> usize {
+    let start = *at;
+    let end = start + text.len();
+    assert!(end < buf.len(), "a file's texts fit its line");
+    buf[start..end].copy_from_slice(text);
+    buf[end] = 0;
+    *at = end + 1;
+    start
+}
+
+impl ChunkBeginHandler for Adapter {
+    /// The chunk begin function, given the file as `struct curl_fileinfo`
+    /// with its texts each ended by a zero byte, and the chunk data
+    /// (`CURLWC_DOWNLOADING`).
+    fn begin(&self, cx: &mut TransferCx<'_>, file: &FileInfo<'_>, remains: usize) -> ChunkBegin {
+        let c = self.easy().wildcard();
+        let Some(f) = c.chunk_bgn else {
+            return ChunkBegin::Get;
+        };
+        let mut texts = [0u8; FileInfo::MAX_TEXT];
+        let mut at = 0;
+        let fields = [
+            Some(file.name),
+            Some(file.time),
+            file.perm_text,
+            file.user,
+            file.group,
+            file.target,
+        ]
+        .map(|text| text.map(|text| put_c_string(&mut texts, &mut at, text)));
+        // Each a pointer into the one buffer, filled.
+        let base = texts.as_mut_ptr();
+        let [filename, time, perm, user, group, target] =
+            fields.map(|at| at.map_or(ptr::null_mut(), |at| base.wrapping_add(at).cast()));
+        let strings = ffi::curl_fileinfo_strings {
+            time,
+            perm,
+            user,
+            group,
+            target,
+        };
+        let known = |known: bool, flag: c_int| if known { flag } else { 0 };
+        let flags = known(file.perm.is_some(), ffi::CURLFINFOFLAG_KNOWN_PERM)
+            | known(file.size.is_some(), ffi::CURLFINFOFLAG_KNOWN_SIZE)
+            | known(
+                file.hardlinks.is_some(),
+                ffi::CURLFINFOFLAG_KNOWN_HLINKCOUNT,
+            );
+        let info = ffi::curl_fileinfo {
+            filename,
+            filetype: match file.kind {
+                FileType::File => ffi::CURLFILETYPE_FILE,
+                FileType::Directory => ffi::CURLFILETYPE_DIRECTORY,
+                FileType::Symlink => ffi::CURLFILETYPE_SYMLINK,
+                FileType::DeviceBlock => ffi::CURLFILETYPE_DEVICE_BLOCK,
+                FileType::DeviceChar => ffi::CURLFILETYPE_DEVICE_CHAR,
+                FileType::NamedPipe => ffi::CURLFILETYPE_NAMEDPIPE,
+                FileType::Socket => ffi::CURLFILETYPE_SOCKET,
+                FileType::Door => ffi::CURLFILETYPE_DOOR,
+            },
+            time: 0,
+            perm: file.perm.unwrap_or(0),
+            uid: 0,
+            gid: 0,
+            // A size is never more than C's `curl_off_t` holds: the
+            // listing's reader reads none bigger.
+            size: file
+                .size
+                .map_or(0, |s| s.try_into().expect("read as an off_t")),
+            hardlinks: file.hardlinks.unwrap_or(0),
+            strings,
+            flags: flags.cast_unsigned(),
+            b_data: ptr::null_mut(),
+            b_size: 0,
+            b_used: 0,
+        };
+        let remains = c_int::try_from(remains).unwrap_or(c_int::MAX);
+        // SAFETY: the application's chunk begin function takes the file's
+        // information, alive and unchanged for the call, the chunk data
+        // and the count.
+        let answer = self.call(cx, || unsafe {
+            f(ptr::from_ref(&info).cast(), c.chunk_data, remains)
+        });
+        match c_int::try_from(answer) {
+            Ok(ffi::CURL_CHUNK_BGN_FUNC_SKIP) => ChunkBegin::Skip,
+            Ok(ffi::CURL_CHUNK_BGN_FUNC_FAIL) => ChunkBegin::Fail,
+            // Any other answer gets the file, as C's switch does.
+            _ => ChunkBegin::Get,
+        }
+    }
+}
+
+impl ChunkEndHandler for Adapter {
+    /// The chunk end function, given the chunk data; its answer is not
+    /// read, as C reads none.
+    fn end(&self, cx: &mut TransferCx<'_>) {
+        let c = self.easy().wildcard();
+        if let Some(f) = c.chunk_end {
+            // SAFETY: the application's chunk end function takes its data.
+            self.call(cx, || unsafe { f(c.chunk_data) });
+        }
+    }
+}
+
+impl FnMatchHandler for Adapter {
+    /// The fnmatch function, given its data, the pattern and the name,
+    /// each ended by a zero byte; 0 is a match
+    /// (`CURL_FNMATCHFUNC_MATCH`), any other answer none.
+    fn matches(
+        &self,
+        cx: &mut TransferCx<'_>,
+        pattern: &[u8],
+        name: &[u8],
+    ) -> Result<Matched, OutOfMemory> {
+        let c = self.easy().wildcard();
+        let Some(f) = c.fnmatch else {
+            return Ok(Matched::NoMatch);
+        };
+        // The name is a part of a line of the listing, which the stack
+        // holds; a pattern too long for it is copied to memory of its own.
+        let mut names = [0u8; FileInfo::MAX_TEXT];
+        put_c_string(&mut names, &mut 0, name);
+        let name = names.as_ptr().cast();
+        let mut short = [0u8; 256];
+        let mut long = Vec::new();
+        let pattern = if pattern.len() < short.len() {
+            put_c_string(&mut short, &mut 0, pattern);
+            short.as_ptr().cast()
+        } else {
+            long.try_reserve_exact(pattern.len() + 1)
+                .map_err(|_| OutOfMemory)?;
+            long.try_extend_from_slice(pattern)?;
+            long.try_push(0)?;
+            long.as_ptr().cast()
+        };
+        // SAFETY: the application's fnmatch function takes its data and
+        // two zero-ended strings, alive for the call.
+        let answer = self.call(cx, || unsafe { f(c.fnmatch_data, pattern, name) });
+        Ok(match answer {
+            ffi::CURL_FNMATCHFUNC_MATCH => Matched::Match,
+            ffi::CURL_FNMATCHFUNC_FAIL => Matched::Fail,
+            _ => Matched::NoMatch,
+        })
     }
 }
 

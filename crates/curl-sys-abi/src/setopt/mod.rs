@@ -1170,6 +1170,7 @@ fn apply(
         (ffi::CURLOPT_FTP_USE_EPRT, Long(n)) => options.line.make_mut()?.ftp.use_eprt = n != 0,
         (ffi::CURLOPT_FTP_USE_EPSV, Long(n)) => options.line.make_mut()?.ftp.use_epsv = n != 0,
         (ffi::CURLOPT_FTP_USE_PRET, Long(n)) => options.line.make_mut()?.ftp.use_pret = n != 0,
+        (ffi::CURLOPT_WILDCARDMATCH, Long(n)) => options.line.make_mut()?.ftp.wildcard = n != 0,
         (ffi::CURLOPT_FTP_SKIP_PASV_IP, Long(n)) => {
             options.line.make_mut()?.ftp.skip_pasv_ip = n != 0;
         }
@@ -1427,6 +1428,32 @@ fn apply(
         (ffi::CURLOPT_XFERINFODATA, Ptr(p)) => ccb.progress_data = p,
         (ffi::CURLOPT_DEBUGDATA, Ptr(p)) => ccb.debug_data = p,
         (ffi::CURLOPT_TRAILERDATA, Ptr(p)) => ccb.trailer_data = p,
+        (
+            ffi::CURLOPT_CHUNK_DATA
+            | ffi::CURLOPT_FNMATCH_DATA
+            | ffi::CURLOPT_CHUNK_BGN_FUNCTION
+            | ffi::CURLOPT_CHUNK_END_FUNCTION
+            | ffi::CURLOPT_FNMATCH_FUNCTION,
+            Ptr(p),
+        ) => {
+            // SAFETY: the handle outlives the call; its wildcard group is
+            // a cell of its own, apart from the options being set.
+            let room = unsafe { me.as_ref() }.wildcard_room()?;
+            let mut c = room.get();
+            match option {
+                ffi::CURLOPT_CHUNK_DATA => c.chunk_data = p,
+                ffi::CURLOPT_FNMATCH_DATA => c.fnmatch_data = p,
+                // SAFETY: the application passes a function of the
+                // option's type, or NULL.
+                ffi::CURLOPT_CHUNK_BGN_FUNCTION => c.chunk_bgn = unsafe { function(p) },
+                // SAFETY: as above.
+                ffi::CURLOPT_CHUNK_END_FUNCTION => c.chunk_end = unsafe { function(p) },
+                // SAFETY: as above.
+                _ => c.fnmatch = unsafe { function(p) },
+            }
+            callbacks::sync_wildcard(options, me, &c)?;
+            room.set(c);
+        }
         (
             ffi::CURLOPT_HSTSREADDATA
             | ffi::CURLOPT_HSTSWRITEDATA

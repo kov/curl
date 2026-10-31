@@ -153,6 +153,7 @@ witness: curl-core an_https_get_stays_within_its_allocation_budget
             own,
             filter,
             deferral: Deferral::None,
+            connected: false,
         })?)
 --- new
         let spare = try_box(0u8)?;
@@ -164,6 +165,7 @@ witness: curl-core an_https_get_stays_within_its_allocation_budget
             own,
             filter,
             deferral: Deferral::None,
+            connected: false,
         })?)
 
 === a TLS identity compares the CA file as set, so naming the default differs from keeping it
@@ -393,3 +395,12 @@ witness: curl-core proto::http::tests::tls::early_data_to_an_https_proxy_is_neit
                 let origin = *filter == Component::Ssl;
 --- new
                 let origin = true;
+
+=== a session still shaking hands says the input its handshake holds is pending
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core conn::tls::tests::the_layer_says_what_its_session_holds_and_waits_for
+--- old
+        if !self.connected {
+            return below.data_pending();
+        }
+--- new

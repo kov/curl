@@ -32,6 +32,9 @@ pub(crate) struct TlsLayer {
     /// HTTPS proxy's (`SSL-PROXY`).
     filter: Component,
     deferral: Deferral,
+    /// Its handshake is done as far as the connection goes (C's
+    /// `cf->connected`).
+    connected: bool,
 }
 
 /// Where a handshake put off for early data is (C's `earlydata_state`,
@@ -76,6 +79,7 @@ impl TlsLayer {
             own,
             filter,
             deferral: Deferral::None,
+            connected: false,
         })?)
     }
 
@@ -108,6 +112,7 @@ impl TlsLayer {
             own,
             filter,
             deferral,
+            ..
         } = self;
         let bytes = match deferral {
             Deferral::Going { early } => early,
@@ -173,12 +178,13 @@ impl Part<Below<'_>> for TlsLayer {
         }
         let (session, mut io) = self.parts(cx, below);
         let shaken = session.handshake(&mut io)?;
-        if shaken == Handshake::Done
-            && let Some(deferred) = self.session.deferred()
-        {
-            self.deferral = Deferral::Awaiting {
-                most: deferred.most,
-            };
+        if shaken == Handshake::Done {
+            self.connected = true;
+            if let Some(deferred) = self.session.deferred() {
+                self.deferral = Deferral::Awaiting {
+                    most: deferred.most,
+                };
+            }
         }
         Ok(shaken)
     }
@@ -203,8 +209,15 @@ impl Part<Below<'_>> for TlsLayer {
     }
 
     /// The bytes received before the layer, those the session holds
-    /// (`SSL_pending`), or those below (`ssl_cf_data_pending`).
+    /// (`SSL_pending`), or those below (`ssl_cf_data_pending`). A layer
+    /// still shaking hands is passed over for the one below, as C's
+    /// connection asks only its connected filters
+    /// (`Curl_conn_data_pending`): what its handshake fed the session is
+    /// no input a read could give yet.
     fn data_pending(&self, below: Below<'_>) -> bool {
+        if !self.connected {
+            return below.data_pending();
+        }
         !self.early.is_empty() || self.session.pending() || below.data_pending()
     }
 
@@ -360,12 +373,13 @@ mod tests {
     use crate::conn::io::{Conversation, FakeNet, Peer};
     use crate::time::ManualClock;
 
-    /// A session that holds bytes, or not, and waits as it is told.
-    struct Holding(bool, TlsWait);
+    /// A session that holds bytes, or not, waits as it is told, and has
+    /// its handshake done or not.
+    struct Holding(bool, TlsWait, Handshake);
 
     impl TlsSession for Holding {
         fn handshake(&mut self, _: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
-            Ok(Handshake::Done)
+            Ok(self.2)
         }
         fn recv(&mut self, _: &mut TlsIo<'_>, _: &mut [u8]) -> io::Result<Recv> {
             Ok(Recv::WouldBlock)
@@ -395,9 +409,10 @@ mod tests {
     }
 
     /// Bytes are pending, which a poll of the socket cannot see, while the
-    /// session holds some or the bytes received before it are unread;
-    /// and the transfer waits on what the session waits for, in place of
-    /// what it wants.
+    /// session holds some or the bytes received before it are unread,
+    /// once its handshake is done: what a handshake under way holds is no
+    /// input yet, as C asks only a connected filter. And the transfer
+    /// waits on what the session waits for, in place of what it wants.
     #[test]
     fn the_layer_says_what_its_session_holds_and_waits_for() {
         let clock = ManualClock::new().unwrap();
@@ -418,15 +433,30 @@ mod tests {
             .unwrap();
             let mut layers = [layer];
             let (top, rest) = layers.split_last_mut().unwrap();
-            top.data_pending(Below::new(rest, &*socket))
+            let before = top.data_pending(Below::new(rest, &*socket));
+            let shaken = top.connect(&mut Noting(None), Below::new(rest, &*socket));
+            assert!(shaken.is_ok());
+            (before, top.data_pending(Below::new(rest, &*socket)))
         };
-        assert!(!pending(Holding(false, TlsWait::Nothing), b""));
-        assert!(pending(Holding(true, TlsWait::Nothing), b""));
-        assert!(pending(Holding(false, TlsWait::Nothing), b"early"));
+        let done = Handshake::Done;
+        assert_eq!(
+            pending(Holding(false, TlsWait::Nothing, done), b""),
+            (false, false)
+        );
+        assert_eq!(
+            pending(Holding(true, TlsWait::Nothing, done), b""),
+            (false, true)
+        );
+        assert_eq!(
+            pending(Holding(false, TlsWait::Nothing, done), b"early"),
+            (false, true)
+        );
+        let shaking = Holding(true, TlsWait::Recv, Handshake::Waiting);
+        assert_eq!(pending(shaking, b"early"), (false, false));
         let waits = |w| {
             let peer = crate::tls::SessionPeer::testing();
             let layer = TlsLayer::boxed(
-                try_box(Holding(false, w)).unwrap(),
+                try_box(Holding(false, w, Handshake::Done)).unwrap(),
                 Vec::new(),
                 peer,
                 crate::tls::OwnSessions::default(),

@@ -2827,3 +2827,138 @@ fn a_verdict_cut_short_says_the_connection_looks_dead() {
         "{said}"
     );
 }
+
+/// Feeds `left` bytes of `u`, then the end.
+struct Feeder {
+    left: crate::test_cell::Cell<usize>,
+}
+
+impl crate::handler::ReadHandler for Feeder {
+    fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
+        let n = self.left.get().min(buf.len());
+        buf[..n].fill(b'u');
+        self.left.set(self.left.get() - n);
+        std::num::NonZeroUsize::new(n).map_or(crate::handler::Read::Eof, crate::handler::Read::Data)
+    }
+}
+
+/// An upload is checked against the size it was said to have, where its
+/// line ends were converted: as many bytes as said, or more, pass. A
+/// body that ends short of its size fails as its read, before the check
+/// (`ftp_done`'s upload check, `cr_in_read`).
+#[test]
+fn an_upload_is_checked_against_its_size() {
+    let run = |source: crate::options::UploadSource, set: &dyn Fn(&mut Options)| {
+        let control = logged_in(&[
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 type\r\n",
+            b"150 go on\r\n226 stored\r\n",
+        ]);
+        let file = Conversation::replies(&[], false);
+        let mut m = serving(&[&control], &[&file]);
+        let (id, _, text) = added(&mut m, URL, |o| {
+            o.method = crate::options::Method::Upload;
+            o.upload = source;
+            set(o);
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        (result, file.received(), text.text())
+    };
+    let fed = |n: usize, size: u64| crate::options::UploadSource::Read {
+        handler: Handler::read(Feeder {
+            left: crate::test_cell::Cell::new(n),
+        })
+        .unwrap(),
+        rewind: None,
+        size: Some(size),
+    };
+    let bytes = |b: &[u8]| {
+        crate::options::UploadSource::Bytes(curl_alloc::TryArc::try_new(b.to_vec()).unwrap())
+    };
+    let none = |_: &mut Options| {};
+    let crlf = |o: &mut Options| o.crlf = true;
+    let (result, got, said) = run(fed(3, 3), &none);
+    assert_eq!((result, got), (Ok(()), b"uuu".to_vec()), "{said}");
+    let (result, _, said) = run(fed(3, 5), &none);
+    assert_eq!(result, Err(ErrorKind::ReadError), "{said}");
+    // Converted: as many as said, or more.
+    let (result, got, said) = run(bytes(b"abc"), &crlf);
+    assert_eq!((result, got), (Ok(()), b"abc".to_vec()), "{said}");
+    let (result, got, said) = run(bytes(b"a\nb"), &crlf);
+    assert_eq!((result, got), (Ok(()), b"a\r\nb".to_vec()), "{said}");
+}
+
+/// The commands after a transfer go once it went well, each answer
+/// awaited: one refused fails the transfer unless it was marked `*` to
+/// be let fail; after a failed transfer none goes (`ftp_done`,
+/// `ftp_sendquote`).
+#[test]
+fn the_commands_after_a_transfer_go_as_c_sends_them() {
+    let run = |verdict: &'static [u8], answers: &[&'static [u8]], cmds: &[&[u8]]| {
+        let mut replies = LOGIN_AND_SETUP.to_vec();
+        replies.push(verdict);
+        replies.extend_from_slice(answers);
+        let control = Conversation::replies(&replies, false).greeting();
+        let file = data(b"hello");
+        let mut m = serving(&[&control], &[&file]);
+        let (id, _, text) = added(&mut m, URL, |o| {
+            o.line
+                .make_mut()
+                .unwrap()
+                .postquote
+                .set(cmds.iter().copied())
+                .unwrap();
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let sent = received(&control);
+        let after = sent.split_once("RETR f\r\n").unwrap().1.to_owned();
+        (result, after, text.text())
+    };
+    let done: &[u8] = b"150 here\r\n226 done\r\n";
+    let (result, after, said) = run(done, &[b"200 ok\r\n", b"200 ok\r\n"], &[b"SITE a", b"NOOP"]);
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(after, "SITE a\r\nNOOP\r\n");
+    let (result, after, said) = run(
+        done,
+        &[b"500 no\r\n", b"200 ok\r\n"],
+        &[b"*SITE a", b"NOOP"],
+    );
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(after, "SITE a\r\nNOOP\r\n");
+    let (result, after, said) = run(done, &[b"500 no\r\n", b"200 ok\r\n"], &[b"SITE a", b"NOOP"]);
+    assert_eq!(result, Err(ErrorKind::QuoteError), "{said}");
+    assert!(said.contains("QUOT string not accepted: SITE a"), "{said}");
+    assert_eq!(after, "SITE a\r\n");
+    let (result, after, said) = run(b"150 here\r\n451 aborted\r\n", &[], &[b"NOOP"]);
+    assert_eq!(result, Err(ErrorKind::PartialFile), "{said}");
+    assert_eq!(after, "");
+}
+
+/// A range cut short is aborted with `ABOR`, and as whether that worked
+/// is not known the control connection is closed, whatever the verdict
+/// (`ftp_done`): the next transfer logs in again.
+#[test]
+fn a_range_cut_short_closes_its_control_connection() {
+    let mut replies = LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n");
+    replies.push(b"426 aborted\r\n");
+    let first = Conversation::replies(&replies, false).greeting();
+    let fresh = control(&[b"150 here\r\n226 done\r\n"]);
+    let (a, b) = (data(b"hello"), data(b"hello"));
+    let mut m = serving(&[&first, &fresh], &[&a, &b]);
+    let (id, body, text) = added(&mut m, URL, |o| o.range = Some(b"0-1".to_vec()));
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"he");
+    assert!(received(&first).ends_with("RETR f\r\nABOR\r\n"), "{said}");
+    assert!(
+        said.contains("partial download completed, closing connection"),
+        "{said}"
+    );
+    m.remove(id, &mut NoEvents).unwrap();
+    let (id, _, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(received(&fresh), COMMANDS);
+}

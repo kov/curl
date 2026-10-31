@@ -168,3 +168,12 @@ features: test-util debug-hooks
             }
 --- new
             if r != Ok(Handshake::Waiting) {}
+
+=== a control connection whose state is unknown serves the next transfer
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_bad_failure_closes_the_control_connection
+features: test-util debug-hooks
+--- old
+        if harmless && !premature {
+--- new
+        if harmless || !premature {

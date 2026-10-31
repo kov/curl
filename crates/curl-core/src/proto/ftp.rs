@@ -2735,8 +2735,12 @@ impl Request {
             return Ok(Some(ProtoStep::Blocked));
         }
         trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
-        deliver::write_resp(cx, 0, true, Ok(()));
+        // The end goes through the writers, which check a range's size
+        // (`cw_download_write`).
+        let ended = self.pipeline.end(cx);
+        deliver::write_resp(cx, 0, true, ended);
         self.receiving = false;
+        ended?;
         // The transfer is over: all its bytes came, if it said how many
         // (`Curl_sendrecv`).
         let got = self.pipeline.bytecount();

@@ -3486,3 +3486,27 @@ fn quit_is_said_only_on_a_connection_still_trusted() {
     drop(m);
     assert!(!quits(&dead), "{}", received(&dead));
 }
+
+/// A range whose data connection closes before its end fails, saying
+/// how many bytes it missed (`cw_download_write`'s end of response).
+#[test]
+fn a_range_cut_short_says_what_it_missed() {
+    let control = logged_in(&[
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"200 binary\r\n",
+        b"213 5\r\n",
+        b"150 here\r\n226 done\r\n",
+    ]);
+    let file = data(b"hel");
+    let mut m = serving(&[&control], &[&file]);
+    let (id, body, text) = added(&mut m, URL, |o| o.range = Some(b"0-3".to_vec()));
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Err(ErrorKind::PartialFile), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hel");
+    assert!(
+        said.contains("end of response with 1 bytes missing"),
+        "{said}"
+    );
+    assert!(!said.contains("Received only partial file"), "{said}");
+}

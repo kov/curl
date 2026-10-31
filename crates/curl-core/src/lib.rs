@@ -36,6 +36,7 @@ mod proto;
 pub mod report;
 mod save;
 pub mod share;
+pub mod ssh;
 #[cfg(test)]
 mod test_cell;
 mod text;

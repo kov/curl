@@ -1147,6 +1147,18 @@ protocols need, each step leaving behaviour and traces as they are:
     of `ssh_setopts`, the C ABI's options and key function, and `curl -V`. Every SCP and SFTP
     test both legs run passes (55 on the Rust leg, 59 on C's: 2604 and 2605 are C unit tests,
     445 and 2004 wait on gopher and TFTP; 3500, 3990 and 3991 need libssh2 on both).
+77. **WebSocket.** **Done**, but for the traces of the calls on a connection a transfer only
+    made, which go untraced as `curl_easy_send`'s do. `ws://` and `wss://` over HTTP/1.1
+    (`proto::ws`, `proto::http::ws`, after `lib/ws.c`): the upgrade request with its key from
+    the random hook, the 101 switching the connection to `LineConn::Ws`, any final response
+    refused; the frame codec both ways, masking, fragments, control frames, auto-pong and
+    close, its refusals of hostile frames tested at every split point. Callback mode decodes
+    in a stage of the pipeline, `curl_ws_meta` answering inside the write callback, and an
+    upload goes out as frames (`ws-encode`); `CURLOPT_CONNECT_ONLY` 2 leaves the connection to
+    `curl_ws_recv`, `curl_ws_send` and `curl_ws_start_frame`. `CURLWS_RAW_MODE`,
+    `CURLWS_NOAUTOPONG`, `curl -V`'s ws and wss. The handlers reach the connection through a
+    `WsLend` (ENGINE.md decision 9's exception). Every WebSockets runtests both legs run
+    passes (29 of 29), and pytest's `test_20_websockets.py` (20 of 20).
 
 ## Milestone 7: shared state
 

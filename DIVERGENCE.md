@@ -155,14 +155,16 @@ not a difference: it is tracked in `MILESTONES.md`.
   late: C's `LIST` beside an APPEND took 1.003 s, ours 1.5 ms; C's `VRFY` beside a mail, to a
   server that greets half a second late, took 1.005 s, ours 0.504 s; measured 2026-10-30, C's
   FTP download beside one whose 226 comes a second after its data, from a server greeting it
-  half a second late, took 1.051 s, ours 0.551 s. The same holds for FTP's TLS handshakes,
-  which C makes blocking (`Curl_conn_connect` with `blocking`): the control connection's after
-  `AUTH` is taken (`ftp_state_auth_resp`), and a protected data connection's
-  (`ftp_initiate_transfer`); here each waits for the server's flight as the connection's own
-  handshake does, the other transfers going on meanwhile. And for the goodbye on a closing
-  connection (FTP's, POP3's and SMTP's `QUIT`, IMAP's `LOGOUT`), which C waits on and the
-  shutdown here does not. To be looked at again against the command-line corpus, should
-  anything there depend on C's blocking. Pinned by
+  half a second late, took 1.051 s, ours 0.551 s. FTP's TLS handshakes, which C makes
+  blocking (`Curl_conn_connect` with `blocking`), wait the same way: the control connection's
+  after `AUTH` is taken (`ftp_state_auth_resp`), and a protected data connection's
+  (`ftp_initiate_transfer`); each waits for the server's flight as a connection's own
+  handshake does, the other transfers going on meanwhile. Their bytes on the wire and their
+  result are C's; the lines C's blocking connect traces (`Curl_conn_connect(block=1)`, its
+  poll) are not said as C says them, and their timing was not measured against the C build.
+  The same holds for the goodbye on a closing connection (FTP's, POP3's and SMTP's `QUIT`,
+  IMAP's `LOGOUT`), which C waits on and the shutdown here does not. To be looked at again
+  against the command-line corpus, should anything there depend on C's blocking. Pinned by
   `an_answer_awaited_in_done_stalls_no_other_transfer`
   (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`,
   `crates/curl-core/src/proto/smtp/tests/over_the_wire.rs` and
@@ -413,7 +415,8 @@ not a difference: it is tracked in `MILESTONES.md`.
   layer of the rewrite works on its bytes; under the proxy's TLS it is not, and the transfer
   fails with 2 (`CURLE_FAILED_INIT`), "Could not set socket". C's libssh build hands the
   library the raw socket whatever filters are over it (`myssh_connect`, `lib/vssh/libssh.c`),
-  so SSH goes onto the wire inside the proxy's TLS stream, which no proxy reads. Read from C's
+  and the library's writes bypass the proxy's TLS: SSH goes onto the connection in clear, in
+  the middle of the TLS session, where the proxy reads it as broken records. Read from C's
   source. Pinned by `the_socket_is_not_handed_over_under_a_proxy_s_tls`
   (`crates/curl-core/src/proto/ssh/tests.rs`).
 

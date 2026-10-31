@@ -1213,7 +1213,8 @@ fn the_socket_is_handed_over_past_a_tunnel() {
 /// Through an HTTPS proxy's tunnel, the library is not handed the socket:
 /// the proxy's TLS works on its bytes, which the library would read and
 /// write past. C's libssh build hands it the socket all the same, and SSH
-/// goes out as bytes inside the proxy's TLS stream (DIVERGENCE.md).
+/// goes out in clear, past the TLS, in the middle of the proxy's TLS
+/// session (DIVERGENCE.md).
 #[test]
 fn the_socket_is_not_handed_over_under_a_proxy_s_tls() {
     use crate::tls::fake::{self, FakeTls, WELCOME};

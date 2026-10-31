@@ -274,6 +274,23 @@ fn packets_taken_in_pieces_go_whole() {
     assert_eq!(said[1] as usize + 2, said.len() - 14 - 2);
 }
 
+/// A post whose DISCONNECT the connection takes a byte at a time, and
+/// not at once, ends only once all of it has gone.
+#[test]
+fn a_post_ends_once_its_disconnect_has_gone() {
+    let one = std::num::NonZeroUsize::new(1).unwrap();
+    // The CONNECT's 26 bytes, the PUBLISH's 14 and the DISCONNECT's
+    // first.
+    let talk = Conversation::replies(&[CONNACK], false)
+        .per_send()
+        .taking(one)
+        .stalling_sends_after(26 + 14 + 1, 1);
+    let (said, ran) = against(talk, "mqtt://127.0.0.1:PORT/top", posting(b"payload"));
+    assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+    assert_eq!(said.len(), 26 + 14 + 2, "{said:?}");
+    assert!(said.ends_with(b"payload\xe0\x00"), "{said:?}");
+}
+
 /// A post of no payload, as the application gave none, is refused.
 #[test]
 fn a_post_without_bytes_is_refused() {

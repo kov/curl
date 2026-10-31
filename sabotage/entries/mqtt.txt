@@ -48,7 +48,7 @@ witness: curl-core proto::mqtt::tests::a_bad_length_is_refused
 
 === a post ends before its DISCONNECT has gone
 file: crates/curl-core/src/proto/mqtt.rs
-witness: curl-core proto::mqtt::tests::packets_taken_in_pieces_go_whole
+witness: curl-core proto::mqtt::tests::a_post_ends_once_its_disconnect_has_gone
 --- old
         Ok(self.unsent.is_empty())
 --- new

@@ -917,6 +917,9 @@ struct Wire {
     /// The peer answers each send with its next reply, not each
     /// request's head: a handshake whose messages have no blank line.
     per_send: bool,
+    /// Its datagrams from the reply numbered first on come from this
+    /// address, not the peer's.
+    datagrams_from: Option<(usize, SocketAddr)>,
     /// The peer speaks first: its first reply is there before anything
     /// is sent, a line protocol's greeting, and each send after that ends
     /// a line with CRLF is answered with the next (a fake TLS handshake's
@@ -1031,6 +1034,16 @@ impl Conversation {
         Conversation(
             curl_alloc::TryArc::try_new(std::sync::Mutex::new(wire)).expect("a test's peer fits"),
         )
+    }
+
+    /// The same peer, its datagrams from reply `first` on (counted from
+    /// 0) coming from `from`.
+    pub fn datagrams_from(self, first: usize, from: SocketAddr) -> Conversation {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .datagrams_from = Some((first, from));
+        self
     }
 
     /// The same peer, answering each send with its next reply.
@@ -2121,6 +2134,45 @@ impl Socket for FakeSocket {
         }
     }
 
+    /// A datagram to the address it was opened for, or the one its
+    /// datagrams come from, as a stream's send.
+    fn send_to(&self, buf: &[u8], to: SocketAddr) -> io::Result<usize> {
+        let other = self
+            .wire
+            .0
+            .lock()
+            .expect("no test panics holding the wire")
+            .datagrams_from
+            .map(|(_, from)| from);
+        assert!(
+            Remote::Inet(to) == self.opened_for || Some(to) == other,
+            "sent to its peer, not {to}"
+        );
+        match self.send(buf)? {
+            Sent::Bytes(n) => Ok(n.get()),
+            Sent::WouldBlock => Err(io::ErrorKind::WouldBlock.into()),
+        }
+    }
+
+    /// Each reply is a datagram from the address it was opened for, or
+    /// from the one `Conversation::from` names.
+    fn recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
+        let Remote::Inet(peer) = self.opened_for else {
+            return Err(io::ErrorKind::Unsupported.into());
+        };
+        let from = {
+            let wire = self.wire.0.lock().expect("no test panics holding the wire");
+            match wire.datagrams_from {
+                Some((first, from)) if wire.answered >= first => from,
+                _ => peer,
+            }
+        };
+        Ok(match self.recv(buf)? {
+            Recv::Data(n) => Some((n.get(), from)),
+            Recv::WouldBlock | Recv::Eof => None,
+        })
+    }
+
     /// Each reply the peer has ready is a datagram, none joined.
     fn recv_batch(&self, buf: &mut [u8], slot: usize, out: &mut [Datagram]) -> io::Result<usize> {
         let room = out.len().min(buf.len() / slot);
@@ -2471,6 +2523,43 @@ mod tests {
             Some(io::ErrorKind::Unsupported)
         );
         net.close(Sock::new(udp, Closer::System));
+    }
+
+    /// A real UDP socket, connected to no peer, sends a datagram to an
+    /// address and reads one with its sender, none when none waits; a
+    /// stream does neither.
+    #[test]
+    fn a_real_udp_socket_sends_to_and_receives_from() {
+        let mut net = SystemNet::default();
+        let any = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
+        let peer = std::net::UdpSocket::bind(any).unwrap();
+        let udp = net.open(&Remote::Inet(any), SocketKind::Datagram).unwrap();
+        udp.bind(any).unwrap();
+        let mut buf = [0u8; 16];
+        assert_eq!(udp.recv_from(&mut buf).unwrap(), None, "none waits yet");
+        assert_eq!(udp.send_to(b"ping", peer.local_addr().unwrap()).unwrap(), 4);
+        let (n, from) = peer.recv_from(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"ping");
+        peer.send_to(b"pong!", from).unwrap();
+        let mut sockets = [SocketPoll::new(&*udp, Events::IN)];
+        net.poll(&mut sockets, &mut [], Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            udp.recv_from(&mut buf).unwrap(),
+            Some((5, peer.local_addr().unwrap()))
+        );
+        assert_eq!(&buf[..5], b"pong!");
+        net.close(Sock::new(udp, Closer::System));
+        let stream = net.open(&Remote::Inet(any), SocketKind::Stream).unwrap();
+        assert_eq!(
+            stream.send_to(b"x", any).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            stream.recv_from(&mut buf).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        net.close(Sock::new(stream, Closer::System));
     }
 
     /// A real socket and a descriptor polled together each get their own

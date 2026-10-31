@@ -66,6 +66,26 @@ fn a_login_too_long_is_refused() {
     assert!(connect_packet(ID, &long[1..], &long[1..]).is_ok());
 }
 
+/// A CONNECT past MQTT's largest message is refused before its user's
+/// length is looked at, as C checks them; one of exactly that size is not.
+#[test]
+fn a_connect_past_the_largest_message_is_refused_first() {
+    let mut n = MAX_MESSAGE - 64;
+    while connect_len(n, 0) < MAX_MESSAGE {
+        n += 1;
+    }
+    assert_eq!(connect_len(n, 0), MAX_MESSAGE);
+    let huge = vec![0u8; n + 1];
+    assert_eq!(
+        connect_packet(ID, &huge[..n], b""),
+        Err(ConnectRefused::UserTooLong(n))
+    );
+    assert_eq!(
+        connect_packet(ID, &huge, b""),
+        Err(ConnectRefused::TooLarge)
+    );
+}
+
 /// SUBSCRIBE says its id, the topic and QoS 0; PUBLISH the topic and the
 /// payload.
 #[test]
@@ -383,4 +403,19 @@ proptest::proptest! {
     fn any_bytes_are_a_length_or_refused(bytes in proptest::collection::vec(0u8.., 0..8)) {
         let _ = decode_len(&bytes);
     }
+}
+
+/// Without a TLS library, `mqtts:` is a scheme the build leaves out,
+/// nothing sent.
+#[test]
+fn mqtts_needs_a_tls_library() {
+    let talk = Conversation::replies(&[], false);
+    let (said, ran) = against(talk, "mqtts://127.0.0.1:PORT/x", |_| {});
+    assert_eq!(
+        ran.result,
+        Some(Err(crate::error::ErrorKind::UnsupportedProtocol)),
+        "{}",
+        ran.text
+    );
+    assert!(said.is_empty());
 }

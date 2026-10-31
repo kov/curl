@@ -3652,8 +3652,9 @@ or resends the request, RX acknowledges each block and ends on a short one, TX r
 from the upload and ends after a short one is acknowledged; each resends on a time-out until the
 retries run out. Every packet goes with `Socket::send_to`, untraced, as C's `sendto`. The
 exchange's error, if any, is the transfer's at DONE (`tftp_translate_code`). A datagram's opcode
-is taken as an event whatever it is, as C takes it. Through a proxy, the CONNECT tunnel refuses
-the scheme (`PROTOPT_NOTCPPROXY`).
+is taken as an event whatever it is, as C takes it. Through an HTTP proxy, the tunnel refuses the
+scheme with C's `PROTOPT_NOTCPPROXY` message, before sending anything; C instead asks the proxy for
+a CONNECT-UDP tunnel, then writes its packets to the proxy's TCP socket unframed.
 
 ## 6. HTTP/1.x
 

@@ -37,3 +37,31 @@ witness: curl-core proto::tftp::tests::the_first_packet_is_made_as_c_makes_it
         if blksize <= at || option.len() + 1 > blksize - at {
 --- new
         if blksize <= at {
+
+=== a datagram from another address is taken
+file: crates/curl-core/src/proto/tftp.rs
+witness: curl-core proto::tftp::tests::over_the_wire::a_datagram_from_another_address_fails
+--- old
+                Some(pinned) if pinned != from => {
+--- new
+                Some(pinned) if false && pinned != from => {
+
+=== a block sent again is delivered again
+file: crates/curl-core/src/proto/tftp.rs
+witness: curl-core proto::tftp::tests::over_the_wire::a_block_sent_again_is_not_delivered_again
+--- old
+                if n > 4 && next_block(self.block) == self.rblock() {
+--- new
+                if n > 4 {
+
+=== the request is sent once fewer than its retries allow
+file: crates/curl-core/src/proto/tftp.rs
+witness: curl-core proto::tftp::tests::over_the_wire::a_silent_server_fails_to_connect
+--- old
+                self.retries += 1;
+                if self.retries > self.retry_max {
+                    self.error = Some(Failure::NoResponse);
+--- new
+                self.retries += 1;
+                if self.retries >= self.retry_max {
+                    self.error = Some(Failure::NoResponse);

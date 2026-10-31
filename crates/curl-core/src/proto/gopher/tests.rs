@@ -96,3 +96,18 @@ proptest::proptest! {
         let _ = selector_of(&path, query.as_deref());
     }
 }
+
+/// Without a TLS library, `gophers:` is a scheme the build leaves out,
+/// nothing sent.
+#[test]
+fn gophers_needs_a_tls_library() {
+    let talk = Conversation::replies(&[], false);
+    let (said, ran) = against(talk, "gophers://127.0.0.1:PORT/x", |_| {});
+    assert_eq!(
+        ran.result,
+        Some(Err(crate::error::ErrorKind::UnsupportedProtocol)),
+        "{}",
+        ran.text
+    );
+    assert!(said.is_empty());
+}

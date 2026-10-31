@@ -173,3 +173,242 @@ proptest::proptest! {
         }
     }
 }
+
+mod over_the_wire {
+    use std::net::SocketAddr;
+
+    use crate::conn::io::Conversation;
+    use crate::error::ErrorKind;
+    use crate::options::{Method, Options, TftpBlockSize, UploadSource};
+    use crate::proto::raw::wire::{PORT, Ran, against};
+
+    const RRQ: &[u8] = b"\0\x01f\0octet\0tsize\x000\0blksize\x00512\0timeout\x003\0";
+
+    fn data(block: u16, bytes: &[u8]) -> Vec<u8> {
+        [&[0, 3][..], &block.to_be_bytes(), bytes].concat()
+    }
+
+    fn ack(block: u16) -> Vec<u8> {
+        [&[0, 4][..], &block.to_be_bytes()].concat()
+    }
+
+    fn fetch(replies: &[&[u8]], set: impl FnOnce(&mut Options)) -> (Vec<u8>, Ran) {
+        let talk = Conversation::replies(replies, false).per_send();
+        against(talk, "tftp://127.0.0.1:PORT/f", set)
+    }
+
+    fn upload(replies: &[&[u8]], body: &[u8]) -> (Vec<u8>, Ran) {
+        let talk = Conversation::replies(replies, false).per_send();
+        against(talk, "tftp://127.0.0.1:PORT/f", |o| {
+            o.method = Method::Upload;
+            o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(body.to_vec()).unwrap());
+        })
+    }
+
+    /// A download asks for the file with C's options, and acknowledges
+    /// each block, the short one last.
+    #[test]
+    fn a_download_is_acknowledged_block_by_block() {
+        let full = [b'a'; 512];
+        let (said, ran) = fetch(&[&data(1, &full), &data(2, b"end")], |_| {});
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        assert_eq!(ran.body, [&full[..], b"end"].concat());
+        assert_eq!(said, [RRQ, &ack(1), &ack(2)].concat());
+        assert!(ran.text.contains("Connected for receive\n"), "{}", ran.text);
+        assert!(
+            ran.text
+                .contains("set timeouts for state 0; Total 10000, retry 3 maxtry 3\n"),
+            "{}",
+            ran.text
+        );
+    }
+
+    /// A block sent again is acknowledged and not delivered twice.
+    #[test]
+    fn a_block_sent_again_is_not_delivered_again() {
+        let full = [b'b'; 512];
+        let (said, ran) = fetch(&[&data(1, &full), &data(1, &full), &data(2, b"")], |_| {});
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        assert_eq!(ran.body, full);
+        assert_eq!(said, [RRQ, &ack(1), &ack(1), &ack(2)].concat());
+        assert!(
+            ran.text
+                .contains("Received last DATA packet block 1 again.\n"),
+            "{}",
+            ran.text
+        );
+    }
+
+    /// The server's OACK sets the block size and the file's size, and is
+    /// acknowledged as block 0; without options none is asked for.
+    #[test]
+    fn an_oack_is_acknowledged_and_taken() {
+        let oack = b"\0\x06blksize\x00600\0tsize\x003\0";
+        let (said, ran) = fetch(&[oack, &data(1, b"abc")], |o| {
+            o.small.make_mut().unwrap().tftp_blksize = Some(TftpBlockSize::clamped(600));
+        });
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        assert_eq!(ran.body, b"abc");
+        let rrq = b"\0\x01f\0octet\0tsize\x000\0blksize\x00600\0timeout\x003\0";
+        assert_eq!(said, [&rrq[..], &ack(0), &ack(1)].concat());
+        assert!(
+            ran.text
+                .contains("blksize parsed from OACK (600) requested (600)\n"),
+            "{}",
+            ran.text
+        );
+        let (said, ran) = fetch(&[&data(1, b"x")], |o| {
+            o.small.make_mut().unwrap().tftp_no_options = true;
+        });
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        assert_eq!(said, [&b"\0\x01f\0octet\0"[..], &ack(1)].concat());
+    }
+
+    /// A block shorter than the size agreed ends the download: one of
+    /// 512 bytes, of a transfer agreed at 600.
+    #[test]
+    fn a_short_block_ends_the_download() {
+        let oack = b"\0\x06blksize\x00600\0";
+        let (_, ran) = fetch(&[oack, &data(1, &[b'c'; 512])], |o| {
+            o.small.make_mut().unwrap().tftp_blksize = Some(TftpBlockSize::clamped(600));
+        });
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        assert_eq!(ran.body.len(), 512);
+    }
+
+    /// The server's error is C's error for its code, its text traced if
+    /// it is ended.
+    #[test]
+    fn an_error_packet_fails_with_its_code() {
+        let (_, ran) = fetch(&[b"\0\x05\0\x01File not found\0"], |_| {});
+        assert_eq!(
+            ran.result,
+            Some(Err(ErrorKind::TftpNotfound)),
+            "{}",
+            ran.text
+        );
+        assert!(
+            ran.text.contains("TFTP error: File not found\n"),
+            "{}",
+            ran.text
+        );
+        let (_, ran) = fetch(&[b"\0\x05\0\x03full"], |_| {});
+        assert_eq!(ran.result, Some(Err(ErrorKind::RemoteDiskFull)));
+        assert!(!ran.text.contains("TFTP error"), "{}", ran.text);
+    }
+
+    /// Once the server answered, a datagram from elsewhere fails the
+    /// transfer.
+    #[test]
+    fn a_datagram_from_another_address_fails() {
+        let other = SocketAddr::from(([127, 0, 0, 2], PORT));
+        let full = [b'a'; 512];
+        let talk = Conversation::replies(&[&data(1, &full), &data(2, b"")], false)
+            .per_send()
+            .datagrams_from(1, other);
+        let (_, ran) = against(talk, "tftp://127.0.0.1:PORT/f", |_| {});
+        assert_eq!(ran.result, Some(Err(ErrorKind::RecvError)), "{}", ran.text);
+        assert!(
+            ran.text.contains("Data received from another address"),
+            "{}",
+            ran.text
+        );
+        assert_eq!(ran.body, full);
+    }
+
+    /// A datagram too short for its head is taken as a time-out, the
+    /// request sent again.
+    #[test]
+    fn a_short_datagram_is_taken_as_a_time_out() {
+        let (said, ran) = fetch(&[b"\0\x03", &data(1, b"z")], |_| {});
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        assert_eq!(ran.body, b"z");
+        assert_eq!(said, [RRQ, RRQ, &ack(1)].concat());
+        assert!(
+            ran.text.contains("Received too short packet"),
+            "{}",
+            ran.text
+        );
+    }
+
+    /// No answer at all: the request is sent again on each time-out
+    /// until the retries, set while the connect timeout ruled, run out.
+    #[test]
+    fn a_silent_server_fails_to_connect() {
+        let (said, ran) = fetch(&[], |o| {
+            o.limits.total = crate::time::TimeLimit::from_millis(0);
+        });
+        assert_eq!(
+            ran.result,
+            Some(Err(ErrorKind::CouldntConnect)),
+            "{}",
+            ran.text
+        );
+        assert!(
+            ran.text
+                .contains("set timeouts for state 0; Total 300000, retry 6 maxtry 50\n"),
+            "{}",
+            ran.text
+        );
+        let rrq = b"\0\x01f\0octet\0tsize\x000\0blksize\x00512\0timeout\x006\0";
+        assert_eq!(said, rrq.repeat(50));
+        // Bounded by the transfer's time instead.
+        let (said, ran) = fetch(&[], |_| {});
+        assert_eq!(ran.result, Some(Err(ErrorKind::OperationTimedout)));
+        assert_eq!(said, RRQ.repeat(3));
+    }
+
+    /// An upload sends its blocks, each when the last is acknowledged,
+    /// counted once.
+    #[test]
+    fn an_upload_sends_block_after_block() {
+        let body = [b'u'; 600];
+        let (said, ran) = upload(&[&ack(0), &ack(1), &ack(2)], &body);
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        let wrq = b"\0\x02f\0octet\0tsize\x00600\0blksize\x00512\0timeout\x003\0";
+        let blocks = [&wrq[..], &data(1, &body[..512]), &data(2, &body[512..])].concat();
+        assert_eq!(said, blocks);
+        assert_eq!(ran.counted.1, 600);
+        assert!(
+            ran.text.contains("Connected for transmit\n"),
+            "{}",
+            ran.text
+        );
+    }
+
+    /// An acknowledgement of another block sends the last block again.
+    #[test]
+    fn a_wrong_acknowledgement_sends_the_block_again() {
+        let body = [b'v'; 5];
+        let (said, ran) = upload(&[&ack(0), &ack(7), &ack(1)], &body);
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        let block = data(1, &body);
+        assert!(said.ends_with(&[&block[..], &block].concat()), "{said:?}");
+        assert!(
+            ran.text.contains("Received ACK for block 7, expecting 1\n"),
+            "{}",
+            ran.text
+        );
+    }
+
+    /// Through an HTTP proxy, the tunnel refuses the scheme before
+    /// anything is sent.
+    #[test]
+    fn a_proxy_refuses_the_scheme() {
+        let (said, ran) = fetch(&[], |o| {
+            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        });
+        assert_eq!(
+            ran.result,
+            Some(Err(ErrorKind::UnsupportedProtocol)),
+            "{}",
+            ran.text
+        );
+        assert!(
+            ran.text.contains("tftp cannot be done over CONNECT\n"),
+            "{}",
+            ran.text
+        );
+        assert!(said.is_empty(), "{said:?}");
+    }
+}

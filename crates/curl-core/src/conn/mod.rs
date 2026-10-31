@@ -274,7 +274,8 @@ impl Route {
         }
         let ssh_same = match (keys(have.cold.as_deref()), keys(want.cold.as_deref())) {
             (Some(h), Some(w)) => h.same(w),
-            (h, w) => h.is_none() && w.is_none(),
+            (None, None) => true,
+            _ => false,
         };
         proxy.as_ref().map(ProxyRoute::key) == want_proxy.as_ref().map(ProxyRoute::key)
             && ftp_same

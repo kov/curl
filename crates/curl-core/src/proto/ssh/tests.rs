@@ -852,6 +852,37 @@ fn a_range_reads_its_part() {
     assert_eq!(body, b"234");
 }
 
+/// A resumed download is asked for as the range from its resume point,
+/// and the resume point is applied again to what the range left, as C
+/// applies both (`setup_range`, `myssh_in_SFTP_DOWNLOAD_STAT`): from 3 of
+/// ten bytes, four come, as C's libssh build gives them. A point at the
+/// end or past it, or the last byte's (`-1`), is a range error.
+#[test]
+fn a_resumed_download_applies_its_point_as_c_does() {
+    use crate::options::Resume;
+    let resumed = |at: Resume| {
+        run(
+            &[("/home/u/f", "0123456789")],
+            "sftp://u@127.0.0.1:PORT/~/f",
+            move |o| o.resume = Some(at),
+        )
+    };
+    let from = |n| Resume::At(std::num::NonZeroU64::new(n).unwrap());
+    let (result, body, said, _) = resumed(from(3));
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(body, b"3456");
+    for at in [from(10), from(11), Resume::AtEnd] {
+        let (result, body, said, _) = resumed(at);
+        assert_eq!(result, Err(ErrorKind::RangeError), "{at:?}: {said}");
+        assert!(body.is_empty());
+    }
+    let (_, _, said, _) = resumed(from(11));
+    assert!(
+        said.contains("Offset (11) was beyond file size (10)\n"),
+        "{said}"
+    );
+}
+
 /// Through an HTTP proxy's tunnel, the library is handed the socket with
 /// the server's banner unread in it: the proxy's answer is read a byte
 /// at a time, as C reads it, so nothing past it waits in a buffer of

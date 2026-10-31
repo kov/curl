@@ -2445,12 +2445,12 @@ pub struct SshAuthTypes(pub u32);
 
 impl SshAuthTypes {
     pub const ANY: SshAuthTypes = SshAuthTypes(u32::MAX);
-    pub const PUBLICKEY: u32 = 1 << 0;
-    pub const PASSWORD: u32 = 1 << 1;
-    pub const HOST: u32 = 1 << 2;
-    pub const KEYBOARD: u32 = 1 << 3;
-    pub const AGENT: u32 = 1 << 4;
-    pub const GSSAPI: u32 = 1 << 5;
+    pub const PUBLICKEY: u32 = 0x01;
+    pub const PASSWORD: u32 = 0x02;
+    pub const HOST: u32 = 0x04;
+    pub const KEYBOARD: u32 = 0x08;
+    pub const AGENT: u32 = 0x10;
+    pub const GSSAPI: u32 = 0x20;
 
     /// Whether it lets the user log in by `way`.
     pub fn allows(self, way: u32) -> bool {

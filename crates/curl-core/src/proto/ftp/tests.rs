@@ -3442,3 +3442,47 @@ fn a_reused_connection_changes_directory_from_its_entry_path() {
     assert_eq!(each[2], "CWD /\r\nCWD c\r\nEPSV\r\nSIZE f\r\nRETR f\r\n");
     assert_eq!(each[3], "CWD /home\r\nEPSV\r\nSIZE f\r\nRETR f\r\n");
 }
+
+/// A control connection closed says `QUIT` only while it can still be
+/// trusted: one given up after a failure that left it in doubt, or one
+/// that looks dead, closes saying nothing (`ftp_quit`'s `ctl_valid`).
+#[test]
+fn quit_is_said_only_on_a_connection_still_trusted() {
+    let quits = |c: &Conversation| c.received().ends_with(b"QUIT\r\n");
+    // Given up after a failure.
+    let one = logged_in(&[
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"200 binary\r\n",
+        b"500 no SITE\r\n",
+    ]);
+    let two = control(&[b"150 here\r\n226 done\r\n"]);
+    let (a, b) = (data(b""), data(b"hello"));
+    let mut m = serving(&[&one, &two], &[&a, &b]);
+    let (id, _, text) = added(&mut m, URL, |o| {
+        o.line
+            .make_mut()
+            .unwrap()
+            .prequote
+            .set([&b"SITE x"[..]])
+            .unwrap();
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Err(ErrorKind::QuoteError), "{}", text.text());
+    m.remove(id, &mut NoEvents).unwrap();
+    let (id, _, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    m.remove(id, &mut NoEvents).unwrap();
+    drop(m);
+    assert!(!quits(&one), "{}", received(&one));
+    assert!(quits(&two), "{}", received(&two));
+    // Looking dead.
+    let dead = control(&[b"150 here\r\n"]);
+    let file = data(b"hello");
+    let mut m = serving(&[&dead], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Err(ErrorKind::OperationTimedout), "{}", text.text());
+    drop(m);
+    assert!(!quits(&dead), "{}", received(&dead));
+}

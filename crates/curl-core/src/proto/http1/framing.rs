@@ -56,6 +56,9 @@ pub(crate) struct Asked {
     pub(crate) forwarded: bool,
     /// The request asks for a WebSocket, which only a 101 answers.
     pub(crate) websocket: bool,
+    /// The request is RTSP's, whose body without a size is none, not one
+    /// read to the close (RFC 2326, section 4.4).
+    pub(crate) rtsp: bool,
 }
 
 /// How the body after a final head ends.
@@ -638,6 +641,7 @@ impl Meta {
             && !self.chunked
             && !self.close
             && status.version == HttpVersion::Http11
+            && !asked.rtsp
             && !asked.head
         {
             // RFC 2616, section 4.4, point 5.
@@ -1011,6 +1015,7 @@ pub(crate) mod arbitrary {
                     http_proxy: b[6],
                     forwarded: b[7],
                     websocket: false,
+                    rtsp: false,
                     time_condition,
                 },
             )

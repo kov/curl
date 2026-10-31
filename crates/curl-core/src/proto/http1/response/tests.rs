@@ -21,6 +21,7 @@ const ASKED: Asked = Asked {
     http_proxy: false,
     forwarded: false,
     websocket: false,
+    rtsp: false,
     time_condition: None,
 };
 
@@ -28,6 +29,7 @@ const PLAIN: Exchange = Exchange {
     sent: HttpVersion::Http11,
     reused: false,
     allow_09: false,
+    rtsp: false,
     asked: ASKED,
 };
 
@@ -951,6 +953,8 @@ fn head_bytes_are_counted_to_c_s_limits() {
 }
 
 const HEAD_WORDS: &[&[u8]] = &[
+    b"RTSP/1.0 ",
+    b"RTSP/1.0 200 OK\r\n",
     b"HTTP/1.1 ",
     b"HTTP/1.0 ",
     b"HTTP/2 ",
@@ -1008,6 +1012,7 @@ const HEADS: &[&[u8]] = &[
       Last-Modified: Tue, 09 Nov 2010 14:49:00 GMT\r\n\r\n12345",
     b"HTTP/1.1 407 Who\r\nProxy-Authenticate: Basic\r\nProxy-Connection: close\r\n\r\n",
     b"no HTTP at all\n",
+    b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Length: 3\r\n\r\nabc",
 ];
 
 const STATUS_LINES: &[&[u8]] = &[
@@ -1022,6 +1027,8 @@ const STATUS_LINES: &[&[u8]] = &[
     b"HTTP/1.1 416 Range\r\n",
     b"HTTP/1.1 204 None\r\n",
     b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n",
+    b"RTSP/1.0 200 OK\r\n",
+    b"RTSP/1.0 401 Who\r\n",
 ];
 
 const HEADER_LINES: &[&[u8]] = &[
@@ -1064,14 +1071,15 @@ fn whole_lines() -> impl Strategy<Value = Vec<u8>> {
 fn exchange() -> impl Strategy<Value = Exchange> {
     (
         prop_oneof![Just(HttpVersion::Http10), Just(HttpVersion::Http11)],
-        any::<[bool; 2]>(),
+        any::<[bool; 3]>(),
         framing::arbitrary::asked(),
     )
-        .prop_map(|(sent, [reused, allow_09], asked)| Exchange {
+        .prop_map(|(sent, [reused, allow_09, rtsp], asked)| Exchange {
             sent,
             reused,
             allow_09,
-            asked,
+            rtsp,
+            asked: Asked { rtsp, ..asked },
         })
 }
 

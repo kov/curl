@@ -2,9 +2,10 @@
 //! while it exchanges data.
 //!
 //! `dict:`, `file:`, `ftp:`, `gopher:`, `http:`, `imap:`, `mqtt:`,
-//! `pop3:`, `smtp:`, `telnet:`, `tftp:`, with a TLS library `ftps:`, `gophers:`, `https:`,
-//! `imaps:`, `mqtts:`, `pop3s:` and `smtps:`, and with an SSH library
-//! `scp:` and `sftp:` are built in. Tests have three more, networkless: `null:`, which
+//! `pop3:`, `rtsp:`, `smtp:`, `telnet:`, `tftp:` and `ws:`, with a TLS
+//! library `ftps:`, `gophers:`, `https:`, `imaps:`, `mqtts:`, `pop3s:`,
+//! `smtps:` and `wss:`, and with an SSH library `scp:` and `sftp:` are
+//! built in. Tests have three more, networkless: `null:`, which
 //! completes at once, `stall:`, which never does, and `script:`, which
 //! delivers the pieces of its transfer's `Options::script`; and `tcp:`,
 //! which connects to its URL's host and port and completes once
@@ -640,6 +641,11 @@ impl ProtoState {
                 curl_alloc::try_box(http::Request::websocket(url, true, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
+            // RTSP is spoken through HTTP's request (`lib/rtsp.c`).
+            b"rtsp" => ProtoState::Http(
+                curl_alloc::try_box(http::Request::rtsp(url, before, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
             b"imap" => ProtoState::Imap(
                 curl_alloc::try_box(imap::Request::new(url, false, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
@@ -838,15 +844,19 @@ impl ProtoState {
         }
     }
 
-    pub(crate) fn take_login(&mut self) -> Option<Credentials> {
-        match self {
+    /// The credentials a connection made for the request logs in with
+    /// once and is matched by; RTSP's request authenticates with them
+    /// too, so they are copied.
+    pub(crate) fn take_login(&mut self) -> Result<Option<Credentials>, curl_alloc::OutOfMemory> {
+        Ok(match self {
             ProtoState::Ftp(r) => r.take_login(),
             ProtoState::Pop3(r) => r.take_login(),
             ProtoState::Imap(r) => r.take_login(),
             ProtoState::Smtp(r) => r.take_login(),
             ProtoState::Ssh(r) => r.take_login(),
+            ProtoState::Http(r) => r.rtsp_login()?,
             _ => None,
-        }
+        })
     }
 
     /// The key files an SSH connection made for the request logs in

@@ -53,6 +53,7 @@ pub(crate) use h3::StreamSend;
 pub(crate) mod hsts;
 pub(crate) mod httpsig;
 pub(crate) mod negotiate;
+pub(crate) mod rtsp;
 pub(crate) mod sigv4;
 pub(crate) mod ws;
 use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, LineKind};
@@ -308,6 +309,8 @@ pub(crate) struct Request {
     upgrade: Option<Upgrade>,
     /// It is for a WebSocket.
     websocket: Option<Websocket>,
+    /// It is RTSP's.
+    rtsp: Option<rtsp::Rtsp>,
     /// Of the bytes the last read got, those past a WebSocket's 101 left
     /// on the connection for the application to receive, its transfer
     /// only connecting.
@@ -591,9 +594,12 @@ impl crate::multi::state::SetupLend for Request {
 impl super::Phases for Request {
     fn connect<H: Host>(
         &mut self,
-        _: &mut StepCx<'_, H>,
-        _: &mut ConnLease,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
     ) -> Result<super::Connect, ErrorKind> {
+        if self.rtsp.is_some() {
+            return self.rtsp_connect(cx, lease);
+        }
         Ok(super::Connect::Done)
     }
 
@@ -738,8 +744,8 @@ impl Request {
             }
         };
         // HTTP's user and password take control bytes
-        // (`PROTOPT_USERPWDCTRL`).
-        let takes = Takes::ControlBytes;
+        // (`PROTOPT_USERPWDCTRL`), RTSP's not.
+        let takes = Takes::of(Some(scheme));
         let credentials = super::request_credentials(cx, gate.trusted(), url, takes)?;
         // By the host's name: an IPv6 address without its brackets, a name
         // in Unicode in its ASCII form (`Curl_netrc_scan` of `hostname`).
@@ -774,6 +780,7 @@ impl Request {
             refused: false,
             upgrade: None,
             websocket: None,
+            rtsp: None,
             unread: 0,
             neg: before.http.neg,
         })
@@ -1048,7 +1055,9 @@ impl Request {
     /// Whether the response so far is nothing at all: no head line and no
     /// body byte (C's `bytecount + headerbytecount`).
     pub(crate) fn received_nothing(&self) -> bool {
-        self.head.as_ref().is_none_or(|h| h.request_bytes() == 0) && self.pipeline.bytecount() == 0
+        self.head.as_ref().is_none_or(|h| h.request_bytes() == 0)
+            && self.pipeline.bytecount() == 0
+            && self.rtsp.as_ref().is_none_or(rtsp::Rtsp::retryable)
     }
 
     /// Whether some of the request is still to send, a body waiting for
@@ -1280,6 +1289,9 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
+        if self.rtsp.is_some() {
+            return self.rtsp_do(cx, lease);
+        }
         // The application's header lists as they are now, as C walks them
         // while it builds the request; the cookies' host is the one its
         // `Host:` names then (`http_set_aptr_host`).
@@ -1713,6 +1725,7 @@ impl Request {
             reused,
             // Not for a WebSocket (`ws_setup_conn`'s `accept_09`).
             allow_09: http.allow_09 && self.websocket.is_none(),
+            rtsp: false,
             asked: Asked {
                 head: self.method == Method::Head,
                 ignore_length: http.ignore_content_length,
@@ -1729,6 +1742,7 @@ impl Request {
                     .filter(|_| options.ranged().is_none()),
                 forwarded,
                 websocket: self.websocket.is_some(),
+                rtsp: false,
             },
         };
         // Named once in use, though Digest sends nothing before its
@@ -2205,9 +2219,10 @@ impl Request {
         let read = match self.receive(cx, lease) {
             Ok(read) => read,
             Err(e) => {
-                // A response cut short in its head is `Curl_sendrecv`'s
-                // own finding, after the reads.
-                if !(e == ErrorKind::PartialFile && matches!(self.stage, Stage::Head)) {
+                // A response cut short in its head, or RTSP's anywhere,
+                // is `Curl_sendrecv`'s own finding, after the reads.
+                let cut = matches!(self.stage, Stage::Head) || self.rtsp.is_some();
+                if !(e == ErrorKind::PartialFile && cut) {
                     let code = e.number();
                     trace::debug_info(cx, format_args!("sendrecv_dl() -> {code}"));
                 }
@@ -2315,8 +2330,10 @@ impl Request {
                     // C marks nothing: what ends in error is closed as
                     // that ends it, and a connection the transfer only
                     // made is kept for the application, which finds its
-                    // end as it reads (test 2304).
-                    if !cx.easy().options().connect_only.reserves() {
+                    // end as it reads (test 2304). RTSP's response may
+                    // end well with the connection, its head held: kept,
+                    // to be found dead when next looked for.
+                    if !cx.easy().options().connect_only.reserves() && self.rtsp.is_none() {
                         lease.get().mark_close();
                     }
                     trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
@@ -2331,6 +2348,8 @@ impl Request {
                             .ws_lend()
                             .expect("a WebSocket's connection speaks it");
                         cx.lending_ws(conn, |cx| self.end(cx))
+                    } else if self.rtsp.is_some() {
+                        self.rtsp_end(cx)
                     } else {
                         self.end(cx)
                     };
@@ -2418,6 +2437,9 @@ impl Request {
         lease: &mut ConnLease,
         mut input: &[u8],
     ) -> Result<(), ErrorKind> {
+        if self.rtsp.is_some() {
+            return self.rtsp_input(cx, lease, input);
+        }
         while !input.is_empty() {
             match self.stage {
                 Stage::Head if !self.wire.multiplexed() => {
@@ -2472,6 +2494,7 @@ impl Request {
             peer,
             cookie_host,
             target,
+            rtsp,
             ..
         } = self;
         let state = |side| lease.conn().negotiate().map(|n| n.state(side));
@@ -2639,6 +2662,12 @@ impl Request {
         {
             alt_svc::from_field(cx, peer, over, value, peer.scheme().over_tls())?;
         }
+        // And what RTSP reads of it (`Curl_rtsp_parseheader`).
+        if line.kind == LineKind::Header
+            && let Some(rtsp) = rtsp
+        {
+            Request::rtsp_header(cx, rtsp, peer, line.bytes)?;
+        }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         // What reading its transfer codings did, traced before the line, as
         // C reads them as it handles it (`http_header_t`).
@@ -2766,8 +2795,9 @@ impl Request {
                 }
                 return Ok(&[]);
             }
-            if matches!(self.stage, Stage::Done) && !rest.is_empty() {
-                // Body where none is to come: the accountant judges it.
+            if matches!(self.stage, Stage::Done) && !rest.is_empty() && self.rtsp.is_none() {
+                // Body where none is to come: the accountant judges it;
+                // RTSP's filter first takes the RTP out of it.
                 self.pipeline.body(cx, rest)?;
                 return Ok(&[]);
             }
@@ -2849,6 +2879,9 @@ impl Request {
         for named in head.meta().transfer_codings() {
             self.pipeline
                 .add_transfer_decoder(decoder_for(cx, named)?)?;
+        }
+        if self.rtsp.is_some() {
+            return self.rtsp_body_start(cx);
         }
         let framing = head.framing().expect("a final head decides its framing");
         let size = head.meta().size();
@@ -3055,6 +3088,8 @@ impl Request {
         next: &AfterRequest,
         inherited: &mut Inherited,
     ) -> Result<(), ErrorKind> {
+        // A receive reads no response to check (`rtsp_done`).
+        let premature = premature || self.rtsp.as_ref().is_some_and(rtsp::Rtsp::receives);
         // What it learned of the versions is the transfer's.
         inherited.neg = self.neg;
         let Some(head) = self.head.as_ref() else {
@@ -3104,7 +3139,7 @@ impl Request {
                 format_args!("Empty reply from server"),
             ));
         }
-        Ok(())
+        self.rtsp_done(cx, lease)
     }
 }
 

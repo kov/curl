@@ -97,6 +97,23 @@ impl CWildcard {
     };
 }
 
+/// The application's interleave function and data, as setopt left them
+/// (`CURLOPT_INTERLEAVEFUNCTION`, `CURLOPT_INTERLEAVEDATA`): RTSP's RTP
+/// goes to them.
+#[derive(Clone, Copy)]
+pub(crate) struct CInterleave {
+    pub(crate) function: curl_write_callback,
+    pub(crate) data: *mut c_void,
+}
+
+impl CInterleave {
+    /// None set, as a new handle has.
+    pub(crate) const NONE: CInterleave = CInterleave {
+        function: None,
+        data: ptr::null_mut(),
+    };
+}
+
 /// The application's HSTS functions and data, as setopt left them.
 #[derive(Clone, Copy)]
 pub(crate) struct CHsts {
@@ -377,6 +394,23 @@ pub(crate) fn sync_trailer(
     Ok(())
 }
 
+/// The interleave adapter, while there is an interleave function: without
+/// one, RTP goes to the write function with its data, as C sends it.
+pub(crate) fn sync_interleave(
+    options: &mut Options,
+    easy: NonNull<ShimEasy>,
+    c: &CInterleave,
+) -> Result<(), OutOfMemory> {
+    // Made anew each time: a copy of the options keeps the handle's it
+    // was copied from.
+    if c.function.is_some() {
+        options.small.make_mut()?.interleave = Some(Handler::write(Interleave(Adapter(easy)))?);
+    } else if let Some(small) = options.small.made_mut() {
+        small.interleave = None;
+    }
+    Ok(())
+}
+
 /// The SSH key adapter, while there is a key function.
 pub(crate) fn sync_ssh_key(
     options: &mut Options,
@@ -597,6 +631,27 @@ impl WriteHandler for Adapter {
                     ccb.write_data,
                 )
             }
+        });
+        write_verdict(wrote)
+    }
+}
+
+/// The application's interleave function, which RTSP's RTP messages go
+/// to (`rtp_client_write`).
+pub(crate) struct Interleave(pub(crate) Adapter);
+
+impl WriteHandler for Interleave {
+    fn write(&self, cx: &mut TransferCx<'_>, message: &[u8]) -> Write {
+        let c = self.0.easy().interleave();
+        let Some(f) = c.function else {
+            // Taken away as setopt runs from a callback: the adapter goes
+            // with the next sync, as C reads the option at each message.
+            return WriteHandler::write(&self.0, cx, message);
+        };
+        let wrote = self.0.call(cx, || {
+            // SAFETY: the application's interleave function takes the
+            // bytes, which it may not change, as its write function does.
+            unsafe { f(message.as_ptr().cast_mut().cast(), 1, message.len(), c.data) }
         });
         write_verdict(wrote)
     }

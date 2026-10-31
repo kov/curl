@@ -12,9 +12,9 @@ witness: curl-core proto::http::tests::coding::a_trailer_stays_behind_the_body_h
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http::tests::coding::accept_encoding_says_what_is_asked_for
 --- old
-                            for coding in decoders.codings() {
+            for coding in decoders.codings() {
 --- new
-                            for coding in decoders.codings().take(1) {
+            for coding in decoders.codings().take(1) {
 
 === a coded body is undone unasked
 file: crates/curl-core/src/proto/http.rs

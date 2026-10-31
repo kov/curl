@@ -1569,6 +1569,23 @@ impl Conn {
         }
     }
 
+    /// What RTSP keeps on it, if it is RTSP's.
+    pub(crate) fn rtsp_mut(&mut self) -> Option<&mut crate::proto::http::rtsp::RtspConn> {
+        match &mut self.session {
+            mux::Speaks::Line(line) => match &mut **line {
+                line::LineConn::Rtsp(rtsp) => Some(rtsp),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether it is RTSP's, which may have input waiting while idle: a
+    /// server's RTP between requests (`rtsp_conn_is_dead`).
+    pub(crate) fn speaks_rtsp(&self) -> bool {
+        matches!(&self.session, mux::Speaks::Line(line) if matches!(**line, line::LineConn::Rtsp(_)))
+    }
+
     /// Its WebSocket, if it switched to one.
     pub(crate) fn ws(&self) -> Option<&crate::proto::ws::WsConn> {
         match &self.session {

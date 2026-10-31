@@ -1688,7 +1688,7 @@ fn scheme_options_reach_the_transfer() {
         (ffi::CURLOPT_REDIR_PROTOCOLS_STR, c"HTTP", CURLE_OK),
         (
             ffi::CURLOPT_PROTOCOLS_STR,
-            c"rtsp",
+            c"ldap",
             ffi::CURLE_UNSUPPORTED_PROTOCOL,
         ),
         (
@@ -1969,10 +1969,41 @@ fn callback_options_install_their_adapters() {
 #[test]
 fn ids_are_told_apart_as_c_tells_them() {
     let c = curl_easy_init();
+    // RTSP's sequence numbers are the handle's: below 0 is refused, past
+    // `INT_MAX` taken as it.
+    let cseq = |c, info| {
+        let mut v: c_long = -1;
+        // SAFETY: a live handle and a `long` to write.
+        assert_eq!(unsafe { curl_easy_getinfo(c, info, &raw mut v) }, CURLE_OK);
+        v
+    };
+    assert_eq!(long(c, ffi::CURLOPT_RTSP_CLIENT_CSEQ, 7), CURLE_OK);
+    assert_eq!(cseq(c, ffi::CURLINFO_RTSP_CLIENT_CSEQ), 7);
     assert_eq!(
-        long(c, ffi::CURLOPT_RTSP_CLIENT_CSEQ, 1),
-        CURLE_NOT_BUILT_IN
+        long(c, ffi::CURLOPT_RTSP_SERVER_CSEQ, c_long::from(i32::MAX) + 1),
+        CURLE_OK
     );
+    assert_eq!(
+        cseq(c, ffi::CURLINFO_RTSP_SERVER_CSEQ),
+        c_long::from(i32::MAX)
+    );
+    assert_eq!(
+        long(c, ffi::CURLOPT_RTSP_CLIENT_CSEQ, -1),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(cseq(c, ffi::CURLINFO_RTSP_CLIENT_CSEQ), 7);
+    assert_eq!(cseq(c, ffi::CURLINFO_RTSP_CSEQ_RECV), 0);
+    // A request of C's eleven, counted from 1.
+    let request = |c| options(c, |o| o.small.rtsp_request);
+    assert_eq!(long(c, ffi::CURLOPT_RTSP_REQUEST, 11), CURLE_OK);
+    assert_eq!(request(c), curl_core::options::RtspRequest::Receive);
+    for bad in [0, 12, -1] {
+        assert_eq!(
+            long(c, ffi::CURLOPT_RTSP_REQUEST, bad),
+            CURLE_BAD_FUNCTION_ARGUMENT
+        );
+    }
+    assert_eq!(request(c), curl_core::options::RtspRequest::Receive);
     // TFTP's block size is brought within its bounds; below 0 is refused.
     let blksize = |c| options(c, |o| o.small.tftp_blksize.map(|b| b.get()));
     assert_eq!(long(c, ffi::CURLOPT_TFTP_BLKSIZE, 7), CURLE_OK);
@@ -2237,10 +2268,12 @@ fn infos_answer_from_the_report() {
     let mut v: c_long = 0;
     // SAFETY: a live handle and a `long` to write.
     unsafe {
+        let mut id: *const c_char = c"x".as_ptr();
         assert_eq!(
-            curl_easy_getinfo(c, ffi::CURLINFO_RTSP_SESSION_ID, &raw mut v),
-            CURLE_UNKNOWN_OPTION
+            curl_easy_getinfo(c, ffi::CURLINFO_RTSP_SESSION_ID, &raw mut id),
+            CURLE_OK
         );
+        assert!(id.is_null(), "no session yet");
         assert_eq!(
             curl_easy_getinfo(c, CURLINFO(5), &raw mut v),
             CURLE_UNKNOWN_OPTION
@@ -5805,7 +5838,10 @@ fn a_handle_costs_no_more_than_cs() {
     });
     let per = |bytes: i64| bytes / HANDLES as i64;
     let (made_bytes, held) = (per(made.bytes), per(made.bytes + added.bytes));
-    assert!(made_bytes <= 2_112, "a new handle holds {made_bytes} bytes");
+    // Made, within C's too: RTSP's state on the handle and its
+    // interleave function on the shim are made when first set, a pointer
+    // each until then.
+    assert!(made_bytes <= 2_120, "a new handle holds {made_bytes} bytes");
     assert!(held <= 3_081, "an added handle holds {held} bytes");
     // The `Easy`, the shim's handle, the write adapter and its count, the
     // URL; then the slot, and the multi's tables as they grow.
@@ -7166,6 +7202,71 @@ fn the_wildcard_options_are_kept_copied_and_reset() {
     // SAFETY: a live handle.
     let reset = unsafe { easy::handle(c) }.unwrap().wildcard();
     assert!(reset.chunk_data.is_null() && reset.fnmatch.is_none());
+    // SAFETY: live handles, not used again.
+    unsafe {
+        curl_easy_cleanup(c);
+        curl_easy_cleanup(d);
+    }
+}
+
+/// RTSP's interleave function and data: an adapter while a function is
+/// set, the data kept beside it; a copy of the handle has them, its own
+/// adapter calling for it, and a reset drops them. RTSP's numbers are
+/// the handle's, kept through a reset and not copied.
+#[test]
+fn the_interleave_options_are_kept_copied_and_reset() {
+    unsafe extern "C" fn rtp(_: *mut c_char, _: usize, n: usize, _: *mut c_void) -> usize {
+        n
+    }
+    let installed = |c| options(c, |o| o.small.interleave.is_some());
+    let c = curl_easy_init();
+    assert!(!installed(c));
+    let mut data = 0u8;
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_INTERLEAVEDATA, &raw mut data),
+        CURLE_OK
+    );
+    assert!(!installed(c), "data alone sends RTP to the write function");
+    assert_eq!(
+        function(
+            c,
+            ffi::CURLOPT_INTERLEAVEFUNCTION,
+            rtp as WriteFn as *const ()
+        ),
+        CURLE_OK
+    );
+    assert!(installed(c));
+    assert_eq!(long(c, ffi::CURLOPT_RTSP_CLIENT_CSEQ, 9), CURLE_OK);
+    // SAFETY: a live handle.
+    let d = unsafe { easy::curl_easy_duphandle(c) };
+    assert!(!d.is_null());
+    assert!(installed(d));
+    // SAFETY: both live handles.
+    let (kept, copied) = unsafe { (easy::handle(c), easy::handle(d)) };
+    let (kept, copied) = (kept.unwrap(), copied.unwrap());
+    assert_eq!(copied.interleave().data, (&raw mut data).cast::<c_void>());
+    assert!(copied.interleave().function.is_some());
+    assert_eq!(
+        copied.rtsp().ok().map(|r| r.next_client_cseq()),
+        Some(0),
+        "not copied"
+    );
+    assert_eq!(
+        function(d, ffi::CURLOPT_INTERLEAVEFUNCTION, ptr::null()),
+        CURLE_OK
+    );
+    assert!(!installed(d));
+    assert!(installed(c));
+    // SAFETY: a live handle.
+    unsafe { easy::curl_easy_reset(c) };
+    assert!(!installed(c));
+    let reset = kept.interleave();
+    assert!(reset.data.is_null() && reset.function.is_none());
+    assert_eq!(
+        kept.rtsp().ok().map(|r| r.next_client_cseq()),
+        Some(9),
+        "kept"
+    );
     // SAFETY: live handles, not used again.
     unsafe {
         curl_easy_cleanup(c);

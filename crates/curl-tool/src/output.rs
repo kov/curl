@@ -741,7 +741,7 @@ impl Stream {
         if !self.show_headers
             || !matches!(
                 protocol,
-                Some(Protocol::File | Protocol::Http | Protocol::Https)
+                Some(Protocol::File | Protocol::Http | Protocol::Https | Protocol::Rtsp)
             )
         {
             return Write::Accepted;

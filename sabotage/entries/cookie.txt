@@ -26,6 +26,12 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
         {
             alt_svc::from_field(cx, peer, over, value, peer.scheme().over_tls())?;
         }
+        // And what RTSP reads of it (`Curl_rtsp_parseheader`).
+        if line.kind == LineKind::Header
+            && let Some(rtsp) = rtsp
+        {
+            Request::rtsp_header(cx, rtsp, peer, line.bytes)?;
+        }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         // What reading its transfer codings did, traced before the line, as
         // C reads them as it handles it (`http_header_t`).
@@ -47,6 +53,12 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
             && let Some(value) = strip_name(line.bytes, b"Alt-Svc:")
         {
             alt_svc::from_field(cx, peer, over, value, peer.scheme().over_tls())?;
+        }
+        // And what RTSP reads of it (`Curl_rtsp_parseheader`).
+        if line.kind == LineKind::Header
+            && let Some(rtsp) = rtsp
+        {
+            Request::rtsp_header(cx, rtsp, peer, line.bytes)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         // What reading its transfer codings did, traced before the line, as

@@ -2203,7 +2203,8 @@ fn ms_since_made(conn: &Conn, now: Instant) -> u32 {
 
 /// Whether `conn` is alive and has no input it should not: input waiting
 /// is unhealthy on an idle HTTP/1 connection; a session reads its peer's
-/// frames (`http2_connisalive`).
+/// frames (`http2_connisalive`), and RTSP's server may send RTP between
+/// requests (`rtsp_conn_is_dead`).
 fn alive(conn: &mut Conn, now: Instant) -> Result<(), Option<PoolNote>> {
     match conn.alive(&mut Silent(now)) {
         Alive::Alive {
@@ -2211,7 +2212,10 @@ fn alive(conn: &mut Conn, now: Instant) -> Result<(), Option<PoolNote>> {
         } => Ok(()),
         Alive::Alive {
             input_pending: true,
-        } if !conn.multiplexes() => Err(Some(PoolNote::InputPending)),
+        } if !conn.multiplexes() && !conn.speaks_rtsp() => Err(Some(PoolNote::InputPending)),
+        Alive::Alive {
+            input_pending: true,
+        } if conn.speaks_rtsp() => Ok(()),
         Alive::Alive {
             input_pending: true,
         }

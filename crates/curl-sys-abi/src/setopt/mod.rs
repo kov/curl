@@ -31,7 +31,9 @@ use curl_core::options::{
     Resume, ReuseLimits, Schemes, Sockets, TimeCondition, UpkeepInterval, UploadBufferSize,
     UploadFlags, UseSsl, UserHeaders,
 };
-use curl_core::options::{Ccc, CreateDirs, FtpMethod, SslAuth, TftpBlockSize};
+use curl_core::options::{
+    Ccc, CreateDirs, FtpMethod, RtspRequest, RtspSession, SslAuth, TftpBlockSize,
+};
 use curl_core::time::TimeLimit;
 
 use crate::callbacks::{self, CCallbacks, CSettings, PostFields};
@@ -1211,6 +1213,56 @@ fn apply(
                 options.small.make_mut()?.tftp_no_options = n != 0;
             }
         }
+        // One of C's eleven, counted from 1 (`setopt_RTSP_REQUEST`).
+        (ffi::CURLOPT_RTSP_REQUEST, Long(n)) => {
+            let kind = usize::try_from(n)
+                .ok()
+                .and_then(|n| n.checked_sub(1))
+                .and_then(|i| RtspRequest::ALL.get(i))
+                .ok_or(Refused::Bad)?;
+            if *kind != RtspRequest::default() || options.small.made_mut().is_some() {
+                options.small.make_mut()?.rtsp_request = *kind;
+            }
+        }
+        // An id set is the application's, from no origin of a server's
+        // (`Curl_peer_unlink`).
+        (ffi::CURLOPT_RTSP_SESSION_ID, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let value = unsafe { owned(p) }?;
+            options
+                .small
+                .set(|g| &mut g.rtsp_session, value.map(RtspSession::given))?;
+        }
+        (ffi::CURLOPT_RTSP_STREAM_URI, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let value = unsafe { owned(p) }?;
+            options.small.set(|g| &mut g.rtsp_stream_uri, value)?;
+        }
+        (ffi::CURLOPT_RTSP_TRANSPORT, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let value = unsafe { owned(p) }?;
+            options.small.set(|g| &mut g.rtsp_transport, value)?;
+        }
+        // The handle's numbers, not its options: `curl_easy_setopt` sets
+        // them; here only checked (`value_range`).
+        (ffi::CURLOPT_RTSP_CLIENT_CSEQ | ffi::CURLOPT_RTSP_SERVER_CSEQ, Long(n)) => {
+            keepalive_value(n)?;
+        }
+        (ffi::CURLOPT_INTERLEAVEFUNCTION | ffi::CURLOPT_INTERLEAVEDATA, Ptr(p)) => {
+            // SAFETY: the handle outlives the call; its interleave group
+            // is a cell of its own, apart from the options being set.
+            let room = unsafe { me.as_ref() }.interleave_room()?;
+            let mut c = room.get();
+            match option {
+                ffi::CURLOPT_INTERLEAVEDATA => c.data = p,
+                // SAFETY: the application passes a function of the
+                // option's type, or NULL, which sends RTP to the write
+                // function.
+                _ => c.function = unsafe { function(p) },
+            }
+            callbacks::sync_interleave(options, me, &c)?;
+            room.set(c);
+        }
         // The application's list, walked as each TELNET transfer starts.
         (ffi::CURLOPT_TELNETOPTIONS, Ptr(p)) => match slist(p)? {
             Some(source) => options.small.make_mut()?.telnet.set_source(source)?,
@@ -1842,6 +1894,10 @@ pub unsafe extern "C" fn curl_easy_setopt(
         ) => Some(*p),
         _ => None,
     };
+    let cseq = match (option, &arg) {
+        (ffi::CURLOPT_RTSP_CLIENT_CSEQ | ffi::CURLOPT_RTSP_SERVER_CSEQ, Arg::Long(n)) => Some(*n),
+        _ => None,
+    };
     let me = NonNull::from(easy);
     let (mut ccb, mut set, mut errbuf) = (easy.ccb.get(), easy.set.get(), easy.errbuf.get());
     let applied = easy.with_options(|o| apply(me, o, &mut ccb, &mut set, &mut errbuf, option, arg));
@@ -1860,6 +1916,22 @@ pub unsafe extern "C" fn curl_easy_setopt(
     easy.ccb.set(ccb);
     easy.set.set(set);
     easy.errbuf.set(errbuf);
+    if let Some(n) = cseq {
+        let Ok(n) = keepalive_value(n) else {
+            unreachable!("checked as applied")
+        };
+        let set = easy.with_rtsp(|r| {
+            r.map(|r| match option {
+                ffi::CURLOPT_RTSP_CLIENT_CSEQ => r.set_next_client_cseq(n),
+                _ => r.set_next_server_cseq(n),
+            })
+        });
+        return match set {
+            Ok(Ok(())) => code,
+            Ok(Err(OutOfMemory)) => CURLE_OUT_OF_MEMORY,
+            Err(_) => CURLE_RECURSIVE_API_CALL,
+        };
+    }
     if let Some(hsts) = hsts {
         // SAFETY: the application passes a C string or NULL.
         return unsafe { hsts_option(easy, hsts) };
@@ -2284,7 +2356,7 @@ mod tests {
             &b"goobar"[..],
             b"http ",
             b" http",
-            b"rtsp",
+            b"ldap",
             b"http,all",
             b"http,ft",
         ] {

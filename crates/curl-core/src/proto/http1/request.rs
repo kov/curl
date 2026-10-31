@@ -14,6 +14,9 @@ use std::fmt::Write as _;
 
 use super::fields;
 
+mod rtsp;
+pub(crate) use rtsp::{RtspContent, RtspHead, render_rtsp};
+
 /// The most a request head may be, the terminating byte C's buffer keeps
 /// for itself taken off (`DYN_HTTP_REQUEST`).
 const MAX_HEAD: usize = 1024 * 1024 - 1;
@@ -527,15 +530,17 @@ pub(crate) enum Typed<'o> {
     Mime(&'o [Vec<u8>]),
 }
 
-/// The request head as it goes on the wire, or only its length.
+/// The request head as it goes on the wire, or only its length, no more
+/// than `max` bytes.
 struct Out<'b> {
     buf: Option<&'b mut Vec<u8>>,
     len: usize,
+    max: usize,
 }
 
 impl Out<'_> {
     fn put(&mut self, bytes: &[u8]) -> Result<(), ErrorKind> {
-        if self.len + bytes.len() > MAX_HEAD {
+        if self.len + bytes.len() > self.max {
             return Err(ErrorKind::TooLarge);
         }
         if let Some(buf) = &mut self.buf {
@@ -564,6 +569,7 @@ pub(crate) fn render_h1(
     let mut measure = Out {
         buf: None,
         len: out.len(),
+        max: MAX_HEAD,
     };
     write_h1(head, gate, &mut measure)?;
     out.try_reserve_exact(measure.len - out.len())
@@ -575,6 +581,7 @@ pub(crate) fn render_h1(
         &mut Out {
             buf: Some(out),
             len,
+            max: MAX_HEAD,
         },
     )
 }
@@ -722,28 +729,7 @@ fn write_h1(
                 if let Some(accepted) = head.accept_encoding
                     && head.headers.replacing(b"Accept-Encoding").is_none()
                 {
-                    match accepted {
-                        Accepted::Given(value) => out.line(&[b"Accept-Encoding: ", value])?,
-                        Accepted::All(decoders) => {
-                            let mut parts: [&[u8]; 1 + 2 * Coding::ALL.len()] =
-                                [b""; 1 + 2 * Coding::ALL.len()];
-                            parts[0] = b"Accept-Encoding: ";
-                            let mut n = 1;
-                            for coding in decoders.codings() {
-                                if n > 1 {
-                                    parts[n] = b", ";
-                                    n += 1;
-                                }
-                                parts[n] = coding.name().as_bytes();
-                                n += 1;
-                            }
-                            if n == 1 {
-                                parts[1] = b"identity";
-                                n = 2;
-                            }
-                            out.line(&parts[..n])?;
-                        }
-                    }
+                    accept_encoding(accepted, out)?;
                 }
             }
             Part::Te => {
@@ -788,6 +774,32 @@ fn write_h1(
 }
 
 /// `n` in decimal, in `buf`.
+/// `Accept-Encoding:`, the application's words or every coding the
+/// handle undoes.
+fn accept_encoding(accepted: Accepted<'_>, out: &mut Out<'_>) -> Result<(), ErrorKind> {
+    match accepted {
+        Accepted::Given(value) => out.line(&[b"Accept-Encoding: ", value]),
+        Accepted::All(decoders) => {
+            let mut parts: [&[u8]; 1 + 2 * Coding::ALL.len()] = [b""; 1 + 2 * Coding::ALL.len()];
+            parts[0] = b"Accept-Encoding: ";
+            let mut n = 1;
+            for coding in decoders.codings() {
+                if n > 1 {
+                    parts[n] = b", ";
+                    n += 1;
+                }
+                parts[n] = coding.name().as_bytes();
+                n += 1;
+            }
+            if n == 1 {
+                parts[1] = b"identity";
+                n = 2;
+            }
+            out.line(&parts[..n])
+        }
+    }
+}
+
 pub(crate) fn decimal(mut n: u64, buf: &mut [u8; 20]) -> &[u8] {
     let mut at = buf.len();
     loop {

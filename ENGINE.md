@@ -1762,7 +1762,7 @@ library is read in the next pass, not after a wait. The pool's health check asks
 down the chain, as `Curl_conn_is_alive` does (cf-socket.c:1811–1846, conncache.c:1041–1068), the
 socket at the bottom polled at once: an error or a hang-up is dead, anything to read is input
 pending, and input pending on an idle connection that does not multiplex makes it unhealthy
-(1701), said first as C's debug build says it (`connection has no transfer but input, not
+(1701) but for RTSP's, whose server may send RTP between requests (`rtsp_conn_is_dead`), said first as C's debug build says it (`connection has no transfer but input, not
 healthy`).
 
 `LayerCx` is an argument, never stored, which removes C's `CF_DATA_SAVE/RESTORE` and its
@@ -1848,8 +1848,8 @@ HTTP/2 for good, or HTTP/1. What the connection speaks is one field, `conn::mux:
 found yet (`Unmade`, as a connection is made, and for good on one no HTTP request found it out
 on), HTTP/1 (`Http1`, no session; a local connection's from the start), a session made (`Made`),
 a protocol's own state with no session (`Line`, `conn/line.rs`'s `LineConn`: what FTP, IMAP,
-POP3, SMTP, SSH and the test protocol `tcp:` keep of the connection between requests, put on
-as their connect makes it), or its session out for a step (`Out`, naming the version). A step takes the session off the
+POP3, SMTP, SSH, RTSP and the test protocol `tcp:` keep of the connection between requests, put
+on as their connect makes it), or its session out for a step (`Out`, naming the version). A step takes the session off the
 connection for the call that drives it and gives it back after (`with_session`, `with_h3`), so
 the lease is free beside it; while it is out the connection reads as having none, and only the
 version taken out is given back. A new session goes only on a connection with none: HTTP/2's
@@ -2230,7 +2230,7 @@ construction, which is the class behind CVE-2021-22924, CVE-2022-27782 and CVE-2
 The transfer's authority (origin, credentials) lives on its `Target`, never written onto a
 shared connection (C's `url_conn_reuse_adjust` has no counterpart). Idle connections are
 health-checked before reuse; input pending on an idle HTTP/1 connection makes it unhealthy
-(1701).
+(1701), on an RTSP one not.
 
 The one exception is HTTP Negotiate, whose authentication C binds to the connection
 (`proto/http/negotiate.rs`, lib/http_negotiate.c). Its state lives on the `Conn`, as
@@ -4014,6 +4014,33 @@ of the handle has an empty cache of the same control, which reads the file named
 loses the control (DIVERGENCE.md).
 
 ---
+
+### 6.8 RTSP
+
+`rtsp://` is HTTP's request in a mode (`proto/http/rtsp.rs`, after `lib/rtsp.c`), as C speaks it
+through `http.c`: `Request::rtsp` makes one in HTTP/1.1 alone, with its `Rtsp` (the request's
+kind, the CSeq it went with and the one its response said, whether a body is read). Its connect
+starts the handle's sequence numbers at 1 and puts `LineConn::Rtsp` on a new connection: the RTP
+message read in part between responses, which says no goodbye. Its DO is `rtsp_do`: a RECEIVE
+sends nothing and reads; any other renders its head (`http1/request/rtsp.rs`, at most 64 KiB) in
+C's order, the request line naming the stream URI (`*` by default) and the CSeq, then the session
+(only to the origin that named it, unless credentials may go anywhere), the option's transport
+for a SETUP, a DESCRIBE's `Accept` and `Accept-Encoding`, the range of a PLAY, PAUSE or RECORD,
+the referer, the user agent, the origin's authorization for the method and the stream URI, a
+SETUP's or DESCRIBE's time condition, the application's headers and an ANNOUNCE's, SET_PARAMETER's
+or GET_PARAMETER's body headers; a GET_PARAMETER with no body is a heartbeat, reading none. It goes
+out through HTTP's sending. The response is read by HTTP's head parser in RTSP's mode (`RTSP/1.0`
+and a code, taken as HTTP/1.1; anything else 8, unsaid), each header line after HTTP's own reading
+of it read for the CSeq, the session (kept with its origin, or checked against the one set) and
+the interleaved channels, kept on the handle (`easy::RtspState`, which `curl_easy_reset` keeps and
+a copy of the handle starts afresh). No length is no body; a length overrides the method's want
+of one unless the application asked for none. What is read goes through the RTP filter
+(`rtsp_rtp_write_resp`, `rtsp_filter_rtp`): outside a head, `$`, a channel the handle named and a
+two-byte length make a message for the interleave handler (else the write handler), anything else
+is body as far as the body is due and dropped past it, and `RTSP/` outside a body stops the
+filter for the head parser; reading stops once the body is whole, what is unread left on the
+connection for the next request. The connection's end cuts a body short (18); a receive reads one
+read's worth, and the response's CSeq must be the request's at DONE.
 
 ## 7. The C ABI mapping: the hard cases
 

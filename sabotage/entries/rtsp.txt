@@ -1,0 +1,98 @@
+=== RTP after a head is filtered on the channels known before it was read
+file: crates/curl-core/src/proto/http/rtsp.rs
+witness: curl-core proto::http::tests::rtsp::messages_after_the_head_that_named_their_channels_are_taken_out
+--- old
+        // As the heads read so far left them.
+        let channels = cx.easy().rtsp();
+--- new
+        let channels = crate::easy::RtspState::default();
+
+=== an idle RTSP connection with RTP waiting is not reused
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::rtsp::messages_after_the_head_that_named_their_channels_are_taken_out
+--- old
+        } if !conn.multiplexes() && !conn.speaks_rtsp() => Err(Some(PoolNote::InputPending)),
+--- new
+        } if !conn.multiplexes() => Err(Some(PoolNote::InputPending)),
+
+=== a response numbered other than its request passes
+file: crates/curl-core/src/proto/http/rtsp.rs
+witness: curl-core proto::http::tests::rtsp::a_cseq_other_than_the_request_s_fails_it
+--- old
+        if !rtsp.receives() && rtsp.cseq_sent != rtsp.cseq_recv {
+--- new
+        if false {
+
+=== a session a server named goes to another origin
+file: crates/curl-core/src/proto/http/rtsp.rs
+witness: curl-core proto::http::tests::rtsp::a_session_goes_only_to_the_origin_that_named_it
+--- old
+            s.origin.as_ref().is_none_or(|origin| origin == &self.peer)
+--- new
+            true
+
+=== the application's Transport goes twice
+file: crates/curl-core/src/proto/http/rtsp.rs
+witness: curl-core proto::http::tests::rtsp::the_application_s_transport_goes_once
+--- old
+            _ if kind != RtspRequest::Setup || headers.replaces(b"Transport") => None,
+--- new
+            _ if kind != RtspRequest::Setup => None,
+
+=== a `$` read before the channel that refuses it is lost
+file: crates/curl-core/src/proto/http/rtsp.rs
+witness: curl-core proto::http::rtsp::tests::a_message_on_another_channel_is_body
+--- old
+                        if *consumed == 0 {
+--- new
+                        if false {
+
+=== the next response's head is taken for junk
+file: crates/curl-core/src/proto/http/rtsp.rs
+witness: curl-core proto::http::rtsp::tests::a_response_s_head_stops_the_filter
+--- old
+                        if !in_body && rest[0] == b'R' && !receive {
+--- new
+                        if false {
+
+=== a response without a length is read to the close
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::an_rtsp_status_line_is_read_as_c_reads_it
+--- old
+            && !asked.rtsp
+--- new
+            && true
+
+=== a response without a length has a body
+file: crates/curl-core/src/proto/http/rtsp.rs
+witness: curl-core proto::http::tests::rtsp::a_response_without_a_length_has_no_body
+--- old
+            (_, Some(n)) if n > 0 => Stage::Body(Body::Length),
+            _ => Stage::Done,
+--- new
+            (_, Some(n)) if n > 0 => Stage::Body(Body::Length),
+            _ => Stage::Body(Body::UntilClose),
+
+=== RTSP's status line is read as HTTP's
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::an_rtsp_status_line_is_read_as_c_reads_it
+--- old
+                let status = if self.exchange.rtsp {
+--- new
+                let status = if false {
+
+=== a copy of the handle forgets its interleave function
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::the_interleave_options_are_kept_copied_and_reset
+--- old
+        interleave: easy.interleave.get().map(|c| c.get()),
+--- new
+        interleave: None,
+
+=== a reset keeps the interleave function
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::the_interleave_options_are_kept_copied_and_reset
+--- old
+        interleave.set(callbacks::CInterleave::NONE);
+--- new
+        drop(interleave);

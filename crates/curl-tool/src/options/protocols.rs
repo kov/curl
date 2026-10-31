@@ -149,8 +149,8 @@ mod tests {
     /// The protocols the library speaks, by name.
     const SPOKEN: &[&str] = &[
         "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap", "imaps",
-        "mqtt", "mqtts", "pop3", "pop3s", "scp", "sftp", "smtp", "smtps", "telnet", "tftp", "ws",
-        "wss",
+        "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp", "smtps", "telnet", "tftp",
+        "ws", "wss",
     ];
 
     /// The library speaks the protocols of `SPOKEN`: every other name is

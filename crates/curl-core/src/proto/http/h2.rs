@@ -1806,6 +1806,7 @@ impl Request {
             sent: response::HttpVersion::Http2,
             reused: true,
             allow_09: http.allow_09,
+            rtsp: false,
             asked: Asked {
                 head: false,
                 ignore_length: http.ignore_content_length,
@@ -1820,6 +1821,7 @@ impl Request {
                 time_condition: None,
                 forwarded: false,
                 websocket: false,
+                rtsp: false,
             },
         };
         request.head = Some(HeadParser::new(exchange));

@@ -32,6 +32,9 @@ pub(crate) enum LineConn {
     /// decoder and encoder and their buffers; boxed, as FTP's. It says
     /// no goodbye (C's WebSocket has no `disconnect`).
     Ws(Box<crate::proto::ws::WsConn>),
+    /// RTSP's: an RTP message read in part between responses. It says no
+    /// goodbye (C's RTSP has no `disconnect`).
+    Rtsp(crate::proto::http::rtsp::RtspConn),
     /// `tcp:`'s, which says a goodbye of its own.
     #[cfg(any(test, feature = "test-util"))]
     Test(Farewell),
@@ -41,7 +44,7 @@ impl LineConn {
     /// Whether it says a goodbye as the connection shuts down, which C's
     /// debug build traces (the scheme has a `disconnect`).
     pub(crate) fn says_goodbye(&self) -> bool {
-        !matches!(self, LineConn::Ws(_))
+        !matches!(self, LineConn::Ws(_) | LineConn::Rtsp(_))
     }
 
     /// Say goodbye to the peer as the connection shuts down, asked once
@@ -57,7 +60,7 @@ impl LineConn {
             LineConn::Smtp(ref mut p) => p.goodbye(cx, below, dead),
             // Said dead or not, as C's SSH disconnect ignores it.
             LineConn::Ssh(ref mut p) => p.goodbye(cx),
-            LineConn::Ws(_) => {}
+            LineConn::Ws(_) | LineConn::Rtsp(_) => {}
             #[cfg(any(test, feature = "test-util"))]
             LineConn::Test(ref mut f) => f.goodbye(cx, below, dead),
         }

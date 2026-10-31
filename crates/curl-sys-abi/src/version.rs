@@ -305,7 +305,7 @@ mod tests {
             want,
             [
                 "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap",
-                "imaps", "mqtt", "mqtts", "pop3", "pop3s", "scp", "sftp", "smtp", "smtps",
+                "imaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp", "smtps",
                 "telnet", "tftp", "ws", "wss",
             ]
         );

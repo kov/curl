@@ -92,6 +92,63 @@ pub struct Easy {
     /// one, only the lines of a verbose transfer that belong to no
     /// component are traced.
     components: Option<Components>,
+    /// RTSP's sequence numbers and interleaved channels, from one
+    /// request and connection to the next: kept through `reset`, not
+    /// copied with the handle (C's `state.rtsp_*`). Made the first time
+    /// either is set: few handles speak RTSP.
+    rtsp: Option<Box<RtspState>>,
+}
+
+/// What RTSP keeps from one request and connection to the next, through
+/// `reset` (C's `state.rtsp_next_client_CSeq`, `rtsp_next_server_CSeq`,
+/// `rtsp_CSeq_recv` and `rtp_channel_mask`). Its sequence numbers start
+/// at 1 as a connection is first made, where none is set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RtspState {
+    pub(crate) next_client_cseq: u32,
+    pub(crate) next_server_cseq: u32,
+    pub(crate) cseq_recv: u32,
+    /// The interleaved channels the `Transport:` headers named, a bit
+    /// each.
+    pub(crate) channels: [u8; 32],
+}
+
+impl RtspState {
+    /// The CSeq the next request sends (`CURLINFO_RTSP_CLIENT_CSEQ`).
+    pub fn next_client_cseq(&self) -> u32 {
+        self.next_client_cseq
+    }
+
+    /// The CSeq the server's next request is expected with
+    /// (`CURLINFO_RTSP_SERVER_CSEQ`).
+    pub fn next_server_cseq(&self) -> u32 {
+        self.next_server_cseq
+    }
+
+    /// The CSeq last received (`CURLINFO_RTSP_CSEQ_RECV`).
+    pub fn cseq_recv(&self) -> u32 {
+        self.cseq_recv
+    }
+
+    /// `CURLOPT_RTSP_CLIENT_CSEQ`.
+    pub fn set_next_client_cseq(&mut self, n: u32) {
+        self.next_client_cseq = n;
+    }
+
+    /// `CURLOPT_RTSP_SERVER_CSEQ`.
+    pub fn set_next_server_cseq(&mut self, n: u32) {
+        self.next_server_cseq = n;
+    }
+
+    /// Whether `channel` is one a `Transport:` header named.
+    pub(crate) fn interleaves(&self, channel: u8) -> bool {
+        self.channels[usize::from(channel / 8)] & (1 << (channel % 8)) != 0
+    }
+
+    /// `channel` is one to read RTP from.
+    pub(crate) fn add_channel(&mut self, channel: u8) {
+        self.channels[usize::from(channel / 8)] |= 1 << (channel % 8);
+    }
 }
 
 /// The connection a handle's transfer had last (`state.last_cpid`).
@@ -249,6 +306,7 @@ impl Easy {
             },
             libraries: self.libraries.clone(),
             components: self.components.clone(),
+            rtsp: None,
         };
         prepare(&mut copy.options)?;
         if let Some(hsts) = self.hsts() {
@@ -307,6 +365,19 @@ impl Easy {
         self.wildcard_resolve = false;
         self.auth = Auth::default();
         self.set_cookies = 0;
+    }
+
+    /// What RTSP keeps from one request to the next.
+    pub fn rtsp(&self) -> RtspState {
+        self.rtsp.as_deref().copied().unwrap_or_default()
+    }
+
+    /// The same, to change: made now if not yet.
+    pub fn rtsp_mut(&mut self) -> Result<&mut RtspState, curl_alloc::OutOfMemory> {
+        if self.rtsp.is_none() {
+            self.rtsp = Some(curl_alloc::try_box(RtspState::default())?);
+        }
+        Ok(self.rtsp.as_deref_mut().expect("made above"))
     }
 
     /// Which components trace, as the application set it.
@@ -1106,10 +1177,10 @@ mod tests {
             )
         );
         assert_eq!(
-            why(b"RTSP://x/"),
+            why(b"LDAP://x/"),
             (
                 ErrorKind::UnsupportedProtocol,
-                "Protocol \"rtsp\" is disabled".into()
+                "Protocol \"ldap\" is disabled".into()
             )
         );
         let bad = b"file://h st/";

@@ -188,6 +188,28 @@ fn string(p: Result<*const c_char, OutOfMemory>) -> Value {
     }
 }
 
+/// What RTSP numbers and names (`CURLINFO_RTSP_*`): the session id
+/// the option holds, which a server's may have set, and the handle's
+/// sequence numbers.
+fn rtsp_info(easy: &ShimEasy, info: CURLINFO) -> Result<Option<Value>, Recursive> {
+    let long = |n: u32| Value::Long(c_long::from(n));
+    if info == ffi::CURLINFO_RTSP_SESSION_ID {
+        return easy.with_options(|o| {
+            Some(match &o.small.rtsp_session {
+                Some(session) => string(kept(easy, |i| &mut i.rtsp_session_id, session.id())),
+                None => Value::Ptr(ptr::null_mut()),
+            })
+        });
+    }
+    easy.rtsp().map(|r| {
+        Some(match info {
+            ffi::CURLINFO_RTSP_CLIENT_CSEQ => long(r.next_client_cseq()),
+            ffi::CURLINFO_RTSP_SERVER_CSEQ => long(r.next_server_cseq()),
+            _ => long(r.cseq_recv()),
+        })
+    })
+}
+
 /// The last request's method (`CURLINFO_EFFECTIVE_METHOD`): the
 /// application's custom one if it set one, as `Easy::effective_method`.
 fn effective_method(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
@@ -496,6 +518,14 @@ pub unsafe extern "C" fn curl_easy_getinfo(
                 _ => Value::Long(c_long::from(s)),
             })
         })
+    } else if matches!(
+        info,
+        ffi::CURLINFO_RTSP_SESSION_ID
+            | ffi::CURLINFO_RTSP_CLIENT_CSEQ
+            | ffi::CURLINFO_RTSP_SERVER_CSEQ
+            | ffi::CURLINFO_RTSP_CSEQ_RECV
+    ) {
+        rtsp_info(easy, info)
     } else if info == ffi::CURLINFO_TLS_SSL_PTR || info == ffi::CURLINFO_TLS_SESSION {
         crate::tls::session_info(easy, info).map(|tsi| Some(Value::Struct(tsi.cast())))
     } else {

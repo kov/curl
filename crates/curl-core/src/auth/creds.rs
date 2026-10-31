@@ -158,6 +158,20 @@ impl From<OutOfMemory> for CredentialsError {
 }
 
 impl Credentials {
+    /// A copy, for a connection matched by them that the request still
+    /// authenticates with, as RTSP's is.
+    pub(crate) fn try_clone(&self) -> Result<Credentials, OutOfMemory> {
+        Ok(Credentials {
+            user: copy(&self.user)?,
+            password: copy(&self.password)?,
+            bearer: copy(&self.bearer)?,
+            service: copy(&self.service)?,
+            authzid: copy(&self.authzid)?,
+            source: self.source,
+            trusted: self.trusted,
+        })
+    }
+
     /// What a request to `url` authenticates with (`url_set_data_creds`):
     /// the application's `login`, if `trusted` lets it go to the URL's
     /// origin; then what the URL carries, if the login named no user,

@@ -20,7 +20,7 @@ use core::cell::Cell;
 use core::ptr::NonNull;
 
 use curl_alloc::OutOfMemory;
-use curl_core::easy::Easy;
+use curl_core::easy::{Easy, RtspState};
 use curl_core::multi::{EventCx, NotifyCx, TransferCx, TransferId};
 use curl_core::options::Options;
 use curl_core::report::TransferReport;
@@ -89,6 +89,61 @@ impl Frame {
                 // SAFETY: as the caller guarantees, the adapter that lent
                 // the context does not use it until its callback returns.
                 unsafe { &mut *cx.as_ptr() }.options_mut(id)
+            }
+        }
+    }
+
+    /// What a transfer's RTSP requests number and read, through the
+    /// context lent, to read.
+    ///
+    /// # Safety
+    ///
+    /// As `options_mut`.
+    pub(crate) unsafe fn rtsp(self, id: TransferId) -> Option<RtspState> {
+        match self {
+            Frame::Transfer(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &*cx.as_ptr() }.rtsp(id)
+            }
+            Frame::Event(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &*cx.as_ptr() }.rtsp(id)
+            }
+            Frame::Notify(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &*cx.as_ptr() }.rtsp(id)
+            }
+        }
+    }
+
+    /// What a transfer's RTSP requests number and read, through the
+    /// context lent.
+    ///
+    /// # Safety
+    ///
+    /// As `options_mut`.
+    pub(crate) unsafe fn rtsp_mut<'a>(
+        self,
+        id: TransferId,
+    ) -> Option<Result<&'a mut RtspState, OutOfMemory>> {
+        match self {
+            Frame::Transfer(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.rtsp_mut(id)
+            }
+            Frame::Event(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.rtsp_mut(id)
+            }
+            Frame::Notify(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.rtsp_mut(id)
             }
         }
     }

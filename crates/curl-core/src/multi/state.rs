@@ -5792,7 +5792,7 @@ fn route_cold<H: Host>(
     };
     let cold = crate::conn::RouteCold {
         local,
-        login: proto.take_login(),
+        login: proto.take_login()?,
         upgrade,
         use_ssl,
         ftp,

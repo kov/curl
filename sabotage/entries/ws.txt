@@ -80,10 +80,10 @@ witness: curl-sys-abi ws::tests::raw_sends_take_no_size_and_no_flags
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::connect_only::a_websocket_head_cut_short_leaves_the_connection_unswitched
 --- old
-                    if !cx.easy().options().connect_only.reserves() {
+                    if !cx.easy().options().connect_only.reserves() && self.rtsp.is_none() {
                         lease.get().mark_close();
 --- new
-                    if true {
+                    if self.rtsp.is_none() {
                         lease.get().mark_close();
 
 === a ping delivered in callback mode is not answered

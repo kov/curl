@@ -954,6 +954,19 @@ impl<'a> TransferCx<'a> {
         self.calls.easy_mut(id).map(Easy::options_mut)
     }
 
+    /// What a transfer's RTSP requests number and read.
+    pub fn rtsp(&self, id: TransferId) -> Option<crate::easy::RtspState> {
+        self.calls.easy(id).map(Easy::rtsp)
+    }
+
+    /// The same, to change.
+    pub fn rtsp_mut(
+        &mut self,
+        id: TransferId,
+    ) -> Option<Result<&mut crate::easy::RtspState, OutOfMemory>> {
+        self.calls.easy_mut(id).map(Easy::rtsp_mut)
+    }
+
     /// A copy of a transfer's `Easy` (`curl_easy_duphandle`).
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
         self.duplicate_with(id, &mut |_| Ok(()))
@@ -1177,6 +1190,19 @@ impl<H: Host> EventCx<'_, H> {
         self.slots.get_mut(id).map(|s| s.easy.options_mut())
     }
 
+    /// As `TransferCx::rtsp`.
+    pub fn rtsp(&self, id: TransferId) -> Option<crate::easy::RtspState> {
+        self.slots.get(id).map(|s| s.easy.rtsp())
+    }
+
+    /// As `TransferCx::rtsp_mut`.
+    pub fn rtsp_mut(
+        &mut self,
+        id: TransferId,
+    ) -> Option<Result<&mut crate::easy::RtspState, OutOfMemory>> {
+        self.slots.get_mut(id).map(|s| s.easy.rtsp_mut())
+    }
+
     /// A copy of a transfer's `Easy` (`curl_easy_duphandle`).
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
         self.duplicate_with(id, &mut |_| Ok(()))
@@ -1309,6 +1335,19 @@ impl<H: Host> NotifyCx<'_, H> {
 
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {
         self.multi.easy_mut(id).map(Easy::options_mut)
+    }
+
+    /// As `TransferCx::rtsp`.
+    pub fn rtsp(&self, id: TransferId) -> Option<crate::easy::RtspState> {
+        self.multi.easy(id).map(Easy::rtsp)
+    }
+
+    /// As `TransferCx::rtsp_mut`.
+    pub fn rtsp_mut(
+        &mut self,
+        id: TransferId,
+    ) -> Option<Result<&mut crate::easy::RtspState, OutOfMemory>> {
+        self.multi.easy_mut(id).map(Easy::rtsp_mut)
     }
 
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {

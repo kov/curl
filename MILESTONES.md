@@ -1155,7 +1155,7 @@ protocols need, each step leaving behaviour and traces as they are:
     after `lib/gopher.c`): the selector of the path and query, a CR or LF decoded into it
     refused, written to the application as header bytes the headers API does not keep; the
     answer read to the close; `curl -V`. Every Gopher test both legs run passes (1200 to
-    1202, 1272, 1563, 1609, 5028); 445 needs LDAP and RTSP, on the C leg only.
+    1202, 1272, 1563, 1609, 5028); 445 needs LDAP, on the C leg only.
 76. **MQTT and mqtts.** **Done.** `mqtt://` and `mqtts://` (`proto::mqtt`, after
     `lib/mqtt.c`): CONNECT with the client id and the login, SUBSCRIBE and each PUBLISH's
     remaining length as the body until DISCONNECT, or, for a post of bytes, PUBLISH and
@@ -1181,7 +1181,7 @@ protocols need, each step leaving behaviour and traces as they are:
     server's bytes as the body; the read function's bytes sent, the tool's reading standard
     input without `-T`, as C's does; C's loop a round a pass in DOING, with its time-out and
     its counts; `curl -V`. Every TELNET test both legs run passes (1326, 1327, 1452, 1548,
-    1714, 3555); 445 needs LDAP and RTSP, on the C leg only.
+    1714, 3555); 445 needs LDAP, on the C leg only.
 79. **TFTP.** **Done.** `tftp://` (`proto::tftp`, after `lib/tftp.c`) over an unconnected UDP
     socket (`Dial::Udp`, `Socket::send_to` and `recv_from`): RRQ and WRQ with the mode and the
     `tsize`, `blksize` and `timeout` options, `--tftp-blksize` and `--tftp-no-options` and their
@@ -1189,6 +1189,15 @@ protocols need, each step leaving behaviour and traces as they are:
     time-outs, the server's address pinned; the server's errors as C's codes; `curl -V`. Every
     TFTP test both legs run passes (271, 283 to 286, 332, 1007, 1009, 1049, 1093, 1094, 1099,
     1238, 1242, 1243, 1453, 2002 to 2004).
+80. **RTSP.** **Done.** `rtsp://` (`proto::http::rtsp`, after `lib/rtsp.c`), a mode of HTTP's
+    request: every request kind of `CURLOPT_RTSP_REQUEST`, its head in C's order with the
+    stream URI, transport, session and CSeq options, the CSeq and the session checked, the
+    channels a `Transport:` names, the RTP interleaved with the responses taken out for
+    `CURLOPT_INTERLEAVEFUNCTION`, the `CURLOPT_RTSP_*` options and `CURLINFO_RTSP_*` infos, the
+    tool's headers shown, `curl -V`. The tool has no `--rtsp-*` options, as C's has none. The
+    filter and the header readings are tested at every split point and with mutated input.
+    Every RTSP test both legs run passes (567 to 572, 577, 657, 689, 1688, 2622, 3100, 3233);
+    445 needs LDAP, on the C leg only.
 
 ## Milestone 7: shared state
 

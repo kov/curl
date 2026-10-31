@@ -2432,7 +2432,7 @@ pub struct Ssh {
     pub new_directory_mode: FileMode,
 }
 
-/// What TELNET and TFTP are told, which few transfers set.
+/// What TELNET, TFTP and RTSP are told, which few transfers set.
 #[derive(Debug)]
 pub struct Small {
     /// TELNET's options, each `NAME=value` (`CURLOPT_TELNETOPTIONS`).
@@ -2445,6 +2445,82 @@ pub struct Small {
     /// What TELNET sends, read each round of its loop, whatever the
     /// method; without one, nothing (C's read function, `fread_func`).
     pub input: Option<Handler<dyn ReadHandler>>,
+    /// The request an RTSP transfer makes (`CURLOPT_RTSP_REQUEST`).
+    pub rtsp_request: RtspRequest,
+    /// What RTSP's request line names, in place of `*`
+    /// (`CURLOPT_RTSP_STREAM_URI`).
+    pub rtsp_stream_uri: Option<Vec<u8>>,
+    /// The `Transport:` an RTSP SETUP sends (`CURLOPT_RTSP_TRANSPORT`).
+    pub rtsp_transport: Option<Vec<u8>>,
+    /// The RTSP session the requests are of, as the application set it
+    /// or a server gave it (`CURLOPT_RTSP_SESSION_ID`).
+    pub rtsp_session: Option<RtspSession>,
+    /// Takes the RTP packets interleaved on an RTSP connection, whole;
+    /// without one, the write handler does (`CURLOPT_INTERLEAVEFUNCTION`).
+    pub interleave: Option<Handler<dyn WriteHandler>>,
+}
+
+/// The request an RTSP transfer makes (`CURL_RTSPREQ_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RtspRequest {
+    #[default]
+    Options,
+    Describe,
+    Announce,
+    Setup,
+    Play,
+    Pause,
+    Teardown,
+    GetParameter,
+    SetParameter,
+    Record,
+    /// None sent: the RTP packets interleaved on the connection are read
+    /// (`CURL_RTSPREQ_RECEIVE`).
+    Receive,
+}
+
+impl RtspRequest {
+    /// Every request, in C's order (`CURL_RTSPREQ_OPTIONS` is 1).
+    pub const ALL: [RtspRequest; 11] = [
+        RtspRequest::Options,
+        RtspRequest::Describe,
+        RtspRequest::Announce,
+        RtspRequest::Setup,
+        RtspRequest::Play,
+        RtspRequest::Pause,
+        RtspRequest::Teardown,
+        RtspRequest::GetParameter,
+        RtspRequest::SetParameter,
+        RtspRequest::Record,
+        RtspRequest::Receive,
+    ];
+}
+
+/// An RTSP session's id, and the origin that gave it if a server did:
+/// one value, so that the id set again forgets where an older one came
+/// from (`STRING_RTSP_SESSION_ID`, `state.rtsp_session_origin`).
+#[derive(Debug)]
+pub struct RtspSession {
+    pub(crate) id: Vec<u8>,
+    /// None for an id the application gave.
+    pub(crate) origin: Option<crate::conn::Peer>,
+}
+
+impl RtspSession {
+    /// An id the application gives (`CURLOPT_RTSP_SESSION_ID`).
+    pub fn given(id: Vec<u8>) -> RtspSession {
+        RtspSession { id, origin: None }
+    }
+
+    pub fn id(&self) -> &[u8] {
+        &self.id
+    }
+
+    /// A copy for a copy of the handle: the id alone, as C copies the
+    /// string but not the origin (`curl_easy_duphandle`).
+    fn copied(&self) -> Result<RtspSession, OutOfMemory> {
+        Ok(RtspSession::given(copy(&self.id)?))
+    }
 }
 
 /// A TFTP block size, within what TFTP allows.
@@ -2476,6 +2552,11 @@ impl ColdGroup for Small {
         tftp_blksize: None,
         tftp_no_options: false,
         input: None,
+        rtsp_request: RtspRequest::Options,
+        rtsp_stream_uri: None,
+        rtsp_transport: None,
+        rtsp_session: None,
+        interleave: None,
     };
 }
 
@@ -2486,6 +2567,15 @@ impl Small {
             tftp_blksize: self.tftp_blksize,
             tftp_no_options: self.tftp_no_options,
             input: self.input.clone(),
+            rtsp_request: self.rtsp_request,
+            rtsp_stream_uri: self.rtsp_stream_uri.as_deref().map(copy).transpose()?,
+            rtsp_transport: self.rtsp_transport.as_deref().map(copy).transpose()?,
+            rtsp_session: self
+                .rtsp_session
+                .as_ref()
+                .map(RtspSession::copied)
+                .transpose()?,
+            interleave: self.interleave.clone(),
         })
     }
 }

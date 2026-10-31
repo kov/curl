@@ -61,9 +61,9 @@ witness: curl-tool keeps_the_remote_time
 file: crates/curl-tool/src/output.rs
 witness: curl-tool includes_headers
 --- old
-                Some(Protocol::File | Protocol::Http | Protocol::Https)
+                Some(Protocol::File | Protocol::Http | Protocol::Https | Protocol::Rtsp)
 --- new
-                Some(Protocol::Http | Protocol::Https)
+                Some(Protocol::Http | Protocol::Https | Protocol::Rtsp)
 
 === an upload that cannot be opened is not reported as a transfer
 file: crates/curl-tool/src/operate.rs
@@ -289,9 +289,9 @@ witness: curl-tool dumps_the_headers
 file: crates/curl-tool/src/output.rs
 witness: curl-tool shows_the_headers_of_http
 --- old
-                Some(Protocol::File | Protocol::Http | Protocol::Https)
+                Some(Protocol::File | Protocol::Http | Protocol::Https | Protocol::Rtsp)
 --- new
-                Some(Protocol::File | Protocol::Https)
+                Some(Protocol::File | Protocol::Https | Protocol::Rtsp)
 
 === `--max-time` is not given to the transfer
 file: crates/curl-tool/src/operate.rs

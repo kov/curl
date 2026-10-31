@@ -37,6 +37,9 @@ pub(crate) struct Exchange {
     pub(crate) reused: bool,
     /// A response that is no HTTP may be HTTP/0.9 (`CURLOPT_HTTP09_ALLOWED`).
     pub(crate) allow_09: bool,
+    /// The response is RTSP's, whose status line says `RTSP/1.0`
+    /// (`checkrtspprefix`).
+    pub(crate) rtsp: bool,
     /// What the request asks of the body's framing.
     pub(crate) asked: Asked,
 }
@@ -84,6 +87,9 @@ pub(crate) enum HeadError {
     /// A line longer than C's line buffer, which C fails silently.
     LineTooLong,
     InvalidStatusLine,
+    /// An RTSP status line that is not `RTSP/1.0` and a code, which C
+    /// fails silently.
+    BadRtspStatus,
     Http09NotAllowed,
     BadSubversion,
     UnknownVersion,
@@ -109,6 +115,7 @@ impl HeadError {
         match self {
             HeadError::LineTooLong => ErrorKind::TooLarge,
             HeadError::InvalidStatusLine
+            | HeadError::BadRtspStatus
             | HeadError::VersionMismatch { .. }
             | HeadError::SwitchedNotHttp11
             | HeadError::BadLine(_) => ErrorKind::WeirdServerReply,
@@ -142,6 +149,7 @@ impl HeadError {
         !matches!(
             self,
             HeadError::LineTooLong
+                | HeadError::BadRtspStatus
                 | HeadError::OutOfMemory
                 | HeadError::Framing(FramingError::OutOfMemory)
         )
@@ -151,7 +159,7 @@ impl HeadError {
 impl fmt::Display for HeadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            HeadError::LineTooLong | HeadError::OutOfMemory => Ok(()),
+            HeadError::LineTooLong | HeadError::BadRtspStatus | HeadError::OutOfMemory => Ok(()),
             HeadError::Framing(ref e) => e.fmt(f),
             HeadError::InvalidStatusLine => f.write_str("Invalid status line"),
             HeadError::Http09NotAllowed => f.write_str("Received HTTP/0.9 when not allowed"),
@@ -463,14 +471,20 @@ impl HeadParser {
     }
 
     /// Whether the start of a first line can be a status line: it
-    /// starts as `HTTP/` or an alias does, as far as either goes, in any
-    /// case (`checkhttpprefix`). Under five bytes, it may yet not be.
+    /// starts as `HTTP/` or an alias does, or for RTSP as `RTSP/`, as far
+    /// as either goes, in any case (`checkhttpprefix`, `checkrtspprefix`).
+    /// Under five bytes, it may yet not be.
     fn looks(&self, line: &[u8]) -> Looks {
         let starts = |prefix: &[u8]| {
             let n = line.len().min(prefix.len());
             line[..n].eq_ignore_ascii_case(&prefix[..n])
         };
-        if !starts(b"HTTP/") && !self.aliases.iter().any(|a| starts(a)) {
+        let looks = if self.exchange.rtsp {
+            starts(b"RTSP/")
+        } else {
+            starts(b"HTTP/") || self.aliases.iter().any(|a| starts(a))
+        };
+        if !looks {
             Looks::No
         } else if line.len() >= 5 {
             Looks::Yes
@@ -543,7 +557,11 @@ impl HeadParser {
         } else {
             self.lines += 1;
             let kind = if self.lines == 1 {
-                let status = read_status(&self.line)?;
+                let status = if self.exchange.rtsp {
+                    read_rtsp_status(&self.line)?
+                } else {
+                    read_status(&self.line)?
+                };
                 if status.version.major() != self.exchange.sent.major() {
                     return Err(HeadError::VersionMismatch {
                         sent: self.exchange.sent.major(),
@@ -715,6 +733,46 @@ fn read_status(line: &[u8]) -> Result<Status, HeadError> {
             }
         }
         _ => Err(HeadError::UnknownVersion),
+    }
+}
+
+/// Read an RTSP status line: a word of at most 32 bytes up to the first
+/// space, which trimmed of blanks says `RTSP/1.0`, then one space and a
+/// number of at most 999. RTSP is taken as HTTP/1.1.
+fn read_rtsp_status(line: &[u8]) -> Result<Status, HeadError> {
+    // C reads the line as a string: a zero byte ends it.
+    let line = &line[..line.iter().position(|&b| b == 0).unwrap_or(line.len())];
+    let word_end = line.iter().position(|&b| b == b' ').unwrap_or(line.len());
+    let word = &line[..word_end];
+    if word.is_empty() || word.len() > 32 || word_end == line.len() {
+        return Err(HeadError::BadRtspStatus);
+    }
+    let digits = line[word_end + 1..]
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    let number = &line[word_end + 1..word_end + 1 + digits];
+    let code = number.iter().try_fold(0u16, |n, &d| {
+        let n = n * 10 + u16::from(d - b'0');
+        (n <= 999).then_some(n)
+    });
+    let trimmed = {
+        let start = word
+            .iter()
+            .position(|&b| !is_blank(b))
+            .unwrap_or(word.len());
+        let stop = word
+            .iter()
+            .rposition(|&b| !is_blank(b))
+            .map_or(start, |p| p + 1);
+        &word[start..stop]
+    };
+    match code {
+        Some(code) if digits > 0 && trimmed == b"RTSP/1.0" => Ok(Status {
+            version: HttpVersion::Http11,
+            code,
+        }),
+        _ => Err(HeadError::BadRtspStatus),
     }
 }
 

@@ -485,6 +485,7 @@ mod tests {
             sent: HttpVersion::Http11,
             reused: false,
             allow_09: false,
+            rtsp: false,
             asked: Asked {
                 head: false,
                 ignore_length: false,
@@ -498,6 +499,7 @@ mod tests {
                 http_proxy: false,
                 forwarded: false,
                 websocket: false,
+                rtsp: false,
                 time_condition: None,
             },
         };

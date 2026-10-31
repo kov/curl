@@ -68,6 +68,9 @@ pub(crate) struct ShimEasy {
     /// The application's HSTS functions and data, made the first time
     /// one is set: few handles set any.
     hsts: OnceCell<Box<Cell<callbacks::CHsts>>>,
+    /// The application's interleave function and data, made the first
+    /// time either is set: few handles speak RTSP.
+    interleave: OnceCell<Box<Cell<callbacks::CInterleave>>>,
     /// The application's wildcard download functions and data, made the
     /// first time one is set: few handles set any.
     wildcard: OnceCell<Box<Cell<callbacks::CWildcard>>>,
@@ -117,6 +120,7 @@ pub(crate) struct StringInfos {
     pub(crate) redirect_url: Vec<u8>,
     pub(crate) method: Vec<u8>,
     pub(crate) referer: Vec<u8>,
+    pub(crate) rtsp_session_id: Vec<u8>,
     pub(crate) primary_ip: Vec<u8>,
     pub(crate) local_ip: Vec<u8>,
     pub(crate) certinfo: crate::certinfo::Kept,
@@ -147,6 +151,7 @@ struct CSide {
     sockets: Option<CSockets>,
     tls: Option<CTls>,
     hsts: Option<callbacks::CHsts>,
+    interleave: Option<callbacks::CInterleave>,
     wildcard: Option<callbacks::CWildcard>,
 }
 
@@ -163,6 +168,7 @@ impl CSide {
             sockets: None,
             tls: None,
             hsts: None,
+            interleave: None,
             wildcard: None,
         }
     }
@@ -200,6 +206,9 @@ impl ShimEasy {
         }
         if let Some(hsts) = c.hsts {
             shim.hsts_room()?.set(hsts);
+        }
+        if let Some(interleave) = c.interleave {
+            shim.interleave_room()?.set(interleave);
         }
         if let Some(wildcard) = c.wildcard {
             shim.wildcard_room()?.set(wildcard);
@@ -296,6 +305,7 @@ impl ShimEasy {
         callbacks::install_defaults(options, me, &set, &ccb)?;
         crate::sockets::sync(options, me, &shim.sockets())?;
         callbacks::sync_hsts(options, me, &shim.hsts())?;
+        callbacks::sync_interleave(options, me, &shim.interleave())?;
         callbacks::sync_wildcard(options, me, &shim.wildcard())?;
         crate::tls::sync(options, me, &shim.tls())
     }
@@ -319,6 +329,22 @@ impl ShimEasy {
     /// The application's HSTS functions and data.
     pub(crate) fn hsts(&self) -> callbacks::CHsts {
         self.hsts.get().map_or(callbacks::CHsts::NONE, |c| c.get())
+    }
+
+    /// The application's interleave function and data.
+    pub(crate) fn interleave(&self) -> callbacks::CInterleave {
+        self.interleave
+            .get()
+            .map_or(callbacks::CInterleave::NONE, |c| c.get())
+    }
+
+    /// Room for them, made now if not yet.
+    pub(crate) fn interleave_room(&self) -> Result<&Cell<callbacks::CInterleave>, OutOfMemory> {
+        if self.interleave.get().is_none() {
+            let made = try_box(Cell::new(callbacks::CInterleave::NONE))?;
+            assert!(self.interleave.set(made).is_ok(), "not made yet");
+        }
+        Ok(self.interleave.get().expect("made above"))
     }
 
     /// Room for the HSTS functions, made now if not yet.
@@ -408,6 +434,7 @@ impl ShimEasy {
             posted: OnceCell::new(),
             sockets: OnceCell::new(),
             hsts: OnceCell::new(),
+            interleave: OnceCell::new(),
             wildcard: OnceCell::new(),
             tls: OnceCell::new(),
             tsi: UnsafeCell::new(ffi::curl_tlssessioninfo {
@@ -510,6 +537,34 @@ impl ShimEasy {
                 // borrow ends with this call, inside its callback.
                 let options = unsafe { frame.options_mut(id) };
                 f(options.expect("an added handle is in its multi"))
+            }
+        })
+    }
+
+    /// What the handle's RTSP requests number and read, wherever it is.
+    pub(crate) fn rtsp(&self) -> Result<curl_core::easy::RtspState, Recursive> {
+        self.with_easy(|e| match e {
+            EasyRef::Easy(easy) => easy.rtsp(),
+            EasyRef::Frame(frame, id) => {
+                // SAFETY: as in `with_options`.
+                let rtsp = unsafe { frame.rtsp(id) };
+                rtsp.expect("an added handle is in its multi")
+            }
+        })
+    }
+
+    /// Run `f` on what the handle's RTSP requests number and read,
+    /// wherever it is.
+    pub(crate) fn with_rtsp<R>(
+        &self,
+        f: impl FnOnce(Result<&mut curl_core::easy::RtspState, OutOfMemory>) -> R,
+    ) -> Result<R, Recursive> {
+        self.with_easy(|e| match e {
+            EasyRef::Easy(easy) => f(easy.rtsp_mut()),
+            EasyRef::Frame(frame, id) => {
+                // SAFETY: as in `with_options`.
+                let rtsp = unsafe { frame.rtsp_mut(id) };
+                f(rtsp.expect("an added handle is in its multi"))
             }
         })
     }
@@ -720,6 +775,7 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
         sockets: easy.sockets.get().map(|c| c.get()),
         tls: easy.tls.get().map(|c| c.get()),
         hsts: easy.hsts.get().map(|c| c.get()),
+        interleave: easy.interleave.get().map(|c| c.get()),
         wildcard: easy.wildcard.get().map(|c| c.get()),
     };
     let Ok(dup) = ShimEasy::homeless(c) else {
@@ -845,6 +901,9 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
     }
     if let Some(hsts) = easy.hsts.get() {
         hsts.set(callbacks::CHsts::NONE);
+    }
+    if let Some(interleave) = easy.interleave.get() {
+        interleave.set(callbacks::CInterleave::NONE);
     }
     // The write adapter stays, reading the reset callbacks; the defaults
     // need no other, so a reset allocates nothing, and cannot fail, as

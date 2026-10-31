@@ -12,11 +12,11 @@ witness: curl-core proto::http::tests::a_body_is_read_no_further_than_its_size
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::responses_end_as_c_ends_them
 --- old
-                    if !cx.easy().options().connect_only.reserves() {
+                    if !cx.easy().options().connect_only.reserves() && self.rtsp.is_none() {
                         lease.get().mark_close();
                     }
 --- new
-                    if !cx.easy().options().connect_only.reserves() {
+                    if !cx.easy().options().connect_only.reserves() && self.rtsp.is_none() {
                     }
 
 === a held line is dropped at the end

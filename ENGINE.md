@@ -1398,16 +1398,19 @@ and a line protocol's command do; a POP3 or IMAP body the server ends by closing
 go back to the pool, "left intact", for the next transfer's health check to find dead, as C
 does. A connection that multiplexes (§4.4) is
 leased by several transfers at once: `Use::Leased(n)` counts them, one more for each that joins
-it and each pushed transfer. FTP's data connection is a second stream the control connection's
-protocol state holds (`LineConn::Ftp`, `proto::ftp::data::DataConn`): connected through its own
+it and each pushed transfer. FTP's data connection is a second stream beside the control
+connection, held by the transfer's FTP request (`proto::ftp::Request`, `proto::ftp::data::DataConn`),
+never by the connection: connected through its own
 `ConnectMachine` over the control connection's route at the port the server named, its name
 looked up in the transfer's cache (`side_drive`), and its proxies' handshakes made by the same
 drivers from FTP's own phases (`SideSetup`, as C's ftp.c connects the second socket's filters),
 over what FTP's request lends them; or listened for and accepted, with TLS of the control connection's identity
 when protected, resuming first the copy of its latest session the control connection's TLS
-layer keeps (`tls::OwnSessions`, C's `connssl->session`), as servers may insist on; its socket joins the transfer's pollset (`ConnSlot::side_pollset`), the
-transfer's end closes it, and the connection's end closes it first if it is still open
-(`conn::shutdown`), so no path leaves it behind its connection. FTP's `CCC` takes the control
+layer keeps (`tls::OwnSessions`, C's `connssl->session`), as servers may insist on; its socket joins the transfer's pollset (`ProtoState::side_pollset`,
+for what `ProtoState::side_interest` wants of it), and the transfer's DONE closes it (`ftp_done`),
+whatever ended the transfer, its removal from the multi among them: one owner and one closer, so
+no later transfer on the connection can reach it, and one left unclosed is a socket dropped, which
+panics. FTP's `CCC` takes the control
 connection's own TLS off again (`LayerStack::clear_tls`, `Curl_ssl_cfilter_remove`): its
 session's goodbye is moved on (`tls::Goodbye`, mutual when active, only the server's read when
 passive) without blocking, in the time a shutdown has, and its layer goes once the goodbye is

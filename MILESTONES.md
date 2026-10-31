@@ -1125,8 +1125,8 @@ protocols need, each step leaving behaviour and traces as they are:
     methods and `--ftp-create-dirs`, the quote commands, TYPE, SIZE, MDTM, REST, time
     conditions, ranges and resumes, RETR, STOR, APPE, LIST and NLST; the data connection
     passive (EPSV, PASV, `--ftp-skip-pasv-ip`, PRET) or active (EPRT, PORT, `--ftp-port`, its
-    accept timed by `FtpAccept`), held by the control connection's state, and through a SOCKS
-    or HTTP proxy; FTPS from the start or by AUTH TLS or SSL, with PBSZ and PROT, and CCC,
+    accept timed by `FtpAccept`), held by the transfer's request and closed by its DONE, and
+    through a SOCKS or HTTP proxy; FTPS from the start or by AUTH TLS or SSL, with PBSZ and PROT, and CCC,
     passive or active, clearing the control connection's TLS after its close_notify within
     the shutdown's time; reuse by `Curl_ftp_conns_match`; an FTP URL asked of a forwarding
     HTTP proxy; DONE's 226 and `-Q -command` answers read without stalling the multi, as

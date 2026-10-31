@@ -14,12 +14,12 @@ file: crates/curl-core/src/proto/ftp.rs
 witness: curl-core proto::ftp::tests::a_file_is_retrieved_over_a_passive_data_connection
 features: test-util debug-hooks
 --- old
-        if let Some(data) = pc.data.take() {
+        if let Some(data) = self.data.take() {
             data.discard(cx);
         }
     }
 --- new
-        if let Some(data) = pc.data.as_deref() {
+        if let Some(data) = self.data.as_deref() {
             let _ = data;
         }
     }

@@ -1132,6 +1132,20 @@ impl ProtoState {
         }
     }
 
+    /// The sockets of the second connection the request has open beside
+    /// its own, FTP's data, and what each waits for, the request wanting
+    /// `wanted` of it.
+    pub(crate) fn side_pollset(
+        &self,
+        wanted: Events,
+    ) -> impl Iterator<Item = (&dyn crate::conn::io::Socket, Events)> {
+        let ftp = match self {
+            ProtoState::Ftp(r) => Some(r.data_pollset(wanted)),
+            _ => None,
+        };
+        ftp.into_iter().flatten()
+    }
+
     /// Whether the request may be made again on a fresh connection, its
     /// reused one having died (`Curl_retry_request`): it got nothing
     /// back, and its protocol answers every request, as HTTP does, or it

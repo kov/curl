@@ -181,8 +181,6 @@ pub(crate) struct FtpConn {
     data_tls: bool,
     /// How far its first transfer asked for TLS (`use_ssl`).
     use_ssl: UseSsl,
-    /// The data connection, while a transfer has one.
-    data: Option<Box<DataConn>>,
     /// What of its route few routes have, the credentials it logs in
     /// with among it: the route owns them.
     cold: Option<TryArc<RouteCold>>,
@@ -210,26 +208,6 @@ impl FtpConn {
         self.state = State::Quit;
         // What does not go now is not said.
         let _sent = below.send(cx, b"QUIT\r\n");
-    }
-
-    /// Close what it has open beside the connection: a data connection
-    /// left by a transfer that never ended.
-    pub(crate) fn close(&mut self, net: &mut dyn crate::conn::io::Net) {
-        if let Some(data) = self.data.take() {
-            data.close(net);
-        }
-    }
-
-    /// The data connection's sockets, and what each waits for, the
-    /// transfer wanting `wanted` of it.
-    pub(crate) fn data_pollset(
-        &self,
-        wanted: Events,
-    ) -> impl Iterator<Item = (&dyn Socket, Events)> {
-        self.data
-            .as_deref()
-            .into_iter()
-            .flat_map(move |d| d.pollset(wanted))
     }
 }
 
@@ -340,6 +318,10 @@ pub(crate) struct Request {
     /// `USER` was refused and the command the application gives in its
     /// place sent (`ftp_trying_alternative`).
     trying_alternative: bool,
+    /// The data connection (C's `SECONDARYSOCKET`), from the command
+    /// that sets it up to DONE, which closes it (`ftp_done`): the
+    /// transfer's alone, so that nothing past its end can reach it.
+    data: Option<Box<DataConn>>,
     /// The upload as it goes.
     sending: Option<Box<Sending>>,
     /// The download is still being read (`KEEP_RECV`).
@@ -483,6 +465,7 @@ impl Request {
             passive: Passive::Epsv,
             port_cmd: None,
             trying_alternative: false,
+            data: None,
             sending: None,
             receiving: false,
             upload_done: false,
@@ -598,6 +581,29 @@ impl Request {
         }
     }
 
+    /// The data connection's sockets, and what each waits for, the
+    /// transfer wanting `wanted` of it.
+    pub(crate) fn data_pollset(
+        &self,
+        wanted: Events,
+    ) -> impl Iterator<Item = (&dyn Socket, Events)> {
+        self.data
+            .as_deref()
+            .into_iter()
+            .flat_map(move |d| d.pollset(wanted))
+    }
+
+    /// `f` run with the data connection, if there is one, and the request
+    /// beside it, which its setup borrows; the data connection is the
+    /// request's again whatever `f` returns.
+    fn with_data<R>(&mut self, f: impl FnOnce(&mut Self, &mut DataConn) -> R) -> Option<R> {
+        let mut data = self.data.take()?;
+        let r = f(self, &mut data);
+        assert!(self.data.is_none(), "one data connection at a time");
+        self.data = Some(data);
+        Some(r)
+    }
+
     /// What the back and forth waits for on the control connection in
     /// `phase` (`ftp_pollset`, `ftp_domore_pollset`): its answer, once
     /// DO_MORE's commands stopped to wait for the data connection.
@@ -669,7 +675,6 @@ impl Request {
             use_eprt: options.line.ftp.use_eprt,
             data_tls: false,
             use_ssl: options.line.use_ssl,
-            data: None,
             cold: lease.conn().net_route().and_then(|r| r.cold.clone()),
         };
         let pc = curl_alloc::try_box(pc).map_err(|_| ErrorKind::OutOfMemory)?;
@@ -1960,10 +1965,10 @@ impl Request {
         route.origin = TryArc::try_new(origin).map_err(|_| ErrorKind::OutOfMemory)?;
         let closer = socket_closer(cx);
         let data = DataConn::start(control.number, route, closer, tls, cx.now())?;
-        if let Some(old) = pc.data.take() {
+        if let Some(old) = self.data.take() {
             old.discard(cx);
         }
-        pc.data = Some(curl_alloc::try_box(data).map_err(|_| ErrorKind::OutOfMemory)?);
+        self.data = Some(curl_alloc::try_box(data).map_err(|_| ErrorKind::OutOfMemory)?);
         trace::info_with(
             cx,
             &[
@@ -1985,7 +1990,7 @@ impl Request {
             Component::Ftp,
             format_args!("[{state}] closing DATA connection"),
         );
-        if let Some(data) = pc.data.take() {
+        if let Some(data) = self.data.take() {
             data.discard(cx);
         }
     }
@@ -2273,8 +2278,10 @@ impl Request {
             trace::of(cx, Component::Ftp, format_args!("ftp_initiate_transfer()"));
         }
         let host = self.control_host()?;
-        let data = pc.data.as_deref_mut().ok_or(ErrorKind::FailedInit)?;
-        if data.connect(cx, &host, self)? != Reached::Up {
+        let reached = self
+            .with_data(|r, data| data.connect(cx, &host, r))
+            .ok_or(ErrorKind::FailedInit)?;
+        if reached? != Reached::Up {
             self.initiating = true;
             return Ok(());
         }
@@ -2385,7 +2392,7 @@ impl Request {
         };
         let (pc, _) = ftp_of(lease);
         let state = pc.state.name();
-        let connected = pc
+        let connected = self
             .data
             .as_deref()
             .is_some_and(|d| d.reached() == Reached::Up);
@@ -2453,15 +2460,16 @@ impl Request {
         let host = self.control_host()?;
         {
             let (pc, mut carrier) = ftp_of(lease);
-            let listened = pc.data.as_deref().is_some_and(DataConn::listens);
-            if let Some(data) = pc.data.as_deref_mut() {
+            let listened = self.data.as_deref().is_some_and(DataConn::listens);
+            if let Some(connected) = self.with_data(|r, data| data.connect(cx, &host, r)) {
                 // One the server is to connect to is not waited for here:
                 // it connects once told what to move.
                 let listens = listened;
-                match data.connect(cx, &host, self) {
+                match connected {
                     Err(ErrorKind::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
                     Err(e) => {
-                        pc.data = None;
+                        // Its failure left nothing of it open.
+                        self.data = None;
                         if !listens && self.passive == Passive::Epsv {
                             // An `EPSV` port that cannot be reached: `PASV`.
                             self.epsv_disable(cx, pc, &mut carrier)?;
@@ -2476,7 +2484,7 @@ impl Request {
                 }
             }
             if self.initiating {
-                if pc.data.as_deref().is_some_and(DataConn::listens) {
+                if self.data.as_deref().is_some_and(DataConn::listens) {
                     // The server has not connected back yet.
                     self.check_ctrl(cx, pc, &mut carrier)?;
                     self.stopped = pc.state == State::Stop;
@@ -2579,14 +2587,24 @@ impl Request {
     pub(crate) fn step<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        lease: &mut ConnLease,
+        _: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
         self.pipeline.flush(cx)?;
-        let (pc, _) = ftp_of(lease);
-        let Some(data) = pc.data.as_deref_mut() else {
-            self.received = true;
-            return Ok(ProtoStep::Done);
-        };
+        match self.with_data(|r, data| r.exchange(cx, data)) {
+            Some(step) => step,
+            None => {
+                self.received = true;
+                Ok(ProtoStep::Done)
+            }
+        }
+    }
+
+    /// The exchange's step over its data connection, `data`.
+    fn exchange<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        data: &mut DataConn,
+    ) -> Result<ProtoStep, ErrorKind> {
         if let Some(sending) = self.sending.as_deref_mut() {
             if sending.send_to(cx, &mut DataOutlet(data))? != ProtoStep::Done {
                 return Ok(ProtoStep::Blocked);
@@ -2753,7 +2771,9 @@ impl Request {
         self.status = result;
         self.premature = premature;
         if !lease.conn().keeps_line() {
-            // It failed before its connection had FTP's state.
+            // It failed before its connection had FTP's state, so before
+            // any command could set up its data connection.
+            assert!(self.data.is_none(), "a data connection without FTP's state");
             return Finish::Done(result);
         }
         let mut result = self.done_status(cx, lease, result, premature);
@@ -2863,7 +2883,7 @@ impl Request {
         mut result: Result<(), ErrorKind>,
     ) -> Result<(), ErrorKind> {
         let (pc, mut carrier) = ftp_of(lease);
-        if pc.data.is_none() {
+        if self.data.is_none() {
             return result;
         }
         if result.is_ok() && self.dont_check && self.max_download.is_some_and(|m| m > 0) {
@@ -3273,11 +3293,11 @@ impl Request {
         );
         let deadline = cx.now().after(timeout);
         let data = DataConn::listening(sock, tls, deadline);
-        if let Some(old) = pc.data.take() {
+        if let Some(old) = self.data.take() {
             old.discard(cx);
         }
         match curl_alloc::try_box_or_back(data) {
-            Ok(data) => pc.data = Some(data),
+            Ok(data) => self.data = Some(data),
             Err(data) => {
                 data.discard(cx);
                 set_state(cx, pc, State::Stop);
@@ -3539,12 +3559,14 @@ impl Request {
         carrier: &mut Carrier<'_>,
     ) -> Result<bool, ErrorKind> {
         let host = self.control_host()?;
-        if !pc.data.as_deref().is_some_and(DataConn::listens) {
+        if !self.data.as_deref().is_some_and(DataConn::listens) {
             return Ok(true);
         }
         set_state(cx, pc, State::Stop);
-        let data = pc.data.as_deref_mut().expect("a data connection listens");
-        if data.connect(cx, &host, self)? != Reached::Connecting {
+        let reached = self
+            .with_data(|r, data| data.connect(cx, &host, r))
+            .expect("a data connection listens");
+        if reached? != Reached::Connecting {
             self.due = None;
             return Ok(true);
         }

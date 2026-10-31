@@ -12,9 +12,9 @@ use super::mux::Carrier;
 /// A protocol's state on its connection.
 #[derive(Debug)]
 pub(crate) enum LineConn {
-    /// FTP's: its back and forth, where it is on the server, how it
-    /// logged in, and the data connection a transfer has open; boxed, as
-    /// it is larger than the others'.
+    /// FTP's: its back and forth, where it is on the server, and how it
+    /// logged in; boxed, as it is larger than the others'. The data
+    /// connection is the transfer's, not the connection's.
     Ftp(Box<crate::proto::ftp::FtpConn>),
     /// POP3's: its back and forth, and how it logged in.
     Pop3(crate::proto::pop3::Pop3Conn),
@@ -49,29 +49,6 @@ impl LineConn {
             #[cfg(any(test, feature = "test-util"))]
             LineConn::Test(ref mut f) => f.goodbye(cx, below, dead),
         }
-    }
-}
-
-impl LineConn {
-    /// Close what it has open beside the connection, as the connection
-    /// closes: FTP's data connection.
-    pub(crate) fn close(&mut self, net: &mut dyn super::io::Net) {
-        if let LineConn::Ftp(p) = self {
-            p.close(net);
-        }
-    }
-
-    /// The sockets it has open beside the connection, and what each
-    /// waits for, the transfer wanting `wanted` of them.
-    pub(crate) fn side_pollset(
-        &self,
-        wanted: super::io::Events,
-    ) -> impl Iterator<Item = (&dyn super::io::Socket, super::io::Events)> {
-        let ftp = match self {
-            LineConn::Ftp(p) => Some(p.data_pollset(wanted)),
-            _ => None,
-        };
-        ftp.into_iter().flatten()
     }
 }
 

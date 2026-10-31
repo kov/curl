@@ -1495,14 +1495,6 @@ impl Conn {
         line.goodbye(cx, carrier, dead);
     }
 
-    /// The state its protocol keeps on it, if one does.
-    pub(crate) fn line(&self) -> Option<&line::LineConn> {
-        match &self.session {
-            mux::Speaks::Line(line) => Some(line),
-            _ => None,
-        }
-    }
-
     /// A protocol keeps its state on it.
     pub(crate) fn keeps_line(&self) -> bool {
         matches!(self.session, mux::Speaks::Line(_))

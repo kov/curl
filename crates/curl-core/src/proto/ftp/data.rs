@@ -2,8 +2,10 @@
 //! the peer a passive answer names, as the control connection was, or
 //! accepted from the server on a socket listening here for an active
 //! one; its TLS made over it once connected if the data is protected,
-//! and closed as each transfer ends. The control connection's protocol state holds
-//! it, so that the connection's close closes it whoever ends it.
+//! and closed as each transfer ends. The transfer's FTP request holds it, and
+//! its DONE closes it, whatever ended the transfer: no connection, and no
+//! later transfer on it, can reach a data connection its own transfer is done
+//! with.
 
 use crate::handler::{Configured, SocketPurpose, SocketToSet};
 use crate::multi::TransferCx;

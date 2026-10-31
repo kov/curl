@@ -1,6 +1,6 @@
 //! Transfers over a fake server: the login, a file retrieved over a
 //! passive data connection, a refused file, the data connection closed
-//! with its control connection, an answer awaited in DONE, and a
+//! with its transfer, an answer awaited in DONE, and a
 //! protected data connection resuming its control connection's session.
 
 use std::net::SocketAddr;
@@ -262,12 +262,11 @@ fn a_refused_file_fails_though_done_goes_well() {
     assert_eq!(received(&talk), COMMANDS);
 }
 
-/// The data connection is the control connection's: a multi that goes
-/// with a download under way closes both, and a socket dropped unclosed
-/// fails the test. The transfer's end closes it first; the control
-/// connection's end closes it if the transfer's did not.
+/// The data connection is the transfer's: a multi that goes with a
+/// download under way ends the transfer, whose DONE closes it, and then
+/// the control connection; a socket dropped unclosed fails the test.
 #[test]
-fn the_data_connection_closes_with_its_control_connection() {
+fn the_data_connection_closes_with_its_transfer() {
     let talk = control(&[b"150 here\r\n"]);
     let file = Conversation::replies(&[b"hello"], false)
         .greeting()

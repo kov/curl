@@ -547,9 +547,12 @@ first connect reaches it (a Unix socket's with `resolved unix://P`); one `connec
 chain below` each as the chain is up. The queries are named from the IP version alone; the
 transport is the connection's wanted one, 6 for a Unix socket, 5 only where an alternative
 service switched the origin to HTTP/3 (`AltSvcSaid::SwitchedToH3`), else 3, HTTP/3 asked for
-otherwise being the HTTPS connect filter's choice over a TCP connection. Not traced: the chain's
-connect result C traces under the top filter's name
-(`Curl_conn_connect(block=0) -> R, done=D`, `filter returned R`), c-ares's polling (the line of each look in the cache as the HTTPS record is polled for, `resolve incomplete`, `still waiting`),
+otherwise being the HTTPS connect filter's choice over a TCP connection. A STARTTLS upgrade
+(IMAP, POP3, SMTP, FTP's `AUTH`) says its connect as C's `Curl_conn_connect` does, under `SSL`:
+`added`, `Curl_conn_connect(block=B) -> R, done=D` (block=1 for FTP's, which waits), and once
+done the `APPCONNECT` time, `Established connection` and the chain `connected`/`reduced to`; a
+failure says `filter returned R` and `failed to connect` with the chain. Not traced: c-ares's
+polling (the line of each look in the cache as the HTTPS record is polled for, `resolve incomplete`, `still waiting`),
 the async resolver's own lines (`[DNS] [N] shutdown async`, `destroy async`), and a SOCKS
 proxy's lookup of the destination.
 

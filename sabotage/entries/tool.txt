@@ -1473,3 +1473,13 @@ witness: curl-tool operations_after_more_outputs_than_urls_run_nothing
                     self.stranded = true;
 --- new
                     self.stranded = false;
+
+=== the tool's upload file never seeks
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool a_resumed_upload_seeks_standard_input_if_it_can
+--- old
+        match file.seek(SeekFrom::Start(offset)) {
+            Ok(_) => Ok(()),
+--- new
+        match file.seek(SeekFrom::Start(offset)) {
+            Ok(_) if false => Ok(()),

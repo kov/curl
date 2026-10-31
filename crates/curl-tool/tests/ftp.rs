@@ -286,3 +286,101 @@ fn says_which_tls_option_overrides_which() {
         "{early}"
     );
 }
+
+/// The command that stored an upload, and the bytes stored.
+type Stored = Option<(String, Vec<u8>)>;
+
+/// A server for one connection that takes an upload by EPSV, and gives
+/// what it stored, if it got that far.
+fn upload_server() -> (u16, JoinHandle<Stored>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (tcp, _) = listener.accept().unwrap();
+        tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let mut out = tcp.try_clone().unwrap();
+        let mut read = BufReader::new(tcp);
+        out.write_all(b"220 hi\r\n").unwrap();
+        let mut data = None;
+        let mut stored = None;
+        loop {
+            let mut line = String::new();
+            if read.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            let command = line.trim_end().to_owned();
+            let answer = match command.split(' ').next().unwrap_or("") {
+                "USER" => "331 password?\r\n".to_owned(),
+                "PASS" => "230 in\r\n".to_owned(),
+                "PWD" => "257 \"/\" is it\r\n".to_owned(),
+                "TYPE" => "200 binary\r\n".to_owned(),
+                "EPSV" => {
+                    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+                    let p = l.local_addr().unwrap().port();
+                    data = Some(l);
+                    format!("229 there (|||{p}|)\r\n")
+                }
+                "STOR" | "APPE" => {
+                    out.write_all(b"150 go\r\n").unwrap();
+                    let (mut d, _) = data.take().unwrap().accept().unwrap();
+                    let mut got = Vec::new();
+                    std::io::Read::read_to_end(&mut d, &mut got).unwrap();
+                    stored = Some((command, got));
+                    "226 stored\r\n".to_owned()
+                }
+                "QUIT" => {
+                    out.write_all(b"221 bye\r\n").unwrap();
+                    break;
+                }
+                _ => "500 what\r\n".to_owned(),
+            };
+            out.write_all(answer.as_bytes()).unwrap();
+        }
+        stored
+    });
+    (port, server)
+}
+
+/// `-T -` resumed seeks standard input when it is a file, and reads up to
+/// the point when it is a pipe (`tool_seek_cb`): past its end, the file
+/// is appended nothing, and the pipe fails to read.
+#[test]
+fn a_resumed_upload_seeks_standard_input_if_it_can() {
+    let body = b"ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNO";
+    let dir = std::env::temp_dir().join(format!("curl-tool-seek-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("up");
+    std::fs::write(&path, body).unwrap();
+    let run = |from: &str, piped: bool| {
+        let (port, server) = upload_server();
+        let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+            .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+        let stdin = if piped {
+            std::process::Stdio::piped()
+        } else {
+            std::fs::File::open(&path).unwrap().into()
+        };
+        let mut child = Command::new(tool)
+            .args(["-q", "-sS", "-T", "-", "-C", from])
+            .arg(format!("ftp://127.0.0.1:{port}/f"))
+            .stdin(stdin)
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        if piped {
+            child.stdin.take().unwrap().write_all(body).unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        (out.status.code().unwrap(), stderr, server.join().unwrap())
+    };
+    let rest = Some(("APPE f".to_owned(), body[20..].to_vec()));
+    assert_eq!(run("20", false), (0, String::new(), rest.clone()));
+    assert_eq!(run("20", true), (0, String::new(), rest));
+    let nothing = Some(("APPE f".to_owned(), Vec::new()));
+    assert_eq!(run("50", false), (0, String::new(), nothing));
+    let short = "curl: (31) Failed to read data\n".to_owned();
+    assert_eq!(run("50", true), (31, short, None));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -18,7 +18,9 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box, try_format};
 use curl_core::cookie::Suffixes;
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, UrlErrorKind};
-use curl_core::handler::{Handler, HeaderOrigin, Read, ReadHandler, Rewind, RewindFailed};
+use curl_core::handler::{
+    Handler, HeaderOrigin, Read, ReadHandler, Rewind, RewindFailed, SeekFailed,
+};
 use curl_core::libraries::{Library, SharedLibraries};
 use curl_core::multi::TransferCx;
 use curl_core::options::{self, Method, Progress, UploadSource};
@@ -3816,6 +3818,16 @@ impl Rewind for UploadFile {
                 cx.fail(b"seek callback returned error 2");
                 Err(RewindFailed)
             }
+        }
+    }
+
+    /// A file that cannot seek, such as a pipe, lets the library read up
+    /// to the point instead (`CURL_SEEKFUNC_CANTSEEK`).
+    fn seek(&self, _: &mut TransferCx<'_>, offset: u64) -> Result<(), SeekFailed> {
+        let mut file = self.file.lock().expect("no panic holds it");
+        match file.seek(SeekFrom::Start(offset)) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(SeekFailed::CantSeek),
         }
     }
 }

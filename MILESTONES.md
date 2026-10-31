@@ -1147,6 +1147,15 @@ protocols need, each step leaving behaviour and traces as they are:
     of `ssh_setopts`, the C ABI's options and key function, and `curl -V`. Every SCP and SFTP
     test both legs run passes (55 on the Rust leg, 59 on C's: 2604 and 2605 are C unit tests,
     445 and 2004 wait on gopher and TFTP; 3500, 3990 and 3991 need libssh2 on both).
+74. **DICT.** **Done.** `dict://` (`proto::dict`, after `lib/dict.c`): `MATCH`, `DEFINE`
+    and any other command of the URL's path, the client's name and `QUIT` with it, a word
+    escaped as C escapes it; the answer read to the server's close (`proto::raw`, which
+    Gopher shares), and `curl -V`. Its test, 1450, passes on both legs.
+75. **Gopher and gophers.** **Done.** `gopher://` and `gophers://` (`proto::gopher`,
+    after `lib/gopher.c`): the selector of the path and query, a CR or LF decoded into it
+    refused, written to the application as header bytes the headers API does not keep; the
+    answer read to the close; `curl -V`. Every Gopher test both legs run passes (1200 to
+    1202, 1272, 1563, 1609, 5028); 445 needs LDAP and RTSP, on the C leg only.
 77. **WebSocket.** **Done**, but for the traces of the calls on a connection a transfer only
     made, which go untraced as `curl_easy_send`'s do. `ws://` and `wss://` over HTTP/1.1
     (`proto::ws`, `proto::http::ws`, after `lib/ws.c`): the upgrade request with its key from

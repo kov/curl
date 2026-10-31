@@ -482,6 +482,22 @@ impl Pipeline {
         result
     }
 
+    /// Deliver header bytes of a protocol outside HTTP's family, to the
+    /// write handler if headers are included and to the header handler,
+    /// and not kept for the headers API: C collects headers for HTTP
+    /// only (`Curl_headers_init`). Gopher's selector is one.
+    pub(crate) fn protocol_header<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        bytes: &[u8],
+    ) -> Result<(), ErrorKind> {
+        self.made = true;
+        let kind = OutKind::Header(HeaderOrigin::Header);
+        let result = self.head_line(cx, bytes, kind);
+        client_write(cx, WriteType::of(kind), bytes.len(), result);
+        result
+    }
+
     /// Deliver a line of a line protocol's answer, which is no header:
     /// to the header handler alone, whether or not headers are included
     /// in the output, and not kept for the headers API

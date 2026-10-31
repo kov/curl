@@ -1,0 +1,31 @@
+=== a request the connection takes in pieces goes out cut short
+file: crates/curl-core/src/proto/raw.rs
+witness: curl-core proto::dict::tests::a_request_taken_in_pieces_is_sent_whole
+--- old
+                Ok(Sent::WouldBlock) => return Ok(false),
+--- new
+                Ok(Sent::WouldBlock) => return Ok(true),
+
+=== a looked-up word's quote goes unescaped
+file: crates/curl-core/src/proto/dict.rs
+witness: curl-core proto::dict::tests::a_word_s_special_bytes_are_escaped
+--- old
+        let escaped = c <= 32 || c == 127 || b == b'\'' || b == b'"' || b == b'\\';
+--- new
+        let escaped = c <= 32 || c == 127 || b == b'"' || b == b'\\';
+
+=== a word past C's buffer is sent whole
+file: crates/curl-core/src/proto/dict.rs
+witness: curl-core proto::dict::tests::a_word_past_the_buffer_fails
+--- old
+        if out.len() + more + 1 > MAX_WORD {
+--- new
+        if out.len() + more > MAX_WORD {
+
+=== a lookup's answer is never read
+file: crates/curl-core/src/proto/dict.rs
+witness: curl-core proto::dict::tests::a_lookup_reads_its_answer_to_the_close
+--- old
+                self.answer.start(cx);
+--- new
+                {}

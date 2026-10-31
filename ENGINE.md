@@ -271,6 +271,11 @@ curl-core/src/
     ssh/                     SCP and SFTP (libssh.c): mod.rs, SshConn and the state
                              machine over the `ssh` library traits; path.rs, the
                              request's path, quote paths, ranges and numbers
+    raw.rs                   a request sent whole in DO and its answer read to the close,
+                             DICT's and Gopher's (`Outgoing`, `ToClose`); raw/wire.rs, their
+                             tests' fake server (tests)
+    dict.rs, gopher.rs       DICT (dict.c) and Gopher (gopher.c): the request each makes of
+                             the URL
     pingpong.rs, pingpong/   Pingpong: the line protocols' reader and writer (pingpong.c),
                              sans-IO; ftp.rs, imap.rs, pop3.rs, smtp.rs: where each one's
                              reply ends
@@ -3572,6 +3577,20 @@ range and resume point, and the body read or sent.
 - **DONE** closes the file or channel and runs the commands after the transfer, blocking as
   C runs them, its waits answered as `Finish::Waiting`; the session says goodbye as the
   connection shuts down.
+
+### 5.9 DICT and Gopher
+
+`proto/dict.rs` and `proto/gopher.rs` are `lib/dict.c` and `lib/gopher.c`: no connect of
+their own (gophers's TLS is the connection's), no state on the connection, which is not
+kept (neither scheme has `PROTOPT_CONN_REUSE`). DO makes the request of the URL (DICT's
+`CLIENT`, command and `QUIT`, a word escaped as RFC 2229 has it, as C's `char` reads it;
+Gopher's selector of the path past its item type and the query, a decoded CR or LF
+refused) and sends it (`raw::Outgoing`): DICT traces each piece sent as `DATA_OUT`, Gopher
+writes the selector to the application as header bytes, which are not kept for the headers
+API (`Pipeline::protocol_header`; C collects HTTP's alone). C sends the whole request in DO,
+waiting on the socket; what the connection does not take goes on in DOING, waiting to send.
+The answer is the body, read in PERFORMING until the server closes the connection
+(`raw::ToClose`, `sendrecv_dl`'s reads and traces).
 
 ## 6. HTTP/1.x
 

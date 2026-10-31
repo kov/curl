@@ -229,9 +229,12 @@ static VERSION: VersionInfo = VersionInfo {
     host: HOST,
     features: FEATURES,
     protocols: &[
+        Protocol::Dict,
         Protocol::File,
         Protocol::Ftp,
         Protocol::Ftps,
+        Protocol::Gopher,
+        Protocol::Gophers,
         Protocol::Http,
         Protocol::Https,
         Protocol::Imap,
@@ -267,8 +270,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "file", "ftp", "ftps", "http", "https", "imap", "imaps", "pop3", "pop3s", "scp",
-                "sftp", "smtp", "smtps", "ws", "wss"
+                "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap",
+                "imaps", "pop3", "pop3s", "scp", "sftp", "smtp", "smtps", "ws", "wss"
             ]
         );
         for &p in version().protocols {

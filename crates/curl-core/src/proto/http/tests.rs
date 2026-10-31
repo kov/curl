@@ -2195,7 +2195,7 @@ fn built_schemes_are_named_in_any_case() {
     assert_eq!(Protocols::built(b"HTTPS"), Protocols::of(&["https"]));
     for name in [
         &b"tftp"[..],
-        b"dict",
+        b"ldap",
         b"goobar",
         b"http ",
         b"",

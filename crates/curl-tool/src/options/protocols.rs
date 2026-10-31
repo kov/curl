@@ -138,41 +138,60 @@ mod tests {
         msgs
     }
 
-    /// The library speaks `file`, `ftp`, `ftps`, `http`, `https`, `imap`,
-    /// `imaps`, `pop3`, `pop3s`, `scp`, `sftp`, `smtp`, `smtps`, `ws` and
-    /// `wss`: every
-    /// other name is unknown, as test 322 checks, and a redirect may go to
-    /// `http`, `https`, `ftp` and `ftps` by default.
+    /// The set of protocols `names`.
+    fn set(names: &[&str]) -> Protocols {
+        names
+            .iter()
+            .map(|n| bit(n.as_bytes()).expect("the library speaks it"))
+            .fold(Protocols(0), |set, b| Protocols(set.0 | b))
+    }
+
+    /// The protocols the library speaks, by name.
+    const SPOKEN: &[&str] = &[
+        "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap", "imaps",
+        "pop3", "pop3s", "scp", "sftp", "smtp", "smtps", "ws", "wss",
+    ];
+
+    /// The library speaks the protocols of `SPOKEN`: every other name is
+    /// unknown, as test 322 checks, and a redirect may go to `http`,
+    /// `https`, `ftp` and `ftps` by default.
     #[test]
-    fn with_file_ftp_http_and_mail() {
+    fn with_the_protocols_built() {
         let msgs = quiet();
-        let (file, http, https) = (Protocols(1), Protocols(8), Protocols(16));
-        let all = Protocols(32767);
-        let redirects = Protocols(30);
-        let ftp_and_mail = Protocols(32742);
+        let all = set(SPOKEN);
+        let but = |out: &[&str]| {
+            let kept: Vec<&str> = SPOKEN
+                .iter()
+                .copied()
+                .filter(|p| !out.contains(p))
+                .collect();
+            set(&kept)
+        };
+        assert_eq!(all.0.count_ones() as usize, SPOKEN.len());
         assert_eq!(Protocols::all(), all);
-        assert_eq!(Protocols::redirect_default(), redirects);
+        assert_eq!(
+            Protocols::redirect_default(),
+            set(&["http", "https", "ftp", "ftps"])
+        );
+        let none: String = SPOKEN.iter().map(|p| format!("-{p},")).collect();
         for (list, want) in [
             (b"".as_slice(), Ok(all)),
             (b",,=ALL,", Ok(all)),
             (b"FILE", Ok(all)),
-            (b"=file", Ok(file)),
-            (b"-file", Ok(Protocols(32766))),
-            (b"-file,-HTTP,-https", Ok(ftp_and_mail)),
-            (b"=ftp,+ftps", Ok(Protocols(6))),
-            (b"=imaps,+pop3", Ok(Protocols(192))),
-            (b"=smtps,+smtp", Ok(Protocols(6144))),
-            (b"=scp,+sftp", Ok(Protocols(1536))),
-            (
-                b"-file,-ftp,-ftps,-HTTP,-https,-imap,-imaps,-pop3,-pop3s,-scp,-sftp,-smtp,-smtps,\
-                  -ws,-wss",
-                Err(ParamError::BadUse),
-            ),
-            (b"-all,+file", Ok(file)),
+            (b"=file", Ok(set(&["file"]))),
+            (b"-file", Ok(but(&["file"]))),
+            (b"-file,-HTTP,-https", Ok(but(&["file", "http", "https"]))),
+            (b"=ftp,+ftps", Ok(set(&["ftp", "ftps"]))),
+            (b"=imaps,+pop3", Ok(set(&["imaps", "pop3"]))),
+            (b"=smtps,+smtp", Ok(set(&["smtps", "smtp"]))),
+            (b"=scp,+sftp", Ok(set(&["scp", "sftp"]))),
+            (b"=dict,+GOPHER", Ok(set(&["dict", "gopher"]))),
+            (none.as_bytes(), Err(ParamError::BadUse)),
+            (b"-all,+file", Ok(set(&["file"]))),
             (b"+-http", Err(ParamError::BadUse)),
-            (b"=http", Ok(http)),
-            (b"=https", Ok(https)),
-            (b"tftp", Err(ParamError::BadUse)),
+            (b"=http", Ok(set(&["http"]))),
+            (b"=https", Ok(set(&["https"]))),
+            (b"ldap", Err(ParamError::BadUse)),
             (b"all,x", Err(ParamError::BadUse)),
             (b"+", Err(ParamError::BadUse)),
         ] {
@@ -184,7 +203,8 @@ mod tests {
     /// library's own set.
     #[test]
     fn sets_go_to_the_library_by_name() {
-        let (file, http, both) = (Protocols(1), Protocols(8), Protocols(9));
+        let (file, http) = (set(&["file"]), set(&["http"]));
+        let both = Protocols(file.0 | http.0);
         assert_eq!(both.list().unwrap(), b"file,http");
         assert_eq!(http.list().unwrap(), b"http");
         assert_eq!(Protocols(0).list().unwrap(), b"");

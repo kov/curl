@@ -1,0 +1,24 @@
+=== a CR or LF decoded into a selector is sent
+file: crates/curl-core/src/proto/gopher.rs
+witness: curl-core proto::gopher::tests::a_line_end_in_the_selector_fails_the_transfer
+--- old
+    if selector.contains(&b'\r') || selector.contains(&b'\n') {
+--- new
+    if false {
+
+=== the selector does not reach the application as a header
+file: crates/curl-core/src/proto/gopher.rs
+witness: curl-core proto::gopher::tests::a_selector_taken_in_pieces_is_sent_whole
+--- old
+            pipeline.protocol_header(cx, header)
+--- new
+            Ok(())
+
+=== a protocol's header lines are kept for the headers API
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::gopher::tests::a_menu_is_read_to_the_close
+--- old
+        let result = self.head_line(cx, bytes, kind);
+--- new
+        cx.report_mut().headers_mut().push(bytes, HeaderOrigin::Header)?;
+        let result = self.head_line(cx, bytes, kind);

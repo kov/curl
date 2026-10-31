@@ -1,16 +1,19 @@
 //! The protocols a transfer can speak, each a state the transfer holds
 //! while it exchanges data.
 //!
-//! `file:`, `ftp:`, `http:`, `imap:`, `pop3:`, `smtp:`, with a TLS
-//! library `ftps:`, `https:`, `imaps:`, `pop3s:` and `smtps:`, and with an
-//! SSH library `scp:` and `sftp:` are built in. Tests have three more, networkless: `null:`, which
+//! `dict:`, `file:`, `ftp:`, `gopher:`, `http:`, `imap:`, `pop3:`,
+//! `smtp:`, with a TLS library `ftps:`, `gophers:`, `https:`, `imaps:`,
+//! `pop3s:` and `smtps:`, and with an SSH library `scp:` and `sftp:` are
+//! built in. Tests have three more, networkless: `null:`, which
 //! completes at once, `stall:`, which never does, and `script:`, which
 //! delivers the pieces of its transfer's `Options::script`; and `tcp:`,
 //! which connects to its URL's host and port and completes once
 //! connected.
 
+pub(crate) mod dict;
 pub(crate) mod file;
 pub(crate) mod ftp;
+pub(crate) mod gopher;
 pub(crate) mod http;
 pub(crate) mod http1;
 pub(crate) mod http2;
@@ -18,6 +21,7 @@ pub(crate) mod http3;
 pub(crate) mod imap;
 pub(crate) mod pingpong;
 pub(crate) mod pop3;
+pub(crate) mod raw;
 #[cfg(any(test, feature = "test-util"))]
 mod script;
 pub(crate) mod smtp;
@@ -101,6 +105,10 @@ pub(crate) enum ProtoState {
     Smtp(Box<smtp::Request>),
     /// Boxed, as HTTP's.
     Ssh(Box<ssh::Request>),
+    /// Boxed, as HTTP's.
+    Dict(Box<dict::Request>),
+    /// Boxed, as HTTP's.
+    Gopher(Box<gopher::Request>),
     #[cfg(any(test, feature = "test-util"))]
     Null,
     #[cfg(any(test, feature = "test-util"))]
@@ -253,10 +261,6 @@ impl Waiting {
     /// its own (`mstate_protocol_pollset`, `mstate_do_pollset`,
     /// `mstate_domore_pollset`): something from the server while it
     /// connects, to send while it makes the request, nothing in DONE.
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "the protocols built say what they wait for")
-    )]
     pub(crate) fn c_default(self) -> Events {
         match self {
             Waiting::Connecting => Events::IN,
@@ -507,7 +511,9 @@ impl SetupLend for ProtoState {
             | ProtoState::Pop3(_)
             | ProtoState::Imap(_)
             | ProtoState::Smtp(_)
-            | ProtoState::Ssh(_) => CredentialGate::FIRST.trusted(),
+            | ProtoState::Ssh(_)
+            | ProtoState::Dict(_)
+            | ProtoState::Gopher(_) => CredentialGate::FIRST.trusted(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
                 CredentialGate::FIRST.trusted()
@@ -524,6 +530,8 @@ impl SetupLend for ProtoState {
             ProtoState::Imap(r) => r.pipeline_mut(),
             ProtoState::Smtp(r) => r.pipeline_mut(),
             ProtoState::Ssh(r) => r.pipeline_mut(),
+            ProtoState::Dict(r) => r.pipeline_mut(),
+            ProtoState::Gopher(r) => r.pipeline_mut(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(p) => p.pipeline_mut(),
             #[cfg(any(test, feature = "test-util"))]
@@ -541,7 +549,9 @@ impl SetupLend for ProtoState {
             | ProtoState::Pop3(_)
             | ProtoState::Imap(_)
             | ProtoState::Smtp(_)
-            | ProtoState::Ssh(_) => None,
+            | ProtoState::Ssh(_)
+            | ProtoState::Dict(_)
+            | ProtoState::Gopher(_) => None,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
         }
@@ -555,7 +565,9 @@ impl SetupLend for ProtoState {
             | ProtoState::Pop3(_)
             | ProtoState::Imap(_)
             | ProtoState::Smtp(_)
-            | ProtoState::Ssh(_) => None,
+            | ProtoState::Ssh(_)
+            | ProtoState::Dict(_)
+            | ProtoState::Gopher(_) => None,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
         }
@@ -648,6 +660,18 @@ impl ProtoState {
                 curl_alloc::try_box(ssh::Request::new(url, true, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
+            b"dict" => ProtoState::Dict(
+                curl_alloc::try_box(dict::Request::new(url, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
+            b"gopher" => ProtoState::Gopher(
+                curl_alloc::try_box(gopher::Request::new(url, false, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
+            b"gophers" if cx.easy().libraries().tls.is_some() => ProtoState::Gopher(
+                curl_alloc::try_box(gopher::Request::new(url, true, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
             #[cfg(any(test, feature = "test-util"))]
             b"null" => ProtoState::Null,
             #[cfg(any(test, feature = "test-util"))]
@@ -675,7 +699,9 @@ impl ProtoState {
             ProtoState::File(_)
             | ProtoState::Http(_)
             | ProtoState::Pop3(_)
-            | ProtoState::Imap(_) => {}
+            | ProtoState::Imap(_)
+            | ProtoState::Dict(_)
+            | ProtoState::Gopher(_) => {}
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {}
         }
@@ -697,6 +723,8 @@ impl ProtoState {
             ProtoState::Imap(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Smtp(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Ssh(ref r) => Ok(Some(r.network(url, scope, idn)?)),
+            ProtoState::Dict(ref r) => Ok(Some(r.network(url, scope, idn)?)),
+            ProtoState::Gopher(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
             #[cfg(any(test, feature = "test-util"))]
@@ -723,6 +751,8 @@ impl ProtoState {
             ProtoState::Imap(r) => Some(r.scheme()),
             ProtoState::Smtp(r) => Some(r.scheme()),
             ProtoState::Ssh(r) => Some(r.scheme()),
+            ProtoState::Dict(r) => Some(r.scheme()),
+            ProtoState::Gopher(r) => Some(r.scheme()),
             ProtoState::File(_) => Scheme::named(b"file"),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
@@ -790,6 +820,7 @@ impl ProtoState {
             ProtoState::Pop3(r) => r.secured(),
             ProtoState::Imap(r) => r.secured(),
             ProtoState::Smtp(r) => r.secured(),
+            ProtoState::Gopher(r) => r.secured(),
             _ => false,
         }
     }
@@ -834,6 +865,8 @@ impl ProtoState {
             ProtoState::Imap(ref mut r) => r.connect(cx, lease),
             ProtoState::Smtp(ref mut r) => r.connect(cx, lease),
             ProtoState::Ssh(ref mut r) => r.connect(cx, lease),
+            ProtoState::Dict(ref mut r) => r.connect(cx, lease),
+            ProtoState::Gopher(ref mut r) => r.connect(cx, lease),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => p.connect(cx, lease),
             #[cfg(any(test, feature = "test-util"))]
@@ -861,6 +894,8 @@ impl ProtoState {
             ProtoState::Imap(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Smtp(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Ssh(ref mut r) => r.make(cx, lease, asked),
+            ProtoState::Dict(ref mut r) => r.make(cx, lease, asked),
+            ProtoState::Gopher(ref mut r) => r.make(cx, lease, asked),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => p.make(cx, lease, asked),
             #[cfg(any(test, feature = "test-util"))]
@@ -880,6 +915,8 @@ impl ProtoState {
             ProtoState::Imap(ref r) => r.waits(phase),
             ProtoState::Smtp(ref r) => r.waits(phase),
             ProtoState::Ssh(ref r) => r.waits(phase),
+            ProtoState::Dict(ref r) => r.waits(phase),
+            ProtoState::Gopher(ref r) => r.waits(phase),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.waits(phase),
             #[cfg(any(test, feature = "test-util"))]
@@ -913,6 +950,8 @@ impl ProtoState {
             ProtoState::Ftp(ref r) => r.exchanges(),
             // Its body to read or send.
             ProtoState::Ssh(ref r) => r.exchanges(),
+            ProtoState::Dict(ref r) => r.exchanges(),
+            ProtoState::Gopher(ref r) => r.exchanges(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => true,
         }
@@ -933,6 +972,8 @@ impl ProtoState {
             ProtoState::Smtp(ref r) => r.sending(),
             ProtoState::Http(ref r) => r.sending(),
             ProtoState::Ssh(ref r) => r.sending(),
+            ProtoState::Dict(ref r) => r.sending(),
+            ProtoState::Gopher(ref r) => r.sending(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(_) => script::wants_send(options),
             #[cfg(any(test, feature = "test-util"))]
@@ -954,6 +995,8 @@ impl ProtoState {
             ProtoState::Smtp(ref r) => r.sending(),
             ProtoState::Http(ref r) => r.sending(),
             ProtoState::Ssh(ref r) => r.sending(),
+            ProtoState::Dict(ref r) => r.sending(),
+            ProtoState::Gopher(ref r) => r.sending(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.sending(options),
             #[cfg(any(test, feature = "test-util"))]
@@ -1042,7 +1085,9 @@ impl ProtoState {
             | ProtoState::Pop3(_)
             | ProtoState::Imap(_)
             | ProtoState::Smtp(_)
-            | ProtoState::Ssh(_) => Ok(()),
+            | ProtoState::Ssh(_)
+            | ProtoState::Dict(_)
+            | ProtoState::Gopher(_) => Ok(()),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
                 Ok(())
@@ -1061,6 +1106,8 @@ impl ProtoState {
             ProtoState::Imap(ref r) => r.holds_output(),
             ProtoState::Smtp(ref r) => r.holds_output(),
             ProtoState::Ssh(ref r) => r.holds_output(),
+            ProtoState::Dict(ref r) => r.holds_output(),
+            ProtoState::Gopher(ref r) => r.holds_output(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.holds_output(),
             #[cfg(any(test, feature = "test-util"))]
@@ -1078,6 +1125,8 @@ impl ProtoState {
             ProtoState::Imap(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Smtp(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Ssh(ref mut r) => Some(r.pipeline_mut()),
+            ProtoState::Dict(ref mut r) => Some(r.pipeline_mut()),
+            ProtoState::Gopher(ref mut r) => Some(r.pipeline_mut()),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => Some(p.pipeline_mut()),
             #[cfg(any(test, feature = "test-util"))]
@@ -1099,6 +1148,8 @@ impl ProtoState {
             ProtoState::Imap(ref mut r) => r.step(cx, lease),
             ProtoState::Smtp(ref mut r) => r.step(cx, lease),
             ProtoState::Ssh(ref mut r) => r.step(cx, lease),
+            ProtoState::Dict(ref mut r) => r.step(cx, lease),
+            ProtoState::Gopher(ref mut r) => r.step(cx, lease),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Tcp => Ok(ProtoStep::Done),
             #[cfg(any(test, feature = "test-util"))]
@@ -1125,6 +1176,8 @@ impl ProtoState {
             ProtoState::Imap(ref r) => r.interest(pause),
             ProtoState::Smtp(ref r) => r.interest(pause),
             ProtoState::Ssh(ref r) => r.interest(pause),
+            ProtoState::Dict(ref r) => r.interest(pause),
+            ProtoState::Gopher(ref r) => r.interest(pause),
             ProtoState::File(_) => Events::NONE,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
@@ -1168,6 +1221,8 @@ impl ProtoState {
             ProtoState::Imap(ref r) => r.received_nothing(),
             ProtoState::Smtp(ref r) => r.received_nothing(),
             ProtoState::Ssh(ref r) => r.received_nothing(),
+            ProtoState::Dict(ref r) => r.received_nothing(),
+            ProtoState::Gopher(ref r) => r.received_nothing(),
             ProtoState::File(_) => false,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
@@ -1292,7 +1347,9 @@ impl ProtoState {
             ProtoState::Imap(ref mut r) => r.done(cx, lease, result, premature, exchanged),
             ProtoState::Smtp(ref mut r) => r.done(cx, lease, result, premature, exchanged),
             ProtoState::Ssh(ref mut r) => r.done(cx, lease, result, premature, exchanged),
-            ProtoState::File(_) => Finish::Done(result),
+            ProtoState::File(_) | ProtoState::Dict(_) | ProtoState::Gopher(_) => {
+                Finish::Done(result)
+            }
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
                 Finish::Done(result)

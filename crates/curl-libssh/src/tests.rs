@@ -114,6 +114,8 @@ fn settings_are_given_as_c_strings() {
     assert_eq!(session.set_port(2222), Ok(()));
     assert_eq!(session.set_compression(), Ok(()));
     assert_eq!(session.set_user(b"someone"), Ok(()));
+    assert_eq!(session.set_user(b"some\0one"), Err(Refused));
+    assert_eq!(session.set_known_hosts(b"/k\0h"), Err(Refused));
     assert!(!session.has_pubkey());
     assert_eq!(
         session.import_pubkey_file(b"/nonexistent/key.pub"),
@@ -150,7 +152,9 @@ fn a_failed_connect_leaves_the_connection_s_socket() {
     session.set_socket(ours.as_raw_fd()).unwrap();
     session.set_blocking(true);
     assert_eq!(session.connect(), Rc::Error);
-    assert!(!session.error().unwrap().is_empty(), "the failure is said");
+    let said = session.error().unwrap();
+    assert!(said.len() > 1 && !said.contains(&0), "the failure is said");
+    assert!(said.is_ascii(), "{said:?}");
     session.disconnect();
     drop(session);
     assert!(is_open(ours.as_raw_fd()));
@@ -222,6 +226,14 @@ impl Sshd {
             .unwrap();
         session.set_blocking(true);
         assert_eq!(session.connect(), Rc::Ok);
+        assert_eq!(session.auth_none(), Auth::Denied);
+        assert!(session.auth_list().has(Methods::PUBLICKEY));
+        let public = self.dir.join("user.pub");
+        assert!(!session.has_pubkey());
+        session
+            .import_pubkey_file(public.to_str().unwrap().as_bytes())
+            .unwrap();
+        assert!(session.has_pubkey());
         let key = self.dir.join("user");
         let key = key.to_str().unwrap().as_bytes();
         assert_eq!(session.import_privkey_file(key, None), Rc::Ok);
@@ -467,14 +479,19 @@ fn sftp_files_and_directories_are_the_server_s() {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     let (sshd, ours) = Sshd::serving();
     let mut session = sshd.session(&ours);
+    assert!(!session.has_sftp());
     assert!(session.sftp_new());
+    assert!(session.has_sftp());
     assert_eq!(session.sftp_init(), Rc::Ok);
     let d = sshd.dir.join("files");
     std::fs::create_dir(&d).unwrap();
     let f = d.join("f");
+    assert!(!session.has_file());
     assert!(session.open(bytes(&f), OpenMode::Truncate, 0o640));
+    assert!(session.has_file());
     write_all(&mut *session, b"hello");
     session.close_file();
+    assert!(!session.has_file());
     assert!(session.open(bytes(&f), OpenMode::Append, 0o640));
     write_all(&mut *session, b" there");
     session.close_file();
@@ -529,6 +546,7 @@ fn sftp_files_and_directories_are_the_server_s() {
     assert!(sub.is_dir());
 
     assert!(session.opendir(bytes(&d)));
+    assert!(!session.dir_eof());
     let mut names = Vec::new();
     while let Some(entry) = session.readdir().unwrap() {
         let name = entry.name.unwrap();
@@ -556,6 +574,7 @@ fn sftp_files_and_directories_are_the_server_s() {
     assert_eq!(session.rename(b"a\0b", bytes(&f)), Rc::Error);
 
     session.sftp_free();
+    assert!(!session.has_sftp());
     session.disconnect();
     drop(session);
     drop(ours);

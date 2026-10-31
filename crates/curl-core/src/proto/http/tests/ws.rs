@@ -38,6 +38,9 @@ fn a_ping_delivered_is_answered_with_a_pong() {
     let payload: Vec<u8> = sent[6..].iter().zip(mask).map(|(b, m)| b ^ m).collect();
     assert_eq!(payload, b"hi");
     assert_eq!(ran.seen.body(), b"x");
+    // The pong counts as sent, as C's `Curl_xfer_send` counts it.
+    let size = ran.easy.report().sizes().request();
+    assert_eq!(size, ran.request.len() as u64);
 }
 
 /// With CURLWS_NOAUTOPONG, and in raw mode, nothing answers the ping.
@@ -448,4 +451,63 @@ fn a_long_frame_paused_goes_on_where_it_stopped() {
     assert_eq!(ran.result, Ok(()));
     assert!(writes.len() > 1, "{}", writes.len());
     follows_on(&writes, 70_000);
+}
+
+/// A write handler that answers the first frame with a message of three
+/// fragments, the last two continued without a type, as C allows.
+#[derive(Clone, Default)]
+struct Fragments(Arc<crate::test_cell::Cell<bool>>);
+
+impl crate::handler::WriteHandler for Fragments {
+    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> crate::handler::Write {
+        use crate::ws::{FrameKind, FrameLen, SendFlags};
+        if !self.0.replace(true) {
+            let sends = [
+                (b"a", Some(FrameKind::Text), true),
+                (b"b", None, true),
+                (b"c", None, false),
+            ];
+            for (bytes, kind, more) in sends {
+                let flags = SendFlags { kind, more };
+                cx.ws_send(bytes, FrameLen::These, flags).unwrap();
+            }
+        }
+        crate::handler::Write::Accepted
+    }
+}
+
+/// Fragments continued without a type go out as continuations, each
+/// said as C says it: the one to come with an info line, the last with
+/// the ws component's.
+#[test]
+fn fragments_without_a_type_continue_the_message() {
+    let mut e = Easy::new();
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"ws");
+    e.set_components(Some(components));
+    let mut reply = SWITCH.to_vec();
+    reply.extend_from_slice(b"\x81\x01x");
+    let (mut m, talk, _) = server(&[&reply], true);
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        let url = format!("ws://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.callbacks.write = Some(Handler::write(Fragments::default()).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let sent = frames_sent(&ran);
+    let heads: Vec<u8> = sent.chunks(7).map(|f| f[0]).collect();
+    assert_eq!(heads, [0x01, 0x00, 0x80], "{sent:x?}");
+    let text = ran.seen.text();
+    let said = |line: &str| text.iter().any(|l| l.trim_end() == line);
+    assert!(
+        said(
+            "[WS] setting CURLWS_CONT flag without message type is supported for \
+             compatibility but highly discouraged"
+        ),
+        "{text:#?}"
+    );
+    assert!(
+        said("[WS] no flags given; interpreting as continuation fragment for compatibility"),
+        "{text:#?}"
+    );
 }

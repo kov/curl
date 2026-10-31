@@ -15,9 +15,10 @@ use core::ptr::{self, NonNull};
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
 use curl_core::handler::{
     ChunkBegin, ChunkBeginHandler, ChunkEndHandler, DebugHandler, DebugKind, FileInfo, FileType,
-    FnMatchHandler, Handler, HeaderHandler, HeaderOrigin, LentBytes, Matched, ProgressHandler,
-    ProgressNow, ProgressVerdict, Read, ReadHandler, Rewind, RewindFailed, TextSink,
-    TrailerHandler, TrailerLines, Trailers, Write, WriteHandler,
+    FnMatchHandler, Handler, HeaderHandler, HeaderOrigin, HostKey, KeyMatch, KeyVerdict, LentBytes,
+    Matched, ProgressHandler, ProgressNow, ProgressVerdict, Read, ReadHandler, Rewind,
+    RewindFailed, SshKeyHandler, TextSink, TrailerHandler, TrailerLines, Trailers, Write,
+    WriteHandler,
 };
 use curl_core::multi::TransferCx;
 use curl_core::options::{Method, Options, Progress, UploadSource};
@@ -66,6 +67,9 @@ pub(crate) struct CCallbacks {
     pub(crate) debug_data: *mut c_void,
     pub(crate) trailer: curl_trailer_callback,
     pub(crate) trailer_data: *mut c_void,
+    /// `CURLOPT_SSH_KEYFUNCTION` and `CURLOPT_SSH_KEYDATA`.
+    pub(crate) ssh_key: ffi::curl_sshkeycallback,
+    pub(crate) ssh_key_data: *mut c_void,
     /// Where text goes without a debug function (`CURLOPT_STDERR`).
     pub(crate) stderr: *mut libc::FILE,
 }
@@ -134,6 +138,8 @@ impl CCallbacks {
             debug_data: ptr::null_mut(),
             trailer: None,
             trailer_data: ptr::null_mut(),
+            ssh_key: None,
+            ssh_key_data: ptr::null_mut(),
             stderr: error,
         }
     }
@@ -196,6 +202,7 @@ pub(crate) fn install_defaults(
     sync_text(options, easy, ccb)?;
     sync_progress(options, easy, set, ccb)?;
     sync_trailer(options, easy, ccb)?;
+    sync_ssh_key(options, easy, ccb)?;
     sync_upload(options, easy, set)
 }
 
@@ -348,6 +355,26 @@ pub(crate) fn sync_trailer(
     match (ccb.trailer.is_some(), c.trailer.is_some()) {
         (true, false) => c.trailer = Some(Handler::trailer(Adapter(easy))?),
         (false, true) => c.trailer = None,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The SSH key adapter, while there is a key function.
+pub(crate) fn sync_ssh_key(
+    options: &mut Options,
+    easy: NonNull<ShimEasy>,
+    ccb: &CCallbacks,
+) -> Result<(), OutOfMemory> {
+    let set = options
+        .ssh
+        .made_mut()
+        .is_some_and(|s| s.key_handler.is_some());
+    match (ccb.ssh_key.is_some(), set) {
+        (true, false) => {
+            options.ssh.make_mut()?.key_handler = Some(Handler::ssh_key(Adapter(easy))?);
+        }
+        (false, true) => options.ssh.make_mut()?.key_handler = None,
         _ => {}
     }
     Ok(())
@@ -739,6 +766,81 @@ impl TrailerHandler for Adapter {
         } else {
             Trailers::Abort
         }
+    }
+}
+
+impl SshKeyHandler for Adapter {
+    /// The key function, given the known-hosts file's key and the
+    /// server's as `struct curl_khkey`, each in base64 ended by a zero
+    /// byte with a length of 0, how they compare and its data; an answer
+    /// it has no name for rejects the key.
+    fn check(
+        &self,
+        cx: &mut TransferCx<'_>,
+        known: Option<HostKey<'_>>,
+        found: HostKey<'_>,
+        matched: KeyMatch,
+    ) -> KeyVerdict {
+        let ccb = self.easy().ccb.get();
+        let Some(f) = ccb.ssh_key else {
+            return KeyVerdict::Reject;
+        };
+        let (Ok(known_text), Ok(found_text)) = (
+            known.map(|k| c_text(k.base64)).transpose(),
+            c_text(found.base64),
+        ) else {
+            return KeyVerdict::Reject;
+        };
+        let khkey = |text: &[u8], kind| ffi::curl_khkey {
+            key: text.as_ptr().cast(),
+            len: 0,
+            keytype: key_type(kind),
+        };
+        let known = known.map(|k| khkey(known_text.as_deref().unwrap_or_default(), k.kind));
+        let found = khkey(&found_text, found.kind);
+        let known_ptr = known.as_ref().map_or(ptr::null(), |k| k as *const _);
+        let matched = match matched {
+            KeyMatch::Ok => ffi::CURLKHMATCH_OK,
+            KeyMatch::Mismatch => ffi::CURLKHMATCH_MISMATCH,
+            KeyMatch::Missing => ffi::CURLKHMATCH_MISSING,
+        };
+        let handle = self.handle();
+        // SAFETY: the application's key function takes the handle, the
+        // two keys, alive through the call with their texts, how they
+        // compare and its data.
+        let answer = self.call(cx, || unsafe {
+            f(handle, known_ptr, &found, matched, ccb.ssh_key_data)
+        });
+        match answer {
+            a if a == ffi::CURLKHSTAT_FINE_ADD_TO_FILE.0 => KeyVerdict::FineAddToFile,
+            a if a == ffi::CURLKHSTAT_FINE.0 => KeyVerdict::Fine,
+            a if a == ffi::CURLKHSTAT_DEFER.0 => KeyVerdict::Defer,
+            a if a == ffi::CURLKHSTAT_FINE_REPLACE.0 => KeyVerdict::FineReplace,
+            _ => KeyVerdict::Reject,
+        }
+    }
+}
+
+/// `text` with a zero byte after it, for C.
+fn c_text(text: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(text.len() + 1)
+        .map_err(|_| OutOfMemory)?;
+    v.try_extend_from_slice(text)?;
+    v.try_push(0)?;
+    Ok(v)
+}
+
+/// A key's type as `enum curl_khtype` names it.
+fn key_type(kind: curl_core::ssh::KeyType) -> ffi::curl_khtype {
+    use curl_core::ssh::KeyType;
+    match kind {
+        KeyType::Rsa => ffi::CURLKHTYPE_RSA,
+        KeyType::Rsa1 => ffi::CURLKHTYPE_RSA1,
+        KeyType::Ecdsa => ffi::CURLKHTYPE_ECDSA,
+        KeyType::Ed25519 => ffi::CURLKHTYPE_ED25519,
+        KeyType::Dss => ffi::CURLKHTYPE_DSS,
+        KeyType::Other => ffi::CURLKHTYPE_UNKNOWN,
     }
 }
 

@@ -944,6 +944,40 @@ fn apply(
             let bits = u16::try_from(n).ok().and_then(FileMode::new);
             options.new_file_mode = bits.ok_or(Refused::Bad)?;
         }
+        (ffi::CURLOPT_SSH_AUTH_TYPES, Long(n)) => {
+            // As C keeps it, its low 32 bits.
+            options.ssh.make_mut()?.auth_types = curl_core::options::SshAuthTypes(n as u32);
+        }
+        (ffi::CURLOPT_NEW_DIRECTORY_PERMS, Long(n)) => {
+            let bits = u16::try_from(n).ok().and_then(FileMode::new);
+            options.ssh.make_mut()?.new_directory_mode = bits.ok_or(Refused::Bad)?;
+        }
+        (ffi::CURLOPT_SSH_COMPRESSION, Long(n)) => options.ssh.make_mut()?.compression = n != 0,
+        (ffi::CURLOPT_SSH_PUBLIC_KEYFILE, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let value = unsafe { owned(p) }?;
+            options.ssh.set(|g| &mut g.public_key, value)?;
+        }
+        (ffi::CURLOPT_SSH_PRIVATE_KEYFILE, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let value = unsafe { owned(p) }?;
+            options.ssh.set(|g| &mut g.private_key, value)?;
+        }
+        (ffi::CURLOPT_SSH_HOST_PUBLIC_KEY_MD5, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let value = unsafe { owned(p) }?;
+            options.ssh.set(|g| &mut g.host_key_md5, value)?;
+        }
+        (ffi::CURLOPT_SSH_HOST_PUBLIC_KEY_SHA256, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let value = unsafe { owned(p) }?;
+            options.ssh.set(|g| &mut g.host_key_sha256, value)?;
+        }
+        (ffi::CURLOPT_SSH_KNOWNHOSTS, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let value = unsafe { owned(p) }?;
+            options.ssh.set(|g| &mut g.known_hosts, value)?;
+        }
         (ffi::CURLOPT_URL, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             options.set_url(unsafe { string(p) }?)?;
@@ -1485,6 +1519,13 @@ fn apply(
             unsafe { string(p) }?;
         }
         (ffi::CURLOPT_HSTS_CTRL | ffi::CURLOPT_ALTSVC_CTRL, Long(_)) => {}
+        (ffi::CURLOPT_SSH_KEYFUNCTION, Ptr(p)) => {
+            // SAFETY: the application passes a function of the option's
+            // type, or NULL, which leaves the key to the known-hosts file.
+            ccb.ssh_key = unsafe { function(p) };
+            callbacks::sync_ssh_key(options, me, ccb)?;
+        }
+        (ffi::CURLOPT_SSH_KEYDATA, Ptr(p)) => ccb.ssh_key_data = p,
         (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
             // SAFETY: the application passes a function of the option's
             // type, or NULL.

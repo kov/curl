@@ -1156,6 +1156,12 @@ protocols need, each step leaving behaviour and traces as they are:
     refused, written to the application as header bytes the headers API does not keep; the
     answer read to the close; `curl -V`. Every Gopher test both legs run passes (1200 to
     1202, 1272, 1563, 1609, 5028); 445 needs LDAP and RTSP, on the C leg only.
+76. **MQTT and mqtts.** **Done.** `mqtt://` and `mqtts://` (`proto::mqtt`, after
+    `lib/mqtt.c`): CONNECT with the client id and the login, SUBSCRIBE and each PUBLISH's
+    remaining length as the body until DISCONNECT, or, for a post of bytes, PUBLISH and
+    DISCONNECT; packets the connection takes in part finished first; PINGREQ after the
+    upkeep interval; the server's packets checked as C checks them; `curl -V`. Every MQTT
+    test both legs run passes (28); 1693 is a C unit test, on the C leg only.
 77. **WebSocket.** **Done**, but for the traces of the calls on a connection a transfer only
     made, which go untraced as `curl_easy_send`'s do. `ws://` and `wss://` over HTTP/1.1
     (`proto::ws`, `proto::http::ws`, after `lib/ws.c`): the upgrade request with its key from

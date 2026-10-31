@@ -26,7 +26,8 @@ pub const BOUNDARY_LEN: usize = BOUNDARY_DASHES + BOUNDARY_CHARS;
 pub const MAX_LEVELS: usize = 40;
 
 /// What a boundary's characters are drawn from.
-const ALNUM: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+pub(crate) const ALNUM: &[u8; 62] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 /// What separates the parts of a `Mime`: 24 dashes and 22 letters and
 /// digits.

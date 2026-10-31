@@ -1,0 +1,55 @@
+=== a CONNACK that refuses the connection is taken
+file: crates/curl-core/src/proto/mqtt.rs
+witness: curl-core proto::mqtt::tests::a_bad_connack_fails
+--- old
+        if ack != [0, 0] {
+--- new
+        if false {
+
+=== a SUBACK for another packet is taken
+file: crates/curl-core/src/proto/mqtt.rs
+witness: curl-core proto::mqtt::tests::a_suback_for_another_packet_fails
+--- old
+        if ack != [(id >> 8) as u8, id as u8, 0] {
+--- new
+        if false {
+
+=== a DISCONNECT with a length is taken
+file: crates/curl-core/src/proto/mqtt.rs
+witness: curl-core proto::mqtt::tests::a_malformed_disconnect_fails
+--- old
+        if (kind == MSG_DISCONNECT || kind == MSG_PINGRESP) && (len > 0 || reserved > 0) {
+--- new
+        if false {
+
+=== a PUBLISH past the most allowed is delivered
+file: crates/curl-core/src/proto/mqtt.rs
+witness: curl-core proto::mqtt::tests::a_publish_past_the_most_allowed_fails
+--- old
+                if max.is_some_and(|max| remaining as u64 > max.get()) {
+--- new
+                if false {
+
+=== a PUBLISH cut short ends the transfer well
+file: crates/curl-core/src/proto/mqtt.rs
+witness: curl-core proto::mqtt::tests::a_short_publish_is_a_partial_file
+--- old
+                        return Err(ErrorKind::PartialFile);
+--- new
+                        return Ok(true);
+
+=== a length of five bytes is read
+file: crates/curl-core/src/proto/mqtt.rs
+witness: curl-core proto::mqtt::tests::a_bad_length_is_refused
+--- old
+        if i == 4 {
+--- new
+        if i == 5 {
+
+=== a post ends before its DISCONNECT has gone
+file: crates/curl-core/src/proto/mqtt.rs
+witness: curl-core proto::mqtt::tests::packets_taken_in_pieces_go_whole
+--- old
+        Ok(self.unsent.is_empty())
+--- new
+        Ok(true)

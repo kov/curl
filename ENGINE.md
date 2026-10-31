@@ -276,6 +276,8 @@ curl-core/src/
                              tests' fake server (tests)
     dict.rs, gopher.rs       DICT (dict.c) and Gopher (gopher.c): the request each makes of
                              the URL
+    mqtt.rs                  MQTT (mqtt.c): its packets, made and read, and the exchange in
+                             DOING
     pingpong.rs, pingpong/   Pingpong: the line protocols' reader and writer (pingpong.c),
                              sans-IO; ftp.rs, imap.rs, pop3.rs, smtp.rs: where each one's
                              reply ends
@@ -3591,6 +3593,23 @@ API (`Pipeline::protocol_header`; C collects HTTP's alone). C sends the whole re
 waiting on the socket; what the connection does not take goes on in DOING, waiting to send.
 The answer is the body, read in PERFORMING until the server closes the connection
 (`raw::ToClose`, `sendrecv_dl`'s reads and traces).
+
+### 5.10 MQTT
+
+`proto/mqtt.rs` is `lib/mqtt.c`. A connection is never reused (no `PROTOPT_CONN_REUSE`), so
+what C keeps on it (the state, the packet id) is the request's. DO says CONNECT, its client
+id `curl` and eight letters or digits drawn as `Curl_rand_alnum` draws them from the
+`Random` hook, then forgets the credentials; everything after is DOING, as in C, and the
+request exchanges nothing once made. Each pass reads at most C's reads: one packet type
+byte, its remaining length a byte at a time (four at most), a CONNACK or SUBACK's fixed
+bytes, or up to 4 KiB of a PUBLISH, whose whole remaining length, its topic too, is the
+body. A GET SUBSCRIBEs and reads until DISCONNECT; a POST of bytes PUBLISHes them and says
+DISCONNECT. What of a packet the connection does not take waits, and DOING waits to send
+it before anything else, as C's `mqtt_pollset` says. PINGREQ goes after the upkeep
+interval with nothing sent or read, when DOING runs then, as C's does; there is no timer
+for it. The server's bytes are checked as C checks them: lengths, the CONNACK's code, the
+SUBACK's id, a PINGRESP or DISCONNECT with a length or reserved bits, and a PUBLISH past
+the most the transfer may deliver.
 
 ## 6. HTTP/1.x
 

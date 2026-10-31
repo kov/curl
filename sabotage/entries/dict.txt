@@ -2,9 +2,11 @@
 file: crates/curl-core/src/proto/raw.rs
 witness: curl-core proto::dict::tests::a_request_taken_in_pieces_is_sent_whole
 --- old
-                Ok(Sent::WouldBlock) => return Ok(false),
+            if n == 0 {
+                return Ok(false);
 --- new
-                Ok(Sent::WouldBlock) => return Ok(true),
+            if n == 0 {
+                return Ok(true);
 
 === a looked-up word's quote goes unescaped
 file: crates/curl-core/src/proto/dict.rs

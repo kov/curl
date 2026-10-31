@@ -239,6 +239,8 @@ static VERSION: VersionInfo = VersionInfo {
         Protocol::Https,
         Protocol::Imap,
         Protocol::Imaps,
+        Protocol::Mqtt,
+        Protocol::Mqtts,
         Protocol::Pop3,
         Protocol::Pop3s,
         Protocol::Scp,
@@ -271,7 +273,8 @@ mod tests {
             names,
             [
                 "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap",
-                "imaps", "pop3", "pop3s", "scp", "sftp", "smtp", "smtps", "ws", "wss"
+                "imaps", "mqtt", "mqtts", "pop3", "pop3s", "scp", "sftp", "smtp", "smtps", "ws",
+                "wss",
             ]
         );
         for &p in version().protocols {

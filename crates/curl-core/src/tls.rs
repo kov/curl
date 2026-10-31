@@ -333,6 +333,13 @@ pub enum Goodbye {
     Heard,
 }
 
+impl Goodbye {
+    /// Ours is sent.
+    pub fn sends(self) -> bool {
+        self == Goodbye::Mutual
+    }
+}
+
 /// What a TLS session waits for on the socket.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TlsWait {

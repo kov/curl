@@ -903,7 +903,7 @@ impl FakeSession {
                 }
                 // A goodbye is said back to the peer's too, unless only
                 // the peer's is waited for.
-                Stage::Open if goodbye == Goodbye::Heard => self.stage = Stage::Closed,
+                Stage::Open if !goodbye.sends() => self.stage = Stage::Closed,
                 Stage::Open => self.stage = Stage::Closing(0),
                 Stage::Closing(mut sent) => {
                     let flushed =

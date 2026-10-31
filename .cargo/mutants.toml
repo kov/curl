@@ -92,13 +92,15 @@ exclude_re = [
     # The engine shuts a session down once, and only after its handshake;
     # what is pending after the goodbye is never read.
     'curl-openssl/src/ssl\.rs:.*: replace (\|\| with &&|!= with ==) in <impl TlsSession for Session>::shutdown$',
-    # The goodbye runs on the multi's own handle, as C's runs on its admin
-    # handle (`Curl_cshutdn_terminate`), so its trace reaches no
+    # A connection's goodbye runs on the multi's own handle, as C's runs on
+    # its admin handle (`Curl_cshutdn_terminate`), so its trace reaches no
     # application; and the connection is closed however it ends. These
     # change only which lines that trace says, whether a close_notify goes
     # to a peer already gone, or how often the socket is waited for. The
     # peer tests in goodbye.rs check the close_notify arrives, and that an
-    # aborted transfer sends none.
+    # aborted transfer sends none. FTP's CCC, whose goodbye the transfer
+    # traces, decides whether ours is sent in `Goodbye::sends`, which is
+    # mutated with curl-core and checked by ccc.rs.
     'curl-openssl/src/ssl\.rs:.*: (replace (==|!=) with (!=|==)|replace <= with >|delete -) in Session::goodbye$',
     # A key of its certificate's signer's kind, the signature naming no
     # digest, that names a default digest of its own: the keys OpenSSL

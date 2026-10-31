@@ -454,6 +454,6 @@ witness: curl-openssl ssl::tests::a_quic_session_s_check_needs_its_handshake_don
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl a_passive_ccc_answers_no_close_notify
 --- old
-        if goodbye == Goodbye::Mutual && sent() == 0 {
+        if goodbye.sends() && sent() == 0 {
 --- new
         if sent() == 0 {

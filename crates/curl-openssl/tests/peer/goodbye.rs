@@ -19,6 +19,10 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "an_aborted_transfer_s_connection_says_no_goodbye",
         an_aborted_transfer_s_connection_says_no_goodbye,
     ),
+    (
+        "a_peer_gone_without_its_close_notify_is_still_said_goodbye_to",
+        a_peer_gone_without_its_close_notify_is_still_said_goodbye_to,
+    ),
 ];
 
 /// A server for one connection answering one GET with `BODY`, the
@@ -95,4 +99,50 @@ fn an_aborted_transfer_s_connection_says_no_goodbye() {
     });
     assert_eq!(got.result, Err(ErrorKind::WriteError));
     assert!(!server.join().unwrap(), "a close_notify came");
+}
+
+/// The server closes its side after the response with no close_notify:
+/// the end the client reads is not a goodbye, so as the multi goes the
+/// client still says its own, as the reference does, rather than taking
+/// the peer for one that said goodbye and closed.
+fn a_peer_gone_without_its_close_notify_is_still_said_goodbye_to() {
+    let certs = certs("goodbye-gone", "localhost", &["localhost"]);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = listener.local_addr().unwrap();
+    let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
+    acceptor.set_private_key(&certs.key).unwrap();
+    acceptor.set_certificate(&certs.cert).unwrap();
+    let acceptor = acceptor.build();
+    let server = std::thread::spawn(move || {
+        let (tcp, _) = listener.accept().unwrap();
+        tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let mut tls = acceptor.accept(tcp).unwrap();
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+            match tls.read(&mut buf) {
+                Ok(0) | Err(_) => return 0,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+            }
+        }
+        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", BODY.len());
+        tls.write_all(head.as_bytes()).unwrap();
+        tls.write_all(BODY).unwrap();
+        // Its side closed under the session, unsaid; what the client
+        // sends after is read as it comes.
+        let tcp = tls.get_mut();
+        tcp.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut after = 0;
+        while let Ok(n) = tcp.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            after += n;
+        }
+        after
+    });
+    let got = get("localhost", at, trusting(&certs));
+    assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+    assert!(server.join().unwrap() > 0, "no close_notify came");
 }

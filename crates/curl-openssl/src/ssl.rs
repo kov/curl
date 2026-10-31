@@ -1580,8 +1580,8 @@ impl Session {
             }
             // SAFETY: the SSL and what its call returned.
             let err = unsafe { openssl_sys::SSL_get_error(ssl, nread) };
-            if nread == 0 && err == openssl_sys::SSL_ERROR_ZERO_RETURN {
-                if goodbye == Goodbye::Heard {
+            if matches!((nread, err), (0, openssl_sys::SSL_ERROR_ZERO_RETURN)) {
+                if !goodbye.sends() {
                     io.trace(format_args!("SSL shutdown received, not sending"));
                     return true;
                 }
@@ -1593,7 +1593,7 @@ impl Session {
                 }
             }
         }
-        if goodbye == Goodbye::Mutual && sent() == 0 {
+        if goodbye.sends() && sent() == 0 {
             // SAFETY: the thread's error queue.
             unsafe { openssl_sys::ERR_clear_error() };
             io.trace(format_args!("send SSL close notify"));

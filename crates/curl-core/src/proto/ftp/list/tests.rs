@@ -365,3 +365,136 @@ fn a_hostile_listing_fails_without_a_panic() {
     assert!(failed > 1000 && failed < 3500, "{failed} rounds failed");
     assert!(kept > 10_000, "{kept} files kept");
 }
+
+/// A Windows NT line's date is eight bytes and a space, its time comes
+/// after any blanks, and a line may end with a bare line feed, as C's
+/// parser reads them (`parse_winnt`).
+#[test]
+fn a_windows_nt_line_s_date_time_and_end_read_as_c_reads_them() {
+    let one = |line: &[u8]| {
+        let l = read(line, line.len());
+        let first = l.files().front().map(|e| {
+            let i = e.info();
+            (i.name.to_vec(), i.time.to_vec(), i.size)
+        });
+        (l.error(), first)
+    };
+    let file = |time: &[u8]| Some((b"n".to_vec(), time.to_vec(), Some(5)));
+    // The ninth byte of the date must be its space.
+    assert_eq!(
+        one(b"01-01-011 01:01AM 5 n\r\n"),
+        (Some(ErrorKind::FtpBadFileList), None)
+    );
+    // One space before the time, or blanks of either kind.
+    assert_eq!(
+        one(b"01-01-01 01:01AM 5 n\r\n"),
+        (None, file(b"01-01-01 01:01AM"))
+    );
+    assert_eq!(
+        one(b"01-01-01 \t 01:01AM 5 n\r\n"),
+        (None, file(b"01-01-01 \t 01:01AM"))
+    );
+    assert_eq!(
+        one(b"01-01-01    01:01AM 5 n\r\n"),
+        (None, file(b"01-01-01    01:01AM"))
+    );
+    // A bare line feed ends the name as CRLF does.
+    let lf = b"01-01-01  01:01AM 5 n\n01-01-01  01:02AM <DIR> d\n";
+    let l = read(lf, lf.len());
+    assert_eq!(l.error(), None);
+    assert_eq!(names(&l), [&b"n"[..], b"d"]);
+}
+
+/// A zero byte passes the checks a field's bytes are held to, as C's
+/// `strchr` finds the string's end in any set (`parse_winnt`): such a
+/// line is read, not failed.
+#[test]
+fn a_zero_byte_passes_a_field_s_check_as_in_c() {
+    let l = read(b"01-0\x00-01  01:01AM 5 n\r\n", 64);
+    assert_eq!((l.error(), names(&l)), (None, vec![&b"n"[..]]));
+}
+
+/// A first line that starts with `t` is read to its line feed before it
+/// fails, whatever it holds: C's reader checks a `total N` there, its
+/// count of the line so far leaving out the CR it takes back out, and
+/// then takes the same line feed for the next line's file type, so
+/// every such listing fails at it (`parse_unix_totalsize`). Whether the
+/// check passed shows only in the state the failure leaves the reader
+/// in: on to the file type, or still in the total.
+#[test]
+fn a_first_line_starting_with_t_fails_at_its_line_feed() {
+    for (line, checked) in [
+        (&b"total 20\r\n"[..], true),
+        (b"total 20\n", true),
+        (b"total \t 20\r\n", true),
+        (b"total \r\n", true),
+        (b"total\r\n", false),
+        (b"total 2x\r\n", false),
+        (b"total x2\r\n", false),
+        (b"totally\r\n", false),
+        (b"t\r\n", false),
+    ] {
+        let said = line.escape_ascii().to_string();
+        let (before, lf) = line.split_at(line.len() - 1);
+        let mut l = Listing::new();
+        for &b in before {
+            l.feed(&[b], &mut |_| Ok(true));
+            assert_eq!(l.error(), None, "{said}");
+        }
+        let held = l.line.as_ref().map(|line| line.buf.clone());
+        let unread: Vec<u8> = before.iter().copied().filter(|&b| b != b'\r').collect();
+        assert_eq!(held, Some(unread.clone()), "{said}");
+        assert_eq!(l.item_length, unread.len(), "{said}");
+        l.feed(lf, &mut |_| Ok(true));
+        assert_eq!(l.error(), Some(ErrorKind::FtpBadFileList), "{said}");
+        assert!(l.files().is_empty());
+        let after = if checked {
+            Unix::FileType
+        } else {
+            Unix::TotalSize { reading: true }
+        };
+        assert_eq!(l.unix, after, "{said}");
+    }
+}
+
+/// A link's name runs to the first ` -> `, spaces and part arrows and
+/// all; its target runs to the line's end, CRLF or a bare line feed; a
+/// line that ends before the arrow, or before a target after it, or
+/// has a CR inside its target, fails, as C's parser reads them
+/// (`parse_unix_symlink`).
+#[test]
+fn a_link_s_name_and_target_read_as_c_reads_them() {
+    let link = |rest: &[u8]| {
+        let line = [&b"lrwxrwxrwx 1 u g 0 Jan 17 11:01 "[..], rest].concat();
+        let l = read(&line, line.len());
+        let first = l.files().front().map(|e| {
+            let i = e.info();
+            (i.name.to_vec(), i.target.map(<[u8]>::to_vec))
+        });
+        (l.error(), first)
+    };
+    let read_as = |name: &[u8], target: &[u8]| (None, Some((name.to_vec(), Some(target.to_vec()))));
+    let bad = (Some(ErrorKind::FtpBadFileList), None);
+    assert_eq!(link(b"my link -> t\r\n"), read_as(b"my link", b"t"));
+    assert_eq!(link(b"a -x -> t\r\n"), read_as(b"a -x", b"t"));
+    assert_eq!(link(b"a ->b -> t\r\n"), read_as(b"a ->b", b"t"));
+    assert_eq!(link(b"  a -> t u\n"), read_as(b"a", b"t u"));
+    for cut in [
+        &b"a\r\n"[..],
+        b"a \r\n",
+        b"a -\r\n",
+        b"a ->\r\n",
+        b"a -> \r\n",
+        b"a -> \n",
+        b"a -> t\rx\r\n",
+    ] {
+        assert_eq!(link(cut), bad, "{}", cut.escape_ascii());
+    }
+    // The next line is read after a link's, however it ended.
+    let two = b"lrwxrwxrwx 1 u g 0 Jan 17 11:01 a -> t\n\
+lrwxrwxrwx 1 u g 0 Jan 17 11:01 b -> u\r\n\
+-rw-r--r-- 1 u g 5 Jan 17 11:01 c\r\n";
+    let l = read(two, two.len());
+    assert_eq!(l.error(), None);
+    assert_eq!(names(&l), [&b"a"[..], b"b", b"c"]);
+}

@@ -31,7 +31,7 @@ use crate::error::{ErrorKind, url_error};
 use crate::handler::{DebugKind, HeaderOrigin, KeyMatch, KeyVerdict};
 use crate::idn::Idn;
 use crate::multi::Host;
-use crate::multi::state::StepCx;
+use crate::multi::state::{AfterRequest, StepCx};
 use crate::options::{CreateDirs, Resume, SshAuthTypes};
 use crate::progress::rate::Way;
 use crate::report::Timer;
@@ -2032,21 +2032,26 @@ impl Request {
 
     /// The transfer is over, with `result` so far (`scp_done`,
     /// `sftp_done`): a transfer that went well closes its channel or file
-    /// and runs the commands after it, the progress done; SCP's ends its
-    /// session too.
+    /// and runs the commands after it, unless the request is to be made
+    /// again on a fresh connection (`next`, C's `bits.retry`), the
+    /// progress done; SCP's ends its session too.
     pub(crate) fn done<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
         result: Result<(), ErrorKind>,
         premature: bool,
+        next: &AfterRequest,
         exchanged: bool,
     ) -> Finish {
         if result.is_ok() && lease.conn().keeps_line() {
             let sc = ssh_of(lease);
             if sc.sftp {
                 // After the file is closed, as a command may need it so.
-                if !premature && cx.easy().options().line.postquote.iter().next().is_some() {
+                if !premature
+                    && *next != AfterRequest::Retry
+                    && cx.easy().options().line.postquote.iter().next().is_some()
+                {
                     sc.next = Some(State::SftpPostquoteInit);
                 }
                 sc.to(cx, State::SftpClose);

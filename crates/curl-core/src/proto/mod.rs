@@ -1451,7 +1451,7 @@ impl ProtoState {
             ProtoState::Pop3(ref mut r) => Finish::Done(r.done(cx, lease, result)),
             ProtoState::Imap(ref mut r) => r.done(cx, lease, result, premature, exchanged),
             ProtoState::Smtp(ref mut r) => r.done(cx, lease, result, premature, exchanged),
-            ProtoState::Ssh(ref mut r) => r.done(cx, lease, result, premature, exchanged),
+            ProtoState::Ssh(ref mut r) => r.done(cx, lease, result, premature, next, exchanged),
             ProtoState::File(_)
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)

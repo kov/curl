@@ -3214,3 +3214,47 @@ fn a_download_cut_short_says_what_it_missed() {
         "{said}"
     );
 }
+
+/// A data connection that fails a read fails the transfer, the failure
+/// said once: by the socket's layer where it is traced, else, as for a
+/// connection accepted, by FTP (`Curl_xfer_recv`, `cf_socket_recv`).
+#[test]
+fn a_failed_read_of_the_data_says_why() {
+    let run = |active: bool| {
+        let reset = Conversation::replies(&[b"he"], false)
+            .greeting()
+            .resetting();
+        let (talk, mut m) = if active {
+            let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+            replies.push(b"150 here\r\n226 done\r\n");
+            let talk = Conversation::replies(&replies, false).greeting();
+            let (m, _) = serving_active(&[&talk], &[&reset]);
+            (talk, m)
+        } else {
+            let talk = control(&[b"150 here\r\n226 done\r\n"]);
+            let m = serving(&[&talk], &[&reset]);
+            (talk, m)
+        };
+        let (id, body, text) = added(&mut m, URL, |o| {
+            if active {
+                o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
+            }
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let said = text.text();
+        assert_eq!(result, Err(ErrorKind::RecvError), "{said}");
+        assert!(received(&talk).contains("RETR f\r\n"), "{said}");
+        assert_eq!(*body.0.lock().unwrap(), b"he");
+        assert_eq!(said.matches("Recv failure: ").count(), 1, "{said}");
+        let done = m.remove(id, &mut NoEvents).unwrap();
+        let failure = done.easy.report().failure().map(<[u8]>::to_vec);
+        assert!(
+            failure
+                .as_deref()
+                .is_some_and(|f| f.starts_with(b"Recv failure: ")),
+            "{said}"
+        );
+    };
+    run(false);
+    run(true);
+}

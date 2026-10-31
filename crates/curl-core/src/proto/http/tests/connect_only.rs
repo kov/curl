@@ -275,3 +275,64 @@ fn a_websocket_head_cut_short_leaves_the_connection_unswitched() {
     assert_eq!(sent.unwrap(), Err(ErrorKind::SendError));
     drop(talk);
 }
+
+/// A WebSocket's transfer that only connects leaves the frames after the
+/// 101 for the handle: received as they came, its own sent masked, a
+/// frame started only once a receive or send took the connection up.
+#[test]
+fn a_websocket_only_connected_is_the_handle_s_to_talk_on() {
+    use crate::ws::{Answer, Call, FrameKind, FrameLen, Received, SendFlags, Sent};
+    let reply: &[u8] = b"HTTP/1.1 101 Switching\r\nUpgrade: websocket\r\n\
+Connection: Upgrade\r\n\r\n\x81\x03txt\x82\x02bi";
+    let (mut m, talk, _) = server(&[reply], false);
+    let mut e = Easy::new();
+    let _seen = connect_only(&mut e);
+    let url = format!("ws://127.0.0.1:{PORT}/");
+    e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+    e.options_mut().connect_only = ConnectOnly::WebSocket;
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let text = SendFlags {
+        kind: Some(FrameKind::Text),
+        more: false,
+    };
+    // Nothing took the connection up yet.
+    let started = m.ws(id, Call::StartFrame(text, 3)).unwrap();
+    assert_eq!(started, Err(ErrorKind::SendError));
+    let mut buf = [0u8; 8];
+    let got = m.ws(id, Call::Recv(&mut buf)).unwrap();
+    let Ok(Answer::Received(Received::Frame(frame))) = got else {
+        panic!("{got:?}");
+    };
+    assert_eq!((frame.kind.kind, frame.len), (FrameKind::Text, 3));
+    assert_eq!(&buf[..3], b"txt");
+    let got = m.ws(id, Call::Recv(&mut buf)).unwrap();
+    let Ok(Answer::Received(Received::Frame(frame))) = got else {
+        panic!("{got:?}");
+    };
+    assert_eq!((frame.kind.kind, frame.len), (FrameKind::Binary, 2));
+    assert_eq!(&buf[..2], b"bi");
+    let got = m.ws(id, Call::Recv(&mut buf)).unwrap();
+    assert_eq!(got, Ok(Answer::Received(Received::WouldBlock)));
+    let head = talk.received().len();
+    let sent = m.ws(id, Call::Send(b"abc", FrameLen::These, text)).unwrap();
+    assert_eq!(sent, Ok(Answer::Sent(Sent::Bytes(3))));
+    let sent = talk.received()[head..].to_vec();
+    assert_eq!(sent.len(), 9);
+    assert_eq!(&sent[..2], [0x81, 0x83]);
+    let mask = &sent[2..6];
+    assert_ne!(mask, [0; 4], "a mask is drawn");
+    let payload: Vec<u8> = sent[6..]
+        .iter()
+        .zip(mask.iter().cycle())
+        .map(|(b, m)| b ^ m)
+        .collect();
+    assert_eq!(payload, b"abc");
+    assert_eq!(
+        m.ws(id, Call::StartFrame(text, 3)).unwrap(),
+        Ok(Answer::Started)
+    );
+}

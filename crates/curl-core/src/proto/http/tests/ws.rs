@@ -65,3 +65,171 @@ fn a_frame_cut_short_by_the_end_fails() {
         Some(&b"[WS] decode ended with incomplete frame"[..])
     );
 }
+
+/// A server that answers the request's head with the 101 and the next
+/// thing sent, the upload's frame, with a close, then closes.
+fn upload_server() -> (Multi, Conversation) {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let talk = Conversation::replies(&[SWITCH, b"\x88\x00"], true).per_send();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    (Multi::new(env).unwrap(), talk)
+}
+
+/// The frame `sent` holds first: its first byte and its payload,
+/// unmasked.
+fn unmasked(sent: &[u8]) -> (u8, Vec<u8>) {
+    assert_eq!(sent[1] & 0x80, 0x80, "masked");
+    let len = usize::from(sent[1] & 0x7f);
+    let mask = &sent[2..6];
+    let payload = sent[6..6 + len]
+        .iter()
+        .zip(mask.iter().cycle())
+        .map(|(b, m)| b ^ m)
+        .collect();
+    (sent[0], payload)
+}
+
+/// An upload after the 101 goes as a binary frame of what was read.
+#[test]
+fn an_upload_goes_as_binary_frames() {
+    let (mut m, talk) = upload_server();
+    let ran = get(&mut m, "/", talk, |o| {
+        let url = format!("ws://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.method = Method::Upload;
+        o.upload = Stream::new(b"abc").source(false);
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(unmasked(frames_sent(&ran)), (0x82, b"abc".to_vec()));
+}
+
+/// A read handler that starts a text frame of what it reads, the
+/// frame's whole length named first (`curl_ws_start_frame`).
+struct Framing(crate::test_cell::Cell<bool>);
+
+impl crate::handler::ReadHandler for Framing {
+    fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
+        if self.0.get() {
+            return crate::handler::Read::Eof;
+        }
+        self.0.set(true);
+        let text = crate::ws::SendFlags {
+            kind: Some(crate::ws::FrameKind::Text),
+            more: false,
+        };
+        cx.ws_start_frame(text, 5).unwrap();
+        buf[..5].copy_from_slice(b"hello");
+        crate::handler::Read::Data(std::num::NonZeroUsize::new(5).unwrap())
+    }
+}
+
+/// A frame the read handler starts takes what it reads as its payload,
+/// sent as the frame it named rather than as binary.
+#[test]
+fn a_read_handler_starts_its_own_frame() {
+    let (mut m, talk) = upload_server();
+    let ran = get(&mut m, "/", talk, |o| {
+        let url = format!("ws://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.method = Method::Upload;
+        o.upload = UploadSource::Read {
+            handler: Handler::read(Framing(crate::test_cell::Cell::new(false))).unwrap(),
+            rewind: None,
+            size: None,
+        };
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(unmasked(frames_sent(&ran)), (0x81, b"hello".to_vec()));
+}
+
+/// A write and what `curl_ws_meta` said of it.
+type MetaWrite = (Vec<u8>, Option<crate::ws::Frame>);
+
+/// Each write it is given with what `curl_ws_meta` says of it, after
+/// pausing at the first.
+#[derive(Clone, Default)]
+struct MetaWrites {
+    got: Arc<std::sync::Mutex<Vec<MetaWrite>>>,
+    paused: Arc<crate::test_cell::Cell<bool>>,
+}
+
+impl crate::handler::WriteHandler for MetaWrites {
+    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> crate::handler::Write {
+        if !self.paused.replace(true) {
+            return crate::handler::Write::Pause;
+        }
+        self.got.lock().unwrap().push((body.to_vec(), cx.ws_meta()));
+        crate::handler::Write::Accepted
+    }
+}
+
+/// Frames held while the write handler paused are delivered once it
+/// unpauses, each piece with its frame, an empty frame as a write of
+/// nothing.
+#[test]
+fn frames_held_by_a_pause_are_delivered_with_their_meta() {
+    use crate::ws::{Frame, FrameKind, FrameType};
+    let mut reply = SWITCH.to_vec();
+    reply.extend_from_slice(b"\x81\x02ab\x81\x00\x82\x02cd");
+    let (mut m, _talk, _) = server(&[&reply], true);
+    let mut e = Easy::new();
+    let handler = MetaWrites::default();
+    let o = e.options_mut();
+    o.set_url(Some(format!("ws://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.callbacks.write = Some(Handler::write(handler.clone()).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(m.info_read().is_none(), "over with its frames held");
+    let mut result = None;
+    for _ in 0..100 {
+        m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        if let Some(msg) = m.info_read() {
+            result = Some(msg.result);
+            break;
+        }
+    }
+    assert_eq!(result, Some(Ok(())));
+    let frame = |kind, len| Frame {
+        kind: FrameType { kind, more: false },
+        offset: 0,
+        bytes_left: 0,
+        len,
+    };
+    assert_eq!(
+        *handler.got.lock().unwrap(),
+        [
+            (b"ab".to_vec(), Some(frame(FrameKind::Text, 2))),
+            (Vec::new(), Some(frame(FrameKind::Text, 0))),
+            (b"cd".to_vec(), Some(frame(FrameKind::Binary, 2))),
+        ]
+    );
+}
+
+/// Without a TLS library wss:// is a scheme the build leaves out, as it
+/// is for C built without one; ws:// is not.
+#[test]
+fn wss_needs_a_tls_library() {
+    assert!(Easy::new().libraries().tls.is_none());
+    let ran = run("/", SWITCH, true, |o| {
+        let url = format!("wss://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
+    assert_eq!(ran.request, b"");
+    // A 101 and the end of the connection: an empty reply (test 2300).
+    assert_eq!(ws(b"", |_| {}).result, Err(ErrorKind::GotNothing));
+}

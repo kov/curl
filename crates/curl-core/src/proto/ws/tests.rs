@@ -22,6 +22,8 @@ struct Rec {
     /// end once it is all received if `ends`.
     incoming: Vec<u8>,
     ends: bool,
+    /// The most a receive gets at once: all there is if `None`.
+    piece: Option<usize>,
 }
 
 impl Said for Rec {
@@ -67,6 +69,7 @@ impl Wire for Rec {
             return Ok(self.ends.then_some(0));
         }
         let n = self.incoming.len().min(buf.len());
+        let n = self.piece.map_or(n, |p| p.min(n));
         buf[..n].copy_from_slice(&self.incoming[..n]);
         self.incoming.drain(..n);
         Ok(Some(n))
@@ -631,4 +634,358 @@ fn a_fragment_is_traced_as_non_final() {
     assert_eq!(heads.len(), 2, "{:?}", frames.rec.lines);
     assert!(heads[0].contains("NON-FINAL"), "{heads:?}");
     assert!(!heads[1].contains("NON-FINAL"), "{heads:?}");
+}
+
+/// What C's lib2700 traces as it echoes test 2700's frames, the
+/// connection only connected: C's own trace, from its log.
+const TRACE_2700: &[&str] = &[
+    "[WS] curl_ws_recv, added 31 bytes from network",
+    "[WS] decoded head [TEXT payload=0/3]",
+    "[WS] decoded passing [TEXT payload=0/3]",
+    "[WS] curl_ws_recv(len=0) -> 0 bytes (frame at 0, 3 left)",
+    "[WS] curl_ws_send(len=0, fragsize=3, flags=21), raw=0",
+    "[WS] WS-ENC: sending [TEXT payload=0/3]",
+    "[WS] flushed 6 bytes",
+    "[WS] curl_ws_send(len=0, fragsize=3, flags=21, raw=0) -> 0, 0",
+    "[WS] passed 3 bytes payload, 0 remain",
+    "[WS] decoded passing [TEXT payload=3/3]",
+    "[WS] curl_ws_recv(len=256) -> 3 bytes (frame at 0, 0 left)",
+    "[WS] curl_ws_send(len=3, fragsize=0, flags=1), raw=0",
+    "[WS] WS-ENC: buffered [TEXT payload=3/3]",
+    "[WS] flushed 3 bytes",
+    "[WS] curl_ws_send(len=3, fragsize=0, flags=1, raw=0) -> 0, 3",
+    "[WS] decoded head [BIN payload=0/3]",
+    "[WS] decoded passing [BIN payload=0/3]",
+    "[WS] curl_ws_recv(len=0) -> 0 bytes (frame at 0, 3 left)",
+    "[WS] curl_ws_send(len=0, fragsize=3, flags=22), raw=0",
+    "[WS] WS-ENC: sending [BIN payload=0/3]",
+    "[WS] flushed 6 bytes",
+    "[WS] curl_ws_send(len=0, fragsize=3, flags=22, raw=0) -> 0, 0",
+    "[WS] passed 3 bytes payload, 0 remain",
+    "[WS] decoded passing [BIN payload=3/3]",
+    "[WS] curl_ws_recv(len=256) -> 3 bytes (frame at 0, 0 left)",
+    "[WS] curl_ws_send(len=3, fragsize=0, flags=2), raw=0",
+    "[WS] WS-ENC: buffered [BIN payload=3/3]",
+    "[WS] flushed 3 bytes",
+    "[WS] curl_ws_send(len=3, fragsize=0, flags=2, raw=0) -> 0, 3",
+    "[WS] decoded head [PING payload=0/4]",
+    "[WS] decoded passing [PING payload=0/4]",
+    "[WS] curl_ws_recv(len=0) -> 0 bytes (frame at 0, 4 left)",
+    "[WS] curl_ws_send(len=0, fragsize=4, flags=30), raw=0",
+    "[WS] WS-ENC: sending [PING payload=0/4]",
+    "[WS] flushed 6 bytes",
+    "[WS] curl_ws_send(len=0, fragsize=4, flags=30, raw=0) -> 0, 0",
+    "[WS] passed 4 bytes payload, 0 remain",
+    "[WS] decoded passing [PING payload=4/4]",
+    "[WS] curl_ws_recv(len=256) -> 4 bytes (frame at 0, 0 left)",
+    "[WS] curl_ws_send(len=4, fragsize=0, flags=10), raw=0",
+    "[WS] WS-ENC: buffered [PING payload=4/4]",
+    "[WS] flushed 4 bytes",
+    "[WS] curl_ws_send(len=4, fragsize=0, flags=10, raw=0) -> 0, 4",
+    "[WS] decoded head [PONG payload=0/4]",
+    "[WS] decoded passing [PONG payload=0/4]",
+    "[WS] curl_ws_recv(len=0) -> 0 bytes (frame at 0, 4 left)",
+    "[WS] curl_ws_send(len=0, fragsize=4, flags=60), raw=0",
+    "[WS] WS-ENC: sending [PONG payload=0/4]",
+    "[WS] flushed 6 bytes",
+    "[WS] curl_ws_send(len=0, fragsize=4, flags=60, raw=0) -> 0, 0",
+    "[WS] passed 4 bytes payload, 0 remain",
+    "[WS] decoded passing [PONG payload=4/4]",
+    "[WS] curl_ws_recv(len=256) -> 4 bytes (frame at 0, 0 left)",
+    "[WS] curl_ws_send(len=4, fragsize=0, flags=40), raw=0",
+    "[WS] WS-ENC: buffered [PONG payload=4/4]",
+    "[WS] flushed 4 bytes",
+    "[WS] curl_ws_send(len=4, fragsize=0, flags=40, raw=0) -> 0, 4",
+    "[WS] decoded head [CLOSE payload=0/7]",
+    "[WS] decoded passing [CLOSE payload=0/7]",
+    "[WS] curl_ws_recv(len=0) -> 0 bytes (frame at 0, 7 left)",
+    "[WS] curl_ws_send(len=0, fragsize=7, flags=28), raw=0",
+    "[WS] WS-ENC: sending [CLOSE payload=0/7]",
+    "[WS] flushed 6 bytes",
+    "[WS] curl_ws_send(len=0, fragsize=7, flags=28, raw=0) -> 0, 0",
+    "[WS] passed 7 bytes payload, 0 remain",
+    "[WS] decoded passing [CLOSE payload=7/7]",
+    "[WS] curl_ws_recv(len=256) -> 7 bytes (frame at 0, 0 left)",
+    "[WS] curl_ws_send(len=7, fragsize=0, flags=8), raw=0",
+    "[WS] WS-ENC: buffered [CLOSE payload=7/7]",
+    "[WS] flushed 7 bytes",
+    "[WS] curl_ws_send(len=7, fragsize=0, flags=8, raw=0) -> 0, 7",
+];
+
+/// lib2700's echo of every frame on the codec: each frame's head read
+/// with a receive of nothing and its echo started with its length, then
+/// its payload received and sent back, until the close; the trace is C's
+/// line for line, and the frames sent are test 2700's.
+#[test]
+fn an_echo_traces_as_c_s_lib2700() {
+    let mut rec = Rec {
+        incoming: b"\x81\x03txt\x82\x03bin\x89\x04ping\x8a\x04pong\x88\x07\x03\xe8close".to_vec(),
+        ..Rec::default()
+    };
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    ws.debugging.zero_mask = true;
+    rec.lines.clear();
+    loop {
+        let Ok(crate::ws::Received::Frame(head)) =
+            api_recv(&mut ws, &mut rec, &mut [], false, false, false)
+        else {
+            panic!("a frame's head");
+        };
+        let flags = SendFlags {
+            kind: Some(head.kind.kind),
+            more: head.kind.more,
+        };
+        let mut left = head.bytes_left;
+        assert_eq!(
+            api_send(
+                &mut ws,
+                &mut rec,
+                false,
+                b"",
+                FrameLen::Total(left),
+                flags,
+                false
+            ),
+            Ok(crate::ws::Sent::Bytes(0))
+        );
+        while left > 0 {
+            let mut buf = [0u8; 256];
+            let Ok(crate::ws::Received::Frame(got)) =
+                api_recv(&mut ws, &mut rec, &mut buf, false, false, false)
+            else {
+                panic!("a frame's payload");
+            };
+            left -= got.len as u64;
+            assert_eq!(got.bytes_left, left);
+            assert_eq!(
+                api_send(
+                    &mut ws,
+                    &mut rec,
+                    false,
+                    &buf[..got.len],
+                    FrameLen::These,
+                    flags,
+                    false
+                ),
+                Ok(crate::ws::Sent::Bytes(got.len))
+            );
+        }
+        if head.kind.kind == FrameKind::Close {
+            break;
+        }
+    }
+    assert_eq!(rec.lines, TRACE_2700);
+    assert_eq!(
+        rec.sent,
+        b"\x81\x83\0\0\0\0txt\x82\x83\0\0\0\0bin\x89\x84\0\0\0\0ping\
+\x8a\x84\0\0\0\0pong\x88\x87\0\0\0\0\x03\xe8close"
+    );
+}
+
+/// Test 2708 on the codec: a receive answers the ping before it with a
+/// pong as it reads the close, and sends the pong before the close the
+/// application sends back; C's trace of it, line for line.
+#[test]
+fn a_ping_before_a_close_traces_as_c_s_2708() {
+    let mut rec = Rec {
+        incoming: b"\x89\x04test\x88\x00".to_vec(),
+        ..Rec::default()
+    };
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    ws.debugging.zero_mask = true;
+    rec.lines.clear();
+    let Ok(crate::ws::Received::Frame(close)) =
+        api_recv(&mut ws, &mut rec, &mut [], false, true, false)
+    else {
+        panic!("the close");
+    };
+    assert_eq!(close.kind.kind, FrameKind::Close);
+    let flags = SendFlags {
+        kind: Some(FrameKind::Close),
+        more: false,
+    };
+    assert_eq!(
+        api_send(
+            &mut ws,
+            &mut rec,
+            false,
+            b"",
+            FrameLen::Total(0),
+            flags,
+            false
+        ),
+        Ok(crate::ws::Sent::Bytes(0))
+    );
+    assert_eq!(
+        rec.lines,
+        [
+            "[WS] curl_ws_recv, added 8 bytes from network",
+            "[WS] decoded head [PING payload=0/4]",
+            "[WS] auto PONG to [PING payload=0/4]",
+            "[WS] passed 4 bytes payload, 0 remain",
+            "[WS] decoded passing [PING payload=4/4]",
+            "[WS] decoded head [CLOSE payload=0/0]",
+            "[WS] curl_ws_recv(len=0) -> 0 bytes (frame at 0, 0 left)",
+            "[WS] WS-ENC: sending [PONG payload=0/4]",
+            "[WS] WS-ENC: buffered [PONG payload=4/4]",
+            "[WS] flushed 10 bytes",
+            "[WS] curl_ws_send(len=0, fragsize=0, flags=28), raw=0",
+            "[WS] WS-ENC: sending [CLOSE payload=0/0]",
+            "[WS] flushed 6 bytes",
+            "[WS] curl_ws_send(len=0, fragsize=0, flags=28, raw=0) -> 0, 0",
+        ]
+    );
+    assert_eq!(rec.sent, b"\x8a\x84\0\0\0\0test\x88\x80\0\0\0\0");
+}
+
+/// A head that comes a byte at a time is traced as C traces it while it
+/// waits for more: its opcode alone, how much of it is read, then the
+/// frame it names, none of its payload come.
+#[test]
+fn a_head_read_in_pieces_is_traced_as_it_comes() {
+    let mut incoming = b"\x81\x7e\x00\x80".to_vec();
+    incoming.extend_from_slice(&[b'x'; 128]);
+    let mut rec = Rec {
+        incoming,
+        piece: Some(1),
+        ..Rec::default()
+    };
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    rec.lines.clear();
+    let mut buf = [0u8; 256];
+    let got = api_recv(&mut ws, &mut rec, &mut buf, false, true, false);
+    let Ok(crate::ws::Received::Frame(frame)) = got else {
+        panic!("{got:?}");
+    };
+    assert_eq!((frame.len, frame.bytes_left), (1, 127));
+    let waits: Vec<&String> = rec
+        .lines
+        .iter()
+        .filter(|l| l.contains("need more input"))
+        .collect();
+    assert_eq!(
+        waits,
+        [
+            "[WS] decoded need more input [TEXT]",
+            "[WS] decoded need more input [TEXT](2/4)",
+            "[WS] decoded need more input [TEXT](3/4)",
+            "[WS] decoded need more input [TEXT payload=0/128]",
+        ]
+    );
+}
+
+/// A decoder that refused a frame starts over: the next frame is read
+/// from its first byte (`ws_dec_reset`).
+#[test]
+fn a_refused_frame_leaves_the_decoder_as_new() {
+    let mut dec = Decoder::default();
+    let mut q = ChunkQueue::new(CHUNK_SIZE, 1);
+    let mut frames = Frames::default();
+    q.write(b"\x89\x7e\x00\x7e").unwrap();
+    assert!(matches!(
+        dec.pass(&mut q, &mut frames),
+        Err(Stop::Failed(_))
+    ));
+    q.reset();
+    q.write(b"\x81\x01x").unwrap();
+    assert!(matches!(dec.pass(&mut q, &mut frames), Ok(Passed::Frame)));
+    assert_eq!(frames.got, [(ft(FrameKind::Text, false), b"x".to_vec())]);
+}
+
+/// A new frame is refused while the last one's payload is still owed,
+/// and a control frame of 125 bytes is the longest sent; a pong's and a
+/// close's refusals name them.
+#[test]
+fn an_encoder_refuses_what_c_refuses() {
+    let mut rec = Rec::default();
+    let mut enc = Encoder::default();
+    let mut out = ChunkQueue::new(CHUNK_SIZE, 2);
+    enc.add_frame(&mut rec, text(), 3, &mut out, false).unwrap();
+    assert_eq!(
+        enc.add_frame(&mut rec, text(), 1, &mut out, false),
+        Err(ErrorKind::SendError)
+    );
+    assert_eq!(
+        rec.failed,
+        ["[WS] starting new frame with 3 bytes from last one remaining to be sent"]
+    );
+    rec.failed.clear();
+    for (kind, name) in [
+        (FrameKind::Ping, "PING"),
+        (FrameKind::Pong, "PONG"),
+        (FrameKind::Close, "CLOSE"),
+    ] {
+        let flags = SendFlags {
+            kind: Some(kind),
+            more: false,
+        };
+        let mut enc = Encoder::default();
+        let mut out = ChunkQueue::new(CHUNK_SIZE, 2);
+        assert_eq!(enc.add_frame(&mut rec, flags, 125, &mut out, false), Ok(()));
+        let mut enc = Encoder::default();
+        assert_eq!(
+            enc.add_frame(&mut rec, flags, 126, &mut out, false),
+            Err(ErrorKind::TooLarge)
+        );
+        assert_eq!(
+            rec.failed.pop().unwrap(),
+            format!("[WS] given {name} frame is too big")
+        );
+    }
+}
+
+/// A frame's length past 125 is said in 16 bits after 126, past 65535
+/// in 64 bits after 127, the mask bit set on each.
+#[test]
+fn long_lengths_are_sent_as_rfc_6455_says() {
+    let mut rec = Rec::default();
+    for (len, head) in [
+        (126u64, vec![0x81, 0xfe, 0x00, 0x7e]),
+        (65535, vec![0x81, 0xfe, 0xff, 0xff]),
+        (65536, vec![0x81, 0xff, 0, 0, 0, 0, 0, 1, 0, 0]),
+    ] {
+        let mut enc = Encoder::default();
+        let mut out = ChunkQueue::new(CHUNK_SIZE, 2);
+        enc.add_frame(&mut rec, text(), len, &mut out, true)
+            .unwrap();
+        let mut got = vec![0u8; out.len()];
+        out.read(&mut got);
+        assert_eq!(got[..head.len()], head[..], "{len}");
+    }
+}
+
+/// Raw, the bytes go as they are, after what was encoded before; a
+/// connection that takes none says to try again.
+#[test]
+fn a_raw_send_goes_as_it_is() {
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    let none = SendFlags {
+        kind: None,
+        more: false,
+    };
+    assert_eq!(
+        api_send(
+            &mut ws,
+            &mut rec,
+            true,
+            b"abc",
+            FrameLen::These,
+            none,
+            false
+        ),
+        Ok(crate::ws::Sent::Bytes(3))
+    );
+    assert_eq!(rec.sent, b"abc");
+    rec.takes = Some(0);
+    assert_eq!(
+        api_send(&mut ws, &mut rec, true, b"de", FrameLen::These, none, false),
+        Ok(crate::ws::Sent::WouldBlock)
+    );
+    rec.takes = Some(1);
+    assert_eq!(
+        api_send(&mut ws, &mut rec, true, b"de", FrameLen::These, none, false),
+        Ok(crate::ws::Sent::Bytes(1))
+    );
+    assert_eq!(rec.sent, b"abcd");
 }

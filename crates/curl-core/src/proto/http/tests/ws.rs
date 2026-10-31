@@ -353,6 +353,8 @@ fn a_started_frame_takes_the_reads_after_it() {
     // Each read, with payload still to come, says no end.
     assert_eq!(reads.len(), 2, "{reads:#?}");
     assert!(reads.iter().all(|l| l.ends_with("eos=0")), "{reads:#?}");
+    // The second read asks no more than the frame still owes.
+    assert!(reads[1].starts_with("[READ] cr_ws_read(len=5) "), "{reads:#?}");
 }
 
 /// A handler that starts a frame and says its end in the same call is

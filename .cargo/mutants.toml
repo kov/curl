@@ -823,6 +823,9 @@ exclude_re = [
     'curl-core/src/proto/ws/frame\.rs:.*: replace \| with \^ in (send_byte|Encoder::add_frame)$',
     'curl-sys-abi/src/ws\.rs:.*: replace \| with \^ in c_frame$',
     'curl-core/src/proto/ws\.rs:.*: replace \| with \^ in c_args$',
+    # Only when a WebSocket's buffer lets go of its taken bytes changes:
+    # what it holds and where its chunk is are the same either way.
+    'curl-core/src/proto/ws/queue\.rs:.*: replace >= with < in ChunkQueue::skip$',
     # A connection only made is reached from outside any callback, so its
     # sends never wait for the connection: this one cannot be called.
     'curl-core/src/multi/raw\.rs:.*: replace <impl crate::proto::ws::Wire for RawWire<.*>>::send_all -> Result<\(\), ErrorKind> with Ok\(\(\)\)$',

@@ -41,6 +41,8 @@ struct World {
     asks: bool,
     /// Every file opened to write is refused as missing.
     refuses_writes: bool,
+    /// SCP's reads end this many bytes short of the size it offers.
+    short_by: usize,
 }
 
 impl World {
@@ -295,7 +297,8 @@ impl Session for FakeSession {
         let at = self.scp.as_ref().unwrap().2;
         let pos = self.reading.unwrap_or(0);
         let w = self.w();
-        let rest = &w.files[at].1[pos..];
+        let end = w.files[at].1.len() - w.short_by;
+        let rest = &w.files[at].1[pos.min(end)..end];
         let n = rest.len().min(buf.len());
         buf[..n].copy_from_slice(&rest[..n]);
         drop(w);
@@ -881,6 +884,72 @@ fn a_resumed_download_applies_its_point_as_c_does() {
         said.contains("Offset (11) was beyond file size (10)\n"),
         "{said}"
     );
+    // Past the middle, the point is compared with what the range left,
+    // as C compares it: at it, nothing is left to get; past it, the point
+    // is beyond.
+    let (result, body, said, _) = resumed(from(5));
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(body.is_empty());
+    assert!(
+        said.contains("File already completely downloaded\n"),
+        "{said}"
+    );
+    let (result, _, said, _) = resumed(from(6));
+    assert_eq!(result, Err(ErrorKind::BadDownloadResume), "{said}");
+    assert!(
+        said.contains("Offset (6) was beyond file size (4)\n"),
+        "{said}"
+    );
+}
+
+/// An SCP upload offers the file at its size and writes it; one of no
+/// known size is refused, as SCP needs the size first.
+#[test]
+fn an_scp_file_is_uploaded() {
+    let w = world(&[]);
+    let (result, _, said, calls) = run_in(&w, "scp://u@127.0.0.1:PORT/tmp/f", |o| {
+        o.method = crate::options::Method::Upload;
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"over scp".to_vec()).unwrap(),
+        );
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        calls.contains(&"scp_push_file /tmp/f".to_owned()),
+        "{calls:?}"
+    );
+    assert_eq!(
+        w.lock().unwrap().files,
+        [(b"/tmp/f".to_vec(), b"over scp".to_vec())]
+    );
+}
+
+/// A file shorter than the server said is a partial one.
+#[test]
+fn a_short_scp_file_is_partial() {
+    let w = world(&[("/tmp/f", "0123456789")]);
+    w.lock().unwrap().short_by = 4;
+    let (result, body, said, _) = run_in(&w, "scp://u@127.0.0.1:PORT/tmp/f", |_| {});
+    assert_eq!(result, Err(ErrorKind::PartialFile), "{said}");
+    assert_eq!(body, b"012345");
+    assert!(
+        said.contains("transfer closed with 4 bytes remaining to read\n"),
+        "{said}"
+    );
+}
+
+/// Without an SSH library, the schemes are not supported.
+#[test]
+fn ssh_wants_an_ssh_library() {
+    for url in ["scp://127.0.0.1:8022/f", "sftp://127.0.0.1:8022/f"] {
+        let mut m = serving(PORT, &silent());
+        let mut e = Easy::new();
+        e.set_libraries(SharedLibraries::new(Libraries::NONE).unwrap());
+        e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Err(ErrorKind::UnsupportedProtocol), "{url}");
+    }
 }
 
 /// Through an HTTP proxy's tunnel, the library is handed the socket with

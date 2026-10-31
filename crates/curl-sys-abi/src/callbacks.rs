@@ -772,8 +772,9 @@ impl TrailerHandler for Adapter {
 impl SshKeyHandler for Adapter {
     /// The key function, given the known-hosts file's key and the
     /// server's as `struct curl_khkey`, each in base64 ended by a zero
-    /// byte with a length of 0, how they compare and its data; an answer
-    /// it has no name for rejects the key.
+    /// byte, its length the text's as C's libssh code gives it, how they
+    /// compare and its data; an answer it has no name for rejects the
+    /// key.
     fn check(
         &self,
         cx: &mut TransferCx<'_>,
@@ -793,7 +794,8 @@ impl SshKeyHandler for Adapter {
         };
         let khkey = |text: &[u8], kind| ffi::curl_khkey {
             key: text.as_ptr().cast(),
-            len: 0,
+            // Without its zero byte (`strlen`).
+            len: text.len() - 1,
             keytype: key_type(kind),
         };
         let known = known.map(|k| khkey(known_text.as_deref().unwrap_or_default(), k.kind));

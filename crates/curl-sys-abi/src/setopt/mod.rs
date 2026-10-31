@@ -2044,6 +2044,77 @@ mod tests {
             .with_options(|o| o.ssh.new_directory_mode.bits())
             .expect("reachable");
         assert_eq!(mode, 0o755);
+        // The strings, copied up to their zero byte, and compression.
+        let strings = [
+            (ffi::CURLOPT_SSH_PUBLIC_KEYFILE, c"pub"),
+            (ffi::CURLOPT_SSH_PRIVATE_KEYFILE, c"priv"),
+            (ffi::CURLOPT_SSH_HOST_PUBLIC_KEY_MD5, c"md5"),
+            (ffi::CURLOPT_SSH_HOST_PUBLIC_KEY_SHA256, c"sha"),
+            (ffi::CURLOPT_SSH_KNOWNHOSTS, c"kh"),
+        ];
+        for (option, value) in strings {
+            // SAFETY: a live handle, and a C string option.
+            let set = unsafe { curl_easy_setopt(c, option, value.as_ptr()) };
+            assert_eq!(set, CURLE_OK);
+        }
+        assert_eq!(long(ffi::CURLOPT_SSH_COMPRESSION, 1), CURLE_OK);
+        let mut data = 0u8;
+        // SAFETY: a live handle, and a pointer option.
+        let set = unsafe {
+            curl_easy_setopt(
+                c,
+                ffi::CURLOPT_SSH_KEYDATA,
+                (&raw mut data).cast::<c_void>(),
+            )
+        };
+        assert_eq!(set, CURLE_OK);
+        let kept = easy
+            .with_options(|o| {
+                let s = &o.ssh;
+                [
+                    s.public_key.clone(),
+                    s.private_key.clone(),
+                    s.host_key_md5.clone(),
+                    s.host_key_sha256.clone(),
+                    s.known_hosts.clone(),
+                    Some(vec![u8::from(s.compression)]),
+                ]
+            })
+            .expect("reachable");
+        let want = [&b"pub"[..], b"priv", b"md5", b"sha", b"kh", &[1]];
+        assert_eq!(kept, want.map(|w| Some(w.to_vec())));
+        assert_eq!(
+            easy.ccb.get().ssh_key_data,
+            (&raw mut data).cast::<c_void>()
+        );
+        // The key function's adapter is there while the function is.
+        unsafe extern "C" fn fine(
+            _: *mut ffi::CURL,
+            _: *const ffi::curl_khkey,
+            _: *const ffi::curl_khkey,
+            _: ffi::curl_khmatch,
+            _: *mut c_void,
+        ) -> core::ffi::c_int {
+            ffi::CURLKHSTAT_FINE.0
+        }
+        type KeyFn = unsafe extern "C" fn(
+            *mut ffi::CURL,
+            *const ffi::curl_khkey,
+            *const ffi::curl_khkey,
+            ffi::curl_khmatch,
+            *mut c_void,
+        ) -> core::ffi::c_int;
+        let handler = || {
+            easy.with_options(|o| o.ssh.key_handler.is_some())
+                .expect("reachable")
+        };
+        let f = fine as KeyFn as *mut c_void;
+        // SAFETY: a live handle, and a function of the option's type.
+        let set = unsafe { curl_easy_setopt(c, ffi::CURLOPT_SSH_KEYFUNCTION, f) };
+        assert_eq!(set, CURLE_OK);
+        assert!(handler());
+        assert_eq!(pointer(ffi::CURLOPT_SSH_KEYFUNCTION), CURLE_OK);
+        assert!(!handler());
         // SAFETY: a live handle, not used again.
         unsafe { crate::easy::curl_easy_cleanup(c) };
     }

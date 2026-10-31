@@ -386,6 +386,8 @@ impl Listing {
         c: u8,
         matches: &mut dyn FnMut(&[u8]) -> Result<bool, ErrorKind>,
     ) -> Result<(), ErrorKind> {
+        // The line so far, this byte among it: never empty, so C's tests
+        // that it is not (`&& len`) always pass, and are left out.
         let len = self.line().buf.len();
         match self.unix {
             Unix::TotalSize { reading } => {
@@ -417,7 +419,7 @@ impl Listing {
             }
             Unix::HLinks { number: false } => {
                 if c != b' ' {
-                    if !(c.is_ascii_digit() && len > 0) {
+                    if !(c.is_ascii_digit()) {
                         return Err(BAD);
                     }
                     self.start_item(len);
@@ -440,7 +442,7 @@ impl Listing {
                 }
             }
             Unix::User { parsing: false } => {
-                if c != b' ' && len > 0 {
+                if c != b' ' {
                     self.start_item(len);
                     self.unix = Unix::User { parsing: true };
                 }
@@ -456,7 +458,7 @@ impl Listing {
                 }
             }
             Unix::Group { name: false } => {
-                if c != b' ' && len > 0 {
+                if c != b' ' {
                     self.start_item(len);
                     self.unix = Unix::Group { name: true };
                 }
@@ -473,7 +475,7 @@ impl Listing {
             }
             Unix::Size { number: false } => {
                 if c != b' ' {
-                    if !(c.is_ascii_digit() && len > 0) {
+                    if !(c.is_ascii_digit()) {
                         return Err(BAD);
                     }
                     self.start_item(len);
@@ -504,7 +506,7 @@ impl Listing {
             Unix::Time(part) => self.time(part, c, len)?,
             Unix::FileName(end) => match end {
                 NameEnd::PreSpace => {
-                    if c != b' ' && len > 0 {
+                    if c != b' ' {
                         self.start_item(len);
                         self.unix = Unix::FileName(NameEnd::Name);
                     }
@@ -592,7 +594,7 @@ impl Listing {
         match part {
             TimePart::Pre1 => {
                 if c != b' ' {
-                    if !(c.is_ascii_alphanumeric() && len > 0) {
+                    if !(c.is_ascii_alphanumeric()) {
                         return Err(BAD);
                     }
                     self.start_item(len);
@@ -664,7 +666,7 @@ impl Listing {
         let eol = c == b'\r' || c == b'\n';
         let next = match link {
             Link::PreSpace => {
-                if c != b' ' && len > 0 {
+                if c != b' ' {
                     self.start_item(len);
                     Link::Name
                 } else {
@@ -742,6 +744,7 @@ impl Listing {
         c: u8,
         matches: &mut dyn FnMut(&[u8]) -> Result<bool, ErrorKind>,
     ) -> Result<(), ErrorKind> {
+        // As in `unix`, never empty.
         let len = self.line().buf.len();
         match self.nt {
             Nt::Date => {
@@ -772,7 +775,7 @@ impl Listing {
                 }
             }
             Nt::DirOrSize { content: false } => {
-                if c != b' ' && len > 0 {
+                if c != b' ' {
                     self.start_item(len);
                     self.nt = Nt::DirOrSize { content: true };
                 }
@@ -797,7 +800,7 @@ impl Listing {
                 }
             }
             Nt::FileName(NameEnd::PreSpace) => {
-                if c != b' ' && len > 0 {
+                if c != b' ' {
                     self.start_item(len);
                     self.nt = Nt::FileName(NameEnd::Name);
                 }

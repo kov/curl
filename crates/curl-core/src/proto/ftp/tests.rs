@@ -959,3 +959,172 @@ fn an_active_download_accepts_the_server_s_connection() {
     );
     assert_eq!(counted.open(), 1, "only the control connection is left");
 }
+
+/// A request for no body asks the type before the size, as sizes differ
+/// between them, takes any 2xx to it, saying so of one not 200, and
+/// tells the application the size and that ranges go, as header lines
+/// it writes as the body (`ftp_state_type`, `client_write_header`).
+#[test]
+fn a_request_for_no_body_sets_the_type_and_says_the_size() {
+    let control = Conversation::replies(
+        &[
+            b"220 hi\r\n",
+            b"331 password?\r\n",
+            b"230 in\r\n",
+            b"257 \"/\" is it\r\n",
+            b"250 binary\r\n",
+            b"213 5\r\n",
+            b"350 restarting\r\n",
+        ],
+        false,
+    )
+    .greeting();
+    let mut m = serving(&[&control], &[]);
+    let (id, body, text) = added(&mut m, URL, |o| o.method = crate::options::Method::Head);
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        received(&control).ends_with("PWD\r\nTYPE I\r\nSIZE f\r\nREST 0\r\n"),
+        "{}",
+        received(&control)
+    );
+    assert!(
+        said.contains("Got a 250 response code instead of the assumed 200"),
+        "{said}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&body.0.lock().unwrap()),
+        "Content-Length: 5\r\nAccept-ranges: bytes\r\n"
+    );
+}
+
+/// A download on a time condition asks the file's time first and gets
+/// the file only if the time meets it, the server's time and the
+/// condition's compared as C compares them (`ftp_state_mdtm_resp`).
+#[test]
+fn a_time_condition_is_met_by_the_server_s_time() {
+    // 2020-01-01 00:00:00 UTC.
+    const AT: i64 = 1_577_836_800;
+    let run = |when, time| {
+        let control = Conversation::replies(
+            &[
+                b"220 hi\r\n",
+                b"331 password?\r\n",
+                b"230 in\r\n",
+                b"257 \"/\" is it\r\n",
+                b"213 20200101000000\r\n",
+                b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+                b"200 binary\r\n",
+                b"213 5\r\n",
+                b"150 here\r\n226 done\r\n",
+            ],
+            false,
+        )
+        .greeting();
+        let file = data(b"hello");
+        let mut m = serving(&[&control], &[&file]);
+        let (id, body, text) = added(&mut m, URL, |o| {
+            o.time_condition = Some(crate::options::TimeCondition { when, time });
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let said = text.text();
+        assert_eq!(result, Ok(()), "{said}");
+        let unmet = m
+            .remove(id, &mut NoEvents)
+            .unwrap()
+            .easy
+            .report()
+            .condition_unmet();
+        let got = body.0.lock().unwrap().clone();
+        // A condition at 0 is not compared: any file meets it.
+        assert_eq!(
+            said.contains("Skipping time comparison"),
+            time == 0,
+            "{said}"
+        );
+        (got, unmet)
+    };
+    use crate::options::Condition::{ModifiedSince, UnmodifiedSince};
+    let got = |unmet| (if unmet { vec![] } else { b"hello".to_vec() }, unmet);
+    assert_eq!(run(ModifiedSince, AT - 1), got(false));
+    assert_eq!(run(ModifiedSince, AT), got(true));
+    assert_eq!(run(UnmodifiedSince, AT), got(false));
+    assert_eq!(run(UnmodifiedSince, AT - 1), got(true));
+    assert_eq!(run(ModifiedSince, 0), got(false));
+}
+
+/// An upload sets its type, then stores the file, its bytes sent over
+/// the data connection (`ftp_state_type_resp` for `STOR_TYPE`).
+#[test]
+fn an_upload_sets_its_type_and_stores_the_file() {
+    let control = Conversation::replies(
+        &[
+            b"220 hi\r\n",
+            b"331 password?\r\n",
+            b"230 in\r\n",
+            b"257 \"/\" is it\r\n",
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 binary\r\n",
+            b"150 go on\r\n226 stored\r\n",
+        ],
+        false,
+    )
+    .greeting();
+    let file = Conversation::replies(&[], false);
+    let mut m = serving(&[&control], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |o| {
+        o.method = crate::options::Method::Upload;
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"up".to_vec()).unwrap(),
+        );
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert!(
+        received(&control).ends_with("EPSV\r\nTYPE I\r\nSTOR f\r\n"),
+        "{}",
+        received(&control)
+    );
+    assert_eq!(file.received(), b"up");
+}
+
+/// A command before the transfer and a URL to a directory list it after
+/// setting ASCII, the commands first (`ftp_state_type_resp` for
+/// `RETR_LIST_TYPE`).
+#[test]
+fn a_directory_with_a_prequote_lists_after_its_type() {
+    let control = Conversation::replies(
+        &[
+            b"220 hi\r\n",
+            b"331 password?\r\n",
+            b"230 in\r\n",
+            b"257 \"/\" is it\r\n",
+            b"250 there\r\n",
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 ascii\r\n",
+            b"200 site\r\n",
+            b"150 here\r\n226 done\r\n",
+        ],
+        false,
+    )
+    .greeting();
+    let list = data(LISTING);
+    let mut m = serving(&[&control], &[&list]);
+    let (id, body, text) = added(&mut m, "ftp://127.0.0.1:PORT/d/", |o| {
+        o.line
+            .make_mut()
+            .unwrap()
+            .prequote
+            .set([&b"SITE x"[..]])
+            .unwrap();
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert!(
+        received(&control).ends_with("EPSV\r\nTYPE A\r\nSITE x\r\nLIST\r\n"),
+        "{}",
+        received(&control)
+    );
+    assert_eq!(*body.0.lock().unwrap(), LISTING);
+}

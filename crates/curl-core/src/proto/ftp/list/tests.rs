@@ -77,6 +77,51 @@ lrwxrwxrwx 1 u g 0 Jan 17 11:01 l -> t\r\n";
     );
 }
 
+/// The blanks C's parser passes over and the ones it fails on, as it
+/// reads these lines.
+#[test]
+fn blanks_read_as_c_reads_them() {
+    let one = |line: &[u8]| {
+        let l = read(line, line.len());
+        let first = l.files().front().map(|e| {
+            let i = e.info();
+            (
+                i.size,
+                i.user.map(<[u8]>::to_vec),
+                i.group.map(<[u8]>::to_vec),
+            )
+        });
+        (l.error(), first)
+    };
+    // A Windows NT size after a tab, the tab passed over with the field.
+    assert_eq!(
+        one(b"01-01-01  01:01AM \t5 n\r\n"),
+        (None, Some((Some(5), None, None)))
+    );
+    // Spaces after the tab start no field of their own.
+    assert_eq!(
+        one(b"01-01-01  01:01AM    \t  7 n\r\n"),
+        (Some(ErrorKind::FtpBadFileList), None)
+    );
+    // A Unix line's fields after two spaces as after one.
+    assert_eq!(
+        one(b"-rw-r--r-- 1  u  g 5 Jan 17 11:01 n\r\n"),
+        (
+            None,
+            Some((Some(5), Some(b"u".to_vec()), Some(b"g".to_vec())))
+        )
+    );
+    // Its link count and its size are digits, a tab before one no blank.
+    assert_eq!(
+        one(b"drwxr-xr-x x u g 0 Jan 17 11:01 n\r\n"),
+        (Some(ErrorKind::FtpBadFileList), None)
+    );
+    assert_eq!(
+        one(b"-rw-r--r-- 1 u g \t5 Jan 17 11:01 n\r\n"),
+        (Some(ErrorKind::FtpBadFileList), None)
+    );
+}
+
 #[test]
 fn a_unix_listing_reads_as_c_reads_it() {
     let l = read(UNIX, UNIX.len());

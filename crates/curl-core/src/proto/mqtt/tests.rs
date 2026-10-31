@@ -137,6 +137,8 @@ fn a_connect_is_as_long_as_its_length_says() {
         (b"u", b""),
         (b"", b"p"),
         (b"user", b"secret"),
+        // A remaining length of 128, the first to take two bytes.
+        (&[b'a'; 102][..], b""),
         (&[b'a'; 200][..], b"p"),
     ] {
         let packet = connect_packet(ID, user, password).unwrap();

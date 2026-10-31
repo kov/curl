@@ -711,4 +711,19 @@ mod over_the_wire {
         let blocks = [&data(1, &[b'r'; 512])[..], &data(2, &[b'r'; 88])].concat();
         assert!(said.ends_with(&blocks), "{said:?}");
     }
+
+    /// While an answer is awaited, the transfer waits for its socket to
+    /// be readable.
+    #[test]
+    fn an_answer_is_waited_for_on_the_socket() {
+        use crate::multi::NoEvents;
+        let talk = Conversation::replies(&[], false).per_send();
+        let mut m = crate::proto::raw::wire::serving(&[&talk]);
+        added(&mut m, |_| {});
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(
+            crate::proto::raw::wire::waits(&mut m),
+            [crate::conn::io::Events::IN]
+        );
+    }
 }

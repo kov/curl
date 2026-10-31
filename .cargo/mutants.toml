@@ -863,4 +863,9 @@ exclude_re = [
     # loopback.
     'curl-os/src/net\.rs:.*: replace (match guard e\.kind\(\) == io::ErrorKind::Interrupted with (true|false)|== with !=) in UdpSocket::send_to$',
     'curl-os/src/net\.rs:.*: replace match guard e\.kind\(\) == io::ErrorKind::(Interrupted with false|WouldBlock with true) in UdpSocket::recv_from$',
+    # A block's buffer larger than the block reads no more: each read is
+    # bounded by what the block has left. An empty DATA block's body,
+    # passed on, delivers nothing.
+    'curl-core/src/proto/tftp\.rs:.*: replace \+ with \* in Request::fill$',
+    'curl-core/src/proto/tftp\.rs:.*: replace > with >= in Request::receive$',
 ]

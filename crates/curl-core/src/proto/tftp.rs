@@ -1029,10 +1029,8 @@ impl super::Phases for Request {
             .small
             .tftp_blksize
             .map_or(BLKSIZE_DEFAULT, |b| usize::from(b.get()));
-        let room = blksize.max(BLKSIZE_DEFAULT) + 4;
-        let oom = |_| ErrorKind::OutOfMemory;
-        self.rpacket.try_reserve(room).map_err(oom)?;
-        self.spacket.try_reserve(room).map_err(oom)?;
+        // The packets grow as each is made or read; the one sent starts
+        // with room for its head.
         self.spacket
             .try_resize(4, 0)
             .map_err(|_| ErrorKind::OutOfMemory)?;

@@ -632,10 +632,8 @@ impl Request {
                 MSG_SUBACK => {
                     self.go(cx, State::SubackComing, State::Unset);
                 }
-                MSG_DISCONNECT => {
-                    trace::info(cx, format_args!("Got DISCONNECT"));
-                    return Ok(true);
-                }
+                // A DISCONNECT has no length, so ends in `remaining`; one
+                // with a length is refused there.
                 _ => return Err(ErrorKind::WeirdServerReply),
             }
             if self.state == State::PubRemain {

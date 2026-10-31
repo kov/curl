@@ -96,3 +96,36 @@ witness: curl-sys-abi handle_tests::the_interleave_options_are_kept_copied_and_r
         interleave.set(callbacks::CInterleave::NONE);
 --- new
         drop(interleave);
+
+=== an RTSP request a close ended is made again
+file: crates/curl-core/src/proto/http/rtsp.rs
+witness: curl-core proto::http::tests::rtsp::only_a_request_cut_short_awaiting_a_body_is_made_again
+--- old
+        !self.receives() && !self.no_body && !ended
+--- new
+        !self.receives() && !self.no_body
+
+=== a retry from PERFORMING fails on DONE's complaint
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::rtsp::only_a_request_cut_short_awaiting_a_body_is_made_again
+--- old
+        if self.next == AfterRequest::Retry && self.result.is_ok() {
+--- new
+        if false {
+
+=== an RTSP connection is reused under another login
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::http::tests::rtsp::an_rtsp_connection_is_reused_only_with_its_login
+--- old
+            ProtoState::Http(r) => r.rtsp_login()?,
+--- new
+
+=== an RTSP connection says a goodbye it has none of
+file: crates/curl-core/src/conn/line.rs
+witness: curl-core proto::http::tests::rtsp::an_rtsp_connection_says_no_goodbye
+features: test-util debug-hooks
+--- old
+        !matches!(self, LineConn::Ws(_) | LineConn::Rtsp(_))
+--- new
+        !matches!(self, LineConn::Ws(_))
+

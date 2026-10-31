@@ -909,6 +909,8 @@ struct Wire {
     /// The peer closes on a request it has no reply for, as a server
     /// closing an idle connection just as it is reused.
     hang_up_unanswered: bool,
+    /// A hang-up is a reset: its reads fail (`ECONNRESET`).
+    hang_up_resets: bool,
     /// The peer closed, whatever it was saying.
     hung_up: bool,
     /// Once its last reply is read, a read fails as on a connection the
@@ -1204,6 +1206,15 @@ impl Conversation {
             .lock()
             .expect("no test panics holding the wire")
             .hang_up_unanswered = true;
+        self
+    }
+
+    /// The same, resetting it instead: the reads after fail.
+    pub fn resetting_unanswered(self) -> Conversation {
+        let mut wire = self.0.lock().expect("no test panics holding the wire");
+        wire.hang_up_unanswered = true;
+        wire.hang_up_resets = true;
+        drop(wire);
         self
     }
 
@@ -2058,6 +2069,9 @@ impl Socket for FakeSocket {
         let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
         wire.reads += 1;
         wire.last_read_room = buf.len();
+        if wire.hung_up && wire.hang_up_resets {
+            return Err(io::Error::from_raw_os_error(libc_errno::ECONNRESET));
+        }
         if wire.hung_up || self.peer() == Peer::HangsUp {
             return Ok(Recv::Eof);
         }

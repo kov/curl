@@ -629,6 +629,18 @@ impl Done {
         }
     }
 
+    /// The request's result once its protocol's DONE came to `done`: the
+    /// request's own failure stands over DONE's (`multi_done`'s callers:
+    /// `if(!result) result = rc`), and a request to be made again from
+    /// PERFORMING lets DONE's go (`(void)multi_done`), as only one from DO
+    /// was failing already.
+    fn done_with(&self, done: Result<(), ErrorKind>) -> Result<(), ErrorKind> {
+        if self.next == AfterRequest::Retry && self.result.is_ok() {
+            return Ok(());
+        }
+        self.result.and(done)
+    }
+
     /// The next request is to send the body again: a retry always rewinds
     /// it (`Curl_retry_request`), a request the response asks for as the
     /// protocol decided (`Curl_creader_will_rewind`).
@@ -1053,7 +1065,7 @@ fn multi_done<H: Host>(
                 ) {
                     // The transfer's own failure stands over DONE's
                     // (`multi_done`'s callers: `if(!result) result = rc`).
-                    crate::proto::Finish::Done(result) => d.result = d.result.and(result),
+                    crate::proto::Finish::Done(result) => d.result = d.done_with(result),
                     crate::proto::Finish::Waiting => {
                         d.ending = Ending::Waiting;
                         return Err(d);
@@ -1064,7 +1076,7 @@ fn multi_done<H: Host>(
         Ending::Waiting => {
             let proto = d.proto.as_mut().expect("only a protocol waits as it ends");
             match proto.finishing(cx, &mut d.lease, exchanged) {
-                crate::proto::Finish::Done(result) => d.result = d.result.and(result),
+                crate::proto::Finish::Done(result) => d.result = d.done_with(result),
                 crate::proto::Finish::Waiting => return Err(d),
             }
         }
@@ -2876,7 +2888,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             // A reused connection that died may be the request's
             // trouble: it is made again on a fresh one (`multistate_do`).
             Err(ErrorKind::SendError) if x.lease.conn().reused() => {
-                let next = match retry_request(run, &mut x, cx) {
+                let next = match retry_request(run, &mut x, cx, false) {
                     Ok(true) => x.retried(Err(ErrorKind::SendError), Reached::Unmade),
                     Ok(false) => x.done(Err(ErrorKind::SendError), false, Reached::Unmade),
                     Err(e) => x.done(Err(e), false, Reached::Unmade),
@@ -2997,7 +3009,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             match stepped {
                 // Received nothing, perhaps over a reused connection that
                 // closed as it was reused (`multistate_performing`).
-                Err(ErrorKind::RecvError) => match retry_request(run, &mut x, cx) {
+                Err(ErrorKind::RecvError) => match retry_request(run, &mut x, cx, false) {
                     Ok(true) => (
                         TransferState::Done(x.retried(Ok(()), Reached::Made)),
                         Wake::Again,
@@ -3041,7 +3053,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                                 arm(&mut run.deadlines, cx, TimerKind::SpeedCheck, wait);
                             }
                             let retry = if ended {
-                                retry_request(run, &mut x, cx)
+                                retry_request(run, &mut x, cx, true)
                             } else {
                                 Ok(false)
                             };
@@ -5394,11 +5406,12 @@ fn retry_request<H: Host>(
     run: &mut Run,
     x: &mut Attached,
     cx: &mut StepCx<'_, H>,
+    ended: bool,
 ) -> Result<bool, ErrorKind> {
-    let reused = x.proto.retryable() && x.lease.conn().reused();
+    let reused = x.proto.retryable(ended) && x.lease.conn().reused();
     // A stream HTTP/2 refused is safe to make again, on any connection,
     // if nothing came on it.
-    let refused = x.proto.take_refused() && x.proto.retryable();
+    let refused = x.proto.take_refused() && x.proto.retryable(ended);
     if !reused && !refused {
         return Ok(false);
     }

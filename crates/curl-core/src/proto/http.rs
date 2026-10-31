@@ -1054,10 +1054,10 @@ impl Request {
 
     /// Whether the response so far is nothing at all: no head line and no
     /// body byte (C's `bytecount + headerbytecount`).
-    pub(crate) fn received_nothing(&self) -> bool {
+    pub(crate) fn received_nothing(&self, ended: bool) -> bool {
         self.head.as_ref().is_none_or(|h| h.request_bytes() == 0)
             && self.pipeline.bytecount() == 0
-            && self.rtsp.as_ref().is_none_or(rtsp::Rtsp::retryable)
+            && self.rtsp.as_ref().is_none_or(|r| r.retryable(ended))
     }
 
     /// Whether some of the request is still to send, a body waiting for

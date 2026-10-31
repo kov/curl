@@ -3,11 +3,9 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::ftp::tests::a_refused_file_fails_though_done_goes_well
 features: test-util debug-hooks
 --- old
-                    // (`multi_done`'s callers: `if(!result) result = rc`).
-                    crate::proto::Finish::Done(result) => d.result = d.result.and(result),
+        self.result.and(done)
 --- new
-                    // (`multi_done`'s callers: `if(!result) result = rc`).
-                    crate::proto::Finish::Done(result) => d.result = result,
+        done
 
 === the data connection outlives the transfer that made it
 file: crates/curl-core/src/proto/ftp.rs

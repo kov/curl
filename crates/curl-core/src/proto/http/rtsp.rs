@@ -66,9 +66,10 @@ impl Rtsp {
 
     /// Whether the request may be made again on a fresh connection, its
     /// reused one having died, as a protocol outside HTTP's may: one that
-    /// waits for a body, and is not a receive (`Curl_retry_request`).
-    pub(super) fn retryable(&self) -> bool {
-        !self.receives() && !self.no_body
+    /// waits for a body, and has not `ended` (a close ends it, a reset
+    /// does not), and is not a receive (`Curl_retry_request`).
+    pub(super) fn retryable(&self, ended: bool) -> bool {
+        !self.receives() && !self.no_body && !ended
     }
 }
 

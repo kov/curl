@@ -628,6 +628,10 @@ impl MultiEvents<NoHost> for Probe {
             .unwrap()
             .set_url(Some(b"null://changed"))
             .unwrap();
+        let before = cx.rtsp(id).map(|r| r.next_client_cseq());
+        cx.rtsp_mut(id).unwrap().unwrap().set_next_client_cseq(9);
+        let after = cx.rtsp(id).map(|r| r.next_client_cseq());
+        self.in_timer.push(format!("rtsp {before:?} {after:?}"));
         let dup = cx.duplicate(id).unwrap().unwrap();
         self.in_timer.push(probe_options(Some(dup.options())));
         cx.set_notify(NotifyKind::EasyDone, true);
@@ -652,6 +656,10 @@ impl MultiEvents<NoHost> for Probe {
             .unwrap()
             .set_url(Some(b"null://again"))
             .unwrap();
+        let before = cx.rtsp(id).map(|r| r.next_server_cseq());
+        cx.rtsp_mut(id).unwrap().unwrap().set_next_server_cseq(11);
+        let after = cx.rtsp(id).map(|r| r.next_server_cseq());
+        self.in_notify.push(format!("rtsp {before:?} {after:?}"));
         let dup = cx.duplicate(id).unwrap().unwrap();
         self.in_notify.push(probe_options(Some(dup.options())));
         let read = cx.info_read().map(|m| m.id);
@@ -675,6 +683,7 @@ fn callbacks_reach_the_multi_through_their_contexts() {
         [
             "counts 2 2".to_owned(),
             url("stall://a"),
+            "rtsp Some(0) Some(9)".to_owned(),
             url("null://changed")
         ]
     );
@@ -686,6 +695,7 @@ fn callbacks_reach_the_multi_through_their_contexts() {
             "counts 1 2".to_owned(),
             "timeout Some(5s)".to_owned(),
             url("null://b"),
+            "rtsp Some(0) Some(11)".to_owned(),
             url("null://again"),
             "read true".to_owned(),
         ]
@@ -694,6 +704,8 @@ fn callbacks_reach_the_multi_through_their_contexts() {
         m.easy(id).unwrap().options().url(),
         Some(&b"null://again"[..])
     );
+    assert_eq!(m.easy(id).unwrap().rtsp().next_server_cseq(), 11);
+    assert_eq!(m.easy(first).unwrap().rtsp().next_client_cseq(), 9);
     let limits = m.conn_limits_mut();
     let n = NonZeroU32::new;
     assert_eq!((limits.max_host, limits.max_total), (n(7), n(8)));

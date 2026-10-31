@@ -153,6 +153,12 @@ pub trait Socket: fmt::Debug + Send {
 
     fn local_addr(&self) -> io::Result<SocketAddr>;
 
+    /// The address of its peer, for one accepted, as the trace names it
+    /// (`getpeername`); a socket of another kind has none to say.
+    fn peer_addr(&self) -> io::Result<SocketAddr> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     /// Set `option` on it.
     fn set(&self, option: SocketOption) -> io::Result<()>;
 
@@ -521,6 +527,10 @@ impl Socket for curl_os::net::TcpSocket {
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
         curl_os::net::TcpSocket::local_addr(self)
+    }
+
+    fn peer_addr(&self) -> io::Result<SocketAddr> {
+        curl_os::net::TcpSocket::peer_addr(self)
     }
 
     fn set(&self, option: SocketOption) -> io::Result<()> {
@@ -1194,6 +1204,10 @@ pub struct FakeNet {
     /// The conversations to come, each for the next connection to its
     /// address.
     conversations: Vec<(Remote, Conversation)>,
+    /// The connections to come in, each to the next socket opened to
+    /// listen on its address (port 0), from its peer's address, so long
+    /// after it listens.
+    incoming: Vec<(IpAddr, SocketAddr, Conversation, Duration)>,
     /// The scope of its interface with a link-local address, if it has one.
     link_local: Option<NonZeroU32>,
     /// Whether IPv6 works, as a multi's probe finds.
@@ -1295,6 +1309,7 @@ impl FakeNet {
             resolving: Vec::new(),
             next_resolve: ResolveId::FIRST,
             conversations: Vec::new(),
+            incoming: Vec::new(),
             link_local: None,
             ipv6: true,
             open,
@@ -1479,6 +1494,23 @@ impl FakeNet {
         self
     }
 
+    /// A server that connects to the next socket opened to listen on
+    /// `ip`, from `from`, `after` it listens, and then says `talk`: FTP's
+    /// active data connection. The socket it connects as is numbered as
+    /// the listening one opens, the next number after it.
+    pub fn with_incoming(
+        mut self,
+        ip: IpAddr,
+        from: SocketAddr,
+        talk: &Conversation,
+        after: Duration,
+    ) -> FakeNet {
+        self.incoming
+            .try_push((ip, from, talk.clone(), after))
+            .expect("a test's connections fit");
+        self
+    }
+
     /// `with_peer`, at an address on the network or a Unix socket.
     pub(crate) fn with_peer_at(mut self, addr: Remote, peer: Peer) -> FakeNet {
         self.peers
@@ -1588,6 +1620,27 @@ impl Net for FakeNet {
             ),
         };
         let key = self.open_number(wire.clone())?;
+        // A socket to listen with: a connection to come in is given its
+        // number now, as it will be once accepted.
+        let listens_on = match addr {
+            Remote::Inet(at) if at.port() == 0 && kind == SocketKind::Stream => Some(at.ip()),
+            _ => None,
+        };
+        let incoming = match listens_on.and_then(|ip| self.incoming.iter().position(|i| i.0 == ip))
+        {
+            Some(at) => {
+                let (_, from, talk, after) = self.incoming.remove(at);
+                let accepted = self.open_number(talk.clone())?;
+                Some(Incoming {
+                    key: accepted,
+                    from,
+                    talk,
+                    after,
+                    at: None,
+                })
+            }
+            None => None,
+        };
         // The port the kernel would have picked.
         let port = 40000 + u16::try_from(key.0 - FIRST_FAKE).expect("a test opens few sockets");
         // A Unix socket has no address of TCP's families.
@@ -1614,6 +1667,9 @@ impl Net for FakeNet {
             clock: self.clock.clone(),
             ready_at,
             wire,
+            listening: std::sync::atomic::AtomicBool::new(false),
+            incoming: std::sync::Mutex::new(incoming),
+            from: None,
         };
         Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?)
     }
@@ -1671,6 +1727,26 @@ struct FakeSocket {
     /// When a peer that answers late answers.
     ready_at: Option<Instant>,
     wire: Conversation,
+    /// It listens.
+    listening: std::sync::atomic::AtomicBool,
+    /// The connection that comes in once it listens, until accepted.
+    incoming: std::sync::Mutex<Option<Incoming>>,
+    /// Where an accepted socket's peer connected from.
+    from: Option<SocketAddr>,
+}
+
+/// A connection to come in to a fake listening socket: its number, its
+/// peer's address and what it says.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug)]
+struct Incoming {
+    key: SocketKey,
+    from: SocketAddr,
+    talk: Conversation,
+    /// How long after the listen it comes, and when that is, once it
+    /// listens.
+    after: Duration,
+    at: Option<Instant>,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -1688,6 +1764,26 @@ impl Socket for FakeSocket {
     }
 
     fn readiness(&self) -> Readiness<'_> {
+        if self.listening.load(std::sync::atomic::Ordering::Relaxed) {
+            // A connection waits to be accepted, comes later, or none comes.
+            let at = self
+                .incoming
+                .lock()
+                .expect("no test panics holding it")
+                .as_ref()
+                .and_then(|i| i.at);
+            let now = crate::time::Clock::now(&self.clock);
+            return match at {
+                Some(at) if at <= now => Readiness::Known {
+                    now: Events::IN,
+                    later: None,
+                },
+                later => Readiness::Known {
+                    now: Events::NONE,
+                    later,
+                },
+            };
+        }
         let wire = self.wire.0.lock().expect("no test panics holding the wire");
         if wire.hung_up {
             return Readiness::Known {
@@ -1759,7 +1855,13 @@ impl Socket for FakeSocket {
             });
         }
         if let Some(at) = bound {
-            return Ok(at);
+            // A bind to port 0 is given one, as the kernel picks.
+            let port = if at.port() == 0 {
+                local.port()
+            } else {
+                at.port()
+            };
+            return Ok(SocketAddr::new(at.ip(), port));
         }
         Ok(match local {
             SocketAddr::V4(_) => SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0)),
@@ -1804,6 +1906,72 @@ impl Socket for FakeSocket {
         } else {
             Err(io::Error::from_raw_os_error(libc_errno::ENODEV))
         }
+    }
+
+    /// Only a socket that was bound listens.
+    fn listen(&self) -> io::Result<()> {
+        if self
+            .bound
+            .lock()
+            .expect("no test panics holding it")
+            .is_none()
+        {
+            return Err(io::Error::from_raw_os_error(libc_errno::EINVAL));
+        }
+        self.listening
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let now = crate::time::Clock::now(&self.clock);
+        if let Some(i) = self
+            .incoming
+            .lock()
+            .expect("no test panics holding it")
+            .as_mut()
+        {
+            i.at = Some(now.after(i.after));
+        }
+        Ok(())
+    }
+
+    /// The connection to come in, once it listens: connected, from its
+    /// peer's address to the one it listens on.
+    fn accept(&self) -> io::Result<Option<Box<dyn Socket>>> {
+        if !self.listening.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(io::Error::from_raw_os_error(libc_errno::EINVAL));
+        }
+        let now = crate::time::Clock::now(&self.clock);
+        let mut waiting = self.incoming.lock().expect("no test panics holding it");
+        if !waiting
+            .as_ref()
+            .is_some_and(|i| i.at.is_some_and(|at| at <= now))
+        {
+            return Ok(None);
+        }
+        let incoming = waiting.take().expect("checked above");
+        drop(waiting);
+        let local = self.local_addr()?;
+        let socket = FakeSocket {
+            key: incoming.key,
+            peer: Some(Peer::Accepts),
+            local: Some(local),
+            binding: None,
+            bound: std::sync::Mutex::new(None),
+            connected: std::sync::atomic::AtomicBool::new(true),
+            opened_for: Remote::Inet(incoming.from),
+            clock: self.clock.clone(),
+            ready_at: None,
+            wire: incoming.talk,
+            listening: std::sync::atomic::AtomicBool::new(false),
+            incoming: std::sync::Mutex::new(None),
+            from: Some(incoming.from),
+        };
+        Ok(Some(
+            try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)? as Box<dyn Socket>,
+        ))
+    }
+
+    fn peer_addr(&self) -> io::Result<SocketAddr> {
+        self.from
+            .ok_or_else(|| io::Error::from_raw_os_error(libc_errno::ENOTCONN))
     }
 
     /// Its peer is the one at the address it was opened for, which it
@@ -1965,6 +2133,7 @@ mod libc_errno {
     pub(super) const EADDRINUSE: i32 = 98;
     pub(super) const EINVAL: i32 = 22;
     pub(super) const ENODEV: i32 = 19;
+    pub(super) const ENOTCONN: i32 = 107;
 }
 
 #[cfg(any(test, feature = "test-util"))]

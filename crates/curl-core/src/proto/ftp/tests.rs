@@ -878,3 +878,84 @@ fn a_wildcard_download_without_a_pattern_lists_its_directory() {
     assert_eq!(*body.0.lock().unwrap(), LISTING);
     assert!(!said.contains("Wildcard - Parsing started"), "{said}");
 }
+
+/// How long after a transfer listens its server connects.
+const ACCEPT_AFTER: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// The server's address its active data connections come from.
+const ACTIVE_FROM: SocketAddr = SocketAddr::new(
+    std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+    20,
+);
+
+/// A multi whose server at `PORT` takes `control` in turn, and connects
+/// to each socket the transfers listen on with the next of `data`.
+fn serving_active(control: &[&Conversation], data: &[&Conversation]) -> (Multi, Counted) {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let mut net = FakeNet::new(clock.clone()).with_peer(at, Net::Accepts);
+    for c in control {
+        net = net.with_conversation(at, (*c).clone());
+    }
+    for c in data {
+        net = net.with_incoming(at.ip(), ACTIVE_FROM, c, ACCEPT_AFTER);
+    }
+    let counted = Counted(Arc::new(Mutex::new(net)));
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(counted.clone()),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    (Multi::new(env).unwrap(), counted)
+}
+
+/// The answers to the login and an active download's setup: the
+/// greeting, `USER`, `PASS`, `PWD`, `EPRT`, `TYPE` and `SIZE`.
+const ACTIVE_LOGIN_AND_SETUP: [&[u8]; 7] = [
+    b"220 hi\r\n",
+    b"331 password?\r\n",
+    b"230 in\r\n",
+    b"257 \"/\" is it\r\n",
+    b"200 EPRT ok\r\n",
+    b"200 binary\r\n",
+    b"213 5\r\n",
+];
+
+/// An active download: offered by `EPRT` at the socket it listens on,
+/// the server's connection accepted, said as C says it, and its bytes
+/// read; the data connection closes as the transfer ends.
+#[test]
+fn an_active_download_accepts_the_server_s_connection() {
+    let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n226 done\r\n");
+    let control = Conversation::replies(&replies, false).greeting();
+    let data = Conversation::replies(&[b"hello"], true).greeting();
+    let (mut m, counted) = serving_active(&[&control], &[&data]);
+    let (id, body, text) = added(&mut m, URL, |o| {
+        o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    assert!(
+        received(&control).contains("EPRT |1|127.0.0.1|40001|\r\nTYPE I\r\n"),
+        "{}",
+        received(&control)
+    );
+    assert!(said.contains("Connection accepted from server"), "{said}");
+    assert!(
+        said.contains(
+            "Established 2nd connection to 127.0.0.1 (127.0.0.1 port 20) from 127.0.0.1 port 40001"
+        ),
+        "{said}"
+    );
+    // Waiting for it, the transfer polls the listening socket beside the
+    // control connection, as C's `ftp_domore_pollset` does.
+    assert!(
+        said.contains("[DOING_MORE] pollset[fd=1000 IN, fd=1001 IN]"),
+        "{said}"
+    );
+    assert_eq!(counted.open(), 1, "only the control connection is left");
+}

@@ -240,6 +240,7 @@ impl DataConn {
                     // The listening socket goes, the accepted one in its
                     // place.
                     close_in(cx, sock);
+                    let peer = accepted.peer_addr().ok().map(Remote::Inet);
                     let sock = Sock::new(accepted, Closer::System);
                     // The application is told of it, and may refuse it.
                     if let Some(c) = cx.easy().options().sockets.configure.clone() {
@@ -250,6 +251,9 @@ impl DataConn {
                         }
                     }
                     let stream = Stream::new(sock);
+                    // Said as the connect of the second socket says it
+                    // (`conn_connect_trace`).
+                    established(cx, host, peer.as_ref(), &stream);
                     let stream = match curl_alloc::try_box_or_back(stream) {
                         Ok(stream) => stream,
                         Err(stream) => {

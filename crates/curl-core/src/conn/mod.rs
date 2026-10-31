@@ -1647,31 +1647,36 @@ impl Conn {
         if self.h2().is_some() {
             return crate::components::Component::Http2;
         }
-        match &self.route {
-            Route::Net(route) => {
-                let tunnel = match &self.transport {
-                    Transport::Stream(stream) => stream.query(layer::LayerQuery::Tunnel),
-                    Transport::Datagram(_) | Transport::Local => None,
-                };
-                let tunnel = match tunnel {
-                    Some(layer::LayerAnswer::Tunnel(filter)) => filter,
-                    _ => crate::components::Component::H1Proxy,
-                };
-                chain::Chain::connected(
-                    Dialing {
-                        route,
-                        dial: self.dial,
-                    },
-                    chain::Head::default(),
-                    false,
-                    tunnel,
-                )
-                .reduced()
-                .top()
-                .expect("a connection has a socket")
-            }
-            Route::Local => crate::components::Component::Tcp,
-        }
+        self.chain().map_or(crate::components::Component::Tcp, |c| {
+            c.top().expect("a connection has a socket")
+        })
+    }
+
+    /// Its chain of filters once it is up, its setup's gone
+    /// (`Curl_conn_remove_setup_filters`), as its route made it; none for
+    /// a local one.
+    pub(crate) fn chain(&self) -> Option<chain::Chain> {
+        let Route::Net(route) = &self.route else {
+            return None;
+        };
+        let tunnel = match &self.transport {
+            Transport::Stream(stream) => stream.query(layer::LayerQuery::Tunnel),
+            Transport::Datagram(_) | Transport::Local => None,
+        };
+        let tunnel = match tunnel {
+            Some(layer::LayerAnswer::Tunnel(filter)) => filter,
+            _ => crate::components::Component::H1Proxy,
+        };
+        let connected = chain::Chain::connected(
+            Dialing {
+                route,
+                dial: self.dial,
+            },
+            chain::Head::default(),
+            false,
+            tunnel,
+        );
+        Some(connected.reduced())
     }
 
     /// What its socket's filter traces as (`TCP`, `UNIX`).

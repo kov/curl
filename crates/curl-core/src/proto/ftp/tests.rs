@@ -328,10 +328,10 @@ fn with_tls() -> SharedLibraries {
 }
 
 /// The control connection's TLS after `AUTH` is said as C says a filter
-/// put on top of the chain (`Curl_conn_cf_add`), and once its handshake
-/// is made the connection is timed and said connected again, as C's
-/// `Curl_conn_connect` does each time the whole chain connects, before
-/// the login goes on.
+/// put on top of the chain (`Curl_conn_cf_add`), each call of its
+/// connect said, and once its handshake is made the connection is timed
+/// and said connected again, then its chain, as C's `Curl_conn_connect`
+/// does each time the whole chain connects, before the login goes on.
 #[test]
 fn a_connection_upgraded_after_auth_is_timed_and_said_connected() {
     use crate::options::UseSsl;
@@ -364,26 +364,7 @@ fn a_connection_upgraded_after_auth_is_timed_and_said_connected() {
     let said = text.text();
     assert_eq!(result, Ok(()), "{said}");
     assert_eq!(*body.0.lock().unwrap(), b"hello");
-    let at = |line: &str| {
-        said.find(line)
-            .unwrap_or_else(|| panic!("{line:?} in {said}"))
-    };
-    let added = at("[SSL] added\n");
-    let shaking = at("[SSL] cf_connect()\n");
-    let shaken = at("[SSL] cf_connect() -> 0, done=1\n");
-    let timed = at("[PGRS-APPCONNECT]");
-    let user = at("[FTP] [AUTH] -> [USER]");
-    assert!(added < shaking, "{said}");
-    let established: Vec<usize> = said
-        .match_indices("Established connection to 127.0.0.1")
-        .map(|(i, _)| i)
-        .collect();
-    assert_eq!(established.len(), 2, "{said}");
-    assert!(established[0] < added, "{said}");
-    assert!(
-        shaken < timed && timed < established[1] && established[1] < user,
-        "{said}"
-    );
+    crate::multi::state::tls::assert_upgraded_in_place(&said, 1, "[FTP] [AUTH] -> [USER]");
 }
 
 /// The control connection's TLS handshake after `AUTH` is taken waits for

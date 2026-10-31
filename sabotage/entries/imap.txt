@@ -185,3 +185,43 @@ features: test-util
         TransferState::Did(x) if !x.proto.exchanges() && !x.proto.holds_output() => (
 --- new
         TransferState::Did(x) if !x.proto.exchanges() => (
+
+=== the TLS made in place is not timed
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::imap::tests::over_the_wire::starttls_is_timed_and_said_connected
+--- old
+            crate::multi::mstate::marked(cx, Timer::AppConnect, marked);
+--- new
+            let _ = marked;
+
+=== STARTTLS's connect is said as one that blocks
+file: crates/curl-core/src/proto/imap.rs
+witness: curl-core proto::imap::tests::over_the_wire::starttls_is_timed_and_said_connected
+--- old
+                crate::multi::state::tls::Blocks::No,
+--- new
+                crate::multi::state::tls::Blocks::Yes,
+
+=== a call of the connect of TLS made in place is not said
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::imap::tests::over_the_wire::starttls_is_timed_and_said_connected
+--- old
+        format_args!("Curl_conn_connect(block={block}) -> {code}, done={done}"),
+--- new
+        format_args!(""),
+
+=== a failed connect of TLS made in place says no chain left
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::imap::tests::over_the_wire::a_failed_starttls_is_said_as_c_s_connect_says_it
+--- old
+                crate::multi::mstate::trace(cx, format_args!("failed to connect {chain}"));
+--- new
+                let _ = chain;
+
+=== a failed connect of TLS made in place says the TLS connected
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::imap::tests::over_the_wire::a_failed_starttls_is_said_as_c_s_connect_says_it
+--- old
+            if let Some(chain) = chain(false) {
+--- new
+            if let Some(chain) = chain(true) {

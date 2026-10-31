@@ -278,6 +278,18 @@ impl Chain {
         left
     }
 
+    /// The chain with `filter` put on top of it, `connected` or not, as a
+    /// filter added to a connection already up goes (`Curl_conn_cf_add`):
+    /// TLS upgraded to in place.
+    pub(crate) fn under(&self, filter: Component, connected: bool) -> Chain {
+        let mut topped = Chain::new();
+        topped.push(filter, connected);
+        for &(filter, connected) in &self.filters[..self.len] {
+            topped.push(filter, connected);
+        }
+        topped
+    }
+
     /// The filter at its top, which a question of the connection is
     /// asked of first (`conn->cfilter[FIRSTSOCKET]`).
     pub(crate) fn top(&self) -> Option<Component> {

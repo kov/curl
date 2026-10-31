@@ -200,15 +200,23 @@ file: crates/curl-core/src/proto/ftp.rs
 witness: curl-core proto::ftp::tests::a_handshake_after_auth_stalls_no_other_transfer
 features: test-util debug-hooks
 --- old
-        let shaken =
-            crate::multi::state::tls::upgrade(carrier, &identity, &self.peer, via.as_deref(), cx)?;
+        )?;
         if shaken == crate::tls::Handshake::Waiting {
             return Ok(());
         }
 --- new
-        while crate::multi::state::tls::upgrade(carrier, &identity, &self.peer, via.as_deref(), cx)?
-            == crate::tls::Handshake::Waiting
-        {}
+        )?;
+        let mut shaken = shaken;
+        while shaken == crate::tls::Handshake::Waiting {
+            shaken = crate::multi::state::tls::upgrade(
+                carrier,
+                &identity,
+                &self.peer,
+                &self.in_place,
+                crate::multi::state::tls::Blocks::Yes,
+                cx,
+            )?;
+        }
 
 === the data connection's handshake blocks the multi
 file: crates/curl-core/src/proto/ftp/data.rs
@@ -238,28 +246,20 @@ witness: curl-core proto::ftp::tests::a_data_connection_s_handshake_stalls_no_ot
                             established(cx, host, peer.as_ref(), &stream);
 --- new
 
-=== the TLS put on after AUTH is not said added
-file: crates/curl-core/src/proto/ftp.rs
+=== the TLS put on in place is not said added
+file: crates/curl-core/src/multi/state/tls.rs
 witness: curl-core proto::ftp::tests::a_connection_upgraded_after_auth_is_timed_and_said_connected
 --- old
-            trace::of(cx, Component::Ssl, format_args!("added"));
+        trace::of(cx, ssl, format_args!("added"));
 --- new
 
-=== the TLS made after AUTH is not timed
+=== FTP's connect after AUTH is said as one that does not block
 file: crates/curl-core/src/proto/ftp.rs
 witness: curl-core proto::ftp::tests::a_connection_upgraded_after_auth_is_timed_and_said_connected
 --- old
-        crate::multi::mstate::marked(cx, crate::report::Timer::AppConnect, marked);
+            crate::multi::state::tls::Blocks::Yes,
 --- new
-        let _ = marked;
-
-=== the connection upgraded after AUTH is not said connected again
-file: crates/curl-core/src/proto/ftp.rs
-witness: curl-core proto::ftp::tests::a_connection_upgraded_after_auth_is_timed_and_said_connected
---- old
-            crate::multi::state::say_established(cx, shown.shown(), &ends.remote, ends.local);
---- new
-            let _ = (shown, ends);
+            crate::multi::state::tls::Blocks::No,
 
 === PORT's address that stands for none fails as PORT's alone
 file: crates/curl-core/src/conn/connect.rs

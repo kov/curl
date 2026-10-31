@@ -362,3 +362,23 @@ features: test-util
             if !runs || !drive::holds(&pc.pp, &mut carrier) {
 --- new
             if !runs && !drive::holds(&pc.pp, &mut carrier) {
+
+=== the chain of a connection upgraded in place is not said reduced
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::smtp::tests::over_the_wire::starttls_is_timed_and_said_connected
+--- old
+                crate::multi::mstate::trace(cx, format_args!("reduced to {chain}"));
+--- new
+
+=== TLS made in place goes under the chain, not on top
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core proto::smtp::tests::over_the_wire::starttls_is_timed_and_said_connected
+--- old
+        let mut topped = Chain::new();
+        topped.push(filter, connected);
+        for &(filter, connected) in &self.filters[..self.len] {
+            topped.push(filter, connected);
+        }
+--- new
+        let mut topped = *self;
+        topped.push(filter, connected);

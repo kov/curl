@@ -685,6 +685,23 @@ fn starttls_upgrades_and_greets_again() {
     assert!(said.windows(again.len()).any(|w| w == again), "{said:?}");
 }
 
+/// The TLS STARTTLS puts on is said as C says a filter put on top of
+/// the chain, each call of its connect said; once its handshake is made
+/// the connection is timed and said connected again, then its chain, as
+/// C's `Curl_conn_connect` does each time the whole chain connects,
+/// before EHLO greets the server again.
+#[test]
+fn starttls_is_timed_and_said_connected() {
+    let talk = upgrading(b"");
+    let mut m = serving(&[&talk]);
+    let ran = tracing(&mut m, &with_tls(), URL, b"multi,ssl", |o| {
+        o.line.make_mut().unwrap().use_ssl = UseSsl::All;
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let next = "[PROTOCONNECTING] -> [DO]";
+    crate::multi::state::tls::assert_upgraded_in_place(&ran.text, 0, next);
+}
+
 /// Bytes after the go-ahead were not sent under TLS: refused before the
 /// upgrade (test 982's).
 #[test]

@@ -351,3 +351,19 @@ features: test-util
             format_args!("response reading failed (errno: 0)"),
 --- new
             format_args!("response reading failed (errno: 115)"),
+
+=== the connection upgraded in place is not said connected again
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::pop3::tests::over_the_wire::stls_is_timed_and_said_connected
+--- old
+                super::say_established(cx, shown.shown(), &ends.remote, ends.local);
+--- new
+                let _ = (shown, ends);
+
+=== POP3 reads no chain from its connection to put its TLS on
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::stls_is_timed_and_said_connected
+--- old
+        self.in_place = crate::multi::state::tls::InPlace::of(lease.conn());
+--- new
+        self.in_place = Default::default();

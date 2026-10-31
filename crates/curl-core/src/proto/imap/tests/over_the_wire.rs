@@ -525,6 +525,62 @@ fn starttls_upgrades_the_connection_before_the_login() {
     assert!(said.windows(login.len()).any(|w| w == login), "{said:?}");
 }
 
+/// The TLS STARTTLS puts on is said as C says a filter put on top of
+/// the chain, each call of its connect said; once its handshake is made
+/// the connection is timed and said connected again, then its chain, as
+/// C's `Curl_conn_connect` does each time the whole chain connects,
+/// before the capabilities are asked again.
+#[test]
+fn starttls_is_timed_and_said_connected() {
+    let talk = upgrading(b"");
+    let mut m = serving(&[&talk]);
+    let ran = tracing(
+        &mut m,
+        &with_tls(),
+        "imap://u:p@127.0.0.1:PORT/",
+        b"multi,ssl",
+        |o| {
+            o.line.make_mut().unwrap().use_ssl = UseSsl::All;
+        },
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    crate::multi::state::tls::assert_upgraded_in_place(&ran.text, 0, "[PROTOCONNECTING] -> [DO]");
+}
+
+/// A STARTTLS handshake that fails is said as C's connect says its
+/// filter's failure: the call's end, what the filter returned, and the
+/// chain left, its TLS not connected.
+#[test]
+fn a_failed_starttls_is_said_as_c_s_connect_says_it() {
+    let replies = [
+        GREETING,
+        CAPABILITY,
+        b"A002 OK\r\n",
+        b"FAKETLS REFUSED\r\n\r\n",
+    ];
+    let talk = Conversation::replies(&replies, false).greeting();
+    let mut m = serving(&[&talk]);
+    let ran = tracing(
+        &mut m,
+        &with_tls(),
+        "imap://u:p@127.0.0.1:PORT/",
+        b"multi,ssl",
+        |o| {
+            o.line.make_mut().unwrap().use_ssl = UseSsl::All;
+        },
+    );
+    assert_eq!(ran.result, Err(ErrorKind::SslConnectError), "{}", ran.text);
+    let said = &ran.text;
+    let at = |line: &str| {
+        said.find(line)
+            .unwrap_or_else(|| panic!("{line:?} in {said}"))
+    };
+    let ended = at("[SSL] Curl_conn_connect(block=0) -> 35, done=0\n");
+    let returned = at("[SSL] Curl_conn_connect(), filter returned 35\n");
+    let left = at("[MULTI] [PROTOCONNECTING] failed to connect [0][!SSL][TCP]\n");
+    assert!(ended < returned && returned < left, "{said}");
+}
+
 /// Bytes after the go-ahead were not sent under TLS: refused before the
 /// upgrade (test 981).
 #[test]

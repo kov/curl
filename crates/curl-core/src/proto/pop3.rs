@@ -259,9 +259,8 @@ pub(crate) struct Request {
     /// The body was read to its end (`req.done`).
     received: bool,
     eob: Eob,
-    /// The peer a connect-to entry names in the origin's place, which TLS
-    /// is made with as the connection is upgraded.
-    via: Option<TryArc<Peer>>,
+    /// What TLS is made with and said as as the connection is upgraded.
+    in_place: crate::multi::state::tls::InPlace,
     /// What the back and forth waits for on the connection.
     wants: Events,
     /// The answers' bytes (`req.headerbytecount`).
@@ -339,7 +338,7 @@ impl Request {
             receiving: false,
             received: false,
             eob: Eob::default(),
-            via: None,
+            in_place: Default::default(),
             wants: Events::IN,
             header_bytes: 0,
         })
@@ -551,7 +550,7 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<bool, ErrorKind> {
         let limit = cx.easy().options().line.server_response;
-        self.via = lease.conn().net_route().and_then(|r| r.via.clone());
+        self.in_place = crate::multi::state::tls::InPlace::of(lease.conn());
         let (pc, mut carrier) = pop3_of(lease);
         if drive::runs(cx, &pc.pp, &mut carrier, limit)? {
             self.machine(cx, pc, &mut carrier)?;
@@ -573,12 +572,12 @@ impl Request {
             let Some(identity) = pc.cold.as_ref().and_then(|c| c.upgrade.clone()) else {
                 return Err(ErrorKind::NotBuiltIn);
             };
-            let via = self.via.clone();
             let shaken = crate::multi::state::tls::upgrade(
                 carrier,
                 &identity,
                 &self.peer,
-                via.as_deref(),
+                &self.in_place,
+                crate::multi::state::tls::Blocks::No,
                 cx,
             );
             let (code, done) = match &shaken {

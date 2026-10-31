@@ -9,12 +9,14 @@ use curl_alloc::{OutOfMemory, TryArc, try_box};
 
 use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
 use crate::components::Component;
+use crate::conn::chain::Chain;
 use crate::conn::layer::LayerQuery;
 use crate::conn::tls::TlsLayer;
-use crate::conn::{Dial, Handshook, Peer, Stream};
+use crate::conn::{Conn, Dial, Handshook, Peer, Stream};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::options::{ProxyType, SslOptions, TlsMaxVersion, TlsMinVersion, TlsOptions};
+use crate::report::Timer;
 use crate::tls::{
     Alpn, Handshake as Shake, OwnSessions, SessionPeer, TlsIdentity, TlsPeer, TlsShared, TlsTicket,
 };
@@ -189,20 +191,105 @@ pub(super) fn put_on<H: Host>(
         .map_err(|OutOfMemory| Failure::Transfer(ErrorKind::OutOfMemory))
 }
 
+/// What a connection upgraded to TLS in place (STARTTLS, FTP's `AUTH`)
+/// is made with and said as, read from its route as each run of its
+/// protocol starts: the peer a connect-to entry names in the origin's
+/// place, which the TLS is made with; the host the connection is said to
+/// be to (`CURL_CONN_HOST_DISPNAME`); and the chain the TLS goes on top
+/// of.
+#[derive(Debug, Default)]
+pub(crate) struct InPlace {
+    via: Option<TryArc<Peer>>,
+    shown: Option<TryArc<Peer>>,
+    below: Option<Chain>,
+}
+
+impl InPlace {
+    pub(crate) fn of(conn: &Conn) -> InPlace {
+        let route = conn.net_route();
+        InPlace {
+            via: route.and_then(|r| r.via.clone()),
+            shown: route.map(|r| r.destination_shared().clone()),
+            below: conn.chain(),
+        }
+    }
+}
+
+/// Whether the connect of an upgrade waits for its end, as C's says
+/// (`Curl_conn_connect`'s `blocking`). Here neither waits: the handshake
+/// moves on as the socket lets it, as a connection's own does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Blocks {
+    /// STARTTLS's (`imap_perform_upgrade_tls` and the others).
+    No,
+    /// FTP's after `AUTH` (`ftp_state_auth_resp`).
+    Yes,
+}
+
 /// Upgrade an open connection to TLS in place (STARTTLS,
 /// `Curl_ssl_cfilter_add` then `Curl_conn_connect`): the session for
-/// `peer`, through `via` if a connect-to names it, made with `identity`
-/// and offering no ALPN, goes on its stream the first time, taking what
-/// was received after the server's go-ahead; each call moves the
-/// handshake on as far as the socket lets it.
+/// `peer`, through `in_place`'s connect-to peer if one is named, made
+/// with `identity` and offering no ALPN, goes on its stream the first
+/// time, taking what was received after the server's go-ahead, its filter
+/// said added; each call moves the handshake on as far as the socket lets
+/// it, said as C's connect of the whole chain says it. Once made, the
+/// chain is connected again: its TLS timed, and the connection said
+/// established, then its chain, as C's connect does
+/// (`conn_report_stats`, `conn_connect_trace`, `Curl_conn_trc_filters`).
+/// A failure is said as C's connect says its filter's.
 pub(crate) fn upgrade<H: Host>(
     carrier: &mut crate::conn::mux::Carrier<'_>,
     identity: &TryArc<TlsIdentity>,
     peer: &Peer,
-    via: Option<&Peer>,
+    in_place: &InPlace,
+    blocks: Blocks,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Shake, ErrorKind> {
-    upgrade_resuming(carrier, identity, peer, via, None, cx)
+    let ssl = Component::Ssl;
+    // Its filter goes on top of the chain first (`Curl_conn_cf_add`).
+    let adds = !carrier.over_tls();
+    if adds {
+        trace::of(cx, ssl, format_args!("added"));
+    }
+    let shaken = upgrade_resuming(carrier, identity, peer, in_place.via.as_deref(), None, cx);
+    let code = trace::Code(shaken.map(|_| ()));
+    let done = u8::from(shaken == Ok(Shake::Done));
+    let block = u8::from(blocks == Blocks::Yes);
+    trace::of(
+        cx,
+        ssl,
+        format_args!("Curl_conn_connect(block={block}) -> {code}, done={done}"),
+    );
+    let chain = |connected| in_place.below.map(|below| below.under(ssl, connected));
+    match shaken {
+        Ok(Shake::Waiting) => {}
+        Ok(Shake::Done) => {
+            let now = cx.now();
+            let marked = cx.report_mut().timings_mut().mark(Timer::AppConnect, now);
+            crate::multi::mstate::marked(cx, Timer::AppConnect, marked);
+            if let (Some(shown), Some(ends)) = (
+                in_place.shown.as_deref(),
+                cx.report_mut().primary().cloned(),
+            ) {
+                super::say_established(cx, shown.shown(), &ends.remote, ends.local);
+            }
+            if let Some(chain) = chain(true) {
+                crate::multi::mstate::trace(cx, format_args!("connected {chain}"));
+                crate::multi::mstate::trace(cx, format_args!("reduced to {chain}"));
+            }
+        }
+        Err(_) => {
+            trace::of(
+                cx,
+                ssl,
+                format_args!("Curl_conn_connect(), filter returned {code}"),
+            );
+            if let Some(chain) = chain(false) {
+                crate::multi::mstate::trace(cx, format_args!("failed to connect {chain}"));
+            }
+        }
+    }
+    shaken
 }
 
 /// The same, the session made resuming `given`, its control connection's
@@ -313,4 +400,44 @@ fn prefs_check<H: Host>(cx: &mut StepCx<'_, H>, options: &TlsOptions) -> Result<
         return Err(trace::fail(cx, ErrorKind::SslConnectError, why));
     }
     Ok(())
+}
+
+/// Assert that `said`, a transfer's trace with its `multi` and `ssl`
+/// components on, says a connection upgraded to TLS in place as C's
+/// connect of the whole chain says it, before `next`, the first line
+/// after the upgrade: the filter added before its first handshake call;
+/// each call's end, `block` given as C's connect is, a first that
+/// waited if any; once done, the
+/// handshake timed, the connection said established again, then its
+/// chain connected and reduced, all of it TLS over TCP.
+#[cfg(test)]
+pub(crate) fn assert_upgraded_in_place(said: &str, block: u8, next: &str) {
+    let at = |line: &str| {
+        said.find(line)
+            .unwrap_or_else(|| panic!("{line:?} in {said}"))
+    };
+    let added = at("[SSL] added\n");
+    let shaking = at("[SSL] cf_connect()\n");
+    let waiting = said
+        .find(&format!(
+            "[SSL] Curl_conn_connect(block={block}) -> 0, done=0\n"
+        ))
+        .unwrap_or(shaking + 1);
+    let shaken = at(&format!(
+        "[SSL] Curl_conn_connect(block={block}) -> 0, done=1\n"
+    ));
+    let timed = at("[PGRS-APPCONNECT]");
+    let connected = at("connected [0][SSL][TCP]\n");
+    let reduced = at("reduced to [0][SSL][TCP]\n");
+    let next = at(next);
+    let established: Vec<usize> = said
+        .match_indices("Established connection to 127.0.0.1")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(established.len(), 2, "{said}");
+    assert!(established[0] < added && added < shaking, "{said}");
+    assert!(shaking < waiting && waiting < shaken, "{said}");
+    assert!(shaken < timed && timed < established[1], "{said}");
+    assert!(established[1] < connected && connected < reduced, "{said}");
+    assert!(reduced < next, "{said}");
 }

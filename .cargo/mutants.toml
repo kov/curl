@@ -116,11 +116,9 @@ exclude_re = [
     # the buffer.
     'curl-os/src/resolve\.rs:.*: replace \+ with \* in lookup$',
     # The same for a long string's copy, whose extends grow the buffer for
-    # what was not reserved.
+    # what was not reserved: only a string longer than the stack's copy
+    # holds is copied there, so the size is never 0.
     'curl-os/src/fnmatch\.rs:.*: replace \+ with (-|\*) in with_c_string$',
-    # `accept4` gives a descriptor, never 0 while standard input is open,
-    # as in the tests, or -1.
-    'curl-os/src/net\.rs:.*: replace < with <= in TcpSocket::accept$',
     # Freeing what C allocated: only a leak checker sees it not freed, and
     # the tests run under none that sees C's heap (Miri cannot run FFI).
     # A successful `getaddrinfo` never leaves the list null.

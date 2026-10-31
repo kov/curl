@@ -1,5 +1,5 @@
 {
- "c-commit": "549501dcc73b088374609b81b8dacfa3efbe9976",
+ "c-commit": "fbbdeb1ae566d711fd496c879ba41e51c40c17c1",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
@@ -44,7 +44,7 @@
    "disabled_unconditional": 14,
    "libtest_programs": 297,
    "perf_programs": 10,
-   "pytest_functions": 357,
+   "pytest_functions": 358,
    "server_keywords_mapped": 36,
    "test_files": 2181,
    "tunit_programs": 6,
@@ -26306,6 +26306,40 @@
          ],
          "line": 611,
          "name": "test_60_18_happy_eyeballs_ipv4_all_proto"
+        },
+        {
+         "decorators": [
+          {
+           "kind": "other",
+           "text": "MARK_NEEDS_H2O"
+          },
+          {
+           "kind": "other",
+           "text": "MARK_NEEDS_NGHTTPX"
+          },
+          {
+           "kind": "other",
+           "text": "MARK_NEEDS_NGHTTP2"
+          },
+          {
+           "argnames": "'proxy'",
+           "call": "pytest.mark.parametrize",
+           "kind": "parametrize",
+           "n_values": 2,
+           "text": "pytest.mark.parametrize('proxy', ['h2o', 'nghttpx'])"
+          }
+         ],
+         "fixtures": [
+          "env",
+          "httpd",
+          "h2o_server",
+          "h2o_proxy",
+          "nghttpx",
+          "nghttpx_fwd",
+          "proxy"
+         ],
+         "line": 636,
+         "name": "test_60_19_http3_races_through_a_proxy"
         }
        ]
       }
@@ -26331,7 +26365,7 @@
     "dnsd": 15,
     "docname": 13,
     "ech_mode": 4,
-    "env": 357,
+    "env": 358,
     "exp_err": 1,
     "exp_exit": 3,
     "exp_ok": 1,
@@ -26339,24 +26373,25 @@
     "fcount": 3,
     "fname": 4,
     "fsize": 1,
-    "h2o_proxy": 14,
-    "h2o_server": 12,
+    "h2o_proxy": 15,
+    "h2o_server": 13,
     "httpcode": 1,
-    "httpd": 261,
+    "httpd": 262,
     "indata": 3,
     "max_arg": 1,
     "max_host_conns": 1,
     "max_total_conns": 1,
     "min_arg": 1,
     "model": 6,
-    "nghttpx": 152,
-    "nghttpx_fwd": 19,
+    "nghttpx": 153,
+    "nghttpx_fwd": 20,
     "nghttpx_tcp": 7,
     "ocsp_case": 1,
     "osslserver": 1,
     "pause_offset": 3,
     "priority": 1,
     "proto": 145,
+    "proxy": 1,
     "proxy_proto": 3,
     "pub_domain": 1,
     "redir": 1,
@@ -26484,7 +26519,7 @@
     "tests/http/test_40_socks.py": 5,
     "tests/http/test_50_scp.py": 10,
     "tests/http/test_51_sftp.py": 12,
-    "tests/http/test_60_h3_proxy.py": 17
+    "tests/http/test_60_h3_proxy.py": 18
    }
   },
   "runner_counts": {

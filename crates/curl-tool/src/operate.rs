@@ -2927,7 +2927,7 @@ fn ssh_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
             )
             .map_err(oom)?
             .map(|p| std::os::unix::ffi::OsStringExt::into_vec(p.into_os_string()));
-            let checked = op.hostpubmd5.is_some() || op.hostpubsha256.is_some();
+            let checked = [op.hostpubmd5.is_some(), op.hostpubsha256.is_some()];
             let home = curl_os::env::var(b"HOME").map_err(oom)?;
             found = known_hosts_default(path, checked, home.as_deref()).map_err(oom)?;
             found.as_deref()
@@ -2937,14 +2937,14 @@ fn ssh_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
 }
 
 /// The known-hosts file when none is given: the user's one `found`, else
-/// one under `home` that might do when the host is not checked by a
-/// fingerprint (`checked`), else none (`ssh_setopts`).
+/// one under `home` that might do when the host is checked by neither
+/// fingerprint (`checked`: MD5, SHA-256), else none (`ssh_setopts`).
 fn known_hosts_default(
     found: Option<Vec<u8>>,
-    checked: bool,
+    checked: [bool; 2],
     home: Option<&[u8]>,
 ) -> Result<Option<Vec<u8>>, OutOfMemory> {
-    if found.is_some() || checked {
+    if found.is_some() || checked.contains(&true) {
         return Ok(found);
     }
     let mut path = Vec::new();
@@ -4597,22 +4597,27 @@ mod tests {
     fn the_known_hosts_default_is_c_s() {
         let found = Some(b"/f/.ssh/known_hosts".to_vec());
         assert_eq!(
-            known_hosts_default(found.clone(), false, None).unwrap(),
+            known_hosts_default(found.clone(), [false; 2], None).unwrap(),
             found
         );
         assert_eq!(
-            known_hosts_default(found.clone(), true, None).unwrap(),
+            known_hosts_default(found.clone(), [true; 2], None).unwrap(),
             found
         );
-        assert_eq!(known_hosts_default(None, true, Some(b"/h")).unwrap(), None);
+        for checked in [[true, false], [false, true], [true, true]] {
+            let default = known_hosts_default(None, checked, Some(b"/h"));
+            assert_eq!(default.unwrap(), None, "{checked:?}");
+        }
         assert_eq!(
-            known_hosts_default(None, false, Some(b"/h"))
+            known_hosts_default(None, [false; 2], Some(b"/h"))
                 .unwrap()
                 .as_deref(),
             Some(&b"/h/.ssh/known_hosts"[..])
         );
         assert_eq!(
-            known_hosts_default(None, false, None).unwrap().as_deref(),
+            known_hosts_default(None, [false; 2], None)
+                .unwrap()
+                .as_deref(),
             Some(&b"/.ssh/known_hosts"[..])
         );
     }

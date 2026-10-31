@@ -1052,3 +1052,29 @@ fn debug_sizes_are_at_most_a_mib() {
     assert_eq!(curl_number(b"x12", DEBUG_MAX), None);
     assert_eq!(curl_number(b"", DEBUG_MAX), None);
 }
+
+/// A length of 63 bits, its top bit clear, is a length: the frame waits
+/// for its payload, refused for nothing.
+#[test]
+fn a_63_bit_length_is_taken() {
+    let (got, failed) = decode(b"\x82\x7f\x7f\xff\xff\xff\xff\xff\xff\xffab");
+    assert_eq!(failed, None);
+    assert_eq!(got.iter().map(|(_, b)| b.len()).sum::<usize>(), 2);
+}
+
+/// A frame's payload held over two chunks fills the buffer from both,
+/// no more than it has room for, the rest left for the next receive.
+#[test]
+fn a_receive_fills_its_buffer_from_more_than_one_chunk() {
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    ws.recvbuf = ChunkQueue::new(4, 4);
+    rec.incoming = b"\x82\x06abcdef".to_vec();
+    let mut buf = [0u8; 3];
+    let frame = ws.recv(&mut rec, &mut buf, true).unwrap();
+    assert_eq!(&buf[..frame.len], b"abc");
+    assert_eq!((frame.offset, frame.bytes_left), (0, 3));
+    let frame = ws.recv(&mut rec, &mut buf, true).unwrap();
+    assert_eq!(&buf[..frame.len], b"def");
+    assert_eq!((frame.offset, frame.bytes_left), (3, 0));
+}

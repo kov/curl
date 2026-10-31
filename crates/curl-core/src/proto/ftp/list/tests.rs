@@ -43,6 +43,40 @@ fn names(l: &Listing) -> Vec<&[u8]> {
     l.files().iter().map(|e| e.info().name).collect()
 }
 
+/// Each file type's letter and each execute letter's high bit, as C's
+/// parser reads them.
+#[test]
+fn each_file_type_and_mode_letter_reads_as_c_reads_it() {
+    let listing = b"-rwsr-Sr-t 1 u g 1 Jan 17 11:01 f\r\n\
+prw-r--r-- 1 u g 0 Jan 17 11:01 p\r\n\
+srwxr-sr-T 1 u g 0 Jan 17 11:01 s\r\n\
+crw-r--r-- 1 u g 0 Jan 17 11:01 c\r\n\
+brw-r--r-- 1 u g 0 Jan 17 11:01 b\r\n\
+Drw-r--r-- 1 u g 0 Jan 17 11:01 D\r\n\
+drwxr-xr-x 1 u g 0 Jan 17 11:01 d\r\n\
+lrwxrwxrwx 1 u g 0 Jan 17 11:01 l -> t\r\n";
+    let l = read(listing, listing.len());
+    assert_eq!(l.error(), None);
+    let read: Vec<_> = l
+        .files()
+        .iter()
+        .map(|e| (e.info().kind, e.info().perm))
+        .collect();
+    assert_eq!(
+        read,
+        [
+            (FileType::File, Some(0o7745)),
+            (FileType::NamedPipe, Some(0o644)),
+            (FileType::Socket, Some(0o3754)),
+            (FileType::DeviceChar, Some(0o644)),
+            (FileType::DeviceBlock, Some(0o644)),
+            (FileType::Door, Some(0o644)),
+            (FileType::Directory, Some(0o755)),
+            (FileType::Symlink, Some(0o777)),
+        ]
+    );
+}
+
 #[test]
 fn a_unix_listing_reads_as_c_reads_it() {
     let l = read(UNIX, UNIX.len());

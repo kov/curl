@@ -1151,6 +1151,32 @@ mod tests {
         Ok((s, state))
     }
 
+    /// A socket bound and listening takes a connection only once one
+    /// comes, accepted nonblocking and close-on-exec, its peer named; a
+    /// socket that does not listen refuses the connect.
+    #[test]
+    fn a_listening_socket_accepts_a_connection() {
+        let any = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let s = open(any, Protocol::Tcp, true).unwrap();
+        s.bind(any).unwrap();
+        let at = s.local_addr().unwrap();
+        // Bound, not listening: nothing can connect to it yet.
+        assert!(std::net::TcpStream::connect(at).is_err());
+        s.listen(1).unwrap();
+        assert!(s.accept().unwrap().is_none(), "none waits yet");
+        let peer = std::net::TcpStream::connect(at).unwrap();
+        assert_eq!(ready(&s, Events::IN), Events::IN);
+        let accepted = s.accept().unwrap().expect("the connection waiting");
+        assert_eq!(accepted.peer_addr().unwrap(), peer.local_addr().unwrap());
+        let fd = accepted.fd().as_raw_fd();
+        // SAFETY: `fcntl` reads the status flags of an open descriptor.
+        let status = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        // SAFETY: and its descriptor flags.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert_ne!(status & libc::O_NONBLOCK, 0, "nonblocking");
+        assert_ne!(flags & libc::FD_CLOEXEC, 0, "close-on-exec");
+    }
+
     /// The host name is the kernel's, and a buffer too small for it gets
     /// none of it, or a cut that ends inside it, never past its end.
     #[test]

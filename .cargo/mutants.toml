@@ -115,6 +115,12 @@ exclude_re = [
     # A reservation size: one byte short only makes the NUL's push grow
     # the buffer.
     'curl-os/src/resolve\.rs:.*: replace \+ with \* in lookup$',
+    # The same for a long string's copy, whose extends grow the buffer for
+    # what was not reserved.
+    'curl-os/src/fnmatch\.rs:.*: replace \+ with (-|\*) in with_c_string$',
+    # `accept4` gives a descriptor, never 0 while standard input is open,
+    # as in the tests, or -1.
+    'curl-os/src/net\.rs:.*: replace < with <= in TcpSocket::accept$',
     # Freeing what C allocated: only a leak checker sees it not freed, and
     # the tests run under none that sees C's heap (Miri cannot run FFI).
     # A successful `getaddrinfo` never leaves the list null.
@@ -186,7 +192,8 @@ exclude_re = [
     'url/host\.rs:.*: replace \| with \^ in (ipv4|pton6)$',
     'url/encode\.rs:.*: replace \| with \^ in (escaped_byte|decode)$',
     'curl-core/src/base64\.rs:.*: replace \| with \^ in encode$',
-    'curl-os/src/net\.rs:.*: replace \| with \^ in (connect|open)$',
+    'curl-os/src/net\.rs:.*: replace \| with \^ in (connect|open|TcpSocket::accept)$',
+    'proto/ftp/list\.rs:.*: replace \| with \^ in permission$',
     'curl-sys-abi/src/sockets\.rs:.*: replace \| with \^ in SockaddrEx::tcp$',
     'curl-os/src/fs\.rs:.*: replace \| with \^ in (open|open_write)$',
     # 0x80 is in no list of invalid bytes, so it stays allowed either way.

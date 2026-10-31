@@ -1134,11 +1134,19 @@ protocols need, each step leaving behaviour and traces as they are:
     parser's rules and matched by `fnmatch` or the application's matcher, with the chunk
     callbacks. The tool's FTP options and the C ABI's. Every FTP and FTPS test both legs run
     passes, and vsftpd's pytest suite (test_30, test_31) passes whole.
-
-SCP and SFTP hand libssh the socket, as C does (`SSH_OPTIONS_FD`): bytes a proxy's tunnel or a
-SOCKS answer left in the stream's buffer would be lost to it, so the hand-over is refused while
-any are held, and DIVERGENCE.md's entry on the bulk read of a `CONNECT` answer is narrowed to
-consumers that read through the stream.
+73. **SCP and SFTP.** **Done.** `scp://` and `sftp://` (`proto::ssh`, after
+    `lib/vssh/libssh.c`) through libssh (`curl-libssh`, the core's `ssh` traits), its C oracle
+    in `build/c-libssh`: the session handed the connection's socket (`SSH_OPTIONS_FD`), a tunnel's
+    answer and a SOCKS grant read no further than they go so that no byte waits in a buffer of
+    ours, and the hand-over refused while one does; the host key against `--hostpubsha256`,
+    `--hostpubmd5`, the known-hosts file and the key function; the logins by public key,
+    agent, GSS-API, keyboard-interactive and password, with C's fallbacks; SFTP's quote
+    commands (`statvfs` unknown, as C's libssh build has it), listings and their links,
+    ranges, resumes, uploads and `--ftp-create-dirs`; SCP's downloads and uploads; reuse by
+    the key files (`ssh_config_matches`). The tool's SSH options and the known-hosts default
+    of `ssh_setopts`, the C ABI's options and key function, and `curl -V`. Every SCP and SFTP
+    test both legs run passes (55 on the Rust leg, 59 on C's: 2604 and 2605 are C unit tests,
+    445 and 2004 wait on gopher and TFTP; 3500, 3990 and 3991 need libssh2 on both).
 
 ## Milestone 7: shared state
 

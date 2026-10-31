@@ -261,6 +261,9 @@ curl-core/src/
                              request's head read back into fields
     http3.rs                 H3Conn: a connection's HTTP/3 session
     script.rs                the test protocol `script:` (test-util)
+    ssh/                     SCP and SFTP (libssh.c): mod.rs, SshConn and the state
+                             machine over the `ssh` library traits; path.rs, the
+                             request's path, quote paths, ranges and numbers
     pingpong.rs, pingpong/   Pingpong: the line protocols' reader and writer (pingpong.c),
                              sans-IO; ftp.rs, imap.rs, pop3.rs, smtp.rs: where each one's
                              reply ends
@@ -1817,8 +1820,8 @@ HTTP/2 for good, or HTTP/1. What the connection speaks is one field, `conn::mux:
 found yet (`Unmade`, as a connection is made, and for good on one no HTTP request found it out
 on), HTTP/1 (`Http1`, no session; a local connection's from the start), a session made (`Made`),
 a protocol's own state with no session (`Line`, `conn/line.rs`'s `LineConn`: what FTP, IMAP,
-POP3, SMTP and the test protocol `tcp:` keep of the connection between requests, put on as
-their connect makes it), or its session out for a step (`Out`, naming the version). A step takes the session off the
+POP3, SMTP, SSH and the test protocol `tcp:` keep of the connection between requests, put on
+as their connect makes it), or its session out for a step (`Out`, naming the version). A step takes the session off the
 connection for the call that drives it and gives it back after (`with_session`, `with_h3`), so
 the lease is free beside it; while it is out the connection reads as having none, and only the
 version taken out is given back. A new session goes only on a connection with none: HTTP/2's
@@ -3517,6 +3520,35 @@ protocol's phases (the drive, below).
   with the route's upgrade settings and offering no ALPN, goes on the carrier's stream once,
   and each call moves its handshake on; the protocol then asks for its capabilities again.
   A reply anything follows is refused first (`WeirdServerReply`).
+
+### 5.8 SCP and SFTP
+
+`proto/ssh/` is `lib/vssh/libssh.c` over the core's `ssh` traits (`ssh.rs`), which
+`curl-libssh` answers with libssh and the tests with a fake. The connection's `LineConn::Ssh`
+holds the session, the SFTP session, the file or directory open, and C's state machine
+(`SshConn`: the state, the next, the result it comes to, what the session waits on); each
+call that would wait leaves the machine where it is and the transfer waiting on the session's
+poll flags, as C's nonblocking machine does. The request (`ssh::Request`) holds its path, the
+range and resume point, and the body read or sent.
+
+- **The socket is lent to the library.** The connect hands libssh a copy of the connection's
+  socket (`SSH_OPTIONS_FD`), so libssh reads and writes past every layer and buffer of ours:
+  the hand-over is refused (`Carrier::bare_socket`) while a layer works on the stream or
+  received bytes are unread, and for these schemes a tunnel's answer is read a byte at a time
+  and a SOCKS grant no further than it goes, as C reads them, so the server's banner stays
+  in the socket. libssh's blocking calls leave the shared file description blocking; the
+  shutdown's drain makes it nonblocking first, as C's does.
+- **The connect** is the session's: the host key checked against the fingerprints, the
+  known-hosts file and the key handler, then the logins in C's order of fallbacks, then
+  SFTP's subsystem and home directory. A connection serves only a transfer with the same key
+  files (`RouteCold::ssh`, `ssh_config_matches`).
+- **DO** runs SFTP's quote commands, then the transfer's setup: a listing (each entry's line
+  written as it is read), a download (its size, range and resume point), or an upload (the
+  directories made once if missing and asked for); SCP's channel is opened to read or write.
+  The body is then read or sent in PERFORMING, at most `MAX_READS` reads a step.
+- **DONE** closes the file or channel and runs the commands after the transfer, blocking as
+  C runs them, its waits answered as `Finish::Waiting`; the session says goodbye as the
+  connection shuts down.
 
 ## 6. HTTP/1.x
 

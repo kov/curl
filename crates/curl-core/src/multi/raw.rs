@@ -381,25 +381,10 @@ impl crate::proto::ws::Wire for RawWire<'_> {
         }
     }
 
-    fn send_all(&mut self, mut bytes: &[u8]) -> Result<(), ErrorKind> {
-        while !bytes.is_empty() {
-            let n = self.send(bytes)?;
-            bytes = &bytes[n..];
-            if !bytes.is_empty()
-                && self
-                    .carrier
-                    .wait_writable(std::time::Duration::from_millis(500))
-                    .is_err()
-            {
-                let why = format_args!("[WS] Error while waiting for socket becoming writable");
-                return Err(crate::proto::ws::Said::fail(
-                    self,
-                    ErrorKind::SendError,
-                    why,
-                ));
-            }
-        }
-        Ok(())
+    // Only a send from inside a callback waits for the connection, and a
+    // connection the transfer only made is reached from outside one.
+    fn send_all(&mut self, _: &[u8]) -> Result<(), ErrorKind> {
+        unreachable!("a connection only made is sent on without waiting")
     }
 
     fn recv(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ErrorKind> {

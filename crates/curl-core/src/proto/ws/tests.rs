@@ -989,3 +989,38 @@ fn a_raw_send_goes_as_it_is() {
     );
     assert_eq!(rec.sent, b"abcd");
 }
+
+/// A send buffer exactly one chunk full takes no pong at a flush: it
+/// waits for the room the buffer's chunk has (`ws_flush`).
+#[test]
+fn a_full_send_buffer_takes_no_pong() {
+    let mut rec = Rec {
+        takes: Some(0),
+        ..Rec::default()
+    };
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    ws.sendbuf = ChunkQueue::new(8, 2);
+    ws.sendbuf.write(&[0; 8]).unwrap();
+    ws.add_pong(b"p");
+    assert_eq!(ws.flush(&mut rec, false), Err(Stop::Again));
+    assert!(ws.pending(), "no room for the pong");
+    rec.takes = None;
+    assert_eq!(ws.flush(&mut rec, false), Ok(()));
+    assert_eq!(rec.sent.len(), 8);
+    assert_eq!(ws.flush(&mut rec, false), Ok(()));
+    assert!(!ws.pending());
+    assert_eq!(rec.sent[8..10], [0x8a, 0x81]);
+}
+
+/// The debug build's chunk limit cuts a send only of a chunk longer than
+/// it: a chunk as long goes whole, and the next with it.
+#[test]
+fn a_chunk_as_long_as_the_debug_limit_goes_whole() {
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    ws.sendbuf = ChunkQueue::new(4, 2);
+    ws.sendbuf.write(b"abcdefgh").unwrap();
+    ws.debugging.chunk_eagain = 4;
+    assert_eq!(ws.flush(&mut rec, false), Ok(()));
+    assert_eq!(rec.sent, b"abcdefgh");
+}

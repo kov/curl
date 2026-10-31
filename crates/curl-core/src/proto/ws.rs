@@ -102,7 +102,7 @@ impl Debugging {
             let number = |name: &[u8]| {
                 let mut buf = [0u8; 32];
                 let given = curl_os::env::var_into(name, &mut buf)?;
-                curl_number(given, 1024 * 1024)
+                curl_number(given, DEBUG_MAX)
             };
             if let Some(n) = number(b"CURL_WS_CHUNK_SIZE") {
                 d.chunk = n;
@@ -115,6 +115,10 @@ impl Debugging {
         d
     }
 }
+
+/// The most the debug test build's sizes may be, a MiB (C's
+/// `curlx_str_number` limit for them).
+const DEBUG_MAX: usize = 1024 * 1024;
 
 /// The decimal number `text` starts with, if it does and is no more than
 /// `max` (`curlx_str_number`).

@@ -75,3 +75,13 @@ witness: curl-sys-abi ws::tests::raw_sends_take_no_size_and_no_flags
     if fragsize == 0 && flags == 0 {
 --- new
     if flags & ffi::CURLWS_OFFSET as c_uint == 0 {
+
+=== a connection only made is closed by the server's end
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::connect_only::a_websocket_head_cut_short_leaves_the_connection_unswitched
+--- old
+                    if !cx.easy().options().connect_only.reserves() {
+                        lease.get().mark_close();
+--- new
+                    if true {
+                        lease.get().mark_close();

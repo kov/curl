@@ -12,10 +12,12 @@ witness: curl-core proto::http::tests::a_body_is_read_no_further_than_its_size
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::responses_end_as_c_ends_them
 --- old
-                    // Closed by the server: not reused (`multi_done`).
-                    lease.get().mark_close();
+                    if !cx.easy().options().connect_only.reserves() {
+                        lease.get().mark_close();
+                    }
 --- new
-                    // Closed by the server: not reused (`multi_done`).
+                    if !cx.easy().options().connect_only.reserves() {
+                    }
 
 === a held line is dropped at the end
 file: crates/curl-core/src/proto/http.rs

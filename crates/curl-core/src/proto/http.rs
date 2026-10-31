@@ -2312,7 +2312,13 @@ impl Request {
                 Ok(Recv::WouldBlock) => return Ok(Read::Waits),
                 Ok(Recv::Eof) => {
                     // Closed by the server: not reused (`multi_done`).
-                    lease.get().mark_close();
+                    // C marks nothing: what ends in error is closed as
+                    // that ends it, and a connection the transfer only
+                    // made is kept for the application, which finds its
+                    // end as it reads (test 2304).
+                    if !cx.easy().options().connect_only.reserves() {
+                        lease.get().mark_close();
+                    }
                     trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
                     // The connection's end stops the sending too
                     // (`Curl_req_stop_send_recv`).

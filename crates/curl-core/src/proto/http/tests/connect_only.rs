@@ -233,3 +233,45 @@ fn a_perform_that_only_connects_leaves_the_handle_its_socket() {
     assert_eq!(got, b"pong");
     assert_eq!(&server.join().unwrap(), b"ping");
 }
+
+/// A WebSocket's 101 cut short by the server's close leaves the handle
+/// the connection, as C leaves it: not a WebSocket's, which its calls
+/// say (test 2304).
+#[test]
+fn a_websocket_head_cut_short_leaves_the_connection_unswitched() {
+    let reply: &[u8] = b"HTTP/1.1 101 Switching\r\nUpgrade: websocket\r\n";
+    let (mut m, talk, _) = server(&[reply], true);
+    let mut e = Easy::new();
+    let seen = connect_only(&mut e);
+    let url = format!("ws://127.0.0.1:{PORT}/");
+    e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+    e.options_mut().connect_only = ConnectOnly::WebSocket;
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let text = seen.text();
+    assert!(
+        text.iter().any(|l| l.ends_with("left intact\n")),
+        "{text:?}"
+    );
+    let mut buf = [0u8; 8];
+    let got = m.ws(id, crate::ws::Call::Recv(&mut buf)).unwrap();
+    assert_eq!(got, Err(ErrorKind::BadFunctionArgument));
+    let failure = m.easy(id).unwrap().report().failure().map(<[u8]>::to_vec);
+    assert_eq!(
+        failure.as_deref(),
+        Some(&b"[WS] connection is not setup for websocket"[..])
+    );
+    let flags = crate::ws::SendFlags {
+        kind: Some(crate::ws::FrameKind::Ping),
+        more: false,
+    };
+    let sent = m.ws(
+        id,
+        crate::ws::Call::Send(b"", crate::ws::FrameLen::These, flags),
+    );
+    assert_eq!(sent.unwrap(), Err(ErrorKind::SendError));
+    drop(talk);
+}

@@ -543,8 +543,8 @@ impl Telnet {
         }
         let sub = self.subbuffer;
         print_sub(wire, Some(b'<'), &sub, self.sb_len() + 2);
+        // The option it is of (`CURL_SB_GET`); nothing reads further.
         let what = self.subbuffer[self.subpointer];
-        self.subpointer += 1;
         let mut temp = Vec::new();
         let oom = |_| ErrorKind::OutOfMemory;
         match what {
@@ -819,7 +819,7 @@ fn print_sub(wire: &mut dyn Wire, direction: Option<u8>, p: &[u8], mut length: u
     }
     match p[0] {
         TELOPT_TTYPE | TELOPT_XDISPLOC => {
-            let text = if length > 2 { &p[2..length] } else { &[][..] };
+            let text = p.get(2..length).unwrap_or_default();
             // C prints it as a string: to its first zero byte.
             let text = &text[..text.iter().position(|&b| b == 0).unwrap_or(text.len())];
             wire.info(&[b" \"", text, b"\""]);
@@ -898,10 +898,6 @@ impl Request {
 
     pub(crate) fn holds_output(&self) -> bool {
         self.pipeline.holds_output()
-    }
-
-    pub(crate) fn received_nothing(&self) -> bool {
-        self.pipeline.bytecount() == 0
     }
 
     /// TELNET exchanges nothing once its DO is done.

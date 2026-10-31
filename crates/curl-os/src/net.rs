@@ -1267,6 +1267,29 @@ mod tests {
     /// A UDP socket connects at once to its one peer, and each send and
     /// receive is one datagram, as QUIC's sockets are; with nothing to
     /// read, a receive would block, and the socket is nonblocking.
+    /// An unconnected UDP socket sends a datagram to an address and reads
+    /// one with its sender, as much as fits; none when none waits.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri opens TCP sockets only")]
+    fn an_unconnected_udp_socket_sends_to_and_receives_from() {
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let at = peer.local_addr().unwrap();
+        let s = open_udp(at, true).unwrap();
+        s.bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+        let mut buf = [0u8; 4];
+        assert_eq!(s.recv_from(&mut buf).unwrap(), None);
+        assert_eq!(s.send_to(b"ping", at).unwrap(), 4);
+        let mut got = [0u8; 8];
+        let (n, from) = peer.recv_from(&mut got).unwrap();
+        assert_eq!(&got[..n], b"ping");
+        peer.send_to(b"pong!", from).unwrap();
+        let mut fds = [PollFd::new(s.fd(), Events::IN)];
+        assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+        assert_eq!(s.recv_from(&mut buf).unwrap(), Some((4, at)));
+        assert_eq!(&buf, b"pong");
+        assert_eq!(s.recv_from(&mut buf).unwrap(), None, "the rest is lost");
+    }
+
     #[test]
     #[cfg_attr(miri, ignore = "Miri opens TCP sockets only")]
     fn a_udp_socket_moves_one_datagram_a_call() {

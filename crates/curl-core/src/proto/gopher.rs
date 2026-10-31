@@ -130,11 +130,6 @@ impl Request {
         self.pipeline.holds_output()
     }
 
-    /// Whether the request has more to send.
-    pub(crate) fn sending(&self) -> bool {
-        !self.out.is_sent()
-    }
-
     /// What the answer waits for on the connection's socket: it is read
     /// from DO on, and the transfer ends once it is read whole.
     pub(crate) fn interest(&self, pause: Pause) -> Events {

@@ -717,3 +717,101 @@ fn the_exchange_waits_on_its_socket_and_its_interval() {
         assert!(wait <= std::time::Duration::from_millis(100), "{wait:?}");
     }
 }
+
+/// Each command and qualifier C names is said by its name.
+#[test]
+fn commands_and_qualifiers_are_named() {
+    let mut w = Rec::default();
+    print_option(&mut w, "RCVD", DONT, TELOPT_ECHO);
+    print_sub(&mut w, None, &[TELOPT_TTYPE, TELQUAL_INFO, b'x'], 3);
+    print_sub(&mut w, None, &[TELOPT_TTYPE, TELQUAL_NAME, b'y'], 3);
+    // A window of four bytes is too short to say.
+    print_sub(&mut w, None, &[TELOPT_NAWS, 0, 80, 0], 4);
+    assert_eq!(
+        w.said,
+        [
+            "RCVD DONT ECHO",
+            "TERM TYPE",
+            " INFO/REPLY",
+            " \"x\"",
+            "TERM TYPE",
+            " NAME",
+            " \"y\"",
+            "NAWS",
+        ]
+    );
+}
+
+/// A suboption ended by IAC and anything but SE is said to be so.
+#[test]
+fn a_suboption_not_ended_by_se_is_said() {
+    let mut w = Rec::default();
+    print_sub(
+        &mut w,
+        Some(b'<'),
+        &[TELOPT_TTYPE, TELQUAL_SEND, IAC, WILL],
+        4,
+    );
+    let said = w.said.join("|");
+    assert!(
+        said.starts_with("RCVD IAC SB |(terminated by |IAC |WILL|, not IAC SE) "),
+        "{said}"
+    );
+}
+
+/// A terminal type of 1000 bytes is sent; the variables go while they fit
+/// C's buffer.
+#[test]
+fn values_go_while_they_fit() {
+    let ask_type = [
+        IAC,
+        DO,
+        TELOPT_TTYPE,
+        IAC,
+        SB,
+        TELOPT_TTYPE,
+        TELQUAL_SEND,
+        IAC,
+        SE,
+    ];
+    let long = [b"TTYPE=".as_slice(), &[b'v'; 1000]].concat();
+    let mut tn = fresh(&[&long]);
+    let mut w = Rec::default();
+    tn.receive(&mut w, &ask_type).unwrap();
+    assert!(w.failed.is_empty(), "{:?}", w.failed);
+    assert!(w.sent.windows(1000).any(|v| v == [b'v'; 1000]));
+    let ask_env = [
+        IAC,
+        DO,
+        TELOPT_NEW_ENVIRON,
+        IAC,
+        SB,
+        TELOPT_NEW_ENVIRON,
+        TELQUAL_SEND,
+        IAC,
+        SE,
+    ];
+    for (len, fits) in [(2036, true), (2037, false)] {
+        let var = [b"NEW_ENV=A,".as_slice(), &vec![b'e'; len - 2]].concat();
+        let mut tn = fresh(&[&var]);
+        let mut w = Rec::default();
+        tn.receive(&mut w, &ask_env).unwrap();
+        let sub = [IAC, SB, TELOPT_NEW_ENVIRON, TELQUAL_IS];
+        let at = w
+            .sent
+            .windows(4)
+            .position(|x| x == sub)
+            .expect("the answer");
+        let answer = &w.sent[at..];
+        let want = if fits { 4 + 1 + len + 2 } else { 4 + 2 };
+        assert_eq!(answer.len(), want, "{len}");
+    }
+}
+
+/// A paused writer holds the server's bytes until they are taken.
+#[test]
+fn a_paused_session_is_held_until_taken() {
+    let talk = Conversation::replies(&[b"hello"], true).greeting();
+    let took = crate::proto::raw::wire::paused_then_taken(&talk, "telnet://127.0.0.1:PORT");
+    assert_eq!(took, b"hello");
+}

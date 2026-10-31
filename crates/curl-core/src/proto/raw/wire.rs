@@ -125,3 +125,64 @@ pub(crate) fn against(
     drop(m);
     (talk.received(), ran)
 }
+
+/// A writer that pauses at its first piece, then takes them all.
+#[derive(Clone, Default)]
+pub(crate) struct PausesFirst {
+    pub(crate) took: Arc<Mutex<Vec<u8>>>,
+    paused: Arc<crate::test_cell::Cell<bool>>,
+}
+
+impl WriteHandler for PausesFirst {
+    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        if !self.paused.replace(true) {
+            return Write::Pause;
+        }
+        self.took.lock().unwrap().extend_from_slice(body);
+        Write::Took(body.len())
+    }
+}
+
+/// A transfer of `url` added to `m`, set as `set` says.
+pub(crate) fn added(
+    m: &mut Multi,
+    url: &str,
+    set: impl FnOnce(&mut Options),
+) -> crate::multi::TransferId {
+    let mut e = Easy::new();
+    e.set_libraries(SharedLibraries::new(Libraries::NONE).unwrap());
+    let o = e.options_mut();
+    let url = url.replace("PORT", &PORT.to_string());
+    o.set_url(Some(url.as_bytes())).unwrap();
+    set(o);
+    m.add(Box::new(e), (), &mut NoEvents).unwrap()
+}
+
+/// What the transfers on `m` wait for on their sockets.
+pub(crate) fn waits(m: &mut Multi) -> Vec<crate::conn::io::Events> {
+    let mut seen = Vec::new();
+    m.sockets(&mut NoEvents, |_, events| seen.push(events))
+        .unwrap();
+    seen
+}
+
+/// Output a paused writer holds keeps a transfer of `url` against
+/// `talk` from ending, the exchange over or not, until it is taken:
+/// what the writer took once unpaused.
+pub(crate) fn paused_then_taken(talk: &Conversation, url: &str) -> Vec<u8> {
+    use crate::deliver::PauseRequest;
+    let mut m = serving(&[talk]);
+    let writer = PausesFirst::default();
+    let w = writer.clone();
+    let id = added(&mut m, url, |o| {
+        o.callbacks.write = Some(Handler::write(w).unwrap());
+    });
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(m.info_read().is_none(), "not over while output is held");
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    writer.took.lock().unwrap().clone()
+}

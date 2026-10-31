@@ -520,4 +520,195 @@ mod over_the_wire {
     }
 
     const RRQ6: &[u8] = b"\0\x01f\0octet\0tsize\x000\0blksize\x00512\0timeout\x006\0";
+
+    /// Silent after a block, the server is sent the block's ACK again on
+    /// each time-out until the retries run out, a time-out the error.
+    #[test]
+    fn a_silence_after_a_block_times_out() {
+        let full = [b'a'; 512];
+        let (said, ran) = fetch(&[&data(1, &full)], |o| {
+            o.limits.total = crate::time::TimeLimit::from_millis(0);
+        });
+        assert_eq!(
+            ran.result,
+            Some(Err(ErrorKind::OperationTimedout)),
+            "{}",
+            ran.text
+        );
+        assert_eq!(said, [RRQ6, &ack(1), &ack(1), &ack(1), &ack(1)].concat());
+        assert!(
+            ran.text
+                .contains("set timeouts for state 1; Total 0, retry 5 maxtry 3\n"),
+            "{}",
+            ran.text
+        );
+        assert!(
+            ran.text
+                .contains("Timeout waiting for block 2 ACK. Retries = 4\n"),
+            "{}",
+            ran.text
+        );
+        assert!(!ran.text.contains("TFTP response timeout"), "{}", ran.text);
+    }
+
+    /// A block the writer refuses fails the transfer; past the first,
+    /// the server is told so, with the block it last had acknowledged,
+    /// as C tells it (none is told of the first, its state not yet RX).
+    #[test]
+    fn a_refused_block_tells_the_server() {
+        struct RefusesSecond(crate::test_cell::Cell<bool>);
+        impl crate::handler::WriteHandler for RefusesSecond {
+            fn write(
+                &self,
+                _: &mut crate::multi::TransferCx<'_>,
+                body: &[u8],
+            ) -> crate::handler::Write {
+                if self.0.replace(true) {
+                    return crate::handler::Write::Fail;
+                }
+                crate::handler::Write::Took(body.len())
+            }
+        }
+        let full = [b'a'; 512];
+        let refuses = RefusesSecond(crate::test_cell::Cell::new(false));
+        let (said, ran) = fetch(&[&data(1, &full), &data(2, b"abc")], |o| {
+            o.callbacks.write = Some(crate::handler::Handler::write(refuses).unwrap());
+        });
+        assert_eq!(ran.result, Some(Err(ErrorKind::WriteError)), "{}", ran.text);
+        assert_eq!(said, [RRQ, &ack(1), b"\0\x05\0\x01"].concat());
+    }
+
+    /// A block shorter than 512 bytes by any amount is the last; a
+    /// datagram longer than a block is cut to one, as C reads it.
+    #[test]
+    fn blocks_are_read_at_most_a_block_long() {
+        let (said, ran) = fetch(&[&data(1, &[b'a'; 510])], |_| {});
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        assert_eq!(said, [RRQ, &ack(1)].concat());
+        let (_, ran) = fetch(&[&data(1, &[b'b'; 600]), &data(2, b"")], |_| {});
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        assert_eq!(ran.body, [b'b'; 512]);
+    }
+
+    /// An empty last block delivers nothing, not even an empty piece.
+    #[test]
+    fn an_empty_block_is_not_written() {
+        #[derive(Clone, Default)]
+        struct Pieces(std::sync::Arc<std::sync::Mutex<Vec<usize>>>);
+        impl crate::handler::WriteHandler for Pieces {
+            fn write(
+                &self,
+                _: &mut crate::multi::TransferCx<'_>,
+                body: &[u8],
+            ) -> crate::handler::Write {
+                self.0.lock().unwrap().push(body.len());
+                crate::handler::Write::Took(body.len())
+            }
+        }
+        let pieces = Pieces::default();
+        let p = pieces.clone();
+        let (_, ran) = fetch(&[&data(1, &[b'c'; 512]), &data(2, b"")], |o| {
+            o.callbacks.write = Some(crate::handler::Handler::write(p).unwrap());
+        });
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        assert_eq!(*pieces.0.lock().unwrap(), [512]);
+    }
+
+    /// A first ACK for another block, or one for 65535 past block 0,
+    /// is answered with what was sent last; only 65535 at block 0 is
+    /// taken, as tftpd-hpa sends it when the count wraps.
+    #[test]
+    fn a_first_ack_must_be_for_block_0() {
+        let (said, ran) = upload(&[&ack(5), &ack(0), &ack(1)], b"xy");
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        assert!(
+            ran.text.contains("Received ACK for block 5, expecting 0\n"),
+            "{}",
+            ran.text
+        );
+        assert!(said.ends_with(&data(1, b"xy")), "{said:?}");
+        let (_, ran) = upload(&[&ack(0), &ack(65535), &ack(1)], b"xy");
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        assert!(
+            ran.text
+                .contains("Received ACK for block 65535, expecting 1\n"),
+            "{}",
+            ran.text
+        );
+        assert!(!ran.text.contains("Unexpected packet"), "{}", ran.text);
+    }
+
+    /// Wrong ACKs past the retries give the upload up.
+    #[test]
+    fn wrong_acks_give_up_the_upload() {
+        let (said, ran) = upload(&[&ack(0), &ack(7), &ack(7), &ack(7), &ack(7)], b"z");
+        assert_eq!(ran.result, Some(Err(ErrorKind::SendError)), "{}", ran.text);
+        assert!(
+            ran.text
+                .contains("tftp_tx: giving up waiting for block 1 ack\n"),
+            "{}",
+            ran.text
+        );
+        let block = data(1, b"z");
+        assert!(said.ends_with(&block.repeat(4)), "{said:?}");
+    }
+
+    /// Silent after a block, the server is sent it again on each time-out,
+    /// counted once, until the retries run out.
+    #[test]
+    fn a_silence_during_an_upload_times_out() {
+        let talk = Conversation::replies(&[&ack(0)], false).per_send();
+        let body = b"hello";
+        let (said, ran) = against(talk, "tftp://127.0.0.1:PORT/f", |o| {
+            o.method = Method::Upload;
+            o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(body.to_vec()).unwrap());
+            o.limits.total = crate::time::TimeLimit::from_millis(0);
+        });
+        assert_eq!(
+            ran.result,
+            Some(Err(ErrorKind::OperationTimedout)),
+            "{}",
+            ran.text
+        );
+        let block = data(1, body);
+        assert!(said.ends_with(&block.repeat(4)), "{said:?}");
+        assert!(!said.ends_with(&block.repeat(5)), "{said:?}");
+        assert_eq!(ran.counted.1, 5);
+    }
+
+    /// A block is filled from as many reads as the upload takes to give
+    /// it.
+    #[test]
+    fn a_block_is_filled_from_many_reads() {
+        struct Trickle(std::sync::Mutex<usize>);
+        impl crate::handler::ReadHandler for Trickle {
+            fn read(
+                &self,
+                _: &mut crate::multi::TransferCx<'_>,
+                buf: &mut [u8],
+            ) -> crate::handler::Read {
+                let mut left = self.0.lock().unwrap();
+                let n = (*left).min(100).min(buf.len());
+                if n == 0 {
+                    return crate::handler::Read::Eof;
+                }
+                *left -= n;
+                buf[..n].fill(b'r');
+                crate::handler::Read::Data(std::num::NonZeroUsize::new(n).unwrap())
+            }
+        }
+        let talk = Conversation::replies(&[&ack(0), &ack(1), &ack(2)], false).per_send();
+        let (said, ran) = against(talk, "tftp://127.0.0.1:PORT/f", |o| {
+            o.method = Method::Upload;
+            o.upload = UploadSource::Read {
+                handler: crate::handler::Handler::read(Trickle(std::sync::Mutex::new(600)))
+                    .unwrap(),
+                rewind: None,
+                size: Some(600),
+            };
+        });
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        let blocks = [&data(1, &[b'r'; 512])[..], &data(2, &[b'r'; 88])].concat();
+        assert!(said.ends_with(&blocks), "{said:?}");
+    }
 }

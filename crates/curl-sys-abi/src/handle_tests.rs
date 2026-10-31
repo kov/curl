@@ -7434,3 +7434,54 @@ fn a_raw_send_needs_a_buffer() {
     // SAFETY: a handle no call uses any more.
     unsafe { curl_easy_cleanup(c) };
 }
+
+/// TELNET's input is the read callback's once the application sets it or
+/// its data, none before; TELNET's options are the application's list;
+/// TFTP's are kept, and setting none leaves their group cold.
+#[test]
+fn telnet_and_tftp_options_reach_the_transfer() {
+    let has_input = |c| options(c, |o| o.small.made_mut().is_some_and(|s| s.input.is_some()));
+    let cold = |c| options(c, |o| o.small.made_mut().is_none());
+    let c = curl_easy_init();
+    assert!(!has_input(c) && cold(c));
+    assert_eq!(long(c, ffi::CURLOPT_TFTP_NO_OPTIONS, 0), CURLE_OK);
+    assert!(cold(c), "nothing set makes nothing");
+    let mut data = 0u8;
+    assert_eq!(pointer(c, ffi::CURLOPT_READDATA, &mut data), CURLE_OK);
+    assert!(has_input(c));
+    assert_eq!(long(c, ffi::CURLOPT_TFTP_NO_OPTIONS, 1), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_TFTP_NO_OPTIONS, 0), CURLE_OK);
+    assert!(!options(c, |o| o.small.made_mut().unwrap().tftp_no_options));
+    let mut list = ptr::null_mut();
+    for line in [c"TTYPE=vt100", c"WS=80x24"] {
+        // SAFETY: a list made here, and a C string.
+        list = unsafe { crate::strings::curl_slist_append(list, line.as_ptr()) };
+    }
+    assert_eq!(pointer(c, ffi::CURLOPT_TELNETOPTIONS, list), CURLE_OK);
+    let lines = options(c, |o| {
+        o.small
+            .made_mut()
+            .unwrap()
+            .telnet
+            .iter()
+            .map(<[u8]>::to_vec)
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(lines, [b"TTYPE=vt100".to_vec(), b"WS=80x24".to_vec()]);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_TELNETOPTIONS, ptr::null_mut::<c_char>()),
+        CURLE_OK
+    );
+    // SAFETY: the list made above, which the handle no longer keeps.
+    unsafe { crate::strings::curl_slist_free_all(list) };
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    let c = curl_easy_init();
+    assert_eq!(
+        function(c, ffi::CURLOPT_READFUNCTION, read as *const ()),
+        CURLE_OK
+    );
+    assert!(has_input(c));
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}

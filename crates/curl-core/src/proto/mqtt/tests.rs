@@ -108,6 +108,12 @@ fn subscribe_and_publish_packets() {
     let long = publish_packet(&topic, b"p").unwrap();
     assert_eq!(long[1..5], [0xaf, 0x02, 0x01, 0x2c]);
     assert_eq!(long.len(), 3 + 2 + 300 + 1);
+    // Each made in one allocation of its size.
+    assert_eq!(long.capacity(), long.len());
+    let sub = subscribe_packet(&topic, 1).unwrap();
+    assert_eq!(sub.capacity(), sub.len());
+    let short = publish_packet(b"t", b"p").unwrap();
+    assert_eq!(short.capacity(), short.len());
 }
 
 /// A PUBLISH whose length leaves room for its header is made; one a
@@ -187,6 +193,22 @@ fn a_subscription_reads_until_disconnect() {
         ran.text
     );
     assert!(ran.text.contains("Got DISCONNECT\n"), "{}", ran.text);
+    assert!(!ran.text.contains("Received ping response"), "{}", ran.text);
+    // The debug build says each state, and the one after the first.
+    if cfg!(feature = "debug-hooks") {
+        assert!(
+            ran.text
+                .contains("MQTT_FIRST (from MQTT_PUB_REMAIN) (next is MQTT_PUBWAIT)\n"),
+            "{}",
+            ran.text
+        );
+        assert!(
+            ran.text
+                .contains("MQTT_PUB_REMAIN (from MQTT_PUBWAIT) (next is )\n"),
+            "{}",
+            ran.text
+        );
+    }
     assert!(
         ran.text.contains("Remaining length: 13 bytes\n"),
         "{}",
@@ -470,4 +492,182 @@ fn a_reset_fails_with_the_socket_s_reason() {
     assert_eq!(ran.result, Some(Err(ErrorKind::RecvError)), "{}", ran.text);
     let said = ran.text.matches("Recv failure: Connection reset by peer\n");
     assert_eq!(said.count(), 1, "{}", ran.text);
+}
+
+/// The sizes of the pieces a writer was given.
+#[derive(Clone, Default)]
+struct Pieces(std::sync::Arc<std::sync::Mutex<Vec<usize>>>);
+
+impl crate::handler::WriteHandler for Pieces {
+    fn write(&self, _: &mut crate::multi::TransferCx<'_>, body: &[u8]) -> crate::handler::Write {
+        self.0.lock().unwrap().push(body.len());
+        crate::handler::Write::Took(body.len())
+    }
+}
+
+/// A PUBLISH whose length takes two bytes is delivered 4 KiB at a time,
+/// as C reads it; one exactly as large as the transfer may deliver is.
+#[test]
+fn a_long_publish_is_delivered_in_pieces() {
+    let payload = vec![b'p'; 5000];
+    // Two bytes of topic length, five of topic.
+    let publish = [&b"\x30\x8f\x27\x00\x05topic"[..], &payload].concat();
+    let talk = server(&then(&[SUBACK, &publish, DISCONNECT]));
+    let pieces = Pieces::default();
+    let p = pieces.clone();
+    let (_, ran) = against(talk, "mqtt://127.0.0.1:PORT/topic", |o| {
+        o.callbacks.write = Some(crate::handler::Handler::write(p).unwrap());
+        o.flow.make_mut().unwrap().max_filesize = std::num::NonZeroU64::new(5007);
+    });
+    assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+    assert!(
+        ran.text.contains("Remaining length: 5007 bytes\n"),
+        "{}",
+        ran.text
+    );
+    let pieces = pieces.0.lock().unwrap();
+    assert_eq!(pieces.iter().sum::<usize>(), 2 + 5 + 5000);
+    assert_eq!(pieces[0], 4096, "{pieces:?}");
+}
+
+/// A topic of 16 bits' length is subscribed to; one longer is refused.
+#[test]
+fn a_topic_past_16_bits_is_refused() {
+    let longest = "t".repeat(0xffff);
+    let talk = server(&then(&[SUBACK, DISCONNECT]));
+    let (said, ran) = against(talk, &format!("mqtt://127.0.0.1:PORT/{longest}"), |_| {});
+    assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+    assert!(said.ends_with(&[longest.as_bytes(), b"\0"].concat()));
+    let talk = server(&then(&[SUBACK, DISCONNECT]));
+    let (said, ran) = against(talk, &format!("mqtt://127.0.0.1:PORT/{longest}t"), |_| {});
+    assert_eq!(
+        ran.result,
+        Some(Err(ErrorKind::UrlMalformat)),
+        "{}",
+        ran.text
+    );
+    assert!(ran.text.contains("Too long MQTT topic\n"), "{}", ran.text);
+    // Found as the SUBSCRIBE is made, after the CONNECT, as C finds it.
+    assert_eq!(said[0], 0x10, "{said:?}");
+    assert!(!said.contains(&0x82), "{said:?}");
+}
+
+/// Bytes the application lends are published as they are.
+#[test]
+fn lent_bytes_are_published() {
+    struct Lends(Vec<u8>);
+    impl crate::handler::LentBytes for Lends {
+        fn size(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn copy_at(&self, at: u64, buf: &mut [u8]) -> usize {
+            let rest = &self.0[usize::try_from(at).unwrap()..];
+            let n = rest.len().min(buf.len());
+            buf[..n].copy_from_slice(&rest[..n]);
+            n
+        }
+    }
+    // Past one piece of the copy's.
+    let payload: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+    let lent = crate::handler::Handler::lent(Lends(payload.clone())).unwrap();
+    let talk = Conversation::replies(&[CONNACK], false).per_send();
+    let (said, ran) = against(talk, "mqtt://127.0.0.1:PORT/t", |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Lent(lent);
+    });
+    assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+    let publish = [&b"\x30\x8b\x27\x00\x01t"[..], &payload, b"\xe0\x00"].concat();
+    assert!(said.ends_with(&publish), "{:?}", &said[..40]);
+}
+
+/// Quiet for the upkeep interval, the client pings once, and takes the
+/// server's answer.
+#[test]
+fn an_idle_subscription_pings_once() {
+    let talk = Conversation::replies(&[CONNACK, SUBACK], false).per_send();
+    let (said, ran) = against(talk, "mqtt://127.0.0.1:PORT/topic", |o| {
+        o.limits.reuse.upkeep = crate::options::UpkeepInterval(std::time::Duration::from_secs(1));
+        o.limits.total = crate::time::TimeLimit::from_millis(3500);
+    });
+    assert_eq!(
+        ran.result,
+        Some(Err(ErrorKind::OperationTimedout)),
+        "{}",
+        ran.text
+    );
+    let pings = said.windows(2).filter(|w| *w == b"\xc0\x00").count();
+    assert_eq!(pings, 1, "{said:?}");
+    assert!(
+        ran.text.contains("mqtt_ping: sent ping request.\n"),
+        "{}",
+        ran.text
+    );
+    // An interval of none never pings.
+    let talk = Conversation::replies(&[CONNACK, SUBACK], false).per_send();
+    let (said, _) = against(talk, "mqtt://127.0.0.1:PORT/topic", |o| {
+        o.limits.reuse.upkeep = crate::options::UpkeepInterval(std::time::Duration::ZERO);
+        o.limits.total = crate::time::TimeLimit::from_millis(3500);
+    });
+    assert!(!said.ends_with(b"\xc0\x00"), "{said:?}");
+}
+
+/// The server's PINGRESP is said, and the subscription waits on.
+#[test]
+fn a_ping_response_is_taken() {
+    let talk = Conversation::replies(&[CONNACK, &then(&[SUBACK, b"\xd0\x00", DISCONNECT])], true)
+        .per_send();
+    let (_, ran) = against(talk, "mqtt://127.0.0.1:PORT/topic", |_| {});
+    assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+    assert!(
+        ran.text.contains("Received ping response.\n"),
+        "{}",
+        ran.text
+    );
+}
+
+/// While the exchange goes on the transfer waits for the server's
+/// bytes, or for room to send what of a packet is left.
+#[test]
+fn the_exchange_waits_on_its_socket() {
+    use crate::libraries::{Libraries, SharedLibraries};
+    use crate::multi::NoEvents;
+    for stalled in [false, true] {
+        let mut talk = Conversation::replies(&[CONNACK], false).per_send();
+        if stalled {
+            talk = talk.stalling_sends_after(1, 1000);
+        }
+        let mut m = crate::proto::raw::wire::serving(&[&talk]);
+        let mut e = crate::easy::Easy::new();
+        e.set_libraries(SharedLibraries::new(Libraries::NONE).unwrap());
+        let url = format!("mqtt://127.0.0.1:{}/topic", crate::proto::raw::wire::PORT);
+        e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+        m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        for _ in 0..5 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        let mut seen = Vec::new();
+        m.sockets(&mut NoEvents, |_, events| seen.push(events))
+            .unwrap();
+        let want = if stalled { Events::OUT } else { Events::IN };
+        assert_eq!(seen, [want], "stalled {stalled}");
+    }
+}
+
+/// A paused writer holds a PUBLISH until it is taken.
+#[test]
+fn a_paused_publish_is_held_until_taken() {
+    let talk = server(&then(&[SUBACK, PUBLISH, DISCONNECT]));
+    let took = crate::proto::raw::wire::paused_then_taken(&talk, "mqtt://127.0.0.1:PORT/topic");
+    assert_eq!(took, DELIVERED);
+}
+
+/// Packets read a byte at a time are taken whole, each in turn.
+#[test]
+fn packets_read_a_byte_at_a_time_are_taken_whole() {
+    let one = std::num::NonZeroUsize::new(1).unwrap();
+    let talk = server(&then(&[SUBACK, PUBLISH, DISCONNECT])).giving(one);
+    let (said, ran) = against(talk, "mqtt://127.0.0.1:PORT/topic", |_| {});
+    assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+    assert_eq!(ran.body, DELIVERED);
+    assert!(said.ends_with(b"\x82\x0a\x00\x01\x00\x05topic\x00"));
 }

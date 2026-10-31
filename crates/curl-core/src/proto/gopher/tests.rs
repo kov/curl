@@ -1,6 +1,6 @@
 use super::*;
 use crate::conn::io::Conversation;
-use crate::proto::raw::wire::against;
+use crate::proto::raw::wire::{against, serving};
 
 fn selector(path: &str, query: Option<&str>) -> Result<Vec<u8>, Refused> {
     selector_of(path.as_bytes(), query.map(str::as_bytes))
@@ -110,4 +110,49 @@ fn gophers_needs_a_tls_library() {
         ran.text
     );
     assert!(said.is_empty());
+}
+
+/// A paused writer holds the answer until it is taken.
+#[test]
+fn a_paused_answer_is_held_until_taken() {
+    let talk = Conversation::new(b"iline\r\n.\r\n", true).per_send();
+    let took = crate::proto::raw::wire::paused_then_taken(&talk, "gopher://127.0.0.1:PORT/1/x");
+    assert_eq!(took, b"iline\r\n.\r\n");
+}
+
+/// While the request goes, the transfer waits for room to send it; then
+/// for the answer.
+#[test]
+fn the_request_waits_for_room_then_for_the_answer() {
+    use crate::conn::io::Events;
+    use crate::multi::NoEvents;
+    use crate::proto::raw::wire::{added, waits};
+    for stalled in [true, false] {
+        let mut talk = Conversation::new(b"", false).per_send();
+        if stalled {
+            talk = talk.stalling_sends_after(0, 1000);
+        }
+        let mut m = serving(&[&talk]);
+        added(&mut m, "gopher://127.0.0.1:PORT/1/x", |_| {});
+        for _ in 0..5 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        let want = if stalled { Events::OUT } else { Events::IN };
+        assert_eq!(waits(&mut m), [want], "stalled {stalled}");
+    }
+}
+
+/// A URL without a port goes to the scheme's.
+#[test]
+fn a_url_without_a_port_goes_to_the_scheme_s() {
+    let talk = Conversation::new(b"", true).per_send();
+    let (said, ran) = against(talk, "gopher://127.0.0.1/1/x", |_| {});
+    assert_eq!(
+        ran.result,
+        Some(Err(ErrorKind::CouldntConnect)),
+        "{}",
+        ran.text
+    );
+    assert!(said.is_empty());
+    assert!(ran.text.contains("port 70"), "{}", ran.text);
 }

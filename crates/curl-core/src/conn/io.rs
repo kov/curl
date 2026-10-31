@@ -2155,7 +2155,8 @@ impl Socket for FakeSocket {
     }
 
     /// Each reply is a datagram from the address it was opened for, or
-    /// from the one `Conversation::from` names.
+    /// from the one `Conversation::datagrams_from` names; what of one
+    /// does not fit is lost, as a datagram's is.
     fn recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, SocketAddr)>> {
         let Remote::Inet(peer) = self.opened_for else {
             return Err(io::ErrorKind::Unsupported.into());
@@ -2168,7 +2169,14 @@ impl Socket for FakeSocket {
             }
         };
         Ok(match self.recv(buf)? {
-            Recv::Data(n) => Some((n.get(), from)),
+            Recv::Data(n) => {
+                let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
+                if wire.read != 0 {
+                    wire.answered += 1;
+                    wire.read = 0;
+                }
+                Some((n.get(), from))
+            }
             Recv::WouldBlock | Recv::Eof => None,
         })
     }

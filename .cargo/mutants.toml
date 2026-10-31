@@ -843,4 +843,24 @@ exclude_re = [
     # The calls a multi's event makes on a transfer only trace its lines
     # (`info_outside`): no handler is given them, so none starts a frame.
     'curl-core/src/multi/cx\.rs:.*: replace <impl TransferCalls for EventCalls<.*>>::ws_start_frame -> Result<\(\), ErrorKind> with Ok\(\(\)\)$',
+    # The bound only rejects the draws that would weigh some letters of
+    # MQTT's client id over others; any bound still gives letters and
+    # digits (`Curl_rand_alnum`).
+    'curl-core/src/proto/mqtt\.rs:.*: replace (< with <=|% with /) in client_id$',
+    # A transfer subscribes once, as packet 1: the id's high byte is 0
+    # shifted either way.
+    'curl-core/src/proto/mqtt\.rs:.*: replace >> with << in Request::verify_suback$',
+    # Only a login of 256 MiB reaches MQTT's largest message; the packet's
+    # own bound is checked by `connect_packet`'s tests.
+    'curl-core/src/proto/mqtt\.rs:.*: replace > with (==|>=) in Request::connect_send$',
+    # Bytes a layer holds are found by the engine's own look at the
+    # pollset (`buffered_input`), which runs the transfer again whatever
+    # the pass returned.
+    'curl-core/src/proto/raw\.rs:.*: replace match guard lease\.get\(\)\.data_pending\(\) with false in ToClose::pass$',
+    # A signal interrupting `sendto` or `recvfrom` cannot be planted by a
+    # test; an unconnected UDP socket has no error for `recvfrom` to report
+    # but would-block (no peer's ICMP reaches it), and `sendto` none on
+    # loopback.
+    'curl-os/src/net\.rs:.*: replace (match guard e\.kind\(\) == io::ErrorKind::Interrupted with (true|false)|== with !=) in UdpSocket::send_to$',
+    'curl-os/src/net\.rs:.*: replace match guard e\.kind\(\) == io::ErrorKind::(Interrupted with false|WouldBlock with true) in UdpSocket::recv_from$',
 ]

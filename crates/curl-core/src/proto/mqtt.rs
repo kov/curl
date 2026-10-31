@@ -14,7 +14,7 @@ use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
 use crate::auth::creds::{CredentialGate, Credentials, Takes};
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
-use crate::deliver::{Pause, Pipeline, Reach};
+use crate::deliver::{Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::handler::DebugKind;
 use crate::idn::Idn;
@@ -38,8 +38,6 @@ const SUBACK_LEN: usize = 3;
 const CLIENT_ID_LEN: usize = 12;
 /// The most a packet's remaining length may say (`MAX_MQTT_MESSAGE_SIZE`).
 const MAX_MESSAGE: usize = 0xFFF_FFFF;
-/// The most received bytes held (`DYN_MQTT_RECV`).
-const MAX_RECV: usize = 64 * 1024;
 /// The most of a PUBLISH read at once.
 const READ_MAX: usize = 4 * 1024;
 
@@ -339,19 +337,9 @@ impl Request {
         self.pipeline.holds_output()
     }
 
-    /// Whether nothing came back for it, as `Curl_retry_request` reads a
-    /// transfer outside HTTP.
-    pub(crate) fn received_nothing(&self) -> bool {
-        self.pipeline.bytecount() == 0
-    }
-
     /// MQTT exchanges nothing once its DOING is done.
     pub(crate) fn step(&mut self) -> ProtoStep {
         ProtoStep::Done
-    }
-
-    pub(crate) fn interest(&self, _: Pause) -> Events {
-        Events::NONE
     }
 
     /// Go to `state`, and from `First` on to `next` (`mqstate`), said in
@@ -426,10 +414,9 @@ impl Request {
             match xfer_recv(cx, lease, &mut buf[..want])? {
                 Got::Again => return Ok(false),
                 Got::Eof => return Err(ErrorKind::RecvError),
+                // Less than the buffer, by the assertion above: far
+                // within C's `DYN_MQTT_RECV`.
                 Got::Data(got) => {
-                    if held + got > MAX_RECV {
-                        return Err(ErrorKind::OutOfMemory);
-                    }
                     self.received
                         .try_extend_from_slice(&buf[..got])
                         .map_err(|_| ErrorKind::OutOfMemory)?;

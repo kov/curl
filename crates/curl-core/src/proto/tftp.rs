@@ -470,9 +470,9 @@ impl Request {
         let Some(socket) = lease.conn().datagram_socket() else {
             return Err(ErrorKind::SendError);
         };
+        // A datagram goes whole or not at all.
         match socket.send_to(&self.spacket[..len], to) {
-            Ok(n) if n == len => Ok(()),
-            Ok(_) => Err(ErrorKind::SendError),
+            Ok(_) => Ok(()),
             Err(e) => {
                 let why = ErrorText::of(&e);
                 Err(trace::fail_with(
@@ -575,9 +575,6 @@ impl Request {
                     options,
                 );
                 let len = packet.len();
-                // The packet's room is kept for the blocks to come.
-                let room = self.requested_blksize.max(BLKSIZE_DEFAULT) + 4;
-                let grown = packet.try_reserve(room.saturating_sub(len));
                 self.spacket = packet;
                 match made {
                     Ok(()) => {}
@@ -597,7 +594,6 @@ impl Request {
                         ));
                     }
                 }
-                grown.map_err(|_| ErrorKind::OutOfMemory)?;
                 self.send(cx, lease, len)
             }
             Event::OACK => {

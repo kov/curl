@@ -1028,14 +1028,15 @@ impl ProtoState {
             | ProtoState::Pop3(_)
             | ProtoState::Mqtt(_)
             | ProtoState::Telnet(_)
-            | ProtoState::Tftp(_) => false,
+            | ProtoState::Tftp(_)
+            // Their requests go whole in DOING.
+            | ProtoState::Dict(_)
+            | ProtoState::Gopher(_) => false,
             ProtoState::Ftp(ref r) => r.sending(),
             ProtoState::Imap(ref r) => r.sending(),
             ProtoState::Smtp(ref r) => r.sending(),
             ProtoState::Http(ref r) => r.sending(),
             ProtoState::Ssh(ref r) => r.sending(),
-            ProtoState::Dict(ref r) => r.sending(),
-            ProtoState::Gopher(ref r) => r.sending(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(_) => script::wants_send(options),
             #[cfg(any(test, feature = "test-util"))]
@@ -1055,14 +1056,15 @@ impl ProtoState {
             | ProtoState::Pop3(_)
             | ProtoState::Mqtt(_)
             | ProtoState::Telnet(_)
-            | ProtoState::Tftp(_) => false,
+            | ProtoState::Tftp(_)
+            // Their requests go whole in DOING.
+            | ProtoState::Dict(_)
+            | ProtoState::Gopher(_) => false,
             ProtoState::Ftp(ref r) => r.sending(),
             ProtoState::Imap(ref r) => r.sending(),
             ProtoState::Smtp(ref r) => r.sending(),
             ProtoState::Http(ref r) => r.sending(),
             ProtoState::Ssh(ref r) => r.sending(),
-            ProtoState::Dict(ref r) => r.sending(),
-            ProtoState::Gopher(ref r) => r.sending(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.sending(options),
             #[cfg(any(test, feature = "test-util"))]
@@ -1271,9 +1273,12 @@ impl ProtoState {
             ProtoState::Ssh(ref r) => r.interest(pause),
             ProtoState::Dict(ref r) => r.interest(pause),
             ProtoState::Gopher(ref r) => r.interest(pause),
-            ProtoState::Mqtt(ref r) => r.interest(pause),
-            // TELNET's and TFTP's exchanges are over once their DO is.
-            ProtoState::File(_) | ProtoState::Telnet(_) | ProtoState::Tftp(_) => Events::NONE,
+            // MQTT's, TELNET's and TFTP's exchanges are over once their DO
+            // is.
+            ProtoState::File(_)
+            | ProtoState::Mqtt(_)
+            | ProtoState::Telnet(_)
+            | ProtoState::Tftp(_) => Events::NONE,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
                 Events::NONE
@@ -1316,13 +1321,13 @@ impl ProtoState {
             ProtoState::Imap(ref r) => r.received_nothing(),
             ProtoState::Smtp(ref r) => r.received_nothing(),
             ProtoState::Ssh(ref r) => r.received_nothing(),
-            ProtoState::Mqtt(ref r) => r.received_nothing(),
-            ProtoState::Telnet(ref r) => r.received_nothing(),
-            // An answer read to the close, or TFTP's, leaves no connection
-            // to reuse.
+            // An answer read to the close, MQTT's, TELNET's or TFTP's,
+            // leaves no connection to reuse.
             ProtoState::File(_)
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)
+            | ProtoState::Mqtt(_)
+            | ProtoState::Telnet(_)
             | ProtoState::Tftp(_) => false,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,

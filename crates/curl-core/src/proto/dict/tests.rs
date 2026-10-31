@@ -298,3 +298,48 @@ proptest::proptest! {
         let _ = request_of(&path);
     }
 }
+
+/// A paused writer holds the answer until it is taken.
+#[test]
+fn a_paused_answer_is_held_until_taken() {
+    let talk = Conversation::new(ANSWER, true).per_send();
+    let took = crate::proto::raw::wire::paused_then_taken(&talk, "dict://127.0.0.1:PORT/d:basic");
+    assert_eq!(took, ANSWER);
+}
+
+/// While the request goes, the transfer waits for room to send it; then
+/// for the answer.
+#[test]
+fn the_request_waits_for_room_then_for_the_answer() {
+    use crate::conn::io::Events;
+    use crate::multi::NoEvents;
+    use crate::proto::raw::wire::{added, waits};
+    for stalled in [true, false] {
+        let mut talk = Conversation::new(b"", false).per_send();
+        if stalled {
+            talk = talk.stalling_sends_after(0, 1000);
+        }
+        let mut m = serving(&[&talk]);
+        added(&mut m, "dict://127.0.0.1:PORT/d:basic", |_| {});
+        for _ in 0..5 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        let want = if stalled { Events::OUT } else { Events::IN };
+        assert_eq!(waits(&mut m), [want], "stalled {stalled}");
+    }
+}
+
+/// A URL without a port goes to the scheme's.
+#[test]
+fn a_url_without_a_port_goes_to_the_scheme_s() {
+    let talk = Conversation::new(b"", true).per_send();
+    let (said, ran) = against(talk, "dict://127.0.0.1/d:basic", |_| {});
+    assert_eq!(
+        ran.result,
+        Some(Err(ErrorKind::CouldntConnect)),
+        "{}",
+        ran.text
+    );
+    assert!(said.is_empty());
+    assert!(ran.text.contains("port 2628"), "{}", ran.text);
+}

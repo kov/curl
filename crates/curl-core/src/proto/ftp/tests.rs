@@ -3258,3 +3258,55 @@ fn a_failed_read_of_the_data_says_why() {
     run(false);
     run(true);
 }
+
+/// A port `EPSV` named that cannot be reached is given up for `PASV`'s
+/// (`ftp_do_more`, `ftp_epsv_disable`); one `PASV` named that cannot be
+/// reached fails the transfer.
+#[test]
+fn an_epsv_port_unreached_falls_back_to_pasv() {
+    let run = |replies: &[&'static [u8]]| {
+        let control = logged_in(replies);
+        let file = data(b"hello");
+        let clock = ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+        let mut net = FakeNet::new(clock.clone())
+            .with_peer(at, Net::Accepts)
+            .with_peer(SocketAddr::from(([127, 0, 0, 1], 9000)), Net::Refuses)
+            .with_peer(SocketAddr::from(([127, 0, 0, 1], DATA_PORT)), Net::Accepts)
+            .with_conversation(at, control.clone());
+        net = net.with_conversation(SocketAddr::from(([127, 0, 0, 1], DATA_PORT)), file);
+        let env = Env {
+            clock: Box::new(clock),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m = Multi::new(env).unwrap();
+        let (id, body, text) = added(&mut m, URL, |_| {});
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let got = body.0.lock().unwrap().clone();
+        (result, received(&control), got, text.text())
+    };
+    let (result, sent, got, said) = run(&[
+        b"229 Entering Extended Passive Mode (|||9000|)\r\n",
+        b"227 Entering Passive Mode (127,0,0,1,31,86)\r\n",
+        b"200 binary\r\n",
+        b"213 5\r\n",
+        b"150 here\r\n226 done\r\n",
+    ]);
+    assert_eq!((result, got), (Ok(()), b"hello".to_vec()), "{said}");
+    assert!(
+        sent.ends_with("PWD\r\nEPSV\r\nPASV\r\nTYPE I\r\nSIZE f\r\nRETR f\r\n"),
+        "{sent}"
+    );
+    assert!(
+        said.contains("Failed EPSV attempt. Disabling EPSV"),
+        "{said}"
+    );
+    let (result, sent, _, said) = run(&[
+        b"500 no EPSV\r\n",
+        b"227 Entering Passive Mode (127,0,0,1,35,40)\r\n",
+    ]);
+    assert_eq!(result, Err(ErrorKind::CouldntConnect), "{said}");
+    assert!(sent.ends_with("PWD\r\nEPSV\r\nPASV\r\n"), "{sent}");
+}

@@ -3625,7 +3625,9 @@ application's options (`Small::telnet`, read again from their source then, as C 
 list), adds the user as the `USER` variable, and runs the first round of C's loop; the
 rest are DOING, a round each pass: one read of the server's bytes, taken through `telrcv`'s
 states (commands out, an IAC doubled in, a NUL after a CR dropped, suboptions gathered in
-C's 512 bytes and answered), C's own negotiation once after the server has started one,
+C's 512 bytes and answered), C's own negotiation once after the server has started one
+(RFC 1143's states, but WANTNO and the queue, which only asking to disable an option
+reaches, and C never asks that),
 then one call of the input handler (`Small::input`, C's read function whatever the
 method), its bytes sent with each IAC doubled. C blocks in DO with a poll of 100 ms between
 rounds; here a round runs when the socket is readable or 100 ms after the last (`due`).

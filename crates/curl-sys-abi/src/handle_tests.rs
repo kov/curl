@@ -7176,8 +7176,9 @@ fn a_websocket_only_connected_talks_through_the_c_calls() {
     use crate::ffi::{CURLWS_BINARY, CURLWS_CLOSE, CURLWS_OFFSET, CURLWS_PING, CURLWS_TEXT};
     use crate::ws::{curl_ws_meta, curl_ws_recv, curl_ws_send};
     use std::io::{Read as _, Write as _};
-    // The text frame's head and payload, then three empty frames.
-    const SENT: usize = 6 + 3 + 3 * 6;
+    // The text frame's head and payload, three empty frames, then two
+    // bytes sent raw.
+    const SENT: usize = 6 + 3 + 3 * 6 + 2;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
@@ -7263,7 +7264,21 @@ fn a_websocket_only_connected_talks_through_the_c_calls() {
     for flags in [CURLWS_BINARY, CURLWS_PING, CURLWS_CLOSE] {
         assert_eq!(send(b"", 0, flags), (CURLE_OK, 0), "{flags:x}");
     }
+    // Raw, the bytes go as they are, with neither a size nor flags, and
+    // never from no buffer.
+    assert_eq!(
+        long(c, ffi::CURLOPT_WS_OPTIONS, ffi::CURLWS_RAW_MODE),
+        CURLE_OK
+    );
+    let mut n = 0;
+    // SAFETY: a live handle, no buffer, and where the count goes.
+    let null = unsafe { curl_ws_send(c, ptr::null(), 0, &raw mut n, 0, 0) };
+    assert_eq!(null, CURLE_BAD_FUNCTION_ARGUMENT);
+    assert_eq!(send(b"x", 1, 0).0, CURLE_BAD_FUNCTION_ARGUMENT);
+    assert_eq!(send(b"x", 0, CURLWS_TEXT).0, CURLE_BAD_FUNCTION_ARGUMENT);
+    assert_eq!(send(b"xy", 0, 0), (CURLE_OK, 2));
     let got = server.join().unwrap();
+    assert_eq!(&got[SENT - 2..], b"xy");
     let heads: Vec<[u8; 2]> = [0, 9, 15, 21]
         .iter()
         .map(|&at| [got[at], got[at + 1]])
@@ -7372,6 +7387,37 @@ fn a_write_callback_echoes_frames_on_its_own_websocket() {
         (vec![ffi::CURLWS_TEXT], vec![CURLE_OK])
     );
     assert_eq!(got[..2], [0x81, 0x82]);
+    // SAFETY: a handle no call uses any more.
+    unsafe { curl_easy_cleanup(c) };
+}
+
+/// Raw, a send needs its buffer, which C says once it found the
+/// connection: without one, that is what fails the send, raw or not.
+#[test]
+fn a_raw_send_needs_a_buffer() {
+    use crate::ws::curl_ws_send;
+    let send = |c: *mut CURL| {
+        let mut n = 0;
+        // SAFETY: a live handle, no bytes, and where their count goes.
+        unsafe { curl_ws_send(c, ptr::null(), 0, &raw mut n, 0, 0) }
+    };
+    let c = curl_easy_init();
+    assert_eq!(send(c), ffi::CURLE_SEND_ERROR, "no connection");
+    // SAFETY: a handle no call uses any more.
+    unsafe { curl_easy_cleanup(c) };
+    let c = curl_easy_init();
+    let mut buf = [0u8; ffi::CURL_ERROR_SIZE as usize];
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_ERRORBUFFER, buf.as_mut_ptr()),
+        CURLE_OK
+    );
+    assert_eq!(
+        long(c, ffi::CURLOPT_WS_OPTIONS, ffi::CURLWS_RAW_MODE),
+        CURLE_OK
+    );
+    assert_eq!(send(c), ffi::CURLE_SEND_ERROR, "no connection, raw");
+    let said = CStr::from_bytes_until_nul(&buf).unwrap();
+    assert_eq!(said.to_bytes(), b"[WS] No associated connection");
     // SAFETY: a handle no call uses any more.
     unsafe { curl_easy_cleanup(c) };
 }

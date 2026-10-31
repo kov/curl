@@ -268,11 +268,24 @@ pub unsafe extern "C" fn curl_ws_send(
         Ok(raw) => raw,
         Err(code) => return code,
     };
-    if raw && buffer.is_null() {
-        return refuse(easy, bad, b"[WS] buffer is NULL in raw mode");
-    }
-    if raw && sent.is_null() {
-        return refuse(easy, bad, b"[WS] sent is NULL in raw mode");
+    if raw && (buffer.is_null() || sent.is_null()) {
+        // C refuses these once the connection is found and what waits on
+        // it is flushed: a send of nothing does both.
+        let none = SendFlags {
+            kind: None,
+            more: false,
+        };
+        match reach(easy, Call::Send(&[], FrameLen::These, none)) {
+            Ok(Ok(_)) => {}
+            Ok(Err(kind)) => return easy_code(kind),
+            Err(code) => return code,
+        }
+        let why: &[u8] = if buffer.is_null() {
+            b"[WS] buffer is NULL in raw mode"
+        } else {
+            b"[WS] sent is NULL in raw mode"
+        };
+        return refuse(easy, bad, why);
     }
     let (len, typed) = if raw {
         raw_args(fragsize, flags)

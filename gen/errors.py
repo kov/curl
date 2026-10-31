@@ -48,7 +48,8 @@ TABLES = [
 # handles to be invalid and no re-entrant calls to refuse, and the core
 # shares nothing it can be refused. A Rust caller never meets these; the
 # shim's enums hold them. TLS's codes stay in the core, which will
-# produce them.
+# produce them. `CURLE_UNKNOWN_OPTION` is the core's too: a TELNET
+# option it does not know.
 SHIM_ONLY = {
     "CURLcode": {
         # The core's would-block, "not yet" and "no connection now" are
@@ -56,7 +57,6 @@ SHIM_ONLY = {
         "CURLE_AGAIN",
         "CURLE_NO_CONNECTION_AVAILABLE",
         "CURLE_RECURSIVE_API_CALL",
-        "CURLE_UNKNOWN_OPTION",
     },
     "CURLMcode": {
         "CURLM_BAD_HANDLE",

@@ -100,6 +100,8 @@ pub struct Options {
     pub schemes: Cold<Schemes>,
     /// What SCP and SFTP are told.
     pub ssh: Cold<Ssh>,
+    /// What TELNET and TFTP are told.
+    pub small: Cold<Small>,
     pub http: Http,
     pub tls: Tls,
     /// What the test protocol `script:` plays.
@@ -802,6 +804,7 @@ impl Options {
             proxy: self.proxy.try_clone(Proxy::try_clone)?,
             schemes: self.schemes.try_clone(|s| Ok(*s))?,
             ssh: self.ssh.try_clone(Ssh::try_clone)?,
+            small: self.small.try_clone(Small::try_clone)?,
             sockets: self.sockets.try_clone(Sockets::try_clone)?,
             http: self.http.try_clone()?,
             tls: self.tls.try_clone()?,
@@ -2427,6 +2430,64 @@ pub struct Ssh {
     /// What a directory SFTP makes may be opened for
     /// (`CURLOPT_NEW_DIRECTORY_PERMS`).
     pub new_directory_mode: FileMode,
+}
+
+/// What TELNET and TFTP are told, which few transfers set.
+#[derive(Debug)]
+pub struct Small {
+    /// TELNET's options, each `NAME=value` (`CURLOPT_TELNETOPTIONS`).
+    pub telnet: Lines,
+    /// The block size TFTP asks for (`CURLOPT_TFTP_BLKSIZE`); none for
+    /// its default, 512.
+    pub tftp_blksize: Option<TftpBlockSize>,
+    /// TFTP asks for no options (`CURLOPT_TFTP_NO_OPTIONS`).
+    pub tftp_no_options: bool,
+    /// What TELNET sends, read each round of its loop, whatever the
+    /// method; without one, nothing (C's read function, `fread_func`).
+    pub input: Option<Handler<dyn ReadHandler>>,
+}
+
+/// A TFTP block size, within what TFTP allows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TftpBlockSize(u16);
+
+impl TftpBlockSize {
+    /// The fewest bytes a block may be (`TFTP_BLKSIZE_MIN`).
+    pub const MIN: u16 = 8;
+    /// The most (`TFTP_BLKSIZE_MAX`).
+    pub const MAX: u16 = 65464;
+
+    /// `n`, brought within the bounds as C's `value_range` brings it: 0
+    /// too is the fewest.
+    pub fn clamped(n: u64) -> TftpBlockSize {
+        let n = n.clamp(u64::from(Self::MIN), u64::from(Self::MAX));
+        TftpBlockSize(u16::try_from(n).expect("clamped to u16"))
+    }
+
+    pub fn get(self) -> u16 {
+        self.0
+    }
+}
+
+impl ColdGroup for Small {
+    const UNSET: &'static Small = &Small::NONE;
+    const NONE: Small = Small {
+        telnet: Lines::NONE,
+        tftp_blksize: None,
+        tftp_no_options: false,
+        input: None,
+    };
+}
+
+impl Small {
+    fn try_clone(&self) -> Result<Small, OutOfMemory> {
+        Ok(Small {
+            telnet: self.telnet.try_clone()?,
+            tftp_blksize: self.tftp_blksize,
+            tftp_no_options: self.tftp_no_options,
+            input: self.input.clone(),
+        })
+    }
 }
 
 impl ColdGroup for Ssh {

@@ -14,11 +14,11 @@ witness: curl-sys-abi strerror::tests::errors_are_every_c_code
 file: crates/curl-sys-abi/src/error_codes.rs
 witness: curl-sys-abi strerror::tests::errors_are_every_c_code
 --- old
-        EasyError::UnknownOption => CURLE_UNKNOWN_OPTION,
         EasyError::Again => CURLE_AGAIN,
+        EasyError::NoConnectionAvailable => CURLE_NO_CONNECTION_AVAILABLE,
 --- new
-        EasyError::UnknownOption => CURLE_AGAIN,
-        EasyError::Again => CURLE_UNKNOWN_OPTION,
+        EasyError::Again => CURLE_NO_CONNECTION_AVAILABLE,
+        EasyError::NoConnectionAvailable => CURLE_AGAIN,
 
 === a core kind answers with a code only the shim produces
 file: crates/curl-sys-abi/src/error_codes.rs

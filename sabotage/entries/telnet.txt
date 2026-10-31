@@ -1,0 +1,63 @@
+=== an IAC in the data sent goes undoubled
+file: crates/curl-core/src/proto/telnet.rs
+witness: curl-core proto::telnet::tests::data_sent_is_escaped
+--- old
+            out.try_push(IAC).map_err(|_| ErrorKind::OutOfMemory)?;
+--- new
+            {}
+
+=== a NUL after a CR is delivered
+file: crates/curl-core/src/proto/telnet.rs
+witness: curl-core proto::telnet::tests::data_passes_through
+--- old
+                    if c == 0 {
+--- new
+                    if false {
+
+=== a command inside a suboption is taken for its end
+file: crates/curl-core/src/proto/telnet.rs
+witness: curl-core proto::telnet::tests::a_bad_suboption_fails
+--- old
+                        if c != IAC {
+--- new
+                        if false {
+
+=== a suboption is written past its buffer
+file: crates/curl-core/src/proto/telnet.rs
+witness: curl-core proto::telnet::tests::a_long_suboption_is_cut_short
+--- old
+        if self.subpointer < SUBBUFSIZE {
+--- new
+        if true {
+
+=== C negotiates with a server that never did
+file: crates/curl-core/src/proto/telnet.rs
+witness: curl-core proto::telnet::tests::nothing_is_negotiated_unasked
+--- old
+        if self.please_negotiate && !self.already_negotiated {
+--- new
+        if !self.already_negotiated {
+
+=== the engine's timeout ends TELNET's loop, with its own reason
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::telnet::tests::a_session_times_out_as_c_s_does
+--- old
+        matches!(self, ProtoState::Telnet(_))
+--- new
+        false
+
+=== what the connection did not take is dropped
+file: crates/curl-core/src/proto/telnet.rs
+witness: curl-core proto::telnet::tests::negotiation_goes_over_the_wire
+--- old
+                self.unsent.drain(..n);
+--- new
+                self.unsent.clear();
+
+=== the bytes read are counted once, not as C counts them
+file: crates/curl-core/src/proto/telnet.rs
+witness: curl-core proto::telnet::tests::a_session_runs_to_the_close
+--- old
+                live.cx.report_mut().sizes_mut().download += n as u64;
+--- new
+                {}

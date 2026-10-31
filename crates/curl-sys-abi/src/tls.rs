@@ -135,9 +135,13 @@ mod tests {
             transfer_result(ffi::CURLE_OUT_OF_MEMORY),
             Err(ErrorKind::OutOfMemory)
         );
+        // A TELNET transfer ends with this, so the function's goes through.
+        assert_eq!(
+            transfer_result(ffi::CURLE_UNKNOWN_OPTION),
+            Err(ErrorKind::UnknownOption)
+        );
         for code in [
             ffi::CURLE_AGAIN,
-            ffi::CURLE_UNKNOWN_OPTION,
             ffi::CURLE_RECURSIVE_API_CALL,
             CURLcode(1000),
         ] {

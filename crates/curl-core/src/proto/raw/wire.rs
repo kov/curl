@@ -35,6 +35,8 @@ pub(crate) struct Ran {
     pub(crate) data_out: Vec<u8>,
     /// Header lines were kept for the headers API.
     pub(crate) stored_headers: bool,
+    /// The bytes counted as downloaded and uploaded.
+    pub(crate) counted: (u64, u64),
 }
 
 impl WriteHandler for Seen {
@@ -106,6 +108,8 @@ pub(crate) fn transfer(m: &mut Multi, url: &str, set: impl FnOnce(&mut Options))
         .headers()
         .next(Origins::ALL, Request::Last, None);
     ran.stored_headers = stored.is_some();
+    let sizes = removed.easy.report().sizes();
+    ran.counted = (sizes.download(), sizes.upload());
     ran
 }
 

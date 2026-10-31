@@ -861,9 +861,9 @@ witness: curl-core multi::tests::a_reused_connection_skips_the_protocol_connect
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_request_waiting_to_be_made_times_out_closing_its_connection
 --- old
-        TransferState::Doing(x) | TransferState::DoingMore(x) if expired(run, cx) => {
+            if !x.proto.times_itself() && expired(run, cx) =>
 --- new
-        TransferState::Doing(x) | TransferState::DoingMore(x) if false => {
+            if false =>
 
 === a request cut short in DOING keeps its connection
 file: crates/curl-core/src/multi/state.rs

@@ -2869,8 +2869,11 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 Wake::Again,
             ),
         },
-        // Out of time as the step starts (`multi_handle_timeout`).
-        TransferState::Doing(x) | TransferState::DoingMore(x) if expired(run, cx) => {
+        // Out of time as the step starts (`multi_handle_timeout`), unless
+        // the protocol times its DOING itself, as C's TELNET does in DO.
+        TransferState::Doing(x) | TransferState::DoingMore(x)
+            if !x.proto.times_itself() && expired(run, cx) =>
+        {
             let kind = timed_out(cx, Phase::Transferring, x.proto.sizes_request());
             // Either half ends the same: past DO, cut short.
             (TransferState::Doing(x).fail(kind), Wake::Again)

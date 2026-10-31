@@ -1201,6 +1201,15 @@ fn apply(
                 }
             }
         },
+        // The application's list, walked as each TELNET transfer starts.
+        (ffi::CURLOPT_TELNETOPTIONS, Ptr(p)) => match slist(p)? {
+            Some(source) => options.small.make_mut()?.telnet.set_source(source)?,
+            None => {
+                if let Some(small) = options.small.made_mut() {
+                    small.telnet.set([])?;
+                }
+            }
+        },
         (ffi::CURLOPT_MAIL_RCPT_ALLOWFAILS, Long(n)) => {
             options.line.make_mut()?.mail_rcpt_allowfails = n != 0;
         }
@@ -1463,7 +1472,10 @@ fn apply(
             ccb.header_data = p;
             callbacks::sync_text(options, me, ccb)?;
         }
-        (ffi::CURLOPT_READDATA, Ptr(p)) => ccb.read_data = p,
+        (ffi::CURLOPT_READDATA, Ptr(p)) => {
+            ccb.read_data = p;
+            callbacks::sync_input(options, me, ccb)?;
+        }
         (ffi::CURLOPT_SEEKDATA, Ptr(p)) => ccb.seek_data = p,
         (ffi::CURLOPT_IOCTLDATA, Ptr(p)) => ccb.ioctl_data = p,
         (ffi::CURLOPT_XFERINFODATA, Ptr(p)) => ccb.progress_data = p,
@@ -1551,8 +1563,11 @@ fn apply(
             ccb.header = unsafe { function(p) };
             callbacks::sync_text(options, me, ccb)?;
         }
-        // SAFETY: as above.
-        (ffi::CURLOPT_READFUNCTION, Ptr(p)) => ccb.read = unsafe { function(p) },
+        (ffi::CURLOPT_READFUNCTION, Ptr(p)) => {
+            // SAFETY: as above.
+            ccb.read = unsafe { function(p) };
+            callbacks::sync_input(options, me, ccb)?;
+        }
         // SAFETY: as above.
         (ffi::CURLOPT_SEEKFUNCTION, Ptr(p)) => ccb.seek = unsafe { function(p) },
         // SAFETY: as above.

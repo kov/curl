@@ -278,6 +278,8 @@ curl-core/src/
                              the URL
     mqtt.rs                  MQTT (mqtt.c): its packets, made and read, and the exchange in
                              DOING
+    telnet.rs                TELNET (telnet.c): the options, the negotiation, the server's
+                             bytes read, and the loop of rounds in DOING
     pingpong.rs, pingpong/   Pingpong: the line protocols' reader and writer (pingpong.c),
                              sans-IO; ftp.rs, imap.rs, pop3.rs, smtp.rs: where each one's
                              reply ends
@@ -667,8 +669,8 @@ C's `CURLE_AGAIN` has three meanings (would-block, "rebuild the sub-chain", "not
 `UrlErrorKind`) hold only the codes the core produces; `gen/errors.py` lists the codes only
 libcurl's C API produces (`SHIM_ONLY`) and generates them into the shim's `EasyError`,
 `MultiError` and `ShareError`, each beside the core's kind and mapped to C with no wildcard.
-Shim-only: `CURLE_AGAIN`, `CURLE_NO_CONNECTION_AVAILABLE`, `CURLE_RECURSIVE_API_CALL`,
-`CURLE_UNKNOWN_OPTION`; every multi code but out of memory, a bad easy handle, an abort by
+Shim-only: `CURLE_AGAIN`, `CURLE_NO_CONNECTION_AVAILABLE` and `CURLE_RECURSIVE_API_CALL`
+(`CURLE_UNKNOWN_OPTION` is the core's, for a TELNET option it does not know); every multi code but out of memory, a bad easy handle, an abort by
 callback and an unrecoverable poll; and every share code, as the core's share fails only with
 its own `InUse` and `OutOfMemory`. TLS's codes stay in `ErrorKind`, which TLS will produce.
 The number of `CURLE_AGAIN`, which the core traces (`-> 81`) but never returns, is a generated
@@ -3610,6 +3612,23 @@ interval with nothing sent or read, when DOING runs then, as C's does; there is 
 for it. The server's bytes are checked as C checks them: lengths, the CONNACK's code, the
 SUBACK's id, a PINGRESP or DISCONNECT with a length or reserved bits, and a PUBLISH past
 the most the transfer may deliver.
+
+### 5.11 TELNET
+
+`proto/telnet.rs` is `lib/telnet.c`. Its connection is never reused. DO reads the
+application's options (`Small::telnet`, read again from their source then, as C walks the
+list), adds the user as the `USER` variable, and runs the first round of C's loop; the
+rest are DOING, a round each pass: one read of the server's bytes, taken through `telrcv`'s
+states (commands out, an IAC doubled in, a NUL after a CR dropped, suboptions gathered in
+C's 512 bytes and answered), C's own negotiation once after the server has started one,
+then one call of the input handler (`Small::input`, C's read function whatever the
+method), its bytes sent with each IAC doubled. C blocks in DO with a poll of 100 ms between
+rounds; here a round runs when the socket is readable or 100 ms after the last (`due`).
+What the connection does not take waits and goes before the next read. Each round ends
+with C's own time check, "Time-out", and a progress update; the engine's timeout check
+leaves TELNET's DOING to it (`times_itself`), as C's multi never sees that time pass. The
+bytes read count as downloaded twice, once read and once delivered, as C counts them. The
+server closing ends the transfer, and so does an input that aborts.
 
 ## 6. HTTP/1.x
 

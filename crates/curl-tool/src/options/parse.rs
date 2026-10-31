@@ -867,6 +867,25 @@ mod tests {
         assert_eq!(l.operations[0].mail_rcpt, [&b""[..]]);
     }
 
+    /// `-t` and `--telnet-option` gather the TELNET options in order, a
+    /// blank one kept, as C's `add2list` keeps it.
+    #[test]
+    fn telnet_options_are_gathered() {
+        let l = line(&[
+            "-t",
+            "TTYPE=vt100",
+            "--telnet-option",
+            "WS=80x24",
+            "-t",
+            "",
+            "x",
+        ]);
+        assert_eq!(
+            l.operations[0].telnet_options,
+            [&b"TTYPE=vt100"[..], b"WS=80x24", b""]
+        );
+    }
+
     /// `--negotiate` needs a library claiming SPNEGO to be turned on,
     /// `--proxy-negotiate` even to be turned off, as C checks
     /// `feature_spnego`; the GSS-API options are read as C reads them,

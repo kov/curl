@@ -203,7 +203,24 @@ pub(crate) fn install_defaults(
     sync_progress(options, easy, set, ccb)?;
     sync_trailer(options, easy, ccb)?;
     sync_ssh_key(options, easy, ccb)?;
+    sync_input(options, easy, ccb)?;
     sync_upload(options, easy, set)
+}
+
+/// The read adapter TELNET sends from whatever the method, once the
+/// application has set a read function or its data; none before, which
+/// costs a handle nothing.
+pub(crate) fn sync_input(
+    options: &mut Options,
+    easy: NonNull<ShimEasy>,
+    ccb: &CCallbacks,
+) -> Result<(), OutOfMemory> {
+    if ccb.read.is_some() || ccb.read_data != standard().0 {
+        options.small.make_mut()?.input = Some(Handler::read(Adapter(easy))?);
+    } else if let Some(small) = options.small.made_mut() {
+        small.input = None;
+    }
+    Ok(())
 }
 
 /// The header, debug and text adapters, where the core's own default

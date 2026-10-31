@@ -1174,6 +1174,14 @@ protocols need, each step leaving behaviour and traces as they are:
     `CURLWS_NOAUTOPONG`, `curl -V`'s ws and wss. The handlers reach the connection through a
     `WsLend` (ENGINE.md decision 9's exception). Every WebSockets runtests both legs run
     passes (29 of 29), and pytest's `test_20_websockets.py` (20 of 20).
+78. **TELNET.** **Done.** `telnet://` (`proto::telnet`, after `lib/telnet.c`): the
+    options of `CURLOPT_TELNETOPTIONS` and `-t` (`TTYPE`, `XDISPLOC`, `NEW_ENV`, `WS`,
+    `BINARY`) refused as C refuses them; RFC 1143's negotiation with C's preferences and its
+    trace; the terminal type, display, variables and window size sent when asked; the
+    server's bytes as the body; the read function's bytes sent, the tool's reading standard
+    input without `-T`, as C's does; C's loop a round a pass in DOING, with its time-out and
+    its counts; `curl -V`. Every TELNET test both legs run passes (1326, 1327, 1452, 1548,
+    1714, 3555); 445 needs LDAP and RTSP, on the C leg only.
 
 ## Milestone 7: shared state
 

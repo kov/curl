@@ -621,12 +621,14 @@ fn etag_header(name: &[u8], msgs: &Messages) -> Result<Vec<u8>, OutOfMemory> {
     Ok(header)
 }
 
-/// Errors after which nothing more is tried (`is_fatal_error`). C's also
-/// has `CURLE_UNKNOWN_OPTION`, which only libcurl's C API returns.
+/// Errors after which nothing more is tried (`is_fatal_error`).
 fn fatal(e: ErrorKind) -> bool {
     matches!(
         e,
-        ErrorKind::FailedInit | ErrorKind::OutOfMemory | ErrorKind::BadFunctionArgument
+        ErrorKind::FailedInit
+            | ErrorKind::OutOfMemory
+            | ErrorKind::UnknownOption
+            | ErrorKind::BadFunctionArgument
     )
 }
 
@@ -794,15 +796,20 @@ impl PerTransfer<'_, '_> {
 
     /// Open what it uploads, for an attempt (`pre_transfer`).
     fn pre_transfer(&self, run: &Shared<'_, '_>, easy: &mut Easy) -> Result<(), Pre> {
-        let Some(file) = self.upload.as_deref() else {
-            return Ok(());
-        };
         // Every read of the upload waits no longer than `--max-time` from
         // the attempt's start, and none is made past it (`tool_read_cb`).
         let timeout = Some(self.op.timeout_ms)
             .filter(|&ms| ms > 0)
             .map(Duration::from_millis);
         let limit = nonblocking::ReadLimit::starting_now(timeout);
+        let Some(file) = self.upload.as_deref() else {
+            // Without one, the read callback reads standard input, as
+            // TELNET sends it (`per->infd`).
+            return match standard_input(limit).map_err(Pre::Failed)? {
+                Some(input) => input_setopts(easy, run, input).map_err(Pre::Failed),
+                None => Ok(()),
+            };
+        };
         if let Some(stdin) = &self.stdin {
             let oom = |_| Pre::Failed(ErrorKind::OutOfMemory);
             let rewind = UploadFile {
@@ -1815,6 +1822,15 @@ fn setopts(
         }
         Ok(())
     })?;
+    if !op.telnet_options.is_empty() {
+        s.slist("CURLOPT_TELNETOPTIONS", &op.telnet_options, |o| {
+            let small = o.small.make_mut().map_err(oom)?;
+            small
+                .telnet
+                .set(op.telnet_options.iter().copied())
+                .map_err(oom)
+        })?;
+    }
     s.long(
         "CURLOPT_CONNECTTIMEOUT_MS",
         long(op.connect_timeout_ms),
@@ -3710,6 +3726,36 @@ enum Unopened {
 }
 
 /// Upload `source`, its size said if known (`pre_transfer`).
+/// Standard input, read as the read callback reads it without an upload:
+/// waiting no longer than `limit`, never started over. None if it is
+/// closed: C's reads of it fail, which reads as its end.
+fn standard_input(
+    limit: Option<nonblocking::ReadLimit>,
+) -> Result<Option<Handler<dyn ReadHandler>>, ErrorKind> {
+    let Ok(file) = curl_os::fs::stdin() else {
+        return Ok(None);
+    };
+    let file = curl_alloc::TryArc::try_new(std::sync::Mutex::new(file))
+        .map_err(|_| ErrorKind::OutOfMemory)?;
+    let input = Handler::read(UploadFile { file, limit }).map_err(|_| ErrorKind::OutOfMemory)?;
+    Ok(Some(input))
+}
+
+/// What TELNET sends: what the read callback reads (C's tool sets it for
+/// every transfer).
+fn input_setopts(
+    easy: &mut Easy,
+    run: &Shared<'_, '_>,
+    input: Handler<dyn ReadHandler>,
+) -> Result<(), ErrorKind> {
+    let mut program = run.libcurl.map(RefCell::borrow_mut);
+    let mut s = Setopt::new(easy, program.as_deref_mut());
+    s.unwritten("the read callback reads it", |o| {
+        o.small.make_mut().map_err(oom)?.input = Some(input);
+        Ok(())
+    })
+}
+
 fn upload_setopts(
     easy: &mut Easy,
     run: &Shared<'_, '_>,
@@ -3719,6 +3765,10 @@ fn upload_setopts(
         UploadSource::Read { size, .. } => *size,
         _ => None,
     };
+    // The read callback reads the upload, for TELNET too.
+    if let UploadSource::Read { handler, .. } = &source {
+        input_setopts(easy, run, handler.clone())?;
+    }
     let mut program = run.libcurl.map(RefCell::borrow_mut);
     let mut s = Setopt::new(easy, program.as_deref_mut());
     // C sets no size it does not know.

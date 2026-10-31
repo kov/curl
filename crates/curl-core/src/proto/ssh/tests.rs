@@ -50,6 +50,21 @@ struct World {
     writes_fail: bool,
     /// The private key's login is refused.
     key_refused: bool,
+    /// The calls, by name, whose first answer is to wait.
+    waiting: Vec<&'static str>,
+    /// The GSS-API login, and the agent's, succeed.
+    gssapi_ok: bool,
+    agent_ok: bool,
+    /// The keyboard-interactive login asks a round of no questions after
+    /// the password's, and refuses an answer given.
+    kbd_extra: bool,
+    answer_refused: bool,
+    /// A file opened to write is refused with this SFTP code.
+    open_code: Option<u32>,
+    /// The known-hosts file's key is of a type the library has no name for.
+    known_other: bool,
+    /// The trace says the SSH component's lines.
+    trace_ssh: bool,
 }
 
 impl World {
@@ -60,6 +75,16 @@ impl World {
             said.push_str(&String::from_utf8_lossy(a));
         }
         self.calls.push(said);
+    }
+
+    /// Whether `name`'s call answers that it waits, the first time.
+    fn waits(&mut self, name: &'static str) -> bool {
+        let at = self.waiting.iter().position(|&n| n == name);
+        if let Some(at) = at {
+            self.waiting.remove(at);
+            self.call("waits", &[name.as_bytes()]);
+        }
+        at.is_some()
     }
 
     fn file(&self, path: &[u8]) -> Option<usize> {
@@ -182,7 +207,11 @@ impl Session for FakeSession {
         Ok(b"fake failure".to_vec())
     }
     fn connect(&mut self) -> Rc {
-        self.w().call("connect", &[]);
+        let mut w = self.w();
+        if w.waits("connect") {
+            return Rc::Again;
+        }
+        w.call("connect", &[]);
         Rc::Ok
     }
     fn host_key(&mut self) -> Option<crate::ssh::HostKey> {
@@ -195,10 +224,15 @@ impl Session for FakeSession {
     }
     fn known_host(&mut self) -> (KnownHosts, Option<Result<KnownKey, Failed>>) {
         let known = self.w().known.unwrap_or(KnownHosts::NotFound);
+        let kind = if self.w().known_other {
+            KeyType::Other
+        } else {
+            KeyType::Ed25519
+        };
         let key = (known != KnownHosts::NotFound).then(|| {
             Ok(KnownKey {
                 base64: Some(b"BBBB".to_vec()),
-                kind: KeyType::Ed25519,
+                kind,
             })
         });
         (known, key)
@@ -208,12 +242,18 @@ impl Session for FakeSession {
         Rc::Ok
     }
     fn auth_none(&mut self) -> Auth {
+        if self.w().waits("auth_none") {
+            return Auth::Again;
+        }
         Auth::Denied
     }
     fn auth_list(&mut self) -> Methods {
         Methods(self.w().methods)
     }
     fn try_publickey(&mut self) -> Auth {
+        if self.w().waits("try_publickey") {
+            return Auth::Again;
+        }
         Auth::Success
     }
     fn import_privkey_file(&mut self, file: &[u8], _: Option<&[u8]>) -> Rc {
@@ -222,6 +262,9 @@ impl Session for FakeSession {
     }
     fn auth_publickey(&mut self) -> Auth {
         let mut w = self.w();
+        if w.waits("auth_publickey") {
+            return Auth::Again;
+        }
         w.call("auth_publickey", &[]);
         if w.key_refused {
             Auth::Denied
@@ -230,33 +273,68 @@ impl Session for FakeSession {
         }
     }
     fn auth_publickey_auto(&mut self, _: Option<&[u8]>) -> Auth {
-        Auth::Denied
+        let mut w = self.w();
+        if w.waits("auth_publickey_auto") {
+            return Auth::Again;
+        }
+        w.call("auth_publickey_auto", &[]);
+        if w.agent_ok {
+            Auth::Success
+        } else {
+            Auth::Denied
+        }
     }
     fn auth_gssapi(&mut self) -> Auth {
-        Auth::Denied
+        let mut w = self.w();
+        if w.waits("auth_gssapi") {
+            return Auth::Again;
+        }
+        w.call("auth_gssapi", &[]);
+        if w.gssapi_ok {
+            Auth::Success
+        } else {
+            Auth::Denied
+        }
     }
     fn auth_kbdint(&mut self) -> Auth {
         let mut w = self.w();
         if !w.asks {
             return Auth::Denied;
         }
+        if w.waits("auth_kbdint") {
+            return Auth::Again;
+        }
         w.call("auth_kbdint", &[]);
-        // Asked, then answered right: done.
+        // Asked, then answered right: done, past a round of no questions
+        // if it has one.
+        let rounds = w.calls.iter().filter(|c| *c == "auth_kbdint").count();
         match w.calls.iter().rfind(|c| c.starts_with("kbdint_answer")) {
             None => Auth::Info,
-            Some(a) if a.as_bytes().ends_with(&w.password) => Auth::Success,
+            Some(a) if a.as_bytes().ends_with(&w.password) => {
+                if w.kbd_extra && rounds == 2 {
+                    Auth::Info
+                } else {
+                    Auth::Success
+                }
+            }
             Some(_) => Auth::Denied,
         }
     }
     fn kbdint_prompts(&mut self) -> i32 {
-        1
+        let w = self.w();
+        let rounds = w.calls.iter().filter(|c| *c == "auth_kbdint").count();
+        i32::from(rounds == 1)
     }
     fn kbdint_answer(&mut self, _: u32, answer: &[u8]) -> i32 {
-        self.w().call("kbdint_answer", &[answer]);
-        0
+        let mut w = self.w();
+        w.call("kbdint_answer", &[answer]);
+        if w.answer_refused { -1 } else { 0 }
     }
     fn auth_password(&mut self, password: &[u8]) -> Auth {
         let mut w = self.w();
+        if w.waits("auth_password") {
+            return Auth::Again;
+        }
         w.call("auth_password", &[password]);
         if w.password == password {
             Auth::Success
@@ -325,6 +403,11 @@ impl Session for FakeSession {
         Rc::Ok
     }
     fn scp_close(&mut self) -> Rc {
+        let mut w = self.w();
+        if w.waits("scp_close") {
+            return Rc::Again;
+        }
+        w.call("scp_close", &[]);
         Rc::Ok
     }
     fn scp_free(&mut self) {
@@ -463,6 +546,14 @@ impl Session for FakeSession {
             self.error = SSH_FX_NO_SUCH_FILE;
             return false;
         }
+        if let Some(code) = w.open_code.filter(|_| mode != OpenMode::Read) {
+            drop(w);
+            self.error = code;
+            return false;
+        }
+        if mode != OpenMode::Read {
+            w.call("open mode", &[format!("{mode:?}").as_bytes()]);
+        }
         let at = match (w.file(path), mode) {
             (Some(at), OpenMode::Truncate) => {
                 w.files[at].1.clear();
@@ -495,6 +586,7 @@ impl Session for FakeSession {
         self.file = None;
     }
     fn seek(&mut self, offset: u64) -> Rc {
+        self.w().call("seek", &[offset.to_string().as_bytes()]);
         self.file.as_mut().unwrap().pos = offset as usize;
         Rc::Ok
     }
@@ -638,6 +730,11 @@ fn added(
 ) -> (TransferId, Body, Text) {
     let ssh: &'static FakeSsh = Box::leak(Box::new(FakeSsh(world.clone())));
     let mut e = Easy::new();
+    if world.lock().unwrap().trace_ssh {
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"ssh");
+        e.set_components(Some(c));
+    }
     e.set_libraries(
         SharedLibraries::new(Libraries {
             ssh: Some(ssh),
@@ -1120,6 +1217,11 @@ fn the_host_key_s_fingerprints_are_checked() {
         said.contains("SSH SHA256 fingerprint: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\n"),
         "{said}"
     );
+    // One character short is no match, though the rest is.
+    let (result, _, said, _) = fingerprinted(|s| {
+        s.host_key_sha256 = Some(b"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ".to_vec())
+    });
+    assert_eq!(result, Err(ErrorKind::PeerFailedVerification), "{said}");
     let (result, _, said, _) =
         fingerprinted(|s| s.host_key_sha256 = Some(b"AAAAAAAAAAAAAAAAAAAA".to_vec()));
     assert_eq!(result, Err(ErrorKind::PeerFailedVerification), "{said}");
@@ -1356,4 +1458,328 @@ fn a_refused_key_falls_back_to_the_password() {
         said.contains("Completed password authentication\n"),
         "{said}"
     );
+}
+
+/// An SFTP status code is the failure C makes of it
+/// (`sftp_error_to_CURLE`).
+#[test]
+fn sftp_codes_are_c_s_failures() {
+    use super::sftp_failure;
+    assert_eq!(sftp_failure(0), Ok(()));
+    for (code, kind) in [
+        (2, ErrorKind::RemoteFileNotFound),
+        (10, ErrorKind::RemoteFileNotFound),
+        (3, ErrorKind::RemoteAccessDenied),
+        (12, ErrorKind::RemoteAccessDenied),
+        (11, ErrorKind::RemoteFileExists),
+        (4, ErrorKind::Ssh),
+    ] {
+        assert_eq!(sftp_failure(code), Err(kind), "{code}");
+    }
+}
+
+/// An upload the server refuses fails with the failure its code is.
+#[test]
+fn a_refused_upload_fails_as_its_code_says() {
+    for (code, kind) in [
+        (3, ErrorKind::RemoteAccessDenied),
+        (11, ErrorKind::RemoteFileExists),
+    ] {
+        let w = world_with(&[], |w| w.open_code = Some(code));
+        let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+            uploads(o, b"up");
+        });
+        assert_eq!(result, Err(kind), "{code}: {said}");
+    }
+}
+
+/// `o` uploads `bytes`.
+fn uploads(o: &mut Options, bytes: &[u8]) {
+    o.method = crate::options::Method::Upload;
+    o.upload =
+        crate::options::UploadSource::Bytes(curl_alloc::TryArc::try_new(bytes.to_vec()).unwrap());
+}
+
+/// An upload resumed is stored as C's libssh build stores it: from a
+/// point, the body's bytes past it written there; from the end, past
+/// what is stored, or whole if nothing is; appended, all of it after
+/// what is stored. Each checked against the C build with libssh, `curl
+/// -T` with `-C 3`, `-C -` and `--append`.
+#[test]
+fn a_resumed_upload_is_stored_as_c_stores_it() {
+    use crate::options::Resume;
+    let at = |n| Some(Resume::At(std::num::NonZeroU64::new(n).unwrap()));
+    let cases: [(&str, Option<Resume>, bool, &str, &str); 4] = [
+        ("abcdef", at(3), false, "abc3456789", "Write"),
+        ("abcd", Some(Resume::AtEnd), false, "abcd456789", "Write"),
+        ("", Some(Resume::AtEnd), false, "0123456789", "Truncate"),
+        ("abcd", None, true, "abcd0123456789", "Append"),
+    ];
+    for (stored, resume, append, want, mode) in cases {
+        let files: &[(&str, &str)] = if stored.is_empty() {
+            &[]
+        } else {
+            &[("/home/u/f", stored)]
+        };
+        let w = world(files);
+        let (result, _, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+            uploads(o, b"0123456789");
+            o.resume = resume;
+            o.line.make_mut().unwrap().ftp.append = append;
+        });
+        assert_eq!(result, Ok(()), "{stored:?}: {said}");
+        let file = w.lock().unwrap().files[0].1.clone();
+        assert_eq!(String::from_utf8(file).unwrap(), want, "{stored:?}");
+        assert!(calls.contains(&format!("open mode {mode}")), "{calls:?}");
+        assert_eq!(calls.iter().any(|c| c.starts_with("seek")), mode == "Write");
+    }
+}
+
+/// A resume point past several of the skipped reads' buffers is passed
+/// whole, and one past the body fails as C's does when it cannot seek.
+#[test]
+fn a_resumed_upload_skips_to_its_point() {
+    use crate::options::Resume;
+    let body: Vec<u8> = (0..10_000u32).map(|i| b'a' + (i % 26) as u8).collect();
+    let stored = "x".repeat(6_000);
+    let w = world(&[("/home/u/f", &stored)]);
+    let (result, _, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        uploads(o, &body);
+        o.resume = Some(Resume::At(std::num::NonZeroU64::new(5_000).unwrap()));
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(calls.contains(&"seek 5000".to_owned()), "{calls:?}");
+    let file = w.lock().unwrap().files[0].1.clone();
+    assert_eq!(&file[..5_000], &stored.as_bytes()[..5_000]);
+    assert_eq!(&file[5_000..], &body[5_000..]);
+    let w = world(&[("/home/u/f", "abcdef")]);
+    let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        uploads(o, b"0123456789");
+        o.resume = Some(Resume::At(std::num::NonZeroU64::new(11).unwrap()));
+    });
+    assert_eq!(result, Err(ErrorKind::FtpCouldntUseRest), "{said}");
+    assert!(said.contains("Failed to read data\n"), "{said}");
+    assert_eq!(w.lock().unwrap().files[0].1, b"abcdef");
+}
+
+/// `atime` and `mtime` set the time given, a date C's parser reads; one
+/// it cannot read, or past 32 bits, is a quote error.
+#[test]
+fn quote_commands_set_times() {
+    let quoted = |cmd: &'static [u8]| {
+        run(
+            &[("/home/u/f", "x")],
+            "sftp://u@127.0.0.1:PORT/~/f",
+            move |o| o.line.make_mut().unwrap().quote.set([cmd]).unwrap(),
+        )
+    };
+    let (result, _, said, calls) = quoted(b"mtime \"1 Jan 2024 00:00:00 GMT\" /home/u/f");
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        calls.contains(&"setstat /home/u/f Mtime(1704067200)".to_owned()),
+        "{calls:?}"
+    );
+    let (result, _, said, calls) = quoted(b"atime \"1 Jan 2024 00:00:00 GMT\" /home/u/f");
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        calls.contains(&"setstat /home/u/f Atime(1704067200)".to_owned()),
+        "{calls:?}"
+    );
+    let (result, _, said, _) = quoted(b"atime nonsense /home/u/f");
+    assert_eq!(result, Err(ErrorKind::QuoteError), "{said}");
+    assert!(said.contains("incorrect date format for atime\n"), "{said}");
+    let (result, _, said, _) = quoted(b"mtime nonsense /home/u/f");
+    assert!(said.contains("incorrect date format for mtime\n"), "{said}");
+    assert_eq!(result, Err(ErrorKind::QuoteError));
+    let (result, _, said, _) = quoted(b"mtime \"1 Jan 2200 00:00:00 GMT\" /home/u/f");
+    assert_eq!(result, Err(ErrorKind::QuoteError), "{said}");
+    assert!(said.contains("date overflow\n"), "{said}");
+    let (result, _, said, calls) = quoted(b"mtime \"7 Feb 2106 06:28:15 GMT\" /home/u/f");
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        calls.contains(&"setstat /home/u/f Mtime(4294967295)".to_owned()),
+        "{calls:?}"
+    );
+}
+
+/// Each login, and the connect, waits on the socket when the library
+/// says to, and goes on where it was.
+#[test]
+fn logins_that_wait_go_on_where_they_were() {
+    let logged_in = |set: fn(&mut World), user: &str| {
+        let w = world_with(&[("/home/u/f", "x")], set);
+        let mut m = chatty();
+        let url = format!("sftp://{user}@127.0.0.1:PORT/~/f");
+        let (result, body, said) = run_on(&mut m, &w, &url, |_| {});
+        drop(m);
+        let w = w.lock().unwrap();
+        assert!(w.waiting.is_empty(), "every wait taken: {:?}", w.waiting);
+        (result, body, said, w.calls.clone())
+    };
+    let (result, body, said, _) = logged_in(
+        |w| w.waiting = vec!["connect", "auth_none", "try_publickey", "auth_publickey"],
+        "u",
+    );
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(body, b"x");
+    let (result, _, said, _) = logged_in(
+        |w| {
+            w.key_refused = true;
+            w.waiting = vec!["auth_password"];
+        },
+        "u:secret",
+    );
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        said.contains("Completed password authentication\n"),
+        "{said}"
+    );
+    let (result, _, said, _) = logged_in(
+        |w| {
+            w.key_refused = true;
+            w.methods |= Methods::GSSAPI_MIC;
+            w.gssapi_ok = true;
+            w.waiting = vec!["auth_gssapi"];
+        },
+        "u",
+    );
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(said.contains("Completed gssapi authentication\n"), "{said}");
+    let (result, _, said, _) = logged_in(
+        |w| {
+            w.key_refused = true;
+            w.methods |= Methods::INTERACTIVE;
+            w.asks = true;
+            w.waiting = vec!["auth_kbdint", "auth_kbdint"];
+        },
+        "u:secret",
+    );
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        said.contains("completed keyboard interactive authentication\n"),
+        "{said}"
+    );
+}
+
+/// Without a private key, the agent's and the default keys log in, and
+/// may wait first.
+#[test]
+fn the_agent_logs_in_without_a_private_key() {
+    let w = world_with(&[("/home/u/f", "x")], |w| {
+        w.agent_ok = true;
+        w.waiting = vec!["auth_publickey_auto"];
+    });
+    let mut m = chatty();
+    let (result, body, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        let ssh = o.ssh.make_mut().unwrap();
+        ssh.private_key = None;
+        ssh.public_key = None;
+        ssh.auth_types = crate::options::SshAuthTypes::ANY;
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(body, b"x");
+    assert!(
+        said.contains("Completed public key authentication\n"),
+        "{said}"
+    );
+    assert!(
+        w.lock()
+            .unwrap()
+            .calls
+            .contains(&"auth_publickey_auto".to_owned())
+    );
+}
+
+/// The keyboard-interactive login takes a round of no questions after
+/// the password's; an answer the library refuses falls to the password.
+#[test]
+fn the_interactive_login_takes_its_rounds() {
+    let w = world_with(&[("/home/u/f", "x")], |w| {
+        w.key_refused = true;
+        w.methods = Methods::PUBLICKEY | Methods::INTERACTIVE;
+        w.asks = true;
+        w.kbd_extra = true;
+    });
+    let (result, _, said, calls) = run_in(&w, "sftp://u:secret@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(calls.iter().filter(|c| *c == "auth_kbdint").count(), 3);
+    let w = world_with(&[("/home/u/f", "x")], |w| {
+        w.key_refused = true;
+        w.methods |= Methods::INTERACTIVE;
+        w.asks = true;
+        w.answer_refused = true;
+    });
+    let (result, _, said, calls) = run_in(&w, "sftp://u:secret@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        said.contains("Completed password authentication\n"),
+        "{said}"
+    );
+    assert_eq!(calls.iter().filter(|c| *c == "auth_kbdint").count(), 1);
+}
+
+/// The setup says the key files a public key login is to use, unless
+/// the transfer may not log in so.
+#[test]
+fn the_key_files_are_said() {
+    let w = world(&[("/home/u/f", "x")]);
+    let (_, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert!(
+        said.contains("SSH: public key file '/keys/id.pub'\n"),
+        "{said}"
+    );
+    assert!(
+        said.contains("SSH: private key file '/keys/id'\n"),
+        "{said}"
+    );
+    let (_, _, said, _) = run_in(&w, "sftp://u:secret@127.0.0.1:PORT/~/f", |o| {
+        o.ssh.make_mut().unwrap().auth_types =
+            crate::options::SshAuthTypes(crate::options::SshAuthTypes::PASSWORD);
+    });
+    assert!(!said.contains("SSH: public key file"), "{said}");
+}
+
+/// The SSH component's trace says each move of the state machine by the
+/// states' C names, and where each run stopped.
+#[test]
+fn the_ssh_trace_says_the_states() {
+    let w = world_with(&[("/home/u/f", "x")], |w| w.trace_ssh = true);
+    let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    for line in [
+        "[SSH] [SSH_INIT] -> [SSH_S_STARTUP]\n",
+        "[SSH] [SSH_AUTH_DONE] -> [SSH_SFTP_INIT]\n",
+        "[SSH] [SSH_STOP] statemachine() -> 0, block=0\n",
+    ] {
+        assert!(said.contains(line), "{line:?} in {said}");
+    }
+}
+
+/// An SCP channel's close that waits is waited on as the upload ends.
+#[test]
+fn an_scp_close_that_waits_is_waited_on() {
+    let w = world_with(&[], |w| w.waiting = vec!["scp_close"]);
+    let mut m = chatty();
+    let (result, _, said) = run_on(&mut m, &w, "scp://u@127.0.0.1:PORT/tmp/f", |o| {
+        uploads(o, b"over scp");
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    drop(m);
+    let w = w.lock().unwrap();
+    assert!(w.waiting.is_empty());
+    assert!(w.calls.contains(&"scp_close".to_owned()), "{:?}", w.calls);
+    assert_eq!(w.files, [(b"/tmp/f".to_vec(), b"over scp".to_vec())]);
+}
+
+/// A known-hosts key of a type the library has no name for is refused.
+#[test]
+fn a_known_key_of_no_known_type_is_refused() {
+    let w = world_with(&[("/home/u/f", "x")], |w| {
+        w.known = Some(KnownHosts::Ok);
+        w.known_other = true;
+    });
+    let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        o.ssh.make_mut().unwrap().known_hosts = Some(b"/k".to_vec());
+    });
+    assert_eq!(result, Err(ErrorKind::PeerFailedVerification), "{said}");
 }

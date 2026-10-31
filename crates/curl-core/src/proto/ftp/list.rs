@@ -392,8 +392,11 @@ impl Listing {
         match self.unix {
             Unix::TotalSize { reading } => {
                 self.total_size(reading, c)?;
-                if self.unix == Unix::FileType {
-                    // On with the same byte, as C falls through.
+                // A first line that is no total starts with its file type:
+                // on with the same byte, as C falls through. A total ends
+                // with its line feed, which C falls through with too, and
+                // fails at as the next line's file type (DIVERGENCE.md).
+                if !reading && self.unix == Unix::FileType {
                     self.file_type(c)?;
                 }
             }

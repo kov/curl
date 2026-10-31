@@ -272,15 +272,24 @@ fn a_failed_listing_reads_no_more() {
     assert_eq!(l.files().len(), before);
 }
 
-/// A listing that starts `total N` fails: C's reader takes the line
-/// feed that ends it for the next line's file type.
+/// A listing that starts `total N`, as `ls -l` writes it, is read past
+/// its total, whatever its line ends and however it comes. C's reader
+/// takes the line feed that ends the total for the next line's file
+/// type, and fails every such listing (DIVERGENCE.md). A first line
+/// that only starts with a `t` still fails.
 #[test]
-fn a_listing_that_starts_with_its_total_fails_as_in_c() {
-    let mut listing = b"total 20\r\n".to_vec();
-    listing.extend_from_slice(UNIX);
-    let l = read(&listing, listing.len());
-    assert_eq!(l.error(), Some(ErrorKind::FtpBadFileList));
-    assert!(l.files().is_empty());
+fn a_listing_that_starts_with_its_total_is_read() {
+    let lf: Vec<u8> = UNIX.iter().copied().filter(|&b| b != b'\r').collect();
+    for (total, rest) in [(&b"total 20\r\n"[..], UNIX), (b"total 20\n", &lf)] {
+        let listing = [total, rest].concat();
+        for pieces in [1, 7, listing.len()] {
+            let alone = read(rest, pieces);
+            let l = read(&listing, pieces);
+            assert_eq!(l.error(), None, "{pieces}");
+            assert_eq!(alone.files().len(), 14, "{pieces}");
+            assert_eq!(names(&l), names(&alone), "{pieces}");
+        }
+    }
     let l = read(b"totally\r\n", 9);
     assert_eq!(l.error(), Some(ErrorKind::FtpBadFileList));
 }
@@ -414,15 +423,14 @@ fn a_zero_byte_passes_a_field_s_check_as_in_c() {
     assert_eq!((l.error(), names(&l)), (None, vec![&b"n"[..]]));
 }
 
-/// A first line that starts with `t` is read to its line feed before it
-/// fails, whatever it holds: C's reader checks a `total N` there, its
-/// count of the line so far leaving out the CR it takes back out, and
-/// then takes the same line feed for the next line's file type, so
-/// every such listing fails at it (`parse_unix_totalsize`). Whether the
-/// check passed shows only in the state the failure leaves the reader
-/// in: on to the file type, or still in the total.
+/// A first line that starts with `t` is read to its line feed, and
+/// checked there as C's reader checks a `total N`, its count of the line
+/// so far leaving out the CR it takes back out (`parse_unix_totalsize`):
+/// a total passes, and the reader is on to the next line's file type; any
+/// other line fails. C then takes the total's line feed for the file
+/// type, and fails it too (DIVERGENCE.md).
 #[test]
-fn a_first_line_starting_with_t_fails_at_its_line_feed() {
+fn a_first_line_starting_with_t_is_checked_at_its_line_feed() {
     for (line, checked) in [
         (&b"total 20\r\n"[..], true),
         (b"total 20\n", true),
@@ -446,14 +454,17 @@ fn a_first_line_starting_with_t_fails_at_its_line_feed() {
         assert_eq!(held, Some(unread.clone()), "{said}");
         assert_eq!(l.item_length, unread.len(), "{said}");
         l.feed(lf, &mut |_| Ok(true));
-        assert_eq!(l.error(), Some(ErrorKind::FtpBadFileList), "{said}");
         assert!(l.files().is_empty());
-        let after = if checked {
-            Unix::FileType
+        if checked {
+            assert_eq!((l.error(), l.unix), (None, Unix::FileType), "{said}");
+            assert_eq!(l.line.as_ref().map(|line| line.buf.len()), Some(0));
+            l.feed(b"-rw-r--r-- 1 u g 5 Jan 17 11:01 n\r\n", &mut |_| Ok(true));
+            assert_eq!((l.error(), names(&l)), (None, vec![&b"n"[..]]), "{said}");
         } else {
-            Unix::TotalSize { reading: true }
-        };
-        assert_eq!(l.unix, after, "{said}");
+            let failed = (l.error(), l.unix);
+            let still = Unix::TotalSize { reading: true };
+            assert_eq!(failed, (Some(ErrorKind::FtpBadFileList), still), "{said}");
+        }
     }
 }
 

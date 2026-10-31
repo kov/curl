@@ -764,6 +764,33 @@ fn a_wildcard_download_gets_each_file_the_listing_matches() {
     }
 }
 
+/// A listing that starts with its total, as `ls -l` writes it and Unix
+/// servers send it, is read past it, its lines ending in CRLF or a bare
+/// line feed: the files it names are got. C fails the download with 87,
+/// "Unable to parse FTP file list", once the listing is read
+/// (DIVERGENCE.md).
+#[test]
+fn a_wildcard_download_reads_past_the_listing_s_total() {
+    let lf: Vec<u8> = LISTING.iter().copied().filter(|&b| b != b'\r').collect();
+    for (total, rest) in [(&b"total 12\r\n"[..], LISTING), (b"total 12\n", &lf)] {
+        let talk = listing_server(2);
+        let listing = [total, rest].concat();
+        let (list, a, c) = (data(&listing), data(b"aaaaa"), data(b"ccc"));
+        let mut m = serving(&[&talk], &[&list, &a, &c]);
+        let (id, body, text) = added(&mut m, WILDCARD, |o| {
+            o.line.make_mut().unwrap().ftp.wildcard = true;
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let said = text.text();
+        assert_eq!(result, Ok(()), "{said}");
+        assert_eq!(*body.0.lock().unwrap(), b"aaaaaccc");
+        assert!(
+            received(&talk).ends_with("RETR a.txt\r\nEPSV\r\nRETR c%.txt\r\n"),
+            "{said}"
+        );
+    }
+}
+
 /// The application's handlers: the names matched by its own, each file
 /// told of with how many are left, and of its end; one it passes over is
 /// not got, and told the end of still.

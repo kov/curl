@@ -185,3 +185,12 @@ witness: curl-core proto::ftp::tests::an_upload_s_reader_is_traced_as_its_body_i
         upload.trace_set_when_read();
 --- new
         upload.trace_set(cx);
+
+=== a listing's total line feed is read as the next line's file type
+file: crates/curl-core/src/proto/ftp/list.rs
+witness: curl-core proto::ftp::tests::a_wildcard_download_reads_past_the_listing_s_total
+features: test-util debug-hooks
+--- old
+                if !reading && self.unix == Unix::FileType {
+--- new
+                if self.unix == Unix::FileType {

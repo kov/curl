@@ -295,6 +295,18 @@ not a difference: it is tracked in `MILESTONES.md`.
   the oldest. Pinned by `tls_options_are_kept_as_c_keeps_them`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+- **An FTP listing that starts with its total is read.** A wildcard download
+  (`CURLOPT_WILDCARDMATCH`) of a directory whose `LIST` answer starts `total 12`, as `ls -l`
+  writes it and Unix servers send it, gets the files the listing names. C's
+  `parse_unix_totalsize` (`lib/ftplistparser.c`) checks the total at its line feed, then falls
+  through with that same line feed into the next line's file type, which it is not: every such
+  listing fails with 87 (`CURLE_FTP_BAD_FILE_LIST`), "Unable to parse FTP file list". Measured
+  against the C build, its lines ending in CRLF and in a bare line feed; the same listing
+  without its total line downloads. A first line that only starts with `t` fails as in C.
+  Pinned by `a_wildcard_download_reads_past_the_listing_s_total`
+  (`crates/curl-core/src/proto/ftp/tests.rs`) and `a_listing_that_starts_with_its_total_is_read`
+  (`crates/curl-core/src/proto/ftp/list/tests.rs`).
+
 - **An `Alt-Svc:` field from an origin named by a dot alone is passed over.** For
   `http://./`, `Curl_altsvc_parse` (`lib/altsvc.c`) returns `CURLE_OUT_OF_MEMORY` when
   `altsvc_createid` refuses the source host, empty once its trailing dot is gone, and the

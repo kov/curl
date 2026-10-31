@@ -3380,3 +3380,65 @@ fn an_accepted_data_connection_may_be_refused() {
         assert_eq!((result, got), (Ok(()), b"hello".to_vec()), "{said}");
     }
 }
+
+/// On a reused connection the directory is changed from the entry path:
+/// `CWD` to it first, unless the path is absolute, when the root is
+/// the way there; a file in the entry path is reached from it
+/// (`ftp_state_cwd`).
+#[test]
+fn a_reused_connection_changes_directory_from_its_entry_path() {
+    let file_replies: [&'static [u8]; 3] = [
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"213 5\r\n",
+        b"150 here\r\n226 done\r\n",
+    ];
+    let mut replies: Vec<&'static [u8]> = vec![
+        b"220 hi\r\n",
+        b"331 password?\r\n",
+        b"230 in\r\n",
+        b"257 \"/home\" is it\r\n",
+        b"250 in a\r\n",
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"200 binary\r\n",
+        b"213 5\r\n",
+        b"150 here\r\n226 done\r\n",
+    ];
+    // Relative: the entry path, then b.
+    replies.extend_from_slice(&[b"250 home\r\n", b"250 in b\r\n"]);
+    replies.extend_from_slice(&file_replies);
+    // Absolute: from the root, no entry path.
+    replies.extend_from_slice(&[b"250 in /\r\n", b"250 in c\r\n"]);
+    replies.extend_from_slice(&file_replies);
+    // In the entry path: back to it.
+    replies.push(b"250 home\r\n");
+    replies.extend_from_slice(&file_replies);
+    let control = Conversation::replies(&replies, false).greeting();
+    let files: Vec<Conversation> = (0..4).map(|_| data(b"hello")).collect();
+    let files: Vec<&Conversation> = files.iter().collect();
+    let mut m = serving(&[&control], &files);
+    let mut sent_before = 0;
+    let mut each = Vec::new();
+    for url in [
+        "ftp://127.0.0.1:PORT/a/f",
+        "ftp://127.0.0.1:PORT/b/f",
+        "ftp://127.0.0.1:PORT/%2Fc/f",
+        "ftp://127.0.0.1:PORT/f",
+    ] {
+        let (id, body, text) = added(&mut m, url, |_| {});
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let said = text.text();
+        assert_eq!(result, Ok(()), "{url}: {said}");
+        assert_eq!(*body.0.lock().unwrap(), b"hello", "{url}");
+        m.remove(id, &mut NoEvents).unwrap();
+        let sent = received(&control);
+        each.push(sent[sent_before..].to_owned());
+        sent_before = sent.len();
+    }
+    assert!(each[0].contains("PWD\r\nCWD a\r\nEPSV\r\n"), "{}", each[0]);
+    assert_eq!(
+        each[1],
+        "CWD /home\r\nCWD b\r\nEPSV\r\nSIZE f\r\nRETR f\r\n"
+    );
+    assert_eq!(each[2], "CWD /\r\nCWD c\r\nEPSV\r\nSIZE f\r\nRETR f\r\n");
+    assert_eq!(each[3], "CWD /home\r\nEPSV\r\nSIZE f\r\nRETR f\r\n");
+}

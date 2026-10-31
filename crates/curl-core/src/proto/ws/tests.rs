@@ -1146,3 +1146,56 @@ fn a_continuation_is_traced_as_cont() {
     let head = "[WS] decoded head [CONT payload=0/1]";
     assert!(rec.lines.iter().any(|l| l == head), "{:#?}", rec.lines);
 }
+
+/// A send blocked once its head went, none of its payload with it, is to
+/// be given again: a send of none is no answer. One byte of it gone is a
+/// send of that byte.
+#[test]
+fn a_send_blocked_after_its_head_is_given_again() {
+    let text = SendFlags {
+        kind: Some(FrameKind::Text),
+        more: false,
+    };
+    let mut rec = Rec {
+        takes: Some(6),
+        ..Rec::default()
+    };
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    let sent = ws.send(&mut rec, b"abc", FrameLen::These, text, false);
+    assert_eq!(sent, Err(Stop::Again));
+    let said = "[WS] EAGAIN flushing sendbuf, payload_encoded: 3/3";
+    assert!(rec.lines.iter().any(|l| l == said), "{:#?}", rec.lines);
+    let mut rec = Rec {
+        takes: Some(7),
+        ..Rec::default()
+    };
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    let sent = ws.send(&mut rec, b"abc", FrameLen::These, text, false);
+    assert_eq!(sent, Ok(1));
+}
+
+/// Raw, a send names no frame: a size given, even of none, is refused.
+#[test]
+fn a_raw_send_with_a_size_is_refused() {
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    let none = SendFlags {
+        kind: None,
+        more: false,
+    };
+    let sent = api_send(
+        &mut ws,
+        &mut rec,
+        true,
+        b"x",
+        FrameLen::Total(0),
+        none,
+        false,
+    );
+    assert_eq!(sent, Err(ErrorKind::BadFunctionArgument));
+    assert_eq!(
+        rec.failed,
+        ["[WS] fragsize and flags must be zero in raw mode"]
+    );
+    assert_eq!(rec.sent, b"");
+}

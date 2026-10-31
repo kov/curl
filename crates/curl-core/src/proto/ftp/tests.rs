@@ -2962,3 +2962,169 @@ fn a_range_cut_short_closes_its_control_connection() {
     assert_eq!(result, Ok(()), "{}", text.text());
     assert_eq!(received(&fresh), COMMANDS);
 }
+
+/// An entry path that does not start with a slash has the server's
+/// system asked: OS/400's is set to name format 1 and the path read
+/// again, unless the server refuses the format; another system goes on
+/// at once, as does a refused `SYST`. An `ACCT` refused fails the login
+/// (`ftp_state_pwd_resp`, `ftp_state_syst_resp`, `FTP_NAMEFMT`,
+/// `FTP_ACCT`).
+#[test]
+fn an_odd_entry_path_asks_the_server_s_system() {
+    let run = |replies: &[&'static [u8]], set: &dyn Fn(&mut crate::options::Ftp)| {
+        let mut all: Vec<&'static [u8]> = vec![b"220 hi\r\n", b"331 password?\r\n"];
+        all.extend_from_slice(replies);
+        all.extend_from_slice(&[b"200 binary\r\n", b"213 5\r\n", b"350 restarting\r\n"]);
+        let control = Conversation::replies(&all, false).greeting();
+        let mut m = serving(&[&control], &[]);
+        let (id, _, text) = added(&mut m, URL, |o| {
+            o.method = crate::options::Method::Head;
+            set(&mut o.line.make_mut().unwrap().ftp);
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let sent = received(&control);
+        let login = "USER anonymous\r\nPASS ftp@example.com\r\n";
+        let after = sent.strip_prefix(login).unwrap_or(&sent).to_owned();
+        (result, after, text.text())
+    };
+    let none = |_: &mut crate::options::Ftp| {};
+    let in_: &[u8] = b"230 in\r\n";
+    let odd: &[u8] = b"257 \"QSYS.LIB\" is it\r\n";
+    let (result, sent, said) = run(
+        &[
+            in_,
+            odd,
+            b"215 OS/400 is the system\r\n",
+            b"250 format 1\r\n",
+            b"257 \"/QSYS.LIB\" is it\r\n",
+        ],
+        &none,
+    );
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        sent.starts_with("PWD\r\nSYST\r\nSITE NAMEFMT 1\r\nPWD\r\nTYPE I\r\n"),
+        "{sent}"
+    );
+    assert!(said.contains("Entry path is '/QSYS.LIB'"), "{said}");
+    // The format refused: on with the path as it was.
+    let (result, sent, said) = run(&[in_, odd, b"215 OS/400 V7\r\n", b"500 no\r\n"], &none);
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        sent.starts_with("PWD\r\nSYST\r\nSITE NAMEFMT 1\r\nTYPE I\r\n"),
+        "{sent}"
+    );
+    // Another system, or none said.
+    for syst in [&b"215 UNIX Type: L8\r\n"[..], b"500 no\r\n"] {
+        let (result, sent, said) = run(&[in_, odd, syst], &none);
+        assert_eq!(result, Ok(()), "{said}");
+        assert!(sent.starts_with("PWD\r\nSYST\r\nTYPE I\r\n"), "{sent}");
+    }
+    // An account refused.
+    let (result, sent, said) = run(&[b"332 account?\r\n", b"530 no\r\n"], &|f| {
+        f.account = Some(b"acct".to_vec())
+    });
+    assert_eq!(result, Err(ErrorKind::FtpWeirdPassReply), "{said}");
+    assert!(said.contains("ACCT rejected by server: 530"), "{said}");
+    assert_eq!(sent, "ACCT acct\r\n");
+}
+
+/// `PROT` asks for the data's protection, `C` when only the commands
+/// are to be protected: refused, it fails a transfer that requires the
+/// data protected, implicit FTPS among them, and leaves the data in the
+/// clear otherwise (`ftp_state_pbsz_resp`, `ftp_state_prot_resp`).
+#[test]
+fn a_refused_prot_fails_only_where_the_data_must_be_protected() {
+    use crate::options::UseSsl;
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    let run = |use_ssl: UseSsl| {
+        let tls = |plain: &[u8]| fake::records(plain).unwrap();
+        let control = [
+            WELCOME.to_vec(),
+            tls(b"220 hi\r\n"),
+            tls(b"331 password?\r\n"),
+            tls(b"230 in\r\n"),
+            tls(b"200 PBSZ\r\n"),
+            tls(b"500 no PROT\r\n"),
+            tls(b"257 \"/\" is it\r\n"),
+            tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+            tls(b"200 binary\r\n"),
+            tls(b"213 5\r\n"),
+            tls(b"150 here\r\n226 done\r\n"),
+        ];
+        let control: Vec<&[u8]> = control.iter().map(Vec::as_slice).collect();
+        let control = Conversation::replies(&control, false).per_send();
+        let file = data(b"hello");
+        let mut m = serving(&[&control], &[&file]);
+        let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing().unwrap()));
+        let libraries = SharedLibraries::new(Libraries {
+            tls: Some(Library::Static(backend)),
+            ..Libraries::NONE
+        })
+        .unwrap();
+        let (id, body, text) =
+            added_with(&mut m, "ftps://127.0.0.1:PORT/f", Some(libraries), |o| {
+                o.line.make_mut().unwrap().use_ssl = use_ssl;
+            });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let got = body.0.lock().unwrap().clone();
+        let sent = fake::read_client(&control.received()).unwrap();
+        let sent = String::from_utf8_lossy(&sent).into_owned();
+        (result, got, sent, text.text())
+    };
+    // Implicit FTPS, or all required: fails.
+    for required in [UseSsl::None, UseSsl::All] {
+        let (result, _, sent, said) = run(required);
+        assert_eq!(result, Err(ErrorKind::UseSslFailed), "{said}");
+        assert!(sent.contains("PROT P\r\n"), "{sent}");
+    }
+    // The commands alone: on, the data in the clear.
+    let (result, got, sent, said) = run(UseSsl::Control);
+    assert_eq!((result, got), (Ok(()), b"hello".to_vec()), "{said}");
+    assert!(sent.contains("PROT C\r\n"), "{sent}");
+}
+
+/// A greeting of 230 is a login already, no `USER` sent, unless TLS is
+/// required and not up yet, when `AUTH` is asked first; any greeting but
+/// 220 or 230 is weird (`ftp_state_wait_resp`).
+#[test]
+fn a_greeting_of_230_is_a_login() {
+    use crate::options::UseSsl;
+    use crate::tls::fake::FakeTls;
+    let run = |replies: &[&'static [u8]], use_ssl: UseSsl| {
+        let control = Conversation::replies(replies, false).greeting();
+        let file = data(b"hello");
+        let mut m = serving(&[&control], &[&file]);
+        let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing().unwrap()));
+        let libraries = SharedLibraries::new(Libraries {
+            tls: Some(Library::Static(backend)),
+            ..Libraries::NONE
+        })
+        .unwrap();
+        let (id, _, text) = added_with(&mut m, URL, Some(libraries), |o| {
+            o.line.make_mut().unwrap().use_ssl = use_ssl;
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        (result, received(&control), text.text())
+    };
+    let mut in_at_once: Vec<&'static [u8]> = vec![b"230 in already\r\n"];
+    in_at_once.extend_from_slice(&LOGIN_AND_SETUP[3..]);
+    in_at_once.push(b"150 here\r\n226 done\r\n");
+    for tried in [UseSsl::None, UseSsl::Try] {
+        let (result, sent, said) = run(&in_at_once, tried);
+        assert_eq!(result, Ok(()), "{said}");
+        assert!(sent.starts_with("PWD\r\nEPSV\r\n"), "{sent}");
+    }
+    let (result, sent, said) = run(
+        &[b"230 in already\r\n", b"500 no\r\n", b"500 no\r\n"],
+        UseSsl::All,
+    );
+    assert_eq!(result, Err(ErrorKind::UseSslFailed), "{said}");
+    assert_eq!(sent, "AUTH SSL\r\nAUTH TLS\r\n");
+    let (result, sent, said) = run(&[b"221 bye\r\n"], UseSsl::None);
+    assert_eq!(result, Err(ErrorKind::WeirdServerReply), "{said}");
+    assert!(
+        said.contains("Got a 221 ftp-server response when 220 was expected"),
+        "{said}"
+    );
+    assert_eq!(sent, "");
+}

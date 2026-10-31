@@ -131,9 +131,9 @@ impl<H: Host> Wire for StepWire<'_, '_, H> {
 /// the step has it lent.
 pub(crate) fn lent<'w, 'c, H: Host>(
     cx: &'w mut StepCx<'c, H>,
-    conn: &'w mut crate::conn::Conn,
+    conn: &'w mut crate::conn::WsLend<'_>,
 ) -> (&'w mut WsConn, StepWire<'w, 'c, H>) {
-    let (ws, carrier) = conn.ws_mut().expect("a WebSocket's connection speaks it");
+    let (ws, carrier) = conn.parts();
     (ws, StepWire { cx, carrier })
 }
 
@@ -193,9 +193,7 @@ pub(crate) fn lent_recv<H: Host>(
 
 /// The WebSocket of the connection lent to the step.
 pub(crate) fn ws_of<'s, H: Host>(cx: &'s mut StepCx<'_, H>) -> &'s mut WsConn {
-    cx.ws_conn()
-        .and_then(|c| c.ws_mut())
-        .map(|(ws, _)| ws)
+    cx.lent_ws()
         .expect("a WebSocket's frames are worked with its connection lent")
 }
 
@@ -315,7 +313,10 @@ impl Request {
             self.ws_upload(cx, lease, raw)?;
         }
         if !rest.is_empty() {
-            let conn = lease.get();
+            let conn = lease
+                .get()
+                .ws_lend()
+                .expect("a WebSocket's connection speaks it");
             cx.lending_ws(conn, |cx| self.pipeline.body(cx, rest))?;
         }
         Ok(0)

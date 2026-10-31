@@ -793,9 +793,24 @@ impl TransferState {
         }
     }
 
-    /// The output of the request under way, if its protocol delivers any.
-    pub(crate) fn pipeline_mut(&mut self) -> Option<&mut Pipeline> {
-        self.attached_mut()?.proto.pipeline_mut()
+    /// Replay the output its request holds, unless a handler holds it
+    /// still: HTTP's with a WebSocket's connection lent for its frames.
+    pub(crate) fn flush_output<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<(), ErrorKind> {
+        match self.attached_mut() {
+            Some(Attached {
+                proto: ProtoState::Http(req),
+                lease,
+                ..
+            }) => req.flush_output(cx, lease),
+            Some(x) => match x.proto.pipeline_mut() {
+                Some(p) => p.flush(cx),
+                None => Ok(()),
+            },
+            None => Ok(()),
+        }
     }
 
     /// Whether the request under way holds output for the application.
@@ -2127,7 +2142,7 @@ pub(crate) struct StepCx<'a, H: Host> {
     /// on it, and its frames' state is read and kept there. The one
     /// exception to decision 9 (ENGINE.md): what reaches it is only
     /// `TransferCx`'s WebSocket calls.
-    ws: Option<&'a mut crate::conn::Conn>,
+    ws: Option<crate::conn::WsLend<'a>>,
 }
 
 impl<'a, H: Host> StepCx<'a, H> {
@@ -2180,11 +2195,11 @@ impl<H: Host> StepCx<'_, H> {
         r
     }
 
-    /// Run `f` with `conn`, a WebSocket's, lent to the step, for its
+    /// Run `f` with a WebSocket's connection lent to the step, for its
     /// handlers to send frames on and its output to be decoded with.
     pub(crate) fn lending_ws<R>(
         &mut self,
-        conn: &mut crate::conn::Conn,
+        conn: crate::conn::WsLend<'_>,
         f: impl FnOnce(&mut StepCx<'_, H>) -> R,
     ) -> R {
         assert!(self.ws.is_none(), "one connection lent at a time");
@@ -2203,9 +2218,9 @@ impl<H: Host> StepCx<'_, H> {
         r
     }
 
-    /// The WebSocket's connection lent to the step, if one is.
-    pub(crate) fn ws_conn(&mut self) -> Option<&mut crate::conn::Conn> {
-        self.ws.as_deref_mut()
+    /// The WebSocket of the connection lent to the step, if one is.
+    pub(crate) fn lent_ws(&mut self) -> Option<&mut crate::proto::ws::WsConn> {
+        self.ws.as_mut().map(|l| l.parts().0)
     }
 
     /// Run `f` with the WebSocket's connection lent to the step, taken
@@ -2213,10 +2228,10 @@ impl<H: Host> StepCx<'_, H> {
     /// connection is lent.
     pub(crate) fn with_ws_conn<R>(
         &mut self,
-        f: impl FnOnce(&mut StepCx<'_, H>, &mut crate::conn::Conn) -> R,
+        f: impl FnOnce(&mut StepCx<'_, H>, &mut crate::conn::WsLend<'_>) -> R,
     ) -> Option<R> {
-        let conn = self.ws.take()?;
-        let r = f(self, &mut *conn);
+        let mut conn = self.ws.take()?;
+        let r = f(self, &mut conn);
         self.ws = Some(conn);
         Some(r)
     }
@@ -2571,7 +2586,7 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
         if self.easy().options().ws.raw {
             return None;
         }
-        self.ws.as_deref()?.ws()?.meta()
+        self.ws.as_ref()?.ws().meta()
     }
 
     fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8]) -> ErrorKind {
@@ -2635,19 +2650,7 @@ pub(crate) fn query_alpn<H: Host>(
 /// Replay a transfer's held output, from outside its step.
 pub(crate) fn flush<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     cx.lent = run.state.tls_native(Some(&cx.rest.caches.pool));
-    let flushed = match run.state.attached_mut() {
-        // HTTP's, with a WebSocket's connection lent for its frames.
-        Some(Attached {
-            proto: ProtoState::Http(req),
-            lease,
-            ..
-        }) => req.flush_output(cx, lease),
-        Some(x) => match x.proto.pipeline_mut() {
-            Some(p) => p.flush(cx),
-            None => Ok(()),
-        },
-        None => Ok(()),
-    };
+    let flushed = run.state.flush_output(cx);
     cx.lent = None;
     flushed
 }
@@ -3270,10 +3273,7 @@ fn progress_after_step<H: Host>(
         | TransferState::Did(_)
         | TransferState::Exchanging(_)
         | TransferState::RateLimiting(_)) => {
-            let passed = progress::update(cx, false).and_then(|()| match s.pipeline_mut() {
-                Some(p) => p.flush(cx),
-                None => Ok(()),
-            });
+            let passed = progress::update(cx, false).and_then(|()| s.flush_output(cx));
             match passed {
                 Ok(()) => (s, wake),
                 Err(e) => (s.fail(e), Wake::Again),

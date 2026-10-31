@@ -1258,6 +1258,23 @@ pub(crate) struct Conn {
     session: mux::Speaks,
 }
 
+/// A connection that speaks WebSocket, lent to a step: all it gives is
+/// the WebSocket and what that works over, never the rest of the
+/// connection (ENGINE.md decision 9's exception).
+pub(crate) struct WsLend<'a>(&'a mut Conn);
+
+impl WsLend<'_> {
+    /// The WebSocket.
+    pub(crate) fn ws(&self) -> &crate::proto::ws::WsConn {
+        self.0.ws().expect("a lent connection speaks WebSocket")
+    }
+
+    /// The WebSocket, and what it works over.
+    pub(crate) fn parts(&mut self) -> (&mut crate::proto::ws::WsConn, mux::Carrier<'_>) {
+        self.0.ws_mut().expect("a lent connection speaks WebSocket")
+    }
+}
+
 impl Conn {
     /// Who its requests are for; none without a network.
     pub(crate) fn origin(&self) -> Option<&TryArc<Peer>> {
@@ -1549,6 +1566,13 @@ impl Conn {
             Some(line::LineConn::Ws(ws)) => Some(ws),
             _ => None,
         }
+    }
+
+    /// It, lent to a step for its handlers' WebSocket calls, if it
+    /// switched to a WebSocket.
+    pub(crate) fn ws_lend(&mut self) -> Option<WsLend<'_>> {
+        self.ws()?;
+        Some(WsLend(self))
     }
 
     /// Say goodbye from the top as it shuts down: its session's, which

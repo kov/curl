@@ -1884,7 +1884,10 @@ impl Request {
         // A WebSocket's is read with its connection lent: its frames are
         // encoded there, and the read handler may start one.
         let got = if self.websocket.is_some() {
-            let conn = lease.get();
+            let conn = lease
+                .get()
+                .ws_lend()
+                .expect("a WebSocket's connection speaks it");
             cx.lending_ws(conn, |cx| body.read(cx, dest, pausable, trailer_block))
         } else {
             body.read(cx, dest, pausable, trailer_block)
@@ -2317,7 +2320,10 @@ impl Request {
                         self.upload_done(cx, true);
                     }
                     let ended = if matches!(self.stage, Stage::Body(Body::WebSocket)) {
-                        let conn = lease.get();
+                        let conn = lease
+                            .get()
+                            .ws_lend()
+                            .expect("a WebSocket's connection speaks it");
                         cx.lending_ws(conn, |cx| self.end(cx))
                     } else {
                         self.end(cx)
@@ -2417,7 +2423,10 @@ impl Request {
                 }
                 Stage::Head => input = self.head_input(cx, lease, input, false)?,
                 Stage::Body(Body::WebSocket) => {
-                    let conn = lease.get();
+                    let conn = lease
+                        .get()
+                        .ws_lend()
+                        .expect("a WebSocket's connection speaks it");
                     cx.lending_ws(conn, |cx| self.pipeline.body(cx, input))?;
                     input = &[];
                 }
@@ -2972,7 +2981,10 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
         if self.pipeline.decodes_websocket() {
-            let conn = lease.get();
+            let conn = lease
+                .get()
+                .ws_lend()
+                .expect("a WebSocket's connection speaks it");
             return cx.lending_ws(conn, |cx| self.pipeline.flush(cx));
         }
         self.pipeline.flush(cx)

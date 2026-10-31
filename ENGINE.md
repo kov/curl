@@ -64,8 +64,9 @@ numbers are those of `SCOPE.md`.
    connection is lent to the step (`StepCx::lending_ws`) while its frames are delivered to the
    write handler and its upload is read, for `curl_ws_send`, `curl_ws_recv`,
    `curl_ws_start_frame` and `curl_ws_meta` from inside those handlers. The handlers reach it
-   only through `TransferCx`'s `ws_*` calls, which use the connection's frames' state and its
-   carrier and nothing else of it; the WebSocket stage of the pipeline and the upload's
+   only through `TransferCx`'s `ws_*` calls. What is lent is a `WsLend`, made only of a
+   connection that speaks WebSocket, and it gives the WebSocket's state and its carrier and
+   nothing else of the connection; the WebSocket stage of the pipeline and the upload's
    encoder find it there and assert it is, so a delivery that forgets the lend fails loudly.
 10. **Side effects are synchronous where C's are.** The timer callback fires inside `add`,
     `remove` and `pause`; the socket callback fires inside `remove` and `pause`; the pollset of

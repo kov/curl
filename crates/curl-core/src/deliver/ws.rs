@@ -133,11 +133,7 @@ impl WsStage {
         while !self.buf.is_empty() && !handler_paused(cx) {
             // Out of the connection while it decodes, for the handler to
             // reach the rest of it.
-            let mut dec = cx
-                .ws_conn()
-                .and_then(|c| c.ws_mut())
-                .map(|(ws, _)| std::mem::take(&mut ws.dec))
-                .expect("a WebSocket's output is decoded with its connection lent");
+            let mut dec = std::mem::take(&mut ws_of(cx).dec);
             let auto_pong = cx.easy().options().ws.auto_pong();
             let passed = dec.pass(
                 &mut self.buf,

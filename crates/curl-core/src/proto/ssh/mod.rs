@@ -743,12 +743,14 @@ impl Request {
         self.ways.send && self.sending.is_some()
     }
 
-    /// Whether nothing came back for a request that may be made again on
-    /// a fresh connection: never, as C's SSH transfers are not retried
-    /// (`Curl_retry_request`, which only HTTP's and the line protocols'
-    /// answers start).
+    /// Whether nothing came back for the request, which waits for a body
+    /// it has not read to its end: one that may be made again on a fresh
+    /// connection, its reused one having died (`Curl_retry_request` for a
+    /// scheme outside HTTP's, which retries no upload). What a quote
+    /// command writes as a header does not count: C counts only HTTP's
+    /// and the line protocols' headers (`req.headerbytecount`).
     pub(crate) fn received_nothing(&self) -> bool {
-        false
+        !self.upload && !self.no_body && self.receiving && self.pipeline.bytecount() == 0
     }
 
     /// What it waits for on its connection while it connects or is made

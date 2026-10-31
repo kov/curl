@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+SFTP
+</keywords>
+</info>
+
+# Server-side
+<reply>
+</reply>
+
+# Client-side
+<client>
+<server>
+sftp
+</server>
+<features>
+libssh
+</features>
+<name>
+SFTP retried on a reused connection that fails to read
+</name>
+<command>
+--key %LOGDIR/server/curl_client_key --pubkey %LOGDIR/server/curl_client_key.pub -u %USER: -w "%{num_connects}\n" sftp://%HOSTIP:%SSHPORT%SFTP_PWD/%LOGDIR/file%TESTNUMBER.txt sftp://%HOSTIP:%SSHPORT%SFTP_PWD/%LOGDIR --insecure
+</command>
+<file name="%LOGDIR/file%TESTNUMBER.txt">
+Test data
+for ssh test
+</file>
+</client>
+
+# Verify data after the test has been "shot"
+# The second URL names a directory: it opens, but its read fails. On the
+# reused connection that is a retry on a fresh one, which fails the same.
+<verify>
+<stdout>
+Test data
+for ssh test
+1
+1
+</stdout>
+<errorcode>
+56
+</errorcode>
+</verify>
+</testcase>

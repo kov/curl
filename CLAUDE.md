@@ -44,6 +44,9 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   functions they call.
 - `crates/curl-libssh/src/lib.rs` and `src/sys.rs`: libssh's session over the connection's
   socket, its SCP channel and SFTP session, and the declarations of the functions they call.
+- `crates/curl-ldap/src/lib.rs` and `src/sys.rs`: libldap's session over the connection's
+  socket, the I/O layer it reads and writes TLS through, its messages, and the declarations of
+  the functions they call.
 - `crates/curl-idn2/src/lib.rs`: libidn2, converting host names to and from punycode.
 - `crates/curl-openssl/src/sys.rs`: OpenSSL's initialisation, and the version of the library
   loaded.

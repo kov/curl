@@ -2356,7 +2356,7 @@ mod tests {
             &b"goobar"[..],
             b"http ",
             b" http",
-            b"ldap",
+            b"smb",
             b"http,all",
             b"http,ft",
         ] {

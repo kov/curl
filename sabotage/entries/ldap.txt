@@ -1,0 +1,78 @@
+=== an attribute type with a line break is written into the LDIF
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::an_entry_that_cannot_be_written_safely_is_refused
+--- old
+        if needs_base64(attr.name) {
+            return Err(Ldif::IllegalType);
+--- new
+        if false {
+            return Err(Ldif::IllegalType);
+
+=== an entry's name with a line break is written as it is
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::an_unsafe_name_is_given_in_base64
+--- old
+    if needs_base64(dn) {
+--- new
+    if false {
+
+=== a value's control bytes are taken as safe in LDIF
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::only_a_safe_string_goes_as_it_is
+--- old
+                || s.iter().any(|&b| !(0x20..0x7f).contains(&b))
+--- new
+                || s.iter().any(|&b| b >= 0x7f)
+
+=== a binary attribute's value is written as it is
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::an_entry_is_written_as_c_writes_it
+--- old
+            if binary || needs_base64(value) {
+--- new
+            if needs_base64(value) {
+
+=== a server's referrals are chased
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::an_anonymous_search_binds_as_no_one
+--- old
+        session.set_no_referrals();
+--- new
+
+=== a refused SASL bind falls back to a version 2 bind
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::a_refused_sasl_bind_fails_the_login
+--- old
+                && lc.sasl.preferred() == Mechs::NONE
+--- new
+
+=== a SASL answer without the challenge its mechanism needs is taken
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::a_sasl_challenge_is_answered_in_another_bind
+--- old
+        if lc.sasl.wants_challenge() && servercred.is_none() {
+--- new
+        if false {
+
+=== a refused STARTTLS goes on in the clear when TLS is required
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::a_refused_starttls_goes_on_only_if_tls_was_tried
+--- old
+                    if use_ssl != UseSsl::Try {
+--- new
+                    if false {
+
+=== a search a transfer leaves unanswered is not abandoned
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::a_search_cut_short_is_abandoned
+--- old
+                carrier,
+            };
+            lc.session.abandon(&mut wire, id);
+        }
+        Finish::Done(result)
+--- new
+                carrier,
+            };
+        }
+        Finish::Done(result)

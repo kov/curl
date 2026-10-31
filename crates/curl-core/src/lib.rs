@@ -26,6 +26,7 @@ pub mod http2;
 pub mod http3;
 pub mod id;
 pub mod idn;
+pub mod ldap;
 pub mod libraries;
 pub mod mime;
 pub mod multi;

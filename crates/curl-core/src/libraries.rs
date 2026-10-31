@@ -15,6 +15,7 @@ use crate::gss::Gss;
 use crate::http2::Http2;
 use crate::http3::Http3;
 use crate::idn::Idn;
+use crate::ldap::Ldap;
 use crate::ssh::Ssh;
 use crate::tls::TlsBackend;
 
@@ -48,6 +49,9 @@ pub struct Libraries {
     /// The SSH library, if any: without it, SCP and SFTP are not built
     /// in, as in a C build without libssh.
     pub ssh: Option<&'static dyn Ssh>,
+    /// The LDAP library, if any: without it, LDAP is not built in, as in
+    /// a C build without OpenLDAP.
+    pub ldap: Option<&'static dyn Ldap>,
     /// Where random bytes come from in place of the system, if anywhere:
     /// the debug build's `CURL_ENTROPY` numbers.
     pub random: Option<Library<dyn Random>>,
@@ -116,6 +120,7 @@ impl Libraries {
         h2: None,
         h3: None,
         ssh: None,
+        ldap: None,
         random: None,
     };
 
@@ -322,7 +327,7 @@ mod tests {
         let printed = format!("{libraries:?}");
         assert!(
             printed.ends_with(
-                "ed25519: Some(Ed25519), tls: None, gss: None, idn: None, h2: None, h3: None, ssh: None, random: None }"
+                "ed25519: Some(Ed25519), tls: None, gss: None, idn: None, h2: None, h3: None, ssh: None, ldap: None, random: None }"
             ),
             "{printed}"
         );

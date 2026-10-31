@@ -95,6 +95,9 @@ pub(crate) struct Params {
     pub(crate) max_ir: usize,
     /// The mechanisms preferred by default (`defmechs`).
     pub(crate) default: Mechs,
+    /// Messages go both ways in base64, as text protocols carry them
+    /// (`SASL_FLAG_BASE64`); else as they are, as LDAP's binds do.
+    pub(crate) base64: bool,
 }
 
 /// What the server answered a step with, as the protocol reads its reply
@@ -466,7 +469,10 @@ impl Sasl {
             };
         self.used = bit;
         self.current = Some(mech);
-        let mut initial = resp.map(|r| base64(&r)).transpose()?;
+        let mut initial = match resp {
+            Some(r) if self.params.base64 => Some(base64(&r)?),
+            raw => raw,
+        };
         if self.params.max_ir > 0
             && initial
                 .as_ref()
@@ -527,13 +533,16 @@ impl Sasl {
             }
             State::LoginPasswd => Some(copy(cx.password())?),
             State::External => Some(copy(cx.user())?),
-            State::CramMd5 => match server_message(message)? {
+            State::CramMd5 => match self.server_message(message)? {
                 Some(chlg) => Some(cram_md5(cx, &chlg)?),
                 None => None,
             },
-            State::DigestMd5 => match server_message(message)? {
+            State::DigestMd5 => match self.server_message(message)? {
                 Some(chlg) => {
-                    next = State::DigestMd5Resp;
+                    // An empty line follows only where it is base64's.
+                    if self.params.base64 {
+                        next = State::DigestMd5Resp;
+                    }
                     digest_md5(cx, &chlg, self.params.service)?
                 }
                 None => None,
@@ -569,7 +578,8 @@ impl Sasl {
         };
         let (state, send) = match resp {
             None => (State::Cancel, Send::Cancel),
-            Some(resp) => (next, Send::Continue(base64(&resp)?)),
+            Some(resp) if self.params.base64 => (next, Send::Continue(base64(&resp)?)),
+            Some(resp) => (next, Send::Continue(resp)),
         };
         self.unsent = Some(Unsent {
             state,
@@ -668,13 +678,27 @@ fn base64(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     Ok(out)
 }
 
-/// The server's challenge decoded (`get_server_message`): an empty one is
-/// no bytes; `None` if it is not base64.
-fn server_message(message: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
-    if message.is_empty() {
-        return Ok(Some(Vec::new()));
+impl Sasl {
+    /// The server's challenge decoded (`get_server_message`): an empty one
+    /// is no bytes; `None` if it is not base64. Raw, it is as it came.
+    fn server_message(&self, message: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
+        if message.is_empty() || !self.params.base64 {
+            return copy(message).map(Some);
+        }
+        crate::base64::decode(message)
     }
-    crate::base64::decode(message)
+
+    /// The mechanism in use (`curmech`), which a raw continuation names
+    /// again.
+    pub(crate) fn current(&self) -> Option<&'static str> {
+        self.current
+    }
+
+    /// Whether the next step reads the server's challenge, which a raw
+    /// protocol must have to give (`get_server_message`'s callers).
+    pub(crate) fn wants_challenge(&self) -> bool {
+        matches!(self.state, State::CramMd5 | State::DigestMd5)
+    }
 }
 
 /// PLAIN's message: the identity acted for, the user and the password,

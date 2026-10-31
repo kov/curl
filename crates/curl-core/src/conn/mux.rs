@@ -251,6 +251,16 @@ impl Carrier<'_> {
         }
     }
 
+    /// The stream's socket, whatever works on its bytes above it: a
+    /// library over TLS reads and writes through those layers, not the
+    /// socket, which it is handed only to poll (`ldap_init_fd`).
+    pub(crate) fn socket_key(&self) -> Option<super::io::SocketKey> {
+        match &self.over {
+            Over::Stream(stream) => Some(stream.socket().key()),
+            Over::Datagrams(_) => None,
+        }
+    }
+
     /// Receive into `buf` what came, from what was received and not used
     /// first (`Curl_conn_recv`): how much, none at the stream's end;
     /// `None` if nothing came yet. The stream's end marks the connection

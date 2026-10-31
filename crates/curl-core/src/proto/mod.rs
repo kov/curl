@@ -4,12 +4,12 @@
 //! `dict:`, `file:`, `ftp:`, `gopher:`, `http:`, `imap:`, `mqtt:`,
 //! `pop3:`, `rtsp:`, `smtp:`, `telnet:`, `tftp:` and `ws:`, with a TLS
 //! library `ftps:`, `gophers:`, `https:`, `imaps:`, `mqtts:`, `pop3s:`,
-//! `smtps:` and `wss:`, and with an SSH library `scp:` and `sftp:` are
-//! built in. Tests have three more, networkless: `null:`, which
-//! completes at once, `stall:`, which never does, and `script:`, which
-//! delivers the pieces of its transfer's `Options::script`; and `tcp:`,
-//! which connects to its URL's host and port and completes once
-//! connected.
+//! `smtps:` and `wss:`, with an SSH library `scp:` and `sftp:`, and with
+//! an LDAP library `ldap:` and, with TLS too, `ldaps:` are built in.
+//! Tests have three more, networkless: `null:`, which completes at once,
+//! `stall:`, which never does, and `script:`, which delivers the pieces
+//! of its transfer's `Options::script`; and `tcp:`, which connects to its
+//! URL's host and port and completes once connected.
 
 pub(crate) mod dict;
 pub(crate) mod file;
@@ -20,6 +20,7 @@ pub(crate) mod http1;
 pub(crate) mod http2;
 pub(crate) mod http3;
 pub(crate) mod imap;
+pub(crate) mod ldap;
 pub(crate) mod mqtt;
 pub(crate) mod pingpong;
 pub(crate) mod pop3;
@@ -109,6 +110,8 @@ pub(crate) enum ProtoState {
     Smtp(Box<smtp::Request>),
     /// Boxed, as HTTP's.
     Ssh(Box<ssh::Request>),
+    /// Boxed, as HTTP's.
+    Ldap(Box<ldap::Request>),
     /// Boxed, as HTTP's.
     Dict(Box<dict::Request>),
     /// Boxed, as HTTP's.
@@ -522,6 +525,7 @@ impl SetupLend for ProtoState {
             | ProtoState::Imap(_)
             | ProtoState::Smtp(_)
             | ProtoState::Ssh(_)
+            | ProtoState::Ldap(_)
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)
             | ProtoState::Mqtt(_)
@@ -543,6 +547,7 @@ impl SetupLend for ProtoState {
             ProtoState::Imap(r) => r.pipeline_mut(),
             ProtoState::Smtp(r) => r.pipeline_mut(),
             ProtoState::Ssh(r) => r.pipeline_mut(),
+            ProtoState::Ldap(r) => r.pipeline_mut(),
             ProtoState::Dict(r) => r.pipeline_mut(),
             ProtoState::Gopher(r) => r.pipeline_mut(),
             ProtoState::Mqtt(r) => r.pipeline_mut(),
@@ -566,6 +571,7 @@ impl SetupLend for ProtoState {
             | ProtoState::Imap(_)
             | ProtoState::Smtp(_)
             | ProtoState::Ssh(_)
+            | ProtoState::Ldap(_)
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)
             | ProtoState::Mqtt(_)
@@ -585,6 +591,7 @@ impl SetupLend for ProtoState {
             | ProtoState::Imap(_)
             | ProtoState::Smtp(_)
             | ProtoState::Ssh(_)
+            | ProtoState::Ldap(_)
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)
             | ProtoState::Mqtt(_)
@@ -678,6 +685,19 @@ impl ProtoState {
                 curl_alloc::try_box(smtp::Request::new(url, true, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
+            // With an LDAP library, as in C built with OpenLDAP.
+            b"ldap" if cx.easy().libraries().ldap.is_some() => ProtoState::Ldap(
+                curl_alloc::try_box(ldap::Request::new(url, false, before, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
+            b"ldaps"
+                if cx.easy().libraries().ldap.is_some() && cx.easy().libraries().tls.is_some() =>
+            {
+                ProtoState::Ldap(
+                    curl_alloc::try_box(ldap::Request::new(url, true, before, cx)?)
+                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                )
+            }
             // With an SSH library, as in C built with libssh.
             b"scp" if cx.easy().libraries().ssh.is_some() => ProtoState::Ssh(
                 curl_alloc::try_box(ssh::Request::new(url, false, before, cx)?)
@@ -743,6 +763,7 @@ impl ProtoState {
             | ProtoState::Http(_)
             | ProtoState::Pop3(_)
             | ProtoState::Imap(_)
+            | ProtoState::Ldap(_)
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)
             | ProtoState::Mqtt(_)
@@ -769,6 +790,7 @@ impl ProtoState {
             ProtoState::Imap(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Smtp(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Ssh(ref r) => Ok(Some(r.network(url, scope, idn)?)),
+            ProtoState::Ldap(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Dict(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Gopher(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             ProtoState::Mqtt(ref r) => Ok(Some(r.network(url, scope, idn)?)),
@@ -800,6 +822,7 @@ impl ProtoState {
             ProtoState::Imap(r) => Some(r.scheme()),
             ProtoState::Smtp(r) => Some(r.scheme()),
             ProtoState::Ssh(r) => Some(r.scheme()),
+            ProtoState::Ldap(r) => Some(r.scheme()),
             ProtoState::Dict(r) => Some(r.scheme()),
             ProtoState::Gopher(r) => Some(r.scheme()),
             ProtoState::Mqtt(r) => Some(r.scheme()),
@@ -854,6 +877,7 @@ impl ProtoState {
             ProtoState::Imap(r) => r.take_login(),
             ProtoState::Smtp(r) => r.take_login(),
             ProtoState::Ssh(r) => r.take_login(),
+            ProtoState::Ldap(r) => r.take_login(),
             ProtoState::Http(r) => r.rtsp_login()?,
             _ => None,
         })
@@ -878,6 +902,7 @@ impl ProtoState {
             ProtoState::Smtp(r) => r.secured(),
             ProtoState::Gopher(r) => r.secured(),
             ProtoState::Mqtt(r) => r.secured(),
+            ProtoState::Ldap(r) => r.secured(),
             _ => false,
         }
     }
@@ -922,6 +947,7 @@ impl ProtoState {
             ProtoState::Imap(ref mut r) => r.connect(cx, lease),
             ProtoState::Smtp(ref mut r) => r.connect(cx, lease),
             ProtoState::Ssh(ref mut r) => r.connect(cx, lease),
+            ProtoState::Ldap(ref mut r) => r.connect(cx, lease),
             ProtoState::Dict(ref mut r) => r.connect(cx, lease),
             ProtoState::Gopher(ref mut r) => r.connect(cx, lease),
             ProtoState::Mqtt(ref mut r) => r.connect(cx, lease),
@@ -954,6 +980,7 @@ impl ProtoState {
             ProtoState::Imap(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Smtp(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Ssh(ref mut r) => r.make(cx, lease, asked),
+            ProtoState::Ldap(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Dict(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Gopher(ref mut r) => r.make(cx, lease, asked),
             ProtoState::Mqtt(ref mut r) => r.make(cx, lease, asked),
@@ -978,6 +1005,7 @@ impl ProtoState {
             ProtoState::Imap(ref r) => r.waits(phase),
             ProtoState::Smtp(ref r) => r.waits(phase),
             ProtoState::Ssh(ref r) => r.waits(phase),
+            ProtoState::Ldap(ref r) => r.waits(phase),
             ProtoState::Dict(ref r) => r.waits(phase),
             ProtoState::Gopher(ref r) => r.waits(phase),
             ProtoState::Mqtt(ref r) => r.waits(phase),
@@ -1016,6 +1044,8 @@ impl ProtoState {
             ProtoState::Ftp(ref r) => r.exchanges(),
             // Its body to read or send.
             ProtoState::Ssh(ref r) => r.exchanges(),
+            // The search's answer.
+            ProtoState::Ldap(ref r) => r.exchanges(),
             // The answer, read from DO on.
             ProtoState::Dict(_) | ProtoState::Gopher(_) => true,
             // All of it is in DOING, as C sets nothing up to exchange.
@@ -1041,7 +1071,9 @@ impl ProtoState {
             | ProtoState::Tftp(_)
             // Their requests go whole in DOING.
             | ProtoState::Dict(_)
-            | ProtoState::Gopher(_) => false,
+            | ProtoState::Gopher(_)
+            // Its search goes whole in DO.
+            | ProtoState::Ldap(_) => false,
             ProtoState::Ftp(ref r) => r.sending(),
             ProtoState::Imap(ref r) => r.sending(),
             ProtoState::Smtp(ref r) => r.sending(),
@@ -1069,7 +1101,9 @@ impl ProtoState {
             | ProtoState::Tftp(_)
             // Their requests go whole in DOING.
             | ProtoState::Dict(_)
-            | ProtoState::Gopher(_) => false,
+            | ProtoState::Gopher(_)
+            // Its search goes whole in DO.
+            | ProtoState::Ldap(_) => false,
             ProtoState::Ftp(ref r) => r.sending(),
             ProtoState::Imap(ref r) => r.sending(),
             ProtoState::Smtp(ref r) => r.sending(),
@@ -1179,6 +1213,7 @@ impl ProtoState {
             | ProtoState::Imap(_)
             | ProtoState::Smtp(_)
             | ProtoState::Ssh(_)
+            | ProtoState::Ldap(_)
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)
             | ProtoState::Mqtt(_)
@@ -1202,6 +1237,7 @@ impl ProtoState {
             ProtoState::Imap(ref r) => r.holds_output(),
             ProtoState::Smtp(ref r) => r.holds_output(),
             ProtoState::Ssh(ref r) => r.holds_output(),
+            ProtoState::Ldap(ref r) => r.holds_output(),
             ProtoState::Dict(ref r) => r.holds_output(),
             ProtoState::Gopher(ref r) => r.holds_output(),
             ProtoState::Mqtt(ref r) => r.holds_output(),
@@ -1224,6 +1260,7 @@ impl ProtoState {
             ProtoState::Imap(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Smtp(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Ssh(ref mut r) => Some(r.pipeline_mut()),
+            ProtoState::Ldap(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Dict(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Gopher(ref mut r) => Some(r.pipeline_mut()),
             ProtoState::Mqtt(ref mut r) => Some(r.pipeline_mut()),
@@ -1250,6 +1287,7 @@ impl ProtoState {
             ProtoState::Imap(ref mut r) => r.step(cx, lease),
             ProtoState::Smtp(ref mut r) => r.step(cx, lease),
             ProtoState::Ssh(ref mut r) => r.step(cx, lease),
+            ProtoState::Ldap(ref mut r) => r.step(cx, lease),
             ProtoState::Dict(ref mut r) => r.step(cx, lease),
             ProtoState::Gopher(ref mut r) => r.step(cx, lease),
             ProtoState::Mqtt(ref mut r) => Ok(r.step()),
@@ -1281,6 +1319,7 @@ impl ProtoState {
             ProtoState::Imap(ref r) => r.interest(pause),
             ProtoState::Smtp(ref r) => r.interest(pause),
             ProtoState::Ssh(ref r) => r.interest(pause),
+            ProtoState::Ldap(ref r) => r.interest(pause),
             ProtoState::Dict(ref r) => r.interest(pause),
             ProtoState::Gopher(ref r) => r.interest(pause),
             // MQTT's, TELNET's and TFTP's exchanges are over once their DO
@@ -1342,8 +1381,10 @@ impl ProtoState {
             ProtoState::Smtp(ref r) => r.received_nothing(),
             ProtoState::Ssh(ref r) => r.received_nothing(),
             // An answer read to the close, MQTT's, TELNET's or TFTP's,
-            // leaves no connection to reuse.
+            // leaves no connection to reuse, nor does LDAP's, whose
+            // connections are not reused.
             ProtoState::File(_)
+            | ProtoState::Ldap(_)
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)
             | ProtoState::Mqtt(_)
@@ -1472,6 +1513,7 @@ impl ProtoState {
             ProtoState::Imap(ref mut r) => r.done(cx, lease, result, premature, exchanged),
             ProtoState::Smtp(ref mut r) => r.done(cx, lease, result, premature, exchanged),
             ProtoState::Ssh(ref mut r) => r.done(cx, lease, result, premature, next, exchanged),
+            ProtoState::Ldap(ref mut r) => r.done(cx, lease, result),
             ProtoState::File(_)
             | ProtoState::Dict(_)
             | ProtoState::Gopher(_)

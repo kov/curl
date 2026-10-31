@@ -31,3 +31,19 @@ witness: curl-core auth::sasl::tests::a_change_of_state_comes_once_its_command_i
         if ok || !unsent.first {
 --- new
         if ok || unsent.first {
+
+=== a raw protocol's SASL answers go in base64
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::a_raw_protocol_s_messages_are_not_base64
+--- old
+            Some(resp) if self.params.base64 => (next, Send::Continue(base64(&resp)?)),
+--- new
+            Some(resp) => (next, Send::Continue(base64(&resp)?)),
+
+=== a raw protocol's challenge is read as base64
+file: crates/curl-core/src/auth/sasl.rs
+witness: curl-core auth::sasl::tests::a_raw_protocol_s_messages_are_not_base64
+--- old
+        if message.is_empty() || !self.params.base64 {
+--- new
+        if message.is_empty() {

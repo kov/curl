@@ -1,6 +1,6 @@
 //! What a protocol keeps of a connection it speaks without a session
 //! (C's `connectdata` meta data the scheme's `connect_it` hangs on it):
-//! FTP's, IMAP's, POP3's, SMTP's, SSH's and WebSocket's state between requests, and
+//! FTP's, IMAP's, POP3's, SMTP's, SSH's, LDAP's and WebSocket's state between requests, and
 //! the goodbye each says as the connection shuts down (the scheme's
 //! `disconnect`). The connection holds it as what it speaks, so that it
 //! is one fact with a session: no protocol has both. Each is built, and
@@ -28,6 +28,9 @@ pub(crate) enum LineConn {
     /// SCP's and SFTP's: the SSH library's session over the connection's
     /// socket, and where its state machine is; boxed, as FTP's.
     Ssh(Box<crate::proto::ssh::SshConn>),
+    /// LDAP's: the library's session over a copy of the connection's
+    /// socket, and where its set-up is; boxed, as FTP's.
+    Ldap(Box<crate::proto::ldap::LdapConn>),
     /// A WebSocket's, switched to from HTTP/1.1 by a 101: its frames'
     /// decoder and encoder and their buffers; boxed, as FTP's. It says
     /// no goodbye (C's WebSocket has no `disconnect`).
@@ -60,6 +63,8 @@ impl LineConn {
             LineConn::Smtp(ref mut p) => p.goodbye(cx, below, dead),
             // Said dead or not, as C's SSH disconnect ignores it.
             LineConn::Ssh(ref mut p) => p.goodbye(cx),
+            // Unbound dead or not, as C's LDAP disconnect ignores it.
+            LineConn::Ldap(ref mut p) => p.goodbye(cx, below),
             LineConn::Ws(_) | LineConn::Rtsp(_) => {}
             #[cfg(any(test, feature = "test-util"))]
             LineConn::Test(ref mut f) => f.goodbye(cx, below, dead),

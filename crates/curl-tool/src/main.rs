@@ -265,8 +265,10 @@ impl std::fmt::Display for CurlVersion {
         let h2 = Library("nghttp2", curl_nghttp2::version());
         let h3 = curl_ngtcp2::version();
         let gss = Library("mit-krb5", curl_gssapi::version());
-        let libraries: [&dyn std::fmt::Display; 10] = [
-            &ssl, &zlib, &brotli, &zstd, &idn, &psl, &ssh, &h2, &h3, &gss,
+        // Named by the library itself (`Curl_ldap_version`).
+        let ldap = curl_ldap::version();
+        let libraries: [&dyn std::fmt::Display; 11] = [
+            &ssl, &zlib, &brotli, &zstd, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
         ];
         version().components(&libraries).fmt(f)
     }
@@ -363,7 +365,7 @@ mod tests {
     #[test]
     fn names_the_libraries_as_c() {
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{} {}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -375,7 +377,8 @@ mod tests {
             curl_nghttp2::version(),
             curl_ngtcp2::ngtcp2_version(),
             curl_ngtcp2::nghttp3_version(),
-            curl_gssapi::version()
+            curl_gssapi::version(),
+            curl_ldap::version()
         );
         assert_eq!(CurlVersion.to_string(), want);
     }

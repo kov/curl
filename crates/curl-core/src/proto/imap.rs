@@ -40,6 +40,7 @@ static SASL: sasl::Params = sasl::Params {
     service: "imap",
     max_ir: 0,
     default: Mechs::DEFAULT,
+    base64: true,
 };
 
 /// The ways a server lets a user log in (`IMAP_TYPE_*`).

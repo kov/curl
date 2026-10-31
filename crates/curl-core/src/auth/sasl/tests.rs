@@ -4,6 +4,7 @@ const POP: Params = Params {
     service: "pop",
     max_ir: 255 - 8,
     default: Mechs::DEFAULT,
+    base64: true,
 };
 
 /// A step's context over `creds`, at 127.0.0.1:`port`, drawing `random`.
@@ -379,6 +380,7 @@ fn an_initial_response_may_be_the_limit_long() {
         service: "pop",
         max_ir: 5 + 240,
         default: Mechs::DEFAULT,
+        base64: true,
     };
     let start = |user: &[u8]| {
         let creds = Secret::new(user, b"", b"");
@@ -406,6 +408,7 @@ fn no_limit_takes_any_initial_response() {
         service: "imap",
         max_ir: 0,
         default: Mechs::DEFAULT,
+        base64: true,
     };
     let creds = Secret::new(b"u", b"p", b"");
     let mut sasl = Sasl::new(&UNLIMITED, AuthMethods::BASIC);
@@ -812,4 +815,49 @@ fn digest_md5_reads_the_protections_as_c_does() {
     assert!(!answer(",auth"));
     assert!(!answer(&format!("{},auth", "x".repeat(33))));
     assert!(answer(&format!("{},auth", "x".repeat(32))));
+}
+
+/// A protocol that carries SASL's messages as they are (LDAP's binds)
+/// gets them unencoded both ways: the initial response, a challenge not
+/// base64 read as it came, and the answer to it.
+#[test]
+fn a_raw_protocol_s_messages_are_not_base64() {
+    static RAW: Params = Params {
+        service: "ldap",
+        max_ir: 0,
+        default: Mechs::NONE,
+        base64: false,
+    };
+    let creds = Secret::new(b"user", b"secret", b"");
+    let mut sasl = Sasl::new(&RAW, AuthMethods::BASIC);
+    sasl.offers(Mechs::PLAIN);
+    assert!(sasl.url_auth(b"PLAIN"));
+    let initial = with_cx(Some(creds), 389, &[], |cx| {
+        sasl.start_sent(cx, true).unwrap()
+    });
+    assert_eq!(
+        initial,
+        Progress::Sends(Send::Auth {
+            mech: "PLAIN",
+            initial: Some(b"\0user\0secret".to_vec()),
+        })
+    );
+    let creds = Secret::new(b"user", b"secret", b"");
+    let mut sasl = Sasl::new(&RAW, AuthMethods::BASIC);
+    sasl.offers(Mechs::CRAM_MD5);
+    assert!(sasl.url_auth(b"CRAM-MD5"));
+    assert_eq!(sasl.current(), None);
+    with_cx(Some(creds), 389, &[], |cx| {
+        sasl.start_sent(cx, false).unwrap();
+        assert_eq!(sasl.current(), Some("CRAM-MD5"));
+        assert!(sasl.wants_challenge());
+        // "!!" is no base64: as it is, it is the challenge.
+        let next = sasl.step_sent(cx, Code::Continue, b"!!").unwrap();
+        let Progress::Sends(Send::Continue(resp)) = next else {
+            panic!("{next:?}")
+        };
+        assert!(resp.starts_with(b"user "), "{resp:?}");
+        assert_eq!(resp.len(), 5 + 32);
+        assert!(!sasl.wants_challenge());
+    });
 }

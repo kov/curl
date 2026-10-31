@@ -229,8 +229,10 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let h2 = Library("nghttp2", curl_nghttp2::version());
             let h3 = curl_ngtcp2::version();
             let gss = Library("mit-krb5", curl_gssapi::version());
-            let libraries: [&dyn fmt::Display; 10] = [
-                &ssl, &zlib, &brotli, &zstd, &idn, &psl, &ssh, &h2, &h3, &gss,
+            // Named by the library itself (`Curl_ldap_version`).
+            let ldap = curl_ldap::version();
+            let libraries: [&dyn fmt::Display; 11] = [
+                &ssl, &zlib, &brotli, &zstd, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
             ];
             cbuf(format_args!("{}", version().components(&libraries)))
         })
@@ -274,7 +276,7 @@ mod tests {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{} {}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
@@ -286,7 +288,8 @@ mod tests {
             curl_nghttp2::version(),
             curl_ngtcp2::ngtcp2_version(),
             curl_ngtcp2::nghttp3_version(),
-            curl_gssapi::version()
+            curl_gssapi::version(),
+            curl_ldap::version()
         );
         assert_eq!(said, want);
         // SAFETY: as above.
@@ -305,8 +308,8 @@ mod tests {
             want,
             [
                 "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap",
-                "imaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp", "smtps",
-                "telnet", "tftp", "ws", "wss",
+                "imaps", "ldap", "ldaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp",
+                "smtp", "smtps", "telnet", "tftp", "ws", "wss",
             ]
         );
     }

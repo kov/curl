@@ -97,6 +97,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-ldap"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "curl-alloc",
+ "curl-core",
+ "proptest",
+]
+
+[[package]]
 name = "curl-libssh"
 version = "0.1.0"
 dependencies = [
@@ -163,6 +173,7 @@ dependencies = [
  "curl-core",
  "curl-gssapi",
  "curl-idn2",
+ "curl-ldap",
  "curl-libssh",
  "curl-nghttp2",
  "curl-ngtcp2",
@@ -184,6 +195,7 @@ dependencies = [
  "curl-core",
  "curl-gssapi",
  "curl-idn2",
+ "curl-ldap",
  "curl-libssh",
  "curl-nghttp2",
  "curl-ngtcp2",

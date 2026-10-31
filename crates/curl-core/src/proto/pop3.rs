@@ -34,6 +34,7 @@ static SASL: sasl::Params = sasl::Params {
     service: "pop",
     max_ir: 255 - 8,
     default: Mechs::DEFAULT,
+    base64: true,
 };
 
 /// The ways a server lets a user log in (`POP3_TYPE_*`).

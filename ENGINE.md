@@ -271,6 +271,8 @@ curl-core/src/
     ssh/                     SCP and SFTP (libssh.c): mod.rs, SshConn and the state
                              machine over the `ssh` library traits; path.rs, the
                              request's path, quote paths, ranges and numbers
+    ldap.rs                  LDAP (openldap.c): LdapConn, the connect's binds over the
+                             `ldap` library traits, the search, the entries as LDIF
     raw.rs                   a request sent whole in DO and its answer read to the close,
                              DICT's and Gopher's (`Outgoing`, `ToClose`); raw/wire.rs, their
                              tests' fake server (tests)
@@ -1848,7 +1850,7 @@ HTTP/2 for good, or HTTP/1. What the connection speaks is one field, `conn::mux:
 found yet (`Unmade`, as a connection is made, and for good on one no HTTP request found it out
 on), HTTP/1 (`Http1`, no session; a local connection's from the start), a session made (`Made`),
 a protocol's own state with no session (`Line`, `conn/line.rs`'s `LineConn`: what FTP, IMAP,
-POP3, SMTP, SSH, RTSP and the test protocol `tcp:` keep of the connection between requests, put
+POP3, SMTP, SSH, LDAP, RTSP and the test protocol `tcp:` keep of the connection between requests, put
 on as their connect makes it), or its session out for a step (`Out`, naming the version). A step takes the session off the
 connection for the call that drives it and gives it back after (`with_session`, `with_h3`), so
 the lease is free beside it; while it is out the connection reads as having none, and only the
@@ -3660,6 +3662,31 @@ exchange's error, if any, is the transfer's at DONE (`tftp_translate_code`). A d
 is taken as an event whatever it is, as C takes it. Through an HTTP proxy, the tunnel refuses the
 scheme with C's `PROTOPT_NOTCPPROXY` message, before sending anything; C instead asks the proxy for
 a CONNECT-UDP tunnel, then writes its packets to the proxy's TCP socket unframed (`DIVERGENCE.md`).
+
+### 5.13 LDAP
+
+`proto/ldap.rs` is `lib/openldap.c` over the core's `ldap` traits (`ldap.rs`), which
+`curl-ldap` answers with OpenLDAP's libldap. The connection's `LineConn::Ldap` holds the
+session, C's connect state and the message whose answer it awaits; the request holds the
+search's message and the URL's parts.
+
+- **The session reads through the connection.** It is made over a copy of the connection's
+  socket (`ldap_init_fd`); until TLS is on, libldap reads and writes that socket itself, as
+  C's does. Once the connection's TLS is made (ldaps) or STARTTLS's handshake is done, an
+  I/O layer goes on the session's stream that reads and writes through the connection's
+  chain (`Wire`, lent for the length of each library call, `ConnWire` over the carrier), as
+  C's `ldapsb_tls` does. Its close leaves the socket to the library's own layer, which closes
+  its copy.
+- **The connect** is C's machine (`oldap_connecting`): version 3 and no referrals, then TLS,
+  STARTTLS (refused, the bind goes on only for `--ssl`), and the bind: SASL's where the login
+  options or the HTTP methods ask for a mechanism (the mechanisms read from the server's root,
+  `Sasl` with raw messages, as LDAP carries them), else a simple one; a protocol error falls
+  back to version 2 once. A STARTTLS handshake done says the connection is established again,
+  as C's `Curl_conn_connect` does.
+- **DO** sends the URL's search; PERFORMING reads its answer an entry a step, written as C's
+  LDIF (a name or value with bytes LDIF does not allow in base64, a binary type's always, an
+  attribute type with them refused), until the result, whose code is the transfer's. DONE
+  abandons a search not answered; the connection unbinds as it shuts down.
 
 ## 6. HTTP/1.x
 

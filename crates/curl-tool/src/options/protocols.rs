@@ -149,8 +149,8 @@ mod tests {
     /// The protocols the library speaks, by name.
     const SPOKEN: &[&str] = &[
         "dict", "file", "ftp", "ftps", "gopher", "gophers", "http", "https", "imap", "imaps",
-        "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp", "smtps", "telnet", "tftp",
-        "ws", "wss",
+        "ldap", "ldaps", "mqtt", "mqtts", "pop3", "pop3s", "rtsp", "scp", "sftp", "smtp", "smtps",
+        "telnet", "tftp", "ws", "wss",
     ];
 
     /// The library speaks the protocols of `SPOKEN`: every other name is
@@ -192,7 +192,7 @@ mod tests {
             (b"+-http", Err(ParamError::BadUse)),
             (b"=http", Ok(set(&["http"]))),
             (b"=https", Ok(set(&["https"]))),
-            (b"ldap", Err(ParamError::BadUse)),
+            (b"smb", Err(ParamError::BadUse)),
             (b"all,x", Err(ParamError::BadUse)),
             (b"+", Err(ParamError::BadUse)),
         ] {

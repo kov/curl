@@ -41,6 +41,7 @@ static SASL: sasl::Params = sasl::Params {
     service: "smtp",
     max_ir: 512 - 8,
     default: Mechs::DEFAULT,
+    base64: true,
 };
 
 /// The longest host name the EHLO domain is read from (`HOSTNAME_MAX`).

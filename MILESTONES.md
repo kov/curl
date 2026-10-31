@@ -1028,7 +1028,8 @@ Status: **to do**. SCOPE stage 6, in groups, each through the test servers `runt
 starts: POP3, IMAP and SMTP with STARTTLS; FTP and FTPS (the data connection a second chain
 beside the control connection's); SCP and SFTP through libssh, the SSH library distributions
 build with, with a C oracle built against it; then LDAP, MQTT, WebSocket, DICT, Gopher,
-RTSP, SMB, TELNET and TFTP. NTLM stays out of scope (SCOPE.md). WebSocket's step lends a write
+RTSP, TELNET and TFTP. SMB is not ported: the C tree no longer has it (7bbaf2fffd), and it
+needs NTLM, which stays out of scope (SCOPE.md). WebSocket's step lends a write
 callback a send handle on its own connection, a typed exception to ENGINE's decision 9, as C
 allows `curl_ws_send` there. It opens with what milestone 5's design review found the
 protocols need, each step leaving behaviour and traces as they are:
@@ -1155,7 +1156,7 @@ protocols need, each step leaving behaviour and traces as they are:
     after `lib/gopher.c`): the selector of the path and query, a CR or LF decoded into it
     refused, written to the application as header bytes the headers API does not keep; the
     answer read to the close; `curl -V`. Every Gopher test both legs run passes (1200 to
-    1202, 1272, 1563, 1609, 5028); 445 needs LDAP, on the C leg only.
+    1202, 1272, 1563, 1609, 5028, 445).
 76. **MQTT and mqtts.** **Done.** `mqtt://` and `mqtts://` (`proto::mqtt`, after
     `lib/mqtt.c`): CONNECT with the client id and the login, SUBSCRIBE and each PUBLISH's
     remaining length as the body until DISCONNECT, or, for a post of bytes, PUBLISH and
@@ -1181,7 +1182,7 @@ protocols need, each step leaving behaviour and traces as they are:
     server's bytes as the body; the read function's bytes sent, the tool's reading standard
     input without `-T`, as C's does; C's loop a round a pass in DOING, with its time-out and
     its counts; `curl -V`. Every TELNET test both legs run passes (1326, 1327, 1452, 1548,
-    1714, 3555); 445 needs LDAP, on the C leg only.
+    1714, 3555, 445).
 79. **TFTP.** **Done.** `tftp://` (`proto::tftp`, after `lib/tftp.c`) over an unconnected UDP
     socket (`Dial::Udp`, `Socket::send_to` and `recv_from`): RRQ and WRQ with the mode and the
     `tsize`, `blksize` and `timeout` options, `--tftp-blksize` and `--tftp-no-options` and their
@@ -1196,8 +1197,18 @@ protocols need, each step leaving behaviour and traces as they are:
     `CURLOPT_INTERLEAVEFUNCTION`, the `CURLOPT_RTSP_*` options and `CURLINFO_RTSP_*` infos, the
     tool's headers shown, `curl -V`. The tool has no `--rtsp-*` options, as C's has none. The
     filter and the header readings are tested at every split point and with mutated input.
-    Every RTSP test both legs run passes (567 to 572, 577, 657, 689, 1688, 2622, 3100, 3233);
-    445 needs LDAP, on the C leg only.
+    Every RTSP test both legs run passes (567 to 572, 577, 657, 689, 1688, 2622, 3100, 3233,
+    445).
+81. **LDAP and LDAPS.** **Done.** `ldap://` and `ldaps://` (`proto::ldap`, after
+    `lib/openldap.c`) through OpenLDAP's libldap, bound in `crates/curl-ldap` behind
+    `curl_core::ldap::Ldap` as SSH is behind its trait: the session over a copy of the
+    connection's socket, and, once TLS is on, over an I/O layer that reads and writes through
+    the connection's chain. Version 3 with C's fallback to 2, STARTTLS with `--ssl` and
+    `--ssl-reqd`, the simple bind or SASL's (`AUTH=` login options, the mechanisms read from
+    the server's root, the messages raw), the URL's search, each entry written as C's LDIF with
+    an unsafe name or value in base64 and an unsafe attribute type refused; C's traces and
+    codes; `curl -V`. The LDIF writer and the login options are tested with mutated input, and
+    the binding with mutated answers. Every LDAP test both legs run passes (445, 1462, 1538).
 
 ## Milestone 7: shared state
 

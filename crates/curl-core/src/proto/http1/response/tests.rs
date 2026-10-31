@@ -1175,3 +1175,47 @@ fn a_line_never_needs_more_than_four_notes() {
     }
     assert_eq!(most, 4, "the most notes a line came with");
 }
+
+/// RTSP's status line says `RTSP/1.0` exactly, in a word of at most 32
+/// bytes, then one space and a code of at most 999; it is taken as
+/// HTTP/1.1. Any other fails silently (test 577). A head without a size
+/// does not mark the connection to close: whether a body follows is
+/// RTSP's to say.
+#[test]
+fn an_rtsp_status_line_is_read_as_c_reads_it() {
+    let rtsp = Exchange {
+        rtsp: true,
+        asked: Asked {
+            rtsp: true,
+            ..ASKED
+        },
+        ..PLAIN
+    };
+    let got = outcome(b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n", rtsp);
+    assert_eq!(got.error, None);
+    assert_eq!(got.lines[0].0, status(HttpVersion::Http11, 200));
+    assert_eq!((got.framing, got.close), (Some(Framing::UntilClose), false));
+    for line in [
+        &b"RTSP/1.1 200 OK\r\n\r\n"[..],
+        b"rtsp/1.0 200 OK\r\n\r\n",
+        b"RTSP/1.0  200 OK\r\n\r\n",
+        b"RTSP/1.0 1000 OK\r\n\r\n",
+        b"RTSP/1.0 OK\r\n\r\n",
+        b"RTSP/1.0\r\n\r\n",
+    ] {
+        let got = parse(&[line], rtsp, &mut 0);
+        assert!(
+            matches!(
+                got.error,
+                Some(HeadError::BadRtspStatus | HeadError::InvalidStatusLine)
+            ),
+            "{:?}: {got:?}",
+            String::from_utf8_lossy(line)
+        );
+    }
+    // HTTP's prefix is no head at all to RTSP, and HTTP/0.9 is refused.
+    let got = parse(&[b"HTTP/1.1 200 OK\r\n\r\n"], rtsp, &mut 0);
+    assert_eq!(got.error, Some(HeadError::Http09NotAllowed));
+    let got = parse(&[b"RTSP/1.0 999\r\n\r\n"], rtsp, &mut 0);
+    assert_eq!(got.lines[0].0, status(HttpVersion::Http11, 999));
+}

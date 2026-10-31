@@ -1482,4 +1482,4 @@ witness: curl-tool a_resumed_upload_seeks_standard_input_if_it_can
             Ok(_) => Ok(()),
 --- new
         match file.seek(SeekFrom::Start(offset)) {
-            Ok(_) if false => Ok(()),
+            Ok(_) => Err(SeekFailed::CantSeek),

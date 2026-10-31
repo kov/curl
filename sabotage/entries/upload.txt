@@ -360,9 +360,10 @@ witness: curl-core upload::tests::a_resumed_body_fails_as_c_s_does
 --- old
             Err(SeekFailed::Fail) => {
                 let why = format_args!("Could not seek stream");
+                return Err(trace::fail(cx, ErrorKind::FtpCouldntUseRest, why));
+            }
 --- new
-            Err(SeekFailed::Fail) if false => {
-                let why = format_args!("Could not seek stream");
+            Err(SeekFailed::Fail) => {}
 
 === the bytes before a resume point are read through the body's reader
 file: crates/curl-core/src/upload/mod.rs

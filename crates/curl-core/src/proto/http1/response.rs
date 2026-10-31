@@ -120,7 +120,9 @@ impl HeadError {
             HeadError::Framing(FramingError::BadLength | FramingError::MultipleLocations) => {
                 ErrorKind::WeirdServerReply
             }
-            HeadError::Framing(FramingError::Returned(_)) => ErrorKind::HttpReturnedError,
+            HeadError::Framing(FramingError::Returned(_) | FramingError::RefusedWebSocket(_)) => {
+                ErrorKind::HttpReturnedError
+            }
             HeadError::Framing(FramingError::FileTooLarge) => ErrorKind::FilesizeExceeded,
             HeadError::Framing(FramingError::CannotResume) => ErrorKind::RangeError,
             HeadError::Framing(
@@ -578,7 +580,12 @@ impl HeadParser {
             kind
         };
         let counted = self.count(self.line.len() as u64, transfer_bytes);
-        if kind == (LineKind::End { interim: true }) {
+        // A 1xx's head, a 101's among them, is no answer of the request's
+        // (`deductheadercount`).
+        let switched = self.status.is_some_and(|s| s.code == 101);
+        if kind == (LineKind::End { interim: true })
+            || (kind == (LineKind::End { interim: false }) && switched)
+        {
             self.interim_bytes = self.request_bytes;
         }
         // Below 200, C writes the line before it looks at the code.

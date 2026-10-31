@@ -1,67 +1,13 @@
 //! The entry points of what this build leaves out, as C's build without
-//! them has them: WebSockets (`CURL_DISABLE_WEBSOCKETS`) and the export
-//! of TLS sessions (`USE_SSLS_EXPORT`). A program linked against a
-//! libcurl with them loads, and is told they are not built in.
+//! them has them: the export of TLS sessions (`USE_SSLS_EXPORT`). A
+//! program linked against a libcurl with them loads, and is told they
+//! are not built in.
 
 #![allow(unsafe_code)]
 
-use core::ffi::{c_char, c_uint, c_void};
-use core::ptr;
+use core::ffi::{c_char, c_void};
 
-use crate::ffi::{self, CURL, CURLE_NOT_BUILT_IN, CURLcode, curl_off_t, curl_ws_frame};
-
-/// # Safety
-///
-/// Any arguments: none is read.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn curl_ws_recv(
-    _curl: *mut CURL,
-    _buffer: *mut c_void,
-    _buflen: usize,
-    _recv: *mut usize,
-    _meta: *mut *const curl_ws_frame,
-) -> CURLcode {
-    CURLE_NOT_BUILT_IN
-}
-const _: ffi::proto::curl_ws_recv = curl_ws_recv;
-
-/// # Safety
-///
-/// Any arguments: none is read.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn curl_ws_send(
-    _curl: *mut CURL,
-    _buffer: *const c_void,
-    _buflen: usize,
-    _sent: *mut usize,
-    _fragsize: curl_off_t,
-    _flags: c_uint,
-) -> CURLcode {
-    CURLE_NOT_BUILT_IN
-}
-const _: ffi::proto::curl_ws_send = curl_ws_send;
-
-/// # Safety
-///
-/// Any arguments: none is read.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn curl_ws_start_frame(
-    _curl: *mut CURL,
-    _flags: c_uint,
-    _frame_len: curl_off_t,
-) -> CURLcode {
-    CURLE_NOT_BUILT_IN
-}
-const _: ffi::proto::curl_ws_start_frame = curl_ws_start_frame;
-
-/// # Safety
-///
-/// Any argument: it is not read.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn curl_ws_meta(_curl: *mut CURL) -> *const curl_ws_frame {
-    ptr::null()
-}
-const _: ffi::proto::curl_ws_meta = curl_ws_meta;
+use crate::ffi::{self, CURL, CURLE_NOT_BUILT_IN, CURLcode};
 
 /// # Safety
 ///
@@ -99,6 +45,7 @@ const _: ffi::proto::curl_easy_ssls_import = curl_easy_ssls_import;
 )]
 mod tests {
     use super::*;
+    use core::ptr;
 
     /// Each says it is not built in, or has nothing, as C's build
     /// without it does.
@@ -107,16 +54,6 @@ mod tests {
         // SAFETY: none of the arguments is read.
         unsafe {
             let null = ptr::null_mut();
-            assert_eq!(
-                curl_ws_recv(null, null, 0, null.cast(), null.cast()),
-                CURLE_NOT_BUILT_IN
-            );
-            assert_eq!(
-                curl_ws_send(null, null, 0, null.cast(), 0, 0),
-                CURLE_NOT_BUILT_IN
-            );
-            assert_eq!(curl_ws_start_frame(null, 0, 0), CURLE_NOT_BUILT_IN);
-            assert!(curl_ws_meta(null).is_null());
             assert_eq!(curl_easy_ssls_export(null, None, null), CURLE_NOT_BUILT_IN);
             let p = ptr::null();
             assert_eq!(

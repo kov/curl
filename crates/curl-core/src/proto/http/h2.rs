@@ -530,7 +530,9 @@ impl Request {
         trace::info(cx, format_args!("Received 101, Switching to HTTP/2"));
         trace::of(cx, H2, format_args!("added"));
         trace::of(cx, H2, format_args!("upgrading connection to HTTP/2"));
-        let settings = self.upgrade.take().expect("an upgrade asked for");
+        let Some(super::Upgrade::H2c(settings)) = self.upgrade.take() else {
+            unreachable!("an upgrade to HTTP/2 asked for");
+        };
         let library = cx.easy().libraries().h2.expect("asked with a library");
         let head = self.method == Method::Head;
         let (mut conn, stream) = H2Conn::open(library, &[], Some((&settings, head)))?;
@@ -1657,7 +1659,7 @@ impl Request {
         let mut check = Vec::new();
         check.try_extend_from_slice(name)?;
         check.try_extend_from_slice(port.bytes())?;
-        let default = if peer.scheme() == HTTPS { 443 } else { 80 };
+        let default = if peer.scheme().over_tls() { 443 } else { 80 };
         Ok(check.eq_ignore_ascii_case(value)
             || (peer.port() == default && name.eq_ignore_ascii_case(value)))
     }
@@ -1817,6 +1819,7 @@ impl Request {
                 http_proxy: false,
                 time_condition: None,
                 forwarded: false,
+                websocket: false,
             },
         };
         request.head = Some(HeadParser::new(exchange));

@@ -5,6 +5,7 @@
 mod decode;
 mod held;
 mod pause;
+mod ws;
 
 pub use pause::PauseRequest;
 pub(crate) use pause::{Directions, Lifts, Pause, RecvPause};
@@ -70,6 +71,9 @@ struct Codings {
     /// The content codings to undo, in the order the response gives them
     /// (`CURL_CW_CONTENT_DECODE`).
     content: Vec<Box<dyn Decoder>>,
+    /// A WebSocket's frames to decode, before the content codings
+    /// (`ws_cw_decode`).
+    ws: Option<ws::WsStage>,
 }
 
 impl Pipeline {
@@ -120,6 +124,25 @@ impl Pipeline {
             .map_err(|_| ErrorKind::OutOfMemory)
     }
 
+    /// The body is a WebSocket's frames, from here on: decoded unless
+    /// `raw`, with the WebSocket's connection lent to the step whenever
+    /// output is delivered (`Curl_ws_accept`).
+    pub(crate) fn decode_websocket(&mut self, raw: bool) -> Result<(), ErrorKind> {
+        self.made = true;
+        if self.codings.is_none() {
+            let codings = curl_alloc::try_box(Codings::default());
+            self.codings = Some(codings.map_err(|_| ErrorKind::OutOfMemory)?);
+        }
+        self.codings.as_mut().expect("made above").ws = Some(ws::WsStage::new(raw));
+        Ok(())
+    }
+
+    /// Whether the body is a WebSocket's frames, which its output is
+    /// delivered with the connection lent for.
+    pub(crate) fn decodes_websocket(&self) -> bool {
+        self.codings.as_ref().is_some_and(|c| c.ws.is_some())
+    }
+
     /// How many content codings are stacked.
     pub(crate) fn decoders(&self) -> usize {
         self.codings.as_ref().map_or(0, |c| c.content.len())
@@ -145,16 +168,26 @@ impl Pipeline {
         if let Some(Codings {
             gate: Some(gate),
             content,
+            ws,
             ..
         }) = self.codings.as_deref_mut()
         {
             gate.flush(&mut Past {
                 cx,
                 decoders: content,
+                ws: ws.as_mut(),
                 out: &mut self.out,
                 pausable,
                 include_all: false,
             })?;
+        }
+        if let Some(Codings {
+            content,
+            ws: Some(ws),
+            ..
+        }) = self.codings.as_deref_mut()
+        {
+            return ws.flush(cx, &mut ws::After::new(content, &mut self.out, pausable));
         }
         self.out.flush(cx, pausable)
     }
@@ -203,13 +236,14 @@ impl Pipeline {
         bytes: &[u8],
     ) -> Result<(), ErrorKind> {
         let pausable = self.pausable();
-        let (gate, decoders) = match self.codings.as_deref_mut() {
-            Some(c) => (c.gate.as_mut(), &mut c.content[..]),
-            None => (None, &mut [][..]),
+        let (gate, decoders, ws) = match self.codings.as_deref_mut() {
+            Some(c) => (c.gate.as_mut(), &mut c.content[..], c.ws.as_mut()),
+            None => (None, &mut [][..], None),
         };
         let mut past = Past {
             cx,
             decoders,
+            ws,
             out: &mut self.out,
             pausable,
             include_all: self.include_all,
@@ -384,13 +418,26 @@ impl Pipeline {
             }
             _ => {
                 // What ends the body goes through to the handlers, with
-                // nothing to write.
+                // nothing to write; a WebSocket's frames must be whole.
                 if !expect.ignore {
+                    let pausable = self.pausable();
+                    let ended = match self.codings.as_deref_mut() {
+                        Some(Codings {
+                            content,
+                            ws: Some(ws),
+                            ..
+                        }) => {
+                            let mut after = ws::After::new(content, &mut self.out, pausable);
+                            ws.write(cx, &mut after, &[], true)
+                        }
+                        _ => Ok(()),
+                    };
                     let eos = WriteType::BODY.eos();
                     write_trace(
                         cx,
-                        format_args!("download_write body(type={eos}, blen=0) -> 0"),
+                        format_args!("download_write body(type={eos}, blen=0) -> {}", Code(ended)),
                     );
+                    return ended;
                 }
                 Ok(())
             }
@@ -605,7 +652,7 @@ impl WriteType {
             HeaderOrigin::Trailer => Self::TRAILER,
         };
         match kind {
-            OutKind::Body => Self::BODY,
+            OutKind::Body | OutKind::EmptyBody => Self::BODY,
             OutKind::Info => WriteType(Self::INFO),
             OutKind::Header(o) => WriteType(Self::HEADER | origin(o)),
             OutKind::Status(o) => WriteType(Self::HEADER | Self::STATUS | origin(o)),
@@ -649,6 +696,7 @@ impl<H: Host> Sink for Counted<'_, '_, H> {
 struct Past<'p, 'c, H: Host> {
     cx: &'p mut StepCx<'c, H>,
     decoders: &'p mut [Box<dyn Decoder>],
+    ws: Option<&'p mut ws::WsStage>,
     out: &'p mut ClientOut,
     pausable: bool,
     include_all: bool,
@@ -666,7 +714,14 @@ impl<H: Host> Onward for Past<'_, '_, H> {
     fn take(&mut self, kind: OutKind, bytes: &[u8]) -> Result<(), ErrorKind> {
         let (cx, out, pausable) = (&mut *self.cx, &mut *self.out, self.pausable);
         match kind {
-            OutKind::Body => decode::run(self.decoders, bytes, &mut Client { cx, out, pausable }),
+            OutKind::Body => match self.ws.as_deref_mut() {
+                Some(ws) => {
+                    let mut after = ws::After::new(&mut *self.decoders, out, pausable);
+                    ws.write(cx, &mut after, bytes, false)
+                }
+                None => decode::run(self.decoders, bytes, &mut Client { cx, out, pausable }),
+            },
+            OutKind::EmptyBody => unreachable!("only a WebSocket's frames are empty body"),
             // Never body, whatever is included (`cw_out_write`).
             OutKind::Info => out.header(cx, bytes, kind, pausable),
             OutKind::Header(_) | OutKind::Status(_) => {
@@ -848,6 +903,17 @@ impl ClientOut {
         self.fail_on(result)
     }
 
+    /// Call the write handler with nothing, for a WebSocket frame of no
+    /// payload; held after what is held.
+    fn empty_body<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        pausable: bool,
+    ) -> Result<(), ErrorKind> {
+        let result = self.write(cx, OutKind::EmptyBody, &[], pausable);
+        self.fail_on(result)
+    }
+
     fn header<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -879,7 +945,7 @@ impl ClientOut {
         // Output of another kind than the last held tries what is held
         // first (`cw_out_do_write`).
         if let OutState::Held(held) = &self.state
-            && held.last_kind().map(is_body) != Some(is_body(kind))
+            && held.last_kind().map(out_type) != Some(out_type(kind))
         {
             self.replay(cx, pausable)?;
         }
@@ -937,8 +1003,13 @@ impl ClientOut {
     }
 }
 
-fn is_body(kind: OutKind) -> bool {
-    kind == OutKind::Body
+/// What C's output writer buffers `kind` as (`cw_out_type`).
+fn out_type(kind: OutKind) -> u8 {
+    match kind {
+        OutKind::Body => 1,
+        OutKind::EmptyBody => 2,
+        OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => 3,
+    }
 }
 
 /// The handlers paused, so `len` more bytes are held after `held`.
@@ -956,10 +1027,11 @@ fn buffering<H: Host>(cx: &mut StepCx<'_, H>, len: usize, held: usize) {
 /// after each call (`cw_out_cb_write`): the bytes it took, or
 /// `CURL_WRITEFUNC_PAUSE` or `CURL_WRITEFUNC_ERROR`.
 fn wrote<H: Host>(cx: &mut StepCx<'_, H>, kind: OutKind, len: usize, w: Write) {
-    let (what, otype) = match kind {
-        OutKind::Body => ("body", 1),
-        OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => ("header", 3),
+    let what = match kind {
+        OutKind::Body | OutKind::EmptyBody => "body",
+        OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => "header",
     };
+    let otype = out_type(kind);
     let took: u64 = match w {
         Write::Accepted => len as u64,
         Write::Took(took) => took as u64,
@@ -984,6 +1056,16 @@ fn deliver<H: Host>(
 ) -> Result<usize, ErrorKind> {
     match kind {
         OutKind::Body => deliver_body(cx, bytes, pausable, listing),
+        OutKind::EmptyBody => {
+            let Some(handler) = cx.easy().options().callbacks.write.clone() else {
+                return Ok(0);
+            };
+            let reasons = cx.easy().report().reasons();
+            let w = handler.write(&mut TransferCx::new(cx), &[]);
+            wrote(cx, kind, 0, w);
+            verdict(cx, w, 0, reasons, pausable)?;
+            Ok(0)
+        }
         OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => {
             // A line protocol's lines are told as a head's.
             let origin = kind.origin().unwrap_or(HeaderOrigin::Header);

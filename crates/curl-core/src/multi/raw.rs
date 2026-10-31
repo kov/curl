@@ -344,3 +344,213 @@ impl Easy {
         }
     }
 }
+
+/// The connection a handle's transfer only made, as its WebSocket's
+/// frames go out on it and come in from it: no transfer runs, so nothing
+/// is traced (`Curl_senddata`, `Curl_easy_recv`).
+struct RawWire<'a> {
+    cx: RawCx<'a>,
+    carrier: crate::conn::mux::Carrier<'a>,
+}
+
+impl crate::proto::ws::Said for RawWire<'_> {
+    fn ws(&mut self, _: fmt::Arguments<'_>) {}
+
+    fn info(&mut self, _: fmt::Arguments<'_>) {}
+
+    fn fail(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
+        fail(self.cx.easy, kind, crate::trace::reason(why))
+    }
+}
+
+impl crate::proto::ws::Wire for RawWire<'_> {
+    fn random(&mut self, out: &mut [u8]) -> Result<(), ErrorKind> {
+        self.cx
+            .easy
+            .libraries()
+            .random(out)
+            .map_err(|_| ErrorKind::FailedInit)
+    }
+
+    fn send(&mut self, bytes: &[u8]) -> Result<usize, ErrorKind> {
+        // Any failure but a wait is a send's (`Curl_senddata`).
+        match self.carrier.send(&mut self.cx, bytes) {
+            Ok(Sent::Bytes(n)) => Ok(n.get()),
+            Ok(_) => Ok(0),
+            Err(_) => Err(ErrorKind::SendError),
+        }
+    }
+
+    fn send_all(&mut self, mut bytes: &[u8]) -> Result<(), ErrorKind> {
+        while !bytes.is_empty() {
+            let n = self.send(bytes)?;
+            bytes = &bytes[n..];
+            if !bytes.is_empty()
+                && self
+                    .carrier
+                    .wait_writable(std::time::Duration::from_millis(500))
+                    .is_err()
+            {
+                let why = format_args!("[WS] Error while waiting for socket becoming writable");
+                return Err(crate::proto::ws::Said::fail(
+                    self,
+                    ErrorKind::SendError,
+                    why,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn recv(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ErrorKind> {
+        match self.carrier.recv_into(&mut self.cx, buf) {
+            Ok(got) => Ok(got),
+            Err(RecvFailed::OutOfMemory) => Err(ErrorKind::OutOfMemory),
+            Err(RecvFailed::Os(_)) => Err(ErrorKind::RecvError),
+        }
+    }
+}
+
+/// A call on the WebSocket of the connection `easy` reserved, in `pool`
+/// (`curl_ws_recv`, `curl_ws_send`, `curl_ws_start_frame` once the
+/// transfer is done): refused for a handle that does not only connect,
+/// whose connection is gone, or that is not a WebSocket's.
+fn ws(
+    pool: Option<&mut Pool>,
+    easy: &mut Easy,
+    now: Instant,
+    call: crate::ws::Call<'_>,
+) -> Result<crate::ws::Answer, ErrorKind> {
+    use crate::ws::{Answer, Call};
+    let options = easy.options().ws;
+    let refuse = |easy: &mut Easy, kind, why: fmt::Arguments<'_>| {
+        Err(fail(easy, kind, crate::trace::reason(why)))
+    };
+    if matches!(call, Call::StartFrame(..)) && options.raw {
+        let why = format_args!("cannot curl_ws_start_frame() with CURLWS_RAW_MODE enabled");
+        return refuse(easy, ErrorKind::FailedInit, why);
+    }
+    if !easy.options().connect_only.reserves() {
+        return match call {
+            Call::Recv(_) => refuse(
+                easy,
+                ErrorKind::UnsupportedProtocol,
+                format_args!("[WS] CONNECT_ONLY is required"),
+            ),
+            Call::Send(..) | Call::StartFrame(..) => refuse(
+                easy,
+                ErrorKind::SendError,
+                format_args!("[WS] No associated connection"),
+            ),
+        };
+    }
+    let last = easy.last_conn;
+    // A frame is started on the connection a receive or a send took up
+    // again: it looks for none itself (`data->conn`).
+    if matches!(call, Call::StartFrame(..)) && !last.is_some_and(|l| l.used) {
+        let why = format_args!("[WS] No associated connection");
+        return refuse(easy, ErrorKind::SendError, why);
+    }
+    let Some(conn) = last.and_then(|l| pool?.reserved_mut(l.id)) else {
+        easy.last_conn = None;
+        easy.report_mut().set_conn(None);
+        return match call {
+            Call::Recv(_) => refuse(
+                easy,
+                ErrorKind::BadFunctionArgument,
+                format_args!("[WS] connection not found"),
+            ),
+            Call::Send(..) | Call::StartFrame(..) => refuse(
+                easy,
+                ErrorKind::UnsupportedProtocol,
+                format_args!("Failed to get last socket used for connection #-1"),
+            ),
+        };
+    };
+    if let Some(l) = easy.last_conn.as_mut() {
+        l.used = true;
+    }
+    let Some((ws, carrier)) = conn.ws_mut() else {
+        return match call {
+            Call::Recv(_) => refuse(
+                easy,
+                ErrorKind::BadFunctionArgument,
+                format_args!("[WS] connection is not setup for websocket"),
+            ),
+            Call::Send(..) | Call::StartFrame(..) => refuse(
+                easy,
+                ErrorKind::SendError,
+                format_args!("[WS] Not a websocket transfer"),
+            ),
+        };
+    };
+    let mut wire = RawWire {
+        cx: RawCx { now, easy },
+        carrier,
+    };
+    let raw = options.raw;
+    match call {
+        Call::Recv(buf) => {
+            crate::proto::ws::api_recv(ws, &mut wire, buf, raw, options.auto_pong(), false)
+                .map(Answer::Received)
+        }
+        Call::Send(bytes, len, flags) => {
+            crate::proto::ws::api_send(ws, &mut wire, raw, bytes, len, flags, false)
+                .map(Answer::Sent)
+        }
+        Call::StartFrame(flags, len) => {
+            crate::proto::ws::api_start_frame(ws, &mut wire, raw, flags, len)
+                .map(|()| Answer::Started)
+        }
+    }
+}
+
+impl<H: Host> Multi<H> {
+    /// A call on the WebSocket transfer `id` only connected, once it is
+    /// done. `None` if `id` is not in this multi.
+    pub fn ws(
+        &mut self,
+        id: TransferId,
+        call: crate::ws::Call<'_>,
+    ) -> Option<Result<crate::ws::Answer, ErrorKind>> {
+        let now = self.clock.now();
+        let easy = &mut self.slots.get_mut(id)?.easy;
+        Some(in_pool(Some(&mut self.caches.pool), easy, |pool, easy| {
+            ws(pool, easy, now, call)
+        }))
+    }
+
+    /// As `ws`, for `easy`, not added, whose transfers this multi ran.
+    pub fn ws_for(
+        &mut self,
+        easy: &mut Easy,
+        call: crate::ws::Call<'_>,
+    ) -> Result<crate::ws::Answer, ErrorKind> {
+        let now = self.clock.now();
+        in_pool(Some(&mut self.caches.pool), easy, |pool, easy| {
+            ws(pool, easy, now, call)
+        })
+    }
+}
+
+impl Easy {
+    /// A call on the WebSocket the handle's last transfer only connected,
+    /// once `perform` is done.
+    pub fn ws(&mut self, call: crate::ws::Call<'_>) -> Result<crate::ws::Answer, ErrorKind> {
+        match self.private.take() {
+            Some(mut private) => {
+                let done = private.multi.ws_for(self, call);
+                self.private = Some(private);
+                done
+            }
+            None => in_pool(None, self, |pool, easy| ws(pool, easy, no_clock(), call)),
+        }
+    }
+
+    /// A call on the handle's WebSocket is refused before it reaches it,
+    /// for `why`: its reason kept as the WebSocket's own would be.
+    /// `kind`, given back.
+    pub fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8]) -> ErrorKind {
+        fail(self, kind, crate::trace::reason_with(&[why]))
+    }
+}

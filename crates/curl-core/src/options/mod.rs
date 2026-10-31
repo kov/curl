@@ -51,6 +51,8 @@ pub struct Options {
     pub quick_exit: bool,
     /// What a transfer does once connected (`CURLOPT_CONNECT_ONLY`).
     pub connect_only: ConnectOnly,
+    /// How a WebSocket's frames are handled (`CURLOPT_WS_OPTIONS`).
+    pub ws: WsOptions,
     /// The remote file is transferred only if its time meets this.
     pub time_condition: Option<TimeCondition>,
     pub limits: Limits,
@@ -774,6 +776,7 @@ impl Options {
             filetime: self.filetime,
             quick_exit: self.quick_exit,
             connect_only: self.connect_only,
+            ws: self.ws,
             time_condition: self.time_condition,
             limits: self.limits,
             flow: self.flow.try_clone(|f| Ok(*f))?,
@@ -1897,6 +1900,24 @@ pub enum ConnectOnly {
     /// Makes its request, a WebSocket's upgrade, and then the connection
     /// is the handle's (2, `connect_only_ws`).
     WebSocket,
+}
+
+/// How a WebSocket's frames are handled (`CURLOPT_WS_OPTIONS`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WsOptions {
+    /// Frames are not decoded or encoded: the write handler is given the
+    /// bytes as they came, and what the application sends goes as it is
+    /// (`CURLWS_RAW_MODE`).
+    pub raw: bool,
+    /// A ping is handed on, not answered (`CURLWS_NOAUTOPONG`).
+    pub no_auto_pong: bool,
+}
+
+impl WsOptions {
+    /// Whether a ping is answered with a pong of its payload.
+    pub(crate) fn auto_pong(self) -> bool {
+        !self.raw && !self.no_auto_pong
+    }
 }
 
 impl ConnectOnly {

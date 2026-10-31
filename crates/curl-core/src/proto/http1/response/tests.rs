@@ -20,6 +20,7 @@ const ASKED: Asked = Asked {
     auth: crate::auth::http::AuthAsked::DEFAULT,
     http_proxy: false,
     forwarded: false,
+    websocket: false,
     time_condition: None,
 };
 

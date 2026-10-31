@@ -16,6 +16,9 @@ pub(crate) const MAX_HELD: usize = 64 * 1024 * 1024;
 pub(crate) enum OutKind {
     /// The write handler: body, and header lines included in it.
     Body,
+    /// The write handler, called with nothing: a WebSocket frame of no
+    /// payload (`CW_OUT_BODY_0LEN`).
+    EmptyBody,
     /// The header handler, one line per entry.
     Header(HeaderOrigin),
     /// The header handler, a status line (`CLIENTWRITE_STATUS`).
@@ -29,7 +32,7 @@ impl OutKind {
     /// Whose head a line is of; none for body.
     pub(crate) fn origin(self) -> Option<HeaderOrigin> {
         match self {
-            OutKind::Body | OutKind::Info => None,
+            OutKind::Body | OutKind::EmptyBody | OutKind::Info => None,
             OutKind::Header(origin) | OutKind::Status(origin) => Some(origin),
         }
     }
@@ -74,16 +77,16 @@ impl HeldOutput {
     }
 
     /// Hold `data` after what is held; body joins body held just before
-    /// it. Past the limit is TooLarge ("pause buffer not large enough").
+    /// it, and an empty body one held just before it. Past the limit is TooLarge ("pause buffer not large enough").
     pub(crate) fn append(&mut self, kind: OutKind, data: &[u8]) -> Result<(), ErrorKind> {
         if self.held + data.len() > self.limit {
             return Err(ErrorKind::TooLarge);
         }
         let start = self.bytes.len();
-        let joins = kind == OutKind::Body
+        let joins = matches!(kind, OutKind::Body | OutKind::EmptyBody)
             && self.entries[self.first..]
                 .last()
-                .is_some_and(|e| e.kind == OutKind::Body);
+                .is_some_and(|e| e.kind == kind);
         if !joins {
             self.entries
                 .try_reserve(1)
@@ -113,7 +116,8 @@ impl HeldOutput {
         Some((e.kind, &self.bytes[e.range.clone()]))
     }
 
-    /// `n` bytes of the front entry were delivered.
+    /// `n` bytes of the front entry were delivered, all of an empty
+    /// body's.
     pub(crate) fn consume(&mut self, n: usize) {
         let e = &mut self.entries[self.first];
         assert!(n <= e.range.len(), "consumed no more than the entry");
@@ -145,8 +149,9 @@ impl HeldOutput {
         }
     }
 
+    /// Nothing is held: no bytes, and no empty body.
     pub(crate) fn is_empty(&self) -> bool {
-        self.held == 0
+        self.first == self.entries.len()
     }
 
     /// Bytes held, not yet delivered.

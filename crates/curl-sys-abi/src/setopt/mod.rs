@@ -850,6 +850,13 @@ fn apply(
                 _ => return Err(Refused::Bad),
             };
         }
+        // Bits it does not know are ignored, as C ignores them.
+        (ffi::CURLOPT_WS_OPTIONS, Long(n)) => {
+            options.ws = curl_core::options::WsOptions {
+                raw: n & ffi::CURLWS_RAW_MODE != 0,
+                no_auto_pong: n & ffi::CURLWS_NOAUTOPONG != 0,
+            };
+        }
         (ffi::CURLOPT_FORBID_REUSE, Long(n)) => options.limits.reuse.forbid = n != 0,
         (ffi::CURLOPT_FRESH_CONNECT, Long(n)) => options.limits.reuse.fresh = n != 0,
         (ffi::CURLOPT_MAXCONNECTS, Long(n)) => {

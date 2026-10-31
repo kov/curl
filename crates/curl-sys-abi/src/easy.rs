@@ -88,6 +88,10 @@ pub(crate) struct ShimEasy {
     pub(crate) string_infos: RefCell<Option<Box<StringInfos>>>,
     /// What `curl_easy_header` and `curl_easy_nextheader` hand out.
     pub(crate) headers_out: [crate::headers::HeaderOut; 2],
+    /// What `curl_ws_meta` and `curl_ws_recv` point to (C's
+    /// `ws->recvframe`), made the first time one is asked for: few
+    /// handles speak WebSocket.
+    ws_frame: OnceCell<Box<UnsafeCell<ffi::curl_ws_frame>>>,
 }
 
 /// The body a POST sends (C's `HTTPREQ_POST`, `HTTPREQ_POST_MIME` and
@@ -417,6 +421,7 @@ impl ShimEasy {
             msg: UnsafeCell::new(unsafe { core::mem::zeroed() }),
             string_infos: RefCell::new(None),
             headers_out: crate::headers::slots(),
+            ws_frame: OnceCell::new(),
         }
     }
 
@@ -993,6 +998,23 @@ impl ShimEasy {
             Home::Detached(e) => Some(f(e)),
             Home::Added { .. } | Home::Nowhere => None,
         }
+    }
+
+    /// Where `curl_ws_meta` and `curl_ws_recv` keep the frame they point
+    /// to, made the first time; none if there is no memory for it.
+    pub(crate) fn ws_frame(&self) -> Option<*mut ffi::curl_ws_frame> {
+        if self.ws_frame.get().is_none() {
+            let zero = ffi::curl_ws_frame {
+                age: 0,
+                flags: 0,
+                offset: 0,
+                bytesleft: 0,
+                len: 0,
+            };
+            let made = try_box(UnsafeCell::new(zero)).ok()?;
+            let _set = self.ws_frame.set(made);
+        }
+        self.ws_frame.get().map(|f| f.get())
     }
 
     /// The multi `curl_easy_perform` runs the handle in, once made.

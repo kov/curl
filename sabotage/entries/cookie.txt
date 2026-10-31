@@ -18,13 +18,13 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
         {
             let value = value.strip_suffix(b"\n").unwrap_or(value);
             let value = value.strip_suffix(b"\r").unwrap_or(value);
-            hsts::from_field(cx, peer.name(), value, peer.scheme() == HTTPS)?;
+            hsts::from_field(cx, peer.name(), value, peer.scheme().over_tls())?;
         }
         // And its alternative services (`http_header_a`).
         if line.kind == LineKind::Header
             && let Some(value) = strip_name(line.bytes, b"Alt-Svc:")
         {
-            alt_svc::from_field(cx, peer, over, value, peer.scheme() == HTTPS)?;
+            alt_svc::from_field(cx, peer, over, value, peer.scheme().over_tls())?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         // What reading its transfer codings did, traced before the line, as
@@ -40,13 +40,13 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
         {
             let value = value.strip_suffix(b"\n").unwrap_or(value);
             let value = value.strip_suffix(b"\r").unwrap_or(value);
-            hsts::from_field(cx, peer.name(), value, peer.scheme() == HTTPS)?;
+            hsts::from_field(cx, peer.name(), value, peer.scheme().over_tls())?;
         }
         // And its alternative services (`http_header_a`).
         if line.kind == LineKind::Header
             && let Some(value) = strip_name(line.bytes, b"Alt-Svc:")
         {
-            alt_svc::from_field(cx, peer, over, value, peer.scheme() == HTTPS)?;
+            alt_svc::from_field(cx, peer, over, value, peer.scheme().over_tls())?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         // What reading its transfer codings did, traced before the line, as

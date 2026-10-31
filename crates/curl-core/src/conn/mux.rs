@@ -251,6 +251,50 @@ impl Carrier<'_> {
         }
     }
 
+    /// Receive into `buf` what came, from what was received and not used
+    /// first (`Curl_conn_recv`): how much, none at the stream's end;
+    /// `None` if nothing came yet. The stream's end marks the connection
+    /// for closing.
+    pub(crate) fn recv_into(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        buf: &mut [u8],
+    ) -> Result<Option<usize>, RecvFailed> {
+        match self.recv(cx, buf.len())? {
+            Recv::Data(_) => {
+                let stream = self.stream();
+                let held = stream.received();
+                let n = held.len().min(buf.len());
+                buf[..n].copy_from_slice(&held[..n]);
+                stream.consume(n);
+                Ok(Some(n))
+            }
+            Recv::Eof => {
+                self.mark_close();
+                Ok(Some(0))
+            }
+            Recv::WouldBlock => Ok(None),
+        }
+    }
+
+    /// Wait up to `timeout` for the socket to take more
+    /// (`SOCKET_WRITABLE`): whether it will. A socket without a
+    /// descriptor says what it is ready for now, not waited on.
+    pub(crate) fn wait_writable(&self, timeout: std::time::Duration) -> std::io::Result<bool> {
+        use super::io::{Events, Readiness};
+        let socket = match &self.over {
+            Over::Stream(stream) => stream.socket(),
+            Over::Datagrams(datagrams) => datagrams.socket(),
+        };
+        match socket.readiness() {
+            Readiness::Poll(fd) => {
+                let mut one = [curl_os::poll::PollFd::new(fd, Events::OUT)];
+                Ok(curl_os::poll::poll(&mut one, timeout)? > 0)
+            }
+            Readiness::Known { now, .. } => Ok(now.contains(Events::OUT)),
+        }
+    }
+
     /// The connection is not to be reused: its server closed it under a
     /// protocol that closes on its end, as HTTP does.
     pub(crate) fn mark_close(&mut self) {

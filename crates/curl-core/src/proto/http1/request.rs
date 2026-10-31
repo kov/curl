@@ -458,11 +458,23 @@ pub(crate) struct RequestHead<'o> {
     /// The request goes to a proxy that sends it on: it asks to keep the
     /// connection to the proxy (`origin_is_proxy`).
     pub(crate) forwarded: Option<Forwarding<'o>>,
-    /// The request asks to go on in HTTP/2 over clear text, with these
-    /// settings in base64url (`Curl_http2_request_upgrade`): `Upgrade:
-    /// h2c`, `HTTP2-Settings:`, and both named in `Connection:`.
-    pub(crate) upgrade: Option<&'o [u8]>,
+    /// What the request asks the connection to switch to.
+    pub(crate) upgrade: Option<Upgrade<'o>>,
     pub(crate) headers: &'o UserHeaders,
+}
+
+/// What a request asks its connection to switch to, named in
+/// `Connection:` as `Upgrade`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Upgrade<'o> {
+    /// HTTP/2 over clear text, with these settings in base64url
+    /// (`Curl_http2_request_upgrade`): `Upgrade: h2c` and
+    /// `HTTP2-Settings:`, which `Connection:` names too.
+    H2c(&'o [u8]),
+    /// A WebSocket, with this key (`Curl_ws_request`): `Upgrade:
+    /// websocket`, `Sec-WebSocket-Version: 13` and `Sec-WebSocket-Key:`,
+    /// each unless the application sends its own.
+    WebSocket(&'o [u8]),
 }
 
 /// The range a request names (`http_range`).
@@ -693,7 +705,7 @@ fn write_h1(
                 }
             }
             Part::Custom => custom(head, gate, out)?,
-            Part::Connection => connection(head.headers, head.te, head.upgrade.is_some(), out)?,
+            Part::Connection => connection(head.headers, head.te, head.upgrade, out)?,
             Part::End => out.put(b"\r\n")?,
             // What no option asks for yet.
             Part::ProxyConnection => {
@@ -751,12 +763,25 @@ fn write_h1(
                     out.line(&[b"Alt-Used: ", used])?;
                 }
             }
-            Part::Upgrade => {
-                if let Some(settings) = head.upgrade {
+            Part::Upgrade => match head.upgrade {
+                Some(Upgrade::H2c(settings)) => {
                     out.line(&[b"Upgrade: h2c"])?;
                     out.line(&[b"HTTP2-Settings: ", settings])?;
                 }
-            }
+                Some(Upgrade::WebSocket(key)) => {
+                    let lines: [(&[u8], &[u8]); 3] = [
+                        (b"Upgrade", b"websocket"),
+                        (b"Sec-WebSocket-Version", b"13"),
+                        (b"Sec-WebSocket-Key", key),
+                    ];
+                    for (name, value) in lines {
+                        if !head.headers.replaces(name) {
+                            out.line(&[name, b": ", value])?;
+                        }
+                    }
+                }
+                None => {}
+            },
         }
     }
     Ok(())
@@ -839,9 +864,10 @@ fn custom(
 fn connection(
     headers: &UserHeaders,
     te: bool,
-    upgrade: bool,
+    upgrade: Option<Upgrade<'_>>,
     out: &mut Out<'_>,
 ) -> Result<(), ErrorKind> {
+    let h2c = matches!(upgrade, Some(Upgrade::H2c(_)));
     let mut given = headers
         .lines
         .items()
@@ -853,8 +879,8 @@ fn connection(
     let tokens = [
         first,
         te.then_some(&b"TE"[..]),
-        upgrade.then_some(&b"Upgrade"[..]),
-        upgrade.then_some(&b"HTTP2-Settings"[..]),
+        upgrade.is_some().then_some(&b"Upgrade"[..]),
+        h2c.then_some(&b"HTTP2-Settings"[..]),
     ];
     let mut parts: [&[u8]; 8] = [b""; 8];
     let mut n = 0;
@@ -1268,7 +1294,7 @@ mod tests {
             cookie: None,
             alt_used: None,
             forwarded: None,
-            upgrade: Some(b"AAMA"),
+            upgrade: Some(Upgrade::H2c(b"AAMA")),
             headers: &headers,
         };
         let here = peer(b"h");
@@ -1279,6 +1305,47 @@ mod tests {
             String::from_utf8(out).unwrap(),
             "GET / HTTP/1.1\r\nHost: h\r\nAccept: */*\r\nTE: gzip\r\nUpgrade: h2c\r\nHTTP2-Settings: AAMA\r\n\
              Connection: close, TE, Upgrade, HTTP2-Settings\r\n\r\n"
+        );
+    }
+
+    /// A WebSocket's upgrade sends its three headers, each unless the
+    /// application sends its own, and names only `Upgrade` in
+    /// `Connection:` (`Curl_ws_request`).
+    #[test]
+    fn a_websocket_upgrade_sends_its_headers() {
+        let headers = UserHeaders::new([&b"Sec-WebSocket-Version: 8"[..]]).unwrap();
+        let head = RequestHead {
+            method: b"GET",
+            target: b"/",
+            version: SentIn::Http11,
+            host: b"h",
+            port: None,
+            user_agent: None,
+            referer: None,
+            proxy_authorization: None,
+            authorization: None,
+            signed: None,
+            range: None,
+            content: None,
+            chunked: false,
+            probe: false,
+            accept_encoding: None,
+            te: false,
+            conditional: None,
+            cookie: None,
+            alt_used: None,
+            forwarded: None,
+            upgrade: Some(Upgrade::WebSocket(b"a2V5")),
+            headers: &headers,
+        };
+        let here = peer(b"h");
+        let gate = CredentialGate::new(&here, &here, false);
+        let mut out = Vec::new();
+        render_h1(&head, &gate, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "GET / HTTP/1.1\r\nHost: h\r\nAccept: */*\r\nUpgrade: websocket\r\n\
+             Sec-WebSocket-Key: a2V5\r\nSec-WebSocket-Version: 8\r\nConnection: Upgrade\r\n\r\n"
         );
     }
 

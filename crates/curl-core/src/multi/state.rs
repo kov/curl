@@ -2122,6 +2122,12 @@ pub(crate) struct StepCx<'a, H: Host> {
     /// protocol last drove its back and forth: the transfer's
     /// `SERVER_RESPONSE` timer once the step is over.
     pub(crate) server_response_at: Option<Instant>,
+    /// The connection a WebSocket's transfer holds, lent while its
+    /// output is delivered and its upload read: its handlers send frames
+    /// on it, and its frames' state is read and kept there. The one
+    /// exception to decision 9 (ENGINE.md): what reaches it is only
+    /// `TransferCx`'s WebSocket calls.
+    ws: Option<&'a mut crate::conn::Conn>,
 }
 
 impl<'a, H: Host> StepCx<'a, H> {
@@ -2138,6 +2144,7 @@ impl<'a, H: Host> StepCx<'a, H> {
             lent: None,
             quic_at: None,
             server_response_at: None,
+            ws: None,
         }
     }
 }
@@ -2171,6 +2178,47 @@ impl<H: Host> StepCx<'_, H> {
         super::put_back(self.rest.tell.slots, self.rest.dirty, id, run);
         self.rest.dirty.insert(id.index());
         r
+    }
+
+    /// Run `f` with `conn`, a WebSocket's, lent to the step, for its
+    /// handlers to send frames on and its output to be decoded with.
+    pub(crate) fn lending_ws<R>(
+        &mut self,
+        conn: &mut crate::conn::Conn,
+        f: impl FnOnce(&mut StepCx<'_, H>) -> R,
+    ) -> R {
+        assert!(self.ws.is_none(), "one connection lent at a time");
+        let mut cx = StepCx {
+            me: self.me,
+            rest: self.rest.reborrow(),
+            lent: self.lent,
+            quic_at: self.quic_at,
+            server_response_at: self.server_response_at,
+            ws: Some(conn),
+        };
+        let r = f(&mut cx);
+        let (quic_at, server_response_at) = (cx.quic_at, cx.server_response_at);
+        self.quic_at = quic_at;
+        self.server_response_at = server_response_at;
+        r
+    }
+
+    /// The WebSocket's connection lent to the step, if one is.
+    pub(crate) fn ws_conn(&mut self) -> Option<&mut crate::conn::Conn> {
+        self.ws.as_deref_mut()
+    }
+
+    /// Run `f` with the WebSocket's connection lent to the step, taken
+    /// out of it meanwhile, so that `f` has the step too; none if no
+    /// connection is lent.
+    pub(crate) fn with_ws_conn<R>(
+        &mut self,
+        f: impl FnOnce(&mut StepCx<'_, H>, &mut crate::conn::Conn) -> R,
+    ) -> Option<R> {
+        let conn = self.ws.take()?;
+        let r = f(self, &mut *conn);
+        self.ws = Some(conn);
+        Some(r)
     }
 
     /// Whether the application takes the responses servers push
@@ -2502,6 +2550,34 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
         trace::fail_with(self, ErrorKind::WriteError, &[why]);
     }
 
+    fn ws_send(
+        &mut self,
+        bytes: &[u8],
+        len: crate::ws::FrameLen,
+        flags: crate::ws::SendFlags,
+    ) -> Result<crate::ws::Sent, ErrorKind> {
+        crate::proto::http::ws::lent_send(self, bytes, len, flags)
+    }
+
+    fn ws_start_frame(&mut self, flags: crate::ws::SendFlags, len: u64) -> Result<(), ErrorKind> {
+        crate::proto::http::ws::lent_start_frame(self, flags, len)
+    }
+
+    fn ws_recv(&mut self, buf: &mut [u8]) -> Result<crate::ws::Received, ErrorKind> {
+        crate::proto::http::ws::lent_recv(self, buf)
+    }
+
+    fn ws_meta(&self) -> Option<crate::ws::Frame> {
+        if self.easy().options().ws.raw {
+            return None;
+        }
+        self.ws.as_deref()?.ws()?.meta()
+    }
+
+    fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8]) -> ErrorKind {
+        trace::fail_with(self, kind, &[why])
+    }
+
     fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
         if id == self.me {
             return self.lent;
@@ -2559,8 +2635,17 @@ pub(crate) fn query_alpn<H: Host>(
 /// Replay a transfer's held output, from outside its step.
 pub(crate) fn flush<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     cx.lent = run.state.tls_native(Some(&cx.rest.caches.pool));
-    let flushed = match run.state.pipeline_mut() {
-        Some(p) => p.flush(cx),
+    let flushed = match run.state.attached_mut() {
+        // HTTP's, with a WebSocket's connection lent for its frames.
+        Some(Attached {
+            proto: ProtoState::Http(req),
+            lease,
+            ..
+        }) => req.flush_output(cx, lease),
+        Some(x) => match x.proto.pipeline_mut() {
+            Some(p) => p.flush(cx),
+            None => Ok(()),
+        },
         None => Ok(()),
     };
     cx.lent = None;

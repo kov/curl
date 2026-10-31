@@ -242,6 +242,8 @@ static VERSION: VersionInfo = VersionInfo {
         Protocol::Sftp,
         Protocol::Smtp,
         Protocol::Smtps,
+        Protocol::Ws,
+        Protocol::Wss,
     ],
 };
 
@@ -266,7 +268,7 @@ mod tests {
             names,
             [
                 "file", "ftp", "ftps", "http", "https", "imap", "imaps", "pop3", "pop3s", "scp",
-                "sftp", "smtp", "smtps"
+                "sftp", "smtp", "smtps", "ws", "wss"
             ]
         );
         for &p in version().protocols {

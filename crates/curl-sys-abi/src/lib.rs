@@ -50,6 +50,7 @@ mod tls_tests;
 mod unbuilt;
 mod url;
 mod version;
+mod ws;
 
 #[cfg(test)]
 mod tests {

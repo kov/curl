@@ -974,6 +974,49 @@ impl<'a> TransferCx<'a> {
     pub fn fail(&mut self, why: &[u8]) {
         self.calls.fail(why);
     }
+
+    /// Send `bytes` on this transfer's WebSocket, from its write or read
+    /// handler (`curl_ws_send`): a frame `len` long, or more of the frame
+    /// under way, as `flags` say, or the bytes as they are if its frames
+    /// are raw. The handler waits for the connection to take them all.
+    pub fn ws_send(
+        &mut self,
+        bytes: &[u8],
+        len: crate::ws::FrameLen,
+        flags: crate::ws::SendFlags,
+    ) -> Result<crate::ws::Sent, ErrorKind> {
+        self.calls.ws_send(bytes, len, flags)
+    }
+
+    /// Start a frame `len` long on this transfer's WebSocket, its payload
+    /// to come in the sends after, from its write or read handler: a read
+    /// handler's upload gives it (`curl_ws_start_frame`).
+    pub fn ws_start_frame(
+        &mut self,
+        flags: crate::ws::SendFlags,
+        len: u64,
+    ) -> Result<(), ErrorKind> {
+        self.calls.ws_start_frame(flags, len)
+    }
+
+    /// Receive into `buf` what came of the next frame on this transfer's
+    /// WebSocket, from its write or read handler (`curl_ws_recv`).
+    pub fn ws_recv(&mut self, buf: &mut [u8]) -> Result<crate::ws::Received, ErrorKind> {
+        self.calls.ws_recv(buf)
+    }
+
+    /// The frame the bytes the write handler is given are of, unless
+    /// frames are raw (`curl_ws_meta`).
+    pub fn ws_meta(&self) -> Option<crate::ws::Frame> {
+        self.calls.ws_meta()
+    }
+
+    /// A call on this transfer's WebSocket is refused before it reaches
+    /// it, for `why`: its reason is kept and traced as the WebSocket's
+    /// own would be. `kind`, given back.
+    pub fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8]) -> ErrorKind {
+        self.calls.ws_refuse(kind, why)
+    }
 }
 
 /// What a `TransferCx` reaches, whatever the multi's `Host`.
@@ -985,6 +1028,17 @@ pub(crate) trait TransferCalls {
     fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind>;
     fn fail(&mut self, why: &[u8]);
     fn tls_native(&self, id: TransferId) -> Option<TlsNative>;
+    /// The calls on the transfer's WebSocket, as `TransferCx`'s say.
+    fn ws_send(
+        &mut self,
+        bytes: &[u8],
+        len: crate::ws::FrameLen,
+        flags: crate::ws::SendFlags,
+    ) -> Result<crate::ws::Sent, ErrorKind>;
+    fn ws_start_frame(&mut self, flags: crate::ws::SendFlags, len: u64) -> Result<(), ErrorKind>;
+    fn ws_recv(&mut self, buf: &mut [u8]) -> Result<crate::ws::Received, ErrorKind>;
+    fn ws_meta(&self) -> Option<crate::ws::Frame>;
+    fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8]) -> ErrorKind;
 }
 
 /// Transfer `me`'s handlers as one of the multi's callbacks calls them,
@@ -1021,6 +1075,32 @@ impl<H: Host> TransferCalls for EventCalls<'_, '_, H> {
 
     fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
         self.cx.tls_native(id)
+    }
+
+    // Outside a transfer's handlers, its connection is not lent.
+    fn ws_send(
+        &mut self,
+        _: &[u8],
+        _: crate::ws::FrameLen,
+        _: crate::ws::SendFlags,
+    ) -> Result<crate::ws::Sent, ErrorKind> {
+        Err(ErrorKind::SendError)
+    }
+
+    fn ws_start_frame(&mut self, _: crate::ws::SendFlags, _: u64) -> Result<(), ErrorKind> {
+        Err(ErrorKind::SendError)
+    }
+
+    fn ws_recv(&mut self, _: &mut [u8]) -> Result<crate::ws::Received, ErrorKind> {
+        Err(ErrorKind::BadFunctionArgument)
+    }
+
+    fn ws_meta(&self) -> Option<crate::ws::Frame> {
+        None
+    }
+
+    fn ws_refuse(&mut self, kind: ErrorKind, _: &[u8]) -> ErrorKind {
+        kind
     }
 }
 

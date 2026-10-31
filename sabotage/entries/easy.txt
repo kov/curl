@@ -51,8 +51,10 @@ file: crates/curl-core/src/multi/raw.rs
 witness: curl-sys-abi handle_tests::recv_and_send_need_a_connect_only_connection
 --- old
     if !easy.options().connect_only.reserves() {
+        let why = format_args!("CONNECT_ONLY is required");
 --- new
     if false {
+        let why = format_args!("CONNECT_ONLY is required");
 
 === VERIFYHOST sets peer verification
 file: crates/curl-sys-abi/src/setopt/mod.rs

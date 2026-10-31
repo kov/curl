@@ -37,6 +37,115 @@ struct Chain {
     /// (`cr-lineconv`); boxed, as few bodies are converted and every
     /// transfer's state holds its body inline.
     lines: Option<Box<LineConv>>,
+    /// `CURL_CR_CONTENT_ENCODE`: a WebSocket's frames, what is read sent
+    /// as binary ones, the frames the application starts itself as it
+    /// starts them (`ws-encode`).
+    ws: Option<WsFrames>,
+}
+
+/// What a WebSocket's upload has read (`cr_ws_ctx`): the source is done,
+/// and so is the body, all of it sent as frames.
+#[derive(Clone, Copy, Debug, Default)]
+struct WsFrames {
+    read_eos: bool,
+    eos: bool,
+}
+
+impl WsFrames {
+    /// Read into `dest` what is encoded, the source read and encoded
+    /// first if nothing is (`cr_ws_read`). The connection is lent to the
+    /// step, its encoder and send buffer the frames'.
+    fn read<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        upload: &mut Upload,
+        dest: &mut [u8],
+        pausable: bool,
+    ) -> Result<Readout, ErrorKind> {
+        use crate::proto::http::ws::{lent, ws_of};
+        if self.eos {
+            return Ok(Readout { n: 0, eos: true });
+        }
+        let mut len = dest.len();
+        if ws_of(cx).sendbuf_mut().is_empty() {
+            if self.read_eos {
+                self.eos = true;
+                return Ok(Readout { n: 0, eos: true });
+            }
+            let remain = ws_of(cx).enc.remain;
+            if remain > 0 {
+                trace::of(
+                    cx,
+                    Component::Ws,
+                    format_args!("current frame, {remain} remaining"),
+                );
+                len = usize::try_from(remain).map_or(len, |r| r.min(len));
+            }
+            let got = upload.read(cx, &mut dest[..len], pausable)?;
+            self.read_eos = got.eos;
+            if !ws_of(cx).sendbuf_mut().is_empty() {
+                // The application started a frame as it was read: what
+                // it said of its end is for that frame's payload.
+                self.read_eos = false;
+                upload.clear_eos();
+            } else if got.n == 0 {
+                self.eos = self.read_eos;
+                return self.traced(cx, len, Ok(0));
+            }
+            let encoded = cx
+                .with_ws_conn(|cx, conn| {
+                    let (ws, mut wire) = lent(cx, conn);
+                    if ws.enc.remain == 0 && ws.sendbuf_mut().is_empty() {
+                        let binary = crate::ws::SendFlags {
+                            kind: Some(crate::ws::FrameKind::Binary),
+                            more: false,
+                        };
+                        ws.write_head(&mut wire, binary, got.n as u64)
+                            .map_err(crate::proto::ws::Stop::Failed)?;
+                    }
+                    ws.encode_payload(&mut wire, &dest[..got.n])
+                })
+                .expect("a WebSocket's upload is read with its connection lent");
+            let n = match encoded {
+                Ok(n) => n,
+                Err(crate::proto::ws::Stop::Again) => 0,
+                Err(crate::proto::ws::Stop::Failed(kind)) => {
+                    return self.traced(cx, len, Err(kind));
+                }
+            };
+            let read = got.n;
+            trace::of(
+                cx,
+                Component::Read,
+                format_args!("cr_ws_read, added {read} payload, len={n}"),
+            );
+        }
+        let n = ws_of(cx).sendbuf_mut().read(&mut dest[..len]);
+        if self.read_eos && ws_of(cx).sendbuf_mut().is_empty() {
+            self.eos = true;
+        }
+        self.traced(cx, len, Ok(n))
+    }
+
+    /// What a read of `len` came to, traced (`cr_ws_read`'s last line).
+    fn traced<H: Host>(
+        &self,
+        cx: &mut StepCx<'_, H>,
+        len: usize,
+        got: Result<usize, ErrorKind>,
+    ) -> Result<Readout, ErrorKind> {
+        let (code, n) = match got {
+            Ok(n) => (trace::Code(Ok(())), n),
+            Err(e) => (trace::Code(Err(e)), 0),
+        };
+        let eos = u8::from(got.is_ok() && self.eos);
+        trace::of(
+            cx,
+            Component::Read,
+            format_args!("cr_ws_read(len={len}) -> {code}, nread={n}, eos={eos}"),
+        );
+        got.map(|n| Readout { n, eos: self.eos })
+    }
 }
 
 /// A stage's read of the one below it.
@@ -327,10 +436,16 @@ impl Body {
         Ok(())
     }
 
+    /// Sent as a WebSocket's frames (`ws-encode`).
+    pub(crate) fn encode_websocket(&mut self) {
+        self.chain.ws = Some(WsFrames::default());
+    }
+
     /// Its size as sent, where known (`Curl_creader_total_length`): a
-    /// conversion or a mail's escaping makes it unknown.
+    /// conversion, a mail's escaping or a WebSocket's frames make it
+    /// unknown.
     pub(crate) fn size(&self) -> Option<u64> {
-        if self.chain.lines.is_some() || self.chain.mail.is_some() {
+        if self.chain.lines.is_some() || self.chain.mail.is_some() || self.chain.ws.is_some() {
             return None;
         }
         self.upload.size()
@@ -359,8 +474,12 @@ impl Body {
             chunks,
             mail,
             lines,
+            ws,
         } = &mut self.chain;
         let upload = &mut self.upload;
+        if let Some(ws) = ws {
+            return ws.read(cx, upload, dest, pausable);
+        }
         let mut source = |cx: &mut StepCx<'_, H>, dest: &mut [u8]| match lines {
             Some(lines) => lines.read(cx, upload, dest, pausable),
             None => upload.read(cx, dest, pausable),

@@ -60,7 +60,13 @@ numbers are those of `SCOPE.md`.
 9. **No engine borrow is live across a call-out except owned values moved out of their
    homes**: the stepping transfer's `Run`, its connection's receive buffer, and a multiplexed
    connection the step has out of its pool place (§4.4). Everything else stays in
-   `EngineRest`, which the context borrows.
+   `EngineRest`, which the context borrows. One exception, typed: a WebSocket transfer's
+   connection is lent to the step (`StepCx::lending_ws`) while its frames are delivered to the
+   write handler and its upload is read, for `curl_ws_send`, `curl_ws_recv`,
+   `curl_ws_start_frame` and `curl_ws_meta` from inside those handlers. The handlers reach it
+   only through `TransferCx`'s `ws_*` calls, which use the connection's frames' state and its
+   carrier and nothing else of it; the WebSocket stage of the pipeline and the upload's
+   encoder find it there and assert it is, so a delivery that forgets the lend fails loudly.
 10. **Side effects are synchronous where C's are.** The timer callback fires inside `add`,
     `remove` and `pause`; the socket callback fires inside `remove` and `pause`; the pollset of
     each transfer is re-assessed right after it runs in `run_dirty`. Pause from a write
@@ -2332,8 +2338,10 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   `LASTSOCKET`). The connection closes at once, said "closing connection #N", as the handle
   leaves a multi of the application's, or, in a handle's own multi
   (`Multi::make_handle_own`, C's `multi_easy`), as the handle's next transfer is added if the
-  handle used it; else as the pool goes. `ConnectOnly::WebSocket` (2) makes its request and
-  reserves the connection after, for WebSockets, which the build does not speak. `Attached { users }` comes before stage 5, for a connection several transfers lease
+  handle used it; else as the pool goes. `ConnectOnly::WebSocket` (2) makes its request, a WebSocket's upgrade, and
+  reserves the connection after: the application receives and sends frames on it with
+  `Easy::ws` and `Multi::ws` (`curl_ws_recv`, `curl_ws_send`, `curl_ws_start_frame`), what
+  came behind the 101 left in the connection's receive buffer for the first receive. `Attached { users }` comes before stage 5, for a connection several transfers lease
   at once (a pool place, not the transfer state of §3.1 that holds a lease). Until then every
   lease count is asserted to be 1. A connection shutting down is in no pool: its multi's
   `ShutdownSet` owns it (below).
@@ -3656,7 +3664,14 @@ fn decide_framing(meta: &ResponseMeta, method: &Method<'_>, opts: &FramingOption
   nothing asked to upgrade to, which C takes for the final response (`http_on_101_upgrade`): it
   ends the head without `decide`, its body all that follows until the connection closes, its
   lines still a 1xx's; to a request not sent as HTTP/1.1 it is 8 once its head is delivered.
-  An upgrade the request asked for (h2c, WebSocket) takes the bytes after it instead.
+  An upgrade the request asked for (h2c, WebSocket) takes the bytes after it instead. A
+  WebSocket's 101 switches the connection to `LineConn::Ws`, the frames' decoder, encoder and
+  buffers (`proto/ws.rs`), which says no goodbye; its body is decoded by the pipeline's
+  WebSocket stage in front of the content codings, the payload handed on a frame's piece at a
+  time (an empty frame as a write of nothing, `CW_OUT_BODY_0LEN`), what the handler is told of
+  each kept on the connection. A transfer that only connects leaves the bytes after the 101
+  unread and reads no more. Any final response to a WebSocket's request is 22, "Refused
+  WebSocket upgrade"; as in C, `Sec-WebSocket-Accept` is not checked.
 - **Every peer limit is an `Error`**: 100 KiB per line, 300 KiB per response and 20× that per
   transfer (one counter per limit in `HeaderBudget`), 5000 stored headers, 17 hex digits per
   chunk size, 4 KiB per trailer line, 5 codings.
@@ -4108,8 +4123,8 @@ freed.
   `curl_easy_recv`/`send`, CURLM_BAD_SOCKET, CURLM_BAD_FUNCTION_ARGUMENT.
 - Every function the system's libcurl exports is exported, so a program linked against it
   loads (Fedora's binaries bind every symbol as they start). The entry points of what the build
-  leaves out answer as C's build without them does (`unbuilt.rs`): WebSockets and TLS session
-  export `CURLE_NOT_BUILT_IN`, a server push's headers NULL. `curl_easy_option_*` walk C's
+  leaves out answer as C's build without them does (`unbuilt.rs`): TLS session export
+  `CURLE_NOT_BUILT_IN`, a server push's headers NULL. `curl_easy_option_*` walk C's
   table, generated from `lib/easyoptions.c` and checked against the inventory
   (`gen/easyoptions.py`). `curl_multi_get_handles` answers NULL inside a transfer's callback,
   as `curl_multi_info_read` does here, where the handles are not reached.

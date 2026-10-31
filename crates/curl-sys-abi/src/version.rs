@@ -305,7 +305,7 @@ mod tests {
             want,
             [
                 "file", "ftp", "ftps", "http", "https", "imap", "imaps", "pop3", "pop3s", "scp",
-                "sftp", "smtp", "smtps"
+                "sftp", "smtp", "smtps", "ws", "wss"
             ]
         );
     }

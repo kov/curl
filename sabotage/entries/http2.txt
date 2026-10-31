@@ -125,14 +125,14 @@ witness: curl-core base64::tests::base64url_is_written_as_curlx_writes_it
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http1::request::tests::an_upgrade_is_named_in_connection_after_te
 --- old
-        upgrade.then_some(&b"HTTP2-Settings"[..]),
+        h2c.then_some(&b"HTTP2-Settings"[..]),
 --- new
 
 === an upgrade asks for a 100 too
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::h2::an_upgrade_asks_for_no_100
 --- old
-            && upgrade.is_none()
+            && self.upgrade.is_none()
             && expects.is_none()
 --- new
             && expects.is_none()
@@ -141,7 +141,7 @@ witness: curl-core proto::http::tests::h2::an_upgrade_asks_for_no_100
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::h2::a_101_switches_an_upgrade_to_http2
 --- old
-                if switching && self.upgrade.is_some() && self.version == SentIn::Http11 {
+                if switching && self.version == SentIn::Http11 {
 --- new
                 if false {
 

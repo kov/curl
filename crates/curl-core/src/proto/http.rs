@@ -54,6 +54,7 @@ pub(crate) mod hsts;
 pub(crate) mod httpsig;
 pub(crate) mod negotiate;
 pub(crate) mod sigv4;
+pub(crate) mod ws;
 use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, LineKind};
 
 /// The most reads one step makes (`sendrecv_dl`: the first and
@@ -78,6 +79,25 @@ enum BodyKind {
 /// HTTP, as the connection layer knows it, and HTTP over TLS.
 const HTTP: Scheme = Scheme::HTTP;
 pub(crate) const HTTPS: Scheme = Scheme::HTTPS;
+
+/// What a request asks its connection to switch to by a 101, until its
+/// answer (`upgr101`, `bits.upgrade_in_progress`).
+#[derive(Debug)]
+enum Upgrade {
+    /// HTTP/2 over clear text, with these settings (`UPGR101_H2`).
+    H2c(Vec<u8>),
+    /// A WebSocket (`UPGR101_WS`).
+    WebSocket,
+}
+
+/// What a request for a WebSocket (`ws://`, `wss://`) asks besides the
+/// switch.
+#[derive(Clone, Copy, Debug)]
+struct Websocket {
+    /// The application uploads (`set.method == HTTPREQ_PUT`): once
+    /// switched, what it gives is sent, as frames unless raw.
+    uploads: bool,
+}
 
 /// The HTTP versions a request may speak (`CURL_HTTP_V1x`, `CURL_HTTP_V2x`,
 /// `CURL_HTTP_V3x`).
@@ -283,10 +303,15 @@ pub(crate) struct Request {
     wire: Wire,
     /// It went on a stream HTTP/2 refused (`state.refused_stream`).
     refused: bool,
-    /// It asks to go on in HTTP/2 over clear text, with these settings
-    /// (`upgr101 == UPGR101_H2`), which a 101 takes up; until its answer
-    /// (`bits.upgrade_in_progress`).
-    upgrade: Option<Vec<u8>>,
+    /// What it asks the connection to switch to, which a 101 takes up;
+    /// until its answer (`bits.upgrade_in_progress`).
+    upgrade: Option<Upgrade>,
+    /// It is for a WebSocket.
+    websocket: Option<Websocket>,
+    /// Of the bytes the last read got, those past a WebSocket's 101 left
+    /// on the connection for the application to receive, its transfer
+    /// only connecting.
+    unread: usize,
     /// The versions it may speak, its transfer's, which it changes for
     /// the requests after it (`state.http_neg`).
     neg: Negotiation,
@@ -535,6 +560,9 @@ enum Body {
     UntilClose,
     /// When the HTTP/2 stream closes.
     Stream,
+    /// When the connection closes, its bytes a WebSocket's frames, the
+    /// pipeline's to decode with the connection lent.
+    WebSocket,
 }
 
 /// HTTP connects as its connection is set up, and makes its request in
@@ -627,6 +655,42 @@ impl Request {
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
+        let scheme = if secured { HTTPS } else { HTTP };
+        Request::of_scheme(url, scheme, before, cx)
+    }
+
+    /// A request for a WebSocket at `url`, whose scheme is `ws`, or
+    /// `wss` if `secured`: a GET, or a HEAD for no body, in HTTP/1.1
+    /// alone (`ws_setup_conn`, `Curl_http_method`).
+    pub(crate) fn websocket<H: Host>(
+        url: &Url,
+        secured: bool,
+        before: Before<'_>,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<Request, ErrorKind> {
+        let scheme = if secured {
+            Scheme::of("wss")
+        } else {
+            Scheme::of("ws")
+        };
+        let mut request = Request::of_scheme(url, scheme, before, cx)?;
+        request.neg.h1_only();
+        request.neg.only_10 = false;
+        if request.method != Method::Head {
+            request.method = Method::Get;
+        }
+        request.websocket = Some(Websocket {
+            uploads: cx.easy().options().method == Method::Upload,
+        });
+        Ok(request)
+    }
+
+    fn of_scheme<H: Host>(
+        url: &Url,
+        scheme: Scheme,
+        before: Before<'_>,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<Request, ErrorKind> {
         let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
         let port = url
             .get(
@@ -664,7 +728,6 @@ impl Request {
             Err(e) => return Err(url_error(e)),
         }
         let scope = cx.easy().options().address_scope;
-        let scheme = if secured { HTTPS } else { HTTP };
         let idn = cx.easy().libraries().idn;
         let peer = super::url_peer((scheme, host, port), url, scope, idn)?;
         let gate = match before.first {
@@ -710,6 +773,8 @@ impl Request {
             wire: Wire::H1,
             refused: false,
             upgrade: None,
+            websocket: None,
+            unread: 0,
             neg: before.http.neg,
         })
     }
@@ -832,14 +897,14 @@ impl Request {
         self.credentials.as_ref()
     }
 
-    /// Its scheme, `http` or `https`.
+    /// Its scheme, `http`, `https`, `ws` or `wss`.
     pub(crate) fn scheme(&self) -> Scheme {
         self.peer.scheme()
     }
 
-    /// It goes over TLS: its scheme is `https` (C's `PROTOPT_SSL`).
+    /// It goes over TLS: its scheme is `https` or `wss` (C's `PROTOPT_SSL`).
     pub(crate) fn secured(&self) -> bool {
-        self.peer.scheme() == HTTPS
+        self.peer.scheme().over_tls()
     }
 
     /// The port its scheme means when a URL names none, which `Host:`
@@ -1241,13 +1306,19 @@ impl Request {
         );
         // Over clear text, HTTP/2 is asked for by an upgrade where the
         // application wants it so (`H1_HD_UPGRADE`).
-        self.upgrade = self.upgrade_settings(cx, lease, self.wire.multiplexed())?;
-        let upgrade = self
-            .upgrade
-            .as_deref()
-            .map(crate::base64::encode_url)
-            .transpose()
-            .map_err(|_| ErrorKind::OutOfMemory)?;
+        // A WebSocket's is asked for after it (`Curl_ws_request`).
+        self.upgrade = self
+            .upgrade_settings(cx, lease, self.wire.multiplexed())?
+            .map(Upgrade::H2c);
+        if self.websocket.is_some() {
+            self.upgrade = Some(Upgrade::WebSocket);
+        }
+        let h2c = match &self.upgrade {
+            Some(Upgrade::H2c(settings)) => {
+                Some(crate::base64::encode_url(settings).map_err(|_| ErrorKind::OutOfMemory)?)
+            }
+            _ => None,
+        };
         // The proxy the request goes to whole, and what it is given.
         let forwarding = lease
             .conn()
@@ -1500,7 +1571,7 @@ impl Request {
         // comes or the wait runs out (`addexpect`).
         let expects = http.headers.expects_continue();
         let added_expect = content.is_some()
-            && upgrade.is_none()
+            && self.upgrade.is_none()
             && expects.is_none()
             && !self.no_expect
             && self.version == SentIn::Http11
@@ -1510,7 +1581,7 @@ impl Request {
         // An upgrade asks for none (`addexpect`).
         let announced = content.is_some()
             && !auth.probe
-            && upgrade.is_none()
+            && self.upgrade.is_none()
             && (expects == Some(true) || added_expect);
         if let Some(content) = &mut content {
             content.expect = added_expect;
@@ -1564,6 +1635,27 @@ impl Request {
             .as_ref()
             .map(|(method, value)| Authorization::to_proxy(method.name(), value));
         let authenticated = (!auth.used.is_empty()).then_some(auth.used);
+        // A WebSocket's key: 16 random bytes in base64, drawn as its
+        // header is made (`Curl_ws_request`).
+        let ws_key = match self.upgrade {
+            Some(Upgrade::WebSocket) => {
+                let mut nonce = [0u8; 16];
+                cx.easy()
+                    .libraries()
+                    .random(&mut nonce)
+                    .map_err(|_| ErrorKind::FailedInit)?;
+                let mut key = Vec::new();
+                crate::base64::encode(nonce.into_iter(), nonce.len(), &mut key)
+                    .map_err(|_| ErrorKind::OutOfMemory)?;
+                Some(key)
+            }
+            _ => None,
+        };
+        let upgrade = match (&h2c, &ws_key) {
+            (Some(settings), _) => Some(request::Upgrade::H2c(settings)),
+            (None, Some(key)) => Some(request::Upgrade::WebSocket(key)),
+            (None, None) => None,
+        };
         let head = RequestHead {
             method,
             // The application's target replaces only the request line's
@@ -1603,7 +1695,7 @@ impl Request {
                 .alt_used
                 .as_deref()
                 .filter(|_| !http.headers.replaces(b"Alt-Used")),
-            upgrade: upgrade.as_deref(),
+            upgrade,
             forwarded: forwarded.then(|| Forwarding {
                 own_headers: (!options.proxy.unified_headers).then_some(&options.proxy.headers),
             }),
@@ -1619,7 +1711,8 @@ impl Request {
                 SentIn::Http3 => response::HttpVersion::Http3,
             },
             reused,
-            allow_09: http.allow_09,
+            // Not for a WebSocket (`ws_setup_conn`'s `accept_09`).
+            allow_09: http.allow_09 && self.websocket.is_none(),
             asked: Asked {
                 head: self.method == Method::Head,
                 ignore_length: http.ignore_content_length,
@@ -1635,6 +1728,7 @@ impl Request {
                     .time_condition
                     .filter(|_| options.ranged().is_none()),
                 forwarded,
+                websocket: self.websocket.is_some(),
             },
         };
         // Named once in use, though Digest sends nothing before its
@@ -1744,7 +1838,7 @@ impl Request {
             AfterHead::Body(Reading {
                 eos_read: false, ..
             }) if self.filled < self.out.len() && !paused => {
-                self.fill(cx)?;
+                self.fill(cx, lease)?;
             }
             AfterHead::Continue => self.held_back(cx, Held::Unsent),
             AfterHead::Body(_) => {}
@@ -1756,7 +1850,11 @@ impl Request {
 
     /// Read body into the buffer behind what is there: whether anything
     /// came or the body ended (`add_from_client`).
-    fn fill<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
+    fn fill<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+    ) -> Result<bool, ErrorKind> {
         self.start_reading(cx);
         let pausable = self.pipeline.pausable();
         let announced = self.outgoing.announced();
@@ -1783,7 +1881,14 @@ impl Request {
         if announced {
             trace::debug_info(cx, format_args!("cr_exp100_read, pass through"));
         }
-        let got = body.read(cx, dest, pausable, trailer_block);
+        // A WebSocket's is read with its connection lent: its frames are
+        // encoded there, and the read handler may start one.
+        let got = if self.websocket.is_some() {
+            let conn = lease.get();
+            cx.lending_ws(conn, |cx| body.read(cx, dest, pausable, trailer_block))
+        } else {
+            body.read(cx, dest, pausable, trailer_block)
+        };
         upload::client_read(cx, len, &got);
         let got = got?;
         self.filled += got.n;
@@ -1859,7 +1964,7 @@ impl Request {
                 )
             {
                 read = false;
-                self.fill(cx)?;
+                self.fill(cx, lease)?;
             }
             if self.sent == self.filled {
                 if let Sending::Body(Reading { eos_read: true, .. }) = self.outgoing {
@@ -1902,7 +2007,7 @@ impl Request {
                         unreachable!("sending")
                     }
                 }
-                if !read || cx.pause().send_paused() || !self.fill(cx)? {
+                if !read || cx.pause().send_paused() || !self.fill(cx, lease)? {
                     return Ok(false);
                 }
                 read = false;
@@ -2093,7 +2198,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
-        self.pipeline.flush(cx)?;
+        self.flush_output(cx, lease)?;
         let read = match self.receive(cx, lease) {
             Ok(read) => read,
             Err(e) => {
@@ -2211,7 +2316,12 @@ impl Request {
                     if self.sending() {
                         self.upload_done(cx, true);
                     }
-                    let ended = self.end(cx);
+                    let ended = if matches!(self.stage, Stage::Body(Body::WebSocket)) {
+                        let conn = lease.get();
+                        cx.lending_ws(conn, |cx| self.end(cx))
+                    } else {
+                        self.end(cx)
+                    };
                     deliver::write_resp(cx, 0, true, ended);
                     ended?;
                     self.stage = Stage::Done;
@@ -2219,7 +2329,9 @@ impl Request {
                 Ok(Recv::Data(_)) => {
                     let mut rx = std::mem::take(lease.get().rx_mut());
                     let fed = self.input(cx, lease, rx.filled());
-                    let all = rx.filled().len();
+                    // What a WebSocket's 101 left for the application
+                    // stays.
+                    let all = rx.filled().len() - std::mem::take(&mut self.unread);
                     rx.consume(all);
                     *lease.get().rx_mut() = rx;
                     deliver::write_resp(cx, all, false, fed);
@@ -2304,6 +2416,11 @@ impl Request {
                     }
                 }
                 Stage::Head => input = self.head_input(cx, lease, input, false)?,
+                Stage::Body(Body::WebSocket) => {
+                    let conn = lease.get();
+                    cx.lending_ws(conn, |cx| self.pipeline.body(cx, input))?;
+                    input = &[];
+                }
                 Stage::Body(Body::Length | Body::UntilClose | Body::Stream) => {
                     self.pipeline.body(cx, input)?;
                     input = &[];
@@ -2499,13 +2616,13 @@ impl Request {
         {
             let value = value.strip_suffix(b"\n").unwrap_or(value);
             let value = value.strip_suffix(b"\r").unwrap_or(value);
-            hsts::from_field(cx, peer.name(), value, peer.scheme() == HTTPS)?;
+            hsts::from_field(cx, peer.name(), value, peer.scheme().over_tls())?;
         }
         // And its alternative services (`http_header_a`).
         if line.kind == LineKind::Header
             && let Some(value) = strip_name(line.bytes, b"Alt-Svc:")
         {
-            alt_svc::from_field(cx, peer, over, value, peer.scheme() == HTTPS)?;
+            alt_svc::from_field(cx, peer, over, value, peer.scheme().over_tls())?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         // What reading its transfer codings did, traced before the line, as
@@ -2557,13 +2674,24 @@ impl Request {
                         &long
                     }
                 };
-                // A 101 to an upgrade to HTTP/2 switches the connection,
-                // its head written first (`http_on_101_upgrade`).
+                // A 101 to an upgrade switches the connection, its head
+                // written first (`http_on_101_upgrade`): to HTTP/2, which
+                // reads on in it, or to a WebSocket, whose frames follow.
                 let switching = cx.report_mut().response_code() == Some(101);
-                if switching && self.upgrade.is_some() && self.version == SentIn::Http11 {
-                    self.pipeline.header(cx, blank, origin)?;
-                    self.upgraded(cx, lease)?;
-                    return Ok(rest);
+                if switching && self.version == SentIn::Http11 {
+                    match self.upgrade {
+                        Some(Upgrade::H2c(_)) => {
+                            self.pipeline.header(cx, blank, origin)?;
+                            self.upgraded(cx, lease)?;
+                            return Ok(rest);
+                        }
+                        Some(Upgrade::WebSocket) => {
+                            self.pipeline.header(cx, blank, origin)?;
+                            self.unread = self.ws_upgraded(cx, lease, rest)?;
+                            return Ok(&[]);
+                        }
+                        None => {}
+                    }
                 }
                 self.body_start(cx)?;
                 self.pipeline.header(cx, blank, origin)?;
@@ -2836,6 +2964,20 @@ impl Request {
         Ok(())
     }
 
+    /// Replay held output, the WebSocket's connection lent if its frames
+    /// are delivered.
+    pub(crate) fn flush_output<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+    ) -> Result<(), ErrorKind> {
+        if self.pipeline.decodes_websocket() {
+            let conn = lease.get();
+            return cx.lending_ws(conn, |cx| self.pipeline.flush(cx));
+        }
+        self.pipeline.flush(cx)
+    }
+
     /// The connection closed: the response must be whole
     /// (`CLIENTWRITE_EOS`, then `Curl_sendrecv`'s check).
     fn end<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
@@ -2851,7 +2993,10 @@ impl Request {
                     _ => Ok(()),
                 }
             }
-            Stage::Body(Body::Length | Body::UntilClose | Body::Stream) => self.pipeline.end(cx),
+            // With the WebSocket's connection lent.
+            Stage::Body(Body::Length | Body::UntilClose | Body::Stream | Body::WebSocket) => {
+                self.pipeline.end(cx)
+            }
             Stage::Body(Body::Chunked(decoder)) => match decoder.finish() {
                 Ok(()) => Ok(()),
                 Err(e) => Err(chunks_failed(cx, &e)),
@@ -2929,7 +3074,10 @@ impl Request {
             lease.get().mark_close();
         }
         result?;
-        if !premature && *next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount())
+        if !premature
+            && *next != AfterRequest::Retry
+            && !cx.easy().options().connect_only.reserves()
+            && head.got_nothing(self.pipeline.bytecount())
         {
             lease.get().mark_close();
             return Err(trace::fail(
@@ -3069,7 +3217,7 @@ fn cookie_site<'a>(
     cookies::Site {
         host: custom_host.as_deref().unwrap_or(peer.name()),
         path: target.split(|&b| b == b'?').next().unwrap_or_default(),
-        secured: peer.scheme() == HTTPS,
+        secured: peer.scheme().over_tls(),
     }
 }
 

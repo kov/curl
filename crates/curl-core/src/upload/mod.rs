@@ -242,6 +242,14 @@ impl Upload {
         }
     }
 
+    /// The handler is asked again, though it said it was done: a stage
+    /// above it started more to send (`Curl_creader_clear_eos`).
+    pub(crate) fn clear_eos(&mut self) {
+        if self.latch == Latch::Eof {
+            self.latch = Latch::Open;
+        }
+    }
+
     /// The body's size, where known (`Curl_creader_total_length`).
     pub(crate) fn size(&self) -> Option<u64> {
         match &self.source {

@@ -52,10 +52,12 @@ pub(crate) const MAX_WRITE: usize = 65536;
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_header_line_goes_out_whole
 --- old
-        OutKind::Body => deliver_body(cx, bytes, pausable, listing),
+            Ok(0)
+        }
         OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => {
 --- new
-        OutKind::Body => deliver_body(cx, bytes, pausable, listing),
+            Ok(0)
+        }
         OutKind::Header(_) | OutKind::Status(_) if bytes.len() > MAX_WRITE => {
             deliver(cx, kind, &bytes[..MAX_WRITE], pausable, None)?;
             deliver(cx, kind, &bytes[MAX_WRITE..], pausable, None)
@@ -153,10 +155,10 @@ witness: curl-core deliver::tests::held_output_is_replayed_in_the_order_it_came
 file: crates/curl-core/src/deliver/held.rs
 witness: curl-core deliver::tests::output_written_while_held_goes_behind_it
 --- old
-        let joins = kind == OutKind::Body
+        let joins = matches!(kind, OutKind::Body | OutKind::EmptyBody)
 --- new
         let joins = false
-            && kind == OutKind::Body
+            && matches!(kind, OutKind::Body | OutKind::EmptyBody)
 
 === a write after held output skips the queue
 file: crates/curl-core/src/deliver/mod.rs
@@ -418,7 +420,7 @@ witness: curl-core proto::http::tests::write_trace::a_coded_body_held_at_the_gat
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core proto::http::tests::write_trace::a_coded_body_held_at_the_gate_is_traced_as_it_is_held_and_flushed
 --- old
-            && held.last_kind().map(is_body) != Some(is_body(kind))
+            && held.last_kind().map(out_type) != Some(out_type(kind))
 --- new
             && false
 

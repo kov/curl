@@ -48,3 +48,4 @@ mod untrusted;
 mod upload;
 pub mod url;
 pub mod version;
+pub mod ws;

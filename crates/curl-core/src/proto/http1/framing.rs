@@ -54,6 +54,8 @@ pub(crate) struct Asked {
     /// alone is the proxy's to read (`origin_is_proxy`): through a
     /// tunnel, or to a host reached without one, it is the origin's.
     pub(crate) forwarded: bool,
+    /// The request asks for a WebSocket, which only a 101 answers.
+    pub(crate) websocket: bool,
 }
 
 /// How the body after a final head ends.
@@ -191,6 +193,8 @@ pub(crate) enum FramingError {
     MultipleLocations,
     /// The response's code is an error the request asked to fail on.
     Returned(u16),
+    /// A final response to a request for a WebSocket.
+    RefusedWebSocket(u16),
     /// The response to a resumed GET starts elsewhere than asked.
     CannotResume,
     OutOfMemory,
@@ -239,6 +243,9 @@ impl fmt::Display for FramingError {
             FramingError::MultipleLocations => f.write_str("Multiple Location headers"),
             FramingError::Returned(code) => {
                 write!(f, "The requested URL returned error: {code}")
+            }
+            FramingError::RefusedWebSocket(code) => {
+                write!(f, "Refused WebSocket upgrade: {code}")
             }
             FramingError::CannotResume => {
                 f.write_str("HTTP server does not seem to support byte ranges. Cannot resume.")
@@ -650,6 +657,11 @@ impl Meta {
                 challenges.refuse();
             }
         }
+        // Any final response to a request for a WebSocket is a refusal
+        // (`http_on_response`).
+        if asked.websocket {
+            return (note, Err(FramingError::RefusedWebSocket(status.code)));
+        }
         self.auth = AuthAct::of(status.code, &self.challenges, &asked.auth);
         if should_fail(status.code, asked, &self.auth) {
             return (note, Err(FramingError::Returned(status.code)));
@@ -998,6 +1010,7 @@ pub(crate) mod arbitrary {
                     auth,
                     http_proxy: b[6],
                     forwarded: b[7],
+                    websocket: false,
                     time_condition,
                 },
             )

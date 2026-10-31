@@ -1485,6 +1485,7 @@ impl Conn {
             return;
         };
         if cfg!(feature = "debug-hooks")
+            && line.says_goodbye()
             && let Some(t) = trace
         {
             t.info(format_args!(
@@ -1517,6 +1518,37 @@ impl Conn {
             "one protocol's state per connection"
         );
         self.session = mux::Speaks::Line(line);
+    }
+
+    /// It speaks WebSocket from here, its HTTP/1.1 request upgraded by a
+    /// 101 (`Curl_ws_accept`).
+    pub(crate) fn switch_to_ws(&mut self, ws: Box<line::LineConn>) {
+        assert!(
+            matches!(self.session, mux::Speaks::Unmade | mux::Speaks::Http1),
+            "a WebSocket upgrades an HTTP/1.1 connection"
+        );
+        assert!(
+            matches!(*ws, line::LineConn::Ws(_)),
+            "switched to a WebSocket"
+        );
+        self.session = mux::Speaks::Line(ws);
+    }
+
+    /// Its WebSocket, if it switched to one, and what that works over,
+    /// borrowed apart.
+    pub(crate) fn ws_mut(&mut self) -> Option<(&mut crate::proto::ws::WsConn, mux::Carrier<'_>)> {
+        match self.line_mut() {
+            Some((line::LineConn::Ws(ws), carrier)) => Some((&mut **ws, carrier)),
+            _ => None,
+        }
+    }
+
+    /// Its WebSocket, if it switched to one.
+    pub(crate) fn ws(&self) -> Option<&crate::proto::ws::WsConn> {
+        match self.line() {
+            Some(line::LineConn::Ws(ws)) => Some(ws),
+            _ => None,
+        }
     }
 
     /// Say goodbye from the top as it shuts down: its session's, which

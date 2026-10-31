@@ -497,6 +497,7 @@ mod tests {
                 auth: Default::default(),
                 http_proxy: false,
                 forwarded: false,
+                websocket: false,
                 time_condition: None,
             },
         };

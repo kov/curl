@@ -288,7 +288,8 @@ mod tests {
     use crate::time::{Clock as _, ManualClock};
 
     /// The socket is handed to a library only while no byte received
-    /// waits unused in the stream: the library would read past it.
+    /// waits unused in the stream, and no layer works on its bytes: the
+    /// library would read past them.
     #[test]
     fn a_socket_with_bytes_held_is_not_handed_over() {
         let clock = ManualClock::new().unwrap();
@@ -305,6 +306,11 @@ mod tests {
         let held = stream.received().len();
         stream.consume(held);
         assert!(stream.bare_socket().is_some(), "all of it used");
+        stream
+            .layers_mut()
+            .push(crate::conn::layer::testing::upper())
+            .unwrap();
+        assert!(stream.bare_socket().is_none(), "a layer works on its bytes");
         net.close(stream.into_socket());
     }
 }

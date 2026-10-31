@@ -2920,31 +2920,37 @@ fn ssh_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
                 Ok(curl_os::env::var(var.as_bytes())?
                     .map(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec))
             };
-            found = match crate::config::find_known_hosts(
+            let path = crate::config::find_known_hosts(
                 env,
                 curl_os::users::home_directory,
                 crate::config::readable,
             )
             .map_err(oom)?
-            {
-                Some(path) => Some(std::os::unix::ffi::OsStringExt::into_vec(
-                    path.into_os_string(),
-                )),
-                // One that might do, as the host is not checked otherwise.
-                None if op.hostpubmd5.is_none() && op.hostpubsha256.is_none() => {
-                    let home = curl_os::env::var(b"HOME").map_err(oom)?.unwrap_or_default();
-                    let mut path = Vec::new();
-                    path.try_extend_from_slice(&home).map_err(oom)?;
-                    path.try_extend_from_slice(b"/.ssh/known_hosts")
-                        .map_err(oom)?;
-                    Some(path)
-                }
-                None => None,
-            };
+            .map(|p| std::os::unix::ffi::OsStringExt::into_vec(p.into_os_string()));
+            let checked = op.hostpubmd5.is_some() || op.hostpubsha256.is_some();
+            let home = curl_os::env::var(b"HOME").map_err(oom)?;
+            found = known_hosts_default(path, checked, home.as_deref()).map_err(oom)?;
             found.as_deref()
         }
     };
     string(s, "CURLOPT_SSH_KNOWNHOSTS", known, |g| &mut g.known_hosts)
+}
+
+/// The known-hosts file when none is given: the user's one `found`, else
+/// one under `home` that might do when the host is not checked by a
+/// fingerprint (`checked`), else none (`ssh_setopts`).
+fn known_hosts_default(
+    found: Option<Vec<u8>>,
+    checked: bool,
+    home: Option<&[u8]>,
+) -> Result<Option<Vec<u8>>, OutOfMemory> {
+    if found.is_some() || checked {
+        return Ok(found);
+    }
+    let mut path = Vec::new();
+    path.try_extend_from_slice(home.unwrap_or_default())?;
+    path.try_extend_from_slice(b"/.ssh/known_hosts")?;
+    Ok(Some(path))
 }
 
 fn ftp_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
@@ -4548,6 +4554,67 @@ mod tests {
             "{off}"
         );
         assert!(off.contains("fastopen: true"), "{off}");
+    }
+
+    /// For an SSH URL the key files, fingerprints, compression and
+    /// known-hosts file are set as C's `ssh_setopts` sets them; with
+    /// `--insecure`, no known-hosts file.
+    #[test]
+    fn sets_the_ssh_options_as_c() {
+        let args = [
+            "--key",
+            "k",
+            "--pubkey",
+            "p",
+            "--hostpubsha256",
+            "s",
+            "--compressed-ssh",
+            "--knownhosts",
+            "/dev/null",
+        ];
+        let (text, _) = set_up_url(&args, "sftp://h/").unwrap();
+        for line in [
+            "curl_easy_setopt(curl, CURLOPT_SSH_PRIVATE_KEYFILE, \"k\");",
+            "curl_easy_setopt(curl, CURLOPT_SSH_PUBLIC_KEYFILE, \"p\");",
+            "curl_easy_setopt(curl, CURLOPT_SSH_HOST_PUBLIC_KEY_SHA256, \"s\");",
+            "curl_easy_setopt(curl, CURLOPT_SSH_COMPRESSION, 1L);",
+            "curl_easy_setopt(curl, CURLOPT_SSH_KNOWNHOSTS, \"/dev/null\");",
+        ] {
+            assert!(text.contains(line), "{line} in {text}");
+        }
+        let (text, _) = set_up_url(&["-k", "--knownhosts", "/dev/null"], "sftp://h/").unwrap();
+        assert!(!text.contains("CURLOPT_SSH_KNOWNHOSTS"), "{text}");
+        // `--hostpubmd5` takes 32 characters, no more nor fewer.
+        let md5 = "0123456789abcdef0123456789abcdef";
+        let (text, _) = set_up_url(&["--hostpubmd5", md5], "sftp://h/").unwrap();
+        assert!(text.contains(&format!("CURLOPT_SSH_HOST_PUBLIC_KEY_MD5, \"{md5}\"")));
+        assert!(set_up_url(&["--hostpubmd5", &md5[1..]], "sftp://h/").is_none());
+    }
+
+    /// With no known-hosts file given or found, one under `$HOME` is set
+    /// unless a fingerprint checks the host.
+    #[test]
+    fn the_known_hosts_default_is_c_s() {
+        let found = Some(b"/f/.ssh/known_hosts".to_vec());
+        assert_eq!(
+            known_hosts_default(found.clone(), false, None).unwrap(),
+            found
+        );
+        assert_eq!(
+            known_hosts_default(found.clone(), true, None).unwrap(),
+            found
+        );
+        assert_eq!(known_hosts_default(None, true, Some(b"/h")).unwrap(), None);
+        assert_eq!(
+            known_hosts_default(None, false, Some(b"/h"))
+                .unwrap()
+                .as_deref(),
+            Some(&b"/h/.ssh/known_hosts"[..])
+        );
+        assert_eq!(
+            known_hosts_default(None, false, None).unwrap().as_deref(),
+            Some(&b"/.ssh/known_hosts"[..])
+        );
     }
 
     /// The peer and its name are verified unless `--insecure` says not

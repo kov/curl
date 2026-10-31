@@ -223,7 +223,9 @@ not a difference: it is tracked in `MILESTONES.md`.
   TCP component's trace: C traces a `recv(len=1)` for each byte of the answer (measured against
   the C build: 19 for `HTTP/1.1 200 OK` and its blank line). To be looked at again against the
   command-line corpus. Pinned by `bytes_after_a_tunnel_s_answer_are_read_first`
-  (`crates/curl-core/src/proto/http/tests.rs`).
+  (`crates/curl-core/src/proto/http/tests.rs`). Not for `scp:` and `sftp:`, whose library is
+  handed the socket and reads past any buffer of ours: their tunnel reads the answer a byte at
+  a time, as C's, so the SSH banner stays in the socket.
 
 ## Waits C times from the clock's origin
 

@@ -238,6 +238,8 @@ static VERSION: VersionInfo = VersionInfo {
         Protocol::Imaps,
         Protocol::Pop3,
         Protocol::Pop3s,
+        Protocol::Scp,
+        Protocol::Sftp,
         Protocol::Smtp,
         Protocol::Smtps,
     ],
@@ -263,8 +265,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "file", "ftp", "ftps", "http", "https", "imap", "imaps", "pop3", "pop3s", "smtp",
-                "smtps"
+                "file", "ftp", "ftps", "http", "https", "imap", "imaps", "pop3", "pop3s", "scp",
+                "sftp", "smtp", "smtps"
             ]
         );
         for &p in version().protocols {

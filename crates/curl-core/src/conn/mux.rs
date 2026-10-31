@@ -240,6 +240,17 @@ impl Carrier<'_> {
         stream.recv(cx, max, Some(socket))
     }
 
+    /// The stream's socket, to hand a library that reads and writes it
+    /// past every layer and buffer of ours (libssh's `SSH_OPTIONS_FD`):
+    /// none while a layer works on the stream's bytes or bytes received
+    /// wait unused, which the library would never see.
+    pub(crate) fn bare_socket(&self) -> Option<super::io::SocketKey> {
+        match &self.over {
+            Over::Stream(stream) => stream.bare_socket().map(|s| s.key()),
+            Over::Datagrams(_) => None,
+        }
+    }
+
     /// The connection is not to be reused: its server closed it under a
     /// protocol that closes on its end, as HTTP does.
     pub(crate) fn mark_close(&mut self) {

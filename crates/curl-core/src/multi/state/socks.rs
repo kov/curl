@@ -158,7 +158,7 @@ fn run<H: Host>(
             return Ok(true);
         }
         let took = h.take_saying(dialed.received(), &mut |line| say(cx, line));
-        match took {
+        let need = match took {
             Ok(Took::Read(n)) => {
                 dialed.consume(n);
                 if h.gss_starts() {
@@ -168,11 +168,19 @@ fn run<H: Host>(
                 }
                 continue;
             }
-            Ok(Took::Need(_)) => {}
+            Ok(Took::Need(need)) => need,
             Err(e) => return Err(refused(cx, &e)),
-        }
+        };
         let received = dialed.received().len();
-        match dialed.recv(cx, READ_SIZE, None) {
+        // For a scheme whose library is handed the socket, no further than
+        // the answer needs, as C reads it: what follows is the server's,
+        // for the library to read past any buffer of ours.
+        let size = if lent.route.target().scheme().hands_socket_over() {
+            need.saturating_sub(received).max(1)
+        } else {
+            READ_SIZE
+        };
+        match dialed.recv(cx, size, None) {
             Ok(Recv::Data(_)) => {}
             Ok(Recv::WouldBlock) => return Ok(false),
             Ok(Recv::Eof) | Err(RecvFailed::Os(_)) if let Some(e) = h.gss_recv_failed(received) => {

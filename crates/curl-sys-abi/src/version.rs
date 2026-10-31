@@ -304,8 +304,8 @@ mod tests {
         assert_eq!(
             want,
             [
-                "file", "ftp", "ftps", "http", "https", "imap", "imaps", "pop3", "pop3s", "smtp",
-                "smtps"
+                "file", "ftp", "ftps", "http", "https", "imap", "imaps", "pop3", "pop3s", "scp",
+                "sftp", "smtp", "smtps"
             ]
         );
     }

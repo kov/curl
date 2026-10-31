@@ -620,11 +620,11 @@ witness: curl-core proto::http::tests::tls::http_through_an_https_proxy_goes_ove
 file: crates/curl-core/src/multi/state/tunnel.rs
 witness: curl-core proto::http::tests::https_trace::tls_in_tls_sets_up_as_c
 --- old
-        let size = if lent.route.proxy_tls().is_some() {
+        let size = if lent.route.proxy_tls().is_some() || hands_over {
             1
 --- new
-        let size = if lent.route.proxy_tls().is_some() {
-            READ_SIZE
+        let size = if lent.route.proxy_tls().is_some() && hands_over {
+            1
 
 === the proxy's TLS answers the ALPN question a tunnel above it keeps
 file: crates/curl-core/src/multi/state.rs

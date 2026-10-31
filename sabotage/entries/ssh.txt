@@ -1,0 +1,62 @@
+# SCP and SFTP (crates/curl-core/src/proto/ssh), over the fake SSH library
+# in its tests.
+
+=== an HTTP proxy's answer is read in bulk ahead of SSH, holding the banner
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::ssh::tests::the_socket_is_handed_over_past_a_tunnel
+--- old
+        let hands_over = lent.route.target().scheme().hands_socket_over();
+--- new
+        let hands_over = lent.route.destination().scheme().hands_socket_over();
+
+=== a SOCKS grant is read in bulk ahead of SSH, holding the banner
+file: crates/curl-core/src/multi/state/socks.rs
+witness: curl-core proto::ssh::tests::the_socket_is_handed_over_past_a_socks_grant
+--- old
+            need.saturating_sub(received).max(1)
+--- new
+            need.saturating_sub(received).max(READ_SIZE)
+
+=== the socket is handed over with received bytes unread
+file: crates/curl-core/src/conn/stream.rs
+witness: curl-core conn::stream::tests::a_socket_with_bytes_held_is_not_handed_over
+--- old
+        (self.layers.is_empty() && self.rx.filled().is_empty()).then(|| self.socket.socket())
+--- new
+        self.layers.is_empty().then(|| self.socket.socket())
+
+=== a quote command starting with `*` fails the transfer
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::quote_commands_run_before_the_transfer
+--- old
+        Rc::Error if !sc.accept_fail => {
+--- new
+        Rc::Error => {
+
+=== text after a quote command's last path is taken
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::a_failing_quote_command_fails_the_transfer
+--- old
+    if rest.is_empty() {
+        sc.to(cx, state);
+--- new
+    if true {
+        sc.to(cx, state);
+
+=== the password login is never tried
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::the_password_logs_in_when_the_key_may_not
+--- old
+    } else if m.has(Methods::PASSWORD) {
+        sc.to(cx, State::AuthPassInit);
+--- new
+    } else if false {
+        sc.to(cx, State::AuthPassInit);
+
+=== a listed link's target is left out
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::a_directory_is_listed
+--- old
+        let link = attrs.flags & Attrs::PERMISSIONS != 0 && attrs.permissions & S_IFMT == S_IFLNK;
+--- new
+        let link = attrs.flags & Attrs::PERMISSIONS != 0 && attrs.permissions & S_IFMT == 0;

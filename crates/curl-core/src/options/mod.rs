@@ -96,6 +96,8 @@ pub struct Options {
     pub line: Cold<Line>,
     pub proxy: Cold<Proxy>,
     pub schemes: Cold<Schemes>,
+    /// What SCP and SFTP are told.
+    pub ssh: Cold<Ssh>,
     pub http: Http,
     pub tls: Tls,
     /// What the test protocol `script:` plays.
@@ -796,6 +798,7 @@ impl Options {
             line: self.line.try_clone(Line::try_clone)?,
             proxy: self.proxy.try_clone(Proxy::try_clone)?,
             schemes: self.schemes.try_clone(|s| Ok(*s))?,
+            ssh: self.ssh.try_clone(Ssh::try_clone)?,
             sockets: self.sockets.try_clone(Sockets::try_clone)?,
             http: self.http.try_clone()?,
             tls: self.tls.try_clone()?,
@@ -1393,6 +1396,10 @@ pub(crate) enum Ranged<'o> {
 pub struct FileMode(u16);
 
 impl FileMode {
+    /// A directory's default: read, write and search for the owner, read
+    /// and search for the rest.
+    pub const DIRECTORY: FileMode = FileMode(0o755);
+
     /// `bits`, if they are permission bits alone.
     pub fn new(bits: u16) -> Option<FileMode> {
         (bits <= 0o777).then_some(FileMode(bits))
@@ -2370,6 +2377,84 @@ impl Schemes {
             return true;
         }
         self.allowed.contains(scheme) && (!redirected || self.redirect.contains(scheme))
+    }
+}
+
+/// What SCP and SFTP are told (C's `ssh_*` settings and strings).
+#[derive(Debug)]
+pub struct Ssh {
+    /// The ways the user may log in (`CURLOPT_SSH_AUTH_TYPES`).
+    pub auth_types: SshAuthTypes,
+    /// The user's key files: the public one, if not the private one's,
+    /// and the private one, if not a default one
+    /// (`CURLOPT_SSH_PUBLIC_KEYFILE`, `CURLOPT_SSH_PRIVATE_KEYFILE`).
+    pub public_key: Option<Vec<u8>>,
+    pub private_key: Option<Vec<u8>>,
+    /// The fingerprint the server's key must have, in hex
+    /// (`CURLOPT_SSH_HOST_PUBLIC_KEY_MD5`) or in base64
+    /// (`CURLOPT_SSH_HOST_PUBLIC_KEY_SHA256`).
+    pub host_key_md5: Option<Vec<u8>>,
+    pub host_key_sha256: Option<Vec<u8>>,
+    /// The known-hosts file the server's key is looked up in
+    /// (`CURLOPT_SSH_KNOWNHOSTS`).
+    pub known_hosts: Option<Vec<u8>>,
+    /// Decides on the server's key, against the known-hosts file's
+    /// (`CURLOPT_SSH_KEYFUNCTION`).
+    pub key_handler: Option<Handler<dyn crate::handler::SshKeyHandler>>,
+    /// zlib compression is offered (`CURLOPT_SSH_COMPRESSION`).
+    pub compression: bool,
+    /// What a directory SFTP makes may be opened for
+    /// (`CURLOPT_NEW_DIRECTORY_PERMS`).
+    pub new_directory_mode: FileMode,
+}
+
+impl ColdGroup for Ssh {
+    const UNSET: &'static Ssh = &Ssh::NONE;
+    const NONE: Ssh = Ssh {
+        auth_types: SshAuthTypes::ANY,
+        public_key: None,
+        private_key: None,
+        host_key_md5: None,
+        host_key_sha256: None,
+        known_hosts: None,
+        key_handler: None,
+        compression: false,
+        new_directory_mode: FileMode::DIRECTORY,
+    };
+}
+
+impl Ssh {
+    fn try_clone(&self) -> Result<Ssh, OutOfMemory> {
+        Ok(Ssh {
+            auth_types: self.auth_types,
+            public_key: self.public_key.as_deref().map(copy).transpose()?,
+            private_key: self.private_key.as_deref().map(copy).transpose()?,
+            host_key_md5: self.host_key_md5.as_deref().map(copy).transpose()?,
+            host_key_sha256: self.host_key_sha256.as_deref().map(copy).transpose()?,
+            known_hosts: self.known_hosts.as_deref().map(copy).transpose()?,
+            key_handler: self.key_handler.clone(),
+            compression: self.compression,
+            new_directory_mode: self.new_directory_mode,
+        })
+    }
+}
+
+/// The ways an SSH user may log in (`CURLSSH_AUTH_*`), as bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SshAuthTypes(pub u32);
+
+impl SshAuthTypes {
+    pub const ANY: SshAuthTypes = SshAuthTypes(u32::MAX);
+    pub const PUBLICKEY: u32 = 1 << 0;
+    pub const PASSWORD: u32 = 1 << 1;
+    pub const HOST: u32 = 1 << 2;
+    pub const KEYBOARD: u32 = 1 << 3;
+    pub const AGENT: u32 = 1 << 4;
+    pub const GSSAPI: u32 = 1 << 5;
+
+    /// Whether it lets the user log in by `way`.
+    pub fn allows(self, way: u32) -> bool {
+        self.0 & way != 0
     }
 }
 

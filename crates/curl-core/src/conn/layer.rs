@@ -741,6 +741,11 @@ impl LayerStack {
         }
     }
 
+    /// Whether it has no layer.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.layers.as_deref().is_none_or(Vec::is_empty)
+    }
+
     /// Put `layer` on top.
     pub(crate) fn push(&mut self, layer: Box<dyn Layer>) -> Result<(), OutOfMemory> {
         let layers = match &mut self.layers {

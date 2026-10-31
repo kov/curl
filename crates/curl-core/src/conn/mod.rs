@@ -267,8 +267,18 @@ impl Route {
                 _ => true,
             },
         };
+        // An SSH connection serves only a transfer that found the same key
+        // files, both having them (`ssh_config_matches`).
+        fn keys(cold: Option<&RouteCold>) -> Option<&crate::proto::ssh::Keys> {
+            cold.and_then(|c| c.ssh.as_ref())
+        }
+        let ssh_same = match (keys(have.cold.as_deref()), keys(want.cold.as_deref())) {
+            (Some(h), Some(w)) => h.same(w),
+            (h, w) => h.is_none() && w.is_none(),
+        };
         proxy.as_ref().map(ProxyRoute::key) == want_proxy.as_ref().map(ProxyRoute::key)
             && ftp_same
+            && ssh_same
             // TLS made with every setting the transfer's has, or none on
             // both (`url_match_ssl_config`): a transfer that verifies its
             // peer never takes a connection made without.
@@ -348,6 +358,10 @@ pub(crate) struct RouteCold {
     /// transfer reusing it must share (`Curl_ftp_conns_match`); none for
     /// another scheme's.
     pub(crate) ftp: Option<FtpSetup>,
+    /// The key files an SCP or SFTP connection logs in with, as its first
+    /// transfer found them, which a transfer reusing it must find the
+    /// same (`ssh_config_matches`); none for another scheme's.
+    pub(crate) ssh: Option<crate::proto::ssh::Keys>,
 }
 
 /// What an FTP connection logged in and set up with, beyond its
@@ -393,6 +407,7 @@ impl RouteCold {
             && self.upgrade.is_none()
             && self.use_ssl == crate::options::UseSsl::None
             && self.ftp.is_none()
+            && self.ssh.is_none()
     }
 }
 
@@ -853,6 +868,14 @@ impl Scheme {
     /// (`PROTOPT_CONN_REUSE`).
     pub(crate) fn reuse(self) -> bool {
         self.0.flags.conn_reuse
+    }
+
+    /// Whether its library is handed the connection's socket, to read and
+    /// write past every layer of ours: SCP's and SFTP's, which libssh
+    /// speaks (`SSH_OPTIONS_FD`).
+    pub(crate) fn hands_socket_over(self) -> bool {
+        use crate::url::schemes::Protocol;
+        matches!(self.0.protocol, Some(Protocol::Scp | Protocol::Sftp))
     }
 
     /// Whether a request of it may be handed whole to an HTTP proxy: one
@@ -2164,6 +2187,7 @@ mod tests {
                         upgrade: upgrade.map(|t| TlsIdentity::of(t, Default::default()).unwrap()),
                         use_ssl,
                         ftp,
+                        ssh: None,
                     })
                     .unwrap(),
                 ),
@@ -2293,6 +2317,7 @@ mod tests {
                         upgrade: None,
                         use_ssl: crate::options::UseSsl::None,
                         ftp: None,
+                        ssh: None,
                     })
                     .unwrap()
                 }),

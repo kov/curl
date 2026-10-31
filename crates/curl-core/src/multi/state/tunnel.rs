@@ -466,8 +466,12 @@ fn run<H: Host>(
         // (`recv_CONNECT_resp`, `H1_CONNECT`). Through an HTTPS proxy's
         // TLS, each of those reads is one of the TLS filter's, which says
         // so: they are made a byte at a time too, and what follows the
-        // answer stays in the TLS session.
-        let size = if lent.route.proxy_tls().is_some() {
+        // answer stays in the TLS session. For a scheme whose library is
+        // handed the socket, what follows the answer is the server's and
+        // the library's to read, past any buffer of ours: SSH's banner
+        // comes with the proxy's answer.
+        let hands_over = lent.route.target().scheme().hands_socket_over();
+        let size = if lent.route.proxy_tls().is_some() || hands_over {
             1
         } else {
             READ_SIZE

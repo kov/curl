@@ -5697,6 +5697,7 @@ fn route_cold<H: Host>(
         upgrade,
         use_ssl,
         ftp,
+        ssh: proto.take_ssh_keys(),
     };
     if cold.is_empty() {
         return Ok(None);

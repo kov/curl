@@ -238,6 +238,51 @@ pub trait PrereqHandler: Send + Sync {
     ) -> Result<(), crate::multi::Abort>;
 }
 
+/// A host key, as an SSH key handler is given it: base64, as a
+/// known-hosts file holds it, and its type.
+#[derive(Clone, Copy, Debug)]
+pub struct HostKey<'a> {
+    pub base64: &'a [u8],
+    pub kind: crate::ssh::KeyType,
+}
+
+/// How the server's key compares with the known-hosts file's
+/// (`enum curl_khmatch`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyMatch {
+    Ok,
+    Mismatch,
+    /// The file has none for the host.
+    Missing,
+}
+
+/// What an SSH key handler decides of the server's key
+/// (`enum curl_khstat`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyVerdict {
+    /// Fine, and to be added to the known-hosts file.
+    FineAddToFile,
+    Fine,
+    Reject,
+    /// Not now: the connection is refused, as for a rejected key.
+    Defer,
+    /// Fine, to replace the file's (which libssh's SSH does not do: it
+    /// refuses the key).
+    FineReplace,
+}
+
+/// Decides on an SSH server's key, given the known-hosts file's for the
+/// host if it has one, and how they compare (`CURLOPT_SSH_KEYFUNCTION`).
+pub trait SshKeyHandler: Send + Sync {
+    fn check(
+        &self,
+        cx: &mut TransferCx<'_>,
+        known: Option<HostKey<'_>>,
+        found: HostKey<'_>,
+        matched: KeyMatch,
+    ) -> KeyVerdict;
+}
+
 /// Told as each resolve of a name starts, an address or `localhost`
 /// answered without a resolver included, but not one the cache answers
 /// (`CURLOPT_RESOLVER_START_FUNCTION`). An abort fails the transfer
@@ -439,6 +484,12 @@ impl Handler<dyn SocketConfigurer> {
 
 impl Handler<dyn PrereqHandler> {
     pub fn prereq(handler: impl PrereqHandler + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn SshKeyHandler> {
+    pub fn ssh_key(handler: impl SshKeyHandler + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
     }
 }

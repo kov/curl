@@ -128,6 +128,13 @@ impl Stream {
         self.socket.socket()
     }
 
+    /// Its socket, for a library that reads and writes it itself; none
+    /// while a layer works on its bytes, or bytes received wait unused:
+    /// the library would read past them.
+    pub(crate) fn bare_socket(&self) -> Option<&dyn Socket> {
+        (self.layers.is_empty() && self.rx.filled().is_empty()).then(|| self.socket.socket())
+    }
+
     /// Its socket has received a byte, as C's socket filter answers how
     /// long that took once it has (`CF_QUERY_CONNECT_REPLY_MS`).
     pub(crate) fn heard(&self) -> bool {
@@ -255,7 +262,13 @@ impl Stream {
 
     /// Read and drop up to 1 KB of what the peer sent, before a clean
     /// close, whatever the read says, as C does (`cf_socket_shutdown`).
+    /// The socket is made nonblocking first, as a library it was lent to
+    /// (libssh, sharing its file description) may have left it blocking;
+    /// one that cannot be is not read.
     pub(crate) fn drain(&self) {
+        if self.socket().set_nonblocking().is_err() {
+            return;
+        }
         let mut buf = [0u8; 1024];
         // A failure, or nothing to read, leaves the close as it was.
         let _ = self.socket().recv(&mut buf);
@@ -264,5 +277,34 @@ impl Stream {
     /// The connection's end here, if the system says.
     pub(crate) fn local_addr(&self) -> Option<SocketAddr> {
         self.socket.socket().local_addr().ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conn::io::{Closer, Conversation, FakeNet, Net as _, Peer, dial};
+    use crate::conn::layer::Silent;
+    use crate::time::{Clock as _, ManualClock};
+
+    /// The socket is handed to a library only while no byte received
+    /// waits unused in the stream: the library would read past it.
+    #[test]
+    fn a_socket_with_bytes_held_is_not_handed_over() {
+        let clock = ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], 22));
+        let talk = Conversation::replies(&[b"SSH-2.0-x\r\n"], false).greeting();
+        let mut net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk);
+        let mut stream = Stream::new(Sock::new(dial(&mut net, at), Closer::System));
+        assert!(stream.bare_socket().is_some(), "nothing received yet");
+        let mut cx = Silent(clock.now());
+        assert!(matches!(stream.recv(&mut cx, 4, None), Ok(Recv::Data(_))));
+        assert!(stream.bare_socket().is_none(), "the banner's start is held");
+        let held = stream.received().len();
+        stream.consume(held);
+        assert!(stream.bare_socket().is_some(), "all of it used");
+        net.close(stream.into_socket());
     }
 }

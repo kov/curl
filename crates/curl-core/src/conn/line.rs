@@ -3,8 +3,8 @@
 //! FTP's, IMAP's, POP3's, SMTP's and SSH's state between requests, and
 //! the goodbye each says as the connection shuts down (the scheme's
 //! `disconnect`). The connection holds it as what it speaks, so that it
-//! is one fact with a session: no protocol has both. FTP's, IMAP's,
-//! POP3's and SMTP's are built, and the test protocol's.
+//! is one fact with a session: no protocol has both. Each is built, and
+//! the test protocol's.
 
 use super::layer::LayerCx;
 use super::mux::Carrier;
@@ -24,6 +24,9 @@ pub(crate) enum LineConn {
     /// SMTP's: its back and forth, what the server offered, how it
     /// logged in, and the name it greets the server with.
     Smtp(crate::proto::smtp::SmtpConn),
+    /// SCP's and SFTP's: the SSH library's session over the connection's
+    /// socket, and where its state machine is; boxed, as FTP's.
+    Ssh(Box<crate::proto::ssh::SshConn>),
     /// `tcp:`'s, which says a goodbye of its own.
     #[cfg(any(test, feature = "test-util"))]
     Test(Farewell),
@@ -41,6 +44,8 @@ impl LineConn {
             LineConn::Pop3(ref mut p) => p.goodbye(cx, below, dead),
             LineConn::Imap(ref mut p) => p.goodbye(cx, below, dead),
             LineConn::Smtp(ref mut p) => p.goodbye(cx, below, dead),
+            // Said dead or not, as C's SSH disconnect ignores it.
+            LineConn::Ssh(ref mut p) => p.goodbye(cx),
             #[cfg(any(test, feature = "test-util"))]
             LineConn::Test(ref mut f) => f.goodbye(cx, below, dead),
         }

@@ -3487,6 +3487,43 @@ fn quit_is_said_only_on_a_connection_still_trusted() {
     assert!(!quits(&dead), "{}", received(&dead));
 }
 
+/// While the server is to connect back, an answer that comes instead
+/// ends the wait: a refusal fails the accept, any other answer is weird
+/// (`ftp_check_ctrl_on_data_wait`).
+#[test]
+fn an_answer_instead_of_the_server_s_connection_fails_the_accept() {
+    for (ahead, code, failed) in [
+        (
+            &b"150 here\r\n425 no\r\n"[..],
+            "FTP code: 425",
+            ErrorKind::FtpAcceptFailed,
+        ),
+        (
+            b"150 here\r\n350 hm\r\n",
+            "FTP code: 350",
+            ErrorKind::WeirdServerReply,
+        ),
+    ] {
+        let ahead: &'static [u8] = Box::leak(ahead.to_vec().into_boxed_slice());
+        let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+        replies.push(ahead);
+        let control = Conversation::replies(&replies, false).greeting();
+        let data = Conversation::replies(&[b"hello"], true).greeting();
+        let (mut m, _) = serving_active(&[&control], &[&data]);
+        let (id, _, text) = added(&mut m, URL, |o| {
+            o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let said = text.text();
+        assert_eq!(result, Err(failed), "{said}");
+        assert!(
+            said.contains("Ctrl conn has data while waiting for data conn"),
+            "{said}"
+        );
+        assert!(said.contains(code), "{said}");
+    }
+}
+
 /// A range whose data connection closes before its end fails, saying
 /// how many bytes it missed (`cw_download_write`'s end of response).
 #[test]

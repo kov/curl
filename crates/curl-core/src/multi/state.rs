@@ -5525,11 +5525,12 @@ fn start_leg<H: Host>(
         return TransferState::Init.fail(trace::fail_with(cx, kind, &why));
     }
     // C reads a `.netrc` before it checks the protocol is built and
-    // allowed; an HTTP, IMAP, POP3 or SMTP request reads it as it is
-    // made, any other URL here.
+    // allowed; an FTP, HTTP, IMAP, POP3, SMTP or SSH request reads it as
+    // it is made, any other URL here.
     let reads_own = match &*scheme {
         b"ftp" | b"http" | b"imap" | b"pop3" | b"smtp" => true,
         b"ftps" | b"https" | b"imaps" | b"pop3s" | b"smtps" => cx.easy().libraries().tls.is_some(),
+        b"scp" | b"sftp" => cx.easy().libraries().ssh.is_some(),
         _ => false,
     };
     if (refused || !reads_own)

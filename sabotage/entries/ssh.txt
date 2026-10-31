@@ -139,3 +139,10 @@ witness: curl-core proto::ssh::tests::the_ssh_trace_says_what_its_pollset_waits_
         (read || write).then_some(events)
 --- new
         Some(events)
+
+=== an SSH request's credentials are read before it too, and said twice
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::ssh::tests::the_credentials_are_said_once_as_the_handle_s_before
+--- old
+        b"scp" | b"sftp" => cx.easy().libraries().ssh.is_some(),
+--- new

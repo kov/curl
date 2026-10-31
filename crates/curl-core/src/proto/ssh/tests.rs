@@ -2038,6 +2038,25 @@ fn the_ssh_trace_says_the_states() {
     }
 }
 
+/// An SSH request reads its credentials once, as C's every transfer
+/// does (`url_set_data_creds_netrc`): the credentials it sets out with are
+/// said as the handle's before, none on its first transfer, and once.
+#[test]
+fn the_credentials_are_said_once_as_the_handle_s_before() {
+    let w = world_with(&[("/home/u/f", "x")], |w| w.trace_ssh = true);
+    let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    let lines: Vec<&str> = said
+        .lines()
+        .filter(|l| l.contains("transfer credentials"))
+        .collect();
+    assert_eq!(
+        lines,
+        ["[MULTI] [CONNECT] transfer credentials: -"],
+        "{said}"
+    );
+}
+
 /// The SSH component's trace says the pollset the session's wait asks
 /// for, its flags in hex, and nothing of one made while it asks for
 /// nothing.

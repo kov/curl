@@ -129,10 +129,7 @@ pub(crate) fn size(line: &[u8]) -> Option<u64> {
 /// The size a `RETR` answer's `(N bytes)` says, the first number in the
 /// line followed by a space and `bytes` (`ftp_state_get_resp`).
 pub(crate) fn transfer_size(line: &[u8]) -> Option<u64> {
-    if line.len() < 7 {
-        return None;
-    }
-    (0..line.len() - 7).find_map(|i| {
+    (0..line.len().saturating_sub(7)).find_map(|i| {
         let (n, rest) = number(&line[i..], i64::MAX as u64)?;
         rest.strip_prefix(b" ")?.starts_with(b"bytes").then_some(n)
     })
@@ -247,6 +244,7 @@ mod tests {
         assert_eq!(path(b"257 \"\" empty\r\n"), Ok(None));
         assert_eq!(path(b"257 no quote\r\n"), Ok(None));
         assert_eq!(path(b"257 \"open\r\n"), Err(ReplyError::Weird));
+        assert_eq!(path(b"257 \"open"), Ok(None));
         assert_eq!(path(b"257 \"a\tb\"\r\n"), Err(ReplyError::Weird));
     }
 
@@ -270,6 +268,8 @@ mod tests {
             Some(545)
         );
         assert_eq!(transfer_size(b"150 ok\r\n"), None);
+        assert_eq!(transfer_size(b"150"), None);
+        assert_eq!(transfer_size(b""), None);
     }
 
     #[test]
@@ -287,6 +287,9 @@ mod tests {
         );
         assert_eq!(file_time(b"213 20041312163218\r\n"), None);
         assert_eq!(file_time(b"213 2004091216321\r\n"), None);
+        // The digits alone, without the line's end, are enough.
+        assert!(file_time(b"213 20040912163218").is_some());
+        assert_eq!(file_time(b"213 2004091216321"), None);
         assert_eq!(file_time(b"213 2004x912163218\r\n"), None);
     }
 

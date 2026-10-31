@@ -1982,3 +1982,49 @@ fn an_upload_resumed_far_in_skips_its_body_in_pieces() {
     assert!(said.contains("Failed to read data"), "{said}");
     assert_eq!(stored, b"");
 }
+
+/// The directory the login started in is reported, and still is for a
+/// transfer on the same handle that reuses the connection without
+/// asking again (`CURLINFO_FTP_ENTRY_PATH`, `most_recent_ftp_entrypath`).
+#[test]
+fn the_entry_path_is_reported_after_reuse() {
+    let control = control(&[
+        b"150 here\r\n226 done\r\n",
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"213 5\r\n",
+        b"150 here\r\n226 done\r\n",
+    ]);
+    let (a, b) = (data(b"hello"), data(b"hello"));
+    let mut m = serving(&[&control], &[&a, &b]);
+    let (id, _, text) = added(&mut m, URL, |_| {});
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let removed = m.remove(id, &mut NoEvents).unwrap();
+    assert_eq!(
+        removed.easy.report().ftp_entry_path(),
+        Some(&b"/"[..]),
+        "{}",
+        text.text()
+    );
+    let mut e = removed.easy;
+    e.options_mut().output.verbose = true;
+    let (id, _, text) = added_easy(&mut m, URL, *e, |_| {});
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let removed = m.remove(id, &mut NoEvents).unwrap();
+    assert!(
+        received(&control).matches("PWD").count() == 1,
+        "{}",
+        received(&control)
+    );
+    assert_eq!(
+        removed.easy.report().ftp_entry_path(),
+        Some(&b"/"[..]),
+        "{}",
+        text.text()
+    );
+}

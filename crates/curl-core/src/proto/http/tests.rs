@@ -7299,3 +7299,58 @@ fn the_queue_time_is_read_from_the_clock_as_it_is_marked() {
     assert_eq!(ran.result, Ok(()));
     assert!(ran.easy.report().timings().queue() > std::time::Duration::ZERO);
 }
+
+/// With the proxy's transfer mode asked for, a forwarded FTP URL says its
+/// type, A for ASCII, unless its path ends in a type already
+/// (`http_target`, `CURLOPT_PROXY_TRANSFER_MODE`).
+#[test]
+fn a_forwarded_ftp_url_says_its_type() {
+    for (url, ascii, start) in [
+        (
+            &b"ftp://origin.example/a"[..],
+            false,
+            "GET ftp://origin.example/a;type=i HTTP/1.1\r\n",
+        ),
+        (
+            b"ftp://origin.example/a",
+            true,
+            "GET ftp://origin.example/a;type=a HTTP/1.1\r\n",
+        ),
+        (
+            b"ftp://origin.example/a;type=A",
+            false,
+            "GET ftp://origin.example/a;type=A HTTP/1.1\r\n",
+        ),
+        (
+            b"ftp://origin.example/a;type=d",
+            true,
+            "GET ftp://origin.example/a;type=d HTTP/1.1\r\n",
+        ),
+        (
+            b"ftp://origin.example/a;type=x",
+            false,
+            "GET ftp://origin.example/a;type=x;type=i HTTP/1.1\r\n",
+        ),
+        (
+            b"ftp://origin.example/a;tipe=a",
+            false,
+            "GET ftp://origin.example/a;tipe=a;type=i HTTP/1.1\r\n",
+        ),
+        (
+            b"ftp://origin.example/",
+            false,
+            "GET ftp://origin.example/;type=i HTTP/1.1\r\n",
+        ),
+    ] {
+        let (mut m, talk, _) = server(&[OK], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            o.set_url(Some(url)).unwrap();
+            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.proxy.make_mut().unwrap().transfer_mode = true;
+            o.line.make_mut().unwrap().ftp.ascii = ascii;
+        });
+        assert_eq!(ran.result, Ok(()));
+        let text = String::from_utf8_lossy(&ran.request).into_owned();
+        assert!(text.starts_with(start), "{text}");
+    }
+}

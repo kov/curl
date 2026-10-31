@@ -1286,6 +1286,16 @@ impl ProtoState {
         }
     }
 
+    /// What the protocol traces of its pollset as it makes it, while it
+    /// connects or is made or, once `made`, as its body moves: SSH's
+    /// (`Curl_ssh_pollset`).
+    pub(crate) fn pollset_said(&self, made: bool) -> Option<Events> {
+        match self {
+            ProtoState::Ssh(r) => r.pollset_said(made),
+            _ => None,
+        }
+    }
+
     /// What the made request waits for on a second connection beside its
     /// own: FTP's data.
     pub(crate) fn side_interest(&self, pause: Pause) -> Events {

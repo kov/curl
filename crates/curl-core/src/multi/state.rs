@@ -1435,6 +1435,9 @@ fn attempt_pollset<'a>(
 /// (`Curl_multi_pollset`).
 pub(crate) struct PollsetTrace<T> {
     wants: Wants,
+    /// What the protocol's pollset says, if it says it, before the
+    /// layers adjust it.
+    proto: Option<Events>,
     /// While the setup runs, what its sockets' filters say.
     setup: Option<SetupTrace>,
     /// What the origin's TLS session waits for, if it waits.
@@ -1493,8 +1496,17 @@ impl Run {
             }),
             _ => None,
         };
+        // A protocol's own pollset, which C asks for in these states only.
+        let proto = match &self.state {
+            TransferState::ProtoConnecting(x) | TransferState::Doing(x) => {
+                x.proto.pollset_said(false)
+            }
+            TransferState::Exchanging(x) => x.proto.pollset_said(true),
+            _ => None,
+        };
         Ok(PollsetTrace {
             wants,
+            proto,
             setup,
             tls: self.state.tls_waits(pool),
             proxy_tls: self.state.proxy_tls_waits(pool),
@@ -1510,6 +1522,7 @@ impl PollsetTrace<std::iter::Empty<(Instant, TimerKind)>> {
     pub(crate) fn gone(pause: Pause) -> Self {
         PollsetTrace {
             wants: Wants::NONE,
+            proto: None,
             setup: None,
             tls: None,
             proxy_tls: None,
@@ -1524,6 +1537,13 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
     /// part in it while the connection is set up, the set with the number
     /// of timers armed, then each timer in the order they fire.
     pub(crate) fn trace<H: Host>(self, cx: &mut StepCx<'_, H>) {
+        // The protocol's part, said as it is made: SSH's, its poll flags
+        // in hex (`Curl_ssh_pollset`).
+        if let Some(events) = self.proto {
+            let flags =
+                u8::from(events.contains(Events::IN)) | u8::from(events.contains(Events::OUT)) << 1;
+            trace::of(cx, Component::Ssh, format_args!("pollset, flags={flags:x}"));
+        }
         let all = self.wants.as_slice();
         // The race's attempt out of the lease, in its turn.
         let (other, leads) = self

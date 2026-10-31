@@ -124,3 +124,18 @@ witness: curl-core proto::ssh::tests::the_socket_is_not_handed_over_under_a_prox
         (self.layers.is_empty() && self.rx.filled().is_empty()).then(|| self.socket.socket())
 --- new
         self.rx.filled().is_empty().then(|| self.socket.socket())
+
+=== an SFTP read's wait says no pollset
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::ssh::tests::the_ssh_trace_says_what_its_pollset_waits_for
+--- old
+            TransferState::Exchanging(x) => x.proto.pollset_said(true),
+--- new
+
+=== a session that waits for nothing says its pollset
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::the_ssh_trace_says_what_its_pollset_waits_for
+--- old
+        (read || write).then_some(events)
+--- new
+        Some(events)

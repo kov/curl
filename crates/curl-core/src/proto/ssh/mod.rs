@@ -756,22 +756,43 @@ impl Request {
     /// What it waits for on its connection while it connects or is made
     /// (`Curl_ssh_pollset`).
     fn pollset(&self, io: Directions) -> Events {
+        match self.waited(io) {
+            Some(events) => events,
+            None if self.live => Events::IN,
+            None => Events::NONE,
+        }
+    }
+
+    /// What the session's wait, else the body's way `io`, asks for, if
+    /// either asks: the pollset C traces as it makes it.
+    fn waited(&self, io: Directions) -> Option<Events> {
         let (read, write) = if self.waitfor.read || self.waitfor.write {
             (self.waitfor.read, self.waitfor.write)
         } else {
             (io.recv, io.send)
         };
-        if read || write {
-            let mut events = Events::NONE;
-            if read {
-                events = events | Events::IN;
-            }
-            if write {
-                events = events | Events::OUT;
-            }
-            return events;
+        let mut events = Events::NONE;
+        if read {
+            events = events | Events::IN;
         }
-        if self.live { Events::IN } else { Events::NONE }
+        if write {
+            events = events | Events::OUT;
+        }
+        (read || write).then_some(events)
+    }
+
+    /// What its pollset says as it is made, while it connects or is made
+    /// or, once `made`, as its body moves: the session's wait or the
+    /// body's way, as C says it only then (`Curl_ssh_pollset`).
+    pub(crate) fn pollset_said(&self, made: bool) -> Option<Events> {
+        if made {
+            self.waited(Directions {
+                recv: self.receiving,
+                send: self.sending.is_some(),
+            })
+        } else {
+            self.waited(Directions::default())
+        }
     }
 
     /// What it waits for once made: the session's wait, else its body's

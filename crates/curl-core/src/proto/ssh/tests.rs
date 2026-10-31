@@ -79,6 +79,8 @@ struct World {
     mkdir_code: Option<u32>,
     /// A listed link says nothing of its permissions.
     link_without_flag: bool,
+    /// What the session says a call that would wait waits for.
+    poll: PollFlags,
 }
 
 impl World {
@@ -215,7 +217,7 @@ impl Session for FakeSession {
     }
     fn set_blocking(&mut self, _: bool) {}
     fn poll_flags(&self) -> PollFlags {
-        PollFlags::default()
+        self.w().poll
     }
     fn error(&self) -> Result<Vec<u8>, OutOfMemory> {
         Ok(b"fake failure".to_vec())
@@ -1947,6 +1949,45 @@ fn the_ssh_trace_says_the_states() {
     ] {
         assert!(said.contains(line), "{line:?} in {said}");
     }
+}
+
+/// The SSH component's trace says the pollset the session's wait asks
+/// for, its flags in hex, and nothing of one made while it asks for
+/// nothing.
+#[test]
+fn the_ssh_trace_says_what_its_pollset_waits_for() {
+    let said = |set: fn(&mut World)| {
+        let w = world_with(&[("/home/u/f", "x")], |w| {
+            w.trace_ssh = true;
+            set(w);
+        });
+        let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+        assert_eq!(result, Ok(()), "{said}");
+        said
+    };
+    let waiting = said(|w| {
+        // Once as it connects, and again once it is waited on.
+        w.waiting = vec!["connect", "connect"];
+        w.poll = PollFlags {
+            read: true,
+            write: true,
+        };
+    });
+    assert!(waiting.contains("[SSH] pollset, flags=3\n"), "{waiting}");
+    let reading = said(|w| {
+        w.read_waits = 1;
+        w.poll = PollFlags {
+            read: true,
+            write: false,
+        };
+    });
+    assert!(reading.contains("[SSH] pollset, flags=1\n"), "{reading}");
+    assert!(!reading.contains("flags=3"), "{reading}");
+    // A connect that waits with the session asking for nothing: the
+    // pollset hears the live session, unsaid.
+    let quiet = said(|w| w.waiting = vec!["connect", "connect"]);
+    assert!(quiet.contains("connect -> EAGAIN"), "{quiet}");
+    assert!(!quiet.contains("pollset"), "{quiet}");
 }
 
 /// An SCP channel's close that waits is waited on as the upload ends.

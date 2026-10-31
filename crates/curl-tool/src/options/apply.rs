@@ -330,6 +330,16 @@ pub(crate) struct Operation<'a> {
     pub(crate) ftp_pret: bool,
     /// `--ftp-create-dirs`.
     pub(crate) ftp_create_dirs: bool,
+    /// `--pubkey`.
+    pub(crate) pubkey: Option<&'a [u8]>,
+    /// `--hostpubmd5`, 32 hex digits.
+    pub(crate) hostpubmd5: Option<&'a [u8]>,
+    /// `--hostpubsha256`.
+    pub(crate) hostpubsha256: Option<&'a [u8]>,
+    /// `--knownhosts`, a file that exists.
+    pub(crate) knownhosts: Option<&'a [u8]>,
+    /// `--compressed-ssh`.
+    pub(crate) ssh_compression: bool,
     /// `--ftp-ssl-control` (C's `ftp_ssl_control`).
     pub(crate) ssl_control: bool,
     /// `--ssl`, `--ftp-ssl` (C's `ftp_ssl`): TLS if the server has it.
@@ -1958,8 +1968,22 @@ pub(crate) fn apply<'a>(
             }
             line.global.libcurl = Some(file);
         }
-        Opt::CompressedSsh
-        | Opt::DnsInterface
+        Opt::CompressedSsh => line.current().ssh_compression = value.toggle(),
+        Opt::Pubkey => line.current().pubkey = Some(non_blank(value.text())?),
+        Opt::Hostpubmd5 => {
+            let md5 = non_blank(value.text())?;
+            if md5.len() != 32 {
+                return Err(ParamError::BadUse);
+            }
+            line.current().hostpubmd5 = Some(md5);
+        }
+        Opt::Hostpubsha256 => line.current().hostpubsha256 = Some(non_blank(value.text())?),
+        Opt::Knownhosts => {
+            let file = value.text();
+            existing_file(file, b"knownhosts", msgs)?;
+            line.current().knownhosts = Some(file);
+        }
+        Opt::DnsInterface
         | Opt::DnsIpv4Addr
         | Opt::DnsIpv6Addr
         | Opt::DnsServers
@@ -1968,12 +1992,8 @@ pub(crate) fn apply<'a>(
         | Opt::DohUrl
         | Opt::Ech
         | Opt::FalseStart
-        | Opt::Hostpubmd5
-        | Opt::Hostpubsha256
-        | Opt::Knownhosts
         | Opt::Ntlm
         | Opt::ProxyNtlm
-        | Opt::Pubkey
         | Opt::SslSessions
         | Opt::TelnetOption
         | Opt::TftpBlksize

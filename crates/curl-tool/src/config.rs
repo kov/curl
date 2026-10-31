@@ -65,6 +65,39 @@ pub(crate) fn find_curlrc(
     Ok(None)
 }
 
+/// The user's SSH known-hosts file, if there is one: `.ssh/known_hosts`
+/// in the first readable one of `CURL_HOME`, `HOME` and the home
+/// directory the user database names (`findfile(".ssh/known_hosts",
+/// FALSE)`).
+pub(crate) fn find_known_hosts(
+    env: impl Fn(&str) -> Result<Option<OsString>, OutOfMemory>,
+    home: impl FnOnce() -> Result<Option<OsString>, OutOfMemory>,
+    readable: impl Fn(&Path) -> bool,
+) -> Result<Option<PathBuf>, OutOfMemory> {
+    const NAME: &[u8] = b"/.ssh/known_hosts";
+    // The places a name with no leading dot to vary is looked in.
+    for &(var, append, without_dot) in PLACES {
+        if without_dot {
+            continue;
+        }
+        let Some(dir) = env(var)?.filter(|d| !d.is_empty()) else {
+            continue;
+        };
+        let path = join(&[dir.as_bytes(), append.as_bytes(), NAME])?;
+        if readable(&path) {
+            return Ok(Some(path));
+        }
+    }
+    // The user database's home is the last place, found or not.
+    match home()?.filter(|d| !d.is_empty()) {
+        Some(dir) => {
+            let path = join(&[dir.as_bytes(), NAME])?;
+            Ok(readable(&path).then_some(path))
+        }
+        None => Ok(None),
+    }
+}
+
 fn join(parts: &[&[u8]]) -> Result<PathBuf, OutOfMemory> {
     let mut path = Vec::new();
     for part in parts {
@@ -321,6 +354,57 @@ mod tests {
         find_curlrc(env, || Ok(home.map(OsString::from)), readable)
             .unwrap()
             .map(|p| p.display().to_string())
+    }
+
+    /// `findfile(".ssh/known_hosts", FALSE)`: `CURL_HOME`, then `HOME`,
+    /// then the user database's home, never `XDG_CONFIG_HOME` nor a
+    /// `.config` directory.
+    #[test]
+    fn finds_known_hosts_where_c_does() {
+        let find = |vars: &[(&str, &str)], home: Option<&str>, files: &[&str]| {
+            let env = |v: &str| {
+                Ok(vars
+                    .iter()
+                    .find(|(k, _)| *k == v)
+                    .map(|(_, d)| OsString::from(d)))
+            };
+            let readable = |p: &Path| files.iter().any(|f| Path::new(f) == p);
+            find_known_hosts(env, || Ok(home.map(OsString::from)), readable)
+                .unwrap()
+                .map(|p| p.display().to_string())
+        };
+        let all = [
+            "/c/.ssh/known_hosts",
+            "/h/.ssh/known_hosts",
+            "/p/.ssh/known_hosts",
+        ];
+        let vars = [
+            ("CURL_HOME", "/c"),
+            ("XDG_CONFIG_HOME", "/x"),
+            ("HOME", "/h"),
+        ];
+        let home = Some("/p");
+        assert_eq!(
+            find(&vars, home, &all).as_deref(),
+            Some("/c/.ssh/known_hosts")
+        );
+        assert_eq!(
+            find(&vars, home, &all[1..]).as_deref(),
+            Some("/h/.ssh/known_hosts")
+        );
+        assert_eq!(
+            find(&vars, home, &all[2..]).as_deref(),
+            Some("/p/.ssh/known_hosts")
+        );
+        assert_eq!(
+            find(
+                &vars,
+                home,
+                &["/x/.ssh/known_hosts", "/c/.config/.ssh/known_hosts"]
+            ),
+            None
+        );
+        assert_eq!(find(&[("HOME", "")], None, &all), None);
     }
 
     /// The order of `findfile` with `CURLRC_DOTSCORE` 1.

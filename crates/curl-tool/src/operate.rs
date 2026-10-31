@@ -1779,6 +1779,7 @@ fn setopts(
     if config.proto == UrlProto::Ftp {
         ftp_setopts(s, op)?;
     }
+    ssh_setopts(s, op)?;
     if crate::options::has_tls() {
         ssl_ca_setopts(s, op)?;
         ssl_setopts(s, op)?;
@@ -2861,6 +2862,91 @@ fn buffer_size(limit_rate: u64) -> u64 {
 /// The options only a URL the tool takes for HTTP's is given
 /// (`http_setopts`, `cookie_setopts`).
 /// What only FTP takes (`ftp_setopts`).
+/// The SSH options, for any URL if the library speaks SCP or SFTP
+/// (`ssh_setopts`): the key files (the private key `--key`, as TLS's),
+/// the host key's fingerprints, compression, and unless `--insecure` the
+/// known-hosts file, the user's if none is given.
+fn ssh_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
+    let ssh = curl_core::version::version()
+        .protocols
+        .iter()
+        .any(|p| matches!(p.name(), "scp" | "sftp"));
+    if !ssh {
+        return Ok(());
+    }
+    let string = |s: &mut Setopt<'_>,
+                  name: &'static str,
+                  value: Option<&[u8]>,
+                  field: fn(&mut options::Ssh) -> &mut Option<Vec<u8>>|
+     -> Result<(), ErrorKind> {
+        let Some(value) = value else {
+            return Ok(());
+        };
+        s.str(name, Some(value), |o| {
+            let value = copy(easysrc::c_string(value)).map_err(oom)?;
+            *field(o.ssh.make_mut().map_err(oom)?) = Some(value);
+            Ok(())
+        })
+    };
+    string(s, "CURLOPT_SSH_PRIVATE_KEYFILE", op.tls.key, |g| {
+        &mut g.private_key
+    })?;
+    string(s, "CURLOPT_SSH_PUBLIC_KEYFILE", op.pubkey, |g| {
+        &mut g.public_key
+    })?;
+    string(s, "CURLOPT_SSH_HOST_PUBLIC_KEY_MD5", op.hostpubmd5, |g| {
+        &mut g.host_key_md5
+    })?;
+    string(
+        s,
+        "CURLOPT_SSH_HOST_PUBLIC_KEY_SHA256",
+        op.hostpubsha256,
+        |g| &mut g.host_key_sha256,
+    )?;
+    if op.ssh_compression {
+        s.long("CURLOPT_SSH_COMPRESSION", 1, |o| {
+            o.ssh.make_mut().map_err(oom)?.compression = true;
+            Ok(())
+        })?;
+    }
+    if op.tls.insecure {
+        return Ok(());
+    }
+    let found;
+    let known = match op.knownhosts {
+        Some(known) => Some(known),
+        None => {
+            let env = |var: &str| {
+                Ok(curl_os::env::var(var.as_bytes())?
+                    .map(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec))
+            };
+            found = match crate::config::find_known_hosts(
+                env,
+                curl_os::users::home_directory,
+                crate::config::readable,
+            )
+            .map_err(oom)?
+            {
+                Some(path) => Some(std::os::unix::ffi::OsStringExt::into_vec(
+                    path.into_os_string(),
+                )),
+                // One that might do, as the host is not checked otherwise.
+                None if op.hostpubmd5.is_none() && op.hostpubsha256.is_none() => {
+                    let home = curl_os::env::var(b"HOME").map_err(oom)?.unwrap_or_default();
+                    let mut path = Vec::new();
+                    path.try_extend_from_slice(&home).map_err(oom)?;
+                    path.try_extend_from_slice(b"/.ssh/known_hosts")
+                        .map_err(oom)?;
+                    Some(path)
+                }
+                None => None,
+            };
+            found.as_deref()
+        }
+    };
+    string(s, "CURLOPT_SSH_KNOWNHOSTS", known, |g| &mut g.known_hosts)
+}
+
 fn ftp_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
     s.str("CURLOPT_FTPPORT", op.ftp_port, |o| {
         if let Some(port) = op.ftp_port {

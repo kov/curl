@@ -327,6 +327,65 @@ fn with_tls() -> SharedLibraries {
     .unwrap()
 }
 
+/// The control connection's TLS after `AUTH` is said as C says a filter
+/// put on top of the chain (`Curl_conn_cf_add`), and once its handshake
+/// is made the connection is timed and said connected again, as C's
+/// `Curl_conn_connect` does each time the whole chain connects, before
+/// the login goes on.
+#[test]
+fn a_connection_upgraded_after_auth_is_timed_and_said_connected() {
+    use crate::options::UseSsl;
+    use crate::tls::fake::{self, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let replies = [
+        b"220 hi\r\n".to_vec(),
+        b"234 go on\r\n".to_vec(),
+        WELCOME.to_vec(),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"213 5\r\n"),
+        tls(b"150 here\r\n226 done\r\n"),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let first = Conversation::replies(&replies, false).per_send().greeting();
+    let one = data(b"hello");
+    let mut m = serving(&[&first], &[&one]);
+    let mut e = Easy::new();
+    e.set_libraries(with_tls());
+    let (id, body, text) = added_tracing(&mut m, URL, e, b"multi,ssl,ftp", |o| {
+        o.line.make_mut().unwrap().use_ssl = UseSsl::Control;
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let at = |line: &str| {
+        said.find(line)
+            .unwrap_or_else(|| panic!("{line:?} in {said}"))
+    };
+    let added = at("[SSL] added\n");
+    let shaking = at("[SSL] cf_connect()\n");
+    let shaken = at("[SSL] cf_connect() -> 0, done=1\n");
+    let timed = at("[PGRS-APPCONNECT]");
+    let user = at("[FTP] [AUTH] -> [USER]");
+    assert!(added < shaking, "{said}");
+    let established: Vec<usize> = said
+        .match_indices("Established connection to 127.0.0.1")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(established.len(), 2, "{said}");
+    assert!(established[0] < added, "{said}");
+    assert!(
+        shaken < timed && timed < established[1] && established[1] < user,
+        "{said}"
+    );
+}
+
 /// The control connection's TLS handshake after `AUTH` is taken waits for
 /// the server's flight without stalling the multi's other transfers. C
 /// makes it blocking (`ftp_state_auth_resp`'s `Curl_conn_connect` with

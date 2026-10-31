@@ -4584,17 +4584,7 @@ fn up<H: Host>(
         }
     }
     // `CURL_CONN_HOST_DISPNAME`.
-    let host = c.route.destination().shown();
-    let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
-    let lip = Ip(lip);
-    let mut line = trace::Line::new();
-    line.raw(b"Established connection to ").raw(host).raw(b" (");
-    line.raw(remote.shown_ip().bytes());
-    line.text(format_args!(
-        " port {}) from {lip} port {lport} ",
-        remote.port()
-    ));
-    trace::info_with(cx, &[line.bytes()]);
+    say_established(cx, c.route.destination().shown(), &remote, local);
     cx.report_mut().set_primary(Ends { remote, local });
     // The setup filters go once the chain is connected
     // (`Curl_conn_remove_setup_filters`).
@@ -4660,6 +4650,27 @@ fn up<H: Host>(
     let reduced = connected.reduced();
     mstate::trace(cx, format_args!("reduced to {reduced}"));
     (c.attached(), Wake::Again)
+}
+
+/// The connection to `host` is connected all the way, from `local` to
+/// `remote`, said as C says it each time its whole chain is
+/// (`conn_connect_trace`).
+pub(crate) fn say_established<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    host: &[u8],
+    remote: &Remote,
+    local: Option<SocketAddr>,
+) {
+    let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
+    let lip = Ip(lip);
+    let mut line = trace::Line::new();
+    line.raw(b"Established connection to ").raw(host).raw(b" (");
+    line.raw(remote.shown_ip().bytes());
+    line.text(format_args!(
+        " port {}) from {lip} port {lport} ",
+        remote.port()
+    ));
+    trace::info_with(cx, &[line.bytes()]);
 }
 
 /// Why the setup failed, as C traces it (`cf_tcp_connect`,

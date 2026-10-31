@@ -334,6 +334,9 @@ pub(crate) struct Request {
     /// The peer a connect-to entry names in the origin's place, which TLS
     /// is made with as the connection is upgraded.
     via: Option<TryArc<Peer>>,
+    /// The host the control connection is said to be to, as each run
+    /// reads it from its route (`CURL_CONN_HOST_DISPNAME`).
+    shown: Option<TryArc<Peer>>,
     /// What the back and forth waits for on the control connection.
     wants: Events,
     /// The back and forth stopped, as it last ran.
@@ -472,6 +475,7 @@ impl Request {
             received: false,
             control: None,
             via: None,
+            shown: None,
             wants: Events::IN,
             stopped: false,
             header_bytes: 0,
@@ -728,7 +732,9 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<bool, ErrorKind> {
         let limit = cx.easy().options().line.server_response;
-        self.via = lease.conn().net_route().and_then(|r| r.via.clone());
+        let route = lease.conn().net_route();
+        self.via = route.and_then(|r| r.via.clone());
+        self.shown = route.map(|r| r.destination_shared().clone());
         let (pc, mut carrier) = ftp_of(lease);
         let ran = if self.clearing.is_some() {
             // As C blocks for it, the shutdown's own time limits it, not
@@ -1045,10 +1051,27 @@ impl Request {
             return Err(ErrorKind::UseSslFailed);
         };
         let via = self.via.clone();
+        // Its filter goes on top of the chain first (`Curl_conn_cf_add`).
+        if !carrier.over_tls() {
+            trace::of(cx, Component::Ssl, format_args!("added"));
+        }
         let shaken =
             crate::multi::state::tls::upgrade(carrier, &identity, &self.peer, via.as_deref(), cx)?;
         if shaken == crate::tls::Handshake::Waiting {
             return Ok(());
+        }
+        // The whole chain is connected again (`Curl_conn_connect`): its
+        // TLS timed, and the connection said as C says it.
+        let now = cx.now();
+        let marked = cx
+            .report_mut()
+            .timings_mut()
+            .mark(crate::report::Timer::AppConnect, now);
+        crate::multi::mstate::marked(cx, crate::report::Timer::AppConnect, marked);
+        if let (Some(shown), Some(ends)) =
+            (self.shown.as_deref(), cx.report_mut().primary().cloned())
+        {
+            crate::multi::state::say_established(cx, shown.shown(), &ends.remote, ends.local);
         }
         self.upgrading = false;
         pc.data_tls = false;

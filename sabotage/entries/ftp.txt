@@ -237,3 +237,26 @@ witness: curl-core proto::ftp::tests::a_data_connection_s_handshake_stalls_no_ot
                             // too (`conn_connect_trace`).
                             established(cx, host, peer.as_ref(), &stream);
 --- new
+
+=== the TLS put on after AUTH is not said added
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_connection_upgraded_after_auth_is_timed_and_said_connected
+--- old
+            trace::of(cx, Component::Ssl, format_args!("added"));
+--- new
+
+=== the TLS made after AUTH is not timed
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_connection_upgraded_after_auth_is_timed_and_said_connected
+--- old
+        crate::multi::mstate::marked(cx, crate::report::Timer::AppConnect, marked);
+--- new
+        let _ = marked;
+
+=== the connection upgraded after AUTH is not said connected again
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_connection_upgraded_after_auth_is_timed_and_said_connected
+--- old
+            crate::multi::state::say_established(cx, shown.shown(), &ends.remote, ends.local);
+--- new
+            let _ = (shown, ends);

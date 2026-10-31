@@ -260,3 +260,31 @@ witness: curl-core proto::ftp::tests::a_connection_upgraded_after_auth_is_timed_
             crate::multi::state::say_established(cx, shown.shown(), &ends.remote, ends.local);
 --- new
             let _ = (shown, ends);
+
+=== PORT's address that stands for none fails as PORT's alone
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_c_resolves_it
+--- old
+            match why {
+                Unresolved::Resolver {
+                    explained: Some(reason),
+                    ..
+                } => cx.fail_with(&[
+                    b"Could not resolve host: ",
+                    name,
+                    b" (",
+                    reason.as_bytes(),
+                    b")",
+                ]),
+                _ => cx.fail_with(&[b"Could not resolve host: ", name]),
+            }
+--- new
+            let _ = why;
+
+=== PORT's resolve says no cache lookup
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_c_resolves_it
+--- old
+    cx.of_with(dns, &[b"cache lookup ", name, at, rest.bytes()]);
+--- new
+    let _ = rest;

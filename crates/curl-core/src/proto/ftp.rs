@@ -3465,8 +3465,8 @@ impl Request {
             kept: None,
             deadlines: None,
         };
-        let answer = crate::conn::resolve_blocking(host, ip_version, &mut dcx, setup)
-            .map_err(|_| ErrorKind::OutOfMemory)?;
+        let family = crate::conn::family(ip_version, &dcx);
+        let answer = crate::conn::resolve_blocking(&mut dcx, host, 0, family, setup)?;
         match answer {
             Some(answer) => {
                 addrs

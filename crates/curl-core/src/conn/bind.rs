@@ -6,14 +6,12 @@
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 
-use super::connect::{Asked, ConnCx, ConnectError, DriveOptions, Found, Unresolved, lookup_name};
+use super::connect::{ConnCx, DriveOptions, resolve_blocking};
 use super::io::{AF_INET, AF_INET6, Family, InterfaceAddress, Socket, SocketOption, ipv6_scope};
-use crate::components::Component;
 use crate::conn::layer::LayerCalls as _;
-use crate::error::{AGAIN_NUMBER, ErrorKind};
+use crate::error::ErrorKind;
 use crate::options::LocalBind;
 use crate::text::Text;
-use crate::trace::Code;
 use curl_os::error::ErrorText;
 
 /// Why a socket's local end was not bound.
@@ -243,130 +241,17 @@ impl std::fmt::Display for Scope {
 
 /// The first address of the family IPv6 if `v6`, else IPv4, `host`
 /// stands for, resolved as C's blocking resolve does it
-/// (`Curl_resolv_blocking`, for port 80): through the cache, which keeps
-/// what is found but not that nothing was, traced as `hostip_resolv`
-/// traces it. `None` if it has none.
+/// (`Curl_resolv_blocking`, for port 80). `None` if it has none.
 fn resolve_host(
     cx: &mut dyn ConnCx,
     host: &[u8],
     v6: bool,
     setup: DriveOptions,
 ) -> Result<Option<IpAddr>, BindFailed> {
-    let (family, queries) = if v6 {
-        (Family::V6, "AAAA")
-    } else {
-        (Family::V4, "A")
-    };
-    let port = BIND_RESOLVE_PORT;
-    let name = host;
-    // The port as a line shows it after the name, and the queries asked.
-    let at = Text::<8>::clipped(format_args!(":{port}")).0;
-    let at = at.bytes();
-    let dns = Component::Dns;
-    // The C debug build's line.
-    #[cfg(feature = "debug-hooks")]
-    cx.of_with(
-        dns,
-        &[
-            b"[",
-            queries.as_bytes(),
-            b"] hostip_resolv(",
-            name,
-            at,
-            b")",
-        ],
-    );
-    let looked = lookup_name((host, port), family, cx, setup, false);
-    if let Err(ConnectError::Unresolved(Unresolved::DebugFailIpv6)) = looked {
-        cx.info(format_args!("DEBUG fail ipv6 resolve"));
-        cx.fail_with(&[b"Could not resolve host: ", name]);
-        cx.fail_with(&[b"Could not resolve: ", name, at]);
-        return Ok(None);
-    }
-    let found = match &looked {
-        Ok((_, found)) => Some(*found),
-        Err(ConnectError::Unresolved(Unresolved::Negative)) => None,
-        Err(ConnectError::Unresolved(_)) => Some(Found::Resolved(Asked::Resolver(None))),
-        Err(ConnectError::OutOfMemory) => return Err(BindFailed::OutOfMemory),
-        Err(ConnectError::Aborted) => {
-            return Err(BindFailed::Failed(ErrorKind::AbortedByCallback));
-        }
-        Err(ConnectError::Failed(..)) => unreachable!("a resolve makes no attempt"),
-    };
-    match found {
-        Some(Found::Stale(_)) => {
-            cx.info(format_args!("Hostname in DNS cache was stale, zapped"));
-        }
-        None => cx.of(
-            dns,
-            format_args!("cache entry does not have type={queries} addresses"),
-        ),
-        Some(_) => {}
-    }
-    let (code, not) = match found {
-        Some(Found::Cached) => (Ok(()), ""),
-        Some(Found::Stale(_) | Found::Resolved(_)) => (Ok(()), "not "),
-        None => (Err(ErrorKind::CouldntResolveHost), "not "),
-    };
-    let code = Code(code);
-    let rest = Text::<64>::clipped(format_args!(" queries={queries} -> {code} {not}found")).0;
-    cx.of_with(dns, &[b"cache lookup ", name, at, rest.bytes()]);
-    if found == Some(Found::Cached) {
-        cx.info_with(&[b"Hostname ", name, b" was found in DNS cache"]);
-    }
-    match looked {
-        Ok((answer, found)) => {
-            if let Found::Stale(asked) | Found::Resolved(asked) = found {
-                let started = match asked {
-                    Asked::Shortcut => 0,
-                    Asked::Resolver(_) => AGAIN_NUMBER,
-                };
-                cx.of(
-                    dns,
-                    format_args!("[{queries}] hostip_resolv started -> {started}"),
-                );
-                // Only an answer had at once is said to be kept: one the
-                // resolver gives is waited for without a word
-                // (`Curl_resolv_blocking`).
-                if asked == Asked::Shortcut {
-                    cx.of_with(
-                        dns,
-                        &[
-                            b"cached entry for ",
-                            name,
-                            at,
-                            b" queries=",
-                            queries.as_bytes(),
-                        ],
-                    );
-                }
-            }
-            Ok(answer.addrs().first().copied())
-        }
-        Err(ConnectError::Unresolved(why)) => {
-            if why != Unresolved::Negative {
-                cx.of(
-                    dns,
-                    format_args!("[{queries}] hostip_resolv started -> {AGAIN_NUMBER}"),
-                );
-            }
-            // With the resolver's reason, if it gives one, as the
-            // reference build's c-ares does (`ares_strerror`).
-            match why {
-                Unresolved::Resolver {
-                    explained: Some(reason),
-                    ..
-                } => cx.fail_with(&[
-                    b"Could not resolve host: ",
-                    name,
-                    b" (",
-                    reason.as_bytes(),
-                    b")",
-                ]),
-                _ => cx.fail_with(&[b"Could not resolve host: ", name]),
-            }
-            Ok(None)
-        }
-        Err(_) => unreachable!("handled above"),
+    let family = if v6 { Family::V6 } else { Family::V4 };
+    match resolve_blocking(cx, host, BIND_RESOLVE_PORT, family, setup) {
+        Ok(answer) => Ok(answer.and_then(|a| a.addrs().first().copied())),
+        Err(ErrorKind::OutOfMemory) => Err(BindFailed::OutOfMemory),
+        Err(kind) => Err(BindFailed::Failed(kind)),
     }
 }

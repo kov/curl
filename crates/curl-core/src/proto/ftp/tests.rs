@@ -1184,6 +1184,52 @@ fn an_active_download_accepts_the_server_s_connection() {
     assert_eq!(counted.open(), 1, "only the control connection is left");
 }
 
+/// The address `PORT` offers is resolved as C's blocking resolve does it
+/// and traced as it is (`ftp_port_resolve_host`'s
+/// `Curl_resolv_blocking`): the control connection's own address its
+/// own answer, and a name that stands for none failed first as any
+/// resolve is, then as `PORT`'s.
+#[test]
+fn the_address_port_offers_is_resolved_as_c_resolves_it() {
+    let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n226 done\r\n");
+    let control = Conversation::replies(&replies, false).greeting();
+    let data = Conversation::replies(&[b"hello"], true).greeting();
+    let (mut m, _) = serving_active(&[&control], &[&data]);
+    let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"multi,dns", |o| {
+        o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    let looked = at_in(&said, "[DNS] cache lookup 127.0.0.1:0 queries=");
+    let after = &said[looked..];
+    let started = at_in(after, "] hostip_resolv started -> 0\n");
+    let kept = at_in(after, "[DNS] cached entry for 127.0.0.1:0 queries=");
+    assert!(started < kept, "{said}");
+
+    let control = Conversation::replies(&ACTIVE_LOGIN_AND_SETUP[..4], false).greeting();
+    let (mut m, _) = serving_active(&[&control], &[]);
+    let (id, _, text) = added(&mut m, URL, |o| {
+        o.line.make_mut().unwrap().ftp.port = Some(b"bogus.invalid".to_vec());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Err(ErrorKind::CouldntResolveHost), "{said}");
+    let any = at_in(&said, "Could not resolve host: bogus.invalid");
+    let port = at_in(
+        &said,
+        "failed to resolve the address provided to PORT: bogus.invalid",
+    );
+    assert!(any < port, "{said}");
+}
+
+/// Where `line` is in `said`, which must hold it.
+fn at_in(said: &str, line: &str) -> usize {
+    said.find(line)
+        .unwrap_or_else(|| panic!("{line:?} in {said}"))
+}
+
 /// A request for no body asks the type before the size, as sizes differ
 /// between them, takes any 2xx to it, saying so of one not 200, and
 /// tells the application the size and that ranges go, as header lines

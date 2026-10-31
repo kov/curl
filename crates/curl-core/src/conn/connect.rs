@@ -34,7 +34,7 @@ use super::shutdown::ConnSettings;
 use super::{Conn, ConnNumber, Dial, Dialing, NetRoute, Peer, Route, Stream, Transport, Use};
 use crate::components::Component;
 use crate::conn::layer::LayerCalls as _;
-use crate::error::ErrorKind;
+use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::handler::Configured;
 use crate::options::{IpVersion, KeepAlive, Sockets};
 use crate::time::Instant;
@@ -2305,32 +2305,140 @@ fn resolve(
     resolve_name((peer.name(), peer.port()), family, cx, setup)
 }
 
-/// The addresses `host` stands for, of the families a resolve in `ip`
-/// asks for, the resolver waited for as C waits for it
-/// (`Curl_resolv_blocking`): FTP's address to offer the server, said as
-/// found in the cache if it was; none if it stands for none.
+/// The addresses of `family` `host` stands for, for port `port`,
+/// resolved as C's blocking resolve does it (`Curl_resolv_blocking`):
+/// through the cache, which keeps what is found but not that nothing
+/// was, the resolver waited for, and traced as `hostip_resolv` traces
+/// it. `None` if it stands for none, said as C fails it; the binding
+/// to a local name's and FTP's address to offer the server.
 pub(crate) fn resolve_blocking(
-    host: &[u8],
-    ip: IpVersion,
     cx: &mut dyn ConnCx,
+    host: &[u8],
+    port: u16,
+    family: Family,
     setup: DriveOptions,
-) -> Result<Option<TryArc<Answer>>, OutOfMemory> {
-    let family = family(ip, cx);
-    match lookup_name((host, 0), family, cx, setup, false) {
+) -> Result<Option<TryArc<Answer>>, ErrorKind> {
+    // `Curl_resolv_query_str`.
+    let queries = match family {
+        Family::V4 => "A",
+        Family::V6 => "AAAA",
+        Family::Any => "A+AAAA",
+    };
+    let name = host;
+    // The port as a line shows it after the name, and the queries asked.
+    let at = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
+    let at = at.bytes();
+    let dns = Component::Dns;
+    // The C debug build's line.
+    #[cfg(feature = "debug-hooks")]
+    cx.of_with(
+        dns,
+        &[
+            b"[",
+            queries.as_bytes(),
+            b"] hostip_resolv(",
+            name,
+            at,
+            b")",
+        ],
+    );
+    let looked = lookup_name((host, port), family, cx, setup, false);
+    if let Err(ConnectError::Unresolved(Unresolved::DebugFailIpv6)) = looked {
+        cx.info(format_args!("DEBUG fail ipv6 resolve"));
+        cx.fail_with(&[b"Could not resolve host: ", name]);
+        cx.fail_with(&[b"Could not resolve: ", name, at]);
+        return Ok(None);
+    }
+    let found = match &looked {
+        Ok((_, found)) => Some(*found),
+        Err(ConnectError::Unresolved(Unresolved::Negative)) => None,
+        Err(ConnectError::Unresolved(_)) => Some(Found::Resolved(Asked::Resolver(None))),
+        Err(ConnectError::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+        Err(ConnectError::Aborted) => return Err(ErrorKind::AbortedByCallback),
+        Err(ConnectError::Failed(..)) => unreachable!("a resolve makes no attempt"),
+    };
+    match found {
+        Some(Found::Stale(_)) => {
+            cx.info(format_args!("Hostname in DNS cache was stale, zapped"));
+        }
+        None => cx.of(
+            dns,
+            format_args!("cache entry does not have type={queries} addresses"),
+        ),
+        Some(_) => {}
+    }
+    let (code, not) = match found {
+        Some(Found::Cached) => (Ok(()), ""),
+        Some(Found::Stale(_) | Found::Resolved(_)) => (Ok(()), "not "),
+        None => (Err(ErrorKind::CouldntResolveHost), "not "),
+    };
+    let code = crate::trace::Code(code);
+    let rest =
+        crate::text::Text::<64>::clipped(format_args!(" queries={queries} -> {code} {not}found")).0;
+    cx.of_with(dns, &[b"cache lookup ", name, at, rest.bytes()]);
+    if found == Some(Found::Cached) {
+        cx.info_with(&[b"Hostname ", name, b" was found in DNS cache"]);
+    }
+    match looked {
         Ok((answer, found)) => {
-            if found == Found::Cached {
-                cx.info_with(&[b"Hostname ", host, b" was found in DNS cache"]);
+            if let Found::Stale(asked) | Found::Resolved(asked) = found {
+                let started = match asked {
+                    Asked::Shortcut => 0,
+                    Asked::Resolver(_) => AGAIN_NUMBER,
+                };
+                cx.of(
+                    dns,
+                    format_args!("[{queries}] hostip_resolv started -> {started}"),
+                );
+                // Only an answer had at once is said to be kept: one the
+                // resolver gives is waited for without a word
+                // (`Curl_resolv_blocking`).
+                if asked == Asked::Shortcut {
+                    cx.of_with(
+                        dns,
+                        &[
+                            b"cached entry for ",
+                            name,
+                            at,
+                            b" queries=",
+                            queries.as_bytes(),
+                        ],
+                    );
+                }
             }
             Ok(Some(answer))
         }
-        Err(ConnectError::OutOfMemory) => Err(OutOfMemory),
-        Err(_) => Ok(None),
+        Err(ConnectError::Unresolved(why)) => {
+            if why != Unresolved::Negative {
+                cx.of(
+                    dns,
+                    format_args!("[{queries}] hostip_resolv started -> {AGAIN_NUMBER}"),
+                );
+            }
+            // With the resolver's reason, if it gives one, as the
+            // reference build's c-ares does (`ares_strerror`).
+            match why {
+                Unresolved::Resolver {
+                    explained: Some(reason),
+                    ..
+                } => cx.fail_with(&[
+                    b"Could not resolve host: ",
+                    name,
+                    b" (",
+                    reason.as_bytes(),
+                    b")",
+                ]),
+                _ => cx.fail_with(&[b"Could not resolve host: ", name]),
+            }
+            Ok(None)
+        }
+        Err(_) => unreachable!("handled above"),
     }
 }
 
 /// The families a resolve in `ip` asks for: without IPv6 only IPv4's
 /// (`Curl_resolv_dns_queries`).
-fn family(ip: IpVersion, cx: &dyn ConnCx) -> Family {
+pub(crate) fn family(ip: IpVersion, cx: &dyn ConnCx) -> Family {
     match ip {
         IpVersion::Any if cx.ipv6_works() => Family::Any,
         IpVersion::Any | IpVersion::V4 => Family::V4,
@@ -3124,7 +3232,7 @@ mod tests {
                 dns: &mut DnsCache::default(),
                 now: clock.now(),
             };
-            let answer = resolve_blocking(host.as_bytes(), IpVersion::Any, &mut cx, setup).unwrap();
+            let answer = resolve_blocking(&mut cx, host.as_bytes(), 0, Family::Any, setup).unwrap();
             let answer = answer.unwrap_or_else(|| panic!("{host} resolved"));
             assert_eq!(answer.addrs(), [ip.parse::<IpAddr>().unwrap()]);
         }
@@ -3133,7 +3241,7 @@ mod tests {
             dns: &mut DnsCache::default(),
             now: clock.now(),
         };
-        let named = resolve_blocking(b"example.com", IpVersion::Any, &mut cx, setup).unwrap();
+        let named = resolve_blocking(&mut cx, b"example.com", 0, Family::Any, setup).unwrap();
         assert!(named.is_none(), "a name is the resolver's");
     }
 

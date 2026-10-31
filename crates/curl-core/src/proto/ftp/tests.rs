@@ -1504,6 +1504,64 @@ fn an_upload_resumed_at_an_offset_appends_past_it() {
     assert_eq!(stored, b"upload");
 }
 
+/// Gives nothing, and seeks anywhere.
+struct Empty;
+
+impl crate::handler::ReadHandler for Empty {
+    fn read(&self, _: &mut crate::multi::TransferCx<'_>, _: &mut [u8]) -> crate::handler::Read {
+        crate::handler::Read::Eof
+    }
+}
+
+impl crate::handler::Rewind for Empty {
+    fn rewind(
+        &self,
+        _: &mut crate::multi::TransferCx<'_>,
+    ) -> Result<(), crate::handler::RewindFailed> {
+        Ok(())
+    }
+
+    fn seek(
+        &self,
+        _: &mut crate::multi::TransferCx<'_>,
+        _: u64,
+    ) -> Result<(), crate::handler::SeekFailed> {
+        Ok(())
+    }
+}
+
+/// An upload of a size of nothing, resumed past it by a seek, is not
+/// taken for one already done: only a size above nothing is, and the
+/// file is appended nothing, as C's `curl -T empty -C 5` is
+/// (`ftp_state_ul_setup`'s `infilesize > 0`).
+#[test]
+fn an_empty_upload_resumed_by_a_seek_is_appended() {
+    use crate::handler::Handler;
+    let control = logged_in(&[
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"200 binary\r\n",
+        b"150 go on\r\n226 stored\r\n",
+    ]);
+    let file = Conversation::replies(&[], false);
+    let mut m = serving(&[&control], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |o| {
+        o.method = crate::options::Method::Upload;
+        o.resume = Some(crate::options::Resume::At(
+            std::num::NonZeroU64::new(5).unwrap(),
+        ));
+        o.upload = crate::options::UploadSource::Read {
+            handler: Handler::read(Empty).unwrap(),
+            rewind: Some(Handler::rewind(Empty).unwrap()),
+            size: Some(0),
+        };
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    let sent = received(&control);
+    assert!(sent.ends_with("TYPE I\r\nAPPE f\r\n"), "{sent}");
+    assert_eq!(file.received(), b"");
+}
+
 /// An active download offering an address it names resolves it, saying
 /// so only if the resolver's cache held it (`ftp_port_resolve_host`,
 /// `Curl_resolv_blocking`).

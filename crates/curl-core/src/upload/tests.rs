@@ -840,7 +840,9 @@ fn a_resumed_body_fails_as_c_s_does() {
         "{:?}",
         r.text
     );
-    for answer in [Read::Eof, Read::Abort, Read::Fail, Read::Pause] {
+    // More than asked for is taken for a failure too.
+    let more = Read::Data(NonZeroUsize::new(51).unwrap());
+    for answer in [Read::Eof, Read::Abort, Read::Fail, Read::Pause, more] {
         let r = resumed(&data, Some(100), 50, None, move |_| Some(answer));
         assert_eq!(r.result, Err(ErrorKind::FtpCouldntUseRest), "{answer:?}");
         assert!(
@@ -860,6 +862,19 @@ fn a_resumed_body_fails_as_c_s_does() {
     );
     assert_eq!(r.result, Err(ErrorKind::FtpCouldntUseRest));
     assert_eq!(r.reads, [150, 50], "the whole body, then its end");
+}
+
+/// A rewind handler that does not say how to seek cannot: the bytes
+/// before the point are read.
+#[test]
+fn a_rewind_handler_cannot_seek_by_default() {
+    let mut e = script(vec![Piece::Resume(2), Piece::SendAll]);
+    let seen = fed(&mut e, b"abcde", Some(5), Some(true), plain);
+    let sent = traced(&mut e);
+    assert_eq!(run(e).0, Ok(()));
+    assert_eq!(*sent.0.lock().unwrap(), b"cde");
+    assert_eq!(*seen.reads.lock().unwrap(), [2, 3]);
+    assert_eq!(seen.rewinds.get(), 0);
 }
 
 /// A body the transfer holds is read to the point and dropped.

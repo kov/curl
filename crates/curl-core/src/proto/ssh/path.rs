@@ -298,6 +298,36 @@ mod tests {
         assert_eq!(r(b"100-"), Err(RangeError::Backwards));
         assert_eq!(r(b"9-5"), Err(RangeError::Backwards));
         assert_eq!(r(b"99999999999999999999-"), Err(RangeError::Silent));
+        // The longest ranges there are read whole.
+        let max = i64::MAX;
+        let last = |s: &str| range(s.as_bytes(), max);
+        assert_eq!(last(&format!("1-{}", max - 1)), Ok((1, max - 1)));
+        assert_eq!(last(&format!("0-{max}")), Ok((0, max)));
+    }
+
+    /// A path from the home directory is refused at `MAX_PATH` bytes, the
+    /// home's and the rest's together, and a quote command's at
+    /// `MAX_QUOTED`, as C's buffers limit them.
+    #[test]
+    fn paths_are_limited_as_c_s() {
+        let rest = vec![b'r'; MAX_PATH - 4];
+        let url = [&b"/~/"[..], &rest].concat();
+        assert_eq!(
+            working_path(&url, Home::Sftp(b"/h")).map(|p| p.len()),
+            Ok(MAX_PATH - 1)
+        );
+        let rest = vec![b'r'; MAX_PATH - 3];
+        let url = [&b"/~/"[..], &rest].concat();
+        assert_eq!(
+            working_path(&url, Home::Sftp(b"/h")),
+            Err(ErrorKind::OutOfMemory)
+        );
+        let quoted = |n: usize| {
+            let cp = [&b"\""[..], &vec![b'q'; n], b"\""].concat();
+            quoted_path(&cp, b"/h").map(|(p, _)| p.len())
+        };
+        assert_eq!(quoted(MAX_QUOTED - 1), Ok(MAX_QUOTED - 1));
+        assert_eq!(quoted(MAX_QUOTED), Err(ErrorKind::TooLarge));
     }
 
     /// unit2604's cases for `Curl_get_pathname`: a command, its home, and

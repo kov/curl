@@ -65,6 +65,20 @@ struct World {
     known_other: bool,
     /// The trace says the SSH component's lines.
     trace_ssh: bool,
+    /// An open file says it is this big, or says no size.
+    stated_size: Option<u64>,
+    no_size_flag: bool,
+    /// The private key's login answers this.
+    key_answer: Option<Auth>,
+    /// The keyboard-interactive login waits once at each of these of its
+    /// calls, counted from 1.
+    kbd_waits_at: Vec<usize>,
+    /// So many opens to write are refused as missing, and each directory
+    /// made fails with this code.
+    refused_opens: usize,
+    mkdir_code: Option<u32>,
+    /// A listed link says nothing of its permissions.
+    link_without_flag: bool,
 }
 
 impl World {
@@ -251,9 +265,11 @@ impl Session for FakeSession {
         Methods(self.w().methods)
     }
     fn try_publickey(&mut self) -> Auth {
-        if self.w().waits("try_publickey") {
+        let mut w = self.w();
+        if w.waits("try_publickey") {
             return Auth::Again;
         }
+        w.call("try_publickey", &[]);
         Auth::Success
     }
     fn import_privkey_file(&mut self, file: &[u8], _: Option<&[u8]>) -> Rc {
@@ -266,6 +282,9 @@ impl Session for FakeSession {
             return Auth::Again;
         }
         w.call("auth_publickey", &[]);
+        if let Some(answer) = w.key_answer {
+            return answer;
+        }
         if w.key_refused {
             Auth::Denied
         } else {
@@ -302,6 +321,11 @@ impl Session for FakeSession {
             return Auth::Denied;
         }
         if w.waits("auth_kbdint") {
+            return Auth::Again;
+        }
+        let next = w.calls.iter().filter(|c| *c == "auth_kbdint").count() + 1;
+        if let Some(at) = w.kbd_waits_at.iter().position(|&n| n == next) {
+            w.kbd_waits_at.remove(at);
             return Auth::Again;
         }
         w.call("auth_kbdint", &[]);
@@ -398,6 +422,9 @@ impl Session for FakeSession {
         Ok(n)
     }
     fn scp_write(&mut self, bytes: &[u8]) -> Rc {
+        if self.w().writes_fail {
+            return Rc::Error;
+        }
         let at = self.scp.as_ref().unwrap().2;
         self.w().files[at].1.extend_from_slice(bytes);
         Rc::Ok
@@ -440,7 +467,11 @@ impl Session for FakeSession {
         }
         for (p, target) in &w.links {
             if let Some(name) = p.strip_prefix(path) {
-                entries.push(Self::attrs(name, target.len(), true));
+                let mut entry = Self::attrs(name, target.len(), true);
+                if w.link_without_flag {
+                    entry.flags = Attrs::SIZE;
+                }
+                entries.push(entry);
             }
         }
         drop(w);
@@ -499,7 +530,13 @@ impl Session for FakeSession {
         Rc::Ok
     }
     fn mkdir(&mut self, path: &[u8], _: u32) -> Rc {
-        self.w().call("mkdir", &[path]);
+        let mut w = self.w();
+        w.call("mkdir", &[path]);
+        if let Some(code) = w.mkdir_code {
+            drop(w);
+            self.error = code;
+            return Rc::Error;
+        }
         Rc::Ok
     }
     fn rename(&mut self, from: &[u8], to: &[u8]) -> Rc {
@@ -542,6 +579,12 @@ impl Session for FakeSession {
         let mut w = self.w();
         w.call("open", &[path]);
         if mode != OpenMode::Read && w.refuses_writes {
+            drop(w);
+            self.error = SSH_FX_NO_SUCH_FILE;
+            return false;
+        }
+        if mode != OpenMode::Read && w.refused_opens > 0 {
+            w.refused_opens -= 1;
             drop(w);
             self.error = SSH_FX_NO_SUCH_FILE;
             return false;
@@ -593,11 +636,14 @@ impl Session for FakeSession {
     fn fstat(&mut self) -> Result<Option<Attrs>, OutOfMemory> {
         let at = self.file.as_ref().unwrap().at;
         let w = self.w();
-        Ok(Some(Self::attrs(
-            &w.files[at].0,
-            w.files[at].1.len(),
-            false,
-        )))
+        let mut attrs = Self::attrs(&w.files[at].0, w.files[at].1.len(), false);
+        if let Some(size) = w.stated_size {
+            attrs.size = size;
+        }
+        if w.no_size_flag {
+            attrs.flags = Attrs::PERMISSIONS;
+        }
+        Ok(Some(attrs))
     }
     fn file_nonblocking(&mut self) {}
     fn begin_read(&mut self, len: usize) -> Rc {
@@ -811,6 +857,7 @@ fn an_sftp_file_is_downloaded() {
         "set_port 8022",
         "import_pubkey_file /keys/id.pub",
         "connect",
+        "try_publickey",
         "import_privkey_file /keys/id",
         "auth_publickey",
         "open /home/u/f",
@@ -929,6 +976,7 @@ fn quote_commands_run_before_the_transfer() {
     assert_eq!(
         ran,
         [
+            "try_publickey",
             "auth_publickey",
             "rename /home/u/a /home/u/b",
             "unlink /home/u/gone",
@@ -1509,10 +1557,11 @@ fn uploads(o: &mut Options, bytes: &[u8]) {
 fn a_resumed_upload_is_stored_as_c_stores_it() {
     use crate::options::Resume;
     let at = |n| Some(Resume::At(std::num::NonZeroU64::new(n).unwrap()));
-    let cases: [(&str, Option<Resume>, bool, &str, &str); 4] = [
+    let cases: [(&str, Option<Resume>, bool, &str, &str); 5] = [
         ("abcdef", at(3), false, "abc3456789", "Write"),
         ("abcd", Some(Resume::AtEnd), false, "abcd456789", "Write"),
         ("", Some(Resume::AtEnd), false, "0123456789", "Truncate"),
+        ("abcdefghijkl", None, false, "0123456789", "Truncate"),
         ("abcd", None, true, "abcd0123456789", "Append"),
     ];
     for (stored, resume, append, want, mode) in cases {
@@ -1782,4 +1831,147 @@ fn a_known_key_of_no_known_type_is_refused() {
         o.ssh.make_mut().unwrap().known_hosts = Some(b"/k".to_vec());
     });
     assert_eq!(result, Err(ErrorKind::PeerFailedVerification), "{said}");
+}
+
+/// A download reads what the file says its size is, and to its end when
+/// it says none.
+#[test]
+fn a_download_reads_the_size_the_file_says() {
+    let read = |set: fn(&mut World)| {
+        let w = world_with(&[("/home/u/f", "0123456789")], set);
+        let (result, body, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+        assert_eq!(result, Ok(()), "{said}");
+        body
+    };
+    assert_eq!(read(|w| w.stated_size = Some(4)), b"0123");
+    assert_eq!(read(|w| w.no_size_flag = true), b"0123456789");
+    assert_eq!(
+        read(|w| {
+            w.stated_size = Some(4);
+            w.no_size_flag = true;
+        }),
+        b"0123456789"
+    );
+}
+
+/// An SCP write that fails fails the upload as an SSH error.
+#[test]
+fn a_failing_scp_write_is_an_ssh_error() {
+    let w = world_with(&[], |w| w.writes_fail = true);
+    let (result, _, said, _) = run_in(&w, "scp://u@127.0.0.1:PORT/tmp/f", |o| {
+        uploads(o, b"over scp");
+    });
+    assert_eq!(result, Err(ErrorKind::Ssh), "{said}");
+}
+
+/// A key login that fails is said with libssh's number for its answer.
+#[test]
+fn a_failed_key_login_says_libssh_s_number() {
+    for (answer, n) in [(Auth::Partial, "2"), (Auth::Error, "-1")] {
+        let w = world_with(&[("/home/u/f", "x")], |w| w.key_answer = Some(answer));
+        let (result, _, said, _) = run_in(&w, "sftp://u:secret@127.0.0.1:PORT/~/f", |_| {});
+        assert_eq!(result, Ok(()), "{said}");
+        let line = format!("Failed public key authentication (rc: {n})\n");
+        assert!(said.contains(&line), "{line:?} in {said}");
+    }
+}
+
+/// The public key is offered first only without a passphrase.
+#[test]
+fn the_public_key_is_offered_without_a_passphrase() {
+    let w = world(&[("/home/u/f", "x")]);
+    let (result, _, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(calls.contains(&"try_publickey".to_owned()), "{calls:?}");
+    let w = world(&[("/home/u/f", "x")]);
+    let (result, _, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        o.tls.options.make_mut().unwrap().key_password = Some(b"pass".to_vec());
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(!calls.contains(&"try_publickey".to_owned()), "{calls:?}");
+}
+
+/// An empty private key is none: without the agent allowed, the public
+/// key login is not tried.
+#[test]
+fn an_empty_private_key_is_none() {
+    let w = world(&[("/home/u/f", "x")]);
+    let (result, _, said, calls) = run_in(&w, "sftp://u:secret@127.0.0.1:PORT/~/f", |o| {
+        let ssh = o.ssh.make_mut().unwrap();
+        ssh.private_key = Some(Vec::new());
+        ssh.auth_types = crate::options::SshAuthTypes(
+            crate::options::SshAuthTypes::PUBLICKEY | crate::options::SshAuthTypes::PASSWORD,
+        );
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        said.contains("Completed password authentication\n"),
+        "{said}"
+    );
+    assert!(
+        !calls.iter().any(|c| c.starts_with("auth_publickey")),
+        "{calls:?}"
+    );
+}
+
+/// The keyboard-interactive login waits in any of its rounds and goes
+/// on where it was.
+#[test]
+fn the_interactive_login_waits_in_its_rounds() {
+    let w = world_with(&[("/home/u/f", "x")], |w| {
+        w.key_refused = true;
+        w.methods = Methods::PUBLICKEY | Methods::INTERACTIVE;
+        w.asks = true;
+        w.kbd_extra = true;
+        w.kbd_waits_at = vec![2, 3];
+    });
+    let mut m = chatty();
+    let (result, _, said) = run_on(&mut m, &w, "sftp://u:secret@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        said.contains("completed keyboard interactive authentication\n"),
+        "{said}"
+    );
+    drop(m);
+    let w = w.lock().unwrap();
+    assert!(w.kbd_waits_at.is_empty());
+    assert_eq!(w.calls.iter().filter(|c| *c == "auth_kbdint").count(), 3);
+    assert!(!w.calls.iter().any(|c| c.starts_with("auth_password")));
+}
+
+/// A directory there already, or refused, is passed as the upload's are
+/// made; one failing otherwise fails the upload with its code.
+#[test]
+fn a_directory_failing_to_be_made_is_passed_or_fails() {
+    let upload = |code: u32| {
+        let w = world_with(&[], |w| {
+            w.refused_opens = 1;
+            w.mkdir_code = Some(code);
+        });
+        let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/a/f", |o| {
+            uploads(o, b"up");
+            o.line.make_mut().unwrap().ftp.create_dirs = CreateDirs::Create;
+        });
+        (result, said, w)
+    };
+    for code in [11, 4, 3] {
+        let (result, said, w) = upload(code);
+        assert_eq!(result, Ok(()), "{code}: {said}");
+        assert_eq!(w.lock().unwrap().files[0].1, b"up");
+    }
+    let (result, said, _) = upload(2);
+    assert_eq!(result, Err(ErrorKind::RemoteFileNotFound), "{said}");
+}
+
+/// A listed entry is a link only if it says its permissions.
+#[test]
+fn a_link_is_one_by_its_permissions() {
+    let w = world_with(&[("/d/file", "abc")], |w| {
+        w.links.push((b"/d/link".to_vec(), b"file".to_vec()));
+        w.link_without_flag = true;
+    });
+    let (result, body, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/d/", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    let listed = String::from_utf8(body).unwrap();
+    assert!(listed.ends_with(" link\n"), "{listed}");
 }

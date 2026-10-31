@@ -37,6 +37,8 @@ mod haproxy;
 mod https;
 mod names;
 mod quictunnel;
+mod side;
+pub(crate) use side::{Shaken, SideSetup};
 mod socks;
 pub(crate) mod tls;
 mod tunnel;
@@ -321,13 +323,55 @@ struct SetupMut<'a> {
     handshake: &'a mut Option<Box<Handshake>>,
 }
 
-/// What the transfer lends a handshake's driver: the route it plans, its
-/// request (the ALPN offered, the pipeline a `CONNECT`'s answer goes
-/// through) and the connection's Negotiate with its proxy.
+/// What the transfer lends a handshake's driver: the route it plans, what
+/// its request lends the setup, the connection's Negotiate with its proxy,
+/// and which of the transfer's connections it is.
 struct Lent<'a> {
     route: &'a NetRoute,
-    proto: &'a mut ProtoState,
+    request: &'a mut dyn SetupLend,
     negotiate: &'a mut Option<Box<crate::proto::http::negotiate::Negotiate>>,
+    rank: ConnRank,
+}
+
+/// Which of a transfer's connections a setup makes: the one it is made
+/// over, or the second a protocol makes beside it, FTP's data connection
+/// (C's `FIRSTSOCKET` and `SECONDARYSOCKET`), which a few of the lines
+/// said of its setup name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConnRank {
+    First,
+    Second,
+}
+
+impl ConnRank {
+    /// How C's lines name it: the second as `2nd `, the first not at all.
+    pub(crate) fn ordinal(self) -> &'static str {
+        match self {
+            ConnRank::First => "",
+            ConnRank::Second => "2nd ",
+        }
+    }
+}
+
+/// What a request lends the handshakes that set its connection up, which
+/// every request answers itself: whether the application's credentials
+/// may go to the origin, which a tunnel's `CONNECT` takes the custom
+/// headers by; the pipeline the proxy's answer to it goes through, as
+/// the request's own headers do; and, for HTTP's alone, the versions it
+/// may speak, which TLS offers by ALPN and the HTTPS connect filter
+/// chooses its attempts by.
+pub(crate) trait SetupLend {
+    /// Whether credentials may go to the request's origin.
+    fn trusted(&self) -> Option<crate::auth::creds::Trusted>;
+
+    /// The pipeline the answer to a tunnel's `CONNECT` is delivered to.
+    fn pipeline(&mut self) -> &mut Pipeline;
+
+    /// What it may speak as HTTP; none for a protocol that is not HTTP.
+    fn negotiation(&self) -> Option<crate::proto::http::Negotiation>;
+
+    /// The same, to change.
+    fn negotiation_mut(&mut self) -> Option<&mut crate::proto::http::Negotiation>;
 }
 
 /// How a handshake failed: its attempt alone, which a race outlives, or
@@ -375,8 +419,9 @@ impl Connecting {
             SetupMut { machine, handshake },
             Lent {
                 route,
-                proto,
+                request: proto,
                 negotiate,
+                rank: ConnRank::First,
             },
         )
     }
@@ -3421,7 +3466,8 @@ fn enter_setup<H: Host>(
     let (SetupPoint::Dialed(made), None) = (reached, under_way) else {
         return Some(chain(reached, under_way, true));
     };
-    let Some(due) = handshake_due(c, a, made) else {
+    let setup = c.attempt(a).expect("a handshake is due over a setup");
+    let Some(due) = handshake_due(&c.route, setup, made) else {
         return Some(chain(reached, None, true));
     };
     // The tunnel's filter was added with the HTTPS proxy's TLS below it,
@@ -3506,21 +3552,9 @@ fn connect_once<H: Host>(
     cx: &mut StepCx<'_, H>,
     a: Attempt,
 ) -> (TransferState, Wake) {
-    if let Some(h) = c.handshake(a) {
-        let under_way = match h {
-            Handshake::Socks(_) => socks::step,
-            Handshake::Connect(_) => tunnel::step,
-            Handshake::H2Connect(_) => h2tunnel::step,
-            Handshake::Quic(_) => quictunnel::step,
-            Handshake::Haproxy(_) => haproxy::step,
-            &Handshake::Tls(side) => {
-                let (mut s, mut t) = c.shaking(a);
-                let shook = tls::step(&mut s, &mut t, cx, side);
-                return c.shook(a, shook, cx);
-            }
-        };
+    if c.handshake(a).is_some() {
         let (mut s, mut t) = c.shaking(a);
-        let shook = under_way(&mut s, &mut t, cx);
+        let shook = step_handshake(&mut s, &mut t, cx);
         return c.shook(a, shook, cx);
     }
     if let Some(SetupPoint::Dialed(_)) = c.attempt(a).map(ConnectMachine::reached) {
@@ -3876,16 +3910,10 @@ fn handshake_next<H: Host>(
     a: Attempt,
 ) -> (TransferState, Wake) {
     let made = c.attempt_mut(a).dialed().made();
-    if let Some(due) = handshake_due(&c, a, made) {
+    let setup = c.attempt(a).expect("a handshake is due over a setup");
+    if let Some(due) = handshake_due(&c.route, setup, made) {
         let (mut s, mut t) = c.shaking(a);
-        let (s, t) = (&mut s, &mut t);
-        let started = match due {
-            Due::Socks(version) => socks::dialed(s, t, cx, version),
-            Due::Tunnel => tunnel::dialed(s, t, cx),
-            Due::Preface => haproxy::start(s, t, cx),
-            Due::Tls(side) => tls::start(s, t, cx, side),
-            Due::Quic => quictunnel::start(s, t, cx),
-        };
+        let started = start_handshake(&mut s, &mut t, cx, due);
         return c.shook(a, started, cx);
     }
     // The origin's QUIC connection made through the tunnel is the
@@ -3930,23 +3958,23 @@ enum Due {
     Quic,
 }
 
-/// The handshake to make next over a connection that made `made`, in
-/// cf-setup.c's order; none once they are all made.
-fn handshake_due(c: &Connecting, a: Attempt, made: Made) -> Option<Due> {
-    if let Some(version) = c.route.socks().map(|leg| leg.version)
+/// The handshake to make next over `setup`, over `route`, which made
+/// `made`, in cf-setup.c's order; none once they are all made.
+fn handshake_due(route: &NetRoute, setup: &ConnectMachine, made: Made) -> Option<Due> {
+    if let Some(version) = route.socks().map(|leg| leg.version)
         && !made.socks
     {
         return Some(Due::Socks(version));
     }
-    let tunnels = c.route.proxy.as_ref().is_some_and(|p| p.tunnels());
-    let proxy_tls = c.route.proxy_tls().is_some() && !made.proxy_tls;
+    let tunnels = route.proxy.as_ref().is_some_and(|p| p.tunnels());
+    let proxy_tls = route.proxy_tls().is_some() && !made.proxy_tls;
     if proxy_tls && tunnels {
         return Some(Due::Tls(TlsSide::Proxy));
     }
     if tunnels && made.tunnel.is_none() {
         return Some(Due::Tunnel);
     }
-    if c.attempt(a).is_some_and(ConnectMachine::sends_preface) && !made.preface {
+    if setup.sends_preface() && !made.preface {
         return Some(Due::Preface);
     }
     // Requests go whole to the HTTPS proxy: its TLS is the origin's
@@ -3956,14 +3984,46 @@ fn handshake_due(c: &Connecting, a: Attempt, made: Made) -> Option<Due> {
     }
     // Through a CONNECT-UDP tunnel, the origin's TLS is its QUIC
     // connection's.
-    let setup = c.attempt(a).expect("a handshake is due over a setup");
     if setup.dialing().tunnels_udp() {
         return (!made.quic).then_some(Due::Quic);
     }
-    if c.route.tls.is_some() && !made.tls {
+    if route.tls.is_some() && !made.tls {
         return Some(Due::Tls(TlsSide::Origin));
     }
     None
+}
+
+/// The handshake `due` starts over a setup.
+fn start_handshake<H: Host>(
+    s: &mut SetupMut<'_>,
+    t: &mut Lent<'_>,
+    cx: &mut StepCx<'_, H>,
+    due: Due,
+) -> Result<Wake, Failure> {
+    match due {
+        Due::Socks(version) => socks::dialed(s, t, cx, version),
+        Due::Tunnel => tunnel::dialed(s, t, cx),
+        Due::Preface => haproxy::start(s, t, cx),
+        Due::Tls(side) => tls::start(s, t, cx, side),
+        Due::Quic => quictunnel::start(s, t, cx),
+    }
+}
+
+/// The handshake under way over a setup moves on, by its driver.
+fn step_handshake<H: Host>(
+    s: &mut SetupMut<'_>,
+    t: &mut Lent<'_>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Wake, Failure> {
+    let under_way = match s.handshake.as_deref().expect("a handshake under way") {
+        Handshake::Socks(_) => socks::step,
+        Handshake::Connect(_) => tunnel::step,
+        Handshake::H2Connect(_) => h2tunnel::step,
+        Handshake::Quic(_) => quictunnel::step,
+        Handshake::Haproxy(_) => haproxy::step,
+        &Handshake::Tls(side) => return tls::step(s, t, cx, side),
+    };
+    under_way(s, t, cx)
 }
 
 /// The name `route` connects to first, missing from the cache, is not
@@ -4093,6 +4153,54 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, found: Option
     }
     if found == Some(Found::Cached) {
         trace::info_with(cx, &[b"Hostname ", name, b" was found in DNS cache"]);
+    }
+}
+
+/// A second connection's `setup` moves on by one event, as the
+/// transfer's own does: through the names the transfer keeps, its
+/// share's if it shares them. The answer its name resolved to, let go as
+/// it connects or fails, is told to the share (`Curl_dns_entry_unlink`).
+pub(crate) fn side_drive<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    setup: ConnectMachine,
+) -> Result<Drove, ConnectError> {
+    let options = drive_options(cx);
+    let kept = cx.rest.kept(cx.me, Kind::Names);
+    let answered = setup.answer().is_some();
+    let drove = setup.drive(
+        &mut DriveCx {
+            step: cx,
+            kept: kept.as_ref(),
+            deadlines: None,
+        },
+        options,
+    );
+    let holds = matches!(&drove, Ok(Drove::Connecting(m, _)) if m.answer().is_some());
+    if answered && !holds {
+        cx.rest.net_names(cx.me, kept.as_ref()).1.release();
+    }
+    drove
+}
+
+/// A second connection's setup, dialed, let go of the answer its name
+/// resolved to, made or given up: told to the share as `side_drive`
+/// tells it.
+pub(crate) fn side_let_go<H: Host>(cx: &mut StepCx<'_, H>) {
+    let kept = cx.rest.kept(cx.me, Kind::Names);
+    cx.rest.net_names(cx.me, kept.as_ref()).1.release();
+}
+
+/// The name a second connection's `setup` connects to first was found,
+/// as `found` says: traced as the transfer's own connection traces it.
+pub(crate) fn side_resolved<H: Host>(cx: &mut StepCx<'_, H>, setup: &ConnectMachine, found: Found) {
+    let route = setup.route();
+    if route.destination().is_unix() {
+        return;
+    }
+    trace_lookup(cx, route, Some(found));
+    if let Found::Stale(asked) | Found::Resolved(asked) = found {
+        let addrs = setup.answer().map_or(&[][..], |a| a.addrs());
+        trace_resolved(cx, route, Ok(asked), addrs);
     }
 }
 

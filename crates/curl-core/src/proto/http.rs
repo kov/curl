@@ -540,6 +540,26 @@ enum Body {
 /// HTTP connects as its connection is set up, and makes its request in
 /// DO's one step (`Curl_protocol_http`: no `connect_it`, `connecting`,
 /// `doing` or `do_more`).
+/// An HTTP request lends its own credentials' trust, its pipeline and
+/// what it may speak.
+impl crate::multi::state::SetupLend for Request {
+    fn trusted(&self) -> Option<Trusted> {
+        Request::trusted(self)
+    }
+
+    fn pipeline(&mut self) -> &mut Pipeline {
+        self.pipeline_mut()
+    }
+
+    fn negotiation(&self) -> Option<Negotiation> {
+        Some(self.neg)
+    }
+
+    fn negotiation_mut(&mut self) -> Option<&mut Negotiation> {
+        Some(&mut self.neg)
+    }
+}
+
 impl super::Phases for Request {
     fn connect<H: Host>(
         &mut self,

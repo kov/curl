@@ -10,6 +10,7 @@ use crate::multi::TransferCx;
 use curl_alloc::TryArc;
 
 use crate::components::Component;
+use crate::conn::chain::SetupPoint;
 use crate::conn::io::{Closer, Events, Net, Remote, Sock, Socket};
 use crate::conn::mux::Carrier;
 use crate::conn::shutdown::ConnSettings;
@@ -18,7 +19,7 @@ use crate::conn::{ConnectMachine, Drove, Progress};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::multi::cx::DriveCx;
-use crate::multi::state::StepCx;
+use crate::multi::state::{SetupLend, Shaken, SideSetup, StepCx};
 use crate::tls::{Handshake, TlsIdentity};
 use crate::trace;
 
@@ -48,8 +49,8 @@ pub(crate) struct DataConn {
 
 #[derive(Debug)]
 enum Phase {
-    /// Being set up.
-    Connecting(Box<ConnectMachine>),
+    /// Being set up: its first hop dialed, then the handshakes over it.
+    Connecting(Box<ConnectMachine>, SideSetup),
     /// Listening for the server to connect, until `deadline`
     /// (`cf_tcp_accept`).
     Listening {
@@ -98,7 +99,7 @@ impl DataConn {
         );
         let machine = curl_alloc::try_box(machine).map_err(|_| ErrorKind::OutOfMemory)?;
         Ok(DataConn {
-            phase: Some(Phase::Connecting(machine)),
+            phase: Some(Phase::Connecting(machine, SideSetup::default())),
             tls,
             socket,
             shut: None,
@@ -128,14 +129,16 @@ impl DataConn {
         matches!(self.phase, Some(Phase::Listening { .. }))
     }
 
-    /// Move the connect on as far as it goes now, the TLS handshake over
-    /// it among it (`Curl_conn_connect` of the second socket), said as
-    /// the control connection's `host` names it: how far it came. A
-    /// failure leaves nothing open.
+    /// Move the connect on as far as it goes now, the handshakes over it
+    /// among it, its proxies' for `request` and its TLS
+    /// (`Curl_conn_connect` of the second socket), said as the control
+    /// connection's `host` names it: how far it came. A failure leaves
+    /// nothing open.
     pub(crate) fn connect<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         host: &[u8],
+        request: &mut dyn SetupLend,
     ) -> Result<Reached, ErrorKind> {
         loop {
             match self
@@ -143,50 +146,59 @@ impl DataConn {
                 .take()
                 .expect("a data connection is set up or up")
             {
-                Phase::Connecting(machine) => {
+                Phase::Connecting(mut machine, mut side) => {
+                    if let SetupPoint::Dialed(_) = machine.reached() {
+                        match side.shake(&mut machine, request, cx) {
+                            Ok(Shaken::Waiting) => {
+                                self.phase = Some(Phase::Connecting(machine, side));
+                                return Ok(Reached::Connecting);
+                            }
+                            Ok(Shaken::Redialed) => {
+                                self.phase = Some(Phase::Connecting(machine, side));
+                                continue;
+                            }
+                            Ok(Shaken::Up) => {
+                                let conn = (*machine).handshaken();
+                                crate::multi::state::side_let_go(cx);
+                                self.up(cx, host, conn)?;
+                                continue;
+                            }
+                            Err(kind) => {
+                                discard_in(cx, *machine);
+                                crate::multi::state::side_let_go(cx);
+                                return Err(kind);
+                            }
+                        }
+                    }
                     let route = machine.route().clone();
-                    let options = crate::multi::state::drive_options(cx);
-                    let mut dcx = DriveCx {
-                        step: cx,
-                        kept: None,
-                        deadlines: None,
-                    };
-                    match (*machine).drive(&mut dcx, options) {
+                    match crate::multi::state::side_drive(cx, *machine) {
                         Ok(Drove::Connecting(m, progress)) => {
                             let m = match curl_alloc::try_box_or_back(m) {
                                 Ok(m) => m,
                                 Err(m) => {
-                                    m.close(&mut dcx);
+                                    let answered = m.answer().is_some();
+                                    discard_in(cx, m);
+                                    if answered {
+                                        crate::multi::state::side_let_go(cx);
+                                    }
                                     return Err(ErrorKind::OutOfMemory);
                                 }
                             };
-                            self.phase = Some(Phase::Connecting(m));
+                            if let Progress::Resolved(found) = progress {
+                                crate::multi::state::side_resolved(cx, &m, found);
+                            }
+                            self.phase = Some(Phase::Connecting(m, side));
                             match progress {
-                                // Moved on: on again at once.
+                                // Moved on: on again at once, to its
+                                // handshakes if it dialed a proxy.
                                 Progress::Resolved(_)
                                 | Progress::Failed
+                                | Progress::Dialed
                                 | Progress::Trying { at_once: true, .. } => {}
                                 _ => return Ok(Reached::Connecting),
                             }
                         }
-                        Ok(Drove::Established(conn)) => {
-                            let (stream, remote) = conn.into_stream();
-                            established(cx, host, remote.as_ref(), &stream);
-                            // Counted as the transfer's connections are
-                            // (`cf_ip_happy_connect`'s `numconnects`).
-                            cx.report_mut().count_connect();
-                            let stream = match curl_alloc::try_box_or_back(stream) {
-                                Ok(stream) => stream,
-                                Err(stream) => {
-                                    close_in(cx, stream.into_socket());
-                                    return Err(ErrorKind::OutOfMemory);
-                                }
-                            };
-                            self.phase = Some(Phase::Up {
-                                stream,
-                                shaken: self.tls.is_none(),
-                            });
-                        }
+                        Ok(Drove::Established(conn)) => self.up(cx, host, conn)?,
                         Err(e) => return Err(crate::multi::state::connect_failed(cx, &route, e)),
                     }
                 }
@@ -290,10 +302,37 @@ impl DataConn {
         }
     }
 
+    /// The connection `conn` is up, its proxies' handshakes made: said as
+    /// C says it, and counted; its TLS follows if the data is protected.
+    fn up<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        host: &[u8],
+        conn: crate::conn::Conn,
+    ) -> Result<(), ErrorKind> {
+        let (stream, remote) = conn.into_stream();
+        established(cx, host, remote.as_ref(), &stream);
+        // Counted as the transfer's connections are
+        // (`cf_ip_happy_connect`'s `numconnects`).
+        cx.report_mut().count_connect();
+        let stream = match curl_alloc::try_box_or_back(stream) {
+            Ok(stream) => stream,
+            Err(stream) => {
+                close_in(cx, stream.into_socket());
+                return Err(ErrorKind::OutOfMemory);
+            }
+        };
+        self.phase = Some(Phase::Up {
+            stream,
+            shaken: self.tls.is_none(),
+        });
+        Ok(())
+    }
+
     /// How far it has come, without moving it on.
     pub(crate) fn reached(&self) -> Reached {
         match self.phase.as_ref() {
-            Some(Phase::Connecting(_) | Phase::Listening { .. }) | None => Reached::Connecting,
+            Some(Phase::Connecting(..) | Phase::Listening { .. }) | None => Reached::Connecting,
             Some(Phase::Up { shaken: false, .. }) => Reached::Ip,
             Some(Phase::Up { shaken: true, .. }) => Reached::Up,
         }
@@ -313,7 +352,7 @@ impl DataConn {
     /// for what a handshake under way waits for.
     pub(crate) fn pollset(&self, wanted: Events) -> impl Iterator<Item = (&dyn Socket, Events)> {
         let (racing, up) = match self.phase.as_ref() {
-            Some(Phase::Connecting(m)) => (Some(m.racing_wants()), None),
+            Some(Phase::Connecting(m, side)) => (Some(side.pollset(m)), None),
             Some(Phase::Listening { sock, .. }) => (None, Some((sock.socket(), Events::IN))),
             Some(Phase::Up { stream, shaken }) => {
                 let events = match self.shut {
@@ -354,12 +393,21 @@ impl DataConn {
     /// Close it at once.
     pub(crate) fn close(mut self, net: &mut dyn Net) {
         match self.phase.take() {
-            Some(Phase::Connecting(machine)) => machine.close(net),
+            Some(Phase::Connecting(machine, _)) => machine.close(net),
             Some(Phase::Listening { sock, .. }) => net.close(sock),
             Some(Phase::Up { stream, .. }) => net.close(stream.into_socket()),
             None => {}
         }
     }
+}
+
+/// Give up `setup` for the transfer, its sockets' closes said.
+fn discard_in<H: Host>(cx: &mut StepCx<'_, H>, setup: ConnectMachine) {
+    setup.discard(&mut DriveCx {
+        step: cx,
+        kept: None,
+        deadlines: None,
+    });
 }
 
 /// Close `socket` for the transfer, said as it goes.

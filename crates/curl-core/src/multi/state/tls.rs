@@ -74,8 +74,10 @@ pub(super) fn start<H: Host>(
     };
     // HTTP/2 is offered only where a library speaks it, and the request
     // may.
-    let only_10 = lent.proto.negotiation().is_some_and(|n| n.only_10);
-    let versions = lent.proto.http_versions();
+    let neg = lent.request.negotiation();
+    let only_10 = neg.is_some_and(|n| n.only_10);
+    // Any, for a protocol that is not HTTP (`http_neg.wanted`).
+    let versions = neg.map_or(crate::proto::http::Versions::ALL, |n| n.versions());
     let h2 = versions.h2 && cx.easy().libraries().h2.is_some();
     // An HTTPS proxy asked for in HTTP/2 is offered it, by ALPN whatever
     // the transfer says of ALPN (`cf_ssl_proxy_create`).

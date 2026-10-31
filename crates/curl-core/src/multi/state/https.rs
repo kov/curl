@@ -16,14 +16,13 @@
 //! the name's addresses, as C keeps it, so a later setup for the name
 //! finds it and arms no timer.
 
-use super::{Connecting, StepCx};
+use super::{Connecting, SetupLend, StepCx};
 use crate::components::Component;
 use crate::conn::{ConnectMachine, Dial, NetRoute, Reply};
 use crate::conn::{HttpsLookup, address};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::multi::timers::{Deadlines, TimerKind};
-use crate::proto::ProtoState;
 use crate::proto::http::Negotiation;
 use crate::share::Kind;
 use crate::text::Text;
@@ -100,13 +99,13 @@ pub(super) struct Choosing {
 }
 
 impl Choosing {
-    /// The choice for the setup `c`, over `route`.
+    /// The choice for the setup of `request`'s connection, over `route`.
     pub(super) fn of<H: Host>(
-        proto: &ProtoState,
+        request: &dyn SetupLend,
         route: &NetRoute,
         cx: &StepCx<'_, H>,
     ) -> Choosing {
-        let neg = proto
+        let neg = request
             .negotiation()
             .expect("an HTTPS connect filter heads an HTTP setup");
         Choosing {
@@ -451,7 +450,8 @@ pub(super) fn start<H: Host>(
     );
     // HTTP/1.1 alone is offered by an attempt in HTTP/1.
     if first == Alpn::H1 {
-        c.proto.negotiation_mut().expect("an HTTP setup").h1_first();
+        let request: &mut dyn SetupLend = &mut c.proto;
+        request.negotiation_mut().expect("an HTTP setup").h1_first();
     }
     let (name, source) = (first.name(), source.name());
     trace::of(

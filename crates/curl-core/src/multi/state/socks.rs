@@ -232,8 +232,9 @@ fn opened<H: Host>(
         .expect("through a SOCKS proxy")
         .to;
     let mut line = trace::Line::new();
+    let nth = lent.rank.ordinal();
     line.text(format_args!(
-        "Opened SOCKS connection from {} port {lport} to ",
+        "Opened {nth}SOCKS connection from {} port {lport} to ",
         Ip(lip)
     ));
     line.raw(to.name());

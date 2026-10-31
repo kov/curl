@@ -239,7 +239,7 @@ struct Control {
     /// The address it reached, and its end here.
     remote_addr: Option<SocketAddr>,
     local: Option<SocketAddr>,
-    /// It goes through a proxy's tunnel (`Curl_conn_is_tunneling`).
+    /// It goes through a proxy (`Curl_conn_is_tunneling`).
     tunnels: bool,
 }
 
@@ -679,7 +679,11 @@ impl Request {
             remote,
             remote_addr: conn.remote().and_then(crate::conn::io::Remote::inet),
             local: conn.local(),
-            tunnels: route.proxy.as_ref().is_some_and(|p| p.tunnels()),
+            // A SOCKS proxy's, an HTTP proxy's tunnel and an HTTPS
+            // proxy's TLS each stay on the connection once it is up
+            // (`CF_TYPE_PROXY`); an FTP URL asked of a proxy that
+            // forwards it is HTTP's.
+            tunnels: route.proxy.is_some(),
         });
         Ok(())
     }
@@ -1717,6 +1721,17 @@ impl Request {
         }
     }
 
+    /// The host the control connection is said to be to: its first proxy,
+    /// else the peer a connect-to names, else the origin
+    /// (`CURL_CONN_HOST_DISPNAME`), which the data connection's lines name.
+    fn control_host(&self) -> Result<Vec<u8>, ErrorKind> {
+        let control = self
+            .control
+            .as_ref()
+            .expect("DO knows its control connection");
+        copied(control.route.destination().shown())
+    }
+
     /// The answer to `EPSV` or `PASV` (`ftp_state_pasv_resp`): the data
     /// connection set up to the port it names, on the control
     /// connection's address or, if the server's is to be used, the one
@@ -1809,7 +1824,9 @@ impl Request {
             .control
             .as_ref()
             .expect("DO knows its control connection");
-        if control.route.proxy.is_some() {
+        // An HTTP/3 proxy's tunnels are raced as its QUIC connections
+        // are made, which only the transfer's own setup does.
+        if control.route.proxy_over_quic() {
             return Err(ErrorKind::NotBuiltIn);
         }
         let mut route = control.route.clone();
@@ -2146,9 +2163,9 @@ impl Request {
         if !self.initiating {
             trace::of(cx, Component::Ftp, format_args!("ftp_initiate_transfer()"));
         }
-        let host = copied(self.peer.shown())?;
+        let host = self.control_host()?;
         let data = pc.data.as_deref_mut().ok_or(ErrorKind::FailedInit)?;
-        if data.connect(cx, &host)? != Reached::Up {
+        if data.connect(cx, &host, self)? != Reached::Up {
             self.initiating = true;
             return Ok(());
         }
@@ -2341,7 +2358,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<DoStep, ErrorKind> {
-        let host = copied(self.peer.shown())?;
+        let host = self.control_host()?;
         {
             let (pc, mut carrier) = ftp_of(lease);
             let listened = pc.data.as_deref().is_some_and(DataConn::listens);
@@ -2349,7 +2366,7 @@ impl Request {
                 // One the server is to connect to is not waited for here:
                 // it connects once told what to move.
                 let listens = listened;
-                match data.connect(cx, &host) {
+                match data.connect(cx, &host, self) {
                     Err(ErrorKind::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
                     Err(e) => {
                         pc.data = None;
@@ -3031,6 +3048,28 @@ impl Request {
 /// FTP connects over its connection by logging in, and makes its request
 /// in DO and DOING, the data connection made in DO_MORE (`ftp_connect`,
 /// `ftp_multi_statemach`, `ftp_do`, `ftp_doing`, `ftp_do_more`).
+/// An FTP request lends its pipeline, which the answer to its data
+/// connection's `CONNECT` goes through as its control connection's did;
+/// its credentials are trusted as a first request's, and it speaks no
+/// HTTP.
+impl crate::multi::state::SetupLend for Request {
+    fn trusted(&self) -> Option<crate::auth::creds::Trusted> {
+        CredentialGate::FIRST.trusted()
+    }
+
+    fn pipeline(&mut self) -> &mut Pipeline {
+        &mut self.pipeline
+    }
+
+    fn negotiation(&self) -> Option<crate::proto::http::Negotiation> {
+        None
+    }
+
+    fn negotiation_mut(&mut self) -> Option<&mut crate::proto::http::Negotiation> {
+        None
+    }
+}
+
 impl super::Phases for Request {
     fn connect<H: Host>(
         &mut self,
@@ -3399,13 +3438,13 @@ impl Request {
         pc: &mut FtpConn,
         carrier: &mut Carrier<'_>,
     ) -> Result<bool, ErrorKind> {
-        let host = copied(self.peer.shown())?;
+        let host = self.control_host()?;
         if !pc.data.as_deref().is_some_and(DataConn::listens) {
             return Ok(true);
         }
         set_state(cx, pc, State::Stop);
         let data = pc.data.as_deref_mut().expect("a data connection listens");
-        if data.connect(cx, &host)? != Reached::Connecting {
+        if data.connect(cx, &host, self)? != Reached::Connecting {
             self.due = None;
             return Ok(true);
         }

@@ -23,7 +23,9 @@ pub(crate) mod smtp;
 
 use std::num::NonZeroU32;
 
-use crate::auth::creds::{Credentials, CredentialsError, NetrcLookup, Takes, Trusted};
+use crate::auth::creds::{
+    CredentialGate, Credentials, CredentialsError, NetrcLookup, Takes, Trusted,
+};
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Directions, Pause, Pipeline};
@@ -31,7 +33,7 @@ use crate::error::ErrorKind;
 use crate::error::{UrlErrorKind, url_error};
 use crate::idn::{Idn, IdnFailure};
 use crate::multi::Host;
-use crate::multi::state::{AfterRequest, StepCx};
+use crate::multi::state::{AfterRequest, SetupLend, StepCx};
 use crate::netrc::{self, NetrcError};
 use crate::options::NetrcMode;
 use crate::options::{Method, Options};
@@ -483,6 +485,69 @@ pub(crate) fn request_credentials<H: Host>(
 /// libcurl's.
 #[cfg(any(test, feature = "test-util"))]
 const TEST_SCHEMES: [&[u8]; 4] = [b"null", b"stall", b"script", b"tcp"];
+
+/// Each request lends its own: HTTP's and FTP's by their own answers;
+/// the others' credentials are trusted as a first request's, and they
+/// speak no HTTP.
+impl SetupLend for ProtoState {
+    fn trusted(&self) -> Option<Trusted> {
+        match self {
+            ProtoState::Http(r) => SetupLend::trusted(&**r),
+            ProtoState::Ftp(r) => SetupLend::trusted(&**r),
+            ProtoState::File(_)
+            | ProtoState::Pop3(_)
+            | ProtoState::Imap(_)
+            | ProtoState::Smtp(_) => CredentialGate::FIRST.trusted(),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
+                CredentialGate::FIRST.trusted()
+            }
+        }
+    }
+
+    fn pipeline(&mut self) -> &mut Pipeline {
+        match self {
+            ProtoState::Http(r) => SetupLend::pipeline(&mut **r),
+            ProtoState::Ftp(r) => SetupLend::pipeline(&mut **r),
+            ProtoState::File(r) => r.pipeline_mut(),
+            ProtoState::Pop3(r) => r.pipeline_mut(),
+            ProtoState::Imap(r) => r.pipeline_mut(),
+            ProtoState::Smtp(r) => r.pipeline_mut(),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Script(p) => p.pipeline_mut(),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => {
+                unreachable!("no test protocol is set up through a tunnel")
+            }
+        }
+    }
+
+    fn negotiation(&self) -> Option<http::Negotiation> {
+        match self {
+            ProtoState::Http(r) => SetupLend::negotiation(&**r),
+            ProtoState::Ftp(r) => SetupLend::negotiation(&**r),
+            ProtoState::File(_)
+            | ProtoState::Pop3(_)
+            | ProtoState::Imap(_)
+            | ProtoState::Smtp(_) => None,
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+        }
+    }
+
+    fn negotiation_mut(&mut self) -> Option<&mut http::Negotiation> {
+        match self {
+            ProtoState::Http(r) => SetupLend::negotiation_mut(&mut **r),
+            ProtoState::Ftp(r) => SetupLend::negotiation_mut(&mut **r),
+            ProtoState::File(_)
+            | ProtoState::Pop3(_)
+            | ProtoState::Imap(_)
+            | ProtoState::Smtp(_) => None,
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+        }
+    }
+}
 
 impl ProtoState {
     /// Whether `scheme`, lowercase, is one libcurl knows, whether this

@@ -1396,7 +1396,10 @@ does. A connection that multiplexes (§4.4) is
 leased by several transfers at once: `Use::Leased(n)` counts them, one more for each that joins
 it and each pushed transfer. FTP's data connection is a second stream the control connection's
 protocol state holds (`LineConn::Ftp`, `proto::ftp::data::DataConn`): connected through its own
-`ConnectMachine`, or listened for and accepted, with TLS of the control connection's identity
+`ConnectMachine` over the control connection's route at the port the server named, its name
+looked up in the transfer's cache (`side_drive`), and its proxies' handshakes made by the same
+drivers from FTP's own phases (`SideSetup`, as C's ftp.c connects the second socket's filters),
+over what FTP's request lends them; or listened for and accepted, with TLS of the control connection's identity
 when protected, resuming first the copy of its latest session the control connection's TLS
 layer keeps (`tls::OwnSessions`, C's `connssl->session`), as servers may insist on; its socket joins the transfer's pollset (`ConnSlot::side_pollset`), the
 transfer's end closes it, and the connection's end closes it first if it is still open
@@ -1535,9 +1538,12 @@ announced to the socket callback first. A transfer whose receiving is paused is 
   (`multi/state/{socks,tunnel,h2tunnel,haproxy,tls,quictunnel}.rs`, and `h3tunnel.rs` for the
   HTTP/3 proxy's, which runs in the race). A driver takes the setup it works on (`SetupMut`:
   the machine and the handshake under way, borrowed from wherever they are kept, the first's or
-  the second's) and what the transfer lends it (`Lent`: the route, the request, for the ALPN
-  offered and the pipeline a `CONNECT`'s answer goes through, and the connection's Negotiate with
-  its proxy). It returns whether to go on at once or wait, or how it failed (`Failure::of`): its
+  the second's) and what the transfer lends it (`Lent`: the route; what its request lends a
+  setup, `SetupLend`, which each request answers itself, with no default: whether credentials
+  may go to its origin, the pipeline a `CONNECT`'s answer goes through and, for HTTP's alone,
+  the versions it may speak, which TLS offers by ALPN and the HTTPS connect filter chooses by;
+  the connection's Negotiate with its proxy; and which of the transfer's connections it is, the
+  second's lines saying `2nd` as C's do). It returns whether to go on at once or wait, or how it failed (`Failure::of`): its
   attempt alone, which a race outlives, or the transfer, as running out of memory does; the
   caller, not the driver, decides what a failed attempt does to a race. TLS is made and moved on
   over a `Stream` (`tls::put_on`, `tls::shake`), so that an open connection can be upgraded by

@@ -7,7 +7,7 @@
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use super::{Failure, Handshake, Lent, SetupMut, StepCx, Wake};
-use crate::auth::creds::{CredentialGate, Secret};
+use crate::auth::creds::Secret;
 use crate::auth::http::{
     self as auth, AuthAct, AuthRequest, Challenges, HeardNote, Offered, Output, OutputError,
     PeerAsked, Side,
@@ -22,7 +22,6 @@ use crate::multi::Host;
 use crate::multi::cx::DriveCx;
 use crate::options::ProxyType;
 use crate::progress;
-use crate::proto::ProtoState;
 use crate::proto::http::negotiate;
 use crate::proto::http1::fields::{self, MAX_HEADERS};
 use crate::proto::http1::framing::Note as HeadNote;
@@ -317,10 +316,7 @@ pub(super) fn connect_head<H: Host>(
     );
     let mut out = Vec::new();
     let options = cx.easy().options();
-    let trusted = match &*lent.proto {
-        ProtoState::Http(request) => request.trusted(),
-        _ => CredentialGate::FIRST.trusted(),
-    };
+    let trusted = lent.request.trusted();
     let scheme: &'static [u8] = if lent.route.proxy_tls().is_some() {
         b"https"
     } else {
@@ -559,7 +555,7 @@ fn line<H: Host>(
         return Err(refused(cx, e));
     }
     let first = t.answer.code().is_none();
-    let pipeline = lent.proto.pipeline_mut().expect("HTTP delivers");
+    let pipeline = lent.request.pipeline();
     if first {
         pipeline.connect_status(cx, line)?;
     } else {

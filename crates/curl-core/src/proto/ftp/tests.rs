@@ -144,11 +144,21 @@ fn added_with(
     libraries: Option<SharedLibraries>,
     set: impl FnOnce(&mut Options),
 ) -> (TransferId, Body, Text) {
-    let url = url.replace("PORT", &PORT.to_string());
     let mut e = Easy::new();
     if let Some(libraries) = libraries {
         e.set_libraries(libraries);
     }
+    added_easy(m, url, e, set)
+}
+
+/// The same, made of `e`.
+fn added_easy(
+    m: &mut Multi,
+    url: &str,
+    mut e: Easy,
+    set: impl FnOnce(&mut Options),
+) -> (TransferId, Body, Text) {
+    let url = url.replace("PORT", &PORT.to_string());
     let traced = crate::components::Components::new().unwrap();
     traced.configure(b"multi");
     e.set_components(Some(traced));
@@ -406,5 +416,127 @@ fn a_download_waits_on_its_data_connection() {
         [(data, crate::conn::io::Events::IN)],
         "{}",
         text.text()
+    );
+}
+
+/// The port of the proxy the transfers go through.
+const PROXY_PORT: u16 = 8080;
+
+/// A multi whose proxy at `PROXY_PORT` takes the control connection's
+/// talk and then the data connection's.
+fn proxied(control: &Conversation, data: &Conversation) -> Multi {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PROXY_PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Net::Accepts)
+        .with_conversation(at, control.clone())
+        .with_conversation(at, data.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(Counted(Arc::new(Mutex::new(net)))),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    Multi::new(env).unwrap()
+}
+
+/// The control connection's talk through a proxy whose last answer to
+/// its setup is `setup`, after `before`: each command answered as it is
+/// sent, the greeting after the setup's answer.
+fn through(before: &[&[u8]], setup: &[u8]) -> Conversation {
+    let greeted = [setup, LOGIN_AND_SETUP[0]].concat();
+    let mut replies = before.to_vec();
+    replies.push(&greeted);
+    replies.extend_from_slice(&LOGIN_AND_SETUP[1..]);
+    replies.push(b"150 here\r\n226 done\r\n");
+    Conversation::replies(&replies, false).per_send()
+}
+
+const TUNNELED: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
+
+/// The data connection goes through the HTTP proxy's tunnel as the
+/// control connection does, with a `CONNECT` of its own to the port the
+/// server named, on the origin's name (`ftp_control_addr_dup`); its
+/// lines name the control connection's proxy, as C's second socket's
+/// filters say them.
+#[test]
+fn the_data_connection_tunnels_through_the_proxy() {
+    let talk = through(&[], TUNNELED);
+    let file = Conversation::replies(&[&[TUNNELED, b"hello"].concat()], true).per_send();
+    let mut m = proxied(&talk, &file);
+    let (id, body, text) = added(&mut m, URL, |o| {
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("http://127.0.0.1:{PROXY_PORT}").into_bytes());
+        proxy.tunnel = true;
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let sent = String::from_utf8_lossy(&talk.received()).into_owned();
+    assert!(
+        sent.starts_with("CONNECT 127.0.0.1:8021 HTTP/1.1\r\n"),
+        "{sent}"
+    );
+    let asked = String::from_utf8_lossy(&file.received()).into_owned();
+    assert!(
+        asked.starts_with("CONNECT 127.0.0.1:8022 HTTP/1.1\r\n"),
+        "{asked}"
+    );
+    assert!(
+        said.contains("Establishing HTTP proxy tunnel to 127.0.0.1:8022\n"),
+        "{said}"
+    );
+    assert!(
+        said.contains("Established 2nd connection to 127.0.0.1 (127.0.0.1 port 8080)"),
+        "{said}"
+    );
+    let established = "CONNECT tunnel established, response 200";
+    assert_eq!(said.matches(established).count(), 2, "{said}");
+    let removed = m.remove(id, &mut NoEvents).unwrap();
+    assert_eq!(removed.easy.report().connects(), 2);
+}
+
+/// SOCKS5's answers: no authentication, then the connect to `port`
+/// granted.
+fn granted(port: u16) -> Vec<u8> {
+    let [hi, lo] = port.to_be_bytes();
+    vec![5, 0, 0, 1, 127, 0, 0, 1, hi, lo]
+}
+
+/// The data connection goes through the SOCKS proxy as the control
+/// connection does, said as the second's (`socks_proxy_cf_connect`), the
+/// proxy's name found in the cache, where the control connection's left
+/// it.
+#[test]
+fn the_data_connection_goes_through_the_socks_proxy() {
+    let talk = through(&[&[5, 0]], &granted(PORT));
+    let data = [&granted(DATA_PORT)[..], b"hello"].concat();
+    let file = Conversation::replies(&[&[5, 0], &data], true).per_send();
+    let mut m = proxied(&talk, &file);
+    // The names are a share's, as the tool's are.
+    let share = crate::share::Share::new().unwrap();
+    share.keep(crate::share::Kind::Names).unwrap();
+    let mut e = Easy::new();
+    e.set_share(Some(share));
+    let (id, body, text) = added_easy(&mut m, URL, e, |o| {
+        o.proxy.make_mut().unwrap().url =
+            Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let asked = file.received();
+    assert_eq!(&asked[..3], [5, 1, 0], "{asked:?}");
+    assert_eq!(asked[3..6], [5, 1, 0], "{asked:?}");
+    assert_eq!(asked[6..], granted(DATA_PORT)[3..], "{asked:?}");
+    assert!(
+        said.contains("Opened 2nd SOCKS connection from 127.0.0.1 port "),
+        "{said}"
+    );
+    assert!(
+        said.contains("Hostname 127.0.0.1 was found in DNS cache"),
+        "{said}"
     );
 }

@@ -278,6 +278,8 @@ pub(crate) struct Request {
     list_only: bool,
     /// The transfer stores a file (`state.upload`).
     upload: bool,
+    /// No body is wanted (`req.no_body`).
+    no_body: bool,
     transfer: Transfer,
     /// The size of the download, once known (`downloadsize`).
     download_size: Option<u64>,
@@ -453,6 +455,7 @@ impl Request {
             prefer_ascii,
             list_only,
             upload: options.method == Method::Upload,
+            no_body: options.method == Method::Head,
             transfer: Transfer::Body,
             download_size: Some(0),
             known_filesize: None,
@@ -540,11 +543,16 @@ impl Request {
         self.pipeline.holds_output()
     }
 
-    /// Whether nothing came back for the request, which has not run to
-    /// its end: one that may be made again on a fresh connection, its
-    /// reused one having died (`Curl_retry_request`).
+    /// Whether nothing came back for the request, which waits for a body
+    /// it has not read to its end: one that may be made again on a fresh
+    /// connection, its reused one having died (`Curl_retry_request` for a
+    /// scheme outside HTTP's, which retries no upload).
     pub(crate) fn received_nothing(&self) -> bool {
-        self.header_bytes == 0 && self.pipeline.bytecount() == 0 && !self.received
+        !self.upload
+            && !self.no_body
+            && self.header_bytes == 0
+            && self.pipeline.bytecount() == 0
+            && !self.received
     }
 
     /// Whether the request, once made, moves anything over the data
@@ -1251,11 +1259,6 @@ fn connected<H: Host>(cx: &mut StepCx<'_, H>, pc: &mut FtpConn) {
 /// states that reach its directory, ask of its file and set its type
 /// (ftp.c's DO phase).
 impl Request {
-    /// No body is wanted (`req.no_body`).
-    fn no_body<H: Host>(cx: &StepCx<'_, H>) -> bool {
-        cx.easy().options().method == Method::Head
-    }
-
     /// The path as DO split it.
     fn path(&self) -> &Path {
         self.parsed.as_ref().unwrap_or(&path::UNPARSED)
@@ -1506,7 +1509,7 @@ impl Request {
                     cx.report_mut().set_filetime(t);
                     filetime = Some(t);
                     let options = cx.easy().options();
-                    if Self::no_body(cx) && self.path().file().is_some() && options.filetime {
+                    if self.no_body && self.path().file().is_some() && options.filetime {
                         let date = crate::date::HttpDate::of(t)
                             .map_err(|_| ErrorKind::BadFunctionArgument)?;
                         let line =
@@ -1555,7 +1558,7 @@ impl Request {
         carrier: &mut Carrier<'_>,
     ) -> Step {
         let want = if self.prefer_ascii { b'A' } else { b'I' };
-        if Self::no_body(cx) && self.path().file().is_some() && pc.transfer_type != Some(want) {
+        if self.no_body && self.path().file().is_some() && pc.transfer_type != Some(want) {
             self.transfer = Transfer::Info;
             self.nb_type(cx, pc, carrier, self.prefer_ascii, State::Type)
         } else {
@@ -2375,7 +2378,7 @@ impl Request {
                 Component::Ftp,
                 format_args!("[{state}] DO phase starts"),
             );
-            if Self::no_body(cx) {
+            if self.no_body {
                 self.transfer = Transfer::Info;
             }
             self.quote(cx, pc, &mut carrier, true, State::Quote)

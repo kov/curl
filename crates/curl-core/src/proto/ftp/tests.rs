@@ -2200,3 +2200,40 @@ fn a_failed_read_after_answers_came_is_not_retried() {
     assert!(!said.contains("Connection died"), "{said}");
     assert_eq!(received(&fresh), "", "{said}");
 }
+
+/// An upload, or a request for no body, on a reused control connection
+/// that fails its first command is not made again: C retries a request
+/// outside HTTP's only when it waits for a body (`Curl_retry_request`).
+#[test]
+fn a_request_with_no_body_to_come_is_not_retried() {
+    let run = |set: &dyn Fn(&mut Options)| {
+        let mut replies = LOGIN_AND_SETUP.to_vec();
+        replies.push(b"150 here\r\n226 done\r\n");
+        let dying = Conversation::replies(&replies, false)
+            .greeting()
+            .breaking_after(7);
+        let fresh = control(&[b"150 here\r\n226 done\r\n"]);
+        let (a, b) = (data(b"hello"), data(b"hello"));
+        let mut m = serving(&[&dying, &fresh], &[&a, &b]);
+        let (id, _, text) = added(&mut m, URL, |_| {});
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Ok(()), "{}", text.text());
+        m.remove(id, &mut NoEvents).unwrap();
+        let (id, _, text) = added(&mut m, URL, |o| set(o));
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        (result, received(&fresh), text.text())
+    };
+    let upload = |o: &mut Options| {
+        o.method = crate::options::Method::Upload;
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"x".to_vec()).unwrap(),
+        );
+    };
+    let no_body = |o: &mut Options| o.method = crate::options::Method::Head;
+    for set in [&upload as &dyn Fn(&mut Options), &no_body] {
+        let (result, fresh, said) = run(set);
+        assert_eq!(result, Err(ErrorKind::SendError), "{said}");
+        assert!(!said.contains("Connection died"), "{said}");
+        assert_eq!(fresh, "", "{said}");
+    }
+}

@@ -2445,6 +2445,111 @@ fn a_rewind_asks_the_application() {
     );
 }
 
+/// A stream the read and seek functions share: the seek's answer, the
+/// offsets it was asked for, and how many reads there were.
+struct Stream {
+    feed: Feed,
+    answer: c_int,
+    asked: Vec<(curl_off_t, c_int)>,
+    reads: u32,
+}
+
+unsafe extern "C" fn stream_read(
+    buf: *mut c_char,
+    size: usize,
+    n: usize,
+    data: *mut c_void,
+) -> usize {
+    // SAFETY: the test passes a `Stream`, whose `Feed` comes first.
+    let s = unsafe { &mut *data.cast::<Stream>() };
+    s.reads += 1;
+    // SAFETY: as `read` is called.
+    unsafe { read(buf, size, n, (&raw mut s.feed).cast()) }
+}
+
+unsafe extern "C" fn stream_seek(data: *mut c_void, offset: curl_off_t, origin: c_int) -> c_int {
+    // SAFETY: the test passes a `Stream`.
+    let s = unsafe { &mut *data.cast::<Stream>() };
+    s.asked.push((offset, origin));
+    if s.answer == ffi::CURL_SEEKFUNC_OK {
+        s.feed.left.drain(..usize::try_from(offset).unwrap());
+    }
+    s.answer
+}
+
+/// A body resumed is moved to its point by the seek function: one that
+/// cannot seek, or no seek function, has the bytes before read instead,
+/// and any other answer fails the transfer (`ftp_state_ul_setup`).
+#[test]
+fn a_resumed_body_asks_the_seek_function() {
+    let run = |answer: Option<c_int>| {
+        let mut s = Stream {
+            feed: Feed {
+                left: (0..100u8).collect(),
+                answer: None,
+            },
+            answer: answer.unwrap_or(-1),
+            asked: Vec::new(),
+            reads: 0,
+        };
+        let mut buf = [0 as c_char; 256];
+        let c = curl_easy_init();
+        pointer(c, ffi::CURLOPT_URL, c"script://a".as_ptr().cast_mut());
+        long(c, ffi::CURLOPT_UPLOAD, 1);
+        long(c, ffi::CURLOPT_TIMEOUT, 5);
+        pointer(c, ffi::CURLOPT_ERRORBUFFER, buf.as_mut_ptr());
+        options(c, |o| {
+            o.script = Some(Script::new(vec![Piece::Resume(60), Piece::SendAll]).unwrap());
+        });
+        type StreamRead = unsafe extern "C" fn(*mut c_char, usize, usize, *mut c_void) -> usize;
+        function(
+            c,
+            ffi::CURLOPT_READFUNCTION,
+            stream_read as StreamRead as *const (),
+        );
+        pointer(c, ffi::CURLOPT_READDATA, &raw mut s);
+        if answer.is_some() {
+            function(
+                c,
+                ffi::CURLOPT_SEEKFUNCTION,
+                stream_seek as SeekFn as *const (),
+            );
+            pointer(c, ffi::CURLOPT_SEEKDATA, &raw mut s);
+        }
+        // SAFETY: a live handle, then not used again.
+        let code = unsafe { curl_easy_perform(c) };
+        // SAFETY: as above.
+        unsafe { curl_easy_cleanup(c) };
+        // SAFETY: the shim ends what it writes with a zero byte.
+        let why = unsafe { CStr::from_ptr(buf.as_ptr()) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        (code, why, s.asked, s.reads, s.feed.left.len())
+    };
+    let set = libc::SEEK_SET;
+    // Moved: the reads give the rest, then the end.
+    assert_eq!(
+        run(Some(ffi::CURL_SEEKFUNC_OK)),
+        (CURLE_OK, String::new(), vec![(60, set)], 2, 0)
+    );
+    // Read to the point, then the rest, then the end.
+    assert_eq!(
+        run(Some(ffi::CURL_SEEKFUNC_CANTSEEK)),
+        (CURLE_OK, String::new(), vec![(60, set)], 3, 0)
+    );
+    assert_eq!(run(None), (CURLE_OK, String::new(), vec![], 3, 0));
+    let failed = (
+        ffi::CURLE_FTP_COULDNT_USE_REST,
+        "Could not seek stream".to_owned(),
+        vec![(60, set)],
+        0,
+        100,
+    );
+    assert_eq!(run(Some(ffi::CURL_SEEKFUNC_FAIL)), failed);
+    assert_eq!(run(Some(7)), failed);
+}
+
 /// A tree posted twice starts over, as the second transfer begins, the
 /// parts the first one's reading reached, as C keeps that in the part
 /// (`mime_part_rewind` past `MIMESTATE_BEGIN`): a part a function reads is

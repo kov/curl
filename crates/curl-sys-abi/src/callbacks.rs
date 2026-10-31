@@ -17,8 +17,8 @@ use curl_core::handler::{
     ChunkBegin, ChunkBeginHandler, ChunkEndHandler, DebugHandler, DebugKind, FileInfo, FileType,
     FnMatchHandler, Handler, HeaderHandler, HeaderOrigin, HostKey, KeyMatch, KeyVerdict, LentBytes,
     Matched, ProgressHandler, ProgressNow, ProgressVerdict, Read, ReadHandler, Rewind,
-    RewindFailed, SshKeyHandler, TextSink, TrailerHandler, TrailerLines, Trailers, Write,
-    WriteHandler,
+    RewindFailed, SeekFailed, SshKeyHandler, TextSink, TrailerHandler, TrailerLines, Trailers,
+    Write, WriteHandler,
 };
 use curl_core::multi::TransferCx;
 use curl_core::options::{Method, Options, Progress, UploadSource};
@@ -1034,6 +1034,29 @@ impl Rewind for Adapter {
             }
         }
         Err(RewindFailed)
+    }
+
+    /// The seek function, to `offset` from the start: `CURL_SEEKFUNC_OK`
+    /// moved it, `CURL_SEEKFUNC_CANTSEEK` and no seek function have the
+    /// bytes before read and dropped, and any other answer fails the
+    /// upload. C sends from where the stream is when there is no seek
+    /// function, the wrong bytes; here they are passed over by reading,
+    /// as its documentation says they are.
+    fn seek(&self, cx: &mut TransferCx<'_>, offset: u64) -> Result<(), SeekFailed> {
+        let ccb = self.easy().ccb.get();
+        let Some(seek) = ccb.seek else {
+            return Err(SeekFailed::CantSeek);
+        };
+        let offset = ffi::curl_off_t::try_from(offset).expect("an offset the application gave");
+        // SAFETY: the application's seek function takes its data.
+        let err = self.call(cx, || unsafe {
+            seek(ccb.seek_data, offset, libc::SEEK_SET)
+        });
+        match err {
+            CURL_SEEKFUNC_OK => Ok(()),
+            ffi::CURL_SEEKFUNC_CANTSEEK => Err(SeekFailed::CantSeek),
+            _ => Err(SeekFailed::Fail),
+        }
     }
 }
 

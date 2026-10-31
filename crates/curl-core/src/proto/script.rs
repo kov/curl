@@ -161,6 +161,7 @@ impl Player {
                     }
                 },
                 Piece::Rewind => self.upload(cx)?.rewind(cx)?,
+                Piece::Resume(from) => self.upload(cx)?.resume_from(cx, *from)?,
                 Piece::Status(line) => self.pipeline.status(cx, line, false)?,
                 Piece::Header(line) => self.pipeline.header(cx, line, HeaderOrigin::Header)?,
                 Piece::Connect(line) => self.pipeline.header(cx, line, HeaderOrigin::Connect)?,

@@ -11,7 +11,7 @@ use curl_alloc::{TryArc, try_box};
 
 use crate::components::Component;
 use crate::error::ErrorKind;
-use crate::handler::{DebugKind, Handler, LentBytes, Read, ReadHandler, Rewind};
+use crate::handler::{DebugKind, Handler, LentBytes, Read, ReadHandler, Rewind, SeekFailed};
 use crate::mime::read::{Escape, MakeError, MimeReader};
 use crate::mime::{Mime, MimeError};
 use crate::multi::state::StepCx;
@@ -379,6 +379,74 @@ impl Upload {
     fn fail(&mut self, e: ErrorKind) -> ErrorKind {
         self.latch = Latch::Errored(e);
         e
+    }
+
+    /// Start the body, not yet read, `from` bytes in, for an upload resumed
+    /// there (`ftp_state_ul_setup`, `myssh_in_UPLOAD_INIT`): a handler's
+    /// rewind handler seeks; one that cannot, or a handler without one,
+    /// has the bytes before read and dropped, by the handler itself, as
+    /// C calls its read function, untraced and not counted as the body's.
+    /// A handler's known size becomes what is left of it. Any other source
+    /// is read to the point. Failing, FtpCouldntUseRest: "Could not seek
+    /// stream" if the seek failed, "Failed to read data" if a read did.
+    pub(crate) fn resume_from<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        from: u64,
+    ) -> Result<(), ErrorKind> {
+        assert!(
+            self.read == 0 && !self.called,
+            "a body resumed before it is read"
+        );
+        let short = |cx: &mut StepCx<'_, H>| {
+            let why = format_args!("Failed to read data");
+            trace::fail(cx, ErrorKind::FtpCouldntUseRest, why)
+        };
+        let mut scratch = [0u8; 4 * 1024];
+        let mut passed = 0;
+        let Source::Read {
+            handler,
+            rewind,
+            size,
+        } = &mut self.source
+        else {
+            while passed < from {
+                let want =
+                    usize::try_from(from - passed).map_or(scratch.len(), |n| n.min(scratch.len()));
+                let got = self.read(cx, &mut scratch[..want], false)?;
+                if got.n == 0 {
+                    return Err(short(cx));
+                }
+                passed += got.n as u64;
+            }
+            return Ok(());
+        };
+        let seeked = match rewind {
+            Some(rewind) => rewind.seek(&mut TransferCx::new(cx), from),
+            None => Err(SeekFailed::CantSeek),
+        };
+        match seeked {
+            Ok(()) => {}
+            Err(SeekFailed::Fail) => {
+                let why = format_args!("Could not seek stream");
+                return Err(trace::fail(cx, ErrorKind::FtpCouldntUseRest, why));
+            }
+            Err(SeekFailed::CantSeek) => {
+                while passed < from {
+                    let want = usize::try_from(from - passed)
+                        .map_or(scratch.len(), |n| n.min(scratch.len()));
+                    match handler.read(&mut TransferCx::new(cx), &mut scratch[..want]) {
+                        Read::Data(n) if n.get() <= want => passed += n.get() as u64,
+                        // Its end, a failure, an abort, a pause or more than
+                        // asked for: C's read function answers each with 0 or
+                        // more than it was asked for.
+                        _ => return Err(short(cx)),
+                    }
+                }
+            }
+        }
+        *size = size.map(|s| s.saturating_sub(from));
+        Ok(())
     }
 
     /// Start the body over (`cr_in_rewind`, `cr_buf_cntrl`). A handler that

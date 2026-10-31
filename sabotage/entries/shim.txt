@@ -364,3 +364,13 @@ witness: curl-sys-abi setopt::tests::takes_the_ssh_options_as_c_s_libssh_build
             return Err(Refused::NotBuiltIn);
         }
         (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
+
+=== the shim's seek takes an unknown answer for one that cannot seek
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::a_resumed_body_asks_the_seek_function
+--- old
+            ffi::CURL_SEEKFUNC_CANTSEEK => Err(SeekFailed::CantSeek),
+            _ => Err(SeekFailed::Fail),
+--- new
+            ffi::CURL_SEEKFUNC_FAIL => Err(SeekFailed::Fail),
+            _ => Err(SeekFailed::CantSeek),

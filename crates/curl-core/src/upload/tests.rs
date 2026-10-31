@@ -11,7 +11,7 @@ use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::handler::{
     DebugHandler, DebugKind, Handler, ProgressHandler, ProgressNow, ProgressVerdict, Read,
-    ReadHandler, Rewind, RewindFailed, Write, WriteHandler,
+    ReadHandler, Rewind, RewindFailed, SeekFailed, Write, WriteHandler,
 };
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, PauseRequest, TransferCx};
@@ -681,4 +681,196 @@ fn a_pause_in_a_step_still_sending_runs_it_again() {
         "at the yield"
     );
     assert_eq!(m.timeout(), Some(Duration::ZERO), "still sending");
+}
+
+/// Moves the feeder it shares a place with, answering as `answer` says,
+/// and keeps the offsets it was asked for.
+struct Seeker {
+    feeder_at: Arc<Cell<usize>>,
+    answer: Result<(), SeekFailed>,
+    asked: Arc<Mutex<Vec<u64>>>,
+}
+
+impl Rewind for Seeker {
+    fn rewind(&self, _: &mut TransferCx<'_>) -> Result<(), RewindFailed> {
+        unreachable!("a resumed body is not rewound here")
+    }
+
+    fn seek(&self, _: &mut TransferCx<'_>, offset: u64) -> Result<(), SeekFailed> {
+        self.asked.lock().unwrap().push(offset);
+        if self.answer.is_ok() {
+            self.feeder_at.set(usize::try_from(offset).unwrap());
+        }
+        self.answer
+    }
+}
+
+/// What a resumed body came to: the transfer's result, its sizes, what
+/// was sent, the offsets the seek was asked for, the room of each read
+/// and the trace's text.
+struct Resumed {
+    result: Result<(), ErrorKind>,
+    sizes: crate::report::Sizes,
+    sent: Vec<u8>,
+    asked: Vec<u64>,
+    reads: Vec<usize>,
+    text: Vec<Vec<u8>>,
+}
+
+/// A body of `data`, `size` known or not, resumed `from` bytes in and
+/// then sent whole, the seek answered by `answer` (None: no rewind
+/// handler), the reads as `read` says.
+fn resumed(
+    data: &[u8],
+    size: Option<u64>,
+    from: u64,
+    answer: Option<Result<(), SeekFailed>>,
+    read: impl Fn(usize) -> Option<Read> + Send + Sync + 'static,
+) -> Resumed {
+    let mut e = script(vec![Piece::Resume(from), Piece::SendAll]);
+    let seen = Arc::new(Seen::default());
+    let at = Arc::new(Cell::new(0));
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let feeder = Feeder {
+        data: data.to_vec(),
+        at: at.clone(),
+        seen: seen.clone(),
+        answer: Box::new(read),
+    };
+    e.options_mut().upload = UploadSource::Read {
+        handler: Handler::read(feeder).unwrap(),
+        rewind: answer.map(|answer| {
+            Handler::rewind(Seeker {
+                feeder_at: at,
+                answer,
+                asked: asked.clone(),
+            })
+            .unwrap()
+        }),
+        size,
+    };
+    let sent = Traced::default();
+    let text = Trace::default();
+    let both = Both(sent.clone(), text.clone());
+    e.options_mut().output.verbose = true;
+    e.options_mut().callbacks.debug = Some(Handler::debug(both).unwrap());
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"read");
+    e.set_components(Some(components));
+    let (result, sizes) = run(e);
+    let reads = seen.reads.lock().unwrap().clone();
+    Resumed {
+        result,
+        sizes,
+        sent: sent.0.lock().unwrap().clone(),
+        asked: asked.lock().unwrap().clone(),
+        reads,
+        text: text.0.lock().unwrap().clone(),
+    }
+}
+
+/// Both traces at once.
+struct Both(Traced, Trace);
+
+impl DebugHandler for Both {
+    fn debug(&self, cx: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        self.0.debug(cx, kind, data);
+        self.1.debug(cx, kind, data);
+    }
+}
+
+/// A body resumed by a seek is read from the point, no byte before it
+/// asked for, and its known size is what is left past it.
+#[test]
+fn a_resumed_body_seeks_to_its_point() {
+    let data: Vec<u8> = (0..30u8).collect();
+    let r = resumed(&data, Some(30), 20, Some(Ok(())), plain);
+    assert_eq!(r.result, Ok(()));
+    assert_eq!(r.asked, [20]);
+    assert_eq!(r.reads, [10], "room for what is left, then no more");
+    assert_eq!(r.sent, &data[20..]);
+    assert_eq!(r.sizes.upload(), 10);
+}
+
+/// A source that cannot seek, or has no rewind handler, has the bytes
+/// before the point read in pieces of 4096 and dropped, untraced, and the
+/// rest sent; the size known is what is left.
+#[test]
+fn a_resumed_body_that_cannot_seek_reads_to_its_point() {
+    let data: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+    for answer in [Some(Err(SeekFailed::CantSeek)), None] {
+        let r = resumed(&data, Some(10_000), 9_000, answer, plain);
+        assert_eq!(r.result, Ok(()), "{answer:?}");
+        assert_eq!(
+            r.asked,
+            if answer.is_some() {
+                vec![9_000]
+            } else {
+                vec![]
+            }
+        );
+        assert_eq!(r.reads, [4096, 4096, 808, 1000], "{answer:?}");
+        assert_eq!(r.sent, &data[9_000..]);
+        assert_eq!(r.sizes.upload(), 1_000);
+        // Only the reads of the body are traced.
+        let reads: Vec<_> = r
+            .text
+            .iter()
+            .filter(|l| l.windows(11).any(|w| w == b"cr_in_read("))
+            .collect();
+        let read = b"[READ] cr_in_read(len=1000, total=1000, read=1000) -> 0, nread=1000, eos=1\n";
+        assert_eq!(reads, [&read.to_vec()], "{answer:?}");
+    }
+    // Of a size not known, the rest is read to the handler's end.
+    let r = resumed(&data, None, 9_000, None, plain);
+    assert_eq!(r.result, Ok(()));
+    assert_eq!(r.sent, &data[9_000..]);
+}
+
+/// A seek that fails fails the transfer before any read; a read short of
+/// the point, whatever the handler answered, fails it with the same code.
+#[test]
+fn a_resumed_body_fails_as_c_s_does() {
+    let data = [5u8; 100];
+    let r = resumed(&data, Some(100), 50, Some(Err(SeekFailed::Fail)), plain);
+    assert_eq!(r.result, Err(ErrorKind::FtpCouldntUseRest));
+    assert!(r.reads.is_empty());
+    assert!(
+        r.text.contains(&b"Could not seek stream\n".to_vec()),
+        "{:?}",
+        r.text
+    );
+    for answer in [Read::Eof, Read::Abort, Read::Fail, Read::Pause] {
+        let r = resumed(&data, Some(100), 50, None, move |_| Some(answer));
+        assert_eq!(r.result, Err(ErrorKind::FtpCouldntUseRest), "{answer:?}");
+        assert!(
+            r.text.contains(&b"Failed to read data\n".to_vec()),
+            "{:?}",
+            r.text
+        );
+        assert!(r.sent.is_empty());
+    }
+    // Past the end of the body.
+    let r = resumed(
+        &data,
+        Some(100),
+        150,
+        Some(Err(SeekFailed::CantSeek)),
+        plain,
+    );
+    assert_eq!(r.result, Err(ErrorKind::FtpCouldntUseRest));
+    assert_eq!(r.reads, [150, 50], "the whole body, then its end");
+}
+
+/// A body the transfer holds is read to the point and dropped.
+#[test]
+fn resumed_bytes_are_read_to_their_point() {
+    let mut e = script(vec![Piece::Resume(2), Piece::SendAll]);
+    e.options_mut().upload = UploadSource::Bytes(TryArc::try_new(b"abcde".to_vec()).unwrap());
+    let sent = traced(&mut e);
+    assert_eq!(run(e).0, Ok(()));
+    assert_eq!(*sent.0.lock().unwrap(), b"cde");
+    let mut e = script(vec![Piece::Resume(6), Piece::SendAll]);
+    e.options_mut().upload = UploadSource::Bytes(TryArc::try_new(b"abcde".to_vec()).unwrap());
+    assert_eq!(run(e).0, Err(ErrorKind::FtpCouldntUseRest));
 }

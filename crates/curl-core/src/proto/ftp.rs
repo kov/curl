@@ -2146,12 +2146,11 @@ impl Request {
             append = true;
         }
         let mut upload = Upload::open(cx)?;
-        upload.trace_set(cx);
         self.infilesize = upload.size();
         if append && self.resume_from > 0 {
             let from = u64::try_from(self.resume_from).unwrap_or(0);
-            skip_upload(cx, &mut upload, from)?;
-            if let Some(size) = self.infilesize {
+            upload.resume_from(cx, from)?;
+            if let Some(size) = self.infilesize.filter(|&s| s > 0) {
                 let left = size.saturating_sub(from);
                 self.infilesize = Some(left);
                 if left == 0 {
@@ -2164,6 +2163,8 @@ impl Request {
                 }
             }
         }
+        // C makes its reader as the body is first read, of the size left.
+        upload.trace_set(cx);
         let mut body = Body::new(upload);
         if cx.easy().options().crlf || self.prefer_ascii {
             body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;
@@ -2298,27 +2299,6 @@ impl Request {
         set_state(cx, pc, State::Stop);
         Ok(())
     }
-}
-
-/// Pass over the first `from` bytes of the upload, read and dropped, as
-/// C does when its source cannot seek (`ftp_state_ul_setup`'s
-/// `CURL_SEEKFUNC_CANTSEEK`).
-fn skip_upload<H: Host>(cx: &mut StepCx<'_, H>, upload: &mut Upload, from: u64) -> Step {
-    let mut scratch = [0u8; 4 * 1024];
-    let mut passed = 0;
-    while passed < from {
-        let want = usize::try_from(from - passed).map_or(scratch.len(), |n| n.min(scratch.len()));
-        let got = upload.read(cx, &mut scratch[..want], false)?;
-        if got.n == 0 || got.n > want {
-            return Err(trace::fail(
-                cx,
-                ErrorKind::FtpCouldntUseRest,
-                format_args!("Failed to read data"),
-            ));
-        }
-        passed += got.n as u64;
-    }
-    Ok(())
 }
 
 /// The data connection, as an upload's body goes to it: shut down once

@@ -100,10 +100,28 @@ impl TrailerLines {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RewindFailed;
 
+/// Why what a read handler gives was not moved to a point in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeekFailed {
+    /// The upload fails (`CURL_SEEKFUNC_FAIL`).
+    Fail,
+    /// It cannot be moved, and the bytes before the point are read and
+    /// dropped instead (`CURL_SEEKFUNC_CANTSEEK`).
+    CantSeek,
+}
+
 /// Starts what a read handler gives over from the beginning, for a request
-/// sent again (`CURLOPT_SEEKFUNCTION` to 0, `CURLOPT_IOCTLFUNCTION`).
+/// sent again (`CURLOPT_SEEKFUNCTION` to 0, `CURLOPT_IOCTLFUNCTION`), or
+/// from a point in it, for an upload resumed there.
 pub trait Rewind: Send + Sync {
     fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed>;
+
+    /// Have the next read give the bytes from `offset` on, counted from
+    /// the start (`CURLOPT_SEEKFUNCTION` with `SEEK_SET`). By default it
+    /// cannot.
+    fn seek(&self, _cx: &mut TransferCx<'_>, _offset: u64) -> Result<(), SeekFailed> {
+        Err(SeekFailed::CantSeek)
+    }
 }
 
 /// Where a header line came from (`CURLH_*`).

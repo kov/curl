@@ -1611,6 +1611,87 @@ fn a_resumed_upload_skips_to_its_point() {
     assert_eq!(w.lock().unwrap().files[0].1, b"abcdef");
 }
 
+/// The upload's handler, reading `body` from where its seek put it.
+struct Seekable {
+    body: &'static [u8],
+    at: Arc<Mutex<usize>>,
+    /// What the seek answers.
+    seeks: Result<(), crate::handler::SeekFailed>,
+}
+
+impl crate::handler::ReadHandler for Seekable {
+    fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
+        let mut at = self.at.lock().unwrap();
+        let n = self.body.len().saturating_sub(*at).min(buf.len());
+        if n == 0 {
+            return crate::handler::Read::Eof;
+        }
+        buf[..n].copy_from_slice(&self.body[*at..*at + n]);
+        *at += n;
+        std::num::NonZeroUsize::new(n).map_or(crate::handler::Read::Eof, crate::handler::Read::Data)
+    }
+}
+
+impl crate::handler::Rewind for Seekable {
+    fn rewind(&self, _: &mut TransferCx<'_>) -> Result<(), crate::handler::RewindFailed> {
+        unreachable!("not rewound")
+    }
+
+    fn seek(&self, _: &mut TransferCx<'_>, offset: u64) -> Result<(), crate::handler::SeekFailed> {
+        if self.seeks.is_ok() {
+            *self.at.lock().unwrap() = usize::try_from(offset).unwrap();
+        }
+        self.seeks
+    }
+}
+
+/// A resumed upload whose source seeks starts there, the size left
+/// announced; past the source's size it fails with C's reason, after the
+/// seek, as `curl -T f -C 11` does with libssh. A seek that fails fails
+/// it, and one that cannot reads to the point.
+#[test]
+fn a_resumed_upload_seeks_its_source() {
+    use crate::handler::{Handler, SeekFailed};
+    use crate::options::{Resume, UploadSource};
+    let resumed = |from: u64, seeks: Result<(), SeekFailed>| {
+        let w = world(&[("/home/u/f", "abcdef")]);
+        let at = Arc::new(Mutex::new(0));
+        let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+            o.method = crate::options::Method::Upload;
+            let source = || Seekable {
+                body: b"0123456789",
+                at: at.clone(),
+                seeks,
+            };
+            o.upload = UploadSource::Read {
+                handler: Handler::read(source()).unwrap(),
+                rewind: Some(Handler::rewind(source()).unwrap()),
+                size: Some(10),
+            };
+            o.resume = Some(Resume::At(std::num::NonZeroU64::new(from).unwrap()));
+        });
+        let file = w.lock().unwrap().files[0].1.clone();
+        (result, said, String::from_utf8(file).unwrap())
+    };
+    let (result, said, file) = resumed(4, Ok(()));
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(file, "abcd456789");
+    let (result, said, file) = resumed(11, Ok(()));
+    assert_eq!(result, Err(ErrorKind::BadFunctionArgument), "{said}");
+    assert!(said.contains("Resume point beyond size\n"), "{said}");
+    assert_eq!(file, "abcdef");
+    let (result, said, file) = resumed(3, Err(SeekFailed::Fail));
+    assert_eq!(result, Err(ErrorKind::FtpCouldntUseRest), "{said}");
+    assert!(said.contains("Could not seek stream\n"), "{said}");
+    assert_eq!(file, "abcdef");
+    let (result, said, file) = resumed(3, Err(SeekFailed::CantSeek));
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(file, "abc3456789");
+    let (result, said, _) = resumed(11, Err(SeekFailed::CantSeek));
+    assert_eq!(result, Err(ErrorKind::FtpCouldntUseRest), "{said}");
+    assert!(said.contains("Failed to read data\n"), "{said}");
+}
+
 /// `atime` and `mtime` set the time given, a date C's parser reads; one
 /// it cannot read, or past 32 bits, is a quote error.
 #[test]

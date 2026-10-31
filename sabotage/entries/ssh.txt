@@ -100,3 +100,11 @@ witness: curl-core proto::ssh::tests::a_command_after_the_transfer_may_wait
             ProtoState::Ssh(ref mut r) => r.finishing(cx, lease, exchanged),
 --- new
             ProtoState::Ssh(_) => Finish::Done(Ok(())),
+
+=== an SFTP upload resumed past its source's size goes on after the seek
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::a_resumed_upload_seeks_its_source
+--- old
+                if from > size {
+--- new
+                if from > size && false {

@@ -1437,7 +1437,7 @@ impl Request {
         self.infilesize = upload.size();
         if self.resume_from > 0 && !append {
             let from = self.resume_from.unsigned_abs();
-            if let Err(e) = skip_upload(cx, &mut upload, from) {
+            if let Err(e) = upload.resume_from(cx, from) {
                 sc.goto_error(cx, e);
                 return;
             }
@@ -2798,30 +2798,6 @@ fn sftp_readdir_link<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
         return;
     }
     sc.to(cx, State::SftpReaddirBottom);
-}
-
-/// Pass over the first `from` bytes of the upload, read and dropped, as
-/// C does when its source cannot seek (`CURL_SEEKFUNC_CANTSEEK`).
-fn skip_upload<H: Host>(
-    cx: &mut StepCx<'_, H>,
-    upload: &mut Upload,
-    from: u64,
-) -> Result<(), ErrorKind> {
-    let mut scratch = [0u8; 4 * 1024];
-    let mut passed = 0;
-    while passed < from {
-        let want = usize::try_from(from - passed).map_or(scratch.len(), |n| n.min(scratch.len()));
-        let got = upload.read(cx, &mut scratch[..want], false)?;
-        if got.n == 0 || got.n > want {
-            return Err(trace::fail(
-                cx,
-                ErrorKind::FtpCouldntUseRest,
-                format_args!("Failed to read data"),
-            ));
-        }
-        passed += got.n as u64;
-    }
-    Ok(())
 }
 
 /// The upload's bytes go to the SCP channel, blocking, or as SFTP's

@@ -337,3 +337,40 @@ witness: curl-sys-abi handle_tests::the_upload_buffer_size_is_held_to_its_range
         UploadBufferSize(n.clamp(Self::MIN, Self::MAX))
 --- new
         UploadBufferSize(n)
+
+=== a resumed body never asks its source to seek
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_resumed_body_seeks_to_its_point
+--- old
+            Some(rewind) => rewind.seek(&mut TransferCx::new(cx), from),
+--- new
+            Some(_) => Err(SeekFailed::CantSeek),
+
+=== a resumed body keeps its whole size after the seek
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_resumed_body_seeks_to_its_point
+--- old
+        *size = size.map(|s| s.saturating_sub(from));
+--- new
+        *size = *size;
+
+=== a seek that fails is taken for one that cannot
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_resumed_body_fails_as_c_s_does
+--- old
+            Err(SeekFailed::Fail) => {
+                let why = format_args!("Could not seek stream");
+--- new
+            Err(SeekFailed::Fail) if false => {
+                let why = format_args!("Could not seek stream");
+
+=== the bytes before a resume point are read through the body's reader
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_resumed_body_fails_as_c_s_does
+--- old
+                    match handler.read(&mut TransferCx::new(cx), &mut scratch[..want]) {
+                        Read::Data(n) if n.get() <= want => passed += n.get() as u64,
+--- new
+                    match handler.read(&mut TransferCx::new(cx), &mut scratch[..want]) {
+                        Read::Data(n) if n.get() <= want => passed += n.get() as u64,
+                        Read::Abort => return Err(ErrorKind::AbortedByCallback),

@@ -776,7 +776,8 @@ pub trait DebugHandler  { fn debug(&self, cx: &mut TransferCx<'_>, k: DebugKind,
 pub trait ProgressHandler { fn progress(&self, cx: &mut TransferCx<'_>, p: ProgressNow) -> ProgressVerdict; }
 pub trait TextSink      { fn write(&self, text: &[u8]); }  // CURLOPT_STDERR; None is the process's
 pub trait PrereqHandler { fn prereq(&self, cx: &mut TransferCx<'_>, ends: Option<&Ends>) -> Result<(), Abort>; }
-pub trait Rewind        { fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed>; }
+pub trait Rewind        { fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed>;
+                          fn seek(&self, cx: &mut TransferCx<'_>, offset: u64) -> Result<(), SeekFailed>; } // default CantSeek
 pub struct Handler<T: ?Sized>(TryArc<Box<T>>);    // Clone shares it; Handler::write(h) etc. box one
 pub trait MultiEvents<H: Host> {
     fn socket(&mut self, cx: &mut EventCx<'_, H>, who: TransferId, s: SocketKey,
@@ -3242,8 +3243,17 @@ part of it the body's last bytes do not already give. FTP's ASCII uploads (`--cr
   `Upload::rewind` is a no-op otherwise; `Bytes` and `Lent` start over and `Read` calls its
   `Rewind` (shim: SEEKFUNCTION(0), IOCTLFUNCTION, fseek iff the default fread), without one or
   on its failure SendFailRewind "necessary data rewind was not possible".
-- Resume is the protocols': a file:// upload skips the offset in its read loop (§5.6), FTP seeks
-  or reads and discards. C's reader-level `resume_from` is never called and is not ported.
+- Resume is the protocols': a file:// upload skips the offset in its read loop (§5.6); FTP and
+  SFTP call `Upload::resume_from` before the body is read (`ftp_state_ul_setup`,
+  `myssh_in_UPLOAD_INIT`). A `Read` source's `Rewind::seek` moves it (shim: SEEKFUNCTION with
+  `SEEK_SET`; tool: `lseek`, `tool_seek_cb`); `CantSeek`, or no rewind handler, has the handler
+  itself read and drop the bytes before, untraced, as C calls its read function; `Fail` is
+  FtpCouldntUseRest "Could not seek stream", a read short of the point FtpCouldntUseRest
+  "Failed to read data". The source's known size becomes what is left, so its reader is traced
+  ("add fread reader, len=") with that size, as C makes its reader only then. Other sources are
+  read to the point through `Upload::read`. Where the application gives no seek function, C
+  sends from the stream's start, the wrong bytes; the shim answers `CantSeek`, and they are
+  read past instead. C's reader-level `resume_from` is never called and is not ported.
 - The protocol announces the body's size (CONTENT_LENGTH_UPLOAD) and, for a request with a
   body, marks POSTTRANSFER when the body is sent rather than at DID.
 

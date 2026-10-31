@@ -4,7 +4,7 @@ witness: curl-core proto::tftp::tests::a_bad_oack_is_refused
 --- old
         if name_len + 1 >= p.len() {
 --- new
-        if name_len >= p.len() {
+        if false {
 
 === an OACK's value without its end is read
 file: crates/curl-core/src/proto/tftp.rs

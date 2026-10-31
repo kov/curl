@@ -1504,6 +1504,39 @@ fn an_upload_resumed_at_an_offset_appends_past_it() {
     assert_eq!(stored, b"upload");
 }
 
+/// An upload's reader is traced as set when the body is first read, once
+/// its data connection is up, with the size left past a resume point: C
+/// makes it only then (`Curl_client_read`).
+#[test]
+fn an_upload_s_reader_is_traced_as_its_body_is_first_read() {
+    let control = logged_in(&[
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"200 binary\r\n",
+        b"150 go on\r\n226 stored\r\n",
+    ]);
+    let file = Conversation::replies(&[], false);
+    let mut m = serving(&[&control], &[&file]);
+    let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"read,ftp", |o| {
+        o.method = crate::options::Method::Upload;
+        o.resume = Some(crate::options::Resume::At(
+            std::num::NonZeroU64::new(2).unwrap(),
+        ));
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"upload".to_vec()).unwrap(),
+        );
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let text = text.text();
+    assert_eq!(result, Ok(()), "{text}");
+    let at = |needle: &str| {
+        text.find(needle)
+            .unwrap_or_else(|| panic!("{needle}: {text}"))
+    };
+    let set = at("[READ] add buf reader, len=6 -> 0\n");
+    assert!(at("ftp_initiate_transfer()") < set, "{text}");
+    assert_eq!(text.matches("add buf reader").count(), 1, "{text}");
+}
+
 /// Gives nothing, and seeks anywhere.
 struct Empty;
 

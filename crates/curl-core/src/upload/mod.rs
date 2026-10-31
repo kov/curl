@@ -31,6 +31,9 @@ pub(crate) struct Upload {
     /// The handler has been called since the start or the last rewind,
     /// whatever it answered (`has_used_cb`).
     called: bool,
+    /// The reader is traced as set by the first read, as C makes it there
+    /// when nothing set it before (`Curl_client_read`).
+    set_when_read: bool,
 }
 
 #[derive(Debug)]
@@ -116,6 +119,7 @@ impl Upload {
             read: 0,
             latch: Latch::Open,
             called: false,
+            set_when_read: false,
         })
     }
 
@@ -133,6 +137,7 @@ impl Upload {
             read: 0,
             latch: Latch::Open,
             called: false,
+            set_when_read: false,
         }
     }
 
@@ -159,6 +164,13 @@ impl Upload {
             }
             Source::None | Source::Mime(_) => {}
         }
+    }
+
+    /// Trace the reader as set (`trace_set`) when the body is first read,
+    /// not now: a protocol that sets none, such as FTP's and SFTP's, has
+    /// C make it as it first reads.
+    pub(crate) fn trace_set_when_read(&mut self) {
+        self.set_when_read = true;
     }
 
     /// Ready to be read: a tree's handlers rewound, as it may have been
@@ -251,6 +263,9 @@ impl Upload {
         pausable: bool,
     ) -> Result<Readout, ErrorKind> {
         assert!(!buf.is_empty(), "a read has room");
+        if std::mem::take(&mut self.set_when_read) {
+            self.trace_set(cx);
+        }
         let (handler, size) = match &mut self.source {
             Source::None => return Ok(Readout { n: 0, eos: true }),
             Source::Mime(reader) => return reader.read(cx, buf, pausable),

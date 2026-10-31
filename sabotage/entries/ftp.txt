@@ -177,3 +177,11 @@ features: test-util debug-hooks
         if harmless && !premature {
 --- new
         if harmless || !premature {
+
+=== an FTP upload's reader is traced as set before its data connection is up
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::an_upload_s_reader_is_traced_as_its_body_is_first_read
+--- old
+        upload.trace_set_when_read();
+--- new
+        upload.trace_set(cx);

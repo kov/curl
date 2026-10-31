@@ -2164,7 +2164,7 @@ impl Request {
             }
         }
         // C makes its reader as the body is first read, of the size left.
-        upload.trace_set(cx);
+        upload.trace_set_when_read();
         let mut body = Body::new(upload);
         if cx.easy().options().crlf || self.prefer_ascii {
             body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;

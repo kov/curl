@@ -3249,8 +3249,9 @@ part of it the body's last bytes do not already give. FTP's ASCII uploads (`--cr
   `SEEK_SET`; tool: `lseek`, `tool_seek_cb`); `CantSeek`, or no rewind handler, has the handler
   itself read and drop the bytes before, untraced, as C calls its read function; `Fail` is
   FtpCouldntUseRest "Could not seek stream", a read short of the point FtpCouldntUseRest
-  "Failed to read data". The source's known size becomes what is left, so its reader is traced
-  ("add fread reader, len=") with that size, as C makes its reader only then. Other sources are
+  "Failed to read data". The source's known size becomes what is left; FTP and SFTP have the
+  reader traced as set ("add fread reader, len=") by the body's first read
+  (`Upload::trace_set_when_read`), with that size, as C makes its reader only then. Other sources are
   read to the point through `Upload::read`. Where the application gives no seek function, C
   sends from the stream's start, the wrong bytes; the shim answers `CantSeek`, and they are
   read past instead. C's reader-level `resume_from` is never called and is not ported.

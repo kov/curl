@@ -1481,9 +1481,10 @@ impl Request {
     fn start_sending<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        upload: Upload,
+        mut upload: Upload,
     ) -> Result<(), ErrorKind> {
-        upload.trace_set(cx);
+        // C makes its reader as the body is first read.
+        upload.trace_set_when_read();
         let mut body = Body::new(upload);
         if cx.easy().options().crlf {
             body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;

@@ -316,6 +316,125 @@ fn an_answer_awaited_in_done_stalls_no_other_transfer() {
     assert_eq!(result, Ok(()));
 }
 
+/// The fake TLS library's libraries.
+fn with_tls() -> SharedLibraries {
+    let backend: &'static crate::tls::fake::FakeTls =
+        Box::leak(Box::new(crate::tls::fake::FakeTls::ticketing().unwrap()));
+    SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap()
+}
+
+/// The control connection's TLS handshake after `AUTH` is taken waits for
+/// the server's flight without stalling the multi's other transfers. C
+/// makes it blocking (`ftp_state_auth_resp`'s `Curl_conn_connect` with
+/// `blocking`), so a transfer beside it waits for it (DIVERGENCE.md).
+#[test]
+fn a_handshake_after_auth_stalls_no_other_transfer() {
+    use crate::options::UseSsl;
+    use crate::tls::fake::{self, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let replies = [
+        b"220 hi\r\n".to_vec(),
+        b"234 go on\r\n".to_vec(),
+        WELCOME.to_vec(),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"213 5\r\n"),
+        tls(b"150 here\r\n226 done\r\n"),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let first = Conversation::replies(&replies, false)
+        .per_send()
+        .greeting()
+        .held();
+    // The greeting and the answer to `AUTH`, not the server's flight.
+    first.allow(2);
+    let second = control(&[b"150 here\r\n226 done\r\n"]);
+    // The transfer beside it connects for its data first.
+    let (one, two) = (data(b"hello"), data(b"world"));
+    let mut m = serving(&[&first, &second], &[&two, &one]);
+    let (waiting, body, text) = added_with(&mut m, URL, Some(with_tls()), |o| {
+        o.line.make_mut().unwrap().use_ssl = UseSsl::Control;
+    });
+    for _ in 0..40 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let sent = fake::read_client(&first.received()).unwrap();
+    assert_eq!(
+        sent,
+        [b"AUTH SSL\r\n", fake::HELLO].concat(),
+        "{}",
+        text.text()
+    );
+    assert!(m.info_read().is_none(), "the handshake waits");
+    let (beside, other, _) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, beside, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    assert_eq!(*other.0.lock().unwrap(), b"world");
+    assert!(m.info_read().is_none(), "the first still waits");
+    first.allow(replies.len());
+    let result = drive_to_completion(&mut m, waiting, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+}
+
+/// A protected data connection's TLS handshake waits for the server's
+/// flight without stalling the multi's other transfers. C makes it
+/// blocking (`ftp_initiate_transfer`'s `Curl_conn_connect` with
+/// `blocking`), so a transfer beside it waits for it (DIVERGENCE.md).
+#[test]
+fn a_data_connection_s_handshake_stalls_no_other_transfer() {
+    use crate::tls::fake::{self, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let replies = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"213 5\r\n"),
+        tls(b"150 here\r\n226 done\r\n"),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let control_one = Conversation::replies(&replies, false).per_send();
+    let file = [WELCOME.to_vec(), tls(b"hello")];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    let file = Conversation::replies(&file, true).per_send().held();
+    let second = control(&[b"150 here\r\n226 done\r\n"]);
+    let two = data(b"world");
+    let mut m = serving(&[&control_one, &second], &[&file, &two]);
+    let url = "ftps://127.0.0.1:PORT/f";
+    let (waiting, body, text) = added_with(&mut m, url, Some(with_tls()), |_| {});
+    for _ in 0..40 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let said = text.text();
+    assert!(said.contains("Established 2nd connection"), "{said}");
+    assert_eq!(fake::read_client(&file.received()).unwrap(), fake::HELLO);
+    assert!(m.info_read().is_none(), "the handshake waits");
+    let (beside, other, _) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, beside, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    assert_eq!(*other.0.lock().unwrap(), b"world");
+    assert!(m.info_read().is_none(), "the first still waits");
+    file.allow(2);
+    let result = drive_to_completion(&mut m, waiting, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+}
+
 /// A protected data connection resumes its control connection's latest
 /// session, not one the cache holds, as servers that insist the data's
 /// session is the control connection's need (`Curl_ssl_get_cf_session`).

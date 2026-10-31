@@ -375,3 +375,14 @@ witness: curl-core upload::tests::a_resumed_body_fails_as_c_s_does
                     match handler.read(&mut TransferCx::new(cx), &mut scratch[..want]) {
                         Read::Data(n) if n.get() <= want => passed += n.get() as u64,
                         Read::Abort => return Err(ErrorKind::AbortedByCallback),
+
+=== a resumed upload with no seek function sends its stream's first bytes
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::a_resumed_body_asks_the_seek_function
+features: debug-hooks
+--- old
+        let Some(seek) = ccb.seek else {
+            return Err(SeekFailed::CantSeek);
+--- new
+        let Some(seek) = ccb.seek else {
+            return Ok(());

@@ -342,3 +342,12 @@ features: test-util
             || tls.as_deref().or(have.upgrade()) == want_tls.as_deref().or(want.upgrade());
 --- new
             || tls.as_deref().or(have.upgrade()) == want.upgrade();
+
+=== a read failed by the server's close says the connect's stale errno
+file: crates/curl-core/src/proto/pingpong/drive.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_server_that_closes_fails_the_read
+features: test-util
+--- old
+            format_args!("response reading failed (errno: 0)"),
+--- new
+            format_args!("response reading failed (errno: 115)"),

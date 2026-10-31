@@ -84,6 +84,23 @@ not a difference: it is tracked in `MILESTONES.md`.
   --retry 3 --retry-max-time 10` and a 503 with `Retry-After: 60`. Pinned by
   `a_failure_not_retried_for_its_wait_still_fails` (`crates/curl-tool/tests/http.rs`).
 
+- **IMAP output paused as a fetched message came whole is delivered.** When a FETCH's whole
+  literal arrives with its line and the write callback pauses on it, the transfer stays in its
+  exchange until the application unpauses, and the held body is then written. C has nothing to
+  exchange after DO there (`Curl_xfer_setup_nop`), goes from DID to DONE, and drops what the
+  writer holds: the transfer reports success with 0 bytes written after the unpause. Measured
+  against the C build with a C program. Pinned by `a_paused_body_holds_the_transfer_open`
+  (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`).
+
+- **A resumed upload with no seek function sends the bytes after its point.** An FTP or SFTP
+  upload resumed at an offset (`CURLOPT_RESUME_FROM_LARGE`) whose application set no
+  `CURLOPT_SEEKFUNCTION` has the bytes before the point read and dropped, as when the seek
+  function answers `CURL_SEEKFUNC_CANTSEEK`. C seeks nothing and reads nothing then, so the
+  stream's first bytes are stored at the resume point and the remote file is silently wrong:
+  measured against the C build, a resume at 20 stored bytes 0 to 20 there. Pinned by
+  `a_resumed_body_asks_the_seek_function` (`crates/curl-sys-abi/src/handle_tests.rs`), its run
+  without a seek function.
+
 ## Loops C never leaves
 
 - **A form part's read function answering -2 fails the transfer.** -2 is
@@ -101,6 +118,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   whose `C` answer to a Kerberos context fails with such a code, the transfer had not returned
   when a 10 s `timeout` killed it. Here it fails, 97, the minor code's text empty. Pinned by
   `a_status_without_words_is_said_without_them` (`crates/curl-gssapi/tests/socks.rs`).
+
+- **An SFTP upload with `--ftp-create-dirs` makes the directories once.** When the file
+  cannot be opened, the directories up to it are made, and an open refused again fails the
+  upload, as C's libssh2 code does (`secondCreateDirs`, `lib/vssh/libssh2.c:1022`). C's libssh
+  code, whose library the rewrite binds, sets the same flag (`lib/vssh/libssh.c:1087`) and never
+  reads it, so a server that keeps refusing the file is asked to make the directories again
+  for as long as it refuses. Read from C's source. Pinned by
+  `a_file_refused_again_is_not_tried_again` and `missing_directories_are_made_once`
+  (`crates/curl-core/src/proto/ssh/tests.rs`).
 
 ## Waits C makes blocking
 
@@ -129,13 +155,21 @@ not a difference: it is tracked in `MILESTONES.md`.
   late: C's `LIST` beside an APPEND took 1.003 s, ours 1.5 ms; C's `VRFY` beside a mail, to a
   server that greets half a second late, took 1.005 s, ours 0.504 s; measured 2026-10-30, C's
   FTP download beside one whose 226 comes a second after its data, from a server greeting it
-  half a second late, took 1.051 s, ours 0.551 s. Blocking here, as for
-  the goodbye on a closing connection (FTP's, POP3's and SMTP's `QUIT`, IMAP's `LOGOUT`, which
-  C waits on and the shutdown here does not), is an open question; the non-blocking path is
-  taken until it is decided. Pinned by `an_answer_awaited_in_done_stalls_no_other_transfer`
+  half a second late, took 1.051 s, ours 0.551 s. The same holds for FTP's TLS handshakes,
+  which C makes blocking (`Curl_conn_connect` with `blocking`): the control connection's after
+  `AUTH` is taken (`ftp_state_auth_resp`), and a protected data connection's
+  (`ftp_initiate_transfer`); here each waits for the server's flight as the connection's own
+  handshake does, the other transfers going on meanwhile. And for the goodbye on a closing
+  connection (FTP's, POP3's and SMTP's `QUIT`, IMAP's `LOGOUT`), which C waits on and the
+  shutdown here does not. To be looked at again against the command-line corpus, should
+  anything there depend on C's blocking. Pinned by
+  `an_answer_awaited_in_done_stalls_no_other_transfer`
   (`crates/curl-core/src/proto/imap/tests/over_the_wire.rs`,
   `crates/curl-core/src/proto/smtp/tests/over_the_wire.rs` and
-  `crates/curl-core/src/proto/ftp/tests.rs`).
+  `crates/curl-core/src/proto/ftp/tests.rs`), and by
+  `a_handshake_after_auth_stalls_no_other_transfer` and
+  `a_data_connection_s_handshake_stalls_no_other_transfer`
+  (`crates/curl-core/src/proto/ftp/tests.rs`).
 
 ## Bodies C cannot send again
 
@@ -365,6 +399,23 @@ not a difference: it is tracked in `MILESTONES.md`.
   271 bytes arrives as 7 or 9, and so does any body or header holding a zero. Here the bytes
   after the ids are the bytes traced, zeros and all. Pinned by
   `traced_bytes_with_the_ids_keep_a_zero_byte` (`crates/curl-core/src/proto/http/tests.rs`).
+
+## Error numbers C leaves stale
+
+- **A server that closes before its greeting is said with `errno: 0`**, in `response reading
+  failed (errno: 0)`; C says `errno: 115`, the `EINPROGRESS` its connect left behind. Pinned by
+  `a_server_that_closes_fails_the_read` (`crates/curl-core/src/proto/pop3/tests.rs`).
+
+## Sockets C hands over
+
+- **An SCP or SFTP transfer through an HTTPS proxy fails before SSH starts.** The SSH library
+  reads and writes the connection's socket itself, so it is handed the socket only while no
+  layer of the rewrite works on its bytes; under the proxy's TLS it is not, and the transfer
+  fails with 2 (`CURLE_FAILED_INIT`), "Could not set socket". C's libssh build hands the
+  library the raw socket whatever filters are over it (`myssh_connect`, `lib/vssh/libssh.c`),
+  so SSH goes onto the wire inside the proxy's TLS stream, which no proxy reads. Read from C's
+  source. Pinned by `the_socket_is_not_handed_over_under_a_proxy_s_tls`
+  (`crates/curl-core/src/proto/ssh/tests.rs`).
 
 ## Codes C passes through
 

@@ -108,3 +108,19 @@ witness: curl-core proto::ssh::tests::a_resumed_upload_seeks_its_source
                 if from > size {
 --- new
                 if from > size && false {
+
+=== the directories are made again when the file is refused after them
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::a_file_refused_again_is_not_tried_again
+--- old
+            if missing && create_dirs && self.path().len() > 1 && !sc.second_create_dirs {
+--- new
+            if missing && create_dirs && self.path().len() > 1 {
+
+=== the socket is handed over under a proxy's TLS
+file: crates/curl-core/src/conn/stream.rs
+witness: curl-core proto::ssh::tests::the_socket_is_not_handed_over_under_a_proxy_s_tls
+--- old
+        (self.layers.is_empty() && self.rx.filled().is_empty()).then(|| self.socket.socket())
+--- new
+        self.rx.filled().is_empty().then(|| self.socket.socket())

@@ -1028,7 +1028,10 @@ fn text_of(text: &Text) -> String {
 }
 
 /// A body whose writer paused holds the transfer open until it is
-/// delivered (`Curl_cwriter_is_paused`).
+/// delivered (`Curl_cwriter_is_paused`), though the FETCH's literal came
+/// whole with its line. C then has nothing to exchange after DO
+/// (`Curl_xfer_setup_nop`), goes from DID to DONE, and drops the held body:
+/// the transfer succeeds with nothing written (DIVERGENCE.md).
 #[test]
 fn a_paused_body_holds_the_transfer_open() {
     use crate::deliver::PauseRequest;

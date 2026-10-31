@@ -1016,7 +1016,8 @@ mod over_the_wire {
     }
 
     /// A server that closes before it answers fails the read, said as C
-    /// says it.
+    /// says it but for the errno, which is 0: C's is the stale 115
+    /// (`EINPROGRESS`) its connect left (DIVERGENCE.md).
     #[test]
     fn a_server_that_closes_fails_the_read() {
         let talk = Conversation::replies(&[GREETING], true).greeting();

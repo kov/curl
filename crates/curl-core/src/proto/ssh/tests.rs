@@ -774,6 +774,17 @@ fn added(
     url: &str,
     set: impl FnOnce(&mut Options),
 ) -> (TransferId, Body, Text) {
+    added_with_tls(m, world, url, None, set)
+}
+
+/// The same, given `tls` as its TLS library if any.
+fn added_with_tls(
+    m: &mut Multi,
+    world: &Arc<Mutex<World>>,
+    url: &str,
+    tls: Option<crate::libraries::Library<dyn crate::tls::TlsBackend>>,
+    set: impl FnOnce(&mut Options),
+) -> (TransferId, Body, Text) {
     let ssh: &'static FakeSsh = Box::leak(Box::new(FakeSsh(world.clone())));
     let mut e = Easy::new();
     if world.lock().unwrap().trace_ssh {
@@ -784,6 +795,7 @@ fn added(
     e.set_libraries(
         SharedLibraries::new(Libraries {
             ssh: Some(ssh),
+            tls,
             ..Libraries::NONE
         })
         .unwrap(),
@@ -1198,6 +1210,40 @@ fn the_socket_is_handed_over_past_a_tunnel() {
     assert_eq!(talk.reads().0, answer.len() - banner.len(), "{said}");
 }
 
+/// Through an HTTPS proxy's tunnel, the library is not handed the socket:
+/// the proxy's TLS works on its bytes, which the library would read and
+/// write past. C's libssh build hands it the socket all the same, and SSH
+/// goes out as bytes inside the proxy's TLS stream (DIVERGENCE.md).
+#[test]
+fn the_socket_is_not_handed_over_under_a_proxy_s_tls() {
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let answer = tls(b"HTTP/1.1 200 Connection established\r\n\r\n");
+    let talk = Conversation::replies(&[WELCOME, &answer], false).per_send();
+    let w = world(&[("/home/u/f", "tunneled")]);
+    let mut m = serving(PROXY_PORT, &talk);
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    let library = crate::libraries::Library::Static(backend as &dyn crate::tls::TlsBackend);
+    let url = "sftp://u@127.0.0.1:PORT/~/f";
+    let (id, body, text) = added_with_tls(&mut m, &w, url, Some(library), |o| {
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("https://127.0.0.1:{PROXY_PORT}").into_bytes());
+        proxy.tunnel = true;
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Err(ErrorKind::FailedInit), "{said}");
+    assert!(said.contains("Could not set socket"), "{said}");
+    let sent = fake::read_client(&talk.received()).unwrap();
+    let sent = String::from_utf8_lossy(&sent).into_owned();
+    assert!(
+        sent.contains("CONNECT 127.0.0.1:8022 HTTP/1.1\r\n"),
+        "{sent}"
+    );
+    assert!(!w.lock().unwrap().calls.contains(&"set_socket".to_owned()));
+    assert!(body.0.lock().unwrap().is_empty());
+}
+
 /// Through a SOCKS5 proxy, the library is handed the socket with the
 /// server's banner unread in it, though it came in the read of the
 /// proxy's grant: the grant is read no further than it goes, as C reads
@@ -1366,8 +1412,10 @@ fn the_keyboard_interactive_login_answers_with_the_password() {
 }
 
 /// An upload whose file cannot be opened makes the directories up to it
-/// once, then fails if the file still cannot be opened, where C's
-/// libssh code would make them again for ever.
+/// once, then fails if the file still cannot be opened, as C's libssh2
+/// code gives up (`secondCreateDirs`), where its libssh code sets the
+/// flag and never reads it, making them again for as long as the open
+/// fails (DIVERGENCE.md).
 #[test]
 fn missing_directories_are_made_once() {
     let w = world_with(&[], |w| w.refuses_writes = true);
@@ -1395,6 +1443,21 @@ fn missing_directories_are_made_once() {
             "open /home/u/a/b/f",
         ]
     );
+}
+
+/// A file refused twice is not tried a third time, though it would open
+/// then: the directories are made once (DIVERGENCE.md).
+#[test]
+fn a_file_refused_again_is_not_tried_again() {
+    let w = world_with(&[], |w| w.refused_opens = 2);
+    let (result, _, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/a/f", |o| {
+        uploads(o, b"up");
+        o.line.make_mut().unwrap().ftp.create_dirs = CreateDirs::Create;
+    });
+    assert_eq!(result, Err(ErrorKind::RemoteFileNotFound), "{said}");
+    let opens = calls.iter().filter(|c| c.starts_with("open /")).count();
+    assert_eq!(opens, 2, "{calls:?}");
+    assert!(w.lock().unwrap().files.is_empty());
 }
 
 /// An upload goes to the file, made if it is not there.

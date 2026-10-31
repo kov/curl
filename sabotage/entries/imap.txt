@@ -176,3 +176,12 @@ features: test-util
             if !runs || !drive::holds(&pc.pp, &mut carrier) {
 --- new
             if !runs && !drive::holds(&pc.pp, &mut carrier) {
+
+=== a body held paused when its literal came whole is dropped at DONE
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::imap::tests::over_the_wire::a_paused_body_holds_the_transfer_open
+features: test-util
+--- old
+        TransferState::Did(x) if !x.proto.exchanges() && !x.proto.holds_output() => (
+--- new
+        TransferState::Did(x) if !x.proto.exchanges() => (

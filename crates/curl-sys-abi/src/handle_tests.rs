@@ -2479,7 +2479,10 @@ unsafe extern "C" fn stream_seek(data: *mut c_void, offset: curl_off_t, origin: 
 
 /// A body resumed is moved to its point by the seek function: one that
 /// cannot seek, or no seek function, has the bytes before read instead,
-/// and any other answer fails the transfer (`ftp_state_ul_setup`).
+/// so that the bytes after the point are the ones sent, and any other
+/// answer fails the transfer (`ftp_state_ul_setup`). With no seek
+/// function C seeks nothing and reads nothing before the point, and sends
+/// the stream's first bytes as the ones after it (DIVERGENCE.md).
 #[test]
 fn a_resumed_body_asks_the_seek_function() {
     let run = |answer: Option<c_int>| {
@@ -2518,6 +2521,7 @@ fn a_resumed_body_asks_the_seek_function() {
         }
         // SAFETY: a live handle, then not used again.
         let code = unsafe { curl_easy_perform(c) };
+        let sent = info::<curl_off_t>(c, ffi::CURLINFO_SIZE_UPLOAD_T);
         // SAFETY: as above.
         unsafe { curl_easy_cleanup(c) };
         // SAFETY: the shim ends what it writes with a zero byte.
@@ -2525,26 +2529,27 @@ fn a_resumed_body_asks_the_seek_function() {
             .to_str()
             .unwrap()
             .to_owned();
-        (code, why, s.asked, s.reads, s.feed.left.len())
+        (code, why, s.asked, s.reads, s.feed.left.len(), sent)
     };
     let set = libc::SEEK_SET;
     // Moved: the reads give the rest, then the end.
     assert_eq!(
         run(Some(ffi::CURL_SEEKFUNC_OK)),
-        (CURLE_OK, String::new(), vec![(60, set)], 2, 0)
+        (CURLE_OK, String::new(), vec![(60, set)], 2, 0, 40)
     );
     // Read to the point, then the rest, then the end.
     assert_eq!(
         run(Some(ffi::CURL_SEEKFUNC_CANTSEEK)),
-        (CURLE_OK, String::new(), vec![(60, set)], 3, 0)
+        (CURLE_OK, String::new(), vec![(60, set)], 3, 0, 40)
     );
-    assert_eq!(run(None), (CURLE_OK, String::new(), vec![], 3, 0));
+    assert_eq!(run(None), (CURLE_OK, String::new(), vec![], 3, 0, 40));
     let failed = (
         ffi::CURLE_FTP_COULDNT_USE_REST,
         "Could not seek stream".to_owned(),
         vec![(60, set)],
         0,
         100,
+        0,
     );
     assert_eq!(run(Some(ffi::CURL_SEEKFUNC_FAIL)), failed);
     assert_eq!(run(Some(7)), failed);

@@ -194,3 +194,27 @@ features: test-util debug-hooks
                 if !reading && self.unix == Unix::FileType {
 --- new
                 if self.unix == Unix::FileType {
+
+=== the control connection's handshake after AUTH blocks the multi
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_handshake_after_auth_stalls_no_other_transfer
+features: test-util debug-hooks
+--- old
+        let shaken =
+            crate::multi::state::tls::upgrade(carrier, &identity, &self.peer, via.as_deref(), cx)?;
+        if shaken == crate::tls::Handshake::Waiting {
+            return Ok(());
+        }
+--- new
+        while crate::multi::state::tls::upgrade(carrier, &identity, &self.peer, via.as_deref(), cx)?
+            == crate::tls::Handshake::Waiting
+        {}
+
+=== the data connection's handshake blocks the multi
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core proto::ftp::tests::a_data_connection_s_handshake_stalls_no_other_transfer
+features: test-util debug-hooks
+--- old
+                            return Ok(Reached::Ip);
+--- new
+                            continue;

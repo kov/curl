@@ -1041,7 +1041,7 @@ impl Rewind for Adapter {
     /// bytes before read and dropped, and any other answer fails the
     /// upload. C sends from where the stream is when there is no seek
     /// function, the wrong bytes; here they are passed over by reading,
-    /// as its documentation says they are.
+    /// as its documentation says they are (DIVERGENCE.md).
     fn seek(&self, cx: &mut TransferCx<'_>, offset: u64) -> Result<(), SeekFailed> {
         let ccb = self.easy().ccb.get();
         let Some(seek) = ccb.seek else {

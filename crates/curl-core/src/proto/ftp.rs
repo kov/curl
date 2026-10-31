@@ -360,7 +360,8 @@ pub(crate) struct Request {
     header_bytes: u64,
     /// DONE's step, once it reads on the control connection.
     ending: Option<Ending>,
-    /// The bytes of answers DONE has read (`nread`).
+    /// The bytes of the whole answers DONE has read (`nread`): a line
+    /// of one not yet ended counts for nothing.
     ending_read: u64,
     round: drive::Blocking,
     due: Option<Instant>,
@@ -750,6 +751,17 @@ impl Request {
         pc: &mut FtpConn,
         carrier: &mut Carrier<'_>,
     ) -> Result<Option<u32>, ErrorKind> {
+        self.read_whole(cx, pc, carrier).map(|(code, _)| code)
+    }
+
+    /// `read_reply`, and the size of the answer it read whole, 0 while
+    /// none is (`Curl_pp_readresp`'s `size`).
+    fn read_whole<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        pc: &mut FtpConn,
+        carrier: &mut Carrier<'_>,
+    ) -> Result<(Option<u32>, usize), ErrorKind> {
         let read = drive::read(
             cx,
             &mut pc.pp,
@@ -759,9 +771,9 @@ impl Request {
             &mut self.header_bytes,
             self.upload_done,
         )?;
-        let code = match read {
-            Read::Reply(code, _) => code.get(),
-            Read::Waiting => 0,
+        let (code, size) = match read {
+            Read::Reply(code, size) => (code.get(), size.get()),
+            Read::Waiting => (0, 0),
         };
         cx.report_mut()
             .set_reply_code(u16::try_from(code).unwrap_or(u16::MAX));
@@ -770,7 +782,7 @@ impl Request {
             set_state(cx, pc, State::Stop);
             return Err(ErrorKind::OperationTimedout);
         }
-        Ok((code != 0).then_some(code))
+        Ok(((code != 0).then_some(code), size))
     }
 
     /// The state machine, a whole answer at a time
@@ -2917,11 +2929,12 @@ impl Request {
                         return Finish::Waiting;
                     }
                     Ok((true, _)) => {
-                        let before = self.header_bytes;
                         let flushed = drive::flush(cx, &mut pc.pp, &mut carrier);
-                        let read = flushed.and_then(|()| self.read_reply(cx, pc, &mut carrier));
-                        self.ending_read += self.header_bytes - before;
-                        read
+                        let read = flushed.and_then(|()| self.read_whole(cx, pc, &mut carrier));
+                        read.map(|(code, size)| {
+                            self.ending_read += size as u64;
+                            code
+                        })
                     }
                     Err(e) => Err(e),
                 };

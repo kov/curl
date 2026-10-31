@@ -2774,3 +2774,56 @@ fn a_request_moves_on_from_did_as_c_s_does() {
     assert!(said.contains("[DID] -> [DONE]"), "{said}");
     assert!(!said.contains("[PERFORMING]"), "{said}");
 }
+
+/// A verdict whose first line comes while DONE waits, and whose last
+/// never does, is no answer: the control connection is said to look
+/// dead and is closed, as when nothing came, the next transfer logging
+/// in again. A whole answer that says no code is one read, and leaves
+/// the connection to the pool. C counts only whole answers as read
+/// (`ftp_done`, `getftpresponse`, `Curl_pp_readresp`).
+#[test]
+fn a_verdict_cut_short_says_the_connection_looks_dead() {
+    let run = |late: &'static [u8]| {
+        let mut replies = LOGIN_AND_SETUP.to_vec();
+        replies.extend_from_slice(&[b"150 here\r\n", late]);
+        let first = Conversation::replies(&replies, false)
+            .greeting()
+            .volunteering(1)
+            .held();
+        first.allow(LOGIN_AND_SETUP.len() + 1);
+        let fresh = control(&[b"150 here\r\n226 done\r\n"]);
+        let (a, b) = (data(b"hello"), data(b"hello"));
+        let mut m = serving(&[&first, &fresh], &[&a, &b]);
+        let (id, _, text) = added(&mut m, URL, |o| {
+            o.line.make_mut().unwrap().server_response = crate::time::TimeLimit::from_millis(3000);
+        });
+        for _ in 0..30 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        assert!(
+            text.text().contains("[PERFORMING] -> [DONE]"),
+            "{}",
+            text.text()
+        );
+        // The late line, once DONE waits for the verdict.
+        first.allow(LOGIN_AND_SETUP.len() + 2);
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(first.answered(), replies.len(), "the late line was read");
+        m.remove(id, &mut NoEvents).unwrap();
+        (result, text.text(), m, fresh)
+    };
+    let (result, said, mut m, fresh) = run(b"226-partial\r\n");
+    assert_eq!(result, Err(ErrorKind::OperationTimedout), "{said}");
+    assert!(said.contains("control connection looks dead"), "{said}");
+    let (id, _, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(received(&fresh), COMMANDS);
+    let (result, said, _, _) = run(b"000 no code\r\n");
+    assert_eq!(result, Err(ErrorKind::OperationTimedout), "{said}");
+    assert!(!said.contains("looks dead"), "{said}");
+    assert!(
+        said.contains("Connection #0 to host 127.0.0.1:8021 left intact"),
+        "{said}"
+    );
+}

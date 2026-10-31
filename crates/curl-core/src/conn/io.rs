@@ -930,6 +930,9 @@ struct Wire {
     /// How many of its replies the peer may give so far, if it waits
     /// for the test to let them go.
     allowed: Option<usize>,
+    /// How many of its last replies the peer gives without being asked,
+    /// each once the one before it is read.
+    volunteers: usize,
 }
 
 /// The most reads of an endless reply before the test fails: a transfer
@@ -947,6 +950,11 @@ impl Wire {
             self.sends
         } else {
             self.heads()
+        };
+        let asked = if self.answered + self.volunteers >= self.replies.len() {
+            asked.max(self.answered + 1)
+        } else {
+            asked
         };
         self.answered < self.replies.len()
             && asked > self.answered
@@ -1078,6 +1086,17 @@ impl Conversation {
         self
     }
 
+    /// The same peer, giving its last `n` replies unasked, each once the
+    /// one before it is read: a server that says more on its own, as a
+    /// reply's line that comes late.
+    pub fn volunteering(self, n: usize) -> Conversation {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .volunteers = n;
+        self
+    }
+
     /// Let a `held` peer give its first `n` replies.
     pub fn allow(&self, n: usize) {
         self.0
@@ -1113,6 +1132,14 @@ impl Conversation {
     pub fn reads(&self) -> (usize, usize) {
         let wire = self.0.lock().expect("no test panics holding the wire");
         (wire.reads, wire.last_read_room)
+    }
+
+    /// How many of its replies were read whole.
+    pub fn answered(&self) -> usize {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .answered
     }
 
     /// How many reads the endless part of the reply has had.

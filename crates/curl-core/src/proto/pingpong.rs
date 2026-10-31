@@ -119,7 +119,6 @@ impl ReplyCode {
 pub(crate) struct ReplySize(usize);
 
 impl ReplySize {
-    #[cfg_attr(not(test), expect(dead_code, reason = "FTP is yet to be built on it"))]
     pub(crate) fn get(self) -> usize {
         self.0
     }

@@ -43,6 +43,13 @@ struct World {
     refuses_writes: bool,
     /// SCP's reads end this many bytes short of the size it offers.
     short_by: usize,
+    /// So many of SFTP's reads, and of its renames, wait first.
+    read_waits: usize,
+    rename_waits: usize,
+    /// SFTP's writes fail.
+    writes_fail: bool,
+    /// The private key's login is refused.
+    key_refused: bool,
 }
 
 impl World {
@@ -212,8 +219,13 @@ impl Session for FakeSession {
         Rc::Ok
     }
     fn auth_publickey(&mut self) -> Auth {
-        self.w().call("auth_publickey", &[]);
-        Auth::Success
+        let mut w = self.w();
+        w.call("auth_publickey", &[]);
+        if w.key_refused {
+            Auth::Denied
+        } else {
+            Auth::Success
+        }
     }
     fn auth_publickey_auto(&mut self, _: Option<&[u8]>) -> Auth {
         Auth::Denied
@@ -407,6 +419,10 @@ impl Session for FakeSession {
     }
     fn rename(&mut self, from: &[u8], to: &[u8]) -> Rc {
         let mut w = self.w();
+        if w.rename_waits > 0 {
+            w.rename_waits -= 1;
+            return Rc::Again;
+        }
         w.call("rename", &[from, to]);
         match w.file(from) {
             Some(at) => {
@@ -496,6 +512,15 @@ impl Session for FakeSession {
         Rc::Ok
     }
     fn wait_read(&mut self, buf: &mut [u8]) -> Aio {
+        {
+            let mut w = self.world.lock().unwrap();
+            if w.read_waits > 0 {
+                w.read_waits -= 1;
+                w.call("wait_read again", &[]);
+                assert!(self.reading.is_some(), "a read begun");
+                return Aio::Again;
+            }
+        }
         let len = self.reading.take().expect("a read begun");
         let open = self.file.as_mut().unwrap();
         let w = self.world.lock().unwrap();
@@ -506,6 +531,9 @@ impl Session for FakeSession {
         Aio::Done(n)
     }
     fn begin_write(&mut self, bytes: &[u8]) -> Rc {
+        if self.w().writes_fail {
+            return Rc::Error;
+        }
         let open = self.file.as_mut().unwrap();
         let mut w = self.world.lock().unwrap();
         let file = &mut w.files[open.at].1;
@@ -1189,4 +1217,100 @@ fn an_sftp_file_is_uploaded() {
     assert_eq!(result, Ok(()), "{said}");
     let w = w.lock().unwrap();
     assert_eq!(w.files, [(b"/home/u/f".to_vec(), b"uploaded".to_vec())]);
+}
+
+/// A multi whose server at `PORT` always has something to read, so
+/// that a wait on the session's socket ends at once.
+fn chatty() -> Multi {
+    serving(
+        PORT,
+        &Conversation::replies(&[b"SSH-2.0-x\r\n"], false).greeting(),
+    )
+}
+
+/// Run `url` over `w` on `m` to its end, as `run_in`.
+fn run_on(
+    m: &mut Multi,
+    w: &Arc<Mutex<World>>,
+    url: &str,
+    set: impl FnOnce(&mut Options),
+) -> (Result<(), ErrorKind>, Vec<u8>, String) {
+    let (id, body, text) = added(m, w, url, set);
+    let result = drive_to_completion(m, id, &mut NoEvents).unwrap();
+    m.remove(id, &mut NoEvents).unwrap();
+    let body = body.0.lock().unwrap().clone();
+    (result, body, text.text())
+}
+
+/// An SFTP read that waits is waited on, then taken where it was asked
+/// for, its room unchanged.
+#[test]
+fn a_read_that_waits_is_taken_after_its_wait() {
+    let w = world_with(&[("/home/u/f", "waited for")], |w| w.read_waits = 2);
+    let mut m = chatty();
+    let (result, body, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(body, b"waited for");
+    let waits = w
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .filter(|c| *c == "wait_read again")
+        .count();
+    assert_eq!(waits, 2);
+}
+
+/// A command after the transfer that waits is waited on as the transfer
+/// ends, and the next transfer finds its connection.
+#[test]
+fn a_command_after_the_transfer_may_wait() {
+    let w = world_with(&[("/home/u/f", "x")], |w| w.rename_waits = 3);
+    let mut m = serving(PORT, &silent());
+    let (result, body, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        let line = o.line.make_mut().unwrap();
+        line.postquote
+            .set([&b"rename /home/u/f /home/u/g"[..]])
+            .unwrap();
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(body, b"x");
+    let (result, body, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/g", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(body, b"x");
+    drop(m);
+    let w = w.lock().unwrap();
+    assert_eq!(w.calls.iter().filter(|c| *c == "connect").count(), 1);
+    assert!(w.calls.contains(&"rename /home/u/f /home/u/g".to_owned()));
+}
+
+/// An SFTP write that fails fails the upload as a send error.
+#[test]
+fn a_failing_write_fails_the_upload() {
+    let w = world_with(&[], |w| w.writes_fail = true);
+    let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        o.method = crate::options::Method::Upload;
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"up".to_vec()).unwrap(),
+        );
+    });
+    assert_eq!(result, Err(ErrorKind::SendError), "{said}");
+}
+
+/// A refused key's login is said with libssh's number for the refusal,
+/// and the password is tried next.
+#[test]
+fn a_refused_key_falls_back_to_the_password() {
+    let w = world_with(&[("/home/u/f", "x")], |w| w.key_refused = true);
+    let (result, body, said, _) = run_in(&w, "sftp://u:secret@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(body, b"x");
+    assert!(
+        said.contains("Failed public key authentication (rc: 1)\n"),
+        "{said}"
+    );
+    assert!(
+        said.contains("Completed password authentication\n"),
+        "{said}"
+    );
 }

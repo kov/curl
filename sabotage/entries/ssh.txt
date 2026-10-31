@@ -92,3 +92,11 @@ witness: curl-core proto::ssh::tests::the_known_hosts_file_and_the_key_handler_d
             KeyVerdict::FineAddToFile => sc.session().update_known_hosts() == Rc::Ok,
 --- new
             KeyVerdict::FineAddToFile => true,
+
+=== a postquote that waits is never waited on as the transfer ends
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::ssh::tests::a_command_after_the_transfer_may_wait
+--- old
+            ProtoState::Ssh(ref mut r) => r.finishing(cx, lease, exchanged),
+--- new
+            ProtoState::Ssh(_) => Finish::Done(Ok(())),

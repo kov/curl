@@ -77,7 +77,8 @@ impl HeldOutput {
     }
 
     /// Hold `data` after what is held; body joins body held just before
-    /// it, and an empty body one held just before it. Past the limit is TooLarge ("pause buffer not large enough").
+    /// it, and an empty body one held just before it. Past the limit is
+    /// TooLarge ("pause buffer not large enough").
     pub(crate) fn append(&mut self, kind: OutKind, data: &[u8]) -> Result<(), ErrorKind> {
         if self.held + data.len() > self.limit {
             return Err(ErrorKind::TooLarge);
@@ -196,6 +197,28 @@ mod tests {
                 (H, b"x: 1\r\n".to_vec()),
                 (H, b"y: 2\r\n".to_vec()),
                 (OutKind::Body, b"ef".to_vec()),
+            ]
+        );
+        assert!(h.is_empty());
+    }
+
+    /// A WebSocket's empty frame held is an entry of its own, which an
+    /// empty frame after it joins but body does not: held, it is still
+    /// something to deliver.
+    #[test]
+    fn an_empty_body_is_held_apart_from_body() {
+        let mut h = HeldOutput::default();
+        h.append(OutKind::EmptyBody, b"").unwrap();
+        assert!(!h.is_empty(), "an empty body is held");
+        h.append(OutKind::EmptyBody, b"").unwrap();
+        h.append(OutKind::Body, b"ab").unwrap();
+        h.append(OutKind::EmptyBody, b"").unwrap();
+        assert_eq!(
+            drain(&mut h),
+            [
+                (OutKind::EmptyBody, Vec::new()),
+                (OutKind::Body, b"ab".to_vec()),
+                (OutKind::EmptyBody, Vec::new()),
             ]
         );
         assert!(h.is_empty());

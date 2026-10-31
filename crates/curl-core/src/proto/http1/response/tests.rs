@@ -459,6 +459,34 @@ fn interim_heads_alone_are_nothing() {
     let p = fed(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n\r\n");
     assert!(!p.got_nothing(0), "a final head's bytes count");
     assert!(fed(b"").got_nothing(0));
+    // A 101 is an interim head too, final as it is (`deductheadercount`):
+    // a WebSocket's 101 and the connection's end is an empty reply.
+    let p = fed(b"HTTP/1.1 101 Switching\r\nUpgrade: websocket\r\n\r\n");
+    assert!(p.got_nothing(0));
+    assert!(!p.got_nothing(1), "a frame's byte counts");
+}
+
+/// A final response to a request for a WebSocket refuses it, whatever
+/// its code, ahead of failing on errors (`http_on_response`).
+#[test]
+fn a_websocket_refused_says_its_code() {
+    let ws = |code: u16, fail: bool| {
+        let reply = format!("HTTP/1.1 {code} X\r\nContent-Length: 0\r\n\r\n");
+        let exchange = asked(|a| {
+            a.websocket = true;
+            a.fail_on_error = fail;
+        });
+        outcome(reply.as_bytes(), exchange).error
+    };
+    for (code, fail) in [(200, false), (404, false), (404, true), (302, false)] {
+        assert_eq!(
+            ws(code, fail),
+            Some(HeadError::Framing(FramingError::RefusedWebSocket(code))),
+            "{code}"
+        );
+    }
+    let plain = outcome(b"HTTP/1.1 200 X\r\nContent-Length: 0\r\n\r\n", PLAIN);
+    assert_eq!(plain.error, None);
 }
 
 fn asked(f: impl FnOnce(&mut Asked)) -> Exchange {

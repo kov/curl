@@ -1,0 +1,77 @@
+=== a frame sent is not masked
+file: crates/curl-core/src/proto/ws/frame.rs
+witness: curl-core proto::ws::tests::a_frame_is_masked_and_sized
+--- old
+            head[1] = len as u8 | MASK;
+--- new
+            head[1] = len as u8;
+
+=== a frame with reserved bits set is read
+file: crates/curl-core/src/proto/ws/frame.rs
+witness: curl-core proto::ws::tests::a_refused_frame_says_why_as_c_does
+--- old
+        b if b & RSV != 0 => refused(said, format_args!("[WS] invalid reserved bits: {b:02x}")),
+--- new
+        b if b & RSV != 0 && false => refused(said, format_args!("[WS] invalid reserved bits: {b:02x}")),
+
+=== a control frame longer than 125 bytes is read
+file: crates/curl-core/src/proto/ws/frame.rs
+witness: curl-core proto::ws::tests::a_control_frame_is_at_most_125_bytes
+--- old
+                    && usize::from(byte) > MAX_CONTROL
+--- new
+                    && usize::from(byte) > MAX_CONTROL + 1
+
+=== a ping received is not answered
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-core proto::ws::tests::a_ping_is_answered
+--- old
+        if self.auto_pong && frame.kind == FrameKind::Ping && remain == 0 {
+            // Only a ping's last bytes are its pong's (`ws_client_collect`).
+--- new
+        if false {
+            // Only a ping's last bytes are its pong's (`ws_client_collect`).
+
+=== the upgrade request sends its own key over the application's
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::a_websocket_upgrade_sends_its_headers
+--- old
+                    for (name, value) in lines {
+                        if !head.headers.replaces(name) {
+--- new
+                    for (name, value) in lines {
+                        if true {
+
+=== a 101's head counts as an answer
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::interim_heads_alone_are_nothing
+--- old
+            || (kind == (LineKind::End { interim: false }) && switched)
+--- new
+            || (kind == (LineKind::End { interim: false }) && switched && false)
+
+=== a final response to a WebSocket's request is taken
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::a_websocket_refused_says_its_code
+--- old
+        if asked.websocket {
+            return (note, Err(FramingError::RefusedWebSocket(status.code)));
+--- new
+        if asked.websocket && status.code < 300 {
+            return (note, Err(FramingError::RefusedWebSocket(status.code)));
+
+=== an empty frame held joins the body after it
+file: crates/curl-core/src/deliver/held.rs
+witness: curl-core deliver::held::tests::an_empty_body_is_held_apart_from_body
+--- old
+                .is_some_and(|e| e.kind == kind);
+--- new
+                .is_some_and(|e| e.kind == kind || e.kind == OutKind::Body);
+
+=== a raw send's size without CURLWS_OFFSET is ignored
+file: crates/curl-sys-abi/src/ws.rs
+witness: curl-sys-abi ws::tests::raw_sends_take_no_size_and_no_flags
+--- old
+    if fragsize == 0 && flags == 0 {
+--- new
+    if flags & ffi::CURLWS_OFFSET as c_uint == 0 {

@@ -148,3 +148,23 @@ features: test-util debug-hooks
             self.known_filesize = Some(size);
 --- new
             let _ = size;
+
+=== a passive CCC sends its close_notify
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_passive_ccc_hears_the_server_s_goodbye_and_says_none
+features: test-util debug-hooks
+--- old
+            Ccc::Passive | Ccc::None => crate::tls::Goodbye::Heard,
+--- new
+            Ccc::Passive | Ccc::None => crate::tls::Goodbye::Mutual,
+
+=== a CCC leaves the TLS layer on
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core proto::ftp::tests::a_passive_ccc_hears_the_server_s_goodbye_and_says_none
+features: test-util debug-hooks
+--- old
+            if r != Ok(Handshake::Waiting) {
+                drop(layers.remove(at));
+            }
+--- new
+            if r != Ok(Handshake::Waiting) {}

@@ -102,6 +102,20 @@ impl Stream {
             .connect(self.socket.socket(), cx, traced, Some(&self.heard))
     }
 
+    /// Move the goodbye of the origin's TLS on, as `goodbye` says, its
+    /// layer taken off once over or failed: what is sent and received
+    /// after goes in clear. The socket's sends and receives traced as
+    /// `traced`, if given.
+    pub(crate) fn clear_tls(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        traced: Option<Component>,
+        goodbye: crate::tls::Goodbye,
+    ) -> Result<Handshake, ErrorKind> {
+        self.layers
+            .clear_tls(self.socket.socket(), cx, traced, Some(&self.heard), goodbye)
+    }
+
     /// Its layers over its socket, for a handshake that reads and writes
     /// past what was received and not used; the socket's sends and
     /// receives traced as `traced`, if given.

@@ -925,7 +925,11 @@ impl crate::tls::TlsSession for SayingSession {
         })
     }
 
-    fn shutdown(&mut self, _: &mut crate::tls::TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    fn shutdown(
+        &mut self,
+        _: &mut crate::tls::TlsIo<'_>,
+        _: crate::tls::Goodbye,
+    ) -> Result<Handshake, ErrorKind> {
         Ok(Handshake::Done)
     }
 

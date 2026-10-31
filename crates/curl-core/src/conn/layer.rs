@@ -506,6 +506,18 @@ pub(crate) trait Layer: for<'a> Part<Below<'a>> + Send + fmt::Debug {
     fn latest_session(&self) -> Option<&crate::tls::TlsTicket> {
         None
     }
+
+    /// Move the goodbye of the origin's TLS on, as `goodbye` says, if this
+    /// layer is it, its session called with no filter's trace around it
+    /// (`vtls_shutdown_blocking`); none from any other layer.
+    fn clear_tls(
+        &mut self,
+        _cx: &mut dyn LayerCx,
+        _below: Below<'_>,
+        _goodbye: crate::tls::Goodbye,
+    ) -> Option<Result<Handshake, ErrorKind>> {
+        None
+    }
 }
 
 /// The layers below one, then the socket: the stack split at the layer
@@ -794,6 +806,41 @@ impl LayerStack {
             .flat_map(|l| l.iter())
             .rev()
             .find_map(|layer| layer.latest_session())
+    }
+
+    /// Move the goodbye of the origin's TLS on over `socket`, as
+    /// `goodbye` says, and take its layer off once it is over or failed,
+    /// the bytes above it then going to the socket in clear
+    /// (`Curl_ssl_cfilter_remove`); with no such layer, there is nothing
+    /// to clear.
+    pub(crate) fn clear_tls(
+        &mut self,
+        socket: &dyn Socket,
+        cx: &mut dyn LayerCx,
+        traced: Option<Component>,
+        heard: Option<&Cell<bool>>,
+        goodbye: crate::tls::Goodbye,
+    ) -> Result<Handshake, ErrorKind> {
+        let Some(layers) = self.layers.as_deref_mut() else {
+            return Ok(Handshake::Done);
+        };
+        for at in (0..layers.len()).rev() {
+            let (below, top) = layers.split_at_mut(at);
+            let below = Below {
+                layers: below,
+                socket,
+                traced,
+                heard,
+            };
+            let Some(r) = top[0].clear_tls(cx, below, goodbye) else {
+                continue;
+            };
+            if r != Ok(Handshake::Waiting) {
+                drop(layers.remove(at));
+            }
+            return r;
+        }
+        Ok(Handshake::Done)
     }
 
     /// Shut its layers down over `socket` from the top, past the `shut`

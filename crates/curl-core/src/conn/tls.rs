@@ -214,7 +214,7 @@ impl Part<Below<'_>> for TlsLayer {
 
     fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind> {
         let (session, mut io) = self.parts(cx, below);
-        let r = session.shutdown(&mut io);
+        let r = session.shutdown(&mut io, crate::tls::Goodbye::Mutual);
         let (code, done) = match &r {
             Ok(done) => (0, u8::from(*done == Handshake::Done)),
             Err(kind) => (kind.number(), 0),
@@ -339,6 +339,19 @@ impl Layer for TlsLayer {
             .then(|| self.own.latest())
             .flatten()
     }
+
+    fn clear_tls(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        below: Below<'_>,
+        goodbye: crate::tls::Goodbye,
+    ) -> Option<Result<Handshake, ErrorKind>> {
+        if self.filter != Component::Ssl {
+            return None;
+        }
+        let (session, mut io) = self.parts(cx, below);
+        Some(session.shutdown(&mut io, goodbye))
+    }
 }
 
 #[cfg(test)]
@@ -360,7 +373,11 @@ mod tests {
         fn send(&mut self, _: &mut TlsIo<'_>, _: &[u8]) -> io::Result<Sent> {
             Ok(Sent::WouldBlock)
         }
-        fn shutdown(&mut self, _: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+        fn shutdown(
+            &mut self,
+            _: &mut TlsIo<'_>,
+            _: crate::tls::Goodbye,
+        ) -> Result<Handshake, ErrorKind> {
             Ok(Handshake::Done)
         }
         fn waits(&self) -> TlsWait {
@@ -473,7 +490,11 @@ mod tests {
             self.sent.extend_from_slice(bytes);
             Ok(Sent::Bytes(NonZeroUsize::new(bytes.len()).unwrap()))
         }
-        fn shutdown(&mut self, _: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+        fn shutdown(
+            &mut self,
+            _: &mut TlsIo<'_>,
+            _: crate::tls::Goodbye,
+        ) -> Result<Handshake, ErrorKind> {
             Ok(Handshake::Done)
         }
         fn waits(&self) -> TlsWait {

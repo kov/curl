@@ -40,6 +40,11 @@ impl ConnSettings {
     /// What a transfer's connections keep: the defaults, as no option
     /// changes them.
     pub(crate) const DEFAULT: ConnSettings = ConnSettings { shutdown_ms: 2000 };
+
+    /// How long a shutdown may take.
+    pub(crate) fn shutdown_time(self) -> Duration {
+        Duration::from_millis(u64::from(self.shutdown_ms))
+    }
 }
 
 /// A connection in a closing set, and how far its shutdown got.

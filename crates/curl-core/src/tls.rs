@@ -172,8 +172,9 @@ pub trait TlsSession: Send {
     /// Send from `bytes`, which is not empty.
     fn send(&mut self, io: &mut TlsIo<'_>, bytes: &[u8]) -> io::Result<Sent>;
 
-    /// Move the goodbye on (close_notify, and the peer's).
-    fn shutdown(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind>;
+    /// Move the goodbye on: the peer's close_notify read for, and ours
+    /// sent unless `goodbye` says only the peer's.
+    fn shutdown(&mut self, io: &mut TlsIo<'_>, goodbye: Goodbye) -> Result<Handshake, ErrorKind>;
 
     /// What its last call that could not go on waits for on the socket
     /// (C's `io_need`): to read, or to write, which it may need while it
@@ -318,6 +319,18 @@ impl TlsNative {
     pub fn session(self) -> Option<NonNull<c_void>> {
         self.session
     }
+}
+
+/// Whose close_notify a session's goodbye is made of (C's
+/// `send_shutdown`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Goodbye {
+    /// Ours sent, and the peer's read for: a connection's end, and FTP's
+    /// active CCC.
+    Mutual,
+    /// Only the peer's read for, ours never sent: FTP's passive CCC, as
+    /// servers that say theirs without waiting for ours expect.
+    Heard,
 }
 
 /// What a TLS session waits for on the socket.

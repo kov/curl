@@ -13,7 +13,7 @@ use crate::handler::{DebugHandler, DebugKind, Handler, Write, WriteHandler};
 use crate::id::ArenaPolicy;
 use crate::libraries::{Libraries, Library, SharedLibraries};
 use crate::multi::{Env, Multi, NoEvents, TransferCx, TransferId, drive_to_completion};
-use crate::options::Options;
+use crate::options::{Ccc, Options};
 use crate::time::ManualClock;
 
 const PORT: u16 = 8021;
@@ -346,6 +346,155 @@ fn a_protected_data_connection_resumes_its_control_connection_s_session() {
     let log = backend.log();
     assert_eq!(log.handshakes, 2, "{}", text.text());
     assert_eq!((log.resumed, log.resumed_given), (1, 1), "{}", text.text());
+}
+
+/// An FTPS download whose control connection is cleared by `CCC` as
+/// `ccc` says, the server answering with `after_ccc` and then, in clear,
+/// the rest of the login: the result, what the server was sent as it
+/// reads it, and the trace.
+fn cleared(ccc: Ccc, after_ccc: &[u8]) -> (Result<(), ErrorKind>, Vec<u8>, String) {
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let control = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        after_ccc.to_vec(),
+        b"257 \"/\" is it\r\n".to_vec(),
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n".to_vec(),
+        b"200 binary\r\n".to_vec(),
+        b"213 5\r\n".to_vec(),
+        b"150 here\r\n226 done\r\n".to_vec(),
+    ];
+    let control: Vec<&[u8]> = control.iter().map(Vec::as_slice).collect();
+    let control = Conversation::replies(&control, false).per_send();
+    let file = [WELCOME.to_vec(), tls(b"hello")];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    let file = Conversation::replies(&file, true).per_send();
+    let mut m = serving(&[&control], &[&file]);
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let url = "ftps://127.0.0.1:PORT/f";
+    let (id, body, text) = added_with(&mut m, url, Some(libraries), |o| {
+        o.line.make_mut().unwrap().ftp.ssl_ccc = ccc;
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    if result.is_ok() {
+        assert_eq!(*body.0.lock().unwrap(), b"hello", "{}", text.text());
+        // The data connection had no session of the control's to resume:
+        // its TLS was gone.
+        assert_eq!(backend.log().resumed_given, 0, "{}", text.text());
+    }
+    drop(m);
+    let sent = fake::read_client(&control.received()).unwrap();
+    (result, sent, text.text())
+}
+
+/// The commands after `CCC`, whatever came before it.
+fn after_ccc(sent: &[u8]) -> String {
+    let at = sent
+        .windows(5)
+        .position(|w| w == b"CCC\r\n")
+        .expect("CCC sent");
+    String::from_utf8_lossy(&sent[at..]).into_owned()
+}
+
+/// Passive `CCC` reads the server's close_notify and sends none: the
+/// login goes on in clear, and so does the QUIT at the end
+/// (`CURLFTPSSL_CCC_PASSIVE`, `Curl_ssl_cfilter_remove`).
+#[test]
+fn a_passive_ccc_hears_the_server_s_goodbye_and_says_none() {
+    use crate::tls::fake::{self, CLOSE};
+    let mut ccc = fake::records(b"200 CCC\r\n").unwrap();
+    ccc.extend_from_slice(CLOSE);
+    let (result, sent, said) = cleared(Ccc::Passive, &ccc);
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(
+        after_ccc(&sent),
+        "CCC\r\nPWD\r\nEPSV\r\nTYPE I\r\nSIZE f\r\nRETR f\r\nQUIT\r\n",
+        "{said}"
+    );
+}
+
+/// Active `CCC` sends its close_notify too, before the login goes on in
+/// clear (`CURLFTPSSL_CCC_ACTIVE`).
+#[test]
+fn an_active_ccc_says_its_goodbye_too() {
+    use crate::tls::fake::{self, CLOSE};
+    let mut ccc = fake::records(b"200 CCC\r\n").unwrap();
+    ccc.extend_from_slice(CLOSE);
+    let (result, sent, said) = cleared(Ccc::Active, &ccc);
+    assert_eq!(result, Ok(()), "{said}");
+    let close = String::from_utf8_lossy(CLOSE);
+    assert_eq!(
+        after_ccc(&sent),
+        format!("CCC\r\n{close}PWD\r\nEPSV\r\nTYPE I\r\nSIZE f\r\nRETR f\r\nQUIT\r\n"),
+        "{said}"
+    );
+}
+
+/// A server that never says its close_notify fails the transfer once
+/// the shutdown's time is out, the TLS taken off unsaid, as C's
+/// blocking shutdown does (`vtls_shutdown_blocking`).
+#[test]
+fn a_ccc_the_server_never_closes_fails_in_the_shutdown_s_time() {
+    let ccc = crate::tls::fake::records(b"200 CCC\r\n").unwrap();
+    let (result, sent, said) = cleared(Ccc::Passive, &ccc);
+    assert_eq!(result, Err(ErrorKind::OperationTimedout), "{said}");
+    assert!(said.contains("SSL shutdown timeout"), "{said}");
+    assert!(
+        said.contains("Failed to clear the command channel (CCC)"),
+        "{said}"
+    );
+    // Nothing more was sent, in TLS or not.
+    assert_eq!(after_ccc(&sent), "CCC\r\n", "{said}");
+}
+
+/// A server that refuses `CCC` keeps the TLS: the login goes on in it.
+#[test]
+fn a_ccc_refused_keeps_the_tls() {
+    let ccc = crate::tls::fake::records(b"500 no\r\n").unwrap();
+    let tls = |plain: &[u8]| crate::tls::fake::records(plain).unwrap();
+    let control = [
+        crate::tls::fake::WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        ccc,
+        tls(b"257 \"/\" is it\r\n"),
+    ];
+    let control: Vec<&[u8]> = control.iter().map(Vec::as_slice).collect();
+    let control = Conversation::replies(&control, false).per_send();
+    let mut m = serving(&[&control], &[]);
+    let backend: &'static crate::tls::fake::FakeTls =
+        Box::leak(Box::new(crate::tls::fake::FakeTls::ticketing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let (id, _, text) = added_with(&mut m, "ftps://127.0.0.1:PORT/f", Some(libraries), |o| {
+        o.line.make_mut().unwrap().ftp.ssl_ccc = Ccc::Passive;
+    });
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let said = text.text();
+    assert!(!said.contains("shutdown and remove SSL"), "{said}");
+    let raw = control.received();
+    // EPSV, after PWD, went as a record: the TLS stayed.
+    let epsv = crate::tls::fake::records(b"EPSV\r\n").unwrap();
+    assert!(raw.windows(epsv.len()).any(|w| w == epsv), "{said}");
+    m.remove(id, &mut NoEvents).unwrap();
 }
 
 /// A connection logged in as one user serves no transfer as another: it

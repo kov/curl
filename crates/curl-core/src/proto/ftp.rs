@@ -31,7 +31,7 @@ use crate::components::Component;
 use std::net::{IpAddr, SocketAddr};
 
 use crate::conn::io::{Closer, Events, InterfaceAddress, Recv, Remote, Sock, Socket};
-use crate::conn::layer::Lower as _;
+use crate::conn::layer::{LayerAnswer, LayerQuery, Lower as _};
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
 use crate::conn::{ConnLease, NetRoute, Peer, RecvFailed, RouteCold, Scheme};
@@ -44,6 +44,7 @@ use crate::multi::state::StepCx;
 use crate::options::{Ccc, CreateDirs, FtpMethod, Method, SslAuth, UseSsl};
 use crate::progress::rate::Way;
 use crate::time::Instant;
+use crate::tls::TlsWait;
 use crate::trace;
 use crate::upload::chain::Body;
 use crate::upload::sending::Sending;
@@ -298,6 +299,9 @@ pub(crate) struct Request {
     reused: bool,
     /// The control connection's TLS is being made, after `AUTH`.
     upgrading: bool,
+    /// The control connection's TLS is being shut down after `CCC`, until
+    /// this instant at the latest.
+    clearing: Option<Instant>,
     /// The server is about to move the data, and the data connection's
     /// TLS is still being made: DO_MORE waits for it.
     initiating: bool,
@@ -459,6 +463,7 @@ impl Request {
             do_more: false,
             reused: false,
             upgrading: false,
+            clearing: None,
             initiating: false,
             infilesize: None,
             cwd_done: false,
@@ -711,10 +716,16 @@ impl Request {
         let limit = cx.easy().options().line.server_response;
         self.via = lease.conn().net_route().and_then(|r| r.via.clone());
         let (pc, mut carrier) = ftp_of(lease);
-        let ran = match drive::runs(cx, &pc.pp, &mut carrier, limit) {
-            Ok(true) => self.machine(cx, pc, &mut carrier),
-            Ok(false) => Ok(()),
-            Err(e) => Err(e),
+        let ran = if self.clearing.is_some() {
+            // As C blocks for it, the shutdown's own time limits it, not
+            // the server's to answer.
+            self.clear_tls(cx, pc, &mut carrier)
+        } else {
+            match drive::runs(cx, &pc.pp, &mut carrier, limit) {
+                Ok(true) => self.machine(cx, pc, &mut carrier),
+                Ok(false) => Ok(()),
+                Err(e) => Err(e),
+            }
         };
         self.wants = drive::waits(&pc.pp);
         self.stopped = pc.state == State::Stop;
@@ -813,7 +824,17 @@ impl Request {
             }
             State::Ccc => {
                 if code < 500 {
-                    return Err(ErrorKind::NotBuiltIn);
+                    // The TLS goes, in the time a shutdown has: tested
+                    // with servers that say their close_notify and wait
+                    // for none, so the passive way sends none.
+                    trace::of(
+                        cx,
+                        Component::Ssl,
+                        format_args!("shutdown and remove SSL, start"),
+                    );
+                    let time = crate::conn::shutdown::ConnSettings::DEFAULT.shutdown_time();
+                    self.clearing = Some(cx.now().after(time));
+                    return self.clear_tls(cx, pc, carrier);
                 }
                 pwd(cx, pc, carrier)
             }
@@ -1007,6 +1028,63 @@ impl Request {
         self.upgrading = false;
         pc.data_tls = false;
         self.user(cx, pc, carrier)
+    }
+
+    /// Move the control connection's TLS shutdown on after `CCC`, its
+    /// layer taken off once it is over or failed; then the login goes on
+    /// in clear (`Curl_ssl_cfilter_remove`, `vtls_shutdown_blocking`).
+    fn clear_tls<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        pc: &mut FtpConn,
+        carrier: &mut Carrier<'_>,
+    ) -> Step {
+        let deadline = self.clearing.expect("clearing after CCC");
+        let goodbye = match cx.easy().options().line.ftp.ssl_ccc {
+            Ccc::Active => crate::tls::Goodbye::Mutual,
+            Ccc::Passive | Ccc::None => crate::tls::Goodbye::Heard,
+        };
+        // A try once what it waited for is there, as C's poll returns
+        // ready: on any other wake it waits on.
+        let ready = match carrier.stream_mut().query(LayerQuery::TlsWaits) {
+            Some(LayerAnswer::TlsWaits(TlsWait::Recv)) => carrier.ready_now(Events::IN),
+            Some(LayerAnswer::TlsWaits(TlsWait::Send)) => carrier.ready_now(Events::OUT),
+            _ => true,
+        };
+        // Out of time, the connection fails with its TLS on, and is closed
+        // without the goodbye a failed connection never says.
+        let cleared = if cx.now() >= deadline {
+            Err(trace::fail(
+                cx,
+                ErrorKind::OperationTimedout,
+                format_args!("SSL shutdown timeout"),
+            ))
+        } else if !ready {
+            Ok(crate::tls::Handshake::Waiting)
+        } else {
+            let traced = Some(carrier.socket_component());
+            carrier.stream_mut().clear_tls(cx, traced, goodbye)
+        };
+        match cleared {
+            Ok(crate::tls::Handshake::Waiting) => {
+                self.due = Some(deadline);
+                Ok(())
+            }
+            Ok(crate::tls::Handshake::Done) => {
+                self.clearing = None;
+                self.due = None;
+                pwd(cx, pc, carrier)
+            }
+            Err(kind) => {
+                self.clearing = None;
+                self.due = None;
+                Err(trace::fail(
+                    cx,
+                    kind,
+                    format_args!("Failed to clear the command channel (CCC)"),
+                ))
+            }
+        }
     }
 
     /// `USER` (`ftp_state_user`).

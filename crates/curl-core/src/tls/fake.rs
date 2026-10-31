@@ -33,7 +33,7 @@ use std::sync::Mutex;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use super::{
-    Alpn, CaDefaults, Chosen, DriveCall, Handshake, QuicTls, TLS1_3, TlsBackend, TlsCx,
+    Alpn, CaDefaults, Chosen, DriveCall, Goodbye, Handshake, QuicTls, TLS1_3, TlsBackend, TlsCx,
     TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 use crate::conn::io::{Recv, Sent};
@@ -698,8 +698,8 @@ impl TlsSession for FakeSession {
         self.send_open(io, bytes)
     }
 
-    fn shutdown(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
-        self.goodbye(io)
+    fn shutdown(&mut self, io: &mut TlsIo<'_>, goodbye: Goodbye) -> Result<Handshake, ErrorKind> {
+        self.goodbye(io, goodbye)
     }
 
     fn chosen(&self) -> Option<Chosen> {
@@ -894,14 +894,16 @@ impl FakeSession {
         Ok(Sent::Bytes(n))
     }
 
-    fn goodbye(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    fn goodbye(&mut self, io: &mut TlsIo<'_>, goodbye: Goodbye) -> Result<Handshake, ErrorKind> {
         loop {
             match self.stage {
                 // No goodbye before the handshake is done.
                 Stage::Hello(_) | Stage::Early(_) | Stage::Welcome(_) | Stage::Finished(_) => {
                     return Ok(Handshake::Done);
                 }
-                // A goodbye is said back to the peer's too.
+                // A goodbye is said back to the peer's too, unless only
+                // the peer's is waited for.
+                Stage::Open if goodbye == Goodbye::Heard => self.stage = Stage::Closed,
                 Stage::Open => self.stage = Stage::Closing(0),
                 Stage::Closing(mut sent) => {
                     let flushed =

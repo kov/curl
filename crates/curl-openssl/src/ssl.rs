@@ -17,9 +17,9 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, CaDefaults, Chosen, Deferred, DriveCall, Handshake, KeyLog, QuicTls, SharedKeyLog,
-    TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsShared,
-    TlsTicket, TlsWait,
+    Alpn, CaDefaults, Chosen, Deferred, DriveCall, Goodbye, Handshake, KeyLog, QuicTls,
+    SharedKeyLog, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind,
+    TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX, SSL_SESSION};
@@ -1361,14 +1361,14 @@ impl TlsSession for Session {
         }
     }
 
-    /// The goodbye (`ssl_cf_shutdown`): only for a handshake that was
+    /// The goodbye (`ossl_shutdown`): only for a handshake that was
     /// done, once; the bytes it holds are given up as it waits or ends.
-    fn shutdown(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    fn shutdown(&mut self, io: &mut TlsIo<'_>, goodbye: Goodbye) -> Result<Handshake, ErrorKind> {
         if self.step != Step::Done || self.shut {
             return Ok(Handshake::Done);
         }
         self.waits = TlsWait::Nothing;
-        let done = self.goodbye(io);
+        let done = self.goodbye(io, goodbye);
         self.shut = done;
         if done || self.waits != TlsWait::Nothing {
             self.flags.input_pending = false;
@@ -1554,11 +1554,12 @@ impl DriveCall for Check<'_> {
 }
 
 impl Session {
-    /// One try at the goodbye (`ossl_shutdown`, sending close_notify):
-    /// the peer's close_notify read first if it came, and nothing sent to
-    /// a peer that closed after it; then ours, then the peer's waited for.
-    /// Done, or waiting for what `waits` says.
-    fn goodbye(&mut self, io: &mut TlsIo<'_>) -> bool {
+    /// One try at the goodbye (`ossl_shutdown`): the peer's close_notify
+    /// read first if it came, which ends one that sends none, and nothing
+    /// sent to a peer that closed after it; then ours, unless `goodbye`
+    /// sends none, then the peer's waited for. Done, or waiting for what
+    /// `waits` says.
+    fn goodbye(&mut self, io: &mut TlsIo<'_>, goodbye: Goodbye) -> bool {
         let ssl = self.ssl().as_ptr();
         let mut buf = [0u8; 1024];
         let mut read = |s: &mut Session, io: &mut TlsIo<'_>| s.read_into(io, &mut buf);
@@ -1579,14 +1580,20 @@ impl Session {
             }
             // SAFETY: the SSL and what its call returned.
             let err = unsafe { openssl_sys::SSL_get_error(ssl, nread) };
-            if nread == 0 && err == openssl_sys::SSL_ERROR_ZERO_RETURN && !io.peer_alive() {
-                // It closed after its close_notify: it wants none of ours.
-                self.flags.peer_closed = true;
-                io.trace(format_args!("peer closed connection"));
-                return true;
+            if nread == 0 && err == openssl_sys::SSL_ERROR_ZERO_RETURN {
+                if goodbye == Goodbye::Heard {
+                    io.trace(format_args!("SSL shutdown received, not sending"));
+                    return true;
+                }
+                if !io.peer_alive() {
+                    // It closed after its close_notify: it wants none of ours.
+                    self.flags.peer_closed = true;
+                    io.trace(format_args!("peer closed connection"));
+                    return true;
+                }
             }
         }
-        if sent() == 0 {
+        if goodbye == Goodbye::Mutual && sent() == 0 {
             // SAFETY: the thread's error queue.
             unsafe { openssl_sys::ERR_clear_error() };
             io.trace(format_args!("send SSL close notify"));

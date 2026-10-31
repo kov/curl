@@ -299,9 +299,11 @@ witness: curl-openssl a_kept_connection_says_goodbye_as_the_multi_goes
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl a_goodbye_answers_the_peer_s_own
 --- old
-            if nread == 0 && err == openssl_sys::SSL_ERROR_ZERO_RETURN && !io.peer_alive() {
+                if !io.peer_alive() {
+                    // It closed after its close_notify: it wants none of ours.
 --- new
-            if nread == 0 && err == openssl_sys::SSL_ERROR_ZERO_RETURN {
+                if true {
+                    // It closed after its close_notify: it wants none of ours.
 
 === an aborted transfer's TLS connection says close_notify
 file: crates/curl-core/src/conn/shutdown.rs
@@ -447,3 +449,11 @@ witness: curl-openssl ssl::tests::a_quic_session_s_check_needs_its_handshake_don
 --- new
         assert_ne!(
             finished, 1,
+
+=== a passive CCC answers the server's close_notify
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_passive_ccc_answers_no_close_notify
+--- old
+        if goodbye == Goodbye::Mutual && sent() == 0 {
+--- new
+        if sent() == 0 {

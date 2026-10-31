@@ -1403,7 +1403,11 @@ over what FTP's request lends them; or listened for and accepted, with TLS of th
 when protected, resuming first the copy of its latest session the control connection's TLS
 layer keeps (`tls::OwnSessions`, C's `connssl->session`), as servers may insist on; its socket joins the transfer's pollset (`ConnSlot::side_pollset`), the
 transfer's end closes it, and the connection's end closes it first if it is still open
-(`conn::shutdown`), so no path leaves it behind its connection.
+(`conn::shutdown`), so no path leaves it behind its connection. FTP's `CCC` takes the control
+connection's own TLS off again (`LayerStack::clear_tls`, `Curl_ssl_cfilter_remove`): its
+session's goodbye is moved on (`tls::Goodbye`, mutual when active, only the server's read when
+passive) without blocking, in the time a shutdown has, and its layer goes once the goodbye is
+over or has failed; what follows on the connection, its end among it, is in clear.
 
 A QUIC connection dialed straight to its peer is `Transport::Datagram`: its socket alone
 (`Datagrams`), no layers and no `rx`, the QUIC connection reading and writing its datagrams

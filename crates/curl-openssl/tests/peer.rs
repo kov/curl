@@ -42,6 +42,8 @@ use openssl::x509::{X509, X509Name};
 
 #[path = "peer/binding.rs"]
 mod binding;
+#[path = "peer/ccc.rs"]
+mod ccc;
 #[path = "peer/chain.rs"]
 mod chain;
 #[path = "peer/checks.rs"]
@@ -160,6 +162,7 @@ fn main() {
     ]
     .into_iter()
     .chain(binding::TESTS.iter().copied())
+    .chain(ccc::TESTS.iter().copied())
     .chain(checks::TESTS.iter().copied())
     .chain(client::TESTS.iter().copied())
     .chain(chain::TESTS.iter().copied())

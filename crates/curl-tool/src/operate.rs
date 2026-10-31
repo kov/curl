@@ -2778,22 +2778,20 @@ fn transfer_setopts(
         o.crlf = op.crlf;
         Ok(())
     })?;
-    for (name, list, at) in [
-        ("CURLOPT_QUOTE", &op.quote, 0),
-        ("CURLOPT_POSTQUOTE", &op.postquote, 1),
-        ("CURLOPT_PREQUOTE", &op.prequote, 2),
-    ] {
+    // Each list with the option it sets.
+    type Quotes = fn(&mut options::Line) -> &mut options::Lines;
+    let quotes: [(&str, _, Quotes); 3] = [
+        ("CURLOPT_QUOTE", &op.quote, |l| &mut l.quote),
+        ("CURLOPT_POSTQUOTE", &op.postquote, |l| &mut l.postquote),
+        ("CURLOPT_PREQUOTE", &op.prequote, |l| &mut l.prequote),
+    ];
+    for (name, list, to) in quotes {
         s.slist(name, list, |o| {
             if list.is_empty() {
                 return Ok(());
             }
             let line = o.line.make_mut().map_err(oom)?;
-            let to = match at {
-                0 => &mut line.quote,
-                1 => &mut line.postquote,
-                _ => &mut line.prequote,
-            };
-            to.set(list.iter().copied()).map_err(oom)
+            to(line).set(list.iter().copied()).map_err(oom)
         })?;
     }
     let (condition, time) = match op.time_cond {
@@ -2883,12 +2881,13 @@ fn ftp_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
         })?;
     }
     if op.ftp_ssl_ccc {
-        let mode = op.ftp_ssl_ccc_mode;
-        s.enumerated("CURLOPT_FTP_SSL_CCC", easysrc::FTP_SSL_CCC, mode, |o| {
-            o.line.make_mut().map_err(oom)?.ftp.ssl_ccc = match mode {
-                2 => options::Ccc::Active,
-                _ => options::Ccc::Passive,
-            };
+        // Said as the mode it sets.
+        let (ccc, said) = match op.ftp_ssl_ccc_mode {
+            2 => (options::Ccc::Active, 2),
+            _ => (options::Ccc::Passive, 1),
+        };
+        s.enumerated("CURLOPT_FTP_SSL_CCC", easysrc::FTP_SSL_CCC, said, |o| {
+            o.line.make_mut().map_err(oom)?.ftp.ssl_ccc = ccc;
             Ok(())
         })?;
     }

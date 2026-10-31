@@ -1257,3 +1257,106 @@ fn pret_names_the_listing_s_command() {
     let sent = run(true);
     assert!(sent.contains("CWD d\r\nPRET NLST\r\nEPSV\r\n"), "{sent}");
 }
+
+/// An EPSV refused falls back to PASV, its 227's last two numbers the
+/// data port, and the connection made there (`ftp_epsv_disable`,
+/// `ftp_state_pasv_resp`).
+#[test]
+fn an_epsv_refused_falls_back_to_pasv() {
+    let control = logged_in(&[
+        b"500 no EPSV\r\n",
+        b"227 Entering Passive Mode (127,0,0,1,31,86)\r\n",
+        b"200 binary\r\n",
+        b"213 5\r\n",
+        b"150 here\r\n226 done\r\n",
+    ]);
+    let file = data(b"hello");
+    let mut m = serving(&[&control], &[&file]);
+    let (id, body, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(
+        said.contains("Failed EPSV attempt. Disabling EPSV"),
+        "{said}"
+    );
+    assert!(
+        received(&control).ends_with("PWD\r\nEPSV\r\nPASV\r\nTYPE I\r\nSIZE f\r\nRETR f\r\n"),
+        "{}",
+        received(&control)
+    );
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+}
+
+/// Over IPv6 only EPSV names a port: its refusal fails the transfer
+/// (`ftp_epsv_disable`).
+#[test]
+fn an_epsv_refused_over_ipv6_fails() {
+    let control = logged_in(&[b"500 no EPSV\r\n"]);
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Net::Accepts)
+        .with_conversation(at, control.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(Counted(Arc::new(Mutex::new(net)))),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let (id, _, text) = added(&mut m, "ftp://[::1]:PORT/f", |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Err(ErrorKind::WeirdServerReply), "{said}");
+    assert!(said.contains("Failed EPSV attempt, exiting"), "{said}");
+    assert!(
+        received(&control).ends_with("PWD\r\nEPSV\r\n"),
+        "{}",
+        received(&control)
+    );
+}
+
+/// A directory listed for its names alone is asked with NLST, LIST
+/// otherwise (`ftp_state_list`).
+#[test]
+fn a_listing_of_names_alone_is_asked_with_nlst() {
+    let run = |list_only: bool| {
+        let control = logged_in(&[
+            b"250 there\r\n",
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 ascii\r\n",
+            b"150 here\r\n226 done\r\n",
+        ]);
+        let list = data(b"a\r\n");
+        let mut m = serving(&[&control], &[&list]);
+        let (id, _, text) = added(&mut m, "ftp://127.0.0.1:PORT/d/", |o| {
+            o.line.make_mut().unwrap().list_only = list_only;
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Ok(()), "{}", text.text());
+        received(&control)
+    };
+    assert!(run(false).ends_with("TYPE A\r\nLIST\r\n"), "{}", run(false));
+    assert!(run(true).ends_with("TYPE A\r\nNLST\r\n"), "{}", run(true));
+}
+
+/// A file bigger than the maximum size fails at its SIZE, one of the
+/// maximum's size is got (`ftp_state_retr`).
+#[test]
+fn a_file_past_the_maximum_size_fails() {
+    let run = |max: u64| {
+        let control = control(&[b"150 here\r\n226 done\r\n"]);
+        let file = data(b"hello");
+        let mut m = serving(&[&control], &[&file]);
+        let (id, body, _) = added(&mut m, URL, |o| {
+            o.flow.make_mut().unwrap().max_filesize = std::num::NonZeroU64::new(max);
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let got = body.0.lock().unwrap().clone();
+        (result, got)
+    };
+    assert_eq!(run(5), (Ok(()), b"hello".to_vec()));
+    assert_eq!(run(6), (Ok(()), b"hello".to_vec()));
+    assert_eq!(run(4), (Err(ErrorKind::FilesizeExceeded), vec![]));
+}

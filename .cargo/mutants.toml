@@ -194,6 +194,7 @@ exclude_re = [
     'curl-core/src/base64\.rs:.*: replace \| with \^ in encode$',
     'curl-os/src/net\.rs:.*: replace \| with \^ in (connect|open|TcpSocket::accept)$',
     'proto/ftp/list\.rs:.*: replace \| with \^ in permission$',
+    'proto/ftp\.rs:.*: replace \| with \^ in Request::pasv_resp$',
     'curl-sys-abi/src/sockets\.rs:.*: replace \| with \^ in SockaddrEx::tcp$',
     'curl-os/src/fs\.rs:.*: replace \| with \^ in (open|open_write)$',
     # 0x80 is in no list of invalid bytes, so it stays allowed either way.

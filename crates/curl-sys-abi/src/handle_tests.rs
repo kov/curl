@@ -7167,3 +7167,211 @@ fn the_wildcard_options_are_kept_copied_and_reset() {
         curl_easy_cleanup(d);
     }
 }
+
+/// A WebSocket a perform only connected is the handle's through C's
+/// calls: frames received with what they are, `curl_ws_meta` empty
+/// outside a callback, and frames of each kind sent as the flags say.
+#[test]
+fn a_websocket_only_connected_talks_through_the_c_calls() {
+    use crate::ffi::{CURLWS_BINARY, CURLWS_CLOSE, CURLWS_OFFSET, CURLWS_PING, CURLWS_TEXT};
+    use crate::ws::{curl_ws_meta, curl_ws_recv, curl_ws_send};
+    use std::io::{Read as _, Write as _};
+    // The text frame's head and payload, then three empty frames.
+    const SENT: usize = 6 + 3 + 3 * 6;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let _request = read_request(&mut peer);
+        peer.write_all(
+            b"HTTP/1.1 101 Switching\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n\
+\x81\x03txt\x82\x02bi",
+        )
+        .unwrap();
+        let mut got = vec![0u8; SENT];
+        peer.read_exact(&mut got).unwrap();
+        got
+    });
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("ws://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_CONNECT_ONLY, 2), CURLE_OK);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let recv = |want: usize| {
+        let mut buf = [0u8; 16];
+        let mut n = 0;
+        let mut meta: *const ffi::curl_ws_frame = ptr::null();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            // SAFETY: a live handle, a buffer of its length, and where
+            // the count and the frame go.
+            let got = unsafe {
+                curl_ws_recv(
+                    c,
+                    buf.as_mut_ptr().cast(),
+                    buf.len(),
+                    &raw mut n,
+                    &raw mut meta,
+                )
+            };
+            if got == CURLE_OK {
+                break;
+            }
+            assert_eq!(got, ffi::CURLE_AGAIN);
+            assert!(std::time::Instant::now() < deadline, "no frame came");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(n, want);
+        assert!(!meta.is_null());
+        // SAFETY: the handle's frame, valid until its next call.
+        let frame = unsafe { *meta };
+        (
+            buf[..n].to_vec(),
+            frame.flags,
+            frame.offset,
+            frame.bytesleft,
+            frame.len,
+        )
+    };
+    assert_eq!(recv(3), (b"txt".to_vec(), CURLWS_TEXT, 0, 0, 3));
+    assert_eq!(recv(2), (b"bi".to_vec(), CURLWS_BINARY, 0, 0, 2));
+    // SAFETY: a live handle.
+    assert!(unsafe { curl_ws_meta(c) }.is_null(), "outside a callback");
+    let send = |bytes: &[u8], fragsize: ffi::curl_off_t, flags: c_int| {
+        let mut n = 0;
+        // SAFETY: a live handle, the bytes and where their count goes.
+        let sent = unsafe {
+            curl_ws_send(
+                c,
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                &raw mut n,
+                fragsize,
+                flags as c_uint,
+            )
+        };
+        (sent, n)
+    };
+    assert_eq!(send(b"", 3, CURLWS_TEXT | CURLWS_OFFSET), (CURLE_OK, 0));
+    assert_eq!(send(b"abc", 0, CURLWS_TEXT), (CURLE_OK, 3));
+    for flags in [CURLWS_BINARY, CURLWS_PING, CURLWS_CLOSE] {
+        assert_eq!(send(b"", 0, flags), (CURLE_OK, 0), "{flags:x}");
+    }
+    let got = server.join().unwrap();
+    let heads: Vec<[u8; 2]> = [0, 9, 15, 21]
+        .iter()
+        .map(|&at| [got[at], got[at + 1]])
+        .collect();
+    assert_eq!(
+        heads,
+        [[0x81, 0x83], [0x82, 0x80], [0x89, 0x80], [0x88, 0x80]]
+    );
+    // SAFETY: a handle no call uses any more.
+    unsafe { curl_easy_cleanup(c) };
+}
+
+/// CURLOPT_WS_OPTIONS sets raw mode and no auto-pong by their bits, any
+/// other bit ignored.
+#[test]
+fn ws_options_are_read_by_their_bits() {
+    let c = curl_easy_init();
+    let raw = ffi::CURLWS_RAW_MODE;
+    let no_pong = ffi::CURLWS_NOAUTOPONG;
+    for (n, want) in [
+        (raw, (true, false)),
+        (no_pong, (false, true)),
+        (raw | no_pong, (true, true)),
+        (0x100, (false, false)),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_WS_OPTIONS, n), CURLE_OK);
+        assert_eq!(options(c, |o| (o.ws.raw, o.ws.no_auto_pong)), want, "{n:x}");
+    }
+    // SAFETY: a handle no call uses any more.
+    unsafe { curl_easy_cleanup(c) };
+}
+
+/// What the echoing write function saw: the frames' flags, as
+/// `curl_ws_meta` said them, and what its sends answered.
+#[derive(Default)]
+struct Echo {
+    handle: usize,
+    flags: Vec<c_int>,
+    sent: Vec<CURLcode>,
+}
+
+/// A write function that sends each frame it is given back, from inside
+/// the callback (`curl_ws_send` there).
+unsafe extern "C" fn echo(ptr: *mut c_char, size: usize, n: usize, data: *mut c_void) -> usize {
+    use crate::ws::{curl_ws_meta, curl_ws_send};
+    // SAFETY: the test gave its `Echo`, alive for the transfer.
+    let echo = unsafe { &mut *data.cast::<Echo>() };
+    let c = echo.handle as *mut CURL;
+    // SAFETY: inside the handle's own write callback.
+    let meta = unsafe { curl_ws_meta(c) };
+    assert!(!meta.is_null(), "meta inside the callback");
+    // SAFETY: the handle's frame, valid during the callback.
+    let flags = unsafe { (*meta).flags };
+    echo.flags.push(flags);
+    let mut sent = 0;
+    // SAFETY: the bytes given, and where their count goes.
+    let code = unsafe { curl_ws_send(c, ptr.cast(), size * n, &raw mut sent, 0, flags as c_uint) };
+    echo.sent.push(code);
+    size * n
+}
+
+/// In callback mode the write function sends on the transfer's own
+/// WebSocket from inside the callback, `curl_ws_meta` naming each frame.
+#[test]
+fn a_write_callback_echoes_frames_on_its_own_websocket() {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let _request = read_request(&mut peer);
+        peer.write_all(
+            b"HTTP/1.1 101 Switching\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n\
+\x81\x02hi",
+        )
+        .unwrap();
+        let mut got = vec![0u8; 8];
+        peer.read_exact(&mut got).unwrap();
+        got
+    });
+    let c = curl_easy_init();
+    let mut seen = Echo {
+        handle: c as usize,
+        ..Echo::default()
+    };
+    let url = std::ffi::CString::new(format!("ws://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(
+        function(c, ffi::CURLOPT_WRITEFUNCTION, echo as WriteFn as *const ()),
+        CURLE_OK
+    );
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_WRITEDATA, (&raw mut seen).cast::<c_void>()),
+        CURLE_OK
+    );
+    // SAFETY: a live handle; the server closes after the echo.
+    let _done = unsafe { curl_easy_perform(c) };
+    let got = server.join().unwrap();
+    assert_eq!(
+        (seen.flags, seen.sent),
+        (vec![ffi::CURLWS_TEXT], vec![CURLE_OK])
+    );
+    assert_eq!(got[..2], [0x81, 0x82]);
+    // SAFETY: a handle no call uses any more.
+    unsafe { curl_easy_cleanup(c) };
+}

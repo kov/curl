@@ -476,5 +476,9 @@ mod tests {
             &out[..n],
             b"[WS] starting new frame with negative payload length -2"
         );
+        // A reason longer than its buffer is cut, never past it.
+        let mut short = [0u8; 10];
+        let n = negative_length(-2, &mut short);
+        assert_eq!(&short[..n], b"[WS] start");
     }
 }

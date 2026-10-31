@@ -5437,6 +5437,7 @@ mod tls_hands;
 mod unix_trace;
 mod wait_trace;
 mod write_trace;
+mod ws;
 
 /// `Proxy-Connection:` counts only on a connection through an HTTP
 /// proxy (`http_header_p`'s `http_proxy.peer`): a server's says nothing.

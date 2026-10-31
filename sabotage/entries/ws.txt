@@ -85,3 +85,18 @@ witness: curl-core proto::http::tests::connect_only::a_websocket_head_cut_short_
 --- new
                     if true {
                         lease.get().mark_close();
+
+=== a ping delivered in callback mode is not answered
+file: crates/curl-core/src/deliver/ws.rs
+witness: curl-core proto::http::tests::ws::a_ping_delivered_is_answered_with_a_pong
+--- old
+            ws_of(self.cx).add_pong(bytes);
+--- new
+
+=== a frame cut short at the end is taken as whole
+file: crates/curl-core/src/deliver/ws.rs
+witness: curl-core proto::http::tests::ws::a_frame_cut_short_by_the_end_fails
+--- old
+        if result.is_ok() && eos && (!self.buf.is_empty() || decoding(cx)) {
+--- new
+        if result.is_ok() && eos && false {

@@ -2237,3 +2237,88 @@ fn a_request_with_no_body_to_come_is_not_retried() {
         assert_eq!(fresh, "", "{said}");
     }
 }
+
+/// A multi dropped while a transfer's data connection is open closes it
+/// with its control connection.
+#[test]
+fn a_multi_dropped_mid_transfer_closes_the_data_connection() {
+    let talk = control(&[b"150 here\r\n"]);
+    let file = Conversation::replies(&[b"hel"], false).greeting();
+    let (mut m, net) = counting(&[&talk], &[&file]);
+    let (_id, body, text) = added(&mut m, URL, |_| {});
+    for _ in 0..30 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert_eq!(*body.0.lock().unwrap(), b"hel", "{}", text.text());
+    assert_eq!(net.open(), 2, "{}", text.text());
+    drop(m);
+    assert_eq!(net.open(), 0, "{}", text.text());
+}
+
+/// The directories to the file are entered one `CWD` at a time; one
+/// refused is made with `MKD` if asked, once, then entered; with retries
+/// asked, a `MKD` refused is let pass once for the `CWD` to be tried
+/// again; otherwise a refusal fails the transfer (`ftp_state_cwd`,
+/// `ftp_state_mkd_resp`).
+#[test]
+fn directories_are_entered_and_made_as_c_does() {
+    use crate::options::CreateDirs;
+    let run = |replies: &[&'static [u8]], create: CreateDirs| {
+        let mut all = replies.to_vec();
+        all.extend_from_slice(&[
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 binary\r\n",
+            b"213 5\r\n",
+            b"150 here\r\n226 done\r\n",
+        ]);
+        let control = logged_in(&all);
+        let file = data(b"hello");
+        let mut m = serving(&[&control], &[&file]);
+        let (id, _, text) = added(&mut m, "ftp://127.0.0.1:PORT/a/b/f", |o| {
+            o.line.make_mut().unwrap().ftp.create_dirs = create;
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let sent = received(&control);
+        let after_pwd = sent.split_once("PWD\r\n").unwrap().1.to_owned();
+        (result, after_pwd, text.text())
+    };
+    let tail = "EPSV\r\nTYPE I\r\nSIZE f\r\nRETR f\r\n";
+    let ok: &[u8] = b"250 ok\r\n";
+    let no: &[u8] = b"550 no\r\n";
+    let made: &[u8] = b"257 made\r\n";
+    // Each in turn.
+    let (result, sent, said) = run(&[ok, ok], CreateDirs::No);
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(sent, format!("CWD a\r\nCWD b\r\n{tail}"));
+    // Refused, not to be made.
+    let (result, sent, said) = run(&[ok, no], CreateDirs::No);
+    assert_eq!(result, Err(ErrorKind::RemoteAccessDenied), "{said}");
+    assert!(
+        said.contains("Server denied you to change to the given directory"),
+        "{said}"
+    );
+    assert_eq!(sent, "CWD a\r\nCWD b\r\n");
+    // Made, then entered, at the depth it was refused.
+    let (result, sent, said) = run(&[ok, no, made, ok], CreateDirs::Create);
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(sent, format!("CWD a\r\nCWD b\r\nMKD b\r\nCWD b\r\n{tail}"));
+    let (result, sent, said) = run(&[no, made, ok, ok], CreateDirs::Create);
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(sent, format!("CWD a\r\nMKD a\r\nCWD a\r\nCWD b\r\n{tail}"));
+    // A refused MKD fails, unless retries are asked: then the CWD is
+    // tried again, and a second refusal of it fails.
+    let (result, sent, said) = run(&[no, no], CreateDirs::Create);
+    assert_eq!(result, Err(ErrorKind::RemoteAccessDenied), "{said}");
+    assert!(said.contains("Failed to MKD dir: 550"), "{said}");
+    assert_eq!(sent, "CWD a\r\nMKD a\r\n");
+    let (result, sent, said) = run(&[no, no, ok, ok], CreateDirs::Retry);
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(sent, format!("CWD a\r\nMKD a\r\nCWD a\r\nCWD b\r\n{tail}"));
+    let (result, sent, said) = run(&[no, no, no], CreateDirs::Retry);
+    assert_eq!(result, Err(ErrorKind::RemoteAccessDenied), "{said}");
+    assert!(
+        said.contains("Server denied you to change to the given directory"),
+        "{said}"
+    );
+    assert_eq!(sent, "CWD a\r\nMKD a\r\nCWD a\r\n");
+}

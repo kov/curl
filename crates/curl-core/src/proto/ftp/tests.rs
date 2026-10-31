@@ -3128,3 +3128,89 @@ fn a_greeting_of_230_is_a_login() {
     );
     assert_eq!(sent, "");
 }
+
+/// The file's time `MDTM` gives is told as a `Last-Modified` header only
+/// for a request for no body that asks for it; a 550 to `MDTM` goes on;
+/// a time of 0 meets any condition, compared with nothing
+/// (`ftp_state_mdtm_resp`).
+#[test]
+fn the_file_s_time_is_told_as_c_tells_it() {
+    let run = |mdtm: &'static [u8], head: bool, set: &dyn Fn(&mut Options)| {
+        let mut replies: Vec<&'static [u8]> = vec![
+            b"220 hi\r\n",
+            b"331 password?\r\n",
+            b"230 in\r\n",
+            b"257 \"/\" is it\r\n",
+            mdtm,
+        ];
+        if head {
+            replies.extend_from_slice(&[b"200 binary\r\n", b"213 5\r\n", b"350 ranges\r\n"]);
+        } else {
+            replies.extend_from_slice(&LOGIN_AND_SETUP[4..]);
+            replies.push(b"150 here\r\n226 done\r\n");
+        }
+        let control = Conversation::replies(&replies, false).greeting();
+        let file = data(b"hello");
+        let mut m = serving(&[&control], &[&file]);
+        let (id, body, text) = added(&mut m, URL, |o| {
+            if head {
+                o.method = crate::options::Method::Head;
+            }
+            set(o);
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let got = String::from_utf8_lossy(&body.0.lock().unwrap()).into_owned();
+        let unmet = m
+            .remove(id, &mut NoEvents)
+            .unwrap()
+            .easy
+            .report()
+            .condition_unmet();
+        (result, got, unmet, text.text())
+    };
+    let time: &[u8] = b"213 20200101000000\r\n";
+    let filetime = |o: &mut Options| o.filetime = true;
+    let modified = "Last-Modified: Wed, 01 Jan 2020 00:00:00 GMT\r\n";
+    let (result, got, _, said) = run(time, true, &filetime);
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(got.contains(modified), "{got}");
+    let (result, got, _, said) = run(time, false, &filetime);
+    assert_eq!((result, got), (Ok(()), "hello".to_owned()), "{said}");
+    let (result, got, _, said) = run(b"550 no time\r\n", true, &filetime);
+    assert_eq!(result, Ok(()), "{said}");
+    assert!(!got.contains("Last-Modified"), "{got}");
+    assert!(
+        said.contains("MDTM failed: file does not exist or permission problem, continuing"),
+        "{said}"
+    );
+    // A file of time 0 is not compared: it meets the condition.
+    let since = |o: &mut Options| {
+        o.time_condition = Some(crate::options::TimeCondition {
+            when: crate::options::Condition::ModifiedSince,
+            time: 1_577_836_800,
+        });
+    };
+    let (result, got, unmet, said) = run(b"213 19700101000000\r\n", false, &since);
+    assert_eq!(
+        (result, got, unmet),
+        (Ok(()), "hello".to_owned(), false),
+        "{said}"
+    );
+}
+
+/// A download whose data connection closes before the size it was told
+/// fails, saying how many bytes it missed (`Curl_sendrecv`).
+#[test]
+fn a_download_cut_short_says_what_it_missed() {
+    let talk = control(&[b"150 here\r\n226 done\r\n"]);
+    let file = data(b"hel");
+    let mut m = serving(&[&talk], &[&file]);
+    let (id, _, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Err(ErrorKind::PartialFile), "{said}");
+    assert!(
+        said.contains("transfer closed with 2 bytes remaining to read"),
+        "{said}"
+    );
+}

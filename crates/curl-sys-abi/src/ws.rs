@@ -40,6 +40,48 @@ fn send_flags(flags: c_uint) -> Option<SendFlags> {
     Some(SendFlags { kind, more })
 }
 
+/// What C's `fragsize` and `flags` come to when frames are raw: any
+/// size or flags at all are refused once the connection is checked, so
+/// any is told to the core as a size, which it refuses there.
+fn raw_args(fragsize: curl_off_t, flags: c_uint) -> (FrameLen, SendFlags) {
+    let none = SendFlags {
+        kind: None,
+        more: false,
+    };
+    if fragsize == 0 && flags == 0 {
+        (FrameLen::These, none)
+    } else {
+        (FrameLen::Total(fragsize.unsigned_abs()), none)
+    }
+}
+
+/// What C's `fragsize` and `flags` say of a frame sent: its length and
+/// its kind; refused, said why, if they say nothing a frame can be.
+fn frame_args(
+    easy: &ShimEasy,
+    fragsize: curl_off_t,
+    flags: c_uint,
+) -> Result<(FrameLen, SendFlags), CURLcode> {
+    let Some(typed) = send_flags(flags) else {
+        let mut why = [0u8; 40];
+        let n = unknown_flags(flags, &mut why);
+        return Err(refuse(easy, ErrorKind::BadFunctionArgument, &why[..n]));
+    };
+    let len = if flags & ffi::CURLWS_OFFSET as c_uint != 0 {
+        match u64::try_from(fragsize) {
+            Ok(total) => FrameLen::Total(total),
+            Err(_) => {
+                let mut why = [0u8; 80];
+                let n = negative_length(fragsize, &mut why);
+                return Err(refuse(easy, ErrorKind::SendError, &why[..n]));
+            }
+        }
+    } else {
+        FrameLen::These
+    };
+    Ok((len, typed))
+}
+
 /// `frame` as C's `struct curl_ws_frame` says it.
 fn c_frame(frame: Frame) -> curl_ws_frame {
     let kind = match frame.kind.kind {
@@ -232,22 +274,13 @@ pub unsafe extern "C" fn curl_ws_send(
     if raw && sent.is_null() {
         return refuse(easy, bad, b"[WS] sent is NULL in raw mode");
     }
-    let Some(typed) = send_flags(flags) else {
-        let mut why = [0u8; 40];
-        let n = unknown_flags(flags, &mut why);
-        return refuse(easy, bad, &why[..n]);
-    };
-    let len = if flags & ffi::CURLWS_OFFSET as c_uint != 0 {
-        match u64::try_from(fragsize) {
-            Ok(total) => FrameLen::Total(total),
-            Err(_) => {
-                let mut why = [0u8; 80];
-                let n = negative_length(fragsize, &mut why);
-                return refuse(easy, ErrorKind::SendError, &why[..n]);
-            }
-        }
+    let (len, typed) = if raw {
+        raw_args(fragsize, flags)
     } else {
-        FrameLen::These
+        match frame_args(easy, fragsize, flags) {
+            Ok(args) => args,
+            Err(code) => return code,
+        }
     };
     let bytes: &[u8] = if buflen == 0 {
         &[]
@@ -380,6 +413,21 @@ fn write_into(out: &mut [u8], args: core::fmt::Arguments<'_>) -> usize {
 mod tests {
     use super::*;
     use core::ffi::c_int;
+
+    /// Raw, only no size and no flags at all send the bytes as they are:
+    /// a size without `CURLWS_OFFSET`, `CURLWS_OFFSET` alone or a bit no
+    /// frame has all reach the core as something it refuses, as C
+    /// refuses them all (`curl_ws_send`).
+    #[test]
+    fn raw_sends_take_no_size_and_no_flags() {
+        assert_eq!(raw_args(0, 0).0, FrameLen::These);
+        let offset = ffi::CURLWS_OFFSET as c_uint;
+        for (fragsize, flags) in [(5, 0), (-5, 0), (0, offset), (0, 0x8000), (0, 1)] {
+            let (len, kind) = raw_args(fragsize, flags);
+            assert_ne!(len, FrameLen::These, "{fragsize} {flags:x}");
+            assert_eq!(kind.kind, None);
+        }
+    }
 
     /// Each kind C names, with or without `CURLWS_CONT` and
     /// `CURLWS_OFFSET`, reads as it; two kinds or a bit no frame has do

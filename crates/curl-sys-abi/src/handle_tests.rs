@@ -6817,14 +6817,11 @@ unsafe extern "C" fn hsts_take(
 }
 
 /// A handle with the HSTS cache on, reading and writing it through the
-/// test's functions with `seen`, and a URL to a port nothing listens on.
+/// test's functions with `seen`, and a URL to a port nothing listens on:
+/// port 1, which no unprivileged test can bind, where a port picked free
+/// and let go can be taken by a test running beside it.
 fn hsts_handle(seen: &mut HstsSeen) -> (*mut CURL, std::ffi::CString) {
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    let url = std::ffi::CString::new("http://127.0.0.1:1/").unwrap();
     let c = curl_easy_init();
     assert_eq!(
         long(c, ffi::CURLOPT_HSTS_CTRL, ffi::CURLHSTS_ENABLE),

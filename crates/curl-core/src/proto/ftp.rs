@@ -282,8 +282,9 @@ pub(crate) struct Request {
     /// The control connection's TLS is being shut down after `CCC`, until
     /// this instant at the latest.
     clearing: Option<Instant>,
-    /// The server is about to move the data, and the data connection's
-    /// TLS is still being made: DO_MORE waits for it.
+    /// The server is about to move the data, and the data connection is
+    /// not up yet, its TLS still being made, or, for an active one, the
+    /// server not connected back (`wait_data_conn`): DO_MORE waits for it.
     initiating: bool,
     /// The size of the upload, less what a resume skips
     /// (`state.infilesize`).
@@ -2489,14 +2490,17 @@ impl Request {
                 }
             }
             if self.initiating {
-                if self.data.as_deref().is_some_and(DataConn::listens) {
-                    // The server has not connected back yet.
+                // An active one is waited for until it is up, its TLS
+                // made, the control connection looked at meanwhile.
+                let active = self.port_cmd.is_some();
+                let up = self.data.as_deref().map(DataConn::reached) == Some(Reached::Up);
+                if active && !up {
                     self.check_ctrl(cx, pc, &mut carrier)?;
                     self.stopped = pc.state == State::Stop;
                     return Ok(DoStep::More);
                 }
-                if listened {
-                    // Accepted: the transfer starts now.
+                if active {
+                    // Up: the transfer starts now.
                     self.due = None;
                     self.initiating = false;
                 }
@@ -3553,10 +3557,12 @@ impl Request {
     }
 
     /// The server is told to move the data and, for an active connection,
-    /// it is to connect back: whether it has (`ftp_state_stor_resp`,
+    /// it is to connect back: whether the connection is up, its TLS made
+    /// if the data is protected (`ftp_state_stor_resp`,
     /// `ftp_state_get_resp`, the `ftp_use_port` branch). Not yet, the
-    /// control connection is looked at for an answer that says it never
-    /// will.
+    /// control connection is looked at for an answer that says the server
+    /// never will connect; an upload's command is done with before, a
+    /// download's after, as C's are.
     fn accepted<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -3564,18 +3570,21 @@ impl Request {
         carrier: &mut Carrier<'_>,
     ) -> Result<bool, ErrorKind> {
         let host = self.control_host()?;
-        if !self.data.as_deref().is_some_and(DataConn::listens) {
+        if self.port_cmd.is_none() {
             return Ok(true);
         }
-        set_state(cx, pc, State::Stop);
+        if self.upload {
+            set_state(cx, pc, State::Stop);
+        }
         let reached = self
             .with_data(|r, data| data.connect(cx, &host, r))
-            .expect("a data connection listens");
-        if reached? != Reached::Connecting {
+            .expect("an active data connection is set up");
+        if reached? == Reached::Up {
             self.due = None;
             return Ok(true);
         }
         trace::info(cx, format_args!("Data conn was not available immediately"));
+        set_state(cx, pc, State::Stop);
         self.initiating = true;
         self.check_ctrl(cx, pc, carrier)?;
         Ok(false)

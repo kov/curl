@@ -1096,6 +1096,15 @@ const ACTIVE_FROM: SocketAddr = SocketAddr::new(
 /// A multi whose server at `PORT` takes `control` in turn, and connects
 /// to each socket the transfers listen on with the next of `data`.
 fn serving_active(control: &[&Conversation], data: &[&Conversation]) -> (Multi, Counted) {
+    serving_active_after(control, data, ACCEPT_AFTER)
+}
+
+/// The same, each connection made `after` its socket listens.
+fn serving_active_after(
+    control: &[&Conversation],
+    data: &[&Conversation],
+    after: std::time::Duration,
+) -> (Multi, Counted) {
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
     let mut net = FakeNet::new(clock.clone()).with_peer(at, Net::Accepts);
@@ -1103,7 +1112,7 @@ fn serving_active(control: &[&Conversation], data: &[&Conversation]) -> (Multi, 
         net = net.with_conversation(at, (*c).clone());
     }
     for c in data {
-        net = net.with_incoming(at.ip(), ACTIVE_FROM, c, ACCEPT_AFTER);
+        net = net.with_incoming(at.ip(), ACTIVE_FROM, c, after);
     }
     let counted = Counted(Arc::new(Mutex::new(net)));
     let env = Env {
@@ -1163,6 +1172,69 @@ fn an_active_download_accepts_the_server_s_connection() {
         "{said}"
     );
     assert_eq!(counted.open(), 1, "only the control connection is left");
+}
+
+/// An active data connection accepted whose TLS is still being made is
+/// not available yet, as C says it (`ftp_state_get_resp`): the command
+/// is done with after, the transfer waits for it all, and once it is
+/// up, the transfer is set to move the data.
+#[test]
+fn an_active_protected_data_connection_waits_for_its_tls() {
+    use crate::tls::fake::{self, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let replies = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"200 EPRT ok\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"213 5\r\n"),
+        tls(b"150 here\r\n226 done\r\n"),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let control = Conversation::replies(&replies, false).per_send();
+    let file = [WELCOME.to_vec(), tls(b"hello")];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    let file = Conversation::replies(&file, true).per_send().held();
+    // The server connects at once.
+    let at_once = std::time::Duration::ZERO;
+    let (mut m, _) = serving_active_after(&[&control], &[&file], at_once);
+    let url = "ftps://127.0.0.1:PORT/f";
+    let e = {
+        let mut e = Easy::new();
+        e.set_libraries(with_tls());
+        e
+    };
+    let (id, body, text) = added_tracing(&mut m, url, e, b"multi,ftp", |o| {
+        o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
+    });
+    for _ in 0..40 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    // Accepted, its handshake waiting for the server's flight.
+    assert_eq!(fake::read_client(&file.received()).unwrap(), fake::HELLO);
+    assert!(m.info_read().is_none(), "the handshake waits");
+    file.allow(2);
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let at = |line: &str| {
+        said.find(line)
+            .unwrap_or_else(|| panic!("{line:?} in {said}"))
+    };
+    let accepted = at("Connection accepted from server\n");
+    let waits = at("Data conn was not available immediately\n");
+    let stop = at("[FTP] [RETR] -> [STOP]\n");
+    let up = at("Established 2nd connection");
+    let initiated = at("[FTP] ftp_initiate_transfer()\n");
+    assert!(accepted < waits && waits < stop && stop < up, "{said}");
+    assert!(up < initiated, "{said}");
+    assert_eq!(said.matches("ftp_initiate_transfer()").count(), 1, "{said}");
 }
 
 /// The address `PORT` offers is resolved as C's blocking resolve does it

@@ -288,3 +288,37 @@ witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_c_r
     cx.of_with(dns, &[b"cache lookup ", name, at, rest.bytes()]);
 --- new
     let _ = rest;
+
+=== an active data connection accepted is taken as available before its TLS is made
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::an_active_protected_data_connection_waits_for_its_tls
+--- old
+        if reached? == Reached::Up {
+            self.due = None;
+            return Ok(true);
+        }
+--- new
+        if reached? != Reached::Connecting {
+            self.due = None;
+            return Ok(true);
+        }
+
+=== a download's command is done with before its active data connection is looked at
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::an_active_protected_data_connection_waits_for_its_tls
+--- old
+        if self.upload {
+            set_state(cx, pc, State::Stop);
+        }
+--- new
+        if true {
+            set_state(cx, pc, State::Stop);
+        }
+
+=== an active data connection whose TLS is being made is not waited for
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::an_active_protected_data_connection_waits_for_its_tls
+--- old
+                if active && !up {
+--- new
+                if active && self.data.as_deref().is_some_and(DataConn::listens) {

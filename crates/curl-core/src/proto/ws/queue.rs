@@ -160,5 +160,7 @@ mod tests {
         q.reset();
         assert!(q.is_empty());
         assert_eq!(q.tail_room(), 4);
+        q.push(b'a').unwrap();
+        assert_eq!(q.tail_room(), 3, "what the last chunk has left");
     }
 }

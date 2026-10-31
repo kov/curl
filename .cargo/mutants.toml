@@ -827,6 +827,13 @@ exclude_re = [
     # send trying again at once: the bytes it sends and what it answers
     # are the same, only the time between its tries changes.
     'curl-core/src/conn/mux\.rs:.*: replace Carrier<.*>::wait_writable -> std::io::Result<\(\)> with Ok\(\(\)\)$',
+    # A send of nothing adds nothing to the request's size.
+    'curl-core/src/proto/http/ws\.rs:.*: replace > with >= in <impl Wire for StepWire<.*>>::send$',
+    # A WebSocket send's loop with nothing left to encode, or a flush with
+    # none of the payload in it, goes round once more to end as it would
+    # have: the same bytes sent, the same count answered.
+    'curl-core/src/proto/ws\.rs:(364|378):.*: replace > with >= in WsConn::send$',
+    'curl-core/src/proto/ws\.rs:.*: replace match guard self\.sendbuf_payload > 0 with true in WsConn::send$',
     # Only when a WebSocket's buffer lets go of its taken bytes changes:
     # what it holds and where its chunk is are the same either way.
     'curl-core/src/proto/ws/queue\.rs:.*: replace >= with < in ChunkQueue::skip$',

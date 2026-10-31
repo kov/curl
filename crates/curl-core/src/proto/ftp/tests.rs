@@ -3338,3 +3338,45 @@ fn the_size_retr_gives_is_the_expected_size() {
     );
     assert_eq!(run(b"150 here (0 bytes)\r\n226 done\r\n", b""), None);
 }
+
+/// The application is told of the data connection the server made, and
+/// refusing it fails the transfer; what else it answers changes nothing
+/// (`AcceptServerConnect`'s `CURLSOCKTYPE_ACCEPT`).
+#[test]
+fn an_accepted_data_connection_may_be_refused() {
+    struct Refusing(crate::handler::Configured);
+    impl crate::handler::SocketConfigurer for Refusing {
+        fn configure(
+            &self,
+            _: &mut TransferCx<'_>,
+            s: crate::handler::SocketToSet<'_>,
+        ) -> crate::handler::Configured {
+            match s.purpose() {
+                crate::handler::SocketPurpose::Accept => self.0,
+                crate::handler::SocketPurpose::Connect => crate::handler::Configured::Ok,
+            }
+        }
+    }
+    let run = |answer| {
+        let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+        replies.push(b"150 here\r\n226 done\r\n");
+        let control = Conversation::replies(&replies, false).greeting();
+        let data = Conversation::replies(&[b"hello"], true).greeting();
+        let (mut m, _) = serving_active(&[&control], &[&data]);
+        let (id, body, text) = added(&mut m, URL, |o| {
+            o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
+            o.sockets.make_mut().unwrap().configure =
+                Some(Handler::socket_configurer(Refusing(answer)).unwrap());
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let got = body.0.lock().unwrap().clone();
+        (result, got, text.text())
+    };
+    use crate::handler::Configured;
+    let (result, _, said) = run(Configured::Abort);
+    assert_eq!(result, Err(ErrorKind::AbortedByCallback), "{said}");
+    for answer in [Configured::Ok, Configured::AlreadyConnected] {
+        let (result, got, said) = run(answer);
+        assert_eq!((result, got), (Ok(()), b"hello".to_vec()), "{said}");
+    }
+}

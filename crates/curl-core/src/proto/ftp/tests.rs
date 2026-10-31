@@ -3310,3 +3310,31 @@ fn an_epsv_port_unreached_falls_back_to_pasv() {
     assert_eq!(result, Err(ErrorKind::CouldntConnect), "{said}");
     assert!(sent.ends_with("PWD\r\nEPSV\r\nPASV\r\n"), "{sent}");
 }
+
+/// The size the answer to `RETR` gives, with no `SIZE` known, is the
+/// download's expected size when more than nothing (`Curl_xfer_setup`'s
+/// `recv_size > 0`): a size of 0 leaves it unknown.
+#[test]
+fn the_size_retr_gives_is_the_expected_size() {
+    let run = |go: &'static [u8], file: &'static [u8]| {
+        let control = logged_in(&[
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 binary\r\n",
+            b"500 no size\r\n",
+            go,
+        ]);
+        let file = data(file);
+        let mut m = serving(&[&control], &[&file]);
+        let (id, _, text) = added(&mut m, URL, |_| {});
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let said = text.text();
+        assert_eq!(result, Ok(()), "{said}");
+        let done = m.remove(id, &mut NoEvents).unwrap();
+        done.easy.report().sizes().download_expected()
+    };
+    assert_eq!(
+        run(b"150 here (5 bytes)\r\n226 done\r\n", b"hello"),
+        Some(5)
+    );
+    assert_eq!(run(b"150 here (0 bytes)\r\n226 done\r\n", b""), None);
+}

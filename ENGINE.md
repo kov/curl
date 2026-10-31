@@ -3656,7 +3656,7 @@ retries run out. Every packet goes with `Socket::send_to`, untraced, as C's `sen
 exchange's error, if any, is the transfer's at DONE (`tftp_translate_code`). A datagram's opcode
 is taken as an event whatever it is, as C takes it. Through an HTTP proxy, the tunnel refuses the
 scheme with C's `PROTOPT_NOTCPPROXY` message, before sending anything; C instead asks the proxy for
-a CONNECT-UDP tunnel, then writes its packets to the proxy's TCP socket unframed.
+a CONNECT-UDP tunnel, then writes its packets to the proxy's TCP socket unframed (`DIVERGENCE.md`).
 
 ## 6. HTTP/1.x
 

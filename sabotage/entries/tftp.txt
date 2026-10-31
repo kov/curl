@@ -65,3 +65,11 @@ witness: curl-core proto::tftp::tests::over_the_wire::a_silent_server_fails_to_c
                 self.retries += 1;
                 if self.retries >= self.retry_max {
                     self.error = Some(Failure::NoResponse);
+
+=== a TFTP transfer asks an HTTP proxy for a tunnel
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::tftp::tests::over_the_wire::a_proxy_refuses_the_scheme
+--- old
+    if scheme.no_tcp_proxy() {
+--- new
+    if false {

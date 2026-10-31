@@ -432,6 +432,19 @@ not a difference: it is tracked in `MILESTONES.md`.
   (`crates/curl-sys-abi/src/tls.rs`) and `the_ssl_ctx_function_s_code_fails_the_transfer`
   (`crates/curl-sys-abi/src/tls_tests.rs`).
 
+## Datagrams C writes onto a stream
+
+- **TFTP through an HTTP proxy is refused before anything is sent.** `curl -x proxy
+  tftp://host/file` fails with 1 (`CURLE_UNSUPPORTED_PROTOCOL`), "tftp cannot be done over
+  CONNECT", the refusal C's `tunnel_init` (`lib/cf-h1-proxy.c`) keeps for a scheme marked
+  `PROTOPT_NOTCPPROXY`. C never reaches it for TFTP: it asks the proxy for a CONNECT-UDP
+  tunnel instead, which against a proxy that answers 404 fails with 7 (`CURLE_COULDNT_CONNECT`),
+  "CONNECT-UDP tunnel failed, response 404", measured against the C build. When the tunnel is
+  granted, `lib/tftp.c` sends each packet with `sendto` on the connection's socket, the TCP
+  stream to the proxy, with no capsule around it, so the proxy reads TFTP's bytes as a broken
+  tunnel; read from C's source. Pinned by `a_proxy_refuses_the_scheme`
+  (`crates/curl-core/src/proto/tftp/tests.rs`).
+
 ## Frames C sends beside a transfer
 
 - **A PING on an HTTP/2 connection with streams open goes with their transfer's next send.**

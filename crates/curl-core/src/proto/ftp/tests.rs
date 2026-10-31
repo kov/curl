@@ -2138,3 +2138,65 @@ fn an_answer_while_waiting_to_be_connected_ends_the_wait() {
     assert!(said.contains("Got 226 before data activity"), "{said}");
     assert!(!said.contains("FTP code"), "{said}");
 }
+
+/// A reused control connection that fails the request's first command
+/// as it is sent had nothing back for it: the request is made again on
+/// a fresh connection (`multistate_do`, `Curl_retry_request`).
+#[test]
+fn a_reused_connection_that_died_is_retried_on_a_fresh_one() {
+    let mut replies = LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n226 done\r\n");
+    // The seven commands of the first transfer go; the next fails.
+    let dying = Conversation::replies(&replies, false)
+        .greeting()
+        .breaking_after(7);
+    let fresh = control(&[b"150 here\r\n226 done\r\n"]);
+    let (a, b) = (data(b"hello"), data(b"hello"));
+    let mut m = serving(&[&dying, &fresh], &[&a, &b]);
+    let (id, _, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    m.remove(id, &mut NoEvents).unwrap();
+    let (id, body, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    assert!(said.contains("Reusing existing ftp: connection"), "{said}");
+    assert!(
+        said.contains("Connection died, retrying a fresh connect (retry count: 1)"),
+        "{said}"
+    );
+    assert_eq!(received(&fresh), COMMANDS);
+}
+
+/// A data connection that fails on a reused control connection fails the
+/// transfer: the answers that came before it are something received,
+/// so it is not made again (`multistate_performing`,
+/// `Curl_retry_request`).
+#[test]
+fn a_failed_read_after_answers_came_is_not_retried() {
+    let mut replies = LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n226 done\r\n");
+    replies.extend_from_slice(&[
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"213 5\r\n",
+        b"150 here\r\n226 done\r\n",
+    ]);
+    let one = Conversation::replies(&replies, false).greeting();
+    let fresh = control(&[b"150 here\r\n226 done\r\n"]);
+    let reset = Conversation::replies(&[], false).resetting();
+    let (a, c) = (data(b"hello"), data(b"hello"));
+    let mut m = serving(&[&one, &fresh], &[&a, &reset, &c]);
+    let (id, _, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    m.remove(id, &mut NoEvents).unwrap();
+    let (id, _, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Err(ErrorKind::RecvError), "{said}");
+    assert!(said.contains("Reusing existing ftp: connection"), "{said}");
+    assert!(!said.contains("Connection died"), "{said}");
+    assert_eq!(received(&fresh), "", "{said}");
+}

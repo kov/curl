@@ -2602,11 +2602,11 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
         crate::proto::http::ws::lent_recv(self, buf)
     }
 
-    fn ws_meta(&self) -> Option<crate::ws::Frame> {
+    fn ws_meta(&self) -> Option<crate::ws::Meta> {
         if self.easy().options().ws.raw {
             return None;
         }
-        self.ws.as_ref()?.ws().meta()
+        Some(self.ws.as_ref()?.ws().meta())
     }
 
     fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8]) -> ErrorKind {

@@ -2,6 +2,7 @@
 //! server sends decoded for the write handler, a ping answered.
 
 use super::*;
+use crate::ws::Meta;
 
 /// The 101 test 2301's server sends, with nothing after it.
 const SWITCH: &[u8] = b"HTTP/1.1 101 Switching to WebSockets\r\n\
@@ -121,8 +122,12 @@ fn an_upload_goes_as_binary_frames() {
 }
 
 /// A read handler that starts a text frame of what it reads, the
-/// frame's whole length named first (`curl_ws_start_frame`).
-struct Framing(crate::test_cell::Cell<bool>);
+/// frame's whole length named first (`curl_ws_start_frame`), keeping
+/// what `curl_ws_meta` said as it first read.
+struct Framing(crate::test_cell::Cell<bool>, MetaSaid);
+
+/// What `curl_ws_meta` said to a handler.
+type MetaSaid = Arc<std::sync::Mutex<Option<Option<crate::ws::Meta>>>>;
 
 impl crate::handler::ReadHandler for Framing {
     fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
@@ -130,6 +135,7 @@ impl crate::handler::ReadHandler for Framing {
             return crate::handler::Read::Eof;
         }
         self.0.set(true);
+        *self.1.lock().unwrap() = Some(cx.ws_meta());
         let text = crate::ws::SendFlags {
             kind: Some(crate::ws::FrameKind::Text),
             more: false,
@@ -141,26 +147,31 @@ impl crate::handler::ReadHandler for Framing {
 }
 
 /// A frame the read handler starts takes what it reads as its payload,
-/// sent as the frame it named rather than as binary.
+/// sent as the frame it named rather than as binary. Before any frame
+/// came, the handler is told of none, as C tells it of its frame made
+/// zeroed.
 #[test]
 fn a_read_handler_starts_its_own_frame() {
+    let said = MetaSaid::default();
     let (mut m, talk) = upload_server(1);
     let ran = get(&mut m, "/", talk, |o| {
         let url = format!("ws://127.0.0.1:{PORT}/");
         o.set_url(Some(url.as_bytes())).unwrap();
         o.method = Method::Upload;
         o.upload = UploadSource::Read {
-            handler: Handler::read(Framing(crate::test_cell::Cell::new(false))).unwrap(),
+            handler: Handler::read(Framing(crate::test_cell::Cell::new(false), said.clone()))
+                .unwrap(),
             rewind: None,
             size: None,
         };
     });
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     assert_eq!(unmasked(frames_sent(&ran)), (0x81, b"hello".to_vec()));
+    assert_eq!(*said.lock().unwrap(), Some(Some(Meta::Nothing)));
 }
 
 /// A write and what `curl_ws_meta` said of it.
-type MetaWrite = (Vec<u8>, Option<crate::ws::Frame>);
+type MetaWrite = (Vec<u8>, Option<crate::ws::Meta>);
 
 /// Each write it is given with what `curl_ws_meta` says of it, after
 /// pausing at the first.
@@ -220,9 +231,12 @@ fn frames_held_by_a_pause_are_delivered_with_their_meta() {
     assert_eq!(
         *handler.got.lock().unwrap(),
         [
-            (b"ab".to_vec(), Some(frame(FrameKind::Text, 2))),
-            (Vec::new(), Some(frame(FrameKind::Text, 0))),
-            (b"cd".to_vec(), Some(frame(FrameKind::Binary, 2))),
+            (b"ab".to_vec(), Some(Meta::Frame(frame(FrameKind::Text, 2)))),
+            (Vec::new(), Some(Meta::Frame(frame(FrameKind::Text, 0)))),
+            (
+                b"cd".to_vec(),
+                Some(Meta::Frame(frame(FrameKind::Binary, 2)))
+            ),
         ]
     );
 }
@@ -425,7 +439,9 @@ fn in_pieces(frames: &[u8], n: usize, pause: bool) -> (Ran, Vec<MetaWrite>) {
 fn follows_on(writes: &[MetaWrite], total: u64) {
     let mut at = 0;
     for (bytes, meta) in writes {
-        let meta = meta.expect("a frame's meta");
+        let Some(Meta::Frame(meta)) = meta else {
+            panic!("a frame's meta: {writes:?}");
+        };
         assert_eq!(meta.offset, at, "{writes:?}");
         at += bytes.len() as u64;
         assert_eq!(meta.bytes_left, total - at, "{writes:?}");
@@ -444,7 +460,7 @@ fn a_frame_in_pieces_is_written_as_it_comes() {
     let of = |kind| -> Vec<MetaWrite> {
         writes
             .iter()
-            .filter(|(_, m)| m.is_some_and(|m| m.kind.kind == kind))
+            .filter(|(_, m)| matches!(m, Some(Meta::Frame(f)) if f.kind.kind == kind))
             .cloned()
             .collect()
     };

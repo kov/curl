@@ -13,7 +13,7 @@ use core::ptr;
 use core::slice;
 
 use curl_core::error::ErrorKind;
-use curl_core::ws::{Answer, Call, Frame, FrameKind, FrameLen, Received, SendFlags, Sent};
+use curl_core::ws::{Answer, Call, Frame, FrameKind, FrameLen, Meta, Received, SendFlags, Sent};
 
 use crate::easy::{EasyRef, ShimEasy, handle};
 use crate::error_codes::easy_code;
@@ -380,14 +380,25 @@ pub unsafe extern "C" fn curl_ws_meta(curl: *mut CURL) -> *const curl_ws_frame {
     // SAFETY: the callback lent its context and does not use it until it
     // returns.
     let cx = unsafe { &*cx.as_ptr() };
-    let Some(frame) = cx.ws_meta().filter(|_| cx.me() == id) else {
+    let Some(meta) = cx.ws_meta().filter(|_| cx.me() == id) else {
         return ptr::null();
     };
     let Some(kept) = easy.ws_frame() else {
         return ptr::null();
     };
+    let said = match meta {
+        Meta::Frame(frame) => c_frame(frame),
+        // As C's is before its first frame: made zeroed (`calloc`).
+        Meta::Nothing => curl_ws_frame {
+            age: 0,
+            flags: 0,
+            offset: 0,
+            bytesleft: 0,
+            len: 0,
+        },
+    };
     // SAFETY: as in `curl_ws_recv`.
-    unsafe { kept.write(c_frame(frame)) };
+    unsafe { kept.write(said) };
     kept.cast_const()
 }
 const _: ffi::proto::curl_ws_meta = curl_ws_meta;

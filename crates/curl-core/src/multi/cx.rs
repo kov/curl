@@ -1005,9 +1005,10 @@ impl<'a> TransferCx<'a> {
         self.calls.ws_recv(buf)
     }
 
-    /// The frame the bytes the write handler is given are of, unless
-    /// frames are raw (`curl_ws_meta`).
-    pub fn ws_meta(&self) -> Option<crate::ws::Frame> {
+    /// What the bytes the write handler is given are of, on this
+    /// transfer's WebSocket, unless frames are raw (`curl_ws_meta`):
+    /// none from a handler that is not given its connection.
+    pub fn ws_meta(&self) -> Option<crate::ws::Meta> {
         self.calls.ws_meta()
     }
 
@@ -1037,7 +1038,7 @@ pub(crate) trait TransferCalls {
     ) -> Result<crate::ws::Sent, ErrorKind>;
     fn ws_start_frame(&mut self, flags: crate::ws::SendFlags, len: u64) -> Result<(), ErrorKind>;
     fn ws_recv(&mut self, buf: &mut [u8]) -> Result<crate::ws::Received, ErrorKind>;
-    fn ws_meta(&self) -> Option<crate::ws::Frame>;
+    fn ws_meta(&self) -> Option<crate::ws::Meta>;
     fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8]) -> ErrorKind;
 }
 
@@ -1095,7 +1096,7 @@ impl<H: Host> TransferCalls for EventCalls<'_, '_, H> {
         Err(ErrorKind::BadFunctionArgument)
     }
 
-    fn ws_meta(&self) -> Option<crate::ws::Frame> {
+    fn ws_meta(&self) -> Option<crate::ws::Meta> {
         None
     }
 

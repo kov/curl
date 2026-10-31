@@ -7404,6 +7404,98 @@ fn a_write_callback_echoes_frames_on_its_own_websocket() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// A frame's fields, as `curl_ws_meta` gave them: its age, flags,
+/// offset, what is left and its length.
+type FrameFields = (c_int, c_int, curl_off_t, curl_off_t, usize);
+
+/// What the read function was told of the WebSocket's frame as it first
+/// read: whether `curl_ws_meta` gave one, and its fields.
+#[derive(Default)]
+struct FirstRead {
+    handle: usize,
+    reads: usize,
+    meta: Option<Option<FrameFields>>,
+}
+
+/// A read function that uploads "up" once, keeping what `curl_ws_meta`
+/// said as it first read.
+unsafe extern "C" fn first_read(
+    ptr: *mut c_char,
+    _size: usize,
+    _n: usize,
+    data: *mut c_void,
+) -> usize {
+    use crate::ws::curl_ws_meta;
+    // SAFETY: the test gave its `FirstRead`, alive for the transfer.
+    let seen = unsafe { &mut *data.cast::<FirstRead>() };
+    seen.reads += 1;
+    if seen.reads > 1 {
+        return 0;
+    }
+    // SAFETY: inside the handle's own read callback.
+    let meta = unsafe { curl_ws_meta(seen.handle as *mut CURL) };
+    seen.meta = Some(
+        // SAFETY: the handle's frame, valid during the callback.
+        unsafe { meta.as_ref() }.map(|m| (m.age, m.flags, m.offset, m.bytesleft, m.len)),
+    );
+    // SAFETY: the buffer has room for what a read may give, more than 2.
+    unsafe { ptr::copy_nonoverlapping(b"up".as_ptr(), ptr.cast::<u8>(), 2) };
+    2
+}
+
+/// Before any frame came, `curl_ws_meta` gives a frame of all zero, as
+/// C gives its frame made zeroed, not none.
+#[test]
+fn the_websocket_s_frame_is_zero_before_the_first() {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let _request = read_request(&mut peer);
+        peer.write_all(
+            b"HTTP/1.1 101 Switching\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+        )
+        .unwrap();
+        // The frame of "up": its head, its mask and its payload.
+        let mut got = vec![0u8; 8];
+        peer.read_exact(&mut got).unwrap();
+        got
+    });
+    let c = curl_easy_init();
+    let mut seen = FirstRead {
+        handle: c as usize,
+        ..FirstRead::default()
+    };
+    let url = std::ffi::CString::new(format!("ws://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_UPLOAD, 1), CURLE_OK);
+    assert_eq!(
+        function(
+            c,
+            ffi::CURLOPT_READFUNCTION,
+            first_read as WriteFn as *const ()
+        ),
+        CURLE_OK
+    );
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_READDATA, (&raw mut seen).cast::<c_void>()),
+        CURLE_OK
+    );
+    // SAFETY: a live handle; the server closes once it has the frame.
+    let _done = unsafe { curl_easy_perform(c) };
+    let got = server.join().unwrap();
+    assert_eq!(got[0], 0x82, "the upload went as a frame");
+    assert_eq!(seen.meta, Some(Some((0, 0, 0, 0, 0))));
+    // SAFETY: a handle no call uses any more.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// Raw, a send needs its buffer, which C says once it found the
 /// connection: without one, that is what fails the send, raw or not.
 #[test]

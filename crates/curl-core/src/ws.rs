@@ -22,6 +22,16 @@ pub struct FrameType {
     pub more: bool,
 }
 
+/// What a WebSocket's handler is told of the bytes it was last given
+/// (`curl_ws_meta`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Meta {
+    /// No frame has come yet: C's frame, as it is made, all zero.
+    Nothing,
+    /// The frame they are of.
+    Frame(Frame),
+}
+
 /// The frame some received bytes are of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Frame {

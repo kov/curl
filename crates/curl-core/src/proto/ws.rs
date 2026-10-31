@@ -179,8 +179,11 @@ impl WsConn {
     }
 
     /// The frame the bytes last received are of, if any came.
-    pub(crate) fn meta(&self) -> Option<Frame> {
-        self.meta
+    pub(crate) fn meta(&self) -> crate::ws::Meta {
+        match self.meta {
+            Some(frame) => crate::ws::Meta::Frame(frame),
+            None => crate::ws::Meta::Nothing,
+        }
     }
 
     /// The bytes last received are `len` of `frame`, from `offset` of

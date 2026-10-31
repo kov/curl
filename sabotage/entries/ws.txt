@@ -100,3 +100,21 @@ witness: curl-core proto::http::tests::ws::a_frame_cut_short_by_the_end_fails
         if result.is_ok() && eos && (!self.buf.is_empty() || decoding(cx)) {
 --- new
         if result.is_ok() && eos && false {
+
+=== a WebSocket's handler is told of no frame before the first comes
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::ws::a_read_handler_starts_its_own_frame
+--- old
+        Some(self.ws.as_ref()?.ws().meta())
+--- new
+        Some(self.ws.as_ref()?.ws().meta()).filter(|m| *m != crate::ws::Meta::Nothing)
+
+=== curl_ws_meta gives no frame before the first comes
+file: crates/curl-sys-abi/src/ws.rs
+witness: curl-sys-abi handle_tests::the_websocket_s_frame_is_zero_before_the_first
+--- old
+        Meta::Nothing => curl_ws_frame {
+--- new
+        Meta::Nothing => return ptr::null(),
+        #[allow(unreachable_patterns)]
+        Meta::Nothing => curl_ws_frame {

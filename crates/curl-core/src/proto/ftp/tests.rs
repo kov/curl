@@ -373,3 +373,38 @@ fn ftps_wants_a_tls_library() {
     );
     assert!(talk.received().is_empty());
 }
+
+/// While the data comes, the transfer waits on its data connection
+/// alone, for it to be readable: the socket a download receives on
+/// (`Curl_xfer_pollset` of the second socket).
+#[test]
+fn a_download_waits_on_its_data_connection() {
+    let mut replies = LOGIN_AND_SETUP.to_vec();
+    replies[6] = b"502 no SIZE here\r\n";
+    replies.push(b"150 here\r\n");
+    let talk = Conversation::replies(&replies, false).greeting();
+    let file = Conversation::replies(&[b"hello"], false)
+        .greeting()
+        .endless(std::time::Duration::from_millis(1));
+    let (mut m, net) = counting(&[&talk], &[&file]);
+    let (_, body, text) = added(&mut m, URL, |_| {});
+    for _ in 0..1000 {
+        if file.endless_reads() > 0 {
+            break;
+        }
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(file.endless_reads() > 0, "{}", text.text());
+    assert!(body.0.lock().unwrap().starts_with(b"hello"));
+    assert_eq!(net.open(), 2, "{}", text.text());
+    let mut waits = Vec::new();
+    m.sockets(&mut NoEvents, |key, events| waits.push((key, events)))
+        .unwrap();
+    let data = crate::conn::io::SocketKey::new(1001);
+    assert_eq!(
+        waits,
+        [(data, crate::conn::io::Events::IN)],
+        "{}",
+        text.text()
+    );
+}

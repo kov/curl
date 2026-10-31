@@ -1777,8 +1777,8 @@ mod tests {
     /// runs itself in.
     const CHILD: &str = "CURL_OS_NET_DESCRIPTOR_CHILD";
 
-    /// A socket may be descriptor 0, and opening one past the descriptor
-    /// limit is an error, not a crash. Run in a child process, as it
+    /// A socket opened or accepted may be descriptor 0, and opening one
+    /// past the descriptor limit is an error, not a crash. Run in a child process, as it
     /// closes stdin and lowers the limit.
     #[test]
     #[cfg_attr(miri, ignore = "Miri cannot start a process")]
@@ -1801,8 +1801,18 @@ mod tests {
     fn in_child() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
+        let any = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let listening = open(any, Protocol::Tcp, true).unwrap();
+        listening.bind(any).unwrap();
+        listening.listen(1).unwrap();
+        let peer = std::net::TcpStream::connect(listening.local_addr().unwrap()).unwrap();
         // SAFETY: nothing in this process reads stdin.
         assert_eq!(unsafe { libc::close(0) }, 0);
+        // A connection accepted as descriptor 0 is one, not a failure.
+        let accepted = listening.accept().unwrap().expect("the connection waiting");
+        assert_eq!(accepted.fd().as_raw_fd(), 0, "the lowest free descriptor");
+        assert_eq!(accepted.peer_addr().unwrap(), peer.local_addr().unwrap());
+        drop(accepted);
         let (s, _) = connect(addr).unwrap();
         assert_eq!(s.fd().as_raw_fd(), 0, "the lowest free descriptor");
         // SAFETY: `dup` of the open stdout; the copy is closed at once.

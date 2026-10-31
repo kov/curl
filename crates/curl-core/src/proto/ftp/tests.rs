@@ -1128,3 +1128,132 @@ fn a_directory_with_a_prequote_lists_after_its_type() {
     );
     assert_eq!(*body.0.lock().unwrap(), LISTING);
 }
+
+/// The control replies of a login and `PWD`, then these.
+fn logged_in(then: &[&'static [u8]]) -> Conversation {
+    let mut replies: Vec<&'static [u8]> = vec![
+        b"220 hi\r\n",
+        b"331 password?\r\n",
+        b"230 in\r\n",
+        b"257 \"/\" is it\r\n",
+    ];
+    replies.extend_from_slice(then);
+    Conversation::replies(&replies, false).greeting()
+}
+
+/// A download resumed asks the size, then `REST` from where it resumes,
+/// and fails if the server will not restart there
+/// (`ftp_state_rest_resp` for `RETR_REST`).
+#[test]
+fn a_resumed_download_restarts_where_it_resumes() {
+    let run = |rest: &'static [u8]| {
+        let control = logged_in(&[
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 binary\r\n",
+            b"213 5\r\n",
+            rest,
+            b"150 here\r\n226 done\r\n",
+        ]);
+        let file = data(b"llo");
+        let mut m = serving(&[&control], &[&file]);
+        let (id, body, _) = added(&mut m, URL, |o| {
+            o.resume = Some(crate::options::Resume::At(
+                std::num::NonZeroU64::new(2).unwrap(),
+            ));
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let got = body.0.lock().unwrap().clone();
+        (result, received(&control), got)
+    };
+    let (result, sent, got) = run(b"350 restarting\r\n");
+    assert_eq!(result, Ok(()), "{sent}");
+    assert!(sent.ends_with("SIZE f\r\nREST 2\r\nRETR f\r\n"), "{sent}");
+    assert_eq!(got, b"llo");
+    let (result, sent, got) = run(b"502 no\r\n");
+    assert_eq!(result, Err(ErrorKind::FtpCouldntUseRest), "{sent}");
+    assert!(sent.ends_with("SIZE f\r\nREST 2\r\n"), "{sent}");
+    assert_eq!(got, b"");
+}
+
+/// A download of a file the server has not got fails at `SIZE`'s 550
+/// (`ftp_state_size_resp`).
+#[test]
+fn a_size_refused_fails_a_resumed_download() {
+    let control = logged_in(&[
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"200 binary\r\n",
+        b"550 no such file\r\n",
+    ]);
+    let file = data(b"");
+    let mut m = serving(&[&control], &[&file]);
+    let (id, _, _) = added(&mut m, URL, |o| {
+        o.resume = Some(crate::options::Resume::At(
+            std::num::NonZeroU64::new(2).unwrap(),
+        ));
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Err(ErrorKind::RemoteFileNotFound));
+}
+
+/// An upload resumed at the end asks the stored size: it appends what
+/// is past it, or stores the whole body if the server has no size, a
+/// 550 to `SIZE` only telling it which to do (`ftp_state_size_resp` for
+/// `STOR_SIZE`).
+#[test]
+fn an_upload_resumed_at_the_end_appends_past_the_stored_size() {
+    let run = |size: &'static [u8]| {
+        let control = logged_in(&[
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 binary\r\n",
+            size,
+            b"150 go on\r\n226 stored\r\n",
+        ]);
+        let file = Conversation::replies(&[], false);
+        let mut m = serving(&[&control], &[&file]);
+        let (id, _, text) = added(&mut m, URL, |o| {
+            o.method = crate::options::Method::Upload;
+            o.resume = Some(crate::options::Resume::AtEnd);
+            o.upload = crate::options::UploadSource::Bytes(
+                curl_alloc::TryArc::try_new(b"upload".to_vec()).unwrap(),
+            );
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Ok(()), "{}", text.text());
+        (received(&control), file.received())
+    };
+    let (sent, stored) = run(b"213 2\r\n");
+    assert!(sent.ends_with("SIZE f\r\nAPPE f\r\n"), "{sent}");
+    assert_eq!(stored, b"load");
+    let (sent, stored) = run(b"550 none\r\n");
+    assert!(sent.ends_with("SIZE f\r\nSTOR f\r\n"), "{sent}");
+    assert_eq!(stored, b"upload");
+}
+
+/// `PRET` names the listing's command, `NLST` only for names alone
+/// (`ftp_state_prepare_transfer`).
+#[test]
+fn pret_names_the_listing_s_command() {
+    let run = |list_only: bool| {
+        let control = logged_in(&[
+            b"250 there\r\n",
+            b"200 pret\r\n",
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"200 ascii\r\n",
+            b"150 here\r\n226 done\r\n",
+        ]);
+        let list = data(LISTING);
+        let mut m = serving(&[&control], &[&list]);
+        let (id, _, text) = added(&mut m, "ftp://127.0.0.1:PORT/d/", |o| {
+            let line = o.line.make_mut().unwrap();
+            line.ftp.use_pret = true;
+            line.list_only = list_only;
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Ok(()), "{}", text.text());
+        received(&control)
+    };
+    let sent = run(false);
+    assert!(sent.contains("CWD d\r\nPRET LIST\r\nEPSV\r\n"), "{sent}");
+    let sent = run(true);
+    assert!(sent.contains("CWD d\r\nPRET NLST\r\nEPSV\r\n"), "{sent}");
+}

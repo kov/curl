@@ -49,6 +49,13 @@ pub(crate) enum PathError {
     OutOfMemory,
 }
 
+/// No path: what a request has before DO splits its own.
+pub(crate) static UNPARSED: Path = Path {
+    raw: Vec::new(),
+    dirs: Vec::new(),
+    file: None,
+};
+
 /// A path, decoded, and where in it its directories and its file are.
 #[derive(Debug, Default)]
 pub(crate) struct Path {

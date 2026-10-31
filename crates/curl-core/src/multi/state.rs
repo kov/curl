@@ -104,6 +104,12 @@ pub(crate) struct Run {
     /// It has run its first step, and is neither done nor gone
     /// (`state.really_alive`).
     pub(crate) alive: bool,
+    /// Its URL is a pattern, as its options said as its last request
+    /// started (`state.wildcardmatch`).
+    wildcard_match: bool,
+    /// The wildcard download, from its first request on: kept here
+    /// between its requests, and lent to each (`data->wildcard`).
+    wildcard: Option<Box<crate::proto::ftp::Wildcard>>,
 }
 
 impl Run {
@@ -127,6 +133,8 @@ impl Run {
             course: Course::START,
             http: Inherited::new(crate::options::HttpVersion::Any),
             alive: false,
+            wildcard_match: false,
+            wildcard: None,
         }
     }
 }
@@ -215,6 +223,10 @@ const MAX_RETRIES: u8 = 5;
 pub(crate) enum AfterRequest {
     /// The transfer is over.
     Complete,
+    /// The transfer is over without a request made: the wildcard
+    /// download it is had no more to get. Its end is no DONE
+    /// (`multistate_do`'s skip to COMPLETED).
+    Nothing,
     /// The same URL is asked for again on a fresh connection, the reused
     /// one having died (C's `FOLLOW_RETRY`).
     Retry,
@@ -1838,6 +1850,14 @@ impl Attached {
         }
     }
 
+    /// The request is not made: the transfer is over.
+    fn nothing(self) -> Done {
+        Done {
+            next: AfterRequest::Nothing,
+            ..self.done(Ok(()), false, Reached::Unmade)
+        }
+    }
+
     /// The request is over, to be made again on a fresh connection.
     fn retried(self, result: Result<(), ErrorKind>, reached: Reached) -> Done {
         Done {
@@ -2741,6 +2761,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 (TransferState::Do(x), Wake::Again)
             }
             Ok(DoStep::Did) => enter_did(x, cx),
+            Ok(DoStep::Nothing) => (TransferState::Done(x.nothing()), Wake::Again),
             // On to its rest, in the same pass (`multistate_do`).
             Ok(DoStep::Doing) => (TransferState::Doing(x), Wake::Again),
             Ok(DoStep::More) => (TransferState::DoingMore(x), Wake::Again),
@@ -2777,7 +2798,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 (TransferState::Doing(x), Wake::Idle)
             }
             Ok(DoStep::More) => (TransferState::DoingMore(x), Wake::Again),
-            Ok(DoStep::Piece) => unreachable!("a piece of the request is DO's alone"),
+            Ok(DoStep::Piece | DoStep::Nothing) => unreachable!("only DO's step answers it"),
             // A failed request is done with, not cut short
             // (`multistate_doing`).
             Err(e) => (
@@ -2797,7 +2818,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 buffered_input(&mut x, Some(Waiting::More), cx);
                 (TransferState::DoingMore(x), Wake::Idle)
             }
-            Ok(DoStep::Piece) => unreachable!("a piece of the request is DO's alone"),
+            Ok(DoStep::Piece | DoStep::Nothing) => unreachable!("only DO's step answers it"),
             // A failed request is done with, not cut short
             // (`multistate_doing_more`).
             Err(e) => (
@@ -2962,6 +2983,12 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 // Its protocol awaits its last answer.
                 Err(waiting) => break 'done (TransferState::Done(waiting), Wake::Idle),
             };
+            // A wildcard download's request gives it back.
+            let wildcard = d.proto.as_mut().and_then(ProtoState::take_wildcard);
+            let more = wildcard.as_ref().is_some_and(|w| !w.done());
+            if wildcard.is_some() {
+                run.wildcard = wildcard;
+            }
             // Held output went with the request; a pause the application
             // asked for stays.
             let pause = cx.pause_mut();
@@ -2997,6 +3024,11 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                     complete(cx, now, true);
                 }
                 (next, Wake::Again)
+            } else if more && d.result.is_ok() {
+                // The download has more to get: its next request starts
+                // from INIT (`multistate_done`).
+                mstate::enter(cx, MState::Init);
+                (TransferState::Init, Wake::Again)
             } else {
                 complete(
                     cx,
@@ -3164,7 +3196,9 @@ fn progress_after_step<H: Host>(
         }
         // Once begun, the end runs on as C's within `multi_done`, with no
         // pass of its loop's.
-        TransferState::Done(d) if d.result.is_ok() && d.ending == Ending::Ahead => {
+        TransferState::Done(d)
+            if d.result.is_ok() && d.ending == Ending::Ahead && d.next != AfterRequest::Nothing =>
+        {
             match progress::update(cx, d.reached == Reached::Exchanged) {
                 Ok(()) => (TransferState::Done(d), wake),
                 // An abort ends the request early, closing its connection.
@@ -4879,6 +4913,14 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
     }
     crate::proto::http::cookies::load(cx)?;
     read_resolve(cx)?;
+    // The URL is a pattern if the options say so as each request starts;
+    // the debug test build says so on request too (`Curl_pretransfer`).
+    run.wildcard_match = cx.easy().options().line.ftp.wildcard
+        || (cfg!(feature = "debug-hooks") && curl_os::env::is_set(b"CURL_DBG_FTP_WILDCARD"));
+    if run.wildcard_match && run.wildcard.is_none() {
+        let made = curl_alloc::try_box(crate::proto::ftp::Wildcard::new());
+        run.wildcard = Some(made.map_err(|_| ErrorKind::OutOfMemory)?);
+    }
     crate::proto::http::hsts::load(cx)?;
     // Taken as it is parsed, its text not read again.
     if let Some((_, copy)) = shared {
@@ -5607,6 +5649,9 @@ fn start_leg<H: Host>(
         // The HTTPS connect filter's first attempt is HTTP/3's
         // (`cf_hc_set_baller1`).
         dial = Dial::Quic;
+    }
+    if run.wildcard_match {
+        proto.give_wildcard(&mut run.wildcard);
     }
     setup(cx, Plan { proto, route, dial })
 }

@@ -540,3 +540,192 @@ fn the_data_connection_goes_through_the_socks_proxy() {
         "{said}"
     );
 }
+
+const WILDCARD: &str = "ftp://127.0.0.1:PORT/d/*.txt";
+
+/// A directory's listing, in the Unix form: a file the pattern matches, a
+/// directory it matches, a file it does not, and another it does.
+const LISTING: &[u8] = b"-rw-r--r--    1 u g       5 Jan 17 11:01 a.txt\r\n\
+drwxr-xr-x    2 u g    4096 Jan 17 11:01 dir.txt\r\n\
+-rw-r--r--    1 u g       5 Jan 17 11:01 b.dat\r\n\
+-rw-r--r--    1 u g       3 Jan 17 11:01 c%.txt\r\n";
+
+/// The server of a wildcard download of `LISTING`'s directory: the
+/// login, `CWD`, the listing, then `RETR` for each file got.
+fn listing_server(files: usize) -> Conversation {
+    let mut replies: Vec<&[u8]> = vec![
+        b"220 hi\r\n",
+        b"331 password?\r\n",
+        b"230 in\r\n",
+        b"257 \"/\" is it\r\n",
+        b"250 there\r\n",
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"200 ascii\r\n",
+        b"150 here\r\n226 done\r\n",
+    ];
+    for n in 0..files {
+        replies.push(b"229 Entering Extended Passive Mode (|||8022|)\r\n");
+        if n == 0 {
+            replies.push(b"200 binary\r\n");
+        }
+        replies.push(b"150 here\r\n226 done\r\n");
+    }
+    Conversation::replies(&replies, false).greeting()
+}
+
+/// The matching files are got, one request each, their paths escaped and decoded back:
+/// the directory is reached once, the size each line gives is not asked
+/// for, a directory is passed over, and a last request finds nothing more
+/// to get. The listing goes to its reader, not the write handler.
+#[test]
+fn a_wildcard_download_gets_each_file_the_listing_matches() {
+    let talk = listing_server(2);
+    let (list, a, c) = (data(LISTING), data(b"aaaaa"), data(b"ccc"));
+    let mut m = serving(&[&talk], &[&list, &a, &c]);
+    let (id, body, text) = added(&mut m, WILDCARD, |o| {
+        o.line.make_mut().unwrap().ftp.wildcard = true;
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"aaaaaccc");
+    assert_eq!(
+        received(&talk),
+        "USER anonymous\r\nPASS ftp@example.com\r\nPWD\r\nCWD d\r\nEPSV\r\nTYPE A\r\nLIST\r\n\
+         EPSV\r\nTYPE I\r\nRETR a.txt\r\nEPSV\r\nRETR c%.txt\r\n"
+    );
+    for line in [
+        "Wildcard - Parsing started",
+        "Wildcard - START of \"a.txt\"",
+        "Wildcard - START of \"dir.txt\"",
+        "Wildcard - START of \"c%.txt\"",
+    ] {
+        assert!(said.contains(line), "{line}: {said}");
+    }
+}
+
+/// The application's handlers: the names matched by its own, each file
+/// told of with how many are left, and of its end; one it passes over is
+/// not got, and told the end of still.
+#[test]
+fn a_wildcard_download_tells_the_application_of_each_file() {
+    use crate::handler::{
+        ChunkBegin, ChunkBeginHandler, ChunkEndHandler, FileInfo, FnMatchHandler, Matched,
+    };
+    #[derive(Clone, Default)]
+    struct Told(Arc<Mutex<Vec<String>>>);
+    impl ChunkBeginHandler for Told {
+        fn begin(&self, _: &mut TransferCx<'_>, file: &FileInfo<'_>, remains: usize) -> ChunkBegin {
+            let name = String::from_utf8_lossy(file.name).into_owned();
+            let said = format!("begin {name} {remains} {:?} {:?}", file.size, file.perm);
+            self.0.lock().unwrap().push(said);
+            if name == "a.txt" {
+                ChunkBegin::Skip
+            } else {
+                ChunkBegin::Get
+            }
+        }
+    }
+    impl ChunkEndHandler for Told {
+        fn end(&self, _: &mut TransferCx<'_>) {
+            self.0.lock().unwrap().push("end".into());
+        }
+    }
+    impl FnMatchHandler for Told {
+        fn matches(
+            &self,
+            _: &mut TransferCx<'_>,
+            pattern: &[u8],
+            name: &[u8],
+        ) -> Result<Matched, curl_alloc::OutOfMemory> {
+            assert_eq!(pattern, b"*.txt");
+            let said = format!("match {}", String::from_utf8_lossy(name));
+            self.0.lock().unwrap().push(said);
+            Ok(if name == b"b.dat" {
+                Matched::Fail
+            } else {
+                Matched::Match
+            })
+        }
+    }
+    let talk = listing_server(1);
+    let (list, c) = (data(LISTING), data(b"ccc"));
+    let mut m = serving(&[&talk], &[&list, &c]);
+    let told = Told::default();
+    let (id, body, text) = added(&mut m, WILDCARD, |o| {
+        let ftp = &mut o.line.make_mut().unwrap().ftp;
+        ftp.wildcard = true;
+        ftp.chunk_begin = Some(Handler::chunk_begin(told.clone()).unwrap());
+        ftp.chunk_end = Some(Handler::chunk_end(told.clone()).unwrap());
+        ftp.fnmatch = Some(Handler::fnmatch(told.clone()).unwrap());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"ccc");
+    assert_eq!(
+        *told.0.lock().unwrap(),
+        [
+            "match a.txt",
+            "match dir.txt",
+            "match b.dat",
+            "match c%.txt",
+            "begin a.txt 3 Some(5) Some(420)",
+            "end",
+            "begin dir.txt 2 Some(4096) Some(493)",
+            "end",
+            "begin c%.txt 1 Some(3) Some(420)",
+            "end",
+        ]
+    );
+    assert!(
+        said.contains("Wildcard - \"a.txt\" skipped by user"),
+        "{said}"
+    );
+    assert!(received(&talk).ends_with("LIST\r\nEPSV\r\nTYPE I\r\nRETR c%.txt\r\n"));
+}
+
+/// A listing that cannot be read fails the download as its next request
+/// starts, after it was read whole; one that names nothing the pattern
+/// matches fails it as nothing found.
+#[test]
+fn a_wildcard_download_fails_on_its_listing() {
+    for (listing, failure) in [
+        (
+            &b"?rw-r--r-- 1 u g 5 Jan 17 11:01 a.txt\r\n"[..],
+            ErrorKind::FtpBadFileList,
+        ),
+        (
+            b"-rw-r--r-- 1 u g 5 Jan 17 11:01 a.dat\r\n",
+            ErrorKind::RemoteFileNotFound,
+        ),
+    ] {
+        let talk = listing_server(0);
+        let list = data(listing);
+        let mut m = serving(&[&talk], &[&list]);
+        let (id, body, text) = added(&mut m, WILDCARD, |o| {
+            o.line.make_mut().unwrap().ftp.wildcard = true;
+        });
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Err(failure), "{}", text.text());
+        assert!(body.0.lock().unwrap().is_empty());
+        assert!(received(&talk).ends_with("LIST\r\n"));
+    }
+}
+
+/// A URL that ends with its directory is only listed, its listing the
+/// body, as without a wildcard; a scheme other than FTP's has none.
+#[test]
+fn a_wildcard_download_without_a_pattern_lists_its_directory() {
+    let talk = listing_server(0);
+    let list = data(LISTING);
+    let mut m = serving(&[&talk], &[&list]);
+    let (id, body, text) = added(&mut m, "ftp://127.0.0.1:PORT/d/", |o| {
+        o.line.make_mut().unwrap().ftp.wildcard = true;
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), LISTING);
+    assert!(!said.contains("Wildcard - Parsing started"), "{said}");
+}

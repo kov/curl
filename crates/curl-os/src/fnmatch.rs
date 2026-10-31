@@ -21,17 +21,19 @@ pub enum Matched {
 /// Whether `name` matches `pattern`, as `fnmatch(pattern, name, 0)` says.
 /// Each is taken up to a zero byte in it, as C's strings end there.
 pub fn fnmatch(pattern: &[u8], name: &[u8]) -> Result<Matched, OutOfMemory> {
-    let pattern = c_string(pattern)?;
-    let name = c_string(name)?;
-    // SAFETY: both are zero-terminated and live for the call, which
-    // only reads them.
-    let rc = unsafe {
-        libc::fnmatch(
-            pattern.as_ptr().cast::<c_char>(),
-            name.as_ptr().cast::<c_char>(),
-            0,
-        )
-    };
+    let rc = with_c_string(pattern, |pattern| {
+        with_c_string(name, |name| {
+            // SAFETY: both are zero-terminated and live for the call,
+            // which only reads them.
+            unsafe {
+                libc::fnmatch(
+                    pattern.as_ptr().cast::<c_char>(),
+                    name.as_ptr().cast::<c_char>(),
+                    0,
+                )
+            }
+        })
+    })??;
     Ok(match rc {
         0 => Matched::Match,
         libc::FNM_NOMATCH => Matched::NoMatch,
@@ -39,19 +41,49 @@ pub fn fnmatch(pattern: &[u8], name: &[u8]) -> Result<Matched, OutOfMemory> {
     })
 }
 
-/// `bytes` up to its first zero byte, with one after.
-fn c_string(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+/// The longest string copied on the stack, its zero byte not counted: a
+/// listing's names and the patterns asked of them are mostly shorter,
+/// and each is matched once per name.
+const ON_STACK: usize = 255;
+
+/// `f` given `bytes` up to its first zero byte, with one after: copied on
+/// the stack if short enough, else to memory of its own.
+fn with_c_string<R>(bytes: &[u8], f: impl FnOnce(&[u8]) -> R) -> Result<R, OutOfMemory> {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    if end <= ON_STACK {
+        let mut buf = [0u8; ON_STACK + 1];
+        buf[..end].copy_from_slice(&bytes[..end]);
+        return Ok(f(&buf[..=end]));
+    }
     let mut out = Vec::new();
     out.try_reserve_exact(end + 1)?;
     out.try_extend_from_slice(&bytes[..end])?;
     out.try_extend_from_slice(&[0])?;
-    Ok(out)
+    Ok(f(&out))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A string the stack cannot hold is matched as one it can: each
+    /// side of the bound, a zero byte cutting it short.
+    #[test]
+    #[allow(clippy::disallowed_methods, clippy::disallowed_macros)]
+    fn long_strings_match_as_short_ones() {
+        for len in [ON_STACK - 1, ON_STACK, ON_STACK + 1, 4 * ON_STACK] {
+            let mut name = vec![b'a'; len];
+            name.push(b'z');
+            assert_eq!(fnmatch(b"a*z", &name), Ok(Matched::Match), "{len}");
+            let mut pattern = vec![b'a'; len];
+            pattern.push(b'*');
+            assert_eq!(fnmatch(&pattern, &name), Ok(Matched::Match), "{len}");
+            pattern.extend_from_slice(b"\0y");
+            name.extend_from_slice(b"\0y");
+            assert_eq!(fnmatch(&pattern, &name), Ok(Matched::Match), "{len}");
+            assert_eq!(fnmatch(b"*y", &name), Ok(Matched::NoMatch), "{len}");
+        }
+    }
 
     /// C's unit test 1307's table, with the results it expects of Linux's
     /// `fnmatch`, in the C locale the tests run in: there a byte past

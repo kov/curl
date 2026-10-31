@@ -306,6 +306,93 @@ pub trait TlsContextHandler: Send + Sync {
     fn configure(&self, cx: &mut TransferCx<'_>, native: TlsNative) -> Result<(), ErrorKind>;
 }
 
+/// What kind of file a listing says an entry is (`curlfiletype`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileType {
+    File,
+    Directory,
+    Symlink,
+    DeviceBlock,
+    DeviceChar,
+    NamedPipe,
+    Socket,
+    Door,
+}
+
+/// A file a wildcard download's listing names and its pattern matched
+/// (`struct curl_fileinfo`): what the listing's line says of it, each
+/// field the line has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileInfo<'a> {
+    pub name: &'a [u8],
+    pub kind: FileType,
+    /// The permission bits, `rwx` for each of user, group and others
+    /// with set-user-id, set-group-id and sticky above them.
+    pub perm: Option<u32>,
+    pub hardlinks: Option<i64>,
+    pub size: Option<u64>,
+    /// The fields as the line gives them.
+    pub time: &'a [u8],
+    pub perm_text: Option<&'a [u8]>,
+    pub user: Option<&'a [u8]>,
+    pub group: Option<&'a [u8]>,
+    /// Where a symbolic link points.
+    pub target: Option<&'a [u8]>,
+}
+
+impl FileInfo<'_> {
+    /// The most bytes its texts take together, a byte after each among
+    /// them: they are parts of one line of the listing, which is never
+    /// longer.
+    pub const MAX_TEXT: usize = 10_000;
+}
+
+/// What a wildcard download does with the file it is about to get
+/// (`CURL_CHUNK_BGN_FUNC_*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChunkBegin {
+    Get,
+    /// The file is passed over, and the next one got.
+    Skip,
+    /// The transfer fails with ChunkFailed.
+    Fail,
+}
+
+/// Told of each file a wildcard download is about to get, with how many
+/// are left to get, this one among them (`CURLOPT_CHUNK_BGN_FUNCTION`).
+pub trait ChunkBeginHandler: Send + Sync {
+    fn begin(&self, cx: &mut TransferCx<'_>, file: &FileInfo<'_>, remains: usize) -> ChunkBegin;
+}
+
+/// Told that a wildcard download is done with a file, got or passed over
+/// (`CURLOPT_CHUNK_END_FUNCTION`).
+pub trait ChunkEndHandler: Send + Sync {
+    fn end(&self, cx: &mut TransferCx<'_>);
+}
+
+/// How a name compares with a wildcard download's pattern
+/// (`CURL_FNMATCHFUNC_*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Matched {
+    Match,
+    NoMatch,
+    /// The pattern could not be compared: the name is passed over.
+    Fail,
+}
+
+/// Matches each name a wildcard download's listing gives against its
+/// pattern, in place of the system's `fnmatch(3)`
+/// (`CURLOPT_FNMATCH_FUNCTION`). Out of memory, the listing fails as one
+/// that could not be read.
+pub trait FnMatchHandler: Send + Sync {
+    fn matches(
+        &self,
+        cx: &mut TransferCx<'_>,
+        pattern: &[u8],
+        name: &[u8],
+    ) -> Result<Matched, OutOfMemory>;
+}
+
 /// A handler as a transfer holds it: shared by every copy of the `Easy`.
 pub struct Handler<T: ?Sized>(TryArc<Box<T>>);
 
@@ -388,6 +475,24 @@ impl Handler<dyn LentBytes> {
 
 impl Handler<dyn ReadHandler> {
     pub fn read(handler: impl ReadHandler + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn ChunkBeginHandler> {
+    pub fn chunk_begin(handler: impl ChunkBeginHandler + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn ChunkEndHandler> {
+    pub fn chunk_end(handler: impl ChunkEndHandler + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn FnMatchHandler> {
+    pub fn fnmatch(handler: impl FnMatchHandler + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
     }
 }

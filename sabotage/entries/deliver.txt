@@ -6,12 +6,15 @@
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_handler_replaced_inside_its_own_call_takes_the_next_piece
 --- old
-        let w = handler.write(&mut TransferCx::new(cx), piece);
+            (None, Some(handler)) => handler.write(&mut TransferCx::new(cx), piece),
 --- new
-        let mut tcx = TransferCx::new(cx);
-        let w = handler.write(&mut tcx, piece);
-        let me = tcx.me();
-        tcx.options_mut(me).unwrap().callbacks.write = Some(handler);
+            (None, Some(handler)) => {
+                let mut tcx = TransferCx::new(cx);
+                let w = handler.write(&mut tcx, piece);
+                let me = tcx.me();
+                tcx.options_mut(me).unwrap().callbacks.write = Some(handler);
+                w
+            }
 
 === a write handler's failure is ignored
 file: crates/curl-core/src/deliver/mod.rs
@@ -49,13 +52,13 @@ pub(crate) const MAX_WRITE: usize = 65536;
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_header_line_goes_out_whole
 --- old
-        OutKind::Body => deliver_body(cx, bytes, pausable),
+        OutKind::Body => deliver_body(cx, bytes, pausable, listing),
         OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => {
 --- new
-        OutKind::Body => deliver_body(cx, bytes, pausable),
+        OutKind::Body => deliver_body(cx, bytes, pausable, listing),
         OutKind::Header(_) | OutKind::Status(_) if bytes.len() > MAX_WRITE => {
-            deliver(cx, kind, &bytes[..MAX_WRITE], pausable)?;
-            deliver(cx, kind, &bytes[MAX_WRITE..], pausable)
+            deliver(cx, kind, &bytes[..MAX_WRITE], pausable, None)?;
+            deliver(cx, kind, &bytes[MAX_WRITE..], pausable, None)
         }
         OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => {
 
@@ -79,7 +82,7 @@ file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::failed_output_stays_failed
 --- old
         if result.is_err() {
-            *self = ClientOut::Failed;
+            self.state = OutState::Failed;
         }
 --- new
 
@@ -139,10 +142,10 @@ witness: curl-core deliver::tests::a_receive_pause_finishes_the_write_under_way
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::held_output_is_replayed_in_the_order_it_came
 --- old
-            let delivered = deliver(cx, kind, bytes, pausable)?;
+            let delivered = deliver(cx, kind, bytes, pausable, self.listing.as_deref_mut())?;
             held.consume(delivered);
 --- new
-            let delivered = deliver(cx, kind, bytes, pausable)?;
+            let delivered = deliver(cx, kind, bytes, pausable, self.listing.as_deref_mut())?;
             let n = bytes.len().min(delivered + MAX_WRITE);
             held.consume(n);
 
@@ -159,14 +162,14 @@ witness: curl-core deliver::tests::output_written_while_held_goes_behind_it
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::output_written_while_held_goes_behind_it
 --- old
-            ClientOut::Held(held) => {
+            OutState::Held(held) => {
                 buffering(cx, bytes.len(), held.held());
 --- new
-            ClientOut::Held(_) if cx.pause().recv != RecvPause::Held => {
-                deliver(cx, kind, bytes, pausable)?;
+            OutState::Held(_) if cx.pause().recv != RecvPause::Held => {
+                deliver(cx, kind, bytes, pausable, self.listing.as_deref_mut())?;
                 self.replay(cx, pausable)
             }
-            ClientOut::Held(held) => {
+            OutState::Held(held) => {
                 buffering(cx, bytes.len(), held.held());
 
 === an unpause waits for the next step to replay

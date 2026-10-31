@@ -18,6 +18,7 @@ use crate::handler::{DebugKind, HeaderOrigin, Write};
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
 use crate::progress::rate::Way;
+use crate::proto::ftp::Matching;
 use crate::report::Timer;
 use crate::trace::{self, Code};
 use decode::{Gate, Onward};
@@ -156,6 +157,17 @@ impl Pipeline {
             })?;
         }
         self.out.flush(cx, pausable)
+    }
+
+    /// The body goes to `listing`, a wildcard download's, in place of
+    /// the write handler, until it is given back.
+    pub(crate) fn list_into(&mut self, listing: Box<Matching>) {
+        self.out.listing = Some(listing);
+    }
+
+    /// The listing the body went to, if it did.
+    pub(crate) fn listed(&mut self) -> Option<Box<Matching>> {
+        self.out.listing.take()
     }
 
     /// Whether C's chain of writers is made, which the request's end is
@@ -802,7 +814,16 @@ impl BodyAccountant {
 
 /// The last stage: the handlers (`cw-out`).
 #[derive(Debug, Default)]
-enum ClientOut {
+struct ClientOut {
+    state: OutState,
+    /// While a wildcard download's listing is read, the body goes to its
+    /// reader in place of the write handler (`Curl_ftp_listmode`).
+    listing: Option<Box<Matching>>,
+}
+
+/// How output reaches the handlers.
+#[derive(Debug, Default)]
+enum OutState {
     /// Writing straight to the handlers.
     #[default]
     Direct,
@@ -841,7 +862,7 @@ impl ClientOut {
     /// Replay held output until it is all delivered or a handler pauses
     /// again (`cw_out_flush_chain`).
     fn flush<H: Host>(&mut self, cx: &mut StepCx<'_, H>, pausable: bool) -> Result<(), ErrorKind> {
-        if matches!(self, ClientOut::Held(_)) && !handler_paused(cx) {
+        if matches!(self.state, OutState::Held(_)) && !handler_paused(cx) {
             write_trace(cx, format_args!("[OUT] flush"));
         }
         let result = self.replay(cx, pausable);
@@ -857,25 +878,25 @@ impl ClientOut {
     ) -> Result<(), ErrorKind> {
         // Output of another kind than the last held tries what is held
         // first (`cw_out_do_write`).
-        if let ClientOut::Held(held) = self
+        if let OutState::Held(held) = &self.state
             && held.last_kind().map(is_body) != Some(is_body(kind))
         {
             self.replay(cx, pausable)?;
         }
-        match self {
-            ClientOut::Failed => Err(ErrorKind::WriteError),
-            ClientOut::Held(held) => {
+        match &mut self.state {
+            OutState::Failed => Err(ErrorKind::WriteError),
+            OutState::Held(held) => {
                 buffering(cx, bytes.len(), held.held());
                 held.append(kind, bytes)?;
                 self.replay(cx, pausable)
             }
-            ClientOut::Direct => {
-                let delivered = deliver(cx, kind, bytes, pausable)?;
+            OutState::Direct => {
+                let delivered = deliver(cx, kind, bytes, pausable, self.listing.as_deref_mut())?;
                 if delivered < bytes.len() {
                     let mut held = HeldOutput::default();
                     buffering(cx, bytes.len() - delivered, 0);
                     held.append(kind, &bytes[delivered..])?;
-                    *self = ClientOut::Held(held);
+                    self.state = OutState::Held(held);
                 }
                 Ok(())
             }
@@ -883,10 +904,10 @@ impl ClientOut {
     }
 
     fn replay<H: Host>(&mut self, cx: &mut StepCx<'_, H>, pausable: bool) -> Result<(), ErrorKind> {
-        let held = match self {
-            ClientOut::Failed => return Err(ErrorKind::WriteError),
-            ClientOut::Direct => return Ok(()),
-            ClientOut::Held(held) => held,
+        let held = match &mut self.state {
+            OutState::Failed => return Err(ErrorKind::WriteError),
+            OutState::Direct => return Ok(()),
+            OutState::Held(held) => held,
         };
         // Only a handler's own pause stops the replay, and it is the only
         // thing that leaves an entry part delivered.
@@ -894,11 +915,11 @@ impl ClientOut {
             let Some((kind, bytes)) = held.front() else {
                 break;
             };
-            let delivered = deliver(cx, kind, bytes, pausable)?;
+            let delivered = deliver(cx, kind, bytes, pausable, self.listing.as_deref_mut())?;
             held.consume(delivered);
         }
         if held.is_empty() {
-            *self = ClientOut::Direct;
+            self.state = OutState::Direct;
         }
         Ok(())
     }
@@ -906,13 +927,13 @@ impl ClientOut {
     /// Any error ends the output for good.
     fn fail_on(&mut self, result: Result<(), ErrorKind>) -> Result<(), ErrorKind> {
         if result.is_err() {
-            *self = ClientOut::Failed;
+            self.state = OutState::Failed;
         }
         result
     }
 
     fn holds_output(&self) -> bool {
-        matches!(self, ClientOut::Held(_))
+        matches!(self.state, OutState::Held(_))
     }
 }
 
@@ -959,9 +980,10 @@ fn deliver<H: Host>(
     kind: OutKind,
     bytes: &[u8],
     pausable: bool,
+    listing: Option<&mut Matching>,
 ) -> Result<usize, ErrorKind> {
     match kind {
-        OutKind::Body => deliver_body(cx, bytes, pausable),
+        OutKind::Body => deliver_body(cx, bytes, pausable, listing),
         OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => {
             // A line protocol's lines are told as a head's.
             let origin = kind.origin().unwrap_or(HeaderOrigin::Header);
@@ -984,13 +1006,15 @@ fn deliver_body<H: Host>(
     cx: &mut StepCx<'_, H>,
     bytes: &[u8],
     pausable: bool,
+    mut listing: Option<&mut Matching>,
 ) -> Result<usize, ErrorKind> {
     let mut delivered = 0;
     for piece in bytes.chunks(MAX_WRITE) {
         let easy = cx.easy();
-        let Some(handler) = easy.options().callbacks.write.clone() else {
+        let handler = easy.options().callbacks.write.clone();
+        if handler.is_none() && listing.is_none() {
             return Ok(bytes.len());
-        };
+        }
         // Body bytes delivered, included header lines among them (C's
         // `progress.deliver`).
         let so_far = easy.report().sizes().delivered();
@@ -1005,7 +1029,14 @@ fn deliver_body<H: Host>(
             ));
         }
         let reasons = cx.easy().report().reasons();
-        let w = handler.write(&mut TransferCx::new(cx), piece);
+        let w = match (listing.as_deref_mut(), handler) {
+            (Some(listing), _) => {
+                listing.take(cx, piece);
+                Write::Accepted
+            }
+            (None, Some(handler)) => handler.write(&mut TransferCx::new(cx), piece),
+            (None, None) => unreachable!("one of them takes the body"),
+        };
         wrote(cx, OutKind::Body, piece.len(), w);
         if !verdict(cx, w, piece.len(), reasons, pausable)? {
             break;

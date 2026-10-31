@@ -6,11 +6,15 @@
 //! verdict on them read on the control connection as the transfer ends.
 
 mod data;
+mod list;
 mod path;
 mod port;
 mod reply;
 #[cfg(test)]
 mod tests;
+mod wildcard;
+
+pub(crate) use wildcard::{Matching, Wildcard};
 
 use std::num::NonZeroU32;
 
@@ -264,8 +268,9 @@ pub(crate) struct Request {
     /// The URL's path after its first slash, encoded, its `;type=` cut
     /// off (`ftp->path`).
     encoded: Vec<u8>,
-    /// The path decoded and split, in DO (`rawpath`, `dirs`, `file`).
-    path: Path,
+    /// The path decoded and split, in DO (`rawpath`, `dirs`, `file`);
+    /// none before, or once let go.
+    parsed: Option<Path>,
     /// The transfer is in ASCII (`state.prefer_ascii`).
     prefer_ascii: bool,
     /// A listing is of names alone (`state.list_only`).
@@ -357,6 +362,8 @@ pub(crate) struct Request {
     /// answer.
     status: Result<(), ErrorKind>,
     premature: bool,
+    /// The wildcard download the request is one of, while it is made.
+    wildcard: Option<Box<Wildcard>>,
 }
 
 /// The ways a step of the back and forth can fail.
@@ -438,7 +445,7 @@ impl Request {
             peer,
             credentials,
             encoded,
-            path: Path::default(),
+            parsed: None,
             prefer_ascii,
             list_only,
             upload: options.method == Method::Upload,
@@ -482,7 +489,13 @@ impl Request {
             due: None,
             status: Ok(()),
             premature: false,
+            wildcard: None,
         })
+    }
+
+    /// The request is one of `wildcard`'s, given to it until it is over.
+    pub(crate) fn give_wildcard(&mut self, wildcard: Box<Wildcard>) {
+        self.wildcard = Some(wildcard);
     }
 
     /// The peer it connects to.
@@ -854,7 +867,7 @@ impl Request {
                     cx,
                     pc,
                     carrier,
-                    &[b"CWD ", self.path.dir(self.cwd_count - 1)],
+                    &[b"CWD ", self.path().dir(self.cwd_count - 1)],
                 )
             }
             State::Mdtm => self.mdtm_resp(cx, pc, carrier, code),
@@ -1165,9 +1178,14 @@ impl Request {
         cx.easy().options().method == Method::Head
     }
 
+    /// The path as DO split it.
+    fn path(&self) -> &Path {
+        self.parsed.as_ref().unwrap_or(&path::UNPARSED)
+    }
+
     /// The file the path names, copied for a command.
     fn file(&self) -> Result<Vec<u8>, ErrorKind> {
-        copied(self.path.file().unwrap_or_default())
+        copied(self.path().file().unwrap_or_default())
     }
 
     /// Decode and split the path (`ftp_parse_url_path`): an upload names
@@ -1182,7 +1200,7 @@ impl Request {
         pc.ctl_valid = false;
         self.cwd_fail = false;
         let method = cx.easy().options().line.ftp.method;
-        self.path = match Path::parse(&self.encoded, method) {
+        self.parsed = Some(match Path::parse(&self.encoded, method) {
             Ok(path) => path,
             Err(PathError::Control) => {
                 return Err(trace::fail(
@@ -1193,8 +1211,8 @@ impl Request {
             }
             Err(PathError::TooDeep) => return Err(ErrorKind::UrlMalformat),
             Err(PathError::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
-        };
-        if self.upload && self.path.file().is_none() && self.transfer == Transfer::Body {
+        });
+        if self.upload && self.path().file().is_none() && self.transfer == Transfer::Body {
             return Err(trace::fail(
                 cx,
                 ErrorKind::UrlMalformat,
@@ -1202,7 +1220,7 @@ impl Request {
             ));
         }
         self.cwd_done = false;
-        if method == FtpMethod::NoCwd && self.path.absolute() {
+        if method == FtpMethod::NoCwd && self.path().absolute() {
             // Absolute paths need no `CWD`.
             self.cwd_done = true;
         } else {
@@ -1212,7 +1230,7 @@ impl Request {
             } else {
                 Some(&b""[..])
             };
-            if old == Some(self.path.working_dir(method)) {
+            if old == Some(self.path().working_dir(method)) {
                 trace::info(
                     cx,
                     format_args!("Request has same path as previous transfer"),
@@ -1301,7 +1319,7 @@ impl Request {
             return self.mdtm(cx, pc, carrier);
         }
         self.mkd_tried = false;
-        let absolute = self.path.depth() > 0 && self.path.absolute();
+        let absolute = self.path().depth() > 0 && self.path().absolute();
         match pc.entry_path.as_deref() {
             Some(entry) if self.reused && !absolute => {
                 self.cwd_count = 0;
@@ -1310,9 +1328,9 @@ impl Request {
                 set_state(cx, pc, State::Cwd);
                 Ok(())
             }
-            _ if self.path.depth() > 0 => {
+            _ if self.path().depth() > 0 => {
                 self.cwd_count = 1;
-                send(cx, pc, carrier, &[b"CWD ", self.path.dir(0)])?;
+                send(cx, pc, carrier, &[b"CWD ", self.path().dir(0)])?;
                 set_state(cx, pc, State::Cwd);
                 Ok(())
             }
@@ -1340,7 +1358,7 @@ impl Request {
                     cx,
                     pc,
                     carrier,
-                    &[b"MKD ", self.path.dir(self.cwd_count - 1)],
+                    &[b"MKD ", self.path().dir(self.cwd_count - 1)],
                 )?;
                 set_state(cx, pc, State::Mkd);
                 return Ok(());
@@ -1354,7 +1372,7 @@ impl Request {
             ));
         }
         self.mkd_tried = false;
-        if self.cwd_count >= self.path.depth() {
+        if self.cwd_count >= self.path().depth() {
             return self.mdtm(cx, pc, carrier);
         }
         self.cwd_count += 1;
@@ -1362,7 +1380,7 @@ impl Request {
             cx,
             pc,
             carrier,
-            &[b"CWD ", self.path.dir(self.cwd_count - 1)],
+            &[b"CWD ", self.path().dir(self.cwd_count - 1)],
         )
     }
 
@@ -1375,7 +1393,7 @@ impl Request {
         carrier: &mut Carrier<'_>,
     ) -> Step {
         let options = cx.easy().options();
-        if (options.filetime || options.time_condition.is_some()) && self.path.file().is_some() {
+        if (options.filetime || options.time_condition.is_some()) && self.path().file().is_some() {
             let file = self.file()?;
             send(cx, pc, carrier, &[b"MDTM ", &file])?;
             set_state(cx, pc, State::Mdtm);
@@ -1410,7 +1428,7 @@ impl Request {
                     cx.report_mut().set_filetime(t);
                     filetime = Some(t);
                     let options = cx.easy().options();
-                    if Self::no_body(cx) && self.path.file().is_some() && options.filetime {
+                    if Self::no_body(cx) && self.path().file().is_some() && options.filetime {
                         let date = crate::date::HttpDate::of(t)
                             .map_err(|_| ErrorKind::BadFunctionArgument)?;
                         let line =
@@ -1459,7 +1477,7 @@ impl Request {
         carrier: &mut Carrier<'_>,
     ) -> Step {
         let want = if self.prefer_ascii { b'A' } else { b'I' };
-        if Self::no_body(cx) && self.path.file().is_some() && pc.transfer_type != Some(want) {
+        if Self::no_body(cx) && self.path().file().is_some() && pc.transfer_type != Some(want) {
             self.transfer = Transfer::Info;
             self.nb_type(cx, pc, carrier, self.prefer_ascii, State::Type)
         } else {
@@ -1527,7 +1545,7 @@ impl Request {
         pc: &mut FtpConn,
         carrier: &mut Carrier<'_>,
     ) -> Step {
-        if self.transfer == Transfer::Info && self.path.file().is_some() {
+        if self.transfer == Transfer::Info && self.path().file().is_some() {
             let file = self.file()?;
             send(cx, pc, carrier, &[b"SIZE ", &file])?;
             set_state(cx, pc, State::Size);
@@ -1587,7 +1605,7 @@ impl Request {
         pc: &mut FtpConn,
         carrier: &mut Carrier<'_>,
     ) -> Step {
-        if self.transfer != Transfer::Body && self.path.file().is_some() {
+        if self.transfer != Transfer::Body && self.path().file().is_some() {
             send(cx, pc, carrier, &[b"REST 0"])?;
             set_state(cx, pc, State::Rest);
             Ok(())
@@ -1644,13 +1662,13 @@ impl Request {
         }
         if options.line.ftp.use_pret {
             let custom = options.http.custom.method.as_deref();
-            let cmd = match (self.path.file(), custom) {
+            let cmd = match (self.path().file(), custom) {
                 (None, Some(custom)) => copied(custom)?,
                 (None, None) if self.list_only => copied(b"NLST")?,
                 (None, None) => copied(b"LIST")?,
                 (Some(_), _) => Vec::new(),
             };
-            if self.path.file().is_none() {
+            if self.path().file().is_none() {
                 send(cx, pc, carrier, &[b"PRET ", &cmd])?;
             } else {
                 let file = self.file()?;
@@ -1924,7 +1942,7 @@ impl Request {
         };
         let cmd = copied(cmd)?;
         let arg = if options.line.ftp.method == FtpMethod::NoCwd {
-            self.path.listed_dir()
+            self.path().listed_dir()
         } else {
             None
         };
@@ -2264,7 +2282,11 @@ impl Request {
         let reused = self.reused;
         {
             let (pc, _) = ftp_of(lease);
-            self.parse_path(cx, pc, reused)?;
+            if self.wildcard.is_none() {
+                self.parse_path(cx, pc, reused)?;
+            } else if self.wildcard_do(cx, pc, reused)? {
+                return Ok(DoStep::Nothing);
+            }
         }
         self.size = None;
         // The progress counts from nothing (`Curl_pgrsReset`).
@@ -2287,7 +2309,7 @@ impl Request {
         let done = match done {
             Ok(done) => done,
             Err(e) => {
-                self.path = Path::default();
+                self.parsed = None;
                 return Err(e);
             }
         };
@@ -2458,7 +2480,7 @@ impl Request {
                     }
                 }
                 let prequote = cx.easy().options().line.prequote.iter().next().is_some();
-                let file = self.path.file().is_some();
+                let file = self.path().file().is_some();
                 if span.is_none() {
                 } else if (self.list_only || !file) && !prequote {
                     // A directory: listed, in ASCII.
@@ -2661,6 +2683,7 @@ impl Request {
             return Finish::Done(result);
         }
         let mut result = self.done_status(cx, lease, result, premature);
+        self.wildcard_done(cx);
         self.done_path(cx, lease, result);
         result = self.done_data(cx, lease, result);
         let (pc, _) = ftp_of(lease);
@@ -2742,11 +2765,13 @@ impl Request {
             return;
         }
         let (pc, _) = ftp_of(lease);
-        if !(method == FtpMethod::NoCwd && self.path.absolute()) {
+        if let Some(path) = &self.parsed
+            && !(method == FtpMethod::NoCwd && path.absolute())
+        {
             pc.prev_path = if self.cwd_fail {
                 None
             } else {
-                copied(self.path.working_dir(method)).ok()
+                copied(path.working_dir(method)).ok()
             };
         }
         if let Some(prev) = pc.prev_path.as_deref() {

@@ -3725,6 +3725,17 @@ where the request goes and what a relative redirect resolves against (`request_u
 `Run::url`, so the URL a retry traces, the report keeps and a referer names is the one asked for. The referer a request sends is the report's (`state.referer`): the application's, copied
 at the transfer's start, until a redirect followed with AUTOREFERER replaces it with the URL it
 came from, without credentials or fragment.
+A wildcard download (`CURLOPT_WILDCARDMATCH`, FTP's alone) is a run of requests too, each from
+INIT to DONE (`multistate_done`): one lists the directory, one gets each file the pattern
+matched, and a last finds nothing left, its DO making no request and the transfer going to
+COMPLETED without a DONE (`DoStep::Nothing`, `AfterRequest::Nothing`). What they share,
+`proto::ftp::Wildcard` (C's `data->wildcard`), is on `Run`, made as the first starts if the
+options say so (`Run::wildcard_match`, read as each starts, as `Curl_pretransfer` reads it), lent
+to each FTP request as its leg is planned and given back as its DONE ends; a request of another
+scheme is made without it. While the listing is read, the body goes to its reader
+(`proto::ftp::list`, `ftplistparser.c`) in place of the write handler, at the handlers' stage
+(`Pipeline::list_into`, C's `Curl_ftp_listmode` in cw-out), so it is traced, counted and held
+to the size limit as a body is.
 Authenticating is `Auth`, on the `Easy` as C keeps `state.authhost`, `state.authproxy` and
 `state.authproblem` on the handle: a `PeerAuth` for the origin and one for the proxy a request
 goes to whole, and one problem flag that stops both. Each side's method picked outlives the

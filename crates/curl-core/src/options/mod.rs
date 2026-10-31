@@ -221,6 +221,14 @@ pub struct Ftp {
     /// The URL's file name is a pattern its matches are transferred for
     /// (`CURLOPT_WILDCARDMATCH`).
     pub wildcard: bool,
+    /// Told of each file a wildcard download is about to get
+    /// (`CURLOPT_CHUNK_BGN_FUNCTION`).
+    pub chunk_begin: Option<Handler<dyn crate::handler::ChunkBeginHandler>>,
+    /// Told it is done with each (`CURLOPT_CHUNK_END_FUNCTION`).
+    pub chunk_end: Option<Handler<dyn crate::handler::ChunkEndHandler>>,
+    /// Matches the names in place of the system's `fnmatch(3)`
+    /// (`CURLOPT_FNMATCH_FUNCTION`).
+    pub fnmatch: Option<Handler<dyn crate::handler::FnMatchHandler>>,
 }
 
 /// How an FTP path's directories are reached (`CURLFTPMETHOD_*`).
@@ -288,6 +296,9 @@ impl Ftp {
         append: false,
         ascii: false,
         wildcard: false,
+        chunk_begin: None,
+        chunk_end: None,
+        fnmatch: None,
     };
 
     fn try_clone(&self) -> Result<Ftp, OutOfMemory> {
@@ -307,6 +318,9 @@ impl Ftp {
             append: self.append,
             ascii: self.ascii,
             wildcard: self.wildcard,
+            chunk_begin: self.chunk_begin.clone(),
+            chunk_end: self.chunk_end.clone(),
+            fnmatch: self.fnmatch.clone(),
         })
     }
 }

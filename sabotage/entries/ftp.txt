@@ -100,3 +100,51 @@ features: test-util debug-hooks
                 rank: ConnRank::Second,
 --- new
                 rank: ConnRank::First,
+
+=== a listing's line grows past C's buffer
+file: crates/curl-core/src/proto/ftp/list.rs
+witness: curl-core proto::ftp::list::tests::a_line_longer_than_c_s_buffer_fails_the_listing
+features: test-util debug-hooks
+--- old
+        if line.buf.len() + 2 > MAX_LINE {
+--- new
+        if line.buf.len() + 1 > MAX_LINE {
+
+=== a listing is read on past the line that failed it
+file: crates/curl-core/src/proto/ftp/list.rs
+witness: curl-core proto::ftp::list::tests::a_failed_listing_reads_no_more
+features: test-util debug-hooks
+--- old
+        if self.error.is_some() {
+            return;
+        }
+        if self.os == Os::Unknown
+--- new
+        if self.os == Os::Unknown
+
+=== a wildcard download stops after its listing
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::ftp::tests::a_wildcard_download_gets_each_file_the_listing_matches
+features: test-util debug-hooks
+--- old
+            } else if more && d.result.is_ok() {
+--- new
+            } else if more && d.result.is_err() {
+
+=== a wildcard download's listing goes to the write handler
+file: crates/curl-core/src/proto/ftp/wildcard.rs
+witness: curl-core proto::ftp::tests::a_wildcard_download_gets_each_file_the_listing_matches
+features: test-util debug-hooks
+--- old
+            self.pipeline.list_into(matching);
+--- new
+            w.matching = Some(matching);
+
+=== a wildcard download asks the size its listing gave
+file: crates/curl-core/src/proto/ftp/wildcard.rs
+witness: curl-core proto::ftp::tests::a_wildcard_download_gets_each_file_the_listing_matches
+features: test-util debug-hooks
+--- old
+            self.known_filesize = Some(size);
+--- new
+            let _ = size;

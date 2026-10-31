@@ -223,6 +223,10 @@ pub(crate) enum DoStep {
     /// `Curl_pgrsCheck` reads it within the one call (`file:`'s DO, a
     /// piece a step). Only DO's step answers it.
     Piece,
+    /// None to make: the wildcard download it is one of has no more to
+    /// get, and the transfer is over (`multistate_do`, `CURLWC_DONE`).
+    /// Only DO's step answers it.
+    Nothing,
 }
 
 /// A phase a request waits in before it is made.
@@ -708,6 +712,26 @@ impl ProtoState {
     /// The credentials a connection made for the request logs in with
     /// once, taken from it for the route, if its scheme logs in per
     /// connection (`url_set_conn_login`).
+    /// The request is one of `wildcard`'s, if it is FTP's: the only
+    /// protocol whose URL may be a pattern (C's `PROTOPT_WILDCARD`).
+    /// Another is made as if the transfer were not a wildcard download,
+    /// which it keeps.
+    pub(crate) fn give_wildcard(&mut self, wildcard: &mut Option<Box<ftp::Wildcard>>) {
+        if let ProtoState::Ftp(r) = self
+            && let Some(w) = wildcard.take()
+        {
+            r.give_wildcard(w);
+        }
+    }
+
+    /// The wildcard download the request was one of, back as it is over.
+    pub(crate) fn take_wildcard(&mut self) -> Option<Box<ftp::Wildcard>> {
+        match self {
+            ProtoState::Ftp(r) => r.take_wildcard(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn take_login(&mut self) -> Option<Credentials> {
         match self {
             ProtoState::Ftp(r) => r.take_login(),

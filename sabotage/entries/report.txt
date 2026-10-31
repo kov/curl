@@ -70,11 +70,14 @@ witness: curl-core deliver::tests::a_handler_reads_its_report_as_it_stands
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_handler_reads_its_report_as_it_stands
 --- old
-        let w = handler.write(&mut TransferCx::new(cx), piece);
+            (None, Some(handler)) => handler.write(&mut TransferCx::new(cx), piece),
 --- new
-        cx.report_mut().sizes_mut().delivered += piece.len() as u64;
-        let w = handler.write(&mut TransferCx::new(cx), piece);
-        cx.report_mut().sizes_mut().delivered -= piece.len() as u64;
+            (None, Some(handler)) => {
+                cx.report_mut().sizes_mut().delivered += piece.len() as u64;
+                let w = handler.write(&mut TransferCx::new(cx), piece);
+                cx.report_mut().sizes_mut().delivered -= piece.len() as u64;
+                w
+            }
 
 === a proxy's CONNECT answer starts the response
 file: crates/curl-core/src/deliver/mod.rs

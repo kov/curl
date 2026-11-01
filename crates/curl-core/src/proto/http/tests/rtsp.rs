@@ -761,6 +761,29 @@ WWW-Authenticate: Digest realm=\"r\", nonce=\"n\"\r\nContent-Length: 0\r\n\r\n";
     );
 }
 
+/// Asked for Negotiate, a request sends its first token at once, as
+/// HTTP's does (`Curl_http_output_auth`).
+#[test]
+fn a_negotiate_token_goes_with_the_request() {
+    let gss = crate::gss::testing::Scripted::leaked();
+    gss.then_token(b"first");
+    let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+        gss: Some(gss),
+        ..crate::libraries::Libraries::NONE
+    })
+    .unwrap();
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    e.options_mut().http.auth = crate::options::HttpAuth(AuthMethods::NEGOTIATE);
+    let ok = ok_for(1);
+    let (ran, _) = rtsp_with(e, &[&ok], false, usize::MAX, |o| o.http.user_agent = None);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        String::from_utf8_lossy(&ran.request),
+        "OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nAuthorization: Negotiate Zmlyc3Q=\r\n\r\n"
+    );
+}
+
 /// A request head may be 64 KiB but the byte C's buffer keeps for its
 /// end; one larger is not sent (`DYN_RTSP_REQ_HEADER`).
 #[test]

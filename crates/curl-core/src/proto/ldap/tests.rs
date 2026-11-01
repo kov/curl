@@ -420,6 +420,8 @@ struct World {
     root_found: Code,
     /// So many asks for an answer find none yet.
     late: usize,
+    /// So many asks for a search's entry find none yet.
+    late_entry: usize,
 }
 
 impl Default for World {
@@ -437,6 +439,7 @@ impl Default for World {
             root: Code::NO_RESULTS_RETURNED,
             root_found: Code::SUCCESS,
             late: 0,
+            late_entry: 0,
         }
     }
 }
@@ -685,6 +688,14 @@ impl Session for FakeSession {
             let mut w = self.world.lock().unwrap();
             if w.late > 0 {
                 w.late -= 1;
+                return Ok(None);
+            }
+            let entry = self
+                .answers
+                .front()
+                .is_some_and(|(_, a)| a.kind == Kind::SearchEntry);
+            if entry && w.late_entry > 0 {
+                w.late_entry -= 1;
                 return Ok(None);
             }
         }
@@ -1509,6 +1520,34 @@ fn an_answer_not_come_waits_on_the_socket() {
                     .unwrap();
             }
             assert!(seen.contains(&crate::conn::io::Events::IN), "{seen:?}");
+            drive_to_completion(m, id, &mut NoEvents).unwrap()
+        },
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+}
+
+/// A search's answer not come yet leaves the transfer waiting to read its
+/// socket.
+#[test]
+fn a_search_s_answer_not_come_waits_to_read() {
+    let ran = run_driven(
+        URL,
+        None,
+        Conversation::replies(&[b"unread"], false).greeting(),
+        |w| {
+            one_entry(w);
+            w.late_entry = 6
+        },
+        |_| {},
+        |m, id| {
+            let mut last = None;
+            for _ in 0..6 {
+                m.perform(&mut NoEvents).unwrap();
+                last = None;
+                m.sockets(&mut NoEvents, |_, events| last = Some(events))
+                    .unwrap();
+            }
+            assert_eq!(last, Some(crate::conn::io::Events::IN));
             drive_to_completion(m, id, &mut NoEvents).unwrap()
         },
     );

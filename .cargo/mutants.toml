@@ -883,6 +883,10 @@ exclude_re = [
     # search of the root is answered with entries: those the `||` reads of
     # anything else are never looked at.
     'curl-core/src/proto/ldap\.rs:\d+:46: replace && with \|\| in Request::connecting_step$',
+    # In the Ssl state an ldaps connection is already over TLS, made before
+    # the protocol connects, and in the Tls state STARTTLS's is not yet:
+    # either half of the guard decides it alone.
+    'curl-core/src/proto/ldap\.rs:\d+:56: replace && with \|\| in Request::ssl_connect$',
     # The session's Debug is for a failed test's message; nothing reads it.
     'curl-ldap/src/lib\.rs:.*: replace <impl core::fmt::Debug for Libsession>::fmt -> core::fmt::Result with Ok\(Default::default\(\)\)$',
     # The library always answers API_INFO, and with its vendor's name, and

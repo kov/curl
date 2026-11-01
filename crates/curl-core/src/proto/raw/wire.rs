@@ -84,7 +84,20 @@ pub(crate) fn serving(conversations: &[&Conversation]) -> Multi {
 /// A verbose transfer of `url`, `PORT` in it replaced, over `m`, set as
 /// `set` says.
 pub(crate) fn transfer(m: &mut Multi, url: &str, set: impl FnOnce(&mut Options)) -> Ran {
+    transfer_tracing(m, url, b"", set)
+}
+
+/// The same, `components` traced.
+fn transfer_tracing(
+    m: &mut Multi,
+    url: &str,
+    components: &[u8],
+    set: impl FnOnce(&mut Options),
+) -> Ran {
     let mut e = Easy::new();
+    let traced = crate::components::Components::new().unwrap();
+    traced.configure(components);
+    e.set_components(Some(traced));
     e.set_libraries(SharedLibraries::new(Libraries::NONE).unwrap());
     let seen = Seen::default();
     let o = e.options_mut();
@@ -124,6 +137,28 @@ pub(crate) fn against(
     let ran = transfer(&mut m, url, set);
     drop(m);
     (talk.received(), ran)
+}
+
+/// An answer read to the close ends through the writers, as C's
+/// `Curl_xfer_write_resp` writes the end (`CLIENTWRITE_EOS`): the lines
+/// C's build traces for `url` over `talk`, in its order.
+pub(crate) fn ends_through_the_writers(talk: &Conversation, url: &str) {
+    let mut m = serving(&[talk]);
+    let ran = transfer_tracing(&mut m, url, b"write", |_| {});
+    assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+    let at = ran
+        .text
+        .find("[WRITE] download_write body(type=81, blen=0) -> 0\n")
+        .unwrap_or_else(|| panic!("the end goes through no writer: {}", ran.text));
+    assert!(
+        ran.text[at..].starts_with(
+            "[WRITE] download_write body(type=81, blen=0) -> 0\n\
+             [WRITE] client_write(type=81, len=0) -> 0\n\
+             [WRITE] xfer_write_resp(len=0, eos=1) -> 0\n"
+        ),
+        "{}",
+        ran.text
+    );
 }
 
 /// A writer that pauses at its first piece, then takes them all.

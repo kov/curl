@@ -12,6 +12,13 @@ fn sent(path: &str) -> Option<String> {
     asked(path.as_bytes()).map(|(r, _)| r)
 }
 
+/// The answer's end goes through the writers.
+#[test]
+fn a_lookup_ends_through_the_writers() {
+    let talk = Conversation::new(b"151 x\r\n.\r\n", true).per_send();
+    crate::proto::raw::wire::ends_through_the_writers(&talk, "dict://127.0.0.1:PORT/d:x");
+}
+
 /// `MATCH`'s word, database and strategy are the path's fields, each
 /// missing one C's default; a fifth field is cut off.
 #[test]

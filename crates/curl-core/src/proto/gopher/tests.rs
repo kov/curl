@@ -29,6 +29,13 @@ fn a_zero_cr_or_lf_is_refused() {
 
 const MENU: &[u8] = b"iMenu results\t\terror.host\t1\r\n.\r\n";
 
+/// The answer's end goes through the writers.
+#[test]
+fn a_menu_ends_through_the_writers() {
+    let talk = Conversation::new(MENU, true).per_send();
+    crate::proto::raw::wire::ends_through_the_writers(&talk, "gopher://127.0.0.1:PORT/1/x");
+}
+
 /// The selector goes with a CRLF; the application has it, and the CRLF,
 /// as header bytes, and the answer to the server's close as the body.
 #[test]

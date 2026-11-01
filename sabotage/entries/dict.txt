@@ -31,3 +31,11 @@ witness: curl-core proto::dict::tests::a_lookup_reads_its_answer_to_the_close
                 self.answer.start(cx);
 --- new
                 {}
+
+=== an answer read to the close never ends through the writers
+file: crates/curl-core/src/proto/raw.rs
+witness: curl-core proto::dict::tests::a_lookup_ends_through_the_writers
+--- old
+                    let ended = pipeline.end(cx);
+--- new
+                    let ended = Ok(());

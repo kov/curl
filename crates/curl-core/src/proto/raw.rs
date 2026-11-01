@@ -213,8 +213,11 @@ impl ToClose {
                 Ok(Recv::WouldBlock) => return Ok(ProtoStep::Blocked),
                 Ok(Recv::Eof) => {
                     trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
-                    deliver::write_resp(cx, 0, true, Ok(()));
+                    // The end goes through the writers.
+                    let ended = pipeline.end(cx);
+                    deliver::write_resp(cx, 0, true, ended);
                     self.receiving = false;
+                    ended?;
                 }
                 Ok(Recv::Data(_)) => {
                     let mut rx = std::mem::take(lease.get().rx_mut());

@@ -560,19 +560,68 @@ pub(crate) enum Connected {
     },
 }
 
+/// A connection's slot that holds it open: the one allocation the slot
+/// has, whichever place it is in.
+#[derive(Debug)]
+struct OpenSlot(Box<ConnSlot>);
+
+impl OpenSlot {
+    /// `slot`, which must hold its connection open.
+    fn of(slot: Box<ConnSlot>) -> OpenSlot {
+        assert!(matches!(*slot, ConnSlot::Open(_)), "a connection is open");
+        OpenSlot(slot)
+    }
+
+    fn as_slot(&self) -> &ConnSlot {
+        &self.0
+    }
+
+    /// The slot again, to lease.
+    fn into_slot(self) -> Box<ConnSlot> {
+        self.0
+    }
+
+    fn into_conn(self) -> Conn {
+        match *self.0 {
+            ConnSlot::Open(conn) => conn,
+            _ => unreachable!("made open"),
+        }
+    }
+}
+
+impl std::ops::Deref for OpenSlot {
+    type Target = Conn;
+
+    fn deref(&self) -> &Conn {
+        match &*self.0 {
+            ConnSlot::Open(conn) => conn,
+            _ => unreachable!("made open"),
+        }
+    }
+}
+
+impl std::ops::DerefMut for OpenSlot {
+    fn deref_mut(&mut self) -> &mut Conn {
+        match &mut *self.0 {
+            ConnSlot::Open(conn) => conn,
+            _ => unreachable!("made open"),
+        }
+    }
+}
+
 /// Where a connection of the pool is.
 enum Place {
-    /// Kept for another transfer; always open.
-    Idle(Box<ConnSlot>),
+    /// Kept for another transfer.
+    Idle(OpenSlot),
     /// Leased: its lease has it.
     Leased(Leased),
     /// Kept for the handle whose transfer only connected
     /// (`CURLOPT_CONNECT_ONLY`), which sends and receives on it: never
     /// reused, pruned or closed to make room, but counted toward the
-    /// limits (`bits.connect_only`); always open.
-    Reserved(Box<ConnSlot>),
+    /// limits (`bits.connect_only`).
+    Reserved(OpenSlot),
     /// Multiplexing, leased by the transfers attached to it, whose leases
-    /// are keys; always open. Its count of them is the connection's
+    /// are keys. Its count of them is the connection's
     /// `Use::Leased`.
     Attached(Shared),
 }
@@ -680,25 +729,21 @@ impl Found {
 /// A connection that multiplexes, in its place.
 struct Shared {
     /// None while the step of one of its transfers has it out.
-    slot: Option<Box<ConnSlot>>,
+    slot: Option<OpenSlot>,
     route: Route,
 }
 
 impl Shared {
     fn conn(&self) -> &Conn {
-        match self.slot.as_deref() {
-            Some(ConnSlot::Open(conn)) => conn,
-            Some(_) => unreachable!("an attached connection is open"),
-            None => panic!("an attached connection is out with a step"),
-        }
+        self.slot
+            .as_deref()
+            .expect("an attached connection is out with a step")
     }
 
     fn conn_mut(&mut self) -> &mut Conn {
-        match self.slot.as_deref_mut() {
-            Some(ConnSlot::Open(conn)) => conn,
-            Some(_) => unreachable!("an attached connection is open"),
-            None => panic!("an attached connection is out with a step"),
-        }
+        self.slot
+            .as_deref_mut()
+            .expect("an attached connection is out with a step")
     }
 }
 
@@ -776,20 +821,14 @@ impl Place {
     /// The idle connection, if this is one.
     fn idle(&self) -> Option<&Conn> {
         match self {
-            Place::Idle(slot) => match &**slot {
-                ConnSlot::Open(conn) => Some(conn),
-                _ => unreachable!("an idle connection is open"),
-            },
+            Place::Idle(slot) => Some(slot),
             Place::Leased(_) | Place::Reserved(_) | Place::Attached(_) => None,
         }
     }
 
     fn idle_mut(&mut self) -> Option<&mut Conn> {
         match self {
-            Place::Idle(slot) => match &mut **slot {
-                ConnSlot::Open(conn) => Some(conn),
-                _ => unreachable!("an idle connection is open"),
-            },
+            Place::Idle(slot) => Some(slot),
             Place::Leased(_) | Place::Reserved(_) | Place::Attached(_) => None,
         }
     }
@@ -797,10 +836,7 @@ impl Place {
     /// The connection, if the pool holds it: idle or reserved.
     fn held(&self) -> Option<&Conn> {
         match self {
-            Place::Idle(slot) | Place::Reserved(slot) => match &**slot {
-                ConnSlot::Open(conn) => Some(conn),
-                _ => unreachable!("a connection held is open"),
-            },
+            Place::Idle(slot) | Place::Reserved(slot) => Some(slot),
             Place::Leased(_) | Place::Attached(_) => None,
         }
     }
@@ -808,7 +844,7 @@ impl Place {
     /// The peer the connection goes to, if over a network.
     fn destination(&self) -> Option<&Peer> {
         match self {
-            Place::Idle(slot) | Place::Reserved(slot) => slot.destination(),
+            Place::Idle(slot) | Place::Reserved(slot) => slot.as_slot().destination(),
             Place::Leased(Leased {
                 route: Route::Net(tcp),
                 ..
@@ -1159,13 +1195,10 @@ impl Pool {
                 else {
                     unreachable!("just found idle");
                 };
-                let ConnSlot::Open(conn) = &mut *slot else {
-                    unreachable!("an idle connection is open");
-                };
-                conn.use_ = Use::Leased(NonZeroU32::MIN);
+                slot.use_ = Use::Leased(NonZeroU32::MIN);
                 return Ok(Some(Took::Lease(ConnLease {
                     id,
-                    conn: Some(slot),
+                    conn: Some(slot.into_slot()),
                     home: here.clone(),
                 })));
             }
@@ -1235,7 +1268,7 @@ impl Pool {
         conn.served = true;
         ConnLease {
             id,
-            conn: l.shared.slot.take(),
+            conn: l.shared.slot.take().map(OpenSlot::into_slot),
             home: Home::Share(share.clone()),
         }
     }
@@ -1281,7 +1314,7 @@ impl Pool {
         // Room made first: the slot is not lost to a refusal.
         let pushed = self.lent.try_push(Lent {
             shared: Shared {
-                slot: Some(slot),
+                slot: Some(OpenSlot::of(slot)),
                 route,
             },
             share,
@@ -1323,7 +1356,7 @@ impl Pool {
         let l = self.lent.swap_remove(at);
         LentBack::Last(ConnLease {
             id,
-            conn: l.shared.slot,
+            conn: l.shared.slot.map(OpenSlot::into_slot),
             home,
         })
     }
@@ -1371,17 +1404,10 @@ impl Pool {
         while let Some(id) = self.conns.next_after(cursor) {
             cursor = Some(id);
             let (conn, idle) = match self.conns.get_mut(id) {
-                Some(Place::Idle(slot)) => match &mut **slot {
-                    ConnSlot::Open(conn) => (conn, true),
-                    _ => unreachable!("an idle connection is open"),
-                },
-                Some(Place::Reserved(slot)) => match &mut **slot {
-                    ConnSlot::Open(conn) => (conn, false),
-                    _ => unreachable!("a reserved connection is open"),
-                },
+                Some(Place::Idle(slot)) => (&mut **slot, true),
+                Some(Place::Reserved(slot)) => (&mut **slot, false),
                 Some(Place::Attached(shared)) => match shared.slot.as_deref_mut() {
-                    Some(ConnSlot::Open(conn)) => (conn, false),
-                    Some(_) => unreachable!("an attached connection is open"),
+                    Some(conn) => (conn, false),
                     // Out with a transfer's step, which keeps it.
                     None => continue,
                 },
@@ -1429,10 +1455,7 @@ impl Pool {
     /// has it there.
     pub(crate) fn reserved_mut(&mut self, id: ConnId) -> Option<&mut Conn> {
         match self.conns.get_mut(id)? {
-            Place::Reserved(slot) => match &mut **slot {
-                ConnSlot::Open(conn) => Some(conn),
-                _ => unreachable!("a reserved connection is open"),
-            },
+            Place::Reserved(slot) => Some(slot),
             Place::Idle(_) | Place::Leased(_) | Place::Attached(_) => None,
         }
     }
@@ -1452,9 +1475,7 @@ impl Pool {
         let Some(Place::Reserved(slot)) = self.conns.remove(id) else {
             unreachable!("checked above");
         };
-        let ConnSlot::Open(conn) = *slot else {
-            unreachable!("a reserved connection is open");
-        };
+        let conn = slot.into_conn();
         let number = conn.number;
         let left = self.conns.len();
         discard(conn, true, false, left, exits, now);
@@ -1545,8 +1566,8 @@ impl Pool {
             conn.served = true;
             let number = conn.number;
             *self.conns.get_mut(id).expect("checked above") = match finish.reserve {
-                true => Place::Reserved(slot),
-                false => Place::Idle(slot),
+                true => Place::Reserved(OpenSlot::of(slot)),
+                false => Place::Idle(OpenSlot::of(slot)),
             };
             return match over_limit(&mut self.conns, limit, Evicted::of(here), exits, now) {
                 Some((full, closed)) if closed == Some(id) => Released::Evicted(full),
@@ -1601,7 +1622,7 @@ impl Pool {
         let place = self.conns.get_mut(id).expect("leased from this pool");
         assert!(matches!(place, Place::Leased(_)), "{id:?} is not leased");
         *place = Place::Attached(Shared {
-            slot: Some(slot),
+            slot: Some(OpenSlot::of(slot)),
             route,
         });
     }
@@ -1672,7 +1693,7 @@ impl Pool {
         // Out with the step that joined it.
         ConnLease {
             id,
-            conn: shared.slot.take(),
+            conn: shared.slot.take().map(OpenSlot::into_slot),
             home: here.clone(),
         }
     }
@@ -1706,7 +1727,7 @@ impl Pool {
         }) else {
             unreachable!("just found attached");
         };
-        shared.slot
+        shared.slot.map(OpenSlot::into_slot)
     }
 
     /// Take the connection a key names out of its place, for its
@@ -1718,7 +1739,7 @@ impl Pool {
             return;
         }
         let slot = self.shared_mut(lease).slot.take();
-        lease.conn = Some(slot.expect("out with another step"));
+        lease.conn = Some(slot.expect("out with another step").into_slot());
     }
 
     /// A key to the connection `lease` has out in its step, for a
@@ -1762,7 +1783,7 @@ impl Pool {
         };
         let shared = self.shared_mut(lease);
         assert!(shared.slot.is_none(), "{id:?} is in its place already");
-        shared.slot = Some(slot);
+        shared.slot = Some(OpenSlot::of(slot));
     }
 
     /// The connection a lease names, wherever it is: with the lease, or,
@@ -1774,12 +1795,12 @@ impl Pool {
         }
         if let Home::Share(_) = lease.home {
             let lent = self.lent_of(lease).expect("a key to a lent connection");
-            return lent.shared.slot.as_deref();
+            return lent.shared.slot.as_ref().map(OpenSlot::as_slot);
         }
         let Some(Place::Attached(shared)) = self.conns.get(lease.id) else {
             panic!("a key to {:?}, which is not attached", lease.id);
         };
-        shared.slot.as_deref()
+        shared.slot.as_ref().map(OpenSlot::as_slot)
     }
 
     /// Connections in the pool, busy or idle.
@@ -2135,13 +2156,17 @@ fn close(
     now: Instant,
 ) {
     match conns.remove(id) {
-        Some(Place::Idle(slot)) => match *slot {
-            ConnSlot::Open(conn) => {
-                let left = conns.len();
-                discard(conn, false, evicted == Evicted::Linger, left, exits, now);
-            }
-            _ => unreachable!("an idle connection is open"),
-        },
+        Some(Place::Idle(slot)) => {
+            let left = conns.len();
+            discard(
+                slot.into_conn(),
+                false,
+                evicted == Evicted::Linger,
+                left,
+                exits,
+                now,
+            );
+        }
         Some(Place::Leased(_)) => panic!("{id:?} is leased"),
         Some(Place::Reserved(_)) => panic!("{id:?} is reserved"),
         Some(Place::Attached(_)) => panic!("{id:?} is attached"),

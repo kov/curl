@@ -224,7 +224,7 @@ impl Route {
             ip: _,
             proxy,
             tls,
-            // Compared field by field in `reaches`.
+            // `RouteCold::suits`.
             cold: _,
             delegation,
         } = have;
@@ -237,55 +237,16 @@ impl Route {
             cold: _,
             delegation: want_delegation,
         } = want;
-        let scheme = want.origin.scheme();
-        // A connection over TLS from the start serves a transfer not, of
-        // its family, that may reuse TLS, made with the settings that
-        // transfer would upgrade with (`url_match_ssl_use`).
-        let tls_reused = want_tls.is_none()
-            && tls.is_some()
-            && scheme.reuses_tls()
-            && tls.as_deref() == want.upgrade();
-        // The TLS a transfer may upgrade to, or is made with from the
-        // start, is made with every setting the connection's is, which it
-        // was made with or would upgrade with (`url_match_ssl_config`
-        // with `may_tls`).
-        let upgrade_same = !want.use_ssl().may()
-            || tls.as_deref().or(have.upgrade()) == want_tls.as_deref().or(want.upgrade());
-        // A connection logged in once serves only the same credentials
-        // (`url_match_auth`).
-        let login_same = !scheme.logs_in_per_connection()
-            || match (have.login(), want.login()) {
-                (Some(have), Some(want)) => have.same(want),
-                (have, want) => have.is_none() && want.is_none(),
-            };
-        // An FTP connection serves only a transfer that would set it up the
-        // same way (`Curl_ftp_conns_match`).
-        let ftp_same = match (have.cold.as_deref(), want.cold.as_deref()) {
-            (_, None) | (None, _) => true,
-            (Some(have_cold), Some(want_cold)) => match (&have_cold.ftp, &want_cold.ftp) {
-                (Some(h), Some(w)) => h.serves(w, have_cold.use_ssl, want_cold.use_ssl),
-                _ => true,
-            },
-        };
-        // An SSH connection serves only a transfer that found the same key
-        // files, both having them (`ssh_config_matches`).
-        fn keys(cold: Option<&RouteCold>) -> Option<&crate::proto::ssh::Keys> {
-            cold.and_then(|c| c.ssh.as_ref())
-        }
-        let ssh_same = match (keys(have.cold.as_deref()), keys(want.cold.as_deref())) {
-            (Some(h), Some(w)) => h.same(w),
-            (None, None) => true,
-            _ => false,
-        };
+        let none = &RouteCold::NONE;
+        let cold = have.cold.as_deref().unwrap_or(none);
+        let want_cold = want.cold.as_deref().unwrap_or(none);
         proxy.as_ref().map(ProxyRoute::key) == want_proxy.as_ref().map(ProxyRoute::key)
-            && ftp_same
-            && ssh_same
-            // TLS made with every setting the transfer's has, or none on
-            // both (`url_match_ssl_config`): a transfer that verifies its
-            // peer never takes a connection made without.
-            && (tls.as_deref() == want_tls.as_deref() || tls_reused)
-            && upgrade_same
-            && login_same
+            && cold.suits(
+                want_cold,
+                tls.as_deref(),
+                want_tls.as_deref(),
+                want.origin.scheme(),
+            )
             && delegation == want_delegation
     }
 }
@@ -401,14 +362,98 @@ impl FtpSetup {
 }
 
 impl RouteCold {
-    /// Whether it holds nothing a route without it does not.
+    /// What a route without any of it has.
+    const NONE: RouteCold = RouteCold {
+        local: crate::options::LocalBind::NONE,
+        login: None,
+        upgrade: None,
+        use_ssl: crate::options::UseSsl::None,
+        ftp: None,
+        ssh: None,
+    };
+
+    /// Whether it holds nothing a route without it does not. Every field
+    /// by name, so that one added does not compile until it is asked.
     pub(crate) fn is_empty(&self) -> bool {
-        !self.local.binds()
-            && self.login.is_none()
-            && self.upgrade.is_none()
-            && self.use_ssl == crate::options::UseSsl::None
-            && self.ftp.is_none()
-            && self.ssh.is_none()
+        let RouteCold {
+            local,
+            login,
+            upgrade,
+            use_ssl,
+            ftp,
+            ssh,
+        } = self;
+        !local.binds()
+            && login.is_none()
+            && upgrade.is_none()
+            && *use_ssl == crate::options::UseSsl::None
+            && ftp.is_none()
+            && ssh.is_none()
+    }
+
+    /// Whether a connection of a route with `self` and TLS made with `tls`
+    /// suits a transfer of `scheme` with `want` and `want_tls`
+    /// (`url_match_ssl_config`, `url_match_auth`, and each scheme's match).
+    /// Every field by name, so that one added does not compile until it is
+    /// compared here or said why not.
+    fn suits(
+        &self,
+        want: &RouteCold,
+        tls: Option<&crate::tls::TlsIdentity>,
+        want_tls: Option<&crate::tls::TlsIdentity>,
+        scheme: Scheme,
+    ) -> bool {
+        let RouteCold {
+            // `Route::reaches`, before C's notes of what the search saw.
+            local: _,
+            login,
+            upgrade,
+            use_ssl,
+            ftp,
+            ssh,
+        } = self;
+        let RouteCold {
+            local: _,
+            login: want_login,
+            upgrade: want_upgrade,
+            use_ssl: want_use_ssl,
+            ftp: want_ftp,
+            ssh: want_ssh,
+        } = want;
+        let (upgrade, want_upgrade) = (upgrade.as_deref(), want_upgrade.as_deref());
+        // A connection over TLS from the start serves a transfer not, of
+        // its family, that may reuse TLS, made with the settings that
+        // transfer would upgrade with (`url_match_ssl_use`).
+        let tls_reused =
+            want_tls.is_none() && tls.is_some() && scheme.reuses_tls() && tls == want_upgrade;
+        // The TLS a transfer may upgrade to, or is made with from the
+        // start, is made with every setting the connection's is, which it
+        // was made with or would upgrade with (`url_match_ssl_config`
+        // with `may_tls`).
+        let upgrade_same = !want_use_ssl.may() || tls.or(upgrade) == want_tls.or(want_upgrade);
+        // A connection logged in once serves only the same credentials
+        // (`url_match_auth`).
+        let login_same = !scheme.logs_in_per_connection()
+            || match (login, want_login) {
+                (Some(have), Some(want)) => have.same(want),
+                (have, want) => have.is_none() && want.is_none(),
+            };
+        // An FTP connection serves only a transfer that would set it up the
+        // same way (`Curl_ftp_conns_match`).
+        let ftp_same = match (ftp, want_ftp) {
+            (Some(have), Some(want)) => have.serves(want, *use_ssl, *want_use_ssl),
+            _ => true,
+        };
+        // An SSH connection serves only a transfer that found the same key
+        // files, both having them (`ssh_config_matches`).
+        let ssh_same = match (ssh, want_ssh) {
+            (Some(have), Some(want)) => have.same(want),
+            (have, want) => have.is_none() && want.is_none(),
+        };
+        // TLS made with every setting the transfer's has, or none on both
+        // (`url_match_ssl_config`): a transfer that verifies its peer never
+        // takes a connection made without.
+        ftp_same && ssh_same && (tls == want_tls || tls_reused) && upgrade_same && login_same
     }
 }
 
@@ -488,12 +533,6 @@ impl NetRoute {
     /// What each socket's local end is bound to, if anything.
     pub(crate) fn local(&self) -> Option<&crate::options::LocalBind> {
         self.cold.as_deref().map(|c| &c.local).filter(|l| l.binds())
-    }
-
-    /// The credentials a connection over it logs in with once, if its
-    /// scheme does.
-    pub(crate) fn login(&self) -> Option<&crate::auth::creds::Credentials> {
-        self.cold.as_deref().and_then(|c| c.login.as_ref())
     }
 
     /// The TLS settings a connection over it is upgraded with, if it may

@@ -198,8 +198,10 @@ witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
 --- old
     line.enters(easy);
     match reach(easy, Call::Prepare) {
+        Err(code) => Err(code),
 --- new
     match reach(easy, Call::Prepare) {
+        Err(code) => Err(code),
 
 === a NULL buffer leaves no line on entering
 file: crates/curl-sys-abi/src/ws.rs
@@ -303,3 +305,31 @@ features: test-util
         })
 --- new
         tls_native_in(&self.slots, Some(&self.caches.pool), id)
+
+=== a send past its frame's end forgets what went
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
+--- old
+        Err(Stop::Again) if counted > 0 => Ok(Sent::BytesThenWouldBlock(counted)),
+--- new
+        Err(Stop::Again) if counted > usize::MAX - 1 => Ok(Sent::BytesThenWouldBlock(counted)),
+
+=== a raw refusal leaves no line on entering
+file: crates/curl-sys-abi/src/ws.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
+--- old
+    line.enters(easy);
+    match reach(easy, Call::Prepare) {
+        Err(code) => code,
+--- new
+    match reach(easy, Call::Prepare) {
+        Err(code) => code,
+
+=== a detached handle's SSL pointer is hidden
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::a_detached_connection_shows_its_ssl_pointer_once_taken_up
+--- old
+            return Ok(native.flatten());
+--- new
+            drop(native);
+            return Ok(None);

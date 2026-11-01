@@ -162,9 +162,10 @@ pub(crate) fn lent_send<H: Host>(
 pub(crate) fn lent_prepare<H: Host>(
     cx: &mut StepCx<'_, H>,
 ) -> Result<crate::ws::Prepared, ErrorKind> {
+    let raw = cx.easy().options().ws.raw;
     let prepared = cx.with_ws_conn(|cx, conn| {
         let (ws, mut wire) = lent(cx, conn);
-        crate::proto::ws::api_prepare(ws, &mut wire, true)
+        crate::proto::ws::api_prepare(ws, &mut wire, raw, true)
     });
     prepared.unwrap_or_else(|| {
         let why = format_args!("[WS] Not a websocket transfer");

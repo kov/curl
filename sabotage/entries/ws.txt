@@ -70,11 +70,11 @@ witness: curl-core deliver::held::tests::an_empty_body_is_held_apart_from_body
 
 === a raw send's size without CURLWS_OFFSET is ignored
 file: crates/curl-sys-abi/src/ws.rs
-witness: curl-sys-abi ws::tests::raw_sends_take_no_size_and_no_flags
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
 --- old
-    if fragsize == 0 && flags == 0 {
+        } else if fragsize != 0 || flags != 0 {
 --- new
-    if flags & ffi::CURLWS_OFFSET as c_uint == 0 {
+        } else if flags != 0 {
 
 === a connection only made is closed by the server's end
 file: crates/curl-core/src/proto/http.rs

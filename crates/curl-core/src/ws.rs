@@ -69,6 +69,9 @@ pub enum FrameLen {
 pub enum Sent {
     Bytes(usize),
     WouldBlock,
+    /// These went, and the connection took no more of what was given,
+    /// which goes past the frame (`CURLE_AGAIN`, with a count).
+    BytesThenWouldBlock(usize),
 }
 
 /// What a receive got: payload bytes of a frame, or none for now.

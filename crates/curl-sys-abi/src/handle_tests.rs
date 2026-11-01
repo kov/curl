@@ -7555,7 +7555,7 @@ fn a_ws_send_of_no_frame_says_c_s_lines() {
             b"HTTP/1.1 101 Switching\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
         )
         .unwrap();
-        let mut got = vec![0u8; 8 + 2];
+        let mut got = vec![0u8; 8 + 2 + 7];
         peer.read_exact(&mut got).unwrap();
     });
     let c = curl_easy_init();
@@ -7662,9 +7662,123 @@ fn a_ws_send_of_no_frame_says_c_s_lines() {
             "[WS] curl_ws_send(len=1, fragsize=-1, flags=20, raw=0) -> 0, 1\n",
         ]
     );
+    // Bytes past the frame's end: what went is told with `CURLE_AGAIN`.
+    let frame_of_one = (CURLWS_TEXT | CURLWS_OFFSET, 1);
+    assert_eq!(
+        send(ab, 2, frame_of_one.1, frame_of_one.0),
+        (ffi::CURLE_AGAIN, 1)
+    );
+    assert_eq!(
+        said(&mut asks).last().map(String::as_str),
+        Some("[WS] curl_ws_send(len=2, fragsize=1, flags=21, raw=0) -> 81, 1\n")
+    );
+    // Raw, each refusal names the arguments as given.
+    assert_eq!(
+        long(c, ffi::CURLOPT_WS_OPTIONS, ffi::CURLWS_RAW_MODE),
+        CURLE_OK
+    );
+    let refused = send(ptr::null(), 0, 0, 0).0;
+    assert_eq!(refused, CURLE_BAD_FUNCTION_ARGUMENT);
+    assert_eq!(
+        said(&mut asks),
+        [
+            "[WS] curl_ws_send(len=0, fragsize=0, flags=0), raw=1\n",
+            "[WS] buffer is NULL in raw mode\n",
+        ]
+    );
+    // SAFETY: a live handle, the byte, and no count.
+    let refused = unsafe { curl_ws_send(c, x.cast(), 1, ptr::null_mut(), 0, 0) };
+    assert_eq!(refused, CURLE_BAD_FUNCTION_ARGUMENT);
+    assert_eq!(
+        said(&mut asks),
+        [
+            "[WS] curl_ws_send(len=1, fragsize=0, flags=0), raw=1\n",
+            "[WS] sent is NULL in raw mode\n",
+        ]
+    );
+    assert_eq!(send(x, 1, 1, 0).0, CURLE_BAD_FUNCTION_ARGUMENT);
+    assert_eq!(
+        said(&mut asks),
+        [
+            "[WS] curl_ws_send(len=1, fragsize=1, flags=0), raw=1\n",
+            "[WS] fragsize and flags must be zero in raw mode\n",
+        ]
+    );
+    assert_eq!(send(x, 1, 0, CURLWS_TEXT).0, CURLE_BAD_FUNCTION_ARGUMENT);
+    assert_eq!(
+        said(&mut asks),
+        [
+            "[WS] curl_ws_send(len=1, fragsize=0, flags=1), raw=1\n",
+            "[WS] fragsize and flags must be zero in raw mode\n",
+        ]
+    );
     server.join().unwrap();
     // SAFETY: a handle no call uses any more.
     unsafe { curl_easy_cleanup(c) };
+}
+
+/// `CURLINFO_TLS_SSL_PTR` on a connection a perform only made, the handle
+/// out of its multi: NULL as the transfer let it go, the session once a
+/// send took it up, as C's `data->conn` makes it.
+#[test]
+fn a_detached_connection_shows_its_ssl_pointer_once_taken_up() {
+    use crate::easy::curl_easy_send;
+    use curl_core::libraries::{Libraries, Library, SharedLibraries};
+    use curl_core::tls::fake::{FINISHED, FakeTls, HELLO, WELCOME};
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut hello = vec![0u8; HELLO.len()];
+        peer.read_exact(&mut hello).unwrap();
+        peer.write_all(WELCOME).unwrap();
+        let mut finished = vec![0u8; FINISHED.len()];
+        peer.read_exact(&mut finished).unwrap();
+        let mut rest = Vec::new();
+        let _until_closed = peer.read_to_end(&mut rest);
+    });
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let c = curl_easy_init();
+    // SAFETY: a live handle.
+    let easy = unsafe { crate::easy::handle(c) }.unwrap();
+    let set = easy.with_easy(|e| match e {
+        crate::easy::EasyRef::Easy(e) => e.set_libraries(libraries),
+        crate::easy::EasyRef::Frame(..) => unreachable!("no callback runs"),
+    });
+    assert!(set.is_ok());
+    let url = std::ffi::CString::new(format!("https://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_CONNECT_ONLY, 1), CURLE_OK);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let ssl = || {
+        let mut tsi: *mut ffi::curl_tlssessioninfo = ptr::null_mut();
+        // SAFETY: a live handle, and a pointer to the info's type.
+        let code = unsafe { curl_easy_getinfo(c, ffi::CURLINFO_TLS_SSL_PTR, &raw mut tsi) };
+        assert_eq!(code, CURLE_OK);
+        // SAFETY: the handle's own, valid until its next call.
+        unsafe { (*tsi).internals }
+    };
+    assert!(ssl().is_null(), "no call took it up");
+    let mut n = 0;
+    // SAFETY: a live handle, the byte and a count to write.
+    let sent = unsafe { curl_easy_send(c, b"x".as_ptr().cast(), 1, &raw mut n) };
+    assert_eq!((sent, n), (CURLE_OK, 1));
+    assert!(!ssl().is_null(), "taken up");
+    // SAFETY: a handle no call uses any more.
+    unsafe { curl_easy_cleanup(c) };
+    server.join().unwrap();
 }
 
 /// CURLOPT_WS_OPTIONS sets raw mode and no auto-pong by their bits, any

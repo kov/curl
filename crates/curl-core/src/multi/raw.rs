@@ -815,7 +815,9 @@ fn ws_on_conn(
             crate::proto::ws::api_start_frame(ws, &mut wire, raw, flags, len)
                 .map(|()| Answer::Started)
         }
-        Call::Prepare => crate::proto::ws::api_prepare(ws, &mut wire, false).map(Answer::Prepared),
+        Call::Prepare => {
+            crate::proto::ws::api_prepare(ws, &mut wire, raw, false).map(Answer::Prepared)
+        }
         Call::SendMore(bytes) => {
             crate::proto::ws::api_send_more(ws, &mut wire, bytes, false).map(Answer::Sent)
         }

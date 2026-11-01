@@ -322,15 +322,29 @@ impl WsConn {
     /// or as more of the frame under way, as `flags` say
     /// (`ws_enc_send`): how much of it went, the rest to be given again;
     /// waiting for the connection inside a callback.
+    #[cfg(test)]
     pub(crate) fn send(
+        &mut self,
+        wire: &mut dyn Wire,
+        buffer: &[u8],
+        len: FrameLen,
+        flags: SendFlags,
+        in_callback: bool,
+    ) -> Result<usize, Stop> {
+        self.send_counting(wire, buffer, len, flags, in_callback, &mut 0)
+    }
+
+    /// `send`, `sent` counting what went even as it stops: bytes past the
+    /// frame's end stop it with the frame's gone.
+    fn send_counting(
         &mut self,
         wire: &mut dyn Wire,
         mut buffer: &[u8],
         len: FrameLen,
         flags: SendFlags,
         in_callback: bool,
+        sent: &mut usize,
     ) -> Result<usize, Stop> {
-        let mut sent = 0;
         if self.enc.remain > 0 || !self.sendbuf.is_empty() {
             // A frame is under way, its payload in the buffer or to come.
             let buffered = self.sendbuf_payload;
@@ -379,18 +393,18 @@ impl WsConn {
             }
             match self.flush(wire, in_callback) {
                 Ok(()) if self.sendbuf_payload > 0 => {
-                    sent += self.sendbuf_payload;
+                    *sent += self.sendbuf_payload;
                     buffer = &buffer[self.sendbuf_payload..];
                     self.sendbuf_payload = 0;
                 }
-                Ok(()) => return Ok(sent),
+                Ok(()) => return Ok(*sent),
                 Err(Stop::Again) if self.sendbuf_payload > self.sendbuf.len() => {
                     // Blocked with some of the payload gone: that much
                     // went.
                     let flushed = self.sendbuf_payload - self.sendbuf.len();
-                    sent += flushed;
+                    *sent += flushed;
                     self.sendbuf_payload -= flushed;
-                    return Ok(sent);
+                    return Ok(*sent);
                 }
                 Err(Stop::Again) => {
                     // Blocked before any of the payload went: a send of
@@ -405,7 +419,7 @@ impl WsConn {
                 Err(stop) => return Err(stop),
             }
         }
-        Ok(sent)
+        Ok(*sent)
     }
 
     /// Send the application's `buffer` as it is, what is encoded first
@@ -598,6 +612,14 @@ fn sent_of(sent: Result<usize, Stop>) -> Result<Sent, ErrorKind> {
     }
 }
 
+/// `sent_of`, of a send that stopped with `counted` gone.
+fn counted_of(sent: Result<usize, Stop>, counted: usize) -> Result<Sent, ErrorKind> {
+    match sent {
+        Err(Stop::Again) if counted > 0 => Ok(Sent::BytesThenWouldBlock(counted)),
+        sent => sent_of(sent),
+    }
+}
+
 /// The application sends `bytes` (`curl_ws_send`): as a frame `len`
 /// long, or as more of the frame under way, as `flags` say; as they are,
 /// if frames are `raw`. Inside a callback, the sends wait for the
@@ -629,27 +651,30 @@ pub(crate) fn api_send(
         }
         return sent_of(ws.send_raw(wire, bytes, in_callback));
     }
-    let sent = ws.send(wire, bytes, len, flags, in_callback);
+    let mut counted = 0;
+    let sent = ws.send_counting(wire, bytes, len, flags, in_callback, &mut counted);
     let (code, went) = match sent {
         Ok(went) => (0, went),
-        Err(Stop::Again) => (crate::error::AGAIN_NUMBER, 0),
+        Err(Stop::Again) => (crate::error::AGAIN_NUMBER, counted),
         Err(Stop::Failed(kind)) => (kind.number(), 0),
     };
     wire.ws(format_args!(
         "curl_ws_send(len={n}, fragsize={fragsize}, flags={bits:x}, raw={raw_n}) -> {code}, {went}"
     ));
-    sent_of(sent)
+    counted_of(sent, counted)
 }
 
 /// Get ready for a send (`Call::Prepare`): as `WsConn::send` starts, what
-/// waits to go goes first unless a frame is under way.
+/// waits to go goes first unless a frame is under way; if frames are `raw`
+/// it goes whatever waits.
 pub(crate) fn api_prepare(
     ws: &mut WsConn,
     wire: &mut dyn Wire,
+    raw: bool,
     in_callback: bool,
 ) -> Result<crate::ws::Prepared, ErrorKind> {
     use crate::ws::Prepared;
-    if ws.enc.remain > 0 || !ws.sendbuf.is_empty() {
+    if !raw && (ws.enc.remain > 0 || !ws.sendbuf.is_empty()) {
         return Ok(Prepared::UnderWay);
     }
     match ws.flush(wire, in_callback) {
@@ -670,7 +695,16 @@ pub(crate) fn api_send_more(
         kind: None,
         more: false,
     };
-    sent_of(ws.send(wire, bytes, FrameLen::These, none, in_callback))
+    let mut counted = 0;
+    let sent = ws.send_counting(
+        wire,
+        bytes,
+        FrameLen::These,
+        none,
+        in_callback,
+        &mut counted,
+    );
+    counted_of(sent, counted)
 }
 
 /// The application starts a frame `len` long, its payload to follow in

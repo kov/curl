@@ -360,9 +360,9 @@ witness: curl-core proto::http::tests::h3_trace::a_refused_quic_attempt_starts_t
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::h3_trace::a_race_both_attempts_lose_fails_with_the_first_s_failure
 --- old
-        Second::Started(_) if race.second.is_none() => Some(failed),
+        Second::Started(_) if race.second.running().is_none() => Some(failed),
 --- new
-        Second::Started(_) if race.second.is_none() => Some(ErrorKind::SslConnectError).filter(|_| failed != ErrorKind::OutOfMemory),
+        Second::Started(_) if race.second.running().is_none() => Some(ErrorKind::SslConnectError).filter(|_| failed != ErrorKind::OutOfMemory),
 
 === the attempt beside the lead is not driven
 file: crates/curl-core/src/multi/state.rs
@@ -429,10 +429,10 @@ witness: curl-core proto::http::tests::h3_trace::a_tcp_first_failing_last_still_
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::h3_trace::a_tcp_first_and_quic_second_failing_fail_with_tcp_s_failure
 --- old
-        Second::Started(_) if race.second.is_none() => Some(failed),
+        Second::Started(_) if race.second.running().is_none() => Some(failed),
         Second::None => Some(failed),
 --- new
-        Second::Started(_) if race.second.is_none() && race.lead == super::Attempt::Second => {
+        Second::Started(_) if race.second.running().is_none() && race.lead == super::Attempt::Second => {
             Some(failed)
         }
         Second::None => Some(failed),
@@ -908,13 +908,13 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_attempts
 --- old
         for m in [
-            failed_first.or_else(|| d.lease.fail_setup()),
-            failed_second.or(second),
+            failed.or_else(|| d.lease.fail_setup()),
+            second.into_machine(),
         ]
 --- new
         for m in [
-            failed_second.or(second),
-            failed_first.or_else(|| d.lease.fail_setup()),
+            second.into_machine(),
+            failed.or_else(|| d.lease.fail_setup()),
         ]
 
 === a race's second loser once dialed is discarded on the transfer's trace
@@ -922,10 +922,10 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_both_tunnels_fails
 --- old
             (Some(race), SetupPoint::Dialed(_)) => {
-                let kept = &mut race.failed[a.index()];
+                // No one drives it again: what its handshake held goes now.
 --- new
-            (Some(race), SetupPoint::Dialed(_)) if race.failed.iter().all(Option::is_none) => {
-                let kept = &mut race.failed[a.index()];
+            (Some(race), SetupPoint::Dialed(_)) if race.failed.is_none() => {
+                // No one drives it again: what its handshake held goes now.
 
 === a race that every attempt failed names no chain
 file: crates/curl-core/src/multi/state.rs

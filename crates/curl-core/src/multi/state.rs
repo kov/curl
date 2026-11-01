@@ -419,7 +419,7 @@ impl Connecting {
             ..
         } = self;
         let machine = match (a, race.as_deref_mut()) {
-            (Attempt::Second, Some(race)) => race.second.as_mut().expect("the second runs"),
+            (Attempt::Second, Some(race)) => race.second.running_mut().expect("the second runs"),
             (Attempt::Second, None) => panic!("a second runs in a race"),
             (Attempt::First, _) => lease.setting_up(),
         };
@@ -464,8 +464,8 @@ struct Race {
     answer: TryArc<Answer>,
     /// The connection's makings, which the second is made with.
     makings: (Closer, ConnSettings, Instant),
-    /// The second attempt, once it started; none once it failed.
-    second: Option<ConnectMachine>,
+    /// The second attempt.
+    second: RaceSecond,
     /// Which attempt leads: a second over TCP once it starts, else the
     /// first.
     lead: Attempt,
@@ -475,13 +475,70 @@ struct Race {
     /// The first failed, with this (`ballers[0].result`), which is the
     /// setup's if the second fails too.
     first_failed: Option<ErrorKind>,
-    /// Each attempt that failed once dialed, the first's then the
-    /// second's, its connection kept until the race ends, as C keeps a
-    /// failed baller's chain.
-    failed: [Option<ConnectMachine>; 2],
+    /// The first attempt, if it failed once dialed: its connection kept
+    /// until the race ends, as C keeps a failed baller's chain. The
+    /// lease holds it failed, with no machine.
+    failed: Option<ConnectMachine>,
     /// The first's peer answered, found once asked (`reply_ms`), which is
     /// not asked again.
     replied: bool,
+}
+
+/// Where a race's second attempt stands.
+#[derive(Debug)]
+enum RaceSecond {
+    /// It has not started.
+    Unstarted,
+    /// It runs beside the first.
+    Running(ConnectMachine),
+    /// It failed once dialed: its connection is kept until the race ends,
+    /// as C keeps a failed baller's chain.
+    Kept(ConnectMachine),
+    /// It failed before it dialed, or it won or lost and its machine went.
+    Gone,
+}
+
+impl RaceSecond {
+    fn running(&self) -> Option<&ConnectMachine> {
+        match self {
+            RaceSecond::Running(m) => Some(m),
+            RaceSecond::Unstarted | RaceSecond::Kept(_) | RaceSecond::Gone => None,
+        }
+    }
+
+    fn running_mut(&mut self) -> Option<&mut ConnectMachine> {
+        match self {
+            RaceSecond::Running(m) => Some(m),
+            RaceSecond::Unstarted | RaceSecond::Kept(_) | RaceSecond::Gone => None,
+        }
+    }
+
+    /// The machine, if it runs, the attempt gone.
+    fn take_running(&mut self) -> Option<ConnectMachine> {
+        if !matches!(self, RaceSecond::Running(_)) {
+            return None;
+        }
+        match std::mem::replace(self, RaceSecond::Gone) {
+            RaceSecond::Running(m) => Some(m),
+            _ => unreachable!("it was running"),
+        }
+    }
+
+    /// Its machine, running or kept, if it has one.
+    fn into_machine(self) -> Option<ConnectMachine> {
+        match self {
+            RaceSecond::Running(m) | RaceSecond::Kept(m) => Some(m),
+            RaceSecond::Unstarted | RaceSecond::Gone => None,
+        }
+    }
+
+    /// Its machine, if it failed once dialed.
+    fn kept(&self) -> Option<&ConnectMachine> {
+        match self {
+            RaceSecond::Kept(m) => Some(m),
+            RaceSecond::Unstarted | RaceSecond::Running(_) | RaceSecond::Gone => None,
+        }
+    }
 }
 
 /// One of a race's attempts: the first, the lease's, or the second.
@@ -492,14 +549,6 @@ enum Attempt {
 }
 
 impl Attempt {
-    /// Its place among the race's ballers: the first's 0, the second's 1.
-    fn index(self) -> usize {
-        match self {
-            Attempt::First => 0,
-            Attempt::Second => 1,
-        }
-    }
-
     /// The attempt beside it.
     fn other(self) -> Attempt {
         match self {
@@ -1109,16 +1158,12 @@ fn multi_done<H: Host>(
     // with the connection, on no transfer's trace, their sockets
     // announced gone.
     let raced = d.race.take().map(|race| {
-        let Race {
-            second,
-            failed: [failed_first, failed_second],
-            ..
-        } = *race;
+        let Race { second, failed, .. } = *race;
         let me = cx.me;
         let mut close = |m: ConnectMachine| m.close(&mut cx.rest.announcing(me));
         for m in [
-            failed_first.or_else(|| d.lease.fail_setup()),
-            failed_second.or(second),
+            failed.or_else(|| d.lease.fail_setup()),
+            second.into_machine(),
         ]
         .into_iter()
         .flatten()
@@ -1723,7 +1768,7 @@ impl Connecting {
     fn attempt(&self, a: Attempt) -> Option<&ConnectMachine> {
         match a {
             Attempt::First => self.lease.setup(),
-            Attempt::Second => self.race.as_ref()?.second.as_ref(),
+            Attempt::Second => self.race.as_ref()?.second.running(),
         }
     }
 
@@ -1734,7 +1779,7 @@ impl Connecting {
             Attempt::Second => self
                 .race
                 .as_mut()
-                .and_then(|r| r.second.as_mut())
+                .and_then(|r| r.second.running_mut())
                 .expect("the second runs"),
         }
     }
@@ -1782,7 +1827,7 @@ impl Connecting {
     /// or closed, if it ran.
     fn fail_attempt(&mut self, a: Attempt) -> Option<ConnectMachine> {
         match a {
-            Attempt::Second => self.race.as_mut()?.second.take(),
+            Attempt::Second => self.race.as_mut()?.second.take_running(),
             Attempt::First => self.lease.fail_setup(),
         }
     }
@@ -1791,7 +1836,7 @@ impl Connecting {
     /// lease's first, given back as the other's connection took its place
     /// (`displaced`), else the race's second.
     fn loser(&mut self, displaced: Option<ConnectMachine>) -> Option<ConnectMachine> {
-        displaced.or_else(|| self.race.as_mut()?.second.take())
+        displaced.or_else(|| self.race.as_mut()?.second.take_running())
     }
 
     /// Move attempt `a`'s setup on by one event: the lease's, or a race's
@@ -1812,10 +1857,10 @@ impl Connecting {
         let Some(race) = self.race.as_deref_mut().filter(|_| a == Attempt::Second) else {
             return self.lease.connect(cx, options, step);
         };
-        let machine = race.second.take().expect("the second runs");
+        let machine = race.second.take_running().expect("the second runs");
         match step(machine, cx, options)? {
             Drove::Connecting(m, progress) => {
-                race.second = Some(m);
+                race.second = RaceSecond::Running(m);
                 Ok(Connected::Connecting(progress))
             }
             Drove::Established(conn) => {
@@ -1833,7 +1878,11 @@ impl Connecting {
         let Some(race) = self.race.as_deref_mut().filter(|_| a == Attempt::Second) else {
             return self.lease.handshaken();
         };
-        let conn = race.second.take().expect("the second runs").handshaken();
+        let conn = race
+            .second
+            .take_running()
+            .expect("the second runs")
+            .handshaken();
         let (up, lost) = self.lease.adopt(conn);
         *displaced = lost;
         up
@@ -3476,7 +3525,7 @@ fn connecting<H: Host>(
                 let partly = c.race.as_ref().and_then(|r| {
                     r.failed
                         .iter()
-                        .flatten()
+                        .chain(r.second.kept())
                         .find_map(ConnectMachine::partly_made)
                 });
                 report_failed(cx, partly);
@@ -3972,12 +4021,18 @@ fn attempt_failed<H: Host>(
     }
     // A handshake's failure leaves its setup running: its connection is
     // kept until the race ends.
-    if let Some(lost) = c.fail_attempt(a) {
+    if let Some(mut lost) = c.fail_attempt(a) {
         match (&mut c.race, lost.reached()) {
             (Some(race), SetupPoint::Dialed(_)) => {
-                let kept = &mut race.failed[a.index()];
-                assert!(kept.is_none(), "an attempt fails once");
-                *kept = Some(lost);
+                // No one drives it again: what its handshake held goes now.
+                lost.handshake = None;
+                match a {
+                    Attempt::First => {
+                        assert!(race.failed.is_none(), "an attempt fails once");
+                        race.failed = Some(lost);
+                    }
+                    Attempt::Second => race.second = RaceSecond::Kept(lost),
+                }
             }
             _ => lost.discard(&mut DriveCx {
                 step: cx,
@@ -4010,11 +4065,11 @@ fn race_starts<H: Host>(c: &mut Connecting, cx: &StepCx<'_, H>) -> Result<(), Ou
     c.race = Some(curl_alloc::try_box(Race {
         answer,
         makings,
-        second: None,
+        second: RaceSecond::Unstarted,
         lead: Attempt::First,
         at,
         first_failed: None,
-        failed: [None, None],
+        failed: None,
         replied: false,
     })?);
     Ok(())
@@ -4043,8 +4098,11 @@ fn second_starts(c: &mut Connecting) -> bool {
         settings,
         race.answer.clone(),
     );
-    assert!(race.second.is_none(), "one second attempt");
-    race.second = Some(second);
+    assert!(
+        matches!(race.second, RaceSecond::Unstarted),
+        "one second attempt"
+    );
+    race.second = RaceSecond::Running(second);
     if alpn == https::Alpn::H3 {
         return false;
     }
@@ -4733,14 +4791,11 @@ fn up<H: Host>(
     // attempts gone as they failed, until then.
     let first_failed = race.as_ref().is_some_and(|r| r.first_failed.is_some());
     assert!(
-        race.as_ref().is_none_or(|r| r.second.is_none()),
+        race.as_ref().is_none_or(|r| r.second.running().is_none()),
         "the race's loser is given"
     );
     // One that failed once dialed goes with its connection.
-    let mut kept = race.and_then(|r| {
-        let [first, second] = r.failed;
-        first.or(second)
-    });
+    let mut kept = race.and_then(|r| r.failed.or(r.second.into_machine()));
     let mut lost = lost;
     for filter in connected.going() {
         trace::of(cx, filter, format_args!("removing connected setup filter"));

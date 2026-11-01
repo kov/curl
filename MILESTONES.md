@@ -1242,6 +1242,7 @@ Its first steps are milestone 6's design-review changes.
 86. **Types a budget cost.** The handshake moves into `ConnectMachine`; each timer holds its own
     `Option<Instant>` through a niche in `Instant`; `RouteCold`'s reuse check goes by name;
     `Race` machines after the handshake's move. Sizes remeasured on a product build.
+    Done: `Race` machines (`RaceSecond`).
 87. **Types that hold more than they say.** `OpenSlot` in the pool; line state passed to `waits`
     and `interest` rather than mirrored in requests; the SSH and LDAP library traits take
     `Option<BorrowedFd>` and answer in real statuses and flag types; SSH's `kbd` an enum and

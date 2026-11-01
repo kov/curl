@@ -600,7 +600,7 @@ pub(super) fn all_failed(c: &Connecting) -> Option<ErrorKind> {
     let race = c.race.as_ref()?;
     let failed = race.first_failed?;
     match h.second {
-        Second::Started(_) if race.second.is_none() => Some(failed),
+        Second::Started(_) if race.second.running().is_none() => Some(failed),
         Second::None => Some(failed),
         Second::Unchosen | Second::Due(_) | Second::Started(_) => None,
     }

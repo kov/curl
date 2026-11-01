@@ -629,8 +629,9 @@ to the hard timeout. An attempt that fails while the other runs is let go;
 once both fail, the setup fails with the first's failure (`ballers[0].result`). The loser goes
 with the HTTPS connect filter at `connected`, its setup's filters with it (`[SETUP] destroy`,
 `[HAPPY-EYEBALLS] destroy` and its attempts'); a first that failed lost its attempts as it
-failed. Each attempt that fails once dialed is kept, by attempt (`Race::failed`), to go with the
-connection, as C keeps a failed baller's chain; when every attempt has failed, the chain is named
+failed. Each attempt that fails once dialed is kept, its handshake let go, to go with the
+connection, as C keeps a failed baller's chain: the first in `Race::failed`, the second as
+`RaceSecond::Kept`, which is `Unstarted`, `Running`, `Kept` or `Gone`; when every attempt has failed, the chain is named
 to the HTTPS connect filter and the first of them that connected says the connect time
 (`cf_hc_cntrl`), after it. A race given up, failed, timed out or its transfer removed, goes into
 `Done` with the lease, and `multi_done` closes its first attempt, then its second, each running

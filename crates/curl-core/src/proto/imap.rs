@@ -227,8 +227,6 @@ pub(crate) struct Request {
     /// The answer DONE reads, and where its blocking drive's round is.
     last: Final,
     round: drive::Blocking,
-    /// The request ran to its end (`req.done`).
-    received: bool,
     /// The `APPEND`'s body is all sent (`upload_done`): the server's
     /// lines from here start the response's time.
     upload_done: bool,
@@ -319,7 +317,6 @@ impl Request {
             sending: None,
             last: Final::None,
             round: drive::Blocking::default(),
-            received: false,
             upload_done: false,
             due: None,
             in_place: Default::default(),
@@ -370,7 +367,7 @@ impl Request {
     /// reused one having died (`Curl_retry_request` for a scheme outside
     /// HTTP's, `req.bytecount + req.headerbytecount`).
     pub(crate) fn received_nothing(&self) -> bool {
-        self.header_bytes == 0 && self.pipeline.bytecount() == 0 && !self.no_body && !self.received
+        self.header_bytes == 0 && self.pipeline.bytecount() == 0 && !self.no_body
     }
 
     /// When DONE, as it awaits its answer, looks again: its poll's end.
@@ -486,7 +483,6 @@ impl Request {
         if self.pipeline.holds_output() {
             return Ok(ProtoStep::Blocked);
         }
-        self.received = true;
         Ok(ProtoStep::Done)
     }
 

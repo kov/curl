@@ -5470,10 +5470,11 @@ fn retry_request<H: Host>(
     cx: &mut StepCx<'_, H>,
     ended: bool,
 ) -> Result<bool, ErrorKind> {
-    let reused = x.proto.retryable(ended) && x.lease.conn().reused();
+    let uploads = cx.easy().options().method == Method::Upload;
+    let reused = x.proto.retryable(ended, uploads) && x.lease.conn().reused();
     // A stream HTTP/2 refused is safe to make again, on any connection,
     // if nothing came on it.
-    let refused = x.proto.take_refused() && x.proto.retryable(ended);
+    let refused = x.proto.take_refused() && x.proto.retryable(ended, uploads);
     if !reused && !refused {
         return Ok(false);
     }

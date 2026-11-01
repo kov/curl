@@ -141,6 +141,22 @@ fn mailing(more: &[&[u8]]) -> Conversation {
 
 const URL: &str = "smtp://127.0.0.1:PORT/900";
 
+/// A mail is not made again on a fresh connection once its reused one
+/// cannot send (`Curl_retry_request`, `state.upload`): the send's failure
+/// stands.
+#[test]
+fn a_mail_a_reused_connection_cannot_send_is_not_retried() {
+    let first = mailing(&[]).breaking_after(5);
+    let fresh = mailing(&[]);
+    let mut m = serving(&[&first, &fresh]);
+    let ran = transfer(&mut m, URL, mail(b"hi\r\n"));
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let ran = transfer(&mut m, URL, mail(b"hi\r\n"));
+    assert_eq!(ran.result, Err(ErrorKind::SendError), "{}", ran.text);
+    assert_eq!(fresh.received(), b"");
+    assert!(!ran.text.contains("Connection died"), "{}", ran.text);
+}
+
 /// A mail of `body` from `f@a` to `r@b`.
 fn mail(body: &[u8]) -> impl FnOnce(&mut Options) {
     let body = body.to_vec();

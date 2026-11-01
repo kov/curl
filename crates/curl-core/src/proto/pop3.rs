@@ -257,8 +257,6 @@ pub(crate) struct Request {
     no_body: bool,
     /// The body is still being read (`KEEP_RECV`).
     receiving: bool,
-    /// The body was read to its end (`req.done`).
-    received: bool,
     eob: Eob,
     /// What TLS is made with and said as as the connection is upgraded.
     in_place: crate::multi::state::tls::InPlace,
@@ -337,7 +335,6 @@ impl Request {
             body: true,
             no_body: cx.easy().options().method == crate::options::Method::Head,
             receiving: false,
-            received: false,
             eob: Eob::default(),
             in_place: Default::default(),
             wants: Events::IN,
@@ -387,7 +384,7 @@ impl Request {
     /// connection, its reused one having died (`Curl_retry_request` for a
     /// scheme outside HTTP's, `req.bytecount + req.headerbytecount`).
     pub(crate) fn received_nothing(&self) -> bool {
-        self.header_bytes == 0 && self.pipeline.bytecount() == 0 && !self.no_body && !self.received
+        self.header_bytes == 0 && self.pipeline.bytecount() == 0 && !self.no_body
     }
 
     /// What the body waits for on the connection's socket.
@@ -447,7 +444,6 @@ impl Request {
         let mut reads = 0;
         loop {
             if !self.receiving {
-                self.received = true;
                 return Ok(ProtoStep::Done);
             }
             if cx.pause().recv_paused() {

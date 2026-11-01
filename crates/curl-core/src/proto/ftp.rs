@@ -329,8 +329,6 @@ pub(crate) struct Request {
     receiving: bool,
     /// The upload is all sent (`upload_done`).
     upload_done: bool,
-    /// The data was moved to its end (`req.done`).
-    received: bool,
     control: Option<Control>,
     /// What TLS is made with and said as as the control connection is
     /// upgraded.
@@ -470,7 +468,6 @@ impl Request {
             sending: None,
             receiving: false,
             upload_done: false,
-            received: false,
             control: None,
             in_place: Default::default(),
             wants: Events::IN,
@@ -533,11 +530,7 @@ impl Request {
     /// connection, its reused one having died (`Curl_retry_request` for a
     /// scheme outside HTTP's, which retries no upload).
     pub(crate) fn received_nothing(&self) -> bool {
-        !self.upload
-            && !self.no_body
-            && self.header_bytes == 0
-            && self.pipeline.bytecount() == 0
-            && !self.received
+        !self.no_body && self.header_bytes == 0 && self.pipeline.bytecount() == 0
     }
 
     /// Whether the request, once made, moves anything over the data
@@ -2295,7 +2288,6 @@ impl Request {
         if self.upload {
             upload::announce_size(cx, self.infilesize);
             crate::multi::mstate::xfer_setup_at(cx, None, Some(1));
-            self.received = false;
         } else {
             crate::multi::mstate::xfer_setup_at(cx, Some(1), None);
             if let Some(size) = self.size.filter(|&s| s > 0) {
@@ -2599,10 +2591,7 @@ impl Request {
         self.pipeline.flush(cx)?;
         match self.with_data(|r, data| r.exchange(cx, data)) {
             Some(step) => step,
-            None => {
-                self.received = true;
-                Ok(ProtoStep::Done)
-            }
+            None => Ok(ProtoStep::Done),
         }
     }
 
@@ -2639,7 +2628,6 @@ impl Request {
         if self.pipeline.holds_output() {
             return Ok(ProtoStep::Blocked);
         }
-        self.received = true;
         Ok(ProtoStep::Done)
     }
 

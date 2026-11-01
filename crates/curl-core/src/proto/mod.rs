@@ -1410,11 +1410,13 @@ impl ProtoState {
     /// Whether the request may be made again on a fresh connection, its
     /// reused one having died (`Curl_retry_request`): it got nothing
     /// back, and its protocol answers every request, as HTTP does, or it
-    /// waits for a body it has not had. `ended` says the request ended,
-    /// as a close ends it (`req.done`).
-    pub(crate) fn retryable(&self, ended: bool) -> bool {
+    /// waits for a body it has not had and uploads nothing (`uploads`,
+    /// `state.upload`). `ended` says the request ended, as a close ends
+    /// it (`req.done`).
+    pub(crate) fn retryable(&self, ended: bool, uploads: bool) -> bool {
         match *self {
             ProtoState::Http(ref r) => r.received_nothing(ended),
+            _ if ended || uploads => false,
             ProtoState::Ftp(ref r) => r.received_nothing(),
             ProtoState::Pop3(ref r) => r.received_nothing(),
             ProtoState::Imap(ref r) => r.received_nothing(),

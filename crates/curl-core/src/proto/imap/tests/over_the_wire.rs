@@ -371,6 +371,34 @@ fn an_upload_is_appended() {
     );
 }
 
+/// An upload is not made again on a fresh connection once its reused one
+/// cannot send (`Curl_retry_request`, `state.upload`): the send's failure
+/// stands.
+#[test]
+fn an_append_a_reused_connection_cannot_send_is_not_retried() {
+    let appending = || {
+        Conversation::replies(
+            &[GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"A003 OK\r\n"],
+            false,
+        )
+        .greeting()
+    };
+    let first = appending().breaking_after(5);
+    let fresh = appending();
+    let mut m = serving(&[&first, &fresh]);
+    let append = |o: &mut Options| {
+        o.method = Method::Upload;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"hello".to_vec()).unwrap());
+    };
+    let url = "imap://u:p@127.0.0.1:PORT/Sent";
+    let ran = transfer(&mut m, &plain(), url, append);
+    assert_eq!(ran.result, Ok(()), "{}", ran.text);
+    let ran = transfer(&mut m, &plain(), url, append);
+    assert_eq!(ran.result, Err(ErrorKind::SendError), "{}", ran.text);
+    assert_eq!(fresh.received(), b"");
+    assert!(!ran.text.contains("Connection died"), "{}", ran.text);
+}
+
 /// An APPEND refused, at once or after its body, fails the upload.
 #[test]
 fn a_refused_append_fails_the_upload() {

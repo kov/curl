@@ -1130,6 +1130,19 @@ mod over_the_wire {
         assert!(!ran.text.contains("Connection died"), "{}", ran.text);
     }
 
+    /// An upload is not made again (`state.upload`), whatever POP3 makes
+    /// of it.
+    #[test]
+    fn an_upload_a_reused_connection_cannot_send_is_not_retried() {
+        let first = breaking();
+        let fresh = in_the_clear();
+        let mut m = serving(&[&first, &fresh]);
+        let ran = twice(&mut m, |o| o.method = crate::options::Method::Upload);
+        assert_eq!(ran.result, Err(ErrorKind::SendError));
+        assert_eq!(fresh.received(), b"");
+        assert!(!ran.text.contains("Connection died"), "{}", ran.text);
+    }
+
     /// A reused connection reset once the command's answer came, before
     /// any of its body: the answer's line was read (`headerbytecount`),
     /// so the request is not made again, and the read's failure stands.

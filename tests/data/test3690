@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+netrc
+LDAP
+MQTT
+TELNET
+WebSockets
+RTSP
+</keywords>
+</info>
+
+# Client-side
+<client>
+<features>
+ldap
+mqtt
+telnet
+ws
+rtsp
+</features>
+<file name="%LOGDIR/netrc%TESTNUMBER">
+machine elsewhere.example login user password secret
+</file>
+<name>
+.netrc read once per request whatever the scheme
+</name>
+<command>
+-v --stderr %LOGDIR/trace%TESTNUMBER --netrc-optional --netrc-file %LOGDIR/netrc%TESTNUMBER ldap://%HOSTIP:%NOLISTENPORT/%TESTNUMBER mqtt://%HOSTIP:%NOLISTENPORT/%TESTNUMBER telnet://%HOSTIP:%NOLISTENPORT/%TESTNUMBER ws://%HOSTIP:%NOLISTENPORT/%TESTNUMBER rtsp://%HOSTIP:%NOLISTENPORT/%TESTNUMBER dict://%HOSTIP:%NOLISTENPORT/%TESTNUMBER gopher://%HOSTIP:%NOLISTENPORT/%TESTNUMBER http://%HOSTIP:%NOLISTENPORT/%TESTNUMBER
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<errorcode>
+7
+</errorcode>
+<postcheck>
+%PERL -ne '$c++ if /^\* Could not find host /; END { exit($c != 8) }' %LOGDIR/trace%TESTNUMBER
+</postcheck>
+</verify>
+</testcase>

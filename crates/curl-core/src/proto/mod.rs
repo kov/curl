@@ -451,33 +451,45 @@ fn set_out_with<H: Host>(
     Ok(credentials)
 }
 
-/// C's `.netrc` step for a URL that no HTTP request is made for: one of
-/// another protocol, or one the application does not let the transfer go
-/// to. C reads the file before it checks the protocol
+/// C's `.netrc` step for a request that keeps no credentials: one whose
+/// protocol sends none, or one not made because its protocol is not built
+/// or not allowed. C reads the file before it checks the protocol
 /// (`parseurlandfillconn`, before `url_set_conn_scheme`), so a required
 /// file that is missing or malformed fails the transfer whatever its
-/// scheme; an HTTP request reads it as it is made (`http::Request::new`).
-/// The credentials are C's at that point, the application's and the
-/// URL's, and are not kept: no protocol here sends any.
-pub(crate) fn netrc_before_protocol<H: Host>(
+/// scheme. A request that keeps them reads it as it is made.
+///
+/// The host is the origin's name, as a request that keeps them looks it
+/// up (`state.origin->hostname`), and what is wrong with the origin fails
+/// first; a scheme with no network, and a test's own, have none to check.
+/// The application's login counts only where `first` lets it go, as for
+/// any request.
+pub(crate) fn netrc_unkept<H: Host>(
     url: &Url,
+    first: Option<&Peer>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
-    let scheme = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;
-    let takes = Takes::of(Scheme::named(&scheme));
+    let name = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;
+    let scheme = Scheme::named(&name);
+    let takes = Takes::of(scheme);
+    if let Some(scheme) = scheme.filter(|s| !s.no_network()) {
+        let peer = dict::peer_of(url, scheme.name().as_bytes(), cx)?;
+        let gate = match first {
+            None => CredentialGate::FIRST,
+            Some(first) => {
+                let other_hosts = cx.easy().options().http.unrestricted_auth;
+                CredentialGate::new(first, &peer, other_hosts)
+            }
+        };
+        let credentials = request_credentials(cx, gate.trusted(), url, takes)?;
+        return with_netrc(credentials, peer.name(), takes, cx).map(drop);
+    }
     let credentials = request_credentials(cx, Some(Trusted::own_url()), url, takes)?;
-    // The host as C's origin holds it: none for `file:///`, an IPv6
-    // address without its brackets.
     let host = match url.get(Part::Host, GetOptions::NONE) {
         Ok(host) => host,
         Err(UrlErrorKind::NoHost) => Vec::new(),
         Err(e) => return Err(url_error(e)),
     };
-    let bare = host
-        .strip_prefix(b"[")
-        .and_then(|h| h.strip_suffix(b"]"))
-        .unwrap_or(&host);
-    with_netrc(credentials, bare, takes, cx).map(drop)
+    with_netrc(credentials, &host, takes, cx).map(drop)
 }
 
 /// What a request to `url` authenticates with, as the application and
@@ -625,10 +637,13 @@ impl ProtoState {
         cx: &mut StepCx<'_, H>,
     ) -> Result<Option<ProtoState>, ErrorKind> {
         Ok(Some(match scheme {
-            b"file" => ProtoState::File(
-                curl_alloc::try_box(file::Request::open(url, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
-            ),
+            b"file" => {
+                netrc_unkept(url, before.first, cx)?;
+                ProtoState::File(
+                    curl_alloc::try_box(file::Request::open(url, cx)?)
+                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                )
+            }
             b"http" => ProtoState::Http(
                 curl_alloc::try_box(http::Request::new(url, false, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
@@ -707,18 +722,27 @@ impl ProtoState {
                 curl_alloc::try_box(ssh::Request::new(url, true, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
-            b"dict" => ProtoState::Dict(
-                curl_alloc::try_box(dict::Request::new(url, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
-            ),
-            b"gopher" => ProtoState::Gopher(
-                curl_alloc::try_box(gopher::Request::new(url, false, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
-            ),
-            b"gophers" if cx.easy().libraries().tls.is_some() => ProtoState::Gopher(
-                curl_alloc::try_box(gopher::Request::new(url, true, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
-            ),
+            b"dict" => {
+                netrc_unkept(url, before.first, cx)?;
+                ProtoState::Dict(
+                    curl_alloc::try_box(dict::Request::new(url, cx)?)
+                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                )
+            }
+            b"gopher" => {
+                netrc_unkept(url, before.first, cx)?;
+                ProtoState::Gopher(
+                    curl_alloc::try_box(gopher::Request::new(url, false, cx)?)
+                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                )
+            }
+            b"gophers" if cx.easy().libraries().tls.is_some() => {
+                netrc_unkept(url, before.first, cx)?;
+                ProtoState::Gopher(
+                    curl_alloc::try_box(gopher::Request::new(url, true, cx)?)
+                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                )
+            }
             b"mqtt" => ProtoState::Mqtt(
                 curl_alloc::try_box(mqtt::Request::new(url, false, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
@@ -731,21 +755,36 @@ impl ProtoState {
                 curl_alloc::try_box(telnet::Request::new(url, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
-            b"tftp" => ProtoState::Tftp(
-                curl_alloc::try_box(tftp::Request::new(url, cx)?)
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
-            ),
+            b"tftp" => {
+                netrc_unkept(url, before.first, cx)?;
+                ProtoState::Tftp(
+                    curl_alloc::try_box(tftp::Request::new(url, cx)?)
+                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                )
+            }
             #[cfg(any(test, feature = "test-util"))]
-            b"null" => ProtoState::Null,
+            b"null" => {
+                netrc_unkept(url, before.first, cx)?;
+                ProtoState::Null
+            }
             #[cfg(any(test, feature = "test-util"))]
-            b"stall" => ProtoState::Stall,
+            b"stall" => {
+                netrc_unkept(url, before.first, cx)?;
+                ProtoState::Stall
+            }
             #[cfg(any(test, feature = "test-util"))]
-            b"script" => ProtoState::Script(
-                curl_alloc::try_box(script::Player::default())
-                    .map_err(|_| ErrorKind::OutOfMemory)?,
-            ),
+            b"script" => {
+                netrc_unkept(url, before.first, cx)?;
+                ProtoState::Script(
+                    curl_alloc::try_box(script::Player::default())
+                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                )
+            }
             #[cfg(any(test, feature = "test-util"))]
-            b"tcp" => ProtoState::Tcp,
+            b"tcp" => {
+                netrc_unkept(url, before.first, cx)?;
+                ProtoState::Tcp
+            }
             _ => return Ok(None),
         }))
     }

@@ -5423,6 +5423,7 @@ mod https_trace;
 mod idn;
 mod multi_trace;
 mod negotiate;
+mod netrc_reads;
 mod os_errno;
 mod range;
 mod read_trace;

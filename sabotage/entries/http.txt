@@ -1430,9 +1430,9 @@ witness: curl-core proto::http::tests::the_wait_for_a_100_starts_once_a_pause_en
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_netrc_file_is_read_before_the_protocol_is_checked
 --- old
-    if (refused || !reads_own)
+        Ok(None) => crate::proto::netrc_unkept(&url, run.first.as_deref(), cx).map(|()| None),
 --- new
-    if false && (refused || !reads_own)
+        Ok(None) => Ok(None),
 
 === an answered challenge is held to the redirect protocols
 file: crates/curl-core/src/multi/state.rs
@@ -1555,3 +1555,46 @@ features: test-util
         let encoded = crate::url::SetOptions {
             parse: crate::url::ParseOptions {
                 url_encode: false,
+
+=== a netrc read twice for a request that keeps its credentials
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::http::tests::netrc_reads::each_scheme_reads_a_netrc_once
+--- old
+        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+--- new
+        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+
+=== a netrc read twice for a request spoken through HTTP's
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::netrc_reads::each_scheme_reads_a_netrc_once
+--- old
+        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+--- new
+        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+
+=== a request that keeps no credentials does not read the netrc
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::http::tests::netrc_reads::each_scheme_reads_a_netrc_once
+--- old
+            b"gophers" if cx.easy().libraries().tls.is_some() => {
+                netrc_unkept(url, before.first, cx)?;
+--- new
+            b"gophers" if cx.easy().libraries().tls.is_some() => {
+
+=== a netrc is looked up by the URL's host, not the origin's name
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::http::tests::netrc_reads::a_netrc_is_read_for_the_origin_s_name
+--- old
+        return with_netrc(credentials, peer.name(), takes, cx).map(drop);
+--- new
+        return with_netrc(credentials, peer.shown(), takes, cx).map(drop);
+
+=== a host too long is told only after the netrc is read
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::netrc_reads::a_bad_origin_fails_before_a_netrc_is_read
+--- old
+    if url.host_held().is_some_and(|host| host.len() > MAX_HOST) {
+--- new
+    if false && url.host_held().is_some_and(|host| host.len() > MAX_HOST) {

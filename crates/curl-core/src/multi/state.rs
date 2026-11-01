@@ -5487,18 +5487,12 @@ fn start_leg<H: Host>(
         let why = [&b"Protocol \""[..], &scheme, b"\" not supported", follow];
         return TransferState::Init.fail(trace::fail_with(cx, kind, &why));
     }
-    // C reads a `.netrc` before it checks the protocol is built and
-    // allowed; an FTP, HTTP, IMAP, POP3, SMTP or SSH request reads it as
-    // it is made, any other URL here.
-    let reads_own = match &*scheme {
-        b"ftp" | b"http" | b"imap" | b"pop3" | b"smtp" => true,
-        b"ftps" | b"https" | b"imaps" | b"pop3s" | b"smtps" => cx.easy().libraries().tls.is_some(),
-        b"scp" | b"sftp" => cx.easy().libraries().ssh.is_some(),
-        _ => false,
-    };
-    if (refused || !reads_own)
-        && let Err(kind) = crate::proto::netrc_before_protocol(&url, cx)
-    {
+    // A host name may be no longer than C lets a URL be (`MAX_URL_LEN`,
+    // `Curl_peer_from_url`): the origin is made before anything is read
+    // for it.
+    if url.host_held().is_some_and(|host| host.len() > MAX_HOST) {
+        let kind = ErrorKind::UrlMalformat;
+        let kind = trace::fail_with(cx, kind, &[b"Too long hostname (maximum is 65535)"]);
         return TransferState::Init.fail(kind);
     }
     let started = if refused {
@@ -5510,6 +5504,13 @@ fn start_leg<H: Host>(
             http: &run.http,
         };
         ProtoState::start(&scheme, &url, before, cx)
+    };
+    // A request made has read the `.netrc`, once. With none to make, C has
+    // read it all the same, before it checks the protocol is built and
+    // allowed.
+    let started = match started {
+        Ok(None) => crate::proto::netrc_unkept(&url, run.first.as_deref(), cx).map(|()| None),
+        started => started,
     };
     // Out of the queue once the request knows its origin and its
     // credentials, before its protocol is checked and a connection looked
@@ -5531,13 +5532,6 @@ fn start_leg<H: Host>(
         }
         Err(e) => return TransferState::Init.fail(e),
     };
-    // A host name may be no longer than C lets a URL be (`MAX_URL_LEN`,
-    // `Curl_peer_from_url`).
-    if url.host_held().is_some_and(|host| host.len() > MAX_HOST) {
-        let kind = ErrorKind::UrlMalformat;
-        let kind = trace::fail_with(cx, kind, &[b"Too long hostname (maximum is 65535)"]);
-        return TransferState::Init.fail(kind);
-    }
     let target = proto.network(
         &url,
         cx.easy().options().address_scope,

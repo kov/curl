@@ -907,6 +907,12 @@ impl Scheme {
         self.0.family == Some(crate::url::schemes::Protocol::Ftp)
     }
 
+    /// Whether it goes over no network, and has no origin to name
+    /// (`PROTOPT_NONETWORK`).
+    pub(crate) fn no_network(self) -> bool {
+        self.0.flags.no_network
+    }
+
     /// Whether a connection is kept for another transfer once done
     /// (`PROTOPT_CONN_REUSE`).
     pub(crate) fn reuse(self) -> bool {

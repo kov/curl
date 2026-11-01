@@ -5604,13 +5604,9 @@ fn the_os_errno_is_the_last_socket_failure_s() {
     let c = curl_easy_init();
     long(c, ffi::CURLOPT_TIMEOUT, 10);
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_OS_ERRNO), 0);
-    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = std::ffi::CString::new(format!(
-        "http://127.0.0.1:{}/",
-        closed.local_addr().unwrap().port()
-    ))
-    .unwrap();
-    drop(closed);
+    // Port 1, which no unprivileged test can bind: a port picked free and
+    // let go can be taken by a test running beside this one.
+    let url = std::ffi::CString::new("http://127.0.0.1:1/").unwrap();
     pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
     // SAFETY: a live handle.
     assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
@@ -6251,14 +6247,10 @@ fn socket_functions_are_called_as_c_calls_them() {
         (2, 2, 2)
     );
     assert!(other.opened.is_empty());
-    // A port nothing listens on, which the reset handle is refused at.
-    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let refused = std::ffi::CString::new(format!(
-        "http://127.0.0.1:{}/",
-        closed.local_addr().unwrap().port()
-    ))
-    .unwrap();
-    drop(closed);
+    // A port nothing listens on, which the reset handle is refused at: port
+    // 1, which no unprivileged test can bind, where a port picked free and
+    // let go can be taken by a test running beside this one.
+    let refused = std::ffi::CString::new("http://127.0.0.1:1/").unwrap();
     // SAFETY: live handles.
     unsafe {
         crate::easy::curl_easy_reset(dup);

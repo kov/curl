@@ -1428,9 +1428,9 @@ mod tests {
                 .collect();
             (result, text, e.report().os_errno().map(|n| n.kind()))
         };
-        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = closed.local_addr().unwrap().port();
-        drop(closed);
+        // Port 1, which no unprivileged test can bind: a port picked free
+        // and let go can be taken by a test running beside this one.
+        let port = 1;
         let (result, text, why) = traced(&format!("tcp://127.0.0.1:{port}/"));
         assert_eq!(result, Err(ErrorKind::CouldntConnect));
         assert_eq!(why, Some(std::io::ErrorKind::ConnectionRefused));

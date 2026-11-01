@@ -198,7 +198,6 @@ fn request() -> Request {
         upload_done: false,
         due: None,
         in_place: Default::default(),
-        wants: Events::IN,
         header_bytes: 0,
     }
 }

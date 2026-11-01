@@ -1572,6 +1572,14 @@ impl Conn {
         matches!(self.session, mux::Speaks::Line(_))
     }
 
+    /// The state its protocol keeps on it, if one does.
+    pub(crate) fn line(&self) -> Option<&line::LineConn> {
+        match &self.session {
+            mux::Speaks::Line(line) => Some(line),
+            _ => None,
+        }
+    }
+
     /// The state its protocol keeps on it, if one does, and what that
     /// works over, borrowed apart for a step to drive both.
     pub(crate) fn line_mut(&mut self) -> Option<(&mut line::LineConn, mux::Carrier<'_>)> {

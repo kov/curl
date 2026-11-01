@@ -613,7 +613,7 @@ impl super::Phases for Request {
         self.do_it(cx, lease).map(|()| super::DoStep::Did)
     }
 
-    fn waits(&self, _: super::Waiting) -> Events {
+    fn waits(&self, _: super::Waiting, _: Option<&crate::conn::line::LineConn>) -> Events {
         unreachable!("HTTP waits in no phase before its request")
     }
 }

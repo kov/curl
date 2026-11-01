@@ -1078,7 +1078,7 @@ impl super::Phases for Request {
     }
 
     /// Its socket, for the server's packets.
-    fn waits(&self, phase: Waiting) -> Events {
+    fn waits(&self, phase: Waiting, _: Option<&crate::conn::line::LineConn>) -> Events {
         match phase {
             Waiting::Doing => Events::IN,
             _ => phase.c_default(),

@@ -102,7 +102,11 @@ impl super::Phases for Player {
         Ok(made)
     }
 
-    fn waits(&self, phase: super::Waiting) -> crate::conn::io::Events {
+    fn waits(
+        &self,
+        phase: super::Waiting,
+        _: Option<&crate::conn::line::LineConn>,
+    ) -> crate::conn::io::Events {
         phase.c_default()
     }
 }

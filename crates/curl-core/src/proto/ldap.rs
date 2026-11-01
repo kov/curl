@@ -72,9 +72,6 @@ pub(crate) struct Request {
     peer: Peer,
     /// The transfer's credentials, until its route takes them.
     credentials: Option<Credentials>,
-    /// The transfer has credentials (`state.creds`), which a failed bind
-    /// is told by.
-    has_credentials: bool,
     /// The URL, as the transfer names it (`state.url`).
     url_text: Vec<u8>,
     /// The search it names.
@@ -384,7 +381,6 @@ impl Request {
             library,
             pipeline: Pipeline::new(Reach::Network),
             peer,
-            has_credentials: credentials.is_some(),
             credentials,
             url_text,
             search,
@@ -751,6 +747,8 @@ impl Request {
     ) -> Result<(), ErrorKind> {
         let cold = lease.conn().net_route().and_then(|r| r.cold.clone());
         let login = cold.as_deref().and_then(|c| c.login.as_ref());
+        // The transfer's credentials (`state.creds`) tell a failed bind.
+        let has_login = login.is_some();
         let secret = login.map(Credentials::secret);
         let (dn, password) = match &secret {
             Some(s) => (Some(s.user()), s.password()),
@@ -767,7 +765,7 @@ impl Request {
             .session
             .bind(&mut wire, dn.map(c_string), Mech::Simple, Some(password));
         let id = sent.map_err(|code| {
-            let otherwise = if self.has_credentials {
+            let otherwise = if has_login {
                 ErrorKind::LoginDenied
             } else {
                 ErrorKind::LdapCannotBind
@@ -1035,7 +1033,12 @@ impl Request {
         if lc.sasl.preferred() != Mechs::NONE {
             return self.perform_mechs(cx, lease);
         }
-        if self.has_credentials {
+        let logs_in = lease
+            .conn()
+            .net_route()
+            .and_then(|r| r.cold.as_deref())
+            .is_some_and(|c| c.login.is_some());
+        if logs_in {
             return self.perform_bind(cx, lease, State::Bind);
         }
         let (lc, _) = ldap_of(lease);
@@ -1329,7 +1332,7 @@ impl super::Phases for Request {
         }
     }
 
-    fn waits(&self, phase: Waiting) -> Events {
+    fn waits(&self, phase: Waiting, _: Option<&crate::conn::line::LineConn>) -> Events {
         phase.c_default()
     }
 }

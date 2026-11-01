@@ -1246,6 +1246,7 @@ Its first steps are milestone 6's design-review changes.
     and `interest` rather than mirrored in requests; the SSH and LDAP library traits take
     `Option<BorrowedFd>` and answer in real statuses and flag types; SSH's `kbd` an enum and
     its session reset trimmed; `State::SftpQuoteStat(kind)`; LDAP's library stored in `Request`.
+    Done: line state passed to `waits` and `interest`.
 88. **What the protocols share.** One receive side, `proto::xfer::Receive`, for FTP, IMAP, POP3,
     DICT and Gopher; `RequestBase`; a table for `over_tls` and the transport; the mail protocols'
     shared glue; FTP, SSH and LDAP inline in the boxed `LineConn`.

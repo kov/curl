@@ -286,8 +286,6 @@ pub(crate) struct Request {
     eob: Eob,
     /// What TLS is made with and said as as the connection is upgraded.
     in_place: crate::multi::state::tls::InPlace,
-    /// What the back and forth waits for on the connection.
-    wants: Events,
     /// The answers' bytes (`req.headerbytecount`).
     header_bytes: u64,
 }
@@ -363,7 +361,6 @@ impl Request {
             receive: Receive::default(),
             eob: Eob::default(),
             in_place: Default::default(),
-            wants: Events::IN,
             header_bytes: 0,
         })
     }
@@ -509,7 +506,6 @@ impl Request {
         if drive::runs(cx, &pc.pp, &mut carrier, limit)? {
             self.machine(cx, pc, &mut carrier)?;
         }
-        self.wants = drive::waits(&pc.pp);
         Ok(pc.state == State::Stop)
     }
 
@@ -1218,8 +1214,12 @@ impl super::Phases for Request {
         }
     }
 
-    fn waits(&self, _: Waiting) -> Events {
-        self.wants
+    fn waits(&self, _: Waiting, line: Option<&LineConn>) -> Events {
+        match line {
+            Some(LineConn::Pop3(pc)) => drive::waits(&pc.pp),
+            Some(_) => unreachable!("a POP3 transfer's connection keeps POP3's state"),
+            None => Events::IN,
+        }
     }
 }
 

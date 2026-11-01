@@ -256,6 +256,15 @@ impl ConnSlot {
             .chain(open)
     }
 
+    /// The state its protocol keeps on the connection, if it is up and one
+    /// does.
+    pub(crate) fn line(&self) -> Option<&super::line::LineConn> {
+        match self {
+            ConnSlot::Open(conn) => conn.line(),
+            ConnSlot::Connecting(_) | ConnSlot::Failed(_) => None,
+        }
+    }
+
     /// What a transfer is to wait for on the connection, given what it
     /// wants: its layers' say, once it is up. A transfer wanting nothing
     /// is not asked about, as its layers' sockets would then be ready

@@ -277,8 +277,6 @@ pub(crate) struct Request {
     due: Option<Instant>,
     /// What TLS is made with and said as as the connection is upgraded.
     in_place: crate::multi::state::tls::InPlace,
-    /// What the back and forth waits for on the connection.
-    wants: Events,
     /// The answers' bytes (`req.headerbytecount`).
     header_bytes: u64,
 }
@@ -370,7 +368,6 @@ impl Request {
             upload_done: false,
             due: None,
             in_place: Default::default(),
-            wants: Events::IN,
             header_bytes: 0,
         })
     }
@@ -574,7 +571,6 @@ impl Request {
             Ok(false) => Ok(()),
             Err(e) => Err(e),
         };
-        self.wants = drive::waits(&pc.pp);
         ran.map(|()| pc.state == State::Stop)
     }
 
@@ -595,7 +591,6 @@ impl Request {
             if runs {
                 self.machine(cx, pc, &mut carrier)?;
             }
-            self.wants = drive::waits(&pc.pp);
             if pc.state == State::Stop {
                 self.due = None;
                 return Ok(true);
@@ -1501,8 +1496,12 @@ impl super::Phases for Request {
         }
     }
 
-    fn waits(&self, _: Waiting) -> Events {
-        self.wants
+    fn waits(&self, _: Waiting, line: Option<&LineConn>) -> Events {
+        match line {
+            Some(LineConn::Smtp(pc)) => drive::waits(&pc.pp),
+            Some(_) => unreachable!("a SMTP transfer's connection keeps SMTP's state"),
+            None => Events::IN,
+        }
     }
 }
 

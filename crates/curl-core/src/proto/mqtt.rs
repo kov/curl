@@ -931,7 +931,7 @@ impl super::Phases for Request {
 
     /// While the exchange goes on, to send what of a packet is left, or
     /// else what the server says (`mqtt_pollset`).
-    fn waits(&self, phase: Waiting) -> Events {
+    fn waits(&self, phase: Waiting, _: Option<&crate::conn::line::LineConn>) -> Events {
         match phase {
             Waiting::Doing if !self.unsent.is_empty() => Events::OUT,
             Waiting::Doing => Events::IN,

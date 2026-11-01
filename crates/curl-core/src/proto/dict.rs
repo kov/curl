@@ -307,7 +307,7 @@ impl super::Phases for Request {
         })
     }
 
-    fn waits(&self, phase: Waiting) -> Events {
+    fn waits(&self, phase: Waiting, _: Option<&crate::conn::line::LineConn>) -> Events {
         phase.c_default()
     }
 }

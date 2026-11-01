@@ -955,9 +955,11 @@ Before its request is made, a protocol answers `proto::Phases` (`proto/mod.rs`),
 with no defaults that each protocol's state implements and `ProtoState` dispatches over:
 `connect` (C's `connect_it`, then `connecting`) answers `Connect { Done, Waiting }`, `make` is
 asked in a `DoPhase { Do, Doing, More }` and answers the phase it goes on in
-(`DoStep { Did, Doing, More, Piece }`), and `waits(Waiting)` is the pollset of each waiting
+(`DoStep { Did, Doing, More, Piece }`), and `waits(Waiting, line)` is the pollset of each waiting
 phase, `Waiting::c_default` C's (IN while connecting, OUT while making the request, nothing in
-DONE, where C blocks); `ProtoState::done` answers a `Finish { Done(result), Waiting }`, and
+DONE, where C blocks). `line` is what the protocol keeps on the connection, read when asked:
+a request keeps no copy of its back and forth's or its session's wait, nor does `interest`,
+which is given it too. `ProtoState::done` answers a `Finish { Done(result), Waiting }`, and
 `finishing` reads on what it awaits (§3.1). HTTP and
 `file:` connect at once and make their request in DO; `script:` reads its phases from the
 script's first pieces. A request's substates belong to its protocol, inside `ProtoState`; the engine sees only

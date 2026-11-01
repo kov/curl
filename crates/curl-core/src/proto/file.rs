@@ -98,7 +98,11 @@ impl super::Phases for Request {
         self.do_it(cx)
     }
 
-    fn waits(&self, _: super::Waiting) -> crate::conn::io::Events {
+    fn waits(
+        &self,
+        _: super::Waiting,
+        _: Option<&crate::conn::line::LineConn>,
+    ) -> crate::conn::io::Events {
         unreachable!("a file transfer waits in no phase before its request")
     }
 }

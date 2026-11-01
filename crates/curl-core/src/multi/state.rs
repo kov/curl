@@ -1366,7 +1366,7 @@ impl TransferState {
                     _ => Waiting::More,
                 };
                 if let Some(slot) = pool.slot_of(&x.lease) {
-                    let events = slot.adjust_pollset(x.proto.waits(phase), None);
+                    let events = slot.adjust_pollset(x.proto.waits(phase, slot.line()), None);
                     for s in slot.sockets() {
                         set.add(s, events)?;
                     }
@@ -1380,7 +1380,7 @@ impl TransferState {
             TransferState::Done(d) if d.ending == Ending::Waiting => {
                 let proto = d.proto.as_ref().expect("only a protocol waits as it ends");
                 if let Some(slot) = pool.slot_of(&d.lease) {
-                    let events = slot.adjust_pollset(proto.waits(Waiting::Done), None);
+                    let events = slot.adjust_pollset(proto.waits(Waiting::Done, slot.line()), None);
                     for s in slot.sockets() {
                         set.add(s, events)?;
                     }
@@ -1390,7 +1390,8 @@ impl TransferState {
                 // A connection another transfer's step has out waits for
                 // nothing of this one's until it is back.
                 if let Some(slot) = pool.slot_of(&x.lease) {
-                    let events = slot.adjust_pollset(x.proto.interest(pause), x.proto.h3_sending());
+                    let events = slot
+                        .adjust_pollset(x.proto.interest(pause, slot.line()), x.proto.h3_sending());
                     for s in slot.sockets() {
                         set.add(s, events)?;
                     }
@@ -1504,10 +1505,12 @@ impl Run {
         };
         // A protocol's own pollset, which C asks for in these states only.
         let proto = match &self.state {
-            TransferState::ProtoConnecting(x) | TransferState::Doing(x) => {
-                x.proto.pollset_said(false)
-            }
-            TransferState::Exchanging(x) => x.proto.pollset_said(true),
+            TransferState::ProtoConnecting(x) | TransferState::Doing(x) => x
+                .proto
+                .pollset_said(false, pool.slot_of(&x.lease).and_then(ConnSlot::line)),
+            TransferState::Exchanging(x) => x
+                .proto
+                .pollset_said(true, pool.slot_of(&x.lease).and_then(ConnSlot::line)),
             _ => None,
         };
         Ok(PollsetTrace {
@@ -3263,8 +3266,8 @@ fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
 /// connection's are with its packets.
 fn buffered_input<H: Host>(x: &mut Attached, phase: Option<Waiting>, cx: &mut StepCx<'_, H>) {
     let wants = match phase {
-        Some(phase) => x.proto.waits(phase),
-        None => x.proto.interest(StepCx::pause(cx)),
+        Some(phase) => x.proto.waits(phase, x.lease.conn().line()),
+        None => x.proto.interest(StepCx::pause(cx), x.lease.conn().line()),
     };
     let wants = wants.contains(Events::IN) && !matches!(cx.rate_allowance(Way::Recv), Some(..=0));
     if wants && x.lease.get().data_pending() {

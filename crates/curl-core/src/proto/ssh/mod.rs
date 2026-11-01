@@ -567,11 +567,6 @@ pub(crate) struct Request {
     sending: Option<Box<Sending>>,
     /// Where a read lands.
     buf: Vec<u8>,
-    /// What the session waits for, as the connection's state machine or
-    /// a read or write last left it.
-    waitfor: PollFlags,
-    /// The connection has a session still.
-    live: bool,
 }
 
 impl Request {
@@ -653,8 +648,6 @@ impl Request {
             receiving: false,
             sending: None,
             buf: Vec::new(),
-            waitfor: PollFlags::default(),
-            live: false,
         })
     }
 
@@ -746,19 +739,20 @@ impl Request {
 
     /// What it waits for on its connection while it connects or is made
     /// (`Curl_ssh_pollset`).
-    fn pollset(&self, io: Directions) -> Events {
-        match self.waited(io) {
+    fn pollset(io: Directions, line: Option<&LineConn>) -> Events {
+        match Self::waited(io, line) {
             Some(events) => events,
-            None if self.live => Events::IN,
+            None if ssh_on(line).is_some_and(|sc| sc.session.is_some()) => Events::IN,
             None => Events::NONE,
         }
     }
 
     /// What the session's wait, else the body's way `io`, asks for, if
     /// either asks: the pollset C traces as it makes it.
-    fn waited(&self, io: Directions) -> Option<Events> {
-        let (read, write) = if self.waitfor.read || self.waitfor.write {
-            (self.waitfor.read, self.waitfor.write)
+    fn waited(io: Directions, line: Option<&LineConn>) -> Option<Events> {
+        let waitfor = ssh_on(line).map_or(PollFlags::default(), |sc| sc.waitfor);
+        let (read, write) = if waitfor.read || waitfor.write {
+            (waitfor.read, waitfor.write)
         } else {
             (io.recv, io.send)
         };
@@ -775,24 +769,30 @@ impl Request {
     /// What its pollset says as it is made, while it connects or is made
     /// or, once `made`, as its body moves: the session's wait or the
     /// body's way, as C says it only then (`Curl_ssh_pollset`).
-    pub(crate) fn pollset_said(&self, made: bool) -> Option<Events> {
+    pub(crate) fn pollset_said(&self, made: bool, line: Option<&LineConn>) -> Option<Events> {
         if made {
-            self.waited(Directions {
-                recv: self.receiving,
-                send: self.sending.is_some(),
-            })
+            Self::waited(
+                Directions {
+                    recv: self.receiving,
+                    send: self.sending.is_some(),
+                },
+                line,
+            )
         } else {
-            self.waited(Directions::default())
+            Self::waited(Directions::default(), line)
         }
     }
 
     /// What it waits for once made: the session's wait, else its body's
     /// way, pause or not, as C's SSH pollset ignores a pause.
-    pub(crate) fn interest(&self, _: Pause) -> Events {
-        self.pollset(Directions {
-            recv: self.receiving,
-            send: self.sending.is_some(),
-        })
+    pub(crate) fn interest(&self, _: Pause, line: Option<&LineConn>) -> Events {
+        Self::pollset(
+            Directions {
+                recv: self.receiving,
+                send: self.sending.is_some(),
+            },
+            line,
+        )
     }
 
     /// Run the state machine as far as the session lets it now
@@ -807,9 +807,7 @@ impl Request {
         let (result, block) = self.machine(cx, sc);
         let stopped = sc.state == State::Stop;
         sc.block2waitfor(block);
-        self.waitfor = sc.waitfor;
-        self.live = sc.session.is_some();
-        if !self.live {
+        if sc.session.is_none() {
             lease.get().mark_close();
         }
         result.map(|()| stopped)
@@ -1968,7 +1966,6 @@ impl Request {
                 }
                 let waited = sc.session().wait_read(buf);
                 sc.block2waitfor(waited == Aio::Again);
-                self.waitfor = sc.waitfor;
                 match waited {
                     Aio::Again => return Ok(ProtoStep::Blocked),
                     Aio::Error => return Err(ErrorKind::RecvError),
@@ -2034,7 +2031,6 @@ impl Request {
         let mut outlet = SshOutlet { sc, failed: None };
         let sent = sending.send_to(cx, &mut outlet);
         let failed = outlet.failed;
-        self.waitfor = sc.waitfor;
         match sent {
             Err(_) if failed.is_some() => Err(failed.expect("a failure kept")),
             Ok(ProtoStep::Done) => {
@@ -2868,6 +2864,15 @@ impl<H: Host> Outlet<H> for SshOutlet<'_> {
 }
 
 /// The connection's SSH state.
+fn ssh_on(line: Option<&LineConn>) -> Option<&SshConn> {
+    match line {
+        Some(LineConn::Ssh(sc)) => Some(sc),
+        Some(_) => unreachable!("an SSH transfer's connection keeps SSH's state"),
+        None => None,
+    }
+}
+
+/// The connection's SSH state.
 fn ssh_of(lease: &mut ConnLease) -> &mut SshConn {
     match lease.get().line_mut() {
         Some((LineConn::Ssh(sc), _)) => sc,
@@ -2924,8 +2929,8 @@ impl super::Phases for Request {
         }
     }
 
-    fn waits(&self, _: Waiting) -> Events {
-        self.pollset(Directions::default())
+    fn waits(&self, _: Waiting, line: Option<&LineConn>) -> Events {
+        Self::pollset(Directions::default(), line)
     }
 }
 

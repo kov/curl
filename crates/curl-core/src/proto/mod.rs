@@ -318,8 +318,9 @@ pub(crate) trait Phases {
         asked: DoPhase,
     ) -> Result<DoStep, ErrorKind>;
 
-    /// What it waits for on its connection while in `phase`.
-    fn waits(&self, phase: Waiting) -> Events;
+    /// What it waits for on its connection while in `phase`, `line` being
+    /// what its protocol keeps on the connection, if it has put it there.
+    fn waits(&self, phase: Waiting, line: Option<&crate::conn::line::LineConn>) -> Events;
 }
 
 /// `credentials` completed or replaced from a `.netrc` file, if the
@@ -1037,23 +1038,27 @@ impl ProtoState {
     }
 
     /// What the request waits for on its connection while in `phase`.
-    pub(crate) fn waits(&self, phase: Waiting) -> Events {
+    pub(crate) fn waits(
+        &self,
+        phase: Waiting,
+        line: Option<&crate::conn::line::LineConn>,
+    ) -> Events {
         match *self {
-            ProtoState::File(ref f) => f.waits(phase),
-            ProtoState::Http(ref r) => r.waits(phase),
-            ProtoState::Ftp(ref r) => r.waits(phase),
-            ProtoState::Pop3(ref r) => r.waits(phase),
-            ProtoState::Imap(ref r) => r.waits(phase),
-            ProtoState::Smtp(ref r) => r.waits(phase),
-            ProtoState::Ssh(ref r) => r.waits(phase),
-            ProtoState::Ldap(ref r) => r.waits(phase),
-            ProtoState::Dict(ref r) => r.waits(phase),
-            ProtoState::Gopher(ref r) => r.waits(phase),
-            ProtoState::Mqtt(ref r) => r.waits(phase),
-            ProtoState::Telnet(ref r) => r.waits(phase),
-            ProtoState::Tftp(ref r) => r.waits(phase),
+            ProtoState::File(ref f) => f.waits(phase, line),
+            ProtoState::Http(ref r) => r.waits(phase, line),
+            ProtoState::Ftp(ref r) => r.waits(phase, line),
+            ProtoState::Pop3(ref r) => r.waits(phase, line),
+            ProtoState::Imap(ref r) => r.waits(phase, line),
+            ProtoState::Smtp(ref r) => r.waits(phase, line),
+            ProtoState::Ssh(ref r) => r.waits(phase, line),
+            ProtoState::Ldap(ref r) => r.waits(phase, line),
+            ProtoState::Dict(ref r) => r.waits(phase, line),
+            ProtoState::Gopher(ref r) => r.waits(phase, line),
+            ProtoState::Mqtt(ref r) => r.waits(phase, line),
+            ProtoState::Telnet(ref r) => r.waits(phase, line),
+            ProtoState::Tftp(ref r) => r.waits(phase, line),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Script(ref p) => p.waits(phase),
+            ProtoState::Script(ref p) => p.waits(phase, line),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => phase.c_default(),
         }
@@ -1352,14 +1357,18 @@ impl ProtoState {
     }
 
     /// What the request waits for on its connection's socket, once made.
-    pub(crate) fn interest(&self, pause: Pause) -> Events {
+    pub(crate) fn interest(
+        &self,
+        pause: Pause,
+        line: Option<&crate::conn::line::LineConn>,
+    ) -> Events {
         match *self {
             ProtoState::Http(ref r) => r.interest(pause),
             ProtoState::Ftp(ref r) => r.interest(pause),
             ProtoState::Pop3(ref r) => r.interest(pause),
             ProtoState::Imap(ref r) => r.interest(pause),
             ProtoState::Smtp(ref r) => r.interest(pause),
-            ProtoState::Ssh(ref r) => r.interest(pause),
+            ProtoState::Ssh(ref r) => r.interest(pause, line),
             ProtoState::Ldap(ref r) => r.interest(pause),
             ProtoState::Dict(ref r) => r.interest(pause),
             ProtoState::Gopher(ref r) => r.interest(pause),
@@ -1379,9 +1388,13 @@ impl ProtoState {
     /// What the protocol traces of its pollset as it makes it, while it
     /// connects or is made or, once `made`, as its body moves: SSH's
     /// (`Curl_ssh_pollset`).
-    pub(crate) fn pollset_said(&self, made: bool) -> Option<Events> {
+    pub(crate) fn pollset_said(
+        &self,
+        made: bool,
+        line: Option<&crate::conn::line::LineConn>,
+    ) -> Option<Events> {
         match self {
-            ProtoState::Ssh(r) => r.pollset_said(made),
+            ProtoState::Ssh(r) => r.pollset_said(made, line),
             _ => None,
         }
     }

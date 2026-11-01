@@ -131,7 +131,9 @@ witness: curl-core proto::ssh::tests::the_socket_is_not_handed_over_under_a_prox
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::ssh::tests::the_ssh_trace_says_what_its_pollset_waits_for
 --- old
-            TransferState::Exchanging(x) => x.proto.pollset_said(true),
+            TransferState::Exchanging(x) => x
+                .proto
+                .pollset_said(true, pool.slot_of(&x.lease).and_then(ConnSlot::line)),
 --- new
 
 === a session that waits for nothing says its pollset

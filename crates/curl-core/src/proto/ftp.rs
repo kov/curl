@@ -332,10 +332,6 @@ pub(crate) struct Request {
     /// What TLS is made with and said as as the control connection is
     /// upgraded.
     in_place: crate::multi::state::tls::InPlace,
-    /// What the back and forth waits for on the control connection.
-    wants: Events,
-    /// The back and forth stopped, as it last ran.
-    stopped: bool,
     /// The answers' bytes (`req.headerbytecount`).
     header_bytes: u64,
     /// DONE's step, once it reads on the control connection.
@@ -468,8 +464,6 @@ impl Request {
             upload_done: false,
             control: None,
             in_place: Default::default(),
-            wants: Events::IN,
-            stopped: false,
             header_bytes: 0,
             ending: None,
             ending_read: 0,
@@ -599,11 +593,14 @@ impl Request {
     /// What the back and forth waits for on the control connection in
     /// `phase` (`ftp_pollset`, `ftp_domore_pollset`): its answer, once
     /// DO_MORE's commands stopped to wait for the data connection.
-    fn control_waits(&self, phase: Waiting) -> Events {
-        if phase == Waiting::More && self.stopped {
-            Events::IN
-        } else {
-            self.wants
+    fn control_waits(&self, phase: Waiting, line: Option<&LineConn>) -> Events {
+        match line {
+            Some(LineConn::Ftp(pc)) if phase == Waiting::More && pc.state == State::Stop => {
+                Events::IN
+            }
+            Some(LineConn::Ftp(pc)) => drive::waits(&pc.pp),
+            Some(_) => unreachable!("an FTP transfer's connection keeps FTP's state"),
+            None => Events::IN,
         }
     }
 }
@@ -733,8 +730,6 @@ impl Request {
                 Err(e) => Err(e),
             }
         };
-        self.wants = drive::waits(&pc.pp);
-        self.stopped = pc.state == State::Stop;
         ran.map(|()| pc.state == State::Stop)
     }
 
@@ -2549,8 +2544,6 @@ impl Request {
                         if !listens && self.passive == Passive::Epsv {
                             // An `EPSV` port that cannot be reached: `PASV`.
                             self.epsv_disable(cx, pc, &mut carrier)?;
-                            self.wants = drive::waits(&pc.pp);
-                            self.stopped = false;
                             return Ok(DoStep::Doing);
                         }
                         return Err(e);
@@ -2566,7 +2559,6 @@ impl Request {
                 let up = self.data.as_deref().map(DataConn::reached) == Some(Reached::Up);
                 if active && !up {
                     self.check_ctrl(cx, pc, &mut carrier)?;
-                    self.stopped = pc.state == State::Stop;
                     return Ok(DoStep::More);
                 }
                 if active {
@@ -2575,7 +2567,6 @@ impl Request {
                     self.initiating = false;
                 }
                 self.initiate_transfer(cx, pc)?;
-                self.stopped = pc.state == State::Stop;
                 return Ok(if self.initiating {
                     DoStep::More
                 } else {
@@ -2872,10 +2863,9 @@ impl Request {
                     round,
                     "FTP response timeout",
                 );
-                let read = match ran {
+                match ran {
                     Ok((false, due)) => {
                         self.due = Some(due);
-                        self.wants = drive::waits(&pc.pp);
                         return Finish::Waiting;
                     }
                     Ok((true, _)) => {
@@ -2887,9 +2877,7 @@ impl Request {
                         })
                     }
                     Err(e) => Err(e),
-                };
-                self.wants = drive::waits(&pc.pp);
-                read
+                }
             };
             match read {
                 Ok(None) => continue,
@@ -3188,8 +3176,8 @@ impl super::Phases for Request {
         }
     }
 
-    fn waits(&self, phase: Waiting) -> Events {
-        self.control_waits(phase)
+    fn waits(&self, phase: Waiting, line: Option<&LineConn>) -> Events {
+        self.control_waits(phase, line)
     }
 }
 

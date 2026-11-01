@@ -15,6 +15,7 @@ use core::slice;
 use curl_core::error::ErrorKind;
 use curl_core::ws::{Answer, Call, Frame, FrameKind, FrameLen, Meta, Received, SendFlags, Sent};
 
+use crate::callbacks::Held;
 use crate::easy::{EasyRef, ShimEasy, handle};
 use crate::error_codes::easy_code;
 use crate::ffi::{
@@ -105,6 +106,19 @@ fn c_frame(frame: Frame) -> curl_ws_frame {
 /// inside one of its own callbacks, the connection lent; else on the
 /// connection it only made, once done.
 fn reach(easy: &ShimEasy, call: Call<'_>) -> Result<Result<Answer, ErrorKind>, CURLcode> {
+    let mut held = Held::default();
+    let done = reach_noting(easy, call, &mut |kind, bytes| held.note(kind, bytes));
+    held.say(easy);
+    done
+}
+
+/// `reach`, what a call from outside a callback traces going to `notes`,
+/// the handle borrowed meanwhile.
+fn reach_noting(
+    easy: &ShimEasy,
+    call: Call<'_>,
+    notes: curl_core::multi::raw::Notes<'_>,
+) -> Result<Result<Answer, ErrorKind>, CURLcode> {
     match easy.added() {
         None => {
             let private = easy.private_multi();
@@ -113,9 +127,9 @@ fn reach(easy: &ShimEasy, call: Call<'_>) -> Result<Result<Answer, ErrorKind>, C
                     // SAFETY: the handle owns its private multi.
                     let m = unsafe { m.as_ref() };
                     // SAFETY: nothing runs on it once its perform is done.
-                    unsafe { m.core_mut() }.ws_for(e, call)
+                    unsafe { m.core_mut() }.ws_for(e, call, notes)
                 }
-                None => e.ws(call),
+                None => e.ws(call, notes),
             });
             done.ok_or(CURLE_RECURSIVE_API_CALL)
         }
@@ -125,7 +139,7 @@ fn reach(easy: &ShimEasy, call: Call<'_>) -> Result<Result<Answer, ErrorKind>, C
             match m.stack.reach() {
                 // SAFETY: nothing runs on the multi.
                 Ok(Reach::Direct) => Ok(unsafe { m.core_mut() }
-                    .ws(id, call)
+                    .ws(id, call, notes)
                     .expect("an added handle is in its multi")),
                 Ok(Reach::Frame(GateFrame::Transfer(cx))) => {
                     // SAFETY: the callback lent its context and does not
@@ -153,8 +167,9 @@ fn reach(easy: &ShimEasy, call: Call<'_>) -> Result<Result<Answer, ErrorKind>, C
 /// Refuse a call for `why` before it reaches the WebSocket, its reason
 /// kept as the core keeps its own.
 fn refuse(easy: &ShimEasy, kind: ErrorKind, why: &[u8]) -> CURLcode {
+    let mut held = Held::default();
     let kept = easy.with_easy(|e| match e {
-        EasyRef::Easy(easy) => easy.ws_refuse(kind, why),
+        EasyRef::Easy(easy) => easy.ws_refuse(kind, why, &mut |kind, bytes| held.note(kind, bytes)),
         EasyRef::Frame(GateFrame::Transfer(cx), _) => {
             // SAFETY: the callback lent its context and does not use it
             // until it returns.
@@ -162,6 +177,7 @@ fn refuse(easy: &ShimEasy, kind: ErrorKind, why: &[u8]) -> CURLcode {
         }
         EasyRef::Frame(_, _) => kind,
     });
+    held.say(easy);
     easy_code(kept.unwrap_or(kind))
 }
 

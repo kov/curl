@@ -10,6 +10,7 @@ use crate::conn::io::Sent;
 use crate::conn::{ConnNumber, TransferNumber};
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::handler::DebugKind;
+use crate::multi::raw::Notes;
 use crate::multi::state::{ConnRank, StepCx};
 use crate::multi::{Host, TransferCx};
 use crate::progress;
@@ -170,6 +171,63 @@ pub(crate) fn info_outside(calls: &mut dyn crate::multi::TransferCalls, args: fm
             progress::to_stderr(sink.as_ref(), b"* ");
             progress::to_stderr(sink.as_ref(), line.bytes());
         }
+    }
+}
+
+/// A line of `component`'s, or with none of the verbose output, of a
+/// call on the connection `easy`'s transfer left: as a transfer's, after
+/// its ids.
+pub(crate) fn note_line(
+    easy: &crate::easy::Easy,
+    component: Option<Component>,
+    notes: Notes<'_>,
+    said: impl FnOnce(&mut Text<LINE_MAX>),
+) {
+    let on = component.is_none_or(|c| easy.components().is_some_and(|on| on.traces(c)));
+    if !easy.options().output.verbose || !on {
+        return;
+    }
+    let mut line = Text::<LINE_MAX>::new();
+    push_ids_of(easy, &mut line);
+    if let Some(component) = component {
+        line.push_fmt(format_args!("[{}] ", component.name()));
+    }
+    said(&mut line);
+    end_line(&mut line);
+    notes(DebugKind::Text, line.bytes());
+}
+
+/// Bytes of a call on the connection `easy`'s transfer left, for its debug
+/// handler (`Curl_debug`): none without one, as standard error shows no
+/// such bytes.
+pub(crate) fn note_bytes(
+    easy: &crate::easy::Easy,
+    kind: DebugKind,
+    bytes: &[u8],
+    notes: Notes<'_>,
+) {
+    if !easy.options().output.verbose || easy.options().callbacks.debug.is_none() {
+        return;
+    }
+    let ids = easy.components().is_some_and(|c| c.traces(Component::Ids));
+    if ids && bytes.len() < LINE_MAX {
+        let mut prefixed = Text::<LINE_MAX>::new();
+        push_ids_of(easy, &mut prefixed);
+        after_ids(&mut prefixed, bytes);
+        notes(kind, prefixed.bytes());
+    } else {
+        notes(kind, bytes);
+    }
+}
+
+/// Why a call on the connection `easy`'s transfer left fails, as `failed`
+/// traces it: its detail alone, with no ids.
+pub(crate) fn note_failure(easy: &crate::easy::Easy, detail: &[u8], notes: Notes<'_>) {
+    if easy.options().output.verbose {
+        let mut line = Text::<{ DETAIL_MAX + 1 }>::new();
+        line.push_clipped(detail);
+        line.push_clipped(b"\n");
+        notes(DebugKind::Text, line.bytes());
     }
 }
 
@@ -558,16 +616,21 @@ pub(crate) fn bytes<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u
     if easy.options().callbacks.debug.is_none() {
         out(cx, kind, bytes, prefixed.bytes());
     } else if bytes.len() < LINE_MAX {
-        // As C ends a buffer it does not add a newline to: cut, and
-        // marked `...`, where it leaves no room for a zero byte.
-        prefixed.push_clipped(bytes);
-        if prefixed.bytes().len() >= LINE_MAX - 1 {
-            prefixed.truncate(LINE_MAX - 5);
-            prefixed.push_clipped(b"...\n");
-        }
+        after_ids(&mut prefixed, bytes);
         out(cx, kind, prefixed.bytes(), &[]);
     } else {
         out(cx, kind, bytes, &[]);
+    }
+}
+
+/// `bytes`, after the ids `prefixed` holds, as C ends a buffer it does not
+/// add a newline to: cut, and marked `...`, where it leaves no room for a
+/// zero byte.
+fn after_ids(prefixed: &mut Text<LINE_MAX>, bytes: &[u8]) {
+    prefixed.push_clipped(bytes);
+    if prefixed.bytes().len() >= LINE_MAX - 1 {
+        prefixed.truncate(LINE_MAX - 5);
+        prefixed.push_clipped(b"...\n");
     }
 }
 

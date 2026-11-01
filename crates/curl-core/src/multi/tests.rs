@@ -2501,7 +2501,10 @@ fn a_raw_send_on_a_share_s_connection_runs_out_of_its_lock() {
     e.options_mut().connect_only = ConnectOnly::Yes;
     e.set_share_watched(share.clone(), told.handler());
     e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
-    assert_eq!(m.send_raw_for(&mut e, b"one"), Ok(RawIo::Bytes(3)));
+    assert_eq!(
+        m.send_raw_for(&mut e, b"one", &mut |_, _| {}),
+        Ok(RawIo::Bytes(3))
+    );
     assert_eq!(talk.received(), b"one");
     let locked = std::sync::Arc::default();
     let sink: Box<dyn crate::handler::TextSink> = Box::new(SaysLocked {
@@ -2510,7 +2513,10 @@ fn a_raw_send_on_a_share_s_connection_runs_out_of_its_lock() {
     });
     e.options_mut().callbacks.failure = Some(crate::handler::Handler::new(sink).unwrap());
     told.uses();
-    assert_eq!(m.send_raw_for(&mut e, b"x"), Err(ErrorKind::SendError));
+    assert_eq!(
+        m.send_raw_for(&mut e, b"x", &mut |_, _| {}),
+        Err(ErrorKind::SendError)
+    );
     assert_eq!(told.uses(), [Kind::Connections], "told once, to find it");
     assert_eq!(*locked.lock().unwrap(), [false], "said out of the lock");
     assert!(m.active_socket_for(&mut e).is_some(), "back in its place");

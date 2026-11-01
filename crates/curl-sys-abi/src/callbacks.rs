@@ -1206,6 +1206,11 @@ impl TextSink for Adapter {
 /// `* `, as `Curl_debug` sends it. Called with nothing of the handle
 /// borrowed, so the function may call back into it.
 pub(crate) fn trace_text(easy: &ShimEasy, line: &[u8]) {
+    trace_as(easy, DebugKind::Text, line);
+}
+
+/// `trace_text`, of any kind: only text goes to the standard error stream.
+fn trace_as(easy: &ShimEasy, kind: DebugKind, bytes: &[u8]) {
     let ccb = easy.ccb.get();
     match ccb.debug {
         // SAFETY: the application's debug function takes the bytes,
@@ -1214,15 +1219,40 @@ pub(crate) fn trace_text(easy: &ShimEasy, line: &[u8]) {
         Some(f) => unsafe {
             f(
                 ptr::from_ref(easy).cast_mut().cast(),
-                ffi::CURLINFO_TEXT,
-                line.as_ptr().cast_mut().cast(),
-                line.len(),
+                infotype(kind),
+                bytes.as_ptr().cast_mut().cast(),
+                bytes.len(),
                 ccb.debug_data,
             );
         },
-        None => {
+        None if kind == DebugKind::Text => {
             to_stream(ccb.stderr, b"* ");
-            to_stream(ccb.stderr, line);
+            to_stream(ccb.stderr, bytes);
+        }
+        None => {}
+    }
+}
+
+/// What a call on the connection a transfer left traced, held until nothing
+/// of the handle is borrowed: its debug function may call back into it, as
+/// C's may. A piece there is no memory to hold is not said, as a line too
+/// long for the trace is cut.
+#[derive(Default)]
+pub(crate) struct Held(Vec<(DebugKind, Vec<u8>)>);
+
+impl Held {
+    pub(crate) fn note(&mut self, kind: DebugKind, bytes: &[u8]) {
+        use curl_alloc::TryVec as _;
+        let mut copy = Vec::new();
+        if copy.try_extend_from_slice(bytes).is_ok() {
+            let _not_said = self.0.try_push((kind, copy));
+        }
+    }
+
+    /// Say what is held, in the order it was traced.
+    pub(crate) fn say(self, easy: &ShimEasy) {
+        for (kind, bytes) in &self.0 {
+            trace_as(easy, *kind, bytes);
         }
     }
 }

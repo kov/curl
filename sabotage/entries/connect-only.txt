@@ -75,11 +75,11 @@ witness: curl-core proto::http::tests::connect_only::a_handle_s_own_multi_keeps_
 --- old
         l.used = true;
     }
-    let mut cx = RawCx { now, easy };
+    let mut cx = RawCx {
 --- new
         l.used = false;
     }
-    let mut cx = RawCx { now, easy };
+    let mut cx = RawCx {
 
 === a raw send on a share's connection runs under the pool's lock
 file: crates/curl-core/src/multi/raw.rs
@@ -127,3 +127,57 @@ witness: curl-sys-abi handle_tests::a_connect_only_perform_leaves_the_connection
 --- new
                 2 => ConnectOnly::WebSocket,
                 _ => ConnectOnly::Yes,
+
+=== a raw call traces nothing
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core proto::http::tests::connect_only::a_raw_call_traces_on_the_handle_s_notes
+features: test-util
+--- old
+    fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
+        Some(self)
+    }
+--- new
+    fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
+        None
+    }
+
+=== a raw call's failure is not traced
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core proto::http::tests::connect_only::a_raw_call_traces_on_the_handle_s_notes
+features: test-util
+--- old
+    crate::trace::note_failure(easy, detail, notes);
+--- new
+    let _ = notes;
+
+=== a raw call's lines lose the numbers of its last transfer
+file: crates/curl-core/src/trace.rs
+witness: curl-core proto::http::tests::connect_only::a_raw_call_traces_on_the_handle_s_notes
+features: test-util
+--- old
+    let mut line = Text::<LINE_MAX>::new();
+    push_ids_of(easy, &mut line);
+    if let Some(component) = component {
+--- new
+    let mut line = Text::<LINE_MAX>::new();
+    if let Some(component) = component {
+
+=== a WebSocket's calls on a connection trace nothing
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core proto::http::tests::connect_only::a_websocket_s_calls_trace_on_the_handle_s_notes
+features: test-util
+--- old
+        crate::conn::layer::Trace::line(&mut self.cx, Component::Ws, args);
+--- new
+        let _ = args;
+
+=== a call's trace reaches the debug function with the handle borrowed
+file: crates/curl-sys-abi/src/ws.rs
+witness: curl-sys-abi handle_tests::a_debug_function_calls_back_during_a_call_on_a_connection
+--- old
+    let done = reach_noting(easy, call, &mut |kind, bytes| held.note(kind, bytes));
+--- new
+    let done = reach_noting(easy, call, &mut |kind, bytes| {
+        crate::callbacks::trace_text(easy, bytes);
+        let _ = (kind, &mut held);
+    });

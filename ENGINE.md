@@ -667,9 +667,10 @@ via ...`).
 
 Outside a transfer the handle's `DebugHandler` is not reached: it takes a `TransferCx`, which a
 handle in no transfer has none of. What C traces there (`CURLOPT_COOKIELIST`'s commands, as
-they are set) is handed to a `notes` closure the caller passes, line by line in the transfer's
-own formatting; the shim sends those lines to the debug function, or the STDERR stream, once
-the handle is no longer borrowed, so the function may call back into it.
+they are set, and the calls on a connection a transfer left, `multi::raw`) is handed to a `notes`
+closure the caller passes, piece by piece in the transfer's own formatting; the shim sends those
+pieces to the debug function, or the STDERR stream, once the handle is no longer borrowed, so the
+function may call back into it.
 
 C's `CURLE_AGAIN` has three meanings (would-block, "rebuild the sub-chain", "nothing yet") and
 "OK with 0 bytes" means EOF; here they are distinct variants. `NO_CONNECTION_AVAILABLE` is
@@ -2356,7 +2357,9 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   only connect or whose connection is gone as C does. The pool is locked only to find the
   connection and to put it back (`Pool::lend_reserved`, `Place::WithHandle`): the bytes move out
   of a share's lock, which the application is told of once. A failure is kept in the report and
-  told to the error sink, and traced nowhere, as no transfer runs. `Multi::active_socket` tells the
+  told to the error sink. What the call traces, the handle's, after its last transfer's numbers as
+  C's lines are, goes to the `Notes` the call is given: no transfer runs, so there is no `TransferCx`
+  for the debug handler. `Multi::active_socket` tells the
   socket of the connection a transfer holds or its pool keeps (`CURLINFO_ACTIVESOCKET`,
   `LASTSOCKET`). The connection closes at once, said "closing connection #N", as the handle
   leaves a multi of the application's, or, in a handle's own multi

@@ -5,10 +5,15 @@
 //! in the pool it was made in (`Place::Reserved`), which the handle names
 //! by its last connection. Also what a handle does with its pool's
 //! connections between transfers: keep them alive (`curl_easy_upkeep`).
+//!
+//! No transfer runs for these calls. What they trace is the handle's, as
+//! C's is, after the numbers its last transfer had, and is told to the
+//! `notes` each call is given.
 
 use std::fmt;
 
 use super::{Host, Multi, TransferId};
+use crate::components::Component;
 use crate::conn::io::{Recv, Sent, SocketKey};
 use crate::conn::layer::LayerCx;
 use crate::conn::pool::Pool;
@@ -17,6 +22,13 @@ use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::share::{Kind, watched};
 use crate::time::Instant;
+use crate::trace::note_line;
+
+/// What a call on the connection a transfer left traces, each piece as it
+/// goes to the handle's debug function or standard error: the call has no
+/// `TransferCx` to reach a debug handler with, and the handle is borrowed
+/// meanwhile, so whoever made the call says them.
+pub type Notes<'a> = &'a mut (dyn FnMut(crate::handler::DebugKind, &[u8]) + 'a);
 
 /// What a raw send or receive moved: bytes, none at a receive meaning the
 /// peer closed its side; or nothing for now (`CURLE_AGAIN`).
@@ -32,12 +44,14 @@ enum Way<'a> {
     Send(&'a [u8]),
 }
 
-/// The context of a raw send or receive: no transfer runs, so nothing is
-/// traced; a failure is kept in the handle's report and told to its
-/// error sink, as C's `failf` keeps it.
+/// The context of a raw send or receive: what it traces goes to `notes`;
+/// a failure is kept in the handle's report and told to its error sink, as
+/// C's `failf` keeps it.
 struct RawCx<'a> {
     now: Instant,
+    unix_time: i64,
     easy: &'a mut Easy,
+    notes: Notes<'a>,
 }
 
 impl LayerCx for RawCx<'_> {
@@ -46,7 +60,7 @@ impl LayerCx for RawCx<'_> {
     }
 
     fn trace(&mut self) -> Option<&mut dyn crate::conn::layer::Trace> {
-        None
+        Some(self)
     }
 
     fn failures(&mut self) -> Option<&mut dyn crate::conn::layer::Failures> {
@@ -54,7 +68,7 @@ impl LayerCx for RawCx<'_> {
     }
 
     fn transfer(&mut self) -> Option<&mut dyn crate::conn::layer::ForTransfer> {
-        None
+        Some(self)
     }
 
     fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
@@ -78,13 +92,81 @@ impl LayerCx for RawCx<'_> {
     }
 }
 
+impl crate::conn::layer::Trace for RawCx<'_> {
+    fn line(&mut self, component: Component, line: fmt::Arguments<'_>) {
+        note_line(self.easy, Some(component), &mut *self.notes, |l| {
+            l.push_fmt(line);
+        });
+    }
+
+    fn line_with(&mut self, component: Component, parts: &[&[u8]]) {
+        note_line(self.easy, Some(component), &mut *self.notes, |l| {
+            for part in parts {
+                l.push_clipped(part);
+            }
+        });
+    }
+
+    fn info_line(&mut self, line: fmt::Arguments<'_>) {
+        note_line(self.easy, None, &mut *self.notes, |l| {
+            l.push_fmt(line);
+        });
+    }
+
+    fn info_line_with(&mut self, parts: &[&[u8]]) {
+        note_line(self.easy, None, &mut *self.notes, |l| {
+            for part in parts {
+                l.push_clipped(part);
+            }
+        });
+    }
+
+    fn says_info(&self) -> bool {
+        self.easy.options().output.verbose
+    }
+}
+
+/// A connection made already asks little of its handle: a TLS session
+/// traces its records and keeps its tickets.
+impl crate::conn::layer::ForTransfer for RawCx<'_> {
+    fn debug_bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
+        crate::trace::note_bytes(self.easy, kind, bytes, &mut *self.notes);
+    }
+
+    fn has_debug_handler(&self) -> bool {
+        let options = self.easy.options();
+        options.callbacks.debug.is_some() && options.output.verbose
+    }
+
+    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
+        None
+    }
+
+    fn peer_verified(&mut self, _: Component, _: i64) {}
+
+    fn has_tls_handler(&self) -> bool {
+        false
+    }
+
+    fn hand_tls_context(&mut self, _: crate::tls::TlsNative) -> Result<(), ErrorKind> {
+        Ok(())
+    }
+
+    fn stop_recv(&mut self) {}
+
+    fn seconds_since_1970(&self) -> i64 {
+        self.unix_time
+    }
+}
+
 impl crate::conn::layer::Failures for RawCx<'_> {
     fn keep(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
-        fail(self.easy, kind, crate::trace::reason(why))
+        fail(self.easy, kind, crate::trace::reason(why), &mut *self.notes)
     }
 
     fn keep_with(&mut self, kind: ErrorKind, parts: &[&[u8]]) -> ErrorKind {
-        fail(self.easy, kind, crate::trace::reason_with(parts))
+        let why = crate::trace::reason_with(parts);
+        fail(self.easy, kind, why, &mut *self.notes)
     }
 
     fn keep_errno(&mut self, e: &std::io::Error) {
@@ -92,16 +174,48 @@ impl crate::conn::layer::Failures for RawCx<'_> {
     }
 }
 
-/// Keep `why` as the reason the handle failed, if it is the first, and
-/// tell the application's error sink (`failf` outside a transfer).
-fn fail(easy: &mut Easy, kind: ErrorKind, reason: crate::trace::Reason) -> ErrorKind {
+/// Keep `why` as the reason the handle failed, if it is the first, tell
+/// the application's error sink and trace it (`failf` outside a transfer).
+fn fail(
+    easy: &mut Easy,
+    kind: ErrorKind,
+    reason: crate::trace::Reason,
+    notes: Notes<'_>,
+) -> ErrorKind {
     let detail = reason.bytes();
     let first = easy.report().unsaid();
     easy.report_mut().record_failure(detail);
     if first && let Some(sink) = easy.options().callbacks.failure.clone() {
         sink.write(detail);
     }
+    crate::trace::note_failure(easy, detail, notes);
     kind
+}
+
+/// The clock of a call on a connection: the multi's that made it, or a
+/// handle with no multi's own, whose layers keep no time but their own.
+#[derive(Clone, Copy)]
+struct When {
+    now: Instant,
+    unix_time: i64,
+}
+
+impl When {
+    fn of(clock: &crate::time::SharedClock) -> When {
+        When {
+            now: clock.now(),
+            unix_time: clock.unix_time(),
+        }
+    }
+
+    fn on_no_clock() -> When {
+        use crate::time::Clock as _;
+        let clock = crate::time::SystemClock::new();
+        When {
+            now: clock.now(),
+            unix_time: clock.unix_time(),
+        }
+    }
 }
 
 /// Run `f` on the pool `easy`'s connections are in: its share's, if that
@@ -157,8 +271,9 @@ fn on_reserved<R>(
 fn raw(
     pool: Option<&mut Pool>,
     easy: &mut Easy,
-    now: Instant,
+    when: When,
     way: Way<'_>,
+    notes: Notes<'_>,
 ) -> Result<RawIo, ErrorKind> {
     if !easy.options().connect_only.reserves() {
         let why = format_args!("CONNECT_ONLY is required");
@@ -166,9 +281,12 @@ fn raw(
             easy,
             ErrorKind::UnsupportedProtocol,
             crate::trace::reason(why),
+            notes,
         ));
     }
-    on_reserved(pool, easy, |easy, conn| raw_on_conn(conn, easy, now, way))
+    on_reserved(pool, easy, |easy, conn| {
+        raw_on_conn(conn, easy, when, way, notes)
+    })
 }
 
 /// `raw`, on the connection found; refused if it is gone, which the handle
@@ -176,8 +294,9 @@ fn raw(
 fn raw_on_conn(
     conn: Option<&mut Conn>,
     easy: &mut Easy,
-    now: Instant,
+    when: When,
     way: Way<'_>,
+    notes: Notes<'_>,
 ) -> Result<RawIo, ErrorKind> {
     let Some(conn) = conn else {
         // Forgotten as it is looked for, so C names it as none.
@@ -188,12 +307,18 @@ fn raw_on_conn(
             easy,
             ErrorKind::UnsupportedProtocol,
             crate::trace::reason(why),
+            notes,
         ));
     };
     if let Some(l) = easy.last_conn.as_mut() {
         l.used = true;
     }
-    let mut cx = RawCx { now, easy };
+    let mut cx = RawCx {
+        now: when.now,
+        unix_time: when.unix_time,
+        easy,
+        notes,
+    };
     match way {
         Way::Recv([]) => Ok(RawIo::Bytes(0)),
         Way::Recv(buf) => match conn.recv(&mut cx, buf.len()) {
@@ -226,20 +351,35 @@ fn raw_on_conn(
 impl<H: Host> Multi<H> {
     /// Receive into `buf` on the connection transfer `id` only made, once
     /// it is done (`curl_easy_recv`). `None` if `id` is not in this multi.
-    pub fn recv_raw(&mut self, id: TransferId, buf: &mut [u8]) -> Option<Result<RawIo, ErrorKind>> {
-        self.raw_on(id, Way::Recv(buf))
+    pub fn recv_raw(
+        &mut self,
+        id: TransferId,
+        buf: &mut [u8],
+        notes: Notes<'_>,
+    ) -> Option<Result<RawIo, ErrorKind>> {
+        self.raw_on(id, Way::Recv(buf), notes)
     }
 
     /// Send from `bytes` on the connection transfer `id` only made, once
     /// it is done (`curl_easy_send`). `None` if `id` is not in this multi.
-    pub fn send_raw(&mut self, id: TransferId, bytes: &[u8]) -> Option<Result<RawIo, ErrorKind>> {
-        self.raw_on(id, Way::Send(bytes))
+    pub fn send_raw(
+        &mut self,
+        id: TransferId,
+        bytes: &[u8],
+        notes: Notes<'_>,
+    ) -> Option<Result<RawIo, ErrorKind>> {
+        self.raw_on(id, Way::Send(bytes), notes)
     }
 
-    fn raw_on(&mut self, id: TransferId, way: Way<'_>) -> Option<Result<RawIo, ErrorKind>> {
-        let now = self.clock.now();
+    fn raw_on(
+        &mut self,
+        id: TransferId,
+        way: Way<'_>,
+        notes: Notes<'_>,
+    ) -> Option<Result<RawIo, ErrorKind>> {
+        let when = When::of(&self.clock);
         let easy = &mut self.slots.get_mut(id)?.easy;
-        Some(raw(Some(&mut self.caches.pool), easy, now, way))
+        Some(raw(Some(&mut self.caches.pool), easy, when, way, notes))
     }
 
     /// The socket of the connection transfer `id` had last, if it is
@@ -261,16 +401,28 @@ impl<H: Host> Multi<H> {
 
     /// As `recv_raw`, for `easy`, not added, whose transfers this multi
     /// ran.
-    pub fn recv_raw_for(&mut self, easy: &mut Easy, buf: &mut [u8]) -> Result<RawIo, ErrorKind> {
-        let now = self.clock.now();
-        raw(Some(&mut self.caches.pool), easy, now, Way::Recv(buf))
+    pub fn recv_raw_for(
+        &mut self,
+        easy: &mut Easy,
+        buf: &mut [u8],
+        notes: Notes<'_>,
+    ) -> Result<RawIo, ErrorKind> {
+        let when = When::of(&self.clock);
+        let pool = Some(&mut self.caches.pool);
+        raw(pool, easy, when, Way::Recv(buf), notes)
     }
 
     /// As `send_raw`, for `easy`, not added, whose transfers this multi
     /// ran.
-    pub fn send_raw_for(&mut self, easy: &mut Easy, bytes: &[u8]) -> Result<RawIo, ErrorKind> {
-        let now = self.clock.now();
-        raw(Some(&mut self.caches.pool), easy, now, Way::Send(bytes))
+    pub fn send_raw_for(
+        &mut self,
+        easy: &mut Easy,
+        bytes: &[u8],
+        notes: Notes<'_>,
+    ) -> Result<RawIo, ErrorKind> {
+        let when = When::of(&self.clock);
+        let pool = Some(&mut self.caches.pool);
+        raw(pool, easy, when, Way::Send(bytes), notes)
     }
 
     /// As `active_socket`, for `easy`, not added, whose transfers this
@@ -331,27 +483,27 @@ impl Easy {
 
     /// Receive into `buf` on the connection the handle's last transfer
     /// only made (`curl_easy_recv`), once `perform` is done.
-    pub fn recv_raw(&mut self, buf: &mut [u8]) -> Result<RawIo, ErrorKind> {
+    pub fn recv_raw(&mut self, buf: &mut [u8], notes: Notes<'_>) -> Result<RawIo, ErrorKind> {
         match self.private.take() {
             Some(mut private) => {
-                let got = private.multi.recv_raw_for(self, buf);
+                let got = private.multi.recv_raw_for(self, buf, notes);
                 self.private = Some(private);
                 got
             }
-            None => raw(None, self, no_clock(), Way::Recv(buf)),
+            None => raw(None, self, When::on_no_clock(), Way::Recv(buf), notes),
         }
     }
 
     /// Send from `bytes` on the connection the handle's last transfer
     /// only made (`curl_easy_send`), once `perform` is done.
-    pub fn send_raw(&mut self, bytes: &[u8]) -> Result<RawIo, ErrorKind> {
+    pub fn send_raw(&mut self, bytes: &[u8], notes: Notes<'_>) -> Result<RawIo, ErrorKind> {
         match self.private.take() {
             Some(mut private) => {
-                let sent = private.multi.send_raw_for(self, bytes);
+                let sent = private.multi.send_raw_for(self, bytes, notes);
                 self.private = Some(private);
                 sent
             }
-            None => raw(None, self, no_clock(), Way::Send(bytes)),
+            None => raw(None, self, When::on_no_clock(), Way::Send(bytes), notes),
         }
     }
 
@@ -370,20 +522,25 @@ impl Easy {
 }
 
 /// The connection a handle's transfer only made, as its WebSocket's
-/// frames go out on it and come in from it: no transfer runs, so nothing
-/// is traced (`Curl_senddata`, `Curl_easy_recv`).
+/// frames go out on it and come in from it (`Curl_senddata`,
+/// `Curl_easy_recv`).
 struct RawWire<'a> {
     cx: RawCx<'a>,
     carrier: crate::conn::mux::Carrier<'a>,
 }
 
 impl crate::proto::ws::Said for RawWire<'_> {
-    fn ws(&mut self, _: fmt::Arguments<'_>) {}
+    fn ws(&mut self, args: fmt::Arguments<'_>) {
+        crate::conn::layer::Trace::line(&mut self.cx, Component::Ws, args);
+    }
 
-    fn info(&mut self, _: fmt::Arguments<'_>) {}
+    fn info(&mut self, args: fmt::Arguments<'_>) {
+        crate::conn::layer::Trace::info_line(&mut self.cx, args);
+    }
 
     fn fail(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
-        fail(self.cx.easy, kind, crate::trace::reason(why))
+        let why = crate::trace::reason(why);
+        fail(self.cx.easy, kind, why, &mut *self.cx.notes)
     }
 }
 
@@ -426,27 +583,30 @@ impl crate::proto::ws::Wire for RawWire<'_> {
 fn ws(
     pool: Option<&mut Pool>,
     easy: &mut Easy,
-    now: Instant,
+    when: When,
     call: crate::ws::Call<'_>,
+    notes: Notes<'_>,
 ) -> Result<crate::ws::Answer, ErrorKind> {
     use crate::ws::Call;
     let options = easy.options().ws;
-    let refuse = |easy: &mut Easy, kind, why: fmt::Arguments<'_>| {
-        Err(fail(easy, kind, crate::trace::reason(why)))
+    let refuse = |easy: &mut Easy, notes: Notes<'_>, kind, why: fmt::Arguments<'_>| {
+        Err(fail(easy, kind, crate::trace::reason(why), notes))
     };
     if matches!(call, Call::StartFrame(..)) && options.raw {
         let why = format_args!("cannot curl_ws_start_frame() with CURLWS_RAW_MODE enabled");
-        return refuse(easy, ErrorKind::FailedInit, why);
+        return refuse(easy, notes, ErrorKind::FailedInit, why);
     }
     if !easy.options().connect_only.reserves() {
         return match call {
             Call::Recv(_) => refuse(
                 easy,
+                notes,
                 ErrorKind::UnsupportedProtocol,
                 format_args!("[WS] CONNECT_ONLY is required"),
             ),
             Call::Send(..) | Call::StartFrame(..) => refuse(
                 easy,
+                notes,
                 ErrorKind::SendError,
                 format_args!("[WS] No associated connection"),
             ),
@@ -457,9 +617,11 @@ fn ws(
     // again: it looks for none itself (`data->conn`).
     if matches!(call, Call::StartFrame(..)) && !last.is_some_and(|l| l.used) {
         let why = format_args!("[WS] No associated connection");
-        return refuse(easy, ErrorKind::SendError, why);
+        return refuse(easy, notes, ErrorKind::SendError, why);
     }
-    on_reserved(pool, easy, |easy, conn| ws_on_conn(conn, easy, now, call))
+    on_reserved(pool, easy, |easy, conn| {
+        ws_on_conn(conn, easy, when, call, notes)
+    })
 }
 
 /// `ws`, on the connection found; refused if it is gone, which the handle
@@ -467,13 +629,14 @@ fn ws(
 fn ws_on_conn(
     conn: Option<&mut Conn>,
     easy: &mut Easy,
-    now: Instant,
+    when: When,
     call: crate::ws::Call<'_>,
+    notes: Notes<'_>,
 ) -> Result<crate::ws::Answer, ErrorKind> {
     use crate::ws::{Answer, Call};
     let options = easy.options().ws;
-    let refuse = |easy: &mut Easy, kind, why: fmt::Arguments<'_>| {
-        Err(fail(easy, kind, crate::trace::reason(why)))
+    let refuse = |easy: &mut Easy, notes: Notes<'_>, kind, why: fmt::Arguments<'_>| {
+        Err(fail(easy, kind, crate::trace::reason(why), notes))
     };
     let Some(conn) = conn else {
         easy.last_conn = None;
@@ -481,11 +644,13 @@ fn ws_on_conn(
         return match call {
             Call::Recv(_) => refuse(
                 easy,
+                notes,
                 ErrorKind::BadFunctionArgument,
                 format_args!("[WS] connection not found"),
             ),
             Call::Send(..) | Call::StartFrame(..) => refuse(
                 easy,
+                notes,
                 ErrorKind::UnsupportedProtocol,
                 format_args!("Failed to get last socket used for connection #-1"),
             ),
@@ -498,18 +663,25 @@ fn ws_on_conn(
         return match call {
             Call::Recv(_) => refuse(
                 easy,
+                notes,
                 ErrorKind::BadFunctionArgument,
                 format_args!("[WS] connection is not setup for websocket"),
             ),
             Call::Send(..) | Call::StartFrame(..) => refuse(
                 easy,
+                notes,
                 ErrorKind::SendError,
                 format_args!("[WS] Not a websocket transfer"),
             ),
         };
     };
     let mut wire = RawWire {
-        cx: RawCx { now, easy },
+        cx: RawCx {
+            now: when.now,
+            unix_time: when.unix_time,
+            easy,
+            notes,
+        },
         carrier,
     };
     let raw = options.raw;
@@ -536,10 +708,11 @@ impl<H: Host> Multi<H> {
         &mut self,
         id: TransferId,
         call: crate::ws::Call<'_>,
+        notes: Notes<'_>,
     ) -> Option<Result<crate::ws::Answer, ErrorKind>> {
-        let now = self.clock.now();
+        let when = When::of(&self.clock);
         let easy = &mut self.slots.get_mut(id)?.easy;
-        Some(ws(Some(&mut self.caches.pool), easy, now, call))
+        Some(ws(Some(&mut self.caches.pool), easy, when, call, notes))
     }
 
     /// As `ws`, for `easy`, not added, whose transfers this multi ran.
@@ -547,30 +720,35 @@ impl<H: Host> Multi<H> {
         &mut self,
         easy: &mut Easy,
         call: crate::ws::Call<'_>,
+        notes: Notes<'_>,
     ) -> Result<crate::ws::Answer, ErrorKind> {
-        let now = self.clock.now();
-        ws(Some(&mut self.caches.pool), easy, now, call)
+        let when = When::of(&self.clock);
+        ws(Some(&mut self.caches.pool), easy, when, call, notes)
     }
 }
 
 impl Easy {
     /// A call on the WebSocket the handle's last transfer only connected,
     /// once `perform` is done.
-    pub fn ws(&mut self, call: crate::ws::Call<'_>) -> Result<crate::ws::Answer, ErrorKind> {
+    pub fn ws(
+        &mut self,
+        call: crate::ws::Call<'_>,
+        notes: Notes<'_>,
+    ) -> Result<crate::ws::Answer, ErrorKind> {
         match self.private.take() {
             Some(mut private) => {
-                let done = private.multi.ws_for(self, call);
+                let done = private.multi.ws_for(self, call, notes);
                 self.private = Some(private);
                 done
             }
-            None => ws(None, self, no_clock(), call),
+            None => ws(None, self, When::on_no_clock(), call, notes),
         }
     }
 
     /// A call on the handle's WebSocket is refused before it reaches it,
     /// for `why`: its reason kept as the WebSocket's own would be.
     /// `kind`, given back.
-    pub fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8]) -> ErrorKind {
-        fail(self, kind, crate::trace::reason_with(&[why]))
+    pub fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8], notes: Notes<'_>) -> ErrorKind {
+        fail(self, kind, crate::trace::reason_with(&[why]), notes)
     }
 }

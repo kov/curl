@@ -1242,6 +1242,8 @@ unsafe fn raw(curl: *mut CURL, call: EasyCall, buffer: Raw, n: *mut usize) -> CU
         // SAFETY: the buffer holds `len` bytes, as the caller guarantees.
         Raw::Send(p, len) => Bytes::Out(unsafe { slice::from_raw_parts(p, len) }),
     };
+    let mut held = callbacks::Held::default();
+    let notes = &mut |kind, bytes: &[u8]| held.note(kind, bytes);
     let got = match easy.added() {
         None => {
             let private = easy.private.get();
@@ -1250,16 +1252,16 @@ unsafe fn raw(curl: *mut CURL, call: EasyCall, buffer: Raw, n: *mut usize) -> CU
                     // SAFETY: the handle owns its private multi.
                     let m = unsafe { m.as_ref() };
                     // SAFETY: nothing runs on it once its perform is done.
-                    unsafe { m.core_mut() }.recv_raw_for(e, buf)
+                    unsafe { m.core_mut() }.recv_raw_for(e, buf, notes)
                 }
                 (Some(m), Bytes::Out(out)) => {
                     // SAFETY: as above.
                     let m = unsafe { m.as_ref() };
                     // SAFETY: as above.
-                    unsafe { m.core_mut() }.send_raw_for(e, out)
+                    unsafe { m.core_mut() }.send_raw_for(e, out, notes)
                 }
-                (None, Bytes::In(buf)) => e.recv_raw(buf),
-                (None, Bytes::Out(out)) => e.send_raw(out),
+                (None, Bytes::In(buf)) => e.recv_raw(buf, notes),
+                (None, Bytes::Out(out)) => e.send_raw(out, notes),
             });
             let Some(got) = got else {
                 return CURLE_RECURSIVE_API_CALL;
@@ -1275,12 +1277,13 @@ unsafe fn raw(curl: *mut CURL, call: EasyCall, buffer: Raw, n: *mut usize) -> CU
             // SAFETY: nothing runs on the multi.
             let core = unsafe { m.core_mut() };
             let got = match bytes {
-                Bytes::In(buf) => core.recv_raw(id, buf),
-                Bytes::Out(out) => core.send_raw(id, out),
+                Bytes::In(buf) => core.recv_raw(id, buf, notes),
+                Bytes::Out(out) => core.send_raw(id, out, notes),
             };
             got.expect("an added handle is in its multi")
         }
     };
+    held.say(easy);
     match got {
         Ok(RawIo::Bytes(moved)) => {
             // SAFETY: as above.

@@ -7449,6 +7449,92 @@ fn a_websocket_only_connected_talks_through_the_c_calls() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// What the debug function that calls back into its handle saw.
+#[derive(Default)]
+struct AsksBack {
+    socket: ffi::curl_socket_t,
+    code: Option<CURLcode>,
+    lines: Vec<Vec<u8>>,
+}
+
+/// A debug function asking its handle for the socket of the connection the
+/// call that traces is on.
+unsafe extern "C" fn debug_asks_back(
+    c: *mut CURL,
+    _: ffi::curl_infotype,
+    data: *mut c_char,
+    size: usize,
+    user: *mut c_void,
+) -> c_int {
+    // SAFETY: the test's own, for the length of the call.
+    let asks = unsafe { &mut *user.cast::<AsksBack>() };
+    // SAFETY: the bytes it was given.
+    let line = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), size) };
+    asks.lines.push(line.to_vec());
+    // SAFETY: a live handle, and a pointer to a value of the info's type.
+    let code = unsafe { curl_easy_getinfo(c, ffi::CURLINFO_ACTIVESOCKET, &raw mut asks.socket) };
+    asks.code = Some(code);
+    0
+}
+
+/// A debug function told what a call on a connection traces may call back
+/// into its handle, as C's may: it is answered, of the connection the
+/// call is on, which the handle keeps for its next call.
+#[test]
+fn a_debug_function_calls_back_during_a_call_on_a_connection() {
+    use crate::easy::curl_easy_send;
+    use crate::ws::curl_ws_recv;
+    let (port, server) = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]);
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_CONNECT_ONLY, 1), CURLE_OK);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let mut asks = AsksBack::default();
+    assert_eq!(pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut asks), CURLE_OK);
+    assert_eq!(
+        function(
+            c,
+            ffi::CURLOPT_DEBUGFUNCTION,
+            debug_asks_back as DebugFn as *const (),
+        ),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_VERBOSE, 1), CURLE_OK);
+    let (mut buf, mut n) = ([0u8; 8], 0);
+    let mut meta: *const ffi::curl_ws_frame = ptr::null();
+    // The connection is not a WebSocket's, which the call says, on it.
+    // SAFETY: a live handle, a buffer of its length, where the count and
+    // the frame go.
+    let got = unsafe {
+        curl_ws_recv(
+            c,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            &raw mut n,
+            &raw mut meta,
+        )
+    };
+    assert_eq!(got, CURLE_BAD_FUNCTION_ARGUMENT);
+    assert_eq!(
+        asks.lines,
+        [b"[WS] connection is not setup for websocket\n".to_vec()]
+    );
+    assert_eq!(asks.code, Some(CURLE_OK));
+    assert!(asks.socket >= 0, "the connection is known during the call");
+    let request = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+    // SAFETY: a live handle, the request's bytes and a count to write.
+    let sent = unsafe { curl_easy_send(c, request.as_ptr().cast(), request.len(), &raw mut n) };
+    assert_eq!((sent, n), (CURLE_OK, request.len()), "still the handle's");
+    assert_eq!(server.join().unwrap(), [request.to_vec()]);
+    // SAFETY: a handle no call uses any more.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// CURLOPT_WS_OPTIONS sets raw mode and no auto-pong by their bits, any
 /// other bit ignored.
 #[test]

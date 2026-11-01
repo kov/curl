@@ -659,9 +659,9 @@ witness: curl-core proto::http::tests::the_plain_build_says_no_debug_lines
 file: crates/curl-core/src/trace.rs
 witness: curl-core proto::http::tests::traced_bytes_with_the_ids_keep_a_zero_byte
 --- old
-        prefixed.push_clipped(bytes);
+    prefixed.push_clipped(bytes);
 --- new
-        prefixed.push_clipped(bytes.split(|&b| b == 0).next().unwrap_or_default());
+    prefixed.push_clipped(bytes.split(|&b| b == 0).next().unwrap_or_default());
 
 === QUIC's socket is traced as TCP's
 file: crates/curl-core/src/conn/mod.rs

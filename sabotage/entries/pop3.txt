@@ -339,9 +339,9 @@ file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::pop3::tests::over_the_wire::a_pop3s_connection_serves_a_pop3s_transfer_requiring_tls
 features: test-util
 --- old
-            || tls.as_deref().or(have.upgrade()) == want_tls.as_deref().or(want.upgrade());
+        let upgrade_same = !want_use_ssl.may() || tls.or(upgrade) == want_tls.or(want_upgrade);
 --- new
-            || tls.as_deref().or(have.upgrade()) == want.upgrade();
+        let upgrade_same = !want_use_ssl.may() || tls.or(upgrade) == want_upgrade;
 
 === a read failed by the server's close says the connect's stale errno
 file: crates/curl-core/src/proto/pingpong/drive.rs

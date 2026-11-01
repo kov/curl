@@ -484,9 +484,11 @@ witness: curl-core conn::pool::tests::a_clean_close_drains_the_socket_first
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_clean_close_drains_the_socket_first
 --- old
-                discard(conn, false, evicted == Evicted::Linger, left, exits, now);
+                slot.into_conn(),
+                false,
 --- new
-                discard(conn, true, evicted == Evicted::Linger, left, exits, now);
+                slot.into_conn(),
+                true,
 
 === a search takes the first idle match, not the transfer's last connection
 file: crates/curl-core/src/conn/pool.rs
@@ -711,9 +713,9 @@ witness: curl-core proto::http::tests::h2::an_idle_connection_is_pinged_once_its
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core proto::http::tests::h2::a_connection_in_use_is_pinged_with_its_transfer_s_next_send
 --- old
-                    Some(ConnSlot::Open(conn)) => (conn, false),
+                    Some(conn) => (conn, false),
 --- new
-                    Some(ConnSlot::Open(_)) => continue,
+                    Some(_) => continue,
 
 === the upkeep of a share's pool asks nothing of a connection lent to a multi
 file: crates/curl-core/src/conn/pool.rs

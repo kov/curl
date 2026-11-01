@@ -65,8 +65,10 @@ witness: curl-core proto::ssh::tests::a_directory_is_listed
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::ssh::tests::a_connection_is_reused_only_with_the_same_key_files
 --- old
-            (Some(h), Some(w)) => h.same(w),
+        let ssh_same = match (ssh, want_ssh) {
+            (Some(have), Some(want)) => have.same(want),
 --- new
+        let ssh_same = match (ssh, want_ssh) {
             (Some(_), Some(_)) => true,
 
 === the directories of an upload are made again for as long as the file is refused
@@ -162,11 +164,3 @@ witness: curl-core proto::ssh::tests::pwd_before_the_transfer_says_the_path
             match self.pipeline.protocol_header(cx, &said) {
 --- new
             match self.pipeline.header(cx, &said, crate::handler::HeaderOrigin::Header) {
-
-=== a connection with other key files serves a transfer
-file: crates/curl-core/src/conn/mod.rs
-witness: curl-core proto::ssh::tests::a_connection_is_reused_only_with_the_same_key_files
---- old
-        let ssh_same = match (ssh, want_ssh) {
---- new
-        let ssh_same = true || match (ssh, want_ssh) {

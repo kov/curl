@@ -172,7 +172,7 @@ impl Default for SystemClock {
 
 impl Clock for SystemClock {
     fn now(&self) -> Instant {
-        Instant(micros(curl_os::time::monotonic()))
+        Instant::EPOCH.after(curl_os::time::monotonic())
     }
 --- new
 pub struct SystemClock(std::time::Instant);
@@ -191,7 +191,7 @@ impl Default for SystemClock {
 
 impl Clock for SystemClock {
     fn now(&self) -> Instant {
-        Instant(micros(self.0.elapsed()))
+        Instant::EPOCH.after(self.0.elapsed())
     }
 
 === the race's timer is cleared with no attempt left to start

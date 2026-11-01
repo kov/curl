@@ -14,9 +14,9 @@ use super::mux::Carrier;
 #[derive(Debug)]
 pub(crate) enum LineConn {
     /// FTP's: its back and forth, where it is on the server, and how it
-    /// logged in; boxed, as it is larger than the others'. The data
-    /// connection is the transfer's, not the connection's.
-    Ftp(Box<crate::proto::ftp::FtpConn>),
+    /// logged in. The data connection is the transfer's, not the
+    /// connection's.
+    Ftp(crate::proto::ftp::FtpConn),
     /// POP3's: its back and forth, and how it logged in.
     Pop3(crate::proto::pop3::Pop3Conn),
     /// IMAP's: its back and forth, how it logged in, and the mailbox
@@ -26,14 +26,15 @@ pub(crate) enum LineConn {
     /// logged in, and the name it greets the server with.
     Smtp(crate::proto::smtp::SmtpConn),
     /// SCP's and SFTP's: the SSH library's session over the connection's
-    /// socket, and where its state machine is; boxed, as FTP's.
-    Ssh(Box<crate::proto::ssh::SshConn>),
+    /// socket, and where its state machine is.
+    Ssh(crate::proto::ssh::SshConn),
     /// LDAP's: the library's session over a copy of the connection's
-    /// socket, and where its set-up is; boxed, as FTP's.
-    Ldap(Box<crate::proto::ldap::LdapConn>),
+    /// socket, and where its set-up is.
+    Ldap(crate::proto::ldap::LdapConn),
     /// A WebSocket's, switched to from HTTP/1.1 by a 101: its frames'
-    /// decoder and encoder and their buffers; boxed, as FTP's. It says
-    /// no goodbye (C's WebSocket has no `disconnect`).
+    /// decoder and encoder and their buffers; boxed, as only a WebSocket
+    /// should pay for them. It says no goodbye (C's WebSocket has no
+    /// `disconnect`).
     Ws(Box<crate::proto::ws::WsConn>),
     /// RTSP's: an RTP message read in part between responses. It says no
     /// goodbye (C's RTSP has no `disconnect`).

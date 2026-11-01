@@ -630,7 +630,6 @@ impl Request {
             use_ssl: options.line.use_ssl,
             cold: lease.conn().net_route().and_then(|r| r.cold.clone()),
         };
-        let pc = curl_alloc::try_box(pc).map_err(|_| ErrorKind::OutOfMemory)?;
         let line = curl_alloc::try_box(LineConn::Ftp(pc)).map_err(|_| ErrorKind::OutOfMemory)?;
         lease.get().put_line(line);
         let (pc, _) = ftp_of(lease);

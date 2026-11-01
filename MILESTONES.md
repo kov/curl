@@ -1251,7 +1251,7 @@ Its first steps are milestone 6's design-review changes.
     DICT and Gopher; `RequestBase`; a table for `over_tls` and the transport; the mail protocols'
     shared glue; FTP, SSH and LDAP inline in the boxed `LineConn`.
     Done: the receive side, the mail protocols' glue (`proto::mail`), each protocol keeping its
-    `run`, `RequestBase` and the table.
+    `run`, `RequestBase` and the table, and FTP, SSH and LDAP inline.
 89. **Waits C blocks in.** **Done.** TELNET's exchange and FTP's CCC stay non-blocking, each
     recorded in DIVERGENCE.md with a test that other transfers do not stall. SSH's DONE blocks
     inside libssh's closes and quote commands, the multi with it, as C's does (measured

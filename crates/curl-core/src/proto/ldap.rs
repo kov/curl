@@ -490,10 +490,7 @@ impl Request {
             msgid: None,
             sasl,
         };
-        let line = curl_alloc::try_box(LineConn::Ldap(
-            curl_alloc::try_box(lc).map_err(|_| ErrorKind::OutOfMemory)?,
-        ))
-        .map_err(|_| ErrorKind::OutOfMemory)?;
+        let line = curl_alloc::try_box(LineConn::Ldap(lc)).map_err(|_| ErrorKind::OutOfMemory)?;
         lease.get().put_line(line);
         let over_tls = lease.get().carrier().over_tls();
         if over_tls {

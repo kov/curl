@@ -2210,10 +2210,7 @@ impl Request {
             reading: None,
             writing: false,
         };
-        let line = curl_alloc::try_box(LineConn::Ssh(
-            curl_alloc::try_box(sc).map_err(|_| ErrorKind::OutOfMemory)?,
-        ))
-        .map_err(|_| ErrorKind::OutOfMemory)?;
+        let line = curl_alloc::try_box(LineConn::Ssh(sc)).map_err(|_| ErrorKind::OutOfMemory)?;
         lease.get().put_line(line);
         let sc = ssh_of(lease);
         sc.to(cx, State::Init);

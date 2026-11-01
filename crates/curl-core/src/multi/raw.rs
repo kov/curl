@@ -688,6 +688,13 @@ impl crate::proto::ws::Wire for RawWire<'_> {
     }
 }
 
+/// A [`Call`](crate::ws::Call) with its typed arguments read as a host's.
+enum WsCall<'a> {
+    Recv(&'a mut [u8]),
+    Send(&'a [u8], crate::ws::Asked<'a>),
+    StartFrame(crate::ws::Asked<'a>),
+}
+
 /// A call on the WebSocket of the connection `easy` reserved, in `pool`
 /// (`curl_ws_recv`, `curl_ws_send`, `curl_ws_start_frame` once the
 /// transfer is done): refused for a handle that does not only connect.
@@ -697,7 +704,8 @@ fn ws(
     call: crate::ws::Call<'_>,
     notes: Notes<'_>,
 ) -> Result<crate::ws::Answer, ErrorKind> {
-    use crate::ws::Call;
+    use crate::proto::ws::{asked_of, send_enters, start_asked_of, start_enters};
+    use crate::ws::{AskedFrame, Call};
     let Around {
         pool,
         sessions,
@@ -707,19 +715,47 @@ fn ws(
     let refuse = |easy: &mut Easy, notes: Notes<'_>, kind, why: fmt::Arguments<'_>| {
         Err(fail(easy, kind, crate::trace::reason(why), notes))
     };
-    if matches!(call, Call::StartFrame(..)) && options.raw {
-        let why = format_args!("cannot curl_ws_start_frame() with CURLWS_RAW_MODE enabled");
-        return refuse(easy, notes, ErrorKind::FailedInit, why);
+    let call = match call {
+        Call::Recv(buf) => WsCall::Recv(buf),
+        Call::Send(bytes, len, flags) => WsCall::Send(bytes, asked_of(len, flags)),
+        Call::SendAsked(bytes, asked) => WsCall::Send(bytes, asked),
+        Call::StartFrame(flags, len) => WsCall::StartFrame(start_asked_of(flags, len)),
+        Call::StartAsked(asked) => WsCall::StartFrame(asked),
+    };
+    match &call {
+        WsCall::Recv(_) => {}
+        WsCall::Send(bytes, asked) => {
+            send_enters(bytes.len(), asked, options.raw, |line| {
+                note_line(easy, Some(Component::Ws), &mut *notes, |l| {
+                    l.push_fmt(line);
+                });
+            });
+            if let AskedFrame::NoBytes { why, .. } = asked.frame {
+                let reason = format_args!("{}", why.why);
+                return refuse(easy, notes, why.kind, reason);
+            }
+        }
+        WsCall::StartFrame(asked) => {
+            if options.raw {
+                let why = format_args!("cannot curl_ws_start_frame() with CURLWS_RAW_MODE enabled");
+                return refuse(easy, notes, ErrorKind::FailedInit, why);
+            }
+            start_enters(asked, |line| {
+                note_line(easy, Some(Component::Ws), &mut *notes, |l| {
+                    l.push_fmt(line);
+                });
+            });
+        }
     }
     if !easy.options().connect_only.reserves() {
         return match call {
-            Call::Recv(_) => refuse(
+            WsCall::Recv(_) => refuse(
                 easy,
                 notes,
                 ErrorKind::UnsupportedProtocol,
                 format_args!("[WS] CONNECT_ONLY is required"),
             ),
-            Call::Send(..) | Call::SendMore(_) | Call::StartFrame(..) | Call::Prepare => refuse(
+            WsCall::Send(..) | WsCall::StartFrame(_) => refuse(
                 easy,
                 notes,
                 ErrorKind::SendError,
@@ -730,7 +766,7 @@ fn ws(
     let last = easy.last_conn;
     // A frame is started on the connection a receive or a send took up
     // again: it looks for none itself (`data->conn`).
-    if matches!(call, Call::StartFrame(..)) && !last.is_some_and(|l| l.used) {
+    if matches!(call, WsCall::StartFrame(_)) && !last.is_some_and(|l| l.used) {
         let why = format_args!("[WS] No associated connection");
         return refuse(easy, notes, ErrorKind::SendError, why);
     }
@@ -746,10 +782,10 @@ fn ws_on_conn(
     easy: &mut Easy,
     sessions: Option<&mut crate::tls::SessionCache>,
     when: When,
-    call: crate::ws::Call<'_>,
+    call: WsCall<'_>,
     notes: Notes<'_>,
 ) -> Result<crate::ws::Answer, ErrorKind> {
-    use crate::ws::{Answer, Call};
+    use crate::ws::Answer;
     let options = easy.options().ws;
     let refuse = |easy: &mut Easy, notes: Notes<'_>, kind, why: fmt::Arguments<'_>| {
         Err(fail(easy, kind, crate::trace::reason(why), notes))
@@ -758,13 +794,13 @@ fn ws_on_conn(
         easy.last_conn = None;
         easy.report_mut().set_conn(None);
         return match call {
-            Call::Recv(_) => refuse(
+            WsCall::Recv(_) => refuse(
                 easy,
                 notes,
                 ErrorKind::BadFunctionArgument,
                 format_args!("[WS] connection not found"),
             ),
-            Call::Send(..) | Call::SendMore(_) | Call::StartFrame(..) | Call::Prepare => refuse(
+            WsCall::Send(..) | WsCall::StartFrame(_) => refuse(
                 easy,
                 notes,
                 ErrorKind::UnsupportedProtocol,
@@ -777,13 +813,13 @@ fn ws_on_conn(
     }
     let Some((ws, carrier)) = conn.ws_mut() else {
         return match call {
-            Call::Recv(_) => refuse(
+            WsCall::Recv(_) => refuse(
                 easy,
                 notes,
                 ErrorKind::BadFunctionArgument,
                 format_args!("[WS] connection is not setup for websocket"),
             ),
-            Call::Send(..) | Call::SendMore(_) | Call::StartFrame(..) | Call::Prepare => refuse(
+            WsCall::Send(..) | WsCall::StartFrame(_) => refuse(
                 easy,
                 notes,
                 ErrorKind::SendError,
@@ -803,23 +839,15 @@ fn ws_on_conn(
     };
     let raw = options.raw;
     match call {
-        Call::Recv(buf) => {
+        WsCall::Recv(buf) => {
             crate::proto::ws::api_recv(ws, &mut wire, buf, raw, options.auto_pong(), false)
                 .map(Answer::Received)
         }
-        Call::Send(bytes, len, flags) => {
-            crate::proto::ws::api_send(ws, &mut wire, raw, bytes, len, flags, false)
-                .map(Answer::Sent)
+        WsCall::Send(bytes, asked) => {
+            crate::proto::ws::api_send(ws, &mut wire, raw, bytes, &asked, false).map(Answer::Sent)
         }
-        Call::StartFrame(flags, len) => {
-            crate::proto::ws::api_start_frame(ws, &mut wire, raw, flags, len)
-                .map(|()| Answer::Started)
-        }
-        Call::Prepare => {
-            crate::proto::ws::api_prepare(ws, &mut wire, raw, false).map(Answer::Prepared)
-        }
-        Call::SendMore(bytes) => {
-            crate::proto::ws::api_send_more(ws, &mut wire, bytes, false).map(Answer::Sent)
+        WsCall::StartFrame(asked) => {
+            crate::proto::ws::api_start_frame(ws, &mut wire, &asked).map(|()| Answer::Started)
         }
     }
 }
@@ -869,20 +897,5 @@ impl Easy {
             }
             None => ws(Around::alone(), self, call, notes),
         }
-    }
-
-    /// A call on the handle's WebSocket is refused before it reaches it,
-    /// for `why`: its reason kept as the WebSocket's own would be.
-    /// `kind`, given back.
-    pub fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8], notes: Notes<'_>) -> ErrorKind {
-        fail(self, kind, crate::trace::reason_with(&[why]), notes)
-    }
-
-    /// A line of the handle's WebSocket's trace, in its host's words
-    /// (`CURL_TRC_WS`).
-    pub fn ws_say(&self, line: fmt::Arguments<'_>, notes: Notes<'_>) {
-        note_line(self, Some(Component::Ws), notes, |l| {
-            l.push_fmt(line);
-        });
     }
 }

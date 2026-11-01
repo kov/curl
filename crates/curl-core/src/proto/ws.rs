@@ -18,7 +18,7 @@ use std::fmt;
 use curl_alloc::OutOfMemory;
 
 use crate::error::ErrorKind;
-use crate::ws::{Frame, FrameKind, FrameLen, FrameType, SendFlags, Sent};
+use crate::ws::{Asked, AskedFrame, Frame, FrameKind, FrameLen, FrameType, SendFlags, Sent};
 use frame::{Decoder, Encoder, MAX_CONTROL, Passed, Take};
 use queue::ChunkQueue;
 
@@ -226,6 +226,28 @@ impl WsConn {
         self.add_frame(wire, flags, len)
     }
 
+    /// The head of the frame `frame` asks for, whose payload is `these`
+    /// long if it says no more; a refusal comes where a head's own failure
+    /// would (`ws_enc_write_head`).
+    fn head_asked(
+        &mut self,
+        wire: &mut dyn Wire,
+        frame: AskedFrame<'_>,
+        these: usize,
+    ) -> Result<(), ErrorKind> {
+        match frame {
+            AskedFrame::Frame(FrameLen::These, flags) => self.write_head(wire, flags, these as u64),
+            AskedFrame::Frame(FrameLen::Total(total), flags) => self.write_head(wire, flags, total),
+            AskedFrame::None(no) | AskedFrame::NoBytes { why: no, .. } => {
+                match self.add_pending(wire) {
+                    Ok(()) | Err(Stop::Again) => {}
+                    Err(Stop::Failed(kind)) => return Err(kind),
+                }
+                Err(wire.fail(no.kind, format_args!("{}", no.why)))
+            }
+        }
+    }
+
     fn add_frame(
         &mut self,
         wire: &mut dyn Wire,
@@ -331,7 +353,8 @@ impl WsConn {
         flags: SendFlags,
         in_callback: bool,
     ) -> Result<usize, Stop> {
-        self.send_counting(wire, buffer, len, flags, in_callback, &mut 0)
+        let frame = AskedFrame::Frame(len, flags);
+        self.send_counting(wire, buffer, frame, in_callback, &mut 0)
     }
 
     /// `send`, `sent` counting what went even as it stops: bytes past the
@@ -340,8 +363,7 @@ impl WsConn {
         &mut self,
         wire: &mut dyn Wire,
         mut buffer: &[u8],
-        len: FrameLen,
-        flags: SendFlags,
+        frame: AskedFrame<'_>,
         in_callback: bool,
         sent: &mut usize,
     ) -> Result<usize, Stop> {
@@ -366,11 +388,7 @@ impl WsConn {
             }
         } else {
             self.flush(wire, in_callback)?;
-            let total = match len {
-                FrameLen::These => buffer.len() as u64,
-                FrameLen::Total(total) => total,
-            };
-            if let Err(kind) = self.write_head(wire, flags, total) {
+            if let Err(kind) = self.head_asked(wire, frame, buffer.len()) {
                 let code = kind.number();
                 wire.ws(format_args!(
                     "curl_ws_send(), error writing frame head {code}"
@@ -459,14 +477,13 @@ impl WsConn {
     pub(crate) fn start_frame(
         &mut self,
         wire: &mut dyn Wire,
-        flags: SendFlags,
-        len: u64,
+        frame: AskedFrame<'_>,
     ) -> Result<(), ErrorKind> {
         if self.enc.remain > 0 {
             let why = format_args!("[WS] previous frame not finished");
             return Err(wire.fail(ErrorKind::SendError, why));
         }
-        let headed = self.write_head(wire, flags, len);
+        let headed = self.head_asked(wire, frame, 0);
         if let Err(kind) = headed {
             let code = kind.number();
             wire.ws(format_args!(
@@ -620,30 +637,75 @@ fn counted_of(sent: Result<usize, Stop>, counted: usize) -> Result<Sent, ErrorKi
     }
 }
 
-/// The application sends `bytes` (`curl_ws_send`): as a frame `len`
-/// long, or as more of the frame under way, as `flags` say; as they are,
-/// if frames are `raw`. Inside a callback, the sends wait for the
+/// What the trace says a typed send or frame's start was asked.
+pub(crate) fn asked_of(len: FrameLen, flags: SendFlags) -> Asked<'static> {
+    let (length, bits) = c_args(len, flags);
+    Asked {
+        length: i64::try_from(length).unwrap_or(i64::MAX),
+        flags: bits,
+        frame: AskedFrame::Frame(len, flags),
+    }
+}
+
+/// [`asked_of`], for a frame's start, which is `len` long with no more said.
+pub(crate) fn start_asked_of(flags: SendFlags, len: u64) -> Asked<'static> {
+    let (_, bits) = c_args(FrameLen::These, flags);
+    Asked {
+        length: i64::try_from(len).unwrap_or(i64::MAX),
+        flags: bits,
+        frame: AskedFrame::Frame(FrameLen::Total(len), flags),
+    }
+}
+
+/// C's line on entering `curl_ws_send`, `n` bytes given.
+pub(crate) fn send_enters(
+    n: usize,
+    asked: &Asked<'_>,
+    raw: bool,
+    say: impl FnOnce(fmt::Arguments<'_>),
+) {
+    let n = match asked.frame {
+        AskedFrame::NoBytes { claimed, .. } => claimed,
+        AskedFrame::Frame(..) | AskedFrame::None(_) => n,
+    };
+    let (length, bits, raw_n) = (asked.length, asked.flags, u8::from(raw));
+    say(format_args!(
+        "curl_ws_send(len={n}, fragsize={length}, flags={bits:x}), raw={raw_n}"
+    ));
+}
+
+/// C's line on entering `curl_ws_start_frame`, which has no closing
+/// parenthesis.
+pub(crate) fn start_enters(asked: &Asked<'_>, say: impl FnOnce(fmt::Arguments<'_>)) {
+    let (length, bits) = (asked.length, asked.flags);
+    say(format_args!(
+        "curl_ws_start_frame(flags={bits:x}, frame_len={length}"
+    ));
+}
+
+/// The application sends `bytes` (`curl_ws_send`), having said so in the
+/// trace: as a frame or as more of the frame under way, as `asked` says; as
+/// they are, if frames are `raw`. Inside a callback, the sends wait for the
 /// connection.
 pub(crate) fn api_send(
     ws: &mut WsConn,
     wire: &mut dyn Wire,
     raw: bool,
     bytes: &[u8],
-    len: FrameLen,
-    flags: SendFlags,
+    asked: &Asked<'_>,
     in_callback: bool,
 ) -> Result<Sent, ErrorKind> {
-    let (fragsize, bits) = c_args(len, flags);
+    let (fragsize, bits) = (asked.length, asked.flags);
     let (n, raw_n) = (bytes.len(), u8::from(raw));
-    wire.ws(format_args!(
-        "curl_ws_send(len={n}, fragsize={fragsize}, flags={bits:x}), raw={raw_n}"
-    ));
     if raw {
         // What waits to go goes first.
         match ws.flush(wire, false) {
             Ok(()) => {}
             Err(Stop::Again) => return Ok(Sent::WouldBlock),
             Err(Stop::Failed(kind)) => return Err(kind),
+        }
+        if let AskedFrame::None(no) = asked.frame {
+            return Err(wire.fail(no.kind, format_args!("{}", no.why)));
         }
         if fragsize != 0 || bits != 0 {
             let why = format_args!("[WS] fragsize and flags must be zero in raw mode");
@@ -652,7 +714,7 @@ pub(crate) fn api_send(
         return sent_of(ws.send_raw(wire, bytes, in_callback));
     }
     let mut counted = 0;
-    let sent = ws.send_counting(wire, bytes, len, flags, in_callback, &mut counted);
+    let sent = ws.send_counting(wire, bytes, asked.frame, in_callback, &mut counted);
     let (code, went) = match sent {
         Ok(went) => (0, went),
         Err(Stop::Again) => (crate::error::AGAIN_NUMBER, counted),
@@ -664,68 +726,14 @@ pub(crate) fn api_send(
     counted_of(sent, counted)
 }
 
-/// Get ready for a send (`Call::Prepare`): as `WsConn::send` starts, what
-/// waits to go goes first unless a frame is under way; if frames are `raw`
-/// it goes whatever waits.
-pub(crate) fn api_prepare(
-    ws: &mut WsConn,
-    wire: &mut dyn Wire,
-    raw: bool,
-    in_callback: bool,
-) -> Result<crate::ws::Prepared, ErrorKind> {
-    use crate::ws::Prepared;
-    if !raw && (ws.enc.remain > 0 || !ws.sendbuf.is_empty()) {
-        return Ok(Prepared::UnderWay);
-    }
-    match ws.flush(wire, in_callback) {
-        Ok(()) => Ok(Prepared::NewFrame),
-        Err(Stop::Again) => Ok(Prepared::WouldBlock),
-        Err(Stop::Failed(kind)) => Err(kind),
-    }
-}
-
-/// `bytes` as more of the frame under way (`Call::SendMore`).
-pub(crate) fn api_send_more(
-    ws: &mut WsConn,
-    wire: &mut dyn Wire,
-    bytes: &[u8],
-    in_callback: bool,
-) -> Result<Sent, ErrorKind> {
-    let none = SendFlags {
-        kind: None,
-        more: false,
-    };
-    let mut counted = 0;
-    let sent = ws.send_counting(
-        wire,
-        bytes,
-        FrameLen::These,
-        none,
-        in_callback,
-        &mut counted,
-    );
-    counted_of(sent, counted)
-}
-
-/// The application starts a frame `len` long, its payload to follow in
-/// its sends (`curl_ws_start_frame`): refused for `raw` frames.
+/// The application starts the frame `asked` says, its payload to follow in
+/// its sends, having said so in the trace (`curl_ws_start_frame`).
 pub(crate) fn api_start_frame(
     ws: &mut WsConn,
     wire: &mut dyn Wire,
-    raw: bool,
-    flags: SendFlags,
-    len: u64,
+    asked: &Asked<'_>,
 ) -> Result<(), ErrorKind> {
-    if raw {
-        let why = format_args!("cannot curl_ws_start_frame() with CURLWS_RAW_MODE enabled");
-        return Err(wire.fail(ErrorKind::FailedInit, why));
-    }
-    let (_, bits) = c_args(FrameLen::These, flags);
-    // C's line has no closing parenthesis.
-    wire.ws(format_args!(
-        "curl_ws_start_frame(flags={bits:x}, frame_len={len}"
-    ));
-    ws.start_frame(wire, flags, len)
+    ws.start_frame(wire, asked.frame)
 }
 
 /// The application receives into `buf` what has come of the next frame

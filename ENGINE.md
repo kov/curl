@@ -2376,10 +2376,10 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   reserves the connection after: the application receives and sends frames on it with
   `Easy::ws` and `Multi::ws` (`curl_ws_recv`, `curl_ws_send`, `curl_ws_start_frame`), what
   came behind the 101 left in the connection's receive buffer for the first receive. The shim
-  reads C's flags and lengths into the core's types; arguments that can be no frame are the shim's
-  to refuse, in C's order and lines: it says them (`ws_say`), asks the core to get ready
-  (`Call::Prepare`: the connection found, what waits sent), and refuses only if a frame would start
-  now, else sends the bytes as more of the frame under way (`Call::SendMore`). `Attached { users }` comes before stage 5, for a connection several transfers lease
+  reads C's flags and lengths into `ws::Asked` (`Call::SendAsked`, `Call::StartAsked`): the
+  arguments as given, which the trace names, and what they come to, a frame or a refusal in C's
+  words. The core keeps C's order: it says the call, looks for the connection, sends what waits,
+  and takes up a refusal only if a frame would start now. `Attached { users }` comes before stage 5, for a connection several transfers lease
   at once (a pool place, not the transfer state of §3.1 that holds a lease). Until then every
   lease count is asserted to be 1. A connection shutting down is in no pool: its multi's
   `ShutdownSet` owns it (below).

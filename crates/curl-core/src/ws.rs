@@ -3,6 +3,8 @@
 //! what a frame is, and what one received says of the bytes it is given
 //! (`struct curl_ws_frame`).
 
+use crate::error::ErrorKind;
+
 /// What a frame carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameKind {
@@ -95,26 +97,43 @@ pub enum Call<'a> {
     /// Start a frame this long, its payload to come in the sends after
     /// (`curl_ws_start_frame`).
     StartFrame(SendFlags, u64),
-    /// Get ready for a send, as one does first: the connection found, and
-    /// what waits to go sent if no frame is under way. A host that has
-    /// read arguments no frame can have refuses them only if one would
-    /// start now.
-    Prepare,
-    /// Send the bytes as more of the frame under way, which a host found
-    /// by `Prepare`; the host says the call's trace lines, in its words.
-    SendMore(&'a [u8]),
+    /// [`Call::Send`], the arguments as a host read them from its own.
+    SendAsked(&'a [u8], Asked<'a>),
+    /// [`Call::StartFrame`], the arguments as a host read them from its own.
+    StartAsked(Asked<'a>),
 }
 
-/// What a [`Call::Prepare`] found.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Prepared {
-    /// A frame is under way: a send is more of it, its flags and length
-    /// not read.
-    UnderWay,
-    /// A send starts a frame.
-    NewFrame,
-    /// What waits to go did not, for now (`CURLE_AGAIN`).
-    WouldBlock,
+/// What a host's caller asked of a send or a frame's start, for a host that
+/// has arguments of its own to read into the core's types: the trace names
+/// them as given, and those no frame can have are refused when a frame
+/// would start, not before, a send that is more of a frame not reading them.
+#[derive(Clone, Copy, Debug)]
+pub struct Asked<'a> {
+    /// The length, as the trace names it.
+    pub length: i64,
+    /// The flags, as the trace names them.
+    pub flags: u32,
+    pub frame: AskedFrame<'a>,
+}
+
+/// What an [`Asked`] comes to.
+#[derive(Clone, Copy, Debug)]
+pub enum AskedFrame<'a> {
+    /// A frame, or as the bytes are if frames are raw.
+    Frame(FrameLen, SendFlags),
+    /// No frame: refused once what waits to go has gone, if a frame would
+    /// start or frames are raw.
+    None(Refusal<'a>),
+    /// No bytes, though the caller said `claimed` of them: refused before
+    /// the connection is looked for.
+    NoBytes { claimed: usize, why: Refusal<'a> },
+}
+
+/// Why a host refuses what it was asked, in its words.
+#[derive(Clone, Copy, Debug)]
+pub struct Refusal<'a> {
+    pub kind: ErrorKind,
+    pub why: &'a str,
 }
 
 /// What a [`Call`] did.
@@ -123,5 +142,4 @@ pub enum Answer {
     Received(Received),
     Sent(Sent),
     Started,
-    Prepared(Prepared),
 }

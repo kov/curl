@@ -14,11 +14,12 @@ use core::slice;
 
 use curl_core::error::ErrorKind;
 use curl_core::ws::{
-    Answer, Call, Frame, FrameKind, FrameLen, Meta, Prepared, Received, SendFlags, Sent,
+    Answer, Asked, AskedFrame, Call, Frame, FrameKind, FrameLen, Meta, Received, Refusal,
+    SendFlags, Sent,
 };
 
 use crate::callbacks::Held;
-use crate::easy::{EasyRef, ShimEasy, handle};
+use crate::easy::{ShimEasy, handle};
 use crate::error_codes::easy_code;
 use crate::ffi::{
     self, CURL, CURLE_AGAIN, CURLE_BAD_FUNCTION_ARGUMENT, CURLE_OK, CURLE_RECURSIVE_API_CALL,
@@ -43,138 +44,38 @@ fn send_flags(flags: c_uint) -> Option<SendFlags> {
     Some(SendFlags { kind, more })
 }
 
-/// Why `fragsize` and `flags` can be no frame, in C's words.
-struct NoFrame {
-    kind: ErrorKind,
-    why: [u8; 80],
+/// A reason in C's words.
+struct Why {
+    bytes: [u8; 80],
     len: usize,
 }
 
-impl NoFrame {
-    fn why(&self) -> &[u8] {
-        &self.why[..self.len]
+impl Why {
+    fn new(args: core::fmt::Arguments<'_>) -> Why {
+        let mut bytes = [0u8; 80];
+        let len = write_into(&mut bytes, args);
+        Why { bytes, len }
+    }
+
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..self.len]).expect("C's reasons are ASCII")
     }
 }
 
-/// What C's `fragsize` and `flags` say of a frame sent: its length and
-/// its kind; or why they say nothing a frame can be.
-fn frame_args(fragsize: curl_off_t, flags: c_uint) -> Result<(FrameLen, SendFlags), NoFrame> {
-    let mut why = [0u8; 80];
-    let Some(typed) = send_flags(flags) else {
-        let len = unknown_flags(flags, &mut why);
-        return Err(NoFrame {
-            kind: ErrorKind::BadFunctionArgument,
-            why,
-            len,
-        });
-    };
-    let len = if flags & ffi::CURLWS_OFFSET as c_uint != 0 {
-        match u64::try_from(fragsize) {
-            Ok(total) => FrameLen::Total(total),
-            Err(_) => {
-                let len = negative_length(fragsize, &mut why);
-                return Err(NoFrame {
-                    kind: ErrorKind::SendError,
-                    why,
-                    len,
-                });
-            }
-        }
-    } else {
-        FrameLen::These
-    };
-    Ok((len, typed))
-}
-
-/// A `curl_ws_send`'s arguments, as its trace lines name them.
-#[derive(Clone, Copy)]
-struct SendLine {
-    buflen: usize,
-    fragsize: curl_off_t,
-    flags: c_uint,
-    raw: bool,
-}
-
-impl SendLine {
-    /// C's line on entering the call.
-    fn enters(self, easy: &ShimEasy) {
-        let Self {
-            buflen,
-            fragsize,
-            flags,
-            raw,
-        } = self;
-        let raw = u8::from(raw);
-        say(
-            easy,
-            format_args!(
-                "curl_ws_send(len={buflen}, fragsize={fragsize}, flags={flags:x}), raw={raw}"
-            ),
-        );
+/// Why a frame of `length`, and `flags`, can be no frame, as C finds it
+/// (`ws_enc_add_frame`): the length first.
+fn no_frame(length: Option<curl_off_t>, flags: c_uint) -> Option<(ErrorKind, Why)> {
+    if let Some(length) = length.filter(|l| *l < 0) {
+        let why = Why::new(format_args!(
+            "[WS] starting new frame with negative payload length {length}"
+        ));
+        return Some((ErrorKind::SendError, why));
     }
-
-    /// C's line on leaving the call with `code`, `went` bytes taken.
-    fn leaves(self, easy: &ShimEasy, code: CURLcode, went: usize) {
-        let Self {
-            buflen,
-            fragsize,
-            flags,
-            raw,
-        } = self;
-        let raw = u8::from(raw);
-        let code = code.0;
-        say(
-            easy,
-            format_args!(
-                "curl_ws_send(len={buflen}, fragsize={fragsize}, flags={flags:x}, raw={raw}) -> {code}, {went}"
-            ),
-        );
+    if send_flags(flags).is_none() {
+        let why = Why::new(format_args!("[WS] unknown flags: {flags:x}"));
+        return Some((ErrorKind::BadFunctionArgument, why));
     }
-}
-
-/// `fragsize` and `flags` can be no frame, and a send reads them only as
-/// it starts one (`ws_enc_write_head`): what comes of them, as C finds the
-/// connection and sends what waits first. `Ok` means a frame is under way,
-/// whose flags are not read: the bytes are more of it, sent here with their
-/// lines in the application's words; `Err`, the call's end.
-fn no_frame(
-    easy: &ShimEasy,
-    bad: &NoFrame,
-    bytes: &[u8],
-    line: SendLine,
-) -> Result<Result<Answer, ErrorKind>, CURLcode> {
-    line.enters(easy);
-    match reach(easy, Call::Prepare) {
-        Err(code) => Err(code),
-        Ok(Err(kind)) => Err(easy_code(kind)),
-        Ok(Ok(Answer::Prepared(Prepared::UnderWay))) => {
-            let answer = reach(easy, Call::SendMore(bytes))?;
-            let (code, went) = match answer {
-                Ok(Answer::Sent(Sent::Bytes(n))) => (CURLE_OK, n),
-                Ok(Answer::Sent(Sent::WouldBlock)) => (CURLE_AGAIN, 0),
-                Ok(Answer::Sent(Sent::BytesThenWouldBlock(n))) => (CURLE_AGAIN, n),
-                Ok(_) => unreachable!("a send sends"),
-                Err(kind) => (easy_code(kind), 0),
-            };
-            line.leaves(easy, code, went);
-            Ok(answer)
-        }
-        Ok(Ok(Answer::Prepared(Prepared::WouldBlock))) => {
-            line.leaves(easy, CURLE_AGAIN, 0);
-            Err(CURLE_AGAIN)
-        }
-        Ok(Ok(Answer::Prepared(Prepared::NewFrame))) => {
-            let code = refuse(easy, bad.kind, bad.why());
-            let number = code.0;
-            say(
-                easy,
-                format_args!("curl_ws_send(), error writing frame head {number}"),
-            );
-            line.leaves(easy, code, 0);
-            Err(code)
-        }
-        Ok(Ok(_)) => unreachable!("getting ready answers so"),
-    }
+    None
 }
 
 /// `frame` as C's `struct curl_ws_frame` says it.
@@ -247,62 +148,21 @@ fn reach_noting(
                         Call::Send(bytes, len, flags) => {
                             cx.ws_send(bytes, len, flags).map(Answer::Sent)
                         }
+                        Call::SendAsked(bytes, asked) => {
+                            cx.ws_send_asked(bytes, &asked).map(Answer::Sent)
+                        }
                         Call::StartFrame(flags, len) => {
                             cx.ws_start_frame(flags, len).map(|()| Answer::Started)
                         }
-                        Call::Prepare => cx.ws_prepare().map(Answer::Prepared),
-                        Call::SendMore(bytes) => cx.ws_send_more(bytes).map(Answer::Sent),
+                        Call::StartAsked(asked) => {
+                            cx.ws_start_asked(&asked).map(|()| Answer::Started)
+                        }
                     })
                 }
                 Ok(Reach::Frame(_)) | Err(_) => Err(CURLE_RECURSIVE_API_CALL),
             }
         }
     }
-}
-
-/// Refuse a call for `why` before it reaches the WebSocket, its reason
-/// kept as the core keeps its own.
-fn refuse(easy: &ShimEasy, kind: ErrorKind, why: &[u8]) -> CURLcode {
-    let mut held = Held::default();
-    let kept = easy.with_easy(|e| match e {
-        EasyRef::Easy(easy) => easy.ws_refuse(kind, why, &mut |kind, bytes| held.note(kind, bytes)),
-        EasyRef::Frame(GateFrame::Transfer(cx), _) => {
-            // SAFETY: the callback lent its context and does not use it
-            // until it returns.
-            unsafe { &mut *cx.as_ptr() }.ws_refuse(kind, why)
-        }
-        EasyRef::Frame(_, _) => kind,
-    });
-    held.say(easy);
-    easy_code(kept.unwrap_or(kind))
-}
-
-/// A raw send's arguments are refused for `why`, once C has found the
-/// connection and sent what waits on it.
-fn raw_refused(easy: &ShimEasy, why: &[u8], line: SendLine) -> CURLcode {
-    line.enters(easy);
-    match reach(easy, Call::Prepare) {
-        Err(code) => code,
-        Ok(Err(kind)) => easy_code(kind),
-        Ok(Ok(Answer::Prepared(Prepared::WouldBlock))) => CURLE_AGAIN,
-        Ok(Ok(_)) => refuse(easy, ErrorKind::BadFunctionArgument, why),
-    }
-}
-
-/// A line of the handle's WebSocket's trace (`CURL_TRC_WS`).
-fn say(easy: &ShimEasy, line: core::fmt::Arguments<'_>) {
-    let mut held = Held::default();
-    // A handle out of reach traces nothing.
-    let _out_of_reach = easy.with_easy(|e| match e {
-        EasyRef::Easy(easy) => easy.ws_say(line, &mut |kind, bytes| held.note(kind, bytes)),
-        EasyRef::Frame(GateFrame::Transfer(cx), _) => {
-            // SAFETY: the callback lent its context and does not use it
-            // until it returns.
-            unsafe { &mut *cx.as_ptr() }.ws_say(line);
-        }
-        EasyRef::Frame(_, _) => {}
-    });
-    held.say(easy);
 }
 
 /// Whether the handle's frames are raw (`CURLWS_RAW_MODE`).
@@ -400,54 +260,57 @@ pub unsafe extern "C" fn curl_ws_send(
         // SAFETY: it points where a `size_t` can be written.
         unsafe { sent.write(0) };
     }
-    let bad = ErrorKind::BadFunctionArgument;
     let raw = match raw_mode(easy) {
         Ok(raw) => raw,
         Err(code) => return code,
     };
-    let line = SendLine {
-        buflen,
-        fragsize,
-        flags,
-        raw,
+    let bad = |why| Refusal {
+        kind: ErrorKind::BadFunctionArgument,
+        why,
     };
-    if buffer.is_null() && buflen > 0 {
-        line.enters(easy);
-        return refuse(easy, bad, b"[WS] buffer is NULL when buflen is not");
-    }
-    if raw {
-        let why: Option<&[u8]> = if buffer.is_null() {
-            Some(b"[WS] buffer is NULL in raw mode")
-        } else if sent.is_null() {
-            Some(b"[WS] sent is NULL in raw mode")
-        } else if fragsize != 0 || flags != 0 {
-            Some(b"[WS] fragsize and flags must be zero in raw mode")
-        } else {
-            None
-        };
-        if let Some(why) = why {
-            return raw_refused(easy, why, line);
+    let length = (flags & ffi::CURLWS_OFFSET as c_uint != 0).then_some(fragsize);
+    let no = no_frame(length, flags);
+    let frame = if buffer.is_null() && buflen > 0 {
+        AskedFrame::NoBytes {
+            claimed: buflen,
+            why: bad("[WS] buffer is NULL when buflen is not"),
         }
-    }
-    let bytes: &[u8] = if buflen == 0 {
+    } else if raw && buffer.is_null() {
+        AskedFrame::None(bad("[WS] buffer is NULL in raw mode"))
+    } else if raw && sent.is_null() {
+        AskedFrame::None(bad("[WS] sent is NULL in raw mode"))
+    } else if raw {
+        let none = SendFlags {
+            kind: None,
+            more: false,
+        };
+        AskedFrame::Frame(FrameLen::These, none)
+    } else if let Some((kind, why)) = &no {
+        AskedFrame::None(Refusal {
+            kind: *kind,
+            why: why.as_str(),
+        })
+    } else {
+        let typed = send_flags(flags).expect("no_frame read them");
+        let len = match length.map(u64::try_from) {
+            Some(Ok(total)) => FrameLen::Total(total),
+            Some(Err(_)) => unreachable!("no_frame read it"),
+            None => FrameLen::These,
+        };
+        AskedFrame::Frame(len, typed)
+    };
+    let bytes: &[u8] = if buflen == 0 || buffer.is_null() {
         &[]
     } else {
         // SAFETY: the buffer holds `buflen` bytes.
         unsafe { slice::from_raw_parts(buffer.cast::<u8>(), buflen) }
     };
-    let args = if raw {
-        let none = SendFlags {
-            kind: None,
-            more: false,
-        };
-        Ok((FrameLen::These, none))
-    } else {
-        frame_args(fragsize, flags)
+    let asked = Asked {
+        length: fragsize,
+        flags,
+        frame,
     };
-    let answer = match args {
-        Ok((len, typed)) => reach(easy, Call::Send(bytes, len, typed)),
-        Err(no) => no_frame(easy, &no, bytes, line),
-    };
+    let answer = reach(easy, Call::SendAsked(bytes, asked));
     let answer = match answer {
         Ok(a) => a,
         Err(code) => return code,
@@ -492,17 +355,23 @@ pub unsafe extern "C" fn curl_ws_start_frame(
     let Ok(_entry) = easy.enter(EasyCall::WsStartFrame) else {
         return CURLE_RECURSIVE_API_CALL;
     };
-    let Some(typed) = send_flags(flags) else {
-        let mut why = [0u8; 40];
-        let n = unknown_flags(flags, &mut why);
-        return refuse(easy, ErrorKind::BadFunctionArgument, &why[..n]);
+    let no = no_frame(Some(frame_len), flags);
+    let frame = match &no {
+        Some((kind, why)) => AskedFrame::None(Refusal {
+            kind: *kind,
+            why: why.as_str(),
+        }),
+        None => AskedFrame::Frame(
+            FrameLen::Total(frame_len as u64),
+            send_flags(flags).expect("no_frame read them"),
+        ),
     };
-    let Ok(len) = u64::try_from(frame_len) else {
-        let mut why = [0u8; 80];
-        let n = negative_length(frame_len, &mut why);
-        return refuse(easy, ErrorKind::SendError, &why[..n]);
+    let asked = Asked {
+        length: frame_len,
+        flags,
+        frame,
     };
-    match reach(easy, Call::StartFrame(typed, len)) {
+    match reach(easy, Call::StartAsked(asked)) {
         Ok(a) => match a {
             Ok(_) => CURLE_OK,
             Err(kind) => easy_code(kind),
@@ -556,19 +425,6 @@ pub unsafe extern "C" fn curl_ws_meta(curl: *mut CURL) -> *const curl_ws_frame {
     kept.cast_const()
 }
 const _: ffi::proto::curl_ws_meta = curl_ws_meta;
-
-/// C's reason for `flags` that name no frame, into `out`: its length.
-fn unknown_flags(flags: c_uint, out: &mut [u8]) -> usize {
-    write_into(out, format_args!("[WS] unknown flags: {flags:x}"))
-}
-
-/// C's reason for a frame of a negative length, into `out`: its length.
-fn negative_length(len: curl_off_t, out: &mut [u8]) -> usize {
-    write_into(
-        out,
-        format_args!("[WS] starting new frame with negative payload length {len}"),
-    )
-}
 
 fn write_into(out: &mut [u8], args: core::fmt::Arguments<'_>) -> usize {
     use core::fmt::Write as _;
@@ -628,40 +484,39 @@ mod tests {
         let _: c_int = c.age;
     }
 
-    /// `flags` and `fragsize` that can be no frame are read as C reads
-    /// them: flags always, the size only with `CURLWS_OFFSET`.
+    /// What can be no frame is found as C finds it: the length first, and
+    /// its reason said in C's words.
     #[test]
     fn no_frame_says_why_in_c_s_words() {
         let text = ffi::CURLWS_TEXT as c_uint;
-        let offset = ffi::CURLWS_OFFSET as c_uint;
-        let no = frame_args(0, text | ffi::CURLWS_BINARY as c_uint)
-            .err()
-            .unwrap();
-        assert_eq!(no.kind, ErrorKind::BadFunctionArgument);
-        assert_eq!(no.why(), b"[WS] unknown flags: 3");
-        let no = frame_args(-1, text | offset).err().unwrap();
-        assert_eq!(no.kind, ErrorKind::SendError);
+        let bad = text | ffi::CURLWS_BINARY as c_uint;
+        let found = |length, flags| {
+            let (kind, why) = no_frame(length, flags).expect("no frame");
+            (kind, std::string::String::from(why.as_str()))
+        };
         assert_eq!(
-            no.why(),
-            b"[WS] starting new frame with negative payload length -1"
+            found(None, bad),
+            (
+                ErrorKind::BadFunctionArgument,
+                "[WS] unknown flags: 3".into()
+            )
         );
-        assert!(frame_args(-1, text).is_ok(), "the size is not read");
+        assert_eq!(
+            found(Some(-1), bad),
+            (
+                ErrorKind::SendError,
+                "[WS] starting new frame with negative payload length -1".into()
+            )
+        );
+        assert!(no_frame(None, text).is_none(), "the length is not read");
+        assert!(no_frame(Some(0), text).is_none());
     }
 
-    /// Unknown flags and negative lengths are said as C says them.
+    /// A reason longer than its buffer is cut, never past it.
     #[test]
-    fn refusals_say_what_c_says() {
-        let mut out = [0u8; 80];
-        let n = unknown_flags(0x103, &mut out);
-        assert_eq!(&out[..n], b"[WS] unknown flags: 103");
-        let n = negative_length(-2, &mut out);
-        assert_eq!(
-            &out[..n],
-            b"[WS] starting new frame with negative payload length -2"
-        );
-        // A reason longer than its buffer is cut, never past it.
+    fn a_reason_stays_in_its_buffer() {
         let mut short = [0u8; 10];
-        let n = negative_length(-2, &mut short);
+        let n = write_into(&mut short, format_args!("[WS] starting"));
         assert_eq!(&short[..n], b"[WS] start");
     }
 }

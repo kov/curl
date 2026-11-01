@@ -8,6 +8,21 @@ use super::*;
 use crate::untrusted;
 use crate::ws::{FrameKind, FrameLen, FrameType, SendFlags};
 
+/// A send as the core takes one, the call said in the trace first.
+fn api_send(
+    ws: &mut WsConn,
+    wire: &mut dyn Wire,
+    raw: bool,
+    bytes: &[u8],
+    len: FrameLen,
+    flags: SendFlags,
+    in_callback: bool,
+) -> Result<Sent, ErrorKind> {
+    let asked = asked_of(len, flags);
+    send_enters(bytes.len(), &asked, raw, |line| wire.ws(line));
+    super::api_send(ws, wire, raw, bytes, &asked, in_callback)
+}
+
 /// What a WebSocket said and sent, and what its wire takes.
 #[derive(Default)]
 struct Rec {
@@ -442,9 +457,12 @@ fn a_frame_s_payload_comes_after_its_length() {
         ws.send(&mut rec, b"cd", FrameLen::These, binary, false),
         Ok(2)
     );
-    assert_eq!(ws.start_frame(&mut rec, binary, 1), Ok(()));
     assert_eq!(
-        ws.start_frame(&mut rec, binary, 1),
+        ws.start_frame(&mut rec, AskedFrame::Frame(FrameLen::Total(1), binary)),
+        Ok(())
+    );
+    assert_eq!(
+        ws.start_frame(&mut rec, AskedFrame::Frame(FrameLen::Total(1), binary)),
         Err(ErrorKind::SendError)
     );
 }
@@ -1113,9 +1131,12 @@ fn a_frame_started_over_another_says_why() {
         kind: Some(FrameKind::Binary),
         more: false,
     };
-    assert_eq!(ws.start_frame(&mut rec, binary, 2), Ok(()));
     assert_eq!(
-        ws.start_frame(&mut rec, binary, 2),
+        ws.start_frame(&mut rec, AskedFrame::Frame(FrameLen::Total(2), binary)),
+        Ok(())
+    );
+    assert_eq!(
+        ws.start_frame(&mut rec, AskedFrame::Frame(FrameLen::Total(2), binary)),
         Err(ErrorKind::SendError)
     );
     assert_eq!(rec.failed, ["[WS] previous frame not finished"]);
@@ -1198,4 +1219,26 @@ fn a_raw_send_with_a_size_is_refused() {
         ["[WS] fragsize and flags must be zero in raw mode"]
     );
     assert_eq!(rec.sent, b"");
+}
+
+/// A frame's start refused still leaves the pong waiting encoded, as its
+/// head would have (`ws_enc_write_head`), and says why after it.
+#[test]
+fn a_refused_frame_start_encodes_the_pong_waiting() {
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    ws.add_pong(b"p");
+    let asked = Asked {
+        length: 1,
+        flags: 3,
+        frame: AskedFrame::None(crate::ws::Refusal {
+            kind: ErrorKind::BadFunctionArgument,
+            why: "[WS] unknown flags: 3",
+        }),
+    };
+    let started = super::api_start_frame(&mut ws, &mut rec, &asked);
+    assert_eq!(started, Err(ErrorKind::BadFunctionArgument));
+    assert_eq!(rec.failed, ["[WS] unknown flags: 3"]);
+    assert!(!ws.sendbuf_mut().is_empty(), "the pong is encoded");
+    assert!(!ws.pending());
 }

@@ -19,7 +19,7 @@ use crate::multi::timers::TimeLeft;
 use crate::proto::ws::{Said, Wire, WsConn};
 use crate::trace;
 use crate::upload::{self, Upload, chain};
-use crate::ws::{FrameLen, Received, SendFlags, Sent as WsSent};
+use crate::ws::{Asked, AskedFrame, Received, Sent as WsSent};
 
 /// What a WebSocket says, on the transfer's trace.
 pub(crate) struct StepSaid<'w, 'c, H: Host>(pub(crate) &'w mut StepCx<'c, H>);
@@ -142,46 +142,18 @@ pub(crate) fn lent<'w, 'c, H: Host>(
 pub(crate) fn lent_send<H: Host>(
     cx: &mut StepCx<'_, H>,
     bytes: &[u8],
-    len: FrameLen,
-    flags: SendFlags,
+    asked: &Asked<'_>,
 ) -> Result<WsSent, ErrorKind> {
     let raw = cx.easy().options().ws.raw;
+    crate::proto::ws::send_enters(bytes.len(), asked, raw, |line| {
+        trace::of(cx, Component::Ws, line);
+    });
+    if let AskedFrame::NoBytes { why, .. } = asked.frame {
+        return Err(trace::fail(cx, why.kind, format_args!("{}", why.why)));
+    }
     let sent = cx.with_ws_conn(|cx, conn| {
         let (ws, mut wire) = lent(cx, conn);
-        crate::proto::ws::api_send(ws, &mut wire, raw, bytes, len, flags, true)
-    });
-    sent.unwrap_or_else(|| {
-        let why = format_args!("[WS] Not a websocket transfer");
-        Err(trace::fail(cx, ErrorKind::SendError, why))
-    })
-}
-
-/// The application gets ready for a send on the transfer's WebSocket from
-/// inside its handler (`Call::Prepare`): what waits to go waits for the
-/// connection.
-pub(crate) fn lent_prepare<H: Host>(
-    cx: &mut StepCx<'_, H>,
-) -> Result<crate::ws::Prepared, ErrorKind> {
-    let raw = cx.easy().options().ws.raw;
-    let prepared = cx.with_ws_conn(|cx, conn| {
-        let (ws, mut wire) = lent(cx, conn);
-        crate::proto::ws::api_prepare(ws, &mut wire, raw, true)
-    });
-    prepared.unwrap_or_else(|| {
-        let why = format_args!("[WS] Not a websocket transfer");
-        Err(trace::fail(cx, ErrorKind::SendError, why))
-    })
-}
-
-/// The application sends more of the frame under way on the transfer's
-/// WebSocket from inside its handler (`Call::SendMore`): its sends wait.
-pub(crate) fn lent_send_more<H: Host>(
-    cx: &mut StepCx<'_, H>,
-    bytes: &[u8],
-) -> Result<WsSent, ErrorKind> {
-    let sent = cx.with_ws_conn(|cx, conn| {
-        let (ws, mut wire) = lent(cx, conn);
-        crate::proto::ws::api_send_more(ws, &mut wire, bytes, true)
+        crate::proto::ws::api_send(ws, &mut wire, raw, bytes, asked, true)
     });
     sent.unwrap_or_else(|| {
         let why = format_args!("[WS] Not a websocket transfer");
@@ -193,13 +165,16 @@ pub(crate) fn lent_send_more<H: Host>(
 /// inside its handler (`curl_ws_start_frame`).
 pub(crate) fn lent_start_frame<H: Host>(
     cx: &mut StepCx<'_, H>,
-    flags: SendFlags,
-    len: u64,
+    asked: &Asked<'_>,
 ) -> Result<(), ErrorKind> {
-    let raw = cx.easy().options().ws.raw;
+    if cx.easy().options().ws.raw {
+        let why = format_args!("cannot curl_ws_start_frame() with CURLWS_RAW_MODE enabled");
+        return Err(trace::fail(cx, ErrorKind::FailedInit, why));
+    }
+    crate::proto::ws::start_enters(asked, |line| trace::of(cx, Component::Ws, line));
     let started = cx.with_ws_conn(|cx, conn| {
         let (ws, mut wire) = lent(cx, conn);
-        crate::proto::ws::api_start_frame(ws, &mut wire, raw, flags, len)
+        crate::proto::ws::api_start_frame(ws, &mut wire, asked)
     });
     started.unwrap_or_else(|| {
         let why = format_args!("[WS] Not a websocket transfer");

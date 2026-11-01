@@ -182,44 +182,6 @@ witness: curl-sys-abi handle_tests::a_debug_function_calls_back_during_a_call_on
         let _ = (kind, &mut held);
     });
 
-=== bad flags are refused before the connection is looked for
-file: crates/curl-sys-abi/src/ws.rs
-witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
---- old
-    match reach(easy, Call::Prepare) {
-        Err(code) => Err(code),
---- new
-    match Ok::<_, CURLcode>(Ok::<_, ErrorKind>(Answer::Prepared(Prepared::NewFrame))) {
-        Err(code) => Err(code),
-
-=== a send's arguments that can be no frame leave no line on entering
-file: crates/curl-sys-abi/src/ws.rs
-witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
---- old
-    line.enters(easy);
-    match reach(easy, Call::Prepare) {
-        Err(code) => Err(code),
---- new
-    match reach(easy, Call::Prepare) {
-        Err(code) => Err(code),
-
-=== a NULL buffer leaves no line on entering
-file: crates/curl-sys-abi/src/ws.rs
-witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
---- old
-        line.enters(easy);
-        return refuse(easy, bad, b"[WS] buffer is NULL when buflen is not");
---- new
-        return refuse(easy, bad, b"[WS] buffer is NULL when buflen is not");
-
-=== a send under way reads bad flags
-file: crates/curl-core/src/proto/ws.rs
-witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
---- old
-        return Ok(Prepared::UnderWay);
---- new
-        return Ok(Prepared::NewFrame);
-
 === a ticket read on a connection only made is dropped by a handle in a multi
 file: crates/curl-core/src/multi/raw.rs
 witness: curl-core proto::http::tests::tls::a_ticket_read_on_a_connection_only_made_is_its_multi_s
@@ -314,17 +276,6 @@ witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
 --- new
         Err(Stop::Again) if counted > usize::MAX - 1 => Ok(Sent::BytesThenWouldBlock(counted)),
 
-=== a raw refusal leaves no line on entering
-file: crates/curl-sys-abi/src/ws.rs
-witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
---- old
-    line.enters(easy);
-    match reach(easy, Call::Prepare) {
-        Err(code) => code,
---- new
-    match reach(easy, Call::Prepare) {
-        Err(code) => code,
-
 === a detached handle's SSL pointer is hidden
 file: crates/curl-sys-abi/src/easy.rs
 witness: curl-sys-abi handle_tests::a_detached_connection_shows_its_ssl_pointer_once_taken_up
@@ -341,3 +292,106 @@ witness: curl-sys-abi handle_tests::a_debug_function_turning_verbose_off_hears_n
             if !easy.with_options(|o| o.output.verbose).unwrap_or(true) {
 --- new
             if false {
+
+=== a send's lines say the size it was not asked to read as nought
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
+--- old
+    let (length, bits, raw_n) = (asked.length, asked.flags, u8::from(raw));
+--- new
+    let (length, bits, raw_n) = (0, asked.flags, u8::from(raw));
+
+=== a NULL buffer's line says no bytes were claimed
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
+--- old
+        AskedFrame::NoBytes { claimed, .. } => claimed,
+--- new
+        AskedFrame::NoBytes { .. } => n,
+
+=== a NULL buffer is taken for a frame's refusal, after the connection
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
+--- old
+            if let AskedFrame::NoBytes { why, .. } = asked.frame {
+--- new
+            if let (AskedFrame::NoBytes { why, .. }, true) = (asked.frame, false) {
+
+=== a send under way reads bad flags
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
+--- old
+        if self.enc.remain > 0 || !self.sendbuf.is_empty() {
+            // A frame is under way, its payload in the buffer or to come.
+--- new
+        if (self.enc.remain > 0 || !self.sendbuf.is_empty())
+            && matches!(frame, AskedFrame::Frame(..))
+        {
+            // A frame is under way, its payload in the buffer or to come.
+
+=== a frame's start says nothing of itself
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
+--- old
+    say(format_args!(
+        "curl_ws_start_frame(flags={bits:x}, frame_len={length}"
+    ));
+--- new
+    let _ = (say, length, bits);
+
+=== a raw frame's start goes on to the connection
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
+--- old
+        WsCall::StartFrame(asked) => {
+            if options.raw {
+--- new
+        WsCall::StartFrame(asked) => {
+            if false && options.raw {
+
+=== bad flags are refused before what waits to go is sent
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_why_if_the_flush_before_it_fails
+--- old
+            self.flush(wire, in_callback)?;
+            if let Err(kind) = self.head_asked(wire, frame, buffer.len()) {
+--- new
+            if matches!(frame, AskedFrame::Frame(..)) {
+                self.flush(wire, in_callback)?;
+            }
+            if let Err(kind) = self.head_asked(wire, frame, buffer.len()) {
+
+=== a send that failed says nothing on leaving
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_why_if_the_flush_before_it_fails
+--- old
+    wire.ws(format_args!(
+        "curl_ws_send(len={n}, fragsize={fragsize}, flags={bits:x}, raw={raw_n}) -> {code}, {went}"
+    ));
+--- new
+    if sent.is_ok() {
+        wire.ws(format_args!(
+            "curl_ws_send(len={n}, fragsize={fragsize}, flags={bits:x}, raw={raw_n}) -> {code}, {went}"
+        ));
+    }
+
+=== flags are read before a frame's length
+file: crates/curl-sys-abi/src/ws.rs
+witness: curl-sys-abi ws::tests::no_frame_says_why_in_c_s_words
+--- old
+    if let Some(length) = length.filter(|l| *l < 0) {
+--- new
+    if let Some(length) = length.filter(|l| *l < 0 && send_flags(flags).is_some()) {
+
+=== a refused frame's start drops the pong waiting
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-core proto::ws::tests::a_refused_frame_start_encodes_the_pong_waiting
+features: test-util
+--- old
+            AskedFrame::None(no) | AskedFrame::NoBytes { why: no, .. } => {
+                match self.add_pending(wire) {
+                    Ok(()) | Err(Stop::Again) => {}
+                    Err(Stop::Failed(kind)) => return Err(kind),
+                }
+--- new
+            AskedFrame::None(no) | AskedFrame::NoBytes { why: no, .. } => {

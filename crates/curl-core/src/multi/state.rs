@@ -2659,30 +2659,17 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
     fn ws_send(
         &mut self,
         bytes: &[u8],
-        len: crate::ws::FrameLen,
-        flags: crate::ws::SendFlags,
+        asked: &crate::ws::Asked<'_>,
     ) -> Result<crate::ws::Sent, ErrorKind> {
-        crate::proto::http::ws::lent_send(self, bytes, len, flags)
+        crate::proto::http::ws::lent_send(self, bytes, asked)
     }
 
-    fn ws_start_frame(&mut self, flags: crate::ws::SendFlags, len: u64) -> Result<(), ErrorKind> {
-        crate::proto::http::ws::lent_start_frame(self, flags, len)
+    fn ws_start_frame(&mut self, asked: &crate::ws::Asked<'_>) -> Result<(), ErrorKind> {
+        crate::proto::http::ws::lent_start_frame(self, asked)
     }
 
     fn ws_recv(&mut self, buf: &mut [u8]) -> Result<crate::ws::Received, ErrorKind> {
         crate::proto::http::ws::lent_recv(self, buf)
-    }
-
-    fn ws_prepare(&mut self) -> Result<crate::ws::Prepared, ErrorKind> {
-        crate::proto::http::ws::lent_prepare(self)
-    }
-
-    fn ws_send_more(&mut self, bytes: &[u8]) -> Result<crate::ws::Sent, ErrorKind> {
-        crate::proto::http::ws::lent_send_more(self, bytes)
-    }
-
-    fn ws_say(&mut self, line: std::fmt::Arguments<'_>) {
-        trace::of(self, Component::Ws, line);
     }
 
     fn ws_meta(&self) -> Option<crate::ws::Meta> {
@@ -2690,10 +2677,6 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
             return None;
         }
         Some(self.ws.as_ref()?.ws().meta())
-    }
-
-    fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8]) -> ErrorKind {
-        trace::fail_with(self, kind, &[why])
     }
 
     fn tls_native(&self, id: TransferId) -> Option<TlsNative> {

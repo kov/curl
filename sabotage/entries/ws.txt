@@ -69,12 +69,12 @@ witness: curl-core deliver::held::tests::an_empty_body_is_held_apart_from_body
                 .is_some_and(|e| e.kind == kind || e.kind == OutKind::Body);
 
 === a raw send's size without CURLWS_OFFSET is ignored
-file: crates/curl-sys-abi/src/ws.rs
+file: crates/curl-core/src/proto/ws.rs
 witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
 --- old
-        } else if fragsize != 0 || flags != 0 {
+        if fragsize != 0 || bits != 0 {
 --- new
-        } else if flags != 0 {
+        if bits != 0 {
 
 === a connection only made is closed by the server's end
 file: crates/curl-core/src/proto/http.rs

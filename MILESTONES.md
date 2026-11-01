@@ -1163,8 +1163,7 @@ protocols need, each step leaving behaviour and traces as they are:
     DISCONNECT; packets the connection takes in part finished first; PINGREQ after the
     upkeep interval; the server's packets checked as C checks them; `curl -V`. Every MQTT
     test both legs run passes (28); 1693 is a C unit test, on the C leg only.
-77. **WebSocket.** **Done**, but for the traces of the calls on a connection a transfer only
-    made (step 83). `ws://` and `wss://` over HTTP/1.1
+77. **WebSocket.** **Done.** `ws://` and `wss://` over HTTP/1.1
     (`proto::ws`, `proto::http::ws`, after `lib/ws.c`): the upgrade request with its key from
     the random hook, the 101 switching the connection to `LineConn::Ws`, any final response
     refused; the frame codec both ways, masking, fragments, control frames, auto-pong and
@@ -1225,9 +1224,12 @@ Its first steps are milestone 6's design-review changes.
     refusal from a callback kept and recorded in DIVERGENCE.md; `Resume` rejected at the option
     rather than clamped. DIVERGENCE.md's source-only entries measured on the libssh leg.
     **Done** of these: the `.netrc` read, `CURLOPT_SHARE`, `Resume`.
-83. **Calls on a detached connection.** Traces for calls that belong to no transfer; the C API
-    layer's WebSocket send lines; TLS 1.3 tickets and the SSL pointer on a detached connection;
-    raw I/O outside the pool lock.
+83. **Calls on a detached connection.** **Done.** Sends and receives on a connection a transfer
+    only made run out of the pool's lock (`Pool::lend_reserved`); they trace on the calling handle,
+    through `Notes`, what C traces there, a debug function free to call back in; `curl_ws_send`'s
+    arguments that can be no frame say C's lines from the shim; TLS 1.3 tickets read on such a
+    connection go to the share or the handle's multi, and `CURLINFO_TLS_SSL_PTR` answers once a
+    call took it up.
 84. **The FTP data connection's indexed trace names** (`[SSL-1]`, `[TCP-1]`, its setup and
     shutdown lines). Done. Not said, as the first connection's trace does not say them either or
     the pollset has no step to say them in: the HTTP proxy tunnel's `[H1-PROXY-1]` state lines,

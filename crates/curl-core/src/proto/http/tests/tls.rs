@@ -1293,6 +1293,157 @@ fn a_share_keeping_sessions_serves_them_across_multis() {
     );
 }
 
+/// A handle that only connected, over a library giving its ticket on the
+/// first read, as TLS 1.3's, and what it goes through: `calls` runs its
+/// transfer in `m` and makes one send and one receive on its connection.
+fn only_connecting(libraries: &SharedLibraries) -> Easy {
+    let mut e = Easy::new();
+    e.set_libraries(libraries.clone());
+    let o = e.options_mut();
+    let url = format!("https://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.connect_only = crate::options::ConnectOnly::Yes;
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    e
+}
+
+/// A library giving its ticket as TLS 1.3's comes.
+fn ticketing_late() -> (&'static FakeTls, SharedLibraries) {
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing_late().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    (backend, libraries)
+}
+
+/// Send and receive on the connection `id` only made, until something
+/// comes.
+fn talk_on(m: &mut Multi, id: crate::multi::TransferId) {
+    let sent = m.send_raw(id, b"x", &mut |_, _| {});
+    assert!(matches!(sent, Some(Ok(_))), "{sent:?}");
+    let mut buf = [0u8; 64];
+    let got = m.recv_raw(id, &mut buf, &mut |_, _| {});
+    assert!(matches!(got, Some(Ok(_))), "{got:?}");
+}
+
+/// A ticket that comes as a handle in a multi reads the connection it only
+/// made is its multi's to keep, for the next connection to resume: without
+/// a share, as C's `data->multi` is still there.
+#[test]
+fn a_ticket_read_on_a_connection_only_made_is_its_multi_s() {
+    let (backend, libraries) = ticketing_late();
+    let [talk_a, talk_b] = [answering(1).remove(0), answering(1).remove(0)];
+    let mut m = serving(Peer::Accepts, &[&talk_a, &talk_b]);
+    let a = m
+        .add(Box::new(only_connecting(&libraries)), (), &mut NoEvents)
+        .unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, a, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    talk_on(&mut m, a);
+    m.remove(a, &mut NoEvents).unwrap();
+    let b = m
+        .add(Box::new(only_connecting(&libraries)), (), &mut NoEvents)
+        .unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, b, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    assert_eq!(backend.log().resumed, 1, "the second resumes the first's");
+    m.remove(b, &mut NoEvents).unwrap();
+}
+
+/// Out of its multi, a ticket goes to the handle's share, the application
+/// told around it, out of the connections' lock, and what the cache says
+/// said after; C's `cf_ssl_scache_get`.
+#[test]
+fn a_ticket_read_out_of_a_multi_is_its_share_s() {
+    use crate::share::{Kind, Share, Told};
+    let (backend, libraries) = ticketing_late();
+    let share = Share::new().unwrap();
+    share.keep(Kind::SslSessions).unwrap();
+    let told = Told::new(&share);
+    for (i, talk) in answering(2).iter().enumerate() {
+        let mut m = serving(Peer::Accepts, &[talk]);
+        m.make_handle_own();
+        let mut e = only_connecting(&libraries);
+        let components = crate::components::Components::new().unwrap();
+        components.configure(b"ssls");
+        e.set_components(Some(components));
+        e.options_mut().output.verbose = true;
+        e.set_share_watched(share.clone(), told.handler());
+        e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
+        assert_eq!(backend.log().resumed, i, "the share's kept for the next");
+        told.uses();
+        let sent = m.send_raw_for(&mut e, b"x", &mut |_, _| {});
+        assert!(sent.is_ok(), "{sent:?}");
+        let mut lines = Vec::new();
+        let mut buf = [0u8; 64];
+        let got = m.recv_raw_for(&mut e, &mut buf, &mut |_, b| {
+            lines.push(String::from_utf8_lossy(b).into_owned());
+        });
+        assert!(got.is_ok(), "{got:?}");
+        assert_eq!(told.uses(), [Kind::SslSessions], "told of the one use");
+        let added = lines
+            .iter()
+            .filter(|l| l.starts_with("[SSLS] added session for "));
+        assert_eq!(added.count(), 1, "{lines:#?}");
+    }
+}
+
+/// Out of its multi with no share, a ticket has nowhere to go: C's
+/// `data->multi` is none once a perform is done. The next connection in
+/// the same own multi has none to resume.
+#[test]
+fn a_ticket_read_with_nowhere_to_go_is_dropped() {
+    let (backend, libraries) = ticketing_late();
+    let talks = answering(2);
+    let mut m = serving(Peer::Accepts, &[&talks[0], &talks[1]]);
+    m.make_handle_own();
+    let mut e = only_connecting(&libraries);
+    e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
+    let sent = m.send_raw_for(&mut e, b"x", &mut |_, _| {});
+    assert!(sent.is_ok(), "{sent:?}");
+    let mut buf = [0u8; 64];
+    let got = m.recv_raw_for(&mut e, &mut buf, &mut |_, _| {});
+    assert!(got.is_ok(), "{got:?}");
+    let mut other = only_connecting(&libraries);
+    other.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
+    assert_eq!(backend.log().resumed, 0, "none kept");
+}
+
+/// `CURLINFO_TLS_SSL_PTR` on a connection only made answers as C's: none
+/// as the transfer lets it go, its session once a call takes it up, in a
+/// multi or out of it.
+#[test]
+fn a_connection_only_made_shows_its_tls_objects_once_taken_up() {
+    let (_backend, libraries) = ticketing_late();
+    let talks = answering(2);
+    let mut m = serving(Peer::Accepts, &[&talks[0]]);
+    let id = m
+        .add(Box::new(only_connecting(&libraries)), (), &mut NoEvents)
+        .unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    assert!(m.tls_native(id).is_none(), "not taken up");
+    talk_on(&mut m, id);
+    assert!(m.tls_native(id).is_some(), "taken up");
+    m.remove(id, &mut NoEvents).unwrap();
+    let mut m = serving(Peer::Accepts, &[&talks[1]]);
+    m.make_handle_own();
+    let mut e = only_connecting(&libraries);
+    e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
+    assert!(m.tls_native_for(&e).is_none(), "not taken up");
+    let sent = m.send_raw_for(&mut e, b"x", &mut |_, _| {});
+    assert!(sent.is_ok(), "{sent:?}");
+    assert!(m.tls_native_for(&e).is_some(), "taken up");
+}
+
 /// Two transfers on fresh connections by a library whose tickets allow
 /// `most` bytes of early data, the second's server answering `second`,
 /// each transfer asking for early data if `asks`: the second's run.

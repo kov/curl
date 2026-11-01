@@ -838,14 +838,18 @@ impl Place {
     fn idle(&self) -> Option<&Conn> {
         match self {
             Place::Idle(slot) => Some(slot),
-            Place::Leased(_) | Place::Reserved(_) | Place::WithHandle(_) | Place::Attached(_) => None,
+            Place::Leased(_) | Place::Reserved(_) | Place::WithHandle(_) | Place::Attached(_) => {
+                None
+            }
         }
     }
 
     fn idle_mut(&mut self) -> Option<&mut Conn> {
         match self {
             Place::Idle(slot) => Some(slot),
-            Place::Leased(_) | Place::Reserved(_) | Place::WithHandle(_) | Place::Attached(_) => None,
+            Place::Leased(_) | Place::Reserved(_) | Place::WithHandle(_) | Place::Attached(_) => {
+                None
+            }
         }
     }
 
@@ -1475,6 +1479,17 @@ impl Pool {
         match self.conns.get_mut(id)? {
             Place::Reserved(slot) => Some(slot),
             Place::Idle(_) | Place::Leased(_) | Place::WithHandle(_) | Place::Attached(_) => None,
+        }
+    }
+
+    /// The TLS library's objects of the connection `id`, reserved for its
+    /// handle, if the pool still has it there.
+    pub(crate) fn reserved_tls_native(&self, id: ConnId) -> Option<crate::tls::TlsNative> {
+        match self.conns.get(id)? {
+            Place::Reserved(slot) => crate::multi::state::native_of(
+                slot.as_slot().query(crate::conn::layer::LayerQuery::TlsNative),
+            ),
+            _ => None,
         }
     }
 

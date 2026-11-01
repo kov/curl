@@ -75,6 +75,9 @@ pub struct FakeTls {
     agree: bool,
     /// Each session resumes a ticket kept and gives one to keep.
     tickets: bool,
+    /// It gives the ticket on its first read, as TLS 1.3's does, not as
+    /// its handshake ends.
+    tickets_late: bool,
     /// The early data the tickets given allow.
     early: usize,
     /// Each QUIC session's check of its peer fails.
@@ -226,6 +229,7 @@ impl FakeTls {
             pause: false,
             agree: false,
             tickets: false,
+            tickets_late: false,
             early: 0,
             quic_unverified: false,
             quic_resumes: None,
@@ -301,6 +305,16 @@ impl FakeTls {
     pub fn ticketing() -> Result<FakeTls, OutOfMemory> {
         Ok(FakeTls {
             tickets: true,
+            ..FakeTls::new()?
+        })
+    }
+
+    /// The same, the ticket given on the session's first read, as TLS
+    /// 1.3's comes after its handshake.
+    pub fn ticketing_late() -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            tickets: true,
+            tickets_late: true,
             ..FakeTls::new()?
         })
     }
@@ -427,6 +441,7 @@ impl TlsBackend for FakeTls {
             made: false,
             pause: self.pause,
             tickets: self.tickets,
+            ticket_due: self.tickets_late,
             early: self.early,
             early_data: peer.early_data,
             alpn,
@@ -479,6 +494,8 @@ enum Stage {
 }
 
 struct FakeSession {
+    /// A ticket is to be given on the first read.
+    ticket_due: bool,
     log: TryArc<Mutex<FakeLog>>,
     /// Its number, counting from 1 in the order the library made them:
     /// what it says its verification of the peer gave.
@@ -691,6 +708,10 @@ impl TlsSession for FakeSession {
     }
 
     fn recv(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv> {
+        if std::mem::take(&mut self.ticket_due) && io.caches_sessions() {
+            self.give_ticket(io)
+                .map_err(|OutOfMemory| io::ErrorKind::OutOfMemory)?;
+        }
         self.recv_open(io, buf)
     }
 
@@ -813,21 +834,31 @@ impl FakeSession {
                     self.stage = Stage::Open;
                     self.waits = TlsWait::Nothing;
                     self.log().handshakes += 1;
-                    if self.tickets && io.caches_sessions() {
-                        let mut ticket = Vec::new();
-                        ticket
-                            .try_extend_from_slice(TICKET)
+                    if self.tickets && !self.ticket_due && io.caches_sessions() {
+                        self.give_ticket(io)
                             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-                        let until = io.unix_time() + 7200;
-                        let early = self.early;
-                        let alpn = self.agreed;
-                        io.keep_session(TlsTicket::new(ticket, TLS1_3, alpn, early, until));
                     }
                     return Ok(Handshake::Done);
                 }
                 Stage::Open | Stage::Closing(_) | Stage::Closed => return Ok(Handshake::Done),
             }
         }
+    }
+
+    /// Give a ticket to keep, good for two hours from the transfer's time
+    /// of day.
+    fn give_ticket(&mut self, io: &mut TlsIo<'_>) -> Result<(), OutOfMemory> {
+        let mut ticket = Vec::new();
+        ticket.try_extend_from_slice(TICKET)?;
+        let until = io.unix_time() + 7200;
+        io.keep_session(TlsTicket::new(
+            ticket,
+            TLS1_3,
+            self.agreed,
+            self.early,
+            until,
+        ));
+        Ok(())
     }
 
     /// A record of `bytes`, at most a record's, kept to send.

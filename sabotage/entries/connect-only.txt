@@ -217,3 +217,89 @@ witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
         return Ok(Prepared::UnderWay);
 --- new
         return Ok(Prepared::NewFrame);
+
+=== a ticket read on a connection only made is dropped by a handle in a multi
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core proto::http::tests::tls::a_ticket_read_on_a_connection_only_made_is_its_multi_s
+features: test-util
+--- old
+        let around = Around {
+            pool: Some(&mut self.caches.pool),
+            sessions: Some(&mut self.caches.sessions),
+            when: When::of(&self.clock),
+        };
+        let easy = &mut self.slots.get_mut(id)?.easy;
+        Some(raw(around, easy, way, notes))
+--- new
+        let around = Around {
+            pool: Some(&mut self.caches.pool),
+            sessions: None,
+            when: When::of(&self.clock),
+        };
+        let easy = &mut self.slots.get_mut(id)?.easy;
+        Some(raw(around, easy, way, notes))
+
+=== a ticket read out of a multi goes to the multi that ran it
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core proto::http::tests::tls::a_ticket_read_with_nowhere_to_go_is_dropped
+features: test-util
+--- old
+            pool: Some(&mut self.caches.pool),
+            sessions: None,
+            when: When::of(&self.clock),
+        }
+    }
+
+    /// As `tls_native`, for `easy`, not added, whose transfers this multi
+--- new
+            pool: Some(&mut self.caches.pool),
+            sessions: Some(&mut self.caches.sessions),
+            when: When::of(&self.clock),
+        }
+    }
+
+    /// As `tls_native`, for `easy`, not added, whose transfers this multi
+
+=== a ticket read out of a multi is not its share's
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core proto::http::tests::tls::a_ticket_read_out_of_a_multi_is_its_share_s
+features: test-util
+--- old
+        let shared = self
+            .easy
+            .share()
+            .is_some_and(|s| s.keeps(Kind::SslSessions));
+--- new
+        let shared = false;
+
+=== what a share's session cache says is said under its lock
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core proto::http::tests::tls::a_ticket_read_out_of_a_multi_is_its_share_s
+features: test-util
+--- old
+            for line in &held.lines {
+                self.of_with(Component::Ssls, &[line]);
+            }
+--- new
+
+=== the SSL pointer is shown before a call took the connection up
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core proto::http::tests::tls::a_connection_only_made_shows_its_tls_objects_once_taken_up
+features: test-util
+--- old
+    let last = easy.last_conn.filter(|l| l.used)?;
+    match easy.share().filter(|s| s.keeps(Kind::Connections)) {
+--- new
+    let last = easy.last_conn?;
+    match easy.share().filter(|s| s.keeps(Kind::Connections)) {
+
+=== the SSL pointer of a connection only made is hidden
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::tls::a_connection_only_made_shows_its_tls_objects_once_taken_up
+features: test-util
+--- old
+        tls_native_in(&self.slots, Some(&self.caches.pool), id).or_else(|| {
+            raw::reserved_tls_native(Some(&self.caches.pool), &self.slots.get(id)?.easy)
+        })
+--- new
+        tls_native_in(&self.slots, Some(&self.caches.pool), id)

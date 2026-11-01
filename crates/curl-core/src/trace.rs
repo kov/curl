@@ -85,7 +85,11 @@ pub(crate) fn info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
 /// (`Curl_trc_ft_is_verbose`, `Curl_trc_cf_is_verbose`): a caller with
 /// work to do for a line asks first.
 pub(crate) fn traces<H: Host>(cx: &StepCx<'_, H>, component: Component) -> bool {
-    let easy = cx.easy();
+    handle_traces(cx.easy(), component)
+}
+
+/// `traces`, of a handle whatever it is doing.
+pub(crate) fn handle_traces(easy: &crate::easy::Easy, component: Component) -> bool {
     easy.options().output.verbose && easy.components().is_some_and(|c| c.traces(component))
 }
 

@@ -399,10 +399,20 @@ impl ShimEasy {
     }
 
     /// The TLS library's objects of the connection the handle's transfer
-    /// holds, wherever the transfer is: none for a handle in no multi.
+    /// holds, wherever the transfer is, or of the one it only made.
     pub(crate) fn tls_native(&self) -> Result<Option<TlsNative>, Recursive> {
         let Some((multi, id)) = self.added() else {
-            return Ok(None);
+            let private = self.private_multi();
+            let native = self.with_detached(|e| match private {
+                Some(m) => {
+                    // SAFETY: the handle owns its private multi.
+                    let m = unsafe { m.as_ref() };
+                    // SAFETY: nothing runs on it once its perform is done.
+                    unsafe { m.core_mut() }.tls_native_for(e)
+                }
+                None => e.tls_native(),
+            });
+            return Ok(native.flatten());
         };
         // SAFETY: the handle's multi outlives its `Added`.
         let multi = unsafe { multi.as_ref() };

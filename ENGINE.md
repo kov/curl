@@ -2359,7 +2359,10 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   of a share's lock, which the application is told of once. A failure is kept in the report and
   told to the error sink. What the call traces, the handle's, after its last transfer's numbers as
   C's lines are, goes to the `Notes` the call is given: no transfer runs, so there is no `TransferCx`
-  for the debug handler. `Multi::active_socket` tells the
+  for the debug handler. A TLS 1.3 ticket read on the connection goes to the handle's share if it
+  keeps sessions, else to the multi of a handle still in one; a handle out of its multi has none
+  (C's `data->multi`). `CURLINFO_TLS_SSL_PTR` answers once a call has taken the connection up
+  (`LastConn::used`, C's `data->conn`). `Multi::active_socket` tells the
   socket of the connection a transfer holds or its pool keeps (`CURLINFO_ACTIVESOCKET`,
   `LASTSOCKET`). The connection closes at once, said "closing connection #N", as the handle
   leaves a multi of the application's, or, in a handle's own multi

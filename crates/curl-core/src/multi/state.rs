@@ -2102,11 +2102,11 @@ impl<H: Host> crate::conn::layer::TlsSessions for StepCx<'_, H> {
 /// The context of a use of a share's TLS sessions under its lock: what
 /// the use traces and fails with is held, to be said once the lock is let
 /// go. A line it has no memory to hold is not said.
-struct HeldSays {
+pub(super) struct HeldSays {
     /// The transfer traces the cache's lines (`ssls`).
-    traces: bool,
-    lines: Vec<Vec<u8>>,
-    failure: Option<(ErrorKind, Vec<u8>)>,
+    pub(super) traces: bool,
+    pub(super) lines: Vec<Vec<u8>>,
+    pub(super) failure: Option<(ErrorKind, Vec<u8>)>,
 }
 
 impl crate::conn::layer::SessionSays for HeldSays {
@@ -2656,7 +2656,7 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
 
 /// The TLS library's objects of the origin's connection, as its layers
 /// answered `LayerQuery::TlsNative`.
-pub(super) fn native_of(answer: Option<LayerAnswer>) -> Option<TlsNative> {
+pub(crate) fn native_of(answer: Option<LayerAnswer>) -> Option<TlsNative> {
     match answer? {
         LayerAnswer::TlsNative(native) => Some(native),
         LayerAnswer::Alpn(..)

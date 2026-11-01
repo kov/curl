@@ -51,6 +51,9 @@ struct RawCx<'a> {
     now: Instant,
     unix_time: i64,
     easy: &'a mut Easy,
+    /// The multi's TLS sessions, for a handle in one (C's `data->multi`,
+    /// which a perform's own multi leaves as it ends).
+    sessions: Option<&'a mut crate::tls::SessionCache>,
     notes: Notes<'a>,
 }
 
@@ -71,8 +74,14 @@ impl LayerCx for RawCx<'_> {
         Some(self)
     }
 
+    /// The share's, if it keeps them (`cf_ssl_scache_get`), else its
+    /// multi's; a handle with neither keeps none.
     fn tls_sessions(&mut self) -> Option<&mut dyn crate::conn::layer::TlsSessions> {
-        None
+        let shared = self
+            .easy
+            .share()
+            .is_some_and(|s| s.keeps(Kind::SslSessions));
+        (shared || self.sessions.is_some()).then_some(self as _)
     }
 
     fn early_data(&mut self) -> Option<&mut dyn crate::conn::layer::EarlyData> {
@@ -89,6 +98,42 @@ impl LayerCx for RawCx<'_> {
 
     fn recv_room(&mut self) -> Option<&mut crate::conn::quic::RecvRoom> {
         None
+    }
+}
+
+impl crate::conn::layer::TlsSessions for RawCx<'_> {
+    /// As a step's use (`StepCx`): what it says of a share's held until the
+    /// share's lock is let go, as nothing is called out from inside it.
+    fn with_cache(
+        &mut self,
+        f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn crate::conn::layer::SessionSays),
+    ) {
+        use crate::conn::layer::LayerCalls as _;
+        let kept = self.easy.share().filter(|s| s.keeps(Kind::SslSessions));
+        if let Some(share) = kept.cloned() {
+            let mut held = super::state::HeldSays {
+                traces: crate::trace::handle_traces(self.easy, Component::Ssls),
+                lines: Vec::new(),
+                failure: None,
+            };
+            let watch = self.easy.share_watch.clone();
+            watched(watch.as_deref(), &share, Kind::SslSessions, || {
+                let mut sessions = share.sessions();
+                let cache = sessions.as_mut().expect("kept while the share keeps them");
+                f(cache, &mut held);
+            });
+            for line in &held.lines {
+                self.of_with(Component::Ssls, &[line]);
+            }
+            if let Some((kind, why)) = held.failure {
+                self.fails_with(kind, &[&why]);
+            }
+            return;
+        }
+        if let Some(own) = self.sessions.take() {
+            f(own, self);
+            self.sessions = Some(own);
+        }
     }
 }
 
@@ -239,6 +284,14 @@ fn in_pool<R>(
     }
 }
 
+/// What a call on a connection reaches beside its handle: the pool it may
+/// be in, the sessions of a handle in a multi, and the clock.
+struct Around<'a> {
+    pool: Option<&'a mut Pool>,
+    sessions: Option<&'a mut crate::tls::SessionCache>,
+    when: When,
+}
+
 /// Run `io` on the connection `easy` reserved, if its pool still has it:
 /// its share's if that keeps connections, else `own`. The pool is locked
 /// and its lock told of only to find the connection
@@ -269,12 +322,16 @@ fn on_reserved<R>(
 /// (`curl_easy_send`, `curl_easy_recv`): refused for a handle that does
 /// not only connect.
 fn raw(
-    pool: Option<&mut Pool>,
+    around: Around<'_>,
     easy: &mut Easy,
-    when: When,
     way: Way<'_>,
     notes: Notes<'_>,
 ) -> Result<RawIo, ErrorKind> {
+    let Around {
+        pool,
+        sessions,
+        when,
+    } = around;
     if !easy.options().connect_only.reserves() {
         let why = format_args!("CONNECT_ONLY is required");
         return Err(fail(
@@ -285,7 +342,7 @@ fn raw(
         ));
     }
     on_reserved(pool, easy, |easy, conn| {
-        raw_on_conn(conn, easy, when, way, notes)
+        raw_on_conn(conn, easy, sessions, when, way, notes)
     })
 }
 
@@ -294,6 +351,7 @@ fn raw(
 fn raw_on_conn(
     conn: Option<&mut Conn>,
     easy: &mut Easy,
+    sessions: Option<&mut crate::tls::SessionCache>,
     when: When,
     way: Way<'_>,
     notes: Notes<'_>,
@@ -317,6 +375,7 @@ fn raw_on_conn(
         now: when.now,
         unix_time: when.unix_time,
         easy,
+        sessions,
         notes,
     };
     match way {
@@ -377,9 +436,13 @@ impl<H: Host> Multi<H> {
         way: Way<'_>,
         notes: Notes<'_>,
     ) -> Option<Result<RawIo, ErrorKind>> {
-        let when = When::of(&self.clock);
+        let around = Around {
+            pool: Some(&mut self.caches.pool),
+            sessions: Some(&mut self.caches.sessions),
+            when: When::of(&self.clock),
+        };
         let easy = &mut self.slots.get_mut(id)?.easy;
-        Some(raw(Some(&mut self.caches.pool), easy, when, way, notes))
+        Some(raw(around, easy, way, notes))
     }
 
     /// The socket of the connection transfer `id` had last, if it is
@@ -407,9 +470,7 @@ impl<H: Host> Multi<H> {
         buf: &mut [u8],
         notes: Notes<'_>,
     ) -> Result<RawIo, ErrorKind> {
-        let when = When::of(&self.clock);
-        let pool = Some(&mut self.caches.pool);
-        raw(pool, easy, when, Way::Recv(buf), notes)
+        raw(self.around_for(), easy, Way::Recv(buf), notes)
     }
 
     /// As `send_raw`, for `easy`, not added, whose transfers this multi
@@ -420,15 +481,44 @@ impl<H: Host> Multi<H> {
         bytes: &[u8],
         notes: Notes<'_>,
     ) -> Result<RawIo, ErrorKind> {
-        let when = When::of(&self.clock);
-        let pool = Some(&mut self.caches.pool);
-        raw(pool, easy, when, Way::Send(bytes), notes)
+        raw(self.around_for(), easy, Way::Send(bytes), notes)
+    }
+
+    /// What a call by a handle not added reaches of this multi, which ran
+    /// its transfers: its pool, not its sessions, C's `data->multi` being
+    /// none once a perform is done.
+    fn around_for(&mut self) -> Around<'_> {
+        Around {
+            pool: Some(&mut self.caches.pool),
+            sessions: None,
+            when: When::of(&self.clock),
+        }
+    }
+
+    /// As `tls_native`, for `easy`, not added, whose transfers this multi
+    /// ran.
+    pub fn tls_native_for(&self, easy: &Easy) -> Option<crate::tls::TlsNative> {
+        reserved_tls_native(Some(&self.caches.pool), easy)
     }
 
     /// As `active_socket`, for `easy`, not added, whose transfers this
     /// multi ran.
     pub fn active_socket_for(&mut self, easy: &mut Easy) -> Option<SocketKey> {
         in_pool(Some(&mut self.caches.pool), easy, pool_socket)
+    }
+}
+
+/// The TLS library's objects of the connection `easy` reserved, once a
+/// call took it up (C's `data->conn`, which that sets): none before, as
+/// the transfer that made it has let it go.
+pub(super) fn reserved_tls_native(
+    own: Option<&Pool>,
+    easy: &Easy,
+) -> Option<crate::tls::TlsNative> {
+    let last = easy.last_conn.filter(|l| l.used)?;
+    match easy.share().filter(|s| s.keeps(Kind::Connections)) {
+        Some(share) => share.pool().reserved_tls_native(last.id),
+        None => own?.reserved_tls_native(last.id),
     }
 }
 
@@ -451,7 +541,28 @@ fn no_clock() -> Instant {
     crate::time::SystemClock::new().now()
 }
 
+impl Around<'static> {
+    /// What a call by a handle that no multi ran reaches: nothing.
+    fn alone() -> Around<'static> {
+        Around {
+            pool: None,
+            sessions: None,
+            when: When::on_no_clock(),
+        }
+    }
+}
+
 impl Easy {
+    /// The TLS library's objects of the connection the handle's last
+    /// transfer only made, once a call took it up
+    /// (`CURLINFO_TLS_SSL_PTR`).
+    pub fn tls_native(&self) -> Option<crate::tls::TlsNative> {
+        match &self.private {
+            Some(private) => private.multi.tls_native_for(self),
+            None => reserved_tls_native(None, self),
+        }
+    }
+
     /// Keep alive the connections of the handle's pool that have gone its
     /// upkeep interval without (`curl_easy_upkeep`): an HTTP/2 connection
     /// is sent a PING, others nothing. The pool is its share's, if that
@@ -490,7 +601,7 @@ impl Easy {
                 self.private = Some(private);
                 got
             }
-            None => raw(None, self, When::on_no_clock(), Way::Recv(buf), notes),
+            None => raw(Around::alone(), self, Way::Recv(buf), notes),
         }
     }
 
@@ -503,7 +614,7 @@ impl Easy {
                 self.private = Some(private);
                 sent
             }
-            None => raw(None, self, When::on_no_clock(), Way::Send(bytes), notes),
+            None => raw(Around::alone(), self, Way::Send(bytes), notes),
         }
     }
 
@@ -581,13 +692,17 @@ impl crate::proto::ws::Wire for RawWire<'_> {
 /// (`curl_ws_recv`, `curl_ws_send`, `curl_ws_start_frame` once the
 /// transfer is done): refused for a handle that does not only connect.
 fn ws(
-    pool: Option<&mut Pool>,
+    around: Around<'_>,
     easy: &mut Easy,
-    when: When,
     call: crate::ws::Call<'_>,
     notes: Notes<'_>,
 ) -> Result<crate::ws::Answer, ErrorKind> {
     use crate::ws::Call;
+    let Around {
+        pool,
+        sessions,
+        when,
+    } = around;
     let options = easy.options().ws;
     let refuse = |easy: &mut Easy, notes: Notes<'_>, kind, why: fmt::Arguments<'_>| {
         Err(fail(easy, kind, crate::trace::reason(why), notes))
@@ -620,7 +735,7 @@ fn ws(
         return refuse(easy, notes, ErrorKind::SendError, why);
     }
     on_reserved(pool, easy, |easy, conn| {
-        ws_on_conn(conn, easy, when, call, notes)
+        ws_on_conn(conn, easy, sessions, when, call, notes)
     })
 }
 
@@ -629,6 +744,7 @@ fn ws(
 fn ws_on_conn(
     conn: Option<&mut Conn>,
     easy: &mut Easy,
+    sessions: Option<&mut crate::tls::SessionCache>,
     when: When,
     call: crate::ws::Call<'_>,
     notes: Notes<'_>,
@@ -680,6 +796,7 @@ fn ws_on_conn(
             now: when.now,
             unix_time: when.unix_time,
             easy,
+            sessions,
             notes,
         },
         carrier,
@@ -714,9 +831,13 @@ impl<H: Host> Multi<H> {
         call: crate::ws::Call<'_>,
         notes: Notes<'_>,
     ) -> Option<Result<crate::ws::Answer, ErrorKind>> {
-        let when = When::of(&self.clock);
+        let around = Around {
+            pool: Some(&mut self.caches.pool),
+            sessions: Some(&mut self.caches.sessions),
+            when: When::of(&self.clock),
+        };
         let easy = &mut self.slots.get_mut(id)?.easy;
-        Some(ws(Some(&mut self.caches.pool), easy, when, call, notes))
+        Some(ws(around, easy, call, notes))
     }
 
     /// As `ws`, for `easy`, not added, whose transfers this multi ran.
@@ -726,8 +847,7 @@ impl<H: Host> Multi<H> {
         call: crate::ws::Call<'_>,
         notes: Notes<'_>,
     ) -> Result<crate::ws::Answer, ErrorKind> {
-        let when = When::of(&self.clock);
-        ws(Some(&mut self.caches.pool), easy, when, call, notes)
+        ws(self.around_for(), easy, call, notes)
     }
 }
 
@@ -745,7 +865,7 @@ impl Easy {
                 self.private = Some(private);
                 done
             }
-            None => ws(None, self, When::on_no_clock(), call, notes),
+            None => ws(Around::alone(), self, call, notes),
         }
     }
 

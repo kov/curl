@@ -1041,9 +1041,12 @@ impl<H: Host> Multi<H> {
     }
 
     /// The TLS library's objects of the origin's connection a transfer
-    /// holds, while it holds one (`CURLINFO_TLS_SSL_PTR`).
+    /// holds, while it holds one, or of the one it only made once a call
+    /// took that up (`CURLINFO_TLS_SSL_PTR`).
     pub fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
-        tls_native_in(&self.slots, Some(&self.caches.pool), id)
+        tls_native_in(&self.slots, Some(&self.caches.pool), id).or_else(|| {
+            raw::reserved_tls_native(Some(&self.caches.pool), &self.slots.get(id)?.easy)
+        })
     }
 
     fn run_of(&self, id: TransferId) -> &Run {

@@ -1374,7 +1374,7 @@ fn a_ticket_read_out_of_a_multi_is_its_share_s() {
         components.configure(b"ssls");
         e.set_components(Some(components));
         e.options_mut().output.verbose = true;
-        e.set_share_watched(share.clone(), told.handler());
+        e.set_share_watched(share.clone(), told.handler()).unwrap();
         e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
         assert_eq!(backend.log().resumed, i, "the share's kept for the next");
         told.uses();

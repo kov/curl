@@ -2522,7 +2522,7 @@ fn a_raw_send_on_a_share_s_connection_runs_out_of_its_lock() {
     m.make_handle_own();
     let mut e = easy("http://127.0.0.1:1/");
     e.options_mut().connect_only = ConnectOnly::Yes;
-    e.set_share_watched(share.clone(), told.handler());
+    e.set_share_watched(share.clone(), told.handler()).unwrap();
     e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
     assert_eq!(
         m.send_raw_for(&mut e, b"one", &mut |_, _| {}),

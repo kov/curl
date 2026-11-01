@@ -814,9 +814,9 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_forwarded_ftp_url_carries_its_credentials
 features: test-util
 --- old
-        } else if let Some(login) = self.credentials.as_ref().filter(|c| !c.given_in_url()) {
+        } else if let Some(login) = self.base.credentials.as_ref().filter(|c| !c.given_in_url()) {
 --- new
-        } else if let Some(login) = self.credentials.as_ref().filter(|_| false) {
+        } else if let Some(login) = self.base.credentials.as_ref().filter(|_| false) {
 
 === a forwarded transfer says it spoke its URL's scheme
 file: crates/curl-core/src/multi/state.rs

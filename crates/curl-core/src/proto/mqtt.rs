@@ -4,20 +4,17 @@
 //! server disconnects, or, for a POST, PUBLISHes the post's bytes to it
 //! and DISCONNECTs. All of it happens in DOING, as C's does.
 
-use std::num::NonZeroU32;
-
 use curl_alloc::TryVec as _;
 
-use super::dict::{peer_of, renetwork};
+use super::base::peer_of;
 use super::raw::{Got, xfer_recv, xfer_send};
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
-use crate::auth::creds::{CredentialGate, Credentials, Takes};
+use crate::auth::creds::{CredentialGate, Takes};
+use crate::conn::ConnLease;
 use crate::conn::io::Events;
-use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::handler::DebugKind;
-use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::{Method, UploadSource};
@@ -84,12 +81,9 @@ impl State {
 /// other transfer reuses (`struct MQTT`, `struct mqtt_conn`).
 #[derive(Debug)]
 pub(crate) struct Request {
-    pipeline: Pipeline,
-    peer: Peer,
+    pub(super) base: super::base::RequestBase,
     /// The URL's path, as it is encoded (`state.up.path`).
     path: Vec<u8>,
-    /// The transfer's credentials, until CONNECT has sent them.
-    credentials: Option<Credentials>,
     state: State,
     /// Where to go once a packet's remaining length is read.
     next: State,
@@ -292,10 +286,12 @@ impl Request {
         };
         let path = url.get(Part::Path, encoded).map_err(url_error)?;
         Ok(Request {
-            pipeline: Pipeline::new(Reach::Network),
-            peer,
+            base: super::base::RequestBase {
+                peer,
+                pipeline: Pipeline::new(Reach::Network),
+                credentials,
+            },
             path,
-            credentials,
             state: State::First,
             next: State::First,
             packet_id: 0,
@@ -308,33 +304,6 @@ impl Request {
             first_byte: 0,
             ping_sent: false,
         })
-    }
-
-    /// The peer it connects to.
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        renetwork(&self.peer, url, scope, idn)
-    }
-
-    pub(crate) fn scheme(&self) -> Scheme {
-        self.peer.scheme()
-    }
-
-    /// It is over TLS from the start: its scheme is `mqtts`.
-    pub(crate) fn secured(&self) -> bool {
-        self.peer.scheme().over_tls()
-    }
-
-    pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
-    }
-
-    pub(crate) fn holds_output(&self) -> bool {
-        self.pipeline.holds_output()
     }
 
     /// MQTT exchanges nothing once its DOING is done.
@@ -496,7 +465,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
-        let credentials = self.credentials.take();
+        let credentials = self.base.credentials.take();
         let (user, password) = match &credentials {
             Some(c) => (c.user(), c.secret().password()),
             None => (&[][..], &[][..]),
@@ -647,7 +616,7 @@ impl Request {
                         format_args!("Maximum file size exceeded"),
                     ));
                 }
-                self.pipeline.announce_size(cx, Some(remaining as u64));
+                self.base.pipeline.announce_size(cx, Some(remaining as u64));
                 self.npacket = remaining;
             }
         }
@@ -673,7 +642,7 @@ impl Request {
                     Got::Data(n) => n,
                 };
                 self.last_time = cx.now();
-                self.pipeline.body(cx, &buf[..n])?;
+                self.base.pipeline.body(cx, &buf[..n])?;
                 self.npacket -= n;
                 if self.npacket == 0 {
                     self.go(cx, State::First, State::PubWait);

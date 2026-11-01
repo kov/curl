@@ -182,9 +182,11 @@ fn request() -> Request {
     let url = Url::parse(b"imap://h/", crate::url::ParseOptions::NONE).unwrap();
     let scheme = Scheme::named(b"imap").unwrap();
     Request {
-        pipeline: Pipeline::new(Reach::Network),
-        peer: super::super::url_peer((scheme, b"h".to_vec(), 143), &url, None, None).unwrap(),
-        credentials: None,
+        base: crate::proto::base::RequestBase {
+            pipeline: Pipeline::new(Reach::Network),
+            peer: super::super::url_peer((scheme, b"h".to_vec(), 143), &url, None, None).unwrap(),
+            credentials: None,
+        },
         path: Vec::new(),
         query: None,
         url_options: None,

@@ -8,19 +8,17 @@
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::num::NonZeroU32;
 use std::time::Duration;
 
 use curl_alloc::TryVec as _;
 use curl_os::error::ErrorText;
 
-use super::dict::{peer_of, renetwork};
+use super::base::peer_of;
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
+use crate::conn::ConnLease;
 use crate::conn::io::{Events, Remote};
-use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
-use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::multi::timers::TimeLeft;
@@ -297,8 +295,7 @@ pub(crate) fn first_packet(
 /// never reused).
 #[derive(Debug)]
 pub(crate) struct Request {
-    pipeline: Pipeline,
-    peer: Peer,
+    pub(super) base: super::base::RequestBase,
     /// The URL's path, its `;mode=` cut off.
     path: Vec<u8>,
     /// The mode is netascii (`prefer_ascii`).
@@ -353,8 +350,11 @@ impl Request {
         }
         let upload = options.method == Method::Upload;
         Ok(Request {
-            pipeline: Pipeline::new(Reach::Network),
-            peer,
+            base: super::base::RequestBase {
+                peer,
+                pipeline: Pipeline::new(Reach::Network),
+                credentials: None,
+            },
             path,
             ascii,
             upload,
@@ -377,28 +377,6 @@ impl Request {
             written: 0,
             looked: None,
         })
-    }
-
-    /// The peer it connects to.
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        renetwork(&self.peer, url, scope, idn)
-    }
-
-    pub(crate) fn scheme(&self) -> Scheme {
-        self.peer.scheme()
-    }
-
-    pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
-    }
-
-    pub(crate) fn holds_output(&self) -> bool {
-        self.pipeline.holds_output()
     }
 
     /// TFTP exchanges nothing once its DO is done.
@@ -897,7 +875,7 @@ impl Request {
                 // Neither an empty block nor one sent again goes to the
                 // application.
                 if n > 4 && next_block(self.block) == self.rblock() {
-                    let delivered = self.pipeline.body(cx, &self.rpacket[4..n]);
+                    let delivered = self.base.pipeline.body(cx, &self.rpacket[4..n]);
                     if let Err(e) = delivered {
                         self.machine(cx, lease, Event::ERROR)?;
                         return Err(e);
@@ -931,7 +909,7 @@ impl Request {
                     Ok(oack) => {
                         self.blksize = oack.blksize;
                         if let Some(tsize) = oack.tsize {
-                            self.pipeline.announce_size(cx, Some(tsize));
+                            self.base.pipeline.announce_size(cx, Some(tsize));
                         }
                     }
                     Err(refused) => {

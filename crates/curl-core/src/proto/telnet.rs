@@ -9,21 +9,19 @@
 //! or 100 ms after the last.
 
 use std::fmt;
-use std::num::NonZeroU32;
 use std::time::Duration;
 
 use curl_alloc::TryVec as _;
 
-use super::dict::{peer_of, renetwork};
+use super::base::peer_of;
 use super::raw::{Got, xfer_recv, xfer_send};
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
 use crate::auth::creds::{CredentialGate, Credentials, Takes};
+use crate::conn::ConnLease;
 use crate::conn::io::Events;
-use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Pipeline, Reach};
 use crate::error::ErrorKind;
 use crate::handler::Read;
-use crate::idn::Idn;
 use crate::multi::state::StepCx;
 use crate::multi::timers::TimeLeft;
 use crate::multi::{Host, TransferCx};
@@ -847,10 +845,7 @@ fn print_sub(wire: &mut dyn Wire, direction: Option<u8>, p: &[u8], mut length: u
 /// A TELNET transfer.
 #[derive(Debug)]
 pub(crate) struct Request {
-    pipeline: Pipeline,
-    peer: Peer,
-    /// The transfer's credentials: its user is sent as `USER`.
-    credentials: Option<Credentials>,
+    pub(super) base: super::base::RequestBase,
     /// The exchange's state, once DO has made it.
     telnet: Option<Box<Telnet>>,
     /// What was sent that the connection has not taken yet.
@@ -869,35 +864,15 @@ impl Request {
             super::request_credentials(cx, CredentialGate::FIRST.trusted(), url, takes)?;
         let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
         Ok(Request {
-            pipeline: Pipeline::new(Reach::Network),
-            peer,
-            credentials,
+            base: super::base::RequestBase {
+                peer,
+                pipeline: Pipeline::new(Reach::Network),
+                credentials,
+            },
             telnet: None,
             unsent: Vec::new(),
             last_pass: None,
         })
-    }
-
-    /// The peer it connects to.
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        renetwork(&self.peer, url, scope, idn)
-    }
-
-    pub(crate) fn scheme(&self) -> Scheme {
-        self.peer.scheme()
-    }
-
-    pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
-    }
-
-    pub(crate) fn holds_output(&self) -> bool {
-        self.pipeline.holds_output()
     }
 
     /// TELNET exchanges nothing once its DO is done.
@@ -918,7 +893,7 @@ impl Request {
         if let Some(small) = cx.easy_mut().options_mut().small.made_mut() {
             small.telnet.refill().map_err(|_| ErrorKind::OutOfMemory)?;
         }
-        let user = self.credentials.as_ref().map(Credentials::user);
+        let user = self.base.credentials.as_ref().map(Credentials::user);
         let options = cx.easy().options().small.telnet.iter();
         // The refusal's reason is made while the options are borrowed,
         // and given once they are not.
@@ -995,7 +970,7 @@ impl Request {
         let mut live = Live {
             cx,
             lease,
-            pipeline: &mut self.pipeline,
+            pipeline: &mut self.base.pipeline,
             unsent: &mut self.unsent,
         };
         // C sends all it has before it reads again.

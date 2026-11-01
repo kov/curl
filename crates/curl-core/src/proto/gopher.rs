@@ -2,19 +2,16 @@
 //! made of the URL's path and query, sent on a connection of its own, and
 //! the server's answer as the body, read until it closes the connection.
 
-use std::num::NonZeroU32;
-
 use curl_alloc::TryVec as _;
 
-use super::dict::{peer_of, renetwork};
+use super::base::peer_of;
 use super::raw::Outgoing;
 use super::xfer::Receive;
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
+use crate::conn::ConnLease;
 use crate::conn::io::Events;
-use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
-use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::trace;
@@ -23,8 +20,7 @@ use crate::url::{GetOptions, Part, Url, decode_but_zero};
 /// A Gopher transfer.
 #[derive(Debug)]
 pub(crate) struct Request {
-    pipeline: Pipeline,
-    peer: Peer,
+    pub(super) base: super::base::RequestBase,
     /// The URL's path, as it is encoded, and its query, if it has one
     /// (`state.up.path`, `state.up.query`).
     path: Vec<u8>,
@@ -94,41 +90,17 @@ impl Request {
             Err(e) => return Err(url_error(e)),
         };
         Ok(Request {
-            pipeline: Pipeline::new(Reach::Network),
-            peer,
+            base: super::base::RequestBase {
+                peer,
+                pipeline: Pipeline::new(Reach::Network),
+                credentials: None,
+            },
             path,
             query,
             out: Outgoing::default(),
             selector: 0,
             answer: Receive::default(),
         })
-    }
-
-    /// The peer it connects to.
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        renetwork(&self.peer, url, scope, idn)
-    }
-
-    pub(crate) fn scheme(&self) -> Scheme {
-        self.peer.scheme()
-    }
-
-    /// It is over TLS from the start: its scheme is `gophers`.
-    pub(crate) fn secured(&self) -> bool {
-        self.peer.scheme().over_tls()
-    }
-
-    pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
-    }
-
-    pub(crate) fn holds_output(&self) -> bool {
-        self.pipeline.holds_output()
     }
 
     /// What the answer waits for on the connection's socket: it is read
@@ -146,8 +118,8 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
-        self.pipeline.flush(cx)?;
-        self.answer.read(cx, lease, &mut self.pipeline)
+        self.base.pipeline.flush(cx)?;
+        self.answer.read(cx, lease, &mut self.base.pipeline)
     }
 
     /// Send the rest of the selector and its CRLF (`send_buf`), each piece
@@ -160,7 +132,7 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<bool, ErrorKind> {
         let selector = self.selector;
-        let pipeline = &mut self.pipeline;
+        let pipeline = &mut self.base.pipeline;
         let sent = self.out.send(cx, lease, &mut |cx, at, piece| {
             let header = &piece[..selector.saturating_sub(at).min(piece.len())];
             // An empty selector writes nothing, as C's loop never runs.
@@ -180,7 +152,7 @@ impl Request {
                 ));
             }
         }
-        self.pipeline.protocol_header(cx, b"\r\n")?;
+        self.base.pipeline.protocol_header(cx, b"\r\n")?;
         self.answer.start_to_end(cx);
         Ok(true)
     }

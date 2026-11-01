@@ -11,6 +11,7 @@
 //! of its transfer's `Options::script`; and `tcp:`, which connects to its
 //! URL's host and port and completes once connected.
 
+mod base;
 pub(crate) mod dict;
 pub(crate) mod file;
 pub(crate) mod ftp;
@@ -475,7 +476,7 @@ pub(crate) fn netrc_unkept<H: Host>(
     let scheme = Scheme::named(&name);
     let takes = Takes::of(scheme);
     if let Some(scheme) = scheme.filter(|s| !s.no_network()) {
-        let peer = dict::peer_of(url, scheme.name().as_bytes(), cx)?;
+        let peer = base::peer_of(url, scheme.name().as_bytes(), cx)?;
         let gate = match first {
             None => CredentialGate::FIRST,
             Some(first) => {
@@ -558,16 +559,16 @@ impl SetupLend for ProtoState {
             ProtoState::Http(r) => SetupLend::pipeline(&mut **r),
             ProtoState::Ftp(r) => SetupLend::pipeline(&mut **r),
             ProtoState::File(r) => r.pipeline_mut(),
-            ProtoState::Pop3(r) => r.pipeline_mut(),
-            ProtoState::Imap(r) => r.pipeline_mut(),
-            ProtoState::Smtp(r) => r.pipeline_mut(),
-            ProtoState::Ssh(r) => r.pipeline_mut(),
-            ProtoState::Ldap(r) => r.pipeline_mut(),
-            ProtoState::Dict(r) => r.pipeline_mut(),
-            ProtoState::Gopher(r) => r.pipeline_mut(),
-            ProtoState::Mqtt(r) => r.pipeline_mut(),
-            ProtoState::Telnet(r) => r.pipeline_mut(),
-            ProtoState::Tftp(r) => r.pipeline_mut(),
+            ProtoState::Pop3(r) => &mut r.base.pipeline,
+            ProtoState::Imap(r) => &mut r.base.pipeline,
+            ProtoState::Smtp(r) => &mut r.base.pipeline,
+            ProtoState::Ssh(r) => &mut r.base.pipeline,
+            ProtoState::Ldap(r) => &mut r.base.pipeline,
+            ProtoState::Dict(r) => &mut r.base.pipeline,
+            ProtoState::Gopher(r) => &mut r.base.pipeline,
+            ProtoState::Mqtt(r) => &mut r.base.pipeline,
+            ProtoState::Telnet(r) => &mut r.base.pipeline,
+            ProtoState::Tftp(r) => &mut r.base.pipeline,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(p) => p.pipeline_mut(),
             #[cfg(any(test, feature = "test-util"))]
@@ -824,20 +825,11 @@ impl ProtoState {
         scope: Option<NonZeroU32>,
         idn: Option<&dyn Idn>,
     ) -> Result<Option<Peer>, ErrorKind> {
+        if let Some(base) = self.base() {
+            return base.network(url, scope, idn).map(Some);
+        }
         match *self {
             ProtoState::File(_) => Ok(None),
-            ProtoState::Http(ref r) => Ok(Some(r.network(url, scope, idn)?)),
-            ProtoState::Ftp(ref r) => Ok(Some(r.network(url, scope, idn)?)),
-            ProtoState::Pop3(ref r) => Ok(Some(r.network(url, scope, idn)?)),
-            ProtoState::Imap(ref r) => Ok(Some(r.network(url, scope, idn)?)),
-            ProtoState::Smtp(ref r) => Ok(Some(r.network(url, scope, idn)?)),
-            ProtoState::Ssh(ref r) => Ok(Some(r.network(url, scope, idn)?)),
-            ProtoState::Ldap(ref r) => Ok(Some(r.network(url, scope, idn)?)),
-            ProtoState::Dict(ref r) => Ok(Some(r.network(url, scope, idn)?)),
-            ProtoState::Gopher(ref r) => Ok(Some(r.network(url, scope, idn)?)),
-            ProtoState::Mqtt(ref r) => Ok(Some(r.network(url, scope, idn)?)),
-            ProtoState::Telnet(ref r) => Ok(Some(r.network(url, scope, idn)?)),
-            ProtoState::Tftp(ref r) => Ok(Some(r.network(url, scope, idn)?)),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
             #[cfg(any(test, feature = "test-util"))]
@@ -851,6 +843,7 @@ impl ProtoState {
                 let scheme = Scheme::own(&crate::conn::TCP_SCHEME);
                 Ok(Some(url_peer((scheme, host, port), url, scope, idn)?))
             }
+            _ => unreachable!("every other protocol has a base"),
         }
     }
 
@@ -858,21 +851,8 @@ impl ProtoState {
     /// own.
     pub(crate) fn scheme(&self) -> Option<Scheme> {
         match self {
-            ProtoState::Http(r) => Some(r.scheme()),
-            ProtoState::Ftp(r) => Some(r.scheme()),
-            ProtoState::Pop3(r) => Some(r.scheme()),
-            ProtoState::Imap(r) => Some(r.scheme()),
-            ProtoState::Smtp(r) => Some(r.scheme()),
-            ProtoState::Ssh(r) => Some(r.scheme()),
-            ProtoState::Ldap(r) => Some(r.scheme()),
-            ProtoState::Dict(r) => Some(r.scheme()),
-            ProtoState::Gopher(r) => Some(r.scheme()),
-            ProtoState::Mqtt(r) => Some(r.scheme()),
-            ProtoState::Telnet(r) => Some(r.scheme()),
-            ProtoState::Tftp(r) => Some(r.scheme()),
             ProtoState::File(_) => Scheme::named(b"file"),
-            #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+            _ => self.base().map(base::RequestBase::scheme),
         }
     }
 
@@ -936,17 +916,7 @@ impl ProtoState {
 
     /// The request goes over TLS (C's `PROTOPT_SSL`).
     pub(crate) fn secured(&self) -> bool {
-        match self {
-            ProtoState::Http(r) => r.secured(),
-            ProtoState::Ftp(r) => r.secured(),
-            ProtoState::Pop3(r) => r.secured(),
-            ProtoState::Imap(r) => r.secured(),
-            ProtoState::Smtp(r) => r.secured(),
-            ProtoState::Gopher(r) => r.secured(),
-            ProtoState::Mqtt(r) => r.secured(),
-            ProtoState::Ldap(r) => r.secured(),
-            _ => false,
-        }
+        self.scheme().is_some_and(Scheme::over_tls)
     }
 
     /// The request goes whole to a proxy that sends it on to `url`, an
@@ -1178,7 +1148,7 @@ impl ProtoState {
     /// The request sends datagrams of its own, over a UDP socket that
     /// connects to no peer: TFTP's (`TRNSPRT_UDP`).
     pub(crate) fn sends_datagrams(&self) -> bool {
-        matches!(self, ProtoState::Tftp(_))
+        self.scheme().is_some_and(Scheme::sends_datagrams)
     }
 
     /// The request's DOING runs out of time itself, with its own reason:
@@ -1274,48 +1244,63 @@ impl ProtoState {
 
     /// Whether the request holds output for the application.
     pub(crate) fn holds_output(&self) -> bool {
+        if let Some(base) = self.base() {
+            return base.pipeline.holds_output();
+        }
         match *self {
-            // A write cannot pause it: it never holds.
-            ProtoState::File(_) => false,
-            ProtoState::Http(ref r) => r.holds_output(),
-            ProtoState::Ftp(ref r) => r.holds_output(),
-            ProtoState::Pop3(ref r) => r.holds_output(),
-            ProtoState::Imap(ref r) => r.holds_output(),
-            ProtoState::Smtp(ref r) => r.holds_output(),
-            ProtoState::Ssh(ref r) => r.holds_output(),
-            ProtoState::Ldap(ref r) => r.holds_output(),
-            ProtoState::Dict(ref r) => r.holds_output(),
-            ProtoState::Gopher(ref r) => r.holds_output(),
-            ProtoState::Mqtt(ref r) => r.holds_output(),
-            ProtoState::Telnet(ref r) => r.holds_output(),
-            ProtoState::Tftp(ref r) => r.holds_output(),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.holds_output(),
-            #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => false,
+            // A write cannot pause a file's: it never holds.
+            _ => false,
         }
     }
 
     /// The output of the request, for protocols that deliver any.
     pub(crate) fn pipeline_mut(&mut self) -> Option<&mut Pipeline> {
-        match *self {
-            ProtoState::File(ref mut f) => Some(f.pipeline_mut()),
-            ProtoState::Http(ref mut r) => Some(r.pipeline_mut()),
-            ProtoState::Ftp(ref mut r) => Some(r.pipeline_mut()),
-            ProtoState::Pop3(ref mut r) => Some(r.pipeline_mut()),
-            ProtoState::Imap(ref mut r) => Some(r.pipeline_mut()),
-            ProtoState::Smtp(ref mut r) => Some(r.pipeline_mut()),
-            ProtoState::Ssh(ref mut r) => Some(r.pipeline_mut()),
-            ProtoState::Ldap(ref mut r) => Some(r.pipeline_mut()),
-            ProtoState::Dict(ref mut r) => Some(r.pipeline_mut()),
-            ProtoState::Gopher(ref mut r) => Some(r.pipeline_mut()),
-            ProtoState::Mqtt(ref mut r) => Some(r.pipeline_mut()),
-            ProtoState::Telnet(ref mut r) => Some(r.pipeline_mut()),
-            ProtoState::Tftp(ref mut r) => Some(r.pipeline_mut()),
+        match self {
+            ProtoState::File(f) => Some(f.pipeline_mut()),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Script(ref mut p) => Some(p.pipeline_mut()),
+            ProtoState::Script(p) => Some(p.pipeline_mut()),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => None,
+            base => base.base_mut().map(|b| &mut b.pipeline),
+        }
+    }
+
+    /// What a network protocol's request has in common.
+    fn base(&self) -> Option<&base::RequestBase> {
+        match self {
+            ProtoState::Http(r) => Some(&r.base),
+            ProtoState::Ftp(r) => Some(&r.base),
+            ProtoState::Pop3(r) => Some(&r.base),
+            ProtoState::Imap(r) => Some(&r.base),
+            ProtoState::Smtp(r) => Some(&r.base),
+            ProtoState::Ssh(r) => Some(&r.base),
+            ProtoState::Ldap(r) => Some(&r.base),
+            ProtoState::Dict(r) => Some(&r.base),
+            ProtoState::Gopher(r) => Some(&r.base),
+            ProtoState::Mqtt(r) => Some(&r.base),
+            ProtoState::Telnet(r) => Some(&r.base),
+            ProtoState::Tftp(r) => Some(&r.base),
+            _ => None,
+        }
+    }
+
+    fn base_mut(&mut self) -> Option<&mut base::RequestBase> {
+        match self {
+            ProtoState::Http(r) => Some(&mut r.base),
+            ProtoState::Ftp(r) => Some(&mut r.base),
+            ProtoState::Pop3(r) => Some(&mut r.base),
+            ProtoState::Imap(r) => Some(&mut r.base),
+            ProtoState::Smtp(r) => Some(&mut r.base),
+            ProtoState::Ssh(r) => Some(&mut r.base),
+            ProtoState::Ldap(r) => Some(&mut r.base),
+            ProtoState::Dict(r) => Some(&mut r.base),
+            ProtoState::Gopher(r) => Some(&mut r.base),
+            ProtoState::Mqtt(r) => Some(&mut r.base),
+            ProtoState::Telnet(r) => Some(&mut r.base),
+            ProtoState::Tftp(r) => Some(&mut r.base),
+            _ => None,
         }
     }
 

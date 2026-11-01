@@ -92,9 +92,9 @@ file: crates/curl-core/src/proto/pop3.rs
 witness: curl-core proto::pop3::tests::over_the_wire::a_reset_after_the_answer_is_not_retried
 features: test-util
 --- old
-        self.header_bytes == 0 && self.pipeline.bytecount() == 0
+        self.header_bytes == 0 && self.base.pipeline.bytecount() == 0
 --- new
-        self.pipeline.bytecount() == 0
+        self.base.pipeline.bytecount() == 0
 
 === a POP3 request asked for no body is made again on a fresh connection
 file: crates/curl-core/src/proto/pop3.rs
@@ -225,13 +225,13 @@ features: test-util
         Some(tls) if !secured || (reuses_tls || use_ssl.may()) => Some(
 
 === a POP3 transfer ends while its paused body is held
-file: crates/curl-core/src/proto/pop3.rs
+file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::pop3::tests::over_the_wire::a_paused_body_holds_the_transfer_open
 features: test-util
 --- old
-        self.pipeline.holds_output()
+            return base.pipeline.holds_output();
 --- new
-        false
+            return !matches!(self, ProtoState::Pop3(_)) && base.pipeline.holds_output();
 
 === POP3's server lines start the response's time
 file: crates/curl-core/src/proto/pop3.rs

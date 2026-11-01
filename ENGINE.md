@@ -959,7 +959,10 @@ asked in a `DoPhase { Do, Doing, More }` and answers the phase it goes on in
 phase, `Waiting::c_default` C's (IN while connecting, OUT while making the request, nothing in
 DONE, where C blocks). `line` is what the protocol keeps on the connection, read when asked:
 a request keeps no copy of its back and forth's or its session's wait, nor does `interest`,
-which is given it too. `ProtoState::done` answers a `Finish { Done(result), Waiting }`, and
+which is given it too. What every network protocol's request holds, its peer, its pipeline and
+its credentials, is `proto::base::RequestBase`, from which `ProtoState` answers `network`,
+`scheme`, `pipeline_mut` and `holds_output`; `file:` and the test protocols have no peer and answer
+for themselves. `secured` and `sends_datagrams` read the request's `Scheme`. `ProtoState::done` answers a `Finish { Done(result), Waiting }`, and
 `finishing` reads on what it awaits (§3.1). HTTP and
 `file:` connect at once and make their request in DO; `script:` reads its phases from the
 script's first pieces. A request's substates belong to its protocol, inside `ProtoState`; the engine sees only

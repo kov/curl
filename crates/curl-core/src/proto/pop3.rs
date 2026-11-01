@@ -3,8 +3,6 @@
 //! the connection is not over it already, and a command per transfer, its
 //! answer's body the transfer's, up to the line of a single dot.
 
-use std::num::NonZeroU32;
-
 use curl_alloc::{TryArc, TryVec as _};
 
 use super::mail::{self, login_of, sasl_failed, sasl_step};
@@ -18,11 +16,10 @@ use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl};
 use crate::conn::io::Events;
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
-use crate::conn::{ConnLease, Peer, RouteCold, Scheme};
+use crate::conn::{ConnLease, RouteCold, Scheme};
 use crate::deliver::{Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::hash::{Hash as _, Md5};
-use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::UseSsl;
@@ -262,10 +259,7 @@ impl Eob {
 /// A POP3 transfer (`struct POP3`, and what C's request keeps of it).
 #[derive(Debug)]
 pub(crate) struct Request {
-    pipeline: Pipeline,
-    peer: Peer,
-    /// The transfer's credentials, until its route takes them.
-    credentials: Option<Credentials>,
+    pub(super) base: super::base::RequestBase,
     /// The URL's path, encoded: read in DO.
     path: Vec<u8>,
     /// The URL's message id, decoded in DO.
@@ -349,9 +343,11 @@ impl Request {
             Err(e) => return Err(url_error(e)),
         };
         Ok(Request {
-            pipeline: Pipeline::new(Reach::Network),
-            peer,
-            credentials,
+            base: super::base::RequestBase {
+                peer,
+                pipeline: Pipeline::new(Reach::Network),
+                credentials,
+            },
             path,
             id: Vec::new(),
             custom: None,
@@ -365,41 +361,9 @@ impl Request {
         })
     }
 
-    /// The peer it connects to.
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        let mut host = Vec::new();
-        host.try_extend_from_slice(self.peer.shown())
-            .map_err(|_| ErrorKind::OutOfMemory)?;
-        let (scheme, port) = (self.peer.scheme(), self.peer.port());
-        super::url_peer((scheme, host, port), url, scope, idn)
-    }
-
-    /// Its scheme.
-    pub(crate) fn scheme(&self) -> Scheme {
-        self.peer.scheme()
-    }
-
     /// Its credentials, which its route takes.
     pub(crate) fn take_login(&mut self) -> Option<Credentials> {
-        self.credentials.take()
-    }
-
-    /// It is over TLS from the start: its scheme is `pop3s`.
-    pub(crate) fn secured(&self) -> bool {
-        self.peer.scheme().over_tls()
-    }
-
-    pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
-    }
-
-    pub(crate) fn holds_output(&self) -> bool {
-        self.pipeline.holds_output()
+        self.base.credentials.take()
     }
 
     /// Whether nothing came back for the request, which waits for a body
@@ -407,7 +371,7 @@ impl Request {
     /// connection, its reused one having died (`Curl_retry_request` for a
     /// scheme outside HTTP's, `req.bytecount + req.headerbytecount`).
     pub(crate) fn received_nothing(&self) -> bool {
-        self.header_bytes == 0 && self.pipeline.bytecount() == 0 && !self.no_body
+        self.header_bytes == 0 && self.base.pipeline.bytecount() == 0 && !self.no_body
     }
 
     /// What the body waits for on the connection's socket.
@@ -442,9 +406,9 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
-        self.pipeline.flush(cx)?;
+        self.base.pipeline.flush(cx)?;
         let mut sink = Body {
-            pipeline: &mut self.pipeline,
+            pipeline: &mut self.base.pipeline,
             eob: &mut self.eob,
         };
         self.receive.read(cx, lease, &mut sink)
@@ -454,7 +418,7 @@ impl Request {
     /// body over once the marker is whole (`CURL_REQ_CLEAR_RECV`).
     fn body_bytes<H: Host>(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> Step {
         let mut sink = Body {
-            pipeline: &mut self.pipeline,
+            pipeline: &mut self.base.pipeline,
             eob: &mut self.eob,
         };
         if <Body<'_> as Sink<H, ConnLease>>::body(&mut sink, cx, bytes)? {
@@ -525,7 +489,7 @@ impl Request {
             let shaken = crate::multi::state::tls::upgrade(
                 carrier,
                 &identity,
-                &self.peer,
+                &self.base.peer,
                 &self.in_place,
                 crate::multi::state::tls::Blocks::No,
                 cx,
@@ -557,7 +521,7 @@ impl Request {
                 &mut pc.pp,
                 carrier,
                 &ends,
-                &mut self.pipeline,
+                &mut self.base.pipeline,
                 &mut self.header_bytes,
                 // A command is sent beside the request's sending, which
                 // never ends: the server's lines start no response's time
@@ -744,7 +708,7 @@ impl Request {
         pc: &mut Pop3Conn,
         carrier: &mut Carrier<'_>,
     ) -> Step {
-        let can = sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        let can = sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.can_authenticate(sx)
         });
         if !can {
@@ -752,7 +716,7 @@ impl Request {
             return Ok(());
         }
         if pc.offered.both(pc.preferred, AuthTypes::SASL) {
-            let progress = sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+            let progress = sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
                 sasl.start(sx, false)
             });
             match progress.map_err(|e| sasl_failed(cx, e))? {
@@ -799,7 +763,7 @@ impl Request {
                 format_args!("Authentication cancelled"),
             ));
         }
-        sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.blocked(sx)
         });
         Err(ErrorKind::LoginDenied)
@@ -873,7 +837,7 @@ impl Request {
             sasl::Send::Cancel => drive::send(cx, &mut pc.pp, carrier, None, &[b"*"]),
         };
         // The exchange moves on once its command is sent.
-        sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.sent(sx, sent.is_ok())
         });
         sent
@@ -897,7 +861,7 @@ impl Request {
         copied
             .try_extend_from_slice(message)
             .map_err(|_| ErrorKind::OutOfMemory)?;
-        let progress = sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        let progress = sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.step(sx, code, &copied)
         });
         match progress.map_err(|e| sasl_failed(cx, e))? {

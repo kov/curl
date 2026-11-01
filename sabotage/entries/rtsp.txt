@@ -27,7 +27,9 @@ witness: curl-core proto::http::tests::rtsp::a_cseq_other_than_the_request_s_fai
 file: crates/curl-core/src/proto/http/rtsp.rs
 witness: curl-core proto::http::tests::rtsp::a_session_goes_only_to_the_origin_that_named_it
 --- old
-            s.origin.as_ref().is_none_or(|origin| origin == &self.peer)
+            s.origin
+                .as_ref()
+                .is_none_or(|origin| origin == &self.base.peer)
 --- new
             true
 

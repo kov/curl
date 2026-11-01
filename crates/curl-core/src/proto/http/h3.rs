@@ -601,7 +601,7 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<Called, ErrorKind> {
         let no_body = self.method == Method::Head;
-        let bytecount = self.pipeline.bytecount();
+        let bytecount = self.base.pipeline.bytecount();
         let s = self.h3_stream();
         let id = s.shown_id();
         if let Some(Ended::Reset(error)) = s.ended {
@@ -969,7 +969,7 @@ fn open<H: Host>(
         quic.keep_alive(&mut *step.cx, 1);
     }
     let custom = step.req.custom_method(step.cx);
-    let scheme = step.req.peer.scheme().name().as_bytes();
+    let scheme = step.req.base.peer.scheme().name().as_bytes();
     let fields = fields_of(
         &step.req.out[start..start + head],
         custom.as_deref(),

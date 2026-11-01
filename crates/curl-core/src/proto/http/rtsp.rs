@@ -505,7 +505,7 @@ impl Request {
     /// What an RTSP connection is matched by, its scheme logging in per
     /// connection (`url_match_auth`); none for HTTP's.
     pub(crate) fn rtsp_login(&self) -> Result<Option<Credentials>, curl_alloc::OutOfMemory> {
-        match (&self.rtsp, &self.credentials) {
+        match (&self.rtsp, &self.base.credentials) {
             (Some(_), Some(c)) => c.try_clone().map(Some),
             _ => Ok(None),
         }
@@ -596,12 +596,12 @@ impl Request {
         // Authenticating with the origin, the stream named as the path;
         // nothing goes to a proxy, which the request only tunnels through
         // (`Curl_http_output_auth` with `HTTPREQ_GET`).
-        let credentials = self.credentials.as_ref().map(Credentials::secret);
+        let credentials = self.base.credentials.as_ref().map(Credentials::secret);
         let (auth_state, options) = cx.easy_mut().auth_with_options();
         auth_state.side(Side::Proxy).finish();
         let request = AuthRequest {
             side: Side::Host,
-            origin: &self.peer,
+            origin: &self.base.peer,
             method,
             uri: &stream_uri,
             get_or_head: true,
@@ -619,10 +619,12 @@ impl Request {
             auth
         };
         let probe = auth.probe;
-        let auth_asked =
-            cx.easy()
-                .auth
-                .asked((credentials, &self.peer), (None, &self.peer), probe, true);
+        let auth_asked = cx.easy().auth.asked(
+            (credentials, &self.base.peer),
+            (None, &self.base.peer),
+            probe,
+            true,
+        );
         cx.report_mut().set_auth_used(auth.used);
         auth_trace(cx, "Server", auth.used, credentials);
         let options = cx.easy().options();
@@ -639,7 +641,9 @@ impl Request {
         // A session a server gave goes back only to its origin, unless
         // credentials may go anywhere.
         let session = small.rtsp_session.as_ref().filter(|s| {
-            s.origin.as_ref().is_none_or(|origin| origin == &self.peer)
+            s.origin
+                .as_ref()
+                .is_none_or(|origin| origin == &self.base.peer)
                 || options.http.unrestricted_auth
         });
         if headers.replaces(b"CSeq") {
@@ -726,7 +730,7 @@ impl Request {
             Some(AcceptEncoding::All) => Some(Accepted::All(cx.easy().decoders())),
             Some(AcceptEncoding::Given(value)) => Some(Accepted::Given(value)),
         };
-        let authorization = match (&self.credentials, &auth.header) {
+        let authorization = match (&self.base.credentials, &auth.header) {
             (Some(c), Some((AuthMethods::DIGEST, value))) => {
                 Some(Authorization::alongside("Digest", value, c.trusted()))
             }
@@ -899,9 +903,9 @@ impl Request {
         }
         let no_body = rtsp.no_body;
         if size.is_some() {
-            self.pipeline.announce_size(cx, size);
+            self.base.pipeline.announce_size(cx, size);
         }
-        self.pipeline.expect(Expect {
+        self.base.pipeline.expect(Expect {
             size,
             max: size,
             no_body,
@@ -1090,9 +1094,9 @@ impl Request {
             ),
         );
         if !rest.is_empty() {
-            self.pipeline.body(cx, rest)?;
+            self.base.pipeline.body(cx, rest)?;
         }
-        if matches!(self.stage, Stage::Body(Body::Length)) && self.pipeline.body_done() {
+        if matches!(self.stage, Stage::Body(Body::Length)) && self.base.pipeline.body_done() {
             self.stage = Stage::Done;
         }
         Ok(())
@@ -1111,7 +1115,7 @@ impl Request {
         let head = self.head.as_ref().expect("made at DO");
         let mut out = Delivered {
             cx,
-            pipeline: &mut self.pipeline,
+            pipeline: &mut self.base.pipeline,
             head,
         };
         rtp.filter(bytes, receive, &channels, &mut out)
@@ -1128,7 +1132,7 @@ impl Request {
                 .meta()
                 .size()
                 .unwrap_or(0)
-                .saturating_sub(self.pipeline.bytecount()),
+                .saturating_sub(self.base.pipeline.bytecount()),
             _ => 0,
         };
         if left > 0 && !no_body {

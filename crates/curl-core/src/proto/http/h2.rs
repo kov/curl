@@ -636,7 +636,7 @@ impl Request {
         if self.stream().id.is_none() {
             // The head goes whole, before any of the body (`h2_submit`).
             let custom = self.custom_method(cx);
-            let scheme = self.peer.scheme().name().as_bytes();
+            let scheme = self.base.peer.scheme().name().as_bytes();
             let fields = fields_of(&self.out[start..start + head], custom.as_deref(), scheme)?;
             let pairs = fields.pairs().map_err(|_| ErrorKind::OutOfMemory)?;
             let body = self.body.is_some();
@@ -1149,7 +1149,7 @@ impl Request {
         let gone = h2.closed() || h2.goaway().is_some_and(|g| g.last.0 < id);
         if stream.reset || gone {
             trace::of(cx, H2, format_args!("[{id}] returning ERR"));
-            return Err(if self.pipeline.bytecount() > 0 {
+            return Err(if self.base.pipeline.bytecount() > 0 {
                 ErrorKind::PartialFile
             } else {
                 ErrorKind::Http2
@@ -1169,7 +1169,7 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
         let no_body = self.method == Method::Head;
-        let bytecount = self.pipeline.bytecount();
+        let bytecount = self.base.pipeline.bytecount();
         let stream = self.stream();
         let id = stream.id.map_or(0, |id| id.0);
         if stream.reset {
@@ -1230,7 +1230,7 @@ impl Request {
         let mut handed = Ok(());
         for line in trailers.lines.split_inclusive(|&b| b == b'\n') {
             trace::bytes(cx, DebugKind::HeaderIn, line);
-            handed = self.pipeline.header(cx, line, HeaderOrigin::Trailer);
+            handed = self.base.pipeline.header(cx, line, HeaderOrigin::Trailer);
             if handed.is_err() {
                 break;
             }
@@ -1652,7 +1652,7 @@ impl Request {
     /// Whether a promise's `:authority` is the request's origin's: its
     /// host and port, or its host alone at its scheme's port.
     fn serves_authority(&self, value: &[u8]) -> Result<bool, OutOfMemory> {
-        let peer = &self.peer;
+        let peer = &self.base.peer;
         let name = peer.name();
         // Built as C's `"%s:%d"` builds it: the name's bytes as they are.
         let port = Text::<8>::clipped(format_args!(":{}", peer.port())).0;
@@ -1764,12 +1764,13 @@ impl Request {
         };
         let same = url
             .get(Part::Scheme, GetOptions::NONE)
-            .is_ok_and(|s| s.eq_ignore_ascii_case(self.peer.scheme().name().as_bytes()))
+            .is_ok_and(|s| s.eq_ignore_ascii_case(self.base.peer.scheme().name().as_bytes()))
             && url
                 .get(Part::Host, GetOptions::NONE)
-                .is_ok_and(|h| h.eq_ignore_ascii_case(self.peer.shown()))
+                .is_ok_and(|h| h.eq_ignore_ascii_case(self.base.peer.shown()))
             && url.get(Part::Port, port).is_ok_and(|p| {
-                std::str::from_utf8(&p).ok().and_then(|p| p.parse().ok()) == Some(self.peer.port())
+                std::str::from_utf8(&p).ok().and_then(|p| p.parse().ok())
+                    == Some(self.base.peer.port())
             });
         Ok(same.then_some(url))
     }
@@ -1795,7 +1796,7 @@ impl Request {
         let options = cx.easy().options();
         let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);
         cx.easy_mut().auth.start(want, proxy_want);
-        let peer = &request.peer;
+        let peer = &request.base.peer;
         let auth = cx
             .easy()
             .auth

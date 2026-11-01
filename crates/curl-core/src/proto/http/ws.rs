@@ -327,7 +327,7 @@ impl Request {
         // C's client does not check the server's `Sec-WebSocket-Accept`.
         trace::info(cx, format_args!("[WS] Received 101, switch to WebSocket"));
         let raw = cx.easy().options().ws.raw;
-        self.pipeline.decode_websocket(raw)?;
+        self.base.pipeline.decode_websocket(raw)?;
         if cx.easy().options().connect_only.reserves() {
             // What came after the 101 waits on the connection for the
             // application's receives, and the transfer reads no more.
@@ -350,7 +350,7 @@ impl Request {
                 .get()
                 .ws_lend()
                 .expect("a WebSocket's connection speaks it");
-            cx.lending_ws(conn, |cx| self.pipeline.body(cx, rest))?;
+            cx.lending_ws(conn, |cx| self.base.pipeline.body(cx, rest))?;
         }
         Ok(0)
     }

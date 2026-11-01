@@ -2,19 +2,16 @@
 //! URL's path, and the server's answer as the body, read until it closes
 //! the connection.
 
-use std::num::NonZeroU32;
-
 use curl_alloc::TryVec as _;
 
 use super::raw::Outgoing;
 use super::xfer::Receive;
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
+use crate::conn::ConnLease;
 use crate::conn::io::Events;
-use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::handler::DebugKind;
-use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::trace;
@@ -27,8 +24,7 @@ const MAX_WORD: usize = 10000;
 /// A DICT transfer.
 #[derive(Debug)]
 pub(crate) struct Request {
-    pipeline: Pipeline,
-    peer: Peer,
+    pub(super) base: super::base::RequestBase,
     /// The URL's path, as it is encoded (`state.up.path`).
     path: Vec<u8>,
     /// The request, once DO has made it.
@@ -141,41 +137,22 @@ fn escape_word(word: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 impl Request {
     /// A transfer of `url`: its peer and its path.
     pub(crate) fn new<H: Host>(url: &Url, cx: &mut StepCx<'_, H>) -> Result<Request, ErrorKind> {
-        let peer = peer_of(url, b"dict", cx)?;
+        let peer = super::base::peer_of(url, b"dict", cx)?;
         let encoded = GetOptions {
             url_encode: true,
             ..GetOptions::NONE
         };
         let path = url.get(Part::Path, encoded).map_err(url_error)?;
         Ok(Request {
-            pipeline: Pipeline::new(Reach::Network),
-            peer,
+            base: super::base::RequestBase {
+                peer,
+                pipeline: Pipeline::new(Reach::Network),
+                credentials: None,
+            },
             path,
             out: Outgoing::default(),
             answer: Receive::default(),
         })
-    }
-
-    /// The peer it connects to.
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        renetwork(&self.peer, url, scope, idn)
-    }
-
-    pub(crate) fn scheme(&self) -> Scheme {
-        self.peer.scheme()
-    }
-
-    pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
-    }
-
-    pub(crate) fn holds_output(&self) -> bool {
-        self.pipeline.holds_output()
     }
 
     /// What the answer waits for on the connection's socket: it is read
@@ -193,8 +170,8 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
-        self.pipeline.flush(cx)?;
-        self.answer.read(cx, lease, &mut self.pipeline)
+        self.base.pipeline.flush(cx)?;
+        self.answer.read(cx, lease, &mut self.base.pipeline)
     }
 
     /// Send the rest of the request, traced as it goes (`sendf`): whether
@@ -221,45 +198,6 @@ impl Request {
             )),
         }
     }
-}
-
-/// The peer of `url`, a URL of `scheme`, at its port or the scheme's.
-pub(super) fn peer_of<H: Host>(
-    url: &Url,
-    scheme: &[u8],
-    cx: &mut StepCx<'_, H>,
-) -> Result<Peer, ErrorKind> {
-    let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
-    let port = url
-        .get(
-            Part::Port,
-            GetOptions {
-                default_port: true,
-                ..GetOptions::NONE
-            },
-        )
-        .map_err(url_error)?;
-    let port = std::str::from_utf8(&port)
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .ok_or(ErrorKind::UrlMalformat)?;
-    let scheme = Scheme::named(scheme).expect("libcurl knows the scheme");
-    let scope = cx.easy().options().address_scope;
-    let idn = cx.easy().libraries().idn;
-    super::url_peer((scheme, host, port), url, scope, idn)
-}
-
-/// The peer `peer` names, again, for `url`.
-pub(super) fn renetwork(
-    peer: &Peer,
-    url: &Url,
-    scope: Option<NonZeroU32>,
-    idn: Option<&dyn Idn>,
-) -> Result<Peer, ErrorKind> {
-    let mut host = Vec::new();
-    host.try_extend_from_slice(peer.shown())
-        .map_err(|_| ErrorKind::OutOfMemory)?;
-    super::url_peer((peer.scheme(), host, peer.port()), url, scope, idn)
 }
 
 impl super::Phases for Request {

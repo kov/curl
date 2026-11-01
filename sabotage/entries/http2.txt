@@ -71,7 +71,7 @@ witness: curl-core proto::http::tests::h2::a_stream_closed_before_its_head_fails
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::trailers_come_as_the_stream_closes
 --- old
-            handed = self.pipeline.header(cx, line, HeaderOrigin::Trailer);
+            handed = self.base.pipeline.header(cx, line, HeaderOrigin::Trailer);
 --- new
             handed = Ok::<(), ErrorKind>(());
 === a connection closed under an open stream ends it whole

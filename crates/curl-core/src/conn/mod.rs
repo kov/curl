@@ -919,6 +919,13 @@ impl Scheme {
         self.0.flags.conn_reuse
     }
 
+    /// Whether it sends datagrams of its own, over a UDP socket that
+    /// connects to no peer: TFTP's (`TRNSPRT_UDP`, which `tftp_setup_connection`
+    /// asks for, as C's scheme table has no transport).
+    pub(crate) fn sends_datagrams(self) -> bool {
+        self.0.protocol == Some(crate::url::schemes::Protocol::Tftp)
+    }
+
     /// Whether its bytes cannot go through a TCP tunnel: TFTP's, which
     /// are datagrams (`PROTOPT_NOTCPPROXY`).
     pub(crate) fn no_tcp_proxy(self) -> bool {

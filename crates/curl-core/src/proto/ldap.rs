@@ -9,8 +9,6 @@
 //! or not at all; over `ldap:` it may first be upgraded to TLS
 //! (STARTTLS).
 
-use std::num::NonZeroU32;
-
 use curl_alloc::TryVec as _;
 
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
@@ -20,10 +18,9 @@ use crate::conn::io::{Events, Sent};
 use crate::conn::layer::LayerCx;
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
-use crate::conn::{ConnLease, Peer, RecvFailed, Scheme};
+use crate::conn::{ConnLease, RecvFailed};
 use crate::deliver::{self, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
-use crate::idn::Idn;
 use crate::ldap::{
     Code, Kind, Ldap, Mech, Message, MsgId, Scope, Search, Session, SessionFailed, UrlError,
     Version, Wire,
@@ -68,10 +65,7 @@ const URL_ERRORS: [&str; 11] = [
 pub(crate) struct Request {
     /// The library its handle has.
     library: &'static dyn Ldap,
-    pipeline: Pipeline,
-    peer: Peer,
-    /// The transfer's credentials, until its route takes them.
-    credentials: Option<Credentials>,
+    pub(super) base: super::base::RequestBase,
     /// The URL, as the transfer names it (`state.url`).
     url_text: Vec<u8>,
     /// The search it names.
@@ -333,7 +327,7 @@ impl Request {
             return Err(ErrorKind::UnsupportedProtocol);
         };
         let name: &[u8] = if secured { b"ldaps" } else { b"ldap" };
-        let peer = super::dict::peer_of(url, name, cx)?;
+        let peer = super::base::peer_of(url, name, cx)?;
         let gate = match before.first {
             None => CredentialGate::FIRST,
             Some(first) => {
@@ -378,10 +372,12 @@ impl Request {
             }
         };
         Ok(Request {
+            base: super::base::RequestBase {
+                peer,
+                pipeline: Pipeline::new(Reach::Network),
+                credentials,
+            },
             library,
-            pipeline: Pipeline::new(Reach::Network),
-            peer,
-            credentials,
             url_text,
             search,
             url_options,
@@ -391,37 +387,10 @@ impl Request {
         })
     }
 
-    /// The peer it connects to.
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        super::dict::renetwork(&self.peer, url, scope, idn)
-    }
-
-    pub(crate) fn scheme(&self) -> Scheme {
-        self.peer.scheme()
-    }
-
-    /// It is over TLS from the start: its scheme is `ldaps`.
-    pub(crate) fn secured(&self) -> bool {
-        self.peer.scheme().over_tls()
-    }
-
     /// Its credentials, which its route takes: a connection binds with
     /// them once (`conn->creds`).
     pub(crate) fn take_login(&mut self) -> Option<Credentials> {
-        self.credentials.take()
-    }
-
-    pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
-    }
-
-    pub(crate) fn holds_output(&self) -> bool {
-        self.pipeline.holds_output()
+        self.base.credentials.take()
     }
 
     /// The answer is read once the search is sent (`Curl_xfer_setup_recv`).
@@ -470,14 +439,14 @@ impl Request {
             None => self.url_options.as_deref(),
         };
         parse_login_options(&mut sasl, options.unwrap_or_default())?;
-        let scheme = self.peer.scheme();
-        let host = if self.peer.ipv6() {
-            self.peer.shown()
+        let scheme = self.base.peer.scheme();
+        let host = if self.base.peer.ipv6() {
+            self.base.peer.shown()
         } else {
-            self.peer.name()
+            self.base.peer.name()
         };
         let mut hosturl = Vec::new();
-        let port = curl_alloc::try_format(format_args!(":{}", self.peer.port()))
+        let port = curl_alloc::try_format(format_args!(":{}", self.base.peer.port()))
             .map_err(|_| ErrorKind::OutOfMemory)?;
         let oom = |_| ErrorKind::OutOfMemory;
         hosturl
@@ -613,8 +582,8 @@ impl Request {
         let mut sx = sasl::Ctx {
             creds: login.map(Credentials::secret),
             sasl_ir,
-            host: self.peer.name(),
-            port: self.peer.port(),
+            host: self.base.peer.name(),
+            port: self.base.peer.port(),
             random: &mut random,
             said: &mut say,
         };
@@ -701,7 +670,7 @@ impl Request {
             let shaken = crate::multi::state::tls::upgrade(
                 &mut carrier,
                 &identity,
-                &self.peer,
+                &self.base.peer,
                 &in_place,
                 crate::multi::state::tls::Blocks::No,
                 cx,
@@ -1080,7 +1049,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
-        self.pipeline.flush(cx)?;
+        self.base.pipeline.flush(cx)?;
         if !self.receiving {
             return Ok(ProtoStep::Done);
         }
@@ -1191,7 +1160,7 @@ impl Request {
     /// The answer is all read (`sendrecv_dl`'s end).
     fn end<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<ProtoStep, ErrorKind> {
         trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
-        let ended = self.pipeline.end(cx);
+        let ended = self.base.pipeline.end(cx);
         deliver::write_resp(cx, 0, true, ended);
         self.receiving = false;
         ended.map(|()| ProtoStep::Done)
@@ -1200,7 +1169,7 @@ impl Request {
     /// Write an entry as LDIF through the pipeline, a write for each of
     /// C's (`client_write`'s parts).
     fn write_entry<H: Host>(&mut self, cx: &mut StepCx<'_, H>, msg: &mut dyn Message) -> Wrote {
-        let pipeline = &mut self.pipeline;
+        let pipeline = &mut self.base.pipeline;
         let wrote = ldif(msg, &mut |bytes| pipeline.body(cx, bytes));
         match wrote {
             Ok(()) => Ok(()),

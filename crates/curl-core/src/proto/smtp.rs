@@ -7,8 +7,6 @@
 //! whose answer is the body. The answer to a mail's body is read in
 //! DONE, as C's `smtp_done` reads it.
 
-use std::num::NonZeroU32;
-
 use curl_alloc::{TryArc, TryVec as _};
 
 use super::mail::{self, sasl_failed, sasl_step};
@@ -22,7 +20,7 @@ use crate::components::Component;
 use crate::conn::io::Events;
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
-use crate::conn::{ConnLease, Peer, RouteCold, Scheme};
+use crate::conn::{ConnLease, RouteCold, Scheme};
 use crate::deliver::{Directions, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::idn::Idn;
@@ -237,10 +235,7 @@ fn parse_address<H: Host>(
 /// An SMTP transfer (`struct SMTP`, and what C's request keeps of it).
 #[derive(Debug)]
 pub(crate) struct Request {
-    pipeline: Pipeline,
-    peer: Peer,
-    /// The transfer's credentials, until its route takes them.
-    credentials: Option<Credentials>,
+    pub(super) base: super::base::RequestBase,
     /// The URL's path, encoded: the EHLO domain, read as the connection
     /// is first spoken over.
     path: Vec<u8>,
@@ -349,9 +344,11 @@ impl Request {
             Err(e) => return Err(url_error(e)),
         };
         Ok(Request {
-            pipeline: Pipeline::new(Reach::Network),
-            peer,
-            credentials,
+            base: super::base::RequestBase {
+                peer,
+                pipeline: Pipeline::new(Reach::Network),
+                credentials,
+            },
             path,
             url_options,
             custom: None,
@@ -372,41 +369,9 @@ impl Request {
         })
     }
 
-    /// The peer it connects to.
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        let mut host = Vec::new();
-        host.try_extend_from_slice(self.peer.shown())
-            .map_err(|_| ErrorKind::OutOfMemory)?;
-        let (scheme, port) = (self.peer.scheme(), self.peer.port());
-        super::url_peer((scheme, host, port), url, scope, idn)
-    }
-
-    /// Its scheme.
-    pub(crate) fn scheme(&self) -> Scheme {
-        self.peer.scheme()
-    }
-
     /// Its credentials, which its route takes.
     pub(crate) fn take_login(&mut self) -> Option<Credentials> {
-        self.credentials.take()
-    }
-
-    /// It is over TLS from the start: its scheme is `smtps`.
-    pub(crate) fn secured(&self) -> bool {
-        self.peer.scheme().over_tls()
-    }
-
-    pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
-    }
-
-    pub(crate) fn holds_output(&self) -> bool {
-        self.pipeline.holds_output()
+        self.base.credentials.take()
     }
 
     /// Whether nothing came back for the request, which has not run to
@@ -414,7 +379,7 @@ impl Request {
     /// reused one having died (`Curl_retry_request` for a scheme outside
     /// HTTP's, `req.bytecount + req.headerbytecount`).
     pub(crate) fn received_nothing(&self) -> bool {
-        self.header_bytes == 0 && self.pipeline.bytecount() == 0 && !self.no_body
+        self.header_bytes == 0 && self.base.pipeline.bytecount() == 0 && !self.no_body
     }
 
     /// When DONE, as it awaits its answer, looks again: its poll's end.
@@ -508,7 +473,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
-        self.pipeline.flush(cx)?;
+        self.base.pipeline.flush(cx)?;
         if let Some(sending) = self.sending.as_deref_mut() {
             if sending.send(cx, lease)? != ProtoStep::Done {
                 return Ok(ProtoStep::Blocked);
@@ -516,7 +481,7 @@ impl Request {
             self.sending = None;
             self.upload_done = true;
         }
-        if self.pipeline.holds_output() {
+        if self.base.pipeline.holds_output() {
             return Ok(ProtoStep::Blocked);
         }
         Ok(ProtoStep::Done)
@@ -619,7 +584,7 @@ impl Request {
             let shaken = crate::multi::state::tls::upgrade(
                 carrier,
                 &identity,
-                &self.peer,
+                &self.base.peer,
                 &self.in_place,
                 crate::multi::state::tls::Blocks::No,
                 cx,
@@ -651,7 +616,7 @@ impl Request {
                 &mut pc.pp,
                 carrier,
                 &ends,
-                &mut self.pipeline,
+                &mut self.base.pipeline,
                 &mut self.header_bytes,
                 // The server's lines start the response's time once the
                 // mail's body is all sent (`upload_done`); before, a
@@ -851,14 +816,14 @@ impl Request {
         pc: &mut SmtpConn,
         carrier: &mut Carrier<'_>,
     ) -> Step {
-        let can = sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        let can = sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.can_authenticate(sx)
         });
         if !pc.auth_offered || !can {
             set_state(cx, pc, State::Stop);
             return Ok(());
         }
-        let progress = sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        let progress = sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.start(sx, false)
         });
         match progress.map_err(|e| sasl_failed(cx, e))? {
@@ -868,7 +833,7 @@ impl Request {
                 Ok(())
             }
             Progress::Idle | Progress::Done => {
-                sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+                sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
                     sasl.blocked(sx)
                 });
                 Err(ErrorKind::LoginDenied)
@@ -903,7 +868,7 @@ impl Request {
             sasl::Send::Cancel => drive::send(cx, &mut pc.pp, carrier, None, &[b"*"]),
         };
         // The exchange moves on once its command is sent.
-        sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.sent(sx, sent.is_ok())
         });
         sent
@@ -927,7 +892,7 @@ impl Request {
         copied
             .try_extend_from_slice(message)
             .map_err(|_| ErrorKind::OutOfMemory)?;
-        let progress = sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        let progress = sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.step(sx, step, &copied)
         });
         match progress.map_err(|e| sasl_failed(cx, e))? {
@@ -1048,7 +1013,7 @@ impl Request {
         }
         if !self.no_body {
             let line = pc.pp.reply_line().expect("a reply was given out");
-            self.pipeline.body(cx, line)?;
+            self.base.pipeline.body(cx, line)?;
         }
         if code == 1 {
             return Ok(());

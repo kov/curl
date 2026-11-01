@@ -13,7 +13,6 @@ use crate::date::{HttpDate, OutOfRange};
 use crate::deliver::{self, Expect, Pause, Pipeline, WriteType};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
-use crate::idn::Idn;
 use crate::libraries::Ed25519;
 use crate::mime::read::MakeError;
 use crate::multi::Host;
@@ -42,7 +41,7 @@ use super::{Before, Ended, ProtoStep};
 use crate::auth::creds::{CredentialGate, Credentials, Secret, Takes, Trusted};
 use crate::auth::http::{AuthAct, AuthRequest, Offered, Output, OutputError, Side};
 use crate::options::AuthMethods;
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::NonZeroUsize;
 
 pub(crate) mod alt_svc;
 pub(crate) mod cookies;
@@ -244,7 +243,7 @@ impl Wire {
 /// An HTTP request and its response.
 #[derive(Debug)]
 pub(crate) struct Request {
-    pipeline: Pipeline,
+    pub(super) base: super::base::RequestBase,
     /// The path and query the request asks for.
     target: Vec<u8>,
     /// The whole URL, the request's target when a proxy it goes to sends
@@ -253,11 +252,6 @@ pub(crate) struct Request {
     /// The alternative service the connection goes to, `host:port` with
     /// an IPv6 address bare, which `Alt-Used:` names (`altused`).
     alt_used: Option<Vec<u8>>,
-    /// What the URL says to authenticate with.
-    credentials: Option<Credentials>,
-    /// The scheme, the host as the URL names it, and the port the
-    /// request goes to.
-    peer: Peer,
     /// What of the application's may go to the request's origin.
     gate: CredentialGate,
     /// The method, as the requests before it left it.
@@ -579,7 +573,7 @@ impl crate::multi::state::SetupLend for Request {
     }
 
     fn pipeline(&mut self) -> &mut Pipeline {
-        self.pipeline_mut()
+        &mut self.base.pipeline
     }
 
     fn negotiation(&self) -> Option<Negotiation> {
@@ -751,12 +745,14 @@ impl Request {
         // in Unicode in its ASCII form (`Curl_netrc_scan` of `hostname`).
         let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
         Ok(Request {
-            pipeline: Pipeline::collecting(),
+            base: super::base::RequestBase {
+                peer,
+                pipeline: Pipeline::collecting(),
+                credentials,
+            },
             target,
             forward_target: None,
             alt_used: None,
-            credentials,
-            peer,
             gate,
             method: before.method,
             custom: !before.http.ignore_custom,
@@ -792,8 +788,8 @@ impl Request {
     /// (`http_target`).
     pub(crate) fn forward(&mut self, url: &Url, ftp_type: Option<u8>) -> Result<(), ErrorKind> {
         let mut url = url.try_clone().map_err(url_error)?;
-        if self.peer.converted() {
-            let host = Some(self.peer.name());
+        if self.base.peer.converted() {
+            let host = Some(self.base.peer.name());
             url.set(Part::Host, host, SetOptions::NONE)
                 .map_err(url_error)?;
         }
@@ -805,7 +801,7 @@ impl Request {
             for part in [Part::User, Part::Password] {
                 url.set(part, None, SetOptions::NONE).map_err(url_error)?;
             }
-        } else if let Some(login) = self.credentials.as_ref().filter(|c| !c.given_in_url()) {
+        } else if let Some(login) = self.base.credentials.as_ref().filter(|c| !c.given_in_url()) {
             // Any other's carries the credentials, those set apart from
             // the URL put into it.
             let encoded = SetOptions {
@@ -884,44 +880,20 @@ impl Request {
         Ok(())
     }
 
-    /// The peer the request connects to: its origin, in the IPv6 scope
-    /// `scope` if the application sets one.
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        let mut host = Vec::new();
-        host.try_extend_from_slice(self.peer.shown())
-            .map_err(|_| ErrorKind::OutOfMemory)?;
-        let (scheme, port) = (self.peer.scheme(), self.peer.port());
-        super::url_peer((scheme, host, port), url, scope, idn)
-    }
-
     /// The credentials it authenticates with.
     pub(crate) fn login(&self) -> Option<&Credentials> {
-        self.credentials.as_ref()
-    }
-
-    /// Its scheme, `http`, `https`, `ws` or `wss`.
-    pub(crate) fn scheme(&self) -> Scheme {
-        self.peer.scheme()
+        self.base.credentials.as_ref()
     }
 
     /// It goes over TLS: its scheme is `https` or `wss` (C's `PROTOPT_SSL`).
     pub(crate) fn secured(&self) -> bool {
-        self.peer.scheme().over_tls()
+        self.base.peer.scheme().over_tls()
     }
 
     /// The port its scheme means when a URL names none, which `Host:`
     /// and the signatures leave out.
     fn default_port(&self) -> u16 {
         if self.secured() { 443 } else { 80 }
-    }
-
-    pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
     }
 
     /// Where the response's `Location:` points, as the server gave it.
@@ -945,7 +917,7 @@ impl Request {
             offered: head.meta_mut().take_challenges(),
             act,
             code,
-            origin: &self.peer,
+            origin: &self.base.peer,
         })
     }
 
@@ -1048,15 +1020,11 @@ impl Request {
         }
     }
 
-    pub(crate) fn holds_output(&self) -> bool {
-        self.pipeline.holds_output()
-    }
-
     /// Whether the response so far is nothing at all: no head line and no
     /// body byte (C's `bytecount + headerbytecount`).
     pub(crate) fn received_nothing(&self, ended: bool) -> bool {
         self.head.as_ref().is_none_or(|h| h.request_bytes() == 0)
-            && self.pipeline.bytecount() == 0
+            && self.base.pipeline.bytecount() == 0
             && self.rtsp.as_ref().is_none_or(|r| r.retryable(ended))
     }
 
@@ -1115,7 +1083,7 @@ impl Request {
             Some(q) => (&self.target[..q], Some(&self.target[q + 1..])),
             None => (&self.target[..], None),
         };
-        let port = self.peer.port();
+        let port = self.base.peer.port();
         let request = sigv4::Request {
             params: options.http.signing.aws_sigv4.as_deref(),
             method,
@@ -1124,8 +1092,8 @@ impl Request {
                 Method::Post => sigv4::Kind::Post,
                 Method::Upload => sigv4::Kind::Put,
             },
-            hostname: self.peer.name(),
-            host: self.peer.request_host(),
+            hostname: self.base.peer.name(),
+            host: self.base.peer.request_host(),
             port: (port != self.default_port()).then_some(port),
             path,
             query,
@@ -1161,7 +1129,7 @@ impl Request {
         // `@authority` is what `Host` says: the application's, if it
         // gives one that says anything, else the library's
         // (`httpsig_authority`).
-        let port = self.peer.port();
+        let port = self.base.peer.port();
         let port = (port != self.default_port()).then_some(port);
         let mut authority = Vec::new();
         let custom = self
@@ -1175,9 +1143,9 @@ impl Request {
                 // address's brackets; else what the library's `Host:`
                 // says.
                 let host = if given.is_some() {
-                    self.peer.name()
+                    self.base.peer.name()
                 } else {
-                    self.peer.request_host()
+                    self.base.peer.request_host()
                 };
                 with_port(&mut authority, host, port)
             }
@@ -1226,8 +1194,8 @@ impl Request {
             .map(|p| (p.peer.clone(), p.creds.clone()));
         let (credentials, peer) = match (side, &forwarding) {
             (Side::Host, _) => (
-                self.credentials.as_ref().map(Credentials::secret),
-                &self.peer,
+                self.base.credentials.as_ref().map(Credentials::secret),
+                &self.base.peer,
             ),
             (Side::Proxy, Some((peer, creds))) => {
                 (creds.as_deref().map(ProxyCreds::secret), &**peer)
@@ -1270,8 +1238,8 @@ impl Request {
             .is_some_and(|p| p.http() && p.creds.is_some());
         negotiate::Wants {
             negotiate: want.contains(AuthMethods::NEGOTIATE) && self.gate.trusted().is_some(),
-            credentials: self.credentials.as_ref().map(Credentials::secret),
-            origin: Some(&self.peer),
+            credentials: self.base.credentials.as_ref().map(Credentials::secret),
+            origin: Some(&self.base.peer),
             proxy: proxy_creds && proxy_want.contains(AuthMethods::NEGOTIATE),
         }
     }
@@ -1338,12 +1306,12 @@ impl Request {
             .map(|p| (p.peer.clone(), p.creds.clone()));
         let forwarded = forwarding.is_some();
         let get_or_head = matches!(self.method, Method::Get | Method::Head);
-        let credentials = self.credentials.as_ref().map(Credentials::secret);
+        let credentials = self.base.credentials.as_ref().map(Credentials::secret);
         // Without one, nothing goes to a proxy: its side is done at once,
         // as for its own peer.
         let (proxy_peer, proxy_secret) = match &forwarding {
             Some((peer, creds)) => (&**peer, creds.as_deref().map(ProxyCreds::secret)),
-            None => (&self.peer, None),
+            None => (&self.base.peer, None),
         };
         let now = cx.unix_time();
         let ed25519 = cx.easy().libraries().ed25519;
@@ -1395,7 +1363,7 @@ impl Request {
         let http = &options.http;
         let request = AuthRequest {
             side: Side::Host,
-            origin: &self.peer,
+            origin: &self.base.peer,
             method: self.method_line(http),
             uri: &self.target,
             get_or_head,
@@ -1473,7 +1441,7 @@ impl Request {
         };
         let probe = auth.probe || proxy_auth.probe;
         let auth_asked = cx.easy().auth.asked(
-            (credentials, &self.peer),
+            (credentials, &self.base.peer),
             (proxy_secret, proxy_peer),
             probe,
             get_or_head,
@@ -1486,7 +1454,7 @@ impl Request {
         let application = http.cookies.send.is_some()
             && !http.headers.replaces(b"Cookie")
             && self.gate.trusted().is_some();
-        let site = cookie_site(&self.cookie_host, &self.target, &self.peer);
+        let site = cookie_site(&self.cookie_host, &self.target, &self.base.peer);
         let cookie = cookies::request_value(cx, &site, application)?;
         let options = cx.easy().options();
         let http = &options.http;
@@ -1622,10 +1590,10 @@ impl Request {
                 }
             },
         };
-        let port = self.peer.port();
+        let port = self.base.peer.port();
         let shown_port = (port != self.default_port()).then_some(port);
         let gate = self.gate;
-        let authorization = match (&self.credentials, &auth.header) {
+        let authorization = match (&self.base.credentials, &auth.header) {
             // Digest goes beside the application's own Authorization, as
             // C's does (`H1_HD_AUTH`).
             (Some(c), Some((AuthMethods::DIGEST, value))) => {
@@ -1681,7 +1649,7 @@ impl Request {
                     .unwrap_or(&self.target),
             },
             version: self.version,
-            host: self.peer.request_host(),
+            host: self.base.peer.request_host(),
             port: shown_port,
             user_agent: http.user_agent.as_deref(),
             referer: cx.easy().report().referer(),
@@ -1754,7 +1722,11 @@ impl Request {
             trace::info_with(cx, &[note]);
         }
         if let Some(method) = authenticated {
-            let user = self.credentials.as_ref().map_or(&b""[..], |c| c.user());
+            let user = self
+                .base
+                .credentials
+                .as_ref()
+                .map_or(&b""[..], |c| c.user());
             let name = method.name().as_bytes();
             trace::info_with(
                 cx,
@@ -1870,7 +1842,7 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<bool, ErrorKind> {
         self.start_reading(cx);
-        let pausable = self.pipeline.pausable();
+        let pausable = self.base.pipeline.pausable();
         let announced = self.outgoing.announced();
         let body = self.body.as_mut().expect("a body to read");
         let dest = &mut self.out[self.filled..];
@@ -2401,7 +2373,7 @@ impl Request {
                     .meta()
                     .size()
                     .expect("a body by length has one")
-                    .saturating_sub(self.pipeline.bytecount());
+                    .saturating_sub(self.base.pipeline.bytecount());
                 usize::try_from(left).map_or(buffer, |left| left.min(buffer))
             }
             _ => buffer,
@@ -2455,13 +2427,14 @@ impl Request {
                         .get()
                         .ws_lend()
                         .expect("a WebSocket's connection speaks it");
-                    cx.lending_ws(conn, |cx| self.pipeline.body(cx, input))?;
+                    cx.lending_ws(conn, |cx| self.base.pipeline.body(cx, input))?;
                     input = &[];
                 }
                 Stage::Body(Body::Length | Body::UntilClose | Body::Stream) => {
-                    self.pipeline.body(cx, input)?;
+                    self.base.pipeline.body(cx, input)?;
                     input = &[];
-                    if matches!(self.stage, Stage::Body(Body::Length)) && self.pipeline.body_done()
+                    if matches!(self.stage, Stage::Body(Body::Length))
+                        && self.base.pipeline.body_done()
                     {
                         self.stage = Stage::Done;
                     }
@@ -2484,14 +2457,17 @@ impl Request {
         whole: bool,
     ) -> Result<&'i [u8], ErrorKind> {
         let Request {
-            pipeline,
+            base:
+                super::base::RequestBase {
+                    pipeline,
+                    credentials,
+                    peer,
+                },
             head,
             interim,
             body,
             outgoing,
             body_sent,
-            credentials,
-            peer,
             cookie_host,
             target,
             rtsp,
@@ -2725,12 +2701,12 @@ impl Request {
                 if switching && self.version == SentIn::Http11 {
                     match self.upgrade {
                         Some(Upgrade::H2c(_)) => {
-                            self.pipeline.header(cx, blank, origin)?;
+                            self.base.pipeline.header(cx, blank, origin)?;
                             self.upgraded(cx, lease)?;
                             return Ok(rest);
                         }
                         Some(Upgrade::WebSocket) => {
-                            self.pipeline.header(cx, blank, origin)?;
+                            self.base.pipeline.header(cx, blank, origin)?;
                             self.unread = self.ws_upgraded(cx, lease, rest)?;
                             return Ok(&[]);
                         }
@@ -2738,7 +2714,7 @@ impl Request {
                     }
                 }
                 self.body_start(cx)?;
-                self.pipeline.header(cx, blank, origin)?;
+                self.base.pipeline.header(cx, blank, origin)?;
             }
             LineKind::End { .. } => pipeline.header(cx, line.bytes, origin)?,
         }
@@ -2798,7 +2774,7 @@ impl Request {
             if matches!(self.stage, Stage::Done) && !rest.is_empty() && self.rtsp.is_none() {
                 // Body where none is to come: the accountant judges it;
                 // RTSP's filter first takes the RTP out of it.
-                self.pipeline.body(cx, rest)?;
+                self.base.pipeline.body(cx, rest)?;
                 return Ok(&[]);
             }
         }
@@ -2877,7 +2853,8 @@ impl Request {
     fn body_start<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         let head = self.head.as_ref().expect("made at DO");
         for named in head.meta().transfer_codings() {
-            self.pipeline
+            self.base
+                .pipeline
                 .add_transfer_decoder(decoder_for(cx, named)?)?;
         }
         if self.rtsp.is_some() {
@@ -2887,9 +2864,9 @@ impl Request {
         let size = head.meta().size();
         let no_body = self.method == Method::Head;
         if size.is_some() {
-            self.pipeline.announce_size(cx, size);
+            self.base.pipeline.announce_size(cx, size);
         }
-        self.pipeline.expect(Expect {
+        self.base.pipeline.expect(Expect {
             size,
             max: size,
             no_body,
@@ -2938,7 +2915,9 @@ impl Request {
         raw: bool,
     ) -> Result<(), ErrorKind> {
         let Request {
-            pipeline, stage, ..
+            base: super::base::RequestBase { pipeline, .. },
+            stage,
+            ..
         } = self;
         let Stage::Body(Body::Chunked(decoder)) = stage else {
             unreachable!("reading chunks");
@@ -3019,14 +2998,14 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
-        if self.pipeline.decodes_websocket() {
+        if self.base.pipeline.decodes_websocket() {
             let conn = lease
                 .get()
                 .ws_lend()
                 .expect("a WebSocket's connection speaks it");
-            return cx.lending_ws(conn, |cx| self.pipeline.flush(cx));
+            return cx.lending_ws(conn, |cx| self.base.pipeline.flush(cx));
         }
-        self.pipeline.flush(cx)
+        self.base.pipeline.flush(cx)
     }
 
     /// The connection closed: the response must be whole
@@ -3046,7 +3025,7 @@ impl Request {
             }
             // With the WebSocket's connection lent.
             Stage::Body(Body::Length | Body::UntilClose | Body::Stream | Body::WebSocket) => {
-                self.pipeline.end(cx)
+                self.base.pipeline.end(cx)
             }
             Stage::Body(Body::Chunked(decoder)) => match decoder.finish() {
                 Ok(()) => Ok(()),
@@ -3061,7 +3040,7 @@ impl Request {
     /// the connection closes), its body showed more than it should, or
     /// the request decided it (`streamclose`).
     fn closes(&self) -> bool {
-        self.head().meta().close() || self.pipeline.body_closes() || self.closing
+        self.head().meta().close() || self.base.pipeline.body_closes() || self.closing
     }
 
     /// The connection hears the transfer is done with it
@@ -3113,7 +3092,7 @@ impl Request {
                 HeaderOrigin::Header
             };
             // C ignores what comes of it.
-            if self.pipeline.header(cx, &line, origin).is_ok() {
+            if self.base.pipeline.header(cx, &line, origin).is_ok() {
                 let head = self.head.as_mut().expect("made at DO");
                 let _counted =
                     head.count_held(line.len() as u64, &mut cx.report_mut().sizes_mut().header);
@@ -3130,7 +3109,7 @@ impl Request {
         if !premature
             && *next != AfterRequest::Retry
             && !cx.easy().options().connect_only.reserves()
-            && head.got_nothing(self.pipeline.bytecount())
+            && head.got_nothing(self.base.pipeline.bytecount())
         {
             lease.get().mark_close();
             return Err(trace::fail(

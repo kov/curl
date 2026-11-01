@@ -165,15 +165,15 @@ witness: curl-core proto::ssh::tests::pwd_after_the_transfer_says_no_path
 file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::tests::pwd_before_the_transfer_says_the_path
 --- old
-            match self.pipeline.protocol_header(cx, &said) {
+            match self.base.pipeline.protocol_header(cx, &said) {
 --- new
-            match self.pipeline.header(cx, &said, crate::handler::HeaderOrigin::Header) {
+            match self.base.pipeline.header(cx, &said, crate::handler::HeaderOrigin::Header) {
 
 === a body short of its size ends without the writers checking it
 file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::tests::a_short_scp_file_is_partial
 --- old
-        let ended = self.pipeline.end(cx);
+        let ended = self.base.pipeline.end(cx);
 --- new
         let ended = Ok(());
 

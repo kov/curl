@@ -2,19 +2,19 @@
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::idn::a_host_in_unicode_is_sent_in_ascii
 --- old
-            host: self.peer.request_host(),
+            host: self.base.peer.request_host(),
             port: shown_port,
 --- new
-            host: self.peer.shown(),
+            host: self.base.peer.shown(),
             port: shown_port,
 
 === a forwarding proxy's target names a host in Unicode as the URL has it
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::idn::a_host_in_unicode_is_sent_in_ascii
 --- old
-        if self.peer.converted() {
+        if self.base.peer.converted() {
 --- new
-        if !self.peer.converted() {
+        if !self.base.peer.converted() {
 
 === a name that converts to nothing is looked up as nothing
 file: crates/curl-core/src/idn.rs

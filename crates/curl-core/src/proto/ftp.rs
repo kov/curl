@@ -16,8 +16,6 @@ mod wildcard;
 
 pub(crate) use wildcard::{Matching, Wildcard};
 
-use std::num::NonZeroU32;
-
 use curl_alloc::{TryArc, TryVec as _};
 
 use self::data::{DataConn, DataTls, Reached};
@@ -38,7 +36,6 @@ use crate::conn::mux::Carrier;
 use crate::conn::{ConnLease, NetRoute, Peer, RouteCold, Scheme};
 use crate::deliver::{self, Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
-use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::cx::DriveCx;
 use crate::multi::state::StepCx;
@@ -240,10 +237,7 @@ enum Ending {
 /// keep of it while it runs).
 #[derive(Debug)]
 pub(crate) struct Request {
-    pipeline: Pipeline,
-    peer: Peer,
-    /// The transfer's credentials, until its route takes them.
-    credentials: Option<Credentials>,
+    pub(super) base: super::base::RequestBase,
     /// The URL's path after its first slash, encoded, its `;type=` cut
     /// off (`ftp->path`).
     encoded: Vec<u8>,
@@ -424,9 +418,11 @@ impl Request {
             None => {}
         }
         Ok(Request {
-            pipeline: Pipeline::new(Reach::Network),
-            peer,
-            credentials,
+            base: super::base::RequestBase {
+                peer,
+                pipeline: Pipeline::new(Reach::Network),
+                credentials,
+            },
             encoded,
             parsed: None,
             prefer_ascii,
@@ -480,41 +476,9 @@ impl Request {
         self.wildcard = Some(wildcard);
     }
 
-    /// The peer it connects to.
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        let mut host = Vec::new();
-        host.try_extend_from_slice(self.peer.shown())
-            .map_err(|_| ErrorKind::OutOfMemory)?;
-        let (scheme, port) = (self.peer.scheme(), self.peer.port());
-        super::url_peer((scheme, host, port), url, scope, idn)
-    }
-
-    /// Its scheme.
-    pub(crate) fn scheme(&self) -> Scheme {
-        self.peer.scheme()
-    }
-
     /// Its credentials, which its route takes.
     pub(crate) fn take_login(&mut self) -> Option<Credentials> {
-        self.credentials.take()
-    }
-
-    /// It is over TLS from the start: its scheme is `ftps`.
-    pub(crate) fn secured(&self) -> bool {
-        self.peer.scheme().over_tls()
-    }
-
-    pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
-    }
-
-    pub(crate) fn holds_output(&self) -> bool {
-        self.pipeline.holds_output()
+        self.base.credentials.take()
     }
 
     /// Whether nothing came back for the request, which waits for a body
@@ -522,7 +486,7 @@ impl Request {
     /// connection, its reused one having died (`Curl_retry_request` for a
     /// scheme outside HTTP's, which retries no upload).
     pub(crate) fn received_nothing(&self) -> bool {
-        !self.no_body && self.header_bytes == 0 && self.pipeline.bytecount() == 0
+        !self.no_body && self.header_bytes == 0 && self.base.pipeline.bytecount() == 0
     }
 
     /// Whether the request, once made, moves anything over the data
@@ -759,7 +723,7 @@ impl Request {
             &mut pc.pp,
             carrier,
             &Ends,
-            &mut self.pipeline,
+            &mut self.base.pipeline,
             &mut self.header_bytes,
             self.upload_done,
         )?;
@@ -947,7 +911,7 @@ impl Request {
     /// How far the connection asks for TLS: an implicit TLS scheme asks
     /// for it on both connections (`ftp_use_ssl`).
     fn use_ssl(&self, pc: &FtpConn) -> UseSsl {
-        if pc.use_ssl == UseSsl::None && self.peer.scheme().over_tls() {
+        if pc.use_ssl == UseSsl::None && self.base.peer.scheme().over_tls() {
             UseSsl::All
         } else {
             pc.use_ssl
@@ -1034,7 +998,7 @@ impl Request {
         let shaken = crate::multi::state::tls::upgrade(
             carrier,
             &identity,
-            &self.peer,
+            &self.base.peer,
             &self.in_place,
             crate::multi::state::tls::Blocks::Yes,
             cx,
@@ -1372,7 +1336,7 @@ impl Request {
                     set_state(cx, pc, State::Stop);
                     Ok(())
                 } else if let Some(known) = self.known_filesize {
-                    self.pipeline.announce_size(cx, Some(known));
+                    self.base.pipeline.announce_size(cx, Some(known));
                     self.retr(cx, pc, carrier, Some(known))
                 } else if cx.easy().options().http.ignore_content_length || self.prefer_ascii {
                     // A growing file's size is not asked, nor an ASCII
@@ -1524,7 +1488,7 @@ impl Request {
                         let line =
                             curl_alloc::try_format(format_args!("Last-Modified: {date}\r\n"))
                                 .map_err(|_| ErrorKind::OutOfMemory)?;
-                        self.pipeline.included_header(cx, line.as_bytes())?;
+                        self.base.pipeline.included_header(cx, line.as_bytes())?;
                     }
                 }
             }
@@ -1671,13 +1635,13 @@ impl Request {
                 if let Some(size) = filesize {
                     let line = curl_alloc::try_format(format_args!("Content-Length: {size}\r\n"))
                         .map_err(|_| ErrorKind::OutOfMemory)?;
-                    self.pipeline.included_header(cx, line.as_bytes())?;
+                    self.base.pipeline.included_header(cx, line.as_bytes())?;
                 }
-                self.pipeline.announce_size(cx, filesize);
+                self.base.pipeline.announce_size(cx, filesize);
                 self.rest(cx, pc, carrier)
             }
             State::RetrSize => {
-                self.pipeline.announce_size(cx, filesize);
+                self.base.pipeline.announce_size(cx, filesize);
                 self.retr(cx, pc, carrier, filesize)
             }
             _ => {
@@ -1727,7 +1691,8 @@ impl Request {
             return Ok(());
         }
         if code == 350 {
-            self.pipeline
+            self.base
+                .pipeline
                 .included_header(cx, b"Accept-ranges: bytes\r\n")?;
         }
         self.prepare_transfer(cx, pc, carrier)
@@ -1817,7 +1782,7 @@ impl Request {
             .as_ref()
             .expect("DO knows its control connection");
         if control.tunnels {
-            return copied(self.peer.shown());
+            return copied(self.base.peer.shown());
         }
         match control.remote.as_deref() {
             Some(remote) => copied(remote),
@@ -1889,7 +1854,7 @@ impl Request {
                             ))
                             .map_err(|_| ErrorKind::OutOfMemory)?
                             .as_bytes(),
-                            self.peer.name(),
+                            self.base.peer.name(),
                             b" instead",
                         ],
                     );
@@ -1938,7 +1903,7 @@ impl Request {
             return Err(ErrorKind::NotBuiltIn);
         }
         let mut route = control.route.clone();
-        let origin = Peer::new(self.peer.scheme(), host, port, None);
+        let origin = Peer::new(self.base.peer.scheme(), host, port, None);
         // A peer the control connection goes to in the origin's place,
         // the data connection does too, at the new port.
         route.via = match route.via.as_deref() {
@@ -2284,9 +2249,9 @@ impl Request {
         } else {
             crate::multi::mstate::xfer_setup_at(cx, Some(1), None);
             if let Some(size) = self.receive.size().filter(|&s| s > 0) {
-                self.pipeline.announce_size(cx, Some(size));
+                self.base.pipeline.announce_size(cx, Some(size));
             }
-            self.pipeline.expect(Expect {
+            self.base.pipeline.expect(Expect {
                 size: self.receive.size(),
                 max: self.max_download,
                 ..Expect::default()
@@ -2657,7 +2622,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         _: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
-        self.pipeline.flush(cx)?;
+        self.base.pipeline.flush(cx)?;
         match self.with_data(|r, data| r.exchange(cx, data)) {
             Some(step) => step,
             None => Ok(ProtoStep::Done),
@@ -2681,12 +2646,12 @@ impl Request {
             let mut source = DataSource(data);
             let read = self
                 .receive
-                .read(cx, &mut source, &mut DataBody(&mut self.pipeline));
+                .read(cx, &mut source, &mut DataBody(&mut self.base.pipeline));
             if read? != ProtoStep::Done {
                 return read;
             }
         }
-        if self.pipeline.holds_output() {
+        if self.base.pipeline.holds_output() {
             return Ok(ProtoStep::Blocked);
         }
         Ok(ProtoStep::Done)
@@ -3059,7 +3024,7 @@ impl Request {
             }
             return Ok(());
         }
-        let got = self.pipeline.bytecount();
+        let got = self.base.pipeline.bytecount();
         if let Some(size) = self.receive.size()
             && size != got
             && self.max_download != Some(got)
@@ -3112,7 +3077,7 @@ impl crate::multi::state::SetupLend for Request {
     }
 
     fn pipeline(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
+        &mut self.base.pipeline
     }
 
     fn negotiation(&self) -> Option<crate::proto::http::Negotiation> {

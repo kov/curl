@@ -111,7 +111,7 @@ impl Request {
         {
             // The listing goes to the reader, not the write handler, as
             // long as the request lasts (`Curl_ftp_listmode`).
-            self.pipeline.list_into(matching);
+            self.base.pipeline.list_into(matching);
         }
         self.wildcard = Some(w);
         // A download with nothing more to get makes no request, whatever
@@ -144,7 +144,7 @@ impl Request {
                 }
                 WcState::Matching => {
                     // The listing is read: back from the reader.
-                    if let Some(matching) = self.pipeline.listed() {
+                    if let Some(matching) = self.base.pipeline.listed() {
                         w.matching = Some(matching);
                     }
                     let listing = &w
@@ -308,7 +308,7 @@ impl Request {
     /// listing back from the reader if it was being read.
     pub(crate) fn take_wildcard(&mut self) -> Option<Box<Wildcard>> {
         let mut w = self.wildcard.take()?;
-        if let Some(matching) = self.pipeline.listed() {
+        if let Some(matching) = self.base.pipeline.listed() {
             w.matching = Some(matching);
         }
         Some(w)

@@ -16,7 +16,6 @@
 mod path;
 
 use std::fmt;
-use std::num::NonZeroU32;
 
 use curl_alloc::{TryArc, TryVec as _};
 
@@ -25,11 +24,10 @@ use crate::auth::creds::{CredentialGate, Credentials, Takes};
 use crate::components::Component;
 use crate::conn::io::{Events, Sent};
 use crate::conn::line::LineConn;
-use crate::conn::{ConnLease, Peer, RouteCold, Scheme};
+use crate::conn::{ConnLease, RouteCold, Scheme};
 use crate::deliver::{self, Directions, Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::handler::{DebugKind, KeyMatch, KeyVerdict};
-use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::{AfterRequest, StepCx};
 use crate::options::{CreateDirs, Resume, SshAuthTypes};
@@ -536,10 +534,7 @@ const S_IFLNK: u32 = 0o120_000;
 /// state).
 #[derive(Debug)]
 pub(crate) struct Request {
-    pipeline: Pipeline,
-    peer: Peer,
-    /// The transfer's credentials, until its route takes them.
-    credentials: Option<Credentials>,
+    pub(super) base: super::base::RequestBase,
     /// The transfer's key files, until its route takes them.
     keys: Option<Keys>,
     /// The URL's path, encoded (`state.up.path`).
@@ -631,9 +626,11 @@ impl Request {
             options.range.as_deref().map(copy).transpose()?
         };
         Ok(Request {
-            pipeline: Pipeline::new(Reach::Network),
-            peer,
-            credentials,
+            base: super::base::RequestBase {
+                peer,
+                pipeline: Pipeline::new(Reach::Network),
+                credentials,
+            },
             keys: Some(Keys::find(cx)?),
             url_path,
             path: None,
@@ -680,40 +677,14 @@ impl Request {
         }
     }
 
-    /// The peer it connects to.
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        let mut host = Vec::new();
-        host.try_extend_from_slice(self.peer.shown())
-            .map_err(|_| ErrorKind::OutOfMemory)?;
-        let (scheme, port) = (self.peer.scheme(), self.peer.port());
-        super::url_peer((scheme, host, port), url, scope, idn)
-    }
-
-    pub(crate) fn scheme(&self) -> Scheme {
-        self.peer.scheme()
-    }
-
     /// Its credentials, which its route takes.
     pub(crate) fn take_login(&mut self) -> Option<Credentials> {
-        self.credentials.take()
+        self.base.credentials.take()
     }
 
     /// Its key files, which its route takes.
     pub(crate) fn take_keys(&mut self) -> Option<Keys> {
         self.keys.take()
-    }
-
-    pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
-    }
-
-    pub(crate) fn holds_output(&self) -> bool {
-        self.pipeline.holds_output()
     }
 
     /// Whether the request, once made, moves bytes: its body to read or
@@ -734,7 +705,7 @@ impl Request {
     /// command writes as a header does not count: C counts only HTTP's
     /// and the line protocols' headers (`req.headerbytecount`).
     pub(crate) fn received_nothing(&self) -> bool {
-        !self.upload && !self.no_body && self.receiving && self.pipeline.bytecount() == 0
+        !self.upload && !self.no_body && self.receiving && self.base.pipeline.bytecount() == 0
     }
 
     /// What it waits for on its connection while it connects or is made
@@ -1280,7 +1251,7 @@ impl Request {
             }
             trace::bytes(cx, DebugKind::HeaderOut, b"PWD\n");
             trace::bytes(cx, DebugKind::HeaderIn, &said);
-            match self.pipeline.protocol_header(cx, &said) {
+            match self.base.pipeline.protocol_header(cx, &said) {
                 Err(e) => quote_failed(cx, sc, e),
                 Ok(()) => sc.to(cx, State::SftpNextQuote),
             }
@@ -1549,7 +1520,7 @@ impl Request {
     /// `SSH_SFTP_READDIR_INIT`: the directory opened to list, unless no
     /// body is wanted.
     fn sftp_readdir_init<H: Host>(&mut self, cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
-        self.pipeline.announce_size(cx, None);
+        self.base.pipeline.announce_size(cx, None);
         if self.no_body {
             sc.to(cx, State::Stop);
             return;
@@ -1608,7 +1579,7 @@ impl Request {
                 sc.actual = Err(ErrorKind::OutOfMemory);
                 return;
             }
-            if let Err(e) = self.pipeline.body(cx, &line) {
+            if let Err(e) = self.base.pipeline.body(cx, &line) {
                 sc.to(cx, State::Stop);
                 sc.actual = Err(e);
             }
@@ -1642,7 +1613,7 @@ impl Request {
     fn sftp_readdir_bottom<H: Host>(&mut self, cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
         let written = match sc.listing.try_push(b'\n') {
             Err(_) => Err(ErrorKind::OutOfMemory),
-            Ok(()) => self.pipeline.body(cx, &sc.listing),
+            Ok(()) => self.base.pipeline.body(cx, &sc.listing),
         };
         match written {
             Err(e) => {
@@ -1695,7 +1666,7 @@ impl Request {
             None => {
                 // The server does not say, or the file is empty.
                 req_size = -1;
-                self.pipeline.announce_size(cx, None);
+                self.base.pipeline.announce_size(cx, None);
                 size = 0;
             }
             Some(stated) => {
@@ -1737,7 +1708,9 @@ impl Request {
                     size = len;
                 }
                 req_size = size;
-                self.pipeline.announce_size(cx, Some(size.unsigned_abs()));
+                self.base
+                    .pipeline
+                    .announce_size(cx, Some(size.unsigned_abs()));
             }
         }
         if self.resume_from != 0 {
@@ -1765,7 +1738,7 @@ impl Request {
             }
             req_size = size - self.resume_from;
             let announced = u64::try_from(req_size).ok();
-            self.pipeline.announce_size(cx, announced);
+            self.base.pipeline.announce_size(cx, announced);
             if let Err(status) = sc.session().seek(self.resume_from.unsigned_abs()) {
                 sc.goto_close(cx, status);
                 return;
@@ -1793,10 +1766,10 @@ impl Request {
             },
         );
         if let Some(size) = size.filter(|&s| s > 0) {
-            self.pipeline.announce_size(cx, Some(size));
+            self.base.pipeline.announce_size(cx, Some(size));
         }
         self.size = size;
-        self.pipeline.expect(Expect {
+        self.base.pipeline.expect(Expect {
             size,
             max: size,
             ..Expect::default()
@@ -1939,7 +1912,7 @@ impl Request {
             // A size known is all that is read (`xfer_recv_resp`).
             let max = match self.size {
                 Some(size) => {
-                    let left = size.saturating_sub(self.pipeline.bytecount());
+                    let left = size.saturating_sub(self.base.pipeline.bytecount());
                     max.min(usize::try_from(left).unwrap_or(usize::MAX))
                 }
                 None => max,
@@ -1981,10 +1954,10 @@ impl Request {
                 self.read_end(cx)?;
                 continue;
             }
-            let fed = self.pipeline.body(cx, &self.buf[..n]);
+            let fed = self.base.pipeline.body(cx, &self.buf[..n]);
             deliver::write_resp(cx, n, false, fed);
             fed?;
-            if self.pipeline.body_done() {
+            if self.base.pipeline.body_done() {
                 self.receiving = false;
             }
         }
@@ -1996,7 +1969,7 @@ impl Request {
     /// difference after them, as a read takes no more than is left.
     fn read_end<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
-        let ended = self.pipeline.end(cx);
+        let ended = self.base.pipeline.end(cx);
         deliver::write_resp(cx, 0, true, ended);
         self.receiving = false;
         ended
@@ -2008,7 +1981,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
-        self.pipeline.flush(cx)?;
+        self.base.pipeline.flush(cx)?;
         let sc = ssh_of(lease);
         if self.receiving {
             let read = self.read_body(cx, sc);
@@ -2118,7 +2091,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
-        let sftp = self.peer.scheme() == Scheme::of("sftp");
+        let sftp = self.base.peer.scheme() == Scheme::of("sftp");
         cx.ssh(format_args!("myssh_connect"));
         let Some(library) = cx.easy().libraries().ssh else {
             return Err(ErrorKind::UnsupportedProtocol);
@@ -2132,10 +2105,10 @@ impl Request {
         };
         let cold = lease.conn().net_route().and_then(|r| r.cold.clone());
         // An IPv6 address in its brackets, else the name as looked up.
-        let host = if self.peer.ipv6() {
-            self.peer.shown()
+        let host = if self.base.peer.ipv6() {
+            self.base.peer.shown()
         } else {
-            self.peer.name()
+            self.base.peer.name()
         };
         if session.set_host(host).is_err() {
             return Err(trace::fail(
@@ -2189,7 +2162,7 @@ impl Request {
                 ));
             }
         }
-        if self.peer.port() != 0 && session.set_port(self.peer.port()).is_err() {
+        if self.base.peer.port() != 0 && session.set_port(self.base.peer.port()).is_err() {
             return Err(trace::fail(
                 cx,
                 ErrorKind::FailedInit,

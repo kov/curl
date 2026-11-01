@@ -8,8 +8,6 @@
 //! read to its size and no further; the tagged answer after it, or after
 //! an `APPEND`'s body, is read in DONE, as C's `imap_done` reads it.
 
-use std::num::NonZeroU32;
-
 use curl_alloc::{TryArc, TryVec as _};
 
 use super::mail::{self, login_of, sasl_failed, sasl_step};
@@ -23,10 +21,9 @@ use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl};
 use crate::conn::io::Events;
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
-use crate::conn::{ConnLease, ConnNumber, Peer, RouteCold, Scheme};
+use crate::conn::{ConnLease, ConnNumber, RouteCold, Scheme};
 use crate::deliver::{Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
-use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::{Method, UploadFlags, UploadSource, UseSsl};
@@ -199,10 +196,7 @@ enum Final {
 /// An IMAP transfer (`struct IMAP`, and what C's request keeps of it).
 #[derive(Debug)]
 pub(crate) struct Request {
-    pipeline: Pipeline,
-    peer: Peer,
-    /// The transfer's credentials, until its route takes them.
-    credentials: Option<Credentials>,
+    pub(super) base: super::base::RequestBase,
     /// The URL's path, encoded, and its query, decoded: read in DO.
     path: Vec<u8>,
     query: Option<Vec<u8>>,
@@ -298,9 +292,11 @@ impl Request {
             Err(e) => return Err(url_error(e)),
         };
         Ok(Request {
-            pipeline: Pipeline::new(Reach::Network),
-            peer,
-            credentials,
+            base: super::base::RequestBase {
+                peer,
+                pipeline: Pipeline::new(Reach::Network),
+                credentials,
+            },
             path,
             query,
             url_options,
@@ -318,41 +314,9 @@ impl Request {
         })
     }
 
-    /// The peer it connects to.
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        let mut host = Vec::new();
-        host.try_extend_from_slice(self.peer.shown())
-            .map_err(|_| ErrorKind::OutOfMemory)?;
-        let (scheme, port) = (self.peer.scheme(), self.peer.port());
-        super::url_peer((scheme, host, port), url, scope, idn)
-    }
-
-    /// Its scheme.
-    pub(crate) fn scheme(&self) -> Scheme {
-        self.peer.scheme()
-    }
-
     /// Its credentials, which its route takes.
     pub(crate) fn take_login(&mut self) -> Option<Credentials> {
-        self.credentials.take()
-    }
-
-    /// It is over TLS from the start: its scheme is `imaps`.
-    pub(crate) fn secured(&self) -> bool {
-        self.peer.scheme().over_tls()
-    }
-
-    pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
-        &mut self.pipeline
-    }
-
-    pub(crate) fn holds_output(&self) -> bool {
-        self.pipeline.holds_output()
+        self.base.credentials.take()
     }
 
     /// Whether nothing came back for the request, which has not run to
@@ -360,7 +324,7 @@ impl Request {
     /// reused one having died (`Curl_retry_request` for a scheme outside
     /// HTTP's, `req.bytecount + req.headerbytecount`).
     pub(crate) fn received_nothing(&self) -> bool {
-        self.header_bytes == 0 && self.pipeline.bytecount() == 0 && !self.no_body
+        self.header_bytes == 0 && self.base.pipeline.bytecount() == 0 && !self.no_body
     }
 
     /// When DONE, as it awaits its answer, looks again: its poll's end.
@@ -452,9 +416,9 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
-        self.pipeline.flush(cx)?;
+        self.base.pipeline.flush(cx)?;
         if self.receive.is_receiving() {
-            let read = self.receive.read(cx, lease, &mut self.pipeline);
+            let read = self.receive.read(cx, lease, &mut self.base.pipeline);
             if read? != ProtoStep::Done {
                 return read;
             }
@@ -462,7 +426,7 @@ impl Request {
         if self.sending.is_some() && self.send_body(cx, lease)? != ProtoStep::Done {
             return Ok(ProtoStep::Blocked);
         }
-        if self.pipeline.holds_output() {
+        if self.base.pipeline.holds_output() {
             return Ok(ProtoStep::Blocked);
         }
         Ok(ProtoStep::Done)
@@ -584,7 +548,7 @@ impl Request {
             let shaken = crate::multi::state::tls::upgrade(
                 carrier,
                 &identity,
-                &self.peer,
+                &self.base.peer,
                 &self.in_place,
                 crate::multi::state::tls::Blocks::No,
                 cx,
@@ -635,7 +599,7 @@ impl Request {
                 &mut pc.pp,
                 carrier,
                 &ends,
-                &mut self.pipeline,
+                &mut self.base.pipeline,
                 &mut self.header_bytes,
                 // The server's lines start the response's time once an
                 // `APPEND`'s body is all sent (`upload_done`); before, a
@@ -820,7 +784,7 @@ impl Request {
         pc: &mut ImapConn,
         carrier: &mut Carrier<'_>,
     ) -> Step {
-        let can = sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        let can = sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.can_authenticate(sx)
         });
         if pc.preauth || !can {
@@ -828,7 +792,7 @@ impl Request {
             return Ok(());
         }
         let ir = pc.ir_offered;
-        let progress = sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        let progress = sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.start(sx, ir)
         });
         match progress.map_err(|e| sasl_failed(cx, e))? {
@@ -841,7 +805,7 @@ impl Request {
                 if !pc.login_disabled && pc.preferred.has(AuthTypes::CLEARTEXT) {
                     self.login(cx, pc, carrier)
                 } else {
-                    sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+                    sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
                         sasl.blocked(sx)
                     });
                     Err(ErrorKind::LoginDenied)
@@ -913,7 +877,7 @@ impl Request {
             sasl::Send::Cancel => drive::send(cx, &mut pc.pp, carrier, None, &[b"*"]),
         };
         // The exchange moves on once its command is sent.
-        sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.sent(sx, sent.is_ok())
         });
         sent
@@ -938,7 +902,7 @@ impl Request {
         copied
             .try_extend_from_slice(message)
             .map_err(|_| ErrorKind::OutOfMemory)?;
-        let progress = sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+        let progress = sasl_step(cx, &self.base.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
             sasl.step(sx, code, &copied)
         });
         match progress.map_err(|e| sasl_failed(cx, e))? {
@@ -1147,10 +1111,10 @@ impl Request {
             let len = line.len();
             let to_cr = line.iter().position(|&b| b == b'\r').unwrap_or(len);
             let Some(size) = literal(&line[..to_cr]) else {
-                return self.pipeline.body(cx, line);
+                return self.base.pipeline.body(cx, line);
             };
             trace::info(cx, format_args!("Found {size} bytes to download"));
-            self.pipeline.body(cx, line)?;
+            self.base.pipeline.body(cx, line)?;
             let after = pc.pp.after_reply().unwrap_or_default();
             let chunk = usize::try_from(size).map_or(after.len(), |s| s.min(after.len()));
             if chunk > 0 {
@@ -1158,12 +1122,12 @@ impl Request {
                 held.try_extend_from_slice(&after[..chunk])
                     .map_err(|_| ErrorKind::OutOfMemory)?;
                 pc.pp.consume_after_reply(chunk);
-                self.pipeline.body(cx, &held)?;
+                self.base.pipeline.body(cx, &held)?;
             } else {
                 pc.pp.consume_after_reply(0);
             }
             let size = size.saturating_add(len as u64);
-            self.pipeline.announce_size(cx, Some(size));
+            self.base.pipeline.announce_size(cx, Some(size));
             self.receive(cx, pc, size);
             // A literal still to come is fetched, its answer after it
             // read as the transfer ends (`imap_done`'s `maxdownload`).
@@ -1208,14 +1172,14 @@ impl Request {
     /// are delivered already counted (`maxdownload`): none left, nothing
     /// is (`Curl_xfer_setup_nop`).
     fn receive<H: Host>(&mut self, cx: &mut StepCx<'_, H>, pc: &mut ImapConn, size: u64) {
-        pc.no_socket = self.pipeline.bytecount() == size;
+        pc.no_socket = self.base.pipeline.bytecount() == size;
         let ways = crate::deliver::Directions {
             recv: !pc.no_socket,
             send: false,
         };
         crate::multi::mstate::xfer_setup(cx, ways);
         if !pc.no_socket {
-            self.pipeline.expect(Expect {
+            self.base.pipeline.expect(Expect {
                 size: Some(size),
                 max: Some(size),
                 ..Expect::default()
@@ -1286,7 +1250,7 @@ impl Request {
         code: ImapReply,
     ) -> Step {
         if code != ImapReply::Untagged {
-            self.pipeline.announce_size(cx, None);
+            self.base.pipeline.announce_size(cx, None);
             set_state(cx, pc, State::Stop);
             return Err(ErrorKind::RemoteFileNotFound);
         }
@@ -1300,7 +1264,7 @@ impl Request {
             ));
         };
         trace::info(cx, format_args!("Found {size} bytes to download"));
-        self.pipeline.announce_size(cx, Some(size));
+        self.base.pipeline.announce_size(cx, Some(size));
         self.last = Final::Fetch;
         let after = pc.pp.after_reply().unwrap_or_default();
         if !after.is_empty() {
@@ -1315,7 +1279,7 @@ impl Request {
             held.try_extend_from_slice(&after[..chunk])
                 .map_err(|_| ErrorKind::OutOfMemory)?;
             pc.pp.consume_after_reply(chunk);
-            self.pipeline.body(cx, &held)?;
+            self.base.pipeline.body(cx, &held)?;
             let left = size - chunk as u64;
             trace::info(
                 cx,

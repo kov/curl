@@ -125,7 +125,7 @@ file: crates/curl-core/src/proto/ftp/wildcard.rs
 witness: curl-core proto::ftp::tests::a_wildcard_download_gets_each_file_the_listing_matches
 features: test-util debug-hooks
 --- old
-            self.pipeline.list_into(matching);
+            self.base.pipeline.list_into(matching);
 --- new
             w.matching = Some(matching);
 

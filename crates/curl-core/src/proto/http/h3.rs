@@ -697,7 +697,9 @@ impl Request {
                 trace::of_with(cx, h3, &[id.bytes(), b"header: ", name, b": ", value]);
                 let mut line = Vec::new();
                 let made = line
-                    .try_extend_from_slice(name)
+                    .try_reserve_exact(name.len() + b": \r\n".len() + value.len())
+                    .map_err(|_| OutOfMemory)
+                    .and_then(|()| line.try_extend_from_slice(name))
                     .and_then(|()| line.try_extend_from_slice(b": "))
                     .and_then(|()| line.try_extend_from_slice(value))
                     .and_then(|()| line.try_extend_from_slice(b"\r\n"));

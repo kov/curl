@@ -59,7 +59,8 @@ detects at build time, kept as static strings. `curl_global_sslset` knows only O
   renderers (`proto/http1/`) consume bytes and the current time and produce bytes and events,
   with no I/O. Its driver (`proto/http.rs`) sends and receives through the leased `Conn` only,
   never a socket, and reports what it waits for next; only the multi loop and the pool touch
-  sockets.
+  a connection's sockets. A protocol may own a socket that is its nature rather than a
+  connection's, FTP's listener or TFTP's datagrams, through `conn::io::Socket`.
 - **`curl_easy_perform` runs a private multi loop**, as in C.
 - **Protocols are testable without a network.** Unit tests feed bytes and a clock, with no
   sockets and no sleeps.
@@ -258,6 +259,11 @@ Two sets of budgets check this:
   a pointer, as C's does. When a fact does not fit, first check whether the budget is paying
   for something C allocates apart; making room by moving a fact away from its owner is not a
   fix.
+- **A size trade is justified only against a budget derived from C**, in the layout the product
+  ships, checked by a product-build print or a pin in both builds. The added handle's 3,081
+  bytes and the connection's 656 are such budgets. A transfer slot's 768 bytes and a new
+  handle's 2,120 are tripwires of ours that name what grew: raising one with a reason is
+  routine, and neither justifies making a type weaker.
 
 Memory the application frees with `curl_free` comes from the application's allocator: the
 `curl_global_init_mem` callbacks when set, `malloc` otherwise. Everything internal uses the

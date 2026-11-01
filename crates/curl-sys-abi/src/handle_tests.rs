@@ -5887,9 +5887,10 @@ fn a_handle_costs_no_more_than_cs() {
     });
     let per = |bytes: i64| bytes / HANDLES as i64;
     let (made_bytes, held) = (per(made.bytes), per(made.bytes + added.bytes));
-    // Made, within C's too: RTSP's state on the handle and its
-    // interleave function on the shim are made when first set, a pointer
-    // each until then.
+    // `held` is the budget, from C. `made` is a tripwire inside it, to
+    // raise with a reason when a field earns its place (DESIGN.md): RTSP's
+    // state on the handle and its interleave function on the shim are made
+    // when first set, a pointer each until then.
     assert!(made_bytes <= 2_120, "a new handle holds {made_bytes} bytes");
     assert!(held <= 3_081, "an added handle holds {held} bytes");
     // The `Easy`, the shim's handle, the write adapter and its count, the

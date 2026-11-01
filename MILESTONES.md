@@ -1229,7 +1229,7 @@ Its first steps are milestone 6's design-review changes.
     raw I/O outside the pool lock.
 84. **The FTP data connection's indexed trace names** (`[SSL-1]`, `[TCP-1]`, its setup and
     shutdown lines).
-85. **Budgets.** 768 and 2120 stay as tripwires; `held` is the budget, and DESIGN.md says a size
+85. **Budgets.** **Done.** 768 and 2120 stay as tripwires; `held` is the budget, and DESIGN.md says a size
     trade is justified only against a budget derived from C. The socket rule allows sockets a
     protocol owns by nature (FTP's listener, TFTP's datagrams).
 86. **Types a budget cost.** The handshake moves into `ConnectMachine`; each timer holds its own

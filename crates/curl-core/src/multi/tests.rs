@@ -4537,8 +4537,9 @@ fn a_request_waiting_to_be_made_times_out_closing_its_connection() {
 /// A connection is its own allocation, as C's `connectdata` is, held no
 /// larger than C's (656 bytes); a transfer's lease holds a pointer to it.
 /// A transfer's slot is held by every handle added to a multi, which
-/// `a_handle_costs_no_more_than_cs` in the shim holds to C's `Curl_easy`;
-/// the pin here names the field that grows it. The socket's closer, which
+/// `a_handle_costs_no_more_than_cs` in the shim holds to C's `Curl_easy`,
+/// the budget; 768 is a tripwire that names the field that grows it, not a
+/// reason to weaken a type (DESIGN.md). The socket's closer, which
 /// a connection keeps from the transfer that made it, is a pointer of
 /// them.
 #[test]

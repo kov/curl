@@ -326,3 +326,11 @@ witness: curl-core proto::ftp::tests::a_ccc_s_shutdown_stalls_no_other_transfer
             Ok(crate::tls::Handshake::Waiting) => self.clear_tls(cx, pc, carrier),
             Ok(crate::tls::Handshake::Done) => {
                 self.clearing = None;
+
+=== a data connection's next attempt arms no timer
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::ftp::tests::a_silent_data_address_gives_way_after_the_eyeballs_delay
+--- old
+        SideTimer::Arm(at) => eyeballs_due(run, cx, at),
+--- new
+        SideTimer::Arm(_) => {}

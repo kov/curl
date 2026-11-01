@@ -180,7 +180,7 @@ impl DataConn {
                     let route = machine.route().clone();
                     match crate::multi::state::side_drive(cx, *machine) {
                         Ok(Drove::Connecting(m, progress)) => {
-                            let m = match curl_alloc::try_box_or_back(m) {
+                            let mut m = match curl_alloc::try_box_or_back(m) {
                                 Ok(m) => m,
                                 Err(m) => {
                                     let answered = m.answer().is_some();
@@ -194,6 +194,9 @@ impl DataConn {
                             if let Progress::Resolved(found) = progress {
                                 crate::multi::state::side_resolved(cx, &m, found);
                             }
+                            crate::multi::state::side_progress(cx, &route, &progress, || {
+                                m.dialed().ends().0
+                            });
                             self.phase = Some(Phase::Connecting(m, side));
                             match progress {
                                 // Moved on: on again at once, to its
@@ -205,7 +208,12 @@ impl DataConn {
                                 _ => return Ok(Reached::Connecting),
                             }
                         }
-                        Ok(Drove::Established(conn)) => self.up(cx, host, conn)?,
+                        Ok(Drove::Established(conn)) => {
+                            if let Some(remote) = conn.remote() {
+                                crate::multi::state::side_won(cx, &route, remote);
+                            }
+                            self.up(cx, host, conn)?;
+                        }
                         Err(e) => return Err(crate::multi::state::connect_failed(cx, &route, e)),
                     }
                 }

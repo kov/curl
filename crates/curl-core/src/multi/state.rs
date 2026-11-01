@@ -2147,6 +2147,9 @@ pub(crate) struct StepCx<'a, H: Host> {
     /// protocol last drove its back and forth: the transfer's
     /// `SERVER_RESPONSE` timer once the step is over.
     pub(crate) server_response_at: Option<Instant>,
+    /// What a second connection's setup, as the step last moved it on,
+    /// asks of the transfer's timers once the step is over.
+    pub(crate) side_due: SideDue,
     /// The connection a WebSocket's transfer holds, lent while its
     /// output is delivered and its upload read: its handlers send frames
     /// on it, and its frames' state is read and kept there. The one
@@ -2169,6 +2172,7 @@ impl<'a, H: Host> StepCx<'a, H> {
             lent: None,
             quic_at: None,
             server_response_at: None,
+            side_due: SideDue::default(),
             ws: None,
         }
     }
@@ -2219,12 +2223,14 @@ impl<H: Host> StepCx<'_, H> {
             lent: self.lent,
             quic_at: self.quic_at,
             server_response_at: self.server_response_at,
+            side_due: self.side_due,
             ws: Some(conn),
         };
         let r = f(&mut cx);
         let (quic_at, server_response_at) = (cx.quic_at, cx.server_response_at);
         self.quic_at = quic_at;
         self.server_response_at = server_response_at;
+        self.side_due = cx.side_due;
         r
     }
 
@@ -3792,16 +3798,7 @@ fn connect_once<H: Host>(
         // own timer ends the wait (`Curl_async_pollset`).
         Ok(Connected::Connecting(Progress::Resolving { retry })) => {
             match retry {
-                Some(at) => {
-                    let mut wait = wait_ms(cx.now(), at);
-                    let left = run
-                        .deadlines
-                        .time_left(starts(cx), cx.now(), Phase::Connecting);
-                    if let TimeLeft::Remaining(left) = left {
-                        wait = wait.min(left);
-                    }
-                    arm(&mut run.deadlines, cx, TimerKind::AsyncName, wait);
-                }
+                Some(at) => name_retry(run, cx, at),
                 None => run.deadlines.clear(TimerKind::AsyncName),
             }
             (TransferState::Connecting(c), Wake::Idle)
@@ -4311,6 +4308,77 @@ pub(crate) fn side_let_go<H: Host>(cx: &mut StepCx<'_, H>) {
     cx.rest.net_names(cx.me, kept.as_ref()).1.release();
 }
 
+/// What one of a second connection's waits asks of its timer.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) enum SideTimer {
+    /// Nothing: it stays as it is.
+    #[default]
+    Keep,
+    /// To fire then.
+    Arm(Instant),
+    /// To fire no more.
+    Clear,
+}
+
+/// What a second connection's setup, which holds no timers, asks of the
+/// transfer's: its next attempt's and its resolver's next try, as the
+/// transfer's own setup arms them.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SideDue {
+    eyeballs: SideTimer,
+    name: SideTimer,
+}
+
+/// A second connection's setup over `route` moved on as `progress` says:
+/// what its waits ask of the transfer's timers noted for the step's end.
+/// `dialed` names the peer it dialed, if it did.
+pub(crate) fn side_progress<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    route: &NetRoute,
+    progress: &Progress,
+    dialed: impl FnOnce() -> Remote,
+) {
+    let due = &mut cx.side_due;
+    match *progress {
+        Progress::Resolved(_) => due.name = SideTimer::Clear,
+        Progress::Trying { until, .. }
+        | Progress::Waiting { until }
+        | Progress::Tunnel { until } => {
+            if let Some(at) = until {
+                due.eyeballs = SideTimer::Arm(at);
+            }
+        }
+        Progress::Resolving { retry } => {
+            due.name = retry.map_or(SideTimer::Clear, SideTimer::Arm);
+        }
+        Progress::Dialed => side_won(cx, route, &dialed()),
+        Progress::Failed => {}
+    }
+}
+
+/// A second connection's attempt to `remote` connected: the race is over,
+/// said as the transfer's is; the connection is counted once it is up.
+pub(crate) fn side_won<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, remote: &Remote) {
+    cx.side_due.eyeballs = SideTimer::Clear;
+    said_won(cx, route, remote);
+}
+
+/// What the step's second connection asked of the timers, now that `run`
+/// is at hand: armed as the transfer's own setup arms them.
+pub(crate) fn side_timers<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
+    let SideDue { eyeballs, name } = std::mem::take(&mut cx.side_due);
+    match eyeballs {
+        SideTimer::Keep => {}
+        SideTimer::Arm(at) => eyeballs_due(run, cx, at),
+        SideTimer::Clear => run.deadlines.clear(TimerKind::Eyeballs),
+    }
+    match name {
+        SideTimer::Keep => {}
+        SideTimer::Arm(at) => name_retry(run, cx, at),
+        SideTimer::Clear => run.deadlines.clear(TimerKind::AsyncName),
+    }
+}
+
 /// The name a second connection's `setup` connects to first was found,
 /// as `found` says: traced as the transfer's own connection traces it.
 pub(crate) fn side_resolved<H: Host>(cx: &mut StepCx<'_, H>, setup: &ConnectMachine, found: Found) {
@@ -4398,6 +4466,19 @@ fn waiting<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, until: Option<Instant
     }
 }
 
+/// The resolver is tried again at `at`: its timer armed for then, or for
+/// the end of the time left to connect if that comes first.
+fn name_retry<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, at: Instant) {
+    let mut wait = wait_ms(cx.now(), at);
+    let left = run
+        .deadlines
+        .time_left(starts(cx), cx.now(), Phase::Connecting);
+    if let TimeLeft::Remaining(left) = left {
+        wait = wait.min(left);
+    }
+    arm(&mut run.deadlines, cx, TimerKind::AsyncName, wait);
+}
+
 /// The race's next attempt is due at `at`: its timer armed for then, or
 /// for the end of the time left to connect if that comes first, as C
 /// arms it.
@@ -4423,6 +4504,12 @@ fn eyeballs_due<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, at: Instant) {
 /// or the proxy a handshake goes through, connected: the race is over,
 /// and counted (`cf_ip_happy_connect`).
 fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, remote: &Remote) {
+    said_won(cx, route, remote);
+    cx.report_mut().count_connect();
+}
+
+/// A race's attempt to `remote` connected, said as C says it.
+fn said_won<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, remote: &Remote) {
     let he = Component::HappyEyeballs;
     let (name, ip, port) = (route.destination().name(), remote.shown_ip(), remote.port());
     let port = Text::<16>::clipped(format_args!(") port {port}")).0;
@@ -4432,7 +4519,6 @@ fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, remote: &Remo
         &[b"Connected to ", name, b" (", ip.bytes(), port.bytes()],
     );
     trace_timer(cx, TimerKind::Eyeballs, format_args!("cleared"));
-    cx.report_mut().count_connect();
 }
 
 /// The QUIC library's timer armed to fire `wait` (`Curl_expire_set(EXPIRE_QUIC)`)

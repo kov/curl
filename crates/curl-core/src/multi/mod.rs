@@ -1247,6 +1247,8 @@ impl<H: Host> Multi<H> {
             cx.rest.now = cx.rest.clock.now();
             state::step(&mut run, &mut cx) == Wake::Again
         } {}
+        // A second connection's setup, as the step left it.
+        state::side_timers(&mut run, &mut cx);
         let now = cx.rest.now;
         // HTTP's wait for a 100 is derived from its state, never stored
         // apart from it; the server's time to answer stays armed until it

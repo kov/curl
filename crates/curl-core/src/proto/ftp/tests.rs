@@ -884,6 +884,65 @@ fn the_data_connection_tunnels_through_the_proxy() {
     assert_eq!(removed.easy.report().connects(), 2);
 }
 
+/// The data connection's name has two addresses, the first silent: the
+/// transfer's timer wakes it for the second after the happy eyeballs
+/// delay, and that race's end clears it, as the control connection's does
+/// (`cf_ip_ballers_run`).
+#[test]
+fn a_silent_data_address_gives_way_after_the_eyeballs_delay() {
+    let talk = through(&[], TUNNELED);
+    let file = Conversation::replies(&[&[TUNNELED, b"hello"].concat()], true).per_send();
+    let clock = ManualClock::new().unwrap();
+    let silent = SocketAddr::from(([127, 0, 0, 2], PROXY_PORT));
+    let at = SocketAddr::from(([127, 0, 0, 1], PROXY_PORT));
+    let net = FakeNet::new(clock.clone())
+        .with_name("pxy.example", &[silent.ip(), at.ip()])
+        .with_peer(silent, Net::Silent)
+        .with_peer(at, Net::Accepts)
+        .with_conversation(at, talk.clone())
+        .with_conversation(at, file.clone());
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(Counted(Arc::new(Mutex::new(net)))),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let (id, body, text) = added_tracing(&mut m, URL, Easy::new(), b"timer", |o| {
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("http://pxy.example:{PROXY_PORT}").into_bytes());
+        proxy.tunnel = true;
+    });
+    let silent_tried = "  Trying 127.0.0.2:8080...\n";
+    let delay = std::time::Duration::from_millis(200);
+    // Past the control connection's race, to the data connection's.
+    for _ in 0..1000 {
+        m.perform(&mut NoEvents).unwrap();
+        if text.text().matches(silent_tried).count() == 2 {
+            break;
+        }
+        clock.advance(m.timeout().unwrap_or(delay).min(delay));
+    }
+    let said = text.text();
+    assert_eq!(said.matches(silent_tried).count(), 2, "{said}");
+    assert_eq!(m.timeout(), Some(delay), "{said}");
+    clock.advance(delay - std::time::Duration::from_millis(1));
+    m.perform(&mut NoEvents).unwrap();
+    let tried = "  Trying 127.0.0.1:8080...\n";
+    assert_eq!(text.text().matches(tried).count(), 1, "not yet");
+    clock.advance(std::time::Duration::from_millis(1));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(text.text().matches(tried).count(), 2, "{}", text.text());
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let armed = "[TIMER] [HAPPY_EYEBALLS] set for 200000us\n";
+    let cleared = "[TIMER] [HAPPY_EYEBALLS] cleared\n";
+    assert_eq!(said.matches(armed).count(), 2, "{said}");
+    assert_eq!(said.matches(cleared).count(), 2, "{said}");
+}
+
 /// SOCKS5's answers: no authentication, then the connect to `port`
 /// granted.
 fn granted(port: u16) -> Vec<u8> {

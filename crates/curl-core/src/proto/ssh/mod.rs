@@ -1993,24 +1993,16 @@ impl Request {
         }
     }
 
-    /// The body's end, read or reached by its size: short of its size, a
-    /// partial file (`Curl_sendrecv`).
+    /// The body's end, read or reached by its size. The end goes through
+    /// the writers, which fail a body short of its size as a partial file
+    /// (`cw_download_write`); `Curl_sendrecv`'s own check never sees a
+    /// difference after them, as a read takes no more than is left.
     fn read_end<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
-        deliver::write_resp(cx, 0, true, Ok(()));
+        let ended = self.pipeline.end(cx);
+        deliver::write_resp(cx, 0, true, ended);
         self.receiving = false;
-        let got = self.pipeline.bytecount();
-        if let Some(size) = self.size
-            && size != got
-        {
-            let left = i128::from(size) - i128::from(got);
-            return Err(trace::fail(
-                cx,
-                ErrorKind::PartialFile,
-                format_args!("transfer closed with {left} bytes remaining to read"),
-            ));
-        }
-        Ok(())
+        ended
     }
 
     /// Move the exchange on: the body read, or the upload sent.

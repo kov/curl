@@ -1186,7 +1186,7 @@ fn a_short_scp_file_is_partial() {
     assert_eq!(result, Err(ErrorKind::PartialFile), "{said}");
     assert_eq!(body, b"012345");
     assert!(
-        said.contains("transfer closed with 4 bytes remaining to read\n"),
+        said.contains("end of response with 4 bytes missing\n"),
         "{said}"
     );
 }

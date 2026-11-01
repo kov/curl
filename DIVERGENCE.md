@@ -521,3 +521,13 @@ not a difference: it is tracked in `MILESTONES.md`.
   differ from C's; no runtests or pytest case compares them. Pinned by
   `a_failed_connect_leaves_the_connection_s_socket` and
   `a_session_never_connected_closes_its_copy` (`crates/curl-libssh/src/tests.rs`).
+
+## Blocks C sizes exactly
+
+- **`curl_url_get` asks the application's allocator for the room a part may need.** The result
+  is written straight into the block, which keeps test 1560 inside its allocation limit. For a
+  whole URL the block can be larger than the string by about 32 bytes plus the shown host's
+  length; the bytes returned are C's. A URL with no host or scheme reports that even when the
+  allocator would fail, since no block is asked for first. The URL's lock is held across the
+  application's `curl_global_init_mem` malloc, so a malloc callback calling `curl_url_*` on the
+  same handle deadlocks. Pinned by `calls_cost_what_c_s_do` (`crates/curl-sys-abi/src/url.rs`).

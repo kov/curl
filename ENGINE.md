@@ -273,9 +273,11 @@ curl-core/src/
                              request's path, quote paths, ranges and numbers
     ldap.rs                  LDAP (openldap.c): LdapConn, the connect's binds over the
                              `ldap` library traits, the search, the entries as LDIF
-    raw.rs                   a request sent whole in DO and its answer read to the close,
-                             DICT's and Gopher's (`Outgoing`, `ToClose`); raw/wire.rs, their
-                             tests' fake server (tests)
+    raw.rs                   a request sent whole in DO, DICT's and Gopher's (`Outgoing`);
+                             raw/wire.rs, their tests' fake server (tests)
+    xfer.rs                  the receive side of FTP, IMAP, POP3, DICT and Gopher (`Receive`,
+                             its `Source` and `Sink`): `sendrecv_dl`'s reads and traces
+    mail.rs                  what POP3, IMAP and SMTP share of their login and connect
     dict.rs, gopher.rs       DICT (dict.c) and Gopher (gopher.c): the request each makes of
                              the URL
     mqtt.rs                  MQTT (mqtt.c): its packets, made and read, and the exchange in
@@ -3603,7 +3605,7 @@ writes the selector to the application as header bytes, which are not kept for t
 API (`Pipeline::protocol_header`; C collects HTTP's alone). C sends the whole request in DO,
 waiting on the socket; what the connection does not take goes on in DOING, waiting to send.
 The answer is the body, read in PERFORMING until the server closes the connection
-(`raw::ToClose`, `sendrecv_dl`'s reads and traces).
+(`xfer::Receive`).
 
 ### 5.10 MQTT
 

@@ -397,6 +397,13 @@ impl Easy {
         self.share.as_ref()
     }
 
+    /// Whether the handle has taken a connection a transfer only made as
+    /// its own, by sending or receiving on it (C's `data->conn`, outside a
+    /// transfer).
+    pub fn holds_connection(&self) -> bool {
+        self.last_conn.is_some_and(|l| l.used)
+    }
+
     /// Use `share` for the transfers from now on, or none.
     pub fn set_share(&mut self, share: Option<Share>) {
         self.forget_pool(share.as_ref());

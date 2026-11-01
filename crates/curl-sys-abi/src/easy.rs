@@ -498,6 +498,25 @@ impl ShimEasy {
         }
     }
 
+    /// Whether the handle holds a connection, as far as can be asked: not
+    /// while a callback runs on its multi (C's `data->conn`).
+    pub(crate) fn holds_connection(&self) -> bool {
+        let Some((multi, id)) = self.added() else {
+            return match &*self.home.borrow() {
+                Home::Detached(easy) => easy.holds_connection(),
+                Home::Added { .. } | Home::Nowhere => false,
+            };
+        };
+        // SAFETY: the handle's multi outlives its `Added`.
+        let multi = unsafe { multi.as_ref() };
+        match multi.stack.reach() {
+            // SAFETY: nothing runs on the multi, so its core is not
+            // borrowed.
+            Ok(Reach::Direct) => unsafe { multi.core_mut() }.holds_connection(id),
+            Ok(Reach::Frame(_)) | Err(_) => false,
+        }
+    }
+
     /// Run `f` on the handle's `Easy`, wherever it is: in the handle, in
     /// its multi's core, or through the context of the callback running.
     pub(crate) fn with_easy<R>(&self, f: impl FnOnce(EasyRef<'_>) -> R) -> Result<R, Recursive> {

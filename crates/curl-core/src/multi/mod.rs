@@ -1021,6 +1021,21 @@ impl<H: Host> Multi<H> {
         self.slots.get(id).map(|s| &*s.easy)
     }
 
+    /// Whether a transfer holds a connection, its own running or one it
+    /// only made and has used (C's `data->conn`): from when it has found or
+    /// started one until the connection goes back. `false` if `id` is not
+    /// in this multi.
+    pub fn holds_connection(&self, id: TransferId) -> bool {
+        let Some(slot) = self.slots.get(id) else {
+            return false;
+        };
+        slot.easy.holds_connection()
+            || slot
+                .run
+                .as_ref()
+                .is_some_and(|run| run.state.lease().is_some())
+    }
+
     pub fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
         self.slots.get_mut(id).map(|s| &mut *s.easy)
     }

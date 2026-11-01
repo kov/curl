@@ -115,3 +115,35 @@ witness: curl-core multi::tests::a_share_s_sockets_close_out_of_its_lock
             self.net.close(socket);
             return;
         }
+
+=== a handle linked in a race aborts the share option
+file: crates/curl-sys-abi/src/share.rs
+witness: curl-sys-abi share::tests::a_handle_linked_in_a_race_is_the_share_in_use
+--- old
+                Err(_) => CURLSHE_IN_USE,
+--- new
+                Err(_) => panic!("held"),
+
+=== a share is changed under a running transfer
+file: crates/curl-sys-abi/src/share.rs
+witness: curl-sys-abi handle_tests::a_share_is_refused_while_the_handle_holds_a_connection
+--- old
+    if easy.holds_connection() {
+--- new
+    if false && easy.holds_connection() {
+
+=== a share is refused for a connection a handle only made and has not used
+file: crates/curl-core/src/easy.rs
+witness: curl-sys-abi handle_tests::a_share_is_refused_while_the_handle_holds_a_connection
+--- old
+        self.last_conn.is_some_and(|l| l.used)
+--- new
+        self.last_conn.is_some()
+
+=== a share is refused for a transfer still waiting for a connection
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-sys-abi handle_tests::a_share_is_refused_while_the_handle_holds_a_connection
+--- old
+            .is_some_and(|run| run.state.lease().is_some())
+--- new
+            .is_some()

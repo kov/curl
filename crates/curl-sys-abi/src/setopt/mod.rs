@@ -1872,7 +1872,7 @@ pub unsafe extern "C" fn curl_easy_setopt(
     };
     if let (ffi::CURLOPT_SHARE, Arg::Ptr(sh)) = (option, &arg) {
         // SAFETY: the application passes a share or NULL.
-        return match unsafe { crate::share::set(easy, *sh) } {
+        return match unsafe { crate::share::set_by_option(easy, *sh) } {
             Ok(()) => CURLE_OK,
             Err(crate::share::Refused::Running) => CURLE_BAD_FUNCTION_ARGUMENT,
             Err(crate::share::Refused::OutOfMemory) => ffi::CURLE_OUT_OF_MEMORY,

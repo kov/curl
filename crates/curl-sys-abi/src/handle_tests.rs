@@ -7720,3 +7720,145 @@ fn telnet_and_tftp_options_reach_the_transfer() {
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }
+
+/// `CURLOPT_SHARE` is refused while the handle holds a connection and
+/// taken while it does not, as the C build answers each of these
+/// (`setopt_share`): added and not run, waiting for room, once out of its
+/// multi; a connection only made is the handle's once it has sent on it.
+#[test]
+fn a_share_is_refused_while_the_handle_holds_a_connection() {
+    use crate::easy::curl_easy_send;
+    use crate::share::{curl_share_cleanup, curl_share_init};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    let sh = curl_share_init();
+    let none = ptr::null_mut::<c_void>();
+    let made = || {
+        let c = curl_easy_init();
+        assert_eq!(
+            pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+            CURLE_OK
+        );
+        c
+    };
+    // SAFETY: live handles, a live multi, and values of the options' types.
+    unsafe {
+        let m = curl_multi_init();
+        let c = made();
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK, "not run");
+        assert_eq!(pointer(c, ffi::CURLOPT_SHARE, none), CURLE_OK);
+        let mut running = 0;
+        assert_eq!(curl_multi_perform(m, &raw mut running), CURLM_OK);
+        assert_eq!(
+            pointer(c, ffi::CURLOPT_SHARE, sh),
+            CURLE_BAD_FUNCTION_ARGUMENT,
+            "running"
+        );
+        assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
+        assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK, "removed");
+        assert_eq!(pointer(c, ffi::CURLOPT_SHARE, none), CURLE_OK);
+        curl_easy_cleanup(c);
+
+        // Over, its message unread, the connection has gone back.
+        let (served, server) = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"]);
+        let over = std::ffi::CString::new(format!("http://127.0.0.1:{served}/")).unwrap();
+        let c = curl_easy_init();
+        pointer(c, ffi::CURLOPT_URL, over.as_ptr().cast_mut());
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            assert_eq!(curl_multi_perform(m, &raw mut running), CURLM_OK);
+            if running == 0 {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK, "over");
+        assert_eq!(pointer(c, ffi::CURLOPT_SHARE, none), CURLE_OK);
+        assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
+        curl_easy_cleanup(c);
+        server.join().unwrap();
+
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_MAX_TOTAL_CONNECTIONS, 1 as c_long),
+            CURLM_OK
+        );
+        let (one, two) = (made(), made());
+        assert_eq!(curl_multi_add_handle(m, one), CURLM_OK);
+        assert_eq!(curl_multi_add_handle(m, two), CURLM_OK);
+        assert_eq!(curl_multi_perform(m, &raw mut running), CURLM_OK);
+        assert_eq!(
+            pointer(one, ffi::CURLOPT_SHARE, sh),
+            CURLE_BAD_FUNCTION_ARGUMENT,
+            "connected"
+        );
+        assert_eq!(pointer(two, ffi::CURLOPT_SHARE, sh), CURLE_OK, "waiting");
+        assert_eq!(pointer(two, ffi::CURLOPT_SHARE, none), CURLE_OK);
+        assert_eq!(curl_multi_remove_handle(m, one), CURLM_OK);
+        assert_eq!(curl_multi_remove_handle(m, two), CURLM_OK);
+        curl_easy_cleanup(one);
+        curl_easy_cleanup(two);
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+
+        let c = made();
+        assert_eq!(long(c, ffi::CURLOPT_CONNECT_ONLY, 1), CURLE_OK);
+        assert_eq!(curl_easy_perform(c), CURLE_OK);
+        assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK, "only made");
+        assert_eq!(pointer(c, ffi::CURLOPT_SHARE, none), CURLE_OK);
+        let mut n = 0;
+        assert_eq!(
+            curl_easy_send(c, c"x".as_ptr().cast(), 1, &raw mut n),
+            CURLE_OK
+        );
+        assert_eq!(
+            pointer(c, ffi::CURLOPT_SHARE, sh),
+            CURLE_BAD_FUNCTION_ARGUMENT,
+            "sent on"
+        );
+        curl_easy_cleanup(c);
+        assert_eq!(curl_share_cleanup(sh), ffi::CURLSHE_OK);
+    }
+}
+
+/// From a callback, `CURLOPT_SHARE` is refused though the transfer has no
+/// connection yet, where C takes it: its `Easy` is the step's to use.
+#[test]
+fn a_callback_cannot_change_the_share() {
+    use crate::share::{curl_share_cleanup, curl_share_init};
+    struct Asked {
+        sh: *mut ffi::CURLSH,
+        answer: Option<ffi::CURLcode>,
+    }
+    unsafe extern "C" fn asks(
+        c: *mut CURL,
+        _: ffi::curl_infotype,
+        _: *mut c_char,
+        _: usize,
+        user: *mut c_void,
+    ) -> c_int {
+        // SAFETY: the test passes its record as the debug data.
+        let asked = unsafe { &mut *user.cast::<Asked>() };
+        if asked.answer.is_none() {
+            asked.answer = Some(pointer(c, ffi::CURLOPT_SHARE, asked.sh));
+        }
+        0
+    }
+    let sh = curl_share_init();
+    let mut asked = Asked { sh, answer: None };
+    let c = curl_easy_init();
+    let url = c"file:///nonexistent/curl-shim-share";
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_VERBOSE, 1);
+    function(c, ffi::CURLOPT_DEBUGFUNCTION, asks as DebugFn as *const ());
+    pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut asked);
+    // SAFETY: a live handle, then it and the share, not used again.
+    unsafe {
+        curl_easy_perform(c);
+        curl_easy_cleanup(c);
+        assert_eq!(asked.answer, Some(CURLE_BAD_FUNCTION_ARGUMENT));
+        assert_eq!(curl_share_cleanup(sh), ffi::CURLSHE_OK);
+    }
+}

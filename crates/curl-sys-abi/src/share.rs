@@ -216,8 +216,12 @@ fn kind(sh: &ShimShare, data: curl_lock_data, on: bool) -> CURLSHcode {
                 true => sh.core.keep(kind),
                 false => sh.core.stop_keeping(kind),
             };
-            kept.expect("no handle holds it, checked above");
-            CURLSHE_OK
+            // A handle may have linked on another thread since `in_use`
+            // was asked.
+            match kept {
+                Ok(()) => CURLSHE_OK,
+                Err(_) => CURLSHE_IN_USE,
+            }
         }
         // Each handle loads its own list; sharing it changes nothing a
         // transfer can see.
@@ -339,8 +343,22 @@ pub unsafe extern "C" fn curl_share_cleanup(sh: *mut CURLSH) -> CURLSHcode {
 }
 const _: ffi::proto::curl_share_cleanup = curl_share_cleanup;
 
+/// `CURLOPT_SHARE`: refused while the handle holds a connection, as C
+/// refuses it with `data->conn` set (`setopt_share`); else as [`set`].
+///
+/// # Safety
+///
+/// `sh` is NULL or a pointer `curl_share_init` returned.
+pub(crate) unsafe fn set_by_option(easy: &ShimEasy, sh: *mut CURLSH) -> Result<(), Refused> {
+    if easy.holds_connection() {
+        return Err(Refused::Running);
+    }
+    // SAFETY: as the caller guarantees.
+    unsafe { set(easy, sh) }
+}
+
 /// Give the handle `easy` the share `sh`, or none if NULL, in place of the
-/// one it has (`setopt_share`): unlinked from the old under its lock, then
+/// one it has: unlinked from the old under its lock, then
 /// linked to the new under its own. A pointer that is no share leaves the
 /// handle with none, as in C.
 ///
@@ -383,8 +401,9 @@ pub(crate) fn unlink(easy: &ShimEasy) -> Result<(), Refused> {
     unlinked
 }
 
-/// Give the handle's transfer `share`, unless a callback of its own runs,
-/// when it has a connection in C and the change is refused.
+/// Give the handle's transfer `share`, unless a callback runs on its
+/// multi, when the transfer's `Easy` is out of reach and the change is
+/// refused, though C allows it before the transfer has a connection.
 /// The share's lock functions, if any is set, are told of the uses it
 /// makes of what is shared.
 fn set_core(easy: &ShimEasy, share: Option<&ShimShare>) -> Result<(), Refused> {
@@ -420,8 +439,8 @@ fn set_core(easy: &ShimEasy, share: Option<&ShimShare>) -> Result<(), Refused> {
 /// Why the handle's share was not changed.
 #[derive(Debug)]
 pub(crate) enum Refused {
-    /// The handle's transfer cannot be reached: a callback of its own
-    /// runs.
+    /// The handle holds a connection, or its transfer cannot be reached:
+    /// a callback runs on its multi.
     Running,
     OutOfMemory,
 }
@@ -431,3 +450,25 @@ const _: () = {
     const fn shared<T: Send + Sync>() {}
     shared::<ShimShare>();
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A handle linking on another thread, after `in_use` was asked and
+    /// before the core's own check, is the share being in use: no abort.
+    #[test]
+    fn a_handle_linked_in_a_race_is_the_share_in_use() {
+        let sh = curl_share_init();
+        // SAFETY: a live share, the one just made.
+        let shim = unsafe { share(sh) }.unwrap();
+        let holder = shim.core.clone();
+        for on in [true, false] {
+            assert_eq!(kind(shim, ffi::CURL_LOCK_DATA_DNS, on), CURLSHE_IN_USE);
+        }
+        drop(holder);
+        assert_eq!(kind(shim, ffi::CURL_LOCK_DATA_DNS, true), CURLSHE_OK);
+        // SAFETY: a live share, held by none, not used again.
+        assert_eq!(unsafe { curl_share_cleanup(sh) }, CURLSHE_OK);
+    }
+}

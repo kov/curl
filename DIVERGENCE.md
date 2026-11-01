@@ -495,6 +495,18 @@ not a difference: it is tracked in `MILESTONES.md`.
   `a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked`
   (`crates/curl-core/src/proto/http/tests/h2.rs`).
 
+## Changing a handle's share
+
+- **`CURLOPT_SHARE` from a callback is refused.** A callback running on the handle's multi gets
+  `CURLE_BAD_FUNCTION_ARGUMENT` whether or not the transfer has a connection; C takes the change
+  until the transfer has one. The step in progress holds the transfer's `Easy` and may be using
+  the share the change would replace. Pinned by `a_callback_cannot_change_the_share`
+  (`crates/curl-sys-abi/src/handle_tests.rs`).
+- **A refused `CURLOPT_SHARE` says nothing.** C traces "Cannot change share object while in
+  use"; a setopt outside a transfer's step has no way to reach the debug function here. The code
+  returned is C's. Pinned by `a_share_is_refused_while_the_handle_holds_a_connection`, for the
+  code (same file).
+
 ## Handles the application never made
 
 - **The connection lock at share cleanup is called with no handle.** When `curl_share_cleanup`

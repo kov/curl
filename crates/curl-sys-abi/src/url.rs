@@ -411,8 +411,7 @@ mod tests {
     }
 
     /// The application's block is asked for once and holds what is written:
-    /// a host that encoding makes much longer, and a URL past the limit,
-    /// which is refused and leaves nothing to free.
+    /// a host that encoding makes much longer.
     #[test]
     fn a_whole_url_fits_the_room_it_asks_for() {
         let u = curl_url();
@@ -423,6 +422,17 @@ mod tests {
             get(u, ffi::CURLUPART_URL, ffi::CURLU_URLENCODE).as_deref(),
             Ok(format!("http://{encoded}/").as_str())
         );
+        // SAFETY: made above, not used again.
+        unsafe { curl_url_cleanup(u) };
+    }
+
+    /// A URL past the limit is refused, and nothing is handed over.
+    #[test]
+    #[cfg_attr(miri, ignore = "eight megabytes, byte by byte")]
+    fn a_whole_url_past_the_limit_is_refused() {
+        let u = curl_url();
+        let url = c"http://host/";
+        assert_eq!(set(u, ffi::CURLUPART_URL, Some(url), 0), ffi::CURLUE_OK);
         let mut path = vec![b'/'];
         path.resize(curl_core::url::MAX_INPUT - 1, b'a');
         path.push(0);
@@ -431,6 +441,23 @@ mod tests {
         assert_eq!(get(u, ffi::CURLUPART_URL, 0), Err(ffi::CURLUE_TOO_LARGE));
         // SAFETY: made above, not used again.
         unsafe { curl_url_cleanup(u) };
+    }
+
+    /// A block not handed over is freed: Miri's leak check is what sees it.
+    #[test]
+    fn text_not_finished_is_freed() {
+        let mut text = CText::new();
+        text.reserve(3).unwrap();
+        text.write(b"abc").unwrap();
+        drop(text);
+        let mut text = CText::new();
+        text.reserve(3).unwrap();
+        text.write(b"abc").unwrap();
+        let p = text.finish();
+        // SAFETY: a C string just terminated.
+        assert_eq!(unsafe { CStr::from_ptr(p) }, c"abc");
+        // SAFETY: handed to the caller, freed once.
+        unsafe { root::curl_free(p.cast()) };
     }
 
     /// lib1560's `urldup`, and the flags reaching the core.

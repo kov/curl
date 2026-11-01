@@ -124,7 +124,9 @@ not a difference: it is tracked in `MILESTONES.md`.
   upload, as C's libssh2 code does (`secondCreateDirs`, `lib/vssh/libssh2.c:1022`). C's libssh
   code, whose library the rewrite binds, sets the same flag (`lib/vssh/libssh.c:1087`) and never
   reads it, so a server that keeps refusing the file is asked to make the directories again
-  for as long as it refuses. Read from C's source. Pinned by
+  for as long as it refuses. Measured 2026-11-01 on C's libssh build, uploading to a path
+  that is a directory, which OpenSSH's server refuses with `SSH_FX_FAILURE`: 4900 rounds in 5 s,
+  when `timeout` killed it; here one round, exit 79. Pinned by
   `a_file_refused_again_is_not_tried_again` and `missing_directories_are_made_once`
   (`crates/curl-core/src/proto/ssh/tests.rs`).
 
@@ -447,8 +449,10 @@ not a difference: it is tracked in `MILESTONES.md`.
   fails with 2 (`CURLE_FAILED_INIT`), "Could not set socket". C's libssh build hands the
   library the raw socket whatever filters are over it (`myssh_connect`, `lib/vssh/libssh.c`),
   and the library's writes bypass the proxy's TLS: SSH goes onto the connection in clear, in
-  the middle of the TLS session, where the proxy reads it as broken records. Read from C's
-  source. Pinned by `the_socket_is_not_handed_over_under_a_proxy_s_tls`
+  the middle of the TLS session, where the proxy reads it as broken records. It fails with 2,
+  "Failure establishing ssh session". Measured 2026-11-01 on C's libssh build, against a
+  proxy that grants the tunnel: `SSH-2.0-libssh_0.12.2` was next on its TCP stream, and its
+  TLS read failed. Pinned by `the_socket_is_not_handed_over_under_a_proxy_s_tls`
   (`crates/curl-core/src/proto/ssh/tests.rs`).
 
 ## Codes C passes through
@@ -463,17 +467,17 @@ not a difference: it is tracked in `MILESTONES.md`.
   (`crates/curl-sys-abi/src/tls.rs`) and `the_ssl_ctx_function_s_code_fails_the_transfer`
   (`crates/curl-sys-abi/src/tls_tests.rs`).
 
-## Datagrams C writes onto a stream
+## A tunnel C asks for and cannot use
 
 - **TFTP through an HTTP proxy is refused before anything is sent.** `curl -x proxy
   tftp://host/file` fails with 1 (`CURLE_UNSUPPORTED_PROTOCOL`), "tftp cannot be done over
   CONNECT", the refusal C's `tunnel_init` (`lib/cf-h1-proxy.c`) keeps for a scheme marked
   `PROTOPT_NOTCPPROXY`. C never reaches it for TFTP: it asks the proxy for a CONNECT-UDP
   tunnel instead, which against a proxy that answers 404 fails with 7 (`CURLE_COULDNT_CONNECT`),
-  "CONNECT-UDP tunnel failed, response 404", measured against the C build. When the tunnel is
-  granted, `lib/tftp.c` sends each packet with `sendto` on the connection's socket, the TCP
-  stream to the proxy, with no capsule around it, so the proxy reads TFTP's bytes as a broken
-  tunnel; read from C's source. Pinned by `a_proxy_refuses_the_scheme`
+  "CONNECT-UDP tunnel failed, response 404", measured against the C build. A granted tunnel
+  fails too: measured 2026-11-01 on C's builds, against a proxy answering 101, `tftp_connect`
+  (`lib/tftp.c`) fails with 7, "bind() failed; Invalid argument", nothing sent after the
+  request. Pinned by `a_proxy_refuses_the_scheme`
   (`crates/curl-core/src/proto/tftp/tests.rs`).
 
 ## Frames C sends beside a transfer

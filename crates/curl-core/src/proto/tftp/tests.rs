@@ -398,8 +398,7 @@ mod over_the_wire {
 
     /// Through an HTTP proxy, the tunnel refuses the scheme before
     /// anything is sent. C asks the proxy for a CONNECT-UDP tunnel instead
-    /// and, granted one, writes TFTP's packets unframed onto the proxy's
-    /// TCP stream (DIVERGENCE.md).
+    /// and, granted one, fails to bind and sends nothing (DIVERGENCE.md).
     #[test]
     fn a_proxy_refuses_the_scheme() {
         let (said, ran) = fetch(&[], |o| {

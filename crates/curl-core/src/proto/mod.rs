@@ -748,15 +748,15 @@ impl ProtoState {
                 )
             }
             b"mqtt" => ProtoState::Mqtt(
-                curl_alloc::try_box(mqtt::Request::new(url, false, cx)?)
+                curl_alloc::try_box(mqtt::Request::new(url, false, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"mqtts" if cx.easy().libraries().tls.is_some() => ProtoState::Mqtt(
-                curl_alloc::try_box(mqtt::Request::new(url, true, cx)?)
+                curl_alloc::try_box(mqtt::Request::new(url, true, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"telnet" => ProtoState::Telnet(
-                curl_alloc::try_box(telnet::Request::new(url, cx)?)
+                curl_alloc::try_box(telnet::Request::new(url, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             b"tftp" => {

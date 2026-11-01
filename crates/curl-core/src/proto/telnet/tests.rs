@@ -474,6 +474,42 @@ fn a_session_runs_to_the_close() {
     assert_eq!(ran.counted, (24, 5));
 }
 
+/// A redirect from HTTP to another host takes the application's user
+/// there only if it lets it go anywhere (`Curl_auth_allowed_to_host`):
+/// the user is what makes TELNET agree to send its environment.
+#[test]
+fn the_application_s_user_stays_with_the_first_host() {
+    use crate::options::{Follow, Login, Protocols};
+    use crate::proto::raw::wire::{PORT, serving, transfer};
+    for unrestricted in [false, true] {
+        let moved = format!(
+            "HTTP/1.1 302 Moved\r\nLocation: telnet://other.test:{PORT}/\r\n\
+             Connection: close\r\nContent-Length: 0\r\n\r\n"
+        );
+        let http = Conversation::new(moved.as_bytes(), true);
+        let talk = Conversation::replies(&[&[IAC, DO, TELOPT_NEW_ENVIRON]], true).greeting();
+        let mut m = serving(&[&http, &talk]);
+        let entry = format!("other.test:{PORT}:127.0.0.1");
+        let url = format!("http://127.0.0.1:{PORT}/a");
+        let input = Handler::read(Input(Mutex::new(Vec::new()))).unwrap();
+        let ran = transfer(&mut m, &url, |o| {
+            o.http.follow = Follow::All;
+            o.http.unrestricted_auth = unrestricted;
+            o.schemes.make_mut().unwrap().redirect = Protocols::of(&["telnet"]).unwrap();
+            o.resolve.set([entry.as_bytes()]).unwrap();
+            *o.login.make_mut().unwrap() = Login::from_pair(b"user:secret").unwrap();
+            o.small.make_mut().unwrap().input = Some(input);
+        });
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        let said = talk.received();
+        let answer = if unrestricted { WILL } else { WONT };
+        let has = said
+            .windows(3)
+            .any(|w| w == [IAC, answer, TELOPT_NEW_ENVIRON]);
+        assert!(has, "{unrestricted}: {said:?}");
+    }
+}
+
 /// An input that aborts ends the exchange, well.
 #[test]
 fn an_aborted_input_ends_it() {

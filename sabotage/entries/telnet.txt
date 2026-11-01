@@ -74,3 +74,11 @@ witness: curl-core proto::telnet::tests::an_exchange_stalls_no_other_transfer
 --- new
         while !self.pass(cx, lease)? {}
         Ok(DoStep::Did)
+
+=== a redirect's other host is given the application's TELNET user
+file: crates/curl-core/src/proto/telnet.rs
+witness: curl-core proto::telnet::tests::the_application_s_user_stays_with_the_first_host
+--- old
+        let gate = match before.first {
+--- new
+        let gate = match None::<&Peer>.or(before.first.filter(|_| false)) {

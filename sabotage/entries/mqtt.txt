@@ -53,3 +53,11 @@ witness: curl-core proto::mqtt::tests::a_post_ends_once_its_disconnect_has_gone
         Ok(self.unsent.is_empty())
 --- new
         Ok(true)
+
+=== a redirect's other host is given the application's MQTT login
+file: crates/curl-core/src/proto/mqtt.rs
+witness: curl-core proto::mqtt::tests::the_application_s_login_stays_with_the_first_host
+--- old
+        let gate = match before.first {
+--- new
+        let gate = match None::<&Peer>.or(before.first.filter(|_| false)) {

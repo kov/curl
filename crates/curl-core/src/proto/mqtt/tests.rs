@@ -663,6 +663,36 @@ fn a_paused_publish_is_held_until_taken() {
     assert_eq!(took, DELIVERED);
 }
 
+/// A redirect from HTTP to another host takes the application's login
+/// there only if it lets it go anywhere (`Curl_auth_allowed_to_host`).
+#[test]
+fn the_application_s_login_stays_with_the_first_host() {
+    use crate::options::{Follow, Login, Protocols};
+    use crate::proto::raw::wire::{PORT, serving, transfer};
+    for unrestricted in [false, true] {
+        let moved = format!(
+            "HTTP/1.1 302 Moved\r\nLocation: mqtt://other.test:{PORT}/topic\r\n\
+             Connection: close\r\nContent-Length: 0\r\n\r\n"
+        );
+        let http = Conversation::new(moved.as_bytes(), true);
+        let mqtt = server(&then(&[SUBACK, PUBLISH, DISCONNECT]));
+        let mut m = serving(&[&http, &mqtt]);
+        let entry = format!("other.test:{PORT}:127.0.0.1");
+        let url = format!("http://127.0.0.1:{PORT}/a");
+        let ran = transfer(&mut m, &url, |o| {
+            o.http.follow = Follow::All;
+            o.http.unrestricted_auth = unrestricted;
+            o.schemes.make_mut().unwrap().redirect = Protocols::of(&["mqtt"]).unwrap();
+            o.resolve.set([entry.as_bytes()]).unwrap();
+            *o.login.make_mut().unwrap() = Login::from_pair(b"user:secret").unwrap();
+        });
+        assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+        let said = mqtt.received();
+        let has = said.windows(6).any(|w| w == b"secret");
+        assert_eq!(has, unrestricted, "{said:?}");
+    }
+}
+
 /// Packets read a byte at a time are taken whole, each in turn.
 #[test]
 fn packets_read_a_byte_at_a_time_are_taken_whole() {

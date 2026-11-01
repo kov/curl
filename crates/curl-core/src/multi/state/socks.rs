@@ -11,7 +11,7 @@ use crate::conn::socks::{
     Creds, Dest, Failed, GssError, GssLine, GssMethod, Handshake as Exchange, Resolved, SocksError,
     Took, Version,
 };
-use crate::conn::{Came, Handshook, RecvFailed};
+use crate::conn::{Came, Handshook, RecvFailed, SocksTarget};
 use crate::error::ErrorKind;
 use crate::gss::Style;
 use crate::multi::Host;
@@ -67,19 +67,15 @@ fn start<H: Host>(
     version: Version,
 ) -> Result<Box<Handshake>, ErrorKind> {
     let ip = cx.easy().options().ip_version;
-    let found = match s.machine.dialed().target() {
-        None => None,
-        Some(Ok((answer, found))) => Some(Ok((answer.clone(), *found))),
-        Some(Err(_)) => Some(Err(())),
-    };
+    let found = s.machine.dialed().target().clone();
     let leg = lent.route.socks().expect("through a SOCKS proxy");
     let target = leg.to;
     if version.resolves_locally() {
         super::names::target_started(cx, target, version.ip(lent.route.ip));
     }
     let resolved = match found {
-        None => Resolved::Remote,
-        Some(Ok((answer, found))) => {
+        SocksTarget::None => Resolved::Remote,
+        SocksTarget::Found(answer, found) => {
             match found {
                 Came::Cached => {
                     let name = answer.name();
@@ -93,7 +89,7 @@ fn start<H: Host>(
             report_resolved(cx, &answer, target.port());
             Resolved::pick(version, answer.addrs(), ip)
         }
-        Some(Err(())) => Resolved::Failed,
+        SocksTarget::Unresolved => Resolved::Failed,
     };
     let creds = leg.creds.map(|c| Creds {
         user: &c.user,

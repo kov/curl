@@ -90,8 +90,8 @@ pub(crate) struct Dialed {
     /// The addresses raced to reach the proxy, raced again on a redial.
     answer: Addresses,
     /// The destination's addresses, for a SOCKS proxy that is not to
-    /// resolve its name, and where they came from; or that there are none.
-    target: Option<Result<(TryArc<Answer>, Came), ()>>,
+    /// resolve its name.
+    target: SocksTarget,
     /// A SOCKS5 proxy on the way authenticated the user.
     socks5_authenticated: bool,
     /// The handshakes made over it so far.
@@ -202,8 +202,8 @@ impl Dialed {
     }
 
     /// The addresses of the destination, resolved here.
-    pub(crate) fn target(&self) -> Option<&Result<(TryArc<Answer>, Came), ()>> {
-        self.target.as_ref()
+    pub(crate) fn target(&self) -> &SocksTarget {
+        &self.target
     }
 
     /// The QUIC connection to an HTTP/3 proxy, for the tunnel's
@@ -480,8 +480,18 @@ pub(crate) enum Found {
     Resolved(Asked),
 }
 
-/// Where a lookup's answer came from, all a setup keeps of its `Found`
-/// (a byte, where a `Found` would grow the setup's slot).
+/// The destination's addresses, as a setup found them for a SOCKS proxy.
+#[derive(Clone, Debug)]
+pub(crate) enum SocksTarget {
+    /// The proxy resolves the name itself, or there is no SOCKS proxy.
+    None,
+    /// The name was looked up here and did not resolve.
+    Unresolved,
+    /// The name's addresses, and where they came from.
+    Found(TryArc<Answer>, Came),
+}
+
+/// Where a lookup's answer came from, all a setup reads of its `Found`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Came {
     Cached,
@@ -1927,22 +1937,21 @@ impl ConnectMachine {
     /// The destination's addresses, for a SOCKS proxy that is not to
     /// resolve its name (`Curl_conn_dns_add_addr_resolve`); a resolver
     /// that finds nothing is for the handshake to say.
-    #[expect(clippy::type_complexity, reason = "the field it fills")]
     fn socks_target(
         &self,
         cx: &mut dyn ConnCx,
         setup: DriveOptions,
-    ) -> Result<Option<Result<(TryArc<Answer>, Came), ()>>, ConnectError> {
+    ) -> Result<SocksTarget, ConnectError> {
         let Some(leg) = self.route.socks() else {
-            return Ok(None);
+            return Ok(SocksTarget::None);
         };
         if !leg.version.resolves_locally() {
-            return Ok(None);
+            return Ok(SocksTarget::None);
         }
         match resolve(leg.to, leg.version.ip(self.route.ip), cx, setup) {
-            Ok((answer, found)) => Ok(Some(Ok((answer, Came::from(found))))),
+            Ok((answer, found)) => Ok(SocksTarget::Found(answer, Came::from(found))),
             // The SOCKS handshake says the name failed, whatever the why.
-            Err(ConnectError::Unresolved(_)) => Ok(Some(Err(()))),
+            Err(ConnectError::Unresolved(_)) => Ok(SocksTarget::Unresolved),
             Err(e) => Err(e),
         }
     }
@@ -2584,10 +2593,15 @@ pub(super) struct Pending {
     /// Whether the cache had a stale answer.
     found: fn(Asked) -> Found,
     keep_negative: bool,
-    /// Which families went as a query of their own, IPv6 and IPv4: in
-    /// the padding, where a `Queued` would grow the setup's slot.
-    queried: (bool, bool),
+    queried: Queried,
     held: Held,
+}
+
+/// Which families went as a query of their own.
+#[derive(Clone, Copy, Debug)]
+struct Queried {
+    v6: bool,
+    v4: bool,
 }
 
 /// A resolve held: one dropped neither answered nor cancelled leaves its
@@ -2613,7 +2627,7 @@ impl Pending {
 
     /// How it was queued, if as queries of their own.
     fn queued(&self) -> Option<Queued> {
-        let (v6, v4) = self.queried;
+        let Queried { v6, v4 } = self.queried;
         (v6 || v4).then_some(Queued {
             id: self.id,
             v6,
@@ -2671,7 +2685,7 @@ pub(super) fn lookup_start(
         .with_resolver(&mut |r| started = Some(r.start(name, family, waiter)));
     let pending = |q: Queued| Pending {
         id: q.id,
-        queried: (q.v6, q.v4),
+        queried: Queried { v6: q.v6, v4: q.v4 },
         family,
         found,
         keep_negative,

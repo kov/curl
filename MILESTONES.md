@@ -1263,6 +1263,7 @@ Its first steps are milestone 6's design-review changes.
 91. **`multi/state.rs` split** mechanically, and the stale parts of ENGINE.md and DESIGN.md and
     stale size comments brought up to date; the two unsafe blocks the SAFETY scan did not match
     (`curl-ngtcp2/src/sys.rs`, `curl-sys-abi/src/printf/mod.rs`) examined.
+    Done: the size comments on `Course`, `SocksTarget` and `Queried`.
 92. **The share.** The kinds above with their lock callbacks. PSL per multi or share, with its
     TTL; `ShareLock::lock` takes the access it wants; HSTS a `with_hsts` with told and untold
     forms, as C tells the callback only around file loads.

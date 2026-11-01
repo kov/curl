@@ -182,35 +182,37 @@ fn prereq<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     }
 }
 
-/// What the requests followed so far change for the next, two flags in
-/// one byte: `Run`'s byte-sized fields fill their word, and a handle
-/// costs no more than C's.
+/// What the requests followed so far change for the next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Course(u8);
-
-impl Course {
+struct Course {
     /// `Options::port` no longer applies: a redirect led to an absolute
     /// URL (`state.allow_port` cleared).
-    const PORT_DROPPED: u8 = 1;
+    port_dropped: bool,
     /// A `Location:` was followed, so each request from here on is
     /// limited to the redirect protocols (`state.this_is_a_follow`).
-    const FOLLOWED: u8 = 2;
-    const START: Course = Course(0);
+    followed: bool,
+}
+
+impl Course {
+    const START: Course = Course {
+        port_dropped: false,
+        followed: false,
+    };
 
     fn allows_port(self) -> bool {
-        self.0 & Course::PORT_DROPPED == 0
+        !self.port_dropped
     }
 
     fn drop_port(&mut self) {
-        self.0 |= Course::PORT_DROPPED;
+        self.port_dropped = true;
     }
 
     fn followed(self) -> bool {
-        self.0 & Course::FOLLOWED != 0
+        self.followed
     }
 
     fn follow(&mut self) {
-        self.0 |= Course::FOLLOWED;
+        self.followed = true;
     }
 }
 

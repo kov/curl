@@ -503,9 +503,10 @@ not a difference: it is tracked in `MILESTONES.md`.
   the share the change would replace. Pinned by `a_callback_cannot_change_the_share`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
 - **A refused `CURLOPT_SHARE` says nothing.** C traces "Cannot change share object while in
-  use"; a setopt outside a transfer's step has no way to reach the debug function here. The code
-  returned is C's. Pinned by `a_share_is_refused_while_the_handle_holds_a_connection`, for the
-  code (same file).
+  use"; the line would call the application's debug function from inside the setopt, with no
+  frame on the multi's stack for a call back into the library, and a handle with no multi has no
+  way to it. The code returned is C's. Pinned by
+  `a_share_is_refused_while_the_handle_holds_a_connection` (same file).
 
 ## Handles the application never made
 

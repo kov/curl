@@ -7748,6 +7748,14 @@ fn a_share_is_refused_while_the_handle_holds_a_connection() {
     unsafe {
         let m = curl_multi_init();
         let c = made();
+        let mut seen = Seen::default();
+        long(c, ffi::CURLOPT_VERBOSE, 1);
+        function(
+            c,
+            ffi::CURLOPT_DEBUGFUNCTION,
+            debug_count as DebugFn as *const (),
+        );
+        pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut seen);
         assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
         assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK, "not run");
         assert_eq!(pointer(c, ffi::CURLOPT_SHARE, none), CURLE_OK);
@@ -7757,6 +7765,12 @@ fn a_share_is_refused_while_the_handle_holds_a_connection() {
             pointer(c, ffi::CURLOPT_SHARE, sh),
             CURLE_BAD_FUNCTION_ARGUMENT,
             "running"
+        );
+        assert!(!seen.texts.is_empty(), "the debug function is called");
+        assert!(
+            !seen.texts.iter().any(|t| t.contains("Cannot change share")),
+            "{:?}",
+            seen.texts
         );
         assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
         assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK, "removed");
@@ -7837,13 +7851,16 @@ fn a_callback_cannot_change_the_share() {
     unsafe extern "C" fn asks(
         c: *mut CURL,
         _: ffi::curl_infotype,
-        _: *mut c_char,
-        _: usize,
+        data: *mut c_char,
+        size: usize,
         user: *mut c_void,
     ) -> c_int {
         // SAFETY: the test passes its record as the debug data.
         let asked = unsafe { &mut *user.cast::<Asked>() };
-        if asked.answer.is_none() {
+        // SAFETY: the `size` bytes the library gives at `data`.
+        let line = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), size) };
+        // As the `.netrc` is read: in C, before the transfer has a connection.
+        if asked.answer.is_none() && line.starts_with(b"Could not find host") {
             asked.answer = Some(pointer(c, ffi::CURLOPT_SHARE, asked.sh));
         }
         0
@@ -7854,6 +7871,8 @@ fn a_callback_cannot_change_the_share() {
     let url = c"file:///nonexistent/curl-shim-share";
     pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
     long(c, ffi::CURLOPT_VERBOSE, 1);
+    long(c, ffi::CURLOPT_NETRC, ffi::CURL_NETRC_OPTIONAL);
+    pointer(c, ffi::CURLOPT_NETRC_FILE, c"/dev/null".as_ptr().cast_mut());
     function(c, ffi::CURLOPT_DEBUGFUNCTION, asks as DebugFn as *const ());
     pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut asked);
     // SAFETY: a live handle, then it and the share, not used again.

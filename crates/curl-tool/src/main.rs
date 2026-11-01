@@ -272,7 +272,8 @@ impl std::fmt::Display for CurlVersion {
     }
 }
 
-/// `curl --version`.
+/// `curl --version`, written as C's `printf` calls are: a reader gone
+/// (`curl -V | head -1`) ends the output, not the tool, and the exit is 0.
 fn version_info() {
     let v = version();
     if v.features
@@ -281,8 +282,22 @@ fn version_info() {
     {
         eprintln!("WARNING: this libcurl is Debug-enabled, do not use in production\n");
     }
-    println!("curl {} ({}) {CurlVersion}", v.version, v.host);
-    println!("Release-Date: {}", v.timestamp);
+    use std::io::Write as _;
+    let mut out = std::io::stdout().lock();
+    // As C's, whose `printf` results go unchecked: a write that fails ends
+    // the listing and nothing else.
+    if write_version(&mut out, v).is_ok() {
+        let _ = out.flush();
+    }
+}
+
+/// The lines of `curl --version` after the warning, onto `out`.
+fn write_version(
+    out: &mut impl std::io::Write,
+    v: &curl_core::version::VersionInfo,
+) -> std::io::Result<()> {
+    writeln!(out, "curl {} ({}) {CurlVersion}", v.version, v.host)?;
+    writeln!(out, "Release-Date: {}", v.timestamp)?;
     if !v.protocols.is_empty() {
         // IPFS and IPNS are served over HTTP: they are listed when it is,
         // in alphabetical order among the rest.
@@ -293,22 +308,23 @@ fn version_info() {
                 .take_while(|p| p.name() < "ipfs")
                 .count()
         });
-        print!("Protocols:");
+        write!(out, "Protocols:")?;
         for (i, p) in v.protocols.iter().enumerate() {
-            print!(" {}", p.name());
+            write!(out, " {}", p.name())?;
             if Some(i) == insert_after {
-                print!(" ipfs ipns");
+                write!(out, " ipfs ipns")?;
             }
         }
-        println!();
+        writeln!(out)?;
     }
     if !v.features.is_empty() {
-        print!("Features:");
+        write!(out, "Features:")?;
         for f in v.features {
-            print!(" {}", f.name());
+            write!(out, " {}", f.name())?;
         }
-        println!();
+        writeln!(out)?;
     }
+    Ok(())
 }
 
 #[cfg(test)]

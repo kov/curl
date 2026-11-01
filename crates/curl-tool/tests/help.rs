@@ -76,3 +76,22 @@ fn shows_the_manual() {
     assert!(run.stdout.contains("\n    -v, --verbose\n"));
     assert!(run.stdout.contains("\nFILES\n"));
 }
+
+/// `curl -V` into a pipe whose reader is gone, as `curl -V | head -1`
+/// can leave it, ends quietly with 0, as C's unchecked `printf`s do,
+/// instead of panicking on the failed write.
+#[test]
+fn a_version_listing_into_a_closed_pipe_ends_quietly() {
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let out = Command::new(tool)
+        .args(["-q", "-V"])
+        .stdout(writer)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}

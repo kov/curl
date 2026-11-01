@@ -759,10 +759,17 @@ unsafe extern "C" {
 }
 
 /// `SSL_set_app_data`, a macro over `SSL_set_ex_data`'s slot 0.
+///
+/// # Safety
+///
+/// `ssl` is a live `SSL`. `data` stays valid for as long as anything
+/// reads the slot back, which is the caller's to arrange: OpenSSL only
+/// stores it.
 pub(crate) unsafe fn ssl_set_app_data(ssl: *mut c_void, data: *mut c_void) {
     unsafe extern "C" {
         fn SSL_set_ex_data(ssl: *mut c_void, idx: c_int, data: *mut c_void) -> c_int;
     }
-    // SAFETY: as the caller says: a live SSL.
+    // SAFETY: `ssl` is live, as this function's caller guarantees; slot 0
+    // is the one `SSL_set_app_data` uses, and storing does not read `data`.
     unsafe { SSL_set_ex_data(ssl, 0, data) };
 }

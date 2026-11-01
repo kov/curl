@@ -58,7 +58,10 @@ fn tag(ty: ArgType) -> Tag {
 }
 
 unsafe extern "C" {
-    /// `csrc/va_fetch.c`.
+    /// `csrc/va_fetch.c`: reads `n` arguments of `ap`, of the types the `n`
+    /// `Tag`s at `types` name, widened into the `n` entries at `out`.
+    /// Callers uphold what the tags say of `ap` and the room at both
+    /// pointers (`fetch`).
     fn curl_rs_va_fetch(ap: VaList<'_>, types: *const u8, n: usize, out: *mut u64);
 }
 
@@ -66,14 +69,28 @@ unsafe extern "C" {
 /// `long double` of aarch64 Linux.
 const RUST_READS_LONG_DOUBLE: bool = cfg!(all(feature = "nightly", target_arch = "aarch64"));
 
+/// Read the next argument, a `long double`, as a `double`'s bits.
+///
+/// # Safety
+///
+/// The next argument in `ap` is a `long double`: `next`'s caller knows it
+/// from the format, whose match with the arguments is the C caller's to
+/// ensure, as for any printf function.
 #[cfg(all(feature = "nightly", target_arch = "aarch64"))]
 unsafe fn long_double(ap: &mut VaList<'_>) -> u64 {
-    // SAFETY: the caller's format says the next argument is a `long
-    // double`, which is `f128` here.
+    // SAFETY: a `long double` is next, as this function's caller
+    // guarantees, and it is `f128` on this target.
     let v = unsafe { ap.next_arg::<f128>() };
     (v as f64).to_bits()
 }
 
+/// Never reached: without Rust's `f128`, `fetch` hands a format with a
+/// `long double` to the C helper whole.
+///
+/// # Safety
+///
+/// None needed: it reads nothing. Declared `unsafe` to match the reader
+/// above, so `next` calls either the same way.
 #[cfg(not(all(feature = "nightly", target_arch = "aarch64")))]
 unsafe fn long_double(_ap: &mut VaList<'_>) -> u64 {
     unreachable!("`long double` arguments are read by the C helper")

@@ -2818,6 +2818,7 @@ impl Request {
             let read = {
                 let (pc, mut carrier) = ftp_of(lease);
                 let round = &mut self.round;
+                let read_first = pc.pp.holds_reply();
                 let ran = drive::runs_done_said(
                     cx,
                     &pc.pp,
@@ -2826,6 +2827,7 @@ impl Request {
                     exchanged,
                     round,
                     "FTP response timeout",
+                    read_first,
                 );
                 match ran {
                     Ok((false, due)) => {

@@ -365,3 +365,11 @@ witness: curl-core proto::ftp::tests::the_data_connection_s_filters_name_its_soc
         if !source.0.shutdown(cx)? {
 --- new
         if false {
+
+=== FTP's DONE waits for its answer without reading first
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::done_reads_once_before_it_waits
+--- old
+                let read_first = pc.pp.holds_reply();
+--- new
+                let read_first = false;

@@ -101,7 +101,10 @@ pub(crate) fn read<H: Host, E: Ends>(
             reads_left -= 1;
             match recv(cx, pp, carrier)? {
                 Some(n) => got = n,
-                None => return Ok(Read::Waiting),
+                None => {
+                    pp.read_nothing();
+                    return Ok(Read::Waiting);
+                }
             }
             *counted += got as u64;
         }
@@ -243,19 +246,19 @@ pub(crate) fn runs_done<H: Host>(
     exchanged: bool,
     round: &mut Blocking,
 ) -> Result<(bool, Instant), ErrorKind> {
-    runs_done_said(
-        cx,
-        pp,
-        carrier,
-        limit,
-        exchanged,
-        round,
-        "server response timeout",
-    )
+    let said = "server response timeout";
+    runs_done_said(cx, pp, carrier, limit, exchanged, round, said, false)
 }
 
-/// `runs_done`, the server's time to answer running out said as `said`:
-/// FTP's own blocking read says it its way (`getftpresponse`).
+/// `runs_done`, the server's time to answer running out said as `said`,
+/// and running at once if `read_first`: FTP's own blocking read says it its
+/// way and does not wait while its buffer holds anything, the line that
+/// ended the last reply among it (`getftpresponse`), so it reads the socket
+/// once, whatever that finds, before it first waits.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the blocking drive's own, with what FTP's differs in"
+)]
 pub(crate) fn runs_done_said<H: Host>(
     cx: &mut StepCx<'_, H>,
     pp: &Pingpong,
@@ -264,6 +267,7 @@ pub(crate) fn runs_done_said<H: Host>(
     exchanged: bool,
     round: &mut Blocking,
     said: &str,
+    read_first: bool,
 ) -> Result<(bool, Instant), ErrorKind> {
     let now = cx.now();
     if let Some(since) = round.polling {
@@ -286,7 +290,7 @@ pub(crate) fn runs_done_said<H: Host>(
             format_args!("{said}"),
         ));
     }
-    if holds(pp, carrier) || carrier.ready_now(waits(pp)) {
+    if read_first || holds(pp, carrier) || carrier.ready_now(waits(pp)) {
         crate::progress::check(cx, exchanged)?;
         return Ok((true, now));
     }

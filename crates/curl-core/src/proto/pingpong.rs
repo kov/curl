@@ -415,6 +415,22 @@ impl Pingpong {
         e
     }
 
+    /// Whether the line that ended a reply is still kept (C's `recvbuf`
+    /// not empty, `nfinal` long).
+    pub(crate) fn holds_reply(&self) -> bool {
+        matches!(self.scan, Scan::Reply(_))
+    }
+
+    /// A read found nothing: the line that ended a reply goes all the
+    /// same, as C ditches it before it reads (`Curl_pp_readresp`).
+    pub(crate) fn read_nothing(&mut self) {
+        if let Scan::Reply(n) = self.scan {
+            self.recv.drain(..n);
+            self.zero_end();
+            self.scan = Scan::Starved;
+        }
+    }
+
     /// The line that ended the reply just given out, its LF included
     /// (the start of C's `recvbuf`, `nfinal` long).
     pub(crate) fn reply_line(&self) -> Option<&[u8]> {

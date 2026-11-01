@@ -381,6 +381,30 @@ fn an_answer_awaited_in_done_stalls_no_other_transfer() {
     assert_eq!(result, Ok(()));
 }
 
+/// DONE reads the control connection once before it first waits for the
+/// answer, as the line that ended the last reply is still held
+/// (`getftpresponse`), so a server yet to answer shows as a read that
+/// would block.
+#[test]
+fn done_reads_once_before_it_waits() {
+    let talk = control(&[b"150 here\r\n"]);
+    let file = data(b"hello");
+    let mut m = serving(&[&talk], &[&file]);
+    let (_, _, text) = added_tracing(&mut m, URL, Easy::new(), b"all", |_| {});
+    for _ in 0..40 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let said = text.text();
+    assert!(m.info_read().is_none(), "the answer is awaited: {said}");
+    said_in_order(
+        &said,
+        &["[PERFORMING] -> [DONE]", "[TCP] recv(len=900) -> 81, 0\n"],
+    );
+    let after = &said[said.find("[PERFORMING] -> [DONE]").unwrap()..];
+    let reads = after.matches("[TCP] recv(len=900) -> 81, 0\n").count();
+    assert_eq!(reads, 1, "{said}");
+}
+
 /// The fake TLS library's libraries.
 fn with_tls() -> SharedLibraries {
     let backend: &'static crate::tls::fake::FakeTls =

@@ -1963,7 +1963,7 @@ impl Request {
             .map_err(|_| ErrorKind::OutOfMemory)?;
         route.origin = TryArc::try_new(origin).map_err(|_| ErrorKind::OutOfMemory)?;
         let closer = socket_closer(cx);
-        let data = DataConn::start(control.number, route, closer, tls, cx.now())?;
+        let data = DataConn::start(cx, control.number, route, closer, tls)?;
         if let Some(old) = self.data.take() {
             old.discard(cx);
         }
@@ -2322,7 +2322,7 @@ impl<H: Host> crate::upload::sending::Outlet<H> for DataOutlet<'_> {
             .0
             .carrier(&mut close)
             .expect("an upload goes over a connected data connection");
-        carrier.send(cx, bytes)
+        cx.as_second(|cx| carrier.send(cx, bytes))
     }
 
     fn shut(&mut self, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
@@ -2677,7 +2677,7 @@ impl Request {
             let mut carrier = data
                 .carrier(&mut close)
                 .expect("a download is read over a connected data connection");
-            match carrier.recv(cx, max) {
+            match cx.as_second(|cx| carrier.recv(cx, max)) {
                 Ok(Recv::WouldBlock) if carrier.reborrow().data_pending() => {
                     return Ok(ProtoStep::AtReadLimit);
                 }
@@ -3287,7 +3287,7 @@ impl Request {
             crate::time::TimeLimit::duration,
         );
         let deadline = cx.now().after(timeout);
-        let data = DataConn::listening(sock, tls, deadline);
+        let data = DataConn::listening(cx, sock, tls, deadline);
         if let Some(old) = self.data.take() {
             old.discard(cx);
         }

@@ -12,7 +12,7 @@ use crate::multi::TransferCx;
 use curl_alloc::TryArc;
 
 use crate::components::Component;
-use crate::conn::chain::SetupPoint;
+use crate::conn::chain::{Chain, SetupPoint};
 use crate::conn::io::{Closer, Events, Net, Remote, Sock, Socket};
 use crate::conn::mux::Carrier;
 use crate::conn::shutdown::ConnSettings;
@@ -21,7 +21,8 @@ use crate::conn::{ConnectMachine, Drove, Progress};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::multi::cx::DriveCx;
-use crate::multi::state::{SetupLend, Shaken, SideSetup, StepCx};
+use crate::multi::state::side;
+use crate::multi::state::{ConnRank, SetupLend, Shaken, SideSetup, StepCx};
 use crate::tls::{Handshake, TlsIdentity};
 use crate::trace;
 
@@ -65,6 +66,8 @@ enum Phase {
         stream: Box<Stream>,
         shaken: bool,
         peer: Option<Remote>,
+        /// The chain it was connected with, its TLS to go in it.
+        chain: Chain,
     },
 }
 
@@ -84,13 +87,15 @@ impl DataConn {
     /// The setup of connection `number`'s second over `route`, its
     /// sockets closed with `closer`, started `now`; protected by `tls`
     /// once connected, if given.
-    pub(crate) fn start(
+    pub(crate) fn start<H: Host>(
+        cx: &mut StepCx<'_, H>,
         number: ConnNumber,
         route: NetRoute,
         closer: Closer,
         tls: Option<DataTls>,
-        now: crate::time::Instant,
     ) -> Result<DataConn, ErrorKind> {
+        let now = cx.now();
+        crate::multi::state::side::chain_set_up(cx, &route);
         let socket = crate::conn::Dialing {
             route: &route,
             dial: Dial::Stream,
@@ -117,15 +122,26 @@ impl DataConn {
     /// `tls` once connected, if given. The socket accepted is closed by the
     /// library, never the application's closer (`cf_socket_close`'s
     /// `!ctx->accepted`).
-    pub(crate) fn listening(
+    pub(crate) fn listening<H: Host>(
+        cx: &mut StepCx<'_, H>,
         sock: Sock,
         tls: Option<DataTls>,
         deadline: crate::time::Instant,
     ) -> DataConn {
+        cx.as_second(|cx| {
+            let accept = Component::TcpAccept;
+            trace::of(cx, accept, format_args!("added"));
+            let (fd, ip, port) = listens_at(&sock);
+            trace::of(
+                cx,
+                accept,
+                format_args!("set filter for listen socket fd={fd} ip={ip}:{port}"),
+            );
+        });
         DataConn {
             phase: Some(Phase::Listening { sock, deadline }),
             tls,
-            socket: Component::Tcp,
+            socket: Component::TcpAccept,
             shut: None,
         }
     }
@@ -147,26 +163,53 @@ impl DataConn {
         host: &[u8],
         request: &mut dyn SetupLend,
     ) -> Result<Reached, ErrorKind> {
+        cx.as_second(|cx| {
+            if let Some(Phase::Connecting(machine, _)) = self.phase.as_ref() {
+                side::chain_started(cx, machine);
+            }
+            let mut entered = false;
+            let mut chain = None;
+            let made = self.connect_call(cx, host, request, &mut entered, &mut chain);
+            // A setup's failure ends the chain's call; a later stage's is
+            // its layer's own.
+            if let (Err(kind), Some(chain)) = (&made, chain) {
+                side::call_failed(cx, *kind, chain);
+            }
+            made
+        })
+    }
+
+    fn connect_call<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        host: &[u8],
+        request: &mut dyn SetupLend,
+        entered: &mut bool,
+        chain: &mut Option<Chain>,
+    ) -> Result<Reached, ErrorKind> {
         loop {
             match self
                 .phase
                 .take()
                 .expect("a data connection is set up or up")
             {
-                Phase::Connecting(mut machine, mut side) => {
+                Phase::Connecting(mut machine, mut setup) => {
+                    *chain = Some(setup.enter(&machine, cx, entered));
                     if let SetupPoint::Dialed(_) = machine.reached() {
-                        match side.shake(&mut machine, request, cx) {
+                        match setup.shake(&mut machine, request, cx) {
                             Ok(Shaken::Waiting) => {
-                                self.phase = Some(Phase::Connecting(machine, side));
+                                self.phase = Some(Phase::Connecting(machine, setup));
+                                side::call_waits(cx, Component::DnsFilter);
                                 return Ok(Reached::Connecting);
                             }
                             Ok(Shaken::Redialed) => {
-                                self.phase = Some(Phase::Connecting(machine, side));
+                                self.phase = Some(Phase::Connecting(machine, setup));
                                 continue;
                             }
                             Ok(Shaken::Up) => {
                                 let conn = (*machine).handshaken();
                                 crate::multi::state::side_let_go(cx);
+                                *chain = None;
                                 self.up(cx, host, conn)?;
                                 continue;
                             }
@@ -197,7 +240,7 @@ impl DataConn {
                             crate::multi::state::side_progress(cx, &route, &progress, || {
                                 m.dialed().ends().0
                             });
-                            self.phase = Some(Phase::Connecting(m, side));
+                            self.phase = Some(Phase::Connecting(m, setup));
                             match progress {
                                 // Moved on: on again at once, to its
                                 // handshakes if it dialed a proxy.
@@ -205,13 +248,17 @@ impl DataConn {
                                 | Progress::Failed
                                 | Progress::Dialed
                                 | Progress::Trying { at_once: true, .. } => {}
-                                _ => return Ok(Reached::Connecting),
+                                _ => {
+                                    side::call_waits(cx, Component::DnsFilter);
+                                    return Ok(Reached::Connecting);
+                                }
                             }
                         }
                         Ok(Drove::Established(conn)) => {
                             if let Some(remote) = conn.remote() {
                                 crate::multi::state::side_won(cx, &route, remote);
                             }
+                            *chain = None;
                             self.up(cx, host, conn)?;
                         }
                         Err(e) => return Err(crate::multi::state::connect_failed(cx, &route, e)),
@@ -227,8 +274,22 @@ impl DataConn {
                             format_args!("Accept timeout occurred while waiting server connect"),
                         ));
                     }
+                    let accept = Component::TcpAccept;
+                    let (fd, ip, port) = listens_at(&sock);
+                    trace::of(
+                        cx,
+                        accept,
+                        format_args!("Checking for incoming on fd={fd} ip={ip}:{port}"),
+                    );
                     let accepted = match sock.socket().accept() {
                         Ok(None) => {
+                            trace::of(cx, accept, format_args!("socket_check -> 0"));
+                            trace::of(
+                                cx,
+                                accept,
+                                format_args!("nothing heard from the server yet"),
+                            );
+                            side::call_waits(cx, accept);
                             self.phase = Some(Phase::Listening { sock, deadline });
                             return Ok(Reached::Connecting);
                         }
@@ -247,6 +308,7 @@ impl DataConn {
                             ));
                         }
                     };
+                    trace::of(cx, accept, format_args!("socket_check -> 1"));
                     trace::info(
                         cx,
                         format_args!("Ready to accept data connection from server"),
@@ -257,6 +319,14 @@ impl DataConn {
                     close_in(cx, sock);
                     let peer = accepted.peer_addr().ok().map(Remote::Inet);
                     let sock = Sock::new(accepted, Closer::System);
+                    if let Some(remote) = peer.as_ref() {
+                        let fd = sock.key().get();
+                        let mut line = trace::Line::new();
+                        line.text(format_args!("accepted_set(sock={fd}, remote="));
+                        line.raw(remote.shown_ip().bytes());
+                        line.text(format_args!(" port={})", remote.port()));
+                        trace::of_with(cx, accept, &[line.bytes()]);
+                    }
                     // The application is told of it, and may refuse it.
                     if let Some(c) = cx.easy().options().sockets.configure.clone() {
                         let set = SocketToSet(sock.socket(), SocketPurpose::Accept);
@@ -266,15 +336,23 @@ impl DataConn {
                         }
                     }
                     let stream = Stream::new(sock);
-                    self.up_with(cx, host, stream, peer)?;
+                    self.up_with(cx, host, stream, peer, Chain::accepted())?;
                 }
                 up @ Phase::Up { shaken: true, .. } => {
                     self.phase = Some(up);
                     return Ok(Reached::Up);
                 }
                 Phase::Up {
-                    mut stream, peer, ..
+                    mut stream,
+                    peer,
+                    chain: connected,
+                    ..
                 } => {
+                    let shaking = connected.with_tls(false);
+                    if !std::mem::replace(entered, true) {
+                        side::entered_tls(cx, shaking);
+                    }
+                    *chain = Some(shaking);
                     let tls = self.tls.as_mut().expect("only protected data shakes hands");
                     let mut close = false;
                     let mut carrier = Carrier::over(&mut stream, self.socket, &mut close);
@@ -288,20 +366,26 @@ impl DataConn {
                     );
                     match shook {
                         Ok(Handshake::Done) => {
+                            *chain = None;
                             // Said once all of it is connected, its TLS
                             // too (`conn_connect_trace`).
-                            established(cx, host, peer.as_ref(), &stream);
+                            let made = connected.with_tls(true);
+                            connected_all(cx, host, peer.as_ref(), &stream, made);
                             self.phase = Some(Phase::Up {
                                 stream,
                                 shaken: true,
                                 peer: None,
+                                chain: made,
                             });
                         }
                         Ok(Handshake::Waiting) => {
+                            let top = shaking.top().unwrap_or(Component::Ssl);
+                            side::call_waits(cx, top);
                             self.phase = Some(Phase::Up {
                                 stream,
                                 shaken: false,
                                 peer,
+                                chain: connected,
                             });
                             return Ok(Reached::Ip);
                         }
@@ -323,11 +407,15 @@ impl DataConn {
         host: &[u8],
         conn: crate::conn::Conn,
     ) -> Result<(), ErrorKind> {
+        let connected = conn
+            .connected_chain()
+            .expect("a second connection is over the network")
+            .on(ConnRank::Second);
         let (stream, remote) = conn.into_stream();
         // Counted as the transfer's connections are
         // (`cf_ip_happy_connect`'s `numconnects`).
         cx.report_mut().count_connect();
-        self.up_with(cx, host, stream, remote)
+        self.up_with(cx, host, stream, remote, connected)
     }
 
     /// The connection `stream` to `peer` is up: said as C says it once
@@ -339,10 +427,14 @@ impl DataConn {
         host: &[u8],
         stream: Stream,
         peer: Option<Remote>,
+        chain: Chain,
     ) -> Result<(), ErrorKind> {
+        let chain = chain.on(ConnRank::Second);
         let shaken = self.tls.is_none();
         if shaken {
-            established(cx, host, peer.as_ref(), &stream);
+            connected_all(cx, host, peer.as_ref(), &stream, chain);
+        } else {
+            side::tls_added(cx, chain.with_tls(false));
         }
         let stream = match curl_alloc::try_box_or_back(stream) {
             Ok(stream) => stream,
@@ -356,6 +448,7 @@ impl DataConn {
             stream,
             shaken,
             peer,
+            chain,
         });
         Ok(())
     }
@@ -406,19 +499,46 @@ impl DataConn {
         let Some(Phase::Up { stream, .. }) = self.phase.as_mut() else {
             return Ok(true);
         };
+        let socket = self.socket;
+        let started = self.shut.is_some();
         let shut = self.shut.get_or_insert(0);
-        Ok(stream.shutdown(cx, shut)? == Handshake::Done)
+        cx.as_second(|cx| {
+            if !started {
+                crate::multi::mstate::trace(
+                    cx,
+                    format_args!("shutdown start on secondary connection"),
+                );
+            }
+            if stream.shutdown(cx, shut)? == Handshake::Waiting {
+                return Ok(false);
+            }
+            let fd = stream.socket().key().get();
+            trace::of(cx, socket, format_args!("cf_socket_shutdown, fd={fd}"));
+            trace::of(cx, socket, format_args!("shut down successfully"));
+            Ok(true)
+        })
     }
 
     /// Close it at once for the transfer (`Curl_conn_cf_discard_all`),
     /// its sockets' closes said.
     pub(crate) fn discard<H: Host>(self, cx: &mut StepCx<'_, H>) {
-        let mut dcx = DriveCx {
-            step: cx,
-            kept: None,
-            deadlines: None,
-        };
-        self.close(&mut dcx);
+        cx.as_second(|cx| {
+            let open = match self.phase.as_ref() {
+                Some(Phase::Up { stream, .. }) => Some(stream.socket().key().get()),
+                Some(Phase::Listening { sock, .. }) => Some(sock.key().get()),
+                Some(Phase::Connecting(..)) | None => None,
+            };
+            if let Some(fd) = open {
+                trace::of(cx, self.socket, format_args!("destroy"));
+                trace::of(cx, self.socket, format_args!("cf_socket_close, fd={fd}"));
+            }
+            let mut dcx = DriveCx {
+                step: cx,
+                kept: None,
+                deadlines: None,
+            };
+            self.close(&mut dcx);
+        });
     }
 
     /// Close it at once.
@@ -449,6 +569,28 @@ fn close_in<H: Host>(cx: &mut StepCx<'_, H>, socket: crate::conn::io::Sock) {
         deadlines: None,
     };
     dcx.close(socket);
+}
+
+/// A listening socket as the accept filter's lines name it: its number,
+/// and where it listens.
+fn listens_at(sock: &Sock) -> (i32, trace::Ip, u16) {
+    let at = sock.socket().local_addr().ok();
+    let port = at.map_or(0, |at| at.port());
+    (sock.key().get(), trace::Ip(at.map(|at| at.ip())), port)
+}
+
+/// All of the chain is connected: the call ends, the connection is said
+/// up, and its setup filters go.
+fn connected_all<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    host: &[u8],
+    remote: Option<&Remote>,
+    stream: &Stream,
+    chain: Chain,
+) {
+    side::call_connected(cx, chain);
+    established(cx, host, remote, stream);
+    side::setup_filters_go(cx, chain);
 }
 
 /// The connection is up: said as C says it (`conn_connect_trace`), the

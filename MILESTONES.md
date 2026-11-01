@@ -1229,7 +1229,10 @@ Its first steps are milestone 6's design-review changes.
     layer's WebSocket send lines; TLS 1.3 tickets and the SSL pointer on a detached connection;
     raw I/O outside the pool lock.
 84. **The FTP data connection's indexed trace names** (`[SSL-1]`, `[TCP-1]`, its setup and
-    shutdown lines).
+    shutdown lines). Done. Not said, as the first connection's trace does not say them either or
+    the pollset has no step to say them in: the HTTP proxy tunnel's `[H1-PROXY-1]` state lines,
+    TLS's `[SSL-1]` detail lines beyond those the first chain says, `adjust_pollset`'s, and
+    `[TIMER] [SHUTDOWN]`, as no timer stands for the shutdown of a data connection.
 85. **Budgets.** **Done.** 768 and 2120 stay as tripwires; `held` is the budget, and DESIGN.md says a size
     trade is justified only against a budget derived from C. The socket rule allows sockets a
     protocol owns by nature (FTP's listener, TFTP's datagrams).

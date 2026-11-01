@@ -1718,6 +1718,12 @@ impl Conn {
     /// (`Curl_conn_remove_setup_filters`), as its route made it; none for
     /// a local one.
     pub(crate) fn chain(&self) -> Option<chain::Chain> {
+        self.connected_chain().map(|connected| connected.reduced())
+    }
+
+    /// Its chain of filters as it connected, its setup's still there;
+    /// none for a local one.
+    pub(crate) fn connected_chain(&self) -> Option<chain::Chain> {
         let Route::Net(route) = &self.route else {
             return None;
         };
@@ -1729,7 +1735,7 @@ impl Conn {
             Some(layer::LayerAnswer::Tunnel(filter)) => filter,
             _ => crate::components::Component::H1Proxy,
         };
-        let connected = chain::Chain::connected(
+        Some(chain::Chain::connected(
             Dialing {
                 route,
                 dial: self.dial,
@@ -1737,8 +1743,7 @@ impl Conn {
             chain::Head::default(),
             false,
             tunnel,
-        );
-        Some(connected.reduced())
+        ))
     }
 
     /// What its socket's filter traces as (`TCP`, `UNIX`).

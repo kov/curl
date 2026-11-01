@@ -37,7 +37,7 @@ mod haproxy;
 mod https;
 mod names;
 mod quictunnel;
-mod side;
+pub(crate) mod side;
 pub(crate) use side::{Shaken, SideSetup};
 mod socks;
 pub(crate) mod tls;
@@ -2150,12 +2150,31 @@ pub(crate) struct StepCx<'a, H: Host> {
     /// What a second connection's setup, as the step last moved it on,
     /// asks of the transfer's timers once the step is over.
     pub(crate) side_due: SideDue,
+    /// The chain of the connection the step is working on, which its
+    /// filters' lines name (`cf->sockindex`).
+    rank: ConnRank,
     /// The connection a WebSocket's transfer holds, lent while its
     /// output is delivered and its upload read: its handlers send frames
     /// on it, and its frames' state is read and kept there. The one
     /// exception to decision 9 (ENGINE.md): what reaches it is only
     /// `TransferCx`'s WebSocket calls.
     ws: Option<crate::conn::WsLend<'a>>,
+}
+
+impl<H: Host> StepCx<'_, H> {
+    /// The chain the lines said now belong to.
+    pub(crate) fn rank(&self) -> ConnRank {
+        self.rank
+    }
+
+    /// Run `f`, its work the connection's second chain's: its filters'
+    /// lines name it, and no others do.
+    pub(crate) fn as_second<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let was = std::mem::replace(&mut self.rank, ConnRank::Second);
+        let r = f(self);
+        self.rank = was;
+        r
+    }
 }
 
 impl<'a, H: Host> StepCx<'a, H> {
@@ -2173,6 +2192,7 @@ impl<'a, H: Host> StepCx<'a, H> {
             quic_at: None,
             server_response_at: None,
             side_due: SideDue::default(),
+            rank: ConnRank::First,
             ws: None,
         }
     }
@@ -2224,6 +2244,7 @@ impl<H: Host> StepCx<'_, H> {
             quic_at: self.quic_at,
             server_response_at: self.server_response_at,
             side_due: self.side_due,
+            rank: self.rank,
             ws: Some(conn),
         };
         let r = f(&mut cx);
@@ -3515,20 +3536,28 @@ fn connecting<H: Host>(
 /// A call of the chain's connect ends, up, under way or failed, as the
 /// filter at its top, the name's DNS one, traces it (`Curl_conn_connect`).
 fn chain_connect_ended<H: Host>(cx: &mut StepCx<'_, H>, ended: Result<bool, ErrorKind>) {
+    connect_ended_at(cx, Component::DnsFilter, ended);
+}
+
+/// The same, `top` the filter at the chain's top.
+fn connect_ended_at<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    top: Component,
+    ended: Result<bool, ErrorKind>,
+) {
     let (code, done) = match ended {
         Ok(done) => (trace::Code(Ok(())), u8::from(done)),
         Err(kind) => (trace::Code(Err(kind)), 0),
     };
-    let dns = Component::Dns;
     trace::of(
         cx,
-        dns,
+        top,
         format_args!("Curl_conn_connect(block=0) -> {code}, done={done}"),
     );
     if ended.is_err() {
         trace::of(
             cx,
-            dns,
+            top,
             format_args!("Curl_conn_connect(), filter returned {code}"),
         );
     }
@@ -3554,26 +3583,47 @@ fn enter_setup<H: Host>(
     a: Attempt,
 ) -> Option<Chain> {
     let setup = c.attempt(a)?;
-    let reached = setup.reached();
     let under_way = c.handshake(a).map(Handshake::filter);
-    let head = head_of(c);
+    Some(enter_chain(
+        setup,
+        &c.route,
+        head_of(c),
+        under_way,
+        cx,
+        entered,
+    ))
+}
+
+/// `enter_setup` of the chain `setup` makes over `plan`, under `head`,
+/// with the handshake `under_way` started.
+fn enter_chain<H: Host>(
+    setup: &ConnectMachine,
+    plan: &NetRoute,
+    head: Head,
+    under_way: Option<Component>,
+    cx: &mut StepCx<'_, H>,
+    entered: &mut bool,
+) -> Chain {
+    let reached = setup.reached();
+    let rank = cx.rank();
     // The route as the attempt dials it, which a race's second dials
     // otherwise than the first.
     let route = setup.dialing();
-    let chain =
-        |reached, under_way, installed| Chain::of(route, head, reached, under_way, installed);
+    let chain = |reached, under_way, installed| {
+        Chain::of(route, head, reached, under_way, installed).on(rank)
+    };
     let entry = |cx: &mut StepCx<'_, H>, chain: Chain| {
         mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
     };
     match reached {
-        SetupPoint::Resolving => return Some(chain(reached, None, true)),
+        SetupPoint::Resolving => return chain(reached, None, true),
         SetupPoint::Racing { started: false } => {
             // The happy eyeballs filter is added (`cf_setup_add_ip_happy`).
             entry(cx, chain(reached, None, true));
-            let peer = c.route.destination();
-            let to = if c.route.proxy_over_quic() {
+            let peer = plan.destination();
+            let to = if plan.proxy_over_quic() {
                 "HTTP/3 proxy"
-            } else if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) {
+            } else if plan.proxy.as_ref().is_some_and(|p| p.tunnels()) {
                 "proxy"
             } else {
                 "origin"
@@ -3593,7 +3643,7 @@ fn enter_setup<H: Host>(
             let racing = chain(SetupPoint::Racing { started: true }, None, true);
             entry(cx, racing);
             *entered = true;
-            return Some(racing);
+            return racing;
         }
         SetupPoint::Racing { started: true } | SetupPoint::Dialed(_) => {}
     }
@@ -3602,24 +3652,23 @@ fn enter_setup<H: Host>(
         *entered = true;
     }
     let (SetupPoint::Dialed(made), None) = (reached, under_way) else {
-        return Some(chain(reached, under_way, true));
+        return chain(reached, under_way, true);
     };
-    let setup = c.attempt(a).expect("a handshake is due over a setup");
-    let Some(due) = handshake_due(&c.route, setup, made) else {
-        return Some(chain(reached, None, true));
+    let Some(due) = handshake_due(plan, setup, made) else {
+        return chain(reached, None, true);
     };
     // The tunnel's filter was added with the HTTPS proxy's TLS below it,
     // and goes on connecting in the same call.
     if let Due::Tunnel = due
         && made.proxy_tls
     {
-        return Some(chain(reached, Some(Component::HttpProxy), false));
+        return chain(reached, Some(Component::HttpProxy), false);
     }
     let filter = match due {
         Due::Socks(_) => {
-            let leg = c.route.socks().expect("through a SOCKS proxy");
+            let leg = plan.socks().expect("through a SOCKS proxy");
             if leg.version.resolves_locally() {
-                names::target_created(cx, leg.to, leg.version.ip(c.route.ip));
+                names::target_created(cx, leg.to, leg.version.ip(plan.ip));
             }
             let at = port_text(leg.to.port());
             trace::of_with(
@@ -3645,7 +3694,7 @@ fn enter_setup<H: Host>(
         // (`cf_setup_add_http_proxy`); one requests go whole to is the
         // origin's filter (`cf_setup_add_origin_filters`), whose line says
         // so though the TLS is the proxy's.
-        Due::Tls(TlsSide::Proxy) if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) => {
+        Due::Tls(TlsSide::Proxy) if plan.proxy.as_ref().is_some_and(|p| p.tunnels()) => {
             trace::of(
                 cx,
                 Component::Setup,
@@ -3678,7 +3727,7 @@ fn enter_setup<H: Host>(
     };
     // The tunnel's filter installs its HTTP/1.1 one as it first connects.
     entry(cx, chain(reached, Some(filter), false));
-    Some(chain(reached, Some(filter), true))
+    chain(reached, Some(filter), true)
 }
 
 /// One step of attempt `a`'s setup within a call: a handshake's, the
@@ -4369,12 +4418,12 @@ pub(crate) fn side_timers<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
     let SideDue { eyeballs, name } = std::mem::take(&mut cx.side_due);
     match eyeballs {
         SideTimer::Keep => {}
-        SideTimer::Arm(at) => eyeballs_due(run, cx, at),
+        SideTimer::Arm(at) => cx.as_second(|cx| eyeballs_due(run, cx, at)),
         SideTimer::Clear => run.deadlines.clear(TimerKind::Eyeballs),
     }
     match name {
         SideTimer::Keep => {}
-        SideTimer::Arm(at) => name_retry(run, cx, at),
+        SideTimer::Arm(at) => cx.as_second(|cx| name_retry(run, cx, at)),
         SideTimer::Clear => run.deadlines.clear(TimerKind::AsyncName),
     }
 }

@@ -41,14 +41,13 @@ fn created<H: Host>(
 ) {
     let head = Text::<48>::clipped(format_args!("[{queries}] created DNS filter for ")).0;
     let tail = Text::<24>::clipped(format_args!(", transport={transport:x}")).0;
-    let dns = Component::Dns;
     trace::of_with(
         cx,
-        dns,
+        Component::Dns,
         &[head.bytes(), peer.name(), at(peer).bytes(), tail.bytes()],
     );
     if added {
-        trace::of(cx, dns, format_args!("added"));
+        trace::of(cx, Component::DnsFilter, format_args!("added"));
     }
 }
 
@@ -84,7 +83,7 @@ pub(super) fn record_started<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute) 
     let peer = route.target();
     trace::of_with(
         cx,
-        Component::Dns,
+        Component::DnsFilter,
         &[b"[HTTPS] cf_dns_start host ", peer.name(), at(peer).bytes()],
     );
 }
@@ -99,7 +98,7 @@ pub(super) fn started<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute) {
     let unix = peer.is_unix();
     let kind = if unix { "unix-domain-socket" } else { "host" };
     let head = Text::<48>::clipped(format_args!("[{queries}] cf_dns_start {kind} ")).0;
-    let dns = Component::Dns;
+    let dns = Component::DnsFilter;
     trace::of_with(cx, dns, &[head.bytes(), peer.name(), at(peer).bytes()]);
     if unix && peer.name().len() < curl_os::net::UNIX_PATH_ROOM {
         trace::of_with(cx, dns, &[b"resolved unix://", peer.name()]);
@@ -112,7 +111,7 @@ pub(super) fn connected<H: Host>(cx: &mut StepCx<'_, H>, filters: usize) {
     for _ in 0..filters {
         trace::of(
             cx,
-            Component::Dns,
+            Component::DnsFilter,
             format_args!("connected filter chain below"),
         );
     }
@@ -133,7 +132,7 @@ pub(super) fn target_started<H: Host>(cx: &mut StepCx<'_, H>, target: &Peer, ip:
     let head = Text::<32>::clipped(format_args!("[{queries}] cf_dns_start host ")).0;
     trace::of_with(
         cx,
-        Component::Dns,
+        Component::DnsFilter,
         &[head.bytes(), target.name(), at(target).bytes()],
     );
 }

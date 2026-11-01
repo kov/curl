@@ -588,7 +588,7 @@ impl Eyeballs {
         line.text(format_args!("get {n}th result for "))
             .raw(of.name)
             .text(format_args!(":{}, family={family}, dns=1", of.port));
-        cx.of_with(Component::Dns, &[line.bytes()]);
+        cx.of_with(Component::DnsFilter, &[line.bytes()]);
         there
     }
 

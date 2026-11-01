@@ -14,9 +14,12 @@ use crate::multi::Host;
 use crate::proto::http::negotiate::Negotiate;
 
 use super::{
-    ConnRank, Failure, Lent, SetupLend, SetupMut, StepCx, Wake, handshake_due, start_handshake,
-    step_handshake,
+    Chain, ConnRank, Failure, Head, Lent, SetupLend, SetupMut, StepCx, Wake,
+    connect_ended_at, enter_chain, handshake_due, mstate, names, start_handshake, step_handshake,
 };
+use crate::components::Component;
+use crate::conn::NetRoute;
+use crate::trace;
 
 /// What a side connection's setup keeps beside its machine: the Negotiate
 /// context with the proxy its tunnel goes through.
@@ -37,7 +40,90 @@ pub(crate) enum Shaken {
     Redialed,
 }
 
+/// The second chain is set up over `route` (`Curl_conn_setup`), said as
+/// the transfer's own is.
+pub(crate) fn chain_set_up<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute) {
+    cx.as_second(|cx| {
+        trace::of(cx, Component::Setup, format_args!("added"));
+        names::chain_set_up(cx, route, false, false);
+    });
+}
+
+/// A call of the chain's connect (`Curl_conn_connect`) reaches the name's
+/// filter first, which starts (`cf_dns_start`).
+pub(crate) fn chain_started<H: Host>(cx: &mut StepCx<'_, H>, machine: &ConnectMachine) {
+    if machine.unasked() {
+        names::started(cx, machine.route());
+    }
+}
+
+/// The call ends with the connect still under way, said by `top`, the
+/// filter at the chain's top.
+pub(crate) fn call_waits<H: Host>(cx: &mut StepCx<'_, H>, top: Component) {
+    connect_ended_at(cx, top, Ok(false));
+}
+
+/// The call ends in `kind`: said by the name's filter, and the chain that
+/// failed named (`Curl_conn_connect`).
+pub(crate) fn call_failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind, chain: Chain) {
+    let top = chain.top().unwrap_or(Component::DnsFilter);
+    connect_ended_at(cx, top, Err(kind));
+    mstate::trace(cx, format_args!("failed to connect {chain}"));
+}
+
+/// The call ends with all of `connected` connected.
+pub(crate) fn call_connected<H: Host>(cx: &mut StepCx<'_, H>, connected: Chain) {
+    names::connected(cx, connected.dns_filters());
+    let top = connected.top().unwrap_or(Component::DnsFilter);
+    connect_ended_at(cx, top, Ok(true));
+}
+
+/// The chain being set up over its first hop adds its TLS, as `chain`
+/// shows it: said as its setup filter says it, if it has one.
+pub(crate) fn tls_added<H: Host>(cx: &mut StepCx<'_, H>, chain: Chain) {
+    if chain.dns_filters() > 0 {
+        trace::of(
+            cx,
+            Component::Setup,
+            format_args!("added SSL filter for origin"),
+        );
+        mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
+    }
+}
+
+/// SETUP's connect is entered as the chain's TLS is made: `chain`.
+pub(crate) fn entered_tls<H: Host>(cx: &mut StepCx<'_, H>, chain: Chain) {
+    if chain.dns_filters() > 0 {
+        mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
+    }
+}
+
+/// The chain `connected` is connected: its setup filters go
+/// (`Curl_conn_remove_setup_filters`).
+pub(crate) fn setup_filters_go<H: Host>(cx: &mut StepCx<'_, H>, connected: Chain) {
+    mstate::trace(cx, format_args!("connected {connected}"));
+    for filter in connected.going() {
+        trace::of(cx, filter, format_args!("removing connected setup filter"));
+        trace::of(cx, filter, format_args!("destroy"));
+    }
+    let reduced = connected.reduced();
+    mstate::trace(cx, format_args!("reduced to {reduced}"));
+}
+
 impl SideSetup {
+    /// SETUP's connect is entered (`cf_setup_connect`): the chain as it
+    /// goes on to, said as the transfer's own is.
+    pub(crate) fn enter<H: Host>(
+        &self,
+        machine: &ConnectMachine,
+        cx: &mut StepCx<'_, H>,
+        entered: &mut bool,
+    ) -> Chain {
+        let under_way = self.handshake.as_deref().map(Handshake::filter);
+        let plan = machine.route().clone();
+        enter_chain(machine, &plan, Head::default(), under_way, cx, entered)
+    }
+
     /// Move the handshakes over `machine`, dialed, on as far as they go
     /// now, in cf-setup.c's order, for `request`. A failure is the
     /// transfer's: the setup is not raced.

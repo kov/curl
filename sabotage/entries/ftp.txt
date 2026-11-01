@@ -221,18 +221,17 @@ file: crates/curl-core/src/proto/ftp/data.rs
 witness: curl-core proto::ftp::tests::a_data_connection_s_handshake_stalls_no_other_transfer
 --- old
         if shaken {
-            established(cx, host, peer.as_ref(), &stream);
-        }
+            connected_all(cx, host, peer.as_ref(), &stream, chain);
+        } else {
 --- new
-        established(cx, host, peer.as_ref(), &stream);
+        connected_all(cx, host, peer.as_ref(), &stream, chain);
+        if !shaken {
 
 === a protected data connection is never said established
 file: crates/curl-core/src/proto/ftp/data.rs
 witness: curl-core proto::ftp::tests::a_data_connection_s_handshake_stalls_no_other_transfer
 --- old
-                            // Said once all of it is connected, its TLS
-                            // too (`conn_connect_trace`).
-                            established(cx, host, peer.as_ref(), &stream);
+                            connected_all(cx, host, peer.as_ref(), &stream, made);
 --- new
 
 === the TLS put on in place is not said added
@@ -331,7 +330,7 @@ witness: curl-core proto::ftp::tests::a_ccc_s_shutdown_stalls_no_other_transfer
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::ftp::tests::a_silent_data_address_gives_way_after_the_eyeballs_delay
 --- old
-        SideTimer::Arm(at) => eyeballs_due(run, cx, at),
+        SideTimer::Arm(at) => cx.as_second(|cx| eyeballs_due(run, cx, at)),
 --- new
         SideTimer::Arm(_) => {}
 
@@ -342,3 +341,19 @@ witness: curl-core proto::smtp::tests::over_the_wire::a_mail_a_reused_connection
             _ if ended || uploads => false,
 --- new
             _ if ended => false,
+
+=== the data connection's filters do not name its socket
+file: crates/curl-core/src/trace.rs
+witness: curl-core proto::ftp::tests::the_data_connection_s_filters_name_its_socket
+--- old
+    if cx.rank() == ConnRank::Second && component.is_filter() {
+--- new
+    if false && cx.rank() == ConnRank::Second && component.is_filter() {
+
+=== a feature's line on the data connection is named as a filter's
+file: crates/curl-core/src/trace.rs
+witness: curl-core proto::ftp::tests::the_data_connection_s_filters_name_its_socket
+--- old
+    if cx.rank() == ConnRank::Second && component.is_filter() {
+--- new
+    if cx.rank() == ConnRank::Second {

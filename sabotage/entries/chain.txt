@@ -29,10 +29,10 @@ witness: curl-core proto::http::tests::setup_trace::a_tunnel_s_setup_is_traced_a
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::setup_trace::a_socks_handshake_refused_as_it_starts_names_its_filter
 --- old
-    Some(chain(reached, Some(filter), true))
+    chain(reached, Some(filter), true)
 }
 --- new
-    Some(chain(reached, under_way, true))
+    chain(reached, under_way, true)
 }
 
 === a SOCKS proxy given an address has no DNS filter of its own in the chain

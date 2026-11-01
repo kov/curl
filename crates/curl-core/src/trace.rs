@@ -10,7 +10,7 @@ use crate::conn::io::Sent;
 use crate::conn::{ConnNumber, TransferNumber};
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::handler::DebugKind;
-use crate::multi::state::StepCx;
+use crate::multi::state::{ConnRank, StepCx};
 use crate::multi::{Host, TransferCx};
 use crate::progress;
 use crate::text::Text;
@@ -96,10 +96,21 @@ pub(crate) fn of<H: Host>(cx: &mut StepCx<'_, H>, component: Component, args: fm
         return;
     }
     let mut line = start_line(cx);
-    line.push_fmt(format_args!("[{}] ", component.name()));
+    push_name(cx, &mut line, component);
     line.push_fmt(args);
     end_line(&mut line);
     text(cx, line.bytes());
+}
+
+/// `component`'s name before its line: a filter of the second chain's
+/// with the socket's index (`trc_infof`'s `sockindex`).
+fn push_name<H: Host>(cx: &StepCx<'_, H>, line: &mut Text<LINE_MAX>, component: Component) {
+    let name = component.name();
+    if cx.rank() == ConnRank::Second && component.is_filter() {
+        line.push_fmt(format_args!("[{name}-1] "));
+    } else {
+        line.push_fmt(format_args!("[{name}] "));
+    }
 }
 
 /// What a send of `len` bytes on the connection came to (`cf_socket_send`),
@@ -128,7 +139,7 @@ pub(crate) fn of_with<H: Host>(cx: &mut StepCx<'_, H>, component: Component, par
         return;
     }
     let mut line = start_line(cx);
-    line.push_fmt(format_args!("[{}] ", component.name()));
+    push_name(cx, &mut line, component);
     for part in parts {
         line.push_clipped(part);
     }

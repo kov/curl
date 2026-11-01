@@ -168,8 +168,7 @@ not a difference: it is tracked in `MILESTONES.md`.
   connection's connect also says each of its calls, `Curl_conn_connect(block=1) -> 0, done=0`,
   and once done the chain it says `connected` and `reduced to`. Not said are the blocking
   connect's waits, `do poll` and `Curl_poll() -> 1`, which the multi's pollset and wait lines
-  stand in for, nor the data connection's connect lines; their timing was not measured against
-  the C build.
+  stand in for; their timing was not measured against the C build.
   The same holds for the goodbye on a closing connection (FTP's, POP3's and SMTP's `QUIT`,
   IMAP's `LOGOUT`), which C waits on and the shutdown here does not. To be looked at again
   against the command-line corpus, should anything there depend on C's blocking. Pinned by

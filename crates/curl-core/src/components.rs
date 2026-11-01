@@ -13,7 +13,8 @@ use curl_alloc::{OutOfMemory, TryArc};
 /// A part of the library that traces on its own: one of C's trace
 /// features (`curl_trc_feat`) or connection filter types (`Curl_cftype`).
 /// C's DNS feature and DNS filter share a name, so a configuration never
-/// sets one without the other: here they are one component.
+/// sets one without the other: they are two components with one level,
+/// as only a filter's line names the connection's socket.
 ///
 /// Every component C knows is here, so a configuration names the same
 /// ones; those the library has no counterpart for yet trace nothing.
@@ -57,6 +58,10 @@ pub enum Component {
     /// configuration names it, and it traces nothing. It is last, past
     /// `ALL`.
     Capsule,
+    /// The DNS filter (`Curl_cft_dns`), where `Dns` is the feature its
+    /// level is shared with: past `ALL`, as a configuration names them
+    /// together.
+    DnsFilter,
 }
 
 /// The groups a configuration can name at once (C's `TRC_CT_*`): `all`
@@ -115,7 +120,7 @@ impl Component {
             Component::Multi => "MULTI",
             Component::Read => "READ",
             Component::Write => "WRITE",
-            Component::Dns => "DNS",
+            Component::Dns | Component::DnsFilter => "DNS",
             Component::Doh => "DoH",
             Component::Timer => "TIMER",
             Component::Threads => "THREADS",
@@ -152,6 +157,7 @@ impl Component {
             Component::Read | Component::Write | Component::Threads => Category::Plain,
             Component::Multi
             | Component::Dns
+            | Component::DnsFilter
             | Component::Doh
             | Component::Timer
             | Component::Ssls
@@ -182,7 +188,32 @@ impl Component {
     }
 
     fn index(self) -> usize {
-        self as usize
+        match self {
+            Component::DnsFilter => Component::Dns as usize,
+            other => other as usize,
+        }
+    }
+
+    /// Whether its lines are a connection filter's (`CURL_TRC_CF`), which
+    /// name the socket of a connection's second chain, where a feature's
+    /// (`CURL_TRC_M` and its kind) do not.
+    pub(crate) fn is_filter(self) -> bool {
+        !matches!(
+            self,
+            Component::Ids
+                | Component::Multi
+                | Component::Read
+                | Component::Write
+                | Component::Dns
+                | Component::Doh
+                | Component::Timer
+                | Component::Threads
+                | Component::Ftp
+                | Component::Smtp
+                | Component::Ssls
+                | Component::Ssh
+                | Component::Ws
+        )
     }
 }
 

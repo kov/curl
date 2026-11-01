@@ -242,6 +242,71 @@ fn a_file_is_retrieved_over_a_passive_data_connection() {
     assert_eq!(removed.easy.report().connects(), 2);
 }
 
+/// That each of `lines` is in `said`, in their order.
+fn said_in_order(said: &str, lines: &[&str]) {
+    let mut from = 0;
+    for line in lines {
+        match said[from..].find(line) {
+            Some(at) => from += at + line.len(),
+            None => panic!("no {line:?} after byte {from} of:\n{said}"),
+        }
+    }
+}
+
+/// The data connection's filters name its socket, as C's build traces
+/// them (`trc_infof`'s `sockindex`), from its setup to its shutdown; the
+/// features do not, nor do the filters of the control connection.
+#[test]
+fn the_data_connection_s_filters_name_its_socket() {
+    let talk = control(&[b"150 here\r\n226 done\r\n"]);
+    let file = data(b"hello");
+    let mut m = serving(&[&talk], &[&file]);
+    let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"all", |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    said_in_order(
+        &said,
+        &[
+            "[SETUP-1] added\n",
+            "created DNS filter for 127.0.0.1:8022, transport=3\n",
+            "[DNS-1] added\n",
+            "Connecting to 127.0.0.1 port 8022\n",
+            "cf_dns_start host 127.0.0.1:8022\n",
+            "[DNS] cache lookup 127.0.0.1:8022",
+            "cf_setup_connect [1][!DNS][!SETUP]\n",
+            "[SETUP-1] happy eyeballing to origin 127.0.0.1:8022\n",
+            "cf_setup_connect [1][!DNS][!SETUP][!HAPPY-EYEBALLS]\n",
+            "[HAPPY-EYEBALLS-1] init ip ballers for transport 3\n",
+            "[DNS-1] get 0th result for 127.0.0.1:8022",
+            "[TCP-1] cf_socket_open() -> 0, fd=",
+            "[TCP-1] connected on fd=",
+            "[HAPPY-EYEBALLS-1] Connected to 127.0.0.1 (127.0.0.1) port 8022\n",
+            "[TIMER] [HAPPY_EYEBALLS] cleared\n",
+            "[DNS-1] connected filter chain below\n",
+            "[DNS-1] Curl_conn_connect(block=0) -> 0, done=1\n",
+            "Established 2nd connection to 127.0.0.1",
+            "connected [1][DNS][SETUP][HAPPY-EYEBALLS][TCP]\n",
+            "[DNS-1] removing connected setup filter\n",
+            "[DNS-1] destroy\n",
+            "[SETUP-1] removing connected setup filter\n",
+            "[SETUP-1] destroy\n",
+            "[HAPPY-EYEBALLS-1] removing connected setup filter\n",
+            "[HAPPY-EYEBALLS-1] destroy\n",
+            "reduced to [1][TCP]\n",
+            "[TCP] send(len=8) -> 0, 8\n",
+            "[TCP-1] recv(len=",
+            "shutdown start on secondary connection\n",
+            "[TCP-1] cf_socket_shutdown, fd=",
+            "[TCP-1] shut down successfully\n",
+            "[TCP-1] destroy\n",
+            "[TCP-1] cf_socket_close, fd=",
+        ],
+    );
+    assert!(!said.contains("[DNS-1] cache lookup"), "{said}");
+    assert!(!said.contains("[MULTI-1]"), "{said}");
+}
+
 /// A file the server refuses fails the transfer though DONE, which finds
 /// nothing wrong with the connection, goes well: the transfer's failure
 /// stands over DONE's result (`multi_done`'s callers keep theirs).
@@ -517,13 +582,27 @@ fn a_protected_data_connection_resumes_its_control_connection_s_session() {
     })
     .unwrap();
     let url = "ftps://127.0.0.1:PORT/f";
-    let (id, body, text) = added_with(&mut m, url, Some(libraries), |_| {});
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let (id, body, text) = added_tracing(&mut m, url, e, b"all", |_| {});
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Ok(()), "{}", text.text());
     assert_eq!(*body.0.lock().unwrap(), b"hello");
     let log = backend.log();
     assert_eq!(log.handshakes, 2, "{}", text.text());
     assert_eq!((log.resumed, log.resumed_given), (1, 1), "{}", text.text());
+    // Its TLS is the second chain's, named so, the chain up as it is made.
+    said_in_order(
+        &text.text(),
+        &[
+            "[SETUP-1] added SSL filter for origin\n",
+            "cf_setup_connect [1][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]\n",
+            "[DNS-1] Curl_conn_connect(block=0) -> 0, done=1\n",
+            "Established 2nd connection to 127.0.0.1",
+            "connected [1][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]\n",
+            "reduced to [1][SSL][TCP]\n",
+        ],
+    );
 }
 
 /// An FTPS download whose control connection is cleared by `CCC` as
@@ -1275,13 +1354,30 @@ fn an_active_download_accepts_the_server_s_connection() {
     let control = Conversation::replies(&replies, false).greeting();
     let data = Conversation::replies(&[b"hello"], true).greeting();
     let (mut m, counted) = serving_active(&[&control], &[&data]);
-    let (id, body, text) = added(&mut m, URL, |o| {
+    let (id, body, text) = added_tracing(&mut m, URL, Easy::new(), b"all", |o| {
         o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let said = text.text();
     assert_eq!(result, Ok(()), "{said}");
     assert_eq!(*body.0.lock().unwrap(), b"hello");
+    // Its one filter is the accepting one, as C's build says it.
+    said_in_order(
+        &said,
+        &[
+            "[TCP-ACCEPT-1] added\n",
+            "[TCP-ACCEPT-1] set filter for listen socket fd=",
+            "[TCP-ACCEPT-1] Checking for incoming on fd=",
+            "[TCP-ACCEPT-1] socket_check -> 1\n",
+            "[TCP-ACCEPT-1] accepted_set(sock=",
+            "[TCP-ACCEPT-1] Curl_conn_connect(block=0) -> 0, done=1\n",
+            "Established 2nd connection to 127.0.0.1",
+            "connected [1][TCP-ACCEPT]\n",
+            "reduced to [1][TCP-ACCEPT]\n",
+            "[TCP-ACCEPT-1] recv(len=",
+            "[TCP-ACCEPT-1] destroy\n",
+        ],
+    );
     assert!(
         received(&control).contains("EPRT |1|127.0.0.1|40001|\r\nTYPE I\r\n"),
         "{}",

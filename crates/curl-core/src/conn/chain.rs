@@ -11,6 +11,7 @@ use std::fmt;
 use super::connect::{Made, Tunneled};
 use super::{Dialing, NetRoute};
 use crate::components::Component;
+use crate::multi::state::ConnRank;
 
 /// How far a setup got, as the chain shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +47,8 @@ const MOST: usize = 14;
 pub(crate) struct Chain {
     filters: [(Component, bool); MOST],
     len: usize,
+    /// The connection's chain it is, which its rendering opens with.
+    rank: ConnRank,
 }
 
 impl Chain {
@@ -53,7 +56,15 @@ impl Chain {
         Chain {
             filters: [(Component::Tcp, false); MOST],
             len: 0,
+            rank: ConnRank::First,
         }
+    }
+
+    /// The same chain, as the connection's `rank` one
+    /// (`conn->cfilter[sockindex]`).
+    pub(crate) fn on(mut self, rank: ConnRank) -> Chain {
+        self.rank = rank;
+        self
     }
 
     fn push(&mut self, filter: Component, connected: bool) {
@@ -146,9 +157,9 @@ impl Chain {
     /// record's above them, then the HTTPS connect filter.
     fn head(&mut self, head: Head, connected: bool) {
         if head.record {
-            self.push(Component::Dns, connected);
+            self.push(Component::DnsFilter, connected);
         }
-        self.push(Component::Dns, connected);
+        self.push(Component::DnsFilter, connected);
         if head.https {
             self.push(Component::HttpsConnect, connected);
         }
@@ -186,13 +197,13 @@ impl Chain {
         let mut chain = Chain::new();
         let mut push = |filter| chain.push(filter, connected(filter));
         if head.record {
-            push(Component::Dns);
+            push(Component::DnsFilter);
         }
-        push(Component::Dns);
+        push(Component::DnsFilter);
         // The SOCKS proxy's goes after the last DNS filter there is
         // (`cf_dns_add_resolve`), above the HTTPS connect filter.
         if added.socks && resolves_target(route.route) {
-            push(Component::Dns);
+            push(Component::DnsFilter);
         }
         if head.https {
             push(Component::HttpsConnect);
@@ -256,7 +267,7 @@ impl Chain {
     /// outside its connect (`cf_hc_baller_connect`), so the chain ends
     /// there.
     pub(crate) fn failed(&self) -> Chain {
-        let mut left = Chain::new();
+        let mut left = Chain::new().on(self.rank);
         for &(filter, connected) in &self.filters[..self.len] {
             left.push(filter, connected);
             if filter == Component::HttpsConnect {
@@ -269,7 +280,7 @@ impl Chain {
     /// What is left once the setup filters go
     /// (`Curl_conn_remove_setup_filters`).
     pub(crate) fn reduced(&self) -> Chain {
-        let mut left = Chain::new();
+        let mut left = Chain::new().on(self.rank);
         for &(filter, connected) in &self.filters[..self.len] {
             if !is_setup(filter) {
                 left.push(filter, connected);
@@ -278,11 +289,47 @@ impl Chain {
         left
     }
 
+    /// What a second connection accepted from the server is
+    /// (`Curl_conn_tcp_listen_set`): its one filter.
+    pub(crate) fn accepted() -> Chain {
+        let mut chain = Chain::new();
+        chain.push(Component::TcpAccept, true);
+        chain
+    }
+
+    /// This connected chain with a second connection's TLS below its setup
+    /// filter: `made`, all of it connected; or being made, it and what is
+    /// above it not yet (`cf_setup_connect`'s `CF_SETUP_CNNCT_SSL`).
+    pub(crate) fn with_tls(&self, made: bool) -> Chain {
+        let filters = &self.filters[..self.len];
+        let at = filters
+            .iter()
+            .position(|&(filter, _)| filter == Component::Setup)
+            .map_or(0, |setup| setup + 1);
+        let mut chain = Chain::new().on(self.rank);
+        for &(filter, _) in &filters[..at] {
+            chain.push(filter, made);
+        }
+        chain.push(Component::Ssl, made);
+        for &(filter, connected) in &filters[at..] {
+            chain.push(filter, connected);
+        }
+        chain
+    }
+
+    /// How many DNS filters it holds.
+    pub(crate) fn dns_filters(&self) -> usize {
+        self.filters[..self.len]
+            .iter()
+            .filter(|&&(filter, _)| filter == Component::DnsFilter)
+            .count()
+    }
+
     /// The chain with `filter` put on top of it, `connected` or not, as a
     /// filter added to a connection already up goes (`Curl_conn_cf_add`):
     /// TLS upgraded to in place.
     pub(crate) fn under(&self, filter: Component, connected: bool) -> Chain {
-        let mut topped = Chain::new();
+        let mut topped = Chain::new().on(self.rank);
         topped.push(filter, connected);
         for &(filter, connected) in &self.filters[..self.len] {
             topped.push(filter, connected);
@@ -329,7 +376,7 @@ struct Handshakes {
 fn is_setup(filter: Component) -> bool {
     matches!(
         filter,
-        Component::Dns
+        Component::DnsFilter
             | Component::HttpsConnect
             | Component::Setup
             | Component::HappyEyeballs
@@ -351,7 +398,10 @@ fn resolves_target(route: &NetRoute) -> bool {
 /// one not connected yet.
 impl fmt::Display for Chain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("[0]")?;
+        f.write_str(match self.rank {
+            ConnRank::First => "[0]",
+            ConnRank::Second => "[1]",
+        })?;
         for &(filter, connected) in &self.filters[..self.len] {
             let not = if connected { "" } else { "!" };
             write!(f, "[{not}{}]", filter.name())?;
@@ -586,7 +636,11 @@ mod tests {
         let going: Vec<_> = up.going().collect();
         assert_eq!(
             going,
-            [Component::Dns, Component::Setup, Component::HappyEyeballs]
+            [
+                Component::DnsFilter,
+                Component::Setup,
+                Component::HappyEyeballs
+            ]
         );
         assert_eq!(up.reduced().to_string(), "[0][H3-PROXY][UDP]");
     }
@@ -673,7 +727,7 @@ mod tests {
         assert_eq!(
             going,
             [
-                Component::Dns,
+                Component::DnsFilter,
                 Component::Setup,
                 Component::HttpProxy,
                 Component::HappyEyeballs

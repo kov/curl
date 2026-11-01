@@ -374,7 +374,7 @@ witness: curl-core proto::smtp::tests::over_the_wire::starttls_is_timed_and_said
 file: crates/curl-core/src/conn/chain.rs
 witness: curl-core proto::smtp::tests::over_the_wire::starttls_is_timed_and_said_connected
 --- old
-        let mut topped = Chain::new();
+        let mut topped = Chain::new().on(self.rank);
         topped.push(filter, connected);
         for &(filter, connected) in &self.filters[..self.len] {
             topped.push(filter, connected);

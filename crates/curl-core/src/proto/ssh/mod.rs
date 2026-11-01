@@ -184,7 +184,7 @@ enum State {
     SftpPostquoteInit,
     SftpQuote,
     SftpNextQuote,
-    SftpQuoteStat,
+    SftpQuoteStat(QuoteChange),
     SftpQuoteSetstat,
     SftpQuoteSymlink,
     SftpQuoteMkdir,
@@ -241,7 +241,7 @@ impl State {
             State::SftpPostquoteInit => "SSH_SFTP_POSTQUOTE_INIT",
             State::SftpQuote => "SSH_SFTP_QUOTE",
             State::SftpNextQuote => "SSH_SFTP_NEXT_QUOTE",
-            State::SftpQuoteStat => "SSH_SFTP_QUOTE_STAT",
+            State::SftpQuoteStat(_) => "SSH_SFTP_QUOTE_STAT",
             State::SftpQuoteSetstat => "SSH_SFTP_QUOTE_SETSTAT",
             State::SftpQuoteSymlink => "SSH_SFTP_QUOTE_SYMLINK",
             State::SftpQuoteMkdir => "SSH_SFTP_QUOTE_MKDIR",
@@ -277,6 +277,27 @@ impl State {
     }
 }
 
+/// The attribute a quote command changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QuoteChange {
+    Chgrp,
+    Chmod,
+    Chown,
+    Atime,
+    Mtime,
+}
+
+/// How far the keyboard-interactive login is (`kbd_state`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kbd {
+    /// Not begun, or begun again.
+    Asking,
+    /// The password is given, the server's verdict awaited.
+    Answered,
+    /// The server asked a round of no questions, its verdict still awaited.
+    Confirming,
+}
+
 /// Which of the transfer's command lists a quote command is of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Quotes {
@@ -305,8 +326,8 @@ pub(crate) struct SshConn {
     /// How the server lets the user log in (`auth_methods`).
     methods: Methods,
     authed: bool,
-    /// How far the keyboard-interactive login is (`kbd_state`).
-    kbd: u8,
+    /// How far the keyboard-interactive login is.
+    kbd: Kbd,
     /// The SFTP session's home directory (`homedir`).
     home: Option<Vec<u8>>,
     /// What of its route few routes have: the credentials and key files
@@ -487,28 +508,10 @@ impl SshConn {
     /// not to be used again, which its owner reads from the session
     /// gone.
     fn session_free(&mut self, says: &mut dyn Says) -> Result<(), ErrorKind> {
-        let result = self.actual;
         self.session = None;
-        self.next = None;
-        self.actual = Ok(());
         self.waitfor = PollFlags::default();
-        self.methods = Methods::default();
-        self.authed = false;
-        self.kbd = 0;
-        self.home = None;
-        self.quote = None;
-        self.path1 = None;
-        self.path2 = None;
-        self.accept_fail = false;
-        self.change = None;
-        self.listing = Vec::new();
-        self.link = None;
-        self.slash = 0;
-        self.second_create_dirs = false;
-        self.reading = None;
-        self.writing = false;
         self.to(says, State::Stop);
-        result
+        self.actual
     }
 }
 
@@ -886,7 +889,7 @@ impl Request {
                         sc.to(cx, State::SftpGetinfo);
                     }
                 }
-                State::SftpQuoteStat => sftp_quote_stat(cx, sc),
+                State::SftpQuoteStat(kind) => sftp_quote_stat(cx, sc, kind),
                 State::SftpQuoteSetstat => {
                     let path = sc.path2.take().unwrap_or_default();
                     let change = sc.change.expect("a stat kept a change to make");
@@ -1321,17 +1324,25 @@ impl Request {
             }
         };
         let starts = |prefix: &[u8]| cmd.starts_with(prefix);
-        if starts(b"chgrp ")
-            || starts(b"chmod ")
-            || starts(b"chown ")
-            || starts(b"atime ")
-            || starts(b"mtime ")
-        {
+        let change = if starts(b"chgrp ") {
+            Some(QuoteChange::Chgrp)
+        } else if starts(b"chmod ") {
+            Some(QuoteChange::Chmod)
+        } else if starts(b"chown ") {
+            Some(QuoteChange::Chown)
+        } else if starts(b"atime ") {
+            Some(QuoteChange::Atime)
+        } else if starts(b"mtime ") {
+            Some(QuoteChange::Mtime)
+        } else {
+            None
+        };
+        if let Some(kind) = change {
             let why = "Syntax error in chgrp/chmod/chown/atime/mtime: Bad second parameter";
             if let Some(p) = second(cx, sc, why) {
                 sc.path2 = Some(p);
                 sc.change = None;
-                sc.to(cx, State::SftpQuoteStat);
+                sc.to(cx, State::SftpQuoteStat(kind));
             }
         } else if starts(b"ln ") || starts(b"symlink ") {
             if let Some(p) = second(cx, sc, "Syntax error in ln/symlink: Bad second parameter") {
@@ -2213,7 +2224,7 @@ impl Request {
             waitfor: PollFlags::default(),
             methods: Methods::default(),
             authed: false,
-            kbd: 0,
+            kbd: Kbd::Asking,
             home: None,
             cold,
             quote: None,
@@ -2316,18 +2327,7 @@ fn quote_done<H: Host>(
 
 /// `SSH_SFTP_QUOTE_STAT`: the file's attributes read and the command's
 /// change to them made, to be sent.
-fn sftp_quote_stat<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
-    let (list, at) = sc.quote.expect("a quote command to run");
-    let given = quote_command(cx, list, at).expect("the quote command is in its list");
-    let mut cmd = [0u8; 5];
-    let given = c_string(given);
-    let (given, accept) = match given.strip_prefix(b"*") {
-        Some(rest) => (rest, true),
-        None => (given, false),
-    };
-    sc.accept_fail = accept;
-    let n = given.len().min(5);
-    cmd[..n].copy_from_slice(&given[..n]);
+fn sftp_quote_stat<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, kind: QuoteChange) {
     let path2 = sc.path2.take().unwrap_or_default();
     let stated = sc.session().stat_to_change(&path2);
     sc.path2 = Some(path2);
@@ -2342,8 +2342,8 @@ fn sftp_quote_stat<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
     }
     let arg = sc.path1.as_deref().unwrap_or_default();
     let number = |max: u32, base: u32| path::number(arg, i64::from(max), base).map(|(n, _)| n);
-    let change = match &cmd {
-        b"chgrp" => match number(u32::MAX, 10) {
+    let change = match kind {
+        QuoteChange::Chgrp => match number(u32::MAX, 10) {
             Ok(n) => AttrChange::Gid(n as u32),
             Err(_) => {
                 let kind = trace::fail(
@@ -2354,7 +2354,7 @@ fn sftp_quote_stat<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
                 return quote_failed(cx, sc, kind);
             }
         },
-        b"chmod" => match number(0o7777, 8) {
+        QuoteChange::Chmod => match number(0o7777, 8) {
             Ok(n) => AttrChange::Permissions(n as u32),
             Err(_) => {
                 let kind = trace::fail(
@@ -2365,7 +2365,7 @@ fn sftp_quote_stat<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
                 return quote_failed(cx, sc, kind);
             }
         },
-        b"chown" => match number(u32::MAX, 10) {
+        QuoteChange::Chown => match number(u32::MAX, 10) {
             Ok(n) => AttrChange::Uid(n as u32),
             Err(_) => {
                 let kind = trace::fail(
@@ -2376,10 +2376,14 @@ fn sftp_quote_stat<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
                 return quote_failed(cx, sc, kind);
             }
         },
-        b"atime" | b"mtime" => {
+        QuoteChange::Atime | QuoteChange::Mtime => {
             let date = match crate::date::parse(arg) {
                 Err(_) => {
-                    let name = if &cmd == b"atime" { "atime" } else { "mtime" };
+                    let name = if kind == QuoteChange::Atime {
+                        "atime"
+                    } else {
+                        "mtime"
+                    };
                     let kind = trace::fail(
                         cx,
                         ErrorKind::QuoteError,
@@ -2394,13 +2398,12 @@ fn sftp_quote_stat<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
                 }
                 Ok(date) => date as u32,
             };
-            if &cmd == b"atime" {
+            if kind == QuoteChange::Atime {
                 AttrChange::Atime(date)
             } else {
                 AttrChange::Mtime(date)
             }
         }
-        _ => unreachable!("only an attribute change is stated"),
     };
     sc.change = Some(change);
     sc.to(cx, State::SftpQuoteSetstat);
@@ -2633,7 +2636,7 @@ fn auth_key<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
 fn interactive(sc: &mut SshConn) -> Rc {
     loop {
         match sc.kbd {
-            0 => {
+            Kbd::Asking => {
                 match sc.session().auth_kbdint() {
                     Auth::Again => return Rc::Again,
                     Auth::Info => {}
@@ -2648,34 +2651,33 @@ fn interactive(sc: &mut SshConn) -> Rc {
                 if sc.session().kbdint_answer(0, &password).is_err() {
                     return Rc::Error;
                 }
-                sc.kbd = 1;
+                sc.kbd = Kbd::Answered;
             }
-            1 => match sc.session().auth_kbdint() {
+            Kbd::Answered => match sc.session().auth_kbdint() {
                 Auth::Again => return Rc::Again,
                 Auth::Success => break,
                 Auth::Info => {
                     if sc.session().kbdint_prompts() != Ok(0) {
                         return Rc::Error;
                     }
-                    sc.kbd = 2;
+                    sc.kbd = Kbd::Confirming;
                 }
                 _ => {
-                    sc.kbd = 0;
+                    sc.kbd = Kbd::Asking;
                     return Rc::Error;
                 }
             },
-            2 => match sc.session().auth_kbdint() {
+            Kbd::Confirming => match sc.session().auth_kbdint() {
                 Auth::Again => return Rc::Again,
                 Auth::Success => break,
                 _ => {
-                    sc.kbd = 0;
+                    sc.kbd = Kbd::Asking;
                     return Rc::Error;
                 }
             },
-            _ => return Rc::Error,
         }
     }
-    sc.kbd = 0;
+    sc.kbd = Kbd::Asking;
     Rc::Ok
 }
 

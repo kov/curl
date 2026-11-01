@@ -25,8 +25,8 @@ use crate::deliver::{self, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::idn::Idn;
 use crate::ldap::{
-    Code, Kind, Mech, Message, MsgId, Scope, Search, Session, SessionFailed, UrlError, Version,
-    Wire,
+    Code, Kind, Ldap, Mech, Message, MsgId, Scope, Search, Session, SessionFailed, UrlError,
+    Version, Wire,
 };
 use crate::multi::Host;
 use crate::multi::state::StepCx;
@@ -66,6 +66,8 @@ const URL_ERRORS: [&str; 11] = [
 /// An LDAP transfer: its search, and where reading the answer is.
 #[derive(Debug)]
 pub(crate) struct Request {
+    /// The library its handle has.
+    library: &'static dyn Ldap,
     pipeline: Pipeline,
     peer: Peer,
     /// The transfer's credentials, until its route takes them.
@@ -330,6 +332,9 @@ impl Request {
         before: super::Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
+        let Some(library) = cx.easy().libraries().ldap else {
+            return Err(ErrorKind::UnsupportedProtocol);
+        };
         let name: &[u8] = if secured { b"ldaps" } else { b"ldap" };
         let peer = super::dict::peer_of(url, name, cx)?;
         let gate = match before.first {
@@ -358,11 +363,6 @@ impl Request {
         let parsed = if from_url || url_options.is_some() {
             Err(UrlError::BAD_URL)
         } else {
-            let library = cx
-                .easy()
-                .libraries()
-                .ldap
-                .expect("LDAP is built with its library");
             library.parse_url(&url_text)
         };
         let search = match parsed {
@@ -381,6 +381,7 @@ impl Request {
             }
         };
         Ok(Request {
+            library,
             pipeline: Pipeline::new(Reach::Network),
             peer,
             has_credentials: credentials.is_some(),
@@ -466,11 +467,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
-        let library = cx
-            .easy()
-            .libraries()
-            .ldap
-            .expect("LDAP is built with its library");
+        let library = self.library;
         let mut sasl = Sasl::new(&SASL, cx.easy().options().http.auth.0);
         let options = match cx.easy().options().line.login_options.as_deref() {
             Some(given) => Some(given),
@@ -808,11 +805,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<bool, ErrorKind> {
-        let library = cx
-            .easy()
-            .libraries()
-            .ldap
-            .expect("LDAP is built with its library");
+        let library = self.library;
         let (lc, _) = ldap_of(lease);
         let state = lc.state;
         // The answer to the last message: its kind, its code, a bind's
@@ -985,11 +978,7 @@ impl Request {
         code: Code,
         servercred: Result<Option<Vec<u8>>, Code>,
     ) -> Result<(), ErrorKind> {
-        let library = cx
-            .easy()
-            .libraries()
-            .ldap
-            .expect("LDAP is built with its library");
+        let library = self.library;
         let servercred = match servercred {
             Ok(cred) => cred,
             Err(rc) => {
@@ -1061,11 +1050,7 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
         trace::info_with(cx, &[b"LDAP local: ", &self.url_text]);
-        let library = cx
-            .easy()
-            .libraries()
-            .ldap
-            .expect("LDAP is built with its library");
+        let library = self.library;
         let (lc, carrier) = ldap_of(lease);
         let mut wire = ConnWire {
             cx: &mut *cx,
@@ -1112,11 +1097,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
-        let library = cx
-            .easy()
-            .libraries()
-            .ldap
-            .expect("LDAP is built with its library");
+        let library = self.library;
         let id = self.msgid.unwrap_or(MsgId(0));
         let (lc, carrier) = ldap_of(lease);
         let mut wire = ConnWire {

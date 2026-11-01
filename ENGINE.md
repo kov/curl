@@ -910,8 +910,10 @@ connection.
 `Curl_retry_request` is the engine's: a request that got nothing back over a reused connection
 (`ProtoState::retryable`: HTTP with no head line and no body byte; a line protocol with no reply
 byte read for the request, C's `headerbytecount`, and no body byte, that wants a body and has not
-read it whole, C's `!no_body && !done`), at the end of the exchange, on a receive error, or on a
-send error at DO, closes the connection and goes to `Done { next: Retry }`; the protocol's
+read it whole, C's `!no_body && !done`; RTSP when it wants a body, is no receive and was not
+ended by the connection's close, a reset leaving it open), at the end of the exchange, on a
+receive error, or on a send error at DO, closes the connection and goes to `Done { next: Retry }`,
+whose result is not failed by the protocol's `done` (C's `(void)multi_done`); the protocol's
 `done` then says no "Empty reply" (C's `conn->bits.retry`), and the Done step parses `Run::url`
 again. For HTTP, whose `follow` makes the next request (`ProtoState::follows`), it traces "Issue
 another request to this URL", counts a new request in the header store, marks REDIRECT, clears
@@ -4049,7 +4051,8 @@ through `http.c`: `Request::rtsp` makes one in HTTP/1.1 alone, with its `Rtsp` (
 kind, the CSeq it went with and the one its response said, whether a body is read). Its connect
 starts the handle's sequence numbers at 1 and puts `LineConn::Rtsp` on a new connection: the RTP
 message read in part between responses, which says no goodbye. Its DO is `rtsp_do`: a RECEIVE
-sends nothing and reads; any other renders its head (`http1/request/rtsp.rs`, at most 64 KiB) in
+sends nothing and reads; any other renders its head (`http1/request/rtsp.rs`, at most 64 KiB
+less the byte C's buffer keeps for its end) in
 C's order, the request line naming the stream URI (`*` by default) and the CSeq, then the session
 (only to the origin that named it, unless credentials may go anywhere), the option's transport
 for a SETUP, a DESCRIBE's `Accept` and `Accept-Encoding`, the range of a PLAY, PAUSE or RECORD,
@@ -4066,8 +4069,10 @@ of one unless the application asked for none. What is read goes through the RTP 
 two-byte length make a message for the interleave handler (else the write handler), anything else
 is body as far as the body is due and dropped past it, and `RTSP/` outside a body stops the
 filter for the head parser; reading stops once the body is whole, what is unread left on the
-connection for the next request. The connection's end cuts a body short (18); a receive reads one
-read's worth, and the response's CSeq must be the request's at DONE.
+connection for the next request. The connection's end cuts a body short (18); a head it cuts
+short has its last line unread, as C's parser holds a line until the next starts, so a CSeq
+there is never read (85) and a length there never sized the body; a receive reads one read's
+worth, and the response's CSeq must be the request's at DONE.
 
 ## 7. The C ABI mapping: the hard cases
 

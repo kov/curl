@@ -887,7 +887,8 @@ impl PerTransfer<'_, '_> {
                         return self.fail(run, &easy, ErrorKind::OutOfMemory);
                     };
                     drop(Handle(std::mem::replace(&mut *easy, dup)));
-                    easy.set_share(Some(run.share.clone()));
+                    easy.set_share(Some(run.share.clone()))
+                        .expect("a handle made now holds no connection");
                 }
                 #[cfg(feature = "debug-hooks")]
                 let result = if run.global.test_event {
@@ -1057,7 +1058,8 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
         return Made::Failed(ErrorKind::OutOfMemory);
     };
     let mut easy = Handle(Easy::new());
-    easy.set_share(Some(run.share.clone()));
+    easy.set_share(Some(run.share.clone()))
+        .expect("a handle made now holds no connection");
     easy.set_public_suffixes(Some(run.suffixes.clone()));
     easy.set_libraries(run.linked.for_handle(run.claims));
     easy.set_components(run.global.components.clone());

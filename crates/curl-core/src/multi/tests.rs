@@ -408,6 +408,29 @@ fn a_transfer_s_easy_is_reached_by_its_id() {
     assert!(m.easy_mut(id).is_none());
 }
 
+/// A handle's share changes only while its transfer holds no connection,
+/// however the handle is reached (`setopt_share`).
+#[test]
+fn a_share_is_refused_while_the_transfer_holds_a_connection() {
+    let (mut m, _clock) = multi();
+    let ev = &mut NoEvents;
+    let id = m.add(Box::new(easy("stall://a")), (), ev).unwrap();
+    let share = crate::share::Share::new().unwrap();
+    let e = m.easy_mut(id).unwrap();
+    assert_eq!(e.set_share(Some(share.clone())), Ok(()), "not started");
+    assert_eq!(e.set_share(None), Ok(()));
+    m.perform(ev).unwrap();
+    assert!(m.holds_connection(id));
+    let e = m.easy_mut(id).unwrap();
+    let refused = Err(crate::share::ShareInUse);
+    assert_eq!(e.set_share(Some(share.clone())), refused);
+    assert_eq!(e.leave_share(), refused);
+    assert!(e.share().is_none());
+    let removed = m.remove(id, ev).unwrap();
+    let mut e = removed.easy;
+    assert_eq!(e.set_share(Some(share)), Ok(()), "out of its multi");
+}
+
 #[test]
 fn a_url_without_a_scheme_is_guessed() {
     let (mut m, _clock) = multi();
@@ -2273,7 +2296,7 @@ fn a_share_keeps_connections_across_handles() {
     for _ in 0..2 {
         let mut m: Multi = Multi::new(env()).unwrap();
         let mut e = easy("tcp://127.0.0.1:1/");
-        e.set_share_watched(share.clone(), told.handler());
+        e.set_share_watched(share.clone(), told.handler()).unwrap();
         e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
         connects.push(e.report().connects());
         uses.push(told.uses());
@@ -2293,7 +2316,7 @@ fn a_share_keeps_connections_across_handles() {
     // A handle whose share keeps no connections uses its multi's.
     let other = Share::new().unwrap();
     let mut e = easy("tcp://127.0.0.1:1/");
-    e.set_share_watched(other, told.handler());
+    e.set_share_watched(other, told.handler()).unwrap();
     e.perform_in(&mut Multi::new(env()).unwrap(), crate::easy::Drive::Waits)
         .unwrap();
     assert_eq!(e.report().connects(), 1);
@@ -2354,7 +2377,7 @@ fn a_connection_closes_its_sockets_through_its_maker_s_closer() {
     share.keep(Kind::Connections).unwrap();
     let mut m: Multi = Multi::new(env()).unwrap();
     let mut e = made();
-    e.set_share(Some(share.clone()));
+    e.set_share(Some(share.clone())).unwrap();
     e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
     assert_eq!(told_now(), [1000], "the attempt that lost");
     drop((m, e));
@@ -2419,7 +2442,7 @@ fn a_share_s_sockets_close_out_of_its_lock() {
     let locked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let made = |forbid: bool| {
         let mut e = easy("tcp://127.0.0.1:1/");
-        e.set_share(Some(share.clone()));
+        e.set_share(Some(share.clone())).unwrap();
         e.options_mut().limits.reuse.forbid = forbid;
         let closer = LockChecking {
             share: held.clone(),
@@ -2547,7 +2570,7 @@ fn a_share_s_connection_not_kept_is_closed_at_once() {
     share.keep(Kind::Connections).unwrap();
     let mut m: Multi = Multi::new(env()).unwrap();
     let mut e = easy("tcp://127.0.0.1:1/");
-    e.set_share(Some(share.clone()));
+    e.set_share(Some(share.clone())).unwrap();
     e.options_mut().limits.reuse.forbid = true;
     e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
     assert_eq!(closed.load(Ordering::Relaxed), 1, "closed as given back");

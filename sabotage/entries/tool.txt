@@ -1320,7 +1320,8 @@ witness: curl-tool runs_each_transfer_on_a_copy_of_its_handle
 features: debug-hooks
 --- old
                     drop(Handle(std::mem::replace(&mut *easy, dup)));
-                    easy.set_share(Some(run.share.clone()));
+                    easy.set_share(Some(run.share.clone()))
+                        .expect("a handle made now holds no connection");
 --- new
                     drop(Handle(std::mem::replace(&mut *easy, dup)));
 

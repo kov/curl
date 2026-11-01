@@ -674,7 +674,8 @@ impl<H: Host> Multi<H> {
         }
         let _ = self.tell_wants(id, Wants::NONE, ev);
         self.trace_membership(id, "removed from", ev);
-        let slot = self.slots.remove(id).expect("still in the multi");
+        let mut slot = self.slots.remove(id).expect("still in the multi");
+        slot.easy.set_running_connection(false);
         self.timers.remove(id);
         self.dirty.remove(id.index());
         // One waiting may run now (multi.c:867).
@@ -1036,8 +1037,16 @@ impl<H: Host> Multi<H> {
                 .is_some_and(|run| run.state.lease().is_some())
     }
 
+    /// The transfer's handle, told whether its transfer has a connection,
+    /// which refuses a change of its share.
     pub fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
-        self.slots.get_mut(id).map(|s| &mut *s.easy)
+        let slot = self.slots.get_mut(id)?;
+        let held = slot
+            .run
+            .as_ref()
+            .is_some_and(|run| run.state.lease().is_some());
+        slot.easy.set_running_connection(held);
+        Some(&mut *slot.easy)
     }
 
     /// The TLS library's objects of the origin's connection a transfer

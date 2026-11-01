@@ -144,9 +144,11 @@ witness: curl-sys-abi handle_tests::a_share_is_refused_while_the_handle_holds_a_
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-sys-abi handle_tests::a_share_is_refused_while_the_handle_holds_a_connection
 --- old
-            .is_some_and(|run| run.state.lease().is_some())
+                .as_ref()
+                .is_some_and(|run| run.state.lease().is_some())
 --- new
-            .is_some()
+                .as_ref()
+                .is_some()
 
 === a callback changes the share under its own step
 file: crates/curl-sys-abi/src/share.rs
@@ -155,3 +157,27 @@ witness: curl-sys-abi handle_tests::a_callback_cannot_change_the_share
         EasyRef::Frame(..) => Err(Refused::Running),
 --- new
         EasyRef::Frame(..) => Ok(()),
+
+=== a running transfer's share changes under it
+file: crates/curl-core/src/easy.rs
+witness: curl-core multi::tests::a_share_is_refused_while_the_transfer_holds_a_connection
+--- old
+        if self.holds_connection() || self.running_connection {
+--- new
+        if self.holds_connection() {
+
+=== a transfer running in a multi says it holds no connection
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_share_is_refused_while_the_transfer_holds_a_connection
+--- old
+        slot.easy.set_running_connection(held);
+--- new
+        slot.easy.set_running_connection(held && false);
+
+=== a handle out of its multi is still refused a share
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_share_is_refused_while_the_transfer_holds_a_connection
+--- old
+        slot.easy.set_running_connection(false);
+--- new
+        slot.easy.set_running_connection(true);

@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use curl_alloc::try_box;
 use curl_core::handler::Handler;
-use curl_core::share::{Kind, Share, ShareLock};
+use curl_core::share::{Kind, Share, ShareInUse, ShareLock};
 
 use crate::easy::{EasyRef, ShimEasy};
 use crate::ffi::{
@@ -344,7 +344,9 @@ pub unsafe extern "C" fn curl_share_cleanup(sh: *mut CURLSH) -> CURLSHcode {
 const _: ffi::proto::curl_share_cleanup = curl_share_cleanup;
 
 /// `CURLOPT_SHARE`: refused while the handle holds a connection, as C
-/// refuses it with `data->conn` set (`setopt_share`); else as [`set`].
+/// refuses it with `data->conn` set (`setopt_share`), before any of the
+/// share's lock functions is called; else as [`set`], which the core's
+/// `Easy::set_share` refuses the same.
 ///
 /// # Safety
 ///
@@ -423,11 +425,12 @@ fn set_core(easy: &ShimEasy, share: Option<&ShimShare>) -> Result<(), Refused> {
     };
     match easy.with_easy(|e| match e {
         EasyRef::Easy(e) => {
-            match (share, watch) {
+            let changed = match (share, watch) {
                 (Some(sh), Some(watch)) => e.set_share_watched(sh.core.clone(), watch),
-                (sh, _) => e.set_share(sh.map(|sh| sh.core.clone())),
-            }
-            Ok(())
+                (Some(sh), None) => e.set_share(Some(sh.core.clone())),
+                (None, _) => e.leave_share(),
+            };
+            changed.map_err(|ShareInUse| Refused::Running)
         }
         EasyRef::Frame(..) => Err(Refused::Running),
     }) {

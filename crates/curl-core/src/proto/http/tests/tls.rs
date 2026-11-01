@@ -1246,7 +1246,7 @@ fn a_share_keeping_sessions_serves_them_across_multis() {
         let mut m = serving(Peer::Accepts, &[talk]);
         let mut e = Easy::new();
         e.set_libraries(libraries.clone());
-        e.set_share_watched(share.clone(), told.handler());
+        e.set_share_watched(share.clone(), told.handler()).unwrap();
         let c = crate::components::Components::new().unwrap();
         c.configure(b"ssls");
         e.set_components(Some(c));
@@ -1279,7 +1279,7 @@ fn a_share_keeping_sessions_serves_them_across_multis() {
         let mut m = serving(Peer::Accepts, &[talk]);
         let mut e = Easy::new();
         e.set_libraries(libraries.clone());
-        e.set_share(Some(other.clone()));
+        e.set_share(Some(other.clone())).unwrap();
         let got = get_with(&mut m, e, "/", talk.clone(), |o| {
             let url = format!("https://127.0.0.1:{PORT}/");
             o.set_url(Some(url.as_bytes())).unwrap();

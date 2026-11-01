@@ -1043,7 +1043,7 @@ fn the_data_connection_goes_through_the_socks_proxy() {
     let share = crate::share::Share::new().unwrap();
     share.keep(crate::share::Kind::Names).unwrap();
     let mut e = Easy::new();
-    e.set_share(Some(share));
+    e.set_share(Some(share)).unwrap();
     let (id, body, text) = added_easy(&mut m, URL, e, |o| {
         o.proxy.make_mut().unwrap().url =
             Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());

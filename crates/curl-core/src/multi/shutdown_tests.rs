@@ -489,7 +489,7 @@ fn a_share_s_closing_connection_joins_the_releasing_multi_s_set() {
     share.keep(Kind::Connections).unwrap();
     let mut ev = Rec::default();
     let mut e = closing(1);
-    e.set_share(Some(share.clone()));
+    e.set_share(Some(share.clone())).unwrap();
     let id = m.add(e, (), &mut ev).unwrap();
     by_events(&mut m, id, 1000, &mut ev);
     assert_eq!(share.pool().len(), 0, "out of the share's pool");
@@ -519,7 +519,7 @@ fn an_evicted_connection_shuts_down_where_its_pool_lets_it() {
             let mut e = closing(port);
             e.options_mut().limits.reuse.forbid = false;
             if shared {
-                e.set_share(Some(share.clone()));
+                e.set_share(Some(share.clone())).unwrap();
             }
             let id = m.add(e, (), &mut ev).unwrap();
             by_events(&mut m, id, fd, &mut ev);
@@ -1186,7 +1186,7 @@ fn a_share_s_search_holds_every_closing_socket_it_closes() {
     let mut ev = Rec::default();
     for fd in 1000..1008 {
         let mut e = closing(1);
-        e.set_share(Some(share.clone()));
+        e.set_share(Some(share.clone())).unwrap();
         let id = m.add(e, (), &mut ev).unwrap();
         by_events(&mut m, id, fd, &mut ev);
         m.remove(id, &mut ev).unwrap();
@@ -1194,7 +1194,7 @@ fn a_share_s_search_holds_every_closing_socket_it_closes() {
     assert_eq!(m.shutdowns.len(), 8);
     m.conn_limits_mut().max_total = NonZeroU32::new(1);
     let mut e = closing(1);
-    e.set_share(Some(share.clone()));
+    e.set_share(Some(share.clone())).unwrap();
     let id = m.add(e, (), &mut ev).unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(wire.closed(), (1000..1008).collect::<Vec<_>>());

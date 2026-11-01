@@ -23,6 +23,11 @@ use crate::conn::{DnsCache, Pool};
 use crate::cookie::Jar;
 use crate::tls::SessionCache;
 
+/// A handle's share cannot change now: the handle holds a connection
+/// (`setopt_share`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShareInUse;
+
 /// A kind of data a share may keep (`curl_lock_data`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {

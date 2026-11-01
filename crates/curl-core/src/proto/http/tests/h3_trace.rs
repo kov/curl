@@ -703,13 +703,13 @@ fn a_shared_connection_keeps_its_clock_under_another_multi() {
     let replies: &[&[u8]] = &[b"server flight", b"response", b"second"];
     let mut first = quic_server_on(ahead, replies);
     let mut e = tracing(FakeTls::new().unwrap(), &script);
-    e.set_share(Some(share.clone()));
+    e.set_share(Some(share.clone())).unwrap();
     assert_eq!(h3_get(&mut first, e).result, Ok(()));
     // The second request's packet, once the first is done.
     script.lock().unwrap().out.extend([vec![5; 75], vec![]]);
     let mut second = quic_server_on(ManualClock::new().unwrap(), replies);
     let mut e = tracing(FakeTls::new().unwrap(), &script);
-    e.set_share(Some(share.clone()));
+    e.set_share(Some(share.clone())).unwrap();
     let ran = h3_get(&mut second, e);
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     assert_eq!(ran.seen.body(), b"ok");
@@ -3242,7 +3242,7 @@ fn a_transfer_given_up_as_it_connects_lets_its_answer_go_as_c() {
         share.keep(Kind::Names).unwrap();
         let told = Told::new(&share);
         let mut e = tracing(FakeTls::new().unwrap(), &first_flight_only());
-        e.set_share_watched(share.clone(), told.handler());
+        e.set_share_watched(share.clone(), told.handler()).unwrap();
         let url = format!("https://127.0.0.1:{PORT}/");
         e.options_mut().set_url(Some(url.as_bytes())).unwrap();
         e.options_mut().http.version = version;
@@ -3292,7 +3292,7 @@ fn a_name_s_https_record_is_looked_for_as_c_locks_it() {
         share.keep(Kind::Names).unwrap();
         let told = Told::new(&share);
         let mut e = tracing(FakeTls::new().unwrap(), &first_flight_only());
-        e.set_share_watched(share.clone(), told.handler());
+        e.set_share_watched(share.clone(), told.handler()).unwrap();
         let url = format!("https://localhost:{PORT}/");
         e.options_mut().set_url(Some(url.as_bytes())).unwrap();
         e.options_mut().http.version = version;

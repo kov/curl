@@ -25,7 +25,7 @@ use crate::report::TransferReport;
 use crate::save;
 
 pub use crate::save::{CacheFile, SaveError};
-use crate::share::{Kind, Share, ShareLock, watched};
+use crate::share::{Kind, Share, ShareInUse, ShareLock, watched};
 use crate::time::{Clock as _, SystemClock};
 use crate::trace;
 
@@ -70,6 +70,11 @@ pub struct Easy {
     /// changes to or from a share that keeps connections; a connection
     /// gone since fails its lookup.
     pub(crate) last_conn: Option<LastConn>,
+    /// The transfer running in the multi holding the handle had a
+    /// connection when the multi last gave the handle out
+    /// (`Multi::easy_mut`), the only way to reach it while it runs; what
+    /// refuses a change of share.
+    running_connection: bool,
     /// The HSTS and alt-svc caches, made the first time the application
     /// turns either on: few handles do.
     caches: Option<Box<HostCaches>>,
@@ -296,6 +301,7 @@ impl Easy {
             set_cookies: 0,
             shown_credentials: None,
             last_conn: None,
+            running_connection: false,
             caches: None,
             share: None,
             share_watch: None,
@@ -404,19 +410,57 @@ impl Easy {
         self.last_conn.is_some_and(|l| l.used)
     }
 
-    /// Use `share` for the transfers from now on, or none.
-    pub fn set_share(&mut self, share: Option<Share>) {
+    /// Use `share` for the transfers from now on, or none; refused while
+    /// the handle holds a connection, its running transfer's or one it
+    /// only made (`setopt_share`).
+    pub fn set_share(&mut self, share: Option<Share>) -> Result<(), ShareInUse> {
+        self.share_may_change()?;
         self.forget_pool(share.as_ref());
         self.share = share;
         self.share_watch = None;
+        Ok(())
     }
 
     /// Use `share` for the transfers from now on, `watch` told around
-    /// each use they make of what it keeps.
-    pub fn set_share_watched(&mut self, share: Share, watch: Handler<dyn ShareLock>) {
+    /// each use they make of what it keeps; refused as [`Easy::set_share`]
+    /// is.
+    pub fn set_share_watched(
+        &mut self,
+        share: Share,
+        watch: Handler<dyn ShareLock>,
+    ) -> Result<(), ShareInUse> {
+        self.share_may_change()?;
         self.forget_pool(Some(&share));
         self.share = Some(share);
         self.share_watch = Some(watch);
+        Ok(())
+    }
+
+    /// Leave the share as the handle is closed, a connection it only made
+    /// going with it (`Curl_share_easy_unlink`). Refused only for a
+    /// running transfer's connection.
+    pub fn leave_share(&mut self) -> Result<(), ShareInUse> {
+        if self.running_connection {
+            return Err(ShareInUse);
+        }
+        self.forget_pool(None);
+        self.share = None;
+        self.share_watch = None;
+        Ok(())
+    }
+
+    fn share_may_change(&self) -> Result<(), ShareInUse> {
+        if self.holds_connection() || self.running_connection {
+            return Err(ShareInUse);
+        }
+        Ok(())
+    }
+
+    /// Say whether the transfer running in the multi holding the handle
+    /// has a connection: told as the multi gives the handle out, or lets
+    /// it go.
+    pub(crate) fn set_running_connection(&mut self, held: bool) {
+        self.running_connection = held;
     }
 
     /// Forget the last connection, if the pool it is in changes: leaving
@@ -1016,7 +1060,7 @@ mod tests {
         e.set_components(Some(crate::components::Components::new().unwrap()));
         let share = crate::share::Share::new().unwrap();
         let told = crate::share::Told::new(&share);
-        e.set_share_watched(share.clone(), told.handler());
+        e.set_share_watched(share.clone(), told.handler()).unwrap();
         let pushed = e.pushed();
         assert!(std::ptr::eq(&*pushed.libraries, &*e.libraries));
         let components = pushed.components().expect("the parent's components");

@@ -259,11 +259,12 @@ fn a_share_of_connections_forgets_the_last_connection() {
     e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
     assert!(e.report().conn_number().is_some());
     // A share that keeps no connections changes nothing.
-    e.set_share(Some(crate::share::Share::new().unwrap()));
+    e.set_share(Some(crate::share::Share::new().unwrap()))
+        .unwrap();
     assert!(m.active_socket_for(&mut e).is_some());
     let share = crate::share::Share::new().unwrap();
     share.keep(crate::share::Kind::Connections).unwrap();
-    e.set_share(Some(share));
+    e.set_share(Some(share)).unwrap();
     assert!(e.report().conn_number().is_none());
     assert!(m.active_socket_for(&mut e).is_none());
     assert_eq!(

@@ -3947,16 +3947,16 @@ fn a_share_keeps_cookies_for_its_handles() {
     let share = crate::share::Share::new().unwrap();
     let mut one = Easy::new();
     let mut two = Easy::new();
-    one.set_share(Some(share.clone()));
-    two.set_share(Some(share.clone()));
+    one.set_share(Some(share.clone())).unwrap();
+    two.set_share(Some(share.clone())).unwrap();
     one.add_cookie(line, |_| {}).unwrap();
     assert!(two.cookie_list().unwrap().is_empty(), "each its own");
     // Kept from when no handle holds the share.
-    one.set_share(None);
-    two.set_share(None);
+    one.set_share(None).unwrap();
+    two.set_share(None).unwrap();
     share.keep(crate::share::Kind::Cookies).unwrap();
-    one.set_share(Some(share.clone()));
-    two.set_share(Some(share.clone()));
+    one.set_share(Some(share.clone())).unwrap();
+    two.set_share(Some(share.clone())).unwrap();
     one.add_cookie(line, |_| {}).unwrap();
     assert_eq!(two.cookie_list().unwrap(), [line.to_vec()]);
     // Saved only once a transfer started the jar; reading files does.
@@ -4023,7 +4023,7 @@ fn a_share_s_jar_takes_cookies_from_two_threads() {
             let share = share.clone();
             scope.spawn(move || {
                 let mut e = Easy::new();
-                e.set_share(Some(share));
+                e.set_share(Some(share)).unwrap();
                 for i in 0..EACH {
                     let line = format!("example.com\tFALSE\t/\tFALSE\t0\tt{t}_{i}\t1");
                     e.add_cookie(line.as_bytes(), |_| {}).unwrap();
@@ -4032,7 +4032,7 @@ fn a_share_s_jar_takes_cookies_from_two_threads() {
         }
     });
     let mut e = Easy::new();
-    e.set_share(Some(share));
+    e.set_share(Some(share)).unwrap();
     assert_eq!(e.cookie_list().unwrap().len(), 2 * EACH);
 }
 
@@ -4050,7 +4050,7 @@ fn a_share_s_uses_are_told_where_c_locks_them() {
     let told = Told::new(&share);
     let (mut m, talk, _) = server(&[SETS_A_COOKIE], false);
     let mut e = Easy::new();
-    e.set_share_watched(share.clone(), told.handler());
+    e.set_share_watched(share.clone(), told.handler()).unwrap();
     let jar_on = |o: &mut Options| o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
     let mut ran = get_with(&mut m, e, "/a", talk, jar_on);
     assert_eq!(ran.result, Ok(()));
@@ -4069,11 +4069,11 @@ fn a_share_s_jar_serves_the_transfers_of_a_multi() {
     let jar_on = |o: &mut Options| o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
     let (mut m, talk, _) = server(&[SETS_A_COOKIE], false);
     let mut one = Easy::new();
-    one.set_share(Some(share.clone()));
+    one.set_share(Some(share.clone())).unwrap();
     assert_eq!(get_with(&mut m, one, "/a", talk, jar_on).result, Ok(()));
     let (mut m, talk, _) = server(&[OK], false);
     let mut two = Easy::new();
-    two.set_share(Some(share.clone()));
+    two.set_share(Some(share.clone())).unwrap();
     let ran = get_with(&mut m, two, "/a", talk, jar_on);
     assert_eq!(ran.result, Ok(()));
     let text = String::from_utf8_lossy(&ran.request).into_owned();
@@ -5612,11 +5612,11 @@ fn a_share_s_dead_connection_is_not_reused() {
     let share = Share::new().unwrap();
     share.keep(Kind::Connections).unwrap();
     let mut e = Easy::new();
-    e.set_share(Some(share.clone()));
+    e.set_share(Some(share.clone())).unwrap();
     let ran = get_with(&mut m, e, "/", first, |_| {});
     assert_eq!(ran.result, Ok(()));
     let mut e = Easy::new();
-    e.set_share(Some(share.clone()));
+    e.set_share(Some(share.clone())).unwrap();
     let ran = get_with(&mut m, e, "/", second.clone(), |_| {});
     assert_eq!(ran.result, Ok(()));
     let said = "Connection 0 seems to be dead, terminating\n".to_string();

@@ -1145,7 +1145,7 @@ fn shared_scenario() -> Result<[Result<(), ErrorKind>; 2], OutOfMemory> {
     let mut results = [Ok(()), Ok(())];
     for result in &mut results {
         let mut easy = Easy::new();
-        easy.set_share(Some(share.clone()));
+        easy.set_share(Some(share.clone())).unwrap();
         easy.options_mut().set_url(Some(URL))?;
         let id = match m.add(try_box(easy)?, (), &mut NoEvents) {
             Ok(id) => id,

@@ -637,7 +637,7 @@ fn a_connection_in_use_is_pinged_with_its_transfer_s_next_send() {
         if on != On::Multi {
             let share = Share::new().unwrap();
             share.keep(Kind::Connections).unwrap();
-            e.set_share(Some(share));
+            e.set_share(Some(share)).unwrap();
         }
         let o = e.options_mut();
         let url = format!("http://127.0.0.1:{PORT}/");
@@ -662,7 +662,7 @@ fn a_connection_in_use_is_pinged_with_its_transfer_s_next_send() {
                 let mut other = Easy::new();
                 let share = Share::new().unwrap();
                 share.keep(Kind::Connections).unwrap();
-                other.set_share(Some(share));
+                other.set_share(Some(share)).unwrap();
                 m.upkeep_for(&other, &mut NoEvents).unwrap();
             }
         }
@@ -737,7 +737,7 @@ fn a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked() {
         share.keep(Kind::Connections).unwrap();
         let mut e = Easy::new();
         e.set_libraries(with_h2());
-        e.set_share(Some(share.clone()));
+        e.set_share(Some(share.clone())).unwrap();
         let o = e.options_mut();
         let url = format!("http://127.0.0.1:{PORT}/");
         o.set_url(Some(url.as_bytes())).unwrap();
@@ -754,7 +754,7 @@ fn a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked() {
         let request = talk.received();
         let asking = |ms: u64| {
             let mut e = Easy::new();
-            e.set_share(Some(share.clone()));
+            e.set_share(Some(share.clone())).unwrap();
             e.options_mut().limits.reuse.upkeep =
                 crate::options::UpkeepInterval(Duration::from_millis(ms));
             e
@@ -785,7 +785,7 @@ fn a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked() {
             // joining transfer's request.
             let mut e = Easy::new();
             e.set_libraries(with_h2());
-            e.set_share(Some(share.clone()));
+            e.set_share(Some(share.clone())).unwrap();
             let o = e.options_mut();
             o.set_url(Some(url.as_bytes())).unwrap();
             o.http.version = HttpVersion::Http2Prior;
@@ -884,7 +884,7 @@ fn the_upkeep_interval_starts_as_one_of_two_transfers_is_done() {
             let mut e = Easy::new();
             e.set_libraries(with_h2());
             if shared {
-                e.set_share(Some(share.clone()));
+                e.set_share(Some(share.clone())).unwrap();
             }
             let o = e.options_mut();
             let url = format!("http://127.0.0.1:{PORT}{path}");
@@ -1476,7 +1476,7 @@ fn transfers_on_a_share_share_its_connection() {
         // Not kept once both are done: no connection outlives the
         // multi's network in the share.
         |_, o| o.limits.reuse.forbid = true,
-        |e| e.set_share_watched(share.clone(), told.handler()),
+        |e| e.set_share_watched(share.clone(), told.handler()).unwrap(),
     );
     assert_eq!(sent.len(), 1, "one connection: {sent:#?}");
     let sent = &sent[0];
@@ -1527,7 +1527,7 @@ fn a_multi_dropped_gives_a_share_s_lent_connection_back() {
         o.http.version = HttpVersion::Http2Prior;
         o.limits.reuse.forbid = true;
         o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
-        e.set_share(Some(share.clone()));
+        e.set_share(Some(share.clone())).unwrap();
         m.add(Box::new(e), (), &mut NoEvents).unwrap();
         seen.push(s);
         for _ in 0..3 {
@@ -1775,7 +1775,7 @@ fn a_pipewait_on_a_share_s_connection_ends_once_known() {
     use crate::share::{Kind, Share};
     let share = Share::new().unwrap();
     share.keep(Kind::Connections).unwrap();
-    pipewait_on_http_1(|e| e.set_share(Some(share.clone())));
+    pipewait_on_http_1(|e| e.set_share(Some(share.clone())).unwrap());
 }
 
 /// Two transfers that pipewait, `handle` making each handle's own
@@ -2480,7 +2480,7 @@ fn a_push_on_a_share_s_connection_is_taken() {
     );
     let (done, sent) = pushed_get_with(reply.as_bytes(), &mut ev, |e| {
         e.options_mut().limits.reuse.forbid = true;
-        e.set_share(Some(share.clone()));
+        e.set_share(Some(share.clone())).unwrap();
         e.enable_cookies().unwrap();
     });
     assert_eq!(done.len(), 2, "{done:?}\n{sent}");

@@ -7717,6 +7717,93 @@ fn a_ws_send_of_no_frame_says_c_s_lines() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// A debug function that turns `CURLOPT_VERBOSE` off hears no more of the
+/// call it is in, though that call's lines were held until it ended: C
+/// asks before each line.
+#[test]
+fn a_debug_function_turning_verbose_off_hears_no_more_of_the_call() {
+    use std::io::{Read as _, Write as _};
+    unsafe extern "C" fn stops(
+        c: *mut CURL,
+        _: ffi::curl_infotype,
+        ptr: *mut c_char,
+        n: usize,
+        user: *mut c_void,
+    ) -> c_int {
+        // SAFETY: the test passes its list, and the shim `n` bytes.
+        let (heard, line) = unsafe {
+            (
+                &mut *user.cast::<Vec<String>>(),
+                core::slice::from_raw_parts(ptr.cast::<u8>(), n),
+            )
+        };
+        heard.push(String::from_utf8_lossy(line).into_owned());
+        long(c, ffi::CURLOPT_VERBOSE, 0);
+        0
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut head = Vec::new();
+        let mut one = [0u8];
+        while !head.ends_with(b"\r\n\r\n") {
+            peer.read_exact(&mut one).unwrap();
+            head.push(one[0]);
+        }
+        peer.write_all(
+            b"HTTP/1.1 101 Switching\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+        )
+        .unwrap();
+        let mut got = vec![0u8; 6 + 2];
+        peer.read_exact(&mut got).unwrap();
+    });
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("ws://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_CONNECT_ONLY, 2), CURLE_OK);
+    let components = curl_core::components::Components::new().unwrap();
+    components.configure(b"ws");
+    // SAFETY: a live handle.
+    let easy = unsafe { crate::easy::handle(c) }.unwrap();
+    let set = easy.with_easy(|e| match e {
+        crate::easy::EasyRef::Easy(e) => e.set_components(Some(components)),
+        crate::easy::EasyRef::Frame(..) => unreachable!("no callback runs"),
+    });
+    assert!(set.is_ok());
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let mut heard: Vec<String> = Vec::new();
+    pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut heard);
+    function(c, ffi::CURLOPT_DEBUGFUNCTION, stops as DebugFn as *const ());
+    assert_eq!(long(c, ffi::CURLOPT_VERBOSE, 1), CURLE_OK);
+    let mut n = 0;
+    // SAFETY: a live handle, the bytes and where their count goes.
+    let sent = unsafe {
+        crate::ws::curl_ws_send(
+            c,
+            b"ab".as_ptr().cast(),
+            2,
+            &raw mut n,
+            0,
+            1 as core::ffi::c_uint,
+        )
+    };
+    assert_eq!((sent, n), (CURLE_OK, 2));
+    assert_eq!(
+        heard,
+        ["[WS] curl_ws_send(len=2, fragsize=0, flags=1), raw=0\n"]
+    );
+    server.join().unwrap();
+    // SAFETY: a handle no call uses any more.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// `CURLINFO_TLS_SSL_PTR` on a connection a perform only made, the handle
 /// out of its multi: NULL as the transfer let it go, the session once a
 /// send took it up, as C's `data->conn` makes it.

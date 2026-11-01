@@ -333,3 +333,11 @@ witness: curl-sys-abi handle_tests::a_detached_connection_shows_its_ssl_pointer_
 --- new
             drop(native);
             return Ok(None);
+
+=== a call's held lines go on after its debug function turned verbose off
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::a_debug_function_turning_verbose_off_hears_no_more_of_the_call
+--- old
+            if !easy.with_options(|o| o.output.verbose).unwrap_or(true) {
+--- new
+            if false {

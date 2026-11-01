@@ -1296,9 +1296,13 @@ impl Held {
         held.chain(self.more.iter().map(|(kind, b)| (*kind, &b[..])))
     }
 
-    /// Say what is held, in the order it was traced.
+    /// Say what is held, in the order it was traced, until the debug
+    /// function turns the handle's verbose off: C asks before each line.
     pub(crate) fn say(self, easy: &ShimEasy) {
         for (kind, bytes) in self.pieces() {
+            if !easy.with_options(|o| o.output.verbose).unwrap_or(true) {
+                return;
+            }
             trace_as(easy, kind, bytes);
         }
     }

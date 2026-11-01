@@ -1307,6 +1307,9 @@ fn the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it() {
     let control = Conversation::replies(&replies, false).greeting();
     let data = Conversation::replies(&[b"hello"], true).greeting();
     let (mut m, _) = serving_active_with(&[&control], &[&data], ACCEPT_AFTER, names);
+    // A transfer before it, so that this one's number is not the first.
+    let before = m.add(Box::new(Easy::new()), (), &mut NoEvents).unwrap();
+    m.remove(before, &mut NoEvents).unwrap();
     let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"multi,dns", |o| {
         o.line.make_mut().unwrap().ftp.port = Some(b"port.test".to_vec());
     });
@@ -1321,7 +1324,7 @@ fn the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it() {
     let v4 = at_in(after, "[DNS] Host port.test:0 resolved IPv4: 127.0.0.1\n");
     let v6 = at_in(after, "[DNS] Host port.test:0 resolved IPv6: (none)\n");
     assert!(
-        after[..queued_v6].ends_with("[DNS] queueing query [0/1"),
+        after[..queued_v6].ends_with("[DNS] queueing query [1/1"),
         "{said}"
     );
     assert!(queued_v6 < queued_v4 && queued_v4 < started, "{said}");

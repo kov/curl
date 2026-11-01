@@ -578,3 +578,13 @@ witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_the
             Some(Found::Resolved(Asked::Resolver(*queued)))
 --- new
             Some(Found::Resolved(Asked::Resolver(queued.and(None))))
+
+=== a blocking resolve names its queries for the first transfer
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it
+--- old
+            .transfer_number()
+            .map_or(0, |n| n.get())
+--- new
+            .transfer_number()
+            .map_or(0, |n| n.get() * 0)

@@ -1224,6 +1224,7 @@ Its first steps are milestone 6's design-review changes.
     line protocols against C's `!req.done`; `CURLOPT_SHARE` refused on a running transfer, its
     refusal from a callback kept and recorded in DIVERGENCE.md; `Resume` rejected at the option
     rather than clamped. DIVERGENCE.md's source-only entries measured on the libssh leg.
+    **Done** of these: the `.netrc` read, `CURLOPT_SHARE`, `Resume`.
 83. **Calls on a detached connection.** Traces for calls that belong to no transfer; the C API
     layer's WebSocket send lines; TLS 1.3 tickets and the SSL pointer on a detached connection;
     raw I/O outside the pool lock.

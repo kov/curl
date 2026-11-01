@@ -135,7 +135,7 @@ fn a_document_that_meets_the_condition_is_read() {
     );
     let resumed = |o: &mut Options| {
         since(Condition::ModifiedSince, DEC_1999)(o);
-        o.resume = Some(Resume::At(NonZeroU64::new(2).unwrap()));
+        o.resume = Some(Resume::At(crate::options::ResumeOffset::new(2).unwrap()));
     };
     assert_eq!(
         read(ranged.as_bytes(), Box::new(resumed)),

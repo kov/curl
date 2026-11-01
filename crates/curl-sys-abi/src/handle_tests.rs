@@ -15,7 +15,9 @@ use std::time::Duration;
 use curl_core::conn::io::Events;
 use curl_core::multi::NotifyKind;
 use curl_core::options::script::{Piece, Script};
-use curl_core::options::{HttpVersion, Method, Options, Progress, Resume, UploadSource};
+use curl_core::options::{
+    HttpVersion, Method, Options, Progress, Resume, ResumeOffset, UploadSource,
+};
 use curl_core::report::TransferReport;
 
 use crate::callbacks::aborts;
@@ -1455,7 +1457,7 @@ fn limits_are_checked_as_in_c() {
     assert_eq!(max(c), None);
     let resume = |c| options(c, |o| o.resume);
     assert_eq!(long(c, ffi::CURLOPT_RESUME_FROM, 9), CURLE_OK);
-    assert_eq!(resume(c), Some(Resume::At(9.try_into().unwrap())));
+    assert_eq!(resume(c), Some(Resume::At(ResumeOffset::new(9).unwrap())));
     assert_eq!(long(c, ffi::CURLOPT_RESUME_FROM, -1), CURLE_OK);
     assert_eq!(resume(c), Some(Resume::AtEnd));
     assert_eq!(
@@ -1470,7 +1472,7 @@ fn limits_are_checked_as_in_c() {
     assert_eq!(off(c, ffi::CURLOPT_RESUME_FROM_LARGE, 1 << 40), CURLE_OK);
     assert_eq!(
         resume(c),
-        Some(Resume::At((1u64 << 40).try_into().unwrap()))
+        Some(Resume::At(ResumeOffset::new(1 << 40).unwrap()))
     );
     assert_eq!(long(c, ffi::CURLOPT_RESUME_FROM, 0), CURLE_OK);
     assert_eq!(resume(c), None);

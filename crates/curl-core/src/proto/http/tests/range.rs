@@ -50,7 +50,7 @@ fn a_download_asks_for_its_range() {
     // An application's resume point is asked for in place of its range.
     let ran = run("/", PARTIAL, false, |o| {
         ranged(b"7-9")(o);
-        o.resume = Some(Resume::At(NonZeroU64::new(1).unwrap()));
+        o.resume = Some(Resume::At(crate::options::ResumeOffset::new(1).unwrap()));
     });
     assert_eq!(range_lines(ran.request), ["Range: bytes=1-"]);
 }

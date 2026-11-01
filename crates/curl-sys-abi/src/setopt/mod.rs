@@ -426,7 +426,7 @@ fn resume(n: i64) -> Result<Option<Resume>, Refused> {
     match n {
         -1 => Ok(Some(Resume::AtEnd)),
         i64::MIN..=-2 => Err(Refused::Bad),
-        n => Ok(NonZeroU64::new(n as u64).map(Resume::At)),
+        n => Ok(curl_core::options::ResumeOffset::new(n as u64).map(Resume::At)),
     }
 }
 

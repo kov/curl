@@ -711,7 +711,7 @@ fn error_codes_fail_when_asked() {
     assert_eq!(code(416, |a| a.fail_on_error = true), returned(416));
     let resumed = |a: &mut Asked| {
         a.fail_on_error = true;
-        a.resume_from = Some(Resume::At(NonZeroU64::new(1).unwrap()));
+        a.resume_from = Some(Resume::At(crate::options::ResumeOffset::new(1).unwrap()));
     };
     assert_eq!(code(416, resumed), None);
     assert_eq!(code(417, resumed), returned(417));
@@ -1146,8 +1146,8 @@ fn a_line_never_needs_more_than_four_notes() {
                     let exchange = asked(|a| {
                         a.follow = flags & 1 != 0;
                         a.time_condition = (flags & 2 != 0).then_some(unmet);
-                        a.resume_from =
-                            (flags & 4 != 0).then_some(Resume::At(NonZeroU64::new(5).unwrap()));
+                        a.resume_from = (flags & 4 != 0)
+                            .then_some(Resume::At(crate::options::ResumeOffset::new(5).unwrap()));
                         a.head = flags & 8 != 0;
                         a.auth = auth;
                     });

@@ -1611,7 +1611,7 @@ fn a_resumed_download_restarts_where_it_resumes() {
         let mut m = serving(&[&control], &[&file]);
         let (id, body, _) = added(&mut m, URL, |o| {
             o.resume = Some(crate::options::Resume::At(
-                std::num::NonZeroU64::new(2).unwrap(),
+                crate::options::ResumeOffset::new(2).unwrap(),
             ));
         });
         let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
@@ -1641,7 +1641,7 @@ fn a_size_refused_fails_a_resumed_download() {
     let mut m = serving(&[&control], &[&file]);
     let (id, _, _) = added(&mut m, URL, |o| {
         o.resume = Some(crate::options::Resume::At(
-            std::num::NonZeroU64::new(2).unwrap(),
+            crate::options::ResumeOffset::new(2).unwrap(),
         ));
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
@@ -1837,7 +1837,7 @@ fn a_resume_is_checked_against_the_file_s_size() {
     let at = |n: u64| {
         move |o: &mut Options| {
             o.resume = Some(crate::options::Resume::At(
-                std::num::NonZeroU64::new(n).unwrap(),
+                crate::options::ResumeOffset::new(n).unwrap(),
             ));
         }
     };
@@ -1934,7 +1934,7 @@ fn an_upload_resumed_at_an_offset_appends_past_it() {
         assert_eq!(result, Ok(()), "{}", text.text());
         (received(&control), file.received())
     };
-    let two = crate::options::Resume::At(std::num::NonZeroU64::new(2).unwrap());
+    let two = crate::options::Resume::At(crate::options::ResumeOffset::new(2).unwrap());
     let (sent, stored) = run(two, &[b"150 go on\r\n226 stored\r\n"]);
     assert!(sent.ends_with("TYPE I\r\nAPPE f\r\n"), "{sent}");
     assert_eq!(stored, b"load");
@@ -1961,7 +1961,7 @@ fn an_upload_s_reader_is_traced_as_its_body_is_first_read() {
     let (id, _, text) = added_tracing(&mut m, URL, Easy::new(), b"read,ftp", |o| {
         o.method = crate::options::Method::Upload;
         o.resume = Some(crate::options::Resume::At(
-            std::num::NonZeroU64::new(2).unwrap(),
+            crate::options::ResumeOffset::new(2).unwrap(),
         ));
         o.upload = crate::options::UploadSource::Bytes(
             curl_alloc::TryArc::try_new(b"upload".to_vec()).unwrap(),
@@ -2022,7 +2022,7 @@ fn an_empty_upload_resumed_by_a_seek_is_appended() {
     let (id, _, text) = added(&mut m, URL, |o| {
         o.method = crate::options::Method::Upload;
         o.resume = Some(crate::options::Resume::At(
-            std::num::NonZeroU64::new(5).unwrap(),
+            crate::options::ResumeOffset::new(5).unwrap(),
         ));
         o.upload = crate::options::UploadSource::Read {
             handler: Handler::read(Empty).unwrap(),
@@ -2266,7 +2266,7 @@ fn an_upload_is_sent_as_its_options_say() {
     let (result, sent, got, said) = run(ascii, b"a\nb", stored, &none);
     assert_eq!((result, got), (Ok(()), b"a\r\nb".to_vec()), "{said}");
     assert!(sent.ends_with("TYPE A\r\nSTOR f\r\n"), "{sent}");
-    let six = crate::options::Resume::At(std::num::NonZeroU64::new(6).unwrap());
+    let six = crate::options::Resume::At(crate::options::ResumeOffset::new(6).unwrap());
     let at_end = |o: &mut Options| o.resume = Some(six);
     let (result, sent, got, said) = run(URL, b"upload", b"", &at_end);
     assert_eq!((result, got), (Ok(()), vec![]), "{said}");
@@ -2498,7 +2498,7 @@ fn an_upload_resumed_far_in_skips_its_body_in_pieces() {
         let (id, _, text) = added(&mut m, URL, |o| {
             o.method = crate::options::Method::Upload;
             o.resume = Some(crate::options::Resume::At(
-                std::num::NonZeroU64::new(from).unwrap(),
+                crate::options::ResumeOffset::new(from).unwrap(),
             ));
             o.upload = crate::options::UploadSource::Bytes(
                 curl_alloc::TryArc::try_new(body.clone()).unwrap(),

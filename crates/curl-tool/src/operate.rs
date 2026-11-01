@@ -67,6 +67,16 @@ enum Step {
 
 /// Ask for the missing passwords, then run every operation's transfers
 /// in turn (`get_args`, `serial_transfers`).
+/// The resume point `n` bytes in, none at the start. `n` is a number `-C`
+/// took, which it bounds, a file's size or a count of bytes written to
+/// one, all within what a `curl_off_t` holds.
+fn resume_at(n: u64) -> Option<options::Resume> {
+    (n != 0).then(|| {
+        let at = options::ResumeOffset::new(n).expect("an offset within a file");
+        options::Resume::At(at)
+    })
+}
+
 pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -> Ending {
     if ask_passwords(&mut line.operations).is_err() {
         return Err(ErrorKind::OutOfMemory);
@@ -1143,9 +1153,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     let resume = if upload.is_some() && op.resume == Some(Resume::FromOutput) {
         Some(options::Resume::AtEnd)
     } else {
-        resume_from
-            .and_then(NonZeroU64::new)
-            .map(options::Resume::At)
+        resume_from.and_then(resume_at)
     };
     // Output to a terminal: no progress meter, and no binary output.
     let terminal = to_stdout && output_expected(url, upload.is_some()) && stdout_is_terminal();
@@ -1550,7 +1558,7 @@ impl Retrying {
                 return Again::No(Err(ErrorKind::WriteError));
             };
             self.resumed_at = at;
-            let resume = NonZeroU64::new(at).map(options::Resume::At);
+            let resume = resume_at(at);
             Setopt::new(easy, None)
                 .unwritten("`retrycheck` sets it itself", |o| {
                     o.resume = resume;
@@ -4334,7 +4342,7 @@ mod tests {
             etag: None,
             proto: url_proto(url.as_bytes(), None).unwrap().0,
             resume: match op.resume {
-                Some(Resume::At(n)) => NonZeroU64::new(n).map(options::Resume::At),
+                Some(Resume::At(n)) => resume_at(n),
                 Some(Resume::FromOutput) if upload.is_some() => Some(options::Resume::AtEnd),
                 _ => None,
             },

@@ -1381,10 +1381,37 @@ impl TimeCondition {
 pub enum Resume {
     /// This many bytes in: a download skips them; an upload skips them of
     /// its body and appends the rest to what is stored.
-    At(NonZeroU64),
+    At(ResumeOffset),
     /// At the end (C's -1): a download gets the last byte; an upload skips
     /// as much of its body as is stored already and appends the rest.
     AtEnd,
+}
+
+/// How far into a resource a transfer starts: more than nothing, and no
+/// more than C's `curl_off_t` can say, which is past the end of any file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResumeOffset(NonZeroU64);
+
+impl ResumeOffset {
+    /// `n` bytes in; none if `n` is zero or past what a `curl_off_t` holds.
+    pub const fn new(n: u64) -> Option<ResumeOffset> {
+        if n > i64::MAX as u64 {
+            return None;
+        }
+        match NonZeroU64::new(n) {
+            Some(n) => Some(ResumeOffset(n)),
+            None => None,
+        }
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+
+    /// As C's `state.resume_from` holds it.
+    pub(crate) const fn signed(self) -> i64 {
+        self.0.get() as i64
+    }
 }
 
 /// The range a transfer asks for, as C's `state.range` holds it.
@@ -3094,6 +3121,19 @@ pub enum Progress {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An offset is what a `curl_off_t` can say, and no more: refused
+    /// beyond it, not clamped.
+    #[test]
+    fn a_resume_offset_fits_a_curl_off_t() {
+        assert_eq!(ResumeOffset::new(0), None);
+        assert_eq!(ResumeOffset::new(1).unwrap().signed(), 1);
+        let most = ResumeOffset::new(i64::MAX as u64).unwrap();
+        assert_eq!(most.get(), i64::MAX as u64);
+        assert_eq!(most.signed(), i64::MAX);
+        assert_eq!(ResumeOffset::new(i64::MAX as u64 + 1), None);
+        assert_eq!(ResumeOffset::new(u64::MAX), None);
+    }
 
     /// A protocol's schemes are its rows of the table, each its own bit:
     /// HTTP's one, SOCKS's five, none of another protocol's.

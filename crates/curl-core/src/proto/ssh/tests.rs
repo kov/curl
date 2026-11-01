@@ -1103,7 +1103,7 @@ fn a_resumed_download_applies_its_point_as_c_does() {
             move |o| o.resume = Some(at),
         )
     };
-    let from = |n| Resume::At(std::num::NonZeroU64::new(n).unwrap());
+    let from = |n| Resume::At(crate::options::ResumeOffset::new(n).unwrap());
     let (result, body, said, _) = resumed(from(3));
     assert_eq!(result, Ok(()), "{said}");
     assert_eq!(body, b"3456");
@@ -1736,7 +1736,7 @@ fn uploads(o: &mut Options, bytes: &[u8]) {
 #[test]
 fn a_resumed_upload_is_stored_as_c_stores_it() {
     use crate::options::Resume;
-    let at = |n| Some(Resume::At(std::num::NonZeroU64::new(n).unwrap()));
+    let at = |n| Some(Resume::At(crate::options::ResumeOffset::new(n).unwrap()));
     let cases: [(&str, Option<Resume>, bool, &str, &str); 5] = [
         ("abcdef", at(3), false, "abc3456789", "Write"),
         ("abcd", Some(Resume::AtEnd), false, "abcd456789", "Write"),
@@ -1774,7 +1774,9 @@ fn a_resumed_upload_skips_to_its_point() {
     let w = world(&[("/home/u/f", &stored)]);
     let (result, _, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
         uploads(o, &body);
-        o.resume = Some(Resume::At(std::num::NonZeroU64::new(5_000).unwrap()));
+        o.resume = Some(Resume::At(
+            crate::options::ResumeOffset::new(5_000).unwrap(),
+        ));
     });
     assert_eq!(result, Ok(()), "{said}");
     assert!(calls.contains(&"seek 5000".to_owned()), "{calls:?}");
@@ -1784,7 +1786,7 @@ fn a_resumed_upload_skips_to_its_point() {
     let w = world(&[("/home/u/f", "abcdef")]);
     let (result, _, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
         uploads(o, b"0123456789");
-        o.resume = Some(Resume::At(std::num::NonZeroU64::new(11).unwrap()));
+        o.resume = Some(Resume::At(crate::options::ResumeOffset::new(11).unwrap()));
     });
     assert_eq!(result, Err(ErrorKind::FtpCouldntUseRest), "{said}");
     assert!(said.contains("Failed to read data\n"), "{said}");
@@ -1848,7 +1850,7 @@ fn a_resumed_upload_seeks_its_source() {
                 rewind: Some(Handler::rewind(source()).unwrap()),
                 size: Some(10),
             };
-            o.resume = Some(Resume::At(std::num::NonZeroU64::new(from).unwrap()));
+            o.resume = Some(Resume::At(crate::options::ResumeOffset::new(from).unwrap()));
         });
         let file = w.lock().unwrap().files[0].1.clone();
         (result, said, String::from_utf8(file).unwrap())

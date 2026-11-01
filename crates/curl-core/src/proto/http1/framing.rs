@@ -994,7 +994,7 @@ pub(crate) mod arbitrary {
             proptest::option::of(count().prop_filter_map("not zero", NonZeroU64::new)),
             proptest::option::of(prop_oneof![
                 count()
-                    .prop_filter_map("not zero", NonZeroU64::new)
+                    .prop_filter_map("not zero", crate::options::ResumeOffset::new)
                     .prop_map(Resume::At),
                 Just(Resume::AtEnd),
             ]),

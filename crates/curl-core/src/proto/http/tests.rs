@@ -907,7 +907,9 @@ fn an_idle_connection_a_layer_finds_dead_is_not_reused() {
 /// binary).
 #[test]
 fn a_resumed_get_takes_only_the_rest() {
-    let resume = |o: &mut Options| o.resume = Some(Resume::At(NonZeroU64::new(18).unwrap()));
+    let resume = |o: &mut Options| {
+        o.resume = Some(Resume::At(crate::options::ResumeOffset::new(18).unwrap()))
+    };
     let ran = run(
         "/",
         b"HTTP/1.1 206 P\r\nContent-Range: bytes 18-21/22\r\nContent-Length: 4\r\n\r\nabc\n",
@@ -991,7 +993,7 @@ fn a_416_to_a_resumed_get_is_read_and_dropped() {
         b"HTTP/1.1 416 No\r\nContent-Length: 4\r\n\r\nnope",
         false,
         |o| {
-            o.resume = Some(Resume::At(NonZeroU64::new(18).unwrap()));
+            o.resume = Some(Resume::At(crate::options::ResumeOffset::new(18).unwrap()));
             o.http.fail_on_error = true;
         },
     );
@@ -1444,7 +1446,7 @@ fn the_application_s_content_headers_replace_the_library_s() {
 #[test]
 fn a_resumed_body_is_refused() {
     let resumed = with_body(Method::Upload, b"a", |o| {
-        o.resume = Some(Resume::At(NonZeroU64::new(1).unwrap()));
+        o.resume = Some(Resume::At(crate::options::ResumeOffset::new(1).unwrap()));
     });
     assert_eq!(resumed.result, Err(ErrorKind::BadFunctionArgument));
     assert!(resumed.request.is_empty());

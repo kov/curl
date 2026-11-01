@@ -621,7 +621,7 @@ impl Request {
         let options = cx.easy().options();
         // A resume point is asked for as the range from it (`setup_range`).
         let resume_from = match options.resume {
-            Some(Resume::At(n)) => i64::try_from(n.get()).unwrap_or(i64::MAX),
+            Some(Resume::At(n)) => n.signed(),
             Some(Resume::AtEnd) => -1,
             None => 0,
         };

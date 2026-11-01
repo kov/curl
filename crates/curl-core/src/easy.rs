@@ -992,7 +992,6 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroU64;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -1250,7 +1249,7 @@ mod tests {
         assert_eq!(e.perform(), Ok(()));
         assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"01234");
         e.options_mut().upload = body(b"0123456789");
-        e.options_mut().resume = Some(Resume::At(NonZeroU64::new(5).unwrap()));
+        e.options_mut().resume = Some(Resume::At(crate::options::ResumeOffset::new(5).unwrap()));
         assert_eq!(e.perform(), Ok(()));
         assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"0123456789");
         assert_eq!(e.report().sizes().upload(), 5);

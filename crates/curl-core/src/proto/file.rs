@@ -518,7 +518,7 @@ fn span(ranged: Option<Ranged<'_>>) -> Result<Option<Span>, ErrorKind> {
         None => return Ok(None),
         // `N-`, read back as N.
         Some(Ranged::Resume(Resume::At(from))) => {
-            let from = i64::try_from(from.get()).unwrap_or(i64::MAX);
+            let from = from.signed();
             return Ok(Some(Span {
                 resume: from,
                 max: None,

@@ -42,3 +42,12 @@ witness: curl-core options::tests::redirects_and_the_continue_wait_are_held_to_t
         ContinueWait(Duration::from_millis(ms.min(Self::MAX_MS)))
 --- new
         ContinueWait(Duration::from_millis(ms))
+
+=== a resume offset past what a curl_off_t holds is taken
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core options::tests::a_resume_offset_fits_a_curl_off_t
+features: test-util
+--- old
+        if n > i64::MAX as u64 {
+--- new
+        if false && n > i64::MAX as u64 {

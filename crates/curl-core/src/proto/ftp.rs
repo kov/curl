@@ -2541,9 +2541,7 @@ impl Request {
                 // (`state.resume_from`).
                 self.resume_from = match cx.easy().options().resume {
                     None => 0,
-                    Some(crate::options::Resume::At(n)) => {
-                        i64::try_from(n.get()).unwrap_or(i64::MAX)
-                    }
+                    Some(crate::options::Resume::At(n)) => n.signed(),
                     Some(crate::options::Resume::AtEnd) => -1,
                 };
                 self.nb_type(cx, pc, &mut carrier, self.prefer_ascii, State::StorType)?;

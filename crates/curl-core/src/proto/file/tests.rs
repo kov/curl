@@ -2,7 +2,7 @@
 //! expectation of headers, sizes, calls and results was read off the C
 //! build running the same transfer.
 
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::NonZeroUsize;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -493,7 +493,7 @@ fn resumed(s: &Scratch, name: &str, resume: Resume) -> (Result<(), ErrorKind>, S
 }
 
 fn at(n: u64) -> Resume {
-    Resume::At(NonZeroU64::new(n).unwrap())
+    Resume::At(crate::options::ResumeOffset::new(n).unwrap())
 }
 
 /// A resumed download skips into the file, its headers still the whole

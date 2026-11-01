@@ -14,8 +14,8 @@ use crate::multi::Host;
 use crate::proto::http::negotiate::Negotiate;
 
 use super::{
-    Chain, ConnRank, Failure, Head, Lent, SetupLend, SetupMut, StepCx, Wake,
-    connect_ended_at, enter_chain, handshake_due, mstate, names, start_handshake, step_handshake,
+    Chain, ConnRank, Failure, Head, Lent, SetupLend, SetupMut, StepCx, Wake, connect_ended_at,
+    enter_chain, handshake_due, mstate, names, start_handshake, step_handshake,
 };
 use crate::components::Component;
 use crate::conn::NetRoute;
@@ -119,7 +119,7 @@ impl SideSetup {
         cx: &mut StepCx<'_, H>,
         entered: &mut bool,
     ) -> Chain {
-        let under_way = self.handshake.as_deref().map(Handshake::filter);
+        let under_way = machine.handshake.as_deref().map(super::Handshake::filter);
         let plan = machine.route().clone();
         enter_chain(machine, &plan, Head::default(), under_way, cx, entered)
     }

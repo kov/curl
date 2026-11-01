@@ -351,9 +351,9 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::timer_trace::a_leg_arms_its_limits_and_the_race_clears_its_timer
 --- old
     trace_timer(cx, TimerKind::Eyeballs, format_args!("cleared"));
-    cx.report_mut().count_connect();
+}
 --- new
-    cx.report_mut().count_connect();
+}
 
 === the first timer due is not named as it fires
 file: crates/curl-core/src/multi/mod.rs

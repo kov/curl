@@ -1487,7 +1487,8 @@ impl Pool {
     pub(crate) fn reserved_tls_native(&self, id: ConnId) -> Option<crate::tls::TlsNative> {
         match self.conns.get(id)? {
             Place::Reserved(slot) => crate::multi::state::native_of(
-                slot.as_slot().query(crate::conn::layer::LayerQuery::TlsNative),
+                slot.as_slot()
+                    .query(crate::conn::layer::LayerQuery::TlsNative),
             ),
             _ => None,
         }

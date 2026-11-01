@@ -356,6 +356,13 @@ not a difference: it is tracked in `MILESTONES.md`.
   the response is read on. Pinned by `an_origin_named_by_a_dot_alone_keeps_nothing`
   (`crates/curl-core/src/altsvc/tests.rs`).
 
+- **An RTSP SETUP sends the application's `Transport:` header once.** With `Transport:` among
+  the application's headers, C's `rtsp_setup_request` (`lib/rtsp.c`) keeps the header line
+  `Curl_checkheaders` found as its own transport header and sends it, without its line end,
+  ahead of the application's headers, which carry it again: the first copy runs into the line
+  after it. Here it goes once, with the application's other headers. Pinned by
+  `the_application_s_transport_goes_once` (`crates/curl-core/src/proto/http/tests/rtsp.rs`).
+
 ## Undefined behaviour in C, defined here
 
 - **A blob option's bytes are copied, `CURL_BLOB_NOCOPY` or not.** C keeps the application's
@@ -472,3 +479,14 @@ not a difference: it is tracked in `MILESTONES.md`.
   closes the share's connections, the lock and unlock functions get NULL for the handle; C
   gives them the share's internal admin handle, an easy handle the application never created.
   Pinned by `a_share_is_held_and_locked_as_in_c` (`crates/curl-sys-abi/src/handle_tests.rs`).
+
+## Descriptors C shares with a library
+
+- **libssh is handed a copy of the connection's socket.** C gives libssh the connection's own
+  descriptor (`SSH_OPTIONS_FD`), and libssh closes it on some failures, behind the connection
+  that also closes it. Here the session gets a duplicate (`F_DUPFD_CLOEXEC`) and closes only
+  that, so the connection's socket is closed once, by the connection. The copy takes a
+  descriptor number of its own, so the descriptor numbers in an SSH transfer's trace after it
+  differ from C's; no runtests or pytest case compares them. Pinned by
+  `a_failed_connect_leaves_the_connection_s_socket` and
+  `a_session_never_connected_closes_its_copy` (`crates/curl-libssh/src/tests.rs`).

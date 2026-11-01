@@ -126,7 +126,7 @@ witness: curl-core proto::http::tests::the_time_limit_is_the_whole_transfer_s
         let total = self.total.map_or(0, |t| left(t.duration(), starts.single));
 
 === a transfer out of time says the time since its last request's start
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::the_time_limit_is_the_whole_transfer_s
 --- old
         Phase::Transferring => timings.since_op_ms(cx.rest.now),
@@ -195,7 +195,7 @@ impl Clock for SystemClock {
     }
 
 === the race's timer is cleared with no attempt left to start
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::tcp_trace::the_race_s_timer_stays_armed_with_no_attempt_left
 --- old
     if let Some(at) = until {

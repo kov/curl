@@ -130,7 +130,7 @@ witness: curl-core proto::http::tests::tcp_trace::an_opener_out_of_memory_fails_
             Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
 
 === the setup's failure is a refused connect whatever the last attempt's was
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::tcp_trace::a_configurer_failing_a_socket_aborts_as_c
 --- old
     let why = failure.message();
@@ -158,7 +158,7 @@ features: test-util
         // Whatever the attempts said is let go (`cf_ip_happy_connect`).
 
 === the last attempt's reason is kept over the race's
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::tcp_trace::an_opener_opening_nothing_fails_as_c
 features: test-util
 --- old

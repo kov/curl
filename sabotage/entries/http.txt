@@ -602,7 +602,7 @@ witness: curl-core proto::http1::chunked::tests::encodes_pieces_as_chunks
             let _ = trailers;
 
 === a Location not followed is not kept
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_location_not_followed_is_kept_resolved
 --- old
     cx.report_mut().set_redirect_url(url);
@@ -642,14 +642,14 @@ witness: curl-core proto::http::tests::a_location_outside_a_redirect_is_not_foll
             self.follow = asked.follow;
 
 === redirects go uncounted
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_redirect_is_followed_on_the_kept_connection
 --- old
     cx.report_mut().count_redirect();
 --- new
 
 === the redirect limit lets one more through
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::redirects_stop_at_the_limit
 --- old
         && cx.report_mut().redirects() >= u32::from(max)
@@ -657,7 +657,7 @@ witness: curl-core proto::http::tests::redirects_stop_at_the_limit
         && cx.report_mut().redirects() > u32::from(max)
 
 === a redirect goes to any scheme built
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_redirect_to_a_file_is_refused
 --- old
     let refused = !cx.easy().options().schemes.permit(&scheme, redirected);
@@ -681,7 +681,7 @@ witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_t
                 CredentialGate::new(&peer, &peer, other_hosts)
 
 === the first origin is each request's own
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
 --- old
     if run.first.is_none() {
@@ -730,7 +730,7 @@ witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_d
     if true {
 
 === the report keeps the first request's method
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does
 --- old
     cx.report_mut().set_method(run.method);
@@ -755,7 +755,7 @@ witness: curl-core proto::http::tests::a_custom_method_follows_as_the_mode_says
         Some(trace::line(format_args!(
 
 === a redirected body is not rewound
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_redirected_body_is_rewound_or_the_transfer_fails
 --- old
         client_start(cx);
@@ -767,7 +767,7 @@ witness: curl-core proto::http::tests::a_redirected_body_is_rewound_or_the_trans
     let rewound: Result<(), ErrorKind> = Ok(());
 
 === a failed rewind fails a redirect to GET
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_redirected_body_is_rewound_or_the_transfer_fails
 --- old
     if let Err(e) = rewound
@@ -777,7 +777,7 @@ witness: curl-core proto::http::tests::a_redirected_body_is_rewound_or_the_trans
     if let Err(e) = rewound {
 
 === a retried body is not rewound
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_retried_request_rewinds_its_body
 --- old
     client_start(cx);
@@ -802,7 +802,7 @@ witness: curl-core proto::http::tests::a_response_in_http_1_0_makes_the_next_req
 --- new
 
 === a redirect's referer is not kept
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_came_from
 --- old
             Ok(referer) => cx.report_mut().set_referer(referer),
@@ -810,7 +810,7 @@ witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_ca
             Ok(_) => {}
 
 === a redirect's referer keeps the fragment
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_came_from
 --- old
     url.set(Part::Fragment, None, none)
@@ -820,7 +820,7 @@ witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_ca
         .and_then(|()| url.set(Part::User, None, none))
 
 === the application's referer is not sent
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_came_from
 --- old
         cx.report_mut().set_referer(referer);
@@ -870,7 +870,7 @@ witness: curl-core proto::http::tests::a_417_has_the_request_made_again_without_
             self.upload_done(cx, true);
 
 === the shared URL is ignored
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_shared_url_is_read_as_each_transfer_starts
 --- old
     if let Some((_, copy)) = shared {
@@ -878,7 +878,7 @@ witness: curl-core proto::http::tests::a_shared_url_is_read_as_each_transfer_sta
     if let Some((_, copy)) = shared.filter(|_| false) {
 
 === the application's port is never applied
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::the_application_s_port_holds_until_an_absolute_redirect
 --- old
         .filter(|_| run.course.allows_port())
@@ -886,14 +886,14 @@ witness: curl-core proto::http::tests::the_application_s_port_holds_until_an_abs
         .filter(|_| false)
 
 === the application's port holds past an absolute redirect
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::the_application_s_port_holds_until_an_absolute_redirect
 --- old
         run.course.drop_port();
 --- new
 
 === a host name over 65535 bytes is looked up
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::a_host_name_too_long_is_refused
 --- old
     if url.host_held().is_some_and(|host| host.len() > MAX_HOST) {
@@ -1178,7 +1178,7 @@ witness: curl-core proto::http::tests::digest_goes_beside_the_application_s_auth
                 Authorization::new("Digest", value, c.trusted(), &http.headers)
 
 === a request counts what the one before it moved
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::each_request_counts_its_own_upload
 --- old
     report.sizes_mut().new_request();
@@ -1257,7 +1257,7 @@ witness: curl-core proto::http::tests::a_step_reads_eleven_times_at_most_and_run
 --- new
 
 === the URL a 401's retry names carries the application's port
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_401_retry_names_the_url_without_the_application_s_port
 --- old
     match url.get(Part::Url, get) {
@@ -1268,7 +1268,7 @@ witness: curl-core proto::http::tests::a_401_retry_names_the_url_without_the_app
         Ok(whole) => run.url = whole,
 
 === a relative redirect resolves without the application's port
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_relative_redirect_resolves_with_the_application_s_port
 --- old
     apply_port(&mut url, run, cx);
@@ -1295,7 +1295,7 @@ witness: curl-core proto::http::tests::a_post_asked_chunked_as_its_request_is_bu
             .map_err(|_| ErrorKind::OutOfMemory)?;
 
 === a 417's retry keeps the application's port
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_417_retry_drops_the_application_s_port
 --- old
     match url.get(Part::Url, get) {
@@ -1428,7 +1428,7 @@ witness: curl-core proto::http::tests::the_wait_for_a_100_starts_once_a_pause_en
                         if !read {
 
 === a .netrc is read only by an HTTP request
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_netrc_file_is_read_before_the_protocol_is_checked
 --- old
         Ok(None) => crate::proto::netrc_unkept(&url, run.first.as_deref(), cx).map(|()| None),
@@ -1486,7 +1486,7 @@ witness: curl-core proto::http::tests::a_named_first_line_is_read_as_a_200
                 .map_err(|_| ErrorKind::OutOfMemory)?;
 
 === an unknown scheme is refused only after the .netrc is read
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_netrc_file_is_read_before_the_protocol_is_checked
 --- old
     if !ProtoState::knows(&scheme) {
@@ -1525,7 +1525,7 @@ witness: curl-core proto::http::tests::a_custom_method_not_utf8_is_traced_as_its
         Some(trace::line(format_args!("Stick to {custom} instead of GET")))
 
 === a .netrc file's credentials stay out of the URL a redirect resolves against
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::multi_trace::a_netrc_login_is_the_url_s_for_a_redirect
 features: test-util
 --- old
@@ -1543,7 +1543,7 @@ features: test-util
         true
 
 === a .netrc file's password goes into a redirect's URL unencoded
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::multi_trace::a_netrc_login_is_the_url_s_for_a_redirect
 features: test-util
 --- old
@@ -1593,7 +1593,7 @@ witness: curl-core proto::http::tests::netrc_reads::a_netrc_is_read_for_the_orig
         return with_netrc(credentials, peer.shown(), takes, cx).map(drop);
 
 === a host too long is told only after the netrc is read
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::netrc_reads::a_bad_origin_fails_before_a_netrc_is_read
 --- old
     if url.host_held().is_some_and(|host| host.len() > MAX_HOST) {

@@ -1,7 +1,7 @@
 # The share (crates/curl-core/src/share.rs).
 
 === a transfer ignores its share's connections
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
         Some(kept) => Home::Share(kept.share),
@@ -52,7 +52,7 @@ witness: curl-core proto::http::tests::a_share_s_jar_serves_the_transfers_of_a_m
     match Err::<Option<R>, _>(f) {
 
 === a setup lets go of its answer untold
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::a_share_s_uses_are_told_where_c_locks_them
 --- old
         // race ends.

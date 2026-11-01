@@ -269,7 +269,7 @@ witness: curl-core multi::tests::sockets_are_set_as_the_options_say
         nodelay: false,
 
 === a transfer's sockets are set by the defaults, not its options
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::sockets_are_set_as_the_options_say
 --- old
         socket: crate::conn::SocketSetup::of(&options.sockets),

@@ -53,7 +53,7 @@ witness: curl-core multi::tests::stale_answers_are_dropped
     names.section(|_| drop((now, max_age)));
 
 === a resolve list is read by every transfer
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 --- old
     if cx.easy().options().resolve.stamp() == cx.easy().resolve_read {
@@ -61,7 +61,7 @@ witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
     if cx.easy().options().resolve.stamp() == u64::MAX {
 
 === a resolve list that failed is not read again
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::a_bad_resolve_entry_fails_the_transfer
 --- old
     if read.is_ok() {
@@ -105,7 +105,7 @@ witness: curl-core conn::dns::tests::the_cache_s_timeout_decides_what_is_stale
             age
 
 === a setup never reads the cache's timeout
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::answers_may_be_kept_for_ever
 --- old
         max_age: options.limits.reuse.dns_max_age,
@@ -123,7 +123,7 @@ witness: curl-core multi::tests::answers_may_be_kept_for_ever
     let now = cx.rest.now;
 
 === a resolve list set while one is read is read by the next transfer
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_resolve_list_set_while_one_is_read_is_dropped
 --- old
         cx.easy_mut().resolve_read = cx.easy().options().resolve.stamp();
@@ -270,7 +270,7 @@ witness: curl-sys-abi handle_tests::the_resolver_s_options_are_the_build_s
         (ffi::CURLOPT_QUICK_EXIT, Long(n)) => options.quick_exit = n > 1,
 
 === a transfer timed out before its name answered says it was resolving
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::a_resolve_that_never_answers_times_out_as_resolving
 --- old
                     Some(SetupPoint::Resolving) => "Resolving",
@@ -294,7 +294,7 @@ witness: curl-core multi::tests::a_queued_resolve_is_traced_as_c_s_threaded_reso
     for (queued, v6) in [(q.v6, true), (q.v4, false)] {
 
 === a queued resolve that fails traces its queries' empty answers
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::a_queued_resolve_is_traced_as_c_s_threaded_resolver
 --- old
                     trace_resolved(cx, route, Err(queued), &[]);
@@ -326,7 +326,7 @@ witness: curl-core conn::threaded::tests::the_debug_build_s_variables_shape_the_
                     true => ResolveFailure::Failed,
 
 === a stalled resolve arms its retry timer
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::socket_tests::a_stalled_resolve_is_tried_again_by_its_timer
 --- old
     arm(&mut run.deadlines, cx, TimerKind::AsyncName, wait);
@@ -346,7 +346,7 @@ witness: curl-core conn::threaded::tests::a_failure_is_given_no_reason
     }
 
 === a resolver's failure without a reason is said once
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::a_failure_without_a_reason_is_said_twice
 --- old
                         None => trace::fail_with(cx, kind, &[what, host]),
@@ -420,7 +420,7 @@ witness: curl-core multi::tests::an_onion_name_is_never_resolved
         name.len() >= 6
 
 === an onion proxy fails as the origin would
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::an_onion_name_is_never_resolved
 --- old
                         Some(_) => ErrorKind::CouldntResolveProxy,
@@ -434,7 +434,7 @@ witness: curl-core multi::tests::an_onion_name_is_never_resolved
                     let why = format_args!("Not resolving .onion address (RFC 7686)");
 
 === a resolve entry's name not UTF-8 is traced lossily as it is added
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::a_resolve_entry_not_utf8_is_traced_as_its_bytes
 --- old
         trace::info_with(
@@ -447,7 +447,7 @@ witness: curl-core multi::tests::a_resolve_entry_not_utf8_is_traced_as_its_bytes
         trace::info(cx, format_args!("[DNS] added {n}{at}:{g} to cache{kept}"));
 
 === a resolve entry not UTF-8 is said lossily as it fails
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::a_resolve_entry_not_utf8_is_traced_as_its_bytes
 --- old
                 let why: [&[u8]; 3] = [b"Could not parse CURLOPT_RESOLVE entry '", line, b"'"];
@@ -469,7 +469,7 @@ features: test-util
         3
 
 === a DNS filter of a connection asked for HTTP/3 says it wants QUIC
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
 features: test-util
 --- old
@@ -496,7 +496,7 @@ features: test-util
     created(cx, queries, first, transport, true);
 
 === the name's DNS filter is traced as started at every connect of the setup
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_has_the_record_s_dns_filter_and_the_addresses
 features: test-util
 --- old
@@ -507,7 +507,7 @@ features: test-util
         names::started(cx, &c.route);
 
 === a SOCKS target resolved here has no DNS filter of its own
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::setup_trace::a_socks4_target_s_name_has_a_dns_filter_of_its_own
 features: test-util
 --- old

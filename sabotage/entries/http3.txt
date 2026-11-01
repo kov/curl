@@ -119,7 +119,7 @@ witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_ha
         if added.tls {
 
 === HTTP/3 alone is dialed over TCP
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
 --- old
             return TransferState::Init.fail(kind);
@@ -174,7 +174,7 @@ witness: curl-core proto::http::tests::h3_trace::a_shared_connection_keeps_its_c
         let now = cx.now();
 
 === a transfer that may speak HTTP/3 alone never multiplexes
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::h3_trace::a_second_transfer_multiplexes_on_the_first_s_connection
 --- old
     let multiplex = (cx.rest.tell.limits.multiplex && http && (versions.h2 || versions.h3))
@@ -292,7 +292,7 @@ witness: curl-core proto::http::tests::h3_trace::a_callback_reaches_the_quic_con
             LayerQuery::TlsNative => None,
 
 === reuse weighs the versions a transfer wants, not those it allows
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::h3_trace::an_http3_connection_serves_a_transfer_that_asks_for_no_version
 --- old
     let versions = proto.allowed_versions();
@@ -309,7 +309,7 @@ witness: curl-core proto::http::tests::h3_trace::an_http3_connection_serves_a_tr
             && self.dial == Dial::Stream
 
 === a connection passed over for its version is said after the transfer's own is added
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::h3_trace::an_http3_connection_is_passed_over_by_a_transfer_in_http1
 features: debug-hooks
 --- old
@@ -365,7 +365,7 @@ witness: curl-core proto::http::tests::h3_trace::a_race_both_attempts_lose_fails
         Second::Started(_) if race.second.running().is_none() => Some(ErrorKind::SslConnectError).filter(|_| failed != ErrorKind::OutOfMemory),
 
 === the attempt beside the lead is not driven
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h3_trace::a_late_quic_peer_wins_over_a_tcp_attempt_running
 --- old
         let Some(other) = c.attempt(a) else {
@@ -377,7 +377,7 @@ witness: curl-core proto::http::tests::h3_trace::a_late_quic_peer_wins_over_a_tc
         };
 
 === the race's loser goes before the HTTPS connect filter
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h3_trace::a_silent_quic_peer_gives_way_to_tcp_at_the_soft_timeout
 --- old
         if filter != Component::HttpsConnect {
@@ -918,7 +918,7 @@ witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_at
         ]
 
 === a race's second loser once dialed is discarded on the transfer's trace
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_both_tunnels_fails
 --- old
             (Some(race), SetupPoint::Dialed(_)) => {
@@ -928,7 +928,7 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_
                 // No one drives it again: what its handshake held goes now.
 
 === a race that every attempt failed names no chain
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_both_tunnels_fails
 --- old
                 mstate::trace(cx, format_args!("failed to connect {}", chain.failed()));
@@ -936,7 +936,7 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_
                 let _ = chain;
 
 === a failed connect says its connect time before the chain that failed
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::setup_trace::a_refused_tunnel_names_the_chain_that_failed
 --- old
                 // What connected says when, after the chain
@@ -1030,7 +1030,7 @@ witness: curl-core proto::http::tests::h3_trace::a_paused_transfer_waits_on_noth
             }) if true => h3conn.adjust_pollset(wanted, h3),
 
 === the connect through an HTTP/3 proxy is timed
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection
 --- old
     let timed = !c.route.proxy_over_quic();
@@ -1038,7 +1038,7 @@ witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy
     let timed = true;
 
 === an attempt going on to its HTTP/3 proxy tunnel does not say what the race checked
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection
 --- old
                 if let Some(m) = c.attempt(a) {

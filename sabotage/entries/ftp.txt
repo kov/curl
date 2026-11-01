@@ -67,7 +67,7 @@ features: test-util debug-hooks
             ProtoState::Ftp(_) => None,
 
 === the data connection looks its proxy's name up in the multi's cache, not the share's the transfer keeps
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::ftp::tests::the_data_connection_goes_through_the_socks_proxy
 features: test-util debug-hooks
 --- old
@@ -327,7 +327,7 @@ witness: curl-core proto::ftp::tests::a_ccc_s_shutdown_stalls_no_other_transfer
                 self.clearing = None;
 
 === a data connection's next attempt arms no timer
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::ftp::tests::a_silent_data_address_gives_way_after_the_eyeballs_delay
 --- old
         SideTimer::Arm(at) => cx.as_second(|cx| eyeballs_due(run, cx, at)),

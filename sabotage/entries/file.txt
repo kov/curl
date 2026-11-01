@@ -181,7 +181,7 @@ witness: curl-core proto::file::tests::an_upload_writes_the_file
 --- new
 
 === a request skips the protocol-connect step
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::file::tests::a_file_is_its_headers_then_its_body
 --- old
             return TransferState::ProtoConnect(Attached {
@@ -213,14 +213,14 @@ witness: curl-core proto::file::tests::a_file_is_its_headers_then_its_body
         TransferState::Did(x) if false => (
 
 === the user rule does not reach the parser
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::file::tests::the_url_rules_apply_to_a_file_url
 --- old
         disallow_user: options.url_rules.disallow_user,
 --- new
 
 === the path rule does not reach the parser
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::file::tests::the_url_rules_apply_to_a_file_url
 --- old
         path_as_is: options.url_rules.path_as_is,

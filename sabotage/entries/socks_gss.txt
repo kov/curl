@@ -113,7 +113,7 @@ witness: curl-core proto::http::tests::socks_gss::a_failed_send_is_said_of_its_m
 --- new
 
 === a GSS-API read out of time is said as any connect's timeout
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::socks_gss::an_unanswered_message_fails_its_read_when_the_time_is_out
 --- old
             Some(Handshake::Socks(_)) => socks::timed_out(&mut c.shaking(lead).0, cx),

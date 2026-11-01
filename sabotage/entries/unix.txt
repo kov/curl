@@ -20,7 +20,7 @@ witness: curl-core conn::tests::unix_sockets_are_told_apart_as_c_tells_them
             && (*at == other.at || *at != PeerAt::AbstractUnix)
 
 === a proxy is gone through over a Unix socket
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::unix_trace::a_proxy_is_not_gone_through_over_a_unix_socket
 --- old
     let proxy = if over_unix {
@@ -54,7 +54,7 @@ witness: curl-core conn::proxy::tests::a_socks_proxy_at_localhost_with_a_path_is
         Ok(path) if socks && host.eq_ignore_ascii_case(b"localhost") => {
 
 === a failure over a Unix socket names it as a host's port
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::unix_trace::a_unix_socket_refused_fails_over_it
 --- old
         Some(via) if via.is_unix() => {
@@ -70,7 +70,7 @@ witness: curl-core proto::http::tests::unix_trace::an_abstract_name_shows_as_not
 
 
 === an empty path is connected to
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::unix_trace::an_empty_path_fails_the_transfer
 --- old
     if unix.path.is_empty() {

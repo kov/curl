@@ -95,7 +95,7 @@ witness: curl-core proto::http::tests::an_origin_s_digest_is_answered_through_a_
             .apply(&act, offered, proxy, proxy)
 
 === a proxy's URL without credentials leaves out the options'
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_proxy_is_answered_with_its_own_credentials
 --- old
             options.user.as_deref().map(copied).transpose()?,
@@ -180,7 +180,7 @@ witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on
     if false {
 
 === a connection redialed to the proxy is not counted
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on_its_407
 --- old
             eyeballs_won(cx, &c.route, &remote);
@@ -375,7 +375,7 @@ witness: curl-core conn::tests::proxied_routes_match_as_c
             }),
 
 === an HTTP proxy behind a pre-proxy does not tunnel
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_tunnels
 --- old
     let tunnels = route.proxy.as_ref().is_some_and(|p| p.tunnels());
@@ -383,7 +383,7 @@ witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_t
     let tunnels = route.proxy.as_ref().is_some_and(|p| !p.http());
 
 === an HTTP pre-proxy is taken
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_pre_proxy_alone_is_the_socks_proxy_and_only_socks
 --- old
     if pre && crate::conn::socks::Version::of(parsed.kind).is_none() {
@@ -391,7 +391,7 @@ witness: curl-core proto::http::tests::a_pre_proxy_alone_is_the_socks_proxy_and_
     if false {
 
 === a pre-proxy in front of a SOCKS proxy is taken
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_pre_proxy_alone_is_the_socks_proxy_and_only_socks
 --- old
         if pre.is_some() {
@@ -399,7 +399,7 @@ witness: curl-core proto::http::tests::a_pre_proxy_alone_is_the_socks_proxy_and_
         if pre.is_some() && false {
 
 === a pre-proxy is given the HTTP proxy's user
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_forwards
 --- old
     let (user, password) = if from_url || pre {
@@ -465,7 +465,7 @@ witness: curl-core proto::http::tests::a_proxy_closing_on_the_credentials_is_con
         let _ = Stage::Racing(Racing {
 
 === a tunnel's setup traces the origin's name as found in the cache
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::a_proxy_s_name_is_the_one_found_in_the_cache
 --- old
     // The name looked up: the proxy's, or what a connect-to names in the
@@ -493,7 +493,7 @@ witness: curl-core proto::http::tests::a_progress_abort_ends_the_tunnel_at_once
         for _ in 0..0 {
 
 === an unresolved SOCKS proxy is named as the origin
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::an_unresolved_proxy_is_named_in_the_failure
 --- old
             let (host, at) = (first.name(), port_text(first.port()));
@@ -502,7 +502,7 @@ witness: curl-core multi::tests::an_unresolved_proxy_is_named_in_the_failure
             let (host, at) = (to.name(), port_text(to.port()));
 
 === a failed connect names the HTTP proxy behind a pre-proxy
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::a_failed_connect_names_the_first_proxy
 --- old
     let proxy = route.proxy.as_ref().map(ProxyRoute::first_peer);
@@ -510,7 +510,7 @@ witness: curl-core multi::tests::a_failed_connect_names_the_first_proxy
     let proxy = route.proxy.as_ref().map(|p| &*p.peer);
 
 === a connect-to's peer is shown with a proxy
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::a_failed_connect_names_the_first_proxy
 --- old
     match Some(first).filter(|&f| f != origin && Some(f) != proxy) {
@@ -595,7 +595,7 @@ witness: curl-core proto::http::tests::tls::an_https_proxy_s_connection_is_reuse
     }
 
 === a tunnel through an HTTPS proxy is asked for before its TLS
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::tls::https_through_an_https_proxy_is_tls_in_tls
 --- old
     if proxy_tls && tunnels {
@@ -603,7 +603,7 @@ witness: curl-core proto::http::tests::tls::https_through_an_https_proxy_is_tls_
     if proxy_tls && tunnels && made.tunnel.is_some() {
 
 === a request forwarded to an HTTPS proxy goes without its TLS
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::tls::http_through_an_https_proxy_goes_over_tls_to_the_proxy
 --- old
     if proxy_tls {
@@ -627,7 +627,7 @@ witness: curl-core proto::http::tests::https_trace::tls_in_tls_sets_up_as_c
             1
 
 === the proxy's TLS answers the ALPN question a tunnel above it keeps
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/cx.rs
 witness: curl-core proto::http::tests::https_trace::a_tunnel_through_an_https_proxy_keeps_the_alpn_question
 --- old
         && (filter != Component::SslProxy || top == Component::SslProxy)
@@ -635,7 +635,7 @@ witness: curl-core proto::http::tests::https_trace::a_tunnel_through_an_https_pr
         && (filter != Component::SslProxy || top != Component::Ssl)
 
 === the proxy's verification is kept as the origin's
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/cx.rs
 witness: curl-core proto::http::tests::tls::https_through_an_https_proxy_is_tls_in_tls
 --- old
         if matches!(filter, Component::SslProxy | Component::H3Proxy) {
@@ -645,7 +645,7 @@ witness: curl-core proto::http::tests::tls::https_through_an_https_proxy_is_tls_
             self.report_mut().set_proxy_verify_result(result);
 
 === a proxy service named alone makes no credentials for the proxy
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_proxy_service_alone_makes_the_proxy_s_credentials
 features: test-util
 --- old
@@ -819,7 +819,7 @@ features: test-util
         } else if let Some(login) = self.base.credentials.as_ref().filter(|_| false) {
 
 === a forwarded transfer says it spoke its URL's scheme
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_forwarded_transfer_speaks_the_proxy_s_scheme
 features: test-util
 --- old

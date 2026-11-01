@@ -1,5 +1,5 @@
 === an alternative is taken for a request made in HTTP/1.0
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_where_c_takes_one
 --- old
         (neg.wanted.h1 && !neg.only_10).then_some(Alpn::H1),
@@ -7,7 +7,7 @@ witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_whe
         neg.wanted.h1.then_some(Alpn::H1),
 
 === an HTTP/1 alternative is taken though the application allows none
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_where_c_takes_one
 --- old
         h1: neg.allowed.h1 && ctrl.h1,
@@ -15,7 +15,7 @@ witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_whe
         h1: neg.allowed.h1,
 
 === an alternative is taken for a plain http URL
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_where_c_takes_one
 --- old
     let secured = scheme == b"https";
@@ -23,7 +23,7 @@ witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_whe
     let secured = scheme == b"https" || scheme == b"http";
 
 === an alternative is taken where a connect-to entry names the peer
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::alt_svc::an_alternative_is_taken_only_where_c_takes_one
 --- old
             Ok(Some(via)) => Some(via),
@@ -153,7 +153,7 @@ witness: curl-core altsvc::tests::an_origin_named_by_a_dot_alone_keeps_nothing
                 if made || dst_port > 0 {
 
 === an alternative in HTTP/2 is passed over
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::h2::an_alternative_in_http_2_is_reached_in_http_2
 --- old
         (neg.wanted.h2 && h2 && !neg.prior).then_some(Alpn::H2),
@@ -202,14 +202,14 @@ witness: curl-core altsvc::tests::a_file_s_hosts_are_saved_as_they_were_read
     };
 
 === an alternative for the origin itself is not preferred
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::h3_trace::an_alternative_here_in_http3_is_tried_first
 --- old
         neg.alt_svc = Some(crate::proto::http::AltSvcSaid::Prefers(alpn));
 --- new
 
 === no alternative from HTTP/3 is looked up
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::h3_trace::an_alternative_here_in_http1_leads_an_http3_transfer
 --- old
         (neg.wanted.h3 && h3).then_some(Alpn::H3),

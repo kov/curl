@@ -84,7 +84,7 @@ features: test-util
             LayerQuery::Alpn => Some(LayerAnswer::Alpn(None, self.filter)),
 
 === the winning attempt is not asked what ALPN agreed
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::https_trace::what_alpn_agreed_is_asked_of_a_new_connection_only
 features: test-util
 --- old
@@ -138,7 +138,7 @@ features: test-util
             tls: None,
 
 === a failed connect of the chain does not say its filter returned it
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::https_trace::versions_that_allow_none_fail_the_tls_filter_s_connect
 features: test-util
 --- old
@@ -167,7 +167,7 @@ witness: curl-core proto::http::tests::h2::alpn_offers_h2_where_a_library_speaks
             Some(Alpn::H1)
 
 === HTTP/3 is not weighed through an HTTP proxy
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect
 --- old
     cx.easy().libraries().h3.is_some() && quic_refused(route, true).is_none()
@@ -175,7 +175,7 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_
     cx.easy().libraries().h3.is_some() && quic_refused(route, true).is_none() && route.proxy.is_none()
 
 === a refused tunnel fails the transfer, not its attempt
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect
 --- old
             ErrorKind::OutOfMemory => Failure::Transfer(kind),
@@ -185,7 +185,7 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_
             kind => Failure::Transfer(kind),
 
 === an attempt failed once dialed goes as it fails, not with the race
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect
 --- old
             (Some(race), SetupPoint::Dialed(_)) => {
@@ -195,7 +195,7 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_
                 // No one drives it again: what its handshake held goes now.
 
 === a leading TCP second does not answer for its connection
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h3_trace::a_tcp_second_leading_answers_for_the_connection
 --- old
     fn second_leads(&self) -> bool {
@@ -207,7 +207,7 @@ witness: curl-core proto::http::tests::h3_trace::a_tcp_second_leading_answers_fo
     }
 
 === a connecting transfer's answers come from its setup even on a reused connection
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::tls::a_transfer_reusing_a_connection_reaches_its_tls_objects_as_it_connects
 --- old
     fn second_leads(&self) -> bool {

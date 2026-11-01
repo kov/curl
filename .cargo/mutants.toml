@@ -778,7 +778,7 @@ exclude_re = [
     # its timer wakes it then; in DO, a connect limit spent would have
     # failed that check in the state before (`multi_handle_timeout`, run
     # for pending transfers too).
-    'curl-core/src/multi/state\.rs:.*: replace < with (==|<=) in StepCx<.*>::time_left$',
+    'curl-core/src/multi/state/cx\.rs:.*: replace < with (==|<=) in StepCx<.*>::time_left$',
     # The upload flags' and IMAP's first bits: `1 << 0` and `1 >> 0` are
     # both 1. IMAP's SASL bit (`1 << 1`, or 0 mutated) is never asked of:
     # only the clear-text bit decides whether LOGIN goes, which a SASL

@@ -27,7 +27,7 @@ witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_fol
         let layer = layer(Vec::new())?;
 
 === the origin's TLS is made before the PROXY protocol's line
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::tls::the_proxy_protocol_s_line_goes_before_tls
 --- old
     if setup.sends_preface() && !made.preface {
@@ -58,7 +58,7 @@ witness: curl-core proto::http::tests::tls::a_read_waits_to_write_what_tls_still
             TlsWait::Send => wanted,
 
 === a TLS handshake's pollset ignores what its layer waits for
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::tls::a_handshake_waits_to_write_while_it_reads
 --- old
             Handshake::Tls(_) => setup.handshake_pollset(Events::NONE),
@@ -91,7 +91,7 @@ witness: curl-core proto::http::tests::tls::https_without_a_tls_library_is_not_s
             b"https" => ProtoState::Http(
 
 === https goes whole to an HTTP proxy rather than through a tunnel
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_followed_its_answer_first
 --- old
         match choose_proxy(cx, &origin, &scheme, via.is_some() || secured || !handed) {
@@ -107,7 +107,7 @@ witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_fol
         80
 
 === an https connection marks no app connect time
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::tls::an_https_get_goes_through_its_tls_layer
 --- old
         if c.route.tls.is_some() && c.lease.query(LayerQuery::TlsDeferred).is_none() {
@@ -193,7 +193,7 @@ witness: curl-core proto::http::tests::tls::a_socket_failing_under_a_session_is_
                             cx.fails_with(kind, &[why.as_bytes()]);
 
 === a setup cut short in its handshake forgets the connection's ends and connect time
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::tls::a_handshake_cut_short_keeps_the_connection_s_ends_and_time
 --- old
     let Some((remote, local, at)) = partly else {
@@ -220,7 +220,7 @@ witness: curl-core tls::pin::tests::a_hash_among_several_matches
             rest = next.filter(|_| false);
 
 === a handler asking for another transfer's TLS objects is handed the stepping one's
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/cx.rs
 witness: curl-core proto::http::tests::tls_hands::a_handler_reaches_another_transfer_s_objects_by_its_id
 features: test-util
 --- old
@@ -244,7 +244,7 @@ features: test-util
     let wake = step_lent(run, cx);
 
 === the context handler cannot reach the context it is handed through its transfer
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/cx.rs
 witness: curl-core proto::http::tests::tls_hands::the_context_handler_and_the_handlers_reach_the_library_s_objects
 features: test-util
 --- old

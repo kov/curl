@@ -124,7 +124,7 @@ want.origin.scheme().reuses_tls() && have.upgrade() == want.upgrade()
 want.origin.scheme().reuses_tls() || have.upgrade() == want.upgrade()
 
 === a POP3 route keeps no TLS settings to upgrade with unless asked for TLS
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::pop3::tests::over_the_wire::an_upgraded_connection_serves_a_transfer_not_asking_for_tls_alike
 features: test-util
 --- old
@@ -133,7 +133,7 @@ features: test-util
         Some(tls) if !secured && (reuses_tls && use_ssl.may()) => Some(
 
 === a POP3 transfer goes to an HTTP proxy without a tunnel
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::pop3::tests::over_the_wire::pop3_tunnels_through_an_http_proxy
 features: test-util
 --- old
@@ -169,7 +169,7 @@ features: test-util
         if let Some(at) = cx.server_response_at.take().filter(|_| false) {
 
 === the connect's time limit bounds the request's whole making
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/cx.rs
 witness: curl-core proto::pop3::tests::over_the_wire::the_time_to_answer_wakes_the_transfer_and_outlives_the_connect_s
 features: test-util
 --- old
@@ -216,7 +216,7 @@ features: test-util
         (true, TlsSide::Origin) if false => Alpn::None,
 
 === an HTTP route keeps TLS settings to upgrade with
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core a_get_with_a_tls_library_allocates_as_one_without
 features: test-util
 --- old

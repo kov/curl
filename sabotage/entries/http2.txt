@@ -274,7 +274,7 @@ witness: curl-core proto::http::tests::h2::a_connection_at_the_servers_limit_tak
     if false {
 
 === a transfer joins a connection in a multi that does not multiplex
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::h2::a_multi_that_does_not_multiplex_shares_no_connection
 --- old
     let multiplex = (cx.rest.tell.limits.multiplex && http && (versions.h2 || versions.h3))
@@ -762,7 +762,7 @@ witness: curl-core proto::http::tests::h2_trace::a_step_reads_frames_however_man
             let closed = lease.conn().h2().is_none_or(H2Conn::closed);
 
 === the HTTP/2 filter the HTTPS connect filter inserts is left out of its chains
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h2_trace::alpn_agreeing_h2_makes_the_session_as_the_connection_is_set_up
 --- old
             head.h2 = true;

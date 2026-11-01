@@ -83,7 +83,7 @@ features: test-util
         *lent.negotiate = None;
 
 === a tunnel's Negotiate is not handed to the connection it set up
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::negotiate::a_connection_negotiating_with_its_proxy_serves_only_its_own
 features: test-util
 --- old

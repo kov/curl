@@ -28,7 +28,7 @@ witness: curl-core trace::tests::ends_lines_as_c
     if line.bytes().len() >= LINE_MAX - 3 {
 
 === a scheme libcurl knows is called unsupported
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core easy::tests::a_failure_says_why
 --- old
                 [b"\" is disabled", follow]
@@ -91,7 +91,7 @@ witness: curl-core proto::http::tests::a_cookie_file_named_while_one_is_warned_o
             }
 
 === the resolve list read is written back over what the debug handler set
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::lists_set_while_their_entries_are_traced_stand
 --- old
     let read = read_entries(cx, &entries);
@@ -102,7 +102,7 @@ witness: curl-core proto::http::tests::lists_set_while_their_entries_are_traced_
     if read.is_ok() {
 
 === the connect-to list is out of the options while its bad entry is traced
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::lists_set_while_their_entries_are_traced_stand
 --- old
     Err(trace::fail_for(cx, kind, reason))
@@ -275,7 +275,7 @@ witness: curl-core proto::http::tests::multi_trace::a_refused_connect_is_done_wi
     for (timer, marked) in enter_completed(cx.report_mut(), now, before_did)
 
 === a redirect's request starts over from CONNECT
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::multi_trace::a_redirect_starts_over_from_setup
 --- old
     sizes.upload_expected = None;
@@ -284,7 +284,7 @@ witness: curl-core proto::http::tests::multi_trace::a_redirect_starts_over_from_
     sizes.upload_expected = None;
 
 === a connection reused is set up again
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::multi_trace::a_redirect_starts_over_from_setup
 --- old
     if !lease.is_up() {
@@ -329,7 +329,7 @@ features: debug-hooks
 }
 
 === a leg's limits are armed untraced
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::timer_trace::a_leg_arms_its_limits_and_the_race_clears_its_timer
 --- old
     for (kind, at) in run.deadlines.start_leg(cx.rest.now).into_iter().flatten() {
@@ -339,7 +339,7 @@ witness: curl-core proto::http::tests::timer_trace::a_leg_arms_its_limits_and_th
     for (_kind, _at) in run.deadlines.start_leg(cx.rest.now).into_iter().flatten() {}
 
 === a timer's wait is traced from the pass's start, not the clock
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::timer_trace::the_speed_timers_are_armed_with_their_waits
 --- old
         let left = at.since(cx.rest.clock.now()).as_micros();
@@ -347,7 +347,7 @@ witness: curl-core proto::http::tests::timer_trace::the_speed_timers_are_armed_w
         let left = at.since(cx.now()).as_micros();
 
 === the race's timer is not cleared as its attempt connects
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::timer_trace::a_leg_arms_its_limits_and_the_race_clears_its_timer
 --- old
     trace_timer(cx, TimerKind::Eyeballs, format_args!("cleared"));
@@ -439,7 +439,7 @@ witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
             format_args!("connect attempt #{} successful", 0),
 
 === the next attempt's delay is armed unsaid
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
 --- old
         format_args!("next HAPPY_EYEBALLS timeout in {ms}ms"),
@@ -447,7 +447,7 @@ witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
         format_args!(""),
 
 === the race's winner is not said
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
 --- old
         &[b"Connected to ", name, b" (", ip.bytes(), port.bytes()],
@@ -455,7 +455,7 @@ witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
         &[b"Connected to ", name],
 
 === a race with no attempt left ends unsaid
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::a_race_with_no_attempt_left_says_so
 --- old
                 format_args!("no more attempts to try"),
@@ -463,7 +463,7 @@ witness: curl-core multi::tests::a_race_with_no_attempt_left_says_so
                 format_args!(""),
 
 === a cache lookup is said to find what it missed
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 --- old
         Some(Found::Stale(_) | Found::Resolved(_)) => (Ok(()), "not "),
@@ -471,7 +471,7 @@ witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
         Some(Found::Stale(_) | Found::Resolved(_)) => (Ok(()), ""),
 
 === a shortcut is said to answer later
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 --- old
         Ok(Asked::Shortcut) => 0,
@@ -495,7 +495,7 @@ witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
         Some(IpAddr::V4(_)) => {}
 
 === the answer kept is not said
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 --- old
             b"cached entry for ",
@@ -509,7 +509,7 @@ witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
             at,
 
 === the resolver's no is kept unsaid
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
 --- old
                         b"cache negative name resolve for ",
@@ -523,7 +523,7 @@ witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
                         at,
 
 === a negative entry is found without a word
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
 --- old
             format_args!("cache entry does not have type={queries} addresses"),
@@ -531,7 +531,7 @@ witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
             format_args!("cache entry does not have addresses"),
 
 === a stale answer is said after the lookup
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
 --- old
     let code = trace::Code(code);
@@ -770,7 +770,7 @@ features: test-util
             let says = true;
 
 === a file says it is set up to move bytes over a socket it has not
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::file::tests::a_file_says_it_is_set_up_to_move_nothing
 features: test-util
 --- old

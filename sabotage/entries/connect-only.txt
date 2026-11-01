@@ -15,7 +15,7 @@ witness: curl-core proto::http::tests::connect_only::a_handle_that_only_connects
         reserve: false,
 
 === a transfer that only connects reuses an idle connection
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::connect_only::a_handle_that_only_connects_makes_a_new_connection
 --- old
         fresh: limits.fresh || cx.easy().options().connect_only.reserves(),

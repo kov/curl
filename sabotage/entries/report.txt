@@ -186,7 +186,7 @@ witness: curl-core deliver::tests::an_invalid_header_line_fails_the_transfer
         }
 
 === the transfer's protocol is not recorded
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core easy::tests::performs_a_file_url_on_its_own
 --- old
     cx.report_mut().set_protocol(Protocol::of_scheme(&scheme));
@@ -204,7 +204,7 @@ witness: curl-core report::tests::keeps_the_first_failure
         let mut kept = Vec::new();
 
 === a URL that cannot be read back runs its transfer
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::a_url_too_long_to_read_back_fails_its_transfer
 --- old
         Err(e) => return TransferState::Init.fail(url_error(e)),
@@ -262,7 +262,7 @@ witness: curl-core version::tests::the_threaded_resolver_is_claimed_as_asynch_dn
     Feature::AsynchDns,
 
 === the queue time is taken from the pass's reading of the clock
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::the_queue_time_is_read_from_the_clock_as_it_is_marked
 --- old
     cx.mark_now(Timer::PostQueue);

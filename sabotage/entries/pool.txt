@@ -225,7 +225,7 @@ witness: curl-core conn::connect::tests::the_winner_closes_the_other_attempts
         let _ = (&mut r.attempts, component);
 
 === a transfer is not woken for its next attempt
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::a_silent_address_gives_way_after_the_eyeballs_delay
 --- old
     if let Some(at) = until {
@@ -373,7 +373,7 @@ witness: curl-core multi::tests::a_transfer_can_refuse_to_share_its_connection
     matches!(route, Route::Net(..))
 
 === a transfer finding room lets no one waiting look
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::a_transfer_finding_room_lets_the_next_look
 --- old
     if !matches!(acquired, Ok(Acquired::Wait(_))) {
@@ -446,7 +446,7 @@ witness: curl-core multi::tests::a_connection_closes_its_sockets_through_its_mak
         match connect {
 
 === a connection is not given its maker's closer
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::a_connection_closes_its_sockets_through_its_maker_s_closer
 --- old
                 Some(close) => Closer::Hook(close.clone()),
@@ -499,7 +499,7 @@ witness: curl-core conn::pool::tests::a_search_tries_the_transfer_s_last_connect
         if let Some(last) = None::<ConnId>
 
 === a transfer does not tell the search which connection it had last
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_redirect_goes_over_the_transfer_s_own_connection
 --- old
             last,

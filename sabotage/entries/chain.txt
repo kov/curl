@@ -1,5 +1,5 @@
 === a call of the setup does not trace the chain as it enters
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::setup_trace::a_direct_setup_is_traced_as_c
 --- old
     if !*entered {
@@ -9,7 +9,7 @@ witness: curl-core proto::http::tests::setup_trace::a_direct_setup_is_traced_as_
         entry(cx, chain(reached, under_way, true));
 
 === the race's start traces no chain before its happy eyeballs filter
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::setup_trace::a_redial_starts_the_chain_over
 --- old
             // The happy eyeballs filter is added (`cf_setup_add_ip_happy`).
@@ -18,7 +18,7 @@ witness: curl-core proto::http::tests::setup_trace::a_redial_starts_the_chain_ov
             // The happy eyeballs filter is added (`cf_setup_add_ip_happy`).
 
 === the tunnel's HTTP/1.1 filter shows as soon as the tunnel's is added
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::setup_trace::a_tunnel_s_setup_is_traced_as_c
 --- old
     entry(cx, chain(reached, Some(filter), false));
@@ -26,7 +26,7 @@ witness: curl-core proto::http::tests::setup_trace::a_tunnel_s_setup_is_traced_a
     entry(cx, chain(reached, Some(filter), true));
 
 === a handshake failing as it starts names the chain without its filter
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::setup_trace::a_socks_handshake_refused_as_it_starts_names_its_filter
 --- old
     chain(reached, Some(filter), true)
@@ -52,7 +52,7 @@ witness: curl-core proto::http::tests::setup_trace::a_direct_setup_is_traced_as_
             .filter(|&f| is_setup(f) && f != Component::Setup)
 
 === a connect under way is polled in the call that started it
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::multi_trace::a_request_is_traced_through_c_s_states
 --- old
             if at_once {
@@ -64,7 +64,7 @@ witness: curl-core proto::http::tests::multi_trace::a_request_is_traced_through_
             }
 
 === a failed setup is not said to fail the connect
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::setup_trace::a_refused_tunnel_names_the_chain_that_failed
 --- old
             TransferState::Done(ref d) => {

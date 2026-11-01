@@ -26,7 +26,7 @@ witness: curl-core idn::tests::a_name_is_looked_up_by_its_ascii_form
 --- new
 
 === a proxy named in Unicode is looked up as the URL has it
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::idn::a_proxy_and_a_connect_to_host_are_looked_up_in_ascii
 --- old
         .idn(cx.easy().libraries().idn)
@@ -36,7 +36,7 @@ witness: curl-core proto::http::tests::idn::a_proxy_and_a_connect_to_host_are_lo
         .map_err(crate::idn::IdnFailure::kind)?;
 
 === a connect-to host named in Unicode is looked up as the entry has it
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::idn::a_proxy_and_a_connect_to_host_are_looked_up_in_ascii
 --- old
             let via = via.idn(cx.easy().libraries().idn);

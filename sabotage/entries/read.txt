@@ -2,7 +2,7 @@
 # body goes through and their resets, against sendf.c's client readers.
 
 === a retry does not rewind its readers
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::read_trace::a_retried_request_keeps_its_readers_to_rewind
 features: test-util
 --- old
@@ -12,7 +12,7 @@ features: test-util
     // rewinds (`Curl_retry_request`).
 
 === a followed request does not rewind its readers
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::read_trace::a_body_sent_again_is_kept_and_rewound
 features: test-util
 --- old

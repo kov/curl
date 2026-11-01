@@ -109,7 +109,7 @@ witness: curl-core multi::tests::a_dead_multi_fails_its_transfers_and_takes_no_m
         if !ev.wants_timer() {
 
 === a scheme libcurl does not know fails as a malformed URL
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::completions_are_read_in_id_order
 --- old
         let kind = ErrorKind::UnsupportedProtocol;
@@ -321,7 +321,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
         let room = rows as usize / 2;
 
 === a path under the default `file` is parsed before its scheme is given
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::state::tests::a_url_without_a_scheme_takes_the_default
 --- old
     if !default.eq_ignore_ascii_case(b"file") || url::has_scheme(url) {
@@ -329,7 +329,7 @@ witness: curl-core multi::state::tests::a_url_without_a_scheme_takes_the_default
     if true {
 
 === a URL without a scheme keeps the guessed one over the default
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::state::tests::a_url_without_a_scheme_takes_the_default
 --- old
             Err(UrlErrorKind::NoScheme) => {}
@@ -345,7 +345,7 @@ witness: curl-core easy::tests::performs_a_path_with_the_default_protocol
             default_protocol: None,
 
 === the connect limit is judged as the transfer's
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::a_silent_peer_times_out_at_the_connect_limit
 --- old
     if let TimeLeft::Expired(_) = run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
@@ -353,7 +353,7 @@ witness: curl-core multi::tests::a_silent_peer_times_out_at_the_connect_limit
     if let TimeLeft::Expired(_) = run.deadlines.time_left(starts(cx), now, Phase::Transferring) {
 
 === a paused transfer connects
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::a_paused_transfer_does_not_connect
 --- old
     if StepCx::pause(cx).recv != RecvPause::Running {
@@ -383,7 +383,7 @@ witness: curl-core multi::tests::an_ipv6_host_is_named_as_c_names_it
             trace::info_with(cx, &[conn.bytes(), origin.name(), rest.bytes()]);
 
 === a reused IPv6 connection is named with its brackets
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::an_ipv6_host_is_named_as_c_names_it
 --- old
                 None => (b": connection with host ", route.origin.name()),
@@ -446,14 +446,14 @@ witness: curl-core id::tests::a_transfer_table_grows_once_few_rows_are_free
             Growth::Transfers if unused <= (capacity >> 3).max(4) => {
 
 === a dead connection is named with its `#`
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::connections_are_numbered_in_their_traces
 --- old
                 let n = n.get();
 --- new
 
 === a request over a fresh connection is retried
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_fresh_connection_that_died_is_an_empty_reply
 --- old
     let reused = x.proto.retryable(ended, uploads) && x.lease.conn().reused();
@@ -461,7 +461,7 @@ witness: curl-core proto::http::tests::a_fresh_connection_that_died_is_an_empty_
     let reused = x.proto.retryable(ended, uploads);
 
 === a request that got something back is retried
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_response_until_close_over_a_reused_connection_is_whole
 --- old
     let reused = x.proto.retryable(ended, uploads) && x.lease.conn().reused();
@@ -469,7 +469,7 @@ witness: curl-core proto::http::tests::a_response_until_close_over_a_reused_conn
     let reused = x.lease.conn().reused();
 
 === a retried request is retried without end
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_request_is_retried_five_times_at_most
 --- old
     if run.retries >= MAX_RETRIES {
@@ -477,7 +477,7 @@ witness: curl-core proto::http::tests::a_request_is_retried_five_times_at_most
     if run.retries >= u8::MAX {
 
 === a retry asks for the URL without its credentials
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_request_over_a_reused_connection_that_died_is_made_again
 --- old
     let url = match parse_url(&run.url, cx.easy().options(), true) {
@@ -485,7 +485,7 @@ witness: curl-core proto::http::tests::a_request_over_a_reused_connection_that_d
     let url = match parse_url(cx.easy().report().url().unwrap_or_default(), cx.easy().options(), true) {
 
 === a retried request's headers are the first request's
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::a_request_over_a_reused_connection_that_died_is_made_again
 --- old
     cx.report_mut().headers_mut().next_request();
@@ -526,7 +526,7 @@ witness: curl-core multi::tests::localhost_names_are_the_loopback_addresses
     host.eq_ignore_ascii_case(b"localhost")
 
 === an established connection keeps the next attempt's wait
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::an_established_connection_forgets_the_next_attempt
 --- old
     // The race is over once an attempt connects, a proxy's or not
@@ -608,7 +608,7 @@ witness: curl-sys-abi handle_tests::proxy_header_lines_appended_after_the_option
     let _ = options;
 
 === the resolve list is read as it was set, not as the transfer starts
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_after_the_option_are_used
 --- old
     cx.easy_mut()
@@ -639,7 +639,7 @@ pub(crate) enum Listed<T> {
 pub(crate) enum Listed<T> {
 
 === the connect-to list is read only when it is set
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_after_the_option_are_used
 --- old
     if let Err(OutOfMemory) = cx.easy_mut().options_mut().connect_to.refill() {
@@ -737,7 +737,7 @@ witness: curl-core multi::tests::a_transfer_let_out_of_pending_is_in_connect_at_
             let _ = (id, now, &ev);
 
 === a transfer let out of PENDING by a connection given back stays traced as pending
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::a_transfer_let_out_of_pending_is_in_connect_at_once
 --- old
         let mut cx = StepCx::new(id, rest.reborrow());

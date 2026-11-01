@@ -1496,7 +1496,7 @@ pub(crate) enum Drove { Connecting(ConnectMachine, Progress), Established(Conn) 
 pub(crate) enum Progress { Resolved(Found), Trying { .. }, Failed, Waiting { until },
                            Resolving { retry }, Dialed, Tunnel { until } }
 
-struct Connecting {                    // multi/state.rs: the transfer's side of a setup
+struct Connecting {                    // multi/state/connecting.rs: the transfer's side of a setup
     lease: ConnLease,                  // the connection's slot, the first setup's machine in it
     proto: ProtoState, route: NetRoute,
     https: Option<HttpsConnect>,       // the HTTPS connect filter's race, when it runs one
@@ -1509,7 +1509,7 @@ struct Connecting {                    // multi/state.rs: the transfer's side of
 reaching the transfer only through its `ConnCx`, `DriveOptions` carrying the transfer's settings
 for the drive (the eyeballs delay, the scope, the socket options, the names' rules, the PROXY
 line). A drive moves it by at most one event and gives it back. The transfer's step drives it
-again for as long as one call of C's `Curl_conn_connect` would go on (`multi/state.rs`'s
+again for as long as one call of C's `Curl_conn_connect` would go on (`multi/state/connecting.rs`'s
 `connecting`): through a name resolved, an attempt failed or connected at once and a handshake
 made; a connect under way ends the call, as `cf_tcp_connect` returns at once on `EINPROGRESS`,
 and the attempt is first polled at the transfer's next run, so its socket is waited on and
@@ -1567,7 +1567,7 @@ announced to the socket callback first. A transfer whose receiving is paused is 
   `Tunneled`), not as boxed layers that do nothing. The last makes the `Conn`
   (`ConnLease::handshaken`), keeping what came after the answer, and it is traced as
   established only then.
-- **Handshake order** is decided in one place, `handshake_due` (`multi/state.rs`), from the
+- **Handshake order** is decided in one place, `handshake_due` (`multi/state/connecting.rs`), from the
   route, the transfer's PROXY line and what `Dialed::made` records, in cf-setup.c's order: the
   eyeballs race, then SOCKS, then the proxy's TLS, then the HTTP proxy's `CONNECT`, then the
   PROXY line, then the origin's TLS (or its QUIC through a CONNECT-UDP tunnel). Each handshake,

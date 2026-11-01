@@ -225,7 +225,7 @@ features: test-util
         self.nothing_after = self.no_body;
 
 === the needle connection C lets go at a reuse goes unsaid
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::smtp::tests::over_the_wire::what_the_last_transfer_set_up_stays_with_the_connection
 features: test-util
 --- old
@@ -284,7 +284,7 @@ witness: curl-core proto::smtp::tests::the_domain_is_the_url_s_path
     &name[..]
 
 === the setup for the connection is said before the transfer leaves the queue
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::smtp::tests::over_the_wire::the_setup_is_said_after_the_queue
 features: test-util
 --- old

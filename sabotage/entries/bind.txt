@@ -50,7 +50,7 @@ witness: curl-core conn::tests::bound_routes_match_as_c
     let anywhere = *port == 0;
 
 === the route forgets its local end
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::bind_trace::a_name_binds_to_its_interface
 --- old
     let local = options.sockets.local.try_clone()?;

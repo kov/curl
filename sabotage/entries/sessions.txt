@@ -64,7 +64,7 @@ features: test-util
         self.identity.options.session_cache || true
 
 === a share keeping sessions is passed over for the multi's own
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/cx.rs
 witness: curl-core proto::http::tests::tls::a_share_keeping_sessions_serves_them_across_multis
 features: test-util
 --- old
@@ -75,7 +75,7 @@ features: test-util
             let mut held = HeldSays {
 
 === what the cache says under a share's lock is never said
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/cx.rs
 witness: curl-core proto::http::tests::tls::a_share_keeping_sessions_serves_them_across_multis
 features: test-util
 --- old

@@ -45,7 +45,7 @@ features: test-util
                 let why = ErrorText::of(&error);
 
 === the transfer's context drops the number
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/cx.rs
 witness: curl-core proto::http::tests::os_errno::a_failed_send_keeps_its_number_until_the_next_transfer
 features: test-util
 --- old

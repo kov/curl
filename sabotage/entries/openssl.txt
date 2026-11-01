@@ -207,7 +207,7 @@ witness: curl-openssl the_chain_is_reported_as_c_words_it_when_asked
     let pushed = info.push(i, label, mem.bytes());
 
 === a transfer that did not ask for the chain is given it
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/multi/state/cx.rs
 witness: curl-openssl the_chain_is_reported_as_c_words_it_when_asked
 --- old
         asked.then(|| self.report_mut())

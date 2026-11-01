@@ -247,6 +247,21 @@ impl Easy {
         self.report.method().name()
     }
 
+    /// A reason the handle failed, given by an API call rather than a
+    /// transfer (`failf`): kept and told to the failure sink if it is the
+    /// first since the last transfer's start. With no sink it is kept
+    /// nowhere, so the first a sink could hear is the one it hears.
+    pub fn tell_failure(&mut self, why: &[u8]) {
+        let Some(sink) = self.options.callbacks.failure.clone() else {
+            return;
+        };
+        let first = self.report.unsaid();
+        self.report.record_told(why);
+        if first {
+            sink.write(why);
+        }
+    }
+
     pub(crate) fn report_mut(&mut self) -> &mut TransferReport {
         &mut self.report
     }

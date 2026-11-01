@@ -93,6 +93,31 @@ impl Frame {
         }
     }
 
+    /// `Easy::tell_failure`, through the context lent.
+    ///
+    /// # Safety
+    ///
+    /// As `options_mut`.
+    pub(crate) unsafe fn tell_failure(self, id: TransferId, why: &[u8]) {
+        match self {
+            Frame::Transfer(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.tell_failure(id, why);
+            }
+            Frame::Event(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.tell_failure(id, why);
+            }
+            Frame::Notify(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.tell_failure(id, why);
+            }
+        }
+    }
+
     /// What a transfer's RTSP requests number and read, through the
     /// context lent, to read.
     ///

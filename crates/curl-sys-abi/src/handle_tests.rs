@@ -8377,6 +8377,13 @@ fn a_share_is_refused_while_the_handle_holds_a_connection() {
             seen.texts.iter().filter(|t| *t == line).count()
         };
         assert_eq!(said(&seen), 1, "{:?}", seen.texts);
+        let line = "setopt 0x2774 got bad argument\n";
+        assert_eq!(
+            seen.texts.iter().filter(|t| *t == line).count(),
+            1,
+            "{:?}",
+            seen.texts
+        );
         assert_eq!(
             pointer(c, ffi::CURLOPT_SHARE, none),
             CURLE_BAD_FUNCTION_ARGUMENT,
@@ -8485,6 +8492,7 @@ fn a_callback_cannot_change_the_share() {
     struct Asked {
         sh: *mut ffi::CURLSH,
         answer: Option<ffi::CURLcode>,
+        said_setopt: bool,
     }
     unsafe extern "C" fn asks(
         c: *mut CURL,
@@ -8501,10 +8509,15 @@ fn a_callback_cannot_change_the_share() {
         if asked.answer.is_none() && line.starts_with(b"Could not find host") {
             asked.answer = Some(pointer(c, ffi::CURLOPT_SHARE, asked.sh));
         }
+        asked.said_setopt |= line.starts_with(b"setopt ");
         0
     }
     let sh = curl_share_init();
-    let mut asked = Asked { sh, answer: None };
+    let mut asked = Asked {
+        sh,
+        answer: None,
+        said_setopt: false,
+    };
     let c = curl_easy_init();
     let url = c"file:///nonexistent/curl-shim-share";
     pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
@@ -8518,6 +8531,175 @@ fn a_callback_cannot_change_the_share() {
         curl_easy_perform(c);
         curl_easy_cleanup(c);
         assert_eq!(asked.answer, Some(CURLE_BAD_FUNCTION_ARGUMENT));
+        assert!(!asked.said_setopt, "this refusal is ours: C has no line");
         assert_eq!(curl_share_cleanup(sh), ffi::CURLSHE_OK);
     }
+}
+
+/// A bad argument to any option adds C's `failf` line: to ERRORBUFFER if no
+/// reason is kept yet, which a reset does not change, and to a verbose
+/// handle's trace every time. Other refusals say nothing. The answers are
+/// the ones a C program gave against the C library.
+#[test]
+fn a_bad_argument_says_which_option_as_in_c() {
+    unsafe extern "C" fn lines(
+        _: *mut CURL,
+        kind: ffi::curl_infotype,
+        data: *mut c_char,
+        size: usize,
+        user: *mut c_void,
+    ) -> c_int {
+        if kind == ffi::CURLINFO_TEXT {
+            // SAFETY: the `size` bytes the library gives at `data`.
+            let line = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), size) };
+            // SAFETY: the test passes its list as the debug data.
+            let seen = unsafe { &mut *user.cast::<Vec<String>>() };
+            seen.push(String::from_utf8_lossy(line).into_owned());
+        }
+        0
+    }
+    let text = |buf: &[c_char; ffi::CURL_ERROR_SIZE as usize]| {
+        // SAFETY: the library keeps it terminated; it starts zeroed.
+        let t = unsafe { CStr::from_ptr(buf.as_ptr()) };
+        t.to_str().unwrap().to_owned()
+    };
+    let mut buf = [0 as c_char; ffi::CURL_ERROR_SIZE as usize];
+    let bad = CURLE_BAD_FUNCTION_ARGUMENT;
+    let (altsvc, sslversion) = (ffi::CURLOPT_ALTSVC_CTRL, ffi::CURLOPT_SSLVERSION);
+
+    // Without a buffer nothing is kept, so the first a buffer could hear
+    // is written; the next does not replace it.
+    let c = curl_easy_init();
+    assert_eq!(long(c, altsvc, 0), bad);
+    pointer(c, ffi::CURLOPT_ERRORBUFFER, buf.as_mut_ptr());
+    assert_eq!(text(&buf), "");
+    assert_eq!(long(c, sslversion, 99999), bad);
+    assert_eq!(text(&buf), "setopt 0x20 got bad argument");
+    assert_eq!(long(c, altsvc, 0), bad);
+    assert_eq!(text(&buf), "setopt 0x20 got bad argument");
+    // A reset leaves that a reason was given.
+    // SAFETY: a live handle.
+    unsafe { crate::easy::curl_easy_reset(c) };
+    pointer(c, ffi::CURLOPT_ERRORBUFFER, buf.as_mut_ptr());
+    buf[0] = 0;
+    assert_eq!(long(c, altsvc, 0), bad);
+    assert_eq!(text(&buf), "", "a reason was already given");
+    // A transfer starts over: its reason replaces the option's, and stays
+    // over the next bad argument.
+    let url = c"nosuch://x/";
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    // SAFETY: a live handle.
+    let performed = unsafe { curl_easy_perform(c) };
+    assert_eq!(performed, ffi::CURLE_UNSUPPORTED_PROTOCOL);
+    let failed = text(&buf);
+    assert!(failed.starts_with("Protocol"), "{failed}");
+    assert_eq!(long(c, sslversion, 99999), bad);
+    assert_eq!(text(&buf), failed);
+    // A transfer that gave no reason leaves room for the next.
+    let url = c"file:///dev/null";
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    assert_eq!(text(&buf), "");
+    assert_eq!(long(c, altsvc, 0), bad);
+    assert_eq!(text(&buf), "setopt 0x11e got bad argument");
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+
+    // Each one is traced, and only a bad argument; not to a quiet handle.
+    let mut seen: Vec<String> = Vec::new();
+    let c = curl_easy_init();
+    function(c, ffi::CURLOPT_DEBUGFUNCTION, lines as DebugFn as *const ());
+    pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut seen);
+    assert_eq!(long(c, altsvc, 0), bad);
+    assert!(seen.is_empty(), "{seen:?}");
+    long(c, ffi::CURLOPT_VERBOSE, 1);
+    assert_eq!(long(c, altsvc, 0), bad);
+    assert_eq!(long(c, sslversion, 99999), bad);
+    assert_eq!(
+        long(c, ffi::CURLOPT_HTTP_VERSION, 99),
+        ffi::CURLE_UNSUPPORTED_PROTOCOL
+    );
+    assert_eq!(
+        seen,
+        [
+            "setopt 0x11e got bad argument\n",
+            "setopt 0x20 got bad argument\n"
+        ]
+    );
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
+/// The same from a transfer's own callback, where the handle is reached
+/// through the multi's frame. It is no reason the callback gave: one that
+/// then fails still has the transfer's own line traced.
+#[test]
+fn a_bad_argument_in_a_callback_is_told_as_in_c() {
+    unsafe extern "C" fn fails(_: *mut c_char, _: usize, _: usize, user: *mut c_void) -> usize {
+        long(user.cast(), ffi::CURLOPT_ALTSVC_CTRL, 0);
+        ffi::CURL_WRITEFUNC_ERROR as usize
+    }
+    unsafe extern "C" fn lines(
+        _: *mut CURL,
+        kind: ffi::curl_infotype,
+        data: *mut c_char,
+        size: usize,
+        user: *mut c_void,
+    ) -> c_int {
+        if kind == ffi::CURLINFO_TEXT {
+            // SAFETY: the `size` bytes the library gives at `data`.
+            let line = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), size) };
+            // SAFETY: the test passes its list as the debug data.
+            let seen = unsafe { &mut *user.cast::<Vec<String>>() };
+            seen.push(String::from_utf8_lossy(line).into_owned());
+        }
+        0
+    }
+    unsafe extern "C" fn write(_: *mut c_char, size: usize, n: usize, user: *mut c_void) -> usize {
+        long(user.cast(), ffi::CURLOPT_ALTSVC_CTRL, 0);
+        size * n
+    }
+    let path = std::env::temp_dir().join(format!("curl-setopt-frame-{}", std::process::id()));
+    std::fs::write(&path, "x").unwrap();
+    let url = std::ffi::CString::new(format!("file://{}", path.display())).unwrap();
+    let mut buf = [0 as c_char; ffi::CURL_ERROR_SIZE as usize];
+    let c = curl_easy_init();
+    pointer(c, ffi::CURLOPT_ERRORBUFFER, buf.as_mut_ptr());
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, write as WriteFn as *const ());
+    pointer(c, ffi::CURLOPT_WRITEDATA, c);
+    // SAFETY: a live handle, not used again; the buffer is the library's
+    // to keep terminated.
+    unsafe {
+        assert_eq!(curl_easy_perform(c), CURLE_OK);
+        let said = CStr::from_ptr(buf.as_ptr());
+        assert_eq!(said.to_bytes(), b"setopt 0x11e got bad argument");
+        curl_easy_cleanup(c);
+    }
+    let mut seen: Vec<String> = Vec::new();
+    let c = curl_easy_init();
+    pointer(c, ffi::CURLOPT_ERRORBUFFER, buf.as_mut_ptr());
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, fails as WriteFn as *const ());
+    pointer(c, ffi::CURLOPT_WRITEDATA, c);
+    long(c, ffi::CURLOPT_VERBOSE, 1);
+    function(c, ffi::CURLOPT_DEBUGFUNCTION, lines as DebugFn as *const ());
+    pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut seen);
+    // SAFETY: a live handle, not used again; the buffer is the library's
+    // to keep terminated.
+    unsafe {
+        assert_eq!(curl_easy_perform(c), ffi::CURLE_WRITE_ERROR);
+        let said = CStr::from_ptr(buf.as_ptr());
+        assert_eq!(said.to_bytes(), b"setopt 0x11e got bad argument");
+        curl_easy_cleanup(c);
+    }
+    let of = |text: &str| seen.iter().filter(|l| l.starts_with(text)).count();
+    assert_eq!(of("setopt 0x11e got bad argument"), 1, "{seen:?}");
+    assert_eq!(
+        of("client returned ERROR on write of 1 bytes"),
+        1,
+        "{seen:?}"
+    );
+    std::fs::remove_file(&path).unwrap();
 }

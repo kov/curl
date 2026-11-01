@@ -954,6 +954,13 @@ impl<'a> TransferCx<'a> {
         self.calls.easy_mut(id).map(Easy::options_mut)
     }
 
+    /// As `Easy::tell_failure`, of a transfer.
+    pub fn tell_failure(&mut self, id: TransferId, why: &[u8]) {
+        if let Some(easy) = self.calls.easy_mut(id) {
+            easy.tell_failure(why);
+        }
+    }
+
     /// What a transfer's RTSP requests number and read.
     pub fn rtsp(&self, id: TransferId) -> Option<crate::easy::RtspState> {
         self.calls.easy(id).map(Easy::rtsp)
@@ -1194,6 +1201,13 @@ impl<H: Host> EventCx<'_, H> {
         self.slots.get_mut(id).map(|s| s.easy.options_mut())
     }
 
+    /// As `Easy::tell_failure`, of a transfer.
+    pub fn tell_failure(&mut self, id: TransferId, why: &[u8]) {
+        if let Some(slot) = self.slots.get_mut(id) {
+            slot.easy.tell_failure(why);
+        }
+    }
+
     /// As `TransferCx::rtsp`.
     pub fn rtsp(&self, id: TransferId) -> Option<crate::easy::RtspState> {
         self.slots.get(id).map(|s| s.easy.rtsp())
@@ -1339,6 +1353,13 @@ impl<H: Host> NotifyCx<'_, H> {
 
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {
         self.multi.easy_mut(id).map(Easy::options_mut)
+    }
+
+    /// As `Easy::tell_failure`, of a transfer.
+    pub fn tell_failure(&mut self, id: TransferId, why: &[u8]) {
+        if let Some(easy) = self.multi.easy_mut(id) {
+            easy.tell_failure(why);
+        }
     }
 
     /// As `TransferCx::rtsp`.

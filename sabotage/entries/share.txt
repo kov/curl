@@ -154,7 +154,7 @@ witness: curl-sys-abi handle_tests::a_share_is_refused_while_the_handle_holds_a_
 file: crates/curl-sys-abi/src/share.rs
 witness: curl-sys-abi handle_tests::a_callback_cannot_change_the_share
 --- old
-        EasyRef::Frame(..) => Err(Refused::Running),
+        EasyRef::Frame(..) => Err(Refused::InCallback),
 --- new
         EasyRef::Frame(..) => Ok(()),
 

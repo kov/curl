@@ -375,3 +375,60 @@ witness: curl-sys-abi handle_tests::a_resumed_body_asks_the_seek_function
 --- new
             ffi::CURL_SEEKFUNC_FAIL => Err(SeekFailed::Fail),
             _ => Err(SeekFailed::CantSeek),
+
+=== a bad argument to an option says nothing
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_bad_argument_says_which_option_as_in_c
+--- old
+    if code == CURLE_BAD_FUNCTION_ARGUMENT {
+        refused(easy, option);
+--- new
+    if code == CURLE_UNKNOWN_OPTION {
+        refused(easy, option);
+
+=== a later reason overwrites the first in the buffer
+file: crates/curl-core/src/easy.rs
+witness: curl-sys-abi handle_tests::a_bad_argument_says_which_option_as_in_c
+--- old
+        self.report.record_told(why);
+        if first {
+--- new
+        self.report.record_told(why);
+        if first || !first {
+
+=== a reset forgets a reason was given
+file: crates/curl-core/src/report.rs
+witness: curl-sys-abi handle_tests::a_bad_argument_says_which_option_as_in_c
+--- old
+            reasons: self.reasons,
+            reasons_cleared: self.reasons_cleared,
+            told: self.told,
+--- new
+
+=== a bad argument in a callback is not told
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_bad_argument_in_a_callback_is_told_as_in_c
+--- old
+        easy::EasyRef::Frame(frame, id) => unsafe { frame.tell_failure(id, why) },
+--- new
+        easy::EasyRef::Frame(..) => {}
+
+=== a bad argument in a callback counts as the callback's own reason
+file: crates/curl-core/src/easy.rs
+witness: curl-sys-abi handle_tests::a_bad_argument_in_a_callback_is_told_as_in_c
+--- old
+        self.report.record_told(why);
+--- new
+        self.report.record_failure(why);
+
+=== the refusal of a share from a callback says C's line
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_callback_cannot_change_the_share
+--- old
+            Err(crate::share::Refused::InCallback) => CURLE_BAD_FUNCTION_ARGUMENT,
+--- new
+            Err(crate::share::Refused::InCallback) => {
+                refused(easy, option);
+                CURLE_BAD_FUNCTION_ARGUMENT
+            }
+

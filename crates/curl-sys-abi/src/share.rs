@@ -433,19 +433,21 @@ fn set_core(easy: &ShimEasy, share: Option<&ShimShare>) -> Result<(), Refused> {
             };
             changed.map_err(|ShareInUse| Refused::Running)
         }
-        EasyRef::Frame(..) => Err(Refused::Running),
+        EasyRef::Frame(..) => Err(Refused::InCallback),
     }) {
         Ok(set) => set,
-        Err(_) => Err(Refused::Running),
+        Err(_) => Err(Refused::InCallback),
     }
 }
 
 /// Why the handle's share was not changed.
 #[derive(Debug)]
 pub(crate) enum Refused {
-    /// The handle holds a connection, or its transfer cannot be reached:
-    /// a callback runs on its multi.
+    /// The handle holds a connection.
     Running,
+    /// Its transfer cannot be reached: a callback runs on its multi. C
+    /// takes the change here, so has no line for it (DIVERGENCE.md).
+    InCallback,
     OutOfMemory,
 }
 

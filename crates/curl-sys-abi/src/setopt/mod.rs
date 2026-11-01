@@ -13,12 +13,12 @@ mod known;
 mod proxy_tls;
 mod tls;
 
-use core::ffi::{CStr, VaList, c_char, c_int, c_long, c_void};
+use core::ffi::{CStr, VaList, c_char, c_int, c_long, c_uint, c_void};
 use core::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use core::ptr::NonNull;
 use core::time::Duration;
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
 use curl_core::altsvc::{AltSvcCtrl, Versions};
 use curl_core::cookie::LoadError;
 use curl_core::easy::CacheFile;
@@ -1874,10 +1874,51 @@ pub unsafe extern "C" fn curl_easy_setopt(
         // SAFETY: the application passes a share or NULL.
         return match unsafe { crate::share::set_by_option(easy, *sh) } {
             Ok(()) => CURLE_OK,
-            Err(crate::share::Refused::Running) => CURLE_BAD_FUNCTION_ARGUMENT,
+            Err(crate::share::Refused::Running) => {
+                refused(easy, option);
+                CURLE_BAD_FUNCTION_ARGUMENT
+            }
+            Err(crate::share::Refused::InCallback) => CURLE_BAD_FUNCTION_ARGUMENT,
             Err(crate::share::Refused::OutOfMemory) => ffi::CURLE_OUT_OF_MEMORY,
         };
     }
+    // SAFETY: as the caller guarantees.
+    let code = unsafe { set_arg(easy, option, arg) };
+    if code == CURLE_BAD_FUNCTION_ARGUMENT {
+        refused(easy, option);
+    }
+    code
+}
+
+/// What every bad argument adds, whichever option's (the end of C's
+/// `curl_easy_setopt`): `failf`'s line. A handle in a call that cannot
+/// reach its transfer hears nothing, having nowhere to keep it.
+fn refused(easy: &ShimEasy, option: CURLoption) {
+    let Ok(line) = try_format(format_args!(
+        "setopt {:#x} got bad argument\n",
+        option.0 as c_uint
+    )) else {
+        return;
+    };
+    let line = line.as_bytes();
+    let why = &line[..line.len() - 1];
+    let reached = easy.with_easy(|e| match e {
+        easy::EasyRef::Easy(easy) => easy.tell_failure(why),
+        // SAFETY: the frame is the multi's innermost, and the borrow ends
+        // with this call, inside its callback.
+        easy::EasyRef::Frame(frame, id) => unsafe { frame.tell_failure(id, why) },
+    });
+    if reached.is_ok() {
+        callbacks::info(easy, line);
+    }
+}
+
+/// Set an option to its argument, which has been read.
+///
+/// # Safety
+///
+/// A pointer argument is of the option's type, NULL or live.
+unsafe fn set_arg(easy: &ShimEasy, option: CURLoption, arg: Arg) -> CURLcode {
     let hsts = match (option, &arg) {
         (ffi::CURLOPT_HSTS, Arg::Ptr(p)) => Some(HstsArg::File(*p)),
         (ffi::CURLOPT_HSTS_CTRL, Arg::Long(n)) => Some(HstsArg::Ctrl(*n)),

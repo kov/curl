@@ -105,6 +105,9 @@ witness: curl-sys-abi handle_tests::the_os_errno_is_the_last_socket_failure_s
             verify_result: 0,
             proxy_verify_result: 0,
             earlydata_sent: 0,
+            reasons: self.reasons,
+            reasons_cleared: self.reasons_cleared,
+            told: self.told,
             ..self.cleared()
         }
 --- new
@@ -112,5 +115,8 @@ witness: curl-sys-abi handle_tests::the_os_errno_is_the_last_socket_failure_s
             verify_result: 0,
             proxy_verify_result: 0,
             earlydata_sent: 0,
+            reasons: self.reasons,
+            reasons_cleared: self.reasons_cleared,
+            told: self.told,
             ..self.cleared()
         }

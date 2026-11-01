@@ -148,6 +148,8 @@ pub struct TransferReport {
     /// How many had been given when the reason kept was last let go
     /// (`Curl_reset_fail`): the next is the first again.
     reasons_cleared: u32,
+    /// An API call gave a reason since then (`failf` outside a transfer).
+    told: bool,
     /// The methods the server's challenges offered
     /// (`info.httpauthavail`).
     auth_offered: AuthMethods,
@@ -203,15 +205,18 @@ impl TransferReport {
     }
 
     /// What a reset of the handle leaves (`curl_easy_reset`): cleared,
-    /// but for the last socket failure's number, which C keeps in the
-    /// handle's state rather than its info (`Curl_initinfo` leaves
-    /// `state.os_errno`).
+    /// but for the last socket failure's number and whether a reason was
+    /// given, which C keeps in the handle's state rather than its info
+    /// (`Curl_initinfo` leaves `state.os_errno` and `state.errorbuf`).
     pub(crate) fn reset(&self) -> TransferReport {
         TransferReport {
             os_errno: self.os_errno,
             verify_result: 0,
             proxy_verify_result: 0,
             earlydata_sent: 0,
+            reasons: self.reasons,
+            reasons_cleared: self.reasons_cleared,
+            told: self.told,
             ..self.cleared()
         }
     }
@@ -602,7 +607,7 @@ impl TransferReport {
     /// No reason was given since the start, or since the one kept was let
     /// go: the next is the one kept.
     pub(crate) fn unsaid(&self) -> bool {
-        self.reasons == self.reasons_cleared
+        self.reasons == self.reasons_cleared && !self.told
     }
 
     /// Let go of the reason kept, the next to be given kept in its place
@@ -612,12 +617,25 @@ impl TransferReport {
         let said = !self.unsaid();
         self.failure = None;
         self.reasons_cleared = self.reasons;
+        self.told = false;
         said
     }
 
     /// Keep `detail` as the reason, unless one was given already.
     pub(crate) fn record_failure(&mut self, detail: &[u8]) {
         self.reasons = self.reasons.saturating_add(1);
+        self.keep_failure(detail);
+    }
+
+    /// As `record_failure`, of a reason an API call gave: the first reason
+    /// is taken, but no handler of the transfer gave it, so what `reasons`
+    /// tells a transfer's code does not change.
+    pub(crate) fn record_told(&mut self, detail: &[u8]) {
+        self.told = true;
+        self.keep_failure(detail);
+    }
+
+    fn keep_failure(&mut self, detail: &[u8]) {
         if self.failure.is_some() {
             return;
         }

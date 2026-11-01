@@ -697,27 +697,19 @@ impl Request {
             let Some(identity) = cold.as_ref().and_then(|c| c.upgrade.clone()) else {
                 return Err(ErrorKind::NotBuiltIn);
             };
-            let via = lease.conn().net_route().and_then(|r| r.via.clone());
+            let in_place = crate::multi::state::tls::InPlace::of(lease.conn());
             let mut carrier = lease.get().carrier();
+            // Timed, and said established, once done, as C's connect of the
+            // chain does (`oldap_ssl_connect`, `Curl_conn_connect`).
             let shaken = crate::multi::state::tls::upgrade(
                 &mut carrier,
                 &identity,
                 &self.peer,
-                via.as_deref(),
+                &in_place,
+                crate::multi::state::tls::Blocks::No,
                 cx,
             )?;
-            let done = shaken == crate::tls::Handshake::Done;
-            // The chain connected again, as C says (`Curl_conn_connect`).
-            if done && let Some(ends) = cx.report_mut().primary().cloned() {
-                let route = lease.conn().net_route().expect("over the network");
-                let host = route.destination().shown();
-                let mut shown = Vec::new();
-                shown
-                    .try_extend_from_slice(host)
-                    .map_err(|_| ErrorKind::OutOfMemory)?;
-                crate::multi::state::say_established(cx, &shown, &ends.remote, ends.local);
-            }
-            done
+            shaken == crate::tls::Handshake::Done
         };
         let (lc, _) = ldap_of(lease);
         Self::to(cx, lc, state);

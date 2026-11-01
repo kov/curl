@@ -857,6 +857,14 @@ fn the_filter_says_what_c_s_debug_build_says() {
             .map(|rest| rest[..1].to_string())
             .collect();
         assert_eq!(states, ["0", "1", "2", "3"].map(String::from).into());
+        // Nothing is left past a filter that took it all.
+        assert!(
+            !filter_said(&ran.seen)
+                .iter()
+                .any(|l| l.contains("possibly excess")),
+            "{:?}",
+            filter_said(&ran.seen)
+        );
     }
 }
 

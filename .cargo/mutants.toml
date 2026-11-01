@@ -887,6 +887,11 @@ exclude_re = [
     # the protocol connects, and in the Tls state STARTTLS's is not yet:
     # either half of the guard decides it alone.
     'curl-core/src/proto/ldap\.rs:\d+:56: replace && with \|\| in Request::ssl_connect$',
+    # A head sized 0 reads nothing whether or not its request wants a body,
+    # and a body of length 0 is done in the call that starts it
+    # (`rtsp_resp` ends it once the pipeline has its whole size).
+    'curl-core/src/proto/http/rtsp\.rs:.*: replace > with >= in Request::rtsp_body_start$',
+    'curl-core/src/proto/http/rtsp\.rs:.*: replace match guard n > 0 with true in Request::rtsp_body_start$',
     # The session's Debug is for a failed test's message; nothing reads it.
     'curl-ldap/src/lib\.rs:.*: replace <impl core::fmt::Debug for Libsession>::fmt -> core::fmt::Result with Ok\(Default::default\(\)\)$',
     # The library always answers API_INFO, and with its vendor's name, and

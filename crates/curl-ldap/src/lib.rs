@@ -63,12 +63,8 @@ fn api_version() -> ([u8; 64], usize) {
     if rc == sys::LDAP_OPT_SUCCESS && !api.ldapai_vendor_name.is_null() {
         // SAFETY: a C string the library allocated, freed below.
         let vendor = unsafe { CStr::from_ptr(api.ldapai_vendor_name) };
-        let v = u32::try_from(api.ldapai_vendor_version).unwrap_or(0);
-        let (major, minor, patch) = (
-            v / 10000,
-            (v - (v / 10000) * 10000 - v % 100) / 100,
-            v % 100,
-        );
+        let (major, minor, patch) =
+            vendor_version(u32::try_from(api.ldapai_vendor_version).unwrap_or(0));
         let said = out
             .write_all(vendor.to_bytes())
             .and_then(|()| write!(out, "/{major}.{minor}.{patch}"));
@@ -82,6 +78,13 @@ fn api_version() -> ([u8; 64], usize) {
     }
     let len = room - out.len();
     (buf, len)
+}
+
+/// The vendor's version number as its major, minor and patch numbers, as
+/// C splits it (`Curl_ldap_version`).
+fn vendor_version(v: u32) -> (u32, u32, u32) {
+    let (major, patch) = (v / 10000, v % 100);
+    (major, (v - major * 10000 - patch) / 100, patch)
 }
 
 /// `text` with a NUL after it, for libldap; none for one with a NUL
@@ -138,10 +141,9 @@ impl Ldap for Libldap {
         // SAFETY: a C string, and where the description goes.
         let rc = unsafe { sys::ldap_url_parse(url.as_ptr().cast::<c_char>(), &raw mut lud) };
         if rc != sys::LDAP_URL_SUCCESS {
-            if !lud.is_null() {
-                // SAFETY: the library's, freed once.
-                unsafe { sys::ldap_free_urldesc(lud) };
-            }
+            // SAFETY: NULL, which the library takes as nothing, or its
+            // description, freed once.
+            unsafe { sys::ldap_free_urldesc(lud) };
             return Err(UrlError(rc));
         }
         assert!(!lud.is_null(), "a URL parsed is described");
@@ -584,21 +586,19 @@ struct Libmessage<'s> {
 
 impl Libmessage<'_> {
     fn free_vals(&mut self) {
-        if !self.vals.is_null() {
-            // SAFETY: the library's array, freed once.
-            unsafe { sys::ber_memfree(self.vals.cast::<c_void>()) };
-            self.vals = ptr::null_mut();
-        }
+        // SAFETY: NULL, which the library takes as nothing, or its array,
+        // freed once: it is forgotten here.
+        unsafe { sys::ber_memfree(self.vals.cast::<c_void>()) };
+        self.vals = ptr::null_mut();
     }
 }
 
 impl Drop for Libmessage<'_> {
     fn drop(&mut self) {
         self.free_vals();
-        if !self.ber.is_null() {
-            // SAFETY: the library's, freed once, its buffer the message's.
-            unsafe { sys::ber_free(self.ber, 0) };
-        }
+        // SAFETY: NULL, which the library takes as nothing, or its
+        // reading, freed once, its buffer the message's.
+        unsafe { sys::ber_free(self.ber, 0) };
         // SAFETY: the library's message, freed once.
         unsafe { sys::ldap_msgfree(self.msg) };
     }
@@ -636,10 +636,9 @@ impl Message for Libmessage<'_> {
         };
         // SAFETY: NULL or the library's C string, freed below.
         let words = unsafe { copied(info) };
-        if !info.is_null() {
-            // SAFETY: allocated by the call, freed once.
-            unsafe { sys::ldap_memfree(info.cast::<c_void>()) };
-        }
+        // SAFETY: NULL, which the library takes as nothing, or allocated
+        // by the call, freed once.
+        unsafe { sys::ldap_memfree(info.cast::<c_void>()) };
         if rc != sys::LDAP_SUCCESS {
             return Err(Code(rc));
         }
@@ -665,10 +664,9 @@ impl Message for Libmessage<'_> {
                 None => Ok(None),
             }
         };
-        if !cred.is_null() {
-            // SAFETY: allocated by the call, freed once.
-            unsafe { sys::ber_bvfree(cred) };
-        }
+        // SAFETY: NULL, which the library takes as nothing, or allocated
+        // by the call, freed once.
+        unsafe { sys::ber_bvfree(cred) };
         if rc != sys::LDAP_SUCCESS {
             return Err(Code(rc));
         }

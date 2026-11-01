@@ -129,6 +129,8 @@ struct Bytes {
     sent: Vec<u8>,
     incoming: Vec<u8>,
     reads: usize,
+    /// It says it holds input it does not.
+    claims: bool,
 }
 
 impl Wire for Bytes {
@@ -149,7 +151,7 @@ impl Wire for Bytes {
     }
 
     fn pending(&mut self) -> bool {
-        !self.incoming.is_empty()
+        self.claims || !self.incoming.is_empty()
     }
 }
 
@@ -329,6 +331,109 @@ fn a_session_over_its_socket_uses_it() {
     assert!(failed.0 < 0, "{failed:?}");
     assert_eq!(unused.reads, 0);
     drop(ours);
+}
+
+/// The vendor's number is split as C splits it.
+#[test]
+fn the_vendor_s_number_is_split_as_c_splits_it() {
+    assert_eq!(vendor_version(20610), (2, 6, 10));
+    assert_eq!(vendor_version(123_456), (12, 34, 56));
+    assert_eq!(vendor_version(7), (0, 0, 7));
+}
+
+/// A string for the library and a list of them are allocated once, at
+/// their size.
+#[test]
+fn strings_for_the_library_are_allocated_at_their_size() {
+    let z = terminated(b"abc").unwrap().unwrap();
+    assert_eq!((z.as_slice(), z.capacity()), (&b"abc\0"[..], 4));
+    let zs = [b"a\0".to_vec(), b"bc\0".to_vec()];
+    let list = c_list(&zs).unwrap();
+    assert_eq!(list.capacity(), 3);
+    assert_eq!(
+        list,
+        [
+            zs[0].as_ptr().cast_mut().cast::<c_char>(),
+            zs[1].as_ptr().cast_mut().cast::<c_char>(),
+            ptr::null_mut(),
+        ]
+    );
+}
+
+/// A session over a wire, as the connect leaves it.
+fn wired() -> Box<dyn Session> {
+    let (ours, _theirs) = UnixStream::pair().unwrap();
+    let mut session = LIBLDAP
+        .session(ours.as_raw_fd(), b"ldap", b"ldap://h:389")
+        .unwrap()
+        .unwrap();
+    drop(ours);
+    session.set_version(3);
+    session.set_no_referrals();
+    assert!(session.use_wire());
+    session
+}
+
+/// An answer larger than the most the session takes is refused; a read
+/// of the layer that finds nothing yet is no answer, not the end; a bind
+/// answer's credentials are the server's; an abandon is sent.
+#[test]
+fn a_wired_session_s_limits_and_answers_are_the_library_s() {
+    let search = Search {
+        dn: Some(b"dc=x".to_vec()),
+        scope: 2,
+        filter: None,
+        attrs: None,
+    };
+    let big = |n: u8| ldap_message(n, &entry_op(b"cn=a,dc=x", &[(b"cn", &[&[b'a'; 100]])]));
+    for (max, taken) in [(64, false), (1024, true)] {
+        let mut session = wired();
+        assert!(session.set_max_incoming(max));
+        let mut wire = Bytes::default();
+        let id = session.search(&mut wire, &search).unwrap();
+        wire.incoming = big(id.0 as u8);
+        let got = session.result(&mut wire, id).map(|m| m.is_some());
+        assert_eq!(got.is_ok(), taken, "{max}: {got:?}");
+    }
+    let mut session = wired();
+    let mut wire = Bytes {
+        claims: true,
+        ..Bytes::default()
+    };
+    let id = session
+        .bind(&mut wire, None, Mech::Simple, Some(b""))
+        .unwrap();
+    assert!(session.result(&mut wire, id).unwrap().is_none());
+    assert!(wire.reads > 0, "the layer was read");
+    let mut op = ber(0x0a, &[14]);
+    op.extend_from_slice(&ber(0x04, b""));
+    op.extend_from_slice(&ber(0x04, b""));
+    op.extend_from_slice(&ber(0x87, b"chal"));
+    wire.incoming = ldap_message(id.0 as u8, &ber(0x61, &op));
+    let mut msg = session.result(&mut wire, id).unwrap().expect("answered");
+    assert_eq!(msg.bind_result(), Ok(Some(b"chal".to_vec())));
+    drop(msg);
+    wire.sent.clear();
+    session.abandon(&mut wire, MsgId(5));
+    assert_eq!(wire.sent, ldap_message(id.0 as u8 + 1, &ber(0x50, &[5])));
+}
+
+/// A session dropped unbinds over its socket, and closes it.
+#[test]
+fn a_session_dropped_says_goodbye_and_closes() {
+    let (ours, mut theirs) = UnixStream::pair().unwrap();
+    let session = LIBLDAP
+        .session(ours.as_raw_fd(), b"ldap", b"ldap://h:389")
+        .unwrap()
+        .unwrap();
+    drop(ours);
+    drop(session);
+    theirs
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    let mut got = Vec::new();
+    theirs.read_to_end(&mut got).unwrap();
+    assert_eq!(got, ldap_message(1, &ber(0x42, b"")));
 }
 
 /// A search's answer as a server might send it, every kind of message

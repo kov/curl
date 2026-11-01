@@ -93,3 +93,11 @@ witness: curl-core proto::ldap::tests::a_paused_write_holds_the_answer
 --- new
         if self.receiving {
 
+=== a session dropped unbound is not unbound
+file: crates/curl-ldap/src/lib.rs
+witness: curl-ldap tests::a_session_dropped_says_goodbye_and_closes
+--- old
+        // be sent, and the session is freed all the same.
+        self.unbind_now();
+--- new
+        // be sent, and the session is freed all the same.

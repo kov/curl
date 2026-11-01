@@ -101,3 +101,13 @@ witness: curl-ldap tests::a_session_dropped_says_goodbye_and_closes
         self.unbind_now();
 --- new
         // be sent, and the session is freed all the same.
+
+=== a socket with no descriptor goes on to make a session
+file: crates/curl-ldap/src/lib.rs
+witness: curl-ldap tests::a_socket_without_a_descriptor_makes_no_session
+--- old
+        let socket = socket.ok_or(SessionFailed::NoCopy)?;
+--- new
+        let Some(socket) = socket else {
+            return Err(SessionFailed::Library(Code::NO_MEMORY));
+        };

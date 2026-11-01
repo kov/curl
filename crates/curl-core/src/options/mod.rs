@@ -2613,20 +2613,33 @@ impl Ssh {
 
 /// The ways an SSH user may log in (`CURLSSH_AUTH_*`), as bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SshAuthTypes(pub u32);
+pub struct SshAuthTypes(u32);
 
 impl SshAuthTypes {
     pub const ANY: SshAuthTypes = SshAuthTypes(u32::MAX);
-    pub const PUBLICKEY: u32 = 0x01;
-    pub const PASSWORD: u32 = 0x02;
-    pub const HOST: u32 = 0x04;
-    pub const KEYBOARD: u32 = 0x08;
-    pub const AGENT: u32 = 0x10;
-    pub const GSSAPI: u32 = 0x20;
+    pub const PUBLICKEY: SshAuthTypes = SshAuthTypes(0x01);
+    pub const PASSWORD: SshAuthTypes = SshAuthTypes(0x02);
+    pub const HOST: SshAuthTypes = SshAuthTypes(0x04);
+    pub const KEYBOARD: SshAuthTypes = SshAuthTypes(0x08);
+    pub const AGENT: SshAuthTypes = SshAuthTypes(0x10);
+    pub const GSSAPI: SshAuthTypes = SshAuthTypes(0x20);
+
+    /// The ways `bits` name, any others among them kept unread.
+    pub const fn from_bits(bits: u32) -> SshAuthTypes {
+        SshAuthTypes(bits)
+    }
 
     /// Whether it lets the user log in by `way`.
-    pub fn allows(self, way: u32) -> bool {
-        self.0 & way != 0
+    pub fn allows(self, way: SshAuthTypes) -> bool {
+        self.0 & way.0 != 0
+    }
+}
+
+impl core::ops::BitOr for SshAuthTypes {
+    type Output = SshAuthTypes;
+
+    fn bitor(self, other: SshAuthTypes) -> SshAuthTypes {
+        SshAuthTypes(self.0 | other.0)
     }
 }
 

@@ -244,9 +244,9 @@ impl Carrier<'_> {
     /// past every layer and buffer of ours (libssh's `SSH_OPTIONS_FD`):
     /// none while a layer works on the stream's bytes or bytes received
     /// wait unused, which the library would never see.
-    pub(crate) fn bare_socket(&self) -> Option<super::io::SocketKey> {
+    pub(crate) fn bare_socket(&self) -> Option<&dyn super::io::Socket> {
         match &self.over {
-            Over::Stream(stream) => stream.bare_socket().map(|s| s.key()),
+            Over::Stream(stream) => stream.bare_socket(),
             Over::Datagrams(_) => None,
         }
     }
@@ -254,9 +254,9 @@ impl Carrier<'_> {
     /// The stream's socket, whatever works on its bytes above it: a
     /// library over TLS reads and writes through those layers, not the
     /// socket, which it is handed only to poll (`ldap_init_fd`).
-    pub(crate) fn socket_key(&self) -> Option<super::io::SocketKey> {
+    pub(crate) fn stream_socket(&self) -> Option<&dyn super::io::Socket> {
         match &self.over {
-            Over::Stream(stream) => Some(stream.socket().key()),
+            Over::Stream(stream) => Some(stream.socket()),
             Over::Datagrams(_) => None,
         }
     }

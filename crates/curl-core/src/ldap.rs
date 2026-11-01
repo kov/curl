@@ -12,6 +12,7 @@
 
 use std::fmt;
 use std::io;
+use std::os::fd::BorrowedFd;
 
 use curl_alloc::OutOfMemory;
 
@@ -21,24 +22,61 @@ pub trait Ldap: fmt::Debug + Send + Sync {
     /// number for what is wrong with it (`LDAP_URL_ERR_*`).
     fn parse_url(&self, url: &[u8]) -> Result<Search, UrlError>;
 
-    /// A session over a copy of the connected socket `fd`, which stays the
+    /// A session over a copy of the connected socket, which stays the
     /// caller's, for `scheme`'s connection to `url`
-    /// (`ldap_pvt_url_scheme2proto`, `ldap_init_fd`): none if a copy
-    /// could not be made, else the library's code if it made no session.
+    /// (`ldap_pvt_url_scheme2proto`, `ldap_init_fd`). A socket with no
+    /// descriptor is one a library over the system's sockets cannot copy.
     fn session(
         &self,
-        fd: i32,
+        socket: Option<BorrowedFd<'_>>,
         scheme: &[u8],
         url: &[u8],
-    ) -> Result<Result<Box<dyn Session>, Code>, NoCopy>;
+    ) -> Result<Box<dyn Session>, SessionFailed>;
 
     /// The library's words for `code` (`ldap_err2string`).
     fn describe(&self, code: Code) -> &'static [u8];
 }
 
-/// The connected socket could not be copied.
+/// Why no session was made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NoCopy;
+pub enum SessionFailed {
+    /// The connected socket could not be copied.
+    NoCopy,
+    /// The library's code for it.
+    Library(Code),
+}
+
+/// The library refused a setting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Refused;
+
+/// The protocol version a session speaks (`LDAP_VERSION*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Version {
+    V2,
+    V3,
+}
+
+impl Version {
+    /// Its number, as the library takes it.
+    pub fn number(self) -> i32 {
+        match self {
+            Version::V2 => 2,
+            Version::V3 => 3,
+        }
+    }
+}
+
+/// How far below its base a search looks (`LDAP_SCOPE_*`), as the library
+/// numbers it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Scope(pub i32);
+
+impl Scope {
+    pub const BASE: Scope = Scope(0);
+    pub const ONE_LEVEL: Scope = Scope(1);
+    pub const SUBTREE: Scope = Scope(2);
+}
 
 /// A result code, the library's or the server's (`LDAP_*`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,8 +110,7 @@ impl UrlError {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Search {
     pub dn: Option<Vec<u8>>,
-    /// `LDAP_SCOPE_*`.
-    pub scope: i32,
+    pub scope: Scope,
     pub filter: Option<Vec<u8>>,
     pub attrs: Option<Vec<Vec<u8>>>,
 }
@@ -122,16 +159,14 @@ pub trait Wire {
 /// closed.
 pub trait Session: fmt::Debug + Send {
     /// The protocol version it speaks (`LDAP_OPT_PROTOCOL_VERSION`).
-    fn set_version(&mut self, version: i32);
+    fn set_version(&mut self, version: Version);
     /// Chase no referrals (`LDAP_OPT_REFERRALS`).
     fn set_no_referrals(&mut self);
-    /// The largest message it reads (`LBER_SB_OPT_SET_MAX_INCOMING`):
-    /// whether it was set.
-    fn set_max_incoming(&mut self, max: usize) -> bool;
+    /// The largest message it reads (`LBER_SB_OPT_SET_MAX_INCOMING`).
+    fn set_max_incoming(&mut self, max: usize) -> Result<(), Refused>;
     /// Read and write through the [`Wire`] each call is handed from now
-    /// on, not its socket (`ber_sockbuf_add_io` of C's `ldapsb_tls`):
-    /// whether it took.
-    fn use_wire(&mut self) -> bool;
+    /// on, not its socket (`ber_sockbuf_add_io` of C's `ldapsb_tls`).
+    fn use_wire(&mut self) -> Result<(), Refused>;
     /// Whether it does.
     fn uses_wire(&self) -> bool;
 

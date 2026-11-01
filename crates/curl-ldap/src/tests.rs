@@ -1,7 +1,7 @@
 use super::*;
 use std::io::{Read as _, Write as _};
 use std::mem::{offset_of, size_of};
-use std::os::fd::AsRawFd as _;
+use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
 
 /// The values and layouts `sys.rs` declares are the headers', in
@@ -94,6 +94,13 @@ fn the_version_is_the_vendor_and_its_number() {
     assert!(parts[0] >= 2, "{v}");
 }
 
+/// A socket with no descriptor is one libldap cannot be given a copy of.
+#[test]
+fn a_socket_without_a_descriptor_makes_no_session() {
+    let made = LIBLDAP.session(None, b"ldap", b"ldap://h:389");
+    assert_eq!(made.err(), Some(SessionFailed::NoCopy));
+}
+
 /// A URL's search is the library's reading of it; a bad one is the
 /// library's number for what is wrong.
 #[test]
@@ -102,11 +109,11 @@ fn a_url_names_its_search() {
         .parse_url(b"ldap://h:389/dc=example,dc=com?cn,mail?sub?(cn=a*)")
         .unwrap();
     assert_eq!(s.dn.as_deref(), Some(&b"dc=example,dc=com"[..]));
-    assert_eq!(s.scope, 2);
+    assert_eq!(s.scope, Scope::SUBTREE);
     assert_eq!(s.filter.as_deref(), Some(&b"(cn=a*)"[..]));
     assert_eq!(s.attrs, Some(vec![b"cn".to_vec(), b"mail".to_vec()]));
     let base = LIBLDAP.parse_url(b"ldap://h/").unwrap();
-    assert_eq!((base.attrs, base.scope), (None, 0));
+    assert_eq!((base.attrs, base.scope), (None, Scope::BASE));
     assert_eq!(LIBLDAP.parse_url(b"http://h/"), Err(UrlError(3)));
     assert_eq!(LIBLDAP.parse_url(b"ldap://h/?a?nonsuch"), Err(UrlError(8)));
     assert_eq!(LIBLDAP.parse_url(b"ldap://h/\0x"), Err(UrlError::BAD_URL));
@@ -208,15 +215,14 @@ fn entry_op(dn: &[u8], attrs: &[(&[u8], &[&[u8]])]) -> Vec<u8> {
 fn a_session_over_a_wire_reads_and_writes_through_it() {
     let (ours, mut theirs) = UnixStream::pair().unwrap();
     let mut session = LIBLDAP
-        .session(ours.as_raw_fd(), b"ldap", b"ldap://h:389")
-        .unwrap()
+        .session(Some(ours.as_fd()), b"ldap", b"ldap://h:389")
         .unwrap();
     drop(ours);
-    session.set_version(3);
+    session.set_version(Version::V3);
     session.set_no_referrals();
-    assert!(session.set_max_incoming(256 * 1024));
+    assert_eq!(session.set_max_incoming(256 * 1024), Ok(()));
     assert!(!session.uses_wire());
-    assert!(session.use_wire());
+    assert_eq!(session.use_wire(), Ok(()));
     assert!(session.uses_wire());
     let mut wire = Bytes::default();
     let id = session
@@ -243,7 +249,7 @@ fn a_session_over_a_wire_reads_and_writes_through_it() {
     wire.sent.clear();
     let search = Search {
         dn: Some(b"dc=x".to_vec()),
-        scope: 2,
+        scope: Scope::SUBTREE,
         filter: Some(b"(cn=*)".to_vec()),
         attrs: Some(vec![b"cn".to_vec()]),
     };
@@ -297,8 +303,7 @@ fn a_session_over_a_wire_reads_and_writes_through_it() {
 fn a_session_over_its_socket_uses_it() {
     let (ours, mut theirs) = UnixStream::pair().unwrap();
     let mut session = LIBLDAP
-        .session(ours.as_raw_fd(), b"ldap", b"ldap://h:389")
-        .unwrap()
+        .session(Some(ours.as_fd()), b"ldap", b"ldap://h:389")
         .unwrap();
     let mut unused = Bytes::default();
     let id = session
@@ -364,13 +369,12 @@ fn strings_for_the_library_are_allocated_at_their_size() {
 fn wired() -> Box<dyn Session> {
     let (ours, _theirs) = UnixStream::pair().unwrap();
     let mut session = LIBLDAP
-        .session(ours.as_raw_fd(), b"ldap", b"ldap://h:389")
-        .unwrap()
+        .session(Some(ours.as_fd()), b"ldap", b"ldap://h:389")
         .unwrap();
     drop(ours);
-    session.set_version(3);
+    session.set_version(Version::V3);
     session.set_no_referrals();
-    assert!(session.use_wire());
+    assert_eq!(session.use_wire(), Ok(()));
     session
 }
 
@@ -381,14 +385,14 @@ fn wired() -> Box<dyn Session> {
 fn a_wired_session_s_limits_and_answers_are_the_library_s() {
     let search = Search {
         dn: Some(b"dc=x".to_vec()),
-        scope: 2,
+        scope: Scope::SUBTREE,
         filter: None,
         attrs: None,
     };
     let big = |n: u8| ldap_message(n, &entry_op(b"cn=a,dc=x", &[(b"cn", &[&[b'a'; 100]])]));
     for (max, taken) in [(64, false), (1024, true)] {
         let mut session = wired();
-        assert!(session.set_max_incoming(max));
+        assert_eq!(session.set_max_incoming(max), Ok(()));
         let mut wire = Bytes::default();
         let id = session.search(&mut wire, &search).unwrap();
         wire.incoming = big(id.0 as u8);
@@ -423,8 +427,7 @@ fn a_wired_session_s_limits_and_answers_are_the_library_s() {
 fn a_session_dropped_says_goodbye_and_closes() {
     let (ours, mut theirs) = UnixStream::pair().unwrap();
     let session = LIBLDAP
-        .session(ours.as_raw_fd(), b"ldap", b"ldap://h:389")
-        .unwrap()
+        .session(Some(ours.as_fd()), b"ldap", b"ldap://h:389")
         .unwrap();
     drop(ours);
     drop(session);
@@ -473,18 +476,17 @@ proptest::proptest! {
     ) {
         let (ours, _theirs) = UnixStream::pair().unwrap();
         let mut session = LIBLDAP
-            .session(ours.as_raw_fd(), b"ldap", b"ldap://h:389")
-            .unwrap()
+            .session(Some(ours.as_fd()), b"ldap", b"ldap://h:389")
             .unwrap();
         drop(ours);
-        session.set_version(3);
+        session.set_version(Version::V3);
         // As the connect sets it: with referrals chased, the library
         // would connect to whatever host a mangled answer named.
         session.set_no_referrals();
-        assert!(session.set_max_incoming(256 * 1024));
-        assert!(session.use_wire());
+        assert_eq!(session.set_max_incoming(256 * 1024), Ok(()));
+        assert_eq!(session.use_wire(), Ok(()));
         let mut wire = Bytes::default();
-        let search = Search { dn: Some(b"dc=x".to_vec()), scope: 2, filter: None, attrs: None };
+        let search = Search { dn: Some(b"dc=x".to_vec()), scope: Scope::SUBTREE, filter: None, attrs: None };
         let id = session.search(&mut wire, &search).unwrap();
         let mut bytes = answer(id.0 as u8);
         for (at, byte, how) in edits {

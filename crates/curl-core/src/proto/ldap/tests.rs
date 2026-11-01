@@ -387,7 +387,7 @@ use crate::easy::Easy;
 use crate::handler::DebugKind;
 use crate::handler::{DebugHandler, Write as Writes, WriteHandler};
 use crate::id::ArenaPolicy;
-use crate::ldap::{Ldap, NoCopy};
+use crate::ldap::{Ldap, Refused};
 use crate::libraries::{Libraries, SharedLibraries};
 use crate::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
 use crate::options::Options;
@@ -459,9 +459,9 @@ impl Ldap for FakeLdap {
         let attrs =
             some(parts.next()).map(|a| a.split(|&b| b == b',').map(<[u8]>::to_vec).collect());
         let scope = match parts.next() {
-            Some("one") => 1,
-            Some("sub") => 2,
-            _ => 0,
+            Some("one") => Scope::ONE_LEVEL,
+            Some("sub") => Scope::SUBTREE,
+            _ => Scope::BASE,
         };
         let filter = some(parts.next());
         Ok(Search {
@@ -474,10 +474,10 @@ impl Ldap for FakeLdap {
 
     fn session(
         &self,
-        _: i32,
+        _: Option<std::os::fd::BorrowedFd<'_>>,
         scheme: &[u8],
         url: &[u8],
-    ) -> Result<Result<Box<dyn Session>, Code>, NoCopy> {
+    ) -> Result<Box<dyn Session>, SessionFailed> {
         let mut w = self.0.lock().unwrap();
         w.calls.push(format!(
             "session {} {}",
@@ -485,14 +485,14 @@ impl Ldap for FakeLdap {
             String::from_utf8_lossy(url)
         ));
         if let Some(code) = w.refuse {
-            return Ok(Err(code));
+            return Err(SessionFailed::Library(code));
         }
-        Ok(Ok(Box::new(FakeSession {
+        Ok(Box::new(FakeSession {
             world: self.0.clone(),
             next: 1,
             answers: VecDeque::new(),
             wired: false,
-        })))
+        }))
     }
 
     fn describe(&self, code: Code) -> &'static [u8] {
@@ -577,22 +577,22 @@ fn shown(b: Option<&[u8]>) -> String {
 }
 
 impl Session for FakeSession {
-    fn set_version(&mut self, version: i32) {
-        self.call(format!("version {version}"));
+    fn set_version(&mut self, version: Version) {
+        self.call(format!("version {}", version.number()));
     }
 
     fn set_no_referrals(&mut self) {
         self.call("no referrals".into());
     }
 
-    fn set_max_incoming(&mut self, max: usize) -> bool {
+    fn set_max_incoming(&mut self, max: usize) -> Result<(), Refused> {
         self.call(format!("max {max}"));
-        true
+        Ok(())
     }
 
-    fn use_wire(&mut self) -> bool {
+    fn use_wire(&mut self) -> Result<(), Refused> {
         self.wired = true;
-        true
+        Ok(())
     }
 
     fn uses_wire(&self) -> bool {
@@ -638,7 +638,7 @@ impl Session for FakeSession {
         let said = format!(
             "search {} {} {} {:?}",
             shown(search.dn.as_deref()),
-            search.scope,
+            search.scope.0,
             shown(search.filter.as_deref()),
             search.attrs.as_ref().map(|a| a
                 .iter()

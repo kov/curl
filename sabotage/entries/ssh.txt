@@ -29,9 +29,9 @@ witness: curl-core conn::stream::tests::a_socket_with_bytes_held_is_not_handed_o
 file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::tests::quote_commands_run_before_the_transfer
 --- old
-        Rc::Error if !sc.accept_fail => {
+        Err(NotDone::Failed(_)) if !sc.accept_fail => {
 --- new
-        Rc::Error => {
+        Err(NotDone::Failed(_)) => {
 
 === text after a quote command's last path is taken
 file: crates/curl-core/src/proto/ssh/mod.rs
@@ -57,9 +57,9 @@ witness: curl-core proto::ssh::tests::the_password_logs_in_when_the_key_may_not
 file: crates/curl-core/src/proto/ssh/mod.rs
 witness: curl-core proto::ssh::tests::a_directory_is_listed
 --- old
-        let link = attrs.flags & Attrs::PERMISSIONS != 0 && attrs.permissions & S_IFMT == S_IFLNK;
+        let link = attrs.permissions.is_some_and(|p| p & S_IFMT == S_IFLNK);
 --- new
-        let link = attrs.flags & Attrs::PERMISSIONS != 0 && attrs.permissions & S_IFMT == 0;
+        let link = attrs.permissions.is_some_and(|p| p & S_IFMT == 0);
 
 === a connection is reused whatever key files it was made with
 file: crates/curl-core/src/conn/mod.rs
@@ -172,3 +172,13 @@ witness: curl-core proto::ssh::tests::a_short_scp_file_is_partial
         let ended = self.pipeline.end(cx);
 --- new
         let ended = Ok(());
+
+=== a socket with no descriptor is taken by libssh
+file: crates/curl-libssh/src/lib.rs
+witness: curl-libssh tests::a_socket_without_a_descriptor_is_refused
+--- old
+        let socket = socket.ok_or(Refused)?;
+--- new
+        let Some(socket) = socket else {
+            return Ok(());
+        };

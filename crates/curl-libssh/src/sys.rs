@@ -155,7 +155,8 @@ pub(crate) const O_CREAT: c_int = 0o100;
 pub(crate) const O_TRUNC: c_int = 0o1000;
 pub(crate) const O_APPEND: c_int = 0o2000;
 
-// `SSH_FILEXFER_ATTR_*` the changes set.
+// `SSH_FILEXFER_ATTR_*` read of what the server gave, and set by the changes.
+pub(crate) const SSH_FILEXFER_ATTR_SIZE: u32 = 0x0000_0001;
 pub(crate) const SSH_FILEXFER_ATTR_UIDGID: u32 = 0x0000_0002;
 pub(crate) const SSH_FILEXFER_ATTR_PERMISSIONS: u32 = 0x0000_0004;
 pub(crate) const SSH_FILEXFER_ATTR_ACMODTIME: u32 = 0x0000_0008;
@@ -315,12 +316,10 @@ unsafe extern "C" {
     /// The C library's, which frees what `ssh_pki_export_pubkey_base64`
     /// allocates.
     pub(crate) fn free(p: *mut c_void);
+    #[cfg(test)]
     pub(crate) fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     pub(crate) fn close(fd: c_int) -> c_int;
 }
-
-/// `fcntl`'s command to duplicate a descriptor, close-on-exec.
-pub(crate) const F_DUPFD_CLOEXEC: c_int = 1030;
 
 // The headers' values and layouts, from `csrc/layout.c`, in the order
 // the tests read them.

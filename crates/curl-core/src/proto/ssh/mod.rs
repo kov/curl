@@ -36,8 +36,8 @@ use crate::options::{CreateDirs, Resume, SshAuthTypes};
 use crate::progress::rate::Way;
 use crate::report::Timer;
 use crate::ssh::{
-    Aio, AttrChange, Attrs, Auth, KeyType, KnownHosts, Methods, OpenMode, PollFlags, Rc,
-    ScpRequest, Session,
+    Aio, AttrChange, AttrsError, Auth, Blocking, KeyType, KnownHosts, Methods, NotDone, OpenMode,
+    PollFlags, Rc, ScpRequest, ScpWay, Session, SftpStatus,
 };
 use crate::trace;
 use crate::upload::Upload;
@@ -405,10 +405,9 @@ impl SshConn {
 
     /// The file is closed, and the run comes to the SFTP failure
     /// (`myssh_to_SFTP_CLOSE`).
-    fn goto_close(&mut self, says: &mut dyn Says) -> Flow {
+    fn goto_close(&mut self, says: &mut dyn Says, status: SftpStatus) -> Flow {
         self.to(says, State::SftpClose);
-        let code = self.session().sftp_error();
-        self.actual = sftp_failure(code);
+        self.actual = sftp_failure(status);
         Flow::On
     }
 
@@ -461,7 +460,7 @@ impl SshConn {
     /// the SFTP session.
     fn sftp_shutdown(&mut self, says: &mut dyn Says) {
         let s = self.session();
-        s.set_blocking(false);
+        s.set_blocking(Blocking::No);
         s.free_aio();
         s.close_file();
         s.sftp_free();
@@ -513,29 +512,18 @@ impl SshConn {
     }
 }
 
-/// The failure an SFTP status code is (`sftp_error_to_CURLE`).
-fn sftp_failure(code: u32) -> Result<(), ErrorKind> {
-    const OK: u32 = 0;
-    const NO_SUCH_FILE: u32 = 2;
-    const PERMISSION_DENIED: u32 = 3;
-    const NO_SUCH_PATH: u32 = 10;
-    const FILE_ALREADY_EXISTS: u32 = 11;
-    const WRITE_PROTECT: u32 = 12;
-    match code {
-        OK => Ok(()),
-        NO_SUCH_FILE | NO_SUCH_PATH => Err(ErrorKind::RemoteFileNotFound),
-        PERMISSION_DENIED | WRITE_PROTECT => Err(ErrorKind::RemoteAccessDenied),
-        FILE_ALREADY_EXISTS => Err(ErrorKind::RemoteFileExists),
-        _ => Err(ErrorKind::Ssh),
+/// The failure an SFTP status is (`sftp_error_to_CURLE`).
+fn sftp_failure(status: SftpStatus) -> Result<(), ErrorKind> {
+    match status {
+        SftpStatus::Unsaid => Ok(()),
+        SftpStatus::NoSuchFile | SftpStatus::NoSuchPath => Err(ErrorKind::RemoteFileNotFound),
+        SftpStatus::PermissionDenied | SftpStatus::WriteProtect => {
+            Err(ErrorKind::RemoteAccessDenied)
+        }
+        SftpStatus::FileAlreadyExists => Err(ErrorKind::RemoteFileExists),
+        SftpStatus::Failure | SftpStatus::Other(_) => Err(ErrorKind::Ssh),
     }
 }
-
-/// SFTP's status codes the upload's directories are made on past.
-const SSH_FX_FAILURE: u32 = 4;
-const SSH_FX_NO_SUCH_FILE: u32 = 2;
-const SSH_FX_PERMISSION_DENIED: u32 = 3;
-const SSH_FX_NO_SUCH_PATH: u32 = 10;
-const SSH_FX_FILE_ALREADY_EXISTS: u32 = 11;
 
 /// A mode's type bits, and a link's (`SSH_S_IFMT`, `SSH_S_IFLNK`).
 const S_IFMT: u32 = 0o170_000;
@@ -840,7 +828,7 @@ impl Request {
                     sc.second_create_dirs = false;
                     sc.next = None;
                     sc.actual = Ok(());
-                    sc.session().set_blocking(false);
+                    sc.session().set_blocking(Blocking::No);
                     sc.to(cx, State::SStartup);
                 }
                 State::SStartup => flow = self.s_startup(cx, sc),
@@ -1050,7 +1038,7 @@ impl Request {
                     let s = sc.session();
                     s.scp_free();
                     cx.ssh(format_args!("SCP DONE phase complete"));
-                    sc.session().set_blocking(false);
+                    sc.session().set_blocking(Blocking::No);
                     sc.to(cx, State::SessionDisconnect);
                 }
                 State::SessionDisconnect => sc.session_disconnect(cx),
@@ -1381,12 +1369,12 @@ impl Request {
         let attrs = sc.session().stat(&path);
         self.path = Some(path);
         match attrs {
-            Err(_) => {
+            Err(AttrsError::OutOfMemory) => {
                 sc.goto_error(cx, ErrorKind::OutOfMemory);
                 return;
             }
-            Ok(Some(attrs)) => cx.report_mut().set_filetime(i64::from(attrs.mtime)),
-            Ok(None) => {}
+            Ok(attrs) => cx.report_mut().set_filetime(i64::from(attrs.mtime)),
+            Err(AttrsError::Status(_)) => {}
         }
         sc.to(cx, State::SftpTransInit);
     }
@@ -1400,14 +1388,16 @@ impl Request {
             let attrs = sc.session().stat(&path);
             self.path = Some(path);
             match attrs {
-                Err(_) => {
+                Err(AttrsError::OutOfMemory) => {
                     sc.goto_error(cx, ErrorKind::OutOfMemory);
                     return;
                 }
-                Ok(Some(Attrs { size, .. })) => match i64::try_from(size) {
+                // C reads the field whether or not the server gave it, which
+                // the library leaves zero then.
+                Ok(attrs) => match i64::try_from(attrs.size.unwrap_or_default()) {
                     Ok(size) => self.resume_from = size,
                     Err(_) => {
-                        let size = size as i64;
+                        let size = attrs.size.unwrap_or_default() as i64;
                         let kind = trace::fail(
                             cx,
                             ErrorKind::BadDownloadResume,
@@ -1417,7 +1407,7 @@ impl Request {
                         return;
                     }
                 },
-                Ok(None) => self.resume_from = 0,
+                Err(AttrsError::Status(_)) => self.resume_from = 0,
             }
         }
         let options = cx.easy().options();
@@ -1436,11 +1426,10 @@ impl Request {
         let path = self.path.take().unwrap_or_default();
         let opened = sc.session().open(&path, mode, perms);
         self.path = Some(path);
-        if !opened {
-            let err = sc.session().sftp_error();
+        if let Err(status) = opened {
             let missing = matches!(
-                err,
-                SSH_FX_NO_SUCH_FILE | SSH_FX_FAILURE | SSH_FX_NO_SUCH_PATH
+                status,
+                SftpStatus::NoSuchFile | SftpStatus::Failure | SftpStatus::NoSuchPath
             );
             // Made once only: a server that keeps refusing the file is not
             // asked again for ever, as C's libssh2 code asks.
@@ -1448,7 +1437,7 @@ impl Request {
                 sc.second_create_dirs = true;
                 sc.to(cx, State::SftpCreateDirsInit);
             } else {
-                sc.goto_close(cx);
+                sc.goto_close(cx, status);
             }
             return;
         }
@@ -1479,8 +1468,8 @@ impl Request {
                 self.infilesize = Some(size - from);
                 crate::upload::announce_size(cx, self.infilesize);
             }
-            if sc.session().seek(from) != Rc::Ok {
-                sc.goto_close(cx);
+            if let Err(status) = sc.session().seek(from) {
+                sc.goto_close(cx, status);
                 return;
             }
         }
@@ -1532,18 +1521,17 @@ impl Request {
         let path = self.path.take().unwrap_or_default();
         let rc = sc.session().mkdir(&path[..dir_end], mode);
         self.path = Some(path);
-        if rc == Rc::Again {
+        if rc == Err(NotDone::Again) {
             return Flow::Again;
         }
         sc.slash += 1;
-        if rc == Rc::Error {
-            let err = sc.session().sftp_error();
-            if !matches!(
-                err,
-                SSH_FX_FILE_ALREADY_EXISTS | SSH_FX_FAILURE | SSH_FX_PERMISSION_DENIED
-            ) {
-                return sc.goto_close(cx);
-            }
+        if let Err(NotDone::Failed(status)) = rc
+            && !matches!(
+                status,
+                SftpStatus::FileAlreadyExists | SftpStatus::Failure | SftpStatus::PermissionDenied
+            )
+        {
+            return sc.goto_close(cx, status);
         }
         sc.to(cx, State::SftpCreateDirs);
         Flow::On
@@ -1560,14 +1548,14 @@ impl Request {
         let path = self.path.take().unwrap_or_default();
         let opened = sc.session().opendir(&path);
         self.path = Some(path);
-        if !opened {
+        if let Err(status) = opened {
             let text = sc.error_text();
             trace::fail_with(
                 cx,
                 ErrorKind::Ssh,
                 &[b"Could not open directory for reading: ", &text],
             );
-            sc.goto_close(cx);
+            sc.goto_close(cx, status);
             return;
         }
         sc.to(cx, State::SftpReaddir);
@@ -1579,24 +1567,24 @@ impl Request {
         sc.listing.clear();
         let entry = match sc.session().readdir() {
             Ok(entry) => entry,
-            Err(_) => {
+            Err(AttrsError::OutOfMemory) => {
                 sc.to(cx, State::SftpClose);
                 sc.actual = Err(ErrorKind::OutOfMemory);
                 return;
             }
-        };
-        let Some(attrs) = entry else {
-            if sc.session().dir_eof() {
-                sc.to(cx, State::SftpReaddirDone);
-            } else {
+            Err(AttrsError::Status(status)) => {
                 let text = sc.error_text();
                 trace::fail_with(
                     cx,
                     ErrorKind::Ssh,
                     &[b"Could not open remote directory for reading: ", &text],
                 );
-                sc.goto_close(cx);
+                sc.goto_close(cx, status);
+                return;
             }
+        };
+        let Some(attrs) = entry else {
+            sc.to(cx, State::SftpReaddirDone);
             return;
         };
         let name = attrs.name.as_deref().unwrap_or_default();
@@ -1623,7 +1611,7 @@ impl Request {
             sc.to(cx, State::Stop);
             return;
         }
-        let link = attrs.flags & Attrs::PERMISSIONS != 0 && attrs.permissions & S_IFMT == S_IFLNK;
+        let link = attrs.permissions.is_some_and(|p| p & S_IFMT == S_IFLNK);
         if link {
             let mut link_path = Vec::new();
             let made = link_path
@@ -1663,14 +1651,14 @@ impl Request {
         let path = self.path.take().unwrap_or_default();
         let opened = sc.session().open(&path, OpenMode::Read, perms);
         self.path = Some(path);
-        if !opened {
+        if let Err(status) = opened {
             let text = sc.error_text();
             trace::fail_with(
                 cx,
                 ErrorKind::Ssh,
                 &[b"Could not open remote file for reading: ", &text],
             );
-            sc.goto_close(cx);
+            sc.goto_close(cx, status);
             return;
         }
         sc.session().file_nonblocking();
@@ -1682,14 +1670,15 @@ impl Request {
     /// (`myssh_in_SFTP_DOWNLOAD_STAT`).
     fn sftp_download_stat<H: Host>(&mut self, cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
         let attrs = match sc.session().fstat() {
-            Ok(attrs) => attrs,
-            Err(_) => {
+            Ok(attrs) => Some(attrs),
+            Err(AttrsError::Status(_)) => None,
+            Err(AttrsError::OutOfMemory) => {
                 sc.goto_error(cx, ErrorKind::OutOfMemory);
                 return;
             }
         };
         // The size as C reads it, a signed number.
-        let sized = attrs.filter(|a| a.flags & Attrs::SIZE != 0 && a.size != 0);
+        let sized = attrs.and_then(|a| a.size).filter(|&stated| stated != 0);
         let mut size: i64;
         // The request's size, -1 if unknown (`req.size`).
         let mut req_size: i64;
@@ -1700,8 +1689,8 @@ impl Request {
                 self.pipeline.announce_size(cx, None);
                 size = 0;
             }
-            Some(attrs) => {
-                size = attrs.size as i64;
+            Some(stated) => {
+                size = stated as i64;
                 if size < 0 {
                     let kind = trace::fail(
                         cx,
@@ -1732,8 +1721,8 @@ impl Request {
                             return;
                         }
                     };
-                    if sc.session().seek(from.unsigned_abs()) != Rc::Ok {
-                        sc.goto_close(cx);
+                    if let Err(status) = sc.session().seek(from.unsigned_abs()) {
+                        sc.goto_close(cx, status);
                         return;
                     }
                     size = len;
@@ -1768,8 +1757,8 @@ impl Request {
             req_size = size - self.resume_from;
             let announced = u64::try_from(req_size).ok();
             self.pipeline.announce_size(cx, announced);
-            if sc.session().seek(self.resume_from.unsigned_abs()) != Rc::Ok {
-                sc.goto_close(cx);
+            if let Err(status) = sc.session().seek(self.resume_from.unsigned_abs()) {
+                sc.goto_close(cx, status);
                 return;
             }
         }
@@ -1824,7 +1813,7 @@ impl Request {
             Ok(p) => self.path = Some(p),
         }
         // SCP's calls cannot answer that they would wait.
-        sc.session().set_blocking(true);
+        sc.session().set_blocking(Blocking::Yes);
         let path = self.path.take().unwrap_or_default();
         let made = if self.upload {
             let upload = match Upload::open(cx) {
@@ -1847,16 +1836,16 @@ impl Request {
                 return;
             }
             self.source = Some(upload);
-            let made = sc.session().scp_new(true, &path);
+            let made = sc.session().scp_new(ScpWay::Write, &path);
             sc.to(cx, State::ScpUploadInit);
             made
         } else {
-            let made = sc.session().scp_new(false, &path);
+            let made = sc.session().scp_new(ScpWay::Read, &path);
             sc.to(cx, State::ScpDownloadInit);
             made
         };
         self.path = Some(path);
-        if !made {
+        if made.is_err() {
             let text = sc.error_text();
             let kind = trace::fail_with(cx, ErrorKind::UploadFailed, &[&text]);
             sc.goto_error(cx, kind);
@@ -1961,7 +1950,7 @@ impl Request {
             let buf = &mut self.buf[..len];
             let n = if sc.sftp {
                 if sc.reading.is_none() {
-                    if sc.session().begin_read(len) == Rc::Error {
+                    if sc.session().begin_read(len).is_err() {
                         return Err(ErrorKind::RecvError);
                     }
                     sc.reading = Some(len);
@@ -2151,16 +2140,17 @@ impl Request {
         }
         // The library reads the socket itself: no layer of ours may work
         // on its bytes, nor any received wait unused.
-        let Some(socket) = lease.get().carrier().bare_socket() else {
+        let carrier = lease.get().carrier();
+        let Some(socket) = carrier.bare_socket() else {
             return Err(trace::fail(
                 cx,
                 ErrorKind::FailedInit,
                 format_args!("Could not set socket: bytes past the tunnel are held"),
             ));
         };
-        let fd = socket.get();
+        let fd = socket.key().get();
         cx.ssh(format_args!("myssh_connect, set socket={fd}"));
-        if session.set_socket(fd).is_err() {
+        if session.set_socket(socket.descriptor()).is_err() {
             return Err(trace::fail(
                 cx,
                 ErrorKind::FailedInit,
@@ -2299,10 +2289,15 @@ fn one_path<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, rest: &[u8], stat
 
 /// A quote command's call came to `rc`: the next command, unless it
 /// failed and may not (`myssh_quote_error` with the command's name).
-fn quote_done<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn, rc: Rc, name: &str) -> Flow {
+fn quote_done<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    sc: &mut SshConn,
+    rc: Result<(), NotDone>,
+    name: &str,
+) -> Flow {
     match rc {
-        Rc::Again => Flow::Again,
-        Rc::Error if !sc.accept_fail => {
+        Err(NotDone::Again) => Flow::Again,
+        Err(NotDone::Failed(_)) if !sc.accept_fail => {
             let text = sc.error_text();
             let kind = trace::fail_with(
                 cx,
@@ -2336,8 +2331,8 @@ fn sftp_quote_stat<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
     let path2 = sc.path2.take().unwrap_or_default();
     let stated = sc.session().stat_to_change(&path2);
     sc.path2 = Some(path2);
-    if !stated {
-        let code = sc.session().sftp_error();
+    if let Err(status) = stated {
+        let code = status.number();
         let kind = trace::fail(
             cx,
             ErrorKind::QuoteError,
@@ -2412,7 +2407,7 @@ fn sftp_quote_stat<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
 }
 
 /// Whether the application lets the user log in by `way`.
-fn allows<H: Host>(cx: &StepCx<'_, H>, way: u32) -> bool {
+fn allows<H: Host>(cx: &StepCx<'_, H>, way: SshAuthTypes) -> bool {
     cx.easy().options().ssh.auth_types.allows(way)
 }
 
@@ -2475,7 +2470,7 @@ fn authlist<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) -> Flow {
     }
     sc.methods = sc.session().auth_list();
     let m = sc.methods;
-    if m.0 != 0 {
+    if m != Methods::NONE {
         trace::info(
             cx,
             format_args!(
@@ -2644,13 +2639,13 @@ fn interactive(sc: &mut SshConn) -> Rc {
                     Auth::Info => {}
                     _ => return Rc::Error,
                 }
-                if sc.session().kbdint_prompts() != 1 {
+                if sc.session().kbdint_prompts() != Ok(1) {
                     return Rc::Error;
                 }
                 let Ok(password) = password(sc) else {
                     return Rc::Error;
                 };
-                if sc.session().kbdint_answer(0, &password) < 0 {
+                if sc.session().kbdint_answer(0, &password).is_err() {
                     return Rc::Error;
                 }
                 sc.kbd = 1;
@@ -2659,7 +2654,7 @@ fn interactive(sc: &mut SshConn) -> Rc {
                 Auth::Again => return Rc::Again,
                 Auth::Success => break,
                 Auth::Info => {
-                    if sc.session().kbdint_prompts() != 0 {
+                    if sc.session().kbdint_prompts() != Ok(0) {
                         return Rc::Error;
                     }
                     sc.kbd = 2;
@@ -2726,8 +2721,8 @@ fn auth_done<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
 /// `SSH_SFTP_INIT`: the session blocking from now on, and the SFTP
 /// subsystem started over it.
 fn sftp_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
-    sc.session().set_blocking(true);
-    if !sc.session().sftp_new() {
+    sc.session().set_blocking(Blocking::Yes);
+    if sc.session().sftp_new().is_err() {
         let text = sc.error_text();
         let kind = trace::fail_with(
             cx,
@@ -2744,7 +2739,7 @@ fn sftp_init<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
             ErrorKind::Ssh,
             &[b"Failure initializing sftp session: ", &text],
         );
-        let kind = sftp_failure(SSH_FX_FAILURE).expect_err("FAILURE is one");
+        let kind = sftp_failure(SftpStatus::Failure).expect_err("FAILURE is one");
         sc.goto_error(cx, kind);
         return;
     }
@@ -2784,18 +2779,18 @@ fn sftp_realpath<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
 fn sftp_readdir_link<H: Host>(cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
     let link = sc.link.take().unwrap_or_default();
     let attrs = match sc.session().lstat(&link) {
-        Ok(Some(attrs)) => attrs,
-        Ok(None) => {
+        Ok(attrs) => attrs,
+        Err(AttrsError::Status(status)) => {
             let text = sc.error_text();
             trace::fail_with(
                 cx,
                 ErrorKind::Ssh,
                 &[b"Could not read symlink for reading: ", &text],
             );
-            sc.goto_close(cx);
+            sc.goto_close(cx, status);
             return;
         }
-        Err(_) => {
+        Err(AttrsError::OutOfMemory) => {
             sc.to(cx, State::SftpClose);
             sc.actual = Err(ErrorKind::OutOfMemory);
             return;
@@ -2845,7 +2840,7 @@ impl<H: Host> Outlet<H> for SshOutlet<'_> {
         }
         if !sc.writing {
             sc.session().file_nonblocking();
-            if sc.session().begin_write(bytes) == Rc::Error {
+            if sc.session().begin_write(bytes).is_err() {
                 self.failed = Some(ErrorKind::SendError);
                 return Err(std::io::Error::other("SFTP write failed"));
             }

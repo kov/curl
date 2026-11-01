@@ -13,7 +13,7 @@ use crate::id::ArenaPolicy;
 use crate::libraries::{Libraries, SharedLibraries};
 use crate::multi::{Env, Multi, NoEvents, TransferCx, TransferId, drive_to_completion};
 use crate::options::Options;
-use crate::ssh::{Failed, KnownKey, Refused, Session, Ssh};
+use crate::ssh::{Attrs, Failed, KnownKey, Refused, Session, Ssh};
 use crate::time::ManualClock;
 use curl_alloc::OutOfMemory;
 
@@ -30,7 +30,7 @@ struct World {
     /// Each link's path and target.
     links: Vec<(Vec<u8>, Vec<u8>)>,
     /// The logins the server offers.
-    methods: u32,
+    methods: Methods,
     /// The password it takes.
     password: Vec<u8>,
     /// Each call the state machine made of note, in order.
@@ -127,7 +127,6 @@ impl Ssh for FakeSsh {
             dir: None,
             reading: None,
             writing: None,
-            error: 0,
             kept: None,
         }))
     }
@@ -145,14 +144,13 @@ struct FakeSession {
     world: Arc<Mutex<World>>,
     pubkey: bool,
     /// The SCP channel: whether it writes, and its path.
-    scp: Option<(bool, Vec<u8>, usize)>,
+    scp: Option<(ScpWay, Vec<u8>, usize)>,
     sftp: bool,
     file: Option<Open>,
     /// The directory listed: its entries left.
     dir: Option<Vec<Attrs>>,
     reading: Option<usize>,
     writing: Option<usize>,
-    error: u32,
     kept: Option<Attrs>,
 }
 
@@ -170,19 +168,20 @@ impl FakeSession {
         Attrs {
             name: Some(name.to_vec()),
             longname: Some(long.into_bytes()),
-            flags: Attrs::SIZE | Attrs::PERMISSIONS,
-            size: size as u64,
-            permissions: if link { 0o120_777 } else { 0o100_644 },
+            size: Some(size as u64),
+            permissions: Some(if link { 0o120_777 } else { 0o100_644 }),
             mtime: 1_000,
         }
     }
-
-    /// A call that fails as for a missing file.
-    fn missing(&mut self) -> Rc {
-        self.error = SSH_FX_NO_SUCH_FILE;
-        Rc::Error
-    }
 }
+
+/// A call that fails as for a missing file.
+fn missing<T>() -> Result<T, NotDone> {
+    Err(NotDone::Failed(SftpStatus::NoSuchFile))
+}
+
+/// A stat that fails as for a missing file.
+const NO_ATTRS: AttrsError = AttrsError::Status(SftpStatus::NoSuchFile);
 
 impl Session for FakeSession {
     fn set_host(&mut self, host: &[u8]) -> Result<(), Refused> {
@@ -192,7 +191,7 @@ impl Session for FakeSession {
     fn parse_config(&mut self) -> Result<(), Refused> {
         Ok(())
     }
-    fn set_socket(&mut self, _: i32) -> Result<(), Refused> {
+    fn set_socket(&mut self, _: Option<std::os::fd::BorrowedFd<'_>>) -> Result<(), Refused> {
         self.w().call("set_socket", &[]);
         Ok(())
     }
@@ -219,7 +218,7 @@ impl Session for FakeSession {
     fn has_pubkey(&self) -> bool {
         self.pubkey
     }
-    fn set_blocking(&mut self, _: bool) {}
+    fn set_blocking(&mut self, _: Blocking) {}
     fn poll_flags(&self) -> PollFlags {
         self.w().poll
     }
@@ -268,7 +267,7 @@ impl Session for FakeSession {
         Auth::Denied
     }
     fn auth_list(&mut self) -> Methods {
-        Methods(self.w().methods)
+        self.w().methods
     }
     fn try_publickey(&mut self) -> Auth {
         let mut w = self.w();
@@ -350,15 +349,19 @@ impl Session for FakeSession {
             Some(_) => Auth::Denied,
         }
     }
-    fn kbdint_prompts(&mut self) -> i32 {
+    fn kbdint_prompts(&mut self) -> Result<u32, Failed> {
         let w = self.w();
         let rounds = w.calls.iter().filter(|c| *c == "auth_kbdint").count();
-        i32::from(rounds == 1)
+        Ok(u32::from(rounds == 1))
     }
-    fn kbdint_answer(&mut self, _: u32, answer: &[u8]) -> i32 {
+    fn kbdint_answer(&mut self, _: u32, answer: &[u8]) -> Result<(), Failed> {
         let mut w = self.w();
         w.call("kbdint_answer", &[answer]);
-        if w.answer_refused { -1 } else { 0 }
+        if w.answer_refused {
+            Err(Failed)
+        } else {
+            Ok(())
+        }
     }
     fn auth_password(&mut self, password: &[u8]) -> Auth {
         let mut w = self.w();
@@ -375,9 +378,9 @@ impl Session for FakeSession {
     fn disconnect(&mut self) {
         self.w().call("disconnect", &[]);
     }
-    fn scp_new(&mut self, write: bool, path: &[u8]) -> bool {
-        self.scp = Some((write, path.to_vec(), 0));
-        true
+    fn scp_new(&mut self, way: ScpWay, path: &[u8]) -> Result<(), Failed> {
+        self.scp = Some((way, path.to_vec(), 0));
+        Ok(())
     }
     fn has_scp(&self) -> bool {
         self.scp.is_some()
@@ -446,9 +449,9 @@ impl Session for FakeSession {
     fn scp_free(&mut self) {
         self.scp = None;
     }
-    fn sftp_new(&mut self) -> bool {
+    fn sftp_new(&mut self) -> Result<(), Failed> {
         self.sftp = true;
-        true
+        Ok(())
     }
     fn has_sftp(&self) -> bool {
         self.sftp
@@ -456,14 +459,11 @@ impl Session for FakeSession {
     fn sftp_init(&mut self) -> Rc {
         Rc::Ok
     }
-    fn sftp_error(&mut self) -> u32 {
-        self.error
-    }
     fn canonicalize(&mut self, path: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
         assert_eq!(path, b".");
         Ok(Some(HOME.to_vec()))
     }
-    fn opendir(&mut self, path: &[u8]) -> bool {
+    fn opendir(&mut self, path: &[u8]) -> Result<(), SftpStatus> {
         let w = self.w();
         let mut entries = Vec::new();
         for (p, bytes) in &w.files {
@@ -475,36 +475,34 @@ impl Session for FakeSession {
             if let Some(name) = p.strip_prefix(path) {
                 let mut entry = Self::attrs(name, target.len(), true);
                 if w.link_without_flag {
-                    entry.flags = Attrs::SIZE;
+                    entry.permissions = None;
                 }
                 entries.push(entry);
             }
         }
         drop(w);
         self.dir = Some(entries);
-        true
+        Ok(())
     }
-    fn readdir(&mut self) -> Result<Option<Attrs>, OutOfMemory> {
+    fn readdir(&mut self) -> Result<Option<Attrs>, AttrsError> {
         let dir = self.dir.as_mut().unwrap();
         Ok((!dir.is_empty()).then(|| dir.remove(0)))
-    }
-    fn dir_eof(&mut self) -> bool {
-        self.dir.as_ref().is_some_and(Vec::is_empty)
     }
     fn closedir(&mut self) {
         self.dir = None;
     }
-    fn lstat(&mut self, path: &[u8]) -> Result<Option<Attrs>, OutOfMemory> {
+    fn lstat(&mut self, path: &[u8]) -> Result<Attrs, AttrsError> {
         let w = self.w();
-        Ok(w.links
+        w.links
             .iter()
             .find(|(p, _)| p == path)
             .map(|(_, target)| Attrs {
-                flags: Attrs::PERMISSIONS,
-                permissions: 0o120_777,
+                size: None,
+                permissions: Some(0o120_777),
                 ..Self::attrs(b"", target.len(), true)
             })
-            .map(|a| Attrs { name: None, ..a }))
+            .map(|a| Attrs { name: None, ..a })
+            .ok_or(NO_ATTRS)
     }
     fn readlink(&mut self, path: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
         let w = self.w();
@@ -513,92 +511,78 @@ impl Session for FakeSession {
             .find(|(p, _)| p == path)
             .map(|(_, t)| t.clone()))
     }
-    fn stat(&mut self, path: &[u8]) -> Result<Option<Attrs>, OutOfMemory> {
+    fn stat(&mut self, path: &[u8]) -> Result<Attrs, AttrsError> {
         let w = self.w();
-        Ok(w.file(path)
-            .map(|at| Self::attrs(path, w.files[at].1.len(), false)))
+        w.file(path)
+            .map(|at| Self::attrs(path, w.files[at].1.len(), false))
+            .ok_or(NO_ATTRS)
     }
-    fn stat_to_change(&mut self, path: &[u8]) -> bool {
-        let found = self.stat(path).unwrap();
-        self.kept = found;
-        if self.kept.is_none() {
-            self.error = SSH_FX_NO_SUCH_FILE;
+    fn stat_to_change(&mut self, path: &[u8]) -> Result<(), SftpStatus> {
+        self.kept = self.stat(path).ok();
+        match self.kept {
+            Some(_) => Ok(()),
+            None => Err(SftpStatus::NoSuchFile),
         }
-        self.kept.is_some()
     }
-    fn setstat_kept(&mut self, path: &[u8], change: AttrChange) -> Rc {
+    fn setstat_kept(&mut self, path: &[u8], change: AttrChange) -> Result<(), NotDone> {
         let said = format!("{change:?}");
         self.w().call("setstat", &[path, said.as_bytes()]);
-        Rc::Ok
+        Ok(())
     }
-    fn symlink(&mut self, target: &[u8], dest: &[u8]) -> Rc {
+    fn symlink(&mut self, target: &[u8], dest: &[u8]) -> Result<(), NotDone> {
         self.w().call("symlink", &[target, dest]);
-        Rc::Ok
+        Ok(())
     }
-    fn mkdir(&mut self, path: &[u8], _: u32) -> Rc {
+    fn mkdir(&mut self, path: &[u8], _: u32) -> Result<(), NotDone> {
         let mut w = self.w();
         w.call("mkdir", &[path]);
-        if let Some(code) = w.mkdir_code {
-            drop(w);
-            self.error = code;
-            return Rc::Error;
+        match w.mkdir_code {
+            Some(code) => Err(NotDone::Failed(SftpStatus::from_number(code))),
+            None => Ok(()),
         }
-        Rc::Ok
     }
-    fn rename(&mut self, from: &[u8], to: &[u8]) -> Rc {
+    fn rename(&mut self, from: &[u8], to: &[u8]) -> Result<(), NotDone> {
         let mut w = self.w();
         if w.rename_waits > 0 {
             w.rename_waits -= 1;
-            return Rc::Again;
+            return Err(NotDone::Again);
         }
         w.call("rename", &[from, to]);
         match w.file(from) {
             Some(at) => {
                 w.files[at].0 = to.to_vec();
-                Rc::Ok
+                Ok(())
             }
-            None => {
-                drop(w);
-                self.missing()
-            }
+            None => missing(),
         }
     }
-    fn rmdir(&mut self, path: &[u8]) -> Rc {
+    fn rmdir(&mut self, path: &[u8]) -> Result<(), NotDone> {
         self.w().call("rmdir", &[path]);
-        Rc::Ok
+        Ok(())
     }
-    fn unlink(&mut self, path: &[u8]) -> Rc {
+    fn unlink(&mut self, path: &[u8]) -> Result<(), NotDone> {
         let mut w = self.w();
         w.call("unlink", &[path]);
         match w.file(path) {
             Some(at) => {
                 w.files.remove(at);
-                Rc::Ok
+                Ok(())
             }
-            None => {
-                drop(w);
-                self.missing()
-            }
+            None => missing(),
         }
     }
-    fn open(&mut self, path: &[u8], mode: OpenMode, _: u32) -> bool {
+    fn open(&mut self, path: &[u8], mode: OpenMode, _: u32) -> Result<(), SftpStatus> {
         let mut w = self.w();
         w.call("open", &[path]);
         if mode != OpenMode::Read && w.refuses_writes {
-            drop(w);
-            self.error = SSH_FX_NO_SUCH_FILE;
-            return false;
+            return Err(SftpStatus::NoSuchFile);
         }
         if mode != OpenMode::Read && w.refused_opens > 0 {
             w.refused_opens -= 1;
-            drop(w);
-            self.error = SSH_FX_NO_SUCH_FILE;
-            return false;
+            return Err(SftpStatus::NoSuchFile);
         }
         if let Some(code) = w.open_code.filter(|_| mode != OpenMode::Read) {
-            drop(w);
-            self.error = code;
-            return false;
+            return Err(SftpStatus::from_number(code));
         }
         if mode != OpenMode::Read {
             w.call("open mode", &[format!("{mode:?}").as_bytes()]);
@@ -609,11 +593,7 @@ impl Session for FakeSession {
                 at
             }
             (Some(at), _) => at,
-            (None, OpenMode::Read) => {
-                drop(w);
-                self.error = SSH_FX_NO_SUCH_FILE;
-                return false;
-            }
+            (None, OpenMode::Read) => return Err(SftpStatus::NoSuchFile),
             (None, _) => {
                 w.files.push((path.to_vec(), Vec::new()));
                 w.files.len() - 1
@@ -626,7 +606,7 @@ impl Session for FakeSession {
         };
         drop(w);
         self.file = Some(Open { at, pos });
-        true
+        Ok(())
     }
     fn has_file(&self) -> bool {
         self.file.is_some()
@@ -634,28 +614,28 @@ impl Session for FakeSession {
     fn close_file(&mut self) {
         self.file = None;
     }
-    fn seek(&mut self, offset: u64) -> Rc {
+    fn seek(&mut self, offset: u64) -> Result<(), SftpStatus> {
         self.w().call("seek", &[offset.to_string().as_bytes()]);
         self.file.as_mut().unwrap().pos = offset as usize;
-        Rc::Ok
+        Ok(())
     }
-    fn fstat(&mut self) -> Result<Option<Attrs>, OutOfMemory> {
+    fn fstat(&mut self) -> Result<Attrs, AttrsError> {
         let at = self.file.as_ref().unwrap().at;
         let w = self.w();
         let mut attrs = Self::attrs(&w.files[at].0, w.files[at].1.len(), false);
         if let Some(size) = w.stated_size {
-            attrs.size = size;
+            attrs.size = Some(size);
         }
         if w.no_size_flag {
-            attrs.flags = Attrs::PERMISSIONS;
+            attrs.size = None;
         }
-        Ok(Some(attrs))
+        Ok(attrs)
     }
     fn file_nonblocking(&mut self) {}
-    fn begin_read(&mut self, len: usize) -> Rc {
+    fn begin_read(&mut self, len: usize) -> Result<(), Failed> {
         assert!(self.reading.is_none(), "one read under way at a time");
         self.reading = Some(len);
-        Rc::Ok
+        Ok(())
     }
     fn wait_read(&mut self, buf: &mut [u8]) -> Aio {
         {
@@ -683,9 +663,9 @@ impl Session for FakeSession {
         open.pos += n;
         Aio::Done(n)
     }
-    fn begin_write(&mut self, bytes: &[u8]) -> Rc {
+    fn begin_write(&mut self, bytes: &[u8]) -> Result<(), Failed> {
         if self.w().writes_fail {
-            return Rc::Error;
+            return Err(Failed);
         }
         let open = self.file.as_mut().unwrap();
         let mut w = self.world.lock().unwrap();
@@ -694,7 +674,7 @@ impl Session for FakeSession {
         file.extend_from_slice(bytes);
         open.pos += bytes.len();
         self.writing = Some(bytes.len());
-        Rc::Ok
+        Ok(())
     }
     fn wait_write(&mut self) -> Aio {
         Aio::Done(self.writing.take().expect("a write begun"))
@@ -963,7 +943,7 @@ fn the_password_logs_in_when_the_key_may_not() {
     let only_password = |pass: &'static str| {
         let url = format!("sftp://u:{pass}@127.0.0.1:PORT/~/f");
         run(&[("/home/u/f", "x")], &url, |o| {
-            o.ssh.make_mut().unwrap().auth_types = SshAuthTypes(SshAuthTypes::PASSWORD);
+            o.ssh.make_mut().unwrap().auth_types = SshAuthTypes::PASSWORD;
         })
     };
     let (result, body, said, calls) = only_password("secret");
@@ -1709,7 +1689,7 @@ fn a_refused_key_falls_back_to_the_password() {
 #[test]
 fn sftp_codes_are_c_s_failures() {
     use super::sftp_failure;
-    assert_eq!(sftp_failure(0), Ok(()));
+    assert_eq!(sftp_failure(SftpStatus::Unsaid), Ok(()));
     for (code, kind) in [
         (2, ErrorKind::RemoteFileNotFound),
         (10, ErrorKind::RemoteFileNotFound),
@@ -1718,7 +1698,11 @@ fn sftp_codes_are_c_s_failures() {
         (11, ErrorKind::RemoteFileExists),
         (4, ErrorKind::Ssh),
     ] {
-        assert_eq!(sftp_failure(code), Err(kind), "{code}");
+        assert_eq!(
+            sftp_failure(SftpStatus::from_number(code)),
+            Err(kind),
+            "{code}"
+        );
     }
 }
 
@@ -1963,7 +1947,7 @@ fn logins_that_wait_go_on_where_they_were() {
     let (result, _, said, _) = logged_in(
         |w| {
             w.key_refused = true;
-            w.methods |= Methods::GSSAPI_MIC;
+            w.methods = w.methods | Methods::GSSAPI_MIC;
             w.gssapi_ok = true;
             w.waiting = vec!["auth_gssapi"];
         },
@@ -1974,7 +1958,7 @@ fn logins_that_wait_go_on_where_they_were() {
     let (result, _, said, _) = logged_in(
         |w| {
             w.key_refused = true;
-            w.methods |= Methods::INTERACTIVE;
+            w.methods = w.methods | Methods::INTERACTIVE;
             w.asks = true;
             w.waiting = vec!["auth_kbdint", "auth_kbdint"];
         },
@@ -2031,7 +2015,7 @@ fn the_interactive_login_takes_its_rounds() {
     assert_eq!(calls.iter().filter(|c| *c == "auth_kbdint").count(), 3);
     let w = world_with(&[("/home/u/f", "x")], |w| {
         w.key_refused = true;
-        w.methods |= Methods::INTERACTIVE;
+        w.methods = w.methods | Methods::INTERACTIVE;
         w.asks = true;
         w.answer_refused = true;
     });
@@ -2059,8 +2043,7 @@ fn the_key_files_are_said() {
         "{said}"
     );
     let (_, _, said, _) = run_in(&w, "sftp://u:secret@127.0.0.1:PORT/~/f", |o| {
-        o.ssh.make_mut().unwrap().auth_types =
-            crate::options::SshAuthTypes(crate::options::SshAuthTypes::PASSWORD);
+        o.ssh.make_mut().unwrap().auth_types = crate::options::SshAuthTypes::PASSWORD;
     });
     assert!(!said.contains("SSH: public key file"), "{said}");
 }
@@ -2254,9 +2237,8 @@ fn an_empty_private_key_is_none() {
     let (result, _, said, calls) = run_in(&w, "sftp://u:secret@127.0.0.1:PORT/~/f", |o| {
         let ssh = o.ssh.make_mut().unwrap();
         ssh.private_key = Some(Vec::new());
-        ssh.auth_types = crate::options::SshAuthTypes(
-            crate::options::SshAuthTypes::PUBLICKEY | crate::options::SshAuthTypes::PASSWORD,
-        );
+        ssh.auth_types =
+            crate::options::SshAuthTypes::PUBLICKEY | crate::options::SshAuthTypes::PASSWORD;
     });
     assert_eq!(result, Ok(()), "{said}");
     assert!(

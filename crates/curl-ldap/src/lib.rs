@@ -18,7 +18,8 @@ use std::sync::OnceLock;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::ldap::{
-    Attribute, Code, Kind, Ldap, Mech, Message, MsgId, NoCopy, Search, Session, UrlError, Wire,
+    Attribute, Code, Kind, Ldap, Mech, Message, MsgId, Refused, Scope, Search, Session,
+    SessionFailed, UrlError, Version, Wire,
 };
 
 /// libldap, as C's build uses it.
@@ -175,7 +176,7 @@ impl Ldap for Libldap {
             };
             Ok(Search {
                 dn,
-                scope: d.lud_scope,
+                scope: Scope(d.lud_scope),
                 filter,
                 attrs,
             })
@@ -187,11 +188,11 @@ impl Ldap for Libldap {
 
     fn session(
         &self,
-        fd: i32,
+        socket: Option<BorrowedFd<'_>>,
         scheme: &[u8],
         url: &[u8],
-    ) -> Result<Result<Box<dyn Session>, Code>, NoCopy> {
-        let nomem = Ok(Err(Code::NO_MEMORY));
+    ) -> Result<Box<dyn Session>, SessionFailed> {
+        let nomem = Err(SessionFailed::Library(Code::NO_MEMORY));
         let (Ok(Some(scheme)), Ok(Some(url))) = (terminated(scheme), terminated(url)) else {
             return nomem;
         };
@@ -201,12 +202,12 @@ impl Ldap for Libldap {
             Ok(slot) => slot,
             Err(OutOfMemory) => return nomem,
         };
-        // SAFETY: the connection's socket, open while its connection is,
-        // which outlives the call.
-        let socket = unsafe { BorrowedFd::borrow_raw(fd) };
+        let socket = socket.ok_or(SessionFailed::NoCopy)?;
         // A copy of its own, close-on-exec (`F_DUPFD_CLOEXEC`): libldap
         // closes it as the session is freed.
-        let copy: OwnedFd = socket.try_clone_to_owned().map_err(|_| NoCopy)?;
+        let copy: OwnedFd = socket
+            .try_clone_to_owned()
+            .map_err(|_| SessionFailed::NoCopy)?;
         // SAFETY: a C string.
         let proto = unsafe { sys::ldap_pvt_url_scheme2proto(scheme.as_ptr().cast::<c_char>()) };
         let raw = copy.into_raw_fd();
@@ -218,7 +219,7 @@ impl Ldap for Libldap {
             // SAFETY: the copy, not taken by a session it did not make:
             // ours to close, once.
             drop(unsafe { OwnedFd::from_raw_fd(raw) });
-            return Ok(Err(Code(rc)));
+            return Err(SessionFailed::Library(Code(rc)));
         }
         let made = Libsession {
             ld,
@@ -230,7 +231,7 @@ impl Ldap for Libldap {
         match curl_alloc::try_box(made) {
             Ok(b) => {
                 let b: Box<dyn Session> = b;
-                Ok(Ok(b))
+                Ok(b)
             }
             Err(OutOfMemory) => nomem,
         }
@@ -347,8 +348,8 @@ fn c_list(zs: &[Vec<u8>]) -> Result<Vec<*mut c_char>, OutOfMemory> {
 }
 
 impl Session for Libsession {
-    fn set_version(&mut self, version: i32) {
-        let version: c_int = version;
+    fn set_version(&mut self, version: Version) {
+        let version: c_int = version.number();
         // SAFETY: a live session, and the option's int.
         unsafe {
             sys::ldap_set_option(
@@ -364,10 +365,8 @@ impl Session for Libsession {
         unsafe { sys::ldap_set_option(self.ld, sys::LDAP_OPT_REFERRALS, ptr::null()) };
     }
 
-    fn set_max_incoming(&mut self, max: usize) -> bool {
-        let Some(sb) = self.sockbuf() else {
-            return false;
-        };
+    fn set_max_incoming(&mut self, max: usize) -> Result<(), Refused> {
+        let sb = self.sockbuf().ok_or(Refused)?;
         let mut max = sys::ber_len_t::try_from(max).expect("a length in memory");
         // SAFETY: the session's buffer, and the option's length.
         let rc = unsafe {
@@ -377,13 +376,11 @@ impl Session for Libsession {
                 (&raw mut max).cast::<c_void>(),
             )
         };
-        rc != 0
+        if rc != 0 { Ok(()) } else { Err(Refused) }
     }
 
-    fn use_wire(&mut self) -> bool {
-        let Some(sb) = self.sockbuf() else {
-            return false;
-        };
+    fn use_wire(&mut self) -> Result<(), Refused> {
+        let sb = self.sockbuf().ok_or(Refused)?;
         let slot: *const Slot = &*self.slot;
         // SAFETY: the session's buffer; the layer's functions are a
         // static's, and its private pointer is the slot, which the
@@ -396,10 +393,11 @@ impl Session for Libsession {
                 slot.cast_mut().cast::<c_void>(),
             )
         };
-        if rc == 0 {
-            self.wired = true;
+        if rc != 0 {
+            return Err(Refused);
         }
-        rc == 0
+        self.wired = true;
+        Ok(())
     }
 
     fn uses_wire(&self) -> bool {
@@ -487,7 +485,7 @@ impl Session for Libsession {
                     ld,
                     dn.as_ref()
                         .map_or(ptr::null(), |d| d.as_ptr().cast::<c_char>()),
-                    search.scope,
+                    search.scope.0,
                     filter
                         .as_ref()
                         .map_or(ptr::null(), |f| f.as_ptr().cast::<c_char>()),

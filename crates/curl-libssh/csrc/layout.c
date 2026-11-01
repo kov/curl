@@ -2,9 +2,9 @@
  * as the headers have them, in the order the crate's tests compare them
  * with sys.rs's. */
 
+#include <fcntl.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <fcntl.h>
 #include <sys/types.h>
 #include <libssh/libssh.h>
 #include <libssh/sftp.h>
@@ -39,7 +39,7 @@ const int64_t curl_libssh_values[] = {
   ATTR(extended_type), ATTR(extended_data),
   (int64_t)sizeof(struct ssh_knownhosts_entry),
   KH(hostname), KH(unparsed), KH(publickey), KH(comment),
-  (int64_t)sizeof(mode_t), F_DUPFD_CLOEXEC,
+  (int64_t)sizeof(mode_t), SSH_FILEXFER_ATTR_SIZE,
 };
 
 _Static_assert(sizeof(curl_libssh_values) / sizeof(curl_libssh_values[0])

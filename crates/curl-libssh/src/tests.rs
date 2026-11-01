@@ -1,7 +1,7 @@
 use super::*;
 use std::io::{Read as _, Write as _};
 use std::mem::{offset_of, size_of};
-use std::os::fd::{AsRawFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, Stdio};
 
@@ -88,7 +88,7 @@ fn the_declarations_are_the_headers() {
         offset_of!(K, publickey) as i64,
         offset_of!(K, comment) as i64,
         size_of::<mode_t>() as i64,
-        F_DUPFD_CLOEXEC.into(),
+        SSH_FILEXFER_ATTR_SIZE.into(),
     ];
     // SAFETY: a table of `LAYOUT_LEN` numbers C defines, read only.
     let theirs = unsafe { curl_libssh_values };
@@ -149,8 +149,8 @@ fn a_failed_connect_leaves_the_connection_s_socket() {
     theirs.shutdown(std::net::Shutdown::Write).unwrap();
     let mut session = LIBSSH.session().expect("a session");
     session.set_host(b"localhost").unwrap();
-    session.set_socket(ours.as_raw_fd()).unwrap();
-    session.set_blocking(true);
+    session.set_socket(Some(ours.as_fd())).unwrap();
+    session.set_blocking(Blocking::Yes);
     assert_eq!(session.connect(), Rc::Error);
     let said = session.error().unwrap();
     assert!(said.len() > 1 && !said.contains(&0), "the failure is said");
@@ -162,12 +162,19 @@ fn a_failed_connect_leaves_the_connection_s_socket() {
     read_to_end(&mut theirs);
 }
 
+/// A socket with no descriptor is one libssh cannot be handed.
+#[test]
+fn a_socket_without_a_descriptor_is_refused() {
+    let mut session = LIBSSH.session().expect("a session");
+    assert_eq!(session.set_socket(None), Err(Refused));
+}
+
 /// A session never connected closes its copy as it is freed.
 #[test]
 fn a_session_never_connected_closes_its_copy() {
     let (ours, mut theirs) = UnixStream::pair().unwrap();
     let mut session = LIBSSH.session().expect("a session");
-    session.set_socket(ours.as_raw_fd()).unwrap();
+    session.set_socket(Some(ours.as_fd())).unwrap();
     drop(session);
     drop(ours);
     read_to_end(&mut theirs);
@@ -220,11 +227,11 @@ impl Sshd {
     fn session(&self, ours: &UnixStream) -> Box<dyn Session> {
         let mut session = LIBSSH.session().expect("a session");
         session.set_host(b"localhost").unwrap();
-        session.set_socket(ours.as_raw_fd()).unwrap();
+        session.set_socket(Some(ours.as_fd())).unwrap();
         session
             .set_user(std::env::var("USER").unwrap().as_bytes())
             .unwrap();
-        session.set_blocking(true);
+        session.set_blocking(Blocking::Yes);
         assert_eq!(session.connect(), Rc::Ok);
         assert_eq!(session.auth_none(), Auth::Denied);
         assert!(session.auth_list().has(Methods::PUBLICKEY));
@@ -266,7 +273,7 @@ fn a_session_that_said_goodbye_closes_its_copy() {
     let key = session.host_key().expect("the server's key");
     assert_eq!(key.kind, KeyType::Ed25519);
     assert!(key.sha256.is_some() && key.md5.is_some() && key.base64.is_some());
-    assert!(session.sftp_new());
+    assert_eq!(session.sftp_new(), Ok(()));
     assert_eq!(session.sftp_init(), Rc::Ok);
     let home = session.canonicalize(b".").unwrap().expect("a home");
     assert!(home.starts_with(b"/"));
@@ -296,10 +303,6 @@ fn libssh_s_numbers_are_named() {
     assert_eq!(rc(sys::SSH_OK), Rc::Ok);
     assert_eq!(rc(sys::SSH_AGAIN), Rc::Again);
     assert_eq!(rc(sys::SSH_ERROR), Rc::Error);
-    assert_eq!(zero_ok(0), Rc::Ok);
-    assert_eq!(zero_ok(sys::SSH_AGAIN), Rc::Again);
-    assert_eq!(zero_ok(-1), Rc::Error);
-    assert_eq!(zero_ok(1), Rc::Error);
     let auths = [
         (sys::SSH_AUTH_SUCCESS, Auth::Success),
         (sys::SSH_AUTH_DENIED, Auth::Denied),
@@ -362,10 +365,10 @@ impl Sshd {
     fn connected(&self, ours: &UnixStream, known: &std::path::Path) -> Box<dyn Session> {
         let mut session = LIBSSH.session().expect("a session");
         session.set_host(b"localhost").unwrap();
-        session.set_socket(ours.as_raw_fd()).unwrap();
+        session.set_socket(Some(ours.as_fd())).unwrap();
         let known = known.to_str().unwrap().as_bytes();
         session.set_known_hosts(known).unwrap();
-        session.set_blocking(true);
+        session.set_blocking(Blocking::Yes);
         assert_eq!(session.connect(), Rc::Ok);
         session
     }
@@ -454,7 +457,7 @@ fn bytes(path: &std::path::Path) -> &[u8] {
 fn read_all(session: &mut dyn Session, chunk: usize) -> Vec<u8> {
     let mut got = Vec::new();
     loop {
-        assert_eq!(session.begin_read(chunk), Rc::Ok);
+        assert_eq!(session.begin_read(chunk), Ok(()));
         let mut buf = vec![0u8; chunk];
         match session.wait_read(&mut buf) {
             Aio::Done(0) => return got,
@@ -466,7 +469,7 @@ fn read_all(session: &mut dyn Session, chunk: usize) -> Vec<u8> {
 
 /// Write `data` to the open file.
 fn write_all(session: &mut dyn Session, data: &[u8]) {
-    assert_eq!(session.begin_write(data), Rc::Ok);
+    assert_eq!(session.begin_write(data), Ok(()));
     assert_eq!(session.wait_write(), Aio::Done(data.len()));
 }
 
@@ -480,98 +483,102 @@ fn sftp_files_and_directories_are_the_server_s() {
     let (sshd, ours) = Sshd::serving();
     let mut session = sshd.session(&ours);
     assert!(!session.has_sftp());
-    assert!(session.sftp_new());
+    assert_eq!(session.sftp_new(), Ok(()));
     assert!(session.has_sftp());
     assert_eq!(session.sftp_init(), Rc::Ok);
     let d = sshd.dir.join("files");
     std::fs::create_dir(&d).unwrap();
     let f = d.join("f");
     assert!(!session.has_file());
-    assert!(session.open(bytes(&f), OpenMode::Truncate, 0o640));
+    assert_eq!(session.open(bytes(&f), OpenMode::Truncate, 0o640), Ok(()));
     assert!(session.has_file());
     write_all(&mut *session, b"hello");
     session.close_file();
     assert!(!session.has_file());
-    assert!(session.open(bytes(&f), OpenMode::Append, 0o640));
+    assert_eq!(session.open(bytes(&f), OpenMode::Append, 0o640), Ok(()));
     write_all(&mut *session, b" there");
     session.close_file();
-    assert!(session.open(bytes(&f), OpenMode::Write, 0));
-    assert_eq!(session.seek(1), Rc::Ok);
+    assert_eq!(session.open(bytes(&f), OpenMode::Write, 0), Ok(()));
+    assert_eq!(session.seek(1), Ok(()));
     write_all(&mut *session, b"E");
-    let open = session.fstat().unwrap().expect("the open file's");
-    assert_eq!(open.size, 11);
+    let open = session.fstat().unwrap();
+    assert_eq!(open.size, Some(11));
     session.close_file();
     assert_eq!(std::fs::read(&f).unwrap(), b"hEllo there");
-    assert!(session.open(bytes(&f), OpenMode::Read, 0));
+    assert_eq!(session.open(bytes(&f), OpenMode::Read, 0), Ok(()));
     assert_eq!(read_all(&mut *session, 4), b"hEllo there");
     session.close_file();
-    assert!(session.open(bytes(&f), OpenMode::Read, 0));
-    assert_eq!(session.seek(6), Rc::Ok);
+    assert_eq!(session.open(bytes(&f), OpenMode::Read, 0), Ok(()));
+    assert_eq!(session.seek(6), Ok(()));
     assert_eq!(read_all(&mut *session, 64), b"there");
     session.close_file();
 
-    let stated = session.stat(bytes(&f)).unwrap().expect("the file's");
-    assert_eq!(stated.size, 11);
-    assert_ne!(stated.flags & Attrs::SIZE, 0);
-    assert_ne!(stated.flags & Attrs::PERMISSIONS, 0);
-    assert_eq!(stated.permissions, std::fs::metadata(&f).unwrap().mode());
-    assert!(session.stat_to_change(bytes(&f)));
+    let stated = session.stat(bytes(&f)).unwrap();
+    assert_eq!(stated.size, Some(11));
+    assert_eq!(
+        stated.permissions,
+        Some(std::fs::metadata(&f).unwrap().mode())
+    );
+    assert_eq!(session.stat_to_change(bytes(&f)), Ok(()));
     assert_eq!(
         session.setstat_kept(bytes(&f), AttrChange::Permissions(0o600)),
-        Rc::Ok
+        Ok(())
     );
     let mode = std::fs::metadata(&f).unwrap().permissions().mode();
     assert_eq!(mode & 0o7777, 0o600);
-    assert!(session.stat_to_change(bytes(&f)));
+    assert_eq!(session.stat_to_change(bytes(&f)), Ok(()));
     assert_eq!(
         session.setstat_kept(bytes(&f), AttrChange::Mtime(1_000_000)),
-        Rc::Ok
+        Ok(())
     );
     assert_eq!(std::fs::metadata(&f).unwrap().mtime(), 1_000_000);
 
     let l = d.join("l");
-    assert_eq!(session.symlink(bytes(&f), bytes(&l)), Rc::Ok);
+    assert_eq!(session.symlink(bytes(&f), bytes(&l)), Ok(()));
     assert_eq!(std::fs::read_link(&l).unwrap(), f);
     assert_eq!(
         session.readlink(bytes(&l)).unwrap().as_deref(),
         Some(bytes(&f))
     );
-    let link = session.lstat(bytes(&l)).unwrap().expect("the link's");
-    assert_eq!(link.permissions & 0o170000, 0o120000);
+    let link = session.lstat(bytes(&l)).unwrap();
+    assert_eq!(link.permissions.unwrap() & 0o170000, 0o120000);
     let m = d.join("m");
-    assert_eq!(session.rename(bytes(&l), bytes(&m)), Rc::Ok);
+    assert_eq!(session.rename(bytes(&l), bytes(&m)), Ok(()));
     assert!(std::fs::symlink_metadata(&m).is_ok() && std::fs::symlink_metadata(&l).is_err());
     let sub = d.join("sub");
-    assert_eq!(session.mkdir(bytes(&sub), 0o750), Rc::Ok);
+    assert_eq!(session.mkdir(bytes(&sub), 0o750), Ok(()));
     assert!(sub.is_dir());
 
-    assert!(session.opendir(bytes(&d)));
-    assert!(!session.dir_eof());
+    assert_eq!(session.opendir(bytes(&d)), Ok(()));
     let mut names = Vec::new();
     while let Some(entry) = session.readdir().unwrap() {
         let name = entry.name.unwrap();
         if name == b"f" {
             let long = String::from_utf8(entry.longname.unwrap()).unwrap();
             assert!(long.starts_with("-rw-------"), "{long}");
-            assert_eq!(entry.size, 11);
+            assert_eq!(entry.size, Some(11));
         }
         names.push(String::from_utf8(name).unwrap());
     }
-    assert!(session.dir_eof());
     session.closedir();
     names.sort();
     assert_eq!(names, [".", "..", "f", "m", "sub"]);
 
-    assert_eq!(session.rmdir(bytes(&sub)), Rc::Ok);
-    assert_eq!(session.unlink(bytes(&m)), Rc::Ok);
+    assert_eq!(session.rmdir(bytes(&sub)), Ok(()));
+    assert_eq!(session.unlink(bytes(&m)), Ok(()));
     assert!(!sub.exists() && std::fs::symlink_metadata(&m).is_err());
-    assert_eq!(session.stat(bytes(&m)).unwrap(), None);
-    assert_eq!(session.sftp_error(), 2, "SSH_FX_NO_SUCH_FILE");
-    assert_eq!(session.unlink(bytes(&m)), Rc::Error);
+    assert_eq!(
+        session.stat(bytes(&m)),
+        Err(AttrsError::Status(SftpStatus::NoSuchFile))
+    );
+    assert_eq!(
+        session.unlink(bytes(&m)),
+        Err(NotDone::Failed(SftpStatus::NoSuchFile))
+    );
     assert_eq!(session.readlink(bytes(&m)).unwrap(), None);
-    assert!(!session.opendir(bytes(&m)));
-    assert!(!session.open(b"a\0b", OpenMode::Read, 0));
-    assert_eq!(session.rename(b"a\0b", bytes(&f)), Rc::Error);
+    assert_eq!(session.opendir(bytes(&m)), Err(SftpStatus::NoSuchFile));
+    assert!(session.open(b"a\0b", OpenMode::Read, 0).is_err());
+    assert!(session.rename(b"a\0b", bytes(&f)).is_err());
 
     session.sftp_free();
     assert!(!session.has_sftp());
@@ -590,7 +597,7 @@ fn scp_files_are_pushed_and_pulled() {
     let mut session = sshd.session(&ours);
     let d = sshd.dir.join("scp");
     std::fs::create_dir(&d).unwrap();
-    assert!(session.scp_new(true, bytes(&d)));
+    assert_eq!(session.scp_new(ScpWay::Write, bytes(&d)), Ok(()));
     assert!(session.has_scp());
     assert_eq!(session.scp_init(), Rc::Ok);
     assert_eq!(session.scp_push_file(b"up", 7, 0o640), Rc::Ok);
@@ -605,7 +612,10 @@ fn scp_files_are_pushed_and_pulled() {
     assert_eq!(mode & 0o777, 0o640);
 
     std::fs::write(d.join("down"), b"from the server").unwrap();
-    assert!(session.scp_new(false, bytes(&d.join("down"))));
+    assert_eq!(
+        session.scp_new(ScpWay::Read, bytes(&d.join("down"))),
+        Ok(())
+    );
     assert_eq!(session.scp_init(), Rc::Ok);
     assert_eq!(session.scp_pull_request(), ScpRequest::NewFile);
     assert_eq!(session.scp_size(), 15);

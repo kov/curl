@@ -6,6 +6,8 @@
 //! goes on the wire, and when a call waits, is the library's as in C.
 
 use std::fmt;
+use std::ops::BitOr;
+use std::os::fd::BorrowedFd;
 
 use curl_alloc::OutOfMemory;
 
@@ -56,17 +58,113 @@ impl Auth {
 
 /// The ways the server lets a user log in (`SSH_AUTH_METHOD_*`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Methods(pub u32);
+pub struct Methods(u32);
 
 impl Methods {
-    pub const PASSWORD: u32 = 0x0002;
-    pub const PUBLICKEY: u32 = 0x0004;
-    pub const INTERACTIVE: u32 = 0x0010;
-    pub const GSSAPI_MIC: u32 = 0x0020;
+    pub const NONE: Methods = Methods(0);
+    pub const PASSWORD: Methods = Methods(0x0002);
+    pub const PUBLICKEY: Methods = Methods(0x0004);
+    pub const INTERACTIVE: Methods = Methods(0x0010);
+    pub const GSSAPI_MIC: Methods = Methods(0x0020);
+
+    /// The ways the library's bits name.
+    pub const fn from_bits(bits: u32) -> Methods {
+        Methods(bits)
+    }
 
     /// Whether it has `method`.
-    pub fn has(self, method: u32) -> bool {
-        self.0 & method != 0
+    pub fn has(self, method: Methods) -> bool {
+        self.0 & method.0 != 0
+    }
+}
+
+impl BitOr for Methods {
+    type Output = Methods;
+
+    fn bitor(self, other: Methods) -> Methods {
+        Methods(self.0 | other.0)
+    }
+}
+
+/// Whether a session's calls wait for the socket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blocking {
+    Yes,
+    No,
+}
+
+/// Which way an SCP channel carries its file (`SSH_SCP_WRITE`,
+/// `SSH_SCP_READ`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScpWay {
+    Write,
+    Read,
+}
+
+/// What the server says of a failed SFTP call (`SSH_FX_*`, from
+/// `sftp_get_error`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SftpStatus {
+    /// `SSH_FX_OK`: the call failed with no word from the server on it.
+    Unsaid,
+    NoSuchFile,
+    PermissionDenied,
+    Failure,
+    NoSuchPath,
+    FileAlreadyExists,
+    WriteProtect,
+    /// Any other code.
+    Other(u32),
+}
+
+impl SftpStatus {
+    /// The status the library's number names.
+    pub fn from_number(number: u32) -> SftpStatus {
+        match number {
+            0 => SftpStatus::Unsaid,
+            2 => SftpStatus::NoSuchFile,
+            3 => SftpStatus::PermissionDenied,
+            4 => SftpStatus::Failure,
+            10 => SftpStatus::NoSuchPath,
+            11 => SftpStatus::FileAlreadyExists,
+            12 => SftpStatus::WriteProtect,
+            other => SftpStatus::Other(other),
+        }
+    }
+
+    /// Its number, as C's trace prints it.
+    pub fn number(self) -> u32 {
+        match self {
+            SftpStatus::Unsaid => 0,
+            SftpStatus::NoSuchFile => 2,
+            SftpStatus::PermissionDenied => 3,
+            SftpStatus::Failure => 4,
+            SftpStatus::NoSuchPath => 10,
+            SftpStatus::FileAlreadyExists => 11,
+            SftpStatus::WriteProtect => 12,
+            SftpStatus::Other(other) => other,
+        }
+    }
+}
+
+/// Why an SFTP call that changes something has not done it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotDone {
+    /// It waits on the socket (`SSH_AGAIN`), to be called again.
+    Again,
+    Failed(SftpStatus),
+}
+
+/// Why an SFTP call gave no attributes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttrsError {
+    Status(SftpStatus),
+    OutOfMemory,
+}
+
+impl From<OutOfMemory> for AttrsError {
+    fn from(OutOfMemory: OutOfMemory) -> AttrsError {
+        AttrsError::OutOfMemory
     }
 }
 
@@ -141,16 +239,11 @@ pub struct Attrs {
     pub name: Option<Vec<u8>>,
     /// Its `ls -l` line, as OpenSSH's server makes one.
     pub longname: Option<Vec<u8>>,
-    /// Which of the fields the server gave (`SSH_FILEXFER_ATTR_*`).
-    pub flags: u32,
-    pub size: u64,
-    pub permissions: u32,
+    /// Its size, if the server gave one (`SSH_FILEXFER_ATTR_SIZE`).
+    pub size: Option<u64>,
+    /// Its mode, if the server gave one (`SSH_FILEXFER_ATTR_PERMISSIONS`).
+    pub permissions: Option<u32>,
     pub mtime: u32,
-}
-
-impl Attrs {
-    pub const SIZE: u32 = 0x0000_0001;
-    pub const PERMISSIONS: u32 = 0x0000_0004;
 }
 
 /// A change to a file's attributes, made to what the server last said of
@@ -204,8 +297,9 @@ pub trait Session: fmt::Debug + Send {
     /// (`ssh_options_parse_config` of the default files).
     fn parse_config(&mut self) -> Result<(), Refused>;
     /// The connected socket the session reads and writes, which stays the
-    /// caller's to close.
-    fn set_socket(&mut self, fd: i32) -> Result<(), Refused>;
+    /// caller's to close; a socket with no descriptor is one a library
+    /// over the system's sockets refuses.
+    fn set_socket(&mut self, socket: Option<BorrowedFd<'_>>) -> Result<(), Refused>;
     fn set_user(&mut self, user: &[u8]) -> Result<(), Refused>;
     /// The known-hosts file, as both the user's and the global one.
     fn set_known_hosts(&mut self, file: &[u8]) -> Result<(), Refused>;
@@ -219,7 +313,7 @@ pub trait Session: fmt::Debug + Send {
     fn has_pubkey(&self) -> bool;
 
     /// Whether the session's calls wait for the socket.
-    fn set_blocking(&mut self, blocking: bool);
+    fn set_blocking(&mut self, blocking: Blocking);
     fn poll_flags(&self) -> PollFlags;
     /// The library's words for the session's last failure
     /// (`ssh_get_error`).
@@ -253,10 +347,10 @@ pub trait Session: fmt::Debug + Send {
     fn auth_publickey_auto(&mut self, passphrase: Option<&[u8]>) -> Auth;
     fn auth_gssapi(&mut self) -> Auth;
     fn auth_kbdint(&mut self) -> Auth;
-    fn kbdint_prompts(&mut self) -> i32;
-    /// Answer the keyboard-interactive question `i`: the library's
-    /// number, which is negative for a failure.
-    fn kbdint_answer(&mut self, i: u32, answer: &[u8]) -> i32;
+    /// How many questions the server asks now.
+    fn kbdint_prompts(&mut self) -> Result<u32, Failed>;
+    /// Answer the keyboard-interactive question `i`.
+    fn kbdint_answer(&mut self, i: u32, answer: &[u8]) -> Result<(), Failed>;
     fn auth_password(&mut self, password: &[u8]) -> Auth;
 
     /// Say goodbye to the server (`ssh_disconnect`).
@@ -264,8 +358,8 @@ pub trait Session: fmt::Debug + Send {
 
     // SCP (`ssh_scp_*`).
 
-    /// Open a channel to write `path`, or read it; whether it was made.
-    fn scp_new(&mut self, write: bool, path: &[u8]) -> bool;
+    /// Open a channel to write `path`, or read it.
+    fn scp_new(&mut self, way: ScpWay, path: &[u8]) -> Result<(), Failed>;
     fn has_scp(&self) -> bool;
     fn scp_init(&mut self) -> Rc;
     fn scp_push_file(&mut self, path: &[u8], size: u64, mode: u32) -> Rc;
@@ -280,44 +374,41 @@ pub trait Session: fmt::Debug + Send {
 
     // SFTP (`sftp_*`).
 
-    /// Open the SFTP subsystem; whether it was made.
-    fn sftp_new(&mut self) -> bool;
+    /// Open the SFTP subsystem.
+    fn sftp_new(&mut self) -> Result<(), Failed>;
     fn has_sftp(&self) -> bool;
     fn sftp_init(&mut self) -> Rc;
-    /// The server's status code for the last failure (`SSH_FX_*`).
-    fn sftp_error(&mut self) -> u32;
     fn canonicalize(&mut self, path: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory>;
-    fn opendir(&mut self, path: &[u8]) -> bool;
-    fn readdir(&mut self) -> Result<Option<Attrs>, OutOfMemory>;
-    fn dir_eof(&mut self) -> bool;
+    fn opendir(&mut self, path: &[u8]) -> Result<(), SftpStatus>;
+    /// The next entry of the open directory; none past its last.
+    fn readdir(&mut self) -> Result<Option<Attrs>, AttrsError>;
     fn closedir(&mut self);
-    fn lstat(&mut self, path: &[u8]) -> Result<Option<Attrs>, OutOfMemory>;
+    fn lstat(&mut self, path: &[u8]) -> Result<Attrs, AttrsError>;
     fn readlink(&mut self, path: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory>;
-    fn stat(&mut self, path: &[u8]) -> Result<Option<Attrs>, OutOfMemory>;
-    /// Read `path`'s attributes and keep them to change; whether the
-    /// server answered.
-    fn stat_to_change(&mut self, path: &[u8]) -> bool;
+    fn stat(&mut self, path: &[u8]) -> Result<Attrs, AttrsError>;
+    /// Read `path`'s attributes and keep them to change.
+    fn stat_to_change(&mut self, path: &[u8]) -> Result<(), SftpStatus>;
     /// Change the attributes kept and send them, whole, for `path`.
-    fn setstat_kept(&mut self, path: &[u8], change: AttrChange) -> Rc;
+    fn setstat_kept(&mut self, path: &[u8], change: AttrChange) -> Result<(), NotDone>;
     /// Make `dest` a link to `target`.
-    fn symlink(&mut self, target: &[u8], dest: &[u8]) -> Rc;
-    fn mkdir(&mut self, path: &[u8], mode: u32) -> Rc;
-    fn rename(&mut self, from: &[u8], to: &[u8]) -> Rc;
-    fn rmdir(&mut self, path: &[u8]) -> Rc;
-    fn unlink(&mut self, path: &[u8]) -> Rc;
-    /// Open `path`, closing any file open before; whether it opened.
-    fn open(&mut self, path: &[u8], mode: OpenMode, perms: u32) -> bool;
+    fn symlink(&mut self, target: &[u8], dest: &[u8]) -> Result<(), NotDone>;
+    fn mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), NotDone>;
+    fn rename(&mut self, from: &[u8], to: &[u8]) -> Result<(), NotDone>;
+    fn rmdir(&mut self, path: &[u8]) -> Result<(), NotDone>;
+    fn unlink(&mut self, path: &[u8]) -> Result<(), NotDone>;
+    /// Open `path`, closing any file open before.
+    fn open(&mut self, path: &[u8], mode: OpenMode, perms: u32) -> Result<(), SftpStatus>;
     fn has_file(&self) -> bool;
     fn close_file(&mut self);
-    fn seek(&mut self, offset: u64) -> Rc;
-    fn fstat(&mut self) -> Result<Option<Attrs>, OutOfMemory>;
+    fn seek(&mut self, offset: u64) -> Result<(), SftpStatus>;
+    fn fstat(&mut self) -> Result<Attrs, AttrsError>;
     fn file_nonblocking(&mut self);
     /// Ask for `len` bytes of the file (`sftp_aio_begin_read`).
-    fn begin_read(&mut self, len: usize) -> Rc;
+    fn begin_read(&mut self, len: usize) -> Result<(), Failed>;
     /// The bytes asked for, into `buf`.
     fn wait_read(&mut self, buf: &mut [u8]) -> Aio;
     /// Send `bytes` to be written (`sftp_aio_begin_write`).
-    fn begin_write(&mut self, bytes: &[u8]) -> Rc;
+    fn begin_write(&mut self, bytes: &[u8]) -> Result<(), Failed>;
     fn wait_write(&mut self) -> Aio;
     /// Let go of any read or write under way (`SFTP_AIO_FREE`).
     fn free_aio(&mut self);

@@ -10,11 +10,13 @@ mod sys;
 
 use core::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use core::ptr;
+use std::os::fd::{BorrowedFd, IntoRawFd as _};
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::ssh::{
-    Aio, AttrChange, Attrs, Auth, Failed, HostKey, KeyType, KnownHosts, KnownKey, Methods,
-    OpenMode, PollFlags, Rc, Refused, ScpRequest, Session, Ssh,
+    Aio, AttrChange, Attrs, AttrsError, Auth, Blocking, Failed, HostKey, KeyType, KnownHosts,
+    KnownKey, Methods, NotDone, OpenMode, PollFlags, Rc, Refused, ScpRequest, ScpWay, Session,
+    SftpStatus, Ssh,
 };
 
 /// libssh, as C's build uses it.
@@ -194,9 +196,9 @@ impl Attributes {
             name: unsafe { copied(a.name) }?,
             // SAFETY: as above.
             longname: unsafe { copied(a.longname) }?,
-            flags: a.flags,
-            size: a.size,
-            permissions: a.permissions,
+            size: (a.flags & sys::SSH_FILEXFER_ATTR_SIZE != 0).then_some(a.size),
+            permissions: (a.flags & sys::SSH_FILEXFER_ATTR_PERMISSIONS != 0)
+                .then_some(a.permissions),
             mtime: a.mtime,
         }))
     }
@@ -213,15 +215,6 @@ impl Drop for Attributes {
 fn rc(rc: c_int) -> Rc {
     match rc {
         sys::SSH_OK => Rc::Ok,
-        sys::SSH_AGAIN => Rc::Again,
-        _ => Rc::Error,
-    }
-}
-
-/// A call that succeeds with 0 and fails with any other number.
-fn zero_ok(n: c_int) -> Rc {
-    match n {
-        0 => Rc::Ok,
         sys::SSH_AGAIN => Rc::Again,
         _ => Rc::Error,
     }
@@ -323,6 +316,23 @@ impl Libsession {
         self.scp
     }
 
+    /// The server's status for the SFTP call that just failed.
+    fn status(&self) -> SftpStatus {
+        // SAFETY: the SFTP session.
+        let code = unsafe { sys::sftp_get_error(self.sftp()) };
+        SftpStatus::from_number(code.cast_unsigned())
+    }
+
+    /// What a call that succeeds with 0 and fails with any other number
+    /// came to.
+    fn finished(&self, n: c_int) -> Result<(), NotDone> {
+        match n {
+            0 => Ok(()),
+            sys::SSH_AGAIN => Err(NotDone::Again),
+            _ => Err(NotDone::Failed(self.status())),
+        }
+    }
+
     /// An SFTP call on a path, its answer `call` makes of it; a path
     /// libssh cannot be given fails it.
     fn on_path<T>(
@@ -344,11 +354,20 @@ impl Libsession {
         one: &[u8],
         two: &[u8],
         call: impl FnOnce(sys::sftp_session, *const c_char, *const c_char) -> c_int,
-    ) -> Rc {
+    ) -> Result<(), NotDone> {
         let sftp = self.sftp();
-        match (terminated(one), terminated(two)) {
-            (Ok(a), Ok(b)) => zero_ok(call(sftp, a.as_ptr().cast(), b.as_ptr().cast())),
-            _ => Rc::Error,
+        let n = match (terminated(one), terminated(two)) {
+            (Ok(a), Ok(b)) => call(sftp, a.as_ptr().cast(), b.as_ptr().cast()),
+            _ => sys::SSH_ERROR,
+        };
+        self.finished(n)
+    }
+
+    /// The attributes a call of libssh's made, NULL for its failure.
+    fn made(&self, made: sys::sftp_attributes) -> Result<Attrs, AttrsError> {
+        match Attributes(made).copied()? {
+            Some(attrs) => Ok(attrs),
+            None => Err(AttrsError::Status(self.status())),
         }
     }
 
@@ -357,13 +376,13 @@ impl Libsession {
         &mut self,
         path: &[u8],
         call: unsafe extern "C" fn(sys::sftp_session, *const c_char) -> sys::sftp_attributes,
-    ) -> Result<Option<Attrs>, OutOfMemory> {
+    ) -> Result<Attrs, AttrsError> {
         let made = self.on_path(path, ptr::null_mut(), |sftp, p| {
             // SAFETY: the SFTP session, and a C string libssh reads for
             // the call.
             unsafe { call(sftp, p) }
         });
-        Attributes(made).copied()
+        self.made(made)
     }
 }
 
@@ -382,14 +401,13 @@ impl Session for Libsession {
         }
     }
 
-    fn set_socket(&mut self, fd: i32) -> Result<(), Refused> {
+    fn set_socket(&mut self, socket: Option<BorrowedFd<'_>>) -> Result<(), Refused> {
         assert_eq!(self.socket, Socket::None, "a session is handed one socket");
-        // SAFETY: a descriptor number the caller has open; the copy, if
-        // made, is this session's.
-        let copy = unsafe { sys::fcntl(fd, sys::F_DUPFD_CLOEXEC, 0) };
-        if copy < 0 {
-            return Err(Refused);
-        }
+        let socket = socket.ok_or(Refused)?;
+        let copy = socket
+            .try_clone_to_owned()
+            .map_err(|_| Refused)?
+            .into_raw_fd();
         self.socket = Socket::Given(copy);
         self.set(sys::SSH_OPTIONS_FD, (&raw const copy).cast())
     }
@@ -431,9 +449,10 @@ impl Session for Libsession {
         !self.pubkey.is_null()
     }
 
-    fn set_blocking(&mut self, blocking: bool) {
+    fn set_blocking(&mut self, blocking: Blocking) {
+        let blocking = c_int::from(blocking == Blocking::Yes);
         // SAFETY: the session.
-        unsafe { sys::ssh_set_blocking(self.session, c_int::from(blocking)) };
+        unsafe { sys::ssh_set_blocking(self.session, blocking) };
     }
 
     fn poll_flags(&self) -> PollFlags {
@@ -527,7 +546,7 @@ impl Session for Libsession {
     fn auth_list(&mut self) -> Methods {
         // SAFETY: the session; NULL for the user it was set with.
         let methods = unsafe { sys::ssh_userauth_list(self.session, ptr::null()) };
-        Methods(methods.cast_unsigned())
+        Methods::from_bits(methods.cast_unsigned())
     }
 
     fn try_publickey(&mut self) -> Auth {
@@ -581,17 +600,17 @@ impl Session for Libsession {
         auth(unsafe { sys::ssh_userauth_kbdint(self.session, ptr::null(), ptr::null()) })
     }
 
-    fn kbdint_prompts(&mut self) -> i32 {
+    fn kbdint_prompts(&mut self) -> Result<u32, Failed> {
         // SAFETY: the session.
-        unsafe { sys::ssh_userauth_kbdint_getnprompts(self.session) }
+        let n = unsafe { sys::ssh_userauth_kbdint_getnprompts(self.session) };
+        u32::try_from(n).map_err(|_| Failed)
     }
 
-    fn kbdint_answer(&mut self, i: u32, answer: &[u8]) -> i32 {
-        let Ok(z) = terminated(answer) else {
-            return -1;
-        };
+    fn kbdint_answer(&mut self, i: u32, answer: &[u8]) -> Result<(), Failed> {
+        let z = terminated(answer).map_err(|Refused| Failed)?;
         // SAFETY: the session, and a C string libssh copies.
-        unsafe { sys::ssh_userauth_kbdint_setanswer(self.session, i, z.as_ptr().cast()) }
+        let n = unsafe { sys::ssh_userauth_kbdint_setanswer(self.session, i, z.as_ptr().cast()) };
+        if n < 0 { Err(Failed) } else { Ok(()) }
     }
 
     fn auth_password(&mut self, password: &[u8]) -> Auth {
@@ -618,19 +637,20 @@ impl Session for Libsession {
         unsafe { sys::ssh_disconnect(self.session) };
     }
 
-    fn scp_new(&mut self, write: bool, path: &[u8]) -> bool {
-        let Ok(z) = terminated(path) else {
-            return false;
-        };
-        let mode = if write {
-            sys::SSH_SCP_WRITE
-        } else {
-            sys::SSH_SCP_READ
+    fn scp_new(&mut self, way: ScpWay, path: &[u8]) -> Result<(), Failed> {
+        let z = terminated(path).map_err(|Refused| Failed)?;
+        let mode = match way {
+            ScpWay::Write => sys::SSH_SCP_WRITE,
+            ScpWay::Read => sys::SSH_SCP_READ,
         };
         self.scp_free();
         // SAFETY: the session, and a C string libssh copies.
         self.scp = unsafe { sys::ssh_scp_new(self.session, mode, z.as_ptr().cast()) };
-        !self.scp.is_null()
+        if self.scp.is_null() {
+            Err(Failed)
+        } else {
+            Ok(())
+        }
     }
 
     fn has_scp(&self) -> bool {
@@ -692,11 +712,15 @@ impl Session for Libsession {
         }
     }
 
-    fn sftp_new(&mut self) -> bool {
+    fn sftp_new(&mut self) -> Result<(), Failed> {
         self.sftp_free();
         // SAFETY: the session.
         self.sftp = unsafe { sys::sftp_new(self.session) };
-        !self.sftp.is_null()
+        if self.sftp.is_null() {
+            Err(Failed)
+        } else {
+            Ok(())
+        }
     }
 
     fn has_sftp(&self) -> bool {
@@ -708,12 +732,6 @@ impl Session for Libsession {
         rc(unsafe { sys::sftp_init(self.sftp()) })
     }
 
-    fn sftp_error(&mut self) -> u32 {
-        // SAFETY: the SFTP session.
-        let code = unsafe { sys::sftp_get_error(self.sftp()) };
-        code.cast_unsigned()
-    }
-
     fn canonicalize(&mut self, path: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
         let made = self.on_path(path, ptr::null_mut(), |sftp, p| {
             // SAFETY: the SFTP session, and a C string libssh reads.
@@ -722,25 +740,27 @@ impl Session for Libsession {
         LibsshString(made).copied()
     }
 
-    fn opendir(&mut self, path: &[u8]) -> bool {
+    fn opendir(&mut self, path: &[u8]) -> Result<(), SftpStatus> {
         self.dir = self.on_path(path, ptr::null_mut(), |sftp, p| {
             // SAFETY: the SFTP session, and a C string libssh reads.
             unsafe { sys::sftp_opendir(sftp, p) }
         });
-        !self.dir.is_null()
+        if self.dir.is_null() {
+            Err(self.status())
+        } else {
+            Ok(())
+        }
     }
 
-    fn readdir(&mut self) -> Result<Option<Attrs>, OutOfMemory> {
+    fn readdir(&mut self) -> Result<Option<Attrs>, AttrsError> {
         assert!(!self.dir.is_null(), "a listing of an open directory");
         // SAFETY: the SFTP session and its open directory.
         let made = unsafe { sys::sftp_readdir(self.sftp(), self.dir) };
-        Attributes(made).copied()
-    }
-
-    fn dir_eof(&mut self) -> bool {
-        assert!(!self.dir.is_null(), "a listing of an open directory");
         // SAFETY: the open directory.
-        unsafe { sys::sftp_dir_eof(self.dir) != 0 }
+        if made.is_null() && unsafe { sys::sftp_dir_eof(self.dir) } != 0 {
+            return Ok(None);
+        }
+        self.made(made).map(Some)
     }
 
     fn closedir(&mut self) {
@@ -752,7 +772,7 @@ impl Session for Libsession {
         }
     }
 
-    fn lstat(&mut self, path: &[u8]) -> Result<Option<Attrs>, OutOfMemory> {
+    fn lstat(&mut self, path: &[u8]) -> Result<Attrs, AttrsError> {
         self.attributes(path, sys::sftp_lstat)
     }
 
@@ -764,20 +784,24 @@ impl Session for Libsession {
         LibsshString(made).copied()
     }
 
-    fn stat(&mut self, path: &[u8]) -> Result<Option<Attrs>, OutOfMemory> {
+    fn stat(&mut self, path: &[u8]) -> Result<Attrs, AttrsError> {
         self.attributes(path, sys::sftp_stat)
     }
 
-    fn stat_to_change(&mut self, path: &[u8]) -> bool {
+    fn stat_to_change(&mut self, path: &[u8]) -> Result<(), SftpStatus> {
         let made = self.on_path(path, ptr::null_mut(), |sftp, p| {
             // SAFETY: the SFTP session, and a C string libssh reads.
             unsafe { sys::sftp_stat(sftp, p) }
         });
         drop(Attributes(core::mem::replace(&mut self.quote_attrs, made)));
-        !self.quote_attrs.is_null()
+        if self.quote_attrs.is_null() {
+            Err(self.status())
+        } else {
+            Ok(())
+        }
     }
 
-    fn setstat_kept(&mut self, path: &[u8], change: AttrChange) -> Rc {
+    fn setstat_kept(&mut self, path: &[u8], change: AttrChange) -> Result<(), NotDone> {
         assert!(!self.quote_attrs.is_null(), "attributes kept to change");
         {
             // SAFETY: the attributes kept, which libssh made and this owns,
@@ -807,49 +831,53 @@ impl Session for Libsession {
             }
         }
         let attrs = self.quote_attrs;
-        self.on_path(path, Rc::Error, |sftp, p| {
+        let n = self.on_path(path, sys::SSH_ERROR, |sftp, p| {
             // SAFETY: the SFTP session, a C string, and the attributes
             // kept, which libssh reads.
-            zero_ok(unsafe { sys::sftp_setstat(sftp, p, attrs) })
-        })
+            unsafe { sys::sftp_setstat(sftp, p, attrs) }
+        });
+        self.finished(n)
     }
 
-    fn symlink(&mut self, target: &[u8], dest: &[u8]) -> Rc {
+    fn symlink(&mut self, target: &[u8], dest: &[u8]) -> Result<(), NotDone> {
         self.on_paths(target, dest, |sftp, t, d| {
             // SAFETY: the SFTP session and two C strings libssh reads.
             unsafe { sys::sftp_symlink(sftp, t, d) }
         })
     }
 
-    fn mkdir(&mut self, path: &[u8], mode: u32) -> Rc {
-        self.on_path(path, Rc::Error, |sftp, p| {
+    fn mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), NotDone> {
+        let n = self.on_path(path, sys::SSH_ERROR, |sftp, p| {
             // SAFETY: the SFTP session, and a C string libssh reads.
-            zero_ok(unsafe { sys::sftp_mkdir(sftp, p, mode) })
-        })
+            unsafe { sys::sftp_mkdir(sftp, p, mode) }
+        });
+        self.finished(n)
     }
 
-    fn rename(&mut self, from: &[u8], to: &[u8]) -> Rc {
+    fn rename(&mut self, from: &[u8], to: &[u8]) -> Result<(), NotDone> {
         self.on_paths(from, to, |sftp, f, t| {
             // SAFETY: the SFTP session and two C strings libssh reads.
             unsafe { sys::sftp_rename(sftp, f, t) }
         })
     }
 
-    fn rmdir(&mut self, path: &[u8]) -> Rc {
-        self.on_path(path, Rc::Error, |sftp, p| {
+    fn rmdir(&mut self, path: &[u8]) -> Result<(), NotDone> {
+        let n = self.on_path(path, sys::SSH_ERROR, |sftp, p| {
             // SAFETY: the SFTP session, and a C string libssh reads.
-            zero_ok(unsafe { sys::sftp_rmdir(sftp, p) })
-        })
+            unsafe { sys::sftp_rmdir(sftp, p) }
+        });
+        self.finished(n)
     }
 
-    fn unlink(&mut self, path: &[u8]) -> Rc {
-        self.on_path(path, Rc::Error, |sftp, p| {
+    fn unlink(&mut self, path: &[u8]) -> Result<(), NotDone> {
+        let n = self.on_path(path, sys::SSH_ERROR, |sftp, p| {
             // SAFETY: the SFTP session, and a C string libssh reads.
-            zero_ok(unsafe { sys::sftp_unlink(sftp, p) })
-        })
+            unsafe { sys::sftp_unlink(sftp, p) }
+        });
+        self.finished(n)
     }
 
-    fn open(&mut self, path: &[u8], mode: OpenMode, perms: u32) -> bool {
+    fn open(&mut self, path: &[u8], mode: OpenMode, perms: u32) -> Result<(), SftpStatus> {
         let flags = match mode {
             OpenMode::Read => sys::O_RDONLY,
             OpenMode::Truncate => sys::O_WRONLY | sys::O_CREAT | sys::O_TRUNC,
@@ -861,7 +889,11 @@ impl Session for Libsession {
             // SAFETY: the SFTP session, and a C string libssh reads.
             unsafe { sys::sftp_open(sftp, p, flags, perms) }
         });
-        !self.file.is_null()
+        if self.file.is_null() {
+            Err(self.status())
+        } else {
+            Ok(())
+        }
     }
 
     fn has_file(&self) -> bool {
@@ -876,15 +908,18 @@ impl Session for Libsession {
         }
     }
 
-    fn seek(&mut self, offset: u64) -> Rc {
+    fn seek(&mut self, offset: u64) -> Result<(), SftpStatus> {
         // SAFETY: the open file.
-        zero_ok(unsafe { sys::sftp_seek64(self.file(), offset) })
+        match unsafe { sys::sftp_seek64(self.file(), offset) } {
+            0 => Ok(()),
+            _ => Err(self.status()),
+        }
     }
 
-    fn fstat(&mut self) -> Result<Option<Attrs>, OutOfMemory> {
+    fn fstat(&mut self) -> Result<Attrs, AttrsError> {
         // SAFETY: the open file.
         let made = unsafe { sys::sftp_fstat(self.file()) };
-        Attributes(made).copied()
+        self.made(made)
     }
 
     fn file_nonblocking(&mut self) {
@@ -892,15 +927,15 @@ impl Session for Libsession {
         unsafe { sys::sftp_file_set_nonblocking(self.file()) };
     }
 
-    fn begin_read(&mut self, len: usize) -> Rc {
+    fn begin_read(&mut self, len: usize) -> Result<(), Failed> {
         let file = self.file();
         // SAFETY: the open file, and the slot for the read under way, which
         // libssh sets.
         let n = unsafe { sys::sftp_aio_begin_read(file, len, &raw mut self.recv_aio) };
         if n == sys::SSH_ERROR as isize {
-            Rc::Error
+            Err(Failed)
         } else {
-            Rc::Ok
+            Ok(())
         }
     }
 
@@ -914,7 +949,7 @@ impl Session for Libsession {
         aio(n)
     }
 
-    fn begin_write(&mut self, bytes: &[u8]) -> Rc {
+    fn begin_write(&mut self, bytes: &[u8]) -> Result<(), Failed> {
         let file = self.file();
         // SAFETY: the open file, `bytes.len()` bytes libssh copies, and the
         // slot for the write under way, which libssh sets.
@@ -927,9 +962,9 @@ impl Session for Libsession {
             )
         };
         if n == sys::SSH_ERROR as isize {
-            Rc::Error
+            Err(Failed)
         } else {
-            Rc::Ok
+            Ok(())
         }
     }
 

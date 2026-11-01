@@ -955,7 +955,8 @@ fn apply(
         }
         (ffi::CURLOPT_SSH_AUTH_TYPES, Long(n)) => {
             // As C keeps it, its low 32 bits.
-            options.ssh.make_mut()?.auth_types = curl_core::options::SshAuthTypes(n as u32);
+            options.ssh.make_mut()?.auth_types =
+                curl_core::options::SshAuthTypes::from_bits(n as u32);
         }
         (ffi::CURLOPT_NEW_DIRECTORY_PERMS, Long(n)) => {
             let bits = u16::try_from(n).ok().and_then(FileMode::new);

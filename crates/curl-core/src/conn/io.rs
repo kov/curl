@@ -147,6 +147,15 @@ pub trait Socket: fmt::Debug + Send {
     /// socket that has none, what it is ready for now.
     fn readiness(&self) -> Readiness<'_>;
 
+    /// Its descriptor, for a library that works on the socket itself; none
+    /// for a socket that has none.
+    fn descriptor(&self) -> Option<BorrowedFd<'_>> {
+        match self.readiness() {
+            Readiness::Poll(fd) => Some(fd),
+            Readiness::Known { .. } => None,
+        }
+    }
+
     /// The error that ended a connect in progress, once the socket is
     /// writable; `None` if it connected (`SO_ERROR`).
     fn take_error(&self) -> io::Result<Option<io::Error>>;

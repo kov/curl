@@ -24,7 +24,10 @@ use crate::conn::{ConnLease, Peer, RecvFailed, Scheme};
 use crate::deliver::{self, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::idn::Idn;
-use crate::ldap::{Code, Kind, Mech, Message, MsgId, Search, Session, UrlError, Wire};
+use crate::ldap::{
+    Code, Kind, Mech, Message, MsgId, Scope, Search, Session, SessionFailed, UrlError, Version,
+    Wire,
+};
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::UseSsl;
@@ -492,13 +495,14 @@ impl Request {
         hosturl
             .try_extend_from_slice(port.as_bytes())
             .map_err(oom)?;
-        let Some(socket) = lease.get().carrier().socket_key() else {
+        let carrier = lease.get().carrier();
+        let Some(socket) = carrier.stream_socket() else {
             return Err(ErrorKind::CouldntConnect);
         };
-        let made = library.session(socket.get(), scheme.name().as_bytes(), &hosturl);
+        let made = library.session(socket.descriptor(), scheme.name().as_bytes(), &hosturl);
         let mut session = match made {
-            Err(crate::ldap::NoCopy) => return Err(ErrorKind::CouldntConnect),
-            Ok(Err(code)) => {
+            Err(SessionFailed::NoCopy) => return Err(ErrorKind::CouldntConnect),
+            Err(SessionFailed::Library(code)) => {
                 return Err(trace::fail_with(
                     cx,
                     ErrorKind::CouldntConnect,
@@ -510,12 +514,12 @@ impl Request {
                     ],
                 ));
             }
-            Ok(Ok(session)) => session,
+            Ok(session) => session,
         };
         // Version 3 first, no referrals chased.
-        session.set_version(3);
+        session.set_version(Version::V3);
         session.set_no_referrals();
-        if !session.set_max_incoming(MAX_INCOMING) {
+        if session.set_max_incoming(MAX_INCOMING).is_err() {
             return Err(ErrorKind::FailedInit);
         }
         let lc = LdapConn {
@@ -577,7 +581,7 @@ impl Request {
             .map_err(oom)?;
         let search = Search {
             dn: Some(Vec::new()),
-            scope: 0,
+            scope: Scope::BASE,
             filter: Some(filter),
             attrs: Some(attrs),
         };
@@ -714,7 +718,7 @@ impl Request {
         let (lc, _) = ldap_of(lease);
         Self::to(cx, lc, state);
         // C puts its layer on each time; once is the same to the library.
-        if done && !lc.session.uses_wire() && !lc.session.use_wire() {
+        if done && !lc.session.uses_wire() && lc.session.use_wire().is_err() {
             return Err(ErrorKind::FailedInit);
         }
         Ok(done)
@@ -874,7 +878,7 @@ impl Request {
                 && (wired || use_ssl <= UseSsl::Try)
                 && lc.sasl.preferred() == Mechs::NONE
             {
-                lc.session.set_version(2);
+                lc.session.set_version(Version::V2);
                 self.perform_bind(cx, lease, State::BindV2)?;
                 return Ok(false);
             }

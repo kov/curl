@@ -223,9 +223,9 @@ witness: curl-core url::tests::lib1560_get_url
 file: crates/curl-core/src/url/mod.rs
 witness: curl-core url::tests::lib1560_get_parts
 --- old
-            if what == Part::Query {
+            let spaced = if what == Part::Query && part.contains(&b'+') {
 --- new
-            if false {
+            let spaced = if false {
 
 === more than three slashes after a scheme are accepted
 file: crates/curl-core/src/url/mod.rs
@@ -327,10 +327,10 @@ witness: curl-core url::tests::sets_parts_as_c_does
 file: crates/curl-core/src/url/mod.rs
 witness: curl-core url::tests::a_transfer_s_path_reads_encoded
 --- old
-                encode::reencode(&mut enc, &out, query)?;
-                out = enc;
+                encode::reencode(&mut enc, text, query)?;
+                changed = Some(enc);
 --- new
-                encode::reencode(&mut enc, &out, query)?;
+                encode::reencode(&mut enc, text, query)?;
 
 === an escape with lowercase hex is taken as needing nothing done
 file: crates/curl-core/src/url/encode.rs
@@ -347,3 +347,30 @@ witness: curl-core url::encode::tests::reencodes_to_itself_as_reencode_says
         (b'!'..0x7f).contains(&b)
 --- new
         (b' '..0x7f).contains(&b)
+
+=== a URL that is not whole is given a block it does not fill
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::a_sink_is_asked_once_for_what_it_is_given
+--- old
+        let host = self.host.as_deref().ok_or(UrlErrorKind::NoHost)?;
+--- new
+        sink.reserve(room(0)).map_err(sink_out_of_memory)?;
+        let host = self.host.as_deref().ok_or(UrlErrorKind::NoHost)?;
+
+=== a whole URL's room leaves out the host as shown
+file: crates/curl-core/src/url/mod.rs
+witness: curl-sys-abi url::tests::a_whole_url_fits_the_room_it_asks_for
+--- old
+        sink.reserve(room(shown_host.as_ref().map_or(0, Vec::len)))
+--- new
+        sink.reserve(room(0))
+
+=== a port's digits are copied to be read
+file: crates/curl-core/src/url/mod.rs
+witness: curl-sys-abi url::tests::calls_cost_what_c_s_do
+features: debug-hooks
+--- old
+    let port = port_after_colon(&host[colon + 1..], has_scheme);
+--- new
+    let digits = copy(&host[colon + 1..])?;
+    let port = port_after_colon(&digits, has_scheme);

@@ -10,6 +10,7 @@
 use std::cell::Cell;
 use std::fmt;
 use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{self, AtomicUsize, Ordering};
@@ -137,6 +138,27 @@ impl<T, C: Count> Shared<T, C> {
         this.inner().count.get()
     }
 
+    /// This handle as a pointer, to hold where only a pointer fits; opaque,
+    /// not the value's address. `from_raw` takes it back.
+    pub fn into_raw(this: Self) -> NonNull<()> {
+        let this = ManuallyDrop::new(this);
+        this.inner.cast()
+    }
+
+    /// The handle `into_raw` gave up.
+    ///
+    /// # Safety
+    ///
+    /// `raw` came from `into_raw` on a handle of this same type, and that
+    /// one handle has not been taken back since; or the result is not
+    /// dropped, and is only read while a handle is held.
+    pub unsafe fn from_raw(raw: NonNull<()>) -> Self {
+        Shared {
+            inner: raw.cast(),
+            _owns: PhantomData,
+        }
+    }
+
     /// Whether both handles point to the same value.
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         a.inner == b.inner
@@ -206,6 +228,21 @@ mod tests {
             &TryRc::try_new(1).unwrap(),
             &TryRc::try_new(1).unwrap()
         ));
+    }
+
+    #[test]
+    fn a_handle_survives_being_a_pointer() {
+        let drops = Cell::new(0);
+        let a = TryRc::try_new(Drops(&drops)).unwrap();
+        let b = a.clone();
+        let raw = TryRc::into_raw(a);
+        assert_eq!((drops.get(), TryRc::count(&b)), (0, 2), "not dropped");
+        // SAFETY: from `into_raw` just above, taken back once.
+        let a = unsafe { TryRc::from_raw(raw) };
+        assert!(TryRc::ptr_eq(&a, &b));
+        drop(a);
+        drop(b);
+        assert_eq!(drops.get(), 1);
     }
 
     #[test]

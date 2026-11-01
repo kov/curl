@@ -432,3 +432,27 @@ witness: curl-sys-abi handle_tests::a_callback_cannot_change_the_share
                 CURLE_BAD_FUNCTION_ARGUMENT
             }
 
+=== a CURLU costs a block of its own besides the URL's
+file: crates/curl-sys-abi/src/url.rs
+witness: curl-sys-abi url::tests::calls_cost_what_c_s_do
+features: debug-hooks
+--- old
+        Ok(shared) => TryArc::into_raw(shared.into_arc()).as_ptr().cast(),
+--- new
+        Ok(shared) => {
+            let _spare = curl_alloc::try_box(0u8);
+            TryArc::into_raw(shared.into_arc()).as_ptr().cast()
+        }
+
+=== curl_url_get copies a part in Rust's allocator before the application's
+file: crates/curl-sys-abi/src/url.rs
+witness: curl-sys-abi url::tests::calls_cost_what_c_s_do
+features: debug-hooks
+--- old
+    if let Err(e) = u.with(|u| u.write_part(what, get_options(flags), idn, &mut text)) {
+--- new
+    if let Err(e) = u.with(|u| u.get_with(what, get_options(flags), idn)).and_then(|t| {
+        text.reserve(t.len())
+            .and_then(|()| text.write(&t))
+            .map_err(|_| curl_core::error::UrlErrorKind::OutOfMemory)
+    }) {

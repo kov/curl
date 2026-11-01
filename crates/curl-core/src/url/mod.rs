@@ -25,7 +25,7 @@ mod c_tests;
 
 use std::sync::Mutex;
 
-use curl_alloc::{OutOfMemory, TryArc};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use crate::error::UrlErrorKind;
 use crate::idn::{Idn, IdnFailure};
@@ -186,6 +186,48 @@ impl GetOptions {
             Err(IdnFailure::Malformed) => Err(UrlErrorKind::BadHostname),
             Err(IdnFailure::OutOfMemory) => Err(UrlErrorKind::OutOfMemory),
         }
+    }
+}
+
+/// Where a URL or a part of one is written, so that a reader with a
+/// buffer of its own needs no copy made first.
+pub trait UrlSink {
+    /// Room for `len` bytes, asked for once, before the first `write`. No
+    /// more than that many are written.
+    fn reserve(&mut self, len: usize) -> Result<(), OutOfMemory>;
+    /// `bytes`, after those written before.
+    fn write(&mut self, bytes: &[u8]) -> Result<(), OutOfMemory>;
+}
+
+/// A sink that cannot take what it is given is out of memory.
+fn sink_out_of_memory(_: OutOfMemory) -> UrlErrorKind {
+    UrlErrorKind::OutOfMemory
+}
+
+impl UrlSink for Bytes {
+    fn reserve(&mut self, len: usize) -> Result<(), OutOfMemory> {
+        self.try_reserve(len).map_err(|_| OutOfMemory)
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> Result<(), OutOfMemory> {
+        self.try_extend_from_slice(bytes).map_err(|_| OutOfMemory)
+    }
+}
+
+/// A whole URL on its way to a sink, held to the limit of C's buffers.
+struct Whole<'a> {
+    sink: &'a mut dyn UrlSink,
+    written: usize,
+}
+
+impl Whole<'_> {
+    /// As `encode::push`: `TooLarge` past the limit.
+    fn put(&mut self, s: &[u8]) -> Result<(), UrlErrorKind> {
+        if self.written + s.len() >= MAX_INPUT {
+            return Err(UrlErrorKind::TooLarge);
+        }
+        self.written += s.len();
+        self.sink.write(s).map_err(sink_out_of_memory)
     }
 }
 
@@ -875,10 +917,25 @@ impl Url {
         opts: GetOptions,
         idn: Option<&dyn Idn>,
     ) -> Result<Bytes, UrlErrorKind> {
+        let mut out = Bytes::new();
+        self.write_part(what, opts, idn, &mut out)?;
+        Ok(out)
+    }
+
+    /// Part `what` written to `sink`, as `get_with` returns it. A part that
+    /// nothing changes and a whole URL are written without a copy on the
+    /// way.
+    pub fn write_part(
+        &self,
+        what: Part,
+        opts: GetOptions,
+        idn: Option<&dyn Idn>,
+        sink: &mut dyn UrlSink,
+    ) -> Result<(), UrlErrorKind> {
         let mut opts = opts;
         let mut port_text = [0u8; 5];
         let (part, missing): (Option<&[u8]>, UrlErrorKind) = match what {
-            Part::Url => return self.whole_with(opts, true, idn),
+            Part::Url => return self.whole_into(opts, true, idn, sink),
             Part::Scheme => {
                 opts.url_decode = false;
                 if opts.no_guess_scheme && self.scheme.as_ref().is_some_and(|s| s.guessed) {
@@ -922,34 +979,42 @@ impl Url {
             ),
         };
         let part = part.ok_or(missing)?;
-        // `urlget_format`
-        let mut out = copy(part)?;
+        // `urlget_format`; a copy only of what it changes.
+        let mut changed: Option<Bytes> = None;
         if opts.url_decode {
-            if what == Part::Query {
-                for b in out.iter_mut().filter(|b| **b == b'+') {
+            let spaced = if what == Part::Query && part.contains(&b'+') {
+                let mut spaced = copy(part)?;
+                for b in spaced.iter_mut().filter(|b| **b == b'+') {
                     *b = b' ';
                 }
-            }
-            out = encode::decode(&out)?.ok_or(UrlErrorKind::Urldecode)?;
+                Some(spaced)
+            } else {
+                None
+            };
+            let decoded = encode::decode(spaced.as_deref().unwrap_or(part))?;
+            changed = Some(decoded.ok_or(UrlErrorKind::Urldecode)?);
         }
         if opts.url_encode {
-            // Most parts need nothing done: they keep their one copy.
-            if !encode::reencodes_to_itself(&out) {
+            let text = changed.as_deref().unwrap_or(part);
+            // Most parts need nothing done.
+            if !encode::reencodes_to_itself(text) {
                 let mut enc = Bytes::new();
                 let query = if what == Part::Query {
                     Query::Yes
                 } else {
                     Query::No
                 };
-                encode::reencode(&mut enc, &out, query)?;
-                out = enc;
+                encode::reencode(&mut enc, text, query)?;
+                changed = Some(enc);
             }
         } else if what == Part::Host
-            && let Some(converted) = opts.idn(part, &out, idn)?
+            && let Some(converted) = opts.idn(part, changed.as_deref().unwrap_or(part), idn)?
         {
-            out = converted;
+            changed = Some(converted);
         }
-        Ok(out)
+        let text = changed.as_deref().unwrap_or(part);
+        sink.reserve(text.len()).map_err(sink_out_of_memory)?;
+        sink.write(text).map_err(sink_out_of_memory)
     }
 
     /// The port to show: the URL's, unless it is the scheme's and
@@ -972,7 +1037,9 @@ impl Url {
             get_empty: true,
             ..GetOptions::NONE
         };
-        self.whole_with(opts, false, None)
+        let mut out = Bytes::new();
+        self.whole_into(opts, false, None, &mut out)?;
+        Ok(out)
     }
 
     /// The application's port in place of the URL's own (`CURLOPT_PORT`).
@@ -980,14 +1047,17 @@ impl Url {
         self.port = Some(port.get());
     }
 
-    /// The whole URL, with its user and password if `credentials`, its
-    /// host converted by `idn` where the options ask (`urlget_url`).
-    fn whole_with(
+    /// The whole URL written to `sink`, with its user and password if
+    /// `credentials`, its host converted by `idn` where the options ask
+    /// (`urlget_url`). Nothing is asked of the sink for a URL that is not
+    /// whole.
+    fn whole_into(
         &self,
         opts: GetOptions,
         credentials: bool,
         idn: Option<&dyn Idn>,
-    ) -> Result<Bytes, UrlErrorKind> {
+        sink: &mut dyn UrlSink,
+    ) -> Result<(), UrlErrorKind> {
         let (user, password) = if credentials {
             (self.user.as_deref(), self.password.as_deref())
         } else {
@@ -1004,8 +1074,6 @@ impl Url {
             Some(Tail::Bare) if opts.get_empty => Some(&b""[..]),
             _ => None,
         };
-        // Room for the parts as they are and their separators, so a URL
-        // that needs no encoding is read back in one allocation.
         let parts = [
             self.scheme.as_ref().map(|s| &s.name[..]),
             user,
@@ -1017,18 +1085,20 @@ impl Url {
             query,
             fragment,
         ];
-        let room = parts.iter().flatten().map(|p| p.len()).sum::<usize>() + 32;
-        let mut out = Bytes::new();
-        out.try_reserve_exact(room.min(MAX_INPUT))
-            .map_err(|_| UrlErrorKind::OutOfMemory)?;
-        let tail = |out: &mut Bytes| -> Result<(), UrlErrorKind> {
+        let held = parts.iter().flatten().map(|p| p.len()).sum::<usize>();
+        // The parts as they are, the host as shown and every separator,
+        // the longest of which together come to less than this: the sink
+        // is asked once, for all the URL can need.
+        const SEPARATORS: usize = 32;
+        let room = |shown: usize| (held + shown + SEPARATORS).min(MAX_INPUT);
+        let tail = |out: &mut Whole| -> Result<(), UrlErrorKind> {
             if let Some(q) = query {
-                push(out, b"?")?;
-                push(out, q)?;
+                out.put(b"?")?;
+                out.put(q)?;
             }
             if let Some(f) = fragment {
-                push(out, b"#")?;
-                push(out, f)?;
+                out.put(b"#")?;
+                out.put(f)?;
             }
             Ok(())
         };
@@ -1037,11 +1107,12 @@ impl Url {
             .as_ref()
             .is_some_and(|s| s.name.eq_ignore_ascii_case(b"file"))
         {
-            push(&mut out, b"file://")?;
+            sink.reserve(room(0)).map_err(sink_out_of_memory)?;
+            let mut out = Whole { sink, written: 0 };
+            out.put(b"file://")?;
             // A path cleared or never set prints as C prints a NULL.
-            push(&mut out, self.path.as_deref().unwrap_or(b"(nil)"))?;
-            tail(&mut out)?;
-            return Ok(out);
+            out.put(self.path.as_deref().unwrap_or(b"(nil)"))?;
+            return tail(&mut out);
         }
         let host = self.host.as_deref().ok_or(UrlErrorKind::NoHost)?;
         let scheme = match &self.scheme {
@@ -1078,33 +1149,35 @@ impl Url {
         } else {
             opts.idn(host, host, idn)?
         };
+        sink.reserve(room(shown_host.as_ref().map_or(0, Vec::len)))
+            .map_err(sink_out_of_memory)?;
+        let mut out = Whole { sink, written: 0 };
         if !opts.no_guess_scheme || !self.scheme.as_ref().is_some_and(|s| s.guessed) {
-            push(&mut out, scheme)?;
-            push(&mut out, b"://")?;
+            out.put(scheme)?;
+            out.put(b"://")?;
         }
         if let Some(user) = user {
-            push(&mut out, user)?;
+            out.put(user)?;
         }
         if let Some(password) = password {
-            push(&mut out, b":")?;
-            push(&mut out, password)?;
+            out.put(b":")?;
+            out.put(password)?;
         }
         if let Some(options) = options {
-            push(&mut out, b";")?;
-            push(&mut out, options)?;
+            out.put(b";")?;
+            out.put(options)?;
         }
         if user.is_some() || password.is_some() || options.is_some() {
-            push(&mut out, b"@")?;
+            out.put(b"@")?;
         }
-        push(&mut out, shown_host.as_deref().unwrap_or(host))?;
+        out.put(shown_host.as_deref().unwrap_or(host))?;
         if let Some(p) = port {
             let mut text = [0u8; 5];
-            push(&mut out, b":")?;
-            push(&mut out, decimal(&mut text, p))?;
+            out.put(b":")?;
+            out.put(decimal(&mut text, p))?;
         }
-        push(&mut out, self.path.as_deref().unwrap_or(b"/"))?;
-        tail(&mut out)?;
-        Ok(out)
+        out.put(self.path.as_deref().unwrap_or(b"/"))?;
+        tail(&mut out)
     }
 }
 
@@ -1190,8 +1263,13 @@ fn parse_port(host: &mut Bytes, has_scheme: bool) -> Result<Option<u16>, UrlErro
     let Some(colon) = colon else {
         return Ok(None);
     };
-    let digits = copy(&host[colon + 1..])?;
+    let port = port_after_colon(&host[colon + 1..], has_scheme);
     host.truncate(colon);
+    port
+}
+
+/// The port in `digits`, what follows the host's `:`.
+fn port_after_colon(digits: &[u8], has_scheme: bool) -> Result<Option<u16>, UrlErrorKind> {
     if digits.is_empty() {
         return if has_scheme {
             Ok(None)
@@ -1207,7 +1285,7 @@ fn parse_port(host: &mut Bytes, has_scheme: bool) -> Result<Option<u16>, UrlErro
         None => {}
     }
     let mut port: u32 = 0;
-    for &d in &digits {
+    for &d in digits {
         port = port * 10 + u32::from(d - b'0');
         if port > 0xffff {
             return Err(UrlErrorKind::BadPortNumber);
@@ -1282,6 +1360,17 @@ impl SharedUrl {
         Ok(SharedUrl(TryArc::try_new(Mutex::new(url))?))
     }
 
+    /// The count this handle is one of, for an owner that holds the URL
+    /// as a bare pointer (`TryArc::into_raw`).
+    pub fn into_arc(self) -> TryArc<Mutex<Url>> {
+        self.0
+    }
+
+    /// The handle `into_arc` gave up.
+    pub fn from_arc(arc: TryArc<Mutex<Url>>) -> SharedUrl {
+        SharedUrl(arc)
+    }
+
     /// What `f` reads of the URL.
     pub fn with<R>(&self, f: impl FnOnce(&Url) -> R) -> R {
         f(&self.0.lock().expect("no panic holds it"))
@@ -1296,6 +1385,55 @@ impl SharedUrl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a reader's own buffer is asked for and given.
+    #[derive(Default)]
+    struct Measuring {
+        asked: Vec<usize>,
+        written: usize,
+    }
+
+    impl UrlSink for Measuring {
+        fn reserve(&mut self, len: usize) -> Result<(), OutOfMemory> {
+            self.asked.push(len);
+            Ok(())
+        }
+
+        fn write(&mut self, bytes: &[u8]) -> Result<(), OutOfMemory> {
+            self.written += bytes.len();
+            Ok(())
+        }
+    }
+
+    /// A sink is asked once, for at least what it is given; a part that
+    /// nothing changes for exactly that, and for nothing if there is no
+    /// such part or no whole URL to write.
+    #[test]
+    fn a_sink_is_asked_once_for_what_it_is_given() {
+        let measure = |u: &Url, what, opts| {
+            let mut sink = Measuring::default();
+            let res = u.write_part(what, opts, None, &mut sink);
+            (res, sink)
+        };
+        let url = b"http://user:pw@[fe80::1%25eth0]:8080/path?q#f";
+        let u = Url::parse(url, ParseOptions::NONE).unwrap();
+        let (res, sink) = measure(&u, Part::Url, GetOptions::NONE);
+        res.unwrap();
+        assert_eq!(sink.written, url.len());
+        assert_eq!(sink.asked.len(), 1);
+        assert!(sink.asked[0] >= sink.written);
+        let (res, sink) = measure(&u, Part::Path, GetOptions::NONE);
+        res.unwrap();
+        assert_eq!((sink.asked, sink.written), (vec![5], 5));
+        let (res, sink) = measure(&u, Part::Options, GetOptions::NONE);
+        assert_eq!(res, Err(UrlErrorKind::NoOptions));
+        assert!(sink.asked.is_empty());
+        let mut hostless = u;
+        hostless.set(Part::Host, None, SetOptions::NONE).unwrap();
+        let (res, sink) = measure(&hostless, Part::Url, GetOptions::NONE);
+        assert_eq!(res, Err(UrlErrorKind::NoHost));
+        assert!(sink.asked.is_empty(), "a URL not whole asks for nothing");
+    }
 
     /// The C code of `kind`.
     fn code(kind: UrlErrorKind) -> usize {

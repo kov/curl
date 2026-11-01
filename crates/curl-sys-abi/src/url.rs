@@ -4,11 +4,11 @@
 #![allow(unsafe_code)]
 
 use core::ffi::{CStr, c_char, c_int, c_uint};
+use core::mem::ManuallyDrop;
 use core::ptr::{self, NonNull};
 
-use curl_alloc::try_box;
-use curl_core::error::UrlErrorKind;
-use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, SharedUrl, Url};
+use curl_alloc::{OutOfMemory, TryArc};
+use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, SharedUrl, Url, UrlSink};
 
 use crate::error_codes::url_code;
 use crate::ffi::{self, CURLU, CURLUPart, CURLUcode};
@@ -70,25 +70,99 @@ pub(crate) fn set_options(flags: c_uint) -> SetOptions {
     }
 }
 
-/// A `CURLU *` holding `url`, or NULL if out of memory.
+/// A `CURLU *` holding `url`, or NULL if out of memory: the shared URL's
+/// own pointer, so that a handle costs its one block, as in C.
 fn boxed(url: Url) -> *mut CURLU {
-    let Ok(shared) = SharedUrl::new(url) else {
-        return ptr::null_mut();
-    };
-    match try_box(shared) {
-        Ok(b) => Box::into_raw(b).cast(),
+    match SharedUrl::new(url) {
+        Ok(shared) => TryArc::into_raw(shared.into_arc()).as_ptr().cast(),
         Err(_) => ptr::null_mut(),
     }
 }
 
-/// The URL `u` points to, if any.
+/// The URL `u` points to, if any, lent: not dropped, so the handle stays
+/// the application's. Clone it to keep it.
 ///
 /// # Safety
 ///
-/// `u` is NULL or a live handle from `boxed`.
-pub(crate) unsafe fn shared<'a>(u: *const CURLU) -> Option<&'a SharedUrl> {
-    // SAFETY: as the caller guarantees.
-    unsafe { u.cast::<SharedUrl>().as_ref() }
+/// `u` is NULL or a live handle from `boxed`, live for as long as the
+/// result is used.
+pub(crate) unsafe fn shared(u: *const CURLU) -> Option<ManuallyDrop<SharedUrl>> {
+    let raw = NonNull::new(u.cast_mut())?;
+    // SAFETY: `boxed` made it with `into_raw` of this type; as it is never
+    // dropped, the application's handle is not taken from it.
+    let arc = unsafe { TryArc::from_raw(raw.cast()) };
+    Some(ManuallyDrop::new(SharedUrl::from_arc(arc)))
+}
+
+/// A C string the application frees with `curl_free`, written in place:
+/// as long as asked for, with room for its terminating zero.
+struct CText {
+    start: *mut u8,
+    room: usize,
+    len: usize,
+}
+
+impl CText {
+    const fn new() -> CText {
+        CText {
+            start: ptr::null_mut(),
+            room: 0,
+            len: 0,
+        }
+    }
+
+    /// The string, terminated, the caller's to hand over.
+    fn finish(self) -> *mut c_char {
+        let text = ManuallyDrop::new(self);
+        assert!(!text.start.is_null(), "a part is always asked room for");
+        // `start` is a block of `room + 1` bytes and `write` keeps `len` at
+        // most `room`, so the last byte written is within it.
+        let end = text.start.wrapping_add(text.len);
+        // SAFETY: as above.
+        unsafe { end.write(0) };
+        text.start.cast()
+    }
+}
+
+impl UrlSink for CText {
+    fn reserve(&mut self, len: usize) -> Result<(), OutOfMemory> {
+        assert!(self.start.is_null(), "room is asked for once");
+        let start = if len == 0 {
+            // As C does: an empty result is a strdup of "".
+            // SAFETY: the literal is NUL-terminated.
+            unsafe { root::allocator().strdup(c"".as_ptr()) }.cast::<u8>()
+        } else {
+            let size = len.checked_add(1).ok_or(OutOfMemory)?;
+            root::allocator().malloc(size).cast::<u8>()
+        };
+        if start.is_null() {
+            return Err(OutOfMemory);
+        }
+        self.start = start;
+        self.room = len;
+        Ok(())
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> Result<(), OutOfMemory> {
+        assert!(bytes.len() <= self.room - self.len, "more than room asked");
+        let to = self.start.wrapping_add(self.len);
+        // SAFETY: `start` is a block of `room + 1` bytes, of which the
+        // `bytes.len()` after `len` were just checked to be there; `bytes`
+        // is memory of the caller's, never this fresh block.
+        unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), to, bytes.len()) };
+        self.len += bytes.len();
+        Ok(())
+    }
+}
+
+impl Drop for CText {
+    fn drop(&mut self) {
+        if !self.start.is_null() {
+            // SAFETY: the allocator's block, not handed over: `finish` does
+            // not drop.
+            unsafe { root::allocator().free(self.start.cast()) };
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -103,9 +177,9 @@ const _: ffi::proto::curl_url = curl_url;
 /// again.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_url_cleanup(u: *mut CURLU) {
-    if !u.is_null() {
+    if let Some(u) = NonNull::new(u) {
         // SAFETY: made by `boxed`, and the caller gives it up.
-        drop(unsafe { Box::from_raw(u.cast::<SharedUrl>()) });
+        drop(unsafe { TryArc::<std::sync::Mutex<Url>>::from_raw(u.cast()) });
     }
 }
 const _: ffi::proto::curl_url_cleanup = curl_url_cleanup;
@@ -179,16 +253,13 @@ pub unsafe extern "C" fn curl_url_get(
     let Some(what) = part(what) else {
         return ffi::CURLUE_UNKNOWN_PART;
     };
-    let text = match u.with(|u| u.get_with(what, get_options(flags), Some(crate::easy::IDN))) {
-        Ok(text) => text,
-        Err(e) => return url_code(e),
-    };
-    let s = root::allocator().c_string(&text);
-    if s.is_null() {
-        return url_code(UrlErrorKind::OutOfMemory);
+    let mut text = CText::new();
+    let idn = Some(crate::easy::IDN);
+    if let Err(e) = u.with(|u| u.write_part(what, get_options(flags), idn, &mut text)) {
+        return url_code(e);
     }
     // SAFETY: as above.
-    unsafe { out.write(s) };
+    unsafe { out.write(text.finish()) };
     ffi::CURLUE_OK
 }
 const _: ffi::proto::curl_url_get = curl_url_get;
@@ -305,6 +376,59 @@ mod tests {
                 part.0
             );
         }
+        // SAFETY: made above, not used again.
+        unsafe { curl_url_cleanup(u) };
+    }
+
+    /// What the calls cost in Rust's allocator, on which test 1560's limit
+    /// on allocations rests: a handle its one block, a part and a whole URL
+    /// nothing on the way to the application's block, each part held one,
+    /// and the port's digits none.
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn calls_cost_what_c_s_do() {
+        use curl_alloc::track::count_allocations;
+        let (u, made) = count_allocations(|| curl_url());
+        assert_eq!(made, 1, "a handle");
+        let url = c"http://user:pw@host:8080/path?q#f";
+        let (rc, made) = count_allocations(|| set(u, ffi::CURLUPART_URL, Some(url), 0));
+        assert_eq!(rc, ffi::CURLUE_OK);
+        assert_eq!(
+            made, 7,
+            "scheme, user, password, host, path, query, fragment"
+        );
+        let mut p: *mut c_char = ptr::null_mut();
+        for what in [ffi::CURLUPART_HOST, ffi::CURLUPART_URL] {
+            // SAFETY: a live handle and a place to write.
+            let (rc, made) = count_allocations(|| unsafe { curl_url_get(u, what, &mut p, 0) });
+            assert_eq!(rc, ffi::CURLUE_OK);
+            assert_eq!(made, 0, "part {}", what.0);
+            // SAFETY: handed to the caller, freed once.
+            unsafe { root::curl_free(p.cast()) };
+        }
+        // SAFETY: made above, not used again.
+        unsafe { curl_url_cleanup(u) };
+    }
+
+    /// The application's block is asked for once and holds what is written:
+    /// a host that encoding makes much longer, and a URL past the limit,
+    /// which is refused and leaves nothing to free.
+    #[test]
+    fn a_whole_url_fits_the_room_it_asks_for() {
+        let u = curl_url();
+        let url = c"http://\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4\xc3\xa4/";
+        assert_eq!(set(u, ffi::CURLUPART_URL, Some(url), 0), ffi::CURLUE_OK);
+        let encoded = "%C3%A4".repeat(16);
+        assert_eq!(
+            get(u, ffi::CURLUPART_URL, ffi::CURLU_URLENCODE).as_deref(),
+            Ok(format!("http://{encoded}/").as_str())
+        );
+        let mut path = vec![b'/'];
+        path.resize(curl_core::url::MAX_INPUT - 1, b'a');
+        path.push(0);
+        let path = CStr::from_bytes_with_nul(&path).unwrap();
+        assert_eq!(set(u, ffi::CURLUPART_PATH, Some(path), 0), ffi::CURLUE_OK);
+        assert_eq!(get(u, ffi::CURLUPART_URL, 0), Err(ffi::CURLUE_TOO_LARGE));
         // SAFETY: made above, not used again.
         unsafe { curl_url_cleanup(u) };
     }

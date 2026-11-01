@@ -1001,7 +1001,7 @@ fn apply(
             // SAFETY: the application passes a handle from `curl_url` or
             // NULL.
             let shared = unsafe { crate::url::shared(p.cast()) };
-            options.set_shared_url(shared.cloned());
+            options.set_shared_url(shared.map(|s| curl_core::url::SharedUrl::clone(&s)));
         }
         (ffi::CURLOPT_ACCEPT_ENCODING, Ptr(p)) => {
             use curl_core::coding::AcceptEncoding;

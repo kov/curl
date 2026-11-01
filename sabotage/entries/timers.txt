@@ -144,13 +144,13 @@ features: test-util
     if false {
         run.deadlines.clear_all();
 
-=== a cleared timer keeps its bit, and still wakes its transfer
+=== a cleared timer stays armed, and still wakes its transfer
 file: crates/curl-core/src/multi/timers.rs
 witness: curl-core multi::timers::tests::limits_are_armed_per_leg_and_judged_from_their_anchors
 --- old
-        self.set &= !kind.bit();
+        self.at[kind.ordinal()] = None;
 --- new
-        self.set &= !0;
+        let _ = kind;
 
 === each system clock counts from when it was made
 file: crates/curl-core/src/time.rs
@@ -207,11 +207,11 @@ witness: curl-core proto::http::tests::tcp_trace::the_race_s_timer_stays_armed_w
         None => run.deadlines.clear(TimerKind::Eyeballs),
     }
 
-=== the 100 wait and the server's time to answer are both armed in one instant
+=== arming a timer disarms the others
 file: crates/curl-core/src/multi/timers.rs
-witness: curl-core multi::timers::tests::two_kinds_that_share_an_instant_are_never_both_armed
+witness: curl-core multi::timers::tests::every_kind_keeps_its_own_instant
 --- old
-        if let Some(sharer) = kind.sharer() {
-            self.set &= !sharer.bit();
-        }
+        self.at[kind.ordinal()] = Some(at);
 --- new
+        self.at = [None; TimerKind::COUNT];
+        self.at[kind.ordinal()] = Some(at);

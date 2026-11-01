@@ -55,18 +55,13 @@ pub(crate) enum TimerKind {
     AsyncName,
     /// A line protocol's server's time to answer, armed each time its
     /// back and forth is driven (`EXPIRE_SERVER_RESPONSE`, set by
-    /// `Curl_pp_statemach`). It shares HTTP's 100 wait's instant, as no
-    /// request has both: arming one disarms the other.
+    /// `Curl_pp_statemach`).
     ServerResponse,
 }
 
 impl TimerKind {
     /// The kinds there are.
     const COUNT: usize = 11;
-    /// The instants they are kept in: two fewer, the 100 wait and the
-    /// server's time to answer sharing one, and the wait for the server
-    /// to connect and the HTTPS connect's second attempt another.
-    const STORED: usize = TimerKind::COUNT - 2;
 
     /// The name C's trace gives it (`Curl_trc_timer_name`).
     pub(crate) fn name(self) -> &'static str {
@@ -105,38 +100,6 @@ impl TimerKind {
     fn ordinal(self) -> usize {
         self as usize
     }
-
-    /// Where its instant is kept.
-    fn slot(self) -> usize {
-        match self {
-            TimerKind::Total => 0,
-            TimerKind::Connect => 1,
-            TimerKind::SpeedCheck => 2,
-            TimerKind::Eyeballs => 3,
-            TimerKind::Proto | TimerKind::ServerResponse => 4,
-            TimerKind::TooFast => 5,
-            TimerKind::Quic => 6,
-            TimerKind::FtpAccept | TimerKind::AlpnEyeballs => 7,
-            TimerKind::AsyncName => 8,
-        }
-    }
-
-    /// The kind its instant is kept with, if any: one no request arms
-    /// while the other is armed. HTTP's 100 wait is no line protocol's;
-    /// the HTTPS connect's attempts are over before FTP offers a port.
-    fn sharer(self) -> Option<TimerKind> {
-        match self {
-            TimerKind::Proto => Some(TimerKind::ServerResponse),
-            TimerKind::ServerResponse => Some(TimerKind::Proto),
-            TimerKind::FtpAccept => Some(TimerKind::AlpnEyeballs),
-            TimerKind::AlpnEyeballs => Some(TimerKind::FtpAccept),
-            _ => None,
-        }
-    }
-
-    fn bit(self) -> u16 {
-        1 << self.ordinal()
-    }
 }
 
 /// Where a transfer is, as far as its limits care: still connecting
@@ -165,12 +128,9 @@ pub(crate) enum TimeLeft {
 pub(crate) struct Deadlines {
     total: Option<TimeLimit>,
     connect: Option<TimeLimit>,
-    /// When each timer fires, if its bit is in `set`. A timer stays
-    /// armed until an expiry pass at or after its instant, even once it
-    /// is in the past. Kept apart from the bits, as every transfer's slot
-    /// holds them; two kinds that share an instant are never both set.
-    at: [Instant; TimerKind::STORED],
-    set: u16,
+    /// When each armed timer fires. A timer stays armed until an expiry
+    /// pass at or after its instant, even once it is in the past.
+    at: [Option<Instant>; TimerKind::COUNT],
 }
 
 impl Deadlines {
@@ -179,8 +139,7 @@ impl Deadlines {
         Deadlines {
             total,
             connect,
-            at: [Instant::EPOCH; TimerKind::STORED],
-            set: 0,
+            at: [None; TimerKind::COUNT],
         }
     }
 
@@ -203,30 +162,25 @@ impl Deadlines {
         [total, connect]
     }
 
-    /// Arm `kind` to fire `wait` after `now`, replacing its last arming
-    /// and disarming the kind it shares its instant with. Returns when it
-    /// fires.
+    /// Arm `kind` to fire `wait` after `now`, replacing its last arming.
+    /// Returns when it fires.
     pub(crate) fn arm_in(&mut self, kind: TimerKind, now: Instant, wait: Duration) -> Instant {
         // C counts in whole milliseconds.
         let ms =
             Duration::from_millis(u64::try_from(wait.min(MAX_WAIT).as_millis()).expect("capped"));
         let at = now.after(ms);
-        self.at[kind.slot()] = at;
-        if let Some(sharer) = kind.sharer() {
-            self.set &= !sharer.bit();
-        }
-        self.set |= kind.bit();
+        self.at[kind.ordinal()] = Some(at);
         at
     }
 
     /// When `kind` fires, if armed.
     fn armed(&self, kind: TimerKind) -> Option<Instant> {
-        (self.set & kind.bit() != 0).then(|| self.at[kind.slot()])
+        self.at[kind.ordinal()]
     }
 
     /// Whether any timer is armed.
     pub(crate) fn any(&self) -> bool {
-        self.set != 0
+        self.at.iter().any(Option::is_some)
     }
 
     /// The timer that fires first, the earliest armed of a tie
@@ -248,11 +202,11 @@ impl Deadlines {
     }
 
     pub(crate) fn clear(&mut self, kind: TimerKind) {
-        self.set &= !kind.bit();
+        self.at[kind.ordinal()] = None;
     }
 
     pub(crate) fn clear_all(&mut self) {
-        self.set = 0;
+        self.at = [None; TimerKind::COUNT];
     }
 
     /// The earliest armed timer, past or not.
@@ -667,30 +621,22 @@ mod tests {
         assert_eq!(wait_ms(us(12, 0), us(11, 0)), Duration::ZERO);
     }
 
-    /// HTTP's wait for a 100 and the server's time to answer keep one
-    /// instant: arming either disarms the other, so neither fires at the
-    /// other's time.
+    /// Every kind keeps its own instant, whatever else is armed: an HTTPS
+    /// leg's second attempt survives FTP's wait for the server to connect,
+    /// as C's does.
     #[test]
-    fn two_kinds_that_share_an_instant_are_never_both_armed() {
+    fn every_kind_keeps_its_own_instant() {
         let mut d = Deadlines::new(None, None);
         let now = at_ms(0);
-        d.arm_in(
-            TimerKind::ServerResponse,
-            now,
-            Duration::from_millis(60_000),
-        );
-        d.arm_in(TimerKind::Proto, now, Duration::from_millis(1000));
-        assert_eq!(
-            d.in_order().collect::<Vec<_>>(),
-            [(at_ms(1000), TimerKind::Proto)]
-        );
-        d.arm_in(TimerKind::ServerResponse, now, Duration::from_millis(500));
-        assert_eq!(
-            d.in_order().collect::<Vec<_>>(),
-            [(at_ms(500), TimerKind::ServerResponse)]
-        );
-        d.clear(TimerKind::Proto);
-        assert_eq!(d.first(), Some(TimerKind::ServerResponse));
+        for (i, kind) in (1u64..).zip(TimerKind::ALL) {
+            d.arm_in(kind, now, Duration::from_millis(i));
+        }
+        let armed: Vec<_> = d.in_order().collect();
+        let want: Vec<_> = (1u64..)
+            .zip(TimerKind::ALL)
+            .map(|(i, kind)| (at_ms(i), kind))
+            .collect();
+        assert_eq!(armed, want);
     }
 
     /// FTP's wait for the server to connect and the server's time to
@@ -708,24 +654,6 @@ mod tests {
         );
         assert_eq!(d.first(), Some(TimerKind::FtpAccept));
         assert_eq!(d.wake_at(), Some(at_ms(2000)));
-    }
-
-    /// Every kind has an instant of its own but the pairs that share one,
-    /// and each pair shares both ways.
-    #[test]
-    fn only_the_pairs_share_an_instant() {
-        for a in TimerKind::ALL {
-            assert!(a.slot() < TimerKind::STORED, "{a:?}");
-            for b in TimerKind::ALL {
-                if a != b && a.slot() == b.slot() {
-                    assert_eq!(a.sharer(), Some(b), "{a:?} {b:?}");
-                }
-            }
-            if let Some(b) = a.sharer() {
-                assert_eq!(b.sharer(), Some(a));
-                assert_eq!(a.slot(), b.slot());
-            }
-        }
     }
 
     #[test]

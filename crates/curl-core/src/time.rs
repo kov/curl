@@ -8,19 +8,20 @@
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-/// A point in time: microseconds since its clock's epoch. Instants from
+/// A point in time: microseconds since its clock's epoch, plus one, so
+/// that `Option<Instant>` takes no more room than an instant. Instants from
 /// different clocks are not comparable; each multi has one clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Instant(u64);
+pub struct Instant(NonZeroU64);
 
 impl Instant {
     /// The clock's epoch.
-    pub const EPOCH: Instant = Instant(0);
+    pub const EPOCH: Instant = Instant(NonZeroU64::MIN);
 
     /// The time from `earlier` to this instant, or zero if `earlier` is
     /// later.
     pub fn since(self, earlier: Instant) -> Duration {
-        Duration::from_micros(self.0.saturating_sub(earlier.0))
+        Duration::from_micros(self.0.get().saturating_sub(earlier.0.get()))
     }
 
     /// The instant `d` after this one, at most the latest representable.
@@ -123,7 +124,7 @@ impl Default for SystemClock {
 
 impl Clock for SystemClock {
     fn now(&self) -> Instant {
-        Instant(micros(curl_os::time::monotonic()))
+        Instant::EPOCH.after(curl_os::time::monotonic())
     }
 
     fn unix_time(&self) -> i64 {
@@ -199,7 +200,8 @@ mod tests {
         let t = Instant::EPOCH.after(Duration::from_millis(5));
         assert_eq!(t.since(Instant::EPOCH), Duration::from_millis(5));
         assert_eq!(Instant::EPOCH.since(t), Duration::ZERO);
-        assert_eq!(t.after(Duration::MAX), Instant(u64::MAX));
+        assert_eq!(t.after(Duration::MAX), Instant(NonZeroU64::MAX));
+        assert_eq!(size_of::<Option<Instant>>(), size_of::<Instant>());
         // Below a microsecond counts as nothing.
         assert_eq!(t.after(Duration::from_nanos(999)), t);
     }

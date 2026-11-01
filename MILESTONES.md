@@ -1237,10 +1237,10 @@ Its first steps are milestone 6's design-review changes.
 85. **Budgets.** **Done.** 768 and 2120 stay as tripwires; `held` is the budget, and DESIGN.md says a size
     trade is justified only against a budget derived from C. The socket rule allows sockets a
     protocol owns by nature (FTP's listener, TFTP's datagrams).
-86. **Types a budget cost.** **Done**, but for the remeasure. The handshake moves into `ConnectMachine`; each timer holds its own
+86. **Types a budget cost.** **Done.** The handshake moves into `ConnectMachine`; each timer holds its own
     `Option<Instant>` through a niche in `Instant`; `RouteCold`'s reuse check goes by name;
-    `Race` machines after the handshake's move (`RaceSecond`). Not done: sizes remeasured on a
-    product build since the handshake moved.
+    `Race` machines after the handshake's move (`RaceSecond`). Measured 2026-11-01 on a build
+    without test-util: a transfer's slot 560 bytes, a connection 272.
 87. **Types that hold more than they say.** **Done.** `OpenSlot` in the pool; line state passed to `waits`
     and `interest` rather than mirrored in requests; the SSH and LDAP library traits take
     `Option<BorrowedFd>` and answer in real statuses and flag types; SSH's `kbd` an enum and

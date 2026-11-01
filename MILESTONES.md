@@ -1024,7 +1024,7 @@ fail; 25 errors are vsftpd's (milestone 6).
 
 ## Milestone 6: the other protocols
 
-Status: **to do**. SCOPE stage 6, in groups, each through the test servers `runtests.pl`
+Status: **done**. SCOPE stage 6, in groups, each through the test servers `runtests.pl`
 starts: POP3, IMAP and SMTP with STARTTLS; FTP and FTPS (the data connection a second chain
 beside the control connection's); SCP and SFTP through libssh, the SSH library distributions
 build with, with a C oracle built against it; then LDAP, MQTT, WebSocket, DICT, Gopher,
@@ -1164,7 +1164,7 @@ protocols need, each step leaving behaviour and traces as they are:
     upkeep interval; the server's packets checked as C checks them; `curl -V`. Every MQTT
     test both legs run passes (28); 1693 is a C unit test, on the C leg only.
 77. **WebSocket.** **Done**, but for the traces of the calls on a connection a transfer only
-    made, which go untraced as `curl_easy_send`'s do. `ws://` and `wss://` over HTTP/1.1
+    made (step 83). `ws://` and `wss://` over HTTP/1.1
     (`proto::ws`, `proto::http::ws`, after `lib/ws.c`): the upgrade request with its key from
     the random hook, the 101 switching the connection to `LineConn::Ws`, any final response
     refused; the frame codec both ways, masking, fragments, control frames, auto-pong and
@@ -1213,10 +1213,49 @@ protocols need, each step leaving behaviour and traces as they are:
 ## Milestone 7: shared state
 
 Status: **to do**. SCOPE stage 7: the share interface (cookies, DNS, connections, SSL
-sessions, HSTS, alt-svc, PSL) with its lock callbacks, DoH (`--doh-url`, 2101), the `--dns-*`
+sessions, HSTS, PSL; alt-svc stays per handle, as C's has no share) with its lock callbacks, DoH (`--doh-url`, 2101), the `--dns-*`
 options, and SSL session import and export (`SSLS-EXPORT`, 1678).
 
+Its first steps are milestone 6's design-review changes.
+
+82. **Parity with C.** One `.netrc` read per request on every scheme; DICT's and Gopher's
+    end-of-body writer lines; SSH's "end of response with N bytes missing"; the FTP data
+    connection keeping its next-attempt, resolver-retry and tunnel deadlines; `retryable` on the
+    line protocols against C's `!req.done`; `CURLOPT_SHARE` refused on a running transfer, its
+    refusal from a callback kept and recorded in DIVERGENCE.md; `Resume` rejected at the option
+    rather than clamped. DIVERGENCE.md's source-only entries measured on the libssh leg.
+83. **Calls on a detached connection.** Traces for calls that belong to no transfer; the C API
+    layer's WebSocket send lines; TLS 1.3 tickets and the SSL pointer on a detached connection;
+    raw I/O outside the pool lock.
+84. **The FTP data connection's indexed trace names** (`[SSL-1]`, `[TCP-1]`, its setup and
+    shutdown lines).
+85. **Budgets.** 768 and 2120 stay as tripwires; `held` is the budget, and DESIGN.md says a size
+    trade is justified only against a budget derived from C. The socket rule allows sockets a
+    protocol owns by nature (FTP's listener, TFTP's datagrams).
+86. **Types a budget cost.** The handshake moves into `ConnectMachine`; each timer holds its own
+    `Option<Instant>` through a niche in `Instant`; `RouteCold`'s reuse check goes by name;
+    `Race` machines after the handshake's move. Sizes remeasured on a product build.
+87. **Types that hold more than they say.** `OpenSlot` in the pool; line state passed to `waits`
+    and `interest` rather than mirrored in requests; the SSH and LDAP library traits take
+    `Option<BorrowedFd>` and answer in real statuses and flag types; SSH's `kbd` an enum and
+    its session reset trimmed; `State::SftpQuoteStat(kind)`; LDAP's library stored in `Request`.
+88. **What the protocols share.** One receive side, `proto::xfer::Receive`, for FTP, IMAP, POP3,
+    DICT and Gopher; `RequestBase`; a table for `over_tls` and the transport; the mail protocols'
+    shared glue; FTP, SSH and LDAP inline in the boxed `LineConn`.
+89. **Waits C blocks in.** TELNET's exchange, FTP's CCC and SSH's DONE stay non-blocking, each
+    recorded in DIVERGENCE.md with a test that other transfers do not stall.
+90. **DoH's owner.** `Owner::App` or `Owner::Internal`, so an internal transfer has an owner on
+    every host, the tool's included.
+91. **`multi/state.rs` split** mechanically, and the stale parts of ENGINE.md and DESIGN.md and
+    stale size comments brought up to date; the two unsafe blocks the SAFETY scan did not match
+    (`curl-ngtcp2/src/sys.rs`, `curl-sys-abi/src/printf/mod.rs`) examined.
+92. **The share.** The kinds above with their lock callbacks. PSL per multi or share, with its
+    TTL; `ShareLock::lock` takes the access it wants; HSTS a `with_hsts` with told and untold
+    forms, as C tells the callback only around file loads.
+
 ## Milestone 8: a WebKit port on the curl backend
+
+Its performance scenarios use the threaded-resolver build and turn VERBOSE on, as WebKit does.
 
 Status: **to do**. The application validation: a WebKit port built with its libcurl network
 backend (`inventory/references/webkit-curl/`) against our library, its own HTTP tests run

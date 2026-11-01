@@ -998,6 +998,54 @@ fn a_response_cut_short_ends_as_c_ends_it() {
             "{said:?} {ignore}"
         );
     }
+    // C's debug build says a head still being read has no size (-1).
+    let (ran, _) = rtsp_with(
+        Easy::new(),
+        &[b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Length: 10\r\n"],
+        true,
+        usize::MAX,
+        |o| kind(o, RtspRequest::Describe),
+    );
+    if cfg!(feature = "debug-hooks") {
+        assert_eq!(
+            filter_said(&ran.seen),
+            [
+                "rtsp_rtp_write_resp(len=46, in_header=0, eos=0)\n",
+                "rtsp_rtp_write_resp(len=0, in_header=1, done=0, rtspc->state=0, req.size=-1)\n",
+            ]
+        );
+    }
+}
+
+/// An interleave handler that takes `short` bytes fewer than it is given.
+struct Takes(usize);
+
+impl WriteHandler for Takes {
+    fn write(&self, _: &mut TransferCx<'_>, message: &[u8]) -> Write {
+        Write::Took(message.len() - self.0)
+    }
+}
+
+/// A message the interleave handler takes whole is written; one it takes
+/// in part fails the request (`rtp_client_write`).
+#[test]
+fn an_rtp_message_taken_in_part_fails_the_request() {
+    for (short, result) in [(0, Ok(())), (1, Err(ErrorKind::WriteError))] {
+        let (ran, _) = rtsp(&[INTERLEAVED], |o| {
+            o.small.make_mut().unwrap().interleave = Some(Handler::write(Takes(short)).unwrap());
+        });
+        assert_eq!(ran.result, result, "{short}");
+    }
+    let (ran, _) = rtsp(&[INTERLEAVED], |o| {
+        o.small.make_mut().unwrap().interleave = Some(Handler::write(Takes(1)).unwrap());
+    });
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"Failed writing RTP data\n".to_string()),
+        "{:?}",
+        ran.seen.text()
+    );
 }
 
 const RESPONSES: &[&[u8]] = &[

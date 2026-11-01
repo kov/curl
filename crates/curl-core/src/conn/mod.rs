@@ -1493,6 +1493,12 @@ impl Conn {
         }
     }
 
+    /// Whether its connect bound the socket to an address or a port
+    /// (`bits.bound`).
+    pub(crate) fn bound_local(&self) -> bool {
+        self.settings.bound_local()
+    }
+
     /// The socket under it, whatever goes over that; none without a
     /// network.
     pub(crate) fn socket(&self) -> Option<&dyn io::Socket> {

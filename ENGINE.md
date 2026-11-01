@@ -488,9 +488,8 @@ connection is set up, the socket's part in it: `adjust_pollset, !connected, POLL
 each attempt, and `adjust_pollset, !active, POLLIN fd=N` for the socket a handshake runs over,
 which waits to read throughout as C's filter, connected but not in use, adds. A socket whose
 connect fails at once traces its opening, `Immediate connect fail`, its close and the failure,
-as C does. Not traced: the health check's `is_alive`
-lines, which the pool's check makes with a silent context where C traces them on the transfer
-looking for a connection. Not traced: the receive
+as C does. The health check's `is_alive` lines are the multi's internal trace's, as C makes
+that check on its internal handle. Not traced: the receive
 C tries before its first poll in PERFORMING, which the engine does not make; a tunnel's and
 SOCKS handshake's reads and writes, as C reads a proxy's answer to `CONNECT` a byte at a time
 from the socket, where the engine reads what is there.

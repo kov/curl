@@ -86,3 +86,21 @@ witness: curl-core proto::tftp::tests::over_the_wire::a_tunnel_granted_fails_to_
         let Some(socket) = lease.conn().datagram_socket() else {
             return Ok(());
 
+
+=== an interface bound by its name spares TFTP's bind
+file: crates/curl-core/src/conn/bind.rs
+witness: curl-core proto::tftp::tests::over_the_wire::an_interface_named_does_not_spare_the_bind
+--- old
+            // Bound to the interface by its name, and nothing else.
+            None => return Ok(false),
+--- new
+            // Bound to the interface by its name, and nothing else.
+            None => return Ok(true),
+
+=== a socket bound to a port is bound again by TFTP
+file: crates/curl-core/src/proto/tftp.rs
+witness: curl-core proto::tftp::tests::over_the_wire::a_socket_bound_to_a_port_fails_to_send_through_a_tunnel
+--- old
+        if lease.conn().bound_local() {
+--- new
+        if false && lease.conn().bound_local() {

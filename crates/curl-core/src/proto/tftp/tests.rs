@@ -451,6 +451,90 @@ mod over_the_wire {
         assert!(head.ends_with("\r\n\r\n"), "nothing after the head: {head}");
     }
 
+    /// What a transfer asked of a proxy granting its tunnel, the network
+    /// and the socket's local end as said.
+    fn tunnel_bound(
+        net: impl FnOnce(crate::conn::io::FakeNet) -> crate::conn::io::FakeNet,
+        bind: crate::options::LocalBind,
+    ) -> (Vec<u8>, Ran) {
+        use crate::conn::io::{FakeNet, Peer};
+        use crate::id::ArenaPolicy;
+        use crate::multi::{Env, Multi};
+        use crate::time::ManualClock;
+        let clock = ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+        let granted = b"HTTP/1.1 101 Switching Protocols\r\nCapsule-Protocol: ?1\r\n\r\n";
+        let talk = Conversation::replies(&[granted], false).per_send();
+        let fake = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        let env = Env {
+            clock: Box::new(clock),
+            net: Box::new(net(fake)),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m: Multi = Multi::new(env).unwrap();
+        let url = format!("tftp://127.0.0.1:{PORT}/f");
+        let ran = crate::proto::raw::wire::transfer(&mut m, &url, |o| {
+            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.sockets.make_mut().unwrap().local = bind;
+        });
+        drop(m);
+        (talk.received(), ran)
+    }
+
+    /// An interface bound by its name is not a socket bound
+    /// (`bits.bound`): the transfer's own bind goes on, and fails.
+    #[test]
+    fn an_interface_named_does_not_spare_the_bind() {
+        use crate::options::{Interface, LocalBind};
+        let bind = LocalBind {
+            interface: Interface::parse(b"eth9").unwrap(),
+            ..LocalBind::NONE
+        };
+        let (_, ran) = tunnel_bound(|n| n.with_device("eth9"), bind);
+        assert_eq!(
+            ran.result,
+            Some(Err(ErrorKind::CouldntConnect)),
+            "{}",
+            ran.text
+        );
+        assert!(
+            ran.text.contains("bind() failed; Invalid argument\n"),
+            "{}",
+            ran.text
+        );
+    }
+
+    /// A socket its connect bound to a port is spared the transfer's bind,
+    /// and its request fails to send; C sends it on the socket connected
+    /// to the proxy (DIVERGENCE.md).
+    #[test]
+    fn a_socket_bound_to_a_port_fails_to_send_through_a_tunnel() {
+        let bind = crate::options::LocalBind {
+            port: 41000,
+            ..crate::options::LocalBind::NONE
+        };
+        let (said, ran) = tunnel_bound(|n| n, bind);
+        assert_eq!(ran.result, Some(Err(ErrorKind::SendError)), "{}", ran.text);
+        let head = String::from_utf8_lossy(&said);
+        assert!(head.ends_with("\r\n\r\n"), "nothing after the head: {head}");
+    }
+
+    /// Through a SOCKS proxy the handshake goes over TCP, and the proxy
+    /// refusing it fails it; C opens a UDP socket to the proxy and fails to send
+    /// on it, with the same code (DIVERGENCE.md).
+    #[test]
+    fn a_socks_proxy_is_spoken_to_over_tcp() {
+        let (said, ran) = fetch(&[b"\x05\xff"], |o| {
+            o.proxy.make_mut().unwrap().url =
+                Some(format!("socks5://127.0.0.1:{PORT}").into_bytes());
+        });
+        assert_eq!(ran.result, Some(Err(ErrorKind::Proxy)), "{}", ran.text);
+        assert_eq!(said[0], 5, "the SOCKS5 greeting: {said:?}");
+    }
+
     /// What the paused writer took, and whether it paused yet.
     #[derive(Clone, Default)]
     struct PausesFirst {

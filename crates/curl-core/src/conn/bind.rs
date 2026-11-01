@@ -42,7 +42,8 @@ const BIND_RESOLVE_PORT: u16 = 80;
 
 /// Bind `socket`, about to connect to `remote`, as `bind` says: in
 /// `scope_id`, the connection's IPv6 scope (0 for none), an interface's
-/// address is taken (`bindlocal`).
+/// address is taken (`bindlocal`). Whether it was bound to an address or a
+/// port (`bits.bound`), not merely to an interface by its name, or nothing.
 pub(super) fn bind_local(
     cx: &mut dyn ConnCx,
     socket: &dyn Socket,
@@ -50,7 +51,7 @@ pub(super) fn bind_local(
     bind: &LocalBind,
     scope_id: u32,
     setup: DriveOptions,
-) -> Result<(), BindFailed> {
+) -> Result<bool, BindFailed> {
     let v6 = remote.is_ipv6();
     let parts = bind
         .interface
@@ -61,7 +62,7 @@ pub(super) fn bind_local(
         None => (None, None, false, false),
     };
     if iface.is_none() && host.is_none() && bind.port == 0 {
-        return Ok(());
+        return Ok(false);
     }
     if iface.is_some_and(|name| name.len() >= 255) {
         return Err(BindFailed::Failed(ErrorKind::BadFunctionArgument));
@@ -77,7 +78,7 @@ pub(super) fn bind_local(
         )? {
             Some(at) => at,
             // Bound to the interface by its name, and nothing else.
-            None => return Ok(()),
+            None => return Ok(false),
         }
     } else if v6 {
         (IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
@@ -99,7 +100,7 @@ pub(super) fn bind_local(
         let error = match socket.bind(at) {
             Ok(()) => {
                 cx.info(format_args!("Local port: {port}"));
-                return Ok(());
+                return Ok(true);
             }
             Err(error) => error,
         };

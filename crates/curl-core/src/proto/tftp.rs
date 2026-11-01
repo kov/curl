@@ -973,7 +973,7 @@ impl Request {
     /// the socket is the one connected to the proxy, whose bind the system
     /// refuses, and the transfer fails with what it says.
     fn bind<H: Host>(&self, cx: &mut StepCx<'_, H>, lease: &ConnLease) -> Result<(), ErrorKind> {
-        if cx.easy().options().sockets.local.binds() {
+        if lease.conn().bound_local() {
             return Ok(());
         }
         let any = match lease.conn().remote() {

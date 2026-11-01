@@ -1344,13 +1344,16 @@ impl ConnectMachine {
                 .scope
                 .or(self.route.destination().scope())
                 .map_or(0, NonZeroU32::get);
-            if let Err(failed) = bind_local(cx, &*socket, *at, local, scope, setup) {
-                cx.net().close(Sock::new(socket, self.closer.clone()));
-                if failed == BindFailed::OutOfMemory {
-                    return Err(ConnectError::OutOfMemory);
+            match bind_local(cx, &*socket, *at, local, scope, setup) {
+                Ok(bound) => self.settings.set_bound_local(bound),
+                Err(failed) => {
+                    cx.net().close(Sock::new(socket, self.closer.clone()));
+                    if failed == BindFailed::OutOfMemory {
+                        return Err(ConnectError::OutOfMemory);
+                    }
+                    let none = io::Error::from_raw_os_error(0);
+                    return self.not_opened(cx, Some(&remote), failed.kind(), none);
                 }
-                let none = io::Error::from_raw_os_error(0);
-                return self.not_opened(cx, Some(&remote), failed.kind(), none);
             }
         }
         if opened.by_application

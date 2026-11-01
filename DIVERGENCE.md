@@ -468,17 +468,17 @@ not a difference: it is tracked in `MILESTONES.md`.
 
 ## A tunnel C asks for and cannot use
 
-- **TFTP through a proxy, its socket bound by the application or through SOCKS.** An HTTP
-  proxy is asked for a CONNECT-UDP tunnel, and, granted one, the bind of the socket connected
-  to it fails, both as in C (`a_tunnel_granted_fails_to_bind`,
-  `crates/curl-core/src/proto/tftp/tests.rs`; test 3700). Two corners are left, each failing
-  with C's exit code. With `--interface` or `--local-port`, C skips that bind where it has
-  bound the socket (`bits.bound`), sends its request on the socket connected to the proxy, and
-  fails with 55, "Received too short packet" once the proxy closes (measured 2026-11-01 against
-  the C build); here `--interface` of any kind skips the bind and the send fails with 55,
-  nothing sent. Through a SOCKS proxy, C opens a UDP socket to the proxy and fails with 97,
-  "Send failure: Destination address required"; here the SOCKS handshake is made over TCP and
-  fails with 97 with what the proxy leaves it. Neither gets a transfer through, on either side.
+- **TFTP through a proxy, its socket bound to an address or a port, or through SOCKS.** Through
+  an HTTP proxy's tunnel, a socket `--interface 127.0.0.1` or `--local-port` bound is spared
+  the transfer's bind. C then sends its request on that socket, which is connected to the proxy,
+  and fails with 55, "Received too short packet" once the proxy closes; here the send fails
+  with 55, "Failed sending data to the peer", nothing sent after the tunnel's request (measured
+  2026-11-01; `a_socket_bound_to_a_port_fails_to_send_through_a_tunnel`,
+  `crates/curl-core/src/proto/tftp/tests.rs`). Through a SOCKS proxy, C opens a UDP socket to
+  the proxy and fails with 97, "Send failure: Destination address required", sending nothing;
+  here the SOCKS handshake is made over TCP and fails with 97 with what that finds (measured
+  2026-11-01; `a_socks_proxy_is_spoken_to_over_tcp`). Neither gets a transfer through, on either
+  side.
 
 ## Frames C sends beside a transfer
 

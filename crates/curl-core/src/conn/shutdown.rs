@@ -34,12 +34,26 @@ pub(crate) struct ConnSettings {
     /// it (`set.shutdowntimeout` is set by none), so it is always C's
     /// `DEFAULT_SHUTDOWN_TIMEOUT_MS`.
     shutdown_ms: u32,
+    /// Its connect bound the socket to an address or a port (`bits.bound`).
+    bound_local: bool,
 }
 
 impl ConnSettings {
     /// What a transfer's connections keep: the defaults, as no option
     /// changes them.
-    pub(crate) const DEFAULT: ConnSettings = ConnSettings { shutdown_ms: 2000 };
+    pub(crate) const DEFAULT: ConnSettings = ConnSettings {
+        shutdown_ms: 2000,
+        bound_local: false,
+    };
+
+    /// Whether its connect bound the socket to an address or a port.
+    pub(crate) fn bound_local(self) -> bool {
+        self.bound_local
+    }
+
+    pub(crate) fn set_bound_local(&mut self, bound: bool) {
+        self.bound_local = bound;
+    }
 
     /// How long a shutdown may take.
     pub(crate) fn shutdown_time(self) -> Duration {

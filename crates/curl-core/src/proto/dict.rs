@@ -6,7 +6,8 @@ use std::num::NonZeroU32;
 
 use curl_alloc::TryVec as _;
 
-use super::raw::{Outgoing, ToClose};
+use super::raw::Outgoing;
+use super::xfer::Receive;
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
@@ -32,7 +33,7 @@ pub(crate) struct Request {
     path: Vec<u8>,
     /// The request, once DO has made it.
     out: Outgoing,
-    answer: ToClose,
+    answer: Receive,
 }
 
 /// The request the path asks for, its words escaped: the bytes it sends
@@ -151,7 +152,7 @@ impl Request {
             peer,
             path,
             out: Outgoing::default(),
-            answer: ToClose::default(),
+            answer: Receive::default(),
         })
     }
 
@@ -192,6 +193,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
+        self.pipeline.flush(cx)?;
         self.answer.read(cx, lease, &mut self.pipeline)
     }
 
@@ -208,7 +210,7 @@ impl Request {
         });
         match sent {
             Ok(true) => {
-                self.answer.start(cx);
+                self.answer.start_to_end(cx);
                 Ok(true)
             }
             Ok(false) => Ok(false),

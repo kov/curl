@@ -191,7 +191,7 @@ fn request() -> Request {
         asked: Box::default(),
         no_body: false,
         nothing_after: false,
-        receiving: None,
+        receive: super::Receive::default(),
         sending: None,
         last: Final::None,
         round: drive::Blocking::default(),

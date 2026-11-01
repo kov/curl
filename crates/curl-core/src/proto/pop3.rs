@@ -10,21 +10,21 @@ use curl_alloc::{TryArc, TryVec as _};
 use super::pingpong::Pingpong;
 use super::pingpong::drive::{self, Read};
 use super::pingpong::pop3::{Pop3, Pop3Reply};
+use super::xfer::{Receive, Sink};
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
 use crate::auth::creds::{CredentialGate, Credentials, Takes};
 use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl, SaslError};
-use crate::conn::io::{Events, Recv};
+use crate::conn::io::Events;
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
-use crate::conn::{ConnLease, Peer, RecvFailed, RouteCold, Scheme};
-use crate::deliver::{self, Pause, Pipeline, Reach};
+use crate::conn::{ConnLease, Peer, RouteCold, Scheme};
+use crate::deliver::{Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::hash::{Hash as _, Md5};
 use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::UseSsl;
-use crate::progress::rate::Way;
 use crate::trace;
 use crate::url::{GetOptions, Part, Url, decode_but_control};
 
@@ -109,6 +109,36 @@ pub(crate) struct Pop3Conn {
 /// The credentials a connection logs in with, as its route holds them.
 fn login_of(cold: &Option<TryArc<RouteCold>>) -> Option<&Credentials> {
     cold.as_deref().and_then(|c| c.login.as_ref())
+}
+
+/// Where a retrieval's bytes go: through the end-of-body scan. The
+/// connection's end writes nothing through the writers, as C's `pop3_write`
+/// passes over `is_eos`.
+struct Body<'a> {
+    pipeline: &'a mut Pipeline,
+    eob: &'a mut Eob,
+}
+
+impl<H: Host, S> Sink<H, S> for Body<'_> {
+    fn body(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> Result<bool, ErrorKind> {
+        let pipeline = &mut *self.pipeline;
+        self.eob.write(bytes, &mut |b| pipeline.body(cx, b))
+    }
+
+    fn bytecount(&self) -> u64 {
+        self.pipeline.bytecount()
+    }
+
+    fn end(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        _: &mut S,
+        _: Option<u64>,
+    ) -> Result<Option<ProtoStep>, ErrorKind> {
+        trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
+        crate::deliver::write_resp(cx, 0, true, Ok(()));
+        Ok(None)
+    }
 }
 
 impl Pop3Conn {
@@ -256,7 +286,7 @@ pub(crate) struct Request {
     /// none.
     no_body: bool,
     /// The body is still being read (`KEEP_RECV`).
-    receiving: bool,
+    receive: Receive,
     eob: Eob,
     /// What TLS is made with and said as as the connection is upgraded.
     in_place: crate::multi::state::tls::InPlace,
@@ -334,7 +364,7 @@ impl Request {
             url_options,
             body: true,
             no_body: cx.easy().options().method == crate::options::Method::Head,
-            receiving: false,
+            receive: Receive::default(),
             eob: Eob::default(),
             in_place: Default::default(),
             wants: Events::IN,
@@ -389,7 +419,7 @@ impl Request {
 
     /// What the body waits for on the connection's socket.
     pub(crate) fn interest(&self, pause: Pause) -> Events {
-        if self.receiving && !pause.recv_paused() {
+        if self.receive.is_receiving() && !pause.recv_paused() {
             Events::IN
         } else {
             Events::NONE
@@ -420,88 +450,22 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
         self.pipeline.flush(cx)?;
-        let read = self.read_body(cx, lease);
-        match read {
-            Ok(ProtoStep::AtReadLimit) => crate::multi::mstate::trace(
-                cx,
-                format_args!("sendrecv_dl() no EAGAIN/pending data, mark as dirty"),
-            ),
-            Err(e) => {
-                let code = e.number();
-                trace::debug_info(cx, format_args!("sendrecv_dl() -> {code}"));
-            }
-            Ok(_) => {}
-        }
-        read
-    }
-
-    /// The reads of a step (`sendrecv_dl`).
-    fn read_body<H: Host>(
-        &mut self,
-        cx: &mut StepCx<'_, H>,
-        lease: &mut ConnLease,
-    ) -> Result<ProtoStep, ErrorKind> {
-        let mut reads = 0;
-        loop {
-            if !self.receiving {
-                return Ok(ProtoStep::Done);
-            }
-            if cx.pause().recv_paused() {
-                return Ok(ProtoStep::Blocked);
-            }
-            if reads == super::http::MAX_READS {
-                return Ok(ProtoStep::AtReadLimit);
-            }
-            let max = cx.easy().options().limits.buffer_size.get();
-            let max = match cx.rate_allowance(Way::Recv) {
-                Some(..=0) => return Ok(ProtoStep::Blocked),
-                Some(allowed) => max.min(usize::try_from(allowed).unwrap_or(usize::MAX)),
-                None => max,
-            };
-            reads += 1;
-            let said = cx.easy().report().reasons();
-            match lease.get().recv(cx, max) {
-                Ok(Recv::WouldBlock) if lease.get().data_pending() => {
-                    return Ok(ProtoStep::AtReadLimit);
-                }
-                Ok(Recv::WouldBlock) => return Ok(ProtoStep::Blocked),
-                Ok(Recv::Eof) => {
-                    trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
-                    deliver::write_resp(cx, 0, true, Ok(()));
-                    self.receiving = false;
-                }
-                Ok(Recv::Data(_)) => {
-                    let mut rx = std::mem::take(lease.get().rx_mut());
-                    let fed = self.body_bytes(cx, rx.filled());
-                    let all = rx.filled().len();
-                    rx.consume(all);
-                    *lease.get().rx_mut() = rx;
-                    deliver::write_resp(cx, all, false, fed);
-                    fed?;
-                }
-                Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
-                Err(RecvFailed::Os(_)) if cx.easy().report().reasons() > said => {
-                    return Err(ErrorKind::RecvError);
-                }
-                Err(RecvFailed::Os(e)) => {
-                    let why = curl_os::error::ErrorText::of(&e);
-                    return Err(trace::fail_with(
-                        cx,
-                        ErrorKind::RecvError,
-                        &[b"Recv failure: ", why.as_bytes()],
-                    ));
-                }
-            }
-        }
+        let mut sink = Body {
+            pipeline: &mut self.pipeline,
+            eob: &mut self.eob,
+        };
+        self.receive.read(cx, lease, &mut sink)
     }
 
     /// Body bytes through the end-of-body scan to the application; the
     /// body over once the marker is whole (`CURL_REQ_CLEAR_RECV`).
     fn body_bytes<H: Host>(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> Step {
-        let pipeline = &mut self.pipeline;
-        let ended = self.eob.write(bytes, &mut |b| pipeline.body(cx, b))?;
-        if ended {
-            self.receiving = false;
+        let mut sink = Body {
+            pipeline: &mut self.pipeline,
+            eob: &mut self.eob,
+        };
+        if <Body<'_> as Sink<H, ConnLease>>::body(&mut sink, cx, bytes)? {
+            self.receive.stop();
         }
         Ok(())
     }
@@ -1049,14 +1013,7 @@ impl Request {
         self.eob = Eob::after_ok();
         if self.body {
             // Read, for as long as the body is (`Curl_xfer_setup_recv`).
-            crate::multi::mstate::xfer_setup(
-                cx,
-                crate::deliver::Directions {
-                    recv: true,
-                    send: false,
-                },
-            );
-            self.receiving = true;
+            self.receive.start_to_end(cx);
             let after = pc.pp.after_reply().unwrap_or_default();
             let n = after.len();
             if n > 0 {

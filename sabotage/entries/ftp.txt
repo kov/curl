@@ -357,3 +357,12 @@ witness: curl-core proto::ftp::tests::the_data_connection_s_filters_name_its_soc
     if cx.rank() == ConnRank::Second && component.is_filter() {
 --- new
     if cx.rank() == ConnRank::Second {
+
+=== a download's end does not wait for the data connection's shutdown
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_file_is_retrieved_over_a_passive_data_connection
+--- old
+        write_end(cx, self.0)?;
+        let got = self.0.bytecount();
+--- new
+        let got = self.0.bytecount();

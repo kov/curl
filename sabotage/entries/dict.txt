@@ -28,14 +28,14 @@ witness: curl-core proto::dict::tests::a_word_past_the_buffer_fails
 file: crates/curl-core/src/proto/dict.rs
 witness: curl-core proto::dict::tests::a_lookup_reads_its_answer_to_the_close
 --- old
-                self.answer.start(cx);
+                self.answer.start_to_end(cx);
 --- new
                 {}
 
 === an answer read to the close never ends through the writers
-file: crates/curl-core/src/proto/raw.rs
+file: crates/curl-core/src/proto/xfer.rs
 witness: curl-core proto::dict::tests::a_lookup_ends_through_the_writers
 --- old
-                    let ended = pipeline.end(cx);
+    let ended = pipeline.end(cx);
 --- new
-                    let ended = Ok(());
+    let ended = Ok(());

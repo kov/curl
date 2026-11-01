@@ -15,20 +15,20 @@ use curl_alloc::{TryArc, TryVec as _};
 use super::pingpong::Pingpong;
 use super::pingpong::drive::{self, Read};
 use super::pingpong::imap::{Continuations, Imap, ImapReply, Tag, Untagged, literal};
+use super::xfer::Receive;
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
 use crate::auth::creds::{CredentialGate, Credentials, Takes};
 use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl, SaslError};
-use crate::conn::io::{Events, Recv};
+use crate::conn::io::Events;
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
-use crate::conn::{ConnLease, ConnNumber, Peer, RecvFailed, RouteCold, Scheme};
-use crate::deliver::{self, Expect, Pause, Pipeline, Reach};
+use crate::conn::{ConnLease, ConnNumber, Peer, RouteCold, Scheme};
+use crate::deliver::{Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::{Method, UploadFlags, UploadSource, UseSsl};
-use crate::progress::rate::Way;
 use crate::time::Instant;
 use crate::trace;
 use crate::upload::chain::Body;
@@ -221,7 +221,7 @@ pub(crate) struct Request {
     nothing_after: bool,
     /// A literal is still being read, to this size of body
     /// (`KEEP_RECV`, `req.size`).
-    receiving: Option<u64>,
+    receive: Receive,
     /// The `APPEND`'s body, while it goes (`KEEP_SEND`).
     sending: Option<Box<Sending>>,
     /// The answer DONE reads, and where its blocking drive's round is.
@@ -313,7 +313,7 @@ impl Request {
             asked: Box::default(),
             no_body: cx.easy().options().method == Method::Head,
             nothing_after: false,
-            receiving: None,
+            receive: Receive::default(),
             sending: None,
             last: Final::None,
             round: drive::Blocking::default(),
@@ -388,7 +388,7 @@ impl Request {
 
     /// What the exchange waits for on the connection's socket.
     pub(crate) fn interest(&self, pause: Pause) -> Events {
-        if self.receiving.is_some() {
+        if self.receive.is_receiving() {
             if pause.recv_paused() {
                 Events::NONE
             } else {
@@ -460,19 +460,8 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
         self.pipeline.flush(cx)?;
-        if self.receiving.is_some() {
-            let read = self.read_body(cx, lease);
-            match read {
-                Ok(ProtoStep::AtReadLimit) => crate::multi::mstate::trace(
-                    cx,
-                    format_args!("sendrecv_dl() no EAGAIN/pending data, mark as dirty"),
-                ),
-                Err(e) => {
-                    let code = e.number();
-                    trace::debug_info(cx, format_args!("sendrecv_dl() -> {code}"));
-                }
-                Ok(_) => {}
-            }
+        if self.receive.is_receiving() {
+            let read = self.receive.read(cx, lease, &mut self.pipeline);
             if read? != ProtoStep::Done {
                 return read;
             }
@@ -484,74 +473,6 @@ impl Request {
             return Ok(ProtoStep::Blocked);
         }
         Ok(ProtoStep::Done)
-    }
-
-    /// Read the literal on, at most as many reads as a step makes, none
-    /// past its size (`sendrecv_dl`, `xfer_recv_resp`).
-    fn read_body<H: Host>(
-        &mut self,
-        cx: &mut StepCx<'_, H>,
-        lease: &mut ConnLease,
-    ) -> Result<ProtoStep, ErrorKind> {
-        let mut reads = 0;
-        loop {
-            let Some(size) = self.receiving else {
-                return Ok(ProtoStep::Done);
-            };
-            if cx.pause().recv_paused() {
-                return Ok(ProtoStep::Blocked);
-            }
-            if reads == super::http::MAX_READS {
-                return Ok(ProtoStep::AtReadLimit);
-            }
-            let left = size.saturating_sub(self.pipeline.bytecount());
-            let max = cx.easy().options().limits.buffer_size.get();
-            let max = max.min(usize::try_from(left).unwrap_or(usize::MAX));
-            let max = match cx.rate_allowance(Way::Recv) {
-                Some(..=0) => return Ok(ProtoStep::Blocked),
-                Some(allowed) => max.min(usize::try_from(allowed).unwrap_or(usize::MAX)),
-                None => max,
-            };
-            reads += 1;
-            let said = cx.easy().report().reasons();
-            match lease.get().recv(cx, max) {
-                Ok(Recv::WouldBlock) if lease.get().data_pending() => {
-                    return Ok(ProtoStep::AtReadLimit);
-                }
-                Ok(Recv::WouldBlock) => return Ok(ProtoStep::Blocked),
-                Ok(Recv::Eof) => {
-                    trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
-                    let ended = self.pipeline.end(cx);
-                    deliver::write_resp(cx, 0, true, ended);
-                    self.receiving = None;
-                    ended?;
-                }
-                Ok(Recv::Data(_)) => {
-                    let mut rx = std::mem::take(lease.get().rx_mut());
-                    let fed = self.pipeline.body(cx, rx.filled());
-                    let all = rx.filled().len();
-                    rx.consume(all);
-                    *lease.get().rx_mut() = rx;
-                    deliver::write_resp(cx, all, false, fed);
-                    fed?;
-                    if self.pipeline.body_done() {
-                        self.receiving = None;
-                    }
-                }
-                Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
-                Err(RecvFailed::Os(_)) if cx.easy().report().reasons() > said => {
-                    return Err(ErrorKind::RecvError);
-                }
-                Err(RecvFailed::Os(e)) => {
-                    let why = curl_os::error::ErrorText::of(&e);
-                    return Err(trace::fail_with(
-                        cx,
-                        ErrorKind::RecvError,
-                        &[b"Recv failure: ", why.as_bytes()],
-                    ));
-                }
-            }
-        }
     }
 
     /// Send the `APPEND`'s body on, as the connection takes it: `Done`
@@ -1273,7 +1194,7 @@ impl Request {
             self.receive(cx, pc, size);
             // A literal still to come is fetched, its answer after it
             // read as the transfer ends (`imap_done`'s `maxdownload`).
-            if self.receiving.is_some() && self.asked.custom.is_some() {
+            if self.receive.is_receiving() && self.asked.custom.is_some() {
                 self.last = Final::Fetch;
             }
             set_state(cx, pc, State::Stop);
@@ -1326,7 +1247,7 @@ impl Request {
                 max: Some(size),
                 ..Expect::default()
             });
-            self.receiving = Some(size);
+            self.receive.start_sized(size);
         }
     }
 
@@ -1885,7 +1806,7 @@ impl Request {
         if self.no_body {
             crate::multi::mstate::xfer_setup(cx, crate::deliver::Directions::default());
             pc.no_socket = true;
-            self.receiving = None;
+            self.receive.stop();
             self.sending = None;
         }
         self.nothing_after = pc.no_socket;

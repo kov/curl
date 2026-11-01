@@ -7,7 +7,8 @@ use std::num::NonZeroU32;
 use curl_alloc::TryVec as _;
 
 use super::dict::{peer_of, renetwork};
-use super::raw::{Outgoing, ToClose};
+use super::raw::Outgoing;
+use super::xfer::Receive;
 use super::{Connect, DoPhase, DoStep, ProtoStep, Waiting};
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
@@ -33,7 +34,7 @@ pub(crate) struct Request {
     /// How much of `out` is the selector, which goes to the application
     /// as a header line as it is sent.
     selector: usize,
-    answer: ToClose,
+    answer: Receive,
 }
 
 /// The selector `path` and `query` ask for (`gopher_do`): none for `/`
@@ -99,7 +100,7 @@ impl Request {
             query,
             out: Outgoing::default(),
             selector: 0,
-            answer: ToClose::default(),
+            answer: Receive::default(),
         })
     }
 
@@ -145,6 +146,7 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
+        self.pipeline.flush(cx)?;
         self.answer.read(cx, lease, &mut self.pipeline)
     }
 
@@ -179,7 +181,7 @@ impl Request {
             }
         }
         self.pipeline.protocol_header(cx, b"\r\n")?;
-        self.answer.start(cx);
+        self.answer.start_to_end(cx);
         Ok(true)
     }
 }

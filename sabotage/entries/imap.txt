@@ -8,13 +8,14 @@ features: test-util
         let credentials = super::request_credentials(cx, Some(crate::auth::creds::Trusted::own_url()), url, takes)?;
 
 === a literal's body is read past its size, into the answer after it
-file: crates/curl-core/src/proto/imap.rs
+file: crates/curl-core/src/proto/xfer.rs
 witness: curl-core proto::imap::tests::over_the_wire::a_custom_command_s_literal_is_its_body
 features: test-util
 --- old
-            let max = max.min(usize::try_from(left).unwrap_or(usize::MAX));
+                    max.min(usize::try_from(left).unwrap_or(usize::MAX))
 --- new
-            let _ = left;
+                    let _ = left;
+                    max
 
 === bytes after the STARTTLS go-ahead are taken as if under TLS
 file: crates/curl-core/src/proto/imap.rs
@@ -43,7 +44,7 @@ file: crates/curl-core/src/proto/imap.rs
 witness: curl-core proto::imap::tests::over_the_wire::a_custom_command_s_answer_is_read_only_after_a_literal_still_to_come
 features: test-util
 --- old
-            if self.receiving.is_some() && self.asked.custom.is_some() {
+            if self.receive.is_receiving() && self.asked.custom.is_some() {
 --- new
             if false {
 

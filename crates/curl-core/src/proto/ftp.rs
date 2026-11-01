@@ -25,16 +25,17 @@ use self::path::{Path, PathError, TypeCode};
 use super::pingpong::Pingpong;
 use super::pingpong::drive::{self, Read};
 use super::pingpong::ftp::Ftp as Ends;
+use super::xfer::{Receive, Sink, Source, write_end};
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
 use crate::auth::creds::{CredentialGate, Credentials, Takes};
 use crate::components::Component;
 use std::net::{IpAddr, SocketAddr};
 
-use crate::conn::io::{Closer, Events, InterfaceAddress, Recv, Remote, Sock, Socket};
+use crate::conn::io::{Closer, Events, InterfaceAddress, Remote, Sock, Socket};
 use crate::conn::layer::{LayerAnswer, LayerQuery, Lower as _};
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
-use crate::conn::{ConnLease, NetRoute, Peer, RecvFailed, RouteCold, Scheme};
+use crate::conn::{ConnLease, NetRoute, Peer, RouteCold, Scheme};
 use crate::deliver::{self, Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::idn::Idn;
@@ -42,7 +43,6 @@ use crate::multi::Host;
 use crate::multi::cx::DriveCx;
 use crate::multi::state::StepCx;
 use crate::options::{Ccc, CreateDirs, FtpMethod, Method, SslAuth, UseSsl};
-use crate::progress::rate::Way;
 use crate::time::Instant;
 use crate::tls::TlsWait;
 use crate::trace;
@@ -268,8 +268,6 @@ pub(crate) struct Request {
     resume_from: i64,
     /// The most of the file asked for (`req.maxdownload`).
     max_download: Option<u64>,
-    /// The size the server says the download is (`req.size`).
-    size: Option<u64>,
     /// The download is of a range: its end is not checked
     /// (`dont_check`).
     dont_check: bool,
@@ -325,8 +323,9 @@ pub(crate) struct Request {
     data: Option<Box<DataConn>>,
     /// The upload as it goes.
     sending: Option<Box<Sending>>,
-    /// The download is still being read (`KEEP_RECV`).
-    receiving: bool,
+    /// The download: the size the server says it is (`req.size`), and
+    /// whether it is still being read (`KEEP_RECV`).
+    receive: Receive,
     /// The upload is all sent (`upload_done`).
     upload_done: bool,
     control: Option<Control>,
@@ -443,7 +442,6 @@ impl Request {
             known_filesize: None,
             resume_from: 0,
             max_download: None,
-            size: None,
             dont_check: false,
             do_more: false,
             reused: false,
@@ -466,7 +464,7 @@ impl Request {
             trying_alternative: false,
             data: None,
             sending: None,
-            receiving: false,
+            receive: Receive::default(),
             upload_done: false,
             control: None,
             in_place: Default::default(),
@@ -536,7 +534,7 @@ impl Request {
     /// Whether the request, once made, moves anything over the data
     /// connection.
     pub(crate) fn exchanges(&self) -> bool {
-        self.receiving || self.sending.is_some()
+        self.receive.is_receiving() || self.sending.is_some()
     }
 
     /// Whether the upload has more to send.
@@ -568,7 +566,7 @@ impl Request {
             } else {
                 Events::OUT
             }
-        } else if self.receiving && !pause.recv_paused() {
+        } else if self.receive.is_receiving() && !pause.recv_paused() {
             Events::IN
         } else {
             Events::NONE
@@ -2235,7 +2233,7 @@ impl Request {
                 _ if instate != State::List && self.prefer_ascii => size = None,
                 _ => {}
             }
-            self.size = size;
+            self.receive.set_size(size);
             let max = self
                 .max_download
                 .map_or(-1, |m| i64::try_from(m).unwrap_or(i64::MAX));
@@ -2290,15 +2288,15 @@ impl Request {
             crate::multi::mstate::xfer_setup_at(cx, None, Some(1));
         } else {
             crate::multi::mstate::xfer_setup_at(cx, Some(1), None);
-            if let Some(size) = self.size.filter(|&s| s > 0) {
+            if let Some(size) = self.receive.size().filter(|&s| s > 0) {
                 self.pipeline.announce_size(cx, Some(size));
             }
             self.pipeline.expect(Expect {
-                size: self.size,
+                size: self.receive.size(),
                 max: self.max_download,
                 ..Expect::default()
             });
-            self.receiving = true;
+            self.receive.start();
         }
         pc.pp.awaits_answer();
         set_state(cx, pc, State::Stop);
@@ -2342,6 +2340,86 @@ impl<H: Host> crate::upload::sending::Outlet<H> for DataOutlet<'_> {
     }
 }
 
+/// What a download reads from: the data connection, its reads the second
+/// chain's.
+struct DataSource<'a>(&'a mut DataConn);
+
+impl DataSource<'_> {
+    /// Its carrier, which exists as long as the download is read.
+    fn with<R>(&mut self, f: impl FnOnce(&mut Carrier<'_>) -> R) -> R {
+        let mut close = false;
+        let mut carrier = self
+            .0
+            .carrier(&mut close)
+            .expect("a download is read over a connected data connection");
+        f(&mut carrier)
+    }
+}
+
+impl<H: Host> Source<H> for DataSource<'_> {
+    fn recv(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        max: usize,
+    ) -> Result<crate::conn::io::Recv, crate::conn::RecvFailed> {
+        self.with(|carrier| cx.as_second(|cx| carrier.recv(cx, max)))
+    }
+
+    fn data_pending(&mut self) -> bool {
+        self.with(|carrier| carrier.reborrow().data_pending())
+    }
+
+    fn take_rx(&mut self) -> crate::conn::RecvBuf {
+        self.with(|carrier| std::mem::take(carrier.rx_mut()))
+    }
+
+    fn put_rx(&mut self, rx: crate::conn::RecvBuf) {
+        self.with(|carrier| *carrier.rx_mut() = rx);
+    }
+}
+
+/// Where a download's bytes go. Its end shuts the data connection down
+/// first, which may wait, and fails a body short of its size.
+struct DataBody<'a>(&'a mut Pipeline);
+
+impl<'s, H: Host> Sink<H, DataSource<'s>> for DataBody<'_> {
+    fn body(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> Result<bool, ErrorKind> {
+        self.0.body(cx, bytes)?;
+        Ok(self.0.body_done())
+    }
+
+    fn bytecount(&self) -> u64 {
+        self.0.bytecount()
+    }
+
+    /// The data connection shut down, then the end written through the
+    /// writers, which check a range's size (`cw_download_write`); then all
+    /// its bytes came, if it said how many (`Curl_sendrecv`).
+    fn end(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        source: &mut DataSource<'s>,
+        size: Option<u64>,
+    ) -> Result<Option<ProtoStep>, ErrorKind> {
+        if !source.0.shutdown(cx)? {
+            return Ok(Some(ProtoStep::Blocked));
+        }
+        write_end(cx, self.0)?;
+        let got = self.0.bytecount();
+        if let Some(size) = size
+            && size != got
+        {
+            let left = i128::from(size) - i128::from(got);
+            return Err(trace::fail(
+                cx,
+                ErrorKind::PartialFile,
+                format_args!("transfer closed with {left} bytes remaining to read"),
+            ));
+        }
+        Ok(None)
+    }
+}
+
 impl Request {
     /// DO (`ftp_do`, `ftp_regular_transfer`, `ftp_perform`): the path
     /// read, the quote commands and those after them started; on in
@@ -2363,7 +2441,7 @@ impl Request {
                 return Ok(DoStep::Nothing);
             }
         }
-        self.size = None;
+        self.receive.set_size(None);
         // The progress counts from nothing (`Curl_pgrsReset`).
         crate::progress::reset(cx);
         let started = {
@@ -2608,19 +2686,11 @@ impl Request {
             self.sending = None;
             self.upload_done = true;
         }
-        if self.receiving {
-            let read = self.read_data(cx, data);
-            match read {
-                Ok(ProtoStep::AtReadLimit) => crate::multi::mstate::trace(
-                    cx,
-                    format_args!("sendrecv_dl() no EAGAIN/pending data, mark as dirty"),
-                ),
-                Err(e) => {
-                    let code = e.number();
-                    trace::debug_info(cx, format_args!("sendrecv_dl() -> {code}"));
-                }
-                Ok(_) => {}
-            }
+        if self.receive.is_receiving() {
+            let mut source = DataSource(data);
+            let read = self
+                .receive
+                .read(cx, &mut source, &mut DataBody(&mut self.pipeline));
             if read? != ProtoStep::Done {
                 return read;
             }
@@ -2629,125 +2699,6 @@ impl Request {
             return Ok(ProtoStep::Blocked);
         }
         Ok(ProtoStep::Done)
-    }
-
-    /// The download's reads of a step, until the connection's end or the
-    /// most a step reads, the connection shut down at its end
-    /// (`sendrecv_dl`, `xfer_recv_resp`).
-    fn read_data<H: Host>(
-        &mut self,
-        cx: &mut StepCx<'_, H>,
-        data: &mut DataConn,
-    ) -> Result<ProtoStep, ErrorKind> {
-        let mut reads = 0;
-        loop {
-            if !self.receiving {
-                return Ok(ProtoStep::Done);
-            }
-            if cx.pause().recv_paused() {
-                return Ok(ProtoStep::Blocked);
-            }
-            if reads == super::http::MAX_READS {
-                return Ok(ProtoStep::AtReadLimit);
-            }
-            let max = cx.easy().options().limits.buffer_size.get();
-            let max = match cx.rate_allowance(Way::Recv) {
-                Some(..=0) => return Ok(ProtoStep::Blocked),
-                Some(allowed) => max.min(usize::try_from(allowed).unwrap_or(usize::MAX)),
-                None => max,
-            };
-            // A size said is all that is read: what follows it is not
-            // asked for (`xfer_recv_resp`).
-            let max = match self.size {
-                Some(size) => {
-                    let left = size.saturating_sub(self.pipeline.bytecount());
-                    max.min(usize::try_from(left).unwrap_or(usize::MAX))
-                }
-                None => max,
-            };
-            if max == 0 {
-                if let Some(step) = self.read_end(cx, data)? {
-                    return Ok(step);
-                }
-                continue;
-            }
-            reads += 1;
-            let said = cx.easy().report().reasons();
-            let mut close = false;
-            let mut carrier = data
-                .carrier(&mut close)
-                .expect("a download is read over a connected data connection");
-            match cx.as_second(|cx| carrier.recv(cx, max)) {
-                Ok(Recv::WouldBlock) if carrier.reborrow().data_pending() => {
-                    return Ok(ProtoStep::AtReadLimit);
-                }
-                Ok(Recv::WouldBlock) => return Ok(ProtoStep::Blocked),
-                Ok(Recv::Eof) => {
-                    if let Some(step) = self.read_end(cx, data)? {
-                        return Ok(step);
-                    }
-                }
-                Ok(Recv::Data(_)) => {
-                    let mut rx = std::mem::take(carrier.rx_mut());
-                    let fed = self.pipeline.body(cx, rx.filled());
-                    let all = rx.filled().len();
-                    rx.consume(all);
-                    *carrier.rx_mut() = rx;
-                    deliver::write_resp(cx, all, false, fed);
-                    fed?;
-                    if self.pipeline.body_done() {
-                        // The most asked for is here.
-                        self.receiving = false;
-                    }
-                }
-                Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
-                Err(RecvFailed::Os(_)) if cx.easy().report().reasons() > said => {
-                    return Err(ErrorKind::RecvError);
-                }
-                Err(RecvFailed::Os(e)) => {
-                    let why = curl_os::error::ErrorText::of(&e);
-                    return Err(trace::fail_with(
-                        cx,
-                        ErrorKind::RecvError,
-                        &[b"Recv failure: ", why.as_bytes()],
-                    ));
-                }
-            }
-        }
-    }
-
-    /// The data's end, read or reached by its size: the data connection
-    /// shut down, then the end written; a step to return if the shutdown
-    /// waits or the end is short.
-    fn read_end<H: Host>(
-        &mut self,
-        cx: &mut StepCx<'_, H>,
-        data: &mut DataConn,
-    ) -> Result<Option<ProtoStep>, ErrorKind> {
-        if !data.shutdown(cx)? {
-            return Ok(Some(ProtoStep::Blocked));
-        }
-        trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
-        // The end goes through the writers, which check a range's size
-        // (`cw_download_write`).
-        let ended = self.pipeline.end(cx);
-        deliver::write_resp(cx, 0, true, ended);
-        self.receiving = false;
-        ended?;
-        // The transfer is over: all its bytes came, if it said how many
-        // (`Curl_sendrecv`).
-        let got = self.pipeline.bytecount();
-        if let Some(size) = self.size
-            && size != got
-        {
-            let left = i128::from(size) - i128::from(got);
-            return Err(trace::fail(
-                cx,
-                ErrorKind::PartialFile,
-                format_args!("transfer closed with {left} bytes remaining to read"),
-            ));
-        }
-        Ok(None)
     }
 
     /// The transfer is over (`ftp_done`): what its result says of the
@@ -3121,7 +3072,7 @@ impl Request {
             return Ok(());
         }
         let got = self.pipeline.bytecount();
-        if let Some(size) = self.size
+        if let Some(size) = self.receive.size()
             && size != got
             && self.max_download != Some(got)
         {
@@ -3131,7 +3082,7 @@ impl Request {
                 format_args!("Received only partial file: {got} bytes"),
             ));
         }
-        if !self.dont_check && got == 0 && self.size.is_some_and(|s| s > 0) {
+        if !self.dont_check && got == 0 && self.receive.size().is_some_and(|s| s > 0) {
             return Err(trace::fail(
                 cx,
                 ErrorKind::FtpCouldntRetrFile,

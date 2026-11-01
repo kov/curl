@@ -178,24 +178,22 @@ features: test-util
         let phase = if self.mstate() > MState::Do {
 
 === a POP3 body step reads without a limit
-file: crates/curl-core/src/proto/pop3.rs
+file: crates/curl-core/src/proto/xfer.rs
 witness: curl-core proto::pop3::tests::over_the_wire::a_body_step_reads_eleven_times_at_most
 features: test-util
 --- old
             reads += 1;
             let said = cx.easy().report().reasons();
-            match lease.get().recv(cx, max) {
 --- new
             reads *= 1;
             let said = cx.easy().report().reasons();
-            match lease.get().recv(cx, max) {
 
 === a POP3 body that would block runs again at once
-file: crates/curl-core/src/proto/pop3.rs
+file: crates/curl-core/src/proto/xfer.rs
 witness: curl-core proto::pop3::tests::over_the_wire::a_body_to_come_waits_on_its_socket_unless_paused
 features: test-util
 --- old
-                Ok(Recv::WouldBlock) if lease.get().data_pending() => {
+                Ok(Recv::WouldBlock) if source.data_pending() => {
 --- new
                 Ok(Recv::WouldBlock) if true => {
 
@@ -204,9 +202,9 @@ file: crates/curl-core/src/proto/pop3.rs
 witness: curl-core proto::pop3::tests::over_the_wire::a_body_to_come_waits_on_its_socket_unless_paused
 features: test-util
 --- old
-        if self.receiving && !pause.recv_paused() {
+        if self.receive.is_receiving() && !pause.recv_paused() {
 --- new
-        if self.receiving || !pause.recv_paused() {
+        if self.receive.is_receiving() || !pause.recv_paused() {
 
 === POP3S offers HTTP's protocols by ALPN
 file: crates/curl-core/src/multi/state/tls.rs
@@ -275,16 +273,16 @@ features: test-util,debug-hooks
                 if false {
 
 === a POP3 body waits on its socket while a layer holds its bytes
-file: crates/curl-core/src/proto/pop3.rs
+file: crates/curl-core/src/proto/xfer.rs
 witness: curl-core proto::pop3::tests::over_the_wire::body_bytes_a_layer_holds_are_read_without_waiting
 features: test-util
 --- old
-                Ok(Recv::WouldBlock) if lease.get().data_pending() => {
+                Ok(Recv::WouldBlock) if source.data_pending() => {
 --- new
                 Ok(Recv::WouldBlock) if false => {
 
 === a POP3 body pass stopped at its read limit says nothing of it
-file: crates/curl-core/src/proto/pop3.rs
+file: crates/curl-core/src/proto/xfer.rs
 witness: curl-core proto::pop3::tests::over_the_wire::a_body_step_reads_eleven_times_at_most
 features: test-util
 --- old
@@ -293,7 +291,7 @@ features: test-util
             Ok(ProtoStep::Blocked) => crate::multi::mstate::trace(
 
 === a POP3 body read's failure is not said as its pass's end
-file: crates/curl-core/src/proto/pop3.rs
+file: crates/curl-core/src/proto/xfer.rs
 witness: curl-core proto::pop3::tests::over_the_wire::a_read_failure_is_said_once
 features: test-util,debug-hooks
 --- old

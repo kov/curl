@@ -32,6 +32,7 @@ pub(crate) mod ssh;
 pub(crate) mod telnet;
 pub(crate) mod tftp;
 pub(crate) mod ws;
+pub(crate) mod xfer;
 
 use std::num::NonZeroU32;
 

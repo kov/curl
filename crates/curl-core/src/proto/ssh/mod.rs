@@ -28,7 +28,7 @@ use crate::conn::line::LineConn;
 use crate::conn::{ConnLease, Peer, RouteCold, Scheme};
 use crate::deliver::{self, Directions, Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
-use crate::handler::{DebugKind, HeaderOrigin, KeyMatch, KeyVerdict};
+use crate::handler::{DebugKind, KeyMatch, KeyVerdict};
 use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::{AfterRequest, StepCx};
@@ -1278,18 +1278,20 @@ impl Request {
         };
         sc.accept_fail = accept;
         if cmd.eq_ignore_ascii_case(b"pwd") {
-            // An FTP-like answer for the header handler, as FTP's `PWD`.
+            // An FTP-like answer for the header handler, as FTP's `PWD`. After
+            // the transfer the path has gone, and C's `%s` says so.
+            let path = self.path.as_deref().unwrap_or(b"(nil)");
             let mut said = Vec::new();
             let made = said
                 .try_extend_from_slice(b"257 \"")
-                .and_then(|()| said.try_extend_from_slice(c_string(self.path())))
+                .and_then(|()| said.try_extend_from_slice(c_string(path)))
                 .and_then(|()| said.try_extend_from_slice(b"\" is current directory.\n"));
             if made.is_err() {
                 return quote_failed(cx, sc, ErrorKind::OutOfMemory);
             }
             trace::bytes(cx, DebugKind::HeaderOut, b"PWD\n");
             trace::bytes(cx, DebugKind::HeaderIn, &said);
-            match self.pipeline.header(cx, &said, HeaderOrigin::Header) {
+            match self.pipeline.protocol_header(cx, &said) {
                 Err(e) => quote_failed(cx, sc, e),
                 Ok(()) => sc.to(cx, State::SftpNextQuote),
             }

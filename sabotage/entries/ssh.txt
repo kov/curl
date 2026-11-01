@@ -146,3 +146,19 @@ witness: curl-core proto::ssh::tests::the_credentials_are_said_once_as_the_handl
 --- old
         b"scp" | b"sftp" => cx.easy().libraries().ssh.is_some(),
 --- new
+
+=== a post-quote `pwd` expects the path the transfer has already dropped
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::pwd_after_the_transfer_says_no_path
+--- old
+            let path = self.path.as_deref().unwrap_or(b"(nil)");
+--- new
+            let path = self.path();
+
+=== `pwd`'s answer is kept as an HTTP header, which refuses it
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::pwd_before_the_transfer_says_the_path
+--- old
+            match self.pipeline.protocol_header(cx, &said) {
+--- new
+            match self.pipeline.header(cx, &said, crate::handler::HeaderOrigin::Header) {

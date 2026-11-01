@@ -719,6 +719,18 @@ impl WriteHandler for Body {
     }
 }
 
+impl crate::handler::HeaderHandler for Body {
+    fn header(
+        &self,
+        _: &mut TransferCx<'_>,
+        line: &[u8],
+        _: crate::handler::HeaderOrigin,
+    ) -> Wrote {
+        self.0.lock().unwrap().extend_from_slice(line);
+        Wrote::Accepted
+    }
+}
+
 /// Collects the trace's text.
 #[derive(Clone, Default)]
 struct Text(Arc<Mutex<Vec<u8>>>);
@@ -1628,6 +1640,37 @@ fn a_command_after_the_transfer_may_wait() {
     let w = w.lock().unwrap();
     assert_eq!(w.calls.iter().filter(|c| *c == "connect").count(), 1);
     assert!(w.calls.contains(&"rename /home/u/f /home/u/g".to_owned()));
+}
+
+/// Run a transfer of `~/f` with `set` choosing its quote commands: what its
+/// header handler was told.
+fn told_by_quotes(set: impl FnOnce(&mut crate::options::Line)) -> Vec<u8> {
+    let w = world_with(&[("/home/u/f", "x")], |_| {});
+    let headers = Body::default();
+    let given = headers.clone();
+    let (result, body, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        o.callbacks.header = Some(crate::handler::Handler::header(given).unwrap());
+        set(o.line.make_mut().unwrap());
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(body, b"x");
+    headers.0.lock().unwrap().clone()
+}
+
+/// `pwd` before the transfer says the path. Its answer is no HTTP header:
+/// kept for the headers API, it would be refused and fail the transfer.
+#[test]
+fn pwd_before_the_transfer_says_the_path() {
+    let told = told_by_quotes(|line| line.quote.set([&b"pwd"[..]]).unwrap());
+    assert_eq!(told, b"257 \"/home/u/f\" is current directory.\n");
+}
+
+/// `pwd` after the transfer, whose path has gone by then, says C's text for
+/// a missing path and does not fail the transfer (test 3652).
+#[test]
+fn pwd_after_the_transfer_says_no_path() {
+    let told = told_by_quotes(|line| line.postquote.set([&b"pwd"[..]]).unwrap());
+    assert_eq!(told, b"257 \"(nil)\" is current directory.\n");
 }
 
 /// An SFTP write that fails fails the upload as a send error.

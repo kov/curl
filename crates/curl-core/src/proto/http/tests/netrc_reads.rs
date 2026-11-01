@@ -6,7 +6,7 @@ use super::*;
 use crate::components::Components;
 use crate::conn::io::Peer;
 use crate::idn::FakeIdn;
-use crate::ldap::{Code, Ldap, NoCopy, Search, Session as LdapSession, UrlError};
+use crate::ldap::{Code, Ldap, Search, Session as LdapSession, SessionFailed, UrlError};
 use crate::libraries::{Libraries, Library, SharedLibraries};
 use crate::options::{NetrcMode, Protocols};
 use crate::ssh::{Session as SshSession, Ssh};
@@ -34,11 +34,11 @@ impl Ldap for NoLdap {
 
     fn session(
         &self,
-        _: i32,
+        _: Option<std::os::fd::BorrowedFd<'_>>,
         _: &[u8],
         _: &[u8],
-    ) -> Result<Result<Box<dyn LdapSession>, Code>, NoCopy> {
-        Err(NoCopy)
+    ) -> Result<Box<dyn LdapSession>, SessionFailed> {
+        Err(SessionFailed::NoCopy)
     }
 
     fn describe(&self, _: Code) -> &'static [u8] {

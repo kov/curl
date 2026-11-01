@@ -1242,12 +1242,11 @@ Its first steps are milestone 6's design-review changes.
 88. **What the protocols share.** One receive side, `proto::xfer::Receive`, for FTP, IMAP, POP3,
     DICT and Gopher; `RequestBase`; a table for `over_tls` and the transport; the mail protocols'
     shared glue; FTP, SSH and LDAP inline in the boxed `LineConn`.
-89. **Waits C blocks in.** TELNET's exchange and FTP's CCC stay non-blocking, each recorded in
-    DIVERGENCE.md with a test that other transfers do not stall: **done**. SSH's DONE is not
-    done: libssh's closes and quote commands block inside the call, the multi with them, as
-    C's do (measured 2026-11-01, 1.16 s beside 1.14 s); its session cannot be made nonblocking
-    there without `ssh_scp_close` closing before the server's EOF, or SFTP's close
-    waiting all the same. **Needs a decision.**
+89. **Waits C blocks in.** **Done.** TELNET's exchange and FTP's CCC stay non-blocking, each
+    recorded in DIVERGENCE.md with a test that other transfers do not stall. SSH's DONE blocks
+    inside libssh's closes and quote commands, the multi with it, as C's does (measured
+    2026-11-01, 1.16 s beside 1.14 s): its session cannot be made nonblocking there without
+    `ssh_scp_close` closing before the server's EOF, so it follows C.
 90. **DoH's owner.** `Owner::App` or `Owner::Internal`, so an internal transfer has an owner on
     every host, the tool's included.
 91. **`multi/state.rs` split** mechanically, and the stale parts of ENGINE.md and DESIGN.md and

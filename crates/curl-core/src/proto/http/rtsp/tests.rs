@@ -28,6 +28,7 @@ impl RtpOut for Sink {
     }
 
     fn junk(&mut self, bytes: &[u8]) -> Result<(), ErrorKind> {
+        assert!(!bytes.is_empty(), "junk is given only when there is some");
         let n = usize::try_from(self.due).map_or(bytes.len(), |d| d.min(bytes.len()));
         self.got.body.extend_from_slice(&bytes[..n]);
         self.got.dropped += bytes.len() - n;

@@ -761,8 +761,7 @@ impl Request {
             headers,
             trusted: self.gate.trusted(),
         };
-        let mut out = Vec::new();
-        render_rtsp(&head, &mut out)?;
+        let mut out = render_rtsp(&head)?;
         let rtsp = self.rtsp.as_mut().expect("an RTSP request");
         rtsp.no_body |= heartbeat;
         let no_body = rtsp.no_body;

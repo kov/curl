@@ -366,11 +366,15 @@ fn a_session_named_is_kept_and_checked() {
         .as_ref()
         .map(RtspSession::id);
     assert_eq!(session, Some(&b"abc"[..]));
-    let other: &[u8] = b"RTSP/1.0 200 OK\r\nCSeq: 2\r\nSession: xyz\r\n\r\n";
+    // The same id again is the same session.
+    let same: &[u8] = b"RTSP/1.0 200 OK\r\nCSeq: 2\r\nSession: abc\r\n\r\n";
+    let (ran, _) = rtsp_with(ran.easy, &[same], false, usize::MAX, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let other: &[u8] = b"RTSP/1.0 200 OK\r\nCSeq: 3\r\nSession: xyz\r\n\r\n";
     let (ran, _) = rtsp_with(ran.easy, &[other], false, usize::MAX, |_| {});
     assert_eq!(ran.result, Err(ErrorKind::RtspSessionError));
     assert!(
-        String::from_utf8_lossy(&ran.request).contains("CSeq: 2\r\nSession: abc\r\n"),
+        String::from_utf8_lossy(&ran.request).contains("CSeq: 3\r\nSession: abc\r\n"),
         "{:?}",
         String::from_utf8_lossy(&ran.request)
     );
@@ -520,6 +524,480 @@ fn a_receive_reads_rtp_alone() {
         "{:?}",
         ran.seen.text()
     );
+}
+
+/// The options of each kind of request, and the request C's build sends
+/// with them to a server answering each with its CSeq (requests checked
+/// against the C build with the same options, no user agent).
+type Setup = fn(&mut Options);
+
+fn ok_for(cseq: u32) -> Vec<u8> {
+    format!("RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Length: 0\r\n\r\n").into_bytes()
+}
+
+/// `set`'s request, with no user agent: what it came to and what went.
+fn sent(replies: &[&[u8]], set: impl FnOnce(&mut Options)) -> (Result<(), ErrorKind>, String) {
+    let (ran, _) = rtsp(replies, |o| {
+        o.http.user_agent = None;
+        set(o);
+    });
+    (
+        ran.result,
+        String::from_utf8_lossy(&ran.request).into_owned(),
+    )
+}
+
+fn kind(o: &mut Options, kind: RtspRequest) {
+    o.small.make_mut().unwrap().rtsp_request = kind;
+}
+
+fn bytes(body: &[u8]) -> UploadSource {
+    UploadSource::Bytes(curl_alloc::TryArc::try_new(body.to_vec()).unwrap())
+}
+
+fn read_sized(body: &[u8]) -> UploadSource {
+    let UploadSource::Read { handler, .. } = pieces(&[body]) else {
+        unreachable!("pieces are read by a handler");
+    };
+    UploadSource::Read {
+        handler,
+        rewind: None,
+        size: Some(body.len() as u64),
+    }
+}
+
+fn headers(lines: &[&[u8]]) -> UserHeaders {
+    UserHeaders::new(lines.iter().copied()).unwrap()
+}
+
+/// A body goes with an ANNOUNCE, a GET_PARAMETER or a SET_PARAMETER, the
+/// fields posted or an upload, typed by the kind unless the application
+/// types it; its line ends as they are; with no other kind, and not when
+/// empty (`rtsp_setup_body`).
+#[test]
+fn requests_with_bodies_are_sent_as_c_sends_them() {
+    let ok = ok_for(1);
+    let cases: [(&str, Setup, &str); 6] = [
+        (
+            "announce-read",
+            |o| {
+                kind(o, RtspRequest::Announce);
+                o.small.make_mut().unwrap().rtsp_stream_uri = Some(b"rtsp://h/x".to_vec());
+                o.method = Method::Upload;
+                o.upload = read_sized(b"v=0\n");
+            },
+            "ANNOUNCE rtsp://h/x RTSP/1.0\r\nCSeq: 1\r\nContent-Length: 4\r\n\
+             Content-Type: application/sdp\r\n\r\nv=0\n",
+        ),
+        (
+            "announce-fields",
+            |o| {
+                kind(o, RtspRequest::Announce);
+                o.upload = bytes(b"a=b&c=d");
+                o.http.headers = headers(&[b"Content-Type: posty goodness"]);
+            },
+            "ANNOUNCE * RTSP/1.0\r\nCSeq: 1\r\nContent-Type: posty goodness\r\n\
+             Content-Length: 7\r\n\r\na=b&c=d",
+        ),
+        (
+            "getparam-fields",
+            |o| {
+                kind(o, RtspRequest::GetParameter);
+                o.upload = bytes(b"scale\nspeed\n");
+            },
+            "GET_PARAMETER * RTSP/1.0\r\nCSeq: 1\r\nContent-Length: 12\r\n\
+             Content-Type: text/parameters\r\n\r\nscale\nspeed\n",
+        ),
+        (
+            "setparam-read-noupload",
+            |o| {
+                kind(o, RtspRequest::SetParameter);
+                o.upload = read_sized(b"v=0\n");
+            },
+            "SET_PARAMETER * RTSP/1.0\r\nCSeq: 1\r\n\r\n",
+        ),
+        (
+            "options-fields",
+            |o| o.upload = bytes(b"x"),
+            "OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n",
+        ),
+        (
+            "getparam-empty",
+            |o| {
+                kind(o, RtspRequest::GetParameter);
+                o.upload = bytes(b"");
+            },
+            "GET_PARAMETER * RTSP/1.0\r\nCSeq: 1\r\n\r\n",
+        ),
+    ];
+    for (name, set, want) in cases {
+        assert_eq!(sent(&[&ok], set), (Ok(()), want.to_string()), "{name}");
+    }
+}
+
+/// A DESCRIBE asks for SDP and the codings, and only it and a SETUP go
+/// with the time condition; a PLAY, PAUSE or RECORD with the range; each
+/// unless the application sends its own (`rtsp_do`).
+#[test]
+fn each_kind_s_own_headers_are_sent_as_c_sends_them() {
+    fn asks(o: &mut Options) {
+        o.http.accept_encoding = Some(crate::coding::AcceptEncoding::Given(b"zz".to_vec()));
+        o.time_condition = Some(crate::options::TimeCondition {
+            when: crate::options::Condition::ModifiedSince,
+            time: 1_000_000_000,
+        });
+    }
+    fn ranged(o: &mut Options) {
+        o.small.make_mut().unwrap().rtsp_session = Some(RtspSession {
+            id: b"s1".to_vec(),
+            origin: None,
+        });
+        o.range = Some(b"npt=0-".to_vec());
+    }
+    let ok = ok_for(1);
+    let cases: [(&str, Setup, &str); 6] = [
+        (
+            "describe-all",
+            |o| {
+                kind(o, RtspRequest::Describe);
+                asks(o);
+            },
+            "DESCRIBE * RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\n\
+             Accept-Encoding: zz\r\nIf-Modified-Since: Sun, 09 Sep 2001 01:46:40 GMT\r\n\r\n",
+        ),
+        (
+            "options-cond",
+            asks,
+            "OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n",
+        ),
+        (
+            "describe-custom",
+            |o| {
+                kind(o, RtspRequest::Describe);
+                asks(o);
+                o.http.headers = headers(&[
+                    b"If-Modified-Since: mine",
+                    b"Accept: a/b",
+                    b"Accept-Encoding: e",
+                ]);
+            },
+            "DESCRIBE * RTSP/1.0\r\nCSeq: 1\r\nIf-Modified-Since: mine\r\nAccept: a/b\r\n\
+             Accept-Encoding: e\r\n\r\n",
+        ),
+        (
+            "play-range",
+            |o| {
+                kind(o, RtspRequest::Play);
+                ranged(o);
+            },
+            "PLAY * RTSP/1.0\r\nCSeq: 1\r\nSession: s1\r\nRange: npt=0-\r\n\r\n",
+        ),
+        (
+            "play-custom-range",
+            |o| {
+                kind(o, RtspRequest::Play);
+                ranged(o);
+                o.http.headers = headers(&[b"Range: x"]);
+            },
+            "PLAY * RTSP/1.0\r\nCSeq: 1\r\nSession: s1\r\nRange: x\r\n\r\n",
+        ),
+        (
+            "options-range",
+            ranged,
+            "OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nSession: s1\r\n\r\n",
+        ),
+    ];
+    for (name, set, want) in cases {
+        assert_eq!(sent(&[&ok], set), (Ok(()), want.to_string()), "{name}");
+    }
+}
+
+/// The login goes as HTTP's does; a Digest answer goes alongside the
+/// application's own `Authorization:`, which a Basic one gives way to.
+/// The application's headers go but for its `Connection:` and those it
+/// takes out.
+#[test]
+fn logins_and_the_application_s_headers_are_sent_as_c_sends_them() {
+    fn login(o: &mut Options) {
+        let login = o.login.make_mut().unwrap();
+        login.user = Some(b"u".to_vec());
+        login.password = Some(b"p".to_vec());
+    }
+    let ok = ok_for(1);
+    assert_eq!(
+        sent(&[&ok], login),
+        (
+            Ok(()),
+            "OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nAuthorization: Basic dTpw\r\n\r\n".to_string()
+        )
+    );
+    let challenge: &[u8] = b"RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\n\
+WWW-Authenticate: Digest realm=\"r\", nonce=\"n\"\r\nContent-Length: 0\r\n\r\n";
+    let (result, request) = sent(&[challenge, &ok_for(2)], |o| {
+        login(o);
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+        o.http.headers = headers(&[b"Authorization: mine"]);
+    });
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        request,
+        "OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nAuthorization: mine\r\n\r\n\
+         OPTIONS * RTSP/1.0\r\nCSeq: 2\r\nAuthorization: Digest username=\"u\", realm=\"r\", \
+         nonce=\"n\", uri=\"*\", response=\"5287c9fe806cea9c4ec0cb9d733228f9\"\r\n\
+         Authorization: mine\r\n\r\n"
+    );
+    let (result, request) = sent(&[&ok], |o| {
+        o.http.headers = headers(&[
+            b"Connection: x",
+            b"X-Gone:",
+            b"X-Blank;",
+            b"Content-Length: 0",
+        ]);
+    });
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        request,
+        "OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nX-Blank:\r\nContent-Length: 0\r\n\r\n"
+    );
+}
+
+/// A request head may be 64 KiB but the byte C's buffer keeps for its
+/// end; one larger is not sent (`DYN_RTSP_REQ_HEADER`).
+#[test]
+fn a_request_head_is_at_most_c_s_buffer() {
+    let ok = ok_for(1);
+    for (n, result) in [(65499, Ok(())), (65500, Err(ErrorKind::TooLarge))] {
+        let line = [&b"X: "[..], &vec![b'a'; n]].concat();
+        let (got, request) = sent(&[&ok], |o| o.http.headers = headers(&[&line]));
+        assert_eq!(got, result, "{n}");
+        assert_eq!(request.len(), if result.is_ok() { 65535 } else { 0 }, "{n}");
+    }
+}
+
+/// The filter says what C's debug build says of each read and each
+/// message, for test 571's response and for one whose head comes after
+/// a message, junk and a `$` on no channel of the handle's (checked
+/// against the C build's trace of the same bytes); the body goes as the
+/// pieces between the messages.
+#[test]
+fn the_filter_says_what_c_s_debug_build_says() {
+    let next: &[u8] = b"$\x00\x00\x01Axx$\x05\x00RTSP/1.0 200 OK\r\nCSeq: 2\r\n\r\n";
+    let (mut m, talk) = rtsp_server(&[INTERLEAVED, next], false, usize::MAX);
+    let rtp = Rtp::default();
+    let first = request(&mut m, Easy::new(), talk.clone(), &rtp, |o| {
+        kind(o, RtspRequest::Describe);
+    });
+    assert_eq!(first.result, Ok(()));
+    assert_eq!(first.seen.of("body"), [&b"he"[..], b"llo"]);
+    let second = request(&mut m, first.easy, talk, &rtp, |o| {
+        kind(o, RtspRequest::Options)
+    });
+    assert_eq!(second.result, Ok(()));
+    assert_eq!(
+        rtp.got().last().map(Vec::as_slice),
+        Some(&b"$\x00\x00\x01A"[..])
+    );
+    assert!(second.seen.body().is_empty());
+    if cfg!(feature = "debug-hooks") {
+        assert_eq!(
+            filter_said(&first.seen),
+            [
+                "rtsp_rtp_write_resp(len=114, in_header=0, eos=0)\n",
+                "RTP write channel 0 rtp_len 7\n",
+                "RTP write channel 1 rtp_len 6\n",
+                "RTP write channel 0 rtp_len 4 (no payload)\n",
+                "RTP write channel 1 rtp_len 5\n",
+                "rtsp_rtp_write_resp(len=0, in_header=0, done=0, rtspc->state=0, req.size=5)\n",
+            ]
+        );
+        assert_eq!(
+            filter_said(&second.seen),
+            [
+                "rtsp_rtp_write_resp(len=38, in_header=0, eos=0)\n",
+                "RTP write channel 0 rtp_len 5\n",
+                "RTSP: invalid RTP channel 0, skipping\n",
+                "RTP rtsp_filter_rtp[SKIP] RTSP/ prefix, skipping 10 bytes of junk\n",
+                "rtsp_rtp_write_resp(len=0, in_header=0, done=0, rtspc->state=0, req.size=0)\n",
+            ]
+        );
+    }
+    // Read a byte at a time, a read can end in each state of a message,
+    // said as C numbers them (`rtp_parse_st`).
+    let (ran, _) = rtsp_with(Easy::new(), &[INTERLEAVED], false, 1, |o| {
+        kind(o, RtspRequest::Describe);
+    });
+    assert_eq!(ran.result, Ok(()));
+    if cfg!(feature = "debug-hooks") {
+        let states: std::collections::BTreeSet<String> = filter_said(&ran.seen)
+            .iter()
+            .filter_map(|l| l.split("rtspc->state=").nth(1))
+            .map(|rest| rest[..1].to_string())
+            .collect();
+        assert_eq!(states, ["0", "1", "2", "3"].map(String::from).into());
+    }
+}
+
+/// A request's result, the pieces of its body, and what the filter said.
+type Filtered = (Result<(), ErrorKind>, Vec<Vec<u8>>, Vec<String>);
+
+/// What the filter says, as C's debug build says it, of each request's
+/// response on one connection: replies to a DESCRIBE, then an OPTIONS;
+/// the requests' results, the bodies and the lines said.
+fn filtered(replies: [&[u8]; 2], rtp: &Rtp) -> [Filtered; 2] {
+    let (mut m, talk) = rtsp_server(&replies, false, usize::MAX);
+    let first = request(&mut m, Easy::new(), talk.clone(), rtp, |o| {
+        kind(o, RtspRequest::Describe);
+    });
+    let one = (
+        first.result,
+        first.seen.of("body"),
+        filter_said(&first.seen),
+    );
+    let second = request(&mut m, first.easy, talk, rtp, |o| {
+        kind(o, RtspRequest::Options)
+    });
+    let two = (
+        second.result,
+        second.seen.of("body"),
+        filter_said(&second.seen),
+    );
+    [one, two]
+}
+
+/// The lines of a trace the RTP filter says.
+fn filter_said(seen: &Seen) -> Vec<String> {
+    seen.of("text")
+        .into_iter()
+        .map(|l| String::from_utf8(l).unwrap())
+        .filter(|l| l.contains("RTP") || l.starts_with("rtsp_rtp") || l.starts_with("RTSP:"))
+        .collect()
+}
+
+/// A head's start inside a body is the body's, and a response past a
+/// body's end is dropped, the next request reading its own; neither is
+/// said to be excess (checked against the C build's trace of the same
+/// bytes).
+#[test]
+fn what_follows_a_body_is_said_as_c_says_it() {
+    let inbody: &[u8] = b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\
+Transport: RTP/AVP/TCP;interleaved=0-1\r\nContent-Length: 5\r\n\r\n$\x00\x00\x01ZRTSP/";
+    let next: &[u8] = b"RTSP/1.0 200 OK\r\nCSeq: 2\r\n\r\n";
+    let excess: &[u8] = b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Length: 2\r\n\r\n\
+abRTSP/1.0 200 OK\r\nCSeq: 9\r\n\r\n";
+    let rtp = Rtp::default();
+    let [one, two] = filtered([inbody, next], &rtp);
+    assert_eq!((one.0, one.1), (Ok(()), vec![b"RTSP/".to_vec()]));
+    assert_eq!((two.0, two.1), (Ok(()), vec![]));
+    assert_eq!(rtp.got(), [&b"$\x00\x00\x01Z"[..]]);
+    let second_said = [
+        "rtsp_rtp_write_resp(len=28, in_header=0, eos=0)\n",
+        "rtsp_rtp_write_resp(len=0, in_header=0, done=0, rtspc->state=0, req.size=0)\n",
+    ];
+    if cfg!(feature = "debug-hooks") {
+        assert_eq!(
+            one.2,
+            [
+                "rtsp_rtp_write_resp(len=97, in_header=0, eos=0)\n",
+                "RTP write channel 0 rtp_len 5\n",
+                "rtsp_rtp_write_resp(len=0, in_header=0, done=0, rtspc->state=0, req.size=5)\n",
+            ]
+        );
+        assert_eq!(two.2, second_said);
+    }
+    let [one, two] = filtered([excess, next], &Rtp::default());
+    assert_eq!((one.0, one.1), (Ok(()), vec![b"ab".to_vec()]));
+    assert_eq!((two.0, two.1), (Ok(()), vec![]));
+    if cfg!(feature = "debug-hooks") {
+        assert_eq!(
+            one.2,
+            [
+                "rtsp_rtp_write_resp(len=77, in_header=0, eos=0)\n",
+                "rtsp_rtp_write_resp(len=0, in_header=0, done=0, rtspc->state=0, req.size=2)\n",
+            ]
+        );
+        assert_eq!(two.2, second_said);
+    }
+}
+
+/// A body sized goes with any kind, an OPTIONS's too; the application
+/// asking for none keeps an OPTIONS's out, and a DESCRIBE's not (checked
+/// against the C build with the same replies).
+#[test]
+fn a_sized_body_is_read_as_c_reads_it() {
+    let describe: &[u8] = b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Length: 3\r\n\r\nabc";
+    let options: &[u8] = b"RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Length: 3\r\n\r\nxyz";
+    for (nobody, second) in [(false, &b"xyz"[..]), (true, b"")] {
+        let (mut m, talk) = rtsp_server(&[describe, options], false, usize::MAX);
+        let rtp = Rtp::default();
+        let set = |o: &mut Options| {
+            if nobody {
+                o.method = Method::Head;
+            }
+        };
+        let first = request(&mut m, Easy::new(), talk.clone(), &rtp, |o| {
+            kind(o, RtspRequest::Describe);
+            set(o);
+        });
+        assert_eq!(
+            (first.result, first.seen.body()),
+            (Ok(()), b"abc".to_vec()),
+            "{nobody}"
+        );
+        let next = request(&mut m, first.easy, talk, &rtp, |o| {
+            kind(o, RtspRequest::Options);
+            set(o);
+        });
+        assert_eq!(
+            (next.result, next.seen.body()),
+            (Ok(()), second.to_vec()),
+            "{nobody}"
+        );
+    }
+}
+
+/// A connection closed during a DESCRIBE's response: a body short of its
+/// size is partial, unless its size is ignored, and then it is none; a
+/// head cut short has its last line unread, which may be its length or
+/// its CSeq (checked against the C build with the same replies).
+#[test]
+fn a_response_cut_short_ends_as_c_ends_it() {
+    for (reply, ignore, result, body) in [
+        (
+            &b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Length: 10\r\n\r\nabc"[..],
+            false,
+            Err(ErrorKind::PartialFile),
+            &b"abc"[..],
+        ),
+        (
+            b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Length: 10\r\n\r\nabc",
+            true,
+            Ok(()),
+            b"",
+        ),
+        (
+            b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Length: 10\r\n",
+            false,
+            Ok(()),
+            b"",
+        ),
+        (
+            b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n",
+            false,
+            Err(ErrorKind::RtspCseqError),
+            b"",
+        ),
+    ] {
+        let (ran, _) = rtsp_with(Easy::new(), &[reply], true, usize::MAX, |o| {
+            kind(o, RtspRequest::Describe);
+            o.http.ignore_content_length = ignore;
+        });
+        let said = String::from_utf8_lossy(reply);
+        assert_eq!(
+            (ran.result, ran.seen.body()),
+            (result, body.to_vec()),
+            "{said:?} {ignore}"
+        );
+    }
 }
 
 const RESPONSES: &[&[u8]] = &[

@@ -129,3 +129,18 @@ features: test-util debug-hooks
 --- new
         !matches!(self, LineConn::Ws(_))
 
+=== an RTSP head takes the byte C's buffer keeps for its end
+file: crates/curl-core/src/proto/http1/request/rtsp.rs
+witness: curl-core proto::http::tests::rtsp::a_request_head_is_at_most_c_s_buffer
+--- old
+const MAX_RTSP_HEAD: usize = 64 * 1024 - 1;
+--- new
+const MAX_RTSP_HEAD: usize = 64 * 1024;
+
+=== a request of a kind that carries no body sends one
+file: crates/curl-core/src/proto/http/rtsp.rs
+witness: curl-core proto::http::tests::rtsp::requests_with_bodies_are_sent_as_c_sends_them
+--- old
+            _ if !carries => None,
+--- new
+            _ if false => None,

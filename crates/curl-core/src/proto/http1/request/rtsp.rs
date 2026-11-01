@@ -60,25 +60,26 @@ pub(crate) struct RtspContent {
     pub(crate) typed: Option<&'static [u8]>,
 }
 
-/// Write `head` to `out` as RTSP sends it; `TooLarge` past 64 KiB.
-pub(crate) fn render_rtsp(head: &RtspHead<'_>, out: &mut Vec<u8>) -> Result<(), ErrorKind> {
+/// `head` as RTSP sends it; `TooLarge` past 64 KiB.
+pub(crate) fn render_rtsp(head: &RtspHead<'_>) -> Result<Vec<u8>, ErrorKind> {
     let mut measure = Out {
         buf: None,
-        len: out.len(),
+        len: 0,
         max: MAX_RTSP_HEAD,
     };
     write_rtsp(head, &mut measure)?;
-    out.try_reserve_exact(measure.len - out.len())
+    let mut out = Vec::new();
+    out.try_reserve_exact(measure.len)
         .map_err(|_| ErrorKind::OutOfMemory)?;
-    let len = out.len();
     write_rtsp(
         head,
         &mut Out {
-            buf: Some(out),
-            len,
+            buf: Some(&mut out),
+            len: 0,
             max: MAX_RTSP_HEAD,
         },
-    )
+    )?;
+    Ok(out)
 }
 
 fn write_rtsp(head: &RtspHead<'_>, out: &mut Out<'_>) -> Result<(), ErrorKind> {

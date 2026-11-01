@@ -744,7 +744,8 @@ fn read_rtsp_status(line: &[u8]) -> Result<Status, HeadError> {
     let line = &line[..line.iter().position(|&b| b == 0).unwrap_or(line.len())];
     let word_end = line.iter().position(|&b| b == b' ').unwrap_or(line.len());
     let word = &line[..word_end];
-    if word.is_empty() || word.len() > 32 || word_end == line.len() {
+    // An empty word is no `RTSP/1.0` either, below.
+    if word.len() > 32 || word_end == line.len() {
         return Err(HeadError::BadRtspStatus);
     }
     let digits = line[word_end + 1..]

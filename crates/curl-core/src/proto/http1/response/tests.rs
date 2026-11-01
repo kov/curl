@@ -1218,4 +1218,11 @@ fn an_rtsp_status_line_is_read_as_c_reads_it() {
     assert_eq!(got.error, Some(HeadError::Http09NotAllowed));
     let got = parse(&[b"RTSP/1.0 999\r\n\r\n"], rtsp, &mut 0);
     assert_eq!(got.lines[0].0, status(HttpVersion::Http11, 999));
+    // The word is at most 32 bytes, its blanks counted (checked against
+    // the C build, which fails the 33 as a weird reply).
+    for (tabs, read) in [(24, true), (25, false)] {
+        let line = [&b"RTSP/1.0"[..], &vec![b'\t'; tabs], b" 200 OK\r\n\r\n"].concat();
+        let got = parse(&[&line], rtsp, &mut 0);
+        assert_eq!(got.error.is_none(), read, "{tabs}: {got:?}");
+    }
 }

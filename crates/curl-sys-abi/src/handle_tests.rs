@@ -210,6 +210,55 @@ fn a_request_target_is_kept() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// RTSP's strings are copied, and NULL unsets each; a session id set is
+/// the application's, from no server's origin.
+#[test]
+fn rtsp_strings_are_kept() {
+    let c = curl_easy_init();
+    let kept = |c| {
+        options(c, |o| {
+            (
+                o.small.rtsp_session.as_ref().map(|s| s.id().to_vec()),
+                o.small.rtsp_stream_uri.clone(),
+                o.small.rtsp_transport.clone(),
+            )
+        })
+    };
+    let mut id = *b"s1\0";
+    let mut uri = *b"rtsp://h/x\0";
+    let mut transport = *b"RTP/AVP\0";
+    for (o, p) in [
+        (ffi::CURLOPT_RTSP_SESSION_ID, id.as_mut_ptr()),
+        (ffi::CURLOPT_RTSP_STREAM_URI, uri.as_mut_ptr()),
+        (ffi::CURLOPT_RTSP_TRANSPORT, transport.as_mut_ptr()),
+    ] {
+        assert_eq!(pointer(c, o, p), CURLE_OK);
+    }
+    id[0] = b'X';
+    uri[0] = b'X';
+    transport[0] = b'X';
+    std::hint::black_box((&id, &uri, &transport));
+    assert_eq!(
+        kept(c),
+        (
+            Some(b"s1".to_vec()),
+            Some(b"rtsp://h/x".to_vec()),
+            Some(b"RTP/AVP".to_vec())
+        )
+    );
+    let null = ptr::null_mut::<c_char>();
+    for o in [
+        ffi::CURLOPT_RTSP_SESSION_ID,
+        ffi::CURLOPT_RTSP_STREAM_URI,
+        ffi::CURLOPT_RTSP_TRANSPORT,
+    ] {
+        assert_eq!(pointer(c, o, null), CURLE_OK);
+    }
+    assert_eq!(kept(c), (None, None, None));
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// The TLS options as setopt.c takes them: a CA file of NULL is none
 /// (not the build's default), a blob without bytes refused; the version
 /// range as `Curl_setopt_SSLVERSION` checks it. Two differ from C

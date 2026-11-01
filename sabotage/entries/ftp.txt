@@ -338,9 +338,9 @@ witness: curl-core proto::ftp::tests::a_silent_data_address_gives_way_after_the_
 file: crates/curl-core/src/proto/mod.rs
 witness: curl-core proto::smtp::tests::over_the_wire::a_mail_a_reused_connection_cannot_send_is_not_retried
 --- old
-            _ if ended || uploads => false,
+            _ if uploads => false,
 --- new
-            _ if ended => false,
+            _ if false => false,
 
 === the data connection's filters do not name its socket
 file: crates/curl-core/src/trace.rs

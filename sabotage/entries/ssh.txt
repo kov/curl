@@ -186,3 +186,11 @@ witness: curl-libssh tests::a_socket_without_a_descriptor_is_refused
         let Some(socket) = socket else {
             return Ok(());
         };
+
+=== a download that ended with nothing is made again on a fresh connection
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::a_download_that_ends_empty_on_a_reused_connection_is_not_made_again
+--- old
+        !self.upload && !self.no_body && self.receiving && self.pipeline.bytecount() == 0
+--- new
+        !self.upload && !self.no_body && self.pipeline.bytecount() == 0

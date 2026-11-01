@@ -1412,11 +1412,12 @@ impl ProtoState {
     /// back, and its protocol answers every request, as HTTP does, or it
     /// waits for a body it has not had and uploads nothing (`uploads`,
     /// `state.upload`). `ended` says the request ended, as a close ends
-    /// it (`req.done`).
+    /// it (`req.done`), which only RTSP has to ask: the others' answers
+    /// count as received, and SSH's download stops waiting as it ends.
     pub(crate) fn retryable(&self, ended: bool, uploads: bool) -> bool {
         match *self {
             ProtoState::Http(ref r) => r.received_nothing(ended),
-            _ if ended || uploads => false,
+            _ if uploads => false,
             ProtoState::Ftp(ref r) => r.received_nothing(),
             ProtoState::Pop3(ref r) => r.received_nothing(),
             ProtoState::Imap(ref r) => r.received_nothing(),

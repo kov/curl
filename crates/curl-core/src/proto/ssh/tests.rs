@@ -1523,6 +1523,25 @@ fn a_read_that_waits_is_taken_after_its_wait() {
     assert_eq!(waits, 2);
 }
 
+/// An SFTP download of no size that reads to its end, with nothing
+/// received, on a reused connection is over: it no longer waits for a body
+/// (`req.done`, `Curl_retry_request`), and it is not made again.
+#[test]
+fn a_download_that_ends_empty_on_a_reused_connection_is_not_made_again() {
+    let w = world_with(&[("/home/u/f", "x"), ("/home/u/g", "")], |w| {
+        w.no_size_flag = true;
+    });
+    let mut m = serving(PORT, &silent());
+    let (result, body, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!((result, body), (Ok(()), b"x".to_vec()), "{said}");
+    let (result, body, said) = run_on(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/g", |_| {});
+    assert_eq!((result, body), (Ok(()), Vec::new()), "{said}");
+    drop(m);
+    let calls = w.lock().unwrap().calls.clone();
+    let connects = calls.iter().filter(|c| *c == "connect").count();
+    assert_eq!(connects, 1, "{calls:?}");
+}
+
 /// An SFTP download whose first read fails on a reused connection, with
 /// nothing received, is made again on a fresh one (`Curl_retry_request`),
 /// its post-quote run once, after the download made again, not after the

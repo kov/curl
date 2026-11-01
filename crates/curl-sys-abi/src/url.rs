@@ -1,5 +1,5 @@
 //! The URL API, `curl_url` and its kin: a `CURLU *` is a core
-//! `SharedUrl` in memory of its own, which `CURLOPT_CURLU` shares.
+//! `SharedUrl` held as its bare pointer, which `CURLOPT_CURLU` shares.
 
 #![allow(unsafe_code)]
 
@@ -8,7 +8,9 @@ use core::mem::ManuallyDrop;
 use core::ptr::{self, NonNull};
 
 use curl_alloc::{OutOfMemory, TryArc};
-use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, SharedUrl, Url, UrlSink};
+use curl_core::url::{
+    GetOptions, ParseOptions, Part, SetOptions, SharedUrl, Url, UrlCell, UrlSink,
+};
 
 use crate::error_codes::url_code;
 use crate::ffi::{self, CURLU, CURLUPart, CURLUcode};
@@ -179,7 +181,7 @@ const _: ffi::proto::curl_url = curl_url;
 pub unsafe extern "C" fn curl_url_cleanup(u: *mut CURLU) {
     if let Some(u) = NonNull::new(u) {
         // SAFETY: made by `boxed`, and the caller gives it up.
-        drop(unsafe { TryArc::<std::sync::Mutex<Url>>::from_raw(u.cast()) });
+        drop(unsafe { TryArc::<UrlCell>::from_raw(u.cast()) });
     }
 }
 const _: ffi::proto::curl_url_cleanup = curl_url_cleanup;

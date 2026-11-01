@@ -1353,32 +1353,38 @@ fn path_part(
 /// same URL. It is reached only for the length of one call, so that no
 /// borrow of it outlives what it was taken for.
 #[derive(Clone, Debug)]
-pub struct SharedUrl(TryArc<Mutex<Url>>);
+pub struct SharedUrl(TryArc<UrlCell>);
+
+/// What a `SharedUrl` counts: closed, so that the count can be held as a
+/// bare pointer without the URL being reached any way but through
+/// `SharedUrl`.
+#[derive(Debug)]
+pub struct UrlCell(Mutex<Url>);
 
 impl SharedUrl {
     pub fn new(url: Url) -> Result<SharedUrl, OutOfMemory> {
-        Ok(SharedUrl(TryArc::try_new(Mutex::new(url))?))
+        Ok(SharedUrl(TryArc::try_new(UrlCell(Mutex::new(url)))?))
     }
 
     /// The count this handle is one of, for an owner that holds the URL
     /// as a bare pointer (`TryArc::into_raw`).
-    pub fn into_arc(self) -> TryArc<Mutex<Url>> {
+    pub fn into_arc(self) -> TryArc<UrlCell> {
         self.0
     }
 
     /// The handle `into_arc` gave up.
-    pub fn from_arc(arc: TryArc<Mutex<Url>>) -> SharedUrl {
+    pub fn from_arc(arc: TryArc<UrlCell>) -> SharedUrl {
         SharedUrl(arc)
     }
 
     /// What `f` reads of the URL.
     pub fn with<R>(&self, f: impl FnOnce(&Url) -> R) -> R {
-        f(&self.0.lock().expect("no panic holds it"))
+        f(&self.0.0.lock().expect("no panic holds it"))
     }
 
     /// What `f` makes of the URL, changing it.
     pub fn update<R>(&self, f: impl FnOnce(&mut Url) -> R) -> R {
-        f(&mut self.0.lock().expect("no panic holds it"))
+        f(&mut self.0.0.lock().expect("no panic holds it"))
     }
 }
 

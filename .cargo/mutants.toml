@@ -875,4 +875,18 @@ exclude_re = [
     # marks the connection to close and ends the transfer in that step:
     # no pollset is asked of it after.
     'curl-core/src/proto/ssh/mod\.rs:.*: replace match guard self\.live with true in Request::pollset$',
+    # Only an RTSP connection says it has input pending while idle: a
+    # multiplexing one's `alive` reads its session's frames itself, so the
+    # guard is never asked of one.
+    'curl-core/src/conn/pool\.rs:.*: replace match guard conn\.speaks_rtsp\(\) with true in alive$',
+    # The mechanisms are read only of an entry, and only the Mechs state's
+    # search of the root is answered with entries: those the `||` reads of
+    # anything else are never looked at.
+    'curl-core/src/proto/ldap\.rs:\d+:46: replace && with \|\| in Request::connecting_step$',
+    # The session's Debug is for a failed test's message; nothing reads it.
+    'curl-ldap/src/lib\.rs:.*: replace <impl core::fmt::Debug for Libsession>::fmt -> core::fmt::Result with Ok\(Default::default\(\)\)$',
+    # The library always answers API_INFO, and with its vendor's name, and
+    # a live session always has its socket buffer: the second half of each
+    # guard is for a library that would not.
+    'curl-ldap/src/lib\.rs:.*: replace && with \|\| in (api_version|Libsession::sockbuf)$',
 ]

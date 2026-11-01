@@ -1236,23 +1236,63 @@ fn trace_as(easy: &ShimEasy, kind: DebugKind, bytes: &[u8]) {
 /// What a call on the connection a transfer left traced, held until nothing
 /// of the handle is borrowed: its debug function may call back into it, as
 /// C's may. A piece there is no memory to hold is not said, as a line too
-/// long for the trace is cut.
-#[derive(Default)]
-pub(crate) struct Held(Vec<(DebugKind, Vec<u8>)>);
+/// long for the trace is cut. Held on the stack, as a call's lines usually
+/// fit and C's trace allocates nothing; those past it are kept apart.
+pub(crate) struct Held {
+    bytes: [u8; Held::BYTES],
+    used: usize,
+    lines: [(DebugKind, usize); Held::LINES],
+    count: usize,
+    more: Vec<(DebugKind, Vec<u8>)>,
+}
+
+impl Default for Held {
+    fn default() -> Self {
+        Held {
+            bytes: [0; Held::BYTES],
+            used: 0,
+            lines: [(DebugKind::Text, 0); Held::LINES],
+            count: 0,
+            more: Vec::new(),
+        }
+    }
+}
 
 impl Held {
+    const BYTES: usize = 2048;
+    const LINES: usize = 16;
+
     pub(crate) fn note(&mut self, kind: DebugKind, bytes: &[u8]) {
         use curl_alloc::TryVec as _;
+        let room = &mut self.bytes[self.used..];
+        if self.more.is_empty() && self.count < Held::LINES && bytes.len() <= room.len() {
+            room[..bytes.len()].copy_from_slice(bytes);
+            self.used += bytes.len();
+            self.lines[self.count] = (kind, bytes.len());
+            self.count += 1;
+            return;
+        }
         let mut copy = Vec::new();
         if copy.try_extend_from_slice(bytes).is_ok() {
-            let _not_said = self.0.try_push((kind, copy));
+            let _not_said = self.more.try_push((kind, copy));
         }
+    }
+
+    /// Each piece held, in the order it was traced.
+    fn pieces(&self) -> impl Iterator<Item = (DebugKind, &[u8])> {
+        let mut left = &self.bytes[..self.used];
+        let held = self.lines[..self.count].iter().map(move |&(kind, len)| {
+            let (piece, rest) = left.split_at(len);
+            left = rest;
+            (kind, piece)
+        });
+        held.chain(self.more.iter().map(|(kind, b)| (*kind, &b[..])))
     }
 
     /// Say what is held, in the order it was traced.
     pub(crate) fn say(self, easy: &ShimEasy) {
-        for (kind, bytes) in &self.0 {
-            trace_as(easy, *kind, bytes);
+        for (kind, bytes) in self.pieces() {
+            trace_as(easy, kind, bytes);
         }
     }
 }
@@ -1274,6 +1314,23 @@ pub(crate) fn aborts(rc: c_int) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pieces held keep their order, past what the stack holds too.
+    #[test]
+    fn held_pieces_keep_their_order() {
+        let mut held = Held::default();
+        let big = vec![b'b'; Held::BYTES];
+        let lines: Vec<Vec<u8>> = (0..Held::LINES + 2)
+            .map(|i| vec![b'a' + u8::try_from(i).unwrap()])
+            .chain([big.clone(), b"last".to_vec()])
+            .collect();
+        for line in &lines {
+            held.note(DebugKind::HeaderIn, line);
+        }
+        let said: Vec<&[u8]> = held.pieces().map(|(_, b)| b).collect();
+        let want: Vec<&[u8]> = lines.iter().map(Vec::as_slice).collect();
+        assert_eq!(said, want);
+    }
 
     /// The application's fields are lent from where a read is, as many
     /// as fit, and no further than their end.

@@ -718,6 +718,41 @@ fn the_exchange_waits_on_its_socket_and_its_interval() {
     }
 }
 
+/// While a server takes its time, its exchange, which C runs blocking
+/// from `telnet_do`, leaves the multi's other transfers moving.
+#[test]
+fn an_exchange_stalls_no_other_transfer() {
+    use crate::libraries::{Libraries, SharedLibraries};
+    use crate::multi::{NoEvents, drive_to_completion};
+    let first = Conversation::replies(&[b"late"], true).greeting().held();
+    let second = Conversation::replies(&[b"soon"], true).greeting();
+    let mut m = crate::proto::raw::wire::serving(&[&first, &second]);
+    let added = |m: &mut crate::multi::Multi| {
+        let mut e = crate::easy::Easy::new();
+        e.set_libraries(SharedLibraries::new(Libraries::NONE).unwrap());
+        let o = e.options_mut();
+        o.set_url(Some(
+            format!("telnet://127.0.0.1:{}", crate::proto::raw::wire::PORT).as_bytes(),
+        ))
+        .unwrap();
+        o.small.make_mut().unwrap().input =
+            Some(Handler::read(Input(Mutex::new(Vec::new()))).unwrap());
+        m.add(Box::new(e), (), &mut NoEvents).unwrap()
+    };
+    let waiting = added(&mut m);
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(m.info_read().is_none(), "the exchange goes on");
+    let beside = added(&mut m);
+    let result = drive_to_completion(&mut m, beside, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    assert!(m.info_read().is_none(), "the first still waits");
+    first.allow(1);
+    let result = drive_to_completion(&mut m, waiting, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+}
+
 /// Each command and qualifier C names is said by its name.
 #[test]
 fn commands_and_qualifiers_are_named() {

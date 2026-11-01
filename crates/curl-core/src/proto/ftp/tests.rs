@@ -584,6 +584,66 @@ fn after_ccc(sent: &[u8]) -> String {
     String::from_utf8_lossy(&sent[at..]).into_owned()
 }
 
+/// While the server holds back its close_notify, the wait for it after
+/// `CCC`, which C makes blocking (`Curl_ssl_cfilter_remove`), leaves the
+/// multi's other transfers moving; once it comes the login goes on in
+/// clear.
+#[test]
+fn a_ccc_s_shutdown_stalls_no_other_transfer() {
+    use crate::tls::fake::{self, CLOSE, FakeTls, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let replies = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"200 CCC\r\n"),
+        CLOSE.to_vec(),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let goodbye_held = replies.len() - 1;
+    let first = Conversation::replies(&replies, false)
+        .per_send()
+        .volunteering(1)
+        .held();
+    first.allow(goodbye_held);
+    let second = control(&[b"150 here\r\n226 done\r\n"]);
+    let file = data(b"world");
+    let mut m = serving(&[&first, &second], &[&file]);
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let url = "ftps://127.0.0.1:PORT/f";
+    let (_, _, text) = added_with(&mut m, url, Some(libraries), |o| {
+        o.line.make_mut().unwrap().ftp.ssl_ccc = Ccc::Passive;
+    });
+    for _ in 0..40 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let sent = |first: &Conversation| {
+        let plain = fake::read_client(&first.received()).unwrap();
+        String::from_utf8_lossy(&plain).into_owned()
+    };
+    let said = text.text();
+    assert!(sent(&first).ends_with("CCC\r\n"), "{said}");
+    assert!(m.info_read().is_none(), "the goodbye is awaited: {said}");
+    let (beside, body, _) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, beside, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    assert_eq!(*body.0.lock().unwrap(), b"world");
+    assert!(sent(&first).ends_with("CCC\r\n"), "the first still waits");
+    first.allow(goodbye_held + 1);
+    for _ in 0..40 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(sent(&first).ends_with("PWD\r\n"), "{}", text.text());
+}
+
 /// Passive `CCC` reads the server's close_notify and sends none: the
 /// login goes on in clear, and so does the QUIT at the end
 /// (`CURLFTPSSL_CCC_PASSIVE`, `Curl_ssl_cfilter_remove`).

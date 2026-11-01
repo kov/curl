@@ -61,3 +61,16 @@ witness: curl-core proto::telnet::tests::a_session_runs_to_the_close
                 live.cx.report_mut().sizes_mut().download += n as u64;
 --- new
                 {}
+
+=== an exchange runs to its end in one step, stalling the multi
+file: crates/curl-core/src/proto/telnet.rs
+witness: curl-core proto::telnet::tests::an_exchange_stalls_no_other_transfer
+--- old
+        Ok(if self.pass(cx, lease)? {
+            DoStep::Did
+        } else {
+            DoStep::Doing
+        })
+--- new
+        while !self.pass(cx, lease)? {}
+        Ok(DoStep::Did)

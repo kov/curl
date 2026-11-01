@@ -311,3 +311,18 @@ witness: curl-core proto::ftp::tests::an_active_protected_data_connection_waits_
                 if active && !up {
 --- new
                 if active && self.data.as_deref().is_some_and(DataConn::listens) {
+
+=== the wait for TLS to end after CCC stalls the multi
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_ccc_s_shutdown_stalls_no_other_transfer
+--- old
+            Ok(crate::tls::Handshake::Waiting) => {
+                self.due = Some(deadline);
+                Ok(())
+            }
+            Ok(crate::tls::Handshake::Done) => {
+                self.clearing = None;
+--- new
+            Ok(crate::tls::Handshake::Waiting) => self.clear_tls(cx, pc, carrier),
+            Ok(crate::tls::Handshake::Done) => {
+                self.clearing = None;

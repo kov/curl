@@ -2078,9 +2078,11 @@ impl Request {
         self.over(cx, result, exchanged)
     }
 
-    /// Run the state machine on as `done` started it, which C runs
-    /// blocking (`myssh_block_statemach`), each pass the progress
-    /// checked: a call that would wait leaves it waiting in DONE.
+    /// Run the state machine on as `done` started it (`myssh_statemach`
+    /// in C's `myssh_block_statemach`), each pass the progress checked. A
+    /// call answering that it would wait leaves it waiting in DONE; libssh's
+    /// session is blocking here, so its closes and quote commands wait
+    /// inside the call instead, the multi with them, as in C.
     pub(crate) fn finishing<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,

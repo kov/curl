@@ -179,6 +179,24 @@ not a difference: it is tracked in `MILESTONES.md`.
   `a_data_connection_s_handshake_stalls_no_other_transfer`
   (`crates/curl-core/src/proto/ftp/tests.rs`).
 
+- **A TELNET exchange leaves the multi's other transfers moving.** C runs the whole exchange
+  in `telnet_do`, polling in its own loop until the server closes (`lib/telnet.c`), so every
+  other transfer of the multi waits for it. Here each pass of that loop is a step of the
+  transfer's DO, the others going on meanwhile. Measured 2026-11-01 with `curl -Z` and a
+  TELNET server that closes after a second, beside an HTTP server that answers in 0.3 s: the
+  HTTP transfer took 1.304 s on C's build, 0.301 s here. Pinned by
+  `an_exchange_stalls_no_other_transfer` (`crates/curl-core/src/proto/telnet/tests.rs`).
+
+- **The wait for TLS to end after FTP's `CCC` leaves the multi's other transfers moving.** C
+  waits in `Curl_ssl_cfilter_remove` (`vtls_shutdown_blocking`), so every other transfer of the
+  multi waits on the server's close_notify. Here it waits in the state after `CCC`, for what
+  the shutdown waits for, the others going on meanwhile. The commands that follow and the
+  result are C's. Measured 2026-11-01 with `curl -Z`, active `CCC` and a server whose
+  close_notify comes a second after its answer, beside an HTTP server that answers in 0.3 s:
+  the HTTP transfer took 1.007 s on C's build, 0.303 s here, both downloads then sending `PWD`,
+  `EPSV`, `PASV`, `QUIT` and exiting 13. Pinned by `a_ccc_s_shutdown_stalls_no_other_transfer`
+  (`crates/curl-core/src/proto/ftp/tests.rs`).
+
 ## Bodies C cannot send again
 
 - **A form part of nothing is sent again.** A part given a name but no content

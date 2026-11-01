@@ -21,6 +21,7 @@ pub(crate) mod http2;
 pub(crate) mod http3;
 pub(crate) mod imap;
 pub(crate) mod ldap;
+mod mail;
 pub(crate) mod mqtt;
 pub(crate) mod pingpong;
 pub(crate) mod pop3;

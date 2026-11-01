@@ -11,12 +11,13 @@ use std::num::NonZeroU32;
 
 use curl_alloc::{TryArc, TryVec as _};
 
+use super::mail::{self, sasl_failed, sasl_step};
 use super::pingpong::Pingpong;
 use super::pingpong::drive::{self, Read};
 use super::pingpong::smtp::{Smtp, SmtpReply};
 use super::{Connect, DoPhase, DoStep, Finish, ProtoStep, Waiting};
 use crate::auth::creds::{CredentialGate, Credentials, Takes};
-use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl, SaslError};
+use crate::auth::sasl::{self, Code, Mechs, Progress, Sasl};
 use crate::components::Component;
 use crate::conn::io::Events;
 use crate::conn::line::LineConn;
@@ -107,11 +108,6 @@ pub(crate) struct SmtpConn {
     /// What of its route few routes have, the credentials it logs in
     /// with among it (`conn->creds`): the route owns them.
     cold: Option<TryArc<RouteCold>>,
-}
-
-/// The credentials a connection logs in with, as its route holds them.
-fn login_of(cold: &Option<TryArc<RouteCold>>) -> Option<&Credentials> {
-    cold.as_deref().and_then(|c| c.login.as_ref())
 }
 
 impl SmtpConn {
@@ -532,12 +528,9 @@ impl Request {
     /// The connection's SMTP state, set up the first time
     /// (`smtp_connect`): the URL's or the application's login options
     /// read, then the domain from the URL's path, the greeting awaited.
-    fn conn_state<H: Host>(
-        &mut self,
-        cx: &mut StepCx<'_, H>,
-        lease: &mut ConnLease,
-        url_options: Option<&[u8]>,
-    ) -> Step {
+    fn conn_state<H: Host>(&mut self, cx: &mut StepCx<'_, H>, lease: &mut ConnLease) -> Step {
+        let url_options = self.url_options.take();
+        let url_options = url_options.as_deref();
         let http = cx.easy().options().http.auth.0;
         let mut sasl = Sasl::new(&SASL, http);
         let options = match cx.easy().options().line.login_options.as_deref() {
@@ -854,31 +847,6 @@ impl Request {
         Ok(())
     }
 
-    /// The SASL context of a step over `pc`'s credentials.
-    fn sasl_step<H: Host, R>(
-        &self,
-        cx: &mut StepCx<'_, H>,
-        pc: &mut SmtpConn,
-        f: impl FnOnce(&mut Sasl, &mut sasl::Ctx<'_>) -> R,
-    ) -> R {
-        let sasl_ir = cx.easy().options().line.sasl_ir;
-        let libraries = cx.easy().shared_libraries();
-        let mut random = |out: &mut [u8]| libraries.random(out).map_err(|_| ());
-        let mut say = |to: sasl::Say, args: core::fmt::Arguments<'_>| match to {
-            sasl::Say::Debug => trace::debug_info(cx, args),
-            sasl::Say::Info => trace::info(cx, args),
-        };
-        let mut sx = sasl::Ctx {
-            creds: login_of(&pc.cold).map(Credentials::secret),
-            sasl_ir,
-            host: self.peer.name(),
-            port: self.peer.port(),
-            random: &mut random,
-            said: &mut say,
-        };
-        f(&mut pc.sasl, &mut sx)
-    }
-
     /// Log in by SASL if the server offers `AUTH` and there is something
     /// to log in with, else the connect is done
     /// (`smtp_perform_authentication`).
@@ -888,12 +856,16 @@ impl Request {
         pc: &mut SmtpConn,
         carrier: &mut Carrier<'_>,
     ) -> Step {
-        let can = self.sasl_step(cx, pc, |sasl, sx| sasl.can_authenticate(sx));
+        let can = sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+            sasl.can_authenticate(sx)
+        });
         if !pc.auth_offered || !can {
             set_state(cx, pc, State::Stop);
             return Ok(());
         }
-        let progress = self.sasl_step(cx, pc, |sasl, sx| sasl.start(sx, false));
+        let progress = sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+            sasl.start(sx, false)
+        });
         match progress.map_err(|e| sasl_failed(cx, e))? {
             Progress::Sends(send) => {
                 self.sasl_send(cx, pc, carrier, send)?;
@@ -901,7 +873,9 @@ impl Request {
                 Ok(())
             }
             Progress::Idle | Progress::Done => {
-                self.sasl_step(cx, pc, |sasl, sx| sasl.blocked(sx));
+                sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+                    sasl.blocked(sx)
+                });
                 Err(ErrorKind::LoginDenied)
             }
         }
@@ -934,7 +908,9 @@ impl Request {
             sasl::Send::Cancel => drive::send(cx, &mut pc.pp, carrier, None, &[b"*"]),
         };
         // The exchange moves on once its command is sent.
-        self.sasl_step(cx, pc, |sasl, sx| sasl.sent(sx, sent.is_ok()));
+        sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+            sasl.sent(sx, sent.is_ok())
+        });
         sent
     }
 
@@ -956,7 +932,9 @@ impl Request {
         copied
             .try_extend_from_slice(message)
             .map_err(|_| ErrorKind::OutOfMemory)?;
-        let progress = self.sasl_step(cx, pc, |sasl, sx| sasl.step(sx, step, &copied));
+        let progress = sasl_step(cx, &self.peer, &pc.cold, &mut pc.sasl, |sasl, sx| {
+            sasl.step(sx, step, &copied)
+        });
         match progress.map_err(|e| sasl_failed(cx, e))? {
             Progress::Done => {
                 set_state(cx, pc, State::Stop);
@@ -1418,16 +1396,6 @@ fn set_state<H: Host>(cx: &mut StepCx<'_, H>, pc: &mut SmtpConn, state: State) {
     pc.state = state;
 }
 
-fn sasl_failed<H: Host>(cx: &mut StepCx<'_, H>, e: SaslError) -> ErrorKind {
-    match e {
-        SaslError::Denied => ErrorKind::LoginDenied,
-        SaslError::OutOfMemory => ErrorKind::OutOfMemory,
-        SaslError::Random => {
-            trace::fail(cx, ErrorKind::FailedInit, format_args!("no random bytes"))
-        }
-    }
-}
-
 /// The URL's or the application's login options
 /// (`smtp_parse_url_options`): `AUTH=` and a SASL mechanism, `*` for
 /// any; any other is malformed.
@@ -1466,15 +1434,7 @@ impl super::Phases for Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<Connect, ErrorKind> {
-        if !lease.conn().keeps_line() {
-            let url_options = self.url_options.take();
-            self.conn_state(cx, lease, url_options.as_deref())?;
-        }
-        Ok(if self.run(cx, lease)? {
-            Connect::Done
-        } else {
-            Connect::Waiting
-        })
+        mail::connect(self, cx, lease, Self::conn_state, Self::run)
     }
 
     fn make<H: Host>(

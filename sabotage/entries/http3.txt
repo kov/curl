@@ -690,7 +690,7 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_an_http3_proxy_is_quic_in_quic
 --- old
-            let udp = u8::from(dialing.tunnels_udp());
+            let udp = u8::from(dialing.asks_udp());
 --- new
             let udp = 0;
 

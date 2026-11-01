@@ -396,26 +396,59 @@ mod over_the_wire {
         );
     }
 
-    /// Through an HTTP proxy, the tunnel refuses the scheme before
-    /// anything is sent. C asks the proxy for a CONNECT-UDP tunnel instead
-    /// and, granted one, fails to bind and sends nothing (DIVERGENCE.md).
-    #[test]
-    fn a_proxy_refuses_the_scheme() {
-        let (said, ran) = fetch(&[], |o| {
+    /// What a transfer through an HTTP proxy asked of it, the proxy giving
+    /// `answer`.
+    fn through_proxy(answer: &[u8]) -> (Vec<u8>, Ran) {
+        fetch(&[answer], |o| {
             o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
-        });
+        })
+    }
+
+    /// Asked for a tunnel of datagrams, a proxy refusing it fails the
+    /// transfer with what C says.
+    #[test]
+    fn a_proxy_is_asked_for_a_connect_udp_tunnel() {
+        let (said, ran) = through_proxy(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
         assert_eq!(
             ran.result,
-            Some(Err(ErrorKind::UnsupportedProtocol)),
+            Some(Err(ErrorKind::CouldntConnect)),
+            "{}",
+            ran.text
+        );
+        let head = String::from_utf8_lossy(&said);
+        assert!(head.starts_with("GET http://"), "{head}");
+        assert!(
+            head.contains("/.well-known/masque/udp/127.0.0.1/"),
+            "{head}"
+        );
+        assert!(head.contains("\r\nUpgrade: connect-udp\r\n"), "{head}");
+        assert!(
+            ran.text
+                .contains("CONNECT-UDP tunnel failed, response 404\n"),
+            "{}",
+            ran.text
+        );
+    }
+
+    /// A tunnel granted leaves the socket connected to the proxy, which
+    /// the transfer's bind fails on, before anything of TFTP is sent.
+    #[test]
+    fn a_tunnel_granted_fails_to_bind() {
+        let (said, ran) =
+            through_proxy(b"HTTP/1.1 101 Switching Protocols\r\nCapsule-Protocol: ?1\r\n\r\n");
+        assert_eq!(
+            ran.result,
+            Some(Err(ErrorKind::CouldntConnect)),
             "{}",
             ran.text
         );
         assert!(
-            ran.text.contains("tftp cannot be done over CONNECT\n"),
+            ran.text.contains("bind() failed; Invalid argument\n"),
             "{}",
             ran.text
         );
-        assert!(said.is_empty(), "{said:?}");
+        let head = String::from_utf8_lossy(&said);
+        assert!(head.ends_with("\r\n\r\n"), "nothing after the head: {head}");
     }
 
     /// What the paused writer took, and whether it paused yet.

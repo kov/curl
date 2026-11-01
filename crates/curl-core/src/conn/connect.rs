@@ -1257,7 +1257,7 @@ impl ConnectMachine {
                 route: &self.route,
                 dial: self.dial,
             };
-            let udp = u8::from(dialing.tunnels_udp());
+            let udp = u8::from(dialing.asks_udp());
             cx.of(
                 Component::H3Proxy,
                 format_args!("created, udp_tunnel={udp}"),
@@ -1390,7 +1390,12 @@ impl ConnectMachine {
             );
         }
         let connect = socket.connect(&remote);
-        let local = socket.local_addr().ok();
+        // A connection of a scheme of datagrams never asks, even as it
+        // goes over a stream to a proxy (`set_local_ip`).
+        let local = socket
+            .local_addr()
+            .ok()
+            .filter(|_| !self.route.origin.scheme().no_tcp_proxy());
         let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
         cx.of(
             component,
@@ -1726,7 +1731,7 @@ impl ConnectMachine {
         i: usize,
         now: Instant,
     ) -> Result<Drove, ConnectError> {
-        let udp = self.dialing().tunnels_udp();
+        let udp = self.dialing().asks_udp();
         let to_proxy = self.route.proxy_over_quic();
         let Stage::Racing(r) = &mut self.stage else {
             unreachable!("only a race is won");

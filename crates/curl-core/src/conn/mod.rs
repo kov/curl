@@ -503,6 +503,16 @@ impl Dialing<'_> {
         self.dial == Dial::Quic && self.route.proxy.as_ref().is_some_and(ProxyRoute::tunnels)
     }
 
+    /// The tunnel through the proxy is asked for as CONNECT-UDP
+    /// (`tunnel_transport` is a datagram's): for QUIC, or for a scheme of
+    /// datagrams, TFTP's, which goes on over the same connection with no
+    /// QUIC of its own.
+    pub(crate) fn asks_udp(&self) -> bool {
+        self.tunnels_udp()
+            || (self.route.origin.scheme().no_tcp_proxy()
+                && self.route.proxy.as_ref().is_some_and(ProxyRoute::tunnels))
+    }
+
     /// What the socket's filter traces as: `UNIX` for a Unix socket's
     /// (`Curl_cft_unix`), `UDP` for QUIC's (`Curl_cft_udp`), else `TCP`.
     pub(crate) fn socket_component(&self) -> crate::components::Component {
@@ -926,8 +936,8 @@ impl Scheme {
         self.0.protocol == Some(crate::url::schemes::Protocol::Tftp)
     }
 
-    /// Whether its bytes cannot go through a TCP tunnel: TFTP's, which
-    /// are datagrams (`PROTOPT_NOTCPPROXY`).
+    /// Whether its bytes are datagrams, which a proxy tunnels as CONNECT-UDP
+    /// and not as a TCP stream: TFTP's (`PROTOPT_NOTCPPROXY`).
     pub(crate) fn no_tcp_proxy(self) -> bool {
         self.0.flags.no_tcp_proxy
     }
@@ -1477,6 +1487,16 @@ impl Conn {
         }
     }
 
+    /// The socket under it, whatever goes over that; none without a
+    /// network.
+    pub(crate) fn socket(&self) -> Option<&dyn io::Socket> {
+        match &self.transport {
+            Transport::Datagram(datagrams) => Some(datagrams.socket()),
+            Transport::Stream(stream) => Some(stream.socket()),
+            Transport::Local => None,
+        }
+    }
+
     /// Put its HTTP/3 session on it, as its QUIC handshake is done.
     pub(crate) fn put_h3(&mut self, h3: Box<crate::proto::http3::H3Conn>) {
         assert!(
@@ -1932,8 +1952,9 @@ impl Conn {
     /// The connection's end here, as its socket says; none without a
     /// network, or if the system does not say.
     pub(crate) fn local(&self) -> Option<SocketAddr> {
-        // A socket that never connects is not asked (`set_local_ip`).
-        if self.dial == Dial::Udp {
+        // A connection of a scheme of datagrams is not asked, even as it
+        // goes over a stream to a proxy (`set_local_ip`).
+        if matches!(&self.route, Route::Net(net) if net.origin.scheme().no_tcp_proxy()) {
             return None;
         }
         match &self.transport {

@@ -969,7 +969,9 @@ impl Request {
     }
 
     /// Bind the socket to any address of the peer's family, unless the
-    /// transfer bound it already (`tftp_connect`).
+    /// transfer bound it already (`tftp_connect`). Through a proxy's tunnel
+    /// the socket is the one connected to the proxy, whose bind the system
+    /// refuses, and the transfer fails with what it says.
     fn bind<H: Host>(&self, cx: &mut StepCx<'_, H>, lease: &ConnLease) -> Result<(), ErrorKind> {
         if cx.easy().options().sockets.local.binds() {
             return Ok(());
@@ -978,7 +980,7 @@ impl Request {
             Some(Remote::Inet(SocketAddr::V6(_))) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
             _ => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         };
-        let Some(socket) = lease.conn().datagram_socket() else {
+        let Some(socket) = lease.conn().socket() else {
             return Ok(());
         };
         if let Err(e) = socket.bind(SocketAddr::new(any, 0)) {

@@ -33,7 +33,7 @@ pub(super) fn start<H: Host>(
         .expect("HTTP/2 is offered to a proxy with a library to speak it");
     let mut proxy = H2Proxy::open(library, cx.max_streams())?;
     proxy.received(s.machine.dialed().stream().rx_mut().take());
-    connect(&mut proxy, lent, cx, s.machine.dialing().tunnels_udp())?;
+    connect(&mut proxy, lent, cx, s.machine.dialing().asks_udp())?;
     let proxy = try_box(proxy).map_err(oom)?;
     try_box(Handshake::H2Connect(proxy)).map_err(oom)
 }
@@ -153,7 +153,7 @@ fn inspect<H: Host>(
     let p = proxy(&mut s.handshake);
     let answer = p.answer().expect("the answer is whole");
     let status = answer.status;
-    let what = super::tunnel::method_name(s.machine.dialing().tunnels_udp());
+    let what = super::tunnel::method_name(s.machine.dialing().asks_udp());
     trace::info(cx, format_args!("{what} Response Status {status}"));
     let total = answer.fields.len();
     trace::info(cx, format_args!("Response Headers ({total} total):"));
@@ -177,11 +177,11 @@ fn inspect<H: Host>(
         && challenged(lent, cx, Component::H2Proxy, value)?
     {
         let mut p = take(s);
-        connect(&mut p, lent, cx, s.machine.dialing().tunnels_udp())?;
+        connect(&mut p, lent, cx, s.machine.dialing().asks_udp())?;
         s.handshake = Some(try_box(Handshake::H2Connect(p)).map_err(oom)?);
         return Ok(Ran::Again);
     }
-    if s.machine.dialing().tunnels_udp() {
+    if s.machine.dialing().asks_udp() {
         let p = proxy(&mut s.handshake);
         let answer = p.answer().expect("the answer is whole");
         let verdict = super::tunnel::udp_answer(cx, status, answer.field(b"capsule-protocol"));

@@ -468,16 +468,17 @@ not a difference: it is tracked in `MILESTONES.md`.
 
 ## A tunnel C asks for and cannot use
 
-- **TFTP through an HTTP proxy is refused before anything is sent.** `curl -x proxy
-  tftp://host/file` fails with 1 (`CURLE_UNSUPPORTED_PROTOCOL`), "tftp cannot be done over
-  CONNECT", the refusal C's `tunnel_init` (`lib/cf-h1-proxy.c`) keeps for a scheme marked
-  `PROTOPT_NOTCPPROXY`. C never reaches it for TFTP: it asks the proxy for a CONNECT-UDP
-  tunnel instead, which against a proxy that answers 404 fails with 7 (`CURLE_COULDNT_CONNECT`),
-  "CONNECT-UDP tunnel failed, response 404", measured against the C build. A granted tunnel
-  fails too: measured 2026-11-01 on C's builds, against a proxy answering 101, `tftp_connect`
-  (`lib/tftp.c`) fails with 7, "bind() failed; Invalid argument", nothing sent after the
-  request. Pinned by `a_proxy_refuses_the_scheme`
-  (`crates/curl-core/src/proto/tftp/tests.rs`).
+- **TFTP through a proxy, its socket bound by the application or through SOCKS.** An HTTP
+  proxy is asked for a CONNECT-UDP tunnel, and, granted one, the bind of the socket connected
+  to it fails, both as in C (`a_tunnel_granted_fails_to_bind`,
+  `crates/curl-core/src/proto/tftp/tests.rs`; test 3700). Two corners are left, each failing
+  with C's exit code. With `--interface` or `--local-port`, C skips that bind where it has
+  bound the socket (`bits.bound`), sends its request on the socket connected to the proxy, and
+  fails with 55, "Received too short packet" once the proxy closes (measured 2026-11-01 against
+  the C build); here `--interface` of any kind skips the bind and the send fails with 55,
+  nothing sent. Through a SOCKS proxy, C opens a UDP socket to the proxy and fails with 97,
+  "Send failure: Destination address required"; here the SOCKS handshake is made over TCP and
+  fails with 97 with what the proxy leaves it. Neither gets a transfer through, on either side.
 
 ## Frames C sends beside a transfer
 

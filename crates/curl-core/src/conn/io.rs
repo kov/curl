@@ -1966,8 +1966,12 @@ impl Socket for FakeSocket {
         Ok(())
     }
 
-    /// Bound to a port in use, the bind is refused.
+    /// Bound to a port in use, the bind is refused; and so is the bind of
+    /// a socket that connected, which the connect bound.
     fn bind(&self, addr: SocketAddr) -> io::Result<()> {
+        if self.connected.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(io::Error::from_raw_os_error(libc_errno::EINVAL));
+        }
         let in_use = self
             .binding
             .as_ref()

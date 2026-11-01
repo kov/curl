@@ -102,7 +102,7 @@ pub(super) fn dialed<H: Host>(
     // What the proxy's TLS negotiated names the tunnel's protocol; with
     // none, the proxy type does: HTTP/2 for an HTTPS proxy asked for in
     // it.
-    let what = method_name(s.machine.dialing().tunnels_udp());
+    let what = method_name(s.machine.dialing().asks_udp());
     let h2 = match super::query_alpn(cx, s.machine.query(LayerQuery::Alpn), below) {
         Some(chosen) => {
             let name = chosen.name();
@@ -128,7 +128,7 @@ pub(super) fn dialed<H: Host>(
     let started = if h2 {
         super::h2tunnel::start(s, lent, cx)
     } else {
-        start(lent, cx, s.machine.dialing().tunnels_udp())
+        start(lent, cx, s.machine.dialing().asks_udp())
     };
     match started {
         Ok(tunnel) => {
@@ -203,13 +203,6 @@ fn start<H: Host>(
     cx: &mut StepCx<'_, H>,
     udp: bool,
 ) -> Result<Box<Handshake>, ErrorKind> {
-    // Datagrams of the request's own cannot go through it (`tunnel_init`).
-    let scheme = lent.route.origin.scheme();
-    if scheme.no_tcp_proxy() {
-        let name = scheme.name();
-        let why = format_args!("{name} cannot be done over CONNECT");
-        return Err(trace::fail(cx, ErrorKind::UnsupportedProtocol, why));
-    }
     let ConnectHead {
         head: request,
         authorized,
@@ -709,8 +702,8 @@ fn finish<H: Host>(
     }
     let code = t.answer.code().unwrap_or(0);
     // A CONNECT-UDP is answered by switching protocols (RFC 9298).
-    let udp = s.machine.dialing().tunnels_udp();
-    let what = method_name(s.machine.dialing().tunnels_udp());
+    let udp = s.machine.dialing().asks_udp();
+    let what = method_name(s.machine.dialing().asks_udp());
     if code / 100 == 2 || (udp && code == 101) {
         trace::info(cx, format_args!("{what} phase completed for HTTP proxy"));
         cx.easy_mut().auth.side(Side::Proxy).finish();
@@ -776,7 +769,7 @@ fn finish<H: Host>(
         return Ok(Ran::Again);
     }
     // Over the same connection.
-    let tunnel = start(lent, cx, s.machine.dialing().tunnels_udp())?;
+    let tunnel = start(lent, cx, s.machine.dialing().asks_udp())?;
     s.handshake = Some(tunnel);
     Ok(Ran::Again)
 }

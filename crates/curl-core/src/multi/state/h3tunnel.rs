@@ -40,7 +40,7 @@ pub(super) fn drive<H: Host>(
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Tunnels, OutOfMemory> {
-    let udp = machine.dialing().tunnels_udp();
+    let udp = machine.dialing().asks_udp();
     for (i, p, socket) in machine.tunnels() {
         // Up as the pass before found it, the attempt is connected now
         // (`H3_TUNNEL_ESTABLISHED`): the request follows the `CONNECT`,

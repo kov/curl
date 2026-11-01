@@ -66,10 +66,23 @@ witness: curl-core proto::tftp::tests::over_the_wire::a_silent_server_fails_to_c
                 if self.retries >= self.retry_max {
                     self.error = Some(Failure::NoResponse);
 
-=== a TFTP transfer asks an HTTP proxy for a tunnel
-file: crates/curl-core/src/multi/state/tunnel.rs
-witness: curl-core proto::tftp::tests::over_the_wire::a_proxy_refuses_the_scheme
+=== a TFTP transfer asks an HTTP proxy for a CONNECT tunnel
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::tftp::tests::over_the_wire::a_proxy_is_asked_for_a_connect_udp_tunnel
 --- old
-    if scheme.no_tcp_proxy() {
+            || (self.route.origin.scheme().no_tcp_proxy()
+                && self.route.proxy.as_ref().is_some_and(ProxyRoute::tunnels))
 --- new
-    if false {
+            || (false
+                && self.route.proxy.as_ref().is_some_and(ProxyRoute::tunnels))
+
+=== a TFTP transfer granted a tunnel goes on without binding its socket
+file: crates/curl-core/src/proto/tftp.rs
+witness: curl-core proto::tftp::tests::over_the_wire::a_tunnel_granted_fails_to_bind
+--- old
+        let Some(socket) = lease.conn().socket() else {
+            return Ok(());
+--- new
+        let Some(socket) = lease.conn().datagram_socket() else {
+            return Ok(());
+

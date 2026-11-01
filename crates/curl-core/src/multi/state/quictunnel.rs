@@ -57,7 +57,7 @@ pub(super) fn start<H: Host>(
     }
     match try_box(Handshake::Quic(quic)) {
         Ok(h) => {
-            *s.handshake = Some(h);
+            s.handshake = Some(h);
             Ok(Wake::Idle)
         }
         Err(OutOfMemory) => Err(Failure::Transfer(ErrorKind::OutOfMemory)),

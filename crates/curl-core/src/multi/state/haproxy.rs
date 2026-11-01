@@ -107,7 +107,7 @@ pub(super) fn start<H: Host>(
         .and_then(|line| try_box(Handshake::Haproxy(Preface { line, sent: 0 })));
     match preface {
         Ok(h) => {
-            *s.handshake = Some(h);
+            s.handshake = Some(h);
             Ok(Wake::Again)
         }
         Err(_) => Err(Failure::Transfer(ErrorKind::OutOfMemory)),
@@ -148,6 +148,6 @@ pub(super) fn step<H: Host>(
         }
     }
     s.machine.dialed().mark_made(Handshook::Preface);
-    *s.handshake = None;
+    s.handshake = None;
     Ok(Wake::Again)
 }

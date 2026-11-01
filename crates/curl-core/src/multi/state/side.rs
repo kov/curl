@@ -14,15 +14,14 @@ use crate::multi::Host;
 use crate::proto::http::negotiate::Negotiate;
 
 use super::{
-    ConnRank, Failure, Handshake, Lent, SetupLend, SetupMut, StepCx, Wake, handshake_due,
-    start_handshake, step_handshake,
+    ConnRank, Failure, Lent, SetupLend, SetupMut, StepCx, Wake, handshake_due, start_handshake,
+    step_handshake,
 };
 
-/// What is under way over a side connection's first hop: its handshake,
-/// and the Negotiate context with the proxy its tunnel goes through.
+/// What a side connection's setup keeps beside its machine: the Negotiate
+/// context with the proxy its tunnel goes through.
 #[derive(Debug, Default)]
 pub(crate) struct SideSetup {
-    handshake: Option<Box<Handshake>>,
     negotiate: Option<Box<Negotiate>>,
 }
 
@@ -53,10 +52,7 @@ impl SideSetup {
             let SetupPoint::Dialed(made) = machine.reached() else {
                 return Ok(Shaken::Redialed);
             };
-            let mut s = SetupMut {
-                machine: &mut *machine,
-                handshake: &mut self.handshake,
-            };
+            let mut s = SetupMut::of(&mut *machine);
             let mut t = Lent {
                 route: &route,
                 request: &mut *request,
@@ -86,7 +82,7 @@ impl SideSetup {
         &'a self,
         machine: &'a ConnectMachine,
     ) -> impl Iterator<Item = (&'a dyn Socket, Events)> {
-        let shaking = self
+        let shaking = machine
             .handshake
             .as_deref()
             .map(|h| h.interest(machine) | Events::IN);

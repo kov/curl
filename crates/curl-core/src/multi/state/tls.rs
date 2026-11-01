@@ -114,7 +114,7 @@ pub(super) fn start<H: Host>(
     put_on(s.machine.dialed().stream(), &to, None, cx)?;
     match try_box(Handshake::Tls(side)) {
         Ok(h) => {
-            *s.handshake = Some(h);
+            s.handshake = Some(h);
             Ok(Wake::Again)
         }
         Err(OutOfMemory) => Err(Failure::Transfer(ErrorKind::OutOfMemory)),
@@ -340,7 +340,7 @@ pub(super) fn step<H: Host>(
     match shake(s.machine.dialed().stream(), side, options, traced, cx) {
         Ok(Shake::Done) => {
             s.machine.dialed().mark_made(side.made());
-            *s.handshake = None;
+            s.handshake = None;
             Ok(Wake::Again)
         }
         Ok(Shake::Waiting) => Ok(Wake::Idle),

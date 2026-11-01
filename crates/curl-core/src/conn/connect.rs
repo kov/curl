@@ -58,6 +58,10 @@ pub(crate) struct ConnectMachine {
     closer: Closer,
     /// What the connection keeps of the creating transfer's settings.
     settings: ConnSettings,
+    /// The handshake under way over the connection to its first hop, once
+    /// connected: a proxy's, the PROXY line or TLS. It goes with the
+    /// machine.
+    pub(crate) handshake: Option<Box<crate::multi::state::Handshake>>,
 }
 
 #[derive(Debug)]
@@ -811,6 +815,7 @@ impl ConnectMachine {
             redials: 0,
             closer,
             settings,
+            handshake: None,
         }
     }
 
@@ -841,6 +846,7 @@ impl ConnectMachine {
             redials: 0,
             closer,
             settings,
+            handshake: None,
         }
     }
 

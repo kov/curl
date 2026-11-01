@@ -606,8 +606,7 @@ wanted versions, so its ALPN offers `http/1.1` alone. HTTP/3 alone (`--http3-onl
 attempt and no race. The first's setup is the lease's throughout; the second, made from the
 addresses the first resolved, runs beside it in `Race::second` (boxed, as a handle's size is
 budgeted). One of the two leads (`Race::lead`): the first, until a second over TCP starts and
-leads from then on. Each attempt has its own setup, the first's handshake on `Connecting`,
-the second's in `Race::setup`, and each is driven the same way, its connect and then its
+leads from then on. Each attempt's machine holds its own handshake, and each is driven the same way, its connect and then its
 handshakes (`connect_once`, `handshake_next` and `enter_setup` for an `Attempt`); a failure
 of the attempt beside the lead is its own (`https::other_failed`). Either attempt's wait arms the
 race's timer for its next attempt; with none left it stays as it was, as C's
@@ -853,7 +852,6 @@ type Origin = TryArc<Peer>;          // the request's peer, shared with its conn
 pub(crate) struct Plan { proto: ProtoState, route: NetRoute,  // the leg's route, built in start_leg
                          dial: Dial }                      // the first attempt's, given to its setup
 pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, route: NetRoute,
-                               setup: Setup,                      // the handshake under way
                                https: Option<HttpsConnect>,       // the HTTPS connect filter
                                race: Option<Box<Race>>,           // HTTP/3 against TCP, its second
                                negotiate: Option<Box<Negotiate>> } // the tunnel's, across a redial
@@ -1493,9 +1491,8 @@ pub(crate) enum Progress { Resolved(Found), Trying { .. }, Failed, Waiting { unt
 struct Connecting {                    // multi/state.rs: the transfer's side of a setup
     lease: ConnLease,                  // the connection's slot, the first setup's machine in it
     proto: ProtoState, route: NetRoute,
-    setup: Setup,                      // the first's handshake under way
     https: Option<HttpsConnect>,       // the HTTPS connect filter's race, when it runs one
-    race: Option<Box<Race>>,           // the second setup, its handshake, who leads
+    race: Option<Box<Race>>,           // the second setup, who leads
     negotiate: Option<Box<Negotiate>>,
 }
 ```
@@ -1573,8 +1570,8 @@ announced to the socket callback first. A transfer whose receiving is paused is 
 - **Handshake drivers.** The machine does only a handshake's I/O; the transfer makes it
   (`multi/state/{socks,tunnel,h2tunnel,haproxy,tls,quictunnel}.rs`, and `h3tunnel.rs` for the
   HTTP/3 proxy's, which runs in the race). A driver takes the setup it works on (`SetupMut`:
-  the machine and the handshake under way, borrowed from wherever they are kept, the first's or
-  the second's) and what the transfer lends it (`Lent`: the route; what its request lends a
+  the machine, the first's or the second's, and its handshake held apart for the step, going
+  back to the machine as the view goes) and what the transfer lends it (`Lent`: the route; what its request lends a
   setup, `SetupLend`, which each request answers itself, with no default: whether credentials
   may go to its origin, the pipeline a `CONNECT`'s answer goes through and, for HTTP's alone,
   the versions it may speak, which TLS offers by ALPN and the HTTPS connect filter chooses by;
@@ -1629,9 +1626,9 @@ announced to the socket callback first. A transfer whose receiving is paused is 
 
 **Two setups at once.** C's HTTPS connect filter races two ballers for an `https://` origin
 asking HTTP/3 (`cf_hc`; its lines are in §2.5). Here the first setup is the
-lease's machine, with its handshake in `Connecting::setup`; the second, made as the race starts
-it (as the first fails, or at the soft or hard ALPN eyeballs timeout), is `Race::second` with
-its handshake in `Race::setup`, sharing the first's resolved answer. Both are driven the same
+lease's machine; the second, made as the race starts it (as the first fails, or at the soft or
+hard ALPN eyeballs timeout), is `Race::second`, sharing the first's resolved answer. Each machine
+holds its own handshake, which goes with it. Both are driven the same
 way, in C's order (`cf_hc_connect`): the attempt leading (`Race::lead`, `Attempt::{First,
 Second}`) through its connect and then its handshakes, the other beside it as its turn comes
 (`drive_other`), each failure its own attempt's. The pollset covers both attempts' sockets and

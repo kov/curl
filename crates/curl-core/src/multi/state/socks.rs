@@ -53,7 +53,7 @@ pub(super) fn dialed<H: Host>(
 ) -> Result<Wake, Failure> {
     match start(s, lent, cx, version) {
         Ok(handshake) => {
-            *s.handshake = Some(handshake);
+            s.handshake = Some(handshake);
             Ok(Wake::Again)
         }
         Err(kind) => Err(Failure::Transfer(kind)),
@@ -137,7 +137,7 @@ fn run<H: Host>(
     cx: &mut StepCx<'_, H>,
 ) -> Result<bool, ErrorKind> {
     loop {
-        let h = socks(s.handshake);
+        let h = socks(&mut s.handshake);
         let dialed = s.machine.dialed().stream();
         if !h.to_send().is_empty() {
             match dialed.send(cx, h.to_send(), None) {
@@ -213,7 +213,7 @@ pub(super) fn timed_out<H: Host>(
     cx: &mut StepCx<'_, H>,
 ) -> Option<ErrorKind> {
     let received = s.machine.dialed().stream().received().len();
-    let e = socks(s.handshake).gss_recv_failed(received)?;
+    let e = socks(&mut s.handshake).gss_recv_failed(received)?;
     Some(refused(cx, &e))
 }
 
@@ -226,7 +226,7 @@ fn opened<H: Host>(
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Wake, Failure> {
-    let authenticated = socks(s.handshake).authenticated();
+    let authenticated = socks(&mut s.handshake).authenticated();
     if authenticated {
         s.machine.dialed().socks5_authenticated();
     }
@@ -250,7 +250,7 @@ fn opened<H: Host>(
     line.raw(remote.shown_ip().bytes());
     line.text(format_args!(" port {})", remote.port()));
     trace::info_with(cx, &[line.bytes()]);
-    *s.handshake = None;
+    s.handshake = None;
     Ok(Wake::Again)
 }
 

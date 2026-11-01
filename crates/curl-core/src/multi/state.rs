@@ -301,9 +301,6 @@ pub(crate) struct Connecting {
     /// connected to in their place and the proxy on the way, as the
     /// failure names them.
     route: NetRoute,
-    /// The first attempt's setup, the lease's: the handshake under way
-    /// over it.
-    setup: Setup,
     /// The HTTPS connect filter heading the setup, if it has one.
     https: Option<https::HttpsConnect>,
     /// The race of an HTTP/3 attempt against one over TCP, once its first
@@ -317,22 +314,25 @@ pub(crate) struct Connecting {
     negotiate: Option<Box<crate::proto::http::negotiate::Negotiate>>,
 }
 
-/// One way of making a connection: what is under way over it, apart from
-/// the transfer it is made for.
-#[derive(Debug, Default)]
-struct Setup {
-    /// The handshake made over the connection to its first hop, once
-    /// connected: a proxy's, the PROXY line or TLS.
+/// A machine and its handshake apart, for as long as a handshake's driver
+/// works on the two together: the handshake goes back to the machine as
+/// this goes.
+struct SetupMut<'a> {
+    machine: &'a mut ConnectMachine,
     handshake: Option<Box<Handshake>>,
 }
 
-/// One setup's state, borrowed from where it is kept: the first
-/// attempt's machine is in the lease's slot, its handshake on
-/// `Connecting`; the second's both in the race. What a handshake's driver
-/// works on.
-struct SetupMut<'a> {
-    machine: &'a mut ConnectMachine,
-    handshake: &'a mut Option<Box<Handshake>>,
+impl<'a> SetupMut<'a> {
+    fn of(machine: &'a mut ConnectMachine) -> Self {
+        let handshake = machine.handshake.take();
+        SetupMut { machine, handshake }
+    }
+}
+
+impl Drop for SetupMut<'_> {
+    fn drop(&mut self) {
+        self.machine.handshake = self.handshake.take();
+    }
 }
 
 /// What the transfer lends a handshake's driver: the route it plans, what
@@ -414,21 +414,17 @@ impl Connecting {
             lease,
             proto,
             route,
-            setup,
             race,
             negotiate,
             ..
         } = self;
-        let (machine, handshake) = match (a, race.as_deref_mut()) {
-            (Attempt::Second, Some(race)) => (
-                race.second.as_mut().expect("the second runs"),
-                &mut race.setup.handshake,
-            ),
+        let machine = match (a, race.as_deref_mut()) {
+            (Attempt::Second, Some(race)) => race.second.as_mut().expect("the second runs"),
             (Attempt::Second, None) => panic!("a second runs in a race"),
-            (Attempt::First, _) => (lease.setting_up(), &mut setup.handshake),
+            (Attempt::First, _) => lease.setting_up(),
         };
         (
-            SetupMut { machine, handshake },
+            SetupMut::of(machine),
             Lent {
                 route,
                 request: proto,
@@ -473,8 +469,6 @@ struct Race {
     /// Which attempt leads: a second over TCP once it starts, else the
     /// first.
     lead: Attempt,
-    /// The second's setup: the handshake under way over it.
-    setup: Setup,
     /// When the first started (`ctx->started`), which the second's
     /// timeouts count from.
     at: Instant,
@@ -518,7 +512,7 @@ impl Attempt {
 /// A handshake over the connection to the first hop: a proxy's, or the
 /// origin's TLS.
 #[derive(Debug)]
-enum Handshake {
+pub(crate) enum Handshake {
     Socks(socks::Socks),
     /// An HTTP proxy's tunnel, with `CONNECT`.
     Connect(tunnel::Tunnel),
@@ -1744,22 +1738,7 @@ impl Connecting {
 
     /// The handshake under way over attempt `a`, if one is.
     fn handshake(&self, a: Attempt) -> Option<&Handshake> {
-        match a {
-            Attempt::First => self.setup.handshake.as_deref(),
-            Attempt::Second => self.race.as_ref()?.setup.handshake.as_deref(),
-        }
-    }
-
-    /// Attempt `a`'s handshake goes, with the attempt.
-    fn drop_handshake(&mut self, a: Attempt) {
-        match a {
-            Attempt::First => self.setup.handshake = None,
-            Attempt::Second => {
-                if let Some(race) = self.race.as_mut() {
-                    race.setup.handshake = None;
-                }
-            }
-        }
+        self.attempt(a)?.handshake.as_deref()
     }
 
     /// The leading setup's machine, while it runs: the lease's, or a
@@ -1863,7 +1842,6 @@ impl Connecting {
             lease,
             proto,
             route,
-            setup: _,
             https: _,
             race,
             negotiate,
@@ -3707,8 +3685,10 @@ fn connect_once<H: Host>(
     a: Attempt,
 ) -> (TransferState, Wake) {
     if c.handshake(a).is_some() {
-        let (mut s, mut t) = c.shaking(a);
-        let shook = step_handshake(&mut s, &mut t, cx);
+        let shook = {
+            let (mut s, mut t) = c.shaking(a);
+            step_handshake(&mut s, &mut t, cx)
+        };
         return c.shook(a, shook, cx);
     }
     if let Some(SetupPoint::Dialed(_)) = c.attempt(a).map(ConnectMachine::reached) {
@@ -3828,8 +3808,6 @@ fn connect_once<H: Host>(
         }
         Ok(Connected::Established { remote, local, at }) => {
             eyeballs_won(cx, &c.route, &remote);
-            // The loser's handshake goes with it.
-            c.drop_handshake(a.other());
             let lost = c.loser(displaced);
             up(c, cx, remote, local, at, false, lost)
         }
@@ -3933,7 +3911,6 @@ fn attempt_failed<H: Host>(
     }
     // A handshake's failure leaves its setup running: its connection is
     // kept until the race ends.
-    c.drop_handshake(a);
     if let Some(lost) = c.fail_attempt(a) {
         match (&mut c.race, lost.reached()) {
             (Some(race), SetupPoint::Dialed(_)) => {
@@ -3974,7 +3951,6 @@ fn race_starts<H: Host>(c: &mut Connecting, cx: &StepCx<'_, H>) -> Result<(), Ou
         makings,
         second: None,
         lead: Attempt::First,
-        setup: Setup::default(),
         at,
         first_failed: None,
         failed: [None, None],
@@ -4066,8 +4042,10 @@ fn handshake_next<H: Host>(
     let made = c.attempt_mut(a).dialed().made();
     let setup = c.attempt(a).expect("a handshake is due over a setup");
     if let Some(due) = handshake_due(&c.route, setup, made) {
-        let (mut s, mut t) = c.shaking(a);
-        let started = start_handshake(&mut s, &mut t, cx, due);
+        let started = {
+            let (mut s, mut t) = c.shaking(a);
+            start_handshake(&mut s, &mut t, cx, due)
+        };
         return c.shook(a, started, cx);
     }
     // The origin's QUIC connection made through the tunnel is the
@@ -4090,8 +4068,6 @@ fn handshake_next<H: Host>(
     if let Some(h3) = h3 {
         c.lease.get().put_h3(h3);
     }
-    // The loser's handshake goes with it.
-    c.drop_handshake(a.other());
     let lost = c.loser(displaced);
     match up_at {
         Connected::Established {
@@ -6182,7 +6158,6 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
         lease,
         proto,
         route,
-        setup: Setup::default(),
         https,
         race: None,
         negotiate: None,

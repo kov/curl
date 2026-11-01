@@ -132,7 +132,7 @@ pub(super) fn dialed<H: Host>(
     };
     match started {
         Ok(tunnel) => {
-            *s.handshake = Some(tunnel);
+            s.handshake = Some(tunnel);
             Ok(Wake::Again)
         }
         Err(kind) => Err(Failure::of(kind)),
@@ -406,12 +406,12 @@ pub(super) fn step<H: Host>(
 ) -> Result<Wake, Failure> {
     match run(s, lent, cx) {
         Ok(Ran::Idle) => {
-            tunnel(s.handshake).authorized = false;
+            tunnel(&mut s.handshake).authorized = false;
             Ok(Wake::Idle)
         }
         Ok(Ran::Again) => Ok(Wake::Again),
         Ok(Ran::Through) => {
-            *s.handshake = None;
+            s.handshake = None;
             Ok(Wake::Again)
         }
         Err(kind) => Err(Failure::of(kind)),
@@ -439,7 +439,7 @@ fn run<H: Host>(
         .proxy_tls()
         .map(|_| s.machine.dialing().socket_component());
     loop {
-        let t = tunnel(s.handshake);
+        let t = tunnel(&mut s.handshake);
         if t.sent < t.request.len() {
             let sent = s
                 .machine
@@ -457,7 +457,7 @@ fn run<H: Host>(
                     ));
                 }
             };
-            let t = tunnel(s.handshake);
+            let t = tunnel(&mut s.handshake);
             let from = t.sent;
             t.sent += n;
             trace::bytes(cx, DebugKind::HeaderOut, &t.request[from..from + n]);
@@ -533,15 +533,15 @@ fn closed<H: Host>(
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Ran, ErrorKind> {
-    let t = tunnel(s.handshake);
+    let t = tunnel(&mut s.handshake);
     if t.answer.closed() == Read::Line {
         line(s, lent, cx)?;
     }
-    let t = tunnel(s.handshake);
+    let t = tunnel(&mut s.handshake);
     let wanted = !cx.easy().options().proxy.auth.0.is_empty();
     if wanted && t.authorized && cx.easy().auth.proxy_offers(&t.challenges) {
         trace::info(cx, format_args!("Proxy CONNECT connection closed"));
-        tunnel(s.handshake).closed = true;
+        tunnel(&mut s.handshake).closed = true;
         progress::update(cx, false)?;
         return finish(s, lent, cx);
     }
@@ -559,7 +559,7 @@ fn line<H: Host>(
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
-    let t = tunnel(s.handshake);
+    let t = tunnel(&mut s.handshake);
     let line = t.answer.line();
     trace::bytes(cx, DebugKind::HeaderIn, line);
     if let Err(e) = t.answer.verify() {
@@ -595,7 +595,7 @@ fn line<H: Host>(
         Applied::Note(note) => trace::info(cx, format_args!("{note}")),
         Applied::Challenge => {
             let asked = proxy_asked(lent, cx);
-            let t = tunnel(s.handshake);
+            let t = tunnel(&mut s.handshake);
             let value = fields::header_value(t.answer.line()).unwrap_or(&[]);
             let heard = t.challenges.read(value, &asked).map_err(oom)?;
             for note in heard.notes() {
@@ -703,7 +703,7 @@ fn finish<H: Host>(
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Ran, ErrorKind> {
-    let t = tunnel(s.handshake);
+    let t = tunnel(&mut s.handshake);
     if t.answer.chunks_read() {
         trace::info(cx, format_args!("chunk reading DONE"));
     }
@@ -733,7 +733,7 @@ fn finish<H: Host>(
             .auth
             .asked((None, peer), (secret, peer), false, true)
     };
-    let t = tunnel(s.handshake);
+    let t = tunnel(&mut s.handshake);
     let closes = t.answer.closes() || t.closed;
     let offered = Offered {
         host: Challenges::default(),
@@ -764,7 +764,7 @@ fn finish<H: Host>(
     }
     if closes {
         trace::info(cx, format_args!("Connect me again please"));
-        *s.handshake = None;
+        s.handshake = None;
         let redialed = s.machine.redial(&mut DriveCx {
             step: cx,
             kept: None,
@@ -777,7 +777,7 @@ fn finish<H: Host>(
     }
     // Over the same connection.
     let tunnel = start(lent, cx, s.machine.dialing().tunnels_udp())?;
-    *s.handshake = Some(tunnel);
+    s.handshake = Some(tunnel);
     Ok(Ran::Again)
 }
 

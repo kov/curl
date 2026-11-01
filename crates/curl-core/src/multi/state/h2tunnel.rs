@@ -120,7 +120,7 @@ fn run<H: Host>(
         .route
         .proxy_tls()
         .map(|_| s.machine.dialing().socket_component());
-    let p = proxy(s.handshake);
+    let p = proxy(&mut s.handshake);
     if p.conn_closed() {
         return Err(trace::fail(
             cx,
@@ -150,7 +150,7 @@ fn inspect<H: Host>(
     lent: &mut Lent<'_>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Ran, ErrorKind> {
-    let p = proxy(s.handshake);
+    let p = proxy(&mut s.handshake);
     let answer = p.answer().expect("the answer is whole");
     let status = answer.status;
     let what = super::tunnel::method_name(s.machine.dialing().tunnels_udp());
@@ -178,11 +178,11 @@ fn inspect<H: Host>(
     {
         let mut p = take(s);
         connect(&mut p, lent, cx, s.machine.dialing().tunnels_udp())?;
-        *s.handshake = Some(try_box(Handshake::H2Connect(p)).map_err(oom)?);
+        s.handshake = Some(try_box(Handshake::H2Connect(p)).map_err(oom)?);
         return Ok(Ran::Again);
     }
     if s.machine.dialing().tunnels_udp() {
-        let p = proxy(s.handshake);
+        let p = proxy(&mut s.handshake);
         let answer = p.answer().expect("the answer is whole");
         let verdict = super::tunnel::udp_answer(cx, status, answer.field(b"capsule-protocol"));
         if verdict.is_err() {
@@ -190,7 +190,7 @@ fn inspect<H: Host>(
         }
         verdict?;
     } else if status / 100 != 2 {
-        proxy(s.handshake).set_state(TunnelState::Failed);
+        proxy(&mut s.handshake).set_state(TunnelState::Failed);
         return Err(ErrorKind::CouldntConnect);
     } else {
         trace::info(

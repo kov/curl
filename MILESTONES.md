@@ -1035,7 +1035,7 @@ allows `curl_ws_send` there. It opens with what milestone 5's design review foun
 protocols need, each step leaving behaviour and traces as they are:
 
 65. **A connection's setup apart from its transfer.** **Done.** The handshake
-    under way is held in a `Setup` beside the lease, and the drivers run over a borrowed view
+    under way is held by its `ConnectMachine`, and the drivers run over a view
     of the leading setup (`SetupMut`) and what the transfer lends them (`Lent`), the TLS one
     over a stream (`tls::put_on`, `tls::shake`) so that it can upgrade an open connection
     too; Negotiate stays the connection's, as C's proxyneg is per connection. The HTTPS race

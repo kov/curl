@@ -609,6 +609,19 @@ impl std::ops::DerefMut for OpenSlot {
     }
 }
 
+/// A connection reserved for its handle, with that handle for one send or
+/// receive; `Pool::return_reserved` puts it back.
+pub(crate) struct LentReserved {
+    id: ConnId,
+    slot: OpenSlot,
+}
+
+impl LentReserved {
+    pub(crate) fn conn_mut(&mut self) -> &mut Conn {
+        &mut self.slot
+    }
+}
+
 /// Where a connection of the pool is.
 enum Place {
     /// Kept for another transfer.
@@ -620,6 +633,9 @@ enum Place {
     /// reused, pruned or closed to make room, but counted toward the
     /// limits (`bits.connect_only`).
     Reserved(OpenSlot),
+    /// Reserved, and with its handle for a send or a receive, out of the
+    /// pool's lock: counted as it was, and reached by nothing else.
+    WithHandle(Route),
     /// Multiplexing, leased by the transfers attached to it, whose leases
     /// are keys. Its count of them is the connection's
     /// `Use::Leased`.
@@ -822,14 +838,14 @@ impl Place {
     fn idle(&self) -> Option<&Conn> {
         match self {
             Place::Idle(slot) => Some(slot),
-            Place::Leased(_) | Place::Reserved(_) | Place::Attached(_) => None,
+            Place::Leased(_) | Place::Reserved(_) | Place::WithHandle(_) | Place::Attached(_) => None,
         }
     }
 
     fn idle_mut(&mut self) -> Option<&mut Conn> {
         match self {
             Place::Idle(slot) => Some(slot),
-            Place::Leased(_) | Place::Reserved(_) | Place::Attached(_) => None,
+            Place::Leased(_) | Place::Reserved(_) | Place::WithHandle(_) | Place::Attached(_) => None,
         }
     }
 
@@ -837,7 +853,7 @@ impl Place {
     fn held(&self) -> Option<&Conn> {
         match self {
             Place::Idle(slot) | Place::Reserved(slot) => Some(slot),
-            Place::Leased(_) | Place::Attached(_) => None,
+            Place::Leased(_) | Place::WithHandle(_) | Place::Attached(_) => None,
         }
     }
 
@@ -849,11 +865,12 @@ impl Place {
                 route: Route::Net(tcp),
                 ..
             })
+            | Place::WithHandle(Route::Net(tcp))
             | Place::Attached(Shared {
                 route: Route::Net(tcp),
                 ..
             }) => Some(tcp.destination()),
-            Place::Leased(_) | Place::Attached(_) => None,
+            Place::Leased(_) | Place::WithHandle(_) | Place::Attached(_) => None,
         }
     }
 }
@@ -1388,7 +1405,7 @@ impl Pool {
                 Some(Place::Reserved(_)) => {
                     self.close_reserved(id, exits, now);
                 }
-                Some(Place::Leased(_) | Place::Attached(_)) | None => {}
+                Some(Place::Leased(_) | Place::WithHandle(_) | Place::Attached(_)) | None => {}
             }
         }
     }
@@ -1421,7 +1438,8 @@ impl Pool {
                     *asked = Some(asked.map_or(ask, |a| a.most_overdue(ask)));
                     continue;
                 }
-                Some(Place::Leased(_)) | None => continue,
+                // With its handle, the handle's work is the next thing on it.
+                Some(Place::Leased(_) | Place::WithHandle(_)) | None => continue,
             };
             // Traced, and failed, as the multi's own handle's: the
             // caller's hears of neither.
@@ -1456,8 +1474,35 @@ impl Pool {
     pub(crate) fn reserved_mut(&mut self, id: ConnId) -> Option<&mut Conn> {
         match self.conns.get_mut(id)? {
             Place::Reserved(slot) => Some(slot),
-            Place::Idle(_) | Place::Leased(_) | Place::Attached(_) => None,
+            Place::Idle(_) | Place::Leased(_) | Place::WithHandle(_) | Place::Attached(_) => None,
         }
+    }
+
+    /// The connection `id`, reserved for its handle, out of the pool for
+    /// a send or a receive by that handle, if the pool still has it there.
+    /// The lock of a share's pool need not be held meanwhile: nothing else
+    /// reaches a reserved connection, and its place stays counted.
+    pub(crate) fn lend_reserved(&mut self, id: ConnId) -> Option<LentReserved> {
+        let route = self.reserved_mut(id)?.route.clone();
+        let Some(Place::Reserved(slot)) = self
+            .conns
+            .replace_with(id, |place| (Place::WithHandle(route), place))
+        else {
+            unreachable!("just found reserved");
+        };
+        Some(LentReserved { id, slot })
+    }
+
+    /// The connection `lent` back from its handle.
+    pub(crate) fn return_reserved(&mut self, lent: LentReserved) {
+        let LentReserved { id, slot } = lent;
+        let was = self
+            .conns
+            .replace_with(id, |place| (Place::Reserved(slot), place));
+        assert!(
+            matches!(was, Some(Place::WithHandle(_))),
+            "{id:?} is with its handle"
+        );
     }
 
     /// Close the connection `id` reserved for its handle, at once, as C
@@ -2168,7 +2213,7 @@ fn close(
             );
         }
         Some(Place::Leased(_)) => panic!("{id:?} is leased"),
-        Some(Place::Reserved(_)) => panic!("{id:?} is reserved"),
+        Some(Place::Reserved(_) | Place::WithHandle(_)) => panic!("{id:?} is reserved"),
         Some(Place::Attached(_)) => panic!("{id:?} is attached"),
         None => unreachable!("closing {id:?}, which the pool no longer has"),
     }

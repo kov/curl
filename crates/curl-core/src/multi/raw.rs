@@ -9,10 +9,10 @@
 use std::fmt;
 
 use super::{Host, Multi, TransferId};
-use crate::conn::RecvFailed;
 use crate::conn::io::{Recv, Sent, SocketKey};
 use crate::conn::layer::LayerCx;
 use crate::conn::pool::Pool;
+use crate::conn::{Conn, RecvFailed};
 use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::share::{Kind, watched};
@@ -125,10 +125,35 @@ fn in_pool<R>(
     }
 }
 
+/// Run `io` on the connection `easy` reserved, if its pool still has it:
+/// its share's if that keeps connections, else `own`. The pool is locked
+/// and its lock told of only to find the connection
+/// (`Curl_cpool_get_last_conn`), and locked again, untold, to put it back:
+/// `io` runs out of the lock, as C's reads and writes do.
+fn on_reserved<R>(
+    mut own: Option<&mut Pool>,
+    easy: &mut Easy,
+    io: impl FnOnce(&mut Easy, Option<&mut Conn>) -> R,
+) -> R {
+    let lent = in_pool(own.as_deref_mut(), easy, |pool, easy| {
+        easy.last_conn.and_then(|l| pool?.lend_reserved(l.id))
+    });
+    let Some(mut lent) = lent else {
+        return io(easy, None);
+    };
+    let done = io(easy, Some(lent.conn_mut()));
+    match easy.share().filter(|s| s.keeps(Kind::Connections)) {
+        Some(share) => share.pool().return_reserved(lent),
+        None => own
+            .expect("lent by the pool it was found in")
+            .return_reserved(lent),
+    }
+    done
+}
+
 /// A raw send or receive on the connection `easy` reserved, in `pool`
 /// (`curl_easy_send`, `curl_easy_recv`): refused for a handle that does
-/// not only connect, or whose connection is gone, which it then forgets
-/// (`easy_connection`, `Curl_cpool_get_last_conn`).
+/// not only connect.
 fn raw(
     pool: Option<&mut Pool>,
     easy: &mut Easy,
@@ -143,8 +168,17 @@ fn raw(
             crate::trace::reason(why),
         ));
     }
-    let last = easy.last_conn;
-    let conn = last.and_then(|l| pool?.reserved_mut(l.id));
+    on_reserved(pool, easy, |easy, conn| raw_on_conn(conn, easy, now, way))
+}
+
+/// `raw`, on the connection found; refused if it is gone, which the handle
+/// then forgets (`easy_connection`, `Curl_cpool_get_last_conn`).
+fn raw_on_conn(
+    conn: Option<&mut Conn>,
+    easy: &mut Easy,
+    now: Instant,
+    way: Way<'_>,
+) -> Result<RawIo, ErrorKind> {
     let Some(conn) = conn else {
         // Forgotten as it is looked for, so C names it as none.
         easy.last_conn = None;
@@ -205,9 +239,7 @@ impl<H: Host> Multi<H> {
     fn raw_on(&mut self, id: TransferId, way: Way<'_>) -> Option<Result<RawIo, ErrorKind>> {
         let now = self.clock.now();
         let easy = &mut self.slots.get_mut(id)?.easy;
-        Some(in_pool(Some(&mut self.caches.pool), easy, |pool, easy| {
-            raw(pool, easy, now, way)
-        }))
+        Some(raw(Some(&mut self.caches.pool), easy, now, way))
     }
 
     /// The socket of the connection transfer `id` had last, if it is
@@ -231,18 +263,14 @@ impl<H: Host> Multi<H> {
     /// ran.
     pub fn recv_raw_for(&mut self, easy: &mut Easy, buf: &mut [u8]) -> Result<RawIo, ErrorKind> {
         let now = self.clock.now();
-        in_pool(Some(&mut self.caches.pool), easy, |pool, easy| {
-            raw(pool, easy, now, Way::Recv(buf))
-        })
+        raw(Some(&mut self.caches.pool), easy, now, Way::Recv(buf))
     }
 
     /// As `send_raw`, for `easy`, not added, whose transfers this multi
     /// ran.
     pub fn send_raw_for(&mut self, easy: &mut Easy, bytes: &[u8]) -> Result<RawIo, ErrorKind> {
         let now = self.clock.now();
-        in_pool(Some(&mut self.caches.pool), easy, |pool, easy| {
-            raw(pool, easy, now, Way::Send(bytes))
-        })
+        raw(Some(&mut self.caches.pool), easy, now, Way::Send(bytes))
     }
 
     /// As `active_socket`, for `easy`, not added, whose transfers this
@@ -310,9 +338,7 @@ impl Easy {
                 self.private = Some(private);
                 got
             }
-            None => in_pool(None, self, |pool, easy| {
-                raw(pool, easy, no_clock(), Way::Recv(buf))
-            }),
+            None => raw(None, self, no_clock(), Way::Recv(buf)),
         }
     }
 
@@ -325,9 +351,7 @@ impl Easy {
                 self.private = Some(private);
                 sent
             }
-            None => in_pool(None, self, |pool, easy| {
-                raw(pool, easy, no_clock(), Way::Send(bytes))
-            }),
+            None => raw(None, self, no_clock(), Way::Send(bytes)),
         }
     }
 
@@ -398,15 +422,14 @@ impl crate::proto::ws::Wire for RawWire<'_> {
 
 /// A call on the WebSocket of the connection `easy` reserved, in `pool`
 /// (`curl_ws_recv`, `curl_ws_send`, `curl_ws_start_frame` once the
-/// transfer is done): refused for a handle that does not only connect,
-/// whose connection is gone, or that is not a WebSocket's.
+/// transfer is done): refused for a handle that does not only connect.
 fn ws(
     pool: Option<&mut Pool>,
     easy: &mut Easy,
     now: Instant,
     call: crate::ws::Call<'_>,
 ) -> Result<crate::ws::Answer, ErrorKind> {
-    use crate::ws::{Answer, Call};
+    use crate::ws::Call;
     let options = easy.options().ws;
     let refuse = |easy: &mut Easy, kind, why: fmt::Arguments<'_>| {
         Err(fail(easy, kind, crate::trace::reason(why)))
@@ -436,7 +459,23 @@ fn ws(
         let why = format_args!("[WS] No associated connection");
         return refuse(easy, ErrorKind::SendError, why);
     }
-    let Some(conn) = last.and_then(|l| pool?.reserved_mut(l.id)) else {
+    on_reserved(pool, easy, |easy, conn| ws_on_conn(conn, easy, now, call))
+}
+
+/// `ws`, on the connection found; refused if it is gone, which the handle
+/// then forgets, or is not a WebSocket's.
+fn ws_on_conn(
+    conn: Option<&mut Conn>,
+    easy: &mut Easy,
+    now: Instant,
+    call: crate::ws::Call<'_>,
+) -> Result<crate::ws::Answer, ErrorKind> {
+    use crate::ws::{Answer, Call};
+    let options = easy.options().ws;
+    let refuse = |easy: &mut Easy, kind, why: fmt::Arguments<'_>| {
+        Err(fail(easy, kind, crate::trace::reason(why)))
+    };
+    let Some(conn) = conn else {
         easy.last_conn = None;
         easy.report_mut().set_conn(None);
         return match call {
@@ -500,9 +539,7 @@ impl<H: Host> Multi<H> {
     ) -> Option<Result<crate::ws::Answer, ErrorKind>> {
         let now = self.clock.now();
         let easy = &mut self.slots.get_mut(id)?.easy;
-        Some(in_pool(Some(&mut self.caches.pool), easy, |pool, easy| {
-            ws(pool, easy, now, call)
-        }))
+        Some(ws(Some(&mut self.caches.pool), easy, now, call))
     }
 
     /// As `ws`, for `easy`, not added, whose transfers this multi ran.
@@ -512,9 +549,7 @@ impl<H: Host> Multi<H> {
         call: crate::ws::Call<'_>,
     ) -> Result<crate::ws::Answer, ErrorKind> {
         let now = self.clock.now();
-        in_pool(Some(&mut self.caches.pool), easy, |pool, easy| {
-            ws(pool, easy, now, call)
-        })
+        ws(Some(&mut self.caches.pool), easy, now, call)
     }
 }
 
@@ -528,7 +563,7 @@ impl Easy {
                 self.private = Some(private);
                 done
             }
-            None => in_pool(None, self, |pool, easy| ws(pool, easy, no_clock(), call)),
+            None => ws(None, self, no_clock(), call),
         }
     }
 

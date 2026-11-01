@@ -26,13 +26,15 @@ witness: curl-core proto::http::tests::connect_only::a_handle_that_only_connects
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_reserved_connection_is_its_handle_s_alone
 --- old
-            Place::Leased(_) | Place::Reserved(_) | Place::Attached(_) => None,
+            Place::Leased(_) | Place::Reserved(_) | Place::WithHandle(_) | Place::Attached(_) => {
+                None
+            }
         }
     }
 
     fn idle_mut(&mut self) -> Option<&mut Conn> {
 --- new
-            Place::Leased(_) | Place::Attached(_) => None,
+            Place::Leased(_) | Place::WithHandle(_) | Place::Attached(_) => None,
             Place::Reserved(slot) => Some(slot),
         }
     }
@@ -78,6 +80,27 @@ witness: curl-core proto::http::tests::connect_only::a_handle_s_own_multi_keeps_
         l.used = false;
     }
     let mut cx = RawCx { now, easy };
+
+=== a raw send on a share's connection runs under the pool's lock
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core multi::tests::a_raw_send_on_a_share_s_connection_runs_out_of_its_lock
+features: test-util
+--- old
+    let done = io(easy, Some(lent.conn_mut()));
+--- new
+    let share = easy.share().cloned();
+    let hold = share.as_ref().map(crate::share::Share::pool);
+    let done = io(easy, Some(lent.conn_mut()));
+    drop(hold);
+
+=== a raw send on a share's connection forgets to put it back
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-core multi::tests::a_raw_send_on_a_share_s_connection_runs_out_of_its_lock
+features: test-util
+--- old
+        Some(share) => share.pool().return_reserved(lent),
+--- new
+        Some(_) => drop(lent),
 
 === a share of connections keeps the last connection of another pool
 file: crates/curl-core/src/easy.rs

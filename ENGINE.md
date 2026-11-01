@@ -2353,8 +2353,10 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   a lookup that finds it gone. `multi::raw` sends and receives on it for the handle
   (`Multi::send_raw`/`recv_raw` for one added, `send_raw_for`/`recv_raw_for` for one a
   handle's own multi ran; `curl_easy_send`, `curl_easy_recv`), refusing a handle that does not
-  only connect or whose connection is gone as C does; a failure is kept in the report and told
-  to the error sink, and traced nowhere, as no transfer runs. `Multi::active_socket` tells the
+  only connect or whose connection is gone as C does. The pool is locked only to find the
+  connection and to put it back (`Pool::lend_reserved`, `Place::WithHandle`): the bytes move out
+  of a share's lock, which the application is told of once. A failure is kept in the report and
+  told to the error sink, and traced nowhere, as no transfer runs. `Multi::active_socket` tells the
   socket of the connection a transfer holds or its pool keeps (`CURLINFO_ACTIVESOCKET`,
   `LASTSOCKET`). The connection closes at once, said "closing connection #N", as the handle
   leaves a multi of the application's, or, in a handle's own multi

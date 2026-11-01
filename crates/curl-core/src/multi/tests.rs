@@ -2453,6 +2453,70 @@ fn a_share_s_sockets_close_out_of_its_lock() {
     assert_eq!(locked.lock().unwrap().len(), 3, "closed with the share");
 }
 
+/// Told, as a raw call on a share's connection fails, whether the share's
+/// pool is locked.
+struct SaysLocked {
+    share: crate::share::Share,
+    locked: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+}
+
+impl crate::handler::TextSink for SaysLocked {
+    fn write(&self, _: &[u8]) {
+        let locked = self.share.pool_is_locked();
+        self.locked.lock().unwrap().push(locked);
+    }
+}
+
+/// A raw send on a share's connection runs out of the pool's lock, which
+/// is told once, to find the connection (`Curl_cpool_get_last_conn`): a
+/// record's work on one handle holds up no pool search of another's. The
+/// connection is back in its place after, and counted throughout.
+#[test]
+fn a_raw_send_on_a_share_s_connection_runs_out_of_its_lock() {
+    use crate::conn::io::{Conversation, Peer};
+    use crate::multi::raw::RawIo;
+    use crate::options::ConnectOnly;
+    use crate::share::{Kind, Share, Told};
+    let clock = ManualClock::new().unwrap();
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+    let talk = Conversation::replies(&[], false).breaking_after(1);
+    let net = std::sync::Arc::new(std::sync::Mutex::new(Closes(
+        FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone()),
+        std::sync::Arc::new(AtomicU32::new(0)),
+    )));
+    let share = Share::with_net(Box::new(OneNet(net.clone()))).unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let told = Told::new(&share);
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(OneNet(net.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    m.make_handle_own();
+    let mut e = easy("http://127.0.0.1:1/");
+    e.options_mut().connect_only = ConnectOnly::Yes;
+    e.set_share_watched(share.clone(), told.handler());
+    e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
+    assert_eq!(m.send_raw_for(&mut e, b"one"), Ok(RawIo::Bytes(3)));
+    assert_eq!(talk.received(), b"one");
+    let locked = std::sync::Arc::default();
+    let sink: Box<dyn crate::handler::TextSink> = Box::new(SaysLocked {
+        share: share.clone(),
+        locked: std::sync::Arc::clone(&locked),
+    });
+    e.options_mut().callbacks.failure = Some(crate::handler::Handler::new(sink).unwrap());
+    told.uses();
+    assert_eq!(m.send_raw_for(&mut e, b"x"), Err(ErrorKind::SendError));
+    assert_eq!(told.uses(), [Kind::Connections], "told once, to find it");
+    assert_eq!(*locked.lock().unwrap(), [false], "said out of the lock");
+    assert!(m.active_socket_for(&mut e).is_some(), "back in its place");
+    assert_eq!(share.pool().len(), 1, "counted throughout");
+}
+
 /// A connection of a share's pool that a transfer does not give back,
 /// for it may not be reused, is closed through the transfer's network
 /// once the transfer is done with the pool: at once, not with the share.

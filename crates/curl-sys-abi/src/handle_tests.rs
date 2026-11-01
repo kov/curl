@@ -7535,6 +7535,138 @@ fn a_debug_function_calls_back_during_a_call_on_a_connection() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// `curl_ws_send`'s arguments that can be no frame trace C's lines and
+/// answer C's codes, as the C build does them: the connection is looked for
+/// first, so one that is gone says that; no flags or length is read while
+/// a frame is under way, which goes on, its lines naming them as given.
+#[test]
+fn a_ws_send_of_no_frame_says_c_s_lines() {
+    use crate::ffi::{CURLWS_BINARY, CURLWS_OFFSET, CURLWS_TEXT};
+    use crate::ws::curl_ws_send;
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let _request = read_request(&mut peer);
+        peer.write_all(
+            b"HTTP/1.1 101 Switching\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+        )
+        .unwrap();
+        let mut got = vec![0u8; 8 + 2];
+        peer.read_exact(&mut got).unwrap();
+    });
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("ws://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_CONNECT_ONLY, 2), CURLE_OK);
+    let components = curl_core::components::Components::new().unwrap();
+    components.configure(b"ws");
+    // SAFETY: a live handle.
+    let easy = unsafe { crate::easy::handle(c) }.unwrap();
+    let set = easy.with_easy(|e| match e {
+        crate::easy::EasyRef::Easy(e) => e.set_components(Some(components)),
+        crate::easy::EasyRef::Frame(..) => unreachable!("no callback runs"),
+    });
+    assert!(set.is_ok());
+    let mut asks = AsksBack::default();
+    assert_eq!(long(c, ffi::CURLOPT_VERBOSE, 1), CURLE_OK);
+    assert_eq!(pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut asks), CURLE_OK);
+    assert_eq!(
+        function(
+            c,
+            ffi::CURLOPT_DEBUGFUNCTION,
+            debug_asks_back as DebugFn as *const (),
+        ),
+        CURLE_OK
+    );
+    let send = |bytes: *const u8, len: usize, fragsize: ffi::curl_off_t, flags: c_int| {
+        let mut n = 0;
+        // SAFETY: a live handle, the bytes and where their count goes.
+        let sent =
+            unsafe { curl_ws_send(c, bytes.cast(), len, &raw mut n, fragsize, flags as c_uint) };
+        (sent, n)
+    };
+    let bad = CURLWS_TEXT | CURLWS_BINARY;
+    let x = b"x".as_ptr();
+    let said = |asks: &mut AsksBack| -> Vec<String> {
+        std::mem::take(&mut asks.lines)
+            .iter()
+            .map(|l| String::from_utf8_lossy(l).into_owned())
+            .filter(|l| !l.contains("WS-ENC") && !l.contains("flushed"))
+            .filter(|l| l.starts_with("[WS]") || l.starts_with("Failed"))
+            .collect()
+    };
+    assert_eq!(send(x, 1, 0, bad).0, ffi::CURLE_UNSUPPORTED_PROTOCOL);
+    assert_eq!(
+        said(&mut asks),
+        [
+            "[WS] curl_ws_send(len=1, fragsize=0, flags=3), raw=0\n",
+            "Failed to get last socket used for connection #-1\n",
+        ]
+    );
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    said(&mut asks);
+    assert_eq!(
+        send(ptr::null(), 5, 0, CURLWS_TEXT).0,
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(
+        said(&mut asks),
+        [
+            "[WS] curl_ws_send(len=5, fragsize=0, flags=1), raw=0\n",
+            "[WS] buffer is NULL when buflen is not\n",
+        ]
+    );
+    assert_eq!(send(x, 1, 0, bad).0, CURLE_BAD_FUNCTION_ARGUMENT);
+    assert_eq!(
+        said(&mut asks),
+        [
+            "[WS] curl_ws_send(len=1, fragsize=0, flags=3), raw=0\n",
+            "[WS] unknown flags: 3\n",
+            "[WS] curl_ws_send(), error writing frame head 43\n",
+            "[WS] curl_ws_send(len=1, fragsize=0, flags=3, raw=0) -> 43, 0\n",
+        ]
+    );
+    assert_eq!(
+        send(x, 1, -1, CURLWS_TEXT | CURLWS_OFFSET).0,
+        ffi::CURLE_SEND_ERROR
+    );
+    assert_eq!(
+        said(&mut asks),
+        [
+            "[WS] curl_ws_send(len=1, fragsize=-1, flags=21), raw=0\n",
+            "[WS] starting new frame with negative payload length -1\n",
+            "[WS] curl_ws_send(), error writing frame head 55\n",
+            "[WS] curl_ws_send(len=1, fragsize=-1, flags=21, raw=0) -> 55, 0\n",
+        ]
+    );
+    // A frame of 4 under way: two bytes now, its head with them, and more.
+    let ab = b"ab".as_ptr();
+    assert_eq!(send(ab, 2, 4, CURLWS_TEXT | CURLWS_OFFSET), (CURLE_OK, 2));
+    said(&mut asks);
+    assert_eq!(send(x, 1, 0, bad), (CURLE_OK, 1), "flags not read");
+    assert_eq!(send(x, 1, -1, CURLWS_OFFSET), (CURLE_OK, 1), "nor the size");
+    assert_eq!(
+        said(&mut asks),
+        [
+            "[WS] curl_ws_send(len=1, fragsize=0, flags=3), raw=0\n",
+            "[WS] curl_ws_send(len=1, fragsize=0, flags=3, raw=0) -> 0, 1\n",
+            "[WS] curl_ws_send(len=1, fragsize=-1, flags=20), raw=0\n",
+            "[WS] curl_ws_send(len=1, fragsize=-1, flags=20, raw=0) -> 0, 1\n",
+        ]
+    );
+    server.join().unwrap();
+    // SAFETY: a handle no call uses any more.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// CURLOPT_WS_OPTIONS sets raw mode and no auto-pong by their bits, any
 /// other bit ignored.
 #[test]

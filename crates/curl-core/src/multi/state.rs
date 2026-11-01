@@ -2619,6 +2619,18 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
         crate::proto::http::ws::lent_recv(self, buf)
     }
 
+    fn ws_prepare(&mut self) -> Result<crate::ws::Prepared, ErrorKind> {
+        crate::proto::http::ws::lent_prepare(self)
+    }
+
+    fn ws_send_more(&mut self, bytes: &[u8]) -> Result<crate::ws::Sent, ErrorKind> {
+        crate::proto::http::ws::lent_send_more(self, bytes)
+    }
+
+    fn ws_say(&mut self, line: std::fmt::Arguments<'_>) {
+        trace::of(self, Component::Ws, line);
+    }
+
     fn ws_meta(&self) -> Option<crate::ws::Meta> {
         if self.easy().options().ws.raw {
             return None;

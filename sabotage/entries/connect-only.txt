@@ -181,3 +181,39 @@ witness: curl-sys-abi handle_tests::a_debug_function_calls_back_during_a_call_on
         crate::callbacks::trace_text(easy, bytes);
         let _ = (kind, &mut held);
     });
+
+=== bad flags are refused before the connection is looked for
+file: crates/curl-sys-abi/src/ws.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
+--- old
+    match reach(easy, Call::Prepare) {
+        Err(code) => Err(code),
+--- new
+    match Ok::<_, CURLcode>(Ok::<_, ErrorKind>(Answer::Prepared(Prepared::NewFrame))) {
+        Err(code) => Err(code),
+
+=== a send's arguments that can be no frame leave no line on entering
+file: crates/curl-sys-abi/src/ws.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
+--- old
+    line.enters(easy);
+    match reach(easy, Call::Prepare) {
+--- new
+    match reach(easy, Call::Prepare) {
+
+=== a NULL buffer leaves no line on entering
+file: crates/curl-sys-abi/src/ws.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
+--- old
+        line.enters(easy);
+        return refuse(easy, bad, b"[WS] buffer is NULL when buflen is not");
+--- new
+        return refuse(easy, bad, b"[WS] buffer is NULL when buflen is not");
+
+=== a send under way reads bad flags
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-sys-abi handle_tests::a_ws_send_of_no_frame_says_c_s_lines
+--- old
+        return Ok(Prepared::UnderWay);
+--- new
+        return Ok(Prepared::NewFrame);

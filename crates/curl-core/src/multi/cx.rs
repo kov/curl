@@ -1026,6 +1026,24 @@ impl<'a> TransferCx<'a> {
         self.calls.ws_recv(buf)
     }
 
+    /// Get ready for a send on this transfer's WebSocket, from its write
+    /// or read handler ([`Call::Prepare`](crate::ws::Call::Prepare)).
+    pub fn ws_prepare(&mut self) -> Result<crate::ws::Prepared, ErrorKind> {
+        self.calls.ws_prepare()
+    }
+
+    /// Send `bytes` as more of the frame under way on this transfer's
+    /// WebSocket ([`Call::SendMore`](crate::ws::Call::SendMore)).
+    pub fn ws_send_more(&mut self, bytes: &[u8]) -> Result<crate::ws::Sent, ErrorKind> {
+        self.calls.ws_send_more(bytes)
+    }
+
+    /// A line of this transfer's WebSocket's trace, in its host's words
+    /// (`CURL_TRC_WS`).
+    pub fn ws_say(&mut self, line: std::fmt::Arguments<'_>) {
+        self.calls.ws_say(line);
+    }
+
     /// What the bytes the write handler is given are of, on this
     /// transfer's WebSocket, unless frames are raw (`curl_ws_meta`):
     /// none from a handler that is not given its connection.
@@ -1059,6 +1077,9 @@ pub(crate) trait TransferCalls {
     ) -> Result<crate::ws::Sent, ErrorKind>;
     fn ws_start_frame(&mut self, flags: crate::ws::SendFlags, len: u64) -> Result<(), ErrorKind>;
     fn ws_recv(&mut self, buf: &mut [u8]) -> Result<crate::ws::Received, ErrorKind>;
+    fn ws_prepare(&mut self) -> Result<crate::ws::Prepared, ErrorKind>;
+    fn ws_send_more(&mut self, bytes: &[u8]) -> Result<crate::ws::Sent, ErrorKind>;
+    fn ws_say(&mut self, line: std::fmt::Arguments<'_>);
     fn ws_meta(&self) -> Option<crate::ws::Meta>;
     fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8]) -> ErrorKind;
 }
@@ -1116,6 +1137,16 @@ impl<H: Host> TransferCalls for EventCalls<'_, '_, H> {
     fn ws_recv(&mut self, _: &mut [u8]) -> Result<crate::ws::Received, ErrorKind> {
         Err(ErrorKind::BadFunctionArgument)
     }
+
+    fn ws_prepare(&mut self) -> Result<crate::ws::Prepared, ErrorKind> {
+        Err(ErrorKind::SendError)
+    }
+
+    fn ws_send_more(&mut self, _: &[u8]) -> Result<crate::ws::Sent, ErrorKind> {
+        Err(ErrorKind::SendError)
+    }
+
+    fn ws_say(&mut self, _: std::fmt::Arguments<'_>) {}
 
     fn ws_meta(&self) -> Option<crate::ws::Meta> {
         None

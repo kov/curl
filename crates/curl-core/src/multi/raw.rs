@@ -604,7 +604,7 @@ fn ws(
                 ErrorKind::UnsupportedProtocol,
                 format_args!("[WS] CONNECT_ONLY is required"),
             ),
-            Call::Send(..) | Call::StartFrame(..) => refuse(
+            Call::Send(..) | Call::SendMore(_) | Call::StartFrame(..) | Call::Prepare => refuse(
                 easy,
                 notes,
                 ErrorKind::SendError,
@@ -648,7 +648,7 @@ fn ws_on_conn(
                 ErrorKind::BadFunctionArgument,
                 format_args!("[WS] connection not found"),
             ),
-            Call::Send(..) | Call::StartFrame(..) => refuse(
+            Call::Send(..) | Call::SendMore(_) | Call::StartFrame(..) | Call::Prepare => refuse(
                 easy,
                 notes,
                 ErrorKind::UnsupportedProtocol,
@@ -667,7 +667,7 @@ fn ws_on_conn(
                 ErrorKind::BadFunctionArgument,
                 format_args!("[WS] connection is not setup for websocket"),
             ),
-            Call::Send(..) | Call::StartFrame(..) => refuse(
+            Call::Send(..) | Call::SendMore(_) | Call::StartFrame(..) | Call::Prepare => refuse(
                 easy,
                 notes,
                 ErrorKind::SendError,
@@ -697,6 +697,10 @@ fn ws_on_conn(
         Call::StartFrame(flags, len) => {
             crate::proto::ws::api_start_frame(ws, &mut wire, raw, flags, len)
                 .map(|()| Answer::Started)
+        }
+        Call::Prepare => crate::proto::ws::api_prepare(ws, &mut wire, false).map(Answer::Prepared),
+        Call::SendMore(bytes) => {
+            crate::proto::ws::api_send_more(ws, &mut wire, bytes, false).map(Answer::Sent)
         }
     }
 }
@@ -750,5 +754,13 @@ impl Easy {
     /// `kind`, given back.
     pub fn ws_refuse(&mut self, kind: ErrorKind, why: &[u8], notes: Notes<'_>) -> ErrorKind {
         fail(self, kind, crate::trace::reason_with(&[why]), notes)
+    }
+
+    /// A line of the handle's WebSocket's trace, in its host's words
+    /// (`CURL_TRC_WS`).
+    pub fn ws_say(&self, line: fmt::Arguments<'_>, notes: Notes<'_>) {
+        note_line(self, Some(Component::Ws), notes, |l| {
+            l.push_fmt(line);
+        });
     }
 }

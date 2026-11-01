@@ -156,6 +156,38 @@ pub(crate) fn lent_send<H: Host>(
     })
 }
 
+/// The application gets ready for a send on the transfer's WebSocket from
+/// inside its handler (`Call::Prepare`): what waits to go waits for the
+/// connection.
+pub(crate) fn lent_prepare<H: Host>(
+    cx: &mut StepCx<'_, H>,
+) -> Result<crate::ws::Prepared, ErrorKind> {
+    let prepared = cx.with_ws_conn(|cx, conn| {
+        let (ws, mut wire) = lent(cx, conn);
+        crate::proto::ws::api_prepare(ws, &mut wire, true)
+    });
+    prepared.unwrap_or_else(|| {
+        let why = format_args!("[WS] Not a websocket transfer");
+        Err(trace::fail(cx, ErrorKind::SendError, why))
+    })
+}
+
+/// The application sends more of the frame under way on the transfer's
+/// WebSocket from inside its handler (`Call::SendMore`): its sends wait.
+pub(crate) fn lent_send_more<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    bytes: &[u8],
+) -> Result<WsSent, ErrorKind> {
+    let sent = cx.with_ws_conn(|cx, conn| {
+        let (ws, mut wire) = lent(cx, conn);
+        crate::proto::ws::api_send_more(ws, &mut wire, bytes, true)
+    });
+    sent.unwrap_or_else(|| {
+        let why = format_args!("[WS] Not a websocket transfer");
+        Err(trace::fail(cx, ErrorKind::SendError, why))
+    })
+}
+
 /// The application starts a frame on the transfer's WebSocket from
 /// inside its handler (`curl_ws_start_frame`).
 pub(crate) fn lent_start_frame<H: Host>(

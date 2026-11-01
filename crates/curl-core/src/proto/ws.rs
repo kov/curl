@@ -641,6 +641,38 @@ pub(crate) fn api_send(
     sent_of(sent)
 }
 
+/// Get ready for a send (`Call::Prepare`): as `WsConn::send` starts, what
+/// waits to go goes first unless a frame is under way.
+pub(crate) fn api_prepare(
+    ws: &mut WsConn,
+    wire: &mut dyn Wire,
+    in_callback: bool,
+) -> Result<crate::ws::Prepared, ErrorKind> {
+    use crate::ws::Prepared;
+    if ws.enc.remain > 0 || !ws.sendbuf.is_empty() {
+        return Ok(Prepared::UnderWay);
+    }
+    match ws.flush(wire, in_callback) {
+        Ok(()) => Ok(Prepared::NewFrame),
+        Err(Stop::Again) => Ok(Prepared::WouldBlock),
+        Err(Stop::Failed(kind)) => Err(kind),
+    }
+}
+
+/// `bytes` as more of the frame under way (`Call::SendMore`).
+pub(crate) fn api_send_more(
+    ws: &mut WsConn,
+    wire: &mut dyn Wire,
+    bytes: &[u8],
+    in_callback: bool,
+) -> Result<Sent, ErrorKind> {
+    let none = SendFlags {
+        kind: None,
+        more: false,
+    };
+    sent_of(ws.send(wire, bytes, FrameLen::These, none, in_callback))
+}
+
 /// The application starts a frame `len` long, its payload to follow in
 /// its sends (`curl_ws_start_frame`): refused for `raw` frames.
 pub(crate) fn api_start_frame(

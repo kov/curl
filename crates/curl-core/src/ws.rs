@@ -92,6 +92,26 @@ pub enum Call<'a> {
     /// Start a frame this long, its payload to come in the sends after
     /// (`curl_ws_start_frame`).
     StartFrame(SendFlags, u64),
+    /// Get ready for a send, as one does first: the connection found, and
+    /// what waits to go sent if no frame is under way. A host that has
+    /// read arguments no frame can have refuses them only if one would
+    /// start now.
+    Prepare,
+    /// Send the bytes as more of the frame under way, which a host found
+    /// by `Prepare`; the host says the call's trace lines, in its words.
+    SendMore(&'a [u8]),
+}
+
+/// What a [`Call::Prepare`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prepared {
+    /// A frame is under way: a send is more of it, its flags and length
+    /// not read.
+    UnderWay,
+    /// A send starts a frame.
+    NewFrame,
+    /// What waits to go did not, for now (`CURLE_AGAIN`).
+    WouldBlock,
 }
 
 /// What a [`Call`] did.
@@ -100,4 +120,5 @@ pub enum Answer {
     Received(Received),
     Sent(Sent),
     Started,
+    Prepared(Prepared),
 }

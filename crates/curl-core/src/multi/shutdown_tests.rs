@@ -781,6 +781,80 @@ fn a_handle_s_own_multi_says_its_cleanup_s_removes() {
 
 /// Asked to, a multi traces its internal handle's work (as C's debug
 /// build does under `CURL_DEBUG`), to standard error.
+/// On the internal trace the socket's sends and receives are said under
+/// its layer's shutdown, and its close, as C's internal handle says them.
+#[test]
+fn the_internal_trace_says_the_socket_under_a_shutdown() {
+    use crate::components::{Component, Components, Level};
+    let talk = tls_talk().held();
+    talk.allow(2);
+    let (mut m, _wire, tls) = over_tls(&talk);
+    let components = Components::new().unwrap();
+    components.set(Component::Ssl, Level::Info);
+    components.set(Component::Tcp, Level::Info);
+    let written = Written::default();
+    m.trace_internally_to(
+        components,
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
+    let mut ev = Rec::default();
+    let id = m.add(closing_tls(tls), (), &mut ev).unwrap();
+    by_perform(&mut m, id, &mut ev);
+    talk.allow(3);
+    m.perform(&mut ev).unwrap();
+    let lines = written.lines();
+    let at = |what: &str| {
+        lines
+            .iter()
+            .position(|l| l.starts_with(what))
+            .unwrap_or_else(|| panic!("no {what}: {lines:?}"))
+    };
+    assert!(
+        at("* [TCP] send(len=") < at("* [SSL] cf_shutdown"),
+        "{lines:?}"
+    );
+    assert!(
+        at("* [SSL] shut down successfully") < at("* [TCP] destroy"),
+        "{lines:?}"
+    );
+    assert!(
+        at("* [TCP] destroy") < at("* [TCP] cf_socket_close, fd="),
+        "{lines:?}"
+    );
+}
+
+/// A connection checked as it is reused says what its socket answered on
+/// the internal trace (`cf_socket_conn_is_alive`, on C's internal handle),
+/// and on no transfer's.
+#[test]
+fn a_reuse_check_says_what_the_socket_answered() {
+    use crate::components::{Component, Components, Level};
+    let talk = Conversation::replies(&[OK, OK], false);
+    let (mut m, _wire, _tls) = over_tls(&talk);
+    let components = Components::new().unwrap();
+    components.set(Component::Tcp, Level::Info);
+    let written = Written::default();
+    m.trace_internally_to(
+        components,
+        crate::handler::Handler::text(written.clone()).unwrap(),
+    );
+    let mut ev = Rec::default();
+    for _ in 0..2 {
+        let mut e = Box::new(Easy::new());
+        e.options_mut()
+            .set_url(Some(b"http://127.0.0.1:4/"))
+            .unwrap();
+        let id = m.add(e, (), &mut ev).unwrap();
+        by_perform(&mut m, id, &mut ev);
+    }
+    let alive = "* [TCP] is_alive: poll timeout, assume alive";
+    assert!(
+        written.lines().iter().any(|l| l == alive),
+        "{:?}",
+        written.lines()
+    );
+}
+
 #[test]
 fn a_multi_traces_internally_when_asked() {
     let (mut m, _wire, _clock) = lingering(Linger::UntilPeer);

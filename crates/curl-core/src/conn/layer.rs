@@ -678,7 +678,17 @@ impl Below<'_> {
                 let asked = Events::RDNORM | Events::IN | Events::RDBAND | Events::PRI;
                 let mut watch = [SocketPoll::new(self.socket, asked)];
                 let polled = poll_together(&mut watch, &mut [], Duration::ZERO);
-                alive_of(polled.map(|_| watch[0].revents()))
+                let revents = polled.map(|_| watch[0].revents());
+                if let Some(component) = self.traced {
+                    let line = match &revents {
+                        Err(_) => "poll error, assume dead",
+                        Ok(r) if r.is_empty() => "poll timeout, assume alive",
+                        Ok(r) if r.intersects(dead_events()) => "err/hup/etc events, assume dead",
+                        Ok(_) => "valid events, looks alive",
+                    };
+                    cx.of(component, format_args!("is_alive: {line}"));
+                }
+                alive_of(revents)
             }
         }
     }
@@ -694,12 +704,17 @@ impl Lower for Below<'_> {
     }
 }
 
+/// What says a socket polled for input is gone.
+fn dead_events() -> Events {
+    Events::ERR | Events::HUP | Events::PRI | Events::NVAL
+}
+
 /// What a poll of the socket for input says of the connection: a failed
 /// poll, an error, a hang-up, urgent data or a bad descriptor is dead;
 /// nothing at all is alive; anything else is input pending
 /// (`cf_socket_conn_is_alive`).
 fn alive_of(revents: io::Result<Events>) -> Alive {
-    let dead = Events::ERR | Events::HUP | Events::PRI | Events::NVAL;
+    let dead = dead_events();
     match revents {
         Err(_) => Alive::Dead,
         Ok(r) if r.is_empty() => Alive::Alive {
@@ -850,10 +865,12 @@ impl LayerStack {
 
     /// Shut its layers down over `socket` from the top, past the `shut`
     /// done already, counting each that finishes: a layer starts once the
-    /// one above is done (`Curl_cshutdn_try_once_idx`).
+    /// one above is done (`Curl_cshutdn_try_once_idx`). The socket's sends
+    /// and receives are traced as `traced`, as those of a transfer are.
     pub(crate) fn shutdown(
         &mut self,
         socket: &dyn Socket,
+        traced: Component,
         cx: &mut dyn LayerCx,
         shut: &mut usize,
     ) -> Result<Handshake, ErrorKind> {
@@ -866,7 +883,7 @@ impl LayerStack {
             let below = Below {
                 layers: below,
                 socket,
-                traced: None,
+                traced: Some(traced),
                 heard: None,
             };
             // Each layer's end said in its name (`Curl_cshutdn_try_once_idx`).

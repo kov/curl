@@ -979,12 +979,12 @@ fn a_direct_connection_is_checked_and_closed_over_its_socket() {
         talks[1].received().ends_with(b"CLOSE"),
         "the second said goodbye"
     );
-    // The goodbye, on the multi's internal trace, went on the socket.
+    // The check's failure and the goodbye, each on the multi's internal
+    // trace, went on the socket.
     let text = String::from_utf8(written.0.lock().unwrap().clone()).unwrap();
-    let sent: Vec<&str> = text.lines().filter(|l| l.contains("vquic_")).collect();
+    let sent: Vec<&str> = text.lines().filter(|l| l.contains("vquic_send")).collect();
     assert_eq!(
-        sent,
-        ["* [HTTP/3] vquic_sendmsg(len=5, gso=5, calls=1) -> 0, sent=5"],
+        sent, ["* [HTTP/3] vquic_sendmsg(len=5, gso=5, calls=1) -> 0, sent=5"; 2],
         "{text}"
     );
 }

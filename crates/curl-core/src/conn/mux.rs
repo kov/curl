@@ -383,8 +383,8 @@ impl Lower for Carrier<'_> {
 
     fn alive(self, cx: &mut dyn LayerCx) -> Alive {
         match self.over {
-            Over::Stream(stream) => stream.is_alive(cx),
-            Over::Datagrams(datagrams) => datagrams.is_alive(cx),
+            Over::Stream(stream) => stream.is_alive(cx, self.socket),
+            Over::Datagrams(datagrams) => datagrams.is_alive(cx, self.socket),
         }
     }
 }

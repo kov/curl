@@ -164,8 +164,9 @@ impl Shutting {
         // (`cshutdn_run_once`, `cf_h2_shutdown`).
         self.say_goodbye(&mut cx, false);
         self.conn.goodbye(&mut cx);
+        let socket = self.conn.socket_component();
         match &mut self.conn.transport {
-            Transport::Stream(stream) => match stream.shutdown(&mut cx, &mut self.shut) {
+            Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
                 Ok(Handshake::Waiting) => Tried::Waiting,
                 Ok(Handshake::Done) | Err(_) => Tried::Done,
             },
@@ -254,6 +255,7 @@ fn terminate(
             format_args!("[SHUTDOWN] {force}closing connection #{n}"),
         );
     }
+    let component = conn.socket_component();
     let socket = match conn.transport {
         Transport::Local => None,
         Transport::Stream(stream) => Some(stream.into_socket()),
@@ -262,6 +264,8 @@ fn terminate(
     if let Some(socket) = socket {
         if let Some(t) = trace {
             let fd = socket.key().get();
+            t.of(component, format_args!("destroy"));
+            t.of(component, format_args!("cf_socket_close, fd={fd}"));
             t.of(
                 Component::Multi,
                 format_args!("Curl_multi_will_close fd={fd}"),

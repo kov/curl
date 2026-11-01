@@ -324,11 +324,48 @@ witness: curl-core multi::shutdown_tests::a_protocol_says_its_goodbye_once
 --- old
         self.say_goodbye(&mut cx, false);
         self.conn.goodbye(&mut cx);
+        let socket = self.conn.socket_component();
         match &mut self.conn.transport {
-            Transport::Stream(stream) => match stream.shutdown(&mut cx, &mut self.shut) {
+            Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
                 Ok(Handshake::Waiting) => Tried::Waiting,
 --- new
         self.conn.goodbye(&mut cx);
+        let socket = self.conn.socket_component();
         match &mut self.conn.transport {
-            Transport::Stream(stream) => match stream.shutdown(&mut cx, &mut self.shut) {
+            Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
                 Ok(Handshake::Waiting) => { self.say_goodbye(&mut cx, false); Tried::Waiting }
+
+=== a layer's shutdown does not say what its socket does
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core multi::shutdown_tests::the_internal_trace_says_the_socket_under_a_shutdown
+--- old
+                traced: Some(traced),
+                heard: None,
+--- new
+                traced: None,
+                heard: None,
+
+=== a data connection's shutdown says nothing of its socket
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core proto::ftp::tests::a_protected_data_connection_resumes_its_control_connection_s_session
+--- old
+                traced: Some(traced),
+                heard: None,
+--- new
+                traced: None,
+                heard: None,
+
+=== a connection's close does not say its socket's
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::the_internal_trace_says_the_socket_under_a_shutdown
+--- old
+            t.of(component, format_args!("destroy"));
+--- new
+
+=== a reuse check says nothing of its socket
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core multi::shutdown_tests::a_reuse_check_says_what_the_socket_answered
+--- old
+                    cx.of(component, format_args!("is_alive: {line}"));
+--- new
+                    let _ = (component, line);

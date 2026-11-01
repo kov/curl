@@ -1208,7 +1208,7 @@ impl Pool {
         {
             Err(None)
         } else {
-            health(conn, since, rules, now).map_err(Some)
+            health(conn, since, rules, now, internal(exits).as_ref()).map_err(Some)
         };
         match verdict {
             Ok(()) => {
@@ -2190,7 +2190,8 @@ fn prune(
         cursor = Some(id);
         if let Some(conn) = conns.get_mut(id).and_then(Place::idle_mut)
             && let Use::Idle { since, .. } = conn.use_
-            && (conn.number.get() < stale_below || health(conn, since, rules, now).is_err())
+            && (conn.number.get() < stale_below
+                || health(conn, since, rules, now, internal(exits).as_ref()).is_err())
         {
             close(conns, id, Evicted::Linger, exits, now);
         }
@@ -2244,6 +2245,12 @@ fn close(
     }
 }
 
+/// The multi's internal trace, on which C's internal handle says what it
+/// asks of an idle connection (`Curl_get_admin`).
+fn internal(exits: &mut dyn Exits) -> Option<crate::trace::Internal> {
+    exits.parts().1.and_then(|l| l.set.internal().cloned())
+}
+
 /// Whether an idle connection may be reused
 /// (`Curl_cpool_conn_seems_healthy`): not idle or alive too long, and with
 /// nothing to read, as an idle HTTP/1 connection must not have (RFC 9112,
@@ -2253,6 +2260,7 @@ fn health(
     idle_since: Instant,
     rules: ReuseRules,
     now: Instant,
+    trace: Option<&crate::trace::Internal>,
 ) -> Result<(), Option<PoolNote>> {
     let idle = now.since(idle_since);
     if let Some(max) = rules.max_idle
@@ -2280,7 +2288,7 @@ fn health(
     {
         return Ok(());
     }
-    let healthy = alive(conn, now);
+    let healthy = alive(conn, now, trace);
     let made_ms = ms_since_made(conn, now);
     if healthy.is_ok()
         && let Use::Idle { checked_ms, .. } = &mut conn.use_
@@ -2300,8 +2308,17 @@ fn ms_since_made(conn: &Conn, now: Instant) -> u32 {
 /// is unhealthy on an idle HTTP/1 connection; a session reads its peer's
 /// frames (`http2_connisalive`), and RTSP's server may send RTP between
 /// requests (`rtsp_conn_is_dead`).
-fn alive(conn: &mut Conn, now: Instant) -> Result<(), Option<PoolNote>> {
-    match conn.alive(&mut Silent(now)) {
+fn alive(
+    conn: &mut Conn,
+    now: Instant,
+    trace: Option<&crate::trace::Internal>,
+) -> Result<(), Option<PoolNote>> {
+    let mut cx = crate::trace::InternalCx {
+        now,
+        trace,
+        room: None,
+    };
+    match conn.alive(&mut cx) {
         Alive::Alive {
             input_pending: false,
         } => Ok(()),

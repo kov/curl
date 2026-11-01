@@ -43,9 +43,10 @@ impl Datagrams {
         super::layer::Below::bare(self.socket.socket(), traced)
     }
 
-    /// Whether the connection seems usable, as its socket says.
-    pub(crate) fn is_alive(&mut self, cx: &mut dyn LayerCx) -> Alive {
-        self.below(None).alive(cx)
+    /// Whether the connection seems usable, as its socket says, the
+    /// answer traced as `traced`.
+    pub(crate) fn is_alive(&mut self, cx: &mut dyn LayerCx, traced: Component) -> Alive {
+        self.below(Some(traced)).alive(cx)
     }
 
     /// The connection's end here, if the system says.
@@ -210,10 +211,11 @@ impl Stream {
 
     /// Whether the connection seems usable, as its layers and its socket
     /// say. Nothing received waits unused on one that is idle: its last
-    /// request used everything it read.
-    pub(crate) fn is_alive(&mut self, cx: &mut dyn LayerCx) -> Alive {
+    /// request used everything it read. Its socket's answer is traced as
+    /// `traced`.
+    pub(crate) fn is_alive(&mut self, cx: &mut dyn LayerCx, traced: Component) -> Alive {
         self.layers
-            .over(self.socket.socket(), None, Some(&self.heard))
+            .over(self.socket.socket(), Some(traced), Some(&self.heard))
             .alive(cx)
     }
 
@@ -238,9 +240,14 @@ impl Stream {
     pub(crate) fn shutdown(
         &mut self,
         cx: &mut dyn LayerCx,
+        traced: Component,
         shut: &mut usize,
     ) -> Result<Handshake, ErrorKind> {
-        if self.layers.shutdown(self.socket.socket(), cx, shut)? == Handshake::Waiting {
+        if self
+            .layers
+            .shutdown(self.socket.socket(), traced, cx, shut)?
+            == Handshake::Waiting
+        {
             return Ok(Handshake::Waiting);
         }
         self.drain();

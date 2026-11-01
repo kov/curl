@@ -509,7 +509,7 @@ impl DataConn {
                     format_args!("shutdown start on secondary connection"),
                 );
             }
-            if stream.shutdown(cx, shut)? == Handshake::Waiting {
+            if stream.shutdown(cx, socket, shut)? == Handshake::Waiting {
                 return Ok(false);
             }
             let fd = stream.socket().key().get();

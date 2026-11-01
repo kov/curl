@@ -89,7 +89,11 @@ fn layers_shut_down_from_the_top_one_at_a_time() {
     let mut shut = 0;
     let mut tries = Vec::new();
     for _ in 0..3 {
-        tries.push(stream.shutdown(&mut cx, &mut shut).unwrap());
+        tries.push(
+            stream
+                .shutdown(&mut cx, crate::components::Component::Tcp, &mut shut)
+                .unwrap(),
+        );
     }
     use Handshake::{Done, Waiting};
     assert_eq!(tries, [Waiting, Waiting, Done]);

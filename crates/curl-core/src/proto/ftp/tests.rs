@@ -615,6 +615,15 @@ fn a_protected_data_connection_resumes_its_control_connection_s_session() {
     let log = backend.log();
     assert_eq!(log.handshakes, 2, "{}", text.text());
     assert_eq!((log.resumed, log.resumed_given), (1, 1), "{}", text.text());
+    // Its shutdown says what its socket does under its TLS.
+    said_in_order(
+        &text.text(),
+        &[
+            "shutdown start on secondary connection\n",
+            "[TCP-1] send(len=",
+            "[TCP-1] cf_socket_shutdown, fd=",
+        ],
+    );
     // Its TLS is the second chain's, named so, the chain up as it is made.
     said_in_order(
         &text.text(),

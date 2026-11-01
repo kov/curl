@@ -70,11 +70,6 @@ pub struct Easy {
     /// changes to or from a share that keeps connections; a connection
     /// gone since fails its lookup.
     pub(crate) last_conn: Option<LastConn>,
-    /// The transfer running in the multi holding the handle had a
-    /// connection when the multi last gave the handle out
-    /// (`Multi::easy_mut`), the only way to reach it while it runs; what
-    /// refuses a change of share.
-    running_connection: bool,
     /// The HSTS and alt-svc caches, made the first time the application
     /// turns either on: few handles do.
     caches: Option<Box<HostCaches>>,
@@ -102,6 +97,106 @@ pub struct Easy {
     /// copied with the handle (C's `state.rtsp_*`). Made the first time
     /// either is set: few handles speak RTSP.
     rtsp: Option<Box<RtspState>>,
+}
+
+/// A handle in a multi, as `Multi::easy_mut` gives it out: everything of
+/// [`Easy`] that reads, and what may change whatever its transfer is doing.
+/// Its share is not among that: whether it may change turns on what the
+/// transfer holds, which the multi knows (`Multi::set_share`).
+///
+/// ```compile_fail,E0599
+/// fn change<H: curl_core::multi::Host>(
+///     multi: &mut curl_core::multi::Multi<H>,
+///     id: curl_core::multi::TransferId,
+/// ) {
+///     let _ = multi.easy_mut(id).unwrap().set_share(None);
+/// }
+/// ```
+pub struct EasyView<'a> {
+    easy: &'a mut Easy,
+}
+
+impl std::ops::Deref for EasyView<'_> {
+    type Target = Easy;
+
+    fn deref(&self) -> &Easy {
+        self.easy
+    }
+}
+
+/// Each as the method of [`Easy`] it forwards to says.
+impl EasyView<'_> {
+    pub fn options_mut(&mut self) -> &mut Options {
+        self.easy.options_mut()
+    }
+
+    pub fn tell_failure(&mut self, why: &[u8]) {
+        self.easy.tell_failure(why);
+    }
+
+    pub fn reset(&mut self) {
+        self.easy.reset();
+    }
+
+    pub fn rtsp_mut(&mut self) -> Result<&mut RtspState, OutOfMemory> {
+        self.easy.rtsp_mut()
+    }
+
+    pub fn set_libraries(&mut self, libraries: SharedLibraries) {
+        self.easy.set_libraries(libraries);
+    }
+
+    pub fn enable_hsts(&mut self, mode: CacheFile) -> Result<(), OutOfMemory> {
+        self.easy.enable_hsts(mode)
+    }
+
+    pub fn disable_hsts(&mut self) {
+        self.easy.disable_hsts();
+    }
+
+    pub fn add_hsts_file(&mut self, file: Option<&[u8]>) -> Result<(), OutOfMemory> {
+        self.easy.add_hsts_file(file)
+    }
+
+    pub fn enable_alt_svc(&mut self, ctrl: AltSvcCtrl) -> Result<(), OutOfMemory> {
+        self.easy.enable_alt_svc(ctrl)
+    }
+
+    pub fn add_alt_svc_file(&mut self, file: Option<&[u8]>) -> Result<(), CacheLoadError> {
+        self.easy.add_alt_svc_file(file)
+    }
+
+    pub fn enable_cookies(&mut self) -> Result<(), OutOfMemory> {
+        self.easy.enable_cookies()
+    }
+
+    pub fn forget_cookies(&mut self) {
+        self.easy.forget_cookies();
+    }
+
+    pub fn add_cookie(&mut self, line: &[u8], notes: impl FnMut(&[u8])) -> Result<(), OutOfMemory> {
+        self.easy.add_cookie(line, notes)
+    }
+
+    pub fn clear_cookies(&mut self) -> Result<(), OutOfMemory> {
+        self.easy.clear_cookies()
+    }
+
+    pub fn clear_session_cookies(&mut self) -> Result<(), OutOfMemory> {
+        self.easy.clear_session_cookies()
+    }
+
+    pub fn reload_cookies(&mut self, notes: impl FnMut(&[u8])) -> Result<(), LoadError> {
+        self.easy.reload_cookies(notes)
+    }
+
+    pub fn cookie_list(&mut self) -> Result<Vec<Vec<u8>>, OutOfMemory> {
+        self.easy.cookie_list()
+    }
+
+    pub fn save_cookies(&mut self) -> Result<(), SaveError> {
+        self.easy.save_cookies()
+    }
 }
 
 /// What RTSP keeps from one request and connection to the next, through
@@ -316,7 +411,6 @@ impl Easy {
             set_cookies: 0,
             shown_credentials: None,
             last_conn: None,
-            running_connection: false,
             caches: None,
             share: None,
             share_watch: None,
@@ -426,8 +520,9 @@ impl Easy {
     }
 
     /// Use `share` for the transfers from now on, or none; refused while
-    /// the handle holds a connection, its running transfer's or one it
-    /// only made (`setopt_share`).
+    /// the handle holds a connection it only made (`setopt_share`). A
+    /// handle in a multi changes through `Multi::set_share`, which knows
+    /// of its running transfer's.
     pub fn set_share(&mut self, share: Option<Share>) -> Result<(), ShareInUse> {
         self.share_may_change()?;
         self.forget_pool(share.as_ref());
@@ -452,30 +547,25 @@ impl Easy {
     }
 
     /// Leave the share as the handle is closed, a connection it only made
-    /// going with it (`Curl_share_easy_unlink`). Refused only for a
+    /// going with it (`Curl_share_easy_unlink`). Out of a multi no transfer
+    /// runs, so nothing refuses it; in one, `Multi::leave_share` does for a
     /// running transfer's connection.
-    pub fn leave_share(&mut self) -> Result<(), ShareInUse> {
-        if self.running_connection {
-            return Err(ShareInUse);
-        }
+    pub fn leave_share(&mut self) {
         self.forget_pool(None);
         self.share = None;
         self.share_watch = None;
-        Ok(())
     }
 
     fn share_may_change(&self) -> Result<(), ShareInUse> {
-        if self.holds_connection() || self.running_connection {
+        if self.holds_connection() {
             return Err(ShareInUse);
         }
         Ok(())
     }
 
-    /// Say whether the transfer running in the multi holding the handle
-    /// has a connection: told as the multi gives the handle out, or lets
-    /// it go.
-    pub(crate) fn set_running_connection(&mut self, held: bool) {
-        self.running_connection = held;
+    /// The handle as one in a multi is reached, for code taking either.
+    pub fn view(&mut self) -> EasyView<'_> {
+        EasyView { easy: self }
     }
 
     /// Forget the last connection, if the pool it is in changes: leaving

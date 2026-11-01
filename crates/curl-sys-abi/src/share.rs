@@ -19,7 +19,7 @@ use curl_alloc::try_box;
 use curl_core::handler::Handler;
 use curl_core::share::{Kind, Share, ShareInUse, ShareLock};
 
-use crate::easy::{EasyRef, ShimEasy};
+use crate::easy::{HomeRef, ShimEasy};
 use crate::ffi::{
     self, CURL, CURLSH, CURLSHE_BAD_OPTION, CURLSHE_IN_USE, CURLSHE_INVALID, CURLSHE_OK,
     CURLSHcode, CURLSHoption, curl_lock_data, curl_lock_function, curl_unlock_function,
@@ -346,7 +346,7 @@ const _: ffi::proto::curl_share_cleanup = curl_share_cleanup;
 /// `CURLOPT_SHARE`: refused while the handle holds a connection, as C
 /// refuses it with `data->conn` set (`setopt_share`), saying so to a verbose
 /// handle, before any of the share's lock functions is called; else as
-/// [`set`], which the core's `Easy::set_share` refuses the same.
+/// [`set`], which the core refuses the same.
 ///
 /// # Safety
 ///
@@ -424,16 +424,29 @@ fn set_core(easy: &ShimEasy, share: Option<&ShimShare>) -> Result<(), Refused> {
         }
         _ => None,
     };
-    match easy.with_easy(|e| match e {
-        EasyRef::Easy(e) => {
+    match easy.with_home(|home| match home {
+        HomeRef::Detached(e) => {
             let changed = match (share, watch) {
                 (Some(sh), Some(watch)) => e.set_share_watched(sh.core.clone(), watch),
                 (Some(sh), None) => e.set_share(Some(sh.core.clone())),
-                (None, _) => e.leave_share(),
+                (None, _) => {
+                    e.leave_share();
+                    Ok(())
+                }
             };
             changed.map_err(|ShareInUse| Refused::Running)
         }
-        EasyRef::Frame(..) => Err(Refused::InCallback),
+        HomeRef::Added(multi, id) => {
+            let changed = match (share, watch) {
+                (Some(sh), Some(watch)) => multi.set_share_watched(id, sh.core.clone(), watch),
+                (Some(sh), None) => multi.set_share(id, Some(sh.core.clone())),
+                (None, _) => multi.leave_share(id),
+            };
+            changed
+                .expect("an added handle is in its multi")
+                .map_err(|ShareInUse| Refused::Running)
+        }
+        HomeRef::Frame(..) => Err(Refused::InCallback),
     }) {
         Ok(set) => set,
         Err(_) => Err(Refused::InCallback),

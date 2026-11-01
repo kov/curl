@@ -1352,12 +1352,12 @@ impl<H: Host> NotifyCx<'_, H> {
     }
 
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {
-        self.multi.easy_mut(id).map(Easy::options_mut)
+        self.multi.slots.get_mut(id).map(|s| s.easy.options_mut())
     }
 
     /// As `Easy::tell_failure`, of a transfer.
     pub fn tell_failure(&mut self, id: TransferId, why: &[u8]) {
-        if let Some(easy) = self.multi.easy_mut(id) {
+        if let Some(mut easy) = self.multi.easy_mut(id) {
             easy.tell_failure(why);
         }
     }
@@ -1372,7 +1372,7 @@ impl<H: Host> NotifyCx<'_, H> {
         &mut self,
         id: TransferId,
     ) -> Option<Result<&mut crate::easy::RtspState, OutOfMemory>> {
-        self.multi.easy_mut(id).map(Easy::rtsp_mut)
+        self.multi.slots.get_mut(id).map(|s| s.easy.rtsp_mut())
     }
 
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {

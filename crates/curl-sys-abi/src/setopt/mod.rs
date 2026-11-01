@@ -1903,7 +1903,7 @@ fn refused(easy: &ShimEasy, option: CURLoption) {
     let line = line.as_bytes();
     let why = &line[..line.len() - 1];
     let reached = easy.with_easy(|e| match e {
-        easy::EasyRef::Easy(easy) => easy.tell_failure(why),
+        easy::EasyRef::Easy(mut easy) => easy.tell_failure(why),
         // SAFETY: the frame is the multi's innermost, and the borrow ends
         // with this call, inside its callback.
         easy::EasyRef::Frame(frame, id) => unsafe { frame.tell_failure(id, why) },
@@ -2013,7 +2013,7 @@ unsafe fn hsts_option(shim: &ShimEasy, arg: HstsArg) -> CURLcode {
         HstsArg::Ctrl(_) | HstsArg::AltSvcCtrl(_) => None,
     };
     let done = shim.with_easy(|e| {
-        let easy = match e {
+        let mut easy = match e {
             easy::EasyRef::Easy(easy) => easy,
             easy::EasyRef::Frame(..) => return Err(EasyError::RecursiveApiCall),
         };
@@ -2071,7 +2071,7 @@ unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CUR
     // borrowed: the debug function may call back into it.
     let mut notes: Vec<Vec<u8>> = Vec::new();
     let done = shim.with_easy(|e| {
-        let easy = match e {
+        let mut easy = match e {
             easy::EasyRef::Easy(easy) => easy,
             // From a callback, only the options are reached: the jar the
             // files and the save name turn on is made as the next transfer
@@ -2085,7 +2085,7 @@ unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CUR
                 easy.enable_cookies().map_err(|_| ErrorKind::OutOfMemory)?;
             }
             (ffi::CURLOPT_COOKIELIST, Some(command)) => {
-                return cookie_command(easy, command, &mut notes).map_err(EasyError::from);
+                return cookie_command(&mut easy, command, &mut notes).map_err(EasyError::from);
             }
             _ => {}
         }
@@ -2104,7 +2104,7 @@ unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CUR
 /// `CURLOPT_COOKIELIST`: a command, in any case, or a cookie to store;
 /// what a verbose handle traces of it into `notes`.
 fn cookie_command(
-    easy: &mut curl_core::easy::Easy,
+    easy: &mut curl_core::easy::EasyView<'_>,
     command: &[u8],
     notes: &mut Vec<Vec<u8>>,
 ) -> Result<(), ErrorKind> {

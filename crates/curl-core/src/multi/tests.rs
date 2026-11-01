@@ -416,19 +416,46 @@ fn a_share_is_refused_while_the_transfer_holds_a_connection() {
     let ev = &mut NoEvents;
     let id = m.add(Box::new(easy("stall://a")), (), ev).unwrap();
     let share = crate::share::Share::new().unwrap();
-    let e = m.easy_mut(id).unwrap();
-    assert_eq!(e.set_share(Some(share.clone())), Ok(()), "not started");
-    assert_eq!(e.set_share(None), Ok(()));
+    let not_started = m.set_share(id, Some(share.clone()));
+    assert_eq!(not_started, Some(Ok(())));
+    assert!(m.easy(id).unwrap().share().is_some());
+    assert_eq!(m.set_share(id, None), Some(Ok(())));
     m.perform(ev).unwrap();
     assert!(m.holds_connection(id));
-    let e = m.easy_mut(id).unwrap();
-    let refused = Err(crate::share::ShareInUse);
-    assert_eq!(e.set_share(Some(share.clone())), refused);
-    assert_eq!(e.leave_share(), refused);
-    assert!(e.share().is_none());
+    let refused = Some(Err(crate::share::ShareInUse));
+    assert_eq!(m.set_share(id, Some(share.clone())), refused);
+    let told = crate::share::Told::new(&share);
+    let watched = m.set_share_watched(id, share.clone(), told.handler());
+    assert_eq!(watched, refused);
+    assert_eq!(m.leave_share(id), refused);
+    assert!(m.easy(id).unwrap().share().is_none());
     let removed = m.remove(id, ev).unwrap();
+    assert_eq!(m.set_share(id, None), None, "gone from the multi");
+    assert_eq!(m.leave_share(id), None);
     let mut e = removed.easy;
     assert_eq!(e.set_share(Some(share)), Ok(()), "out of its multi");
+}
+
+/// A transfer run to its end holds no connection and takes a share, still
+/// in its multi.
+#[test]
+fn a_share_is_taken_once_the_transfer_holds_no_connection() {
+    let (mut m, _clock) = multi();
+    let ev = &mut NoEvents;
+    let id = m.add(Box::new(easy("null://a")), (), ev).unwrap();
+    while m.info_read().is_none() {
+        m.perform(ev).unwrap();
+    }
+    assert!(m.easy(id).is_some(), "still in its multi");
+    assert!(!m.holds_connection(id));
+    let share = crate::share::Share::new().unwrap();
+    assert_eq!(m.set_share(id, Some(share.clone())), Some(Ok(())));
+    assert!(m.easy(id).unwrap().share().is_some());
+    let told = crate::share::Told::new(&share);
+    let watched = m.set_share_watched(id, share, told.handler());
+    assert_eq!(watched, Some(Ok(())));
+    assert_eq!(m.leave_share(id), Some(Ok(())));
+    assert!(m.easy(id).unwrap().share().is_none());
 }
 
 #[test]

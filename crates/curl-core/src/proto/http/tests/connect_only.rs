@@ -173,6 +173,29 @@ fn a_raw_call_traces_on_the_handle_s_notes() {
     assert_eq!(noted.0, [], "not verbose");
 }
 
+/// A connection the handle only made refuses a new share, but not leaving
+/// the one it has: it goes with the handle (`Curl_share_easy_unlink`).
+#[test]
+fn a_connection_only_made_lets_the_transfer_leave_its_share() {
+    let (mut m, _talk, _) = server(&[OK], false);
+    let mut e = Easy::new();
+    let _seen = connect_only(&mut e);
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let share = crate::share::Share::new().unwrap();
+    assert_eq!(m.set_share(id, Some(share.clone())), Some(Ok(())));
+    let sent = m.send_raw(id, b"abc", &mut |_, _| {});
+    assert_eq!(sent, Some(Ok(RawIo::Bytes(3))));
+    assert!(m.holds_connection(id));
+    let refused = Some(Err(crate::share::ShareInUse));
+    assert_eq!(m.set_share(id, Some(share)), refused);
+    assert_eq!(m.leave_share(id), Some(Ok(())));
+    assert!(m.easy(id).unwrap().share().is_none());
+}
+
 /// A WebSocket's calls trace as they do from inside a transfer, under the
 /// `ws` component.
 #[test]

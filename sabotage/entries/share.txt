@@ -144,43 +144,78 @@ witness: curl-sys-abi handle_tests::a_share_is_refused_while_the_handle_holds_a_
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-sys-abi handle_tests::a_share_is_refused_while_the_handle_holds_a_connection
 --- old
-                .as_ref()
-                .is_some_and(|run| run.state.lease().is_some())
+            .is_some_and(|run| run.state.lease().is_some())
 --- new
-                .as_ref()
-                .is_some()
+            .is_some()
 
 === a callback changes the share under its own step
 file: crates/curl-sys-abi/src/share.rs
 witness: curl-sys-abi handle_tests::a_callback_cannot_change_the_share
 --- old
-        EasyRef::Frame(..) => Err(Refused::InCallback),
+        HomeRef::Frame(..) => Err(Refused::InCallback),
 --- new
-        EasyRef::Frame(..) => Ok(()),
+        HomeRef::Frame(..) => Ok(()),
 
 === a running transfer's share changes under it
-file: crates/curl-core/src/easy.rs
-witness: curl-core multi::tests::a_share_is_refused_while_the_transfer_holds_a_connection
---- old
-        if self.holds_connection() || self.running_connection {
---- new
-        if self.holds_connection() {
-
-=== a transfer running in a multi says it holds no connection
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::a_share_is_refused_while_the_transfer_holds_a_connection
 --- old
-        slot.easy.set_running_connection(held);
+        if self.holds_connection(id) {
+            return Some(Err(ShareInUse));
+        }
+        Some(self.slots.get_mut(id)?.easy.set_share(share))
 --- new
-        slot.easy.set_running_connection(held && false);
+        Some(self.slots.get_mut(id)?.easy.set_share(share))
 
-=== a handle out of its multi is still refused a share
+=== a running transfer's watched share changes under it
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::a_share_is_refused_while_the_transfer_holds_a_connection
 --- old
-        slot.easy.set_running_connection(false);
+        if self.holds_connection(id) {
+            return Some(Err(ShareInUse));
+        }
+        Some(self.slots.get_mut(id)?.easy.set_share_watched(share, watch))
 --- new
-        slot.easy.set_running_connection(true);
+        Some(self.slots.get_mut(id)?.easy.set_share_watched(share, watch))
+
+=== a running transfer leaves its share
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_share_is_refused_while_the_transfer_holds_a_connection
+--- old
+        if self.running_on_connection(id) {
+            return Some(Err(ShareInUse));
+        }
+--- new
+
+=== a transfer running on no connection is refused a share
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_share_is_taken_once_the_transfer_holds_no_connection
+--- old
+        if self.holds_connection(id) {
+            return Some(Err(ShareInUse));
+        }
+        Some(self.slots.get_mut(id)?.easy.set_share(share))
+--- new
+        if self.slots.get(id).is_some() {
+            return Some(Err(ShareInUse));
+        }
+        Some(self.slots.get_mut(id)?.easy.set_share(share))
+
+=== a connection the handle only made stops it leaving its share
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::connect_only::a_connection_only_made_lets_the_transfer_leave_its_share
+--- old
+        if self.running_on_connection(id) {
+--- new
+        if self.holds_connection(id) {
+
+=== a connection the handle only made does not refuse a share in a multi
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::connect_only::a_connection_only_made_lets_the_transfer_leave_its_share
+--- old
+        slot.easy.holds_connection() || self.running_on_connection(id)
+--- new
+        self.running_on_connection(id)
 
 === a refused share says nothing
 file: crates/curl-sys-abi/src/share.rs

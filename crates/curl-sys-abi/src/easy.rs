@@ -14,12 +14,12 @@ use core::ptr::{self, NonNull};
 use core::slice;
 
 use curl_alloc::{OutOfMemory, try_box};
-use curl_core::easy::Easy;
+use curl_core::easy::{Easy, EasyView};
 use curl_core::error::{ErrorKind, MultiErrorKind};
 use curl_core::handler::{Handler, WriteHandler};
 use curl_core::multi::raw::RawIo;
 use curl_core::multi::{
-    EventTable, PauseRequest, TransferId, drive_by_events_with, drive_to_completion,
+    EventTable, Multi, PauseRequest, TransferId, drive_by_events_with, drive_to_completion,
 };
 use curl_core::options::{Callbacks, Options};
 use curl_core::report::TransferReport;
@@ -32,7 +32,7 @@ use crate::ffi::{
     CURLE_RECURSIVE_API_CALL, CURLcode,
 };
 use crate::gate::{EasyCall, EasyStack, Frame, MultiCall, MultiStack, Reach, Recursive};
-use crate::multi::{ShimEvents, ShimMulti};
+use crate::multi::{CHost, ShimEvents, ShimMulti};
 use crate::share::ShimShare;
 use crate::sockets::CSockets;
 use crate::tls::CTls;
@@ -530,6 +530,20 @@ impl ShimEasy {
     /// Run `f` on the handle's `Easy`, wherever it is: in the handle, in
     /// its multi's core, or through the context of the callback running.
     pub(crate) fn with_easy<R>(&self, f: impl FnOnce(EasyRef<'_>) -> R) -> Result<R, Recursive> {
+        self.with_home(|home| {
+            f(match home {
+                HomeRef::Detached(easy) => EasyRef::Easy(easy.view()),
+                HomeRef::Added(multi, id) => {
+                    EasyRef::Easy(multi.easy_mut(id).expect("an added handle is in its multi"))
+                }
+                HomeRef::Frame(frame, id) => EasyRef::Frame(frame, id),
+            })
+        })
+    }
+
+    /// Run `f` on where the handle's `Easy` is, for what differs between
+    /// a handle on its own and one in a multi: its share, and its close.
+    pub(crate) fn with_home<R>(&self, f: impl FnOnce(HomeRef<'_>) -> R) -> Result<R, Recursive> {
         let added = self.added();
         let Some((multi, id)) = added else {
             let mut home = self.home.borrow_mut();
@@ -538,19 +552,15 @@ impl ShimEasy {
             let Home::Detached(easy) = &mut *home else {
                 return Err(Recursive);
             };
-            return Ok(f(EasyRef::Easy(easy)));
+            return Ok(f(HomeRef::Detached(easy)));
         };
         // SAFETY: the handle's multi outlives its `Added`.
         let multi = unsafe { multi.as_ref() };
         Ok(match multi.stack.reach()? {
             // SAFETY: nothing runs on the multi, so its core is not
             // borrowed.
-            Reach::Direct => f(EasyRef::Easy(
-                unsafe { multi.core_mut() }
-                    .easy_mut(id)
-                    .expect("an added handle is in its multi"),
-            )),
-            Reach::Frame(frame) => f(EasyRef::Frame(frame, id)),
+            Reach::Direct => f(HomeRef::Added(unsafe { multi.core_mut() }, id)),
+            Reach::Frame(frame) => f(HomeRef::Frame(frame, id)),
         })
     }
 
@@ -560,7 +570,7 @@ impl ShimEasy {
         f: impl FnOnce(&mut Options) -> R,
     ) -> Result<R, Recursive> {
         self.with_easy(|e| match e {
-            EasyRef::Easy(easy) => f(easy.options_mut()),
+            EasyRef::Easy(mut easy) => f(easy.options_mut()),
             EasyRef::Frame(frame, id) => {
                 // SAFETY: the frame is the multi's innermost, and the
                 // borrow ends with this call, inside its callback.
@@ -589,7 +599,7 @@ impl ShimEasy {
         f: impl FnOnce(Result<&mut curl_core::easy::RtspState, OutOfMemory>) -> R,
     ) -> Result<R, Recursive> {
         self.with_easy(|e| match e {
-            EasyRef::Easy(easy) => f(easy.rtsp_mut()),
+            EasyRef::Easy(mut easy) => f(easy.rtsp_mut()),
             EasyRef::Frame(frame, id) => {
                 // SAFETY: as in `with_options`.
                 let rtsp = unsafe { frame.rtsp_mut(id) };
@@ -641,7 +651,17 @@ impl ShimEasy {
 
 /// A handle's `Easy`, where it was reached.
 pub(crate) enum EasyRef<'a> {
-    Easy(&'a mut Easy),
+    Easy(EasyView<'a>),
+    Frame(Frame, TransferId),
+}
+
+/// Where a handle's `Easy` is.
+pub(crate) enum HomeRef<'a> {
+    /// In the handle, the whole of it its own.
+    Detached(&'a mut Easy),
+    /// In its multi's core, which nothing is running on.
+    Added(&'a mut Multi<CHost>, TransferId),
+    /// Out of reach but through the context of the callback running.
     Frame(Frame, TransferId),
 }
 
@@ -751,15 +771,17 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
     // The jar is written as the handle goes (`Curl_flush_cookies`); one
     // that cannot be fails nothing, as in C, which says so only in the
     // trace, of which there is none outside a transfer here.
-    let saved = easy.with_easy(|e| match e {
+    let saved = easy.with_home(|e| match e {
         // Then the alt-svc cache (`Curl_altsvc_save`) and the HSTS cache
         // (`Curl_hsts_save`), whose failures go unsaid too.
-        EasyRef::Easy(easy) => (
+        HomeRef::Detached(easy) => (
             easy.save_cookies().ok(),
             easy.save_alt_svc().ok(),
             easy.save_hsts().ok(),
         ),
-        EasyRef::Frame(..) => unreachable!("not added to a multi any more"),
+        HomeRef::Added(..) | HomeRef::Frame(..) => {
+            unreachable!("not added to a multi any more")
+        }
     });
     assert!(saved.is_ok(), "the handle is its own");
     // Then it leaves its share (`Curl_share_easy_unlink`).
@@ -944,7 +966,7 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
         ShimEasy::adapt(me, options, write).expect("the defaults allocate no adapter");
     };
     let reset = easy.with_easy(|e| match e {
-        EasyRef::Easy(easy) => {
+        EasyRef::Easy(mut easy) => {
             let mut options = core::mem::take(easy.options_mut());
             easy.reset();
             fresh(&mut options);

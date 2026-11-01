@@ -2490,7 +2490,9 @@ cleanup for its own pool, and an easy handle's cleanup for its private multi's. 
 keeps cannot change while a handle holds it (`Share::holders`). A handle holds its share
 (`Easy::set_share`, C's `data->share`): kept through `reset`, not copied by `try_clone`, as C's
 `duphandle` links none, and refused a change while the handle holds a connection, however it is
-reached (`ShareInUse`; `Multi::easy_mut` tells the handle of its transfer's). Each transfer uses its share's pool, names or jar where the share keeps
+reached: on its own by `Easy::set_share`, in a multi by `Multi::set_share`, which asks what its
+transfer holds (`ShareInUse`). `Multi::easy_mut` gives out an `EasyView`, without the share's
+setters, so a change cannot go round that. Each transfer uses its share's pool, names or jar where the share keeps
 that kind, else its multi's (or, for cookies, its handle's), whichever multi or thread runs it,
 so a connection one handle's multi made is reused by the next (tests 2051, 2052, 3225).
 

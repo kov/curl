@@ -31,13 +31,13 @@ use crate::conn::shutdown::{Linger, ShutdownSet, WithSet};
 use crate::conn::{AddLimits, Caches, Pool};
 use crate::conn::{ConnId, Home};
 use crate::deliver::{Pause, RecvPause};
-use crate::easy::Easy;
+use crate::easy::{Easy, EasyView};
 use crate::error::{ErrorKind, MultiErrorKind};
 use crate::handler::Handler;
 use crate::id::{Arena, ArenaPolicy, Key};
 use crate::progress::Speedometer;
 use crate::progress::rate::{RateLimits, Way};
-use crate::share::{Kind, Share, ShareLock, watched};
+use crate::share::{Kind, Share, ShareInUse, ShareLock, watched};
 use crate::time::{Clock, Instant};
 use crate::tls::{TlsNative, TlsShared};
 use crate::upload::Readers;
@@ -674,8 +674,7 @@ impl<H: Host> Multi<H> {
         }
         let _ = self.tell_wants(id, Wants::NONE, ev);
         self.trace_membership(id, "removed from", ev);
-        let mut slot = self.slots.remove(id).expect("still in the multi");
-        slot.easy.set_running_connection(false);
+        let slot = self.slots.remove(id).expect("still in the multi");
         self.timers.remove(id);
         self.dirty.remove(id.index());
         // One waiting may run now (multi.c:867).
@@ -1030,23 +1029,62 @@ impl<H: Host> Multi<H> {
         let Some(slot) = self.slots.get(id) else {
             return false;
         };
-        slot.easy.holds_connection()
-            || slot
-                .run
-                .as_ref()
-                .is_some_and(|run| run.state.lease().is_some())
+        slot.easy.holds_connection() || self.running_on_connection(id)
     }
 
-    /// The transfer's handle, told whether its transfer has a connection,
-    /// which refuses a change of its share.
-    pub fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
-        let slot = self.slots.get_mut(id)?;
-        let held = slot
-            .run
-            .as_ref()
-            .is_some_and(|run| run.state.lease().is_some());
-        slot.easy.set_running_connection(held);
-        Some(&mut *slot.easy)
+    /// Whether a transfer is running on a connection, as opposed to one
+    /// its handle only made.
+    fn running_on_connection(&self, id: TransferId) -> bool {
+        self.slots
+            .get(id)
+            .and_then(|slot| slot.run.as_ref())
+            .is_some_and(|run| run.state.lease().is_some())
+    }
+
+    /// The transfer's handle, without what only the multi can decide: its
+    /// share changes through [`Multi::set_share`].
+    pub fn easy_mut(&mut self, id: TransferId) -> Option<EasyView<'_>> {
+        self.slots.get_mut(id).map(|slot| slot.easy.view())
+    }
+
+    /// Use `share` for a transfer's next run, or none; refused while it
+    /// holds a connection (`setopt_share`). `None` if `id` is not in this
+    /// multi.
+    pub fn set_share(
+        &mut self,
+        id: TransferId,
+        share: Option<Share>,
+    ) -> Option<Result<(), ShareInUse>> {
+        if self.holds_connection(id) {
+            return Some(Err(ShareInUse));
+        }
+        Some(self.slots.get_mut(id)?.easy.set_share(share))
+    }
+
+    /// As [`Multi::set_share`], `watch` told around each use the transfer
+    /// makes of what the share keeps.
+    pub fn set_share_watched(
+        &mut self,
+        id: TransferId,
+        share: Share,
+        watch: Handler<dyn ShareLock>,
+    ) -> Option<Result<(), ShareInUse>> {
+        if self.holds_connection(id) {
+            return Some(Err(ShareInUse));
+        }
+        Some(self.slots.get_mut(id)?.easy.set_share_watched(share, watch))
+    }
+
+    /// Take a transfer off its share, a connection its handle only made
+    /// going with it (`Curl_share_easy_unlink`); refused only while the
+    /// transfer is running on a connection. `None` if `id` is not in this
+    /// multi.
+    pub fn leave_share(&mut self, id: TransferId) -> Option<Result<(), ShareInUse>> {
+        if self.running_on_connection(id) {
+            return Some(Err(ShareInUse));
+        }
+        self.slots.get_mut(id)?.easy.leave_share();
+        Some(Ok(()))
     }
 
     /// The TLS library's objects of the origin's connection a transfer

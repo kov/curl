@@ -7569,9 +7569,9 @@ fn a_ws_send_of_no_frame_says_c_s_lines() {
     components.configure(b"ws");
     // SAFETY: a live handle.
     let easy = unsafe { crate::easy::handle(c) }.unwrap();
-    let set = easy.with_easy(|e| match e {
-        crate::easy::EasyRef::Easy(e) => e.set_components(Some(components)),
-        crate::easy::EasyRef::Frame(..) => unreachable!("no callback runs"),
+    let set = easy.with_home(|e| match e {
+        crate::easy::HomeRef::Detached(e) => e.set_components(Some(components)),
+        _ => unreachable!("in no multi"),
     });
     assert!(set.is_ok());
     let mut asks = AsksBack::default();
@@ -7839,9 +7839,9 @@ fn a_ws_send_of_no_frame_says_why_if_the_flush_before_it_fails() {
     components.configure(b"ws");
     // SAFETY: a live handle.
     let easy = unsafe { crate::easy::handle(c) }.unwrap();
-    let set = easy.with_easy(|e| match e {
-        crate::easy::EasyRef::Easy(e) => e.set_components(Some(components)),
-        crate::easy::EasyRef::Frame(..) => unreachable!("no callback runs"),
+    let set = easy.with_home(|e| match e {
+        crate::easy::HomeRef::Detached(e) => e.set_components(Some(components)),
+        _ => unreachable!("in no multi"),
     });
     assert!(set.is_ok());
     let mut seen = Seen::default();
@@ -7958,9 +7958,9 @@ fn a_debug_function_turning_verbose_off_hears_no_more_of_the_call() {
     components.configure(b"ws");
     // SAFETY: a live handle.
     let easy = unsafe { crate::easy::handle(c) }.unwrap();
-    let set = easy.with_easy(|e| match e {
-        crate::easy::EasyRef::Easy(e) => e.set_components(Some(components)),
-        crate::easy::EasyRef::Frame(..) => unreachable!("no callback runs"),
+    let set = easy.with_home(|e| match e {
+        crate::easy::HomeRef::Detached(e) => e.set_components(Some(components)),
+        _ => unreachable!("in no multi"),
     });
     assert!(set.is_ok());
     // SAFETY: a live handle.
@@ -8023,9 +8023,9 @@ fn a_detached_connection_shows_its_ssl_pointer_once_taken_up() {
     let c = curl_easy_init();
     // SAFETY: a live handle.
     let easy = unsafe { crate::easy::handle(c) }.unwrap();
-    let set = easy.with_easy(|e| match e {
-        crate::easy::EasyRef::Easy(e) => e.set_libraries(libraries),
-        crate::easy::EasyRef::Frame(..) => unreachable!("no callback runs"),
+    let set = easy.with_home(|e| match e {
+        crate::easy::HomeRef::Detached(e) => e.set_libraries(libraries),
+        _ => unreachable!("in no multi"),
     });
     assert!(set.is_ok());
     let url = std::ffi::CString::new(format!("https://127.0.0.1:{port}/")).unwrap();

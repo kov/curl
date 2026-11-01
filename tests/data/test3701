@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+SOCKS5
+URL
+</keywords>
+</info>
+
+# Client-side
+<client>
+<name>
+A socks5 URL is not for transfers
+</name>
+<command>
+-sS socks5://%HOSTIP:%NOLISTENPORT/%TESTNUMBER
+</command>
+<features>
+proxy
+</features>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<errorcode>
+1
+</errorcode>
+<stderr mode="text">
+curl: (1) Protocol "socks5" is not for transfers
+</stderr>
+</verify>
+</testcase>

@@ -2147,6 +2147,22 @@ fn a_redirect_goes_only_where_the_option_lets_it() {
 
 /// A URL reaches only the schemes the application allows, the first as
 /// much as one a redirect leads to; a redirect needs both lists.
+/// A redirect to a scheme that only names a proxy is refused as that, not
+/// as disabled, and no redirect is said of it.
+#[test]
+fn a_socks_scheme_is_not_for_transfers() {
+    let (mut m, talk, _) = server(&[&moved("socks5://example.com/", false)], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.http.follow = Follow::All;
+    });
+    assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
+    let text = ran.seen.text();
+    assert!(
+        text.contains(&"Protocol \"socks5\" is not for transfers\n".to_string()),
+        "{text:?}"
+    );
+}
+
 #[test]
 fn a_url_goes_only_where_the_option_lets_it() {
     let http = Protocols::of(&["http"]).unwrap();

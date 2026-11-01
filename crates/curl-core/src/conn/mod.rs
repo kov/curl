@@ -912,6 +912,12 @@ impl Scheme {
         self.0.name
     }
 
+    /// Whether it names a proxy and carries no transfer: SOCKS's
+    /// (`PROTOPT_NO_TRANSFER`).
+    pub(crate) fn no_transfer(self) -> bool {
+        self.0.flags.no_transfer
+    }
+
     /// Whether it is FTP's or FTPS's (`CURLPROTO_FTP`'s family).
     pub(crate) fn ftp_family(self) -> bool {
         self.0.family == Some(crate::url::schemes::Protocol::Ftp)

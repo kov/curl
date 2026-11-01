@@ -5733,8 +5733,15 @@ fn start_leg<H: Host>(
         Ok(Some(proto)) => proto,
         Ok(None) => {
             // A scheme libcurl knows that this build leaves out, or that
-            // the options do not allow (`url_set_conn_scheme`).
-            let why = [&b"Protocol \""[..], &scheme, b"\" is disabled", follow];
+            // the options do not allow, or that names a proxy and carries
+            // no transfer (`url_set_conn_scheme`).
+            let carries = crate::conn::Scheme::named(&scheme).is_none_or(|s| !s.no_transfer());
+            let tail: [&[u8]; 2] = if carries {
+                [b"\" is disabled", follow]
+            } else {
+                [b"\" is not for transfers", b""]
+            };
+            let why = [&b"Protocol \""[..], &scheme, tail[0], tail[1]];
             let kind = trace::fail_with(cx, ErrorKind::UnsupportedProtocol, &why);
             return TransferState::Init.fail(kind);
         }

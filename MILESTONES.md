@@ -1211,19 +1211,18 @@ protocols need, each step leaving behaviour and traces as they are:
 
 ## Milestone 7: shared state
 
-Status: **to do**. SCOPE stage 7: the share interface (cookies, DNS, connections, SSL
+Status: **in progress**. SCOPE stage 7: the share interface (cookies, DNS, connections, SSL
 sessions, HSTS, PSL; alt-svc stays per handle, as C's has no share) with its lock callbacks, DoH (`--doh-url`, 2101), the `--dns-*`
 options, and SSL session import and export (`SSLS-EXPORT`, 1678).
 
 Its first steps are milestone 6's design-review changes.
 
-82. **Parity with C.** One `.netrc` read per request on every scheme; DICT's and Gopher's
+82. **Parity with C.** **Done.** One `.netrc` read per request on every scheme; DICT's and Gopher's
     end-of-body writer lines; SSH's "end of response with N bytes missing"; the FTP data
     connection keeping its next-attempt, resolver-retry and tunnel deadlines; `retryable` on the
     line protocols against C's `!req.done`; `CURLOPT_SHARE` refused on a running transfer, its
     refusal from a callback kept and recorded in DIVERGENCE.md; `Resume` rejected at the option
     rather than clamped. DIVERGENCE.md's source-only entries measured on the libssh leg.
-    **Done** of these: the `.netrc` read, `CURLOPT_SHARE`, `Resume`.
 83. **Calls on a detached connection.** **Done.** Sends and receives on a connection a transfer
     only made run out of the pool's lock (`Pool::lend_reserved`); they trace on the calling handle,
     through `Notes`, what C traces there, a debug function free to call back in; `curl_ws_send`'s
@@ -1238,20 +1237,18 @@ Its first steps are milestone 6's design-review changes.
 85. **Budgets.** **Done.** 768 and 2120 stay as tripwires; `held` is the budget, and DESIGN.md says a size
     trade is justified only against a budget derived from C. The socket rule allows sockets a
     protocol owns by nature (FTP's listener, TFTP's datagrams).
-86. **Types a budget cost.** The handshake moves into `ConnectMachine`; each timer holds its own
+86. **Types a budget cost.** **Done**, but for the remeasure. The handshake moves into `ConnectMachine`; each timer holds its own
     `Option<Instant>` through a niche in `Instant`; `RouteCold`'s reuse check goes by name;
-    `Race` machines after the handshake's move. Sizes remeasured on a product build.
-    Done: `Race` machines (`RaceSecond`).
-87. **Types that hold more than they say.** `OpenSlot` in the pool; line state passed to `waits`
+    `Race` machines after the handshake's move (`RaceSecond`). Not done: sizes remeasured on a
+    product build since the handshake moved.
+87. **Types that hold more than they say.** **Done.** `OpenSlot` in the pool; line state passed to `waits`
     and `interest` rather than mirrored in requests; the SSH and LDAP library traits take
     `Option<BorrowedFd>` and answer in real statuses and flag types; SSH's `kbd` an enum and
     its session reset trimmed; `State::SftpQuoteStat(kind)`; LDAP's library stored in `Request`.
-    Done: line state passed to `waits` and `interest`.
-88. **What the protocols share.** One receive side, `proto::xfer::Receive`, for FTP, IMAP, POP3,
+88. **What the protocols share.** **Done.** One receive side, `proto::xfer::Receive`, for FTP, IMAP, POP3,
     DICT and Gopher; `RequestBase`; a table for `over_tls` and the transport; the mail protocols'
-    shared glue; FTP, SSH and LDAP inline in the boxed `LineConn`.
-    Done: the receive side, the mail protocols' glue (`proto::mail`), each protocol keeping its
-    `run`, `RequestBase` and the table, and FTP, SSH and LDAP inline.
+    shared glue (`proto::mail`), each protocol keeping its `run`; FTP, SSH and LDAP inline in the
+    boxed `LineConn`.
 89. **Waits C blocks in.** **Done.** TELNET's exchange and FTP's CCC stay non-blocking, each
     recorded in DIVERGENCE.md with a test that other transfers do not stall. SSH's DONE blocks
     inside libssh's closes and quote commands, the multi with it, as C's does (measured
@@ -1259,10 +1256,9 @@ Its first steps are milestone 6's design-review changes.
     `ssh_scp_close` closing before the server's EOF, so it follows C.
 90. **DoH's owner.** `Owner::App` or `Owner::Internal`, so an internal transfer has an owner on
     every host, the tool's included.
-91. **`multi/state.rs` split** mechanically, and the stale parts of ENGINE.md and DESIGN.md and
+91. **`multi/state.rs` split** **Done.** Mechanically, and the stale parts of ENGINE.md and DESIGN.md and
     stale size comments brought up to date; the two unsafe blocks the SAFETY scan did not match
     (`curl-ngtcp2/src/sys.rs`, `curl-sys-abi/src/printf/mod.rs`) examined.
-    Done: the size comments on `Course`, `SocksTarget` and `Queried`.
 92. **The share.** The kinds above with their lock callbacks. PSL per multi or share, with its
     TTL; `ShareLock::lock` takes the access it wants; HSTS a `with_hsts` with told and untold
     forms, as C tells the callback only around file loads.

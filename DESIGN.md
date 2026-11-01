@@ -18,6 +18,11 @@ decisions, not implementation details: those live beside the code.
 | `curl-brotli` | brotli's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-zstd` | zstd's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-openssl` | OpenSSL: the TLS library behind `curl_core::tls`, and Ed25519 for HTTP signatures, behind `curl_core::libraries::Ed25519`. | yes: it is a binding |
+| `curl-nghttp2` | nghttp2's HTTP/2 session, behind `curl_core::http2::Http2`. | yes: it is a binding |
+| `curl-ngtcp2` | ngtcp2 and nghttp3: QUIC and HTTP/3, behind `curl_core::http3::Http3`. | yes: it is a binding |
+| `curl-libssh` | libssh's SCP and SFTP, behind `curl_core::ssh`'s traits. | yes: it is a binding |
+| `curl-ldap` | OpenLDAP's libldap, behind `curl_core::ldap`'s traits. | yes: it is a binding |
+| `curl-idn2` | libidn2's host names, behind `curl_core::idn::Idn`. | yes: it is a binding |
 | `curl-gssapi` | MIT krb5's GSS-API, behind `curl_core::gss::Gss`; with `debug-hooks`, the debug build's stub for the tests (`CURL_STUB_GSS_CREDS`). | in `sys.rs` |
 
 Code that must talk to C or to the OS gets its own crate, never a module of `curl-core`:

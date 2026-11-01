@@ -105,7 +105,8 @@ numbers are those of `SCOPE.md`.
     down as `now`.
 19. **Sockets and polling live in `curl-os`** (`net.rs`, `poll.rs`, behind a `net` feature);
     `curl-core` depends on it and adapts it in safe code. Only `conn::*` and `multi::wait`
-    touch sockets.
+    touch sockets, but for a socket a protocol owns by nature (FTP's listener, TFTP's
+    datagrams), through `conn::io::Socket`.
 20. **C's read cap at `size - bytecount` is kept**, deliberately, for byte-identical `DATA_IN`
     traces and reuse decisions, until a C-leg comparison on 1701 and 3223 shows it can go.
 21. **C's two-anchor total timeout is ported as is** (wake-up from the leg start, lateness from
@@ -208,12 +209,19 @@ curl-core/src/
   save.rs                    a file written whole under a name of its own, then renamed
   multi/
     mod.rs                   Multi<H>, Host, Slot, ConnLimits, the public API
-    state.rs                 Run, TransferState and its variant structs, StepCx, the steps;
-                             state/tunnel.rs, state/socks.rs, state/haproxy.rs,
+    state.rs                 Run, TransferState and its variant structs, the steps (`step_lent`);
+                             state/cx.rs: StepCx, what the layers ask of a step;
+                             state/connecting.rs: Connecting, the race, Handshake, how a
+                             setup ends; state/leg.rs: the next request's URL, redirect or
+                             retry, route, proxy and connection;
+                             state/tunnel.rs, state/h2tunnel.rs, state/h3tunnel.rs,
+                             state/quictunnel.rs, state/socks.rs, state/haproxy.rs,
                              state/tls.rs: the CONNECT and SOCKS handshakes, the PROXY
                              line and the origin's TLS handshake a transfer makes;
                              state/https.rs: the HTTPS connect filter heading an
-                             https setup, its HTTPS-RR lookup and its timer
+                             https setup, its HTTPS-RR lookup and its timer;
+                             state/names.rs: C's DNS filters' lines; state/side.rs: a
+                             connection beside the transfer's own, FTP's data connection
     mstate.rs                MState: where a transfer is in C's states, for the trace
     sched.rs                 RowSet (the dirty set), Counts, Tally
     timers.rs                Deadlines, TimerQueue, TimerAnnounce
@@ -222,6 +230,8 @@ curl-core/src/
     check.rs                 the debug build's invariant check
     cx.rs                    EngineRest, TransferCx, EventCx, NotifyCx, CloseLater
     wait.rs                  wait, the waker, drive_to_completion over Net
+    push.rs                  a pushed response: what was promised, what the application made of it
+    raw.rs                   what a handle does itself on the connection its transfer only made
     props.rs                 random call sequences checked against a model (tests)
   conn/
     mod.rs                   Caches, ConnSlot, Conn, Route, ProxyRoute, NetRoute, Dialing, Scheme, Peer,
@@ -233,6 +243,10 @@ curl-core/src/
     socks.rs                 the SOCKS4, 4a and 5 handshakes, sans-IO
     socks/gss.rs             SOCKS5's GSS-API method (RFC 1961), states of the same
                              handshake
+    bind.rs                  a socket's local end bound before it connects (`bindlocal`)
+    h2proxy.rs, h3proxy.rs   a tunnel through an HTTPS proxy speaking HTTP/2 or HTTP/3
+    capsule.rs               HTTP Datagrams in capsules, as a CONNECT-UDP tunnel carries them
+    threaded.rs              the threaded resolver, its queries on a pool of threads
     connect_to.rs            the CURLOPT_CONNECT_TO entry matcher and parser
     dns.rs                   DnsCache, Answer, the CURLOPT_RESOLVE entry parser
     buf.rs                   RecvBuf
@@ -256,18 +270,40 @@ curl-core/src/
   upload/                    Upload, Readout (C's client readers); chain.rs: Body, Chain
   mime/                      Mime, Part, Content, Encoder, MimeSource; read.rs: MimeReader
   proto/
-    mod.rs                   ProtoState (File, Http; test-util: Null, Stall, Script, Tcp),
+    mod.rs                   ProtoState (File, Http, Ftp, Pop3, Imap, Smtp, Ssh, Ldap, Dict,
+                             Gopher, Mqtt, Telnet, Tftp; test-util: Null, Stall, Script, Tcp),
                              Before, Ended
-    file.rs
+    base.rs                  RequestBase: what every network protocol's request holds: where
+                             it goes, the body on its way, and who it goes as
+    file.rs                  FILE (file.c)
     http.rs, http/           the HTTP driver: the request sent, the response read;
                              h2.rs and h3.rs, the request's HTTP/2 and HTTP/3 stream;
-                             cookies.rs (the jar as
-                             HTTP uses it), sigv4.rs, httpsig.rs; suite.rs, C's test
-                             cases over the fake network
+                             rtsp.rs, RTSP (rtsp.c); ws.rs, the upgrade to WebSocket;
+                             cookies.rs (the jar as HTTP uses it), hsts.rs, alt_svc.rs,
+                             negotiate.rs, sigv4.rs, httpsig.rs; suite.rs, C's test cases
+                             over the fake network
     http2.rs                 H2Conn: a connection's HTTP/2 session and its output; the
                              request's head read back into fields
     http3.rs                 H3Conn: a connection's HTTP/3 session
-    script.rs                the test protocol `script:` (test-util)
+    http1/                   the parsers and the renderer, sans-IO, which import nothing of
+                             the driver: request.rs, response.rs, framing.rs, chunked.rs
+                             (decoder and encoder), fields.rs, follow.rs (where a
+                             `Location:` leads, HTTP's `Inherited`); tunnel.rs, CONNECT and the proxy's
+                             answer; fixture.rs, the test cases' sections (tests)
+    ws.rs, ws/               WebSocket (ws.c): what a connection that switched to it keeps,
+                             frames sent; frame.rs, the codec; queue.rs, C's `bufq` chunks
+    ftp.rs, ftp/             FTP and FTPS (ftp.c): the control connection's machine; data.rs,
+                             the data connection; path.rs, port.rs, reply.rs; list.rs and
+                             wildcard.rs, a wildcard download's listing and walk
+    imap.rs, pop3.rs, smtp.rs
+                             IMAP, POP3 and SMTP (imap.c, pop3.c, smtp.c): each one's login,
+                             commands and body
+    mail.rs                  what POP3, IMAP and SMTP share of their login and connect
+    pingpong.rs, pingpong/   Pingpong: the line protocols' reader and writer (pingpong.c),
+                             sans-IO; ftp.rs, imap.rs, pop3.rs, smtp.rs: where each one's
+                             reply ends
+    xfer.rs                  the receive side of FTP, IMAP, POP3, DICT and Gopher (`Receive`,
+                             its `Source` and `Sink`): `sendrecv_dl`'s reads and traces
     ssh/                     SCP and SFTP (libssh.c): mod.rs, SshConn and the state
                              machine over the `ssh` library traits; path.rs, the
                              request's path, quote paths, ranges and numbers
@@ -275,9 +311,6 @@ curl-core/src/
                              `ldap` library traits, the search, the entries as LDIF
     raw.rs                   a request sent whole in DO, DICT's and Gopher's (`Outgoing`);
                              raw/wire.rs, their tests' fake server (tests)
-    xfer.rs                  the receive side of FTP, IMAP, POP3, DICT and Gopher (`Receive`,
-                             its `Source` and `Sink`): `sendrecv_dl`'s reads and traces
-    mail.rs                  what POP3, IMAP and SMTP share of their login and connect
     dict.rs, gopher.rs       DICT (dict.c) and Gopher (gopher.c): the request each makes of
                              the URL
     mqtt.rs                  MQTT (mqtt.c): its packets, made and read, and the exchange in
@@ -286,19 +319,11 @@ curl-core/src/
                              bytes read, and the loop of rounds in DOING
     tftp.rs                  TFTP (tftp.c): its packets, made and read, and the machine of
                              blocks, answers and time-outs over an unconnected UDP socket
-    pingpong.rs, pingpong/   Pingpong: the line protocols' reader and writer (pingpong.c),
-                             sans-IO; ftp.rs, imap.rs, pop3.rs, smtp.rs: where each one's
-                             reply ends
-    http1/                   the parsers and the renderer, sans-IO, which import nothing of
-                             the driver: request.rs, response.rs, framing.rs, chunked.rs
-                             (decoder and encoder), fields.rs, follow.rs (where a
-                             `Location:` leads, HTTP's `Inherited`); tunnel.rs, CONNECT and the proxy's
-                             answer; fixture.rs, the test cases' sections (tests)
+    script.rs                the test protocol `script:` (test-util)
   untrusted.rs, test_cell.rs input for the never-panics properties; a Cell for handlers (tests)
 ```
 
-Planned, not built: a `Resolver` for names the cache and the shortcuts do not answer; and
-`DebugNet`.
+Planned, not built: `DebugNet`.
 
 ### 2.3 Ids and the arena
 
@@ -859,13 +884,17 @@ pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, route: NetRo
                                race: Option<Box<Race>>,           // HTTP/3 against TCP, its second
                                negotiate: Option<Box<Negotiate>> } // the tunnel's, across a redial
 pub(crate) struct Attached { lease: ConnLease, proto: ProtoState, origin: Option<Origin> }
-pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>, result: Result<(), ErrorKind>,
-                         premature: bool, reached: Reached, origin: Option<Origin>,
-                         next: AfterRequest, ending: Ending }
+pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>,
+                         unconnected_chain: bool,  // C's `req.writer.stack`, read only without `proto`
+                         result: Result<(), ErrorKind>, premature: bool, reached: Reached,
+                         origin: Option<Origin>, next: AfterRequest,
+                         race: Option<Box<Race>>,  // the race it failed in, its attempt out of the lease
+                         ending: Ending }
 enum Ending { Ahead, Waiting, Cut }   // multi_done not begun; its protocol's done awaits an answer;
                                       // that wait given up (failed or removed), the connection closing
-enum Reached { Unmade, Made, Exchanged }  // DID's times taken; the exchange ran to its end
-pub(crate) enum AfterRequest { Complete, Retry, Follow { location: Vec<u8>, code: u16 } }
+enum Reached { Unmade, Making, Made, Exchanged }  // past DO; DID's times taken; the exchange ran to its end
+pub(crate) enum AfterRequest { Complete, Nothing, // Nothing: a wildcard download with no more to get
+                               Retry, Follow { location: Vec<u8>, code: u16, reload: bool } }
                                                   // the protocol's `exchanged` decides it
 pub(crate) struct Completed { outcome: Result<(), ErrorKind>, message: Message }
 pub(crate) enum Message { Unread, Read }
@@ -1104,13 +1133,11 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   (`StepCx::server_response_in`, traced `set for` as C's `Curl_pp_statemach` does), armed as the
   step ends. Like C's it is never cleared: it lasts until it fires or the transfer completes, so
   a POP3 body's PERFORMING still lists it and COMPLETED says `[TIMEOUT] all cleared`. A DONE
-  awaiting its answer, where C blocks and arms nothing, is woken by it at its poll's end. It
-  shares `Proto`'s instant (`TimerKind::slot`), as no request has both, and arming either
-  disarms the other, so the transfer's slot does not grow.
+  awaiting its answer, where C blocks and arms nothing, is woken by it at its poll's end.
 - `FtpAccept` (EXPIRE_FTP_ACCEPT) is FTP's wait for the server to connect to the port it was
   offered (`CURLOPT_ACCEPTTIMEOUT_MS`, 60 s by default): derived from the protocol's state as
   `Proto` is (`ProtoState::due_timer`), apart from `ServerResponse`, which each step arms
-  again. It shares `AlpnEyeballs`' instant, whose attempts are over before a port is offered.
+  again.
 - `AlpnEyeballs` (EXPIRE_ALPN_EYEBALLS, half the happy eyeballs delay, 100 ms by default) is
   armed as the HTTPS connect filter's attempt starts while its ballers are not complete: with a
   second baller (the race of HTTP/3 against TCP, §2.5), or with the origin's HTTPS-RR answer still
@@ -4005,7 +4032,8 @@ are checked against public suffixes through `cookie::PublicSuffixes`, which `cur
 implements over libpsl; core cannot make one, so the handle is given it
 (`Easy::set_public_suffixes`, kept through `reset`, shared by duplicates): the tool gives
 every handle one list, as its share's `CURL_LOCK_DATA_PSL` does, and the shim each handle its
-own, loaded at the first question, as C's per-multi cache is. A handle given none behaves as
+own, loaded at the first question and kept, where C keeps one per multi or share, refreshed
+after 72 hours (`Curl_psl_use`; MILESTONES step 92). A handle given none behaves as
 C built without libpsl: a domain needs a dot not at its end, or to be `localhost`
 (`bad_domain`). A list that cannot be loaded refuses every domain, as C's does.
 

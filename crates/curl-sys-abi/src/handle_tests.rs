@@ -8098,12 +8098,25 @@ fn a_share_is_refused_while_the_handle_holds_a_connection() {
             CURLE_BAD_FUNCTION_ARGUMENT,
             "running"
         );
-        assert!(!seen.texts.is_empty(), "the debug function is called");
-        assert!(
-            !seen.texts.iter().any(|t| t.contains("Cannot change share")),
-            "{:?}",
-            seen.texts
+        let said = |seen: &Seen| {
+            let line = "Cannot change share object while in use\n";
+            seen.texts.iter().filter(|t| *t == line).count()
+        };
+        assert_eq!(said(&seen), 1, "{:?}", seen.texts);
+        assert_eq!(
+            pointer(c, ffi::CURLOPT_SHARE, none),
+            CURLE_BAD_FUNCTION_ARGUMENT,
+            "leaving it, running"
         );
+        assert_eq!(said(&seen), 2, "{:?}", seen.texts);
+        long(c, ffi::CURLOPT_VERBOSE, 0);
+        assert_eq!(
+            pointer(c, ffi::CURLOPT_SHARE, sh),
+            CURLE_BAD_FUNCTION_ARGUMENT,
+            "running, not verbose"
+        );
+        assert_eq!(said(&seen), 2, "only a verbose handle is told");
+        long(c, ffi::CURLOPT_VERBOSE, 1);
         assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
         assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK, "removed");
         assert_eq!(pointer(c, ffi::CURLOPT_SHARE, none), CURLE_OK);
@@ -8143,7 +8156,16 @@ fn a_share_is_refused_while_the_handle_holds_a_connection() {
             CURLE_BAD_FUNCTION_ARGUMENT,
             "connected"
         );
+        let mut waiting = Seen::default();
+        long(two, ffi::CURLOPT_VERBOSE, 1);
+        function(
+            two,
+            ffi::CURLOPT_DEBUGFUNCTION,
+            debug_count as DebugFn as *const (),
+        );
+        pointer(two, ffi::CURLOPT_DEBUGDATA, &raw mut waiting);
         assert_eq!(pointer(two, ffi::CURLOPT_SHARE, sh), CURLE_OK, "waiting");
+        assert_eq!(said(&waiting), 0, "{:?}", waiting.texts);
         assert_eq!(pointer(two, ffi::CURLOPT_SHARE, none), CURLE_OK);
         assert_eq!(curl_multi_remove_handle(m, one), CURLM_OK);
         assert_eq!(curl_multi_remove_handle(m, two), CURLM_OK);
@@ -8154,8 +8176,17 @@ fn a_share_is_refused_while_the_handle_holds_a_connection() {
         let c = made();
         assert_eq!(long(c, ffi::CURLOPT_CONNECT_ONLY, 1), CURLE_OK);
         assert_eq!(curl_easy_perform(c), CURLE_OK);
+        let mut made_only = Seen::default();
+        long(c, ffi::CURLOPT_VERBOSE, 1);
+        function(
+            c,
+            ffi::CURLOPT_DEBUGFUNCTION,
+            debug_count as DebugFn as *const (),
+        );
+        pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut made_only);
         assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK, "only made");
         assert_eq!(pointer(c, ffi::CURLOPT_SHARE, none), CURLE_OK);
+        assert_eq!(said(&made_only), 0, "{:?}", made_only.texts);
         let mut n = 0;
         assert_eq!(
             curl_easy_send(c, c"x".as_ptr().cast(), 1, &raw mut n),
@@ -8166,6 +8197,7 @@ fn a_share_is_refused_while_the_handle_holds_a_connection() {
             CURLE_BAD_FUNCTION_ARGUMENT,
             "sent on"
         );
+        assert_eq!(said(&made_only), 1, "{:?}", made_only.texts);
         curl_easy_cleanup(c);
         assert_eq!(curl_share_cleanup(sh), ffi::CURLSHE_OK);
     }

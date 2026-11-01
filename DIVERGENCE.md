@@ -498,15 +498,11 @@ not a difference: it is tracked in `MILESTONES.md`.
 ## Changing a handle's share
 
 - **`CURLOPT_SHARE` from a callback is refused.** A callback running on the handle's multi gets
-  `CURLE_BAD_FUNCTION_ARGUMENT` whether or not the transfer has a connection; C takes the change
-  until the transfer has one. The step in progress holds the transfer's `Easy` and may be using
+  `CURLE_BAD_FUNCTION_ARGUMENT` whether or not the transfer has a connection, and says nothing; C
+  takes the change until the transfer has one, and traces "Cannot change share object while in
+  use" once it does. The step in progress holds the transfer's `Easy` and may be using
   the share the change would replace. Pinned by `a_callback_cannot_change_the_share`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
-- **A refused `CURLOPT_SHARE` says nothing.** C traces "Cannot change share object while in
-  use"; the line would call the application's debug function from inside the setopt, with no
-  frame on the multi's stack for a call back into the library, and a handle with no multi has no
-  way to it. The code returned is C's. Pinned by
-  `a_share_is_refused_while_the_handle_holds_a_connection` (same file).
 
 ## Handles the application never made
 

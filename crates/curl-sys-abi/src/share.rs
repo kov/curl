@@ -344,15 +344,16 @@ pub unsafe extern "C" fn curl_share_cleanup(sh: *mut CURLSH) -> CURLSHcode {
 const _: ffi::proto::curl_share_cleanup = curl_share_cleanup;
 
 /// `CURLOPT_SHARE`: refused while the handle holds a connection, as C
-/// refuses it with `data->conn` set (`setopt_share`), before any of the
-/// share's lock functions is called; else as [`set`], which the core's
-/// `Easy::set_share` refuses the same.
+/// refuses it with `data->conn` set (`setopt_share`), saying so to a verbose
+/// handle, before any of the share's lock functions is called; else as
+/// [`set`], which the core's `Easy::set_share` refuses the same.
 ///
 /// # Safety
 ///
 /// `sh` is NULL or a pointer `curl_share_init` returned.
 pub(crate) unsafe fn set_by_option(easy: &ShimEasy, sh: *mut CURLSH) -> Result<(), Refused> {
     if easy.holds_connection() {
+        crate::callbacks::info(easy, b"Cannot change share object while in use\n");
         return Err(Refused::Running);
     }
     // SAFETY: as the caller guarantees.

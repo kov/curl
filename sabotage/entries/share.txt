@@ -181,3 +181,18 @@ witness: curl-core multi::tests::a_share_is_refused_while_the_transfer_holds_a_c
         slot.easy.set_running_connection(false);
 --- new
         slot.easy.set_running_connection(true);
+
+=== a refused share says nothing
+file: crates/curl-sys-abi/src/share.rs
+witness: curl-sys-abi handle_tests::a_share_is_refused_while_the_handle_holds_a_connection
+--- old
+        crate::callbacks::info(easy, b"Cannot change share object while in use\n");
+--- new
+
+=== a refused share tells a handle that is not verbose
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::a_share_is_refused_while_the_handle_holds_a_connection
+--- old
+    if easy.with_options(|o| o.output.verbose).unwrap_or(false) {
+--- new
+    if true {

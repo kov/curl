@@ -1209,6 +1209,13 @@ pub(crate) fn trace_text(easy: &ShimEasy, line: &[u8]) {
     trace_as(easy, DebugKind::Text, line);
 }
 
+/// A line a verbose handle is told, outside a transfer (`infof`).
+pub(crate) fn info(easy: &ShimEasy, line: &[u8]) {
+    if easy.with_options(|o| o.output.verbose).unwrap_or(false) {
+        trace_text(easy, line);
+    }
+}
+
 /// `trace_text`, of any kind: only text goes to the standard error stream.
 fn trace_as(easy: &ShimEasy, kind: DebugKind, bytes: &[u8]) {
     let ccb = easy.ccb.get();

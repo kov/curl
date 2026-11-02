@@ -240,6 +240,12 @@ fn a_failure_is_not_kept_as_no_such_name() {
             http(&rcode(3)),
             b"HTTP/1.1 500 no\r\nContent-Length: 0\r\n\r\n".to_vec(),
         ),
+        // A failed status says nothing, whatever its body says.
+        (http(&rcode(3)), {
+            let mut failed = b"HTTP/1.1 500 no\r\nContent-Length: 12\r\n\r\n".to_vec();
+            failed.extend_from_slice(&rcode(3));
+            failed
+        }),
     ] {
         let net = FakeNet::new(clock.clone())
             .with_peer(SERVER.into(), Peer::Accepts)
@@ -537,4 +543,52 @@ fn a_socks_destination_skips_doh() {
     m.add(easy, (), &mut NoEvents).unwrap();
     run(&mut m, &clock);
     assert!(m.census().counts.current <= 1, "no probe was started");
+}
+
+/// An answer past C's limit that would otherwise read well fails its
+/// probe: the name does not resolve, for all the addresses it holds.
+#[test]
+fn an_answer_too_long_is_not_read() {
+    let clock = ManualClock::new().unwrap();
+    let mut long = vec![0, 0, 0x81, 0x80, 0, 1];
+    let records: u16 = 200;
+    long.extend_from_slice(&records.to_be_bytes());
+    long.extend_from_slice(&[0, 0, 0, 0]);
+    long.extend_from_slice(b"\x03foo\x04test\x00\x00\x01\x00\x01");
+    for _ in 0..records {
+        long.extend_from_slice(b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x37\x00\x04\x7f\x00\x00\x01");
+    }
+    assert!(long.len() > super::doh::MAX_RESPONSE);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_conversation(
+            SERVER.into(),
+            Conversation::new(&http(&no_records()), false),
+        )
+        .with_conversation(SERVER.into(), Conversation::new(&http(&long), false));
+    let mut m = multi_over(net, &clock);
+    m.add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    run(&mut m, &clock);
+    assert_eq!(message(&mut m), Some(Err(ErrorKind::CouldntResolveHost)));
+}
+
+/// Once the answer is had, the probes go, though the master goes on.
+#[test]
+fn the_probes_go_as_the_answer_comes() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_peer(at(80), Peer::Silent)
+        .with_conversation(
+            SERVER.into(),
+            Conversation::new(&http(&no_records()), false),
+        )
+        .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false));
+    let mut m = multi_over(net, &clock);
+    m.add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    run(&mut m, &clock);
+    assert_eq!(message(&mut m), None, "still connecting");
+    assert_eq!(m.census().counts.current, 1);
 }

@@ -298,3 +298,19 @@ fn the_addresses_past_the_limit_are_ignored() {
     assert_eq!(a.addrs[23], IpAddr::from([10, 0, 0, 23]));
     assert_eq!(a.ttl, Some(1000 - 29));
 }
+
+/// A label is at most 63 bytes on the wire: what would be its length's top
+/// bits mean something else.
+#[test]
+fn a_label_is_at_most_63_bytes() {
+    let name = |n: usize| {
+        let mut name = vec![b'a'; n];
+        name.extend_from_slice(b".test");
+        name
+    };
+    assert!(encode_query(&name(63), QueryType::A).is_ok());
+    assert_eq!(
+        encode_query(&name(64), QueryType::A),
+        Err(DohError::BadLabel)
+    );
+}

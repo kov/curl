@@ -35,7 +35,7 @@ witness: curl-core doh::tests::unit1650_answers
 
 === a label of 64 bytes goes on the wire
 file: crates/curl-core/src/doh.rs
-witness: curl-core doh::tests::unit1655_names
+witness: curl-core doh::tests::a_label_is_at_most_63_bytes
 --- old
             .filter(|l| (1..=63).contains(l))
 --- new
@@ -47,7 +47,7 @@ witness: curl-core doh::tests::unit1658_records
 --- old
         if u32::from(key) < least || length > after.len() {
 --- new
-        if length > after.len() {
+        if (u32::from(key) < least && key == u16::MAX) || length > after.len() {
 
 # DoH's probes as the multi's transfers: none outlives its master, and
 # none is the application's.
@@ -71,7 +71,7 @@ witness: curl-core multi::doh_tests::a_masters_removal_takes_its_probes
 
 === a master's end leaves its probes running
 file: crates/curl-core/src/multi/mod.rs
-witness: curl-core multi::doh_tests::a_master_timing_out_takes_its_probes
+witness: curl-core multi::doh_tests::the_probes_go_as_the_answer_comes
 --- old
             None => self.reap(ev),
 --- new
@@ -116,7 +116,7 @@ witness: curl-core multi::doh_tests::a_failure_is_not_kept_as_no_such_name
 
 === a probe keeps an answer of any size
 file: crates/curl-core/src/multi/doh.rs
-witness: curl-core multi::doh_tests::an_answer_too_long_fails_its_probe
+witness: curl-core multi::doh_tests::an_answer_too_long_is_not_read
 --- old
         kept.len().saturating_add(body.len()) <= MAX_RESPONSE
             && kept
@@ -160,3 +160,14 @@ features: debug-hooks
         shim.internal.set(true);
 --- new
 
+
+=== a master's completion leaves its probes running
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::doh_tests::a_master_timing_out_takes_its_probes
+--- old
+                    self.notify.push(Notification::InfoRead);
+                }
+                self.reap(ev);
+--- new
+                    self.notify.push(Notification::InfoRead);
+                }

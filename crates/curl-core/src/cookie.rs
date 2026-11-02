@@ -1182,15 +1182,26 @@ fn bucket(domain: Option<&[u8]>) -> usize {
         },
         None => domain,
     };
-    // `cookie_hash_domain`, with C's `size_t`. A byte past ASCII is read
-    // as the platform's `char` reads it, then widened as C widens it:
-    // sign-extended where `char` is signed (x86_64), not where it is
-    // unsigned (aarch64), so a non-ASCII domain lands in C's bucket and
-    // the cookies are listed in C's order.
+    domain_hash(top, CHAR_IS_SIGNED)
+}
+
+/// Whether C's `char` is signed on this target.
+const CHAR_IS_SIGNED: bool = core::ffi::c_char::MIN != 0;
+
+/// `cookie_hash_domain`, with C's `size_t`. A byte past ASCII is read as
+/// the platform's `char` reads it, then widened as C widens it:
+/// sign-extended where `char` is signed (x86_64), not where it is unsigned
+/// (aarch64), so a non-ASCII domain lands in C's bucket and the cookies are
+/// listed in C's order.
+fn domain_hash(top: &[u8], char_signed: bool) -> usize {
     let mut h: u64 = 5381;
     for &b in top {
+        let b = b.to_ascii_uppercase();
         h = h.wrapping_add(h << 5);
-        h ^= i64::from(b.to_ascii_uppercase() as core::ffi::c_char) as u64;
+        h ^= match char_signed {
+            true => i64::from(b as i8) as u64,
+            false => u64::from(b),
+        };
     }
     (h % BUCKETS as u64) as usize
 }

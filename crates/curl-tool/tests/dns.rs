@@ -11,7 +11,8 @@ use std::time::Duration;
 
 /// A server on a port of its own that answers each query with `127.0.0.1`
 /// for A, `alpn=http/1.1` for HTTPS and nothing for AAAA, or with NXDOMAIN
-/// for a name under `nx`. Each query's type and name is sent on the channel.
+/// for a name under `nx`; a name under `silent` gets no answer, and one
+/// under `slowa` its A late. Each query's type and name is sent on the channel.
 fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let port = socket.local_addr().unwrap().port();
@@ -28,6 +29,12 @@ fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
             }
             let kind = u16::from_be_bytes([q[i + 1], q[i + 2]]);
             let name = labels.join(".").to_lowercase();
+            if name.starts_with("silent") {
+                continue;
+            }
+            if name.starts_with("slowa") && kind == 1 {
+                thread::sleep(Duration::from_millis(300));
+            }
             let nx = name.starts_with("nx");
             let mut answer = Vec::new();
             if !nx && kind == 1 {
@@ -152,5 +159,170 @@ fn a_bad_setting_fails_the_resolve_as_c_does() {
             said.contains("Error 43 resolving name.test:1"),
             "{option}: {said}"
         );
+    }
+}
+
+#[test]
+fn an_interface_named_by_host_is_resolved_by_the_servers_named() {
+    let (dns, heard) = dns_server();
+    let http = http_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let url = format!("http://127.0.0.1:{http}/");
+    let run = curl(&[
+        "--dns-servers",
+        &servers,
+        "--interface",
+        "host!bind.test",
+        &url,
+    ]);
+    assert_eq!(
+        run.stdout,
+        b"ok",
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let asked: Vec<_> = heard.try_iter().collect();
+    assert!(asked.contains(&(1, "bind.test".to_owned())), "{asked:?}");
+}
+
+#[test]
+fn an_interface_name_that_does_not_exist_is_said_as_c_ares_says_it() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let run = curl(&[
+        "-v",
+        "--dns-servers",
+        &servers,
+        "--interface",
+        "host!nx.test",
+        "http://127.0.0.1:1/",
+    ]);
+    assert_eq!(run.status.code(), Some(45));
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        said.contains("Could not resolve host: nx.test (Domain name not found)"),
+        "{said}"
+    );
+    assert!(said.contains("Could not bind to 'nx.test'"), "{said}");
+}
+
+#[test]
+fn an_interface_name_is_waited_for_no_longer_than_the_transfer_may_take() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let run = curl(&[
+        "-v",
+        "--connect-timeout",
+        "1",
+        "--dns-servers",
+        &servers,
+        "--interface",
+        "host!silent.test",
+        "http://127.0.0.1:1/",
+    ]);
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(45), "{said}");
+    assert!(said.contains("Could not bind to 'silent.test'"), "{said}");
+}
+
+#[test]
+fn a_socket_c_ares_closes_is_said_to_close() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let run = curl(&[
+        "-v",
+        "--trace-config",
+        "multi",
+        "--dns-servers",
+        &servers,
+        "http://nx.test:1/",
+    ]);
+    assert_eq!(run.status.code(), Some(6));
+    let said = String::from_utf8_lossy(&run.stderr);
+    // No connection was made, whose socket this could be.
+    assert!(said.contains("Curl_multi_will_close fd="), "{said}");
+    assert!(!said.contains("Trying"), "{said}");
+}
+
+#[test]
+fn the_race_begins_before_a_late_a_as_aaaa_has_answered() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let run = curl(&[
+        "-v",
+        "--trace-config",
+        "dns,happy-eyeballs",
+        "--dns-servers",
+        &servers,
+        "http://slowa.test:1/",
+    ]);
+    assert_eq!(run.status.code(), Some(7));
+    let said = String::from_utf8_lossy(&run.stderr);
+    let at = |needle: &str| {
+        said.find(needle)
+            .unwrap_or_else(|| panic!("{needle}: {said}"))
+    };
+    assert!(at("init ip ballers") < at("resolve complete"), "{said}");
+    assert!(said.contains("family=2, dns=0"), "{said}");
+    assert!(said.contains("family=2, dns=1"), "{said}");
+}
+
+#[test]
+fn a_resolve_that_does_not_end_times_out_as_resolving() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let run = curl(&[
+        "--max-time",
+        "1",
+        "--dns-servers",
+        &servers,
+        "http://silent.test:1/",
+    ]);
+    assert_eq!(run.status.code(), Some(28));
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert!(said.contains("Resolving timed out"), "{said}");
+}
+
+#[test]
+fn a_resolve_is_looked_at_as_soon_as_it_starts() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let run = curl(&[
+        "-v",
+        "--trace-config",
+        "dns",
+        "--dns-servers",
+        &servers,
+        "http://nx.test:1/",
+    ]);
+    let said = String::from_utf8_lossy(&run.stderr);
+    let lines: Vec<_> = said.lines().collect();
+    let started = lines
+        .iter()
+        .position(|l| l.contains("hostip_resolv started -> 81"))
+        .unwrap_or_else(|| panic!("{said}"));
+    assert!(
+        lines[started - 1].contains("resolve incomplete, responses=-"),
+        "{said}"
+    );
+    assert!(
+        lines[started + 1].contains("cache lookup nx.test:1"),
+        "{said}"
+    );
+    assert!(lines[started + 2].contains("resolve incomplete"), "{said}");
+}
+
+/// A debug build says what it refused, as C's does.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_debug_build_names_the_bad_setting() {
+    for (option, value, words) in [
+        ("--dns-ipv4-addr", "nope", "* bad DNS IPv4 address"),
+        ("--dns-ipv6-addr", "nope", "* bad DNS IPv6 address"),
+        ("--dns-servers", "not a server", "* bad servers set"),
+    ] {
+        let run = curl(&["-v", option, value, "http://name.test:1/"]);
+        let said = String::from_utf8_lossy(&run.stderr);
+        assert!(said.contains(words), "{said}");
     }
 }

@@ -581,10 +581,10 @@ otherwise being the HTTPS connect filter's choice over a TCP connection. A START
 (IMAP, POP3, SMTP, FTP's `AUTH`) says its connect as C's `Curl_conn_connect` does, under `SSL`:
 `added`, `Curl_conn_connect(block=B) -> R, done=D` (block=1 for FTP's, which waits), and once
 done the `APPCONNECT` time, `Established connection` and the chain `connected`/`reduced to`; a
-failure says `filter returned R` and `failed to connect` with the chain. Not traced: c-ares's
-polling (the line of each look in the cache as the HTTPS record is polled for, `resolve incomplete`, `still waiting`),
-the async resolver's own lines (`[DNS] [N] shutdown async`, `destroy async`), and a SOCKS
-proxy's lookup of the destination.
+failure says `filter returned R` and `failed to connect` with the chain. Not traced: the async
+resolver's own lines (`[DNS] [N] shutdown async`, `destroy async`), and a SOCKS
+proxy's lookup of the destination. How many times `resolve incomplete` and its cache lookup are
+said depends on when answers arrive, in C as here.
 
 The TLS components, as the reference build traces them on the transfer. `SSL` (the origin's
 layer) traces the handshake as it is driven (`cf_connect()`, `ossl_connect, step1|2|3`,
@@ -2588,8 +2588,17 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
 - **c-ares.** `Libraries::dns` names a `DnsLibrary`, `curl-ares` in a build without the threaded
   resolver: a channel per resolve (`DnsResolve`), held by the setup as `Via::Library`, its sockets
   in the transfer's pollset and its next try on `TimerKind::AsyncName`. The `--dns-*` settings
-  (`options.dns`) are read as a resolve starts, and refused there as C refuses them. The resolves a
-  socket's interface name needs stay with the system's resolver.
+  (`options.dns`) are read as a resolve starts, and refused there as C refuses them. A blocking
+  resolve, a socket's interface name or FTP's address, is the library's too, waited for in place for
+  as long as the transfer may (`await_library`, `Curl_async_await`). A socket the library closes
+  is told to the multi (`DnsResolve::closed`, `Net::will_close`) as C's `sock_state_cb` tells it:
+  said, and forgotten, so a number the library uses again is announced anew.
+- **Going on before the name is known.** Once AAAA has answered or its wait is over the setup goes
+  on to its race though no address has come (`cf_dns_ready_to_connect`), so the HTTPS filter's
+  first connect and its choice of attempts do not wait for A. The race holds the resolve still
+  going on in its `Eyeballs`, and waits on it when it has nothing to try; a transfer timing out
+  then times out `Resolving`. A race's second attempt asks no resolver of its own: before each
+  drive it is given what the first's has found (`follow`).
 - **A name's HTTPS record.** `https.rs` starts a third probe of its own (`start_https`), named
   `_port._https.name` off port 443, before the name's addresses are asked for. Its answer, kept in
   the cache beside them, chooses the attempts' versions ahead of what is wanted, if it is about

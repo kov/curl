@@ -39,6 +39,9 @@ pub fn version_number() -> u32 {
     u32::try_from(number).unwrap_or(0)
 }
 
+/// What C's debug build says of servers c-ares will not take.
+const BAD_SERVERS: &str = "bad servers set";
+
 /// The c-ares library, for a transfer's `Libraries`.
 #[derive(Debug)]
 pub struct Ares;
@@ -71,6 +74,7 @@ impl DnsLibrary for Ares {
 #[derive(Debug)]
 struct Answers {
     ongoing: u32,
+    a_answered: bool,
     aaaa_answered: bool,
     asked_v6: bool,
     v6: Vec<IpAddr>,
@@ -84,6 +88,8 @@ struct Answers {
     /// An HTTPS query, with what its answer held.
     https: bool,
     record: Option<HttpsRecord>,
+    /// The sockets the channel closed, not yet told.
+    closed: Vec<SocketKey>,
 }
 
 /// One resolve: its channel, and what it has found.
@@ -120,6 +126,7 @@ unsafe extern "C" fn addresses_done(
     let a = unsafe { answers(arg) };
     a.ongoing -= 1;
     a.aaaa_answered |= v6;
+    a.a_answered |= !v6;
     if status == sys::SUCCESS {
         a.status = sys::SUCCESS;
         // SAFETY: on success c-ares passes a list it gives us to free.
@@ -291,14 +298,24 @@ unsafe fn record_wire(record: *const sys::DnsRecord) -> Result<Option<Vec<u8>>, 
     Ok(Some(wire))
 }
 
-/// `sock_state_cb`: nothing to do with what closes, which leaves the pollset
-/// as the wants are read again.
-unsafe extern "C" fn socket_state(_: *mut c_void, _: c_int, _: c_int, _: c_int) {}
+/// `sock_state_cb`: a socket with nothing left to wait for is about to close,
+/// which the multi is told as soon as the channel is back in our hands.
+unsafe extern "C" fn socket_state(arg: *mut c_void, fd: c_int, readable: c_int, writable: c_int) {
+    if readable != 0 || writable != 0 {
+        return;
+    }
+    // SAFETY: `arg` is what `new` gave, the channel's `Answers`.
+    let a = unsafe { answers(arg) };
+    if a.closed.try_push(SocketKey::new(fd)).is_err() {
+        a.failed = Some(DnsRefused::OutOfMemory);
+    }
+}
 
-/// A copy of `text` ending in the NUL c-ares wants; refused if it holds one.
-fn c_text(text: &[u8]) -> Result<Vec<u8>, DnsRefused> {
+/// A copy of `text` ending in the NUL c-ares wants; refused as `why` if it
+/// holds one.
+fn c_text(text: &[u8], why: &'static str) -> Result<Vec<u8>, DnsRefused> {
     if text.contains(&0) {
-        return Err(DnsRefused::BadOption);
+        return Err(DnsRefused::BadOption(why));
     }
     let mut c = Vec::new();
     c.try_extend_from_slice(text)
@@ -310,8 +327,9 @@ fn c_text(text: &[u8]) -> Result<Vec<u8>, DnsRefused> {
 
 impl Resolving {
     fn new() -> Result<Resolving, DnsRefused> {
-        let answers = try_box(Answers {
+        let mut answers = try_box(Answers {
             ongoing: 0,
+            a_answered: false,
             aaaa_answered: false,
             asked_v6: false,
             v6: Vec::new(),
@@ -321,12 +339,14 @@ impl Resolving {
             failed: None,
             https: false,
             record: None,
+            closed: Vec::new(),
         })
         .map_err(|OutOfMemory| DnsRefused::OutOfMemory)?;
         // SAFETY: all zeroes is valid for each field of the options; only the
         // callback's, set below, is read, as the mask says.
         let mut options: sys::Options = unsafe { core::mem::zeroed() };
         options.sock_state_cb = Some(socket_state);
+        options.sock_state_cb_data = (&raw mut *answers).cast();
         let mut channel = core::ptr::null_mut();
         // SAFETY: the out pointer and the options are valid for the call.
         let status = unsafe {
@@ -353,7 +373,7 @@ impl Resolving {
         #[cfg(not(feature = "debug-hooks"))]
         let servers = ask.options.servers.as_deref();
         if let Some(servers) = servers {
-            let servers = c_text(servers)?;
+            let servers = c_text(servers, BAD_SERVERS)?;
             // SAFETY: the channel is ours and the text ends in its NUL.
             let status = unsafe {
                 sys::ares_set_servers_ports_csv(self.channel, servers.as_ptr().cast::<c_char>())
@@ -361,21 +381,24 @@ impl Resolving {
             match status {
                 sys::SUCCESS => {}
                 sys::ENOMEM => return Err(DnsRefused::OutOfMemory),
-                _ => return Err(DnsRefused::BadOption),
+                _ => return Err(DnsRefused::BadOption(BAD_SERVERS)),
             }
         }
-        let interface = c_text(ask.options.interface.as_deref().unwrap_or(b""))?;
+        let interface = c_text(
+            ask.options.interface.as_deref().unwrap_or(b""),
+            "bad DNS interface",
+        )?;
         // SAFETY: as above; c-ares copies the name.
         unsafe { sys::ares_set_local_dev(self.channel, interface.as_ptr().cast::<c_char>()) };
         let v4 = match ask.options.local_ip4.as_deref() {
             None | Some(b"") => 0,
-            Some(text) => u32::from(parsed::<Ipv4Addr>(text)?),
+            Some(text) => u32::from(parsed::<Ipv4Addr>(text, "bad DNS IPv4 address")?),
         };
         // SAFETY: the channel is ours; the address is in the host's order.
         unsafe { sys::ares_set_local_ip4(self.channel, v4) };
         let v6 = match ask.options.local_ip6.as_deref() {
             None | Some(b"") => Ipv6Addr::UNSPECIFIED,
-            Some(text) => parsed::<Ipv6Addr>(text)?,
+            Some(text) => parsed::<Ipv6Addr>(text, "bad DNS IPv6 address")?,
         };
         let octets = v6.octets();
         // SAFETY: the channel is ours; c-ares reads the 16 bytes given.
@@ -399,7 +422,7 @@ impl Resolving {
 
     /// The queries, AAAA's first (`Curl_async_getaddrinfo`).
     fn ask(&mut self, ask: &DnsAsk<'_>, say: &mut DnsSay<'_>) -> Result<(), DnsRefused> {
-        let name = c_text(ask.name)?;
+        let name = c_text(ask.name, "bad name")?;
         let oom = |OutOfMemory| DnsRefused::OutOfMemory;
         let arg: *mut c_void = (&raw mut *self.answers).cast();
         let Some(family) = ask.family else {
@@ -413,7 +436,7 @@ impl Resolving {
             }
             qname.try_extend_from_slice(ask.name).map_err(oom)?;
             say(&[b"[HTTPS] ares: query records for ", &qname]);
-            let qname = c_text(&qname)?;
+            let qname = c_text(&qname, "bad name")?;
             self.answers.https = true;
             self.answers.ongoing += 1;
             // SAFETY: the channel is ours, the name ends in its NUL, and the
@@ -431,7 +454,7 @@ impl Resolving {
             };
             return Ok(());
         };
-        let service = c_text(Digits::of(ask.port).bytes())?;
+        let service = c_text(Digits::of(ask.port).bytes(), "bad port")?;
         let socktype = if ask.stream {
             libc::SOCK_STREAM
         } else {
@@ -530,16 +553,19 @@ impl Digits {
     }
 }
 
-/// `text` as an address, or C's `inet_pton` failing.
-fn parsed<T: core::str::FromStr>(text: &[u8]) -> Result<T, DnsRefused> {
+/// `text` as an address, or C's `inet_pton` failing, refused as `why`.
+fn parsed<T: core::str::FromStr>(text: &[u8], why: &'static str) -> Result<T, DnsRefused> {
     core::str::from_utf8(text)
         .ok()
         .and_then(|t| t.parse().ok())
-        .ok_or(DnsRefused::BadOption)
+        .ok_or(DnsRefused::BadOption(why))
 }
 
 impl Drop for Resolving {
     fn drop(&mut self) {
+        if self.channel.is_null() {
+            return;
+        }
         // SAFETY: the channel is ours and goes here; its callbacks, told it
         // goes, still find the answers.
         unsafe { sys::ares_destroy(self.channel) };
@@ -547,6 +573,18 @@ impl Drop for Resolving {
 }
 
 impl DnsResolve for Resolving {
+    fn closed(&mut self) -> Vec<SocketKey> {
+        core::mem::take(&mut self.answers.closed)
+    }
+
+    fn close(mut self: Box<Self>) -> Vec<SocketKey> {
+        // SAFETY: the channel is ours and goes here, and `drop` sees that it
+        // has; its callbacks, told it goes, still find the answers.
+        unsafe { sys::ares_destroy(self.channel) };
+        self.channel = core::ptr::null_mut();
+        self.closed()
+    }
+
     fn perform(&mut self) -> Result<(), OutOfMemory> {
         let mut polls = [libc::pollfd {
             fd: -1,
@@ -632,7 +670,13 @@ impl DnsResolve for Resolving {
 
     fn ongoing(&self) -> (u32, &'static str) {
         let a = &self.answers;
-        let responses = if a.aaaa_answered { "AAAA" } else { "-" };
+        // `Curl_resolv_query_str`.
+        let responses = match (a.a_answered, a.aaaa_answered) {
+            (false, false) => "-",
+            (true, false) => "A",
+            (false, true) => "AAAA",
+            (true, true) => "A+AAAA",
+        };
         (a.ongoing, responses)
     }
 
@@ -758,6 +802,49 @@ impl Socket for FdSocket {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_socket_with_nothing_to_wait_for_is_kept_to_be_told() {
+        let mut r = super::Resolving::new().unwrap();
+        let arg: *mut core::ffi::c_void = (&raw mut *r.answers).cast();
+        // SAFETY: `arg` is this resolve's answers, borrowed by nothing here.
+        unsafe { super::socket_state(arg, 7, 1, 0) };
+        assert!(
+            super::DnsResolve::closed(&mut r).is_empty(),
+            "it still waits"
+        );
+        // SAFETY: as above.
+        unsafe { super::socket_state(arg, 7, 0, 0) };
+        let closed = super::DnsResolve::closed(&mut r);
+        assert_eq!(closed, [super::SocketKey::new(7)]);
+        assert!(super::DnsResolve::closed(&mut r).is_empty(), "told once");
+    }
+
+    #[test]
+    fn closing_a_resolve_gives_what_was_not_told_and_leaves_nothing() {
+        let mut r = Box::new(super::Resolving::new().unwrap());
+        let arg: *mut core::ffi::c_void = (&raw mut *r.answers).cast();
+        // SAFETY: `arg` is this resolve's answers, borrowed by nothing here.
+        unsafe { super::socket_state(arg, 9, 0, 0) };
+        let closed = super::DnsResolve::close(r);
+        assert_eq!(closed, [super::SocketKey::new(9)]);
+    }
+
+    #[test]
+    fn the_responses_are_named_as_c_names_them() {
+        let mut r = super::Resolving::new().unwrap();
+        for (a, aaaa, named) in [
+            (false, false, "-"),
+            (true, false, "A"),
+            (false, true, "AAAA"),
+            (true, true, "A+AAAA"),
+        ] {
+            r.answers.a_answered = a;
+            r.answers.aaaa_answered = aaaa;
+            assert_eq!(super::DnsResolve::ongoing(&r).1, named);
+        }
+    }
+
     use curl_core::options::DnsOptions;
 
     fn ask<'a>(name: &'a [u8], family: Option<Family>, options: &'a DnsOptions) -> DnsAsk<'a> {
@@ -809,15 +896,15 @@ mod tests {
         };
         assert_eq!(
             bad(&|o| o.local_ip4 = Some(b"nope".to_vec())),
-            Some(DnsRefused::BadOption)
+            Some(DnsRefused::BadOption("bad DNS IPv4 address"))
         );
         assert_eq!(
             bad(&|o| o.local_ip6 = Some(b"nope".to_vec())),
-            Some(DnsRefused::BadOption)
+            Some(DnsRefused::BadOption("bad DNS IPv6 address"))
         );
         assert_eq!(
             bad(&|o| o.servers = Some(b"not a server".to_vec())),
-            Some(DnsRefused::BadOption)
+            Some(DnsRefused::BadOption("bad servers set"))
         );
         let options = DnsOptions::NONE_SET;
         assert!(

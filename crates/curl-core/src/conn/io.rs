@@ -443,13 +443,18 @@ pub enum DnsRefused {
     /// The library could not be set up (`CURLE_FAILED_INIT`).
     Init,
     /// A setting it takes is not one (`CURLE_BAD_FUNCTION_ARGUMENT`).
-    BadOption,
+    BadOption(&'static str),
     /// An answer's record could not be read.
     BadRecord,
 }
 
 /// One resolve under way in a [`DnsLibrary`].
 pub trait DnsResolve: Send + fmt::Debug {
+    /// The sockets it closed since last asked, each named once.
+    fn closed(&mut self) -> Vec<SocketKey>;
+    /// It is not wanted any more: what it still had open closes, and is
+    /// named with those not yet asked for.
+    fn close(self: Box<Self>) -> Vec<SocketKey>;
     /// Process what is ready and what has timed out.
     fn perform(&mut self) -> Result<(), OutOfMemory>;
     /// The sockets it waits on, and for what.
@@ -588,6 +593,13 @@ pub trait Net {
 
     /// `f` given the network's resolver.
     fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver));
+
+    /// A socket another library owns, that a transfer may be waiting on,
+    /// closes or has just closed: nothing waits on it from here on
+    /// (`Curl_multi_will_close`).
+    fn will_close(&mut self, key: SocketKey) {
+        let _ = key;
+    }
 
     /// The scope of the first local interface that is up, is not
     /// loopback and has a link-local IPv6 address, if any.

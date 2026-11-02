@@ -303,25 +303,21 @@ pub(super) fn connect_call<H: Host>(
         Record::Pending if c.record_lookup.is_some() => {
             let lookup = c.record_lookup.as_mut().expect("looked at above");
             let (found, doh) = match lookup {
-                RecordLookup::Doh(lookup) => (lookup.https(), true),
+                RecordLookup::Doh(lookup) => {
+                    say_lookup(&c.route, cx);
+                    (lookup.https(), true)
+                }
                 RecordLookup::Library(resolve) => {
+                    say_lookup(&c.route, cx);
                     resolve.perform().map_err(|_| ErrorKind::OutOfMemory)?;
+                    for key in resolve.closed() {
+                        cx.will_close(key);
+                    }
                     (resolve.record(), false)
                 }
             };
-            say_lookup(&c.route, cx);
             let Some(found) = found else {
-                let peer = c.route.target();
-                let at = Text::<8>::clipped(format_args!(":{}", peer.port())).0;
-                trace::of_with(
-                    cx,
-                    Component::Dns,
-                    &[
-                        b"[HTTPS] resolve incomplete, responses=-, ongoing=1 for ",
-                        peer.name(),
-                        at.bytes(),
-                    ],
-                );
+                say_incomplete(&c.route, cx);
                 return Ok(());
             };
             if doh {
@@ -343,7 +339,11 @@ pub(super) fn connect_call<H: Host>(
                     );
                 }
             }
-            c.record_lookup = None;
+            if let Some(RecordLookup::Library(r)) = c.record_lookup.take() {
+                for key in r.close() {
+                    cx.will_close(key);
+                }
+            }
             let came = match found {
                 RecordAnswer::Record(record) => Came::Record(try_arc(record)?),
                 RecordAnswer::NoRecord => Came::NoRecord,
@@ -542,6 +542,8 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
                 Some(Err(_)) | None => None,
             }
         };
+        let mut lookup = lookup;
+        look_at_library(route, &mut lookup, cx)?;
         // The resolver answers later (`CURLE_AGAIN`).
         let again = crate::error::AGAIN_NUMBER;
         trace::of(
@@ -555,8 +557,47 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
             found_since(route, kept.as_ref(), cx);
             return Ok((Record::Known, kept, None));
         }
+        if matches!(lookup, Some(RecordLookup::Library(_))) {
+            say_lookup(route, cx);
+            look_at_library(route, &mut lookup, cx)?;
+        }
         Ok((Record::Pending, None, lookup))
     }
+}
+
+/// A library's resolve run once just after it starts, as C looks for the
+/// answer at once (`hostip_resolv`).
+fn look_at_library<H: Host>(
+    route: &NetRoute,
+    lookup: &mut Option<RecordLookup>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<(), ErrorKind> {
+    let Some(RecordLookup::Library(resolve)) = lookup else {
+        return Ok(());
+    };
+    resolve.perform().map_err(|_| ErrorKind::OutOfMemory)?;
+    for key in resolve.closed() {
+        cx.will_close(key);
+    }
+    if resolve.ongoing().0 > 0 {
+        say_incomplete(route, cx);
+    }
+    Ok(())
+}
+
+/// A record's query not yet answered.
+fn say_incomplete<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) {
+    let peer = route.target();
+    let at = Text::<8>::clipped(format_args!(":{}", peer.port())).0;
+    trace::of_with(
+        cx,
+        Component::Dns,
+        &[
+            b"[HTTPS] resolve incomplete, responses=-, ongoing=1 for ",
+            peer.name(),
+            at.bytes(),
+        ],
+    );
 }
 
 /// The origin's record looked for in the cache, under the share's lock

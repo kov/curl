@@ -587,8 +587,8 @@ fn connecting_step<H: Host>(
             )
             | None => {
                 // Named for the name, while it is not resolved yet.
-                let what = match c.lead().map(ConnectMachine::reached) {
-                    Some(SetupPoint::Resolving) => "Resolving",
+                let what = match c.lead().map(ConnectMachine::resolving) {
+                    Some(true) => "Resolving",
                     _ => "Connection",
                 };
                 trace::fail(
@@ -942,6 +942,7 @@ fn connect_once<H: Host>(
     cx: &mut StepCx<'_, H>,
     a: Attempt,
 ) -> (TransferState, Wake) {
+    share_addresses(&mut c);
     if c.handshake(a).is_some() {
         let shook = {
             let (mut s, mut t) = c.shaking(a);
@@ -1262,6 +1263,24 @@ enum Other {
 /// the first, after it if the second, as the lead is, on until it waits:
 /// its connect, then its handshakes. Its failure is its own; the
 /// transfer's step ends here if it made the connection.
+/// The second attempt of a race is given what the first's resolve has found
+/// by now, and told whether more may come.
+fn share_addresses(c: &mut Connecting) {
+    let first = c.attempt(Attempt::First);
+    let resolving = first.is_some_and(ConnectMachine::resolving);
+    let answer = first.and_then(|m| m.answer().cloned());
+    let Some(race) = c.race.as_mut() else {
+        return;
+    };
+    if let Some(answer) = answer {
+        race.answer = answer;
+    }
+    let answer = race.answer.clone();
+    if let Some(second) = race.second.running_mut() {
+        second.follow(answer, resolving);
+    }
+}
+
 fn drive_other<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>) -> Other {
     let Some(a) = c.beside() else {
         return Other::Racing(c);
@@ -2014,6 +2033,7 @@ pub(crate) fn connect_failed<H: Host>(
         ConnectError::Refused(kind) => return kind,
         ConnectError::Unresolved(why) => {
             match why {
+                Unresolved::GaveUp => unreachable!("said of a blocking resolve, to its caller"),
                 Unresolved::NoIpv6 => return no_ipv6(cx, route, proxy.is_some()),
                 Unresolved::DebugFailIpv6 => return debug_failed_ipv6(cx, route, proxy.is_some()),
                 Unresolved::UnixPathTooLong => {

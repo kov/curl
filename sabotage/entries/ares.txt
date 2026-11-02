@@ -12,7 +12,7 @@ witness: curl-tool the_servers_named_find_the_address
 file: crates/curl-ares/src/lib.rs
 witness: curl-tool a_bad_setting_fails_the_resolve_as_c_does
 --- old
-            Some(text) => u32::from(parsed::<Ipv4Addr>(text)?),
+            Some(text) => u32::from(parsed::<Ipv4Addr>(text, "bad DNS IPv4 address")?),
 --- new
             Some(_) => 0,
 
@@ -31,3 +31,73 @@ witness: curl-tool a_name_that_does_not_exist_is_said_as_c_ares_says_it
         Via::Library(resolve) => (resolve.explain(), Some(resolve.status())),
 --- new
         Via::Library(resolve) => (None, Some(resolve.status())),
+
+=== an interface's name goes to the system's resolver
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-tool an_interface_named_by_host_is_resolved_by_the_servers_named
+--- old
+    if over_doh || (cx.has_dns_library() && !(family == Family::V6 && !ipv6)) {
+--- new
+    if over_doh || (doh && cx.has_dns_library() && !(family == Family::V6 && !ipv6)) {
+
+=== a blocking resolve waits on with no limit
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-tool an_interface_name_is_waited_for_no_longer_than_the_transfer_may_take
+--- old
+        let left = cx.await_resolve_left(since)?;
+--- new
+        let left = cx.await_resolve_left(since).unwrap_or(Duration::from_millis(100));
+
+=== a socket c-ares closes is not kept to be told
+file: crates/curl-ares/src/lib.rs
+witness: curl-ares tests::a_socket_with_nothing_to_wait_for_is_kept_to_be_told
+--- old
+    if a.closed.try_push(SocketKey::new(fd)).is_err() {
+--- new
+    if fd < 0 && a.closed.try_push(SocketKey::new(fd)).is_err() {
+
+=== a closed socket stays registered with the application
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::socket_tests::a_library_s_socket_closing_is_removed_though_its_number_comes_back
+--- old
+    fn will_close(&mut self, key: SocketKey) {
+        self.forget(key);
+    }
+--- new
+    fn will_close(&mut self, key: SocketKey) {
+        let _ = key;
+    }
+
+=== the race waits for a first address
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-tool the_race_begins_before_a_late_a_as_aaaa_has_answered
+--- old
+                                    } else {
+                                        let answer = part.answer(name, p.family).map_err(oom)?;
+--- new
+                                    } else if !part.addrs.is_empty() {
+                                        let answer = part.answer(name, p.family).map_err(oom)?;
+
+=== a race on part of a resolve times out as a connection
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-tool a_resolve_that_does_not_end_times_out_as_resolving
+--- old
+            Stage::Racing(r) => r.eyeballs.late.0.is_some(),
+--- new
+            Stage::Racing(_) => false,
+
+=== a second attempt gives up while the first's resolve goes on
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::a_second_attempt_goes_on_what_the_firsts_resolve_finds
+--- old
+            r.eyeballs.following = resolving;
+--- new
+            let _ = resolving;
+
+=== a resolve is not looked at as it starts
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-tool a_resolve_is_looked_at_as_soon_as_it_starts
+--- old
+                            Looked::Pending(mut p) if !fresh || p.is_library() => {
+--- new
+                            Looked::Pending(mut p) if !fresh => {

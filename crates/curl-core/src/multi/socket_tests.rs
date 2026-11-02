@@ -847,3 +847,112 @@ fn a_wait_polls_the_resolver_s_wake_while_a_transfer_is_alive() {
     wake.drain().unwrap();
     assert_eq!(wait(&mut m, &mut ev), Ok(0), "polled, not ready");
 }
+
+/// A resolver library whose socket closes and whose next one has the same
+/// number: what the application registered is gone, so it is told Remove
+/// first (`sock_state_cb`, `Curl_multi_will_close`), and then told of the
+/// new one, not left believing nothing changed.
+#[test]
+fn a_library_s_socket_closing_is_removed_though_its_number_comes_back() {
+    #[derive(Debug)]
+    struct Reopening {
+        wants: Vec<(Box<dyn Socket>, Events)>,
+        performed: u32,
+        closed: Vec<SocketKey>,
+    }
+
+    impl crate::conn::io::DnsResolve for Reopening {
+        fn closed(&mut self) -> Vec<SocketKey> {
+            std::mem::take(&mut self.closed)
+        }
+        fn close(self: Box<Self>) -> Vec<SocketKey> {
+            self.closed
+        }
+        fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
+            self.performed += 1;
+            // Past the looks at it as it starts.
+            if self.performed == 3 {
+                self.closed.push(self.wants[0].0.key());
+            }
+            Ok(())
+        }
+        fn wants(&self) -> &[(Box<dyn Socket>, Events)] {
+            &self.wants
+        }
+        fn due(&self, within: Duration) -> Duration {
+            within
+        }
+        fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
+            Ok(crate::conn::io::Partial {
+                addrs: Vec::new(),
+                v6_answered: false,
+            })
+        }
+        fn ongoing(&self) -> (u32, &'static str) {
+            (2, "-")
+        }
+        fn answer(
+            &mut self,
+        ) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
+            None
+        }
+        fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
+            None
+        }
+        fn explain(&self) -> Option<&'static str> {
+            None
+        }
+        fn status(&self) -> i32 {
+            0
+        }
+    }
+
+    #[derive(Debug)]
+    struct Library(Mutex<Option<Box<dyn Socket>>>);
+
+    impl crate::conn::io::DnsLibrary for Library {
+        fn resolve(
+            &self,
+            _: crate::conn::io::DnsAsk<'_>,
+            _: &mut crate::conn::io::DnsSay<'_>,
+        ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
+            let socket = self.0.lock().unwrap().take().unwrap();
+            Ok(Box::new(Reopening {
+                wants: vec![(socket, Events::IN)],
+                performed: 0,
+                closed: Vec::new(),
+            }))
+        }
+    }
+
+    let (mut m, clock, mut ev) = networked();
+    let mut own =
+        FakeNet::new(clock).with_peer(SocketAddr::from(([127, 0, 0, 1], 3)), Peer::Silent);
+    let socket = own
+        .open(
+            &crate::conn::io::Remote::Inet(SocketAddr::from(([127, 0, 0, 1], 3))),
+            crate::conn::io::SocketKind::Stream,
+        )
+        .unwrap();
+    let key = socket.key().get();
+    let library: &'static Library = Box::leak(Box::new(Library(Mutex::new(Some(socket)))));
+    let libraries = crate::libraries::Libraries {
+        dns: Some(library),
+        ..crate::libraries::Libraries::NONE
+    };
+    let mut e = easy("http://name.test:80/");
+    e.set_libraries(crate::libraries::SharedLibraries::new(libraries).unwrap());
+    let id = m.add(Box::new(e), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    m.socket_action(SocketEvent::Socket(SocketKey::new(key)), &mut ev)
+        .unwrap();
+    assert_eq!(
+        ev.calls,
+        [
+            (id.index(), key, SocketWhat::In, None, 0),
+            (id.index(), key, Remove, Some(1), 0),
+            (id.index(), key, SocketWhat::In, None, 0),
+        ]
+    );
+    m.remove(id, &mut ev).unwrap();
+}

@@ -573,14 +573,28 @@ impl<H: Host> StepCx<'_, H> {
 
     /// What is left of the transfer's time, as of the step's start: its
     /// connect limit counts before DO (`Curl_timeleft_ms`).
+    /// A socket closes that another library owned: said, and nothing waits
+    /// on it from here on (`Curl_multi_will_close`).
+    pub(crate) fn will_close(&mut self, key: SocketKey) {
+        let fd = key.get();
+        mstate::trace(self, format_args!("Curl_multi_will_close fd={fd}"));
+        let me = self.me;
+        crate::conn::io::Net::will_close(&mut self.rest.announcing(me), key);
+    }
+
     pub(crate) fn time_left(&self) -> TimeLeft {
+        self.time_left_at(self.now())
+    }
+
+    /// What is left of the transfer's time at `now`.
+    pub(crate) fn time_left_at(&self, now: Instant) -> TimeLeft {
         let limits = self.easy().options().limits;
         let phase = if self.mstate() < MState::Do {
             Phase::Connecting
         } else {
             Phase::Transferring
         };
-        Deadlines::new(limits.total, limits.connect).time_left(starts(self), self.now(), phase)
+        Deadlines::new(limits.total, limits.connect).time_left(starts(self), now, phase)
     }
 
     /// The calendar time, read now (`time(NULL)`).

@@ -1259,7 +1259,8 @@ Its first steps are milestone 6's design-review changes.
     and c-ares, and chooses the attempts' versions; a SOCKS destination's name goes over DoH, the
     handshake waiting for it; what came of a resolve is connected to as C's DNS filter does.
     `crates/curl-ares` binds c-ares with the `--dns-*` options and their setopts, a channel per
-    resolve, as the reference build has it; a `threaded-resolver` build goes without.
+    resolve, blocking ones too, as the reference build has it; its sockets closing are told to the
+    multi. A `threaded-resolver` build does not link it (`c-ares`, a default feature).
 91. **`multi/state.rs` split** **Done.** Mechanically, and the stale parts of ENGINE.md and DESIGN.md and
     stale size comments brought up to date; the two unsafe blocks the SAFETY scan did not match
     (`curl-ngtcp2/src/sys.rs`, `curl-sys-abi/src/printf/mod.rs`) examined.

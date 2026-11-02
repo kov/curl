@@ -518,6 +518,22 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         self.step.easy().options().doh.url.is_some()
     }
 
+    fn await_resolve_left(&mut self, since: Instant) -> Option<Duration> {
+        let now = self.step.rest.clock.now();
+        match self.step.time_left_at(now) {
+            super::timers::TimeLeft::Remaining(left) => Some(left),
+            super::timers::TimeLeft::Expired(_) => None,
+            // `CURL_TIMEOUT_RESOLVE_MS`.
+            super::timers::TimeLeft::Unlimited => {
+                Duration::from_secs(300).checked_sub(now.since(since))
+            }
+        }
+    }
+
+    fn await_resolve_tick(&mut self) -> Result<(), ()> {
+        crate::progress::update(self.step, false).map_err(|_| ())
+    }
+
     fn has_dns_library(&self) -> bool {
         self.step.easy().libraries().dns.is_some()
     }
@@ -581,6 +597,10 @@ impl<H: Host> Net for DriveCx<'_, '_, H> {
         super::mstate::trace(self.step, format_args!("Curl_multi_will_close fd={fd}"));
         let me = self.step.me;
         self.step.rest.announcing(me).close(socket);
+    }
+
+    fn will_close(&mut self, key: SocketKey) {
+        self.step.will_close(key);
     }
 
     fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
@@ -695,6 +715,10 @@ impl Net for CloseLater<'_> {
         self.more.try_push(socket).expect("room was made");
     }
 
+    fn will_close(&mut self, key: SocketKey) {
+        self.net.will_close(key);
+    }
+
     fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
         self.net.with_resolver(f);
     }
@@ -763,6 +787,10 @@ impl<H: Host> Net for Announcing<'_, H> {
     fn close(&mut self, socket: Sock) {
         self.forget(socket.key());
         self.net.close(socket);
+    }
+
+    fn will_close(&mut self, key: SocketKey) {
+        self.forget(key);
     }
 
     fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {

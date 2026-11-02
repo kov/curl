@@ -274,9 +274,9 @@ witness: curl-sys-abi handle_tests::the_resolver_s_options_are_the_build_s
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::a_resolve_that_never_answers_times_out_as_resolving
 --- old
-                    Some(SetupPoint::Resolving) => "Resolving",
+                    Some(true) => "Resolving",
 --- new
-                    Some(SetupPoint::Resolving) => "Connection",
+                    Some(true) => "Connection",
 
 === the threaded resolver's queries are traced IPv6's first, as queued
 file: crates/curl-core/src/conn/connect.rs

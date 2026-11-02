@@ -457,3 +457,12 @@ features: debug-hooks
             .and_then(|()| text.write(&t))
             .map_err(|_| curl_core::error::UrlErrorKind::OutOfMemory)
     }) {
+
+=== a DoH probe's body is read from the read function
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::a_probes_handle_is_the_multis
+features: debug-hooks
+--- old
+            post.fields = callbacks::PostFields::Copied(query.clone());
+--- new
+            let _ = &post.fields;

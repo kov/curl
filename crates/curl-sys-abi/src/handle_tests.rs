@@ -8890,6 +8890,8 @@ unsafe extern "C" fn debug_probe(
 /// A probe calls the master's debug function with a handle of its own,
 /// one the application may not add, remove or ask about, and that goes
 /// with the transfer; `curl_multi_get_handles` lists the application's.
+/// Each posts its query, never what the read function gives
+/// (`doh_probe_run` sets `CURLOPT_POSTFIELDS`).
 #[cfg(feature = "debug-hooks")]
 #[test]
 fn a_probes_handle_is_the_multis() {
@@ -8897,12 +8899,33 @@ fn a_probes_handle_is_the_multis() {
     use std::io::{Read as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    // The server: what a name is answered with, for either query.
+    let (told, heard) = std::sync::mpsc::channel();
+    // The server: what a name is answered with, for either query, once
+    // the request's body is in.
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let mut s = stream.unwrap();
+            s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
             let mut got = [0u8; 2048];
-            let _ = s.read(&mut got).unwrap();
+            let whole = |r: &[u8]| {
+                let Some(end) = r.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    return false;
+                };
+                let head = String::from_utf8_lossy(&r[..end]).to_ascii_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length: "))
+                    .map_or(0, |n| n.trim().parse::<usize>().unwrap());
+                r.len() >= end + 4 + length
+            };
+            while !whole(&request) {
+                let n = s.read(&mut got).unwrap();
+                assert!(n > 0, "the request ends early");
+                request.extend_from_slice(&got[..n]);
+            }
+            let _sent = told.send(request);
             let mut body = vec![0, 0, 0x81, 0x83, 0, 0, 0, 0, 0, 0, 0, 0];
             let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
             body.splice(0..0, head.bytes());
@@ -8962,6 +8985,16 @@ fn a_probes_handle_is_the_multis() {
         curl_easy_cleanup(c);
     }
     assert_eq!(seen.handles.len(), 2, "one for each query");
+    let requests: Vec<Vec<u8>> = heard.try_iter().collect();
+    assert_eq!(requests.len(), 2);
+    for r in requests {
+        let shown = String::from_utf8_lossy(&r);
+        assert!(r.starts_with(b"POST /dns "), "{shown}");
+        assert!(
+            r.windows(9).any(|w| w == b"\x02nx\x04test\x00"),
+            "the query is posted: {shown}"
+        );
+    }
     assert!(
         seen.removed
             .iter()

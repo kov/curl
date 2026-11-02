@@ -258,6 +258,15 @@ impl ShimEasy {
             c.tls = Some(parent.tls());
         }
         let child = ShimEasy::homeless(c)?;
+        // The query is the probe's `CURLOPT_POSTFIELDS`, as `doh_probe_run`
+        // sets it: what the C side syncs the body from, so that the body is
+        // never the read function's, standard input by default.
+        if let curl_core::options::UploadSource::Bytes(query) = &easy.options().upload {
+            // SAFETY: just made, and reached only through this pointer.
+            let mut post = unsafe { child.as_ref() }.post.borrow_mut();
+            post.fields = callbacks::PostFields::Copied(query.clone());
+            post.size = i64::try_from(query.len()).expect("a query is short");
+        }
         let body = easy.options_mut().callbacks.write.take();
         if ShimEasy::adapt(child, easy.options_mut(), body).is_err() {
             // SAFETY: made by `homeless`, given no `Easy` and handed to no

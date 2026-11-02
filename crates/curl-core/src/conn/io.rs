@@ -1227,8 +1227,10 @@ impl Conversation {
         self
     }
 
-    /// After how many options its socket was made nonblocking, if it
-    /// was: a socket the network opens is nonblocking from the start.
+    /// After how many options its socket was made nonblocking before its
+    /// first send or read, if it was: a socket the network opens is
+    /// nonblocking from the start, and the drain before a close comes too
+    /// late.
     pub fn made_nonblocking_after(&self) -> Option<usize> {
         self.0
             .lock()
@@ -1962,7 +1964,9 @@ impl Socket for FakeSocket {
 
     fn set_nonblocking(&self) -> io::Result<()> {
         let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
-        wire.nonblocking_after = Some(wire.options.iter().flatten().count());
+        if wire.sends == 0 && wire.reads == 0 {
+            wire.nonblocking_after = Some(wire.options.iter().flatten().count());
+        }
         Ok(())
     }
 

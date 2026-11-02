@@ -2097,6 +2097,26 @@ fn a_location_not_followed_is_kept_resolved() {
     assert_eq!(ran.easy.report().redirect_url(), None);
 }
 
+/// A redirect to a URL whose user has a space resolves, spaces allowed,
+/// and is refused as its request is set up, as C's build says it: the
+/// next leg's URL is parsed without them (`follow_parse_url`, then
+/// `Curl_parseurl`'s "Bad user").
+#[test]
+fn a_redirect_to_a_user_with_a_space_resolves_and_is_refused() {
+    let location = format!("http://u ser:pw@127.0.0.1:{PORT}/x");
+    let first = moved(&location, false);
+    let (mut m, talk, _) = server(&[&first, OK], false);
+    let ran = get(&mut m, "/p", talk, |o| o.http.follow = Follow::All);
+    let text = ran.seen.text();
+    assert_eq!(ran.result, Err(ErrorKind::UrlMalformat), "{text:?}");
+    let issue = format!("Issue another request to this URL: '{location}'\n");
+    assert!(text.contains(&issue), "{text:?}");
+    assert!(
+        text.contains(&"URL rejected: Bad user\n".to_string()),
+        "{text:?}"
+    );
+}
+
 fn moved(location: &str, close: bool) -> Vec<u8> {
     let close = if close { "Connection: close\r\n" } else { "" };
     format!("HTTP/1.1 301 Moved\r\nLocation: {location}\r\n{close}Content-Length: 5\r\n\r\nmoved")

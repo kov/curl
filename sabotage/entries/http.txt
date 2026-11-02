@@ -1622,3 +1622,12 @@ witness: curl-core proto::http::tests::a_challenge_read_as_a_probe_goes_lets_its
             || meta.close()
 --- new
             || meta.close()
+
+=== a location followed is parsed with spaces allowed
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core proto::http::tests::a_redirect_to_a_user_with_a_space_resolves_and_is_refused
+features: test-util debug-hooks
+--- old
+    let url = match parse_url(&text, cx.easy().options(), reload) {
+--- new
+    let url = match parse_url(&text, cx.easy().options(), true) {

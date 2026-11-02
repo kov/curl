@@ -1921,7 +1921,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                     if !reload {
                         run.course.follow();
                     }
-                    Some(follow_leg(run, cx, proto, location, *code))
+                    Some(follow_leg(run, cx, proto, location, *code, *reload))
                 }
                 _ => None,
             };

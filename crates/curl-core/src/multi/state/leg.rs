@@ -244,6 +244,7 @@ pub(super) fn follow_leg<H: Host>(
     proto: &mut ProtoState,
     location: &[u8],
     code: u16,
+    reload: bool,
 ) -> TransferState {
     let options = cx.easy().options();
     let path_as_is = options.url_rules.path_as_is;
@@ -317,8 +318,10 @@ pub(super) fn follow_leg<H: Host>(
     {
         return TransferState::Init.fail(e);
     }
-    // Parsed again for its leg, as every request's URL is.
-    let url = match parse_url(&text, cx.easy().options(), true) {
+    // Parsed again for its leg, as every request's URL is: a location
+    // followed from its text, spaces refused, a reload from the URL as
+    // it was (`this_is_a_follow`).
+    let url = match parse_url(&text, cx.easy().options(), reload) {
         Ok(url) => url,
         Err(UrlRefused::Rejected(e)) => {
             let why = format_args!("URL rejected: {e}");
@@ -1617,7 +1620,9 @@ pub(super) enum UrlRefused {
 /// scheme where it has none (`parseurlandfillconn`). The transfer's
 /// `own` URL, read back from one parsed already, keeps any space the
 /// application's URL handle allowed, as C goes on from that handle
-/// (`state.uh`, `follow_parse_url`'s `CURLU_ALLOW_SPACE`).
+/// (`state.uh`, `follow_parse_url`'s `CURLU_ALLOW_SPACE`); a location
+/// followed is not its own, and C parses its text without
+/// (`url_set_data_origin_and_creds` with `this_is_a_follow`).
 pub(super) fn parse_url(url: &[u8], options: &Options, own: bool) -> Result<Url, UrlRefused> {
     let parse = ParseOptions {
         guess_scheme: true,

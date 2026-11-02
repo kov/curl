@@ -310,28 +310,21 @@ pub(crate) trait ConnCx: LayerCx {
     fn wants_doh(&self) -> bool;
 
     /// Whether the transfer has a resolver library.
-    fn has_dns_library(&self) -> bool {
-        false
-    }
+    fn has_dns_library(&self) -> bool;
 
     /// How long a blocking resolve begun at `since` may still be waited
     /// for, read from the clock now; none once its time is up
     /// (`Curl_timeleft_ms`, `CURL_TIMEOUT_RESOLVE_MS`).
-    fn await_resolve_left(&mut self, since: Instant) -> Option<Duration> {
-        let _ = since;
-        None
-    }
+    fn await_resolve_left(&mut self, since: Instant) -> Option<Duration>;
 
     /// The application hears of the transfer's progress while a blocking
     /// resolve waits, and may stop it (`Curl_pgrsUpdate`).
     #[allow(clippy::result_unit_err)]
-    fn await_resolve_tick(&mut self) -> Result<(), ()> {
-        Ok(())
-    }
+    fn await_resolve_tick(&mut self) -> Result<(), ()>;
 
     /// The sockets the transfer's libraries closed are told, as soon as a
     /// library is back from its work (`Curl_multi_will_close`).
-    fn libraries_closed(&mut self) {}
+    fn libraries_closed(&mut self);
 
     /// The resolve of `name` in `family` by the transfer's resolver library,
     /// if it has one (`Curl_async_getaddrinfo`).
@@ -340,10 +333,7 @@ pub(crate) trait ConnCx: LayerCx {
         name: &[u8],
         port: u16,
         family: Family,
-    ) -> Option<Result<Box<dyn DnsResolve>, DnsRefused>> {
-        let _ = (name, port, family);
-        None
-    }
+    ) -> Option<Result<Box<dyn DnsResolve>, DnsRefused>>;
 
     /// The resolve of `name` in `family` over DoH started (`Curl_doh`).
     fn doh_start(&mut self, name: &[u8], family: Family) -> Result<DohLookup, ConnectError>;
@@ -506,6 +496,29 @@ impl ConnCx for Plain<'_> {
 
     fn announce_resolve(&mut self) -> Result<(), ConnectError> {
         Ok(())
+    }
+
+    fn has_dns_library(&self) -> bool {
+        false
+    }
+
+    fn await_resolve_left(&mut self, _: Instant) -> Option<Duration> {
+        None
+    }
+
+    fn await_resolve_tick(&mut self) -> Result<(), ()> {
+        Ok(())
+    }
+
+    fn libraries_closed(&mut self) {}
+
+    fn dns_start(
+        &mut self,
+        _: &[u8],
+        _: u16,
+        _: Family,
+    ) -> Option<Result<Box<dyn DnsResolve>, DnsRefused>> {
+        None
     }
 }
 

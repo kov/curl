@@ -39,6 +39,9 @@ pub enum Feature {
     /// Strict Transport Security: hosts a server says to reach only over
     /// HTTPS are, from a file, the application or the server's word.
     Hsts,
+    /// HTTPS records: asked for alongside an `https` origin's addresses,
+    /// the versions they name tried first.
+    HttpsRr,
     /// HTTP/2, by nghttp2, which the tool and the C ABI give every handle.
     Http2,
     /// HTTP/3 over QUIC, by ngtcp2 and nghttp3, which the tool and the C
@@ -96,6 +99,7 @@ impl Feature {
             Feature::Debug => "Debug",
             Feature::GssApi => "GSS-API",
             Feature::Hsts => "HSTS",
+            Feature::HttpsRr => "HTTPSRR",
             Feature::Http2 => "HTTP2",
             Feature::Http3 => "HTTP3",
             Feature::HttpsProxy => "HTTPS-proxy",
@@ -131,6 +135,7 @@ const FEATURES: &[Feature] = &[
     Feature::Http3,
     Feature::HttpsProxy,
     Feature::Httpsig,
+    Feature::HttpsRr,
     Feature::Idn,
     Feature::Ipv6,
     Feature::Kerberos,

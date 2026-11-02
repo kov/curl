@@ -526,13 +526,6 @@ not a difference: it is tracked in `MILESTONES.md`.
   runs under the share's own lock. A writer changing the cache sees no change in what it is given.
   Pinned by `a_share_s_cache_is_not_locked_across_the_application` (same file).
 
-## DoH
-
-- **No HTTPS query.** The reference build claims `HTTPSRR` and sends three POSTs, HTTPS's first;
-  the rewrite claims nothing of the kind, so it sends two, as C's build without it does (test
-  2100's `%else`). The decoder is ported (`unit1658_records`). Pinned by
-  `a_name_resolves_over_doh`.
-
 ## Handles the application never made
 
 - **The connection lock at share cleanup is called with no handle.** When `curl_share_cleanup`

@@ -908,6 +908,12 @@ impl ConnectMachine {
         self.dial
     }
 
+    /// Dial as `dial`, the attempts not started: the HTTPS connect filter
+    /// has chosen.
+    pub(crate) fn set_dial(&mut self, dial: Dial) {
+        self.dial = dial;
+    }
+
     /// Its route, as it dials it.
     pub(crate) fn dialing(&self) -> Dialing<'_> {
         Dialing {
@@ -1849,13 +1855,13 @@ impl ConnectMachine {
                 .map(|at| at.after(setup.delay));
             return Ok(Drove::Connecting(self, Progress::Tunnel { until }));
         }
+        // Whatever else was to come of the name is not wanted
+        // (`Curl_resolv_destroy`).
+        r.late.cancel(cx.net());
         cx.of(
             Component::HappyEyeballs,
             format_args!("connect attempt #{i} successful"),
         );
-        // Whatever else was to come of the name is not wanted
-        // (`Curl_resolv_destroy`).
-        r.late.cancel(cx.net());
         let won = r.attempts.remove(i);
         let component = Dialing {
             route: &self.route,
@@ -2873,11 +2879,24 @@ impl Pending {
                 DohPolled::Done(answer) => {
                     say_not_cached(family_queries(self.family), (name, port), cx);
                     cx.of(Component::Dns, format_args!("[DoH] probe done"));
+                    if answer.as_ref().is_ok_and(|a| !a.is_empty()) {
+                        say_cached_entry(family_queries(self.family), (name, port), cx);
+                    }
+                    cx.of(Component::Dns, format_args!("[DoH] probe done"));
                     Some(answer)
                 }
             },
         }
     }
+}
+
+/// That the name's entry is made, as `Curl_dnscache_add` says it.
+fn say_cached_entry(queries: &str, (name, port): (&[u8], u16), cx: &mut dyn ConnCx) {
+    let name = curl_alloc::Lossy(name);
+    cx.of(
+        Component::Dns,
+        format_args!("cached entry for {name}:{port} queries={queries}"),
+    );
 }
 
 /// That the name is not in the cache, as `Curl_dnscache_get` says it each

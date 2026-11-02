@@ -1213,6 +1213,8 @@ pub(super) fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferStat
         proto,
         route,
         https,
+        record: None,
+        record_lookup: None,
         race: None,
         negotiate: None,
     })

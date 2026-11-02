@@ -628,3 +628,158 @@ fn a_race_out_of_addresses_waits_for_the_rest() {
     assert_eq!(message(&mut m), None);
     assert_eq!(m.census().counts.current, 3);
 }
+
+/// An HTTPS record for an `https` origin: asked for first, under the name
+/// with its port, and its versions tried in the order it gives.
+#[test]
+fn an_origins_record_is_asked_for_and_its_versions_chosen() {
+    let clock = ManualClock::new().unwrap();
+    // `h2` alone, as the record's data has it, in an answer for the question.
+    let mut m_ = vec![0, 0, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+    m_.extend_from_slice(b"\x05_8443\x06_https\x03foo\x04test\x00\x00\x41\x00\x01");
+    m_.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x0a");
+    m_.extend_from_slice(b"\x00\x01\x00\x00\x01\x00\x03\x02h2");
+    let https = Conversation::new(&http(&m_), false);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_peer(at(8443), Peer::Silent)
+        .with_conversation(SERVER.into(), https.clone())
+        .with_conversation(
+            SERVER.into(),
+            Conversation::new(&http(&no_records()), false),
+        )
+        .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false));
+    let mut m = multi_over(net, &clock);
+    let mut easy = asking("https://foo.test:8443/x");
+    let tls = Box::leak(Box::new(crate::tls::fake::FakeTls::new().unwrap()));
+    easy.set_libraries(
+        crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+            tls: Some(crate::libraries::Library::Static(tls)),
+            ..crate::libraries::Libraries::NONE
+        })
+        .unwrap(),
+    );
+    let lines = Lines::default();
+    let o = easy.options_mut();
+    o.output.verbose = true;
+    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    m.add(easy, (), &mut NoEvents).unwrap();
+    run(&mut m, &clock);
+    let got = https.received();
+    let wire = b"\x05_8443\x06_https\x03foo\x04test\x00\x00\x41\x00\x01";
+    assert!(
+        got.windows(wire.len()).any(|w| w == wire),
+        "{:?}",
+        String::from_utf8_lossy(&got)
+    );
+    let said = lines.0.lock().unwrap().clone();
+    assert!(
+        said.iter()
+            .any(|l| l.trim_end() == "HTTPS-RR foo.test:8443: 1 . alpn=h2"),
+        "{said:?}"
+    );
+}
+
+/// A record that came only after the chain's first connect does not choose
+/// the first attempt, whatever the plan dialed: C has chosen by then. The
+/// second is chosen by it.
+#[test]
+fn a_record_that_comes_late_leaves_the_first_attempt_alone() {
+    let clock = ManualClock::new().unwrap();
+    let mut answer = vec![0, 0, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+    answer.extend_from_slice(b"\x03foo\x04test\x00\x00\x41\x00\x01");
+    answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x10");
+    answer.extend_from_slice(b"\x00\x01\x00\x00\x01\x00\x09\x08http/1.1");
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_peer(at(443), Peer::Silent)
+        .with_conversation(SERVER.into(), Conversation::new(&http(&answer), false))
+        .with_conversation(
+            SERVER.into(),
+            Conversation::new(&http(&no_records()), false),
+        )
+        .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false));
+    let mut m = multi_over(net, &clock);
+    let mut easy = asking("https://foo.test/x");
+    let tls = Box::leak(Box::new(crate::tls::fake::FakeTls::new().unwrap()));
+    easy.set_libraries(
+        crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+            tls: Some(crate::libraries::Library::Static(tls)),
+            ..crate::libraries::Libraries::NONE
+        })
+        .unwrap(),
+    );
+    let lines = Lines::default();
+    let o = easy.options_mut();
+    o.output.verbose = true;
+    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"https-connect");
+    easy.set_components(Some(c));
+    m.add(easy, (), &mut NoEvents).unwrap();
+    run(&mut m, &clock);
+    let said = lines.0.lock().unwrap().clone();
+    assert!(
+        said.iter().any(|l| l.contains("1st attempt uses")),
+        "{said:?}"
+    );
+    assert!(
+        !said
+            .iter()
+            .any(|l| l.contains("1st attempt uses") && l.contains("HTTPS-RR")),
+        "{said:?}"
+    );
+}
+
+/// What an HTTPS query's end leaves in the cache: a server's no such name
+/// and its answer without a record are kept, anything else says nothing
+/// of the name.
+#[test]
+fn only_an_answer_about_the_name_is_kept_of_its_record() {
+    let line = |rcode: u8, what: &[u8], ancount: u8| {
+        let clock = ManualClock::new().unwrap();
+        let mut reply = vec![0, 0, 0x81, 0x80 | rcode, 0, 1, 0, ancount, 0, 0, 0, 0];
+        reply.extend_from_slice(b"\x03foo\x04test\x00\x00\x41\x00\x01");
+        reply.extend_from_slice(what);
+        let net = FakeNet::new(clock.clone())
+            .with_peer(SERVER.into(), Peer::Accepts)
+            .with_peer(at(443), Peer::Silent)
+            .with_conversation(SERVER.into(), Conversation::new(&http(&reply), false))
+            .with_conversation(
+                SERVER.into(),
+                Conversation::new(&http(&no_records()), false),
+            )
+            .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false));
+        let mut m = multi_over(net, &clock);
+        let mut easy = asking("https://foo.test/x");
+        let tls = Box::leak(Box::new(crate::tls::fake::FakeTls::new().unwrap()));
+        easy.set_libraries(
+            crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+                tls: Some(crate::libraries::Library::Static(tls)),
+                ..crate::libraries::Libraries::NONE
+            })
+            .unwrap(),
+        );
+        let lines = Lines::default();
+        let o = easy.options_mut();
+        o.output.verbose = true;
+        o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"dns");
+        easy.set_components(Some(c));
+        m.add(easy, (), &mut NoEvents).unwrap();
+        run(&mut m, &clock);
+        let said = lines.0.lock().unwrap().clone();
+        (
+            said.iter()
+                .any(|l| l.contains("cache negative") && l.contains("HTTPS")),
+            said.iter()
+                .any(|l| l.contains("[HTTPS] no record available")),
+        )
+    };
+    assert_eq!(line(3, b"", 0), (true, false), "no such name");
+    assert_eq!(line(0, b"", 0), (false, true), "no record");
+    assert_eq!(line(2, b"", 0), (false, false), "a server's failure");
+    let a = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x37\x00\x04\x7f\x00\x00\x01";
+    assert_eq!(line(0, a, 1), (false, false), "another type of record");
+}

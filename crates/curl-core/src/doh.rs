@@ -480,3 +480,50 @@ fn decode_alpns(record: &mut HttpsRecord, mut value: &[u8]) -> Result<(), Record
     }
     Ok(())
 }
+
+impl HttpsRecord {
+    /// As the trace shows it (`Curl_httpsrr_print`).
+    pub(crate) fn print(&self) -> Result<Vec<u8>, OutOfMemory> {
+        let mut out = Vec::new();
+        let priority = crate::text::Text::<8>::clipped(format_args!("{} ", self.priority)).0;
+        out.try_extend_from_slice(priority.bytes())?;
+        out.try_extend_from_slice(if self.target.is_empty() {
+            b"."
+        } else {
+            &self.target
+        })?;
+        if self.mandatory {
+            out.try_extend_from_slice(b" mandatory-keys(ignored)")?;
+        }
+        for (i, alpn) in self.alpns.iter().enumerate() {
+            out.try_extend_from_slice(if i == 0 { b" alpn=" } else { b"," })?;
+            out.try_extend_from_slice(match alpn {
+                RecordAlpn::H1 => b"http/1.1",
+                RecordAlpn::H2 => b"h2",
+                RecordAlpn::H3 => b"h3",
+            })?;
+        }
+        let mut say = |args: std::fmt::Arguments<'_>| {
+            let text = crate::text::Text::<64>::clipped(args).0;
+            out.try_extend_from_slice(text.bytes())
+        };
+        if let Some(port) = self.port {
+            say(format_args!(" port={port}"))?;
+        }
+        if self.no_default_alpn {
+            say(format_args!(" no-default-alpn"))?;
+        }
+        for (i, ip) in self.ipv6_hints.iter().enumerate() {
+            let head = if i == 0 { " ipv6hint=" } else { "," };
+            say(format_args!("{head}{ip}"))?;
+        }
+        for (i, ip) in self.ipv4_hints.iter().enumerate() {
+            let head = if i == 0 { " ipv4hint=" } else { "," };
+            say(format_args!("{head}{ip}"))?;
+        }
+        if !self.ech.is_empty() {
+            say(format_args!(" ech=<{} bytes>", self.ech.len()))?;
+        }
+        Ok(out)
+    }
+}

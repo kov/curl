@@ -1155,7 +1155,7 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   uses, or a name `CURLOPT_RESOLVE` gives, which answers the addresses only); never an address,
   which asks for none, nor a name whose answer is cached. Once armed it is not cleared when the
   attempt wins: it stays in the transfer's pollset lines until `[TIMEOUT] all cleared` at
-  COMPLETED. The engine resolves no HTTPS-RR (that waits for c-ares) and has the answer the
+  COMPLETED. Without DoH or c-ares the engine resolves no HTTPS-RR, and has the answer the
   reference build's resolver gives a name without one: it looks for the record in the DNS cache
   as the setup's first connect starts, as C's does (`queries=HTTPS -> 0 not found`, `hostip_resolv
   started -> 81`), and at the setup's next connect has the answer, none, as C's local resolver
@@ -2585,6 +2585,13 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
 - **The host.** `MultiEvents::internal` lets it make its value for the probe and `internal_gone`
   gives it back; the shim's is a `ShimEasy` marked internal, which `easy::handle` refuses as C's
   `state.internal` is refused, called back with its debug function and its master's data.
+- **A name's HTTPS record.** `https.rs` starts a third probe of its own (`start_https`), named
+  `_port._https.name` off port 443, before the name's addresses are asked for. Its answer, kept in
+  the cache beside them, chooses the attempts' versions ahead of what is wanted, if it is about
+  the origin itself. The first attempt is chosen by what was known at the chain's first connect,
+  or, under `CURL_DBG_AWAIT_HTTPSRR`, once the record has come (`set_dial`); a record arriving
+  later chooses the second. A server's no such name is kept as a negative entry and an answer
+  without a record as an empty one; any other failure keeps nothing.
 - **The trace.** `Easy::doing` names DoH before each line but those of DNS and the like, which
   name themselves (`state.feat`). A probe is verbose only with DoH's trace on.
 

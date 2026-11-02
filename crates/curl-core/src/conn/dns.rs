@@ -6,6 +6,7 @@ use crate::share::{Kind, Share, ShareLock, watched};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
+use crate::doh::HttpsRecord;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use crate::conn::io::Family;
@@ -108,20 +109,37 @@ struct Entry {
     added: Instant,
     /// Given by the application without `+`: it never goes stale.
     permanent: bool,
-    /// What it keeps is that the name has no HTTPS record (HTTPS-RR),
+    /// What it keeps is what the name has of an HTTPS record (HTTPS-RR),
     /// not its addresses: an entry of its own, as C keeps both
-    /// (`CURL_DNST_HTTPS`), and one that says no.
+    /// (`CURL_DNST_HTTPS`).
     https: bool,
+    /// The record, for an entry that says the name has one.
+    record: Option<TryArc<HttpsRecord>>,
+    /// It says that the name has no record, as a name's not existing is
+    /// said: it ages twice as fast.
+    negative: bool,
 }
 
 /// What the cache had of a name's HTTPS record.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(crate) enum HttpsLookup {
-    /// That it has none.
-    Found,
+    /// What it has: a record or, as far as was asked, none.
+    Found(Option<TryArc<HttpsRecord>>),
     /// It had gone stale, and is gone.
     Stale,
     Missing,
+}
+
+#[cfg(test)]
+impl PartialEq for HttpsLookup {
+    fn eq(&self, other: &HttpsLookup) -> bool {
+        matches!(
+            (self, other),
+            (HttpsLookup::Found(None), HttpsLookup::Found(None))
+                | (HttpsLookup::Stale, HttpsLookup::Stale)
+                | (HttpsLookup::Missing, HttpsLookup::Missing)
+        )
+    }
 }
 
 /// What the cache had for a name.
@@ -193,6 +211,8 @@ impl DnsCache {
             added: now,
             permanent,
             https: false,
+            record: None,
+            negative: false,
         })?;
         Ok(replaced)
     }
@@ -226,10 +246,10 @@ impl DnsCache {
             self.entries.remove(row);
             return HttpsLookup::Stale;
         }
-        HttpsLookup::Found
+        HttpsLookup::Found(self.entries[row].record.clone())
     }
 
-    /// Keep that `name` has no HTTPS record on `port`, from `now`, in
+    /// Keep what `name` has of an HTTPS record on `port`, from `now`, in
     /// place of what was kept of it. The name is the answer of its
     /// addresses when they are kept, so the entry costs no more than its
     /// row.
@@ -237,6 +257,8 @@ impl DnsCache {
         &mut self,
         name: &[u8],
         port: u16,
+        record: Option<TryArc<HttpsRecord>>,
+        negative: bool,
         now: Instant,
     ) -> Result<(), OutOfMemory> {
         let answer = match self.row(name, port, false) {
@@ -252,6 +274,8 @@ impl DnsCache {
             added: now,
             permanent: false,
             https: true,
+            record,
+            negative,
         })
     }
 
@@ -296,7 +320,7 @@ impl Entry {
     /// (`dnscache_entry_is_stale`).
     fn age(&self, now: Instant) -> Duration {
         let age = now.since(self.added);
-        if self.https || self.answer.addrs.is_empty() {
+        if self.negative || (!self.https && self.answer.addrs.is_empty()) {
             age.saturating_mul(2)
         } else {
             age
@@ -657,17 +681,23 @@ mod tests {
         let https = |cache: &mut DnsCache, name: &[u8], port, at| {
             cache.lookup_https((name, port), MAX_AGE, at)
         };
-        assert_eq!(https(&mut cache, b"a.test", 443, now), HttpsLookup::Missing);
-        cache.put_https(b"a.test", 443, now).unwrap();
+        assert!(matches!(
+            https(&mut cache, b"a.test", 443, now),
+            HttpsLookup::Missing
+        ));
+        cache.put_https(b"a.test", 443, None, true, now).unwrap();
         assert_eq!(TryArc::count(&addrs), 3, "the addresses' answer");
-        assert_eq!(https(&mut cache, b"A.TEST", 443, now), HttpsLookup::Found);
+        assert_eq!(
+            https(&mut cache, b"A.TEST", 443, now),
+            HttpsLookup::Found(None)
+        );
         assert_eq!(https(&mut cache, b"a.test", 80, now), HttpsLookup::Missing);
         match cache.lookup((b"a.test", 443), Family::Any, false, MAX_AGE, now) {
             Lookup::Found(found) => assert_eq!(found.addrs(), [ip("1.2.3.4")]),
             _ => panic!("the addresses stay"),
         }
         // Kept again, it replaces what was kept.
-        cache.put_https(b"a.test", 443, now).unwrap();
+        cache.put_https(b"a.test", 443, None, true, now).unwrap();
         assert_eq!(TryArc::count(&addrs), 3);
         let half = now.after(Duration::from_secs(30));
         assert_eq!(https(&mut cache, b"a.test", 443, half), HttpsLookup::Stale);
@@ -681,9 +711,12 @@ mod tests {
         ));
         // A name with no addresses kept has its record kept alone, and
         // forgetting addresses leaves it.
-        cache.put_https(b"b.test", 443, now).unwrap();
+        cache.put_https(b"b.test", 443, None, true, now).unwrap();
         assert!(!cache.remove(b"b.test", 443));
-        assert_eq!(https(&mut cache, b"b.test", 443, now), HttpsLookup::Found);
+        assert_eq!(
+            https(&mut cache, b"b.test", 443, now),
+            HttpsLookup::Found(None)
+        );
         assert!(matches!(
             cache.lookup((b"b.test", 443), Family::Any, false, MAX_AGE, now),
             Lookup::Missing

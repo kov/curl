@@ -21,7 +21,9 @@ use super::timers::TimeLeft;
 use super::{EventCx, Host, Owner, Rows, Slots, StepCx, TransferId};
 use crate::conn::ConnectError;
 use crate::conn::io::{Family, ResolveFailure};
-use crate::doh::{DohError, QueryType, decode_answer, encode_query};
+use crate::doh::{
+    DohError, HttpsRecord, QueryType, RecordError, decode_answer, decode_https_record, encode_query,
+};
 use crate::error::ErrorKind;
 use crate::handler::{Handler, Write, WriteHandler};
 use crate::multi::TransferCx;
@@ -51,13 +53,28 @@ enum QueryFailure {
     Other,
 }
 
+/// What a resolve of a name's HTTPS record came to.
+#[derive(Debug)]
+pub(crate) enum RecordAnswer {
+    Record(HttpsRecord),
+    /// The server answered, without one.
+    NoRecord,
+    /// The server said no such name, which is kept.
+    NoSuchName,
+    /// Anything else, which says nothing of the name and is not kept.
+    Failed,
+}
+
 /// The state a resolve and its probes share.
 #[derive(Debug)]
 struct State {
     /// Set as the lookup drops: the master wants nothing any more.
     gone: bool,
-    /// IPv6's, then IPv4's, as the probes start.
+    /// IPv6's, then IPv4's, as the probes start; or, for a resolve of a
+    /// name's HTTPS record, its one query, the first.
     queries: [Query; 2],
+    /// The HTTPS record found.
+    record: Option<HttpsRecord>,
 }
 
 type Shared = TryArc<Mutex<State>>;
@@ -127,6 +144,7 @@ pub(super) fn orphan_for_test() -> (Lookup, Probe) {
     let shared = TryArc::try_new(Mutex::new(State {
         gone: false,
         queries: [Query::Waiting(Vec::new()), Query::Unasked],
+        record: None,
     }))
     .unwrap();
     let probe = Probe {
@@ -164,6 +182,21 @@ impl Lookup {
         Ok(crate::conn::io::Partial {
             addrs,
             v6_answered: !matches!(state.queries[0], Query::Waiting(_)),
+        })
+    }
+
+    /// What a resolve of an HTTPS record came to, once its query ended
+    /// (`Curl_doh_take_result`).
+    pub(crate) fn https(&self) -> Option<RecordAnswer> {
+        let mut state = lock(&self.0);
+        Some(match state.queries[0] {
+            Query::Ended(Ok(_)) => match state.record.take() {
+                Some(record) => RecordAnswer::Record(record),
+                None => RecordAnswer::NoRecord,
+            },
+            Query::Ended(Err(QueryFailure::NoSuchName)) => RecordAnswer::NoSuchName,
+            Query::Ended(Err(QueryFailure::Other)) => RecordAnswer::Failed,
+            _ => return None,
         })
     }
 
@@ -226,6 +259,7 @@ pub(crate) fn start<H: Host>(
     let shared = TryArc::try_new(Mutex::new(State {
         gone: false,
         queries,
+        record: None,
     }))
     .map_err(|OutOfMemory| ConnectError::OutOfMemory)?;
     // Whatever failed part of the way, the probes started go with this.
@@ -240,6 +274,36 @@ pub(crate) fn start<H: Host>(
             run_probe(cx, name, probe)?;
         }
     }
+    Ok(lookup)
+}
+
+/// Start the resolve of `name`'s HTTPS record on `port` over DoH, named as
+/// a record for another port than HTTPS's is (`Curl_doh`).
+pub(crate) fn start_https<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    name: &[u8],
+    port: u16,
+) -> Result<Lookup, ConnectError> {
+    let oom = |OutOfMemory| ConnectError::OutOfMemory;
+    let shared = TryArc::try_new(Mutex::new(State {
+        gone: false,
+        queries: [Query::Waiting(Vec::new()), Query::Unasked],
+        record: None,
+    }))
+    .map_err(oom)?;
+    let lookup = Lookup(shared.clone());
+    let mut asked = Vec::new();
+    if port != 443 {
+        let prefix = crate::text::Text::<24>::clipped(format_args!("_{port}._https."));
+        asked.try_extend_from_slice(prefix.0.bytes()).map_err(oom)?;
+    }
+    asked.try_extend_from_slice(name).map_err(oom)?;
+    let probe = Probe {
+        shared,
+        query: 0,
+        what: QueryType::Https,
+    };
+    run_probe(cx, &asked, probe)?;
     Ok(lookup)
 }
 
@@ -324,6 +388,16 @@ fn run_probe<H: Host>(
     Ok(())
 }
 
+/// What C says of a record it refuses, its `CURLcode`'s words.
+fn record_error(e: RecordError) -> &'static str {
+    match e {
+        RecordError::BadParameter => ErrorKind::BadFunctionArgument.message(),
+        RecordError::BadName | RecordError::OutOfMemory => ErrorKind::OutOfMemory.message(),
+        RecordError::Weird => ErrorKind::WeirdServerReply.message(),
+        RecordError::BadAlpn => ErrorKind::BadContentEncoding.message(),
+    }
+}
+
 /// C's number for a query that cannot be made, as its failure says it.
 fn number(e: DohError) -> u8 {
     match e {
@@ -381,6 +455,26 @@ pub(super) fn probe_done<H: Host>(
                     DohError::NoSuchName => QueryFailure::NoSuchName,
                     _ => QueryFailure::Other,
                 })
+            }
+            Ok(answer) if probe.what == QueryType::Https && !answer.https.is_empty() => {
+                let n = answer.https.len();
+                trace::of(
+                    cx,
+                    crate::components::Component::Dns,
+                    format_args!("[HTTPS] got {n} records"),
+                );
+                match decode_https_record(answer.https[0]) {
+                    Ok(record) => {
+                        state.record = Some(record);
+                        trace::info(cx, format_args!("DoH request complete, 0 to go"));
+                        Ok(Vec::new())
+                    }
+                    Err(e) => {
+                        let why = record_error(e);
+                        trace::info(cx, format_args!("[DoH] error decoding HTTPS RR: {why}"));
+                        Err(QueryFailure::Other)
+                    }
+                }
             }
             Ok(answer) => {
                 let waiting = state

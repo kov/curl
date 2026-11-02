@@ -197,3 +197,37 @@ witness: curl-core multi::doh_tests::a_socks_destination_goes_over_doh
 --- new
             d.target_late.0 = Some(p);
             return Ok(true);
+
+=== a record for another port is followed
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core multi::state::https::tests::an_origins_record_chooses_first
+--- old
+    matches!(record.target.as_slice(), b"" | b".") && record.port.is_none_or(|p| p == port)
+--- new
+    matches!(record.target.as_slice(), b"" | b".") && (port > 0 || record.port.is_none())
+
+=== a record's versions come after what was wanted
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core multi::state::https::tests::an_origins_record_chooses_first
+--- old
+        self.recorded(None)
+            .map(|a| (a, Source::Record))
+--- new
+        self.recorded(Some(Alpn::H1))
+            .map(|a| (a, Source::Record))
+
+=== a record that came late chooses the first attempt
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core multi::doh_tests::a_record_that_comes_late_leaves_the_first_attempt_alone
+--- old
+    if c.https.is_some_and(|h| h.first_by_record) {
+--- new
+    if c.https.is_some() {
+
+=== a server's failure is kept as the name's having no record
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core multi::doh_tests::only_an_answer_about_the_name_is_kept_of_its_record
+--- old
+                RecordAnswer::Failed => Came::Failed,
+--- new
+                RecordAnswer::Failed => Came::Negative,

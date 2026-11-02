@@ -14,6 +14,10 @@ pub(crate) struct Connecting {
     pub(super) route: NetRoute,
     /// The HTTPS connect filter heading the setup, if it has one.
     pub(super) https: Option<https::HttpsConnect>,
+    /// The origin's HTTPS record, once known that it has one.
+    pub(super) record: Option<curl_alloc::TryArc<crate::doh::HttpsRecord>>,
+    /// Its resolve over DoH, while it goes on: gone with the setup.
+    pub(super) record_lookup: Option<crate::multi::doh::Lookup>,
     /// The race of an HTTP/3 attempt against one over TCP, once its first
     /// started: what the second is made from, and the QUIC attempt out
     /// of the lease while both run.
@@ -396,6 +400,11 @@ impl Connecting {
         self.attempt(self.leader())
     }
 
+    /// The leading setup, as it is about to start.
+    pub(super) fn lead_mut(&mut self) -> &mut ConnectMachine {
+        self.attempt_mut(self.leader())
+    }
+
     /// The leading setup's handshake under way, if one is.
     fn lead_handshake(&self) -> Option<&Handshake> {
         self.handshake(self.leader())
@@ -496,6 +505,8 @@ impl Connecting {
             proto,
             route,
             https: _,
+            record: _,
+            record_lookup: _,
             race,
             negotiate,
         } = self;
@@ -634,6 +645,11 @@ pub(super) fn connecting<H: Host>(
             return (TransferState::Connecting(c), Wake::Idle);
         }
         if let Some(SetupPoint::Racing { started: false }) = c.lead().map(ConnectMachine::reached) {
+            if https::awaiting(&c, cx) {
+                https::call_ended(c.https, cx, Ok(false));
+                chain_connect_ended(cx, Ok(false));
+                return (TransferState::Connecting(c), Wake::Idle);
+            }
             https::start(&mut c, &mut run.deadlines, cx);
             if race_starts(&mut c, cx).is_err() {
                 return (

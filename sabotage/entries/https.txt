@@ -12,10 +12,10 @@ file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_waits_for_its_record_once
 features: test-util
 --- old
-        Record::Known
+        Ok((Record::Known, kept, None))
     } else {
 --- new
-        Record::Pending
+        Ok((Record::Pending, kept, None))
     } else {
 
 === the record's answer is not kept for the next setup
@@ -23,7 +23,7 @@ file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_waits_for_its_record_once
 features: test-util
 --- old
-        .section(|d| d.put_https(peer.name(), peer.port(), now))
+        .section(|d| d.put_https(name, port, record.cloned(), negative, now))
 --- new
         .section(|_| Ok::<(), curl_alloc::OutOfMemory>(()))
 
@@ -39,9 +39,9 @@ witness: curl-core conn::dns::tests::a_name_s_https_record_is_kept_apart_from_it
 file: crates/curl-core/src/conn/dns.rs
 witness: curl-core conn::dns::tests::a_name_s_https_record_is_kept_apart_from_its_addresses
 --- old
-        if self.https || self.answer.addrs.is_empty() {
+        if self.negative || (!self.https && self.answer.addrs.is_empty()) {
 --- new
-        if self.answer.addrs.is_empty() {
+        if !self.https && self.answer.addrs.is_empty() {
 
 === a failed chain is named past the HTTPS connect filter
 file: crates/curl-core/src/conn/chain.rs
@@ -272,27 +272,28 @@ witness: curl-core proto::http::tests::h3_trace::a_connect_udp_tunnel_unanswered
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::h3_trace::a_name_s_https_record_is_looked_for_as_c_locks_it
 --- old
-        if cached(route, cx) == HttpsLookup::Found {
-            found_since(route, cx);
-            return Record::Known;
+        if let HttpsLookup::Found(kept) = cached(route, cx) {
+            found_since(route, kept.as_ref(), cx);
+            return Ok((Record::Known, kept, None));
         }
-        Record::Pending
+        Ok((Record::Pending, None, lookup))
 --- new
-        Record::Pending
+        Ok((Record::Pending, None, lookup))
 
 === an HTTPS record kept by another transfer meanwhile is kept again
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::h3_trace::a_record_kept_meanwhile_is_found_not_kept_again
 --- old
-            if cached(&c.route, cx) == HttpsLookup::Found {
+    if let HttpsLookup::Found(kept) = cached(&c.route, cx) {
 --- new
-            if false {
+    if let HttpsLookup::Found(kept) = HttpsLookup::Missing {
 
 === an HTTPS record found as its answer is taken is not said to be none
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::h3_trace::a_record_kept_meanwhile_is_found_not_kept_again
 --- old
-    trace::info_with(cx, &[b"HTTPS-RR ", name, at.bytes(), b": -"]);
+    say_record(route, kept, cx);
 }
 --- new
+    let _ = kept;
 }

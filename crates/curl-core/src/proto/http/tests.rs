@@ -3970,8 +3970,12 @@ fn a_share_keeps_cookies_for_its_handles() {
     let dir = std::env::temp_dir().join(format!("curl-share-jar-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let jar = dir.join("jar");
-    two.options_mut().http.cookies.make_mut().unwrap().save_to =
-        Some(jar.as_os_str().as_encoded_bytes().to_vec());
+    two.options_mut()
+        .http
+        .cookies
+        .make_mut()
+        .unwrap()
+        .set_save_to(Some(jar.as_os_str().as_encoded_bytes().to_vec()));
     two.save_cookies().unwrap();
     assert!(!jar.exists(), "no transfer started it");
     two.options_mut()

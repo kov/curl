@@ -3275,7 +3275,12 @@ fn http_setopts(
     }
     s.str("CURLOPT_COOKIEJAR", op.cookie_jar, |o| {
         if let Some(jar) = op.cookie_jar {
-            o.http.cookies.make_mut().map_err(oom)?.save_to = Some(copy(jar).map_err(oom)?);
+            let jar = copy(jar).map_err(oom)?;
+            o.http
+                .cookies
+                .make_mut()
+                .map_err(oom)?
+                .set_save_to(Some(jar));
         }
         Ok(())
     })?;

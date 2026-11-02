@@ -974,6 +974,9 @@ impl Easy {
         if self.cookies.is_none() {
             self.cookies = Some(try_box(Jar::default())?);
         }
+        if let Some(cookies) = self.options.http.cookies.made_mut() {
+            cookies.jar_made();
+        }
         Ok(())
     }
 
@@ -1147,7 +1150,7 @@ impl Easy {
     /// were read is not written, as they may not all have been. Nothing to
     /// write is no failure.
     pub fn save_cookies(&mut self) -> Result<(), SaveError> {
-        let Some(to) = &self.options.http.cookies.save_to else {
+        let Some(to) = self.options.http.cookies.save_to() else {
             self.watch_shared_jar();
             return Ok(());
         };

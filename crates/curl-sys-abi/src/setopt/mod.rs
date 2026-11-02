@@ -1480,7 +1480,16 @@ fn apply(
         (ffi::CURLOPT_COOKIEJAR, Ptr(p)) => {
             // SAFETY: as above.
             let value = unsafe { owned(p) }?;
-            options.http.cookies.set(|g| &mut g.save_to, value)?;
+            // Clearing a group never made makes nothing, as C allocates
+            // nothing to clear an option; `jar_option` makes the jar.
+            match value {
+                Some(_) => options.http.cookies.make_mut()?.set_save_to(value),
+                None => {
+                    if let Some(cookies) = options.http.cookies.made_mut() {
+                        cookies.set_save_to(None);
+                    }
+                }
+            }
         }
         (ffi::CURLOPT_COOKIESESSION, Long(n)) => {
             options.http.cookies.make_mut()?.new_session = n != 0

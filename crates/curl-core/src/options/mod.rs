@@ -1260,6 +1260,7 @@ impl ColdGroup for Cookies {
         send: None,
         files: Lines::NONE,
         save_to: None,
+        jar_asked: false,
         new_session: false,
     };
 }
@@ -2142,8 +2143,12 @@ pub struct Cookies {
     /// (`CURLOPT_COOKIEFILE`). Any, even an empty name, turns the jar on.
     pub files: Lines,
     /// Where `Easy::save_cookies` writes the jar, `-` for standard
-    /// output; set, it turns the jar on (`CURLOPT_COOKIEJAR`).
-    pub save_to: Option<Vec<u8>>,
+    /// output (`CURLOPT_COOKIEJAR`).
+    save_to: Option<Vec<u8>>,
+    /// Setting `save_to` asked for a jar no one has made yet. C makes it as
+    /// the name is set and not after, so a jar that later goes, by leaving
+    /// a share or by `CURLOPT_COOKIEFILE` NULL, does not come back.
+    jar_asked: bool,
     /// The files' cookies that last the session are passed over
     /// (`CURLOPT_COOKIESESSION`).
     pub new_session: bool,
@@ -2152,7 +2157,24 @@ pub struct Cookies {
 impl Cookies {
     /// Whether the options turn the jar on.
     pub(crate) fn wanted(&self) -> bool {
-        self.files.iter().next().is_some() || self.save_to.is_some()
+        self.files.iter().next().is_some() || self.jar_asked
+    }
+
+    /// Where `Easy::save_cookies` writes the jar.
+    pub fn save_to(&self) -> Option<&[u8]> {
+        self.save_to.as_deref()
+    }
+
+    /// Name where `Easy::save_cookies` writes the jar, and turn the jar on,
+    /// whatever the name (`CURLOPT_COOKIEJAR`).
+    pub fn set_save_to(&mut self, name: Option<Vec<u8>>) {
+        self.save_to = name;
+        self.jar_asked = true;
+    }
+
+    /// A jar has been made: what asked for one has its answer.
+    pub(crate) fn jar_made(&mut self) {
+        self.jar_asked = false;
     }
 
     fn try_clone(&self) -> Result<Cookies, OutOfMemory> {
@@ -2160,6 +2182,7 @@ impl Cookies {
             send: self.send.as_deref().map(copy).transpose()?,
             files: self.files.try_clone()?,
             save_to: self.save_to.as_deref().map(copy).transpose()?,
+            jar_asked: self.jar_asked,
             new_session: self.new_session,
         })
     }

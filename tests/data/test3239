@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+HTTP GET
+cookies
+share
+libtest
+</keywords>
+</info>
+
+# Server-side
+<reply>
+<data nocheck="yes">
+HTTP/1.1 200 OK
+Content-Length: 0
+Set-Cookie: a=1
+
+</data>
+</reply>
+
+# Client-side
+<client>
+<features>
+cookies
+</features>
+<server>
+http
+</server>
+<name>
+CURLOPT_COOKIEJAR does not bring back a jar that has gone
+</name>
+<tool>
+lib%TESTNUMBER
+</tool>
+<command>
+http://%HOSTIP:%HTTPPORT/%TESTNUMBER %LOGDIR/jar%TESTNUMBER-
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<stdout>
+named: 1 cookies, written
+left a share: 0 cookies, not written
+forgotten: 0 cookies, not written
+named again: 1 cookies, written
+a file after: 1 cookies, written
+</stdout>
+</verify>
+</testcase>

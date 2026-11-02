@@ -1,5 +1,23 @@
 # The share (crates/curl-core/src/share.rs).
 
+=== a jar that went comes back at the next transfer because a name to save it under is set
+file: crates/curl-core/src/options/mod.rs
+witness: curl-sys-abi handle_tests::a_jar_gone_is_not_brought_back_by_its_name
+--- old
+        self.files.iter().next().is_some() || self.jar_asked
+--- new
+        self.files.iter().next().is_some() || self.save_to.is_some()
+
+=== a jar once made is asked for again at each transfer
+file: crates/curl-core/src/options/mod.rs
+witness: curl-sys-abi handle_tests::a_jar_gone_is_not_brought_back_by_its_name
+--- old
+    pub(crate) fn jar_made(&mut self) {
+        self.jar_asked = false;
+    }
+--- new
+    pub(crate) fn jar_made(&mut self) {}
+
 === a transfer ignores its share's connections
 file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core multi::tests::a_share_keeps_connections_across_handles

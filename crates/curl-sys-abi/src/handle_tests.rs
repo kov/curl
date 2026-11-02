@@ -1814,7 +1814,7 @@ fn request_strings_reach_the_transfer() {
                 o.http.custom.method.clone(),
                 k.send.clone(),
                 k.files.iter().map(<[u8]>::to_vec).collect::<Vec<_>>(),
-                k.save_to.clone(),
+                k.save_to().map(<[u8]>::to_vec),
             )
         })
     };
@@ -6003,6 +6003,88 @@ fn a_lock_function_alone_locks_what_is_shared() {
     }
     let calls = std::mem::take(&mut *seen.lock().unwrap());
     assert!(calls.iter().all(|&d| d == cookie), "{calls:?}");
+}
+
+/// A name to save the jar under turns a jar on as it is set, not at each
+/// transfer: once the jar has gone, by leaving a share that keeps cookies or
+/// by `CURLOPT_COOKIEFILE` NULL, a transfer has none until the name is set
+/// again or a cookie file named, as the C build does.
+#[test]
+fn a_jar_gone_is_not_brought_back_by_its_name() {
+    use crate::share::{curl_share_cleanup, curl_share_init, curl_share_setopt};
+    const REPLY: &[u8] = b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nContent-Length: 0\r\n\
+                           Connection: close\r\n\r\n";
+    let dir = std::env::temp_dir().join(format!("curl-jar-gone-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sh = curl_share_init();
+    // SAFETY: a live share and an int, as the option takes.
+    let kept = unsafe {
+        curl_share_setopt(
+            sh,
+            ffi::CURLSHOPT_SHARE,
+            ffi::CURL_LOCK_DATA_COOKIE.0 as c_int,
+        )
+    };
+    assert_eq!(kept, ffi::CURLSHE_OK);
+    let leave = |c| {
+        assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK);
+        assert_eq!(
+            pointer(c, ffi::CURLOPT_SHARE, ptr::null_mut::<c_void>()),
+            CURLE_OK
+        );
+    };
+    let name = |c, jar: &std::ffi::CString| {
+        assert_eq!(
+            pointer(c, ffi::CURLOPT_COOKIEJAR, jar.as_ptr().cast_mut()),
+            CURLE_OK
+        );
+    };
+    type Between<'a> = &'a dyn Fn(*mut CURL, &std::ffi::CString);
+    let cases: [(&str, bool, Between); 5] = [
+        ("named", true, &|_, _| {}),
+        ("left a share", false, &|c, _| leave(c)),
+        ("forgotten", false, &|c, _| {
+            let none = ptr::null_mut::<c_char>();
+            assert_eq!(pointer(c, ffi::CURLOPT_COOKIEFILE, none), CURLE_OK);
+        }),
+        ("named again", true, &|c, jar| {
+            leave(c);
+            name(c, jar);
+        }),
+        ("a file after", true, &|c, _| {
+            leave(c);
+            pointer(c, ffi::CURLOPT_COOKIEFILE, c"".as_ptr().cast_mut());
+        }),
+    ];
+    for (what, kept, between) in cases {
+        let (port, server) = serve(vec![REPLY]);
+        let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+        let path = dir.join(what.replace(' ', "-"));
+        let jar = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        let c = curl_easy_init();
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+        function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+        long(c, ffi::CURLOPT_TIMEOUT, 10);
+        name(c, &jar);
+        between(c, &jar);
+        // SAFETY: a live handle.
+        assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK, "{what}");
+        server.join().unwrap();
+        let mut list: *mut ffi::curl_slist = ptr::null_mut();
+        // SAFETY: a live handle, and where the option's list goes.
+        let got = unsafe { curl_easy_getinfo(c, ffi::CURLINFO_COOKIELIST, &raw mut list) };
+        assert_eq!(got, CURLE_OK);
+        assert_eq!(!list.is_null(), kept, "{what}: the jar's cookies");
+        // SAFETY: the list just given, and then a live handle, not used again.
+        unsafe {
+            crate::strings::curl_slist_free_all(list);
+            curl_easy_cleanup(c);
+        }
+        assert_eq!(path.exists(), kept, "{what}: the file written at cleanup");
+    }
+    // SAFETY: a live share, held by none.
+    assert_eq!(unsafe { curl_share_cleanup(sh) }, ffi::CURLSHE_OK);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// What libtest 751 pays for each of its thousand handles, made, given a

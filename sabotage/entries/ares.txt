@@ -20,9 +20,9 @@ witness: curl-tool a_bad_setting_fails_the_resolve_as_c_does
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-tool an_https_origins_record_is_asked_for_under_its_port
 --- old
-                Some(Ok(resolve)) => Some(RecordLookup::Library(resolve)),
+            match crate::multi::dns::start(cx, name, peer.port(), None) {
 --- new
-                Some(Ok(_)) => None,
+            match None::<Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused>> {
 
 === c-ares's reason is not said beside the name
 file: crates/curl-core/src/conn/connect.rs

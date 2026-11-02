@@ -65,8 +65,8 @@ exclude_re = [
     "skip_record",
     # Read only of the debug build's `CURL_DBG_AWAIT_HTTPSRR`, which the tests
     # do not set in their own process: test_22_httpsrr.py runs them.
-    "in awaits_record",
-    "in awaiting",
+    "awaits_record",
+    "awaiting",
     # A `Done` that does not await its protocol's answer never outlasts the
     # step it is entered in: the guards that tell it from a waiting one
     # in `due`, `fail`, `pollset` and the checker's `awaits_end` are never

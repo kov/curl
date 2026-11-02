@@ -405,6 +405,26 @@ mod tests {
     /// (`CURLSHE_IN_USE`): each kind is kept and let go on its own, the
     /// cookies forgotten as they are.
     #[test]
+    fn cookies_go_only_as_the_share_stops_keeping_them() {
+        let share = Share::new().unwrap();
+        share.keep(Kind::Cookies).unwrap();
+        share.keep(Kind::Hsts).unwrap();
+        let line = b"example.com\tFALSE\t/\tFALSE\t0\ta\t1";
+        {
+            let mut jar = share.cookies();
+            let jar = jar.as_mut().unwrap();
+            jar.add_line(line, None, 0, &mut 0).unwrap();
+        }
+        share.stop_keeping(Kind::Hsts).unwrap();
+        let kept = share.cookies().as_ref().map(|j| j.listed().count());
+        assert_eq!(kept, Some(1), "another kind let go");
+        share.stop_keeping(Kind::Cookies).unwrap();
+        share.keep(Kind::Cookies).unwrap();
+        let kept = share.cookies().as_ref().map(|j| j.listed().count());
+        assert_eq!(kept, Some(0), "kept again, empty");
+    }
+
+    #[test]
     fn what_is_kept_changes_only_while_the_share_is_idle() {
         let share = Share::new().unwrap();
         assert_eq!(share.holders(), 1);

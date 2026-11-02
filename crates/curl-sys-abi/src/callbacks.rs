@@ -1343,6 +1343,48 @@ mod tests {
         assert_eq!(said, want);
     }
 
+    /// A few short pieces are held where the trace is, without an
+    /// allocation each.
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn short_pieces_are_held_without_allocating() {
+        let mut held = Held::default();
+        let (_, made) = curl_alloc::track::measure(|| {
+            for line in [&b"a"[..], b"bb", b"ccc"] {
+                held.note(DebugKind::HeaderIn, line);
+            }
+        });
+        assert_eq!(made.allocations, 0);
+        assert_eq!(held.pieces().count(), 3);
+    }
+
+    /// Without a debug function only text goes to the standard error
+    /// stream, after `* `; headers and data go nowhere.
+    #[test]
+    fn only_text_goes_to_the_error_stream() {
+        let c = crate::easy::curl_easy_init();
+        // SAFETY: a stream of the C library's, closed below.
+        let stream = unsafe { libc::tmpfile() };
+        assert!(!stream.is_null());
+        // SAFETY: a live handle, and a stream that outlives it.
+        let set = unsafe { crate::setopt::curl_easy_setopt(c, crate::ffi::CURLOPT_STDERR, stream) };
+        assert_eq!(set, crate::ffi::CURLE_OK);
+        // SAFETY: a live handle.
+        let easy = unsafe { crate::easy::handle(c) }.unwrap();
+        trace_as(easy, DebugKind::HeaderIn, b"head");
+        trace_as(easy, DebugKind::Text, b"text");
+        let mut got = [0u8; 32];
+        // SAFETY: the stream made above.
+        unsafe { libc::rewind(stream) };
+        // SAFETY: the same stream, read into a buffer of the length given.
+        let n = unsafe { libc::fread(got.as_mut_ptr().cast(), 1, got.len(), stream) };
+        assert_eq!(&got[..n], b"* text");
+        // SAFETY: a live handle, not used again.
+        unsafe { crate::easy::curl_easy_cleanup(c) };
+        // SAFETY: the stream made above, no longer the handle's.
+        unsafe { libc::fclose(stream) };
+    }
+
     /// The application's fields are lent from where a read is, as many
     /// as fit, and no further than their end.
     #[test]

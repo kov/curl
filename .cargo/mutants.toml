@@ -22,7 +22,13 @@
 # C ABI, and a QUIC session's early data is sent only against caddy; cargo
 # refuses curl-sys-abi's features for a curl-openssl run. curl-ngtcp2's
 # run with `--test-package curl-ngtcp2 --test-package curl-core --features
-# curl-core/test-util,curl-core/debug-hooks`. The copy has no `build/deps`:
+# curl-core/test-util,curl-core/debug-hooks`. Adding `--test-package
+# curl-sys-abi` to a curl-core run reaches what only the C ABI calls, but
+# cargo takes no curl-sys-abi feature there either, and curl-sys-abi does
+# not build against a curl-core with `debug-hooks` unless it has them too:
+# in the copy only, add `default = ["debug-hooks"]` to curl-sys-abi's
+# `[features]`, and check one mutant builds before the run, or every
+# mutant is unviable. The copy has no `build/deps`:
 # export `CURL_NGTCP2_DIR` naming the tree's `build/deps/ngtcp2`, or every
 # crate linking ngtcp2 fails to build.)
 # (The copy is made in `TMPDIR`: where `/tmp` is a small tmpfs it fills, and
@@ -56,6 +62,20 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # The cookies read with `NeverAsked` are those whose domains are never
+    # checked: its `with_list` is never called, and says so by panicking.
+    'curl-core/src/cookie\.rs:.*: replace <impl SuffixCheck for NeverAsked>::with_list with \(\)$',
+    # A text not handed over that is not freed leaks a block of the C
+    # allocator, which no `cargo test` tracks: Miri's leak check fails
+    # `text_not_finished_is_freed` with either fault planted, in the
+    # crate's Miri run.
+    'curl-sys-abi/src/url\.rs:.*: (replace <impl Drop for CText>::drop with \(\)|delete ! in <impl Drop for CText>::drop)$',
+    # The fake socket notes when it was made nonblocking only to check the
+    # options set before it; the core makes a socket nonblocking once, as
+    # it opens it, before any send or read, so either half decides alone.
+    'curl-core/src/conn/io\.rs:.*: replace && with \|\| in <impl Socket for FakeSocket>::set_nonblocking$',
+    # A library's Debug is for a failed test's message; nothing reads it.
+    'curl-core/src/psl\.rs:.*: replace <impl fmt::Debug for dyn SuffixLibrary>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
     # A peer neither key nor HMAC names holds no session, so the slot search
     # takes it for its empty sessions, and an export has nothing of it to
     # send: only `is_free` wrongly true of a named peer is observable.

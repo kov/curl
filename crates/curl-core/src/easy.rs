@@ -1368,6 +1368,35 @@ mod tests {
         assert!(pushed.share_watch().is_some());
     }
 
+    /// A build with a public suffix list takes the application's cookie for
+    /// a domain with no dot, which it does not check; one without refuses it
+    /// (`parse_cookie_header` under `USE_LIBPSL`).
+    #[test]
+    fn the_application_s_cookie_is_taken_as_the_build_s_list_says() {
+        struct NoList;
+        impl crate::psl::SuffixLibrary for NoList {
+            fn latest(&self) -> Option<crate::cookie::Suffixes> {
+                None
+            }
+            fn builtin(&self) -> Option<crate::cookie::Suffixes> {
+                None
+            }
+        }
+        static LIBRARY: NoList = NoList;
+        let line = b"Set-Cookie: a=1; domain=com";
+        let mut with = Easy::new();
+        let libraries = crate::libraries::Libraries {
+            psl: Some(&LIBRARY),
+            ..crate::libraries::Libraries::NONE
+        };
+        with.set_libraries(SharedLibraries::new(libraries).unwrap());
+        with.add_cookie(line, |_| {}).unwrap();
+        assert_eq!(with.cookie_list().unwrap().len(), 1);
+        let mut without = Easy::new();
+        without.add_cookie(line, |_| {}).unwrap();
+        assert!(without.cookie_list().unwrap().is_empty());
+    }
+
     /// What a failure sink hears.
     #[derive(Clone, Default)]
     struct Heard(Arc<Mutex<Vec<Vec<u8>>>>);

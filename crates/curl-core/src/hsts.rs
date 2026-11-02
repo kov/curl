@@ -655,6 +655,33 @@ mod tests {
             .collect()
     }
 
+    /// What the application's reader gives is kept (`hsts_pull`).
+    #[test]
+    fn a_reader_s_entries_are_kept() {
+        struct One(std::sync::atomic::AtomicBool);
+        impl HstsReader for One {
+            fn read(
+                &self,
+                keep: &mut dyn FnMut(HstsEntry<'_>) -> Result<(), BadEntry>,
+            ) -> Result<HstsRead, BadEntry> {
+                if self.0.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    return Ok(HstsRead::Done);
+                }
+                keep(HstsEntry {
+                    name: b"example.com",
+                    expire: b"20991231 00:00:00",
+                    subdomains: true,
+                })?;
+                Ok(HstsRead::Given)
+            }
+        }
+        let mut h = Hsts::default();
+        h.pull(&One(Default::default()), NOW).unwrap();
+        let kept = names(&h);
+        assert_eq!(kept.len(), 1);
+        assert_eq!((&kept[0].0[..], kept[0].1), ("example.com", true));
+    }
+
     /// Headers taken or refused, and what is kept after them, as C's
     /// `Curl_hsts_parse` and `hsts_check` have them.
     #[test]

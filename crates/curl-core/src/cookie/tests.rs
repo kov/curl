@@ -943,6 +943,40 @@ fn expiry_is_capped_without_overflowing() {
     }
 }
 
+/// A list naming every domain a public suffix.
+struct Every;
+
+impl PublicSuffixes for Every {
+    fn is_public_suffix(&self, _: &[u8]) -> bool {
+        true
+    }
+
+    fn accepts(&self, _: &[u8], _: &[u8]) -> bool {
+        false
+    }
+}
+
+/// A domain too long for C's buffer is not asked of the list, and its
+/// cookie is not acceptable (`is_public_suffix`'s 256 bytes): dropped,
+/// though a list that is never asked could not refuse it.
+#[test]
+fn a_domain_too_long_to_check_is_dropped() {
+    let mut jar = Jar::default();
+    let long = format!("{}.com", "x".repeat(300));
+    let line = format!("{long}\tFALSE\t/\tFALSE\t0\tlong\t1\n");
+    jar.load(
+        line.as_bytes(),
+        false,
+        false,
+        Some(&Every),
+        NOW,
+        &mut 0,
+        |_| {},
+    )
+    .unwrap();
+    assert!(names(&jar).is_empty());
+}
+
 #[test]
 fn suffixes_debug_as_a_name() {
     let list = Suffixes::new(Box::new(Two)).unwrap();

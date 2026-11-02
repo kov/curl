@@ -2333,3 +2333,23 @@ fn a_link_is_one_by_its_permissions() {
     let listed = String::from_utf8(body).unwrap();
     assert!(listed.ends_with(" link\n"), "{listed}");
 }
+
+/// Sets of ways of logging in: one way or'ed with itself is that way.
+#[test]
+fn a_way_of_logging_in_or_ed_with_itself_stays() {
+    use crate::options::SshAuthTypes;
+    assert_eq!(
+        SshAuthTypes::PASSWORD | SshAuthTypes::PASSWORD,
+        SshAuthTypes::PASSWORD
+    );
+    let both = Methods::PASSWORD | Methods::PUBLICKEY;
+    assert_eq!(both | Methods::PASSWORD, both);
+}
+
+/// An SFTP status gives back the number C's trace prints.
+#[test]
+fn an_sftp_status_keeps_its_number() {
+    for n in [0, 2, 3, 4, 10, 11, 12, 99] {
+        assert_eq!(crate::ssh::SftpStatus::from_number(n).number(), n);
+    }
+}

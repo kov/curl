@@ -1104,6 +1104,25 @@ mod tests {
         assert_eq!(r.reasons(), 3);
     }
 
+    /// What says the next reason is the first lasts from one transfer's
+    /// start to the next: a reason given, by a transfer or by an API call,
+    /// stays given, and one let go stays let go (`Curl_initinfo` leaves
+    /// `state.errorbuf`).
+    #[test]
+    fn a_reason_said_stays_said_through_a_reset() {
+        let mut given = TransferReport::default();
+        given.record_failure(b"transfer");
+        assert!(!given.reset().unsaid());
+        let mut told = TransferReport::default();
+        told.record_told(b"call");
+        assert!(!told.unsaid());
+        assert!(!told.reset().unsaid());
+        let mut let_go = TransferReport::default();
+        let_go.record_failure(b"transfer");
+        assert!(let_go.reset_failure());
+        assert!(let_go.reset().unsaid());
+    }
+
     fn started(now: Instant) -> Timings {
         let mut r = TransferReport::default();
         r.restart(now);

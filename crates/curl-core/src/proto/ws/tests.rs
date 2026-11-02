@@ -1195,6 +1195,51 @@ fn a_send_blocked_after_its_head_is_given_again() {
     assert_eq!(sent, Ok(1));
 }
 
+/// A send that blocks says what of it went: none is a send to give again;
+/// some, gone before the block, is a count with the block to follow
+/// (`curl_ws_send` returning `CURLE_AGAIN` with its `sent` set).
+#[test]
+fn a_blocked_send_counts_what_went_before() {
+    let flags = text();
+    let mut rec = Rec {
+        takes: Some(6),
+        ..Rec::default()
+    };
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    let sent = api_send(
+        &mut ws,
+        &mut rec,
+        false,
+        b"abc",
+        FrameLen::These,
+        flags,
+        false,
+    );
+    assert_eq!(sent, Ok(Sent::WouldBlock), "only the head went");
+    // Bytes past the frame's end stop the send with the frame's gone.
+    let mut rec = Rec::default();
+    let mut ws = WsConn::new(&mut rec).unwrap();
+    let sent = api_send(
+        &mut ws,
+        &mut rec,
+        false,
+        b"abcde",
+        FrameLen::Total(3),
+        flags,
+        false,
+    );
+    assert_eq!(sent, Ok(Sent::BytesThenWouldBlock(3)));
+}
+
+/// C's line on entering `curl_ws_start_frame` has no closing parenthesis.
+#[test]
+fn a_frame_s_start_is_said_as_c_says_it() {
+    let asked = start_asked_of(text(), 5);
+    let mut said = String::new();
+    start_enters(&asked, |line| said = line.to_string());
+    assert_eq!(said, "curl_ws_start_frame(flags=1, frame_len=5");
+}
+
 /// Raw, a send names no frame: a size given, even of none, is refused.
 #[test]
 fn a_raw_send_with_a_size_is_refused() {

@@ -1368,6 +1368,126 @@ mod tests {
         assert!(pushed.share_watch().is_some());
     }
 
+    /// What a failure sink hears.
+    #[derive(Clone, Default)]
+    struct Heard(Arc<Mutex<Vec<Vec<u8>>>>);
+
+    impl crate::handler::TextSink for Heard {
+        fn write(&self, text: &[u8]) {
+            self.0.lock().unwrap().push(text.to_vec());
+        }
+    }
+
+    /// A reason an API call gives is kept and told if it is the first, and
+    /// the next is neither (`failf`).
+    #[test]
+    fn a_call_s_reason_is_told_if_the_first() {
+        let heard = Heard::default();
+        let mut e = Easy::new();
+        e.tell_failure(b"no sink");
+        assert_eq!(e.report().failure(), None, "kept nowhere with no sink");
+        e.options_mut().callbacks.failure = Some(Handler::text(heard.clone()).unwrap());
+        e.tell_failure(b"first");
+        e.tell_failure(b"second");
+        assert_eq!(*heard.0.lock().unwrap(), [b"first".to_vec()]);
+        assert_eq!(e.report().failure(), Some(&b"first"[..]));
+    }
+
+    /// A handle holding the connection it took has its share refused,
+    /// joined or left, and one it only made does not (`setopt_share`).
+    #[test]
+    fn a_share_is_refused_while_the_handle_holds_a_connection() {
+        let mut e = Easy::new();
+        let share = crate::share::Share::new().unwrap();
+        let policy = crate::id::ArenaPolicy::new(1, 0).unwrap();
+        let mut conns = crate::id::Arena::<u8, crate::conn::ConnSlot>::new(policy).unwrap();
+        let id = conns.reserve().unwrap().fill(0);
+        e.last_conn = Some(LastConn { id, used: false });
+        e.set_share(None).unwrap();
+        e.last_conn = Some(LastConn { id, used: true });
+        assert_eq!(e.set_share(Some(share.clone())), Err(ShareInUse));
+        assert!(e.share().is_none());
+        let told = crate::share::Told::new(&share);
+        let watched = e.set_share_watched(share.clone(), told.handler());
+        assert_eq!(watched, Err(ShareInUse));
+    }
+
+    /// Each of the view's methods does on the handle what the handle's own
+    /// does, as code holding a handle in a multi reaches it only so.
+    #[test]
+    fn a_view_changes_the_handle_it_is_of() {
+        let dir = Scratch::new("view");
+        let session = b"example.com\tFALSE\t/\tFALSE\t0\tsession\t1".to_vec();
+        let lasting = b"example.com\tFALSE\t/\tFALSE\t99999999999\tlasting\t2".to_vec();
+        let file = dir.0.join("cookies");
+        std::fs::write(&file, &lasting).unwrap();
+        let file = file.as_os_str().as_encoded_bytes().to_vec();
+        let jar = dir.0.join("jar");
+
+        let mut e = Easy::new();
+        let mut v = e.view();
+        v.options_mut().output.verbose = true;
+        assert!(v.options().output.verbose);
+
+        let heard = Heard::default();
+        v.options_mut().callbacks.failure = Some(Handler::text(heard.clone()).unwrap());
+        v.tell_failure(b"why");
+        assert_eq!(*heard.0.lock().unwrap(), [b"why".to_vec()]);
+
+        v.rtsp_mut().unwrap().next_client_cseq = 7;
+        assert_eq!(v.rtsp().next_client_cseq, 7);
+
+        let libraries = SharedLibraries::new(crate::libraries::Libraries::NONE).unwrap();
+        v.set_libraries(libraries.clone());
+        assert!(std::ptr::eq(v.libraries(), &*libraries));
+
+        v.enable_hsts(CacheFile::ReadOnly).unwrap();
+        assert!(v.hsts_enabled());
+        assert_eq!(v.hsts_mode(), CacheFile::ReadOnly);
+        v.disable_hsts();
+        assert!(!v.hsts_enabled());
+        v.add_hsts_file(Some(b"named")).unwrap();
+        assert_eq!(v.hsts_files_named(), 1);
+
+        let versions = crate::altsvc::Versions {
+            h1: true,
+            h2: false,
+            h3: false,
+        };
+        let ctrl = crate::altsvc::AltSvcCtrl {
+            file: CacheFile::ReadOnly,
+            versions,
+        };
+        v.enable_alt_svc(ctrl).unwrap();
+        assert!(v.alt_svc_enabled());
+        let mut other = Easy::new();
+        other.view().add_alt_svc_file(None).unwrap();
+        assert!(other.alt_svc_enabled());
+
+        v.enable_cookies().unwrap();
+        assert!(v.cookies.is_some());
+        v.add_cookie(&session, |_| {}).unwrap();
+        v.add_cookie(&lasting, |_| {}).unwrap();
+        assert_eq!(v.cookie_list().unwrap().len(), 2);
+        v.clear_session_cookies().unwrap();
+        assert_eq!(v.cookie_list().unwrap(), std::slice::from_ref(&lasting));
+        v.clear_cookies().unwrap();
+        assert_eq!(v.cookie_list().unwrap(), Vec::<Vec<u8>>::new());
+
+        let cookies = v.options_mut().http.cookies.make_mut().unwrap();
+        cookies.files.push(&file).unwrap();
+        cookies.set_save_to(Some(jar.as_os_str().as_encoded_bytes().to_vec()));
+        v.reload_cookies(|_| {}).unwrap();
+        assert_eq!(v.cookie_list().unwrap(), std::slice::from_ref(&lasting));
+        v.save_cookies().unwrap();
+        assert!(jar.exists(), "written through the view");
+
+        v.forget_cookies();
+        assert!(v.cookies.is_none());
+        v.reset();
+        assert!(!v.options().output.verbose);
+    }
+
     /// A directory of its own for a test, removed after it.
     struct Scratch(PathBuf);
 

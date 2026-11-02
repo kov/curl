@@ -1393,7 +1393,7 @@ mod tests {
     use super::*;
 
     /// What a reader's own buffer is asked for and given.
-    #[derive(Default)]
+    #[derive(Debug, Default)]
     struct Measuring {
         asked: Vec<usize>,
         written: usize,
@@ -1439,6 +1439,22 @@ mod tests {
         let (res, sink) = measure(&hostless, Part::Url, GetOptions::NONE);
         assert_eq!(res, Err(UrlErrorKind::NoHost));
         assert!(sink.asked.is_empty(), "a URL not whole asks for nothing");
+        let file = Url::parse(
+            b"file:///a/path/longer/than/any/room/for/separators",
+            ParseOptions::NONE,
+        );
+        let (res, sink) = measure(&file.unwrap(), Part::Url, GetOptions::NONE);
+        res.unwrap();
+        assert!(sink.asked[0] >= sink.written, "{sink:?}");
+    }
+
+    /// The limit on a whole URL is on what has been written so far and the
+    /// piece to come, together: a URL well under it is written whole.
+    #[test]
+    fn a_long_url_under_the_limit_is_written_whole() {
+        let url = format!("http://h/{}", "a".repeat(MAX_INPUT / 2));
+        let u = Url::parse(url.as_bytes(), ParseOptions::NONE).unwrap();
+        assert_eq!(u.get(Part::Url, GetOptions::NONE).unwrap(), url.as_bytes());
     }
 
     /// The C code of `kind`.

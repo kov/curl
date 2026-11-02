@@ -227,3 +227,29 @@ witness: curl-core multi::doh_tests::only_an_answer_about_the_name_is_kept_of_it
                 RecordAnswer::Failed => Came::Failed,
 --- new
                 RecordAnswer::Failed => Came::Negative,
+
+=== a lookup waiting names the wrong response as ended
+file: crates/curl-core/src/multi/doh.rs
+witness: curl-core multi::doh::tests::a_lookup_waiting_says_what_ended
+--- old
+                    (true, false) => "AAAA",
+                    (false, true) => "A",
+--- new
+                    (true, false) => "A",
+                    (false, true) => "AAAA",
+
+=== a query that cannot be made is numbered off by one
+file: crates/curl-core/src/multi/doh.rs
+witness: curl-core multi::doh::tests::a_query_that_cannot_be_made_is_numbered_as_c_numbers_it
+--- old
+        DohError::TooSmall => 4,
+--- new
+        DohError::TooSmall => 3,
+
+=== a record with a bad ALPN is said as a weird reply
+file: crates/curl-core/src/multi/doh.rs
+witness: curl-core multi::doh::tests::a_record_refused_is_said_in_cs_words
+--- old
+        RecordError::BadAlpn => ErrorKind::BadContentEncoding.message(),
+--- new
+        RecordError::BadAlpn => ErrorKind::WeirdServerReply.message(),

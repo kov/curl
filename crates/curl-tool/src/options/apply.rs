@@ -2023,9 +2023,7 @@ pub(crate) fn apply<'a>(
             let url = value.text();
             line.current().tls.doh_url = (!url.is_empty()).then_some(url);
         }
-        Opt::Ech | Opt::FalseStart | Opt::Ntlm | Opt::ProxyNtlm => {
-            line.not_implemented(spec, "--")
-        }
+        Opt::Ech | Opt::FalseStart | Opt::Ntlm | Opt::ProxyNtlm => line.not_implemented(spec, "--"),
     }
     Ok(Flow::Continue)
 }

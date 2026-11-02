@@ -306,7 +306,7 @@ mod tests {
                 "cut short"
             );
             assert_eq!(
-                curl_easy_ssls_import(c, null, null, 0, p, blob.len()),
+                curl_easy_ssls_import(c, ptr::null(), null, 0, p, blob.len()),
                 CURLE_BAD_FUNCTION_ARGUMENT
             );
             assert_eq!(

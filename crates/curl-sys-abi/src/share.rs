@@ -178,7 +178,10 @@ pub unsafe extern "C" fn curl_share_setopt(
             }
         }
         ffi::CURLSHOPT_LOCKFUNC => {
-            // SAFETY: the application passes a pointer.
+            // `next_arg` reads only data pointers, not C's function pointer
+            // (`VaArgSafe` is sealed): one is passed the same way on every
+            // ABI the build covers, as `read_arg` has it for `setopt`.
+            // SAFETY: the application passes a lock function or NULL.
             let p = unsafe { args.next_arg::<*mut c_void>() };
             // SAFETY: it is a lock function or NULL.
             let lock = unsafe { function(p) };
@@ -186,7 +189,8 @@ pub unsafe extern "C" fn curl_share_setopt(
             CURLSHE_OK
         }
         ffi::CURLSHOPT_UNLOCKFUNC => {
-            // SAFETY: the application passes a pointer.
+            // Read as `CURLSHOPT_LOCKFUNC` reads its function.
+            // SAFETY: the application passes an unlock function or NULL.
             let p = unsafe { args.next_arg::<*mut c_void>() };
             // SAFETY: it is an unlock function or NULL.
             let unlock = unsafe { function(p) };

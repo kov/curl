@@ -3338,8 +3338,8 @@ fn the_multi_s_callbacks_run_with_their_frames() {
     // SAFETY: live handles throughout, until their cleanups, and data
     // that outlives them.
     unsafe {
-        let t = timer as TimerFn as *const ();
-        let n = notify as NotifyFn as *const ();
+        let t = timer as TimerFn as *mut c_void;
+        let n = notify as NotifyFn as *mut c_void;
         assert_eq!(
             curl_multi_setopt(m, ffi::CURLMOPT_TIMERFUNCTION, t),
             CURLM_OK
@@ -3864,6 +3864,7 @@ fn the_socket_function_is_called_as_c_calls_it() {
     // SAFETY: a live multi and handle; the log outlives them.
     unsafe {
         let f: ffi::curl_socket_callback = Some(socket_fn);
+        let f = f.map_or(ptr::null_mut(), |f| f as *mut c_void);
         assert_eq!(
             curl_multi_setopt(m, ffi::CURLMOPT_SOCKETFUNCTION, f),
             CURLM_OK
@@ -3956,6 +3957,7 @@ fn cleanup_removes_the_sockets_the_socket_function_was_told() {
     // SAFETY: a live multi and handle; the log outlives the multi.
     unsafe {
         let f: ffi::curl_socket_callback = Some(socket_fn);
+        let f = f.map_or(ptr::null_mut(), |f| f as *mut c_void);
         assert_eq!(
             curl_multi_setopt(m, ffi::CURLMOPT_SOCKETFUNCTION, f),
             CURLM_OK
@@ -4017,6 +4019,7 @@ fn a_closing_connection_s_socket_is_removed_by_the_internal_handle() {
     // SAFETY: a live multi and handle; the log outlives them.
     unsafe {
         let f: ffi::curl_socket_callback = Some(socket_fn);
+        let f = f.map_or(ptr::null_mut(), |f| f as *mut c_void);
         assert_eq!(
             curl_multi_setopt(m, ffi::CURLMOPT_SOCKETFUNCTION, f),
             CURLM_OK
@@ -4403,7 +4406,9 @@ fn a_share_is_held_and_locked_as_in_c() {
     // SAFETY: a live share, and the functions its options take.
     unsafe {
         let lock: ffi::curl_lock_function = Some(record_lock);
+        let lock = lock.map_or(ptr::null_mut(), |f| f as *mut c_void);
         let unlock: ffi::curl_unlock_function = Some(record_unlock);
+        let unlock = unlock.map_or(ptr::null_mut(), |f| f as *mut c_void);
         assert_eq!(
             curl_share_setopt(sh, ffi::CURLSHOPT_LOCKFUNC, lock),
             ffi::CURLSHE_OK
@@ -5155,7 +5160,7 @@ fn the_multi_counts_running_and_waiting_transfers_apart() {
     unsafe {
         let limit = ffi::CURLMOPT_MAX_HOST_CONNECTIONS;
         assert_eq!(curl_multi_setopt(m, limit, 1 as c_long), CURLM_OK);
-        let t = sample_timer as TimerFn as *const ();
+        let t = sample_timer as TimerFn as *mut c_void;
         assert_eq!(
             curl_multi_setopt(m, ffi::CURLMOPT_TIMERFUNCTION, t),
             CURLM_OK
@@ -5898,7 +5903,9 @@ fn the_lock_functions_are_told_of_the_list_and_the_cache_as_in_c() {
             assert_eq!(on, ffi::CURLSHE_OK);
         }
         let lock: ffi::curl_lock_function = Some(access_lock);
+        let lock = lock.map_or(ptr::null_mut(), |f| f as *mut c_void);
         let unlock: ffi::curl_unlock_function = Some(access_unlock);
+        let unlock = unlock.map_or(ptr::null_mut(), |f| f as *mut c_void);
         curl_share_setopt(sh, ffi::CURLSHOPT_LOCKFUNC, lock);
         curl_share_setopt(sh, ffi::CURLSHOPT_UNLOCKFUNC, unlock);
         let user = (&raw const calls).cast_mut().cast::<c_void>();
@@ -5968,6 +5975,7 @@ fn a_lock_function_alone_locks_what_is_shared() {
             ffi::CURLSHE_OK
         );
         let lock: ffi::curl_lock_function = Some(lock_into);
+        let lock = lock.map_or(ptr::null_mut(), |f| f as *mut c_void);
         assert_eq!(
             curl_share_setopt(sh, ffi::CURLSHOPT_LOCKFUNC, lock),
             ffi::CURLSHE_OK

@@ -538,7 +538,7 @@ witness: curl-core conn::pool::tests::a_share_s_connection_lent_to_a_multi_is_th
 
 === a share's connection never says it takes one request at a time
 file: crates/curl-core/src/multi/state.rs
-witness: curl-core proto::http::tests::h2::a_pipewait_on_a_share_s_connection_ends_once_known
+witness: curl-core proto::http::tests::h2::a_pipewait_on_a_share_s_refused_upgrade_ends_with_its_answer
 --- old
             home @ Home::Share(share) => share.pool().settle(home, lease, settled),
 --- new

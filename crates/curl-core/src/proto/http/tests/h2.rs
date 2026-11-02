@@ -1709,21 +1709,21 @@ fn a_transfer_that_does_not_pipewait_makes_its_own_connection() {
 }
 
 /// A transfer that pipewaits on a connection that turns out to take one
-/// request at a time makes its own once it is known, without waiting for
-/// the first transfer to end (`seen_single_use_conn`).
+/// request at a time waits for it to be given back and reuses it, making
+/// none of its own: nothing wakes it sooner (checked against the C build:
+/// one connection, the second request after the first's answer).
 #[test]
-fn a_pipewait_on_a_connection_that_does_not_multiplex_ends_once_known() {
+fn a_pipewait_on_a_connection_that_does_not_multiplex_waits_for_it() {
     pipewait_on_http_1(|_| {});
 }
 
-/// The pass in which the first request finds its connection speaks
-/// HTTP/1 is the one that lets the transfer pipewaiting on it go
-/// (`Curl_multi_connchanged` as the connection settles), not a later one.
+/// The first request finding its connection speaks HTTP/1 lets no one go:
+/// C pokes the multi only for an upgrade's answer (`http_on_response`'s
+/// `conn_changed`), so the transfer pipewaiting stays in PENDING.
 #[test]
-fn a_pipewait_ends_in_the_pass_its_connection_settles() {
-    let first = Conversation::new(OK, false).held();
-    let second = Conversation::new(OK, false);
-    let mut m = serving(Peer::Accepts, &[&first, &second]);
+fn a_pipewait_outlasts_the_pass_its_connection_settles() {
+    let first = Conversation::replies(&[OK, OK], false).held();
+    let mut m = serving(Peer::Accepts, &[&first]);
     let mut ids = Vec::new();
     for path in ["/a", "/b"] {
         let mut e = Easy::new();
@@ -1751,13 +1751,13 @@ fn a_pipewait_ends_in_the_pass_its_connection_settles() {
         assert!(passes < 20, "the first never sent");
     }
     assert!(
-        !matches!(
+        matches!(
             m.state_of(ids[1]),
             crate::multi::state::TransferState::Pending(_)
         ),
-        "still waiting after the pass its connection settled in"
+        "let go by its connection settling"
     );
-    first.allow(1);
+    first.allow(2);
     for id in ids {
         assert_eq!(
             drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
@@ -1767,11 +1767,9 @@ fn a_pipewait_ends_in_the_pass_its_connection_settles() {
     }
 }
 
-/// As a connection of the multi's own, a share's (`CURL_LOCK_DATA_CONNECT`)
-/// is pending until its first request finds what it speaks, and a
-/// transfer that pipewaits on it waits until then.
+/// As a connection of the multi's own, a share's (`CURL_LOCK_DATA_CONNECT`).
 #[test]
-fn a_pipewait_on_a_share_s_connection_ends_once_known() {
+fn a_pipewait_on_a_share_s_connection_waits_for_it() {
     use crate::share::{Kind, Share};
     let share = Share::new().unwrap();
     share.keep(Kind::Connections).unwrap();
@@ -1781,11 +1779,10 @@ fn a_pipewait_on_a_share_s_connection_ends_once_known() {
 /// Two transfers that pipewait, `handle` making each handle's own
 /// settings, to an origin whose connections take one request at a time,
 /// the first's answer held: the second waits for the first's connection
-/// to say what it speaks, then makes its own.
+/// to be given back, then reuses it.
 fn pipewait_on_http_1(handle: impl Fn(&mut Easy)) {
-    let first = Conversation::new(OK, false).held();
-    let second = Conversation::new(OK, false);
-    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let first = Conversation::replies(&[OK, OK], false).held();
+    let mut m = serving(Peer::Accepts, &[&first]);
     let mut ids = Vec::new();
     let mut seen = Vec::new();
     for path in ["/a", "/b"] {
@@ -1804,8 +1801,9 @@ fn pipewait_on_http_1(handle: impl Fn(&mut Easy)) {
         ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
         seen.push(s);
     }
-    let b = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
-    assert_eq!(b, Ok(()));
+    for _ in 0..8 {
+        m.perform(&mut NoEvents).unwrap();
+    }
     assert!(first.received().ends_with(b"\r\n\r\n"), "the first sent");
     let text = seen[1].text();
     assert_eq!(
@@ -1817,11 +1815,16 @@ fn pipewait_on_http_1(handle: impl Fn(&mut Easy)) {
         ],
         "{text:#?}"
     );
-    assert!(text.iter().any(|l| l.contains("Trying")), "{text:#?}");
-    assert_eq!(seen[1].body(), b"ok\n");
-    first.allow(1);
+    assert_eq!(text.len(), 3, "it still waits: {text:#?}");
+    first.allow(2);
     let a = drive_to_completion(&mut m, ids[0], &mut NoEvents).unwrap();
     assert_eq!(a, Ok(()));
+    let b = drive_to_completion(&mut m, ids[1], &mut NoEvents).unwrap();
+    assert_eq!(b, Ok(()));
+    let text = seen[1].text();
+    assert!(text.iter().any(|l| l.starts_with("Reusing")), "{text:#?}");
+    assert!(!text.iter().any(|l| l.contains("Trying")), "{text:#?}");
+    assert_eq!(seen[1].body(), b"ok\n");
     for id in ids {
         m.remove(id, &mut NoEvents).unwrap();
     }
@@ -1833,6 +1836,23 @@ fn pipewait_on_http_1(handle: impl Fn(&mut Easy)) {
 /// comes (`bits.upgrade_in_progress`).
 #[test]
 fn a_pipewait_on_a_refused_upgrade_ends_with_its_answer() {
+    pipewait_on_refused_upgrade(|_| {});
+}
+
+/// As a connection of the multi's own, a share's: found single-use in the
+/// share's pool, which is what the second's search reads.
+#[test]
+fn a_pipewait_on_a_share_s_refused_upgrade_ends_with_its_answer() {
+    use crate::share::{Kind, Share};
+    let share = Share::new().unwrap();
+    share.keep(Kind::Connections).unwrap();
+    pipewait_on_refused_upgrade(|e| e.set_share(Some(share.clone())).unwrap());
+}
+
+/// Two transfers that pipewait over clear text asking for HTTP/2, `handle`
+/// making each handle's own settings, the first's upgrade refused and its
+/// body left unfinished.
+fn pipewait_on_refused_upgrade(handle: impl Fn(&mut Easy)) {
     let first = Conversation::new(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab", false);
     let second = Conversation::new(OK, false);
     let mut m = serving(Peer::Accepts, &[&first, &second]);
@@ -1851,6 +1871,7 @@ fn a_pipewait_on_a_refused_upgrade_ends_with_its_answer() {
         o.http.pipewait = true;
         o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
         o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        handle(&mut e);
         ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
         seen.push(s);
     }
@@ -1878,7 +1899,8 @@ fn a_pipewait_on_a_refused_upgrade_ends_with_its_answer() {
 /// A connection to the origin that takes one request at a time, and none
 /// seen that takes more, says the server does not multiplex: a transfer
 /// that pipewaits makes its own then, though another is still being set
-/// up (`url_match_result`).
+/// up (`url_match_result`). The first is busy and known by the time the
+/// others are added; the second does not pipewait, so it sets up another.
 #[test]
 fn a_single_use_connection_ends_a_pipewait_over_another_set_up() {
     let first = Conversation::new(OK, false).held();
@@ -1892,7 +1914,7 @@ fn a_single_use_connection_ends_a_pipewait_over_another_set_up() {
     );
     let mut ids = Vec::new();
     let mut seen = Vec::new();
-    for path in ["/a", "/b", "/c"] {
+    for (path, pipewait) in [("/a", true), ("/b", false), ("/c", true)] {
         let mut e = Easy::new();
         e.set_libraries(with_h2());
         let s = Seen::default();
@@ -1901,17 +1923,23 @@ fn a_single_use_connection_ends_a_pipewait_over_another_set_up() {
         o.set_url(Some(url.as_bytes())).unwrap();
         o.output.verbose = true;
         o.limits.total = crate::time::TimeLimit::from_millis(10_000);
-        o.http.pipewait = true;
+        o.http.pipewait = pipewait;
         o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
         o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
         ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
         seen.push(s);
+        if path == "/a" {
+            for _ in 0..8 {
+                m.perform(&mut NoEvents).unwrap();
+            }
+            assert!(first.received().ends_with(b"\r\n\r\n"), "the first sent");
+        }
     }
     let c = drive_to_completion(&mut m, ids[2], &mut NoEvents).unwrap();
     let text = seen[2].text();
     assert_eq!(c, Ok(()), "{text:#?}");
     let waits = text.iter().filter(|l| l.starts_with("Waiting on")).count();
-    assert_eq!(waits, 1, "{text:#?}");
+    assert_eq!(waits, 0, "{text:#?}");
     assert!(
         text.iter()
             .any(|l| l == "Connection #1 is not open enough, cannot reuse\n"),

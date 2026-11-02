@@ -1506,6 +1506,10 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         }
     }
     let settled = run.state.attached().is_some_and(|x| x.proto.settled_conn());
+    let asked_upgrade = run
+        .state
+        .attached()
+        .is_some_and(|x| x.proto.asked_upgrade());
     if let Some(lease) = run.state.lease_mut() {
         let pool = &mut cx.rest.caches.pool;
         let attached = pool.is_attached(lease);
@@ -1517,8 +1521,10 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             Home::Multi => pool.settle(&Home::Multi, lease, settled),
             home @ Home::Share(share) => share.pool().settle(home, lease, settled),
         };
-        if single {
-            // One waiting for it to multiplex makes its own now.
+        // An upgrade refused is the news C pokes the multi with
+        // (`Curl_multi_connchanged`). A connection that never asked tells
+        // no one: those waiting look when it is given back.
+        if single && asked_upgrade {
             schedule_pending(&mut cx.rest);
         }
     }

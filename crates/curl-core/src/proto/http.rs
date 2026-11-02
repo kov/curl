@@ -301,6 +301,10 @@ pub(crate) struct Request {
     /// What it asks the connection to switch to, which a 101 takes up;
     /// until its answer (`bits.upgrade_in_progress`).
     upgrade: Option<Upgrade>,
+    /// It asked the connection to switch: its answer tells those waiting
+    /// on the connection to look again (`http_on_response`'s
+    /// `conn_changed`).
+    asked_upgrade: bool,
     /// It is for a WebSocket.
     websocket: Option<Websocket>,
     /// It is RTSP's.
@@ -636,6 +640,11 @@ impl Request {
         self.head.is_some() && self.upgrade.is_none()
     }
 
+    /// It asked its connection to switch to another protocol.
+    pub(crate) fn asked_upgrade(&self) -> bool {
+        self.asked_upgrade
+    }
+
     /// It went on a stream HTTP/2 refused, which may be made again: said
     /// once.
     pub(crate) fn take_refused(&mut self) -> bool {
@@ -775,6 +784,7 @@ impl Request {
             wire: Wire::H1,
             refused: false,
             upgrade: None,
+            asked_upgrade: false,
             websocket: None,
             rtsp: None,
             unread: 0,
@@ -1293,6 +1303,7 @@ impl Request {
         if self.websocket.is_some() {
             self.upgrade = Some(Upgrade::WebSocket);
         }
+        self.asked_upgrade = self.upgrade.is_some();
         let h2c = match &self.upgrade {
             Some(Upgrade::H2c(settings)) => {
                 Some(crate::base64::encode_url(settings).map_err(|_| ErrorKind::OutOfMemory)?)

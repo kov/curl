@@ -1986,8 +1986,9 @@ unless `--parallel-immediate`) waits in PENDING for it, unless a single-use one 
 with no multiplexing one, says the server does not multiplex (`url_match_result`). Each is
 noted once it reaches the transfer's origin (`Route::reaches`), before its proxy, TLS and
 authentication are compared, as C notes it in `url_match_conn`. A connection
-attached, or found single-use, lets one waiting transfer look again, and each one that then gets
-a connection lets the next.
+attached, or found single-use by a refused upgrade, lets one waiting transfer look again, as does
+one given back; each one that then gets a connection lets the next. A connection that never asked
+to upgrade tells no one as it settles: a transfer pipewaiting on it reuses it once given back.
 
 **Windows.** Each stream's receive window is the one its transfer asks for
 (`cf_h2_update_local_win`): the most once its head is in, what a receive limit allows under one,

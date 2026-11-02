@@ -253,3 +253,13 @@ witness: curl-core multi::doh::tests::a_record_refused_is_said_in_cs_words
         RecordError::BadAlpn => ErrorKind::BadContentEncoding.message(),
 --- new
         RecordError::BadAlpn => ErrorKind::WeirdServerReply.message(),
+
+=== a DoH answer's cache entry is not said inside its probe's end
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::doh_tests::the_resolves_lines_are_c_s
+--- old
+                    if answer.as_ref().is_ok_and(|a| !a.is_empty()) {
+                        say_cached_entry(family_queries(self.family), (name, port), cx);
+                    }
+--- new
+                    let _ = (&answer, port);

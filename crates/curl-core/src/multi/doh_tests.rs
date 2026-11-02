@@ -855,4 +855,13 @@ fn the_resolves_lines_are_c_s() {
         assert!(has(want) >= 1, "{want}: {said:?}");
     }
     assert_eq!(has("[DNS] [DoH] probe done"), 4, "{said:?}");
+    // The answer's entry is said between the two lines of its probe's end,
+    // as `Curl_dnscache_add` says it inside C's.
+    let at = said
+        .iter()
+        .position(|l| l.trim_end() == "[DNS] cached entry for foo.test:443 queries=A+AAAA")
+        .expect("said");
+    for near in [&said[at - 1], &said[at + 1]] {
+        assert_eq!(near.trim_end(), "[DNS] [DoH] probe done", "{said:?}");
+    }
 }

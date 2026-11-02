@@ -109,3 +109,23 @@ witness: curl-tool a_record_never_answered_says_its_socket_closed
     let Ok(closed) = cx.closed_sockets() else {
 --- new
     let Ok(closed) = crate::conn::io::SocketsClosed::new() else {
+
+=== a socket c-ares closes in a drive is said only after its answer
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-tool a_socket_closed_is_said_before_the_answer_is_taken
+--- old
+    fn libraries_closed(&mut self) {
+        self.step.libraries_closed();
+    }
+--- new
+    fn libraries_closed(&mut self) {}
+
+=== a blocking resolve's answer is taken unsaid
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-tool a_socket_closed_is_said_before_the_answer_is_taken
+--- old
+        let status = resolve.status();
+        say_taken(queries, status, cx);
+--- new
+        let status = resolve.status();
+        let _ = (queries, status);

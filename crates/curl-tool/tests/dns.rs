@@ -376,3 +376,42 @@ fn a_second_attempt_started_during_a_resolve_takes_what_it_finds() {
     assert_eq!(said.matches("Trying 127.0.0.1:1...").count(), 2, "{said}");
     assert!(said.contains("QUIC connect to 127.0.0.1"), "{said}");
 }
+
+/// Where `needle` first is in `said`, which must have it.
+fn at(said: &str, needle: &str) -> usize {
+    said.find(needle)
+        .unwrap_or_else(|| panic!("{needle}: {said}"))
+}
+
+#[test]
+fn a_socket_closed_is_said_before_the_answer_is_taken() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    for (interface, url, queries) in [
+        (None, "http://plain.test:1/", "A+AAAA"),
+        (Some("host!bind.test"), "http://127.0.0.1:1/", "A"),
+    ] {
+        let mut args = vec![
+            "-v",
+            "--trace-config",
+            "dns,multi",
+            "--dns-servers",
+            &servers,
+        ];
+        if let Some(interface) = interface {
+            args.extend(["--interface", interface]);
+        }
+        args.push(url);
+        let run = curl(&args);
+        assert_eq!(run.status.code(), Some(7));
+        let said = String::from_utf8_lossy(&run.stderr);
+        // As C's `sock_state_cb` tells it, in the call that answers.
+        let taken = format!(
+            "[{queries}] ares_take_result, result=0, ares_result=0, ares_status=0, dns=found"
+        );
+        assert!(
+            at(&said, "Curl_multi_will_close fd=") < at(&said, &taken),
+            "{said}"
+        );
+    }
+}

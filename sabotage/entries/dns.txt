@@ -669,9 +669,9 @@ witness: curl-core proto::http::tests::https_trace::resolves_are_let_go_of_where
 file: crates/curl-core/src/conn/asyncs.rs
 witness: curl-core proto::http::tests::https_trace::resolves_are_let_go_of_where_c_lets_them_go
 --- old
-        self.all().iter().rev().nth(n).map(|k| k.id)
+        (n < len).then(|| kept.get(len - 1 - n))
 --- new
-        self.all().iter().nth(n).map(|k| k.id)
+        (n < len).then(|| kept.get(n))
 
 === a transfer done says nothing of the resolves it still keeps
 file: crates/curl-core/src/multi/state.rs
@@ -756,3 +756,12 @@ witness: curl-sys-abi handle_tests::cleanup_and_reset_tell_the_debug_function_of
         (id == self.me).then_some(&*self.easy)
 --- new
         (id == TransferId::lone()).then_some(&*self.easy)
+
+=== the first resolve's record allocates twice, where C allocates once
+file: crates/curl-core/src/conn/asyncs.rs
+witness: curl-openssl an_https_get_stays_within_its_allocation_budget
+--- old
+        kept.push(Kept { id, holder })
+--- new
+        kept.more.try_reserve(1).map_err(|_| OutOfMemory)?;
+        kept.push(Kept { id, holder })

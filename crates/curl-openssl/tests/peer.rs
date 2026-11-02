@@ -985,8 +985,8 @@ fn plain_get_allocations() -> u64 {
     n
 }
 
-/// What an HTTPS GET allocates beyond the same GET over plain HTTP, one
-/// by one: the route's `TlsIdentity` (its `TryArc`) and the CA file's
+/// What a TLS layer to a peer allocates beyond the same GET over plain
+/// HTTP, one by one: the route's `TlsIdentity` (its `TryArc`) and the CA file's
 /// copy in the options it holds; the `TlsLayer`'s box; the
 /// `LayerStack`'s box and its vector; the handshake's marker; the
 /// session's box and the copy of the host name it checks the
@@ -1000,7 +1000,14 @@ fn plain_get_allocations() -> u64 {
 /// first, the slot's copy of the key and its list of sessions, and each
 /// ticket's DER. OpenSSL's own allocations are libc's, not counted, as
 /// C's memory tracker does not count them.
-const HTTPS_GET_EXTRA: u64 = 18;
+const TLS_LAYER_EXTRA: u64 = 18;
+
+/// What an HTTPS GET allocates beyond the same GET over plain HTTP: its
+/// TLS layer's (`TLS_LAYER_EXTRA`), and the handle's list of its resolves'
+/// records, made as the origin's HTTPS record is asked for, where C
+/// allocates that ask's record (`hostip_async_new`, in C's memdump of the
+/// HTTPS GET and not of the plain one).
+const HTTPS_GET_EXTRA: u64 = TLS_LAYER_EXTRA + 1;
 
 fn an_https_get_stays_within_its_allocation_budget() {
     let base = plain_get_allocations();
@@ -1053,9 +1060,9 @@ fn proxied_get(scheme: &str, proxy: SocketAddr, ca: &[u8]) -> (Got, u64) {
 
 /// What a GET through an HTTPS proxy allocates beyond the same GET
 /// through an HTTP proxy: what an HTTPS GET's TLS layer to its origin
-/// allocates (`HTTPS_GET_EXTRA`, 18), here to the proxy, and the proxy
+/// allocates (`TLS_LAYER_EXTRA`, 18), here to the proxy, and the proxy
 /// route's cold part holding the proxy's TLS identity.
-const HTTPS_PROXY_GET_EXTRA: u64 = HTTPS_GET_EXTRA + 1;
+const HTTPS_PROXY_GET_EXTRA: u64 = TLS_LAYER_EXTRA + 1;
 
 fn a_get_through_an_https_proxy_stays_within_its_allocation_budget() {
     let (at, server) = serve_plain();

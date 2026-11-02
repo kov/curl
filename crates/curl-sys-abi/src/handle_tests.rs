@@ -4389,7 +4389,7 @@ fn a_share_is_held_and_locked_as_in_c() {
         (ffi::CURL_LOCK_DATA_DNS, ffi::CURLSHE_OK),
         (ffi::CURL_LOCK_DATA_CONNECT, ffi::CURLSHE_OK),
         (ffi::CURL_LOCK_DATA_PSL, ffi::CURLSHE_OK),
-        (ffi::CURL_LOCK_DATA_HSTS, ffi::CURLSHE_NOT_BUILT_IN),
+        (ffi::CURL_LOCK_DATA_HSTS, ffi::CURLSHE_OK),
         (ffi::CURL_LOCK_DATA_SSL_SESSION, ffi::CURLSHE_OK),
         (ffi::CURL_LOCK_DATA_SHARE, ffi::CURLSHE_BAD_OPTION),
         (ffi::CURL_LOCK_DATA_LAST, ffi::CURLSHE_BAD_OPTION),
@@ -5816,6 +5816,138 @@ unsafe extern "C" fn lock_into(
     // SAFETY: the test passes its record as the share's user data.
     let seen = unsafe { &*user.cast::<std::sync::Mutex<Vec<c_int>>>() };
     seen.lock().unwrap().push(data.0 as c_int);
+}
+
+/// The lock functions' calls with their access: `(access, data)`, the
+/// access none for an unlock. Kept in what the share is given.
+type AccessCalls = std::sync::Mutex<Vec<(Option<c_int>, c_int)>>;
+
+unsafe extern "C" fn access_lock(
+    _: *mut CURL,
+    data: ffi::curl_lock_data,
+    access: ffi::curl_lock_access,
+    user: *mut c_void,
+) {
+    // SAFETY: the test's calls, alive as long as the share.
+    let calls = unsafe { &*user.cast::<AccessCalls>() };
+    calls
+        .lock()
+        .unwrap()
+        .push((Some(access.0 as c_int), data.0 as c_int));
+}
+
+unsafe extern "C" fn access_unlock(_: *mut CURL, data: ffi::curl_lock_data, user: *mut c_void) {
+    // SAFETY: as in `access_lock`.
+    let calls = unsafe { &*user.cast::<AccessCalls>() };
+    calls.lock().unwrap().push((None, data.0 as c_int));
+}
+
+/// A server on this machine answering each connection with `reply`.
+fn answering(reply: &'static [u8]) -> u16 {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut got = Vec::new();
+            let mut chunk = [0; 1024];
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut chunk) {
+                    Ok(n) if n > 0 => got.extend_from_slice(&chunk[..n]),
+                    _ => break,
+                }
+            }
+            let _gone = stream.write_all(reply);
+        }
+    });
+    port
+}
+
+/// Which lock calls a share keeping the public suffix list, the cookies
+/// and the HSTS cache makes around two transfers, as the C build makes
+/// them: `SHARED`, with `SINGLE` where a list is looked for, nested in the
+/// cookies' use; the HSTS cache `SINGLE` around its file alone.
+#[test]
+fn the_lock_functions_are_told_of_the_list_and_the_cache_as_in_c() {
+    use crate::share::{curl_share_cleanup, curl_share_init, curl_share_setopt};
+    const COOKIE: c_int = ffi::CURL_LOCK_DATA_COOKIE.0 as c_int;
+    const PSL: c_int = ffi::CURL_LOCK_DATA_PSL.0 as c_int;
+    const HSTS: c_int = ffi::CURL_LOCK_DATA_HSTS.0 as c_int;
+    const SHARED: Option<c_int> = Some(ffi::CURL_LOCK_ACCESS_SHARED.0 as c_int);
+    const SINGLE: Option<c_int> = Some(ffi::CURL_LOCK_ACCESS_SINGLE.0 as c_int);
+    let port = answering(
+        b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1; domain=localhost\r\n\
+          Content-Length: 0\r\nConnection: close\r\n\r\n",
+    );
+    let file = std::env::temp_dir().join(format!("curl-abi-share-{}", std::process::id()));
+    std::fs::write(&file, "kept.example \"unlimited\"\n").unwrap();
+    let name = std::ffi::CString::new(file.to_str().unwrap()).unwrap();
+    let url = std::ffi::CString::new(format!("http://localhost:{port}/")).unwrap();
+    let calls = AccessCalls::default();
+    let sh = curl_share_init();
+    // SAFETY: a live share, then ints, the functions and data the options
+    // take, the data outliving the share.
+    unsafe {
+        for data in [
+            ffi::CURL_LOCK_DATA_COOKIE,
+            ffi::CURL_LOCK_DATA_PSL,
+            ffi::CURL_LOCK_DATA_HSTS,
+        ] {
+            let on = curl_share_setopt(sh, ffi::CURLSHOPT_SHARE, data.0 as c_int);
+            assert_eq!(on, ffi::CURLSHE_OK);
+        }
+        let lock: ffi::curl_lock_function = Some(access_lock);
+        let unlock: ffi::curl_unlock_function = Some(access_unlock);
+        curl_share_setopt(sh, ffi::CURLSHOPT_LOCKFUNC, lock);
+        curl_share_setopt(sh, ffi::CURLSHOPT_UNLOCKFUNC, unlock);
+        let user = (&raw const calls).cast_mut().cast::<c_void>();
+        curl_share_setopt(sh, ffi::CURLSHOPT_USERDATA, user);
+    }
+    let c = curl_easy_init();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_HSTS, name.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_COOKIEFILE, c"".as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    let of = |kind: c_int, all: &[(Option<c_int>, c_int)]| -> Vec<Option<c_int>> {
+        all.iter().filter(|c| c.1 == kind).map(|c| c.0).collect()
+    };
+    let take = || std::mem::take(&mut *calls.lock().unwrap());
+    take();
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let first = take();
+    assert_eq!(of(HSTS, &first), [SINGLE, None], "around the file");
+    assert_eq!(
+        of(PSL, &first),
+        [SHARED, None, SINGLE, None, SHARED, None],
+        "looked for"
+    );
+    // Nested in the use of the cookies that stores the one with a domain.
+    let opened = first.iter().position(|c| c.1 == PSL).unwrap();
+    assert_eq!(first[opened - 1], (SINGLE, COOKIE));
+    assert_eq!(first[opened + 6], (None, COOKIE));
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let second = take();
+    assert_eq!(of(HSTS, &second), [SINGLE, None], "at each transfer");
+    assert_eq!(of(PSL, &second), [SHARED, None], "kept");
+    // SAFETY: a live handle, not used again; then the share, held by none.
+    unsafe {
+        curl_easy_cleanup(c);
+        assert_eq!(of(HSTS, &take()), []);
+        assert_eq!(curl_share_cleanup(sh), ffi::CURLSHE_OK);
+    }
+    std::fs::remove_file(&file).unwrap();
 }
 
 /// A lock function set alone is called for what is shared, as

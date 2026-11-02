@@ -89,8 +89,8 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
     // The transfers share their connections, resolved names, cookies, TLS
-    // sessions and public suffix list, as C's tool gives each handle its
-    // share.
+    // sessions, public suffix list and HSTS cache, as C's tool gives each
+    // handle its share.
     let share = match Share::new() {
         Ok(share) => share,
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
@@ -102,6 +102,7 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -
         Kind::Cookies,
         Kind::SslSessions,
         Kind::Psl,
+        Kind::Hsts,
     ] {
         if kind != Kind::Connections || !line.global.parallel {
             share.keep(kind).expect("held by none yet");

@@ -82,10 +82,10 @@ witness: curl-sys-abi handle_tests::a_share_is_held_and_locked_as_in_c
 file: crates/curl-core/src/easy.rs
 witness: curl-sys-abi handle_tests::a_share_is_held_and_locked_as_in_c
 --- old
-            caches: None,
+            left_shared_hsts: false,
             share: None,
 --- new
-            caches: None,
+            left_shared_hsts: false,
             share: self.share.clone(),
 
 === a share asked through C for cookies keeps none
@@ -362,3 +362,86 @@ witness: curl-core proto::http::tests::a_cookie_file_s_lines_tell_the_public_suf
     drop(suffixes);
     held.trace(cx)?;
     // The jar is off only
+
+=== an HSTS file is read with nothing told
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::hsts::a_share_s_cache_is_told_of_only_around_the_files_read
+--- old
+        let loaded = self.with_hsts_told(|hsts| files.iter().try_for_each(|f| hsts.load(f, now)));
+--- new
+        let loaded = self.with_hsts(|hsts| files.iter().try_for_each(|f| hsts.load(f, now)));
+
+=== every use of a share's HSTS cache is told
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::hsts::a_share_s_cache_is_told_of_only_around_the_files_read
+--- old
+            Some(share) => share.hsts().as_mut().map(f),
+--- new
+            Some(share) => watched(self.share_watch(), share, Kind::Hsts, || {
+                share.hsts().as_mut().map(f)
+            }),
+
+=== a handle joining a share keeping HSTS keeps its own cache
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::hsts::a_handle_uses_the_cache_its_share_and_options_say
+--- old
+        match self.hsts_share() {
+            Some(share) => share.hsts().as_mut().map(f),
+--- new
+        match self.hsts_share().filter(|_| false) {
+            Some(share) => share.hsts().as_mut().map(f),
+
+=== turning HSTS off on a share leaves the handle on the share's cache
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::hsts::a_handle_uses_the_cache_its_share_and_options_say
+--- old
+        self.left_shared_hsts = shared;
+--- new
+        let _ = shared;
+
+=== the files named are forgotten as the handle lets the share's cache go
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::hsts::a_handle_uses_the_cache_its_share_and_options_say
+--- old
+            if !shared {
+                caches.hsts_files = Vec::new();
+--- new
+            {
+                caches.hsts_files = Vec::new();
+
+=== the application's HSTS writer runs under the share's lock
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::hsts::a_share_s_cache_is_not_locked_across_the_application
+--- old
+            let every = options.write.as_ref().map(|_| hsts.alive_copy(i64::MIN));
+--- new
+            if let Some(writer) = &options.write {
+                hsts.push(&**writer);
+            }
+            let every = options.write.as_ref().map(|_| hsts.alive_copy(i64::MIN));
+
+=== files named with no cache to read them into are dropped from the list
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::hsts::files_named_with_no_cache_are_not_read
+--- old
+        if let Some(caches) = self.caches.as_deref_mut() {
+            caches.hsts_files = files;
+        }
+--- new
+        drop(files);
+
+=== the shim tells a shared use as single
+file: crates/curl-sys-abi/src/share.rs
+witness: curl-sys-abi handle_tests::the_lock_functions_are_told_of_the_list_and_the_cache_as_in_c
+--- old
+            Access::Shared => ffi::CURL_LOCK_ACCESS_SHARED,
+--- new
+            Access::Shared => ffi::CURL_LOCK_ACCESS_SINGLE,
+
+=== the shim tells the HSTS cache as the public suffix list
+file: crates/curl-sys-abi/src/share.rs
+witness: curl-sys-abi handle_tests::the_lock_functions_are_told_of_the_list_and_the_cache_as_in_c
+--- old
+        Kind::Hsts => ffi::CURL_LOCK_DATA_HSTS,
+--- new
+        Kind::Hsts => ffi::CURL_LOCK_DATA_PSL,

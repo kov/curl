@@ -401,7 +401,7 @@ fn hsts_upgrade<H: Host>(
     run: &mut Run,
     cx: &mut StepCx<'_, H>,
 ) -> Result<(), ErrorKind> {
-    if cx.easy().hsts().is_none() {
+    if !cx.easy().hsts_enabled() {
         return Ok(());
     }
     let scheme = url.get(Part::Scheme, GetOptions::NONE).map_err(url_error)?;

@@ -9,7 +9,6 @@ use std::fmt;
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::date::HttpDate;
-use crate::save::CacheFile;
 use crate::url::is_ip_address;
 
 /// The most entries kept: past it, the oldest goes (`MAX_HSTS_ENTRIES`).
@@ -114,14 +113,10 @@ pub enum PullError {
 /// The cache (C's `struct hsts`).
 #[derive(Debug, Default)]
 pub struct Hsts {
-    /// Whether its file is written back.
-    mode: CacheFile,
     /// Oldest first.
     entries: Vec<Entry>,
     /// The file last read, written back when no other is named.
     file: Option<Vec<u8>>,
-    /// The files read as each transfer starts (C's `state.hstslist`).
-    to_read: Vec<Vec<u8>>,
 }
 
 /// Why a `Strict-Transport-Security:` header was not taken.
@@ -200,6 +195,34 @@ impl From<OutOfMemory> for BadEntry {
 /// `name` without one trailing dot.
 fn undotted(name: &[u8]) -> &[u8] {
     name.strip_suffix(b".").unwrap_or(name)
+}
+
+/// Give what the application's reader gives to `keep`, until it says no
+/// more (`hsts_pull`). No cache is held across the reader, which is the
+/// application's: `keep` reaches it for each entry.
+pub(crate) fn pull_into(
+    reader: &dyn HstsReader,
+    keep: &mut dyn FnMut(HstsEntry<'_>) -> Result<(), BadEntry>,
+) -> Result<(), PullError> {
+    loop {
+        let read = reader.read(&mut |entry| {
+            keep(HstsEntry {
+                expire: if entry.expire.is_empty() {
+                    b"unlimited"
+                } else {
+                    entry.expire
+                },
+                ..entry
+            })
+        });
+        match read {
+            Ok(HstsRead::Given) => {}
+            Ok(HstsRead::Done) => return Ok(()),
+            Ok(HstsRead::Abort) => return Err(PullError::Aborted),
+            Ok(HstsRead::Invalid) | Err(BadEntry::Date) => return Err(PullError::Invalid),
+            Err(BadEntry::OutOfMemory) => return Err(PullError::OutOfMemory),
+        }
+    }
 }
 
 impl Hsts {
@@ -359,26 +382,7 @@ impl Hsts {
     /// Keep what the application's reader gives, until it says no more
     /// (`hsts_pull`).
     pub fn pull(&mut self, reader: &dyn HstsReader, now: i64) -> Result<(), PullError> {
-        loop {
-            let read = reader.read(&mut |entry| {
-                let entry = HstsEntry {
-                    expire: if entry.expire.is_empty() {
-                        b"unlimited"
-                    } else {
-                        entry.expire
-                    },
-                    ..entry
-                };
-                self.add(entry, now)
-            });
-            match read {
-                Ok(HstsRead::Given) => {}
-                Ok(HstsRead::Done) => return Ok(()),
-                Ok(HstsRead::Abort) => return Err(PullError::Aborted),
-                Ok(HstsRead::Invalid) | Err(BadEntry::Date) => return Err(PullError::Invalid),
-                Err(BadEntry::OutOfMemory) => return Err(PullError::OutOfMemory),
-            }
-        }
+        pull_into(reader, &mut |entry| self.add(entry, now))
     }
 
     /// Give every entry to the application's writer, until it says no
@@ -401,32 +405,6 @@ impl Hsts {
             },
         });
         ok
-    }
-
-    /// Read `file` as each transfer starts, from now on.
-    pub fn read_at_start(&mut self, file: &[u8]) -> Result<(), OutOfMemory> {
-        let mut name = Vec::new();
-        name.try_extend_from_slice(file)?;
-        self.to_read.try_push(name)
-    }
-
-    /// Read the files named to be read as each transfer starts
-    /// (`Curl_hsts_loadfiles`).
-    pub fn load_named(&mut self, now: i64) -> Result<(), LoadError> {
-        let files = std::mem::take(&mut self.to_read);
-        let loaded = files.iter().try_for_each(|f| self.load(f, now));
-        self.to_read = files;
-        loaded
-    }
-
-    /// Whether its file is written back.
-    pub fn mode(&self) -> CacheFile {
-        self.mode
-    }
-
-    /// Write its file back, or not, from now on.
-    pub fn set_mode(&mut self, mode: CacheFile) {
-        self.mode = mode;
     }
 
     /// The file last read, if any.
@@ -489,11 +467,6 @@ impl Hsts {
             self.create(&e.host, e.subdomains, e.expires)?;
         }
         Ok(())
-    }
-
-    /// How many files are read as each transfer starts.
-    pub fn files_to_read(&self) -> usize {
-        self.to_read.len()
     }
 
     /// How many entries it keeps.

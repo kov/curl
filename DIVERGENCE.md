@@ -514,6 +514,18 @@ not a difference: it is tracked in `MILESTONES.md`.
   `the_public_suffixes_are_told_inside_the_jar_as_c_locks_them`
   (`crates/curl-core/src/proto/http/tests.rs`).
 
+- **HSTS files named with no cache are not read.** A handle that named a file and then left a
+  share keeping HSTS, or turned `CURLOPT_HSTS_CTRL` off while on it, has no cache and its files
+  still named. Its next transfer in C fails the assertion in `Curl_hsts_loadfile`, and reads through
+  the null pointer in a build without assertions (reproduced on the debug build). Here the files
+  stay named and unread, and the transfer runs without a cache. Pinned by
+  `files_named_with_no_cache_are_not_read` (`crates/curl-core/src/proto/http/tests/hsts.rs`).
+- **A share's HSTS cache is not held across the application's reader and writer.** C runs both on
+  the live cache, without telling the lock functions. Here the reader's entries are kept one at a
+  time and the writer is given a copy of the entries taken as the save starts, so that no callback
+  runs under the share's own lock. A writer changing the cache sees no change in what it is given.
+  Pinned by `a_share_s_cache_is_not_locked_across_the_application` (same file).
+
 ## Handles the application never made
 
 - **The connection lock at share cleanup is called with no handle.** When `curl_share_cleanup`

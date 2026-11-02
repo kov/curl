@@ -1,8 +1,9 @@
-//! The share: connections, resolved names, cookies, TLS sessions and the
-//! public suffix list kept for every transfer given it, whichever handle
+//! The share: connections, resolved names, cookies, TLS sessions, the
+//! public suffix list and the HSTS cache kept for every transfer given it, whichever handle
 //! and thread runs them (`CURLSH`, with `CURL_LOCK_DATA_CONNECT`,
 //! `CURL_LOCK_DATA_DNS`, `CURL_LOCK_DATA_COOKIE`,
-//! `CURL_LOCK_DATA_SSL_SESSION` and `CURL_LOCK_DATA_PSL`).
+//! `CURL_LOCK_DATA_SSL_SESSION`, `CURL_LOCK_DATA_PSL` and
+//! `CURL_LOCK_DATA_HSTS`).
 //!
 //! Each kind of data it keeps has a lock of its own, held for one use of
 //! it at a time (a search for a connection, a lookup, a cookie stored) and
@@ -22,6 +23,7 @@ use crate::conn::io::{Net, SystemNet};
 use crate::conn::shutdown::NoSet;
 use crate::conn::{DnsCache, Pool};
 use crate::cookie::Jar;
+use crate::hsts::Hsts;
 use crate::psl::PslCache;
 use crate::tls::SessionCache;
 
@@ -43,6 +45,8 @@ pub enum Kind {
     SslSessions,
     /// The public suffix list (`CURL_LOCK_DATA_PSL`).
     Psl,
+    /// The HSTS cache (`CURL_LOCK_DATA_HSTS`).
+    Hsts,
 }
 
 impl Kind {
@@ -53,6 +57,7 @@ impl Kind {
             Kind::Cookies => 4,
             Kind::SslSessions => 8,
             Kind::Psl => 16,
+            Kind::Hsts => 32,
         }
     }
 }
@@ -88,6 +93,8 @@ struct Inner {
     cookies: Mutex<Option<Jar>>,
     /// The TLS sessions, a cache made when they are first kept.
     sessions: Mutex<Option<SessionCache>>,
+    /// The HSTS cache, made when it is first kept.
+    hsts: Mutex<Option<Hsts>>,
     /// The public suffix list, used by its transfers in place of each
     /// one's multi's once it is kept. It has a lock of its own.
     psl: PslCache,
@@ -114,6 +121,7 @@ impl Share {
             dns: Mutex::new(DnsCache::default()),
             cookies: Mutex::new(None),
             sessions: Mutex::new(None),
+            hsts: Mutex::new(None),
             psl: PslCache::default(),
             net: Mutex::new(net),
         })?))
@@ -138,12 +146,15 @@ impl Share {
                 *sessions = Some(SessionCache::new(SessionCache::PEERS));
             }
         }
+        if kind == Kind::Hsts {
+            lock(&self.0.hsts).get_or_insert_with(Hsts::default);
+        }
         self.0.keeps.fetch_or(kind.bit(), Ordering::Relaxed);
         Ok(())
     }
 
-    /// Keep `kind` no more (`CURLSHOPT_UNSHARE`), forgetting the cookies
-    /// or TLS sessions kept; connections and names stay until the share
+    /// Keep `kind` no more (`CURLSHOPT_UNSHARE`), forgetting the cookies,
+    /// TLS sessions or HSTS cache kept; connections and names stay until the share
     /// goes, as C's do.
     pub fn stop_keeping(&self, kind: Kind) -> Result<(), InUse> {
         self.idle()?;
@@ -152,6 +163,9 @@ impl Share {
         }
         if kind == Kind::SslSessions {
             *lock(&self.0.sessions) = None;
+        }
+        if kind == Kind::Hsts {
+            *lock(&self.0.hsts) = None;
         }
         self.0.keeps.fetch_and(!kind.bit(), Ordering::Relaxed);
         Ok(())
@@ -199,6 +213,18 @@ impl Share {
     /// The jar, locked; none if the share keeps no cookies.
     pub(crate) fn cookies(&self) -> MutexGuard<'_, Option<Jar>> {
         lock(&self.0.cookies)
+    }
+
+    /// The HSTS cache, locked; none if the share keeps none.
+    pub(crate) fn hsts(&self) -> MutexGuard<'_, Option<Hsts>> {
+        lock(&self.0.hsts)
+    }
+
+    /// Whether its HSTS cache is locked now, for the tests of what runs
+    /// out of the lock.
+    #[cfg(test)]
+    pub(crate) fn hsts_is_locked(&self) -> bool {
+        self.0.hsts.try_lock().is_err()
     }
 
     /// The public suffix list.
@@ -316,6 +342,7 @@ impl Told {
             && inner.dns.try_lock().is_ok()
             && inner.cookies.try_lock().is_ok()
             && inner.sessions.try_lock().is_ok()
+            && inner.hsts.try_lock().is_ok()
             && !inner.psl.is_locked();
         assert!(free, "told of {kind:?} under the share's own lock");
         lock(&self.told).push((access, kind));

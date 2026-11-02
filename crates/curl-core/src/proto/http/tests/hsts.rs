@@ -250,12 +250,14 @@ fn a_copy_of_the_handle_keeps_the_entries_alive() {
     assert!(!e.hsts_enabled());
     e.add_hsts_file(Some(file.name())).unwrap();
     assert!(e.hsts_enabled());
-    assert_eq!(e.hsts().unwrap().files_to_read(), 1);
-    let hsts = e.hsts_mut().unwrap();
+    assert_eq!(e.hsts_files_named(), 1);
     let now = crate::time::SystemClock::new().unix_time();
-    hsts.parse(b"kept.example", b"max-age=1000", now).unwrap();
+    e.with_hsts(|hsts| hsts.parse(b"kept.example", b"max-age=1000", now))
+        .unwrap()
+        .unwrap();
     let copy = e.try_clone().unwrap();
-    assert!(copy.hsts().is_some_and(|h| h.files_to_read() == 0));
+    assert!(copy.hsts_enabled());
+    assert_eq!(copy.hsts_files_named(), 0);
     let mut copy = copy;
     copy.save_hsts().unwrap();
     assert!(file.text().contains("\nkept.example \""), "{}", file.text());
@@ -264,6 +266,244 @@ fn a_copy_of_the_handle_keeps_the_entries_alive() {
     // Turned off, it is gone.
     e.disable_hsts();
     assert!(!e.hsts_enabled());
+}
+
+/// A share's cache told of only as the files named are read, around them
+/// all and to itself, however else it is used: not as a response's field
+/// is kept, a URL is switched, a reader gives or a save is made
+/// (`Curl_hsts_loadfiles`, measured on the C build). A second handle with
+/// no HSTS option of its own uses it, and a save writes what any handle
+/// learned.
+#[test]
+fn a_share_s_cache_is_told_of_only_around_the_files_read() {
+    use crate::share::{Access, Kind, Share, Told};
+    let one = Temp::new("told-1", "file.example \"unlimited\"\n");
+    let two = Temp::new("told-2", "");
+    let share = Share::new().unwrap();
+    share.keep(Kind::Hsts).unwrap();
+    let told = Told::new(&share);
+    let hsts = |a| (a, Kind::Hsts);
+
+    let mut e = Easy::new();
+    e.add_hsts_file(Some(one.name())).unwrap();
+    e.add_hsts_file(Some(two.name())).unwrap();
+    e.set_share_watched(share.clone(), told.handler()).unwrap();
+    assert_eq!(e.hsts_files_named(), 2, "they outlive the own cache");
+    let (mut m, talk) = named_server(&[OK]);
+    let ran = get_with(&mut m, e, "/a", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        told.calls(),
+        [hsts(Some(Access::Single)), hsts(None)],
+        "one use, for the two files"
+    );
+    let mut first = ran.easy;
+    assert_eq!(
+        first.with_hsts(|h| h.applies(b"file.example", NOW)),
+        Some(true),
+        "read into the share's"
+    );
+
+    // No files, no reader's tell, no field's, no switch's and no save's.
+    let mut other = Easy::new();
+    assert!(!other.hsts_enabled());
+    other
+        .set_share_watched(share.clone(), told.handler())
+        .unwrap();
+    assert!(other.hsts_enabled(), "the share's, with no option set");
+    other
+        .with_hsts(|h| h.parse(b"learned.example", b"max-age=1000", NOW))
+        .unwrap()
+        .unwrap();
+    let reader = Giving {
+        entries: Mutex::new(vec![("given.example", "", false)]),
+        last: HstsRead::Done,
+    };
+    let (mut m, talk) = named_server(&[OK]);
+    let url = format!("http://file.example:{PORT}/a");
+    let mut ran = get_with(&mut m, other, "/a", talk, |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.hsts.make_mut().unwrap().read = Some(Handler::hsts_reader(reader).unwrap());
+    });
+    assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol), "switched");
+    ran.easy.save_hsts().unwrap();
+    assert_eq!(told.calls(), [], "none of those is told");
+
+    // It writes the file the share's cache read last.
+    let written = two.text();
+    for host in ["file.example", "learned.example", "given.example"] {
+        assert!(written.contains(host), "{host}: {written}");
+    }
+    // As does the handle that named it, whatever another learned; the
+    // file read first is the last named by neither.
+    std::fs::write(&two.0, "").unwrap();
+    first.save_hsts().unwrap();
+    assert!(two.text().contains("learned.example"), "{}", two.text());
+    assert!(!one.text().contains("learned.example"), "{}", one.text());
+}
+
+/// What `CURLOPT_HSTS_CTRL`, `CURLOPT_HSTS` and the share's coming and
+/// going do to the cache a handle uses, as `lib/setopt.c` and
+/// `lib/curl_share.c` do.
+#[test]
+fn a_handle_uses_the_cache_its_share_and_options_say() {
+    use crate::share::{Kind, Share};
+    let share = Share::new().unwrap();
+    share.keep(Kind::Hsts).unwrap();
+    let knows = |e: &mut Easy, host: &[u8]| e.with_hsts(|h| h.applies(host, NOW));
+    let learn = |e: &mut Easy, host: &[u8]| {
+        e.with_hsts(|h| h.parse(host, b"max-age=1000", NOW))
+            .unwrap()
+            .unwrap();
+    };
+    let mut e = Easy::new();
+    e.enable_hsts(CacheFile::ReadWrite).unwrap();
+    learn(&mut e, b"own.example");
+    // Joining, the own cache is gone for good.
+    e.set_share(Some(share.clone())).unwrap();
+    assert_eq!(knows(&mut e, b"own.example"), Some(false));
+    learn(&mut e, b"shared.example");
+    // Let go of: off, the share's left whole and the files still named.
+    let file = Temp::new("ctrl", "");
+    e.add_hsts_file(Some(file.name())).unwrap();
+    e.disable_hsts();
+    assert_eq!(knows(&mut e, b"shared.example"), None);
+    assert_eq!(e.hsts_files_named(), 1);
+    let mut other = Easy::new();
+    other.set_share(Some(share.clone())).unwrap();
+    assert_eq!(knows(&mut other, b"shared.example"), Some(true));
+    // Turned on again, a cache of its own, though on the share.
+    e.enable_hsts(CacheFile::ReadWrite).unwrap();
+    assert_eq!(knows(&mut e, b"shared.example"), Some(false));
+    learn(&mut e, b"apart.example");
+    assert_eq!(knows(&mut other, b"apart.example"), Some(false));
+    // Its own stays as it leaves; the share's use would not.
+    e.set_share(None).unwrap();
+    assert_eq!(knows(&mut e, b"apart.example"), Some(true));
+    // Back on it, it is the share's again.
+    e.set_share(Some(share.clone())).unwrap();
+    assert_eq!(knows(&mut e, b"shared.example"), Some(true));
+    // No file names none, and keeps the share's cache in use.
+    e.add_hsts_file(None).unwrap();
+    assert_eq!(e.hsts_files_named(), 0);
+    assert_eq!(knows(&mut e, b"shared.example"), Some(true));
+    // Leaving, it has none.
+    e.leave_share();
+    assert_eq!(knows(&mut e, b"shared.example"), None);
+    assert!(!e.hsts_enabled());
+    // A share keeping no cache takes nothing from a handle.
+    let mut own = Easy::new();
+    own.enable_hsts(CacheFile::ReadWrite).unwrap();
+    learn(&mut own, b"own.example");
+    own.set_share(Some(Share::new().unwrap())).unwrap();
+    assert_eq!(knows(&mut own, b"own.example"), Some(true));
+    // A copy of a handle on the share has its own, of the share's entries,
+    // and the share's cache is what stops being used.
+    let mut on = Easy::new();
+    on.set_share(Some(share.clone())).unwrap();
+    let now = crate::time::SystemClock::new().unix_time();
+    on.with_hsts(|h| h.parse(b"copied.example", b"max-age=1000", now))
+        .unwrap()
+        .unwrap();
+    let mut copy = on.try_clone().unwrap();
+    assert!(copy.share().is_none());
+    assert_eq!(
+        copy.with_hsts(|h| h.applies(b"copied.example", now)),
+        Some(true)
+    );
+    copy.with_hsts(|h| h.parse(b"only-copy.example", b"max-age=1000", now))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        on.with_hsts(|h| h.applies(b"only-copy.example", now)),
+        Some(false)
+    );
+}
+
+/// C asserts, or reads through a null pointer, reading the files named
+/// into the cache a handle let go of or left with its share. Here they are
+/// not read, and stay named: the transfer runs with no cache.
+#[test]
+fn files_named_with_no_cache_are_not_read() {
+    use crate::share::{Kind, Share};
+    let share = Share::new().unwrap();
+    share.keep(Kind::Hsts).unwrap();
+    let file = Temp::new("off", "sts.example \"unlimited\"\n");
+    for left in [true, false] {
+        let mut e = Easy::new();
+        e.add_hsts_file(Some(file.name())).unwrap();
+        e.set_share(Some(share.clone())).unwrap();
+        if left {
+            e.disable_hsts();
+        } else {
+            e.set_share(None).unwrap();
+        }
+        let (mut m, talk) = named_server(&[OK]);
+        let url = format!("http://sts.example:{PORT}/a");
+        let ran = get_with(&mut m, e, "/a", talk, |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+        });
+        assert_eq!(ran.result, Ok(()), "not switched: {left}");
+        assert_eq!(ran.easy.hsts_files_named(), 1);
+        assert!(!ran.easy.hsts_enabled());
+    }
+}
+
+/// The application's reader and writer, which may do what they like, run
+/// out of the share's lock on its cache.
+#[test]
+fn a_share_s_cache_is_not_locked_across_the_application() {
+    use crate::share::{Kind, Share};
+    struct Reads(Share, Mutex<u32>);
+    impl HstsReader for Reads {
+        fn read(
+            &self,
+            keep: &mut dyn FnMut(HstsEntry<'_>) -> Result<(), BadEntry>,
+        ) -> Result<HstsRead, BadEntry> {
+            assert!(!self.0.hsts_is_locked(), "under the lock");
+            let mut n = self.1.lock().unwrap();
+            if *n == 2 {
+                return Ok(HstsRead::Done);
+            }
+            *n += 1;
+            let name = format!("given{n}.example");
+            keep(HstsEntry {
+                name: name.as_bytes(),
+                expire: b"",
+                subdomains: false,
+            })?;
+            Ok(HstsRead::Given)
+        }
+    }
+    struct Writes(Share, Mutex<usize>);
+    impl HstsWriter for Writes {
+        fn write(&self, _: HstsEntry<'_>, _: usize, total: usize) -> HstsWrite {
+            assert!(!self.0.hsts_is_locked(), "under the lock");
+            *self.1.lock().unwrap() = total;
+            HstsWrite::More
+        }
+    }
+    let share = Share::new().unwrap();
+    share.keep(Kind::Hsts).unwrap();
+    let mut e = Easy::new();
+    e.set_share(Some(share.clone())).unwrap();
+    let (mut m, talk) = named_server(&[OK]);
+    let writes = TryArc::try_new(Writes(share.clone(), Mutex::new(0))).unwrap();
+    struct Shared(TryArc<Writes>);
+    impl HstsWriter for Shared {
+        fn write(&self, entry: HstsEntry<'_>, index: usize, total: usize) -> HstsWrite {
+            self.0.write(entry, index, total)
+        }
+    }
+    let reads = Reads(share.clone(), Mutex::new(0));
+    let mut ran = get_with(&mut m, e, "/a", talk, |o| {
+        let hsts = o.http.hsts.make_mut().unwrap();
+        hsts.read = Some(Handler::hsts_reader(reads).unwrap());
+        hsts.write = Some(Handler::hsts_writer(Shared(writes.clone())).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    ran.easy.save_hsts().unwrap();
+    assert_eq!(*writes.1.lock().unwrap(), 2, "both entries kept and given");
 }
 
 /// A cache whose file is read-only reads it and never writes it back,
@@ -276,9 +516,10 @@ fn a_read_only_file_is_not_written_back() {
     let mut e = Easy::new();
     e.enable_hsts(CacheFile::ReadOnly).unwrap();
     e.add_hsts_file(Some(file.name())).unwrap();
-    let hsts = e.hsts_mut().unwrap();
     let now = crate::time::SystemClock::new().unix_time();
-    hsts.parse(b"kept.example", b"max-age=1000", now).unwrap();
+    e.with_hsts(|hsts| hsts.parse(b"kept.example", b"max-age=1000", now))
+        .unwrap()
+        .unwrap();
     let mut copy = e.try_clone().unwrap();
     copy.save_hsts().unwrap();
     e.save_hsts().unwrap();

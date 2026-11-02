@@ -210,11 +210,10 @@ fn kind(sh: &ShimShare, data: curl_lock_data, on: bool) -> CURLSHcode {
         ffi::CURL_LOCK_DATA_DNS
         | ffi::CURL_LOCK_DATA_CONNECT
         | ffi::CURL_LOCK_DATA_COOKIE
-        | ffi::CURL_LOCK_DATA_SSL_SESSION => keep(sh, data, on),
+        | ffi::CURL_LOCK_DATA_SSL_SESSION
+        | ffi::CURL_LOCK_DATA_HSTS => keep(sh, data, on),
         // C has no way to stop sharing the list.
         ffi::CURL_LOCK_DATA_PSL if on => keep(sh, data, on),
-        // HSTS is not built in yet.
-        ffi::CURL_LOCK_DATA_HSTS => ffi::CURLSHE_NOT_BUILT_IN,
         _ => CURLSHE_BAD_OPTION,
     }
 }
@@ -240,6 +239,7 @@ fn core_kind(data: curl_lock_data) -> Option<Kind> {
         ffi::CURL_LOCK_DATA_COOKIE => Some(Kind::Cookies),
         ffi::CURL_LOCK_DATA_SSL_SESSION => Some(Kind::SslSessions),
         ffi::CURL_LOCK_DATA_PSL => Some(Kind::Psl),
+        ffi::CURL_LOCK_DATA_HSTS => Some(Kind::Hsts),
         _ => None,
     }
 }
@@ -261,6 +261,7 @@ fn lock_data(kind: Kind) -> curl_lock_data {
         Kind::Cookies => ffi::CURL_LOCK_DATA_COOKIE,
         Kind::SslSessions => ffi::CURL_LOCK_DATA_SSL_SESSION,
         Kind::Psl => ffi::CURL_LOCK_DATA_PSL,
+        Kind::Hsts => ffi::CURL_LOCK_DATA_HSTS,
     }
 }
 

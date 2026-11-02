@@ -73,6 +73,10 @@ pub struct Easy {
     /// The HSTS and alt-svc caches, made the first time the application
     /// turns either on: few handles do.
     caches: Option<Box<HostCaches>>,
+    /// The handle has let go of the HSTS cache of the share it is on, and
+    /// has only its own if any (`CURLOPT_HSTS_CTRL` without
+    /// `CURLHSTS_ENABLE`).
+    left_shared_hsts: bool,
     /// Where connections, resolved names and cookies are kept for the
     /// transfers after, if not in the handle's own multi (`CURLOPT_SHARE`,
     /// C's `data->share`): kept through `reset`, not copied with the
@@ -263,8 +267,14 @@ pub(crate) struct LastConn {
 /// turns it on, kept from one transfer to the next and through `reset`.
 #[derive(Debug, Default)]
 struct HostCaches {
-    /// C's `hsts`.
+    /// C's `hsts`, where it is the handle's own. A share keeping one has
+    /// it in its place: see `Easy::with_hsts`.
     hsts: Option<Hsts>,
+    /// The files read into the cache in use as each transfer starts (C's
+    /// `state.hstslist`).
+    hsts_files: Vec<Vec<u8>>,
+    /// Whether this handle writes the cache's file back.
+    hsts_mode: CacheFile,
     /// C's `asi`.
     alt_svc: Option<AltSvc>,
 }
@@ -399,6 +409,7 @@ impl Easy {
             shown_credentials: None,
             last_conn: None,
             caches: None,
+            left_shared_hsts: false,
             share: None,
             share_watch: None,
             libraries: self.libraries.clone(),
@@ -406,9 +417,13 @@ impl Easy {
             rtsp: None,
         };
         prepare(&mut copy.options)?;
-        if let Some(hsts) = self.hsts() {
-            let hsts = copy.hsts_copy(hsts)?;
-            copy.caches_made()?.hsts = Some(hsts);
+        let now = crate::date::cache_now(SystemClock::new().unix_time());
+        if let Some(alive) = self.read_hsts(|hsts| hsts.alive_copy(now)) {
+            let hsts = copy.hsts_copy(alive?, now)?;
+            let mode = self.hsts_mode();
+            let caches = copy.caches_made()?;
+            caches.hsts = Some(hsts);
+            caches.hsts_mode = mode;
         }
         if let Some(original) = self.alt_svc() {
             // A cache of its own, which reads the file named, as C's copy
@@ -429,12 +444,10 @@ impl Easy {
 
     /// The HSTS cache this copy of a handle starts with
     /// (`curl_easy_duphandle`): its file and the application's reader read
-    /// into a new one, as C reads them, then the entries alive in the
-    /// original's `hsts`. What fails to be read is passed over, as in C.
-    fn hsts_copy(&self, hsts: &Hsts) -> Result<Hsts, OutOfMemory> {
-        let now = crate::date::cache_now(SystemClock::new().unix_time());
+    /// into a new one, as C reads them, then `alive`, the entries alive in
+    /// the original's. What fails to be read is passed over, as in C.
+    fn hsts_copy(&self, alive: Hsts, now: i64) -> Result<Hsts, OutOfMemory> {
         let mut copy = Hsts::default();
-        copy.set_mode(hsts.mode());
         let options = &*self.options.http.hsts;
         if let Some(file) = &options.file
             && let Err(crate::hsts::LoadError::OutOfMemory) = copy.load(file, now)
@@ -446,7 +459,6 @@ impl Easy {
         {
             return Err(OutOfMemory);
         }
-        let alive = hsts.alive_copy(now)?;
         copy.merge(alive)?;
         Ok(copy)
     }
@@ -509,6 +521,7 @@ impl Easy {
         self.share_may_change()?;
         self.forget_pool(share.as_ref());
         self.relink_jar(share.as_ref());
+        self.relink_hsts(share.as_ref());
         self.share = share;
         self.share_watch = None;
         Ok(())
@@ -525,6 +538,7 @@ impl Easy {
         self.share_may_change()?;
         self.forget_pool(Some(&share));
         self.relink_jar(Some(&share));
+        self.relink_hsts(Some(&share));
         self.share = Some(share);
         self.share_watch = Some(watch);
         Ok(())
@@ -537,6 +551,7 @@ impl Easy {
     pub fn leave_share(&mut self) {
         self.forget_pool(None);
         self.relink_jar(None);
+        self.relink_hsts(None);
         self.share = None;
         self.share_watch = None;
     }
@@ -579,6 +594,20 @@ impl Easy {
         }
     }
 
+    /// As the share changes to `next`: joining one that keeps an HSTS
+    /// cache, the handle's own is gone and the share's used, turned on or
+    /// not; leaving one, the handle has only its own, if it made one after
+    /// letting go of the share's (`Curl_share_easy_link`,
+    /// `Curl_share_easy_unlink`). The files named stay.
+    fn relink_hsts(&mut self, next: Option<&Share>) {
+        self.left_shared_hsts = false;
+        if next.is_some_and(|s| s.keeps(Kind::Hsts))
+            && let Some(caches) = self.caches.as_deref_mut()
+        {
+            caches.hsts = None;
+        }
+    }
+
     /// What is told around each use of the share, if anything is.
     pub(crate) fn share_watch(&self) -> Option<&dyn ShareLock> {
         self.share_watch.as_deref()
@@ -613,13 +642,88 @@ impl Easy {
     /// Turn the HSTS cache on, empty, if it is not, its file written back
     /// as `mode` says (`CURLHSTS_ENABLE`, `CURLHSTS_READONLYFILE`).
     pub fn enable_hsts(&mut self, mode: CacheFile) -> Result<(), OutOfMemory> {
-        self.hsts_made()?.set_mode(mode);
+        self.hsts_made()?;
+        self.caches_made()?.hsts_mode = mode;
         Ok(())
     }
 
-    /// The HSTS cache, made empty now if the handle has none.
-    fn hsts_made(&mut self) -> Result<&mut Hsts, OutOfMemory> {
-        Ok(self.caches_made()?.hsts.get_or_insert_with(Hsts::default))
+    /// Make an HSTS cache of the handle's own, empty, if it uses none.
+    fn hsts_made(&mut self) -> Result<(), OutOfMemory> {
+        if !self.hsts_enabled() {
+            self.caches_made()?.hsts = Some(Hsts::default());
+        }
+        Ok(())
+    }
+
+    /// The share whose HSTS cache the handle uses, if it does.
+    fn hsts_share(&self) -> Option<&Share> {
+        self.share_keeping_hsts().filter(|_| !self.left_shared_hsts)
+    }
+
+    fn share_keeping_hsts(&self) -> Option<&Share> {
+        self.share.as_ref().filter(|s| s.keeps(Kind::Hsts))
+    }
+
+    /// Run `f` on the HSTS cache the handle uses, if any: its share's, if
+    /// that keeps one, under its lock, else its own. The application is
+    /// not told: C locks the cache only around the files it reads
+    /// ([`Easy::with_hsts_told`]). Nothing `f` does may call out.
+    pub(crate) fn with_hsts<R>(&mut self, f: impl FnOnce(&mut Hsts) -> R) -> Option<R> {
+        match self.hsts_share() {
+            Some(share) => share.hsts().as_mut().map(f),
+            None => self.caches.as_deref_mut()?.hsts.as_mut().map(f),
+        }
+    }
+
+    /// As [`Easy::with_hsts`], reading it from a handle not to be changed.
+    pub(crate) fn read_hsts<R>(&self, f: impl FnOnce(&Hsts) -> R) -> Option<R> {
+        match self.hsts_share() {
+            Some(share) => share.hsts().as_ref().map(f),
+            None => self.caches.as_deref()?.hsts.as_ref().map(f),
+        }
+    }
+
+    /// As [`Easy::with_hsts`], the application told around it if the share
+    /// keeps a cache, even with the handle using its own, as C's lock asks
+    /// only what the share keeps (`Curl_hsts_loadfiles`).
+    fn with_hsts_told<R>(&mut self, f: impl FnOnce(&mut Hsts) -> R) -> Option<R> {
+        let Some(share) = self.share.clone() else {
+            return self.with_hsts(f);
+        };
+        let watch = self.share_watch.clone();
+        watched(watch.as_deref(), &share, Kind::Hsts, || self.with_hsts(f))
+    }
+
+    /// Read the files named into the cache the handle uses, as one use of
+    /// the share's (`Curl_hsts_loadfiles`). Without a cache they stay named
+    /// and are not read: C dereferences the cache it does not have
+    /// (DIVERGENCE.md).
+    pub(crate) fn load_hsts_files(&mut self, now: i64) -> Result<(), crate::hsts::LoadError> {
+        let Some(caches) = self.caches.as_deref_mut() else {
+            return Ok(());
+        };
+        if caches.hsts_files.is_empty() {
+            return Ok(());
+        }
+        let files = std::mem::take(&mut caches.hsts_files);
+        let loaded = self.with_hsts_told(|hsts| files.iter().try_for_each(|f| hsts.load(f, now)));
+        if let Some(caches) = self.caches.as_deref_mut() {
+            caches.hsts_files = files;
+        }
+        loaded.unwrap_or(Ok(()))
+    }
+
+    /// How many HSTS files are read as each transfer starts.
+    #[cfg(test)]
+    pub(crate) fn hsts_files_named(&self) -> usize {
+        self.caches.as_deref().map_or(0, |c| c.hsts_files.len())
+    }
+
+    /// Whether this handle writes the HSTS cache's file back.
+    fn hsts_mode(&self) -> CacheFile {
+        self.caches
+            .as_deref()
+            .map_or_else(CacheFile::default, |c| c.hsts_mode)
     }
 
     /// The caches, made now if the handle has none.
@@ -628,15 +732,6 @@ impl Easy {
             self.caches = Some(try_box(HostCaches::default())?);
         }
         Ok(self.caches.as_deref_mut().expect("made above"))
-    }
-
-    /// The HSTS cache, if on.
-    pub(crate) fn hsts(&self) -> Option<&Hsts> {
-        self.caches.as_deref()?.hsts.as_ref()
-    }
-
-    pub(crate) fn hsts_mut(&mut self) -> Option<&mut Hsts> {
-        self.caches.as_deref_mut()?.hsts.as_mut()
     }
 
     /// The alt-svc cache, if on.
@@ -648,57 +743,83 @@ impl Easy {
         self.caches.as_deref_mut()?.alt_svc.as_mut()
     }
 
-    /// Turn the HSTS cache off: its entries and the files named are
-    /// forgotten (`CURLOPT_HSTS_CTRL` without `CURLHSTS_ENABLE`).
+    /// Turn the HSTS cache off (`CURLOPT_HSTS_CTRL` without
+    /// `CURLHSTS_ENABLE`): its entries and the files named are forgotten,
+    /// but on a share keeping one the share's is only let go, and the files
+    /// stay named.
     pub fn disable_hsts(&mut self) {
+        let shared = self.share_keeping_hsts().is_some();
+        self.left_shared_hsts = shared;
         if let Some(caches) = self.caches.as_deref_mut() {
             caches.hsts = None;
+            if !shared {
+                caches.hsts_files = Vec::new();
+                caches.hsts_mode = CacheFile::default();
+            }
         }
     }
 
     /// Read the HSTS file `file` into the cache as each transfer starts,
     /// and write the cache to it as the handle goes; the cache is turned
     /// on. Without a file, the files named are forgotten and the cache
-    /// turned off (`CURLOPT_HSTS`).
+    /// turned off, unless it is a share's (`CURLOPT_HSTS`).
     pub fn add_hsts_file(&mut self, file: Option<&[u8]>) -> Result<(), OutOfMemory> {
         self.hsts_made()?;
         let Some(file) = file else {
-            self.disable_hsts();
+            if self.share_keeping_hsts().is_some() {
+                if let Some(caches) = self.caches.as_deref_mut() {
+                    caches.hsts_files = Vec::new();
+                }
+            } else {
+                self.disable_hsts();
+            }
             return Ok(());
         };
         let mut copy = Vec::new();
         copy.try_extend_from_slice(file)?;
-        let hsts = self.hsts_mut().expect("enabled above");
-        hsts.read_at_start(file)?;
+        let mut named = Vec::new();
+        named.try_extend_from_slice(file)?;
+        self.caches_made()?.hsts_files.try_push(named)?;
         self.options.http.hsts.make_mut()?.file = Some(copy);
         Ok(())
     }
 
     /// Whether the HSTS cache is on.
     pub fn hsts_enabled(&self) -> bool {
-        self.hsts().is_some()
+        self.read_hsts(|_| ()).is_some()
     }
 
     /// Write the HSTS cache, if it is on, to `HstsOptions::file` or else
     /// the file last read, and give it to the application's writer
     /// (`Curl_hsts_save`). A file not written, or a writer that says the
-    /// save fails, fails it, after the rest is done.
+    /// save fails, fails it, after the rest is done. What is written is
+    /// taken from a share's cache under its lock, and written and given to
+    /// the writer, the application's, once that is let go; C does not tell
+    /// the lock functions of any of it.
     pub fn save_hsts(&mut self) -> Result<(), SaveError> {
-        let Some(hsts) = self.hsts() else {
-            return Ok(());
-        };
         let options = &*self.options.http.hsts;
-        let file = options.file.as_deref().or(hsts.file());
-        let mut result = Ok(());
         // C never sets the flag it tests, so writes a read-only file back
         // (DIVERGENCE.md).
-        let written = hsts.mode() == CacheFile::ReadWrite;
-        if let Some(file) = file.filter(|f| written && !f.is_empty()) {
-            result = crate::save::replace(file, &hsts.text()?);
+        let written = self.hsts_mode() == CacheFile::ReadWrite;
+        let taken = self.read_hsts(|hsts| -> Result<_, OutOfMemory> {
+            let file = options.file.as_deref().or(hsts.file());
+            let file = file.filter(|f| written && !f.is_empty());
+            let file = file.map(crate::options::copy).transpose()?;
+            let text = file.is_some().then(|| hsts.text()).transpose()?;
+            let every = options.write.as_ref().map(|_| hsts.alive_copy(i64::MIN));
+            Ok((file.zip(text), every.transpose()?))
+        });
+        let Some(taken) = taken else {
+            return Ok(());
+        };
+        let (to_file, every) = taken?;
+        let mut result = Ok(());
+        if let Some((file, text)) = to_file {
+            result = crate::save::replace(&file, &text);
         }
-        if let Some(writer) = &options.write {
+        if let (Some(writer), Some(every)) = (&options.write, every) {
             // The writer's verdict is the save's, as C's is.
-            result = match hsts.push(&**writer) {
+            result = match every.push(&**writer) {
                 true => Ok(()),
                 false => Err(SaveError::Write),
             };

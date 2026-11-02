@@ -507,6 +507,11 @@ impl AuthAsked {
         get_or_head: true,
         problem: false,
     };
+
+    /// The request went without its body (`req.authneg`).
+    pub(crate) fn probe(&self) -> bool {
+        self.probe
+    }
 }
 
 impl Default for AuthAsked {

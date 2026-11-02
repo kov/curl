@@ -2816,12 +2816,20 @@ impl Request {
         state::trace_timer(cx, TimerKind::Proto, format_args!("cleared"));
     }
 
-    /// An error response came before the body was all sent: it goes on if
-    /// the application says so, and stops otherwise, the connection not
-    /// used again (`http_handle_send_error`).
+    /// An error response came before the body of a POST or PUT was all
+    /// sent: it goes on if the application says so, and stops otherwise,
+    /// the connection not used again (`http_handle_send_error`). A probe
+    /// for a challenge, which has no body, and a request of another
+    /// method send all of their head whatever came.
     fn send_error<H: Host>(&mut self, cx: &mut StepCx<'_, H>, code: u16) -> Result<(), ErrorKind> {
-        let meta = self.head().meta();
-        if !self.sending() || meta.close() || meta.rewinds() {
+        let head = self.head();
+        let meta = head.meta();
+        if !self.sending()
+            || head.probe()
+            || meta.close()
+            || meta.rewinds()
+            || !matches!(self.method, Method::Post | Method::Upload)
+        {
             return Ok(());
         }
         if code == 417 && self.outgoing.announced() {

@@ -284,6 +284,12 @@ impl HeadParser {
         &mut self.meta
     }
 
+    /// The request went without its body, a probe for a challenge
+    /// (`req.authneg`).
+    pub(crate) fn probe(&self) -> bool {
+        self.exchange.asked.auth.probe()
+    }
+
     /// The final head's status, once it ended.
     pub(crate) fn status(&self) -> Option<Status> {
         self.status.filter(|_| self.phase == Phase::Done)

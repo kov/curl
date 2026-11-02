@@ -1597,3 +1597,28 @@ witness: curl-core proto::http::tests::netrc_reads::a_bad_origin_fails_before_a_
     if url.host_held().is_some_and(|host| host.len() > MAX_HOST) {
 --- new
     if false && url.host_held().is_some_and(|host| host.len() > MAX_HOST) {
+
+=== an error response stops a GET's head
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::an_error_response_lets_a_get_s_head_go
+--- old
+            || !matches!(self.method, Method::Post | Method::Upload)
+--- new
+            || matches!(self.method, Method::Head)
+
+=== an error response lets a PUT's body go on
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::an_error_response_stops_a_put_s_body
+--- old
+            || !matches!(self.method, Method::Post | Method::Upload)
+--- new
+            || !matches!(self.method, Method::Post)
+
+=== a challenge read as a probe goes stops its head
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_challenge_read_as_a_probe_goes_lets_its_head_go
+--- old
+            || head.probe()
+            || meta.close()
+--- new
+            || meta.close()

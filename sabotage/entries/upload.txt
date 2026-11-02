@@ -258,9 +258,10 @@ witness: curl-core proto::http::tests::a_redirect_mid_body_closes_rather_than_se
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_redirect_with_little_of_the_body_left_keeps_the_connection
 --- old
-        if !self.sending() || meta.close() || meta.rewinds() {
+            || meta.close()
+            || meta.rewinds()
 --- new
-        if !self.sending() || meta.close() {
+            || meta.close()
 
 === the rest of a body read again is not said to go
 file: crates/curl-core/src/proto/http.rs

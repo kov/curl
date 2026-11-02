@@ -1678,6 +1678,114 @@ fn an_error_response_stops_the_body() {
     );
 }
 
+/// A server that answers with `replies` before it is asked, each once
+/// the one before was read, and takes 8 bytes a send: a response is read
+/// while the head still goes (the C build under `CURL_DBG_SOCK_WPARTIAL`,
+/// against a server that answers as it accepts).
+fn answering_early(replies: &[&[u8]]) -> Conversation {
+    Conversation::replies(replies, false)
+        .volunteering(replies.len())
+        .taking(std::num::NonZeroUsize::new(8).unwrap())
+}
+
+/// A request by `set` to an `answering_early` server.
+fn answered_early(replies: &[&[u8]], set: impl FnOnce(&mut Options)) -> Ran {
+    let talk = answering_early(replies);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    get(&mut m, "/a", talk, set)
+}
+
+/// Whether a run's connection was closed, or left for the next transfer.
+fn closed(ran: &Ran) -> bool {
+    let text = ran.seen.text();
+    let kept = text.iter().any(|l| l.ends_with("left intact\n"));
+    let shut = text
+        .iter()
+        .any(|l| l.starts_with("shutting down connection"));
+    assert_ne!(kept, shut, "{text:?}");
+    shut
+}
+
+const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad\r\nContent-Length: 3\r\n\r\nno\n";
+
+/// An error response read while a GET's head goes stops nothing: all of
+/// the head goes, and the connection is kept, as C stops only a POST or
+/// a PUT (`http_handle_send_error`).
+#[test]
+fn an_error_response_lets_a_get_s_head_go() {
+    let ran = answered_early(&[BAD_REQUEST], |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.request, request_of("/a"));
+    assert_eq!(ran.seen.body(), b"no\n");
+    let text = ran.seen.text();
+    assert!(
+        !text
+            .iter()
+            .any(|l| l.starts_with("HTTP error before end of send") || l == "abort upload\n"),
+        "{text:?}"
+    );
+    assert!(!closed(&ran));
+}
+
+/// An error response read while a PUT's head goes stops its body, the
+/// connection not used again, as the C build does.
+#[test]
+fn an_error_response_stops_a_put_s_body() {
+    let ran = answered_early(&[BAD_REQUEST], |o| {
+        o.method = Method::Upload;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"hello".to_vec()).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(!ran.request.ends_with(b"hello"), "the body stopped");
+    let text = ran.seen.text();
+    let stop = text
+        .iter()
+        .position(|l| l == "HTTP error before end of send, stop sending\n");
+    let abort = text.iter().position(|l| l == "abort upload\n");
+    assert!(stop.is_some() && abort == stop.map(|at| at + 1), "{text:?}");
+    assert_eq!(ran.easy.report().sizes().upload(), 0);
+    assert!(closed(&ran));
+}
+
+/// A probe for a challenge sends all of its head whatever came, and its
+/// connection is left intact, as C's `authneg` request is: a POST with
+/// Digest wanted, the challenge read as the probe's head goes. The
+/// server's answer to the next request already waits on it, which has
+/// the connection found dead and the request made on another.
+#[test]
+fn a_challenge_read_as_a_probe_goes_lets_its_head_go() {
+    let first = answering_early(&[DIGEST_CHALLENGE, OK]);
+    let second = Conversation::new(OK, false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let ran = get(&mut m, "/a", second, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    });
+    let text = ran.seen.text();
+    assert_eq!(ran.result, Ok(()), "{text:#?}");
+    assert!(
+        !text
+            .iter()
+            .any(|l| l.starts_with("HTTP error before end of send") || l == "abort upload\n"),
+        "{text:?}"
+    );
+    let probe = format!(
+        "POST /a HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\
+         Content-Length: 0\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n"
+    );
+    assert_eq!(String::from_utf8_lossy(&first.received()), probe);
+    let intact = format!("Connection #0 to host 127.0.0.1:{PORT} left intact\n");
+    let issue = text
+        .iter()
+        .position(|l| l.starts_with("Issue another request"));
+    let kept = text.iter().position(|l| *l == intact);
+    assert!(kept.is_some() && kept < issue, "{text:?}");
+    assert!(ran.request.ends_with(b"\r\n\r\na=b"));
+    assert_eq!(ran.seen.body(), b"ok\n");
+}
+
 /// A body larger than the send buffer is read again as each buffer goes,
 /// the first buffer shared with the head.
 #[test]

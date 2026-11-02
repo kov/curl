@@ -4458,11 +4458,21 @@ fn a_share_is_held_and_locked_as_in_c() {
         pointer(one, ffi::CURLOPT_SHARE, ptr::null_mut::<c_void>()),
         CURLE_OK
     );
-    // The one left holds it still.
+    // The one left holds it still: for an option the core has no say in,
+    // and for its cleanup.
     assert_eq!(
         set(sh, ffi::CURLSHOPT_SHARE, ffi::CURL_LOCK_DATA_DNS),
         ffi::CURLSHE_IN_USE
     );
+    // SAFETY: a live share and a pointer, as the option takes; then a live
+    // share.
+    unsafe {
+        assert_eq!(
+            curl_share_setopt(sh, ffi::CURLSHOPT_USERDATA, ptr::null_mut::<c_void>()),
+            ffi::CURLSHE_IN_USE
+        );
+        assert_eq!(curl_share_cleanup(sh), ffi::CURLSHE_IN_USE);
+    }
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(two) };
     // The jar locked for each use of it, the flush at cleanup among them,

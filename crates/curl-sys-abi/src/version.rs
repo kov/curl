@@ -198,13 +198,13 @@ fn info() -> &'static curl_version_info_data {
                 ares: if cfg!(feature = "threaded-resolver") {
                     ptr::null()
                 } else {
-                    ARES.get_or_init(|| cbuf(format_args!("{}", curl_ares::version())))
+                    ARES.get_or_init(|| cbuf(format_args!("{}", crate::ares::version())))
                         .as_ptr()
                 },
                 ares_num: if cfg!(feature = "threaded-resolver") {
                     0
                 } else {
-                    curl_ares::version_number() as _
+                    crate::ares::version_number() as _
                 },
                 libidn: curl_idn2::version_c().as_ptr(),
                 iconv_ver_num: 0,
@@ -236,7 +236,7 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let zlib = Library("zlib", curl_zlib::version());
             let brotli = Library("brotli", curl_brotli::version());
             let zstd = Library("zstd", curl_zstd::version());
-            let ares = Library("c-ares", curl_ares::version());
+            let ares = Library("c-ares", crate::ares::version());
             let idn = Library("libidn2", curl_idn2::version());
             let psl = Library("libpsl", curl_psl::version());
             let ssh = Library("libssh", curl_libssh::version());
@@ -296,7 +296,7 @@ mod tests {
         if cfg!(feature = "threaded-resolver") {
             String::new()
         } else {
-            format!(" c-ares/{}", curl_ares::version())
+            format!(" c-ares/{}", crate::ares::version())
         }
     }
 

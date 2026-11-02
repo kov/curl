@@ -11,9 +11,13 @@ name = "curl"
 crate-type = ["cdylib"]
 
 [features]
+# Answers names by c-ares (C's `--enable-ares`), unless the threaded resolver
+# is chosen; one or the other is needed.
+default = ["c-ares"]
+c-ares = ["dep:curl-ares"]
 # The hooks of a C debug build: the curl_dbg_* exports, memory tracking
 # and the libcurl-d.so.4 soname.
-debug-hooks = ["curl-alloc/debug-hooks", "curl-ares/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks"]
+debug-hooks = ["curl-alloc/debug-hooks", "curl-ares?/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks"]
 # Read `long double` printf arguments in Rust (aarch64 only), with nightly's
 # `f128`; without it a C helper reads them.
 nightly = []
@@ -26,7 +30,7 @@ curl-core = { path = "../curl-core" }
 curl-gssapi = { path = "../curl-gssapi" }
 curl-openssl = { path = "../curl-openssl" }
 curl-psl = { path = "../curl-psl" }
-curl-ares = { path = "../curl-ares" }
+curl-ares = { path = "../curl-ares", optional = true }
 curl-idn2 = { path = "../curl-idn2" }
 curl-libssh = { path = "../curl-libssh" }
 curl-ldap = { path = "../curl-ldap" }

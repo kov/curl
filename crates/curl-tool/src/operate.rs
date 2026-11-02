@@ -4025,11 +4025,7 @@ impl Linked {
                 ed25519: Some(&curl_openssl::ED25519),
                 tls: Some(Library::Owned(tls)),
                 gss,
-                dns: if cfg!(feature = "threaded-resolver") {
-                    None
-                } else {
-                    Some(&curl_ares::ARES)
-                },
+                dns: crate::ares::LIBRARY,
                 idn: Some(&curl_idn2::IDN2),
                 h2: Some(&curl_nghttp2::NGHTTP2),
                 h3: Some(&curl_ngtcp2::NGTCP2),

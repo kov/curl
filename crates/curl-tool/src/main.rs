@@ -12,6 +12,7 @@ use curl_alloc::OutOfMemory;
 use curl_core::error::ErrorKind;
 use curl_core::version::version;
 
+mod ares;
 mod bar;
 mod config;
 mod easysrc;
@@ -259,7 +260,7 @@ impl std::fmt::Display for CurlVersion {
         let zlib = Library("zlib", curl_zlib::version());
         let brotli = Library("brotli", curl_brotli::version());
         let zstd = Library("zstd", curl_zstd::version());
-        let ares = Library("c-ares", curl_ares::version());
+        let ares = Library("c-ares", ares::version());
         let idn = Library("libidn2", curl_idn2::version());
         let psl = Library("libpsl", curl_psl::version());
         let ssh = Library("libssh", curl_libssh::version());
@@ -382,7 +383,7 @@ mod tests {
             if cfg!(feature = "threaded-resolver") {
                 String::new()
             } else {
-                format!(" c-ares/{}", curl_ares::version())
+                format!(" c-ares/{}", ares::version())
             },
             curl_idn2::version(),
             curl_psl::version(),

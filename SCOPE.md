@@ -105,7 +105,8 @@ libcurl. The rewrite's resolver is a build choice, a cargo feature, as C's confi
 the suite's measurement build keeps the resolver checked against the c-ares reference above,
 and the library that stands in for a distribution's (milestone 4's last step) uses the threaded
 resolver, checked against `build/c-threaded`. c-ares is bound by `crates/curl-ares`; the tool and
-the shim use it unless built with `threaded-resolver`.
+the shim have it by their default `c-ares` feature, and neither uses nor links it when built with
+`threaded-resolver`. With neither feature the build stops.
 
 The machine also needs the following for the test servers, which the build does not check:
 

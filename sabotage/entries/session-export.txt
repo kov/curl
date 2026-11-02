@@ -253,3 +253,11 @@ witness: curl-sys-abi ssls::tests::what_uses_the_cache_is_refused_while_it_goes_
         if rules.no_scache_lock && self.exporting.get() {
 --- new
         if false && rules.no_scache_lock && self.exporting.get() {
+
+=== a multi's sessions are taken to be going out when its handle's share's are
+file: crates/curl-sys-abi/src/ssls.rs
+witness: curl-sys-abi ssls::tests::a_share_s_sessions_go_out_past_a_multi
+--- old
+    let multi = easy.added().filter(|_| !exporting.on_share());
+--- new
+    let multi = easy.added();

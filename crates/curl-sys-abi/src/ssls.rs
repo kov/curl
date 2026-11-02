@@ -327,6 +327,110 @@ mod tests {
         }
     }
 
+    /// A handle in a multi using a share: its sessions are the share's, so
+    /// that is what is refused, wherever the other handle is, and the multi
+    /// goes on. What the function fails with comes back from the multi too.
+    #[test]
+    fn a_share_s_sessions_go_out_past_a_multi() {
+        use crate::multi::{curl_multi_add_handle, curl_multi_cleanup, curl_multi_init};
+        use crate::multi::{curl_multi_perform, curl_multi_remove_handle};
+        use crate::setopt::curl_easy_setopt;
+        use crate::share::{curl_share_cleanup, curl_share_init, curl_share_setopt};
+
+        struct Others {
+            other: *mut CURL,
+            multi: *mut ffi::CURLM,
+            answer: CURLcode,
+            calls: u32,
+        }
+
+        const BLOB: [u8; 5] = [1, 4, 0, 1, b'T'];
+
+        unsafe extern "C" fn try_them(
+            _: *mut CURL,
+            others: *mut c_void,
+            _: *const c_char,
+            _: *const u8,
+            _: usize,
+            _: *const u8,
+            _: usize,
+            _: ffi::curl_off_t,
+            _: c_int,
+            _: *const c_char,
+            _: usize,
+        ) -> CURLcode {
+            // SAFETY: the pointer the test gave, and handles it made.
+            unsafe {
+                let o = &mut *others.cast::<Others>();
+                o.calls += 1;
+                let key = c"other:G".as_ptr();
+                let got = curl_easy_ssls_import(o.other, key, ptr::null(), 0, BLOB.as_ptr(), 5);
+                assert_eq!(got, CURLE_RECURSIVE_API_CALL);
+                if !o.multi.is_null() {
+                    let mut running = 0;
+                    assert_eq!(curl_multi_perform(o.multi, &mut running), ffi::CURLM_OK);
+                }
+                o.answer
+            }
+        }
+
+        // SAFETY: handles made here, with pointers holding what each call
+        // says, `o` outliving the exports.
+        unsafe {
+            let sh = curl_share_init();
+            let session = ffi::CURL_LOCK_DATA_SSL_SESSION.0 as c_int;
+            assert_eq!(
+                curl_share_setopt(sh, ffi::CURLSHOPT_SHARE, session),
+                ffi::CURLSHE_OK
+            );
+            let (a, c) = (curl_easy_init(), curl_easy_init());
+            for h in [a, c] {
+                assert_eq!(curl_easy_setopt(h, ffi::CURLOPT_SHARE, sh), CURLE_OK);
+            }
+            let m = curl_multi_init();
+            assert_eq!(curl_multi_add_handle(m, c), ffi::CURLM_OK);
+            let key = c"peer:G".as_ptr();
+            assert_eq!(
+                curl_easy_ssls_import(a, key, ptr::null(), 0, BLOB.as_ptr(), 5),
+                CURLE_OK
+            );
+
+            let mut o = Others {
+                other: a,
+                multi: m,
+                answer: CURLE_OK,
+                calls: 0,
+            };
+            let code = curl_easy_ssls_export(c, Some(try_them), (&raw mut o).cast());
+            assert_eq!((code, o.calls), (CURLE_OK, 1), "from the multi");
+
+            let mut o = Others {
+                other: c,
+                multi: ptr::null_mut(),
+                answer: CURLE_OK,
+                calls: 0,
+            };
+            let code = curl_easy_ssls_export(a, Some(try_them), (&raw mut o).cast());
+            assert_eq!((code, o.calls), (CURLE_OK, 1), "to the multi");
+
+            let failing = ffi::CURLE_WRITE_ERROR;
+            let mut o = Others {
+                other: a,
+                multi: ptr::null_mut(),
+                answer: failing,
+                calls: 0,
+            };
+            let code = curl_easy_ssls_export(c, Some(try_them), (&raw mut o).cast());
+            assert_eq!((code, o.calls), (failing, 1), "its failure");
+
+            assert_eq!(curl_multi_remove_handle(m, c), ffi::CURLM_OK);
+            curl_multi_cleanup(m);
+            curl_easy_cleanup(a);
+            curl_easy_cleanup(c);
+            curl_share_cleanup(sh);
+        }
+    }
+
     /// Inside the application's function, another handle using the same
     /// cache is refused what C's gate refuses it, while one using another
     /// cache, and what the rule does not name, go on.

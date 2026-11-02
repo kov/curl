@@ -402,6 +402,14 @@ impl Queued {
     }
 }
 
+/// What a resolve has found so far: every address of the queries that
+/// answered, and whether AAAA's is among them or was never asked.
+#[derive(Debug)]
+pub struct Partial {
+    pub addrs: Vec<IpAddr>,
+    pub v6_answered: bool,
+}
+
 /// What finds the addresses names stand for (C's resolver backends):
 /// the system's, at once, or one that answers later, telling the multi
 /// which transfers to run again.
@@ -417,6 +425,13 @@ pub trait Resolver {
 
     /// The answer of `id`, once it has come, taken; none while it has not.
     fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>>;
+
+    /// What has come of `id` while it goes on (`Curl_resolv_get_ai`), for
+    /// a resolver that answers each query as it can.
+    fn partial(&mut self, id: ResolveId) -> Result<Option<Partial>, OutOfMemory> {
+        let _ = id;
+        Ok(None)
+    }
 
     /// The answer of `id`, waited for (C's `Curl_async_await`).
     fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure>;

@@ -2617,8 +2617,13 @@ The setup's own resolve waits in `Stage::Resolving`, its `ResolveId` held, its a
 transfer is run, cancelled as the setup closes; one dropped neither answered nor cancelled
 aborts, as its answer would stay in the resolver. What it finds goes to the cache as before.
 The other resolves wait where they are, as C's do (`Curl_resolv_blocking`): the interface a
-socket binds to, by name, and, until step 48b makes it wait as the setup's own resolve does
-(C's second DNS filter), a SOCKS proxy's destination resolved here. The system's resolver asks `getaddrinfo` and answers at once, as C's
+socket binds to, by name. A SOCKS proxy's destination, resolved here, waits as the setup's own
+does (C's second DNS filter): its resolve is held by the dialed setup, the handshake,
+`Handshake::SocksTarget`, starting once it has answered. What a resolve has found while it goes
+on (`Resolver::partial`, DoH's and the threaded resolver's) is connected to once AAAA has answered
+or 25 ms have passed (`cf_dns_ready_to_connect`): the race holds the resolve as `Racing::late`,
+its addresses growing as the queries answer, until the resolve answers or the race is won. A race
+out of addresses waits for what is still to come. The system's resolver asks `getaddrinfo` and answers at once, as C's
 synchronous resolver and the c-ares-like build do; the threaded resolver (step 48b) answers
 later, from a thread pool, waking the multi.
 

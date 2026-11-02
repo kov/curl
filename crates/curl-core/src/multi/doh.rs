@@ -152,6 +152,21 @@ pub(crate) enum Polled {
 impl Lookup {
     /// As `Curl_doh_take_result`: nothing until every probe ended; a name
     /// is said not to exist only if no query failed but by saying so.
+    /// What the queries that ended have found (`Curl_resolv_get_ai`).
+    pub(crate) fn partial(&self) -> Result<crate::conn::io::Partial, OutOfMemory> {
+        let state = lock(&self.0);
+        let mut addrs = Vec::new();
+        for query in &state.queries {
+            if let Query::Ended(Ok(found)) = query {
+                addrs.try_extend_from_slice(found)?;
+            }
+        }
+        Ok(crate::conn::io::Partial {
+            addrs,
+            v6_answered: !matches!(state.queries[0], Query::Waiting(_)),
+        })
+    }
+
     pub(crate) fn poll(&self) -> Polled {
         let mut state = lock(&self.0);
         let ended = |q: &Query| matches!(q, Query::Ended(_));
@@ -247,12 +262,13 @@ fn run_probe<H: Host>(
             return Err(ConnectError::OutOfMemory);
         }
     };
-    // What is left of the master's time is the probe's. Past it, the master
-    // fails as its own timer says as soon as it is next run.
+    // What is left of the master's time is the probe's.
     let left = match cx.time_left() {
         TimeLeft::Unlimited => None,
         TimeLeft::Remaining(left) => Some(left),
-        TimeLeft::Expired(_) => Some(std::time::Duration::from_millis(1)),
+        TimeLeft::Expired(_) => {
+            return Err(ConnectError::Failed(None, ErrorKind::OperationTimedout));
+        }
     };
     let body = Handler::write(ProbeBody(probe.clone())).map_err(oom)?;
     let easy = cx.easy().doh_probe(&query, body, left).map_err(oom)?;

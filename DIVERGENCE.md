@@ -528,26 +528,10 @@ not a difference: it is tracked in `MILESTONES.md`.
 
 ## DoH
 
-- **The answer is taken when both queries have ended.** C can start connecting on A's addresses
-  while AAAA is awaited, as `Curl_doh_take_result` gives a partial answer. The rewrite waits, so
-  a DoH server slow on one query delays the connection; the bytes it sends and its results are
-  otherwise the same. Pinned by `the_answer_waits_for_both_queries`
-  (`crates/curl-core/src/multi/doh_tests.rs`).
-
 - **No HTTPS query.** The reference build claims `HTTPSRR` and sends three POSTs, HTTPS's first;
   the rewrite claims nothing of the kind, so it sends two, as C's build without it does (test
   2100's `%else`). The decoder is ported (`unit1658_records`). Pinned by
   `a_name_resolves_over_doh`.
-
-- **A SOCKS destination's name goes to the system's resolver.** With local name resolution over
-  SOCKS (`socks4://`, `socks5://`) C's name filter asks DoH for the destination; the rewrite
-  resolves it with a blocking call to the resolver, which leaks the name to the system's
-  resolver. Pinned by `a_socks_destination_skips_doh` (same file).
-
-- **A probe goes at the end of its master's step**, not inside it, and an expired time left
-  is 1 ms rather than an error of C's `doh_probe_run`, its master failing on its own timer. C's
-  "ignoring outdated DoH response" is not said, a stale probe being taken out first. Pinned by
-  `a_master_timing_out_takes_its_probes`.
 
 ## Handles the application never made
 

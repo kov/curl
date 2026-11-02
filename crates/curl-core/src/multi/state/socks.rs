@@ -51,6 +51,12 @@ pub(super) fn dialed<H: Host>(
     cx: &mut StepCx<'_, H>,
     version: Version,
 ) -> Result<Wake, Failure> {
+    if !target_known(s, cx)? {
+        s.handshake = try_box(Handshake::SocksTarget(version))
+            .map(Some)
+            .map_err(|_| Failure::Transfer(ErrorKind::OutOfMemory))?;
+        return Ok(Wake::Idle);
+    }
     match start(s, lent, cx, version) {
         Ok(handshake) => {
             s.handshake = Some(handshake);
@@ -58,6 +64,41 @@ pub(super) fn dialed<H: Host>(
         }
         Err(kind) => Err(Failure::Transfer(kind)),
     }
+}
+
+/// Whether the destination's name is resolved, as far as the handshake
+/// needs: said once it is (`Curl_conn_dns_addr_result`).
+fn target_known<H: Host>(s: &mut SetupMut<'_>, cx: &mut StepCx<'_, H>) -> Result<bool, Failure> {
+    let kept = cx.rest.kept(cx.me, crate::share::Kind::Names);
+    let known = s.machine.target_known(&mut crate::multi::cx::DriveCx {
+        step: cx,
+        kept: kept.as_ref(),
+        deadlines: None,
+    });
+    match known {
+        Ok(known) => Ok(known),
+        Err(crate::conn::ConnectError::Aborted) => {
+            Err(Failure::Transfer(ErrorKind::AbortedByCallback))
+        }
+        Err(_) => Err(Failure::Transfer(ErrorKind::OutOfMemory)),
+    }
+}
+
+/// The handshake waits for the destination's name.
+pub(super) fn awaited<H: Host>(
+    s: &mut SetupMut<'_>,
+    lent: &mut Lent<'_>,
+    cx: &mut StepCx<'_, H>,
+) -> Result<Wake, Failure> {
+    let Some(Handshake::SocksTarget(version)) = s.handshake.as_deref() else {
+        unreachable!("the name is waited for");
+    };
+    let version = *version;
+    if !target_known(s, cx)? {
+        return Ok(Wake::Idle);
+    }
+    s.handshake = None;
+    dialed(s, lent, cx, version)
 }
 
 fn start<H: Host>(

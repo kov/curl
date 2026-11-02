@@ -17,7 +17,9 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
-use super::io::{Family, Queued, Resolve, ResolveFailure, ResolveId, Resolver, Waiter, Waker};
+use super::io::{
+    Family, Partial, Queued, Resolve, ResolveFailure, ResolveId, Resolver, Waiter, Waker,
+};
 
 /// How many threads a pool keeps at most, and how long an idle one
 /// waits for work before it ends.
@@ -189,9 +191,12 @@ struct Resolving {
     waiter: Waiter,
     /// Its queries not answered yet.
     left: u8,
+    /// IPv6's addresses were asked for.
+    asked_v6: bool,
     v6: Option<Result<Vec<IpAddr>, ResolveFailure>>,
     v4: Option<Result<Vec<IpAddr>, ResolveFailure>>,
-    told: bool,
+    /// Its queries left when it was last told of.
+    told: Option<u8>,
 }
 
 /// The threaded resolver of one multi.
@@ -474,7 +479,8 @@ impl Resolver for ThreadedResolver {
             left: families.len() as u8,
             v6: None,
             v4: None,
-            told: false,
+            asked_v6: families.contains(&Family::V6),
+            told: None,
         })?;
         if let Err(OutOfMemory) = self.queue(&mut queries) {
             self.resolving.pop();
@@ -500,6 +506,21 @@ impl Resolver for ThreadedResolver {
             return None;
         }
         Some(self.take(at))
+    }
+
+    fn partial(&mut self, id: ResolveId) -> Result<Option<Partial>, OutOfMemory> {
+        self.collect();
+        let Some(r) = self.resolving.iter().find(|r| r.id == id) else {
+            return Ok(None);
+        };
+        let mut addrs = Vec::new();
+        for found in [&r.v6, &r.v4].into_iter().flatten().flatten() {
+            addrs.try_extend_from_slice(found)?;
+        }
+        Ok(Some(Partial {
+            addrs,
+            v6_answered: r.v6.is_some() || !r.asked_v6,
+        }))
     }
 
     fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure> {
@@ -530,8 +551,9 @@ impl Resolver for ThreadedResolver {
         let _drained = self.shared.waker.drain();
         self.collect();
         for r in &mut self.resolving {
-            if r.left == 0 && !r.told {
-                r.told = true;
+            // Each answer is told of, as what came may be connected to.
+            if r.told != Some(r.left) && (r.left == 0 || r.v6.is_some() || r.v4.is_some()) {
+                r.told = Some(r.left);
                 each(r.waiter, r.id);
             }
         }

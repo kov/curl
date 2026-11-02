@@ -274,6 +274,8 @@ impl Attempt {
 #[derive(Debug)]
 pub(crate) enum Handshake {
     Socks(socks::Socks),
+    /// A SOCKS handshake about to start, the destination's name to come.
+    SocksTarget(crate::conn::socks::Version),
     /// An HTTP proxy's tunnel, with `CONNECT`.
     Connect(tunnel::Tunnel),
     /// An HTTPS proxy's tunnel, with `CONNECT` as a stream of an HTTP/2
@@ -295,7 +297,7 @@ impl Handshake {
     /// The filter C's chain holds for it.
     pub(super) fn filter(&self) -> Component {
         match self {
-            Handshake::Socks(_) => Component::Socks,
+            Handshake::Socks(_) | Handshake::SocksTarget(_) => Component::Socks,
             Handshake::Connect(_) => Component::HttpProxy,
             Handshake::H2Connect(_) => Component::H2Proxy,
             Handshake::Quic(_) => Component::Http3,
@@ -311,6 +313,7 @@ impl Handshake {
     pub(super) fn interest(&self, setup: &ConnectMachine) -> Events {
         match self {
             Handshake::Socks(s) => setup.handshake_pollset(s.interest()),
+            Handshake::SocksTarget(_) => setup.handshake_pollset(Events::NONE),
             Handshake::Connect(t) => setup.handshake_pollset(t.interest()),
             Handshake::H2Connect(p) => setup.handshake_pollset(p.connect_interest()),
             Handshake::Quic(q) => setup.handshake_pollset(q.wants()),
@@ -537,6 +540,7 @@ pub(super) fn connecting<H: Host>(
             ),
             Some(
                 Handshake::Socks(_)
+                | Handshake::SocksTarget(_)
                 | Handshake::Haproxy(_)
                 | Handshake::Tls(_)
                 | Handshake::Quic(_),
@@ -1356,6 +1360,7 @@ pub(super) fn step_handshake<H: Host>(
 ) -> Result<Wake, Failure> {
     let under_way = match s.handshake.as_deref().expect("a handshake under way") {
         Handshake::Socks(_) => socks::step,
+        Handshake::SocksTarget(_) => socks::awaited,
         Handshake::Connect(_) => tunnel::step,
         Handshake::H2Connect(_) => h2tunnel::step,
         Handshake::Quic(_) => quictunnel::step,

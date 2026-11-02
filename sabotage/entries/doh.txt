@@ -170,3 +170,30 @@ witness: curl-core multi::doh_tests::a_master_timing_out_takes_its_probes
 --- new
                     self.notify.push(Notification::InfoRead);
                 }
+
+=== AAAA is not waited for before connecting to what came
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::doh_tests::what_came_is_connected_to_after_a_wait_for_aaaa
+--- old
+                                    if !part.v6_answered && now < p.await_until {
+--- new
+                                    if !part.v6_answered && now < now {
+
+=== a race out of addresses fails with more to come
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::doh_tests::a_race_out_of_addresses_waits_for_the_rest
+--- old
+            self.last_failed = Some((error, kind));
+            return Ok(Progress::Failed);
+--- new
+            return Err(ConnectError::Failed(error, kind));
+
+=== a SOCKS handshake starts before the destination's name is known
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::doh_tests::a_socks_destination_goes_over_doh
+--- old
+            d.target_late.0 = Some(p);
+            return Ok(false);
+--- new
+            d.target_late.0 = Some(p);
+            return Ok(true);

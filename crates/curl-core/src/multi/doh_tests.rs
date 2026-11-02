@@ -511,38 +511,56 @@ fn a_probes_lines_say_whose_they_are() {
     assert_eq!(has(&format!("Could not resolve: {name}")), 1, "{lines:?}");
 }
 
-/// C would connect on the A answer while AAAA is awaited; here the answer
-/// waits for both (DIVERGENCE.md).
+/// With A's answer in and AAAA's not, the transfer connects once the wait
+/// for AAAA is over, as C does, and the rest does not matter once it has.
 #[test]
-fn the_answer_waits_for_both_queries() {
+fn what_came_is_connected_to_after_a_wait_for_aaaa() {
     let clock = ManualClock::new().unwrap();
+    let target = Conversation::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", false);
     let net = FakeNet::new(clock.clone())
         .with_peer(SERVER.into(), Peer::Accepts)
         .with_peer(at(80), Peer::Accepts)
         .with_conversation(SERVER.into(), Conversation::replies(&[], false))
-        .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false));
+        .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false))
+        .with_conversation(at(80), target.clone());
     let mut m = multi_over(net, &clock);
     m.add(asking("http://foo.test/x"), (), &mut NoEvents)
         .unwrap();
+    // Less than the wait.
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+        clock.advance(Duration::from_millis(1));
+    }
+    assert!(target.received().is_empty(), "AAAA is waited for");
     run(&mut m, &clock);
-    assert_eq!(message(&mut m), None);
-    assert_eq!(m.census().counts.current, 3, "AAAA's is still asking");
+    assert_eq!(message(&mut m), Some(Ok(())));
+    assert!(target.received().starts_with(b"GET /x"));
+    assert_eq!(m.census().counts.current, 1, "the probes went with it");
 }
 
-/// A destination SOCKS leaves to be resolved here is not asked of the DoH
-/// server, as C's would be (DIVERGENCE.md).
+/// A destination a SOCKS proxy is told as an address is asked of the DoH
+/// server, while the transfer waits: nothing of it goes to the system's
+/// resolver, and the handshake carries the address found.
 #[test]
-fn a_socks_destination_skips_doh() {
+fn a_socks_destination_goes_over_doh() {
     let clock = ManualClock::new().unwrap();
+    let proxy = Conversation::new(&[0, 90, 0, 0, 0, 0, 0, 0], false);
     let net = FakeNet::new(clock.clone())
         .with_peer(at(1080), Peer::Accepts)
-        .with_name("foo.test", &[[127, 0, 0, 1].into()]);
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_conversation(at(1080), proxy.clone())
+        // SOCKS4 has room for IPv4 alone: one query.
+        .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false));
     let mut m = multi_over(net, &clock);
     let mut easy = asking("http://foo.test/x");
     easy.options_mut().proxy.make_mut().unwrap().url = Some(b"socks4://127.0.0.1:1080".to_vec());
     m.add(easy, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert!(proxy.received().is_empty(), "the name is awaited");
     run(&mut m, &clock);
-    assert!(m.census().counts.current <= 1, "no probe was started");
+    let sent = proxy.received();
+    assert_eq!(&sent[..8], &[4, 1, 0, 80, 127, 0, 0, 1], "{sent:?}");
 }
 
 /// An answer past C's limit that would otherwise read well fails its
@@ -591,4 +609,22 @@ fn the_probes_go_as_the_answer_comes() {
     run(&mut m, &clock);
     assert_eq!(message(&mut m), None, "still connecting");
     assert_eq!(m.census().counts.current, 1);
+}
+
+/// All that came refused, with AAAA still to come: the setup waits for it
+/// rather than fail or run out of addresses.
+#[test]
+fn a_race_out_of_addresses_waits_for_the_rest() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_peer(at(80), Peer::Refuses)
+        .with_conversation(SERVER.into(), Conversation::replies(&[], false))
+        .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false));
+    let mut m = multi_over(net, &clock);
+    m.add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    run(&mut m, &clock);
+    assert_eq!(message(&mut m), None);
+    assert_eq!(m.census().counts.current, 3);
 }

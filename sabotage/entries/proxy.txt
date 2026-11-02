@@ -539,7 +539,7 @@ witness: curl-core proto::http::tests::a_transfer_removed_mid_connect_leaves_no_
             TransferState::Connecting(mut c) => Done {
                 unconnected_chain: c.proto.pipeline_mut().is_some_and(|p| p.made()),
                 premature: {
-                    let promoted = c.setup.handshake.is_some();
+                    let promoted = c.lease.setup().is_some_and(|s| s.handshake.is_some());
                     if promoted {
                         c.lease.handshaken();
                     }

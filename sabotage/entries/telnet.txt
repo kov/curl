@@ -81,4 +81,4 @@ witness: curl-core proto::telnet::tests::the_application_s_user_stays_with_the_f
 --- old
         let gate = match before.first {
 --- new
-        let gate = match None::<&Peer>.or(before.first.filter(|_| false)) {
+        let gate = match before.first.filter(|_| false) {

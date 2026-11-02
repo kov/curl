@@ -60,4 +60,4 @@ witness: curl-core proto::mqtt::tests::the_application_s_login_stays_with_the_fi
 --- old
         let gate = match before.first {
 --- new
-        let gate = match None::<&Peer>.or(before.first.filter(|_| false)) {
+        let gate = match before.first.filter(|_| false) {

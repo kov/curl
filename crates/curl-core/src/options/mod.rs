@@ -102,6 +102,8 @@ pub struct Options {
     pub ssh: Cold<Ssh>,
     /// What TELNET and TFTP are told.
     pub small: Cold<Small>,
+    /// Names resolved over DNS over HTTPS.
+    pub doh: Cold<Doh>,
     pub http: Http,
     pub tls: Tls,
     /// What the test protocol `script:` plays.
@@ -805,6 +807,7 @@ impl Options {
             schemes: self.schemes.try_clone(|s| Ok(*s))?,
             ssh: self.ssh.try_clone(Ssh::try_clone)?,
             small: self.small.try_clone(Small::try_clone)?,
+            doh: self.doh.try_clone(Doh::try_clone)?,
             sockets: self.sockets.try_clone(Sockets::try_clone)?,
             http: self.http.try_clone()?,
             tls: self.tls.try_clone()?,
@@ -2572,6 +2575,39 @@ impl TftpBlockSize {
     }
 }
 
+/// Where names are resolved over HTTPS, and how much its server is trusted
+/// (`CURLOPT_DOH_URL`, `CURLOPT_DOH_SSL_VERIFY*`): none of the transfer's
+/// own TLS settings but those a probe inherits (`Easy::doh_probe`).
+#[derive(Debug)]
+pub struct Doh {
+    /// With none, names go to the resolver.
+    pub url: Option<Vec<u8>>,
+    pub verify_peer: bool,
+    pub verify_host: bool,
+    pub verify_status: bool,
+}
+
+impl ColdGroup for Doh {
+    const UNSET: &'static Doh = &Doh::NONE;
+    const NONE: Doh = Doh {
+        url: None,
+        verify_peer: true,
+        verify_host: true,
+        verify_status: false,
+    };
+}
+
+impl Doh {
+    fn try_clone(&self) -> Result<Doh, OutOfMemory> {
+        Ok(Doh {
+            url: self.url.as_deref().map(copy).transpose()?,
+            verify_peer: self.verify_peer,
+            verify_host: self.verify_host,
+            verify_status: self.verify_status,
+        })
+    }
+}
+
 impl ColdGroup for Small {
     const UNSET: &'static Small = &Small::NONE;
     const NONE: Small = Small {
@@ -2975,7 +3011,7 @@ pub enum CaSetting {
 }
 
 impl CaSetting {
-    fn try_clone(&self) -> Result<CaSetting, OutOfMemory> {
+    pub(crate) fn try_clone(&self) -> Result<CaSetting, OutOfMemory> {
         Ok(match self {
             CaSetting::Default => CaSetting::Default,
             CaSetting::Unset => CaSetting::Unset,

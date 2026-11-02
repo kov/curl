@@ -283,6 +283,33 @@ impl MultiEvents<CHost> for ShimEvents<'_> {
         });
     }
 
+    /// A DoH probe has a handle of its own, as C's does: the application's
+    /// callbacks name it, with no private data of the master's, and it is
+    /// never the application's to add, remove or clean up (`doh_probe_run`).
+    fn internal(
+        &mut self,
+        cx: &mut EventCx<'_, CHost>,
+        master: TransferId,
+        easy: Box<Easy>,
+    ) -> Result<(Box<Easy>, Option<NonNull<ShimEasy>>), OutOfMemory> {
+        let &parent = cx.owner(master).expect("the stepping transfer");
+        // SAFETY: a transfer's owner is its live handle.
+        let child = ShimEasy::doh_probe(unsafe { parent.as_ref() }, easy)?;
+        // SAFETY: made above, live until `internal_gone`.
+        let easy = unsafe { child.as_ref() }.detach();
+        Ok((easy, Some(child)))
+    }
+
+    fn internal_gone(&mut self, easy: Box<Easy>, host: NonNull<ShimEasy>) {
+        // SAFETY: made by `internal`, handed to the application only for
+        // the length of its callbacks.
+        let child = unsafe { host.as_ref() };
+        child.return_home(easy);
+        child.release_internal();
+        // SAFETY: as above, and not used again.
+        unsafe { easy::curl_easy_cleanup(host.as_ptr().cast()) };
+    }
+
     fn wants_timer(&self) -> bool {
         self.multi.cb.get().timer.is_some()
     }
@@ -395,6 +422,10 @@ impl MultiEvents<CHost> for ShimEvents<'_> {
 struct Cleanup<'a>(ShimEvents<'a>);
 
 impl MultiEvents<CHost> for Cleanup<'_> {
+    fn internal_gone(&mut self, easy: Box<Easy>, host: NonNull<ShimEasy>) {
+        self.0.internal_gone(easy, host);
+    }
+
     fn socket(
         &mut self,
         cx: &mut EventCx<'_, CHost>,

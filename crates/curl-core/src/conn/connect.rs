@@ -36,6 +36,7 @@ use crate::components::Component;
 use crate::conn::layer::LayerCalls as _;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::handler::Configured;
+use crate::multi::doh::{Lookup as DohLookup, Polled as DohPolled};
 use crate::options::{IpVersion, KeepAlive, Sockets};
 use crate::time::Instant;
 use crate::trace::{Ip, Line};
@@ -290,6 +291,12 @@ pub(crate) trait ConnCx: LayerCx {
     /// it: it may stop it (`Curl_resolv_announce_start`).
     fn announce_resolve(&mut self) -> Result<(), ConnectError>;
 
+    /// The transfer wants its names resolved over DoH (`set.doh`).
+    fn wants_doh(&self) -> bool;
+
+    /// The resolve of `name` in `family` over DoH started (`Curl_doh`).
+    fn doh_start(&mut self, name: &[u8], family: Family) -> Result<DohLookup, ConnectError>;
+
     /// The number of the transfer the setup is for, as its lines name
     /// it, 0 before it has one.
     fn transfer_number(&self) -> u64;
@@ -438,6 +445,14 @@ impl ConnCx for Plain<'_> {
 
     fn reset_fail(&mut self) {}
 
+    fn wants_doh(&self) -> bool {
+        false
+    }
+
+    fn doh_start(&mut self, _: &[u8], _: Family) -> Result<DohLookup, ConnectError> {
+        unreachable!("a plain setup wants no DoH");
+    }
+
     fn announce_resolve(&mut self) -> Result<(), ConnectError> {
         Ok(())
     }
@@ -516,6 +531,8 @@ pub(crate) enum Asked {
     Shortcut,
     /// A resolver, which queued its queries as `.0` says, if it did.
     Resolver(Option<Queued>),
+    /// DoH's transfers, the lookup's lines said as it started.
+    Doh,
 }
 
 /// What a setup's attempts connect to: the addresses a name resolved to,
@@ -786,6 +803,9 @@ pub(crate) enum Unresolved {
         why: ResolveFailure,
         queued: Option<Queued>,
         explained: Option<&'static str>,
+        /// DoH's transfers said it: the lookup's lines were said as it
+        /// started.
+        over_doh: bool,
     },
     /// It said so before, and the cache kept its word.
     Negative,
@@ -1136,29 +1156,27 @@ impl ConnectMachine {
                         let looked = match pending {
                             None => {
                                 let family = family(self.route.ip, cx);
-                                lookup_start((name, port), family, cx, setup, true)?
+                                lookup_start((name, port), family, cx, setup, true, true)?
                             }
-                            Some(p) => {
-                                let id = p.id;
-                                let mut polled = None;
-                                cx.net().with_resolver(&mut |r| polled = Some(r.answer(id)));
-                                match polled.expect("the network lends its resolver") {
-                                    Some(answer) => {
-                                        let (a, f) = settle(answer, (name, port), p, cx)?;
-                                        Looked::Found(a, f)
-                                    }
-                                    None => Looked::Pending(p),
+                            Some(p) => match p.polled((name, port), cx) {
+                                Some(answer) => {
+                                    let (a, f) = settle(answer, (name, port), p, cx)?;
+                                    Looked::Found(a, f)
                                 }
-                            }
+                                None => Looked::Pending(p),
+                            },
                         };
                         match looked {
                             Looked::Found(answer, found) => (Addresses::Resolved(answer), found),
                             // Nothing until the resolver answers, when the
                             // multi runs the transfer again.
                             Looked::Pending(p) => {
+                                let over_doh = p.over_doh();
                                 self.stage = Stage::Resolving(Some(p));
                                 let mut retry = None;
-                                cx.net().with_resolver(&mut |r| retry = r.retry());
+                                if !over_doh {
+                                    cx.net().with_resolver(&mut |r| retry = r.retry());
+                                }
                                 let retry = retry.map(|after| cx.now().after(after));
                                 return Ok(Drove::Connecting(self, Progress::Resolving { retry }));
                             }
@@ -2038,7 +2056,9 @@ impl ConnectMachine {
             Stage::Resolving(None) => {}
             // Its answer, if it comes, is not wanted.
             Stage::Resolving(Some(p)) => {
-                net.with_resolver(&mut |r| r.cancel(p.id));
+                if let Via::Resolver { id, .. } = p.via {
+                    net.with_resolver(&mut |r| r.cancel(id));
+                }
                 p.done();
             }
             Stage::Racing(mut r) => r.close_all(net),
@@ -2427,6 +2447,7 @@ pub(crate) fn resolve_blocking(
                 let started = match asked {
                     Asked::Shortcut => 0,
                     Asked::Resolver(_) => AGAIN_NUMBER,
+                    Asked::Doh => unreachable!("a blocking resolve never goes over DoH"),
                 };
                 cx.of(
                     dns,
@@ -2574,10 +2595,12 @@ pub(super) fn lookup_name(
     setup: DriveOptions,
     keep_negative: bool,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
-    match lookup_start((name, port), family, cx, setup, keep_negative)? {
+    match lookup_start((name, port), family, cx, setup, keep_negative, false)? {
         Looked::Found(answer, found) => Ok((answer, found)),
         Looked::Pending(pending) => {
-            let id = pending.id;
+            let Via::Resolver { id, .. } = pending.via else {
+                unreachable!("a lookup waited for is not over DoH");
+            };
             let mut answer = None;
             cx.net().with_resolver(&mut |r| answer = Some(r.wait(id)));
             let answer = answer.expect("the network lends its resolver");
@@ -2596,13 +2619,21 @@ pub(super) enum Looked {
 /// A resolve the resolver answers later, and what its answer is to be.
 #[derive(Debug)]
 pub(super) struct Pending {
-    pub(super) id: ResolveId,
+    via: Via,
     family: Family,
     /// Whether the cache had a stale answer.
     found: fn(Asked) -> Found,
     keep_negative: bool,
     queried: Queried,
-    held: Held,
+}
+
+/// Who answers a resolve.
+#[derive(Debug)]
+enum Via {
+    /// The network's resolver, which must be told if it is not wanted.
+    Resolver { id: ResolveId, held: Held },
+    /// Transfers of the multi's: gone with this.
+    Doh(DohLookup),
 }
 
 /// Which families went as a query of their own.
@@ -2629,29 +2660,95 @@ impl Drop for Held {
 impl Pending {
     /// Its answer taken, or the resolve cancelled: let go.
     fn done(self) -> (Family, fn(Asked) -> Found, bool) {
-        std::mem::forget(self.held);
+        if let Via::Resolver { held, .. } = self.via {
+            std::mem::forget(held);
+        }
         (self.family, self.found, self.keep_negative)
     }
 
     /// How it was queued, if as queries of their own.
     fn queued(&self) -> Option<Queued> {
         let Queried { v6, v4 } = self.queried;
-        (v6 || v4).then_some(Queued {
-            id: self.id,
-            v6,
-            v4,
-        })
+        match self.via {
+            Via::Resolver { id, .. } => (v6 || v4).then_some(Queued { id, v6, v4 }),
+            Via::Doh(_) => None,
+        }
+    }
+
+    fn over_doh(&self) -> bool {
+        matches!(self.via, Via::Doh(_))
+    }
+
+    /// Its answer for `name` on `port`, if it has come
+    /// (`hostip_resolv_take_result`).
+    fn polled(
+        &self,
+        (name, port): (&[u8], u16),
+        cx: &mut dyn ConnCx,
+    ) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
+        match &self.via {
+            Via::Resolver { id, .. } => {
+                let id = *id;
+                let mut polled = None;
+                cx.net().with_resolver(&mut |r| polled = Some(r.answer(id)));
+                polled.expect("the network lends its resolver")
+            }
+            Via::Doh(lookup) => match lookup.poll() {
+                DohPolled::Waiting { ongoing, responses } => {
+                    let queries = family_queries(self.family);
+                    say_not_cached(queries, (name, port), cx);
+                    let name = curl_alloc::Lossy(name);
+                    cx.of(
+                        Component::Dns,
+                        format_args!(
+                            "[{queries}] resolve incomplete, responses={responses}, \
+                             ongoing={ongoing} for {name}:{port}"
+                        ),
+                    );
+                    None
+                }
+                DohPolled::Done(answer) => {
+                    say_not_cached(family_queries(self.family), (name, port), cx);
+                    cx.of(Component::Dns, format_args!("[DoH] probe done"));
+                    Some(answer)
+                }
+            },
+        }
     }
 }
 
-/// A lookup started: the cache, then the shortcuts, then the resolver,
-/// whose answer may come later (`hostip_resolv_start`).
+/// That the name is not in the cache, as `Curl_dnscache_get` says it each
+/// time it is asked.
+fn say_not_cached(queries: &str, (name, port): (&[u8], u16), cx: &mut dyn ConnCx) {
+    let at = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
+    let rest =
+        crate::text::Text::<64>::clipped(format_args!(" queries={queries} -> 0 not found")).0;
+    cx.of_with(
+        Component::Dns,
+        &[b"cache lookup ", name, at.bytes(), rest.bytes()],
+    );
+}
+
+/// The queries of a resolve in `family`, as the DNS trace names them
+/// (`Curl_resolv_query_str`).
+fn family_queries(family: Family) -> &'static str {
+    match family {
+        Family::V4 => "A",
+        Family::V6 => "AAAA",
+        Family::Any => "A+AAAA",
+    }
+}
+
+/// A lookup started: the cache, then the shortcuts, then, if `doh` may
+/// answer it and the transfer wants it, DoH, else the resolver, whose
+/// answer may come later (`hostip_resolv_start`).
 pub(super) fn lookup_start(
     (name, port): (&[u8], u16),
     family: Family,
     cx: &mut dyn ConnCx,
     setup: DriveOptions,
     keep_negative: bool,
+    doh: bool,
 ) -> Result<Looked, ConnectError> {
     if is_onion(name) {
         return Err(ConnectError::Unresolved(Unresolved::Onion));
@@ -2662,14 +2759,14 @@ pub(super) fn lookup_start(
     let now = cx.now();
     let ipv6 = cx.ipv6_works();
     let (wildcard, max_age) = (setup.wildcard, setup.max_age);
-    let found: fn(Asked) -> Found = match cx
+    let (found, stale): (fn(Asked) -> Found, bool) = match cx
         .names()
         .section(|c| c.lookup((name, port), family, wildcard, max_age, now))
     {
         Lookup::Found(answer) => return Ok(Looked::Found(answer, Found::Cached)),
         Lookup::Negative => return Err(ConnectError::Unresolved(Unresolved::Negative)),
-        Lookup::Stale => Found::Stale,
-        Lookup::Missing => Found::Resolved,
+        Lookup::Stale => (Found::Stale, true),
+        Lookup::Missing => (Found::Resolved, false),
     };
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
     if let Some(answer) = shortcut(name).map_err(oom)? {
@@ -2680,6 +2777,59 @@ pub(super) fn lookup_start(
             .section(|c| c.put(answer.clone(), port, now, false))
             .map_err(oom)?;
         return Ok(Looked::Found(answer, found(Asked::Shortcut)));
+    }
+    if doh && cx.wants_doh() {
+        // Said now, as the probes' own lines follow.
+        let queries = family_queries(family);
+        #[cfg(feature = "debug-hooks")]
+        {
+            let at = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
+            cx.of_with(
+                Component::Dns,
+                &[
+                    b"[",
+                    queries.as_bytes(),
+                    b"] hostip_resolv(",
+                    name,
+                    at.bytes(),
+                    b")",
+                ],
+            );
+        }
+        if stale {
+            cx.info(format_args!("Hostname in DNS cache was stale, zapped"));
+        }
+        say_not_cached(queries, (name, port), cx);
+        cx.announce_resolve()?;
+        let lookup = match cx.doh_start(name, family) {
+            Ok(lookup) => lookup,
+            Err(e) => {
+                // `Curl_resolv`'s words for a failure of no resolver's.
+                if matches!(e, ConnectError::OutOfMemory) {
+                    let code = crate::trace::Code(Err(ErrorKind::OutOfMemory));
+                    let port = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
+                    let error =
+                        crate::text::Text::<32>::clipped(format_args!("Error {code} resolving ")).0;
+                    cx.fail_with(&[error.bytes(), name, port.bytes()]);
+                    cx.fail_with(&[b"Could not resolve: ", name]);
+                }
+                return Err(e);
+            }
+        };
+        cx.of(
+            Component::Dns,
+            format_args!("[{queries}] hostip_resolv started -> {AGAIN_NUMBER}"),
+        );
+        return Ok(Looked::Pending(Pending {
+            via: Via::Doh(lookup),
+            queried: Queried {
+                v6: false,
+                v4: false,
+            },
+            family,
+            found,
+            keep_negative,
+        }));
     }
     // A resolver is not asked for IPv6 addresses alone without IPv6
     // (`can_resolve_dns_queries`); nothing is kept of it.
@@ -2692,12 +2842,14 @@ pub(super) fn lookup_start(
     cx.net()
         .with_resolver(&mut |r| started = Some(r.start(name, family, waiter)));
     let pending = |q: Queued| Pending {
-        id: q.id,
+        via: Via::Resolver {
+            id: q.id,
+            held: Held,
+        },
         queried: Queried { v6: q.v6, v4: q.v4 },
         family,
         found,
         keep_negative,
-        held: Held,
     };
     match started.expect("the network lends its resolver") {
         Ok(Resolve::Pending(queued)) => Ok(Looked::Pending(pending(queued))),
@@ -2728,14 +2880,18 @@ pub(super) fn settle(
     let now = cx.now();
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
     let queued = pending.queued();
+    let over_doh = pending.over_doh();
     let (family, found, keep_negative) = pending.done();
     let refused = |why: ResolveFailure, cx: &mut dyn ConnCx| {
         let mut explained = None;
-        cx.net().with_resolver(&mut |r| explained = r.explain(why));
+        if !over_doh {
+            cx.net().with_resolver(&mut |r| explained = r.explain(why));
+        }
         ConnectError::Unresolved(Unresolved::Resolver {
             why,
             queued,
             explained,
+            over_doh,
         })
     };
     let answer = match answer {
@@ -2755,7 +2911,12 @@ pub(super) fn settle(
     cx.names()
         .section(|c| c.put(answer.clone(), port, now, false))
         .map_err(oom)?;
-    Ok((answer, found(Asked::Resolver(queued))))
+    let asked = if over_doh {
+        Asked::Doh
+    } else {
+        Asked::Resolver(queued)
+    };
+    Ok((answer, found(asked)))
 }
 
 /// The addresses `name`, a host without brackets, stands for without

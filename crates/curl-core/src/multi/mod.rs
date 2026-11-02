@@ -10,6 +10,7 @@
 #[cfg(debug_assertions)]
 mod check;
 pub(crate) mod cx;
+pub(crate) mod doh;
 pub(crate) mod mstate;
 mod notify;
 pub(crate) mod push;
@@ -86,6 +87,38 @@ pub enum Transfer {}
 /// A transfer in a multi; stale once it is removed.
 pub type TransferId = Key<Transfer>;
 
+/// A transfer out of its slot: its handle, who owned it, and what its
+/// timer call came to.
+type TakenOut<H> = (Box<Easy>, Owner<H>, Result<(), MultiErrorKind>);
+
+/// Who a transfer is for: the application, which gave a value of its own
+/// with it, or another transfer it does work for, which the application
+/// never added nor removes (`state.internal`, `master_mid`). A host that
+/// names its handles to its callbacks has one for it too, which the multi
+/// gives back through `MultiEvents::internal_gone`.
+pub(crate) enum Owner<H: Host> {
+    App(H::Transfer),
+    Internal {
+        master: TransferId,
+        host: Option<H::Transfer>,
+        probe: doh::Probe,
+    },
+}
+
+impl<H: Host> Owner<H> {
+    /// The value callbacks name the transfer by, if it has one.
+    fn host(&self) -> Option<&H::Transfer> {
+        match self {
+            Owner::App(host) => Some(host),
+            Owner::Internal { host, .. } => host.as_ref(),
+        }
+    }
+
+    fn is_internal(&self) -> bool {
+        matches!(self, Owner::Internal { .. })
+    }
+}
+
 /// An application callback's request to stop: the multi fails every
 /// transfer and accepts no more until it is empty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +145,26 @@ pub trait MultiEvents<H: Host> {
     /// inside the add may.
     fn added(&mut self, id: TransferId, owner: &H::Transfer) {
         let _ = (id, owner);
+    }
+
+    /// The multi makes `easy`, a transfer of its own doing work for
+    /// `master` (a DoH probe): the host's value for it, if it names its
+    /// transfers to its callbacks, with `easy` back as the transfer is to
+    /// run. Called inside the master's step.
+    fn internal(
+        &mut self,
+        cx: &mut EventCx<'_, H>,
+        master: TransferId,
+        easy: Box<Easy>,
+    ) -> Result<(Box<Easy>, Option<H::Transfer>), OutOfMemory> {
+        let _ = (cx, master);
+        Ok((easy, None))
+    }
+
+    /// An internal transfer went, or could not be added: what the host made
+    /// for it is the host's to dispose of (`Curl_close`).
+    fn internal_gone(&mut self, easy: Box<Easy>, host: H::Transfer) {
+        let _ = (easy, host);
     }
 
     /// Whether `timer` is wanted. Without it the multi keeps no record of
@@ -197,7 +250,7 @@ enum Life {
 }
 
 struct Slot<H: Host> {
-    owner: H::Transfer,
+    owner: Owner<H>,
     /// In memory of its own, which the handle's owner hands in and takes
     /// back: the transfer's options and report do not move, nor are they
     /// kept twice.
@@ -569,7 +622,7 @@ impl<H: Host> Multi<H> {
             &mut self.counts,
             &mut self.caches.pool,
             easy,
-            owner,
+            Owner::App(owner),
         )
         .map_err(|(refused, _)| refused)?;
         let easy = &mut self.slots.get_mut(id).expect("just added").easy;
@@ -583,7 +636,8 @@ impl<H: Host> Multi<H> {
         let easy = &mut self.slots.get_mut(id).expect("just added").easy;
         easy.last_conn = None;
         self.dirty.insert(id.index());
-        ev.added(id, &self.slots.get(id).expect("just added").owner);
+        let owner = &self.slots.get(id).expect("just added").owner;
+        ev.added(id, owner.host().expect("the application's own"));
         // The debug build says what it is, once for the multi, as the
         // first transfer comes (`multi_warn_debug`).
         #[cfg(feature = "debug-hooks")]
@@ -619,17 +673,48 @@ impl<H: Host> Multi<H> {
     /// (`curl_multi_remove_handle`). `None` if `id` is not in this multi.
     /// A transfer that had not completed gives its connection back as a
     /// premature end, and leaves no message.
+    /// One the multi added for itself is not the application's to remove.
     pub fn remove(&mut self, id: TransferId, ev: &mut dyn MultiEvents<H>) -> Option<Removed<H>> {
-        let removed = self.remove_unchecked(id, ev);
+        if self.slots.get(id)?.owner.is_internal() {
+            return None;
+        }
+        let (easy, owner, status) = self.take_out(id, ev)?;
+        let Owner::App(owner) = owner else {
+            unreachable!("looked at above");
+        };
+        // What it had going on its behalf goes with it.
+        self.reap(ev);
         self.check();
-        removed
+        Some(Removed {
+            easy,
+            owner,
+            status,
+        })
     }
 
-    fn remove_unchecked(
-        &mut self,
-        id: TransferId,
-        ev: &mut dyn MultiEvents<H>,
-    ) -> Option<Removed<H>> {
+    /// The internal transfers nobody wants any more taken out: those of a
+    /// resolve that ended, or of a master gone. Called at the end of what
+    /// may have ended one; `doh` says why a forgotten call is no leak of
+    /// anything a stale probe can reach.
+    fn reap(&mut self, ev: &mut dyn MultiEvents<H>) {
+        if self.counts.internals() == 0 {
+            return;
+        }
+        let mut cursor = None;
+        while let Some(id) = self.slots.next_after(cursor) {
+            cursor = Some(id);
+            if doh::orphan(&self.slots, id)
+                && let Some((easy, owner, _)) = self.take_out(id, ev)
+            {
+                self.counts.internal_removed();
+                if let Owner::Internal { host: Some(h), .. } = owner {
+                    ev.internal_gone(easy, h);
+                }
+            }
+        }
+    }
+
+    fn take_out(&mut self, id: TransferId, ev: &mut dyn MultiEvents<H>) -> Option<TakenOut<H>> {
         let run = self
             .slots
             .get_mut(id)?
@@ -681,11 +766,7 @@ impl<H: Host> Multi<H> {
         let now = self.clock.now();
         self.wake_pending(now, ev);
         let status = self.update_timer(ev);
-        Some(Removed {
-            easy: slot.easy,
-            owner: slot.owner,
-            status,
-        })
+        Some((slot.easy, slot.owner, status))
     }
 
     /// Run every transfer that is not completed, in id order, then tell
@@ -998,12 +1079,20 @@ impl<H: Host> Multi<H> {
     /// The transfer after `after` in the multi, or the first; transfers
     /// added meanwhile may or may not be met.
     pub fn next_transfer(&self, after: Option<TransferId>) -> Option<TransferId> {
-        self.slots.next_after(after)
+        let mut after = after;
+        loop {
+            let id = self.slots.next_after(after)?;
+            if !self.slots.get(id).expect("just found").owner.is_internal() {
+                return Some(id);
+            }
+            after = Some(id);
+        }
     }
 
-    /// What the application gave with the transfer when it added it.
+    /// What the application gave with the transfer when it added it, or
+    /// what the host made for one of the multi's own.
     pub fn owner(&self, id: TransferId) -> Option<&H::Transfer> {
-        self.slots.get(id).map(|s| &s.owner)
+        self.slots.get(id).and_then(|s| s.owner.host())
     }
 
     /// What the application gave with each transfer, in id order
@@ -1330,15 +1419,45 @@ impl<H: Host> Multi<H> {
             self.timers.update(id, run.deadlines.wake_at());
         }
         put_back(&mut self.slots, &mut self.dirty, id, run);
-        if completed {
-            // `Done` never outlasts a step, so this run went through it:
-            // done, then its message posted (`mstate_enter_done`,
-            // `multi_addmsg`).
-            self.notify.push(Notification::EasyDone(id));
-            if !self.unread_besides(id) {
-                self.notify.push(Notification::InfoRead);
+        let internal = match &self.slots.get(id).expect("just run").owner {
+            Owner::App(_) => None,
+            Owner::Internal { master, probe, .. } => Some((*master, probe.clone())),
+        };
+        match internal {
+            // Told to its master, not to the application (`handle_completed`).
+            Some((master, probe)) if completed => {
+                let result = self.read_internal(id);
+                let mut cx = StepCx::new(id, self.rest(now, ev));
+                doh::probe_done(&mut cx, &probe, master, result);
             }
+            Some(_) => {}
+            None if completed => {
+                // `Done` never outlasts a step, so this run went through it:
+                // done, then its message posted (`mstate_enter_done`,
+                // `multi_addmsg`).
+                self.notify.push(Notification::EasyDone(id));
+                if !self.unread_besides(id) {
+                    self.notify.push(Notification::InfoRead);
+                }
+                self.reap(ev);
+            }
+            None => self.reap(ev),
         }
+    }
+
+    /// The result of the internal transfer `id`, which just completed, and
+    /// which leaves no message.
+    fn read_internal(&mut self, id: TransferId) -> Result<(), ErrorKind> {
+        let run = self
+            .slots
+            .get_mut(id)
+            .and_then(|s| s.run.as_mut())
+            .expect("just put back");
+        let TransferState::Completed(c) = &mut run.state else {
+            unreachable!("just completed");
+        };
+        c.message = MessageState::Read;
+        c.outcome
     }
 
     /// Whether a transfer other than `id` has an unread message.
@@ -1579,7 +1698,10 @@ fn read_message<H: Host>(slots: &mut Slots<H>) -> Option<Message<'_, H>> {
     c.message = MessageState::Read;
     Some(Message {
         id,
-        owner: &slot.owner,
+        owner: slot
+            .owner
+            .host()
+            .expect("an internal transfer leaves no message"),
         result: c.outcome,
         remaining,
     })
@@ -1625,8 +1747,8 @@ fn insert<H: Host>(
     counts: &mut Tally,
     pool: &mut Pool,
     easy: Box<Easy>,
-    owner: H::Transfer,
-) -> Result<TransferId, (AddError, H::Transfer)> {
+    owner: Owner<H>,
+) -> Result<TransferId, (AddError, Owner<H>)> {
     let refuse = |kind, easy, owner| Err((AddError { kind, easy }, owner));
     let Ok(vacancy) = rows.slots.reserve() else {
         return refuse(MultiErrorKind::OutOfMemory, easy, owner);
@@ -2074,6 +2196,8 @@ impl<H: Host> Drop for Multi<H> {
     }
 }
 
+#[cfg(test)]
+mod doh_tests;
 #[cfg(test)]
 mod props;
 #[cfg(test)]

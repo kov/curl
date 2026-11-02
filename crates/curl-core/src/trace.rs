@@ -30,9 +30,19 @@ pub(crate) fn info<H: Host>(cx: &mut StepCx<'_, H>, args: fmt::Arguments<'_>) {
         return;
     }
     let mut line = start_line(cx);
+    push_doing(cx, &mut line);
     line.push_fmt(args);
     end_line(&mut line);
     text(cx, line.bytes());
+}
+
+/// The work of the multi's a transfer is doing before its lines, but for
+/// those of other kinds that name their own (`trc_infof`'s
+/// `data->state.feat`): `[DoH]`, for a probe.
+fn push_doing<H: Host>(cx: &StepCx<'_, H>, line: &mut Text<LINE_MAX>) {
+    if let Some(doing) = cx.easy().doing() {
+        line.push_fmt(format_args!("[{}] ", doing.name()));
+    }
 }
 
 /// A line only C's debug build traces (`DEBUGF(infof(...))`): `info`
@@ -74,6 +84,7 @@ pub(crate) fn info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
         return;
     }
     let mut line = start_line(cx);
+    push_doing(cx, &mut line);
     for part in parts {
         line.push_clipped(part);
     }
@@ -101,6 +112,9 @@ pub(crate) fn of<H: Host>(cx: &mut StepCx<'_, H>, component: Component, args: fm
         return;
     }
     let mut line = start_line(cx);
+    if component.is_filter() {
+        push_doing(cx, &mut line);
+    }
     push_name(cx, &mut line, component);
     line.push_fmt(args);
     end_line(&mut line);
@@ -144,6 +158,9 @@ pub(crate) fn of_with<H: Host>(cx: &mut StepCx<'_, H>, component: Component, par
         return;
     }
     let mut line = start_line(cx);
+    if component.is_filter() {
+        push_doing(cx, &mut line);
+    }
     push_name(cx, &mut line, component);
     for part in parts {
         line.push_clipped(part);

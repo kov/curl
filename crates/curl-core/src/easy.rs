@@ -14,7 +14,7 @@ use crate::conn::ConnId;
 use crate::conn::io::{SystemNet, Waker};
 use crate::cookie::{Jar, LoadError, NeverAsked, SuffixCheck};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
-use crate::handler::Handler;
+use crate::handler::{Handler, WriteHandler};
 use crate::hsts::{Hsts, LoadError as CacheLoadError};
 use crate::id::ArenaPolicy;
 use crate::libraries::{Libraries, SharedLibraries};
@@ -34,6 +34,9 @@ use crate::trace;
 /// default allocates nothing.
 #[derive(Debug, Default)]
 pub struct Easy {
+    /// The work of the multi's this handle does, which its lines name
+    /// (`state.feat`): none for one of the application's.
+    doing: Option<crate::components::Component>,
     options: Options,
     /// The current or last transfer's.
     report: TransferReport,
@@ -354,6 +357,11 @@ impl Easy {
         }
     }
 
+    /// The work of the multi's this handle does, which its lines name.
+    pub(crate) fn doing(&self) -> Option<crate::components::Component> {
+        self.doing
+    }
+
     pub(crate) fn report_mut(&mut self) -> &mut TransferReport {
         &mut self.report
     }
@@ -379,6 +387,82 @@ impl Easy {
         pushed
     }
 
+    /// A handle for a DoH probe posting `query` to this handle's DoH server,
+    /// with `left` to do it in (`doh_probe_run`): this one's libraries and
+    /// share, its trace if it traces DoH, and the TLS settings C has probes
+    /// inherit; nothing else, not its proxy.
+    pub(crate) fn doh_probe(
+        &self,
+        query: &[u8],
+        body: Handler<dyn WriteHandler>,
+        left: Option<Duration>,
+    ) -> Result<Easy, OutOfMemory> {
+        let mut probe = Easy {
+            doing: Some(crate::components::Component::Doh),
+            components: self.components.clone(),
+            libraries: self.libraries.clone(),
+            share_watch: self.share_watch.clone(),
+            share: self.share.clone(),
+            ..Easy::default()
+        };
+        let (to, from) = (&mut probe.options, &self.options);
+        let url = from.doh.url.as_deref();
+        to.set_url(url)?;
+        to.set_default_protocol(Some(b"https"))?;
+        to.callbacks.write = Some(body);
+        to.upload =
+            crate::options::UploadSource::Bytes(TryArc::try_new(crate::options::copy(query)?)?);
+        to.method = crate::options::Method::Post;
+        to.http.headers =
+            crate::options::UserHeaders::new([&b"Content-Type: application/dns-message"[..]])?;
+        let maybe_https = !url.is_some_and(|u| {
+            u.get(..5)
+                .is_some_and(|scheme| scheme.eq_ignore_ascii_case(b"http:"))
+        });
+        if maybe_https {
+            to.http.version = crate::options::HttpVersion::Http2Tls;
+            to.http.pipewait = true;
+        }
+        // HTTP as well only in the debug build, for the tests.
+        #[cfg(any(test, feature = "debug-hooks"))]
+        let schemes: &[&str] = &["http", "https"];
+        #[cfg(not(any(test, feature = "debug-hooks")))]
+        let schemes: &[&str] = &["https"];
+        to.schemes.make_mut()?.allowed =
+            crate::options::Protocols::of(schemes).expect("libcurl knows them");
+        to.limits.total = left.and_then(|d| {
+            let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+            crate::time::TimeLimit::from_millis(ms)
+        });
+        to.callbacks.stderr = from.callbacks.stderr.clone();
+        to.callbacks.debug = from.callbacks.debug.clone();
+        let traces = self
+            .components
+            .as_ref()
+            .is_some_and(|c| c.traces(crate::components::Component::Doh));
+        to.output.verbose = from.output.verbose && traces;
+        if maybe_https {
+            to.tls.verify_host = from.doh.verify_host;
+            to.tls.verify_peer = from.doh.verify_peer;
+            to.tls.certinfo = from.tls.certinfo;
+            let (t, f) = (to.tls.options.make_mut()?, &*from.tls.options);
+            t.verify_status = from.doh.verify_status;
+            t.ca_file = f.ca_file.try_clone()?;
+            t.ca_path = f.ca_path.try_clone()?;
+            t.ca_blob = f.ca_blob.as_deref().map(crate::options::copy).transpose()?;
+            t.crl_file = f
+                .crl_file
+                .as_deref()
+                .map(crate::options::copy)
+                .transpose()?;
+            t.curves = f.curves.as_deref().map(crate::options::copy).transpose()?;
+            t.context = f.context.clone();
+            let auto = crate::options::SslOptions::AUTO_CLIENT_CERT.bits();
+            t.ssl_options = crate::options::SslOptions::from_bits(f.ssl_options.bits() & !auto);
+        }
+        Ok(probe)
+    }
+
     /// A handle with the same options (`curl_easy_duphandle`).
     pub fn try_clone(&self) -> Result<Easy, OutOfMemory> {
         self.try_clone_with(&mut |_| Ok(()))
@@ -393,6 +477,7 @@ impl Easy {
         prepare: &mut dyn FnMut(&mut Options) -> Result<(), OutOfMemory>,
     ) -> Result<Easy, OutOfMemory> {
         let mut copy = Easy {
+            doing: None,
             options: self.options.try_clone()?,
             report: TransferReport::default(),
             meter_titled: false,

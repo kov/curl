@@ -723,6 +723,20 @@ fn apply(
             };
         }
         (ffi::CURLOPT_AUTOREFERER, Long(n)) => options.http.auto_referer = n != 0,
+        (ffi::CURLOPT_DOH_URL, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let url = unsafe { owned(p) }?;
+            options.doh.set(|d| &mut d.url, url)?;
+        }
+        (ffi::CURLOPT_DOH_SSL_VERIFYPEER, Long(n)) => {
+            options.doh.make_mut()?.verify_peer = n != 0;
+        }
+        (ffi::CURLOPT_DOH_SSL_VERIFYHOST, Long(n)) => {
+            options.doh.make_mut()?.verify_host = n != 0;
+        }
+        (ffi::CURLOPT_DOH_SSL_VERIFYSTATUS, Long(n)) => {
+            options.doh.make_mut()?.verify_status = n != 0;
+        }
         (ffi::CURLOPT_PIPEWAIT, Long(n)) => options.http.pipewait = n != 0,
         // Out of 1 to 256, the weight stays as it was (`CURLOPT_STREAM_WEIGHT`).
         (ffi::CURLOPT_STREAM_WEIGHT, Long(n)) => {

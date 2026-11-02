@@ -46,8 +46,9 @@ const ERROR_SIZE: usize = 256;
 pub(crate) struct ShimEasy {
     magic: Cell<u32>,
     /// A multi's own handle, which the application may not use (C's
-    /// `state.internal`).
-    internal: bool,
+    /// `state.internal`): the admin's, and a DoH probe's for as long as
+    /// the multi runs it.
+    internal: Cell<bool>,
     pub(crate) stack: EasyStack,
     home: RefCell<Home>,
     pub(crate) ccb: Cell<CCallbacks>,
@@ -237,6 +238,55 @@ impl ShimEasy {
     /// with the parent's write, header, debug and progress functions and
     /// their data, and the parent's share; its handlers, and the share's
     /// lock calls, are its own.
+    pub(crate) fn doh_probe(
+        parent: &ShimEasy,
+        mut easy: Box<Easy>,
+    ) -> Result<NonNull<ShimEasy>, OutOfMemory> {
+        let from = parent.ccb.get();
+        let ccb = CCallbacks {
+            debug: from.debug,
+            debug_data: from.debug_data,
+            stderr: from.stderr,
+            ..CCallbacks::new()
+        };
+        let mut c = CSide {
+            ccb,
+            ..CSide::new()
+        };
+        // Its `SSL_CTX` function, called with the probe's handle.
+        if parent.tls.get().is_some() {
+            c.tls = Some(parent.tls());
+        }
+        let child = ShimEasy::homeless(c)?;
+        let body = easy.options_mut().callbacks.write.take();
+        if ShimEasy::adapt(child, easy.options_mut(), body).is_err() {
+            // SAFETY: made by `homeless`, given no `Easy` and handed to no
+            // one.
+            drop(unsafe { Box::from_raw(child.as_ptr()) });
+            return Err(OutOfMemory);
+        }
+        // SAFETY: just made, and reached only through this pointer.
+        let shim = unsafe { child.as_ref() };
+        *shim.home.borrow_mut() = Home::Detached(easy);
+        // Linked to the master's share as C sets it (`CURLOPT_SHARE`).
+        if let Some(share) = parent.share.get() {
+            // SAFETY: the parent's share, live while the parent holds it.
+            if unsafe { crate::share::set(shim, share.as_ptr().cast()) }.is_err() {
+                // SAFETY: just made, and handed to no one.
+                unsafe { curl_easy_cleanup(child.as_ptr().cast()) };
+                return Err(OutOfMemory);
+            }
+        }
+        shim.internal.set(true);
+        Ok(child)
+    }
+
+    /// The application's again in all but name: the library's to clean up
+    /// with what cleaning up a handle does.
+    pub(crate) fn release_internal(&self) {
+        self.internal.set(false);
+    }
+
     pub(crate) fn pushed(
         parent: &ShimEasy,
         mut easy: Box<Easy>,
@@ -434,7 +484,7 @@ impl ShimEasy {
     fn empty(internal: bool, ccb: CCallbacks, set: CSettings) -> ShimEasy {
         ShimEasy {
             magic: Cell::new(MAGIC),
-            internal,
+            internal: Cell::new(internal),
             stack: EasyStack::default(),
             home: RefCell::new(Home::Nowhere),
             ccb: Cell::new(ccb),
@@ -675,7 +725,7 @@ pub(crate) unsafe fn handle<'a>(curl: *mut CURL) -> Option<&'a ShimEasy> {
     let easy = NonNull::new(curl.cast::<ShimEasy>())?;
     // SAFETY: as the caller guarantees.
     let easy = unsafe { easy.as_ref() };
-    (easy.magic.get() == MAGIC && !easy.internal).then_some(easy)
+    (easy.magic.get() == MAGIC && !easy.internal.get()).then_some(easy)
 }
 
 /// What the libraries libcurl is linked with do for a handle: the content

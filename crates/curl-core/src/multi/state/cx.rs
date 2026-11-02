@@ -437,18 +437,21 @@ impl<H: Host> StepCx<'_, H> {
             &mut *rest.tell.counts,
             &mut rest.caches.pool,
             easy,
-            owner,
+            super::super::Owner::App(owner),
         );
         let id = match inserted {
             Ok(id) => id,
             Err((refused, owner)) => {
-                rest.events.unpushed(refused.easy, owner);
+                if let super::super::Owner::App(owner) = owner {
+                    rest.events.unpushed(refused.easy, owner);
+                }
                 return Offered::Denied;
             }
         };
         rest.dirty.insert(id.index());
         let slot = rest.tell.slots.get(id).expect("just added");
-        rest.events.added(id, &slot.owner);
+        rest.events
+            .added(id, slot.owner.host().expect("the application's own"));
         let slot = rest.tell.slots.get_mut(id).expect("just added");
         let mut run = slot.run.take().expect("a new run in its slot");
         let lent = self.lent;

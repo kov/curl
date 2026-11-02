@@ -1843,6 +1843,10 @@ fn setopts(
             Ok(())
         },
     )?;
+    s.str("CURLOPT_DOH_URL", op.tls.doh_url, |o| {
+        let url = op.tls.doh_url.map(copy).transpose().map_err(oom)?;
+        o.doh.set(|d| &mut d.url, url).map_err(oom)
+    })?;
     let create = if op.ftp_create_dirs { 2 } else { 0 };
     s.long("CURLOPT_FTP_CREATE_MISSING_DIRS", create, |o| {
         if op.ftp_create_dirs {
@@ -2126,7 +2130,10 @@ fn ssl_ca_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKin
         tls.cacert.as_deref().map(Cow::Borrowed),
         tls.capath.as_deref().map(Cow::Borrowed),
     );
-    if cacert.is_none() && capath.is_none() && !tls.insecure {
+    if cacert.is_none()
+        && capath.is_none()
+        && (!tls.insecure || (tls.doh_url.is_some() && !tls.doh_insecure))
+    {
         let var = |name: &[u8]| {
             curl_os::env::var(name)
                 .map(|v| v.filter(|v| !v.is_empty()).map(Cow::Owned))
@@ -2232,6 +2239,16 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
         o.tls.verify_host = !tls.insecure;
         Ok(())
     })?;
+    if tls.doh_insecure {
+        s.long("CURLOPT_DOH_SSL_VERIFYPEER", 0, |o| {
+            o.doh.make_mut().map_err(oom)?.verify_peer = false;
+            Ok(())
+        })?;
+        s.long("CURLOPT_DOH_SSL_VERIFYHOST", 0, |o| {
+            o.doh.make_mut().map_err(oom)?.verify_host = false;
+            Ok(())
+        })?;
+    }
     if tls.proxy_insecure {
         s.long("CURLOPT_PROXY_SSL_VERIFYPEER", 0, |o| {
             o.proxy.make_mut().map_err(oom)?.tls.verify_peer = false;
@@ -2245,6 +2262,12 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
     if tls.cert_status {
         s.long("CURLOPT_SSL_VERIFYSTATUS", 1, |o| {
             o.tls.options.make_mut().map_err(oom)?.verify_status = true;
+            Ok(())
+        })?;
+    }
+    if tls.doh_cert_status {
+        s.long("CURLOPT_DOH_SSL_VERIFYSTATUS", 1, |o| {
+            o.doh.make_mut().map_err(oom)?.verify_status = true;
             Ok(())
         })?;
     }
@@ -4780,7 +4803,9 @@ mod tests {
     fn writes_each_option_it_sets() {
         // `CURLOPT_HTTP_CONTENT_DECODING` and `_TRANSFER_DECODING` are
         // set to 0, their default in C's eyes, and not written.
-        let unwritten = ["raw"];
+        // `--doh-insecure` sets its options to 0, which `--libcurl` takes
+        // for a default and does not write, as C's does.
+        let unwritten = ["raw", "doh-insecure"];
         let (base_text, base_options) = set_up(&[]).unwrap();
         let mut tried = 0;
         let mut changed = 0;

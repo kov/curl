@@ -131,6 +131,12 @@ pub(crate) struct Tls<'a> {
     pub(crate) insecure: bool,
     /// `--proxy-insecure`: an HTTPS proxy goes unverified.
     pub(crate) proxy_insecure: bool,
+    /// `--doh-url`: where names are resolved.
+    pub(crate) doh_url: Option<&'a [u8]>,
+    /// `--doh-insecure`: the DoH server goes unverified.
+    pub(crate) doh_insecure: bool,
+    /// `--doh-cert-status`.
+    pub(crate) doh_cert_status: bool,
     /// An HTTPS proxy's other TLS options.
     pub(crate) proxy: ProxyTls<'a>,
     /// `--cacert`, or the environment's (`cacertpaths`).
@@ -1996,18 +2002,20 @@ pub(crate) fn apply<'a>(
             existing_file(file, b"knownhosts", msgs)?;
             line.current().knownhosts = Some(file);
         }
-        Opt::DnsInterface
-        | Opt::DnsIpv4Addr
-        | Opt::DnsIpv6Addr
-        | Opt::DnsServers
-        | Opt::DohCertStatus
-        | Opt::DohInsecure
-        | Opt::DohUrl
-        | Opt::Ech
-        | Opt::FalseStart
-        | Opt::Ntlm
-        | Opt::ProxyNtlm
-        | Opt::SslSessions => line.not_implemented(spec, "--"),
+        // These need c-ares, which this library does not bind.
+        Opt::DnsInterface | Opt::DnsIpv4Addr | Opt::DnsIpv6Addr | Opt::DnsServers => {
+            return Err(ParamError::LibcurlDoesntSupport);
+        }
+        Opt::DohCertStatus => line.current().tls.doh_cert_status = value.toggle(),
+        Opt::DohInsecure => line.current().tls.doh_insecure = value.toggle(),
+        // A blank one makes it none again.
+        Opt::DohUrl => {
+            let url = value.text();
+            line.current().tls.doh_url = (!url.is_empty()).then_some(url);
+        }
+        Opt::Ech | Opt::FalseStart | Opt::Ntlm | Opt::ProxyNtlm | Opt::SslSessions => {
+            line.not_implemented(spec, "--")
+        }
     }
     Ok(Flow::Continue)
 }

@@ -154,10 +154,15 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
     starts, written only by the engine while it runs (getinfo inside a callback reads it live),
     and left unchanged in the `Easy` until the next transfer replaces it. Its header store spans
     every request of the transfer, since `curl_easy_header` is callable after `perform`.
-- **There is no hidden internal easy handle.** Connection-level work (pruning, health checks,
-  shutdown) takes a connection context whose limits are captured per connection when it is
-  created, not copied from whichever transfer ran last. The shim passes one internal `CURL *`
-  per multi where the C ABI shows connection-owned sockets.
+- **Connection-level work has no easy handle.** Pruning, health checks and shutdown take a
+  connection context whose limits are captured per connection when it is created, not copied
+  from whichever transfer ran last. The shim passes one internal `CURL *` per multi where the C
+  ABI shows connection-owned sockets.
+- **Work that is a transfer is a transfer the multi owns.** A DoH probe has a request, a
+  response and a connection like any other, so it is an ordinary slot whose owner is
+  `Owner::Internal { master, .. }` rather than `Owner::App`: on every host, as the host's own
+  value is optional there. The application is never told of one: no message, no removal, no
+  place in its lists.
 - **The Rust multi carries the application's values.** `Multi<H: Host>` stores one value per
   transfer and one per socket, so the shim keeps no second map from ids to its handles.
 - **Typestate is used where C keeps flags.** Examples are a connection before and after its

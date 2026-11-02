@@ -70,6 +70,19 @@ impl<H: Host> Multi<H> {
             );
             queued += usize::from(wake.is_some());
         }
+        // No probe outlives its resolve between calls, and each is counted.
+        let (mut internals, mut cursor) = (0, None);
+        while let Some(id) = self.slots.next_after(cursor) {
+            cursor = Some(id);
+            if self.slots.get(id).expect("just found").owner.is_internal() {
+                internals += 1;
+                assert!(
+                    !super::doh::orphan(&self.slots, id),
+                    "{id:?} outlived what it was started for"
+                );
+            }
+        }
+        assert_eq!(internals, self.counts.internals(), "the internal transfers");
         let counts = self.counts.get();
         assert_eq!(
             (counts.running, counts.current),

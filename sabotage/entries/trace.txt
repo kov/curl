@@ -482,9 +482,13 @@ witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 --- old
-    Ok((answer, found(Asked::Resolver(queued))))
+        Asked::Resolver(queued)
+    };
+    Ok((answer, found(asked)))
 --- new
-    Ok((answer, found(Asked::Shortcut)))
+        Asked::Shortcut
+    };
+    Ok((answer, found(asked)))
 
 === an address's own family is not asked for
 file: crates/curl-core/src/conn/connect.rs

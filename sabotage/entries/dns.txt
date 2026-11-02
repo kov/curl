@@ -166,8 +166,9 @@ witness: curl-core multi::tests::without_ipv6_only_ipv4_is_resolved
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::a_closed_setup_cancels_its_resolve
 --- old
-                net.with_resolver(&mut |r| r.cancel(p.id));
+                    net.with_resolver(&mut |r| r.cancel(id));
 --- new
+                    let _ = id;
 
 === a pending resolve dropped goes unnoticed
 file: crates/curl-core/src/conn/connect.rs

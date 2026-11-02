@@ -8845,3 +8845,132 @@ fn a_bad_argument_in_a_callback_is_told_as_in_c() {
     );
     std::fs::remove_file(&path).unwrap();
 }
+
+/// What the debug function saw of the probes it was called for.
+#[cfg(feature = "debug-hooks")]
+struct ProbeSeen {
+    master: *mut CURL,
+    /// A multi the transfer does not run in, which its gate lets through:
+    /// its own says the call is recursive before it looks at the handle.
+    other: *mut CURLM,
+    handles: Vec<usize>,
+    removed: Vec<ffi::CURLMcode>,
+    added: Vec<ffi::CURLMcode>,
+    asked: Vec<CURLcode>,
+}
+
+#[cfg(feature = "debug-hooks")]
+unsafe extern "C" fn debug_probe(
+    h: *mut CURL,
+    _: ffi::curl_infotype,
+    _: *mut c_char,
+    _: usize,
+    data: *mut c_void,
+) -> c_int {
+    // SAFETY: the `ProbeSeen` the test set, alive across its run.
+    let seen = unsafe { &mut *data.cast::<ProbeSeen>() };
+    if h != seen.master && !seen.handles.contains(&(h as usize)) {
+        seen.handles.push(h as usize);
+        let mut code: c_long = -1;
+        // SAFETY: as a debug function may be called with, and what C says
+        // to them for a handle of its own is what is checked.
+        unsafe {
+            seen.removed.push(curl_multi_remove_handle(seen.other, h));
+            seen.added.push(curl_multi_add_handle(seen.other, h));
+            seen.asked.push(curl_easy_getinfo(
+                h,
+                ffi::CURLINFO_RESPONSE_CODE,
+                &raw mut code,
+            ));
+        }
+    }
+    0
+}
+
+/// A probe calls the master's debug function with a handle of its own,
+/// one the application may not add, remove or ask about, and that goes
+/// with the transfer; `curl_multi_get_handles` lists the application's.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_probes_handle_is_the_multis() {
+    use crate::multi::curl_multi_get_handles;
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    // The server: what a name is answered with, for either query.
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut s = stream.unwrap();
+            let mut got = [0u8; 2048];
+            let _ = s.read(&mut got).unwrap();
+            let mut body = vec![0, 0, 0x81, 0x83, 0, 0, 0, 0, 0, 0, 0, 0];
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+            body.splice(0..0, head.bytes());
+            s.write_all(&body).unwrap();
+        }
+    });
+    let doh = std::ffi::CString::new(format!("http://127.0.0.1:{port}/dns")).unwrap();
+    let m = curl_multi_init();
+    let c = curl_easy_init();
+    let mut seen = ProbeSeen {
+        master: c,
+        other: curl_multi_init(),
+        handles: Vec::new(),
+        removed: Vec::new(),
+        added: Vec::new(),
+        asked: Vec::new(),
+    };
+    pointer(c, ffi::CURLOPT_URL, c"http://nx.test/".as_ptr().cast_mut());
+    pointer(c, ffi::CURLOPT_DOH_URL, doh.as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_VERBOSE, 1);
+    function(
+        c,
+        ffi::CURLOPT_DEBUGFUNCTION,
+        debug_probe as DebugFn as *const (),
+    );
+    pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut seen);
+    // SAFETY: live handles, and a multi's list freed as it is read.
+    unsafe {
+        // Its lines are only said where DoH's trace is on (`doh_probe_run`).
+        assert_eq!(crate::root::curl_global_trace(c"doh".as_ptr()), CURLE_OK);
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        let (mut running, mut rounds) = (1, 0);
+        let mut listed = 0;
+        while running > 0 {
+            assert_eq!(curl_multi_perform(m, &raw mut running), CURLM_OK);
+            let list = curl_multi_get_handles(m);
+            let mut n = 0;
+            while !(*list.add(n)).is_null() {
+                assert_eq!(*list.add(n), c, "the application's alone");
+                n += 1;
+            }
+            listed = listed.max(n);
+            crate::root::curl_free(list.cast());
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            rounds += 1;
+            assert!(rounds < 5000, "the transfer never ends");
+        }
+        assert_eq!(listed, 1);
+        let mut queued = 0;
+        let msg = curl_multi_info_read(m, &raw mut queued);
+        assert_eq!((*msg).data.result, ffi::CURLE_COULDNT_RESOLVE_HOST);
+        assert_eq!(queued, 0, "the probes left no message");
+        assert!(curl_multi_info_read(m, &raw mut queued).is_null());
+        assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+        assert_eq!(curl_multi_cleanup(seen.other), CURLM_OK);
+        curl_easy_cleanup(c);
+    }
+    assert_eq!(seen.handles.len(), 2, "one for each query");
+    assert!(
+        seen.removed
+            .iter()
+            .all(|&r| r == ffi::CURLM_BAD_EASY_HANDLE)
+    );
+    assert!(seen.added.iter().all(|&r| r == ffi::CURLM_BAD_EASY_HANDLE));
+    assert!(
+        seen.asked
+            .iter()
+            .all(|&r| r == ffi::CURLE_BAD_FUNCTION_ARGUMENT)
+    );
+}

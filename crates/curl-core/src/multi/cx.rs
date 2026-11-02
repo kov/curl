@@ -514,6 +514,18 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         crate::trace::reset_fail(self.step);
     }
 
+    fn wants_doh(&self) -> bool {
+        self.step.easy().options().doh.url.is_some()
+    }
+
+    fn doh_start(
+        &mut self,
+        name: &[u8],
+        family: crate::conn::io::Family,
+    ) -> Result<crate::multi::doh::Lookup, crate::conn::ConnectError> {
+        crate::multi::doh::start(self.step, name, family)
+    }
+
     fn announce_resolve(&mut self) -> Result<(), crate::conn::ConnectError> {
         let Some(handler) = self.step.easy().options().sockets.resolve_start.clone() else {
             return Ok(());
@@ -1237,16 +1249,21 @@ impl<H: Host> EventCx<'_, H> {
 
     /// What the application gave with the transfer when it added it.
     pub fn owner(&self, id: TransferId) -> Option<&H::Transfer> {
-        self.slots.get(id).map(|s| &s.owner)
+        self.slots.get(id).and_then(|s| s.owner.host())
     }
 
     /// What the application gave with each transfer, in id order.
     pub fn owners(&self) -> impl Iterator<Item = &H::Transfer> {
         let mut cursor = None;
         std::iter::from_fn(move || {
-            let id = self.slots.next_after(cursor)?;
-            cursor = Some(id);
-            self.slots.get(id).map(|s| &s.owner)
+            loop {
+                let id = self.slots.next_after(cursor)?;
+                cursor = Some(id);
+                match &self.slots.get(id).expect("just found").owner {
+                    crate::multi::Owner::App(host) => return Some(host),
+                    crate::multi::Owner::Internal { .. } => {}
+                }
+            }
         })
     }
 

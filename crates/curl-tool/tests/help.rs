@@ -5,7 +5,7 @@
 //! another tool to run them on, as
 //! `CURL_TOOL_UNDER_TEST=build/c/src/curl LD_LIBRARY_PATH=build/c/lib`.
 
-#![allow(clippy::disallowed_methods)]
+#![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -94,4 +94,30 @@ fn a_version_listing_into_a_closed_pipe_ends_quietly() {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(out.status.code(), Some(0), "{stderr}");
     assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+/// Without a resolver that can take them, the DNS options are refused as
+/// C's threaded build refuses them.
+#[test]
+fn the_dns_options_need_a_library_that_has_them() {
+    // The reference build has c-ares, and takes them.
+    if std::env::var_os("CURL_TOOL_UNDER_TEST").is_some() {
+        return;
+    }
+    for (option, value) in [
+        ("--dns-servers", "127.0.0.1"),
+        ("--dns-interface", "lo"),
+        ("--dns-ipv4-addr", "127.0.0.1"),
+        ("--dns-ipv6-addr", "::1"),
+    ] {
+        let run = curl(&[option, value, "http://127.0.0.1:1/"]);
+        assert_eq!(run.code, 2, "{option}");
+        assert!(
+            run.stderr.starts_with(&format!(
+                "curl: option {option}: the installed libcurl version does not support this\n"
+            )),
+            "{}",
+            run.stderr
+        );
+    }
 }

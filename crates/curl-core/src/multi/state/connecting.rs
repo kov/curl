@@ -1423,6 +1423,9 @@ fn debug_failed_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, proxy: b
 /// (or stale, said first) and so resolved, or `None`, the resolver's no
 /// kept from before.
 fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, found: Option<Found>) {
+    if let Some(Found::Stale(Asked::Doh) | Found::Resolved(Asked::Doh)) = found {
+        return;
+    }
     // The name looked up: the proxy's, or what a connect-to names in the
     // origin's place.
     let peer = route.destination();
@@ -1625,14 +1628,16 @@ fn trace_resolved<H: Host>(
     let at = at.bytes();
     let code = match asked {
         Ok(Asked::Shortcut) => 0,
-        Ok(Asked::Resolver(_)) | Err(_) => crate::error::AGAIN_NUMBER,
+        Ok(Asked::Resolver(_) | Asked::Doh) | Err(_) => crate::error::AGAIN_NUMBER,
     };
     let dns = Component::Dns;
-    trace::of(
-        cx,
-        dns,
-        format_args!("[{queries}] hostip_resolv started -> {code}"),
-    );
+    if asked != Ok(Asked::Doh) {
+        trace::of(
+            cx,
+            dns,
+            format_args!("[{queries}] hostip_resolv started -> {code}"),
+        );
+    }
     if let Ok(Asked::Resolver(Some(q))) | Err(Some(q)) = asked {
         crate::conn::say_answered(q, name, at, addrs, &mut |parts| {
             trace::of_with(cx, dns, parts);
@@ -1641,7 +1646,7 @@ fn trace_resolved<H: Host>(
     if asked.is_err() {
         return;
     }
-    if let Ok(Asked::Resolver(_)) = asked {
+    if let Ok(Asked::Resolver(_) | Asked::Doh) = asked {
         trace::of_with(
             cx,
             dns,
@@ -1983,6 +1988,7 @@ pub(crate) fn connect_failed<H: Host>(
                     return kind;
                 }
                 Unresolved::Negative => trace_lookup(cx, route, None),
+                Unresolved::Resolver { over_doh: true, .. } => {}
                 Unresolved::Resolver { queued, .. } => {
                     trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver(queued))));
                     trace_resolved(cx, route, Err(queued), &[]);
@@ -2010,7 +2016,11 @@ pub(crate) fn connect_failed<H: Host>(
                 // it gives one, as the reference build's c-ares does
                 // (`ares_strerror`), and the lookup again without
                 // (`Curl_async_failed`, twice).
-                Unresolved::Resolver { explained, .. } => {
+                Unresolved::Resolver {
+                    explained,
+                    over_doh: false,
+                    ..
+                } => {
                     let kind = match explained {
                         Some(reason) => trace::fail_with(
                             cx,

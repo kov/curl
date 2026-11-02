@@ -771,8 +771,16 @@ pub struct Multi<H: Host = NoHost> {
     warned: bool,                    // a transfer was told the library is a debug build
 }
 
+enum Owner<H: Host> {
+    App(H::Transfer),                // what the application gave as it added the transfer
+    Internal {                       // the multi's own, for a master's work (§4.8.1)
+        master: TransferId,
+        probe: Probe,
+        host: Option<H::Transfer>,   // what the host made for it; the tool's makes none
+    },
+}
 struct Slot<H: Host> {
-    owner: H::Transfer,
+    owner: Owner<H>,
     easy: Box<Easy>,                 // options + live report; reachable from contexts
     pause: Pause,                    // reachable while the run is out (§3.6)
     judge_pause: bool,               // its own handler paused while it was out
@@ -2551,6 +2559,34 @@ transfer's, passed to `find`. Connection-owned sockets appear in the `SocketTabl
 Built: `ConnCx` and `DriveCx`; the tests drive with `Plain`, which traces nothing and has no
 hooks. The closer is not a call-out: it is captured with the connection (§4.6). `ConnSettings`
 (the shutdown timeout, in ms) and `SocketOwner::Conn`; a shutdown's context is `Silent`.
+
+### 4.8.1 DoH
+
+A transfer with `options.doh.url` resolves a name the cache does not answer, and that is no
+address or `localhost`, by adding two transfers to its multi, AAAA's first (`multi/doh.rs`,
+C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of the engine.
+
+- **One owner.** The master's setup holds a `Lookup` where a resolver's id would be (`Via::Doh`
+  in `Pending`). A `Probe`, in the slot's `Owner::Internal`, shares its state: a body kept per
+  query, then what the query came to. `Lookup`'s `Drop` marks the state gone, so whichever way
+  the setup ends, nothing a probe does afterwards reaches anything: its writes fail, its end is
+  a no-op. `master` is only a row to wake, and its generation makes a reused row name nobody.
+- **One removal.** `Multi::reap` takes out every probe whose lookup or master is gone, and is
+  called at the end of `remove` and of each application transfer's step; so no orphan is left
+  between calls, which `check` asserts. Dropping the multi drops slots with their lookups.
+- **The master is not told through callbacks.** A probe's end records its query and wakes the
+  master; the master polls its `Lookup` in its own setup and takes the answer as it takes a
+  resolver's, into the cache. No address, and every query said the name does not exist: kept as
+  negative. Any other failure says nothing of the name and is not kept.
+- **What a probe has.** `Easy::doh_probe` makes it from nothing rather than from a copy of the
+  master, with C's list: the `doh` group's URL and verification, the master's share, its other
+  TLS file settings but not its client certificate, the time left. No proxy, no user agent.
+  HTTP/2 over TLS, `pipewait`. HTTPS only outside the debug hooks build.
+- **The host.** `MultiEvents::internal` lets it make its value for the probe and `internal_gone`
+  gives it back; the shim's is a `ShimEasy` marked internal, which `easy::handle` refuses as C's
+  `state.internal` is refused, called back with its debug function and its master's data.
+- **The trace.** `Easy::doing` names DoH before each line but those of DNS and the like, which
+  name themselves (`state.feat`). A probe is verbose only with DoH's trace on.
 
 ### 4.8 Resolver
 

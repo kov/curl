@@ -48,3 +48,115 @@ witness: curl-core doh::tests::unit1658_records
         if u32::from(key) < least || length > after.len() {
 --- new
         if length > after.len() {
+
+# DoH's probes as the multi's transfers: none outlives its master, and
+# none is the application's.
+
+=== a lookup going does not tell its probes
+file: crates/curl-core/src/multi/doh.rs
+witness: curl-core multi::doh_tests::a_stale_probe_reaches_nothing
+--- old
+        lock(&self.0).gone = true;
+--- new
+        drop(lock(&self.0));
+
+=== a master's removal leaves its probes running
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::doh_tests::a_masters_removal_takes_its_probes
+--- old
+        // What it had going on its behalf goes with it.
+        self.reap(ev);
+--- new
+        // What it had going on its behalf goes with it.
+
+=== a master's end leaves its probes running
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::doh_tests::a_master_timing_out_takes_its_probes
+--- old
+            None => self.reap(ev),
+--- new
+            None => {}
+
+=== the application can remove a probe
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::doh_tests::a_probe_is_not_the_applications_to_remove
+--- old
+        if self.slots.get(id)?.owner.is_internal() {
+            return None;
+        }
+        let (easy, owner, status)
+--- new
+        let (easy, owner, status)
+
+=== the application's list shows the probes
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::doh_tests::a_name_resolves_over_doh
+--- old
+            if !self.slots.get(id).expect("just found").owner.is_internal() {
+                return Some(id);
+            }
+--- new
+            return Some(id);
+
+=== a query's failure reads as no such name
+file: crates/curl-core/src/multi/doh.rs
+witness: curl-core multi::doh_tests::a_failure_is_not_kept_as_no_such_name
+--- old
+                    Err(QueryFailure::Other) => negative = false,
+--- new
+                    Err(QueryFailure::Other) => {}
+
+=== a probe's failed status is read as its answer
+file: crates/curl-core/src/multi/doh.rs
+witness: curl-core multi::doh_tests::a_failure_is_not_kept_as_no_such_name
+--- old
+        Ok(()) if !(200..300).contains(&code) => {
+--- new
+        Ok(()) if false && !(200..300).contains(&code) => {
+
+=== a probe keeps an answer of any size
+file: crates/curl-core/src/multi/doh.rs
+witness: curl-core multi::doh_tests::an_answer_too_long_fails_its_probe
+--- old
+        kept.len().saturating_add(body.len()) <= MAX_RESPONSE
+            && kept
+--- new
+        kept
+
+=== A is asked before AAAA
+file: crates/curl-core/src/multi/doh.rs
+witness: curl-core multi::doh_tests::a_name_resolves_over_doh
+--- old
+[(0, QueryType::Aaaa), (1, QueryType::A)]
+--- new
+[(1, QueryType::A), (0, QueryType::Aaaa)]
+
+=== a probe's lines do not say whose they are
+file: crates/curl-core/src/easy.rs
+witness: curl-core multi::doh_tests::a_probes_lines_say_whose_they_are
+--- old
+            doing: Some(crate::components::Component::Doh),
+--- new
+            doing: None,
+
+=== the failure over DoH is said twice
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core multi::doh_tests::a_probes_lines_say_whose_they_are
+--- old
+                    over_doh: false,
+                    ..
+                } => {
+                    let kind = match explained {
+--- new
+                    ..
+                } => {
+                    let kind = match explained {
+
+=== a probe's handle is the application's to use
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::a_probes_handle_is_the_multis
+features: debug-hooks
+--- old
+        shim.internal.set(true);
+--- new
+

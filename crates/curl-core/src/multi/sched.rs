@@ -99,7 +99,7 @@ impl Census {
 /// The multi's counts, changed only as transfers come, complete and go.
 /// The debug build checks them against a recount after every call.
 #[derive(Debug, Default)]
-pub(crate) struct Tally(Counts);
+pub(crate) struct Tally(Counts, u32);
 
 impl Tally {
     pub(crate) fn get(&self) -> Counts {
@@ -110,6 +110,20 @@ impl Tally {
         self.0.running += 1;
         self.0.current += 1;
         self.0.added_ever += 1;
+    }
+
+    /// How many transfers are the multi's own, `Counts` holding them too,
+    /// as C's do.
+    pub(crate) fn internals(&self) -> u32 {
+        self.1
+    }
+
+    pub(crate) fn internal_added(&mut self) {
+        self.1 += 1;
+    }
+
+    pub(crate) fn internal_removed(&mut self) {
+        self.1 -= 1;
     }
 
     /// An add the timer callback refused: the transfer is gone again, but

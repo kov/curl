@@ -1,0 +1,540 @@
+//! DoH's probes as transfers of the multi's: what they send, what their end
+//! does to the master, and that none outlives what it was started for.
+
+use std::cell::Cell;
+use std::net::SocketAddr;
+use std::rc::Rc;
+use std::time::Duration;
+
+use super::*;
+use crate::conn::io::{Conversation, FakeNet, Peer};
+use crate::time::ManualClock;
+
+const SERVER: ([u8; 4], u16) = ([127, 0, 0, 1], 53);
+const URL: &[u8] = b"http://127.0.0.1:53/dns";
+
+fn at(port: u16) -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], port))
+}
+
+fn multi_over(net: FakeNet, clock: &ManualClock) -> Multi {
+    Multi::new(Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    })
+    .unwrap()
+}
+
+/// A handle for `url` with its names resolved at `URL`.
+fn asking(url: &str) -> Box<Easy> {
+    let mut easy = Easy::new();
+    let o = easy.options_mut();
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.doh.make_mut().unwrap().url = Some(URL.to_vec());
+    Box::new(easy)
+}
+
+/// A response carrying the DNS message `body`.
+fn http(body: &[u8]) -> Vec<u8> {
+    let mut reply =
+        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+    reply.extend_from_slice(body);
+    reply
+}
+
+/// The answer naming `addr` for a question of A.
+fn a_answer() -> Vec<u8> {
+    let mut m = vec![0, 0, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+    m.extend_from_slice(b"\x03foo\x04test\x00\x00\x01\x00\x01");
+    m.extend_from_slice(b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x37\x00\x04\x7f\x00\x00\x01");
+    m
+}
+
+/// An answer without records, for any question.
+fn no_records() -> Vec<u8> {
+    let mut m = vec![0, 0, 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0];
+    m.extend_from_slice(b"\x03foo\x04test\x00\x00\x1c\x00\x01");
+    m
+}
+
+/// An answer with `rcode` and nothing else.
+fn rcode(rcode: u8) -> Vec<u8> {
+    vec![0, 0, 0x81, 0x80 | rcode, 0, 0, 0, 0, 0, 0, 0, 0]
+}
+
+/// How many passes a test waits for something that needs no time to pass.
+fn run(m: &mut Multi, clock: &ManualClock) {
+    for _ in 0..40 {
+        m.perform(&mut NoEvents).unwrap();
+        clock.advance(Duration::from_millis(1));
+    }
+}
+
+fn message(m: &mut Multi) -> Option<Result<(), ErrorKind>> {
+    m.info_read().map(|msg| msg.result)
+}
+
+/// A name answered: two probes post C's bytes, AAAA's first, without a
+/// `User-Agent`, leave no message, and go as the master gets on with its
+/// transfer to the address found.
+#[test]
+fn a_name_resolves_over_doh() {
+    let clock = ManualClock::new().unwrap();
+    let aaaa = Conversation::new(&http(&no_records()), false);
+    let a = Conversation::new(&http(&a_answer()), false);
+    let target = Conversation::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", false);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_peer(at(80), Peer::Accepts)
+        .with_conversation(SERVER.into(), aaaa.clone())
+        .with_conversation(SERVER.into(), a.clone())
+        .with_conversation(at(80), target.clone());
+    let mut m = multi_over(net, &clock);
+    let id = m
+        .add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    // As C's handles: the master's two sub transfers count.
+    assert_eq!(m.census().counts.current, 3);
+    assert_eq!(
+        m.next_transfer(Some(id)),
+        None,
+        "the application sees its own"
+    );
+    run(&mut m, &clock);
+    assert_eq!(message(&mut m), Some(Ok(())));
+    assert_eq!(message(&mut m), None, "a probe leaves no message");
+    assert_eq!(m.census().counts.current, 1, "the probes went");
+    let head = "POST /dns HTTP/1.1\r\nHost: 127.0.0.1:53\r\nAccept: */*\r\n\
+                Content-Type: application/dns-message\r\nContent-Length: 26\r\n\r\n";
+    let query = |kind: u8| {
+        let mut q = head.as_bytes().to_vec();
+        q.extend_from_slice(b"\0\0\x01\0\0\x01\0\0\0\0\0\0\x03foo\x04test\0\0");
+        q.extend_from_slice(&[kind, 0, 1]);
+        q
+    };
+    assert_eq!(aaaa.received(), query(28));
+    assert_eq!(a.received(), query(1));
+    assert!(
+        target
+            .received()
+            .starts_with(b"GET /x HTTP/1.1\r\nHost: foo.test\r\n"),
+        "{:?}",
+        String::from_utf8_lossy(&target.received())
+    );
+    let removed = m.remove(id, &mut NoEvents).unwrap();
+    assert_eq!(removed.status, Ok(()));
+    assert_eq!(m.census().counts.current, 0);
+}
+
+/// Its master removed while they run, the probes go with it, and what was
+/// its row names another transfer: none reaches that one.
+#[test]
+fn a_masters_removal_takes_its_probes() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Silent)
+        .with_name("other.test", &[[127, 0, 0, 1].into()]);
+    let mut m = multi_over(net, &clock);
+    let id = m
+        .add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.census().counts.current, 3);
+    assert!(m.remove(id, &mut NoEvents).is_some());
+    assert_eq!(m.census().counts.current, 0, "no probe remains");
+    assert_eq!(m.census().counts.running, 0);
+    let next = m.add(Box::new(Easy::new()), (), &mut NoEvents).unwrap();
+    assert_eq!(
+        next.index(),
+        id.index() + 3,
+        "rows go on from the last used"
+    );
+    assert_eq!(m.census().counts.current, 1);
+}
+
+/// A probe is the multi's: the application cannot take it out.
+#[test]
+fn a_probe_is_not_the_applications_to_remove() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone()).with_peer(SERVER.into(), Peer::Silent);
+    let mut m = multi_over(net, &clock);
+    let id = m
+        .add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let probe = m.slots.next_after(Some(id)).expect("a probe");
+    assert!(m.remove(probe, &mut NoEvents).is_none());
+    assert_eq!(m.census().counts.current, 3);
+    assert_eq!(m.owners().count(), 1, "`curl_multi_get_handles` skips them");
+}
+
+/// The master timing out ends the resolve: its probes go as it fails, not
+/// as their own time runs out.
+#[test]
+fn a_master_timing_out_takes_its_probes() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone()).with_peer(SERVER.into(), Peer::Silent);
+    let mut m = multi_over(net, &clock);
+    let mut easy = asking("http://foo.test/x");
+    easy.options_mut().limits.total = crate::time::TimeLimit::from_millis(50);
+    m.add(easy, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.census().counts.current, 3);
+    clock.advance(Duration::from_millis(60));
+    run(&mut m, &clock);
+    assert!(matches!(message(&mut m), Some(Err(_))));
+    assert_eq!(m.census().counts.current, 1, "no probe remains");
+}
+
+/// Dropped with its probes running, the multi is simply gone.
+#[test]
+fn a_multi_goes_with_its_probes_running() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone()).with_peer(SERVER.into(), Peer::Silent);
+    let mut m = multi_over(net, &clock);
+    m.add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    drop(m);
+}
+
+/// A name that does not exist is kept as such, if every query said so;
+/// the next asks nobody.
+#[test]
+fn no_such_name_is_kept() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_conversation(SERVER.into(), Conversation::new(&http(&rcode(3)), false))
+        .with_conversation(SERVER.into(), Conversation::new(&http(&rcode(3)), false));
+    let mut m = multi_over(net, &clock);
+    let id = m
+        .add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    run(&mut m, &clock);
+    assert_eq!(message(&mut m), Some(Err(ErrorKind::CouldntResolveHost)));
+    m.remove(id, &mut NoEvents).unwrap();
+    m.add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        m.census().counts.current,
+        1,
+        "the cache answered: no probes"
+    );
+    assert_eq!(message(&mut m), Some(Err(ErrorKind::CouldntResolveHost)));
+}
+
+/// A server's failure says nothing of the name, nor does an answer that
+/// cannot be read: nothing is kept, and the next transfer asks again.
+#[test]
+fn a_failure_is_not_kept_as_no_such_name() {
+    let clock = ManualClock::new().unwrap();
+    for (one, other) in [
+        (http(&rcode(3)), http(&rcode(2))),
+        (http(&rcode(3)), http(b"\x00\x01garbage")),
+        (
+            http(&rcode(3)),
+            b"HTTP/1.1 500 no\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        ),
+    ] {
+        let net = FakeNet::new(clock.clone())
+            .with_peer(SERVER.into(), Peer::Accepts)
+            .with_conversation(SERVER.into(), Conversation::new(&one, false))
+            .with_conversation(SERVER.into(), Conversation::new(&other, false));
+        let mut m = multi_over(net, &clock);
+        let id = m
+            .add(asking("http://foo.test/x"), (), &mut NoEvents)
+            .unwrap();
+        run(&mut m, &clock);
+        assert_eq!(message(&mut m), Some(Err(ErrorKind::CouldntResolveHost)));
+        m.remove(id, &mut NoEvents).unwrap();
+        m.add(asking("http://foo.test/x"), (), &mut NoEvents)
+            .unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(m.census().counts.current, 3, "asked again");
+    }
+}
+
+/// An answer of more than C keeps is a failure of that probe, not of
+/// memory.
+#[test]
+fn an_answer_too_long_fails_its_probe() {
+    let clock = ManualClock::new().unwrap();
+    let huge = http(&vec![0; super::doh::MAX_RESPONSE + 1]);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_conversation(SERVER.into(), Conversation::new(&huge, false))
+        .with_conversation(SERVER.into(), Conversation::new(&huge, false));
+    let mut m = multi_over(net, &clock);
+    m.add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    run(&mut m, &clock);
+    assert_eq!(message(&mut m), Some(Err(ErrorKind::CouldntResolveHost)));
+}
+
+/// An address or `localhost` needs no server.
+#[test]
+fn the_shortcuts_go_before_doh() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone()).with_peer(at(80), Peer::Silent);
+    let mut m = multi_over(net, &clock);
+    m.add(asking("http://127.0.0.1/x"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.census().counts.current, 1);
+}
+
+/// A name that cannot go in a query fails as C fails it.
+#[test]
+fn a_name_for_no_query_fails_as_out_of_memory() {
+    let clock = ManualClock::new().unwrap();
+    let mut m = multi_over(FakeNet::new(clock.clone()), &clock);
+    let label = "a".repeat(64);
+    m.add(asking(&format!("http://{label}.test/x")), (), &mut NoEvents)
+        .unwrap();
+    run(&mut m, &clock);
+    assert_eq!(message(&mut m), Some(Err(ErrorKind::OutOfMemory)));
+}
+
+/// What a probe has of its master's: only C's list.
+#[test]
+fn a_probe_inherits_only_cs_list() {
+    let mut master = Easy::new();
+    let o = master.options_mut();
+    o.set_url(Some(b"https://secret.test/")).unwrap();
+    o.doh.make_mut().unwrap().url = Some(b"https://dns.test/".to_vec());
+    o.doh.make_mut().unwrap().verify_peer = false;
+    o.doh.make_mut().unwrap().verify_host = false;
+    o.doh.make_mut().unwrap().verify_status = true;
+    o.proxy.make_mut().unwrap().url = Some(b"http://proxy.test/".to_vec());
+    o.http.user_agent = Some(b"agent".to_vec());
+    let t = o.tls.options.make_mut().unwrap();
+    t.ca_blob = Some(b"blob".to_vec());
+    t.crl_file = Some(b"crl".to_vec());
+    t.ssl_options =
+        crate::options::SslOptions::AUTO_CLIENT_CERT | crate::options::SslOptions::NO_REVOKE;
+    t.cert = Some(b"client".to_vec());
+    let body = crate::handler::Handler::write(Dropped).unwrap();
+    let probe = master
+        .doh_probe(b"query", body, Some(Duration::from_millis(1234)))
+        .unwrap();
+    let p = probe.options();
+    assert_eq!(p.url(), Some(&b"https://dns.test/"[..]));
+    assert_eq!(p.default_protocol(), Some(&b"https"[..]));
+    assert!(p.proxy.url.is_none(), "not the proxy");
+    assert!(p.http.user_agent.is_none(), "not the agent");
+    assert_eq!(p.http.version, crate::options::HttpVersion::Http2Tls);
+    assert!(p.http.pipewait);
+    assert_eq!(p.limits.total, crate::time::TimeLimit::from_millis(1234));
+    assert!(!p.tls.verify_peer);
+    assert!(!p.tls.verify_host);
+    assert!(p.tls.options.verify_status);
+    assert_eq!(p.tls.options.ca_blob.as_deref(), Some(&b"blob"[..]));
+    assert_eq!(p.tls.options.crl_file.as_deref(), Some(&b"crl"[..]));
+    assert!(p.tls.options.cert.is_none(), "not the client's certificate");
+    assert_eq!(
+        p.tls.options.ssl_options,
+        crate::options::SslOptions::NO_REVOKE,
+        "not to pick a client certificate on its own"
+    );
+    assert_eq!(probe.doing(), Some(crate::components::Component::Doh));
+    // Over clear text, TLS's settings and HTTP/2's are not asked for.
+    let o = master.options_mut();
+    o.doh.make_mut().unwrap().url = Some(b"HTTP://dns.test/".to_vec());
+    let body = crate::handler::Handler::write(Dropped).unwrap();
+    let probe = master.doh_probe(b"query", body, None).unwrap();
+    let p = probe.options();
+    assert_eq!(p.http.version, crate::options::HttpVersion::Any);
+    assert!(p.tls.verify_peer, "its own default");
+    assert!(p.limits.total.is_none());
+}
+
+struct Dropped;
+
+impl crate::handler::WriteHandler for Dropped {
+    fn write(&self, _: &mut crate::multi::TransferCx<'_>, _: &[u8]) -> crate::handler::Write {
+        crate::handler::Write::Accepted
+    }
+}
+
+/// A host that names its transfers: every probe has a value of its own,
+/// made once and given back once, whichever way the probe goes.
+#[test]
+fn a_hosts_value_for_a_probe_comes_back() {
+    struct Named;
+    impl Host for Named {
+        type Transfer = u32;
+        type Socket = ();
+    }
+    #[derive(Default)]
+    struct Ev {
+        made: Rc<Cell<u32>>,
+        gone: Rc<Cell<u32>>,
+    }
+    impl MultiEvents<Named> for Ev {
+        fn internal(
+            &mut self,
+            cx: &mut EventCx<'_, Named>,
+            master: TransferId,
+            easy: Box<Easy>,
+        ) -> Result<(Box<Easy>, Option<u32>), OutOfMemory> {
+            assert_eq!(cx.owner(master), Some(&7), "named by its master's");
+            self.made.set(self.made.get() + 1);
+            Ok((easy, Some(100 + self.made.get())))
+        }
+        fn internal_gone(&mut self, _: Box<Easy>, host: u32) {
+            assert!(host > 100);
+            self.gone.set(self.gone.get() + 1);
+        }
+    }
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone()).with_peer(SERVER.into(), Peer::Silent);
+    let mut m: Multi<Named> = Multi::new(Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    })
+    .unwrap();
+    let mut ev = Ev::default();
+    let id = m.add(asking("http://foo.test/x"), 7, &mut ev).unwrap();
+    m.perform(&mut ev).unwrap();
+    assert_eq!(ev.made.get(), 2);
+    let probe = m.slots.next_after(Some(id)).expect("a probe");
+    assert_eq!(m.owner(probe), Some(&101), "callbacks name it by its own");
+    assert_eq!(m.owners().collect::<Vec<_>>(), [&7]);
+    let removed = m.remove(id, &mut ev).unwrap();
+    assert_eq!(removed.owner, 7);
+    assert_eq!(ev.gone.get(), 2);
+}
+
+/// Once its lookup goes, what a probe still has running goes nowhere, and
+/// says it is to be taken out. Whatever row its master's was, the state it
+/// holds is that lookup's alone.
+#[test]
+fn a_stale_probe_reaches_nothing() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone()).with_peer(SERVER.into(), Peer::Silent);
+    let mut m = multi_over(net, &clock);
+    m.add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    let (lookup, probe) = super::doh::orphan_for_test();
+    assert!(!probe.orphaned());
+    drop(lookup);
+    assert!(probe.orphaned(), "said as the lookup goes, on any path");
+    assert!(!probe.accepts(b"answer"), "its writes fail");
+    m.perform(&mut NoEvents).unwrap();
+}
+
+/// Keeps the trace's text lines.
+#[derive(Clone, Default)]
+struct Lines(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl crate::handler::DebugHandler for Lines {
+    fn debug(
+        &self,
+        _: &mut crate::multi::TransferCx<'_>,
+        kind: crate::handler::DebugKind,
+        data: &[u8],
+    ) {
+        if kind == crate::handler::DebugKind::Text {
+            let line = String::from_utf8_lossy(data).into_owned();
+            self.0.lock().unwrap().push(line);
+        }
+    }
+}
+
+/// The trace of `url`'s transfer, its handle's components on as `config`
+/// says, over a server that says the name does not exist.
+fn traced(url: &str, config: &[u8]) -> Vec<String> {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_conversation(SERVER.into(), Conversation::new(&http(&rcode(3)), false))
+        .with_conversation(SERVER.into(), Conversation::new(&http(&rcode(3)), false));
+    let mut m = multi_over(net, &clock);
+    let mut easy = asking(url);
+    let lines = Lines::default();
+    let o = easy.options_mut();
+    o.output.verbose = true;
+    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    let components = crate::components::Components::new().unwrap();
+    components.configure(config);
+    easy.set_components(Some(components));
+    m.add(easy, (), &mut NoEvents).unwrap();
+    run(&mut m, &clock);
+    assert!(message(&mut m).expect("it ended").is_err());
+    lines.0.lock().unwrap().clone()
+}
+
+/// A probe's lines are said only with DoH's trace on, and each begins with
+/// `[DoH]`, its own trace and C's double one included; the failure is said
+/// once for the resolve, as C's one `failf` says it, then for the name.
+#[test]
+fn a_probes_lines_say_whose_they_are() {
+    let quiet = traced("http://nx.test/", b"");
+    assert!(!quiet.iter().any(|l| l.contains("DoH")), "{quiet:?}");
+    let lines = traced("http://nx.test/", b"doh");
+    let has = |want: &str| lines.iter().filter(|l| l.trim_end() == want).count();
+    assert_eq!(
+        has("[DoH] [DoH] [AAAA] error decoding response: No such name"),
+        1,
+        "{lines:?}"
+    );
+    assert_eq!(
+        has("[DoH] [DoH] [A] error decoding response: No such name"),
+        1,
+        "{lines:?}"
+    );
+    assert_eq!(has("Could not resolve host: nx.test"), 1, "{lines:?}");
+    assert_eq!(has("Could not resolve: nx.test:80"), 1, "{lines:?}");
+    let too_long = format!("http://{}.test/", "a".repeat(64));
+    let name = &too_long[7..too_long.len() - 1];
+    let lines = traced(&too_long, b"doh");
+    let has = |want: &str| lines.iter().filter(|l| l.trim_end() == want).count();
+    assert_eq!(has("Failed to encode DoH packet [1]"), 1, "{lines:?}");
+    assert_eq!(
+        has(&format!("Error 27 resolving {name}:80")),
+        1,
+        "{lines:?}"
+    );
+    assert_eq!(has(&format!("Could not resolve: {name}")), 1, "{lines:?}");
+}
+
+/// C would connect on the A answer while AAAA is awaited; here the answer
+/// waits for both (DIVERGENCE.md).
+#[test]
+fn the_answer_waits_for_both_queries() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_peer(at(80), Peer::Accepts)
+        .with_conversation(SERVER.into(), Conversation::replies(&[], false))
+        .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false));
+    let mut m = multi_over(net, &clock);
+    m.add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    run(&mut m, &clock);
+    assert_eq!(message(&mut m), None);
+    assert_eq!(m.census().counts.current, 3, "AAAA's is still asking");
+}
+
+/// A destination SOCKS leaves to be resolved here is not asked of the DoH
+/// server, as C's would be (DIVERGENCE.md).
+#[test]
+fn a_socks_destination_skips_doh() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at(1080), Peer::Accepts)
+        .with_name("foo.test", &[[127, 0, 0, 1].into()]);
+    let mut m = multi_over(net, &clock);
+    let mut easy = asking("http://foo.test/x");
+    easy.options_mut().proxy.make_mut().unwrap().url = Some(b"socks4://127.0.0.1:1080".to_vec());
+    m.add(easy, (), &mut NoEvents).unwrap();
+    run(&mut m, &clock);
+    assert!(m.census().counts.current <= 1, "no probe was started");
+}

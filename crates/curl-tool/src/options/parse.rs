@@ -1247,13 +1247,18 @@ mod tests {
         assert_eq!(run(&["-hfoo", "http://a/"]), Ok((1, None, None)));
         // A recognised option without its meaning is recorded, not run.
         assert_eq!(
+            run(&["--false-start", "x"]),
+            Ok((1, Some("false-start"), None))
+        );
+        // What the library lacks is refused.
+        assert_eq!(
             run(&["--dns-interface", "lo", "x"]),
-            Ok((1, Some("dns-interface"), None))
+            Err(ParamError::LibcurlDoesntSupport)
         );
         // Each operation has its own URLs and options.
         assert_eq!(
-            run(&["x", "--dns-interface", "e", "--next", "y", "z", "-C", "1"]),
-            Ok((2, Some("dns-interface"), None))
+            run(&["x", "--next", "y", "z", "-C", "1"]),
+            Ok((2, None, None))
         );
         assert_eq!(
             run(&["x", "-C", "1", "--clobber", "--no-remove-on-error"]),

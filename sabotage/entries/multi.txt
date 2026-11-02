@@ -149,15 +149,15 @@ witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::notifications_come_in_the_order_things_happened
 --- old
-            self.notify.push(Notification::EasyDone(id));
-            if !self.unread_besides(id) {
-                self.notify.push(Notification::InfoRead);
-            }
+                self.notify.push(Notification::EasyDone(id));
+                if !self.unread_besides(id) {
+                    self.notify.push(Notification::InfoRead);
+                }
 --- new
-            if !self.unread_besides(id) {
-                self.notify.push(Notification::InfoRead);
-            }
-            self.notify.push(Notification::EasyDone(id));
+                if !self.unread_besides(id) {
+                    self.notify.push(Notification::InfoRead);
+                }
+                self.notify.push(Notification::EasyDone(id));
 
 === info_read is notified for every message, not once per batch
 file: crates/curl-core/src/multi/mod.rs

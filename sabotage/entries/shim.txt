@@ -84,8 +84,9 @@ witness: curl-sys-abi url::tests::copies_and_reads_back
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-sys-abi handle_tests::the_multi_s_callbacks_run_with_their_frames
 --- old
-        ev.added(id, &self.slots.get(id).expect("just added").owner);
+        ev.added(id, owner.host().expect("the application's own"));
 --- new
+        let _ = owner;
 
 === an auth bit this build does not implement is dropped, and Basic goes at once
 file: crates/curl-sys-abi/src/setopt/mod.rs

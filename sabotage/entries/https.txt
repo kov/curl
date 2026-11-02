@@ -366,3 +366,21 @@ features: threaded-resolver
                     unanswered = cfg!(feature = "threaded-resolver");
 --- new
                     unanswered = false;
+
+=== a library's record is not looked for again right after its resolve starts
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_waits_for_its_record_once
+--- old
+        if matches!(lookup, Some(RecordLookup::Library(_))) {
+            say_lookup(route, cx);
+--- new
+        if matches!(lookup, Some(RecordLookup::Library(_))) {
+
+=== a library's record is not looked for again as its answer is taken
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_waits_for_its_record_once
+--- old
+                RecordLookup::Library(resolve) => {
+                    say_lookup(&c.route, cx);
+--- new
+                RecordLookup::Library(resolve) => {

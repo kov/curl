@@ -100,17 +100,101 @@ fn an_https_setup_to_an_address_asks_for_no_record() {
     assert_eq!(got, want);
 }
 
+/// A resolve of the library [`Ares`] stands for: a name's addresses,
+/// 127.0.0.1, at once, as c-ares answers `localhost` from the hosts file;
+/// its record, none, at the third run, the two before it just as it starts.
+#[derive(Debug)]
+struct AresResolve {
+    record: bool,
+    performed: u32,
+}
+
+impl crate::conn::io::DnsResolve for AresResolve {
+    fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
+        self.performed += 1;
+        Ok(())
+    }
+    fn wants(&self) -> &[(Box<dyn crate::conn::io::Socket>, crate::conn::io::Events)] {
+        &[]
+    }
+    fn due(&self, within: std::time::Duration) -> std::time::Duration {
+        within
+    }
+    fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
+        Ok(crate::conn::io::Partial {
+            addrs: Vec::new(),
+            v6_answered: false,
+        })
+    }
+    fn ongoing(&self) -> (u32, &'static str) {
+        if self.record && self.performed < 3 {
+            (1, "-")
+        } else {
+            (0, "A")
+        }
+    }
+    fn answer(&mut self) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
+        (!self.record).then(|| Ok(vec![std::net::IpAddr::from([127, 0, 0, 1])]))
+    }
+    fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
+        (self.performed >= 3).then_some(crate::doh::RecordAnswer::NoSuchName)
+    }
+    fn explain(&self) -> Option<&'static str> {
+        None
+    }
+    fn status(&self) -> i32 {
+        // `ARES_ENODATA`.
+        1
+    }
+}
+
+/// A resolver library standing for c-ares, the reference build's.
+#[derive(Debug)]
+struct Ares;
+
+impl crate::conn::io::DnsLibrary for Ares {
+    fn resolve(
+        &self,
+        ask: crate::conn::io::DnsAsk<'_>,
+        _: &mut crate::conn::io::DnsSay<'_>,
+    ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
+        Ok(Box::new(AresResolve {
+            record: ask.family.is_none(),
+            performed: 0,
+        }))
+    }
+}
+
+/// A handle as [`tracing`]'s, resolving through [`Ares`].
+fn tracing_over_ares(components: &[u8]) -> Easy {
+    let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(tls)),
+        dns: Some(&Ares),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let c = Components::new().unwrap();
+    c.configure(components);
+    e.set_components(Some(c));
+    e
+}
+
 /// For a name, the record is asked for as the setup's first connect
 /// starts, and the timer armed as the attempt starts, with half the
-/// happy eyeballs delay; the answer, none, comes at the next connect and
-/// is kept, and the timer stays until the transfer completes. The next
-/// setup for the name finds the record kept and arms nothing.
-#[cfg(not(feature = "threaded-resolver"))]
+/// happy eyeballs delay; the record is looked for in the cache as the
+/// resolve starts, again right after (`Curl_resolv_take_result`), and once
+/// more as the answer, none, comes at the next connect and is kept; the
+/// timer stays until the transfer completes. The next setup for the name
+/// finds the record kept and arms nothing. C's tool over c-ares traces
+/// the same lines for `https://localhost:PORT/` twice in one run.
 #[test]
 fn an_https_setup_to_a_name_waits_for_its_record_once() {
     let mut m = tls_server(2);
     let url = format!("https://localhost:{PORT}/");
-    let e = tracing(b"multi,https-connect,timer,dns");
+    let e = tracing_over_ares(b"multi,https-connect,timer,dns");
     let first = https_get(&mut m, e, &url, |_| {});
     assert_eq!(first.result, Ok(()));
     let starts = [
@@ -124,6 +208,7 @@ fn an_https_setup_to_a_name_waits_for_its_record_once() {
     let want = expect(&format!(
         "[HTTPS-CONNECT] added
         [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
+        [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
         [DNS] cache lookup localhost:{PORT} queries=A -> 0 not found
         [DNS] cached entry for localhost:{PORT} queries=A
         [HTTPS-CONNECT] connect, init
@@ -132,6 +217,7 @@ fn an_https_setup_to_a_name_waits_for_its_record_once() {
         [TIMER] [ALPN_EYEBALLS] set for 100000us
         [HTTPS-CONNECT] connect -> 0, done=0
         [HTTPS-CONNECT] adjust_pollset -> 0, 1 socks
+        [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
         [DNS] cache negative name resolve for localhost:{PORT} type=HTTPS
         [HTTPS-CONNECT] HTTPS-RR not available
         [HTTPS-CONNECT] connect -> 0, done=1
@@ -152,7 +238,7 @@ fn an_https_setup_to_a_name_waits_for_its_record_once() {
             .any(|l| l == "[MULTI] [COMPLETED] [TIMEOUT] all cleared\n"),
         "the timer stays to the end"
     );
-    let e = tracing(b"https-connect,timer,dns");
+    let e = tracing_over_ares(b"https-connect,timer,dns");
     let second = https_get(&mut m, e, &url, |_| {});
     assert_eq!(second.result, Ok(()));
     let got = lines(&second, &starts);

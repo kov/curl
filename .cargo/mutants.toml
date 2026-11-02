@@ -954,4 +954,33 @@ exclude_re = [
     # The trait's default already answers nothing: the replacement is its
     # own body, so the function is the same.
     'curl-core/src/conn/io\.rs:.*: replace Resolver::partial -> Result<Option<Partial>, OutOfMemory> with Ok\(None\)$',
+    # At FTP_STOP no command is half sent, so the pingpong waits for the
+    # answer, IN, as the guard's own arm does: dropping the arm or asking
+    # it in another phase waits the same.
+    'curl-core/src/proto/ftp\.rs:.*: replace match guard phase == Waiting::More && pc\.state == State::Stop with false in Request::control_waits$',
+    'curl-core/src/proto/ftp\.rs:\d+:46: replace == with != in Request::control_waits$',
+    # A range sets `dont_check` with its size to stop at, so "No data was
+    # received" needs a size said, nothing got and no range: and the size
+    # check before it already fails that, as C's `ftp_done` does.
+    'curl-core/src/proto/ftp\.rs:\d+:82: replace > with < in Request::check_partial$',
+    # A POP3 body has no size said (`start_to_end`): the read loop asks a
+    # sink's count only against a size, so POP3's is never asked.
+    'curl-core/src/proto/pop3\.rs:.*: replace <impl Sink<H, S> for Body<.*>>::bytecount -> u64 with [01]$',
+    # Every SSH request finds its key files as it is made, and its route,
+    # made once as the transfer starts, takes them: an SSH route always has
+    # them, and only SSH connections are compared for an SSH transfer, so
+    # the arm for one side without is only ever both without.
+    # (The line pins the SSH arm: the login arm above it reads the same.)
+    'curl-core/src/conn/mod\.rs:455:44: replace && with \|\| in RouteCold::suits$',
+    # An attached key is to a multiplexing connection: the multi's has no
+    # leased place to settle, so `settle` says nothing, and a share's lent
+    # one multiplexes, so its verdict is Pending already, as a key, with no
+    # connection in hand, would settle it.
+    'curl-core/src/multi/state\.rs:.*: replace match guard attached with false in step$',
+    # A raw call works on a connection made already: nothing it reaches
+    # asks whether the handle is verbose (only the handshake's certificate
+    # lines and an HTTP/3 proxy's setup do) or says a line of parts (the
+    # bind, the connect and a session resumed say those, all before).
+    'curl-core/src/multi/raw\.rs:.*: replace <impl crate::conn::layer::Trace for RawCx<.*>>::says_info -> bool with (true|false)$',
+    'curl-core/src/multi/raw\.rs:.*: replace <impl crate::conn::layer::Trace for RawCx<.*>>::info_line_with with \(\)$',
 ]

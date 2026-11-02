@@ -618,6 +618,32 @@ fn a_tunnel_through_an_https_proxy_keeps_the_alpn_question() {
     );
 }
 
+/// Plain HTTP sent whole to an HTTPS proxy, no tunnel: the proxy's TLS is
+/// added as the origin's filter is, and said so, with no tunnel's filter
+/// (the C build's `--trace-config all` through such a proxy says `added
+/// SSL filter for origin`, its chain `[SSL-PROXY]`).
+#[test]
+fn an_https_proxy_sent_requests_whole_adds_its_tls_as_the_origin_s() {
+    let (_, libraries) = super::tls::tls();
+    let response = fake::records(OK).unwrap();
+    let talk = Conversation::replies(&[WELCOME, &response], true);
+    let url = format!("http://127.0.0.1:{PORT}/");
+    let got = through_https_proxy(&libraries, &url, &talk, |_| {});
+    let picked: Vec<&str> = got
+        .iter()
+        .map(String::as_str)
+        .filter(|l| l.starts_with("[SETUP] added ") || l.contains("reduced to"))
+        .collect();
+    assert_eq!(
+        picked,
+        [
+            "[SETUP] added SSL filter for origin",
+            "[MULTI] [CONNECTING] reduced to [0][SSL-PROXY][TCP]",
+        ],
+        "{got:#?}"
+    );
+}
+
 /// The request follows an HTTP proxy's `CONNECT`, so once the tunnel is
 /// up what reads it starts over, after the tunnel is said to be
 /// established (`cf_h1_proxy_connect`'s `Curl_client_reset`); before

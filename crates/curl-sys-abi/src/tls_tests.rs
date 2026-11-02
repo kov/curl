@@ -60,6 +60,11 @@ unsafe fn set_retry_verify(ssl: *mut SSL) -> c_int {
 /// A server for one connection on loopback, with a certificate of its
 /// own, answering one GET with `ok`; it ends when the client does.
 fn serve() -> (u16, JoinHandle<()>) {
+    serve_n(1)
+}
+
+/// The same for `n` connections, one after another.
+fn serve_n(n: usize) -> (u16, JoinHandle<()>) {
     let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
     let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
     let mut name = X509Name::builder().unwrap();
@@ -83,22 +88,24 @@ fn serve() -> (u16, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (tcp, _) = listener.accept().unwrap();
-        tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
-            .unwrap();
-        let Ok(mut tls) = acceptor.accept(tcp) else {
-            return;
-        };
-        let mut got = Vec::new();
-        let mut buf = [0u8; 4096];
-        while !got.windows(4).any(|w| w == b"\r\n\r\n") {
-            match tls.read(&mut buf) {
-                Ok(0) | Err(_) => return,
-                Ok(n) => got.extend_from_slice(&buf[..n]),
+        for _ in 0..n {
+            let (tcp, _) = listener.accept().unwrap();
+            tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let Ok(mut tls) = acceptor.accept(tcp) else {
+                continue;
+            };
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                match tls.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
             }
+            let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+            while matches!(tls.read(&mut buf), Ok(n) if n > 0) {}
         }
-        let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
-        while matches!(tls.read(&mut buf), Ok(n) if n > 0) {}
     });
     (port, server)
 }
@@ -346,6 +353,100 @@ fn a_raw_call_over_tls_traces_its_records() {
     assert!(kinds.is_empty(), "{kinds:?}");
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
+    server.join().unwrap();
+}
+
+/// What an export of sessions found: each one's time it is good until.
+unsafe extern "C" fn session_until(
+    _: *mut CURL,
+    until: *mut c_void,
+    _: *const c_char,
+    _: *const u8,
+    _: usize,
+    _: *const u8,
+    _: usize,
+    valid_until: ffi::curl_off_t,
+    _: c_int,
+    _: *const c_char,
+    _: usize,
+) -> CURLcode {
+    // SAFETY: the test's vector, alive through the export.
+    unsafe { &mut *until.cast::<Vec<ffi::curl_off_t>>() }.push(valid_until);
+    CURLE_OK
+}
+
+/// A TLS 1.3 session that comes as a handle that only connected receives
+/// over it is kept good for its time from now, the time of day the raw
+/// call's, as any transfer's is (`Curl_ssl_scache_put`'s `time(NULL)`).
+#[test]
+fn a_session_a_raw_call_receives_is_good_from_now() {
+    let (port, server) = serve();
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("https://localhost:{port}/")).unwrap();
+    let request = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+    let mut sent = 0usize;
+    let mut buf = [0u8; 256];
+    let mut got = Vec::new();
+    // The sessions kept in a share, which an export reads.
+    let sh = crate::share::curl_share_init();
+    // SAFETY: a live share, and an option of its type.
+    let shared = unsafe {
+        crate::share::curl_share_setopt(
+            sh,
+            ffi::CURLSHOPT_SHARE,
+            ffi::CURL_LOCK_DATA_SSL_SESSION.0 as c_int,
+        )
+    };
+    assert_eq!(shared, ffi::CURLSHE_OK);
+    // SAFETY: a live handle, options of their types, and buffers that
+    // outlive their calls.
+    unsafe {
+        curl_easy_setopt(c, ffi::CURLOPT_SHARE, sh);
+        curl_easy_setopt(c, ffi::CURLOPT_URL, url.as_ptr());
+        curl_easy_setopt(c, ffi::CURLOPT_SSL_VERIFYPEER, 0 as c_long);
+        curl_easy_setopt(c, ffi::CURLOPT_SSL_VERIFYHOST, 0 as c_long);
+        curl_easy_setopt(
+            c,
+            ffi::CURLOPT_SSLVERSION,
+            ffi::CURL_SSLVERSION_TLSv1_3 as c_long,
+        );
+        curl_easy_setopt(c, ffi::CURLOPT_CONNECT_ONLY, 1 as c_long);
+        assert_eq!(crate::easy::curl_easy_perform(c), CURLE_OK);
+        let r =
+            crate::easy::curl_easy_send(c, request.as_ptr().cast(), request.len(), &raw mut sent);
+        assert_eq!((r, sent), (CURLE_OK, request.len()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !got.ends_with(b"ok") {
+            let mut n = 0usize;
+            let r = crate::easy::curl_easy_recv(c, buf.as_mut_ptr().cast(), buf.len(), &raw mut n);
+            match r {
+                CURLE_OK => got.extend_from_slice(&buf[..n]),
+                ffi::CURLE_AGAIN => std::thread::sleep(std::time::Duration::from_millis(5)),
+                other => panic!("receive failed: {other:?}"),
+            }
+            assert!(std::time::Instant::now() < deadline, "no answer came");
+        }
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let now = ffi::curl_off_t::try_from(now).unwrap();
+    let mut until: Vec<ffi::curl_off_t> = Vec::new();
+    // SAFETY: a live handle, and a vector that outlives the export.
+    let code = unsafe {
+        crate::ssls::curl_easy_ssls_export(c, Some(session_until), (&raw mut until).cast())
+    };
+    assert_eq!(code, CURLE_OK);
+    assert!(!until.is_empty(), "the session was kept");
+    for &u in &until {
+        assert!(u > now && u <= now + 7 * 24 * 3600, "{u} against {now}");
+    }
+    // SAFETY: a live handle and share, not used again.
+    unsafe {
+        curl_easy_cleanup(c);
+        crate::share::curl_share_cleanup(sh);
+    }
     server.join().unwrap();
 }
 

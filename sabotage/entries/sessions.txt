@@ -141,3 +141,13 @@ witness: curl-core tls::cache::tests::a_quic_session_is_traced_with_its_transpor
 --- new
             yes_no(false),
         ));
+
+=== a session a raw call keeps counts its life from 1970
+file: crates/curl-core/src/multi/raw.rs
+witness: curl-sys-abi tls_tests::a_session_a_raw_call_receives_is_good_from_now
+--- old
+    fn seconds_since_1970(&self) -> i64 {
+        self.unix_time
+--- new
+    fn seconds_since_1970(&self) -> i64 {
+        0

@@ -7709,6 +7709,83 @@ unsafe extern "C" fn debug_asks_back(
     0
 }
 
+/// A WebSocket only connected whose server closes: the receive gets
+/// nothing, and says so in the verbose output as C's `curl_ws_recv` does.
+#[test]
+fn a_websocket_closed_under_a_receive_says_so() {
+    use crate::ws::curl_ws_recv;
+    use std::io::Write as _;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let _request = read_request(&mut peer);
+        peer.write_all(
+            b"HTTP/1.1 101 Switching\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+        )
+        .unwrap();
+    });
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("ws://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_CONNECT_ONLY, 2), CURLE_OK);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    server.join().unwrap();
+    let mut asks = AsksBack::default();
+    assert_eq!(pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut asks), CURLE_OK);
+    assert_eq!(
+        function(
+            c,
+            ffi::CURLOPT_DEBUGFUNCTION,
+            debug_asks_back as DebugFn as *const ()
+        ),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_VERBOSE, 1), CURLE_OK);
+    let mut buf = [0u8; 16];
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let got = loop {
+        let mut n = 0;
+        let mut meta: *const ffi::curl_ws_frame = ptr::null();
+        // SAFETY: a live handle, a buffer of its length, and where the
+        // count and the frame go.
+        let got = unsafe {
+            curl_ws_recv(
+                c,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &raw mut n,
+                &raw mut meta,
+            )
+        };
+        if got != ffi::CURLE_AGAIN {
+            break got;
+        }
+        assert!(std::time::Instant::now() < deadline, "no end came");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(got, ffi::CURLE_GOT_NOTHING);
+    let lines: Vec<String> = asks
+        .lines
+        .iter()
+        .map(|l| String::from_utf8_lossy(l).into_owned())
+        .collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "[WS] connection expectedly closed?\n"),
+        "{lines:?}"
+    );
+    // SAFETY: a handle no call uses any more.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// A debug function told what a call on a connection traces may call back
 /// into its handle, as C's may: it is answered, of the connection the
 /// call is on, which the handle keeps for its next call.
@@ -8475,6 +8552,92 @@ fn the_websocket_s_frame_is_zero_before_the_first() {
     let got = server.join().unwrap();
     assert_eq!(got[0], 0x82, "the upload went as a frame");
     assert_eq!(seen.meta, Some(Some((0, 0, 0, 0, 0))));
+    // SAFETY: a handle no call uses any more.
+    unsafe { curl_easy_cleanup(c) };
+}
+
+/// What a read function that starts its frame was told.
+#[derive(Default)]
+struct StartsFrame {
+    handle: usize,
+    reads: usize,
+    started: Option<CURLcode>,
+}
+
+/// A read function that starts a text frame of 2, then gives its payload,
+/// "up", once.
+unsafe extern "C" fn starts_frame(
+    ptr: *mut c_char,
+    _size: usize,
+    _n: usize,
+    data: *mut c_void,
+) -> usize {
+    // SAFETY: the test gave its `StartsFrame`, alive for the transfer.
+    let seen = unsafe { &mut *data.cast::<StartsFrame>() };
+    seen.reads += 1;
+    if seen.reads > 1 {
+        return 0;
+    }
+    // SAFETY: inside the handle's own read callback.
+    let started = unsafe {
+        crate::ws::curl_ws_start_frame(seen.handle as *mut CURL, ffi::CURLWS_TEXT as c_uint, 2)
+    };
+    seen.started = Some(started);
+    // SAFETY: the buffer has room for what a read may give, more than 2.
+    unsafe { ptr::copy_nonoverlapping(b"up".as_ptr(), ptr.cast::<u8>(), 2) };
+    2
+}
+
+/// A frame started from inside the read function is the frame its bytes
+/// go as: text, not the binary frame a read makes by itself
+/// (`curl_ws_start_frame`).
+#[test]
+fn a_frame_started_in_the_read_function_is_the_one_sent() {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let _request = read_request(&mut peer);
+        peer.write_all(
+            b"HTTP/1.1 101 Switching\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+        )
+        .unwrap();
+        // The frame of "up": its head, its mask and its payload.
+        let mut got = vec![0u8; 8];
+        peer.read_exact(&mut got).unwrap();
+        got
+    });
+    let c = curl_easy_init();
+    let mut seen = StartsFrame {
+        handle: c as usize,
+        ..StartsFrame::default()
+    };
+    let url = std::ffi::CString::new(format!("ws://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_UPLOAD, 1), CURLE_OK);
+    assert_eq!(
+        function(
+            c,
+            ffi::CURLOPT_READFUNCTION,
+            starts_frame as WriteFn as *const ()
+        ),
+        CURLE_OK
+    );
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_READDATA, (&raw mut seen).cast::<c_void>()),
+        CURLE_OK
+    );
+    // SAFETY: a live handle; the server closes once it has the frame.
+    let _done = unsafe { curl_easy_perform(c) };
+    let got = server.join().unwrap();
+    assert_eq!(seen.started, Some(CURLE_OK));
+    assert_eq!(got[..2], [0x81, 0x82], "a text frame of 2, masked");
     // SAFETY: a handle no call uses any more.
     unsafe { curl_easy_cleanup(c) };
 }

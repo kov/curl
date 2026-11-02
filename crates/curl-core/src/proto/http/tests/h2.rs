@@ -224,6 +224,21 @@ fn a_connection_closed_under_a_stream_fails_it() {
     assert_eq!(ran.result, Err(ErrorKind::PartialFile));
 }
 
+/// Closed before any of the body came, the stream fails as HTTP/2's
+/// error, not a file cut short (`stream_recv`'s `data->req.bytecount ?
+/// CURLE_PARTIAL_FILE : CURLE_HTTP2`).
+#[test]
+fn a_connection_closed_before_the_body_fails_as_http2() {
+    let talk = Conversation::replies(&[b"S\nH 1 0\n:status: 200\n\n"], true).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        o.http.version = HttpVersion::Http2Prior;
+    });
+    assert_eq!(ran.result, Err(ErrorKind::Http2));
+}
+
 /// Without an HTTP/2 library, prior knowledge speaks HTTP/1.1, as a C
 /// build without nghttp2 has no such option.
 #[test]

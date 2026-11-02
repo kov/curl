@@ -1067,6 +1067,14 @@ mod over_the_wire {
         assert_eq!(ran.result, Ok(()));
         // Its CRLF is held as the marker's start, as C holds it.
         assert_eq!(ran.body, b"body line");
+        // The end of input said as C's debug build says it (`sendrecv_dl`).
+        if cfg!(feature = "debug-hooks") {
+            assert!(
+                ran.text.contains("sendrecv_dl: we are done\n"),
+                "{}",
+                ran.text
+            );
+        }
         let intact = format!("Connection #0 to host 127.0.0.1:{PORT} left intact");
         assert!(ran.text.contains(&intact), "{}", ran.text);
         assert!(!ran.text.contains("shutting down"), "{}", ran.text);

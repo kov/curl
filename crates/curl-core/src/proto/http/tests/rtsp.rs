@@ -950,6 +950,25 @@ abRTSP/1.0 200 OK\r\nCSeq: 9\r\n\r\n";
     }
 }
 
+/// A response left over past an OPTIONS's head goes on as its body, and
+/// an OPTIONS wants none: the bytes are traced as they came, and the
+/// connection is closed rather than kept to be read from again (checked
+/// against the C build's `curl -v` of the same bytes: `{ [28 bytes
+/// data]`, then `shutting down connection #0`).
+#[test]
+fn a_response_left_over_past_an_options_closes_the_connection() {
+    let first: &[u8] = b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\nRTSP/1.0 200 OK\r\nCSeq: 9\r\n\r\n";
+    let (mut m, talk) = rtsp_server(&[first], false, usize::MAX);
+    let one = request(&mut m, Easy::new(), talk, &Rtp::default(), |o| {
+        kind(o, RtspRequest::Options);
+    });
+    assert_eq!(one.result, Ok(()));
+    assert_eq!(one.seen.of("data"), [&first[28..]]);
+    assert_eq!(one.seen.body(), b"");
+    let text = one.seen.text();
+    assert!(!text.iter().any(|l| l.contains("left intact")), "{text:?}");
+}
+
 /// A body sized goes with any kind, an OPTIONS's too; the application
 /// asking for none keeps an OPTIONS's out, and a DESCRIBE's not (checked
 /// against the C build with the same replies).

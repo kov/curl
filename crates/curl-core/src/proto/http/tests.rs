@@ -4395,6 +4395,29 @@ fn a_proxy_is_answered_with_its_own_credentials() {
     );
 }
 
+/// A proxy URL with a user and no password logs in as that user with an
+/// empty password, not with the options' credentials (`parse_proxy`'s
+/// `proxyuser || proxypasswd`; the C build sends `Basic YTo=` for
+/// `-x http://a@host --proxy-user u:p`).
+#[test]
+fn a_proxy_url_s_user_alone_is_its_login() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("http://a@127.0.0.1:{PORT}").into_bytes());
+        proxy.user = Some(b"u".to_vec());
+        proxy.password = Some(b"p".to_vec());
+        proxy.auth = crate::options::HttpAuth(AuthMethods::BASIC);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(
+        text.contains("\r\nProxy-Authorization: Basic YTo=\r\n"),
+        "{text}"
+    );
+}
+
 /// The application's own `Proxy-Authorization` is one of its headers, not
 /// of the proxy's, and goes beside the one made for the proxy, as C sends
 /// both.

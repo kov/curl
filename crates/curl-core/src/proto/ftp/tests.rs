@@ -305,6 +305,14 @@ fn the_data_connection_s_filters_name_its_socket() {
     );
     assert!(!said.contains("[DNS-1] cache lookup"), "{said}");
     assert!(!said.contains("[MULTI-1]"), "{said}");
+    // One DNS filter, which says its chain below connected once
+    // (`cf_dns_connect`).
+    assert_eq!(
+        said.matches("[DNS-1] connected filter chain below\n")
+            .count(),
+        1,
+        "{said}"
+    );
 }
 
 /// A file the server refuses fails the transfer though DONE, which finds
@@ -638,6 +646,119 @@ fn a_protected_data_connection_resumes_its_control_connection_s_session() {
     );
 }
 
+/// The lines of a trace that say how the data connection's chain is set
+/// up, each call of its connect and what it reached, as C's build says
+/// them, without the transfer's ids.
+fn data_setup_said(said: &str) -> Vec<String> {
+    const SAYS: [&str; 8] = [
+        "cf_setup_connect [1]",
+        "[DNS-1] Curl_conn_connect",
+        "[SETUP-1] added",
+        "connected [1]",
+        "reduced to [1]",
+        "failed to connect",
+        "[DNS-1] connected filter",
+        "Established 2nd",
+    ];
+    said.lines()
+        .filter(|l| SAYS.iter().any(|n| l.contains(n)))
+        .map(|l| l.strip_prefix("[0-0] ").unwrap_or(l).to_string())
+        .collect()
+}
+
+/// A protected data connection whose handshake takes more than one call
+/// says each call as C's build does: the chain as the call enters the
+/// setup, once, then the call's end (checked against the C build's trace
+/// of a download from a server whose data connection is over TLS).
+#[test]
+fn a_protected_data_connection_says_each_call_of_its_handshake() {
+    use crate::tls::fake::{self, FakeTls, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let control = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"213 5\r\n"),
+        tls(b"150 here\r\n226 done\r\n"),
+    ];
+    let control: Vec<&[u8]> = control.iter().map(Vec::as_slice).collect();
+    let control = Conversation::replies(&control, false).per_send();
+    let file = [WELCOME.to_vec(), tls(b"hello")];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    let file = Conversation::replies(&file, true).per_send().held();
+    let mut m = serving(&[&control], &[&file]);
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing().unwrap()));
+    let libraries = SharedLibraries::new(Libraries {
+        tls: Some(Library::Static(backend)),
+        ..Libraries::NONE
+    })
+    .unwrap();
+    let url = "ftps://127.0.0.1:PORT/f";
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let (id, body, text) = added_tracing(&mut m, url, e, b"all", |_| {});
+    for _ in 0..30 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    file.allow(2);
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let lines = data_setup_said(&said);
+    let tls_chain =
+        "[MULTI] [DOING_MORE] cf_setup_connect [1][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]";
+    let waits = "[DNS-1] Curl_conn_connect(block=0) -> 0, done=0";
+    // Dialed, then its TLS added as the call that connected it ends.
+    assert_eq!(
+        lines[..8],
+        [
+            "[SETUP-1] added",
+            "[MULTI] [DOING_MORE] cf_setup_connect [1][!DNS][!SETUP]",
+            "[MULTI] [DOING_MORE] cf_setup_connect [1][!DNS][!SETUP][!HAPPY-EYEBALLS]",
+            waits,
+            "[MULTI] [DOING_MORE] cf_setup_connect [1][!DNS][!SETUP][!HAPPY-EYEBALLS]",
+            "[SETUP-1] added SSL filter for origin",
+            tls_chain,
+            waits,
+        ],
+        "{said}"
+    );
+    // Each call while the handshake waits says the chain it enters, once.
+    let (middle, end) = lines[8..].split_at(lines.len() - 8 - 6);
+    assert!(middle.len() >= 4, "{said}");
+    for pair in middle.chunks(2) {
+        assert_eq!(pair, [tls_chain, waits], "{said}");
+    }
+    assert_eq!(
+        end[..3],
+        [
+            tls_chain,
+            "[DNS-1] connected filter chain below",
+            "[DNS-1] Curl_conn_connect(block=0) -> 0, done=1"
+        ],
+        "{said}"
+    );
+    assert!(
+        end[3].starts_with("Established 2nd connection to 127.0.0.1"),
+        "{said}"
+    );
+    assert_eq!(
+        end[4..],
+        [
+            "[MULTI] [DOING_MORE] connected [1][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]",
+            "[MULTI] [DOING_MORE] reduced to [1][SSL][TCP]",
+        ],
+        "{said}"
+    );
+}
+
 /// An FTPS download whose control connection is cleared by `CCC` as
 /// `ccc` says, the server answering with `after_ccc` and then, in clear,
 /// the rest of the login: the result, what the server was sent as it
@@ -953,6 +1074,34 @@ fn through(before: &[&[u8]], setup: &[u8]) -> Conversation {
 
 const TUNNELED: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
 
+/// While the data connection's tunnel waits for the proxy's answer, the
+/// data connection is waited on for it, as C's second socket's setup
+/// filters ask (`cf_setup_adjust_pollset`).
+#[test]
+fn a_data_connection_s_tunnel_waits_on_its_socket() {
+    use crate::conn::io::Events;
+    let talk = through(&[], TUNNELED);
+    let file = Conversation::replies(&[&[TUNNELED, b"hello"].concat()], true)
+        .per_send()
+        .held();
+    let mut m = proxied(&talk, &file);
+    let (id, body, text) = added(&mut m, URL, |o| {
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.url = Some(format!("http://127.0.0.1:{PROXY_PORT}").into_bytes());
+        proxy.tunnel = true;
+    });
+    for _ in 0..30 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let said = text.text();
+    assert!(file.received().starts_with(b"CONNECT "), "{said}");
+    assert!(waits(&mut m).contains(&(1001, Events::IN)), "{said}");
+    file.allow(1);
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+}
+
 /// The data connection goes through the HTTP proxy's tunnel as the
 /// control connection does, with a `CONNECT` of its own to the port the
 /// server named, on the origin's name (`ftp_control_addr_dup`); its
@@ -1077,7 +1226,7 @@ fn the_data_connection_goes_through_the_socks_proxy() {
     share.keep(crate::share::Kind::Names).unwrap();
     let mut e = Easy::new();
     e.set_share(Some(share)).unwrap();
-    let (id, body, text) = added_easy(&mut m, URL, e, |o| {
+    let (id, body, text) = added_tracing(&mut m, URL, e, b"all", |o| {
         o.proxy.make_mut().unwrap().url =
             Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
     });
@@ -1085,6 +1234,14 @@ fn the_data_connection_goes_through_the_socks_proxy() {
     let said = text.text();
     assert_eq!(result, Ok(()), "{said}");
     assert_eq!(*body.0.lock().unwrap(), b"hello");
+    // The proxy's DNS filter and the target's, resolved here, each say
+    // their chain below connected (`cf_dns_connect`).
+    assert_eq!(
+        said.matches("[DNS-1] connected filter chain below\n")
+            .count(),
+        2,
+        "{said}"
+    );
     let asked = file.received();
     assert_eq!(&asked[..3], [5, 1, 0], "{asked:?}");
     assert_eq!(asked[3..6], [5, 1, 0], "{asked:?}");
@@ -1493,6 +1650,17 @@ fn an_active_protected_data_connection_waits_for_its_tls() {
     assert!(accepted < waits && waits < stop && stop < up, "{said}");
     assert!(up < initiated, "{said}");
     assert_eq!(said.matches("ftp_initiate_transfer()").count(), 1, "{said}");
+    // Accepted, it has no setup filter to say its chain as it connects:
+    // its TLS goes straight on the accepted socket (the C build's trace
+    // of an active FTPS download says only `connected [1][SSL][TCP-ACCEPT]`).
+    assert!(!said.contains("cf_setup_connect [1]"), "{said}");
+    said_in_order(
+        &said,
+        &[
+            "connected [1][SSL][TCP-ACCEPT]\n",
+            "reduced to [1][SSL][TCP-ACCEPT]\n",
+        ],
+    );
 }
 
 /// The address `PORT` offers is resolved as C's blocking resolve does it
@@ -3350,6 +3518,34 @@ fn waits(m: &mut Multi) -> Vec<(i32, crate::conn::io::Events)> {
     waits
 }
 
+/// A command of DO_MORE's whose sending blocks waits for the control
+/// connection to take more, not for its answer (`ftp_domore_pollset`'s
+/// `Curl_pp_pollset`, the wait for the answer being FTP_STOP's alone).
+#[test]
+fn a_command_sent_half_waits_to_send_the_rest() {
+    use crate::conn::io::Events;
+    let control_fd = 1000;
+    // USER, PASS, PWD and EPSV go; TYPE, sent once the data connection
+    // is made, does not.
+    let talk = Conversation::replies(&LOGIN_AND_SETUP, false)
+        .greeting()
+        .stalling_sends_after(4, 1000);
+    let file = Conversation::replies(&[b"hello"], true).greeting().held();
+    let mut m = serving(&[&talk], &[&file]);
+    let (_, _, text) = added(&mut m, URL, |_| {});
+    for _ in 0..30 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let said = text.text();
+    assert!(received(&talk).ends_with("EPSV\r\n"), "{said}");
+    assert!(said.contains("[DO] -> [DOING_MORE]"), "{said}");
+    let control: Vec<_> = waits(&mut m)
+        .into_iter()
+        .filter(|&(fd, _)| fd == control_fd)
+        .collect();
+    assert_eq!(control, [(control_fd, Events::OUT)], "{said}");
+}
+
 /// What the exchange waits for: an upload's data connection to take
 /// more, unless its sending is paused; a download's to give more, unless
 /// its receiving is; and, the data moved, DONE the control connection's
@@ -3405,6 +3601,9 @@ fn an_exchange_waits_on_what_it_moves() {
     }
     assert!(received(&talk).ends_with("RETR f\r\n"), "{}", text.text());
     assert_eq!(waits(&mut m), [(data_fd, Events::IN)], "{}", text.text());
+    // Nothing held unread, the read that would block waits for the
+    // socket rather than running again at once.
+    assert!(!text.text().contains("mark as dirty"), "{}", text.text());
     m.pause(
         id,
         PauseRequest {
@@ -4003,7 +4202,7 @@ fn an_epsv_port_unreached_falls_back_to_pasv() {
             waker: None,
         };
         let mut m = Multi::new(env).unwrap();
-        let (id, body, text) = added(&mut m, URL, |_| {});
+        let (id, body, text) = added_tracing(&mut m, URL, Easy::new(), b"all", |_| {});
         let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
         let got = body.0.lock().unwrap().clone();
         (result, received(&control), got, text.text())
@@ -4020,9 +4219,15 @@ fn an_epsv_port_unreached_falls_back_to_pasv() {
         sent.ends_with("PWD\r\nEPSV\r\nPASV\r\nTYPE I\r\nSIZE f\r\nRETR f\r\n"),
         "{sent}"
     );
-    assert!(
-        said.contains("Failed EPSV attempt. Disabling EPSV"),
-        "{said}"
+    // The data connection's failure said as C's build says it.
+    said_in_order(
+        &said,
+        &[
+            "[DNS-1] Curl_conn_connect(block=0) -> 7, done=0\n",
+            "[DNS-1] Curl_conn_connect(), filter returned 7\n",
+            "[MULTI] [DOING_MORE] failed to connect [1][!DNS][!SETUP][!HAPPY-EYEBALLS]\n",
+            "Failed EPSV attempt. Disabling EPSV",
+        ],
     );
     let (result, sent, _, said) = run(&[
         b"500 no EPSV\r\n",
@@ -4290,6 +4495,74 @@ fn a_file_of_one_byte_is_read_whole() {
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Ok(()), "{}", text.text());
     assert_eq!(*body.0.lock().unwrap(), b"x");
+}
+
+/// A download on a share that keeps names tells the application of each
+/// use of them where C locks them: the control connection's name looked
+/// up, kept and let go, then the data connection's, then the names pruned
+/// at the end (the C build's lock function, called seven times over the
+/// same download). A data connection slow to connect lets its name go
+/// once, as it connects, not as each call finds it still connecting.
+#[test]
+fn a_share_s_names_are_told_for_both_connections() {
+    use crate::share::{Kind, Told};
+    for (slow, data_peer) in [
+        (false, Net::Accepts),
+        (
+            true,
+            Net::AcceptsAfter(std::time::Duration::from_millis(50)),
+        ),
+    ] {
+        let share = crate::share::Share::new().unwrap();
+        share.keep(Kind::Names).unwrap();
+        let told = Told::new(&share);
+        let talk = control(&[b"150 here\r\n226 done\r\n"]);
+        let file = data(b"hello");
+        let clock = ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+        let data_at = SocketAddr::from(([127, 0, 0, 1], DATA_PORT));
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Net::Accepts)
+            .with_peer(data_at, data_peer)
+            .with_conversation(at, talk.clone())
+            .with_conversation(data_at, file);
+        let env = Env {
+            clock: Box::new(clock),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m = Multi::new(env).unwrap();
+        let mut e = Easy::new();
+        e.set_share_watched(share.clone(), told.handler()).unwrap();
+        let (id, body, text) = added_easy(&mut m, URL, e, |_| {});
+        // The clock still, each pass finds the data connection connecting.
+        for _ in 0..10 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Ok(()), "{}", text.text());
+        assert_eq!(*body.0.lock().unwrap(), b"hello");
+        assert_eq!(told.uses(), [Kind::Names; 7], "slow: {slow}");
+    }
+}
+
+/// A file's size said, its reads ask for no more than is left of it: what
+/// the data connection sends past it is not read (`xfer_recv_resp`'s
+/// `totalleft`).
+#[test]
+fn a_sized_file_is_read_no_further_than_its_size() {
+    let talk = control(&[b"150 here\r\n226 done\r\n"]);
+    let file = Conversation::replies(&[b"hello world"], true)
+        .greeting()
+        .giving(std::num::NonZeroUsize::new(3).unwrap());
+    let mut m = serving(&[&talk], &[&file]);
+    let (id, body, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello", "{said}");
+    assert!(!said.contains("Excess"), "{said}");
 }
 
 /// A control connection serves only a transfer logging in with the same

@@ -366,3 +366,31 @@ witness: curl-core proto::ftp::tests::done_reads_once_before_it_waits
                 let read_first = pc.pp.holds_reply();
 --- new
                 let read_first = false;
+
+=== a read asks for more than is left of the size said
+file: crates/curl-core/src/proto/xfer.rs
+witness: curl-core proto::ftp::tests::a_sized_file_is_read_no_further_than_its_size
+features: test-util debug-hooks
+--- old
+                    let left = size.saturating_sub(sink.bytecount());
+--- new
+                    let left = size;
+
+=== a command half sent in DO_MORE waits for an answer, not to send
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::a_command_sent_half_waits_to_send_the_rest
+features: test-util debug-hooks
+--- old
+            Some(LineConn::Ftp(pc)) if phase == Waiting::More && pc.state == State::Stop => {
+--- new
+            Some(LineConn::Ftp(pc)) if phase == Waiting::More => {
+
+=== a data connection's proxy handshake is not waited on
+file: crates/curl-core/src/multi/state/side.rs
+witness: curl-core proto::ftp::tests::a_data_connection_s_tunnel_waits_on_its_socket
+features: test-util debug-hooks
+--- old
+        shaken.chain(racing)
+--- new
+        let _ = shaken;
+        racing

@@ -305,6 +305,9 @@ fn the_data_connection_s_filters_name_its_socket() {
     );
     assert!(!said.contains("[DNS-1] cache lookup"), "{said}");
     assert!(!said.contains("[MULTI-1]"), "{said}");
+    // The request's end said through the writers' last, as C's build
+    // says it (`Curl_cw_out_done`).
+    assert!(said.contains("[WRITE] [OUT] done\n"), "{said}");
     // One DNS filter, which says its chain below connected once
     // (`cf_dns_connect`).
     assert_eq!(

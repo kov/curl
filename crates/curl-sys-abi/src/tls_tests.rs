@@ -450,6 +450,67 @@ fn a_session_a_raw_call_receives_is_good_from_now() {
     server.join().unwrap();
 }
 
+/// A TLS 1.3 session a transfer receives as it reads its response is
+/// kept good for its time from now (`Curl_ssl_scache_put`'s
+/// `time(NULL)`).
+#[test]
+fn a_session_a_transfer_receives_is_good_from_now() {
+    let (port, server) = serve();
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("https://localhost:{port}/")).unwrap();
+    let sh = crate::share::curl_share_init();
+    // SAFETY: a live share, and an option of its type.
+    let shared = unsafe {
+        crate::share::curl_share_setopt(
+            sh,
+            ffi::CURLSHOPT_SHARE,
+            ffi::CURL_LOCK_DATA_SSL_SESSION.0 as c_int,
+        )
+    };
+    assert_eq!(shared, ffi::CURLSHE_OK);
+    let sink = discard as unsafe extern "C" fn(*mut c_char, usize, usize, *mut c_void) -> usize;
+    // SAFETY: a live handle and share, and options of their types.
+    unsafe {
+        curl_easy_setopt(c, ffi::CURLOPT_SHARE, sh);
+        curl_easy_setopt(c, ffi::CURLOPT_URL, url.as_ptr());
+        curl_easy_setopt(c, ffi::CURLOPT_SSL_VERIFYPEER, 0 as c_long);
+        curl_easy_setopt(c, ffi::CURLOPT_SSL_VERIFYHOST, 0 as c_long);
+        curl_easy_setopt(
+            c,
+            ffi::CURLOPT_SSLVERSION,
+            ffi::CURL_SSLVERSION_TLSv1_3 as c_long,
+        );
+        curl_easy_setopt(c, ffi::CURLOPT_WRITEFUNCTION, sink);
+        assert_eq!(crate::easy::curl_easy_perform(c), CURLE_OK);
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let now = ffi::curl_off_t::try_from(now).unwrap();
+    let mut until: Vec<ffi::curl_off_t> = Vec::new();
+    // SAFETY: a live handle, and a vector that outlives the export.
+    let code = unsafe {
+        crate::ssls::curl_easy_ssls_export(c, Some(session_until), (&raw mut until).cast())
+    };
+    assert_eq!(code, CURLE_OK);
+    assert!(!until.is_empty(), "the session was kept");
+    for &u in &until {
+        assert!(u > now && u <= now + 7 * 24 * 3600, "{u} against {now}");
+    }
+    // SAFETY: a live handle and share, not used again.
+    unsafe {
+        curl_easy_cleanup(c);
+        crate::share::curl_share_cleanup(sh);
+    }
+    server.join().unwrap();
+}
+
+/// A write function that takes everything and keeps none of it.
+unsafe extern "C" fn discard(_: *mut c_char, size: usize, n: usize, _: *mut c_void) -> usize {
+    size * n
+}
+
 /// The function's error code fails the transfer with that code, said as
 /// C says it; a code no transfer ends with is an abort (DIVERGENCE.md).
 #[test]

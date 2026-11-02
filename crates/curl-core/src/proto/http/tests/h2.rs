@@ -2751,3 +2751,79 @@ fn an_alternative_here_in_http1_offers_http1_alone() {
     );
     assert!(!said("2nd attempt"), "{text:#?}");
 }
+
+/// A connection closed under two streams is found closed by whichever
+/// transfer reads it, and the other stream's transfer runs in the same
+/// pass to learn so: run by its timer alone, the reader does not leave
+/// the other waiting for an event its socket gave the reader.
+#[test]
+fn a_connection_closed_under_two_streams_ends_both_in_one_pass() {
+    use crate::multi::SocketEvent;
+    use std::num::{NonZeroU16, NonZeroU64};
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let talk = Conversation::replies(
+        &[
+            b"S\nH 1 0\n:status: 200\n\nD 1 2 0\naaH 3 0\n:status: 200\n\nD 3 2 0\nbb",
+            WINDOW_SENT,
+        ],
+        true,
+    )
+    .per_send()
+    .held();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let mut ids = Vec::new();
+    let mut seen = Vec::new();
+    for (path, timed) in [("/a", true), ("/b", false)] {
+        let mut e = Easy::new();
+        e.set_libraries(with_h2());
+        let o = e.options_mut();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.version = HttpVersion::Http2Prior;
+        // The first alone has a timer to run it: its speed checked each
+        // second.
+        if timed {
+            o.flow.make_mut().unwrap().low_speed = Some(crate::options::LowSpeed {
+                limit: NonZeroU64::new(1).unwrap(),
+                time: NonZeroU16::new(30).unwrap(),
+            });
+        }
+        let s = Seen::default();
+        o.callbacks.write = Some(Handler::write(s.clone()).unwrap());
+        o.callbacks.debug = Some(Handler::debug(s.clone()).unwrap());
+        o.output.verbose = true;
+        seen.push(s);
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+        for _ in 0..3 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+    }
+    let sent = || String::from_utf8(talk.received()).unwrap();
+    assert!(sent().contains("H 3 1\n"), "both requests sent: {}", sent());
+    talk.allow(1);
+    for _ in 0..3 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert_eq!(seen[0].body(), b"aa", "{:#?}", seen[0].text());
+    assert_eq!(seen[1].body(), b"bb", "{:#?}", seen[1].text());
+    // The rest, and then the close, come; the first's timer runs it.
+    talk.allow(2);
+    clock.advance(std::time::Duration::from_millis(1000));
+    let running = m
+        .socket_action(SocketEvent::Timeout, &mut NoEvents)
+        .unwrap();
+    assert_eq!(running, 0, "{:#?}\n{:#?}", seen[0].text(), seen[1].text());
+    for id in ids {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+}

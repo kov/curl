@@ -800,3 +800,14 @@ witness: curl-core conn::pool::tests::input_an_http2_session_holds_is_pending_on
         !self.held.is_empty() || below.data_pending()
 --- new
         below.data_pending()
+
+=== a connection closed under two streams leaves the other's transfer unrun
+file: crates/curl-core/src/multi/state/cx.rs
+witness: curl-core proto::http::tests::h2::a_connection_closed_under_two_streams_ends_both_in_one_pass
+features: test-util debug-hooks
+--- old
+        if self.rest.tell.slots.get(id).is_some() {
+            self.rest.dirty.insert(id.index());
+        }
+--- new
+        let _ = id;

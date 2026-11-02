@@ -1310,6 +1310,9 @@ mod over_the_wire {
             "[WRITE] download_write header(type=2, blen=11) -> 0",
             "[WRITE] client_write(type=2, len=11) -> 0",
             "[WRITE] client_write(type=2, len=14) -> 0",
+            // The request's end, through the writers' last
+            // (`Curl_cw_out_done`).
+            "[WRITE] [OUT] done",
         ] {
             assert!(ran.text.lines().any(|l| l == line), "{line}: {}", ran.text);
         }

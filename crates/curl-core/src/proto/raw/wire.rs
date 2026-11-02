@@ -159,6 +159,13 @@ pub(crate) fn ends_through_the_writers(talk: &Conversation, url: &str) {
         "{}",
         ran.text
     );
+    // Then the request's end, through the writers' last
+    // (`Curl_cw_out_done`).
+    assert!(
+        ran.text[at..].contains("[WRITE] [OUT] done\n"),
+        "{}",
+        ran.text
+    );
 }
 
 /// A writer that pauses at its first piece, then takes them all.

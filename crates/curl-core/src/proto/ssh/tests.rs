@@ -69,6 +69,8 @@ struct World {
     known_other: bool,
     /// The trace says the SSH component's lines.
     trace_ssh: bool,
+    /// The trace says the writers' lines.
+    trace_write: bool,
     /// An open file says it is this big, or says no size.
     stated_size: Option<u64>,
     no_size_flag: bool,
@@ -797,6 +799,11 @@ fn added_with_tls(
         c.configure(b"ssh,multi");
         e.set_components(Some(c));
     }
+    if world.lock().unwrap().trace_write {
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"write");
+        e.set_components(Some(c));
+    }
     e.set_libraries(
         SharedLibraries::new(Libraries {
             ssh: Some(ssh),
@@ -850,6 +857,17 @@ fn run_in(
 /// An SFTP download: the session handed the socket, logged in with the
 /// key files, the file opened from the home directory and read whole;
 /// the session said goodbye as its connection closed.
+/// A download's end is said through the writers' last, as C's build
+/// says it for any protocol (`Curl_cw_out_done`).
+#[test]
+fn a_download_ends_through_the_writers() {
+    let w = world_with(&[("/home/u/f", "hello\n")], |w| w.trace_write = true);
+    let (result, body, said, _) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(body, b"hello\n");
+    assert!(said.lines().any(|l| l == "[WRITE] [OUT] done"), "{said}");
+}
+
 #[test]
 fn an_sftp_file_is_downloaded() {
     let (result, body, said, calls) = run(
@@ -1504,6 +1522,35 @@ fn run_on(
     (result, body, text.text())
 }
 
+/// An SFTP read that waits has its connection waited on for what the
+/// session asks, as C's pollset asks it (`Curl_ssh_pollset`).
+#[test]
+fn a_read_that_waits_waits_on_its_connection() {
+    use crate::conn::io::Events;
+    let w = world_with(&[("/home/u/f", "waited for")], |w| {
+        w.read_waits = 1000;
+        w.poll = PollFlags {
+            read: true,
+            write: false,
+        };
+    });
+    let mut m = chatty();
+    let (_, _, text) = added(&mut m, &w, "sftp://u@127.0.0.1:PORT/~/f", |_| {});
+    for _ in 0..30 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let calls = w.lock().unwrap().calls.clone();
+    assert!(
+        calls.iter().any(|c| c == "wait_read again"),
+        "{calls:?} {}",
+        text.text()
+    );
+    let mut waits = Vec::new();
+    m.sockets(&mut NoEvents, |_, events| waits.push(events))
+        .unwrap();
+    assert_eq!(waits, [Events::IN], "{}", text.text());
+}
+
 /// An SFTP read that waits is waited on, then taken where it was asked
 /// for, its room unchanged.
 #[test]
@@ -2136,6 +2183,18 @@ fn the_ssh_trace_says_what_its_pollset_waits_for() {
     });
     assert!(reading.contains("[SSH] pollset, flags=1\n"), "{reading}");
     assert!(!reading.contains("flags=3"), "{reading}");
+    // A read that waits for the session to send waits to send, not to
+    // read as the body would: the session's wait stands over the body's
+    // way (`Curl_ssh_pollset`'s `sshc->waitfor`).
+    let sending = said(|w| {
+        w.read_waits = 1;
+        w.poll = PollFlags {
+            read: false,
+            write: true,
+        };
+    });
+    assert!(sending.contains("[SSH] pollset, flags=2\n"), "{sending}");
+    assert!(!sending.contains("flags=1"), "{sending}");
     // A connect that waits with the session asking for nothing: the
     // pollset hears the live session, unsaid.
     let quiet = said(|w| w.waiting = vec!["connect", "connect"]);
@@ -2383,4 +2442,14 @@ fn a_download_reports_its_size_and_time() {
     );
     let e = m.remove(id, &mut NoEvents).unwrap().easy;
     assert_eq!(e.report().sizes().download_expected, None);
+    // One with bytes says its size.
+    let w = world(&[("/home/u/f", "hello\n")]);
+    let mut m = serving(PORT, &silent());
+    let (id, _, _) = added(&mut m, &w, "scp://u@127.0.0.1:PORT/home/u/f", |_| {});
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let e = m.remove(id, &mut NoEvents).unwrap().easy;
+    assert_eq!(e.report().sizes().download_expected, Some(6));
 }

@@ -1502,6 +1502,8 @@ fn a_request_goes_as_early_data_where_the_server_takes_it() {
         String::from_utf8_lossy(&want)
     );
     assert_eq!(got.easy.report().earlydata_sent(), n as i64);
+    // Its TLS is timed as the put-off handshake ends.
+    assert!(got.easy.report().timings().appconnect() > Duration::ZERO);
     let accepted = format!("Server accepted {n} bytes of TLS early data.");
     assert!(said(&got, &accepted), "{:?}", got.seen.text());
 }

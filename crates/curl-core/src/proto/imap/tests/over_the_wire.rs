@@ -144,6 +144,21 @@ fn fetching(more: &[&[u8]]) -> Conversation {
 
 const FETCH_URL: &str = "imap://u:p@127.0.0.1:PORT/INBOX;MAILINDEX=1";
 
+/// A fetch's end is said through the writers' last, as C's build says it
+/// (`Curl_cw_out_done`).
+#[test]
+fn a_fetch_ends_through_the_writers() {
+    let talk = fetching(&[]);
+    let mut m = serving(&[&talk]);
+    let ran = tracing(&mut m, &plain(), FETCH_URL, b"write", |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert!(
+        ran.text.lines().any(|l| l == "[WRITE] [OUT] done"),
+        "{}",
+        ran.text
+    );
+}
+
 #[test]
 fn a_message_is_fetched_after_a_login_and_a_select() {
     let talk = fetching(&[]);

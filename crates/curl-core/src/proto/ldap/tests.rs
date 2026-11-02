@@ -422,6 +422,8 @@ struct World {
     late: usize,
     /// So many asks for a search's entry find none yet.
     late_entry: usize,
+    /// The trace says the writers' lines.
+    trace_write: bool,
 }
 
 impl Default for World {
@@ -440,6 +442,7 @@ impl Default for World {
             root_found: Code::SUCCESS,
             late: 0,
             late_entry: 0,
+            trace_write: false,
         }
     }
 }
@@ -848,6 +851,7 @@ fn run_driven(
 ) -> Ran {
     let mut w = World::default();
     world(&mut w);
+    let trace_write = w.trace_write;
     let w = Arc::new(Mutex::new(w));
     let ldap: &'static FakeLdap = Box::leak(Box::new(FakeLdap(w.clone())));
     let clock = ManualClock::new().unwrap();
@@ -873,6 +877,11 @@ fn run_driven(
         crate::handler::Handler::text(internal.clone()).unwrap(),
     );
     let mut e = Easy::new();
+    if trace_write {
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"write");
+        e.set_components(Some(c));
+    }
     e.set_libraries(
         SharedLibraries::new(Libraries {
             ldap: Some(ldap),
@@ -1198,6 +1207,26 @@ fn a_search_s_result_is_the_transfer_s() {
     assert_eq!(ran.result, Ok(()), "{}", ran.said);
     assert!(
         ran.said.contains("There are more than 1 entries"),
+        "{}",
+        ran.said
+    );
+}
+
+/// A search's end is said through the writers' last, as C's build says
+/// it for any protocol (`Curl_cw_out_done`).
+#[test]
+fn a_search_ends_through_the_writers() {
+    let ran = run(
+        URL,
+        |w| {
+            one_entry(w);
+            w.trace_write = true;
+        },
+        |_| {},
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+    assert!(
+        ran.said.lines().any(|l| l == "[WRITE] [OUT] done"),
         "{}",
         ran.said
     );

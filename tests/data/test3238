@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+HTTP GET
+cookies
+HSTS
+PSL
+share
+libtest
+</keywords>
+</info>
+
+# Server-side
+<reply>
+<data nocheck="yes">
+HTTP/1.1 200 OK
+Content-Length: 0
+Set-Cookie: a=1; domain=www.example.com
+Set-Cookie: b=1; domain=www.example.com
+
+</data>
+</reply>
+
+# Client-side
+<client>
+<features>
+cookies
+HSTS
+PSL
+</features>
+<server>
+http
+</server>
+<name>
+share lock calls for cookies, the public suffix list and the HSTS cache
+</name>
+<tool>
+lib%TESTNUMBER
+</tool>
+<command>
+http://%HOSTIP:%HTTPPORT/%TESTNUMBER %LOGDIR/hsts%TESTNUMBER
+</command>
+<file name="%LOGDIR/hsts%TESTNUMBER">
+kept.example "unlimited"
+</file>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<stdout>
+lock share single
+unlock share
+perform
+lock cookie single
+unlock cookie
+lock cookie single
+unlock cookie
+lock hsts single
+unlock hsts
+lock cookie single
+unlock cookie
+lock cookie single
+lock psl shared
+unlock psl
+lock psl single
+unlock psl
+lock psl shared
+unlock psl
+unlock cookie
+lock cookie single
+lock psl shared
+unlock psl
+unlock cookie
+perform
+lock cookie single
+unlock cookie
+lock cookie single
+unlock cookie
+lock hsts single
+unlock hsts
+lock cookie single
+unlock cookie
+lock cookie single
+lock psl shared
+unlock psl
+unlock cookie
+lock cookie single
+lock psl shared
+unlock psl
+unlock cookie
+application's cookie
+lock cookie single
+unlock cookie
+cleanup
+lock cookie single
+unlock cookie
+lock share single
+unlock share
+lock share single
+unlock share
+</stdout>
+</verify>
+</testcase>

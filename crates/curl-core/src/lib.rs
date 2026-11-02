@@ -16,6 +16,7 @@ pub mod conn;
 pub mod cookie;
 pub mod date;
 mod deliver;
+pub mod doh;
 pub mod easy;
 pub mod error;
 pub mod gss;

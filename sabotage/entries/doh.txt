@@ -1,0 +1,50 @@
+# DNS messages as DNS over HTTPS carries them (crates/curl-core/src/doh.rs):
+# what a hostile answer must not get past.
+
+=== bytes after the last section are let through
+file: crates/curl-core/src/doh.rs
+witness: curl-core doh::tests::what_an_answer_may_not_be
+--- old
+    if r.at != message.len() {
+--- new
+    if r.at > message.len() {
+
+=== a label's reserved prefix reads as a length
+file: crates/curl-core/src/doh.rs
+witness: curl-core doh::tests::names_are_skipped_not_followed
+--- old
+            if length & 0xc0 != 0 {
+--- new
+            if length & 0xc0 == 0xff {
+
+=== a record of another type is taken
+file: crates/curl-core/src/doh.rs
+witness: curl-core doh::tests::what_an_answer_may_not_be
+--- old
+        if kind != what.code() && kind != TYPE_CNAME && kind != TYPE_DNAME {
+--- new
+        if false && kind != what.code() && kind != TYPE_CNAME && kind != TYPE_DNAME {
+
+=== a time to live stays uncapped
+file: crates/curl-core/src/doh.rs
+witness: curl-core doh::tests::unit1650_answers
+--- old
+        let ttl = r.u32()?.min(MAX_TTL);
+--- new
+        let ttl = r.u32()?;
+
+=== a label of 64 bytes goes on the wire
+file: crates/curl-core/src/doh.rs
+witness: curl-core doh::tests::unit1655_names
+--- old
+            .filter(|l| (1..=63).contains(l))
+--- new
+            .filter(|l| (1..=64).contains(l))
+
+=== an HTTPS record's keys may run backwards
+file: crates/curl-core/src/doh.rs
+witness: curl-core doh::tests::unit1658_records
+--- old
+        if u32::from(key) < least || length > after.len() {
+--- new
+        if length > after.len() {

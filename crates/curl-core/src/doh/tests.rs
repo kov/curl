@@ -1,0 +1,300 @@
+//! C's unit tests 1650, 1655 and 1658, and hostile answers.
+
+use super::*;
+use crate::doh::c_tests::{
+    UNIT1650_ANSWERS, UNIT1650_FULL, UNIT1650_QUERIES, UNIT1655_NAMES, UNIT1658,
+};
+use std::fmt::Write;
+
+/// An answer's addresses and time to live, as unit1650 writes them.
+fn shown(a: &DohAnswer<'_>) -> String {
+    let mut out = String::new();
+    for addr in &a.addrs {
+        match addr {
+            IpAddr::V4(v4) => write!(out, "{v4} ").unwrap(),
+            IpAddr::V6(v6) => {
+                let [s0, s1, s2, s3, s4, s5, s6, s7] = v6.segments();
+                write!(
+                    out,
+                    "{s0:04x}:{s1:04x}:{s2:04x}:{s3:04x}:{s4:04x}:{s5:04x}:{s6:04x}:{s7:04x} "
+                )
+                .unwrap();
+            }
+        }
+    }
+    // C starts from the largest it can hold.
+    write!(out, "({})", a.ttl.unwrap_or(i32::MAX as u32)).unwrap();
+    out
+}
+
+#[test]
+fn unit1650_queries() {
+    for &(name, what, want, rc) in UNIT1650_QUERIES {
+        let made = encode_query(name, what);
+        assert_eq!(made.as_ref().map(|_| ()).map_err(|e| *e), rc, "{name:?}");
+        if let (Ok(made), Some(want)) = (&made, want) {
+            assert_eq!(&made[..], want, "{name:?}");
+        }
+    }
+}
+
+#[test]
+fn unit1650_answers() {
+    for (i, &(packet, what, rc, want)) in UNIT1650_ANSWERS.iter().enumerate() {
+        let got = decode_answer(packet, what);
+        assert_eq!(got.as_ref().map(|_| ()).map_err(|e| *e), rc, "row {i}");
+        if let (Ok(got), Some(want)) = (&got, want) {
+            assert_eq!(shown(got), want, "row {i}");
+        }
+    }
+}
+
+/// An HTTPS record shorter than three bytes is refused, as unit1650's
+/// `httpsrr` case.
+#[test]
+fn unit1650_https_record_length() {
+    let mut packet = vec![
+        0x00, 0x00, 0x81, 0x80, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x41,
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+    ];
+    for i in 0..=3usize {
+        packet[22] = i as u8;
+        let got = decode_answer(&packet[..packet.len() - 3 + i], QueryType::Https);
+        if i < 3 {
+            assert_eq!(got, Err(DohError::RdataLength));
+        } else {
+            assert_eq!(got.unwrap().https.len(), 1);
+        }
+    }
+}
+
+/// Every truncation of an answer, from either end, is refused.
+#[test]
+fn unit1650_truncations() {
+    for i in 0..UNIT1650_FULL.len() {
+        assert!(
+            decode_answer(&UNIT1650_FULL[..i], QueryType::A).is_err(),
+            "{i}"
+        );
+    }
+    // C's other end reaches the literal's NUL too, as its size says not.
+    for i in 1..=UNIT1650_FULL.len() {
+        assert!(
+            decode_answer(&UNIT1650_FULL[i..], QueryType::A).is_err(),
+            "{i}"
+        );
+    }
+    let whole = decode_answer(UNIT1650_FULL, QueryType::A).unwrap();
+    assert_eq!(whole.addrs, [IpAddr::from([127, 0, 0, 1])]);
+}
+
+#[test]
+fn unit1655_names() {
+    for &(name, rc) in UNIT1655_NAMES {
+        let made = encode_query(name, QueryType::A);
+        assert_eq!(made.as_ref().map(|_| ()).map_err(|e| *e), rc, "{name:?}");
+        if let Ok(made) = made {
+            assert!(made.len() <= MAX_QUERY);
+            assert!(made.len() > name.len());
+        }
+    }
+}
+
+/// A trailing dot adds nothing; each letter one.
+#[test]
+fn unit1655_lengths() {
+    let one = encode_query(b"a.com", QueryType::A).unwrap();
+    assert_eq!(one, encode_query(b"a.com.", QueryType::A).unwrap());
+    assert_eq!(
+        encode_query(b"aa.com", QueryType::A).unwrap().len(),
+        one.len() + 1
+    );
+}
+
+/// A record decoded, as unit1658 writes it, with C's numbers for its
+/// failures.
+fn account(data: &[u8]) -> String {
+    let mut out = String::new();
+    let record = match decode_https_record(data) {
+        Ok(r) => r,
+        Err(e) => {
+            let n = match e {
+                RecordError::BadParameter => 43,
+                RecordError::BadName | RecordError::OutOfMemory => 27,
+                RecordError::Weird => 8,
+                RecordError::BadAlpn => 61,
+            };
+            return format!("r:{n}|");
+        }
+    };
+    write!(out, "r:0|p:{}|", record.priority).unwrap();
+    write!(out, "{}|", String::from_utf8_lossy(&record.target)).unwrap();
+    for a in &record.alpns {
+        let id = match a {
+            RecordAlpn::H1 => 8,
+            RecordAlpn::H2 => 0x10,
+            RecordAlpn::H3 => 0x20,
+        };
+        write!(out, "alpn:{id:x}|").unwrap();
+    }
+    if record.no_default_alpn {
+        out.push_str("no-def-alpn|");
+    }
+    if let Some(p) = record.port {
+        write!(out, "port:{p}|").unwrap();
+    }
+    for a in &record.ipv4_hints {
+        write!(out, "ipv4:{a}|").unwrap();
+    }
+    if !record.ech.is_empty() {
+        out.push_str("ech:");
+        for b in &record.ech {
+            write!(out, "{b:02x}").unwrap();
+        }
+        out.push('|');
+    }
+    for a in &record.ipv6_hints {
+        let s = a.segments();
+        write!(
+            out,
+            "ipv6:{:04x}:{:04x}:{:04x}:{:04x}:{:04x}:{:04x}:{:04x}:{:04x}|",
+            s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]
+        )
+        .unwrap();
+    }
+    out
+}
+
+#[test]
+fn unit1658_records() {
+    for &(name, data, want) in UNIT1658 {
+        assert_eq!(account(data), want, "{name}");
+    }
+}
+
+/// A small generator, so a failure repeats.
+fn next(seed: &mut u64) -> u64 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    *seed
+}
+
+/// No answer, however mangled, panics: whatever came of C's tables, cut and
+/// with bytes changed.
+#[test]
+fn hostile_answers_never_panic() {
+    let mut seed = 0x1650_1658_u64;
+    let decode_all = |p: &[u8]| {
+        for what in [QueryType::A, QueryType::Aaaa, QueryType::Https] {
+            if let Ok(a) = decode_answer(p, what) {
+                assert!(a.addrs.len() <= MAX_ADDRS);
+                assert!(a.https.len() <= MAX_HTTPS);
+                assert!(a.ttl.is_none_or(|t| t <= MAX_TTL));
+            }
+        }
+        let _ = decode_https_record(p);
+    };
+    for &(packet, ..) in UNIT1650_ANSWERS {
+        for _ in 0..2000 {
+            let mut p = packet.to_vec();
+            for _ in 0..1 + next(&mut seed) % 4 {
+                let i = next(&mut seed) as usize % p.len().max(1);
+                if let Some(b) = p.get_mut(i) {
+                    *b = next(&mut seed) as u8;
+                }
+            }
+            p.truncate(next(&mut seed) as usize % (p.len() + 1));
+            decode_all(&p);
+        }
+    }
+    for &(_, data, _) in UNIT1658 {
+        for _ in 0..2000 {
+            let mut p = data.to_vec();
+            let i = next(&mut seed) as usize % p.len().max(1);
+            if let Some(b) = p.get_mut(i) {
+                *b = next(&mut seed) as u8;
+            }
+            decode_all(&p);
+        }
+    }
+}
+
+/// A question with a record count far beyond what is there ends at the
+/// message's end, not after sixty-five thousand reads.
+#[test]
+fn counts_past_the_message_are_refused() {
+    let mut p = vec![0, 0, 1, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0];
+    assert_eq!(decode_answer(&p, QueryType::A), Err(DohError::OutOfRange));
+    p[4] = 0;
+    p[5] = 0;
+    p[6] = 0xff;
+    assert_eq!(decode_answer(&p, QueryType::A), Err(DohError::OutOfRange));
+    p[6] = 0;
+    p[8] = 0xff;
+    assert_eq!(decode_answer(&p, QueryType::A), Err(DohError::OutOfRange));
+    p[8] = 0;
+    p[10] = 0xff;
+    assert_eq!(decode_answer(&p, QueryType::A), Err(DohError::OutOfRange));
+}
+
+/// A compression pointer is stepped over, so one pointing at itself loops
+/// nowhere; a label's reserved prefixes are refused.
+#[test]
+fn names_are_skipped_not_followed() {
+    let mut p = vec![0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+    p.extend_from_slice(&[0xc0, 12, 0, 1, 0, 1]);
+    assert_eq!(
+        decode_answer(&p, QueryType::A),
+        Ok(DohAnswer::default()),
+        "a pointer to itself"
+    );
+    for prefix in [0x40, 0x80] {
+        p[12] = prefix;
+        assert_eq!(decode_answer(&p, QueryType::A), Err(DohError::BadLabel));
+    }
+}
+
+/// Bytes left after the last section are refused; a record of the wrong
+/// type or class too.
+#[test]
+fn what_an_answer_may_not_be() {
+    let ok = UNIT1650_FULL;
+    let mut more = ok.to_vec();
+    more.push(0);
+    assert_eq!(decode_answer(&more, QueryType::A), Err(DohError::Malformed));
+    assert_eq!(
+        decode_answer(ok, QueryType::Aaaa),
+        Err(DohError::UnexpectedType)
+    );
+    let mut class = ok.to_vec();
+    // The answer's class, after its pointer and type.
+    class[33 + 4] = 9;
+    assert_eq!(
+        decode_answer(&class, QueryType::A),
+        Err(DohError::UnexpectedClass)
+    );
+    let mut short = ok.to_vec();
+    short[43..45].copy_from_slice(&[0, 3]);
+    short.pop();
+    assert_eq!(
+        decode_answer(&short, QueryType::A),
+        Err(DohError::RdataLength)
+    );
+}
+
+/// More addresses than are kept are ignored, not refused, and the least
+/// time to live wins.
+#[test]
+fn the_addresses_past_the_limit_are_ignored() {
+    let mut p = vec![0, 0, 1, 0, 0, 0, 0, 30, 0, 0, 0, 0];
+    for i in 0..30u8 {
+        p.extend_from_slice(&[0, 0, 1, 0, 1]);
+        p.extend_from_slice(&u32::from(1000 - u16::from(i)).to_be_bytes());
+        p.extend_from_slice(&[0, 4, 10, 0, 0, i]);
+    }
+    let a = decode_answer(&p, QueryType::A).unwrap();
+    assert_eq!(a.addrs.len(), MAX_ADDRS);
+    assert_eq!(a.addrs[23], IpAddr::from([10, 0, 0, 23]));
+    assert_eq!(a.ttl, Some(1000 - 29));
+}

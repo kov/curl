@@ -1,5 +1,7 @@
 # DNS messages as DNS over HTTPS carries them (crates/curl-core/src/doh.rs):
 # what a hostile answer must not get past.
+# And DoH's probes as the multi's transfers: none outlives its master, and
+# none is the application's.
 
 === bytes after the last section are let through
 file: crates/curl-core/src/doh.rs
@@ -45,12 +47,9 @@ witness: curl-core doh::tests::a_label_is_at_most_63_bytes
 file: crates/curl-core/src/doh.rs
 witness: curl-core doh::tests::unit1658_records
 --- old
-        if u32::from(key) < least || length > after.len() {
+        least = u32::from(key) + 1;
 --- new
-        if (u32::from(key) < least && key == u16::MAX) || length > after.len() {
-
-# DoH's probes as the multi's transfers: none outlives its master, and
-# none is the application's.
+        least = 0;
 
 === a lookup going does not tell its probes
 file: crates/curl-core/src/multi/doh.rs

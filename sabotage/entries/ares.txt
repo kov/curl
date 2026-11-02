@@ -137,3 +137,15 @@ witness: curl-core multi::socket_tests::a_library_s_resolve_dropped_anywhere_say
         let Some(closed) = slot.closed.as_ref().map(SocketsClosed::take) else {
 --- new
         let Some(closed) = slot.closed.as_ref().map(|_| Vec::<SocketKey>::new()) else {
+
+=== a socket still waited on is boxed anew each time the resolve is looked at
+file: crates/curl-ares/src/lib.rs
+witness: curl-ares tests::a_socket_still_waited_on_keeps_its_entry
+--- old
+            let known = self.wants[kept..]
+                .iter()
+                .position(|(socket, _)| socket.key() == key);
+--- new
+            let known = self.wants[kept..]
+                .iter()
+                .position(|(socket, _)| socket.key() == key && false);

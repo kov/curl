@@ -495,6 +495,9 @@ impl Resolving {
     }
 
     /// The sockets the channel waits on read anew (`Curl_ares_pollset`).
+    /// A socket still waited on keeps its entry, so that looking again
+    /// allocates nothing, as C's pollset does not: only a socket new to
+    /// the channel is boxed.
     fn refresh(&mut self) {
         let mut socks = [sys::SOCKET_BAD; sys::GETSOCK_MAXNUM];
         // SAFETY: the array holds as many as it is said to.
@@ -505,7 +508,9 @@ impl Resolving {
                 sys::GETSOCK_MAXNUM as c_int,
             )
         };
-        self.wants.clear();
+        // The first `kept` are the sockets read so far, in the channel's
+        // order; the rest are those it may no longer wait on.
+        let mut kept = 0;
         for (i, &fd) in socks.iter().enumerate() {
             let mut events = Events::NONE;
             if bits & (1 << i) != 0 {
@@ -517,19 +522,33 @@ impl Resolving {
             if events == Events::NONE {
                 break;
             }
-            let Ok(socket) = try_box(FdSocket(fd)) else {
-                self.answers.failed = Some(DnsRefused::OutOfMemory);
-                return;
-            };
-            if self
-                .wants
-                .try_push((socket as Box<dyn Socket>, events))
-                .is_err()
-            {
-                self.answers.failed = Some(DnsRefused::OutOfMemory);
-                return;
+            let key = SocketKey::new(fd);
+            let known = self.wants[kept..]
+                .iter()
+                .position(|(socket, _)| socket.key() == key);
+            match known {
+                Some(at) => self.wants.swap(kept, kept + at),
+                None => {
+                    let Ok(socket) = try_box(FdSocket(fd)) else {
+                        self.answers.failed = Some(DnsRefused::OutOfMemory);
+                        return;
+                    };
+                    if self
+                        .wants
+                        .try_push((socket as Box<dyn Socket>, events))
+                        .is_err()
+                    {
+                        self.answers.failed = Some(DnsRefused::OutOfMemory);
+                        return;
+                    }
+                    let last = self.wants.len() - 1;
+                    self.wants.swap(kept, last);
+                }
             }
+            self.wants[kept].1 = events;
+            kept += 1;
         }
+        self.wants.truncate(kept);
     }
 }
 
@@ -886,6 +905,38 @@ mod tests {
             ARES.resolve(ask(b"nul\0name", Some(Family::V4), &options), &mut say)
                 .is_err()
         );
+    }
+
+    /// Looked at again while its query waits, a resolve keeps the entry of
+    /// the socket it waits on rather than making it anew: how often the
+    /// transfer looks does not change what it allocates.
+    #[test]
+    #[allow(clippy::disallowed_macros)]
+    fn a_socket_still_waited_on_keeps_its_entry() {
+        let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let servers = format!("127.0.0.1:{}", silent.local_addr().unwrap().port());
+        let options = DnsOptions {
+            servers: Some(servers.into_bytes()),
+            ..DnsOptions::NONE_SET
+        };
+        let mut say = |_: &[&[u8]]| {};
+        let mut r = ARES
+            .resolve(ask(b"x.test", Some(Family::V4), &options), &mut say)
+            .unwrap();
+        let entries = |r: &dyn DnsResolve| {
+            r.wants()
+                .iter()
+                .map(|(socket, _)| (&raw const **socket).cast::<()>())
+                .collect::<Vec<_>>()
+        };
+        r.perform().unwrap();
+        let first = entries(&*r);
+        assert_eq!(first.len(), 1, "it waits on its server's socket");
+        for _ in 0..3 {
+            r.perform().unwrap();
+            assert_eq!(entries(&*r), first);
+        }
+        assert!(r.answer().is_none(), "the server says nothing");
     }
 
     #[test]

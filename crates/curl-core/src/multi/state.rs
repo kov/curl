@@ -62,7 +62,7 @@ use crate::upload::{self, Readers};
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
 use crate::version::Protocol;
 
-use super::cx::{DriveCx, EngineRest, EventCx, Kept, TransferCalls, TransferCx};
+use super::cx::{DriveCx, EngineRest, EventCx, TransferCalls, TransferCx};
 use super::mstate::{self, MState};
 use super::sched::RowSet;
 use super::sockets::{Pollset, Wants};

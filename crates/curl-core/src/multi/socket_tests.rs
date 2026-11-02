@@ -1093,3 +1093,94 @@ fn a_library_s_resolve_dropped_anywhere_says_its_socket_closed() {
     assert!(told(&ev, keys[1], Remove), "removed: {:?}", ev.calls);
     assert_eq!(closes(keys[1]), 1, "removed");
 }
+
+/// A name a resolver library says does not exist is kept as such in the
+/// share the transfer keeps its names in, as the tool's transfers do,
+/// however its answer came: AAAA's first, the race begun without an
+/// address, and then A's. The next transfer to the name, of another multi
+/// with the same share, finds the negative entry and asks no one
+/// (`Curl_dnscache_add_negative`).
+#[test]
+fn a_name_found_not_to_exist_after_the_race_began_is_kept_negative() {
+    #[derive(Debug)]
+    struct NoSuchName {
+        performed: u32,
+    }
+
+    impl crate::conn::io::DnsResolve for NoSuchName {
+        fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
+            self.performed += 1;
+            Ok(())
+        }
+        fn wants(&self) -> &[(Box<dyn Socket>, Events)] {
+            &[]
+        }
+        fn due(&self, within: Duration) -> Duration {
+            within.min(Duration::from_millis(100))
+        }
+        fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
+            Ok(crate::conn::io::Partial {
+                addrs: Vec::new(),
+                v6_answered: self.performed >= 2,
+            })
+        }
+        fn ongoing(&self) -> (u32, &'static str) {
+            match self.performed {
+                0 | 1 => (2, "-"),
+                2..=4 => (1, "AAAA"),
+                _ => (0, "A+AAAA"),
+            }
+        }
+        fn answer(
+            &mut self,
+        ) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
+            (self.performed > 4).then_some(Err(crate::conn::io::ResolveFailure::NotFound))
+        }
+        fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
+            None
+        }
+        fn explain(&self) -> Option<&'static str> {
+            None
+        }
+        fn status(&self) -> i32 {
+            4
+        }
+    }
+
+    #[derive(Debug)]
+    struct Library(Mutex<u32>);
+
+    impl crate::conn::io::DnsLibrary for Library {
+        fn resolve(
+            &self,
+            _: crate::conn::io::DnsAsk<'_>,
+            _: &mut crate::conn::io::DnsSay<'_>,
+        ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
+            *self.0.lock().unwrap() += 1;
+            Ok(Box::new(NoSuchName { performed: 0 }))
+        }
+    }
+
+    let library: &'static Library = Box::leak(Box::new(Library(Mutex::new(0))));
+    let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+        dns: Some(library),
+        ..crate::libraries::Libraries::NONE
+    })
+    .unwrap();
+    let share = crate::share::Share::new().unwrap();
+    share.keep(crate::share::Kind::Names).unwrap();
+    for n in 1..=2 {
+        let (mut m, _clock, _ev) = networked();
+        let mut e = easy("http://nx.test:80/");
+        e.set_libraries(libraries.clone());
+        e.set_share(Some(share.clone())).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        assert_eq!(
+            crate::multi::wait::drive_by_events(&mut m, id),
+            Ok(Err(crate::error::ErrorKind::CouldntResolveHost)),
+            "transfer {n}"
+        );
+        m.remove(id, &mut NoEvents).unwrap();
+        assert_eq!(*library.0.lock().unwrap(), 1, "asked once, by transfer 1");
+    }
+}

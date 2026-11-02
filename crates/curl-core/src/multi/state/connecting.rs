@@ -695,11 +695,7 @@ fn connecting_step<H: Host>(
             .is_some_and(ConnectMachine::resolving)
         {
             let first = c.attempt_mut(Attempt::First);
-            let polled = first.poll_late(&mut DriveCx {
-                step: cx,
-                kept: None,
-                deadlines: None,
-            });
+            let polled = first.poll_late(&mut DriveCx::new(cx, None));
             match polled {
                 Ok(Some(found)) => resolved(&c, run, cx, Attempt::First, found),
                 Ok(None) => {}
@@ -999,23 +995,18 @@ fn connect_once<H: Host>(
         return handshake_next(c, cx, a);
     }
     let setup = drive_options(cx);
-    let kept = cx.rest.kept(cx.me, Kind::Names);
     let answered = c.attempt(a).and_then(ConnectMachine::answer).is_some();
     let mut displaced = None;
     // An HTTP/3 proxy's tunnels are the race's attempts, checked first.
     let mut connected = match tunnels_drive(&mut c, cx, a) {
         Ok(Tunnels::Idle) => c.connect_attempt(
             a,
-            &mut DriveCx {
-                step: cx,
-                kept: kept.as_ref(),
-                deadlines: Some(&mut run.deadlines),
-            },
+            &mut DriveCx::new(cx, Some(&mut run.deadlines)),
             setup,
             &mut displaced,
             ConnectMachine::drive,
         ),
-        decided => tunnel_decided(&mut c, a, run, cx, kept.as_ref(), &mut displaced, decided),
+        decided => tunnel_decided(&mut c, a, run, cx, &mut displaced, decided),
     };
     // A QUIC connection to the proxy made, its tunnel's `CONNECT` goes
     // in the same check (`cf_h3_proxy_connect`).
@@ -1030,12 +1021,13 @@ fn connect_once<H: Host>(
                 }
                 Ok(Connected::Connecting(Progress::Waiting { until }))
             }
-            decided => tunnel_decided(&mut c, a, run, cx, kept.as_ref(), &mut displaced, decided),
+            decided => tunnel_decided(&mut c, a, run, cx, &mut displaced, decided),
         };
     }
     if answered && c.attempt(a).and_then(ConnectMachine::answer).is_none() && c.race.is_none() {
         // Connected, or failed: the answer is let go; a race's, as the
         // race ends.
+        let kept = cx.rest.kept(cx.me, Kind::Names);
         cx.rest.net_names(cx.me, kept.as_ref()).1.release();
     }
     // The race is over once an attempt connects, a proxy's or not
@@ -1142,16 +1134,11 @@ fn tunnel_decided<H: Host>(
     a: Attempt,
     run: &mut Run,
     cx: &mut StepCx<'_, H>,
-    kept: Option<&Kept>,
     displaced: &mut Option<ConnectMachine>,
     decided: Result<Tunnels, OutOfMemory>,
 ) -> Result<Connected, ConnectError> {
     let setup = drive_options(cx);
-    let mut dcx = DriveCx {
-        step: cx,
-        kept,
-        deadlines: Some(&mut run.deadlines),
-    };
+    let mut dcx = DriveCx::new(cx, Some(&mut run.deadlines));
     match decided {
         Ok(Tunnels::Idle) => unreachable!("an undecided drive moves the setup on"),
         Ok(Tunnels::Through(i)) => c.connect_attempt(a, &mut dcx, setup, displaced, |m, cx, o| {
@@ -1211,11 +1198,7 @@ pub(super) fn attempt_failed<H: Host>(
                     Attempt::Second => race.second = RaceSecond::Kept(lost),
                 }
             }
-            _ => lost.discard(&mut DriveCx {
-                step: cx,
-                kept: None,
-                deadlines: None,
-            }),
+            _ => lost.discard(&mut DriveCx::new(cx, None)),
         }
     }
     if lead {
@@ -1606,14 +1589,7 @@ pub(crate) fn side_drive<H: Host>(
     let options = drive_options(cx);
     let kept = cx.rest.kept(cx.me, Kind::Names);
     let answered = setup.answer().is_some();
-    let drove = setup.drive(
-        &mut DriveCx {
-            step: cx,
-            kept: kept.as_ref(),
-            deadlines: None,
-        },
-        options,
-    );
+    let drove = setup.drive(&mut DriveCx::new(cx, None), options);
     let holds = matches!(&drove, Ok(Drove::Connecting(m, _)) if m.answer().is_some());
     if answered && !holds {
         cx.rest.net_names(cx.me, kept.as_ref()).1.release();
@@ -2009,18 +1985,10 @@ pub(super) fn up<H: Host>(
         }
         if let Some(lost) = lost.take() {
             trace::of(cx, Component::Setup, format_args!("destroy"));
-            lost.discard(&mut DriveCx {
-                step: cx,
-                kept: None,
-                deadlines: None,
-            });
+            lost.discard(&mut DriveCx::new(cx, None));
         } else if let Some(failed) = kept.take() {
             trace::of(cx, Component::Setup, format_args!("destroy"));
-            failed.lose(&mut DriveCx {
-                step: cx,
-                kept: None,
-                deadlines: None,
-            });
+            failed.lose(&mut DriveCx::new(cx, None));
         } else if first_failed {
             trace::of(cx, Component::Setup, format_args!("destroy"));
             trace::of(cx, Component::HappyEyeballs, format_args!("destroy"));

@@ -616,3 +616,13 @@ witness: curl-tool an_interface_name_is_waited_for_no_longer_than_the_transfer_m
     let ms = cx.easy().report().timings().since_single_ms(now);
 --- new
     let ms = cx.easy().report().timings().since_single_ms(cx.rest.now);
+
+=== a setup's drive keeps its names in the multi's cache, not its share's
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::socket_tests::a_name_found_not_to_exist_after_the_race_began_is_kept_negative
+--- old
+        let kept = step.rest.kept(step.me, Kind::Names);
+        DriveCx {
+--- new
+        let kept = step.rest.kept(step.me, Kind::Names).filter(|_| false);
+        DriveCx {

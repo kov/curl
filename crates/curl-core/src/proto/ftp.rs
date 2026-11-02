@@ -3242,11 +3242,7 @@ impl Request {
                     SocketAddr::V6(a) => a.scope_id(),
                     SocketAddr::V4(_) => 0,
                 };
-                let mut dcx = DriveCx {
-                    step: cx,
-                    kept: None,
-                    deadlines: None,
-                };
+                let mut dcx = DriveCx::new(cx, None);
                 use crate::conn::ConnCx as _;
                 match dcx
                     .net()
@@ -3272,11 +3268,7 @@ impl Request {
         };
         let addrs = self.port_addresses(cx, &host, ip_version)?;
         // A socket of the first family that opens.
-        let mut dcx = DriveCx {
-            step: cx,
-            kept: None,
-            deadlines: None,
-        };
+        let mut dcx = DriveCx::new(cx, None);
         let mut opened = None;
         let mut why = None;
         for &ip in &addrs {
@@ -3337,11 +3329,7 @@ impl Request {
     ) -> Result<Vec<IpAddr>, ErrorKind> {
         let mut addrs = Vec::new();
         let setup = crate::multi::state::drive_options(cx);
-        let mut dcx = DriveCx {
-            step: cx,
-            kept: None,
-            deadlines: None,
-        };
+        let mut dcx = DriveCx::new(cx, None);
         let family = crate::conn::family(ip_version, &dcx);
         let answer = crate::conn::resolve_blocking(&mut dcx, host, 0, family, setup)?;
         match answer {
@@ -3674,11 +3662,7 @@ fn socket_closer<H: Host>(cx: &mut StepCx<'_, H>) -> Closer {
 
 /// Close `sock` for the transfer.
 fn close_socket<H: Host>(cx: &mut StepCx<'_, H>, sock: Sock) {
-    let mut dcx = DriveCx {
-        step: cx,
-        kept: None,
-        deadlines: None,
-    };
+    let mut dcx = DriveCx::new(cx, None);
     crate::conn::io::Net::close(&mut dcx, sock);
 }
 

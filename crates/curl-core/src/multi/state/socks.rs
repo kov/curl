@@ -69,12 +69,9 @@ pub(super) fn dialed<H: Host>(
 /// Whether the destination's name is resolved, as far as the handshake
 /// needs: said once it is (`Curl_conn_dns_addr_result`).
 fn target_known<H: Host>(s: &mut SetupMut<'_>, cx: &mut StepCx<'_, H>) -> Result<bool, Failure> {
-    let kept = cx.rest.kept(cx.me, crate::share::Kind::Names);
-    let known = s.machine.target_known(&mut crate::multi::cx::DriveCx {
-        step: cx,
-        kept: kept.as_ref(),
-        deadlines: None,
-    });
+    let known = s
+        .machine
+        .target_known(&mut crate::multi::cx::DriveCx::new(cx, None));
     match known {
         Ok(known) => Ok(known),
         Err(crate::conn::ConnectError::Aborted) => {

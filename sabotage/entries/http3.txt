@@ -896,11 +896,7 @@ witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_at
 --- new
         let _ = me;
         let mut close = |m: ConnectMachine| {
-            m.close(&mut DriveCx {
-                step: cx,
-                kept: None,
-                deadlines: None,
-            });
+            m.close(&mut DriveCx::new(cx, None));
         };
 
 === a race given up closes its second attempt before its first

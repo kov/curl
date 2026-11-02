@@ -66,21 +66,6 @@ features: test-util debug-hooks
 --- new
             ProtoState::Ftp(_) => None,
 
-=== the data connection looks its proxy's name up in the multi's cache, not the share's the transfer keeps
-file: crates/curl-core/src/multi/state/connecting.rs
-witness: curl-core proto::ftp::tests::the_data_connection_goes_through_the_socks_proxy
-features: test-util debug-hooks
---- old
-    let drove = setup.drive(
-        &mut DriveCx {
-            step: cx,
-            kept: kept.as_ref(),
---- new
-    let drove = setup.drive(
-        &mut DriveCx {
-            step: cx,
-            kept: None,
-
 === the data connection's setup is said as the transfer's first connection's
 file: crates/curl-core/src/multi/state/side.rs
 witness: curl-core proto::ftp::tests::the_data_connection_goes_through_the_socks_proxy

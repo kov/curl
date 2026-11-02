@@ -1375,7 +1375,8 @@ The rules that keep this sound:
   drive's network, and builds an `Announcing` for each close, never held across the drive),
   and the socket hooks (OPENSOCKET, SOCKOPT), the transfer's own handlers called with a
   `TransferCx` over the step, and a failure's first reason (`failf`). The context reaches no
-  pool. A drive traces its own lines, in C's order among them: its attempts' and their
+  pool. The names it reaches are the transfer's: its share's when the share keeps them, taken
+  from the transfer as the context is made, never named by the caller. A drive traces its own lines, in C's order among them: its attempts' and their
   sockets' (`HAPPY-EYEBALLS`, `TCP`, `Trying`, a failure), a close's `Curl_multi_will_close`, a
   redial's `retrying connect`. What it reports as `Progress` the transfer traces after it (the
   name's lookup, the winner's peer, the timers), and the chain's lines with it.

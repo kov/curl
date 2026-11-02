@@ -29,11 +29,7 @@ pub(super) fn start<H: Host>(
     if let Err(OutOfMemory) = pushed {
         return Err(Failure::Transfer(ErrorKind::OutOfMemory));
     }
-    let made = s.machine.tunnel_quic(&mut DriveCx {
-        step: cx,
-        kept: None,
-        deadlines: None,
-    });
+    let made = s.machine.tunnel_quic(&mut DriveCx::new(cx, None));
     let mut quic = match made {
         Ok(quic) => quic,
         Err(kind) => return Err(Failure::Attempt(kind)),

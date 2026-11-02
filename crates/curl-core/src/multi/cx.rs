@@ -361,13 +361,30 @@ fn names<'k>(own: &'k mut DnsCache, kept: Option<&'k Kept>) -> Names<'k> {
 /// The context a transfer's step drives its connection's setup with
 /// (`ConnCx`): the step's own, for the time and the trace; the network,
 /// a socket that closes told to the socket callback first, through an
-/// `Announcing` made for that close alone; and the names `kept` says.
+/// `Announcing` made for that close alone; and the transfer's names.
 pub(crate) struct DriveCx<'c, 'a, H: Host> {
     pub(crate) step: &'c mut StepCx<'a, H>,
-    pub(crate) kept: Option<&'c Kept>,
+    /// The share the transfer keeps its names in, if it does: taken from
+    /// the transfer, so that whatever drives a setup reaches the cache
+    /// the transfer looks its names up in.
+    kept: Option<Kept>,
     /// The transfer's timers, which a QUIC attempt arms its library's in:
     /// none for a redial, which dials TCP.
     pub(crate) deadlines: Option<&'c mut crate::multi::timers::Deadlines>,
+}
+
+impl<'c, 'a, H: Host> DriveCx<'c, 'a, H> {
+    pub(crate) fn new(
+        step: &'c mut StepCx<'a, H>,
+        deadlines: Option<&'c mut crate::multi::timers::Deadlines>,
+    ) -> DriveCx<'c, 'a, H> {
+        let kept = step.rest.kept(step.me, Kind::Names);
+        DriveCx {
+            step,
+            kept,
+            deadlines,
+        }
+    }
 }
 
 /// The step's, but for its timer, which a QUIC attempt arms in the
@@ -454,7 +471,7 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
     }
 
     fn names(&mut self) -> Names<'_> {
-        names(&mut self.step.rest.caches.dns, self.kept)
+        names(&mut self.step.rest.caches.dns, self.kept.as_ref())
     }
 
     fn ipv6_works(&self) -> bool {

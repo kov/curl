@@ -532,11 +532,7 @@ impl DataConn {
                 trace::of(cx, self.socket, format_args!("destroy"));
                 trace::of(cx, self.socket, format_args!("cf_socket_close, fd={fd}"));
             }
-            let mut dcx = DriveCx {
-                step: cx,
-                kept: None,
-                deadlines: None,
-            };
+            let mut dcx = DriveCx::new(cx, None);
             self.close(&mut dcx);
         });
     }
@@ -554,20 +550,12 @@ impl DataConn {
 
 /// Give up `setup` for the transfer, its sockets' closes said.
 fn discard_in<H: Host>(cx: &mut StepCx<'_, H>, setup: ConnectMachine) {
-    setup.discard(&mut DriveCx {
-        step: cx,
-        kept: None,
-        deadlines: None,
-    });
+    setup.discard(&mut DriveCx::new(cx, None));
 }
 
 /// Close `socket` for the transfer, said as it goes.
 fn close_in<H: Host>(cx: &mut StepCx<'_, H>, socket: crate::conn::io::Sock) {
-    let mut dcx = DriveCx {
-        step: cx,
-        kept: None,
-        deadlines: None,
-    };
+    let mut dcx = DriveCx::new(cx, None);
     dcx.close(socket);
 }
 

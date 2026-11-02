@@ -758,11 +758,7 @@ fn finish<H: Host>(
     if closes {
         trace::info(cx, format_args!("Connect me again please"));
         s.handshake = None;
-        let redialed = s.machine.redial(&mut DriveCx {
-            step: cx,
-            kept: None,
-            deadlines: None,
-        });
+        let redialed = s.machine.redial(&mut DriveCx::new(cx, None));
         if !redialed {
             return Err(ErrorKind::CouldntConnect);
         }

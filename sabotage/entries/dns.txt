@@ -626,3 +626,33 @@ witness: curl-core multi::socket_tests::a_name_found_not_to_exist_after_the_race
 --- new
         let kept = step.rest.kept(step.me, Kind::Names).filter(|_| false);
         DriveCx {
+
+=== a race that connects leaves the resolve still going on to the resolver
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::a_race_connected_cancels_the_resolve_still_going_on
+--- old
+    fn cancel(&mut self, net: &mut dyn Net) {
+        if let Some(p) = self.0.take() {
+            p.cancel(net);
+        }
+    }
+--- new
+    fn cancel(&mut self, net: &mut dyn Net) {
+        let _ = net;
+    }
+
+=== a library's resolve beside a race is not run again when it says
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::socket_tests::a_library_s_resolve_is_run_again_when_it_says
+--- old
+            Stage::Racing(r) => r.eyeballs.late.0.as_ref()?.due(now),
+--- new
+            Stage::Racing(_) => None,
+
+=== a library's record lookup is not run again when it says
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core multi::socket_tests::a_library_s_resolve_is_run_again_when_it_says
+--- old
+            Some(RecordLookup::Library(r)) => Some(now.after(r.due(Duration::from_secs(1)))),
+--- new
+            Some(RecordLookup::Library(_)) => None,

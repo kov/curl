@@ -1417,6 +1417,10 @@ pub struct FakeNet {
     no_reasons: bool,
     /// How many of the sockets it opened were for datagrams.
     datagrams: u32,
+    /// Whether a late name's AAAA answers before its gate opens, as the
+    /// threaded resolver tells of each family as it answers: its IPv6
+    /// addresses come first, its IPv4 ones with the rest.
+    v6_first: bool,
 }
 
 /// The gate of a fake name answered late: its resolves wait until the
@@ -1507,6 +1511,7 @@ impl FakeNet {
             binding: None,
             no_reasons: false,
             datagrams: 0,
+            v6_first: false,
         }
     }
 
@@ -1622,6 +1627,12 @@ impl FakeNet {
     /// resolver gives none.
     pub fn without_reasons(mut self) -> FakeNet {
         self.no_reasons = true;
+        self
+    }
+
+    /// Its late names' AAAA answers come before their gates open.
+    pub fn with_v6_first(mut self) -> FakeNet {
+        self.v6_first = true;
         self
     }
 
@@ -2440,6 +2451,31 @@ impl Resolver for FakeNet {
 
     fn cancel(&mut self, id: ResolveId) {
         self.resolving.retain(|r| r.id != id);
+    }
+
+    fn partial(&mut self, id: ResolveId) -> Result<Option<Partial>, OutOfMemory> {
+        if !self.v6_first {
+            return Ok(None);
+        }
+        let r = self
+            .resolving
+            .iter()
+            .find(|r| r.id == id)
+            .expect("a resolve not taken or cancelled");
+        let mut addrs = Vec::new();
+        if let Some((_, all)) = self
+            .names
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(&r.name))
+        {
+            for a in all.iter().filter(|a| a.is_ipv6()) {
+                addrs.try_push(*a)?;
+            }
+        }
+        Ok(Some(Partial {
+            addrs,
+            v6_answered: true,
+        }))
     }
 
     fn answered(&mut self, each: &mut dyn FnMut(Waiter, ResolveId)) {

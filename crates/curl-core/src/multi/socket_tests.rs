@@ -951,64 +951,121 @@ fn a_library_s_socket_closing_is_removed_though_its_number_comes_back() {
     m.remove(id, &mut ev).unwrap();
 }
 
-/// A resolver library's resolve whose socket closes as it is dropped, as
-/// c-ares's `ares_destroy` closes its channel's: wherever the transfer
-/// lets it go, as it times out or as the application removes it, the
-/// close is said (`Curl_multi_will_close`), once.
+/// A resolver library's resolve that never answers, waiting on a socket
+/// that closes as the resolve is dropped, as c-ares's `ares_destroy` closes
+/// its channel's.
+#[derive(Debug)]
+struct Closing {
+    wants: Vec<(Box<dyn Socket>, Events)>,
+    closed: crate::conn::io::SocketsClosed,
+}
+
+impl Drop for Closing {
+    fn drop(&mut self) {
+        for (socket, _) in &self.wants {
+            self.closed.said(socket.key()).unwrap();
+        }
+    }
+}
+
+impl crate::conn::io::DnsResolve for Closing {
+    fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
+        Ok(())
+    }
+    fn wants(&self) -> &[(Box<dyn Socket>, Events)] {
+        &self.wants
+    }
+    fn due(&self, within: Duration) -> Duration {
+        within
+    }
+    fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
+        Ok(crate::conn::io::Partial {
+            addrs: Vec::new(),
+            v6_answered: false,
+        })
+    }
+    fn ongoing(&self) -> (u32, &'static str) {
+        (2, "-")
+    }
+    fn answer(&mut self) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
+        None
+    }
+    fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
+        None
+    }
+    fn explain(&self) -> Option<&'static str> {
+        None
+    }
+    fn status(&self) -> i32 {
+        0
+    }
+}
+
+/// A resolver library handing each resolve the next of its sockets, and
+/// keeping the family each was asked in.
+#[derive(Debug)]
+struct ClosingLibrary {
+    sockets: Mutex<Vec<Box<dyn Socket>>>,
+    asked: Mutex<Vec<crate::conn::io::Family>>,
+}
+
+impl crate::conn::io::DnsLibrary for ClosingLibrary {
+    fn resolve(
+        &self,
+        ask: crate::conn::io::DnsAsk<'_>,
+        _: &mut crate::conn::io::DnsSay<'_>,
+    ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push(ask.family.unwrap_or(crate::conn::io::Family::Any));
+        let socket = self.sockets.lock().unwrap().remove(0);
+        Ok(Box::new(Closing {
+            wants: vec![(socket, Events::IN)],
+            closed: ask.closed.clone(),
+        }))
+    }
+}
+
+/// A library of `n` silent sockets over `clock`, their keys, and the
+/// libraries a transfer is given to use it.
+fn closing_library(
+    clock: &ManualClock,
+    n: usize,
+) -> (
+    &'static ClosingLibrary,
+    Vec<i32>,
+    crate::libraries::SharedLibraries,
+) {
+    let at = SocketAddr::from(([127, 0, 0, 1], 3));
+    let mut own = FakeNet::new(clock.clone()).with_peer(at, Peer::Silent);
+    let sockets: Vec<_> = (0..n)
+        .map(|_| {
+            own.open(
+                &crate::conn::io::Remote::Inet(at),
+                crate::conn::io::SocketKind::Stream,
+            )
+            .unwrap()
+        })
+        .collect();
+    let keys = sockets.iter().map(|s| s.key().get()).collect();
+    let library: &'static ClosingLibrary = Box::leak(Box::new(ClosingLibrary {
+        sockets: Mutex::new(sockets),
+        asked: Mutex::new(Vec::new()),
+    }));
+    let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+        dns: Some(library),
+        ..crate::libraries::Libraries::NONE
+    })
+    .unwrap();
+    (library, keys, libraries)
+}
+
+/// A resolver library's resolve whose socket closes as it is dropped:
+/// wherever the transfer lets it go, as it times out or as the application
+/// removes it, the close is said (`Curl_multi_will_close`), once.
 #[test]
 fn a_library_s_resolve_dropped_anywhere_says_its_socket_closed() {
-    #[derive(Debug)]
-    struct Closing {
-        wants: Vec<(Box<dyn Socket>, Events)>,
-        closed: crate::conn::io::SocketsClosed,
-    }
-
-    impl Drop for Closing {
-        fn drop(&mut self) {
-            for (socket, _) in &self.wants {
-                self.closed.said(socket.key()).unwrap();
-            }
-        }
-    }
-
-    impl crate::conn::io::DnsResolve for Closing {
-        fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
-            Ok(())
-        }
-        fn wants(&self) -> &[(Box<dyn Socket>, Events)] {
-            &self.wants
-        }
-        fn due(&self, within: Duration) -> Duration {
-            within
-        }
-        fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
-            Ok(crate::conn::io::Partial {
-                addrs: Vec::new(),
-                v6_answered: false,
-            })
-        }
-        fn ongoing(&self) -> (u32, &'static str) {
-            (2, "-")
-        }
-        fn answer(
-            &mut self,
-        ) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
-            None
-        }
-        fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
-            None
-        }
-        fn explain(&self) -> Option<&'static str> {
-            None
-        }
-        fn status(&self) -> i32 {
-            0
-        }
-    }
-
-    #[derive(Debug)]
-    struct Library(Mutex<Vec<Box<dyn Socket>>>);
-
     #[derive(Clone, Default)]
     struct Lines(Arc<Mutex<Vec<String>>>);
 
@@ -1021,38 +1078,8 @@ fn a_library_s_resolve_dropped_anywhere_says_its_socket_closed() {
         }
     }
 
-    impl crate::conn::io::DnsLibrary for Library {
-        fn resolve(
-            &self,
-            ask: crate::conn::io::DnsAsk<'_>,
-            _: &mut crate::conn::io::DnsSay<'_>,
-        ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
-            let socket = self.0.lock().unwrap().remove(0);
-            Ok(Box::new(Closing {
-                wants: vec![(socket, Events::IN)],
-                closed: ask.closed.clone(),
-            }))
-        }
-    }
-
     let (mut m, clock, mut ev) = networked();
-    let at = SocketAddr::from(([127, 0, 0, 1], 3));
-    let mut own = FakeNet::new(clock.clone()).with_peer(at, Peer::Silent);
-    let mut open = || {
-        own.open(
-            &crate::conn::io::Remote::Inet(at),
-            crate::conn::io::SocketKind::Stream,
-        )
-        .unwrap()
-    };
-    let sockets = vec![open(), open()];
-    let keys: Vec<_> = sockets.iter().map(|s| s.key().get()).collect();
-    let library: &'static Library = Box::leak(Box::new(Library(Mutex::new(sockets))));
-    let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
-        dns: Some(library),
-        ..crate::libraries::Libraries::NONE
-    })
-    .unwrap();
+    let (_, keys, libraries) = closing_library(&clock, 2);
     let told = |ev: &Sockets, key, what| ev.calls.iter().any(|c| c.1 == key && c.2 == what);
     let lines = Lines::default();
     let traced = |url: &str| {
@@ -1182,5 +1209,198 @@ fn a_name_found_not_to_exist_after_the_race_began_is_kept_negative() {
         );
         m.remove(id, &mut NoEvents).unwrap();
         assert_eq!(*library.0.lock().unwrap(), 1, "asked once, by transfer 1");
+    }
+}
+
+/// A resolver library is asked only for the families the system can use:
+/// IPv4 alone for any where IPv6 does not work (`Curl_async_getaddrinfo`'s
+/// `PF_INET`), and not at all for IPv6 alone there.
+#[test]
+fn a_library_is_asked_for_the_families_the_system_can_use() {
+    use crate::conn::io::Family;
+    use crate::options::IpVersion;
+    for (ipv6, ip, asked) in [
+        (true, IpVersion::Any, Some(Family::Any)),
+        (true, IpVersion::V6, Some(Family::V6)),
+        (true, IpVersion::V4, Some(Family::V4)),
+        (false, IpVersion::Any, Some(Family::V4)),
+        (false, IpVersion::V4, Some(Family::V4)),
+        (false, IpVersion::V6, None),
+    ] {
+        let clock = ManualClock::new().unwrap();
+        let net = FakeNet::new(clock.clone());
+        let net = if ipv6 { net } else { net.without_ipv6() };
+        let env = Env {
+            clock: Box::new(clock.clone()),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+        let mut ev = Sockets::default();
+        let (library, _, libraries) = closing_library(&clock, 1);
+        let mut e = easy("http://name.test:80/");
+        e.set_libraries(libraries);
+        e.options_mut().ip_version = ip;
+        m.add(Box::new(e), (), &mut ev).unwrap();
+        m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+        let got = library.asked.lock().unwrap().first().copied();
+        assert_eq!(got, asked, "IPv6 works: {ipv6}, {ip:?}");
+    }
+}
+
+/// A blocking resolve, an interface's name, tells the application of the
+/// transfer's progress as it waits, which may stop it (`Curl_async_await`'s
+/// `Curl_pgrsUpdate`): the wait ends after its first turn, not at the
+/// transfer's limit. How it ended is not the caller's to hear, as C's
+/// binding ignores it: the interface is not bound either way.
+#[test]
+fn a_blocking_resolve_may_be_stopped_by_the_progress_handler() {
+    struct Stop;
+
+    impl crate::handler::ProgressHandler for Stop {
+        fn progress(
+            &self,
+            _: &mut TransferCx<'_>,
+            _: crate::handler::ProgressNow,
+        ) -> crate::handler::ProgressVerdict {
+            crate::handler::ProgressVerdict::Abort
+        }
+    }
+
+    let (mut m, clock, _ev) = networked();
+    let (_, _, libraries) = closing_library(&clock, 1);
+    let mut e = easy("http://127.0.0.1:3/");
+    e.set_libraries(libraries);
+    let o = e.options_mut();
+    o.limits.total = crate::time::TimeLimit::from_millis(3000);
+    o.progress =
+        crate::options::Progress::Handler(crate::handler::Handler::progress(Stop).unwrap());
+    o.sockets.make_mut().unwrap().local.interface =
+        Some(crate::options::Interface::Host(b"bind.test".to_vec()));
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    let start = clock.now();
+    assert_eq!(
+        crate::multi::wait::drive_by_events(&mut m, id),
+        Ok(Err(crate::error::ErrorKind::InterfaceFailed))
+    );
+    // One turn of the wait, a second on the fake clock: not the 3 s limit.
+    assert_eq!(clock.now().since(start), Duration::from_secs(1));
+}
+
+/// A resolver library's resolve that waits on no socket is run again when
+/// the library says, whatever stage it holds: resolving, beside a race
+/// begun on AAAA's answer, or as the origin's record (`Curl_async_pollset`'s
+/// `EXPIRE_ASYNC_NAME`). The multi's timer is that soon, not later.
+#[test]
+fn a_library_s_resolve_is_run_again_when_it_says() {
+    use crate::conn::io::{DnsAsk, DnsLibrary, DnsRefused, DnsResolve, DnsSay, Partial};
+    use std::net::IpAddr;
+
+    // Sooner than any other timer of the setup: the wait for AAAA, the
+    // race's next attempt.
+    const DUE: Duration = Duration::from_millis(10);
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Case {
+        Resolving,
+        Racing,
+        Record,
+    }
+
+    #[derive(Debug)]
+    struct Waits {
+        case: Case,
+        record: bool,
+    }
+
+    impl DnsResolve for Waits {
+        fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
+            Ok(())
+        }
+        fn wants(&self) -> &[(Box<dyn Socket>, Events)] {
+            &[]
+        }
+        fn due(&self, within: Duration) -> Duration {
+            within.min(DUE)
+        }
+        fn partial(&self) -> Result<Partial, curl_alloc::OutOfMemory> {
+            let racing = self.case == Case::Racing;
+            let mut addrs = Vec::new();
+            if racing {
+                addrs.push(IpAddr::from([0u16, 0, 0, 0, 0, 0, 0, 1]));
+            }
+            Ok(Partial {
+                addrs,
+                v6_answered: racing,
+            })
+        }
+        fn ongoing(&self) -> (u32, &'static str) {
+            (1, "-")
+        }
+        fn answer(&mut self) -> Option<Result<Vec<IpAddr>, crate::conn::io::ResolveFailure>> {
+            (self.case == Case::Record && !self.record)
+                .then(|| Ok(vec![IpAddr::from([127, 0, 0, 1])]))
+        }
+        fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
+            None
+        }
+        fn explain(&self) -> Option<&'static str> {
+            None
+        }
+        fn status(&self) -> i32 {
+            0
+        }
+    }
+
+    #[derive(Debug)]
+    struct Library(Case);
+
+    impl DnsLibrary for Library {
+        fn resolve(
+            &self,
+            ask: DnsAsk<'_>,
+            _: &mut DnsSay<'_>,
+        ) -> Result<Box<dyn DnsResolve>, DnsRefused> {
+            Ok(Box::new(Waits {
+                case: self.0,
+                record: ask.family.is_none(),
+            }))
+        }
+    }
+
+    for case in [Case::Resolving, Case::Racing, Case::Record] {
+        let clock = ManualClock::new().unwrap();
+        let net = FakeNet::new(clock.clone())
+            .with_peer("[::1]:80".parse().unwrap(), crate::conn::io::Peer::Silent)
+            .with_peer(
+                "127.0.0.1:443".parse().unwrap(),
+                crate::conn::io::Peer::Silent,
+            );
+        let env = Env {
+            clock: Box::new(clock.clone()),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m: Multi<Tagged> = Multi::new(env).unwrap();
+        let mut ev = Sockets::default();
+        let library: &'static Library = Box::leak(Box::new(Library(case)));
+        let tls = Box::leak(Box::new(crate::tls::fake::FakeTls::new().unwrap()));
+        let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+            dns: Some(library),
+            tls: Some(crate::libraries::Library::Static(tls)),
+            ..crate::libraries::Libraries::NONE
+        })
+        .unwrap();
+        let url = match case {
+            Case::Record => "https://name.test/",
+            Case::Resolving | Case::Racing => "http://name.test/",
+        };
+        let mut e = easy(url);
+        e.set_libraries(libraries);
+        m.add(Box::new(e), (), &mut ev).unwrap();
+        m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+        assert_eq!(m.timeout(), Some(DUE), "{case:?}");
     }
 }

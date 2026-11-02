@@ -729,7 +729,7 @@ fn a_record_answered_first_chooses_the_first_attempt() {
 
 /// What an HTTPS query's end leaves in the cache: a server's no such name
 /// and its answer without a record are kept, anything else says nothing
-/// of the name.
+/// of the name. A server's failure ends the probe all the same.
 #[test]
 fn only_an_answer_about_the_name_is_kept_of_its_record() {
     let line = |rcode: u8, what: &[u8], ancount: u8| {
@@ -771,13 +771,23 @@ fn only_an_answer_about_the_name_is_kept_of_its_record() {
                 .any(|l| l.contains("cache negative") && l.contains("HTTPS")),
             said.iter()
                 .any(|l| l.contains("[HTTPS] no record available")),
+            said.iter()
+                .filter(|l| l.contains("[DoH] probe done"))
+                .count(),
         )
     };
-    assert_eq!(line(3, b"", 0), (true, false), "no such name");
-    assert_eq!(line(0, b"", 0), (false, true), "no record");
-    assert_eq!(line(2, b"", 0), (false, false), "a server's failure");
+    let (negative, no_record, ended) = line(3, b"", 0);
+    assert_eq!((negative, no_record), (true, false), "no such name");
+    let (negative, no_record, _) = line(0, b"", 0);
+    assert_eq!((negative, no_record), (false, true), "no record");
+    assert_eq!(line(2, b"", 0), (false, false, ended), "a server's failure");
     let a = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x37\x00\x04\x7f\x00\x00\x01";
-    assert_eq!(line(0, a, 1), (false, false), "another type of record");
+    let (negative, no_record, _) = line(0, a, 1);
+    assert_eq!(
+        (negative, no_record),
+        (false, false),
+        "another type of record"
+    );
 }
 
 /// Exactly when the wait for AAAA ends what came is connected to.
@@ -851,6 +861,16 @@ fn the_resolves_lines_are_c_s() {
         assert!(has(want) >= 1, "{want}: {said:?}");
     }
     assert_eq!(has("[DNS] [DoH] probe done"), 4, "{said:?}");
+    // Its probes started, the resolve is not looked at again at once, as
+    // C looks at a resolver's but not at DoH's (`hostip_resolv_start`).
+    let started = said
+        .iter()
+        .position(|l| l.trim_end() == "[DNS] [A+AAAA] hostip_resolv started -> 81")
+        .expect("started");
+    assert!(
+        !said[started + 1].starts_with("[DNS] cache lookup foo.test:443 queries=A+AAAA"),
+        "{said:?}"
+    );
     // The answer's entry is said between the two lines of its probe's end,
     // as `Curl_dnscache_add` says it inside C's.
     let at = said

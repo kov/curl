@@ -3632,6 +3632,30 @@ fn literal(name: &[u8]) -> Option<IpAddr> {
 mod tests {
     use super::*;
 
+    /// A race expects more addresses only while a resolve goes on, its own
+    /// or the one it follows: with neither it is out of addresses at once,
+    /// not waiting for some that never come.
+    #[test]
+    fn more_addresses_are_coming_only_while_a_resolve_goes_on() {
+        let mut e = Eyeballs::new(Addresses::Unix, IpVersion::Any);
+        assert!(!e.coming(), "nothing goes on");
+        e.following = true;
+        assert!(e.coming(), "the first attempt's resolve goes on");
+        e.following = false;
+        e.late = Late(Some(Pending {
+            via: Via::Resolver {
+                id: ResolveId::FIRST,
+                held: Held,
+            },
+            family: Family::Any,
+            found: Found::Resolved,
+            keep_negative: false,
+            queried: Queried { v6: true, v4: true },
+            await_until: ManualClock::new().unwrap().now(),
+        }));
+        assert!(e.coming(), "its own goes on");
+    }
+
     /// A late resolve dropped with no network to tell, as running out of
     /// memory drops it, lets go of what it held rather than aborting.
     #[test]
@@ -4007,6 +4031,77 @@ mod tests {
         let late = crate::conn::io::Late::new();
         let (m, _net) = waiting_for(&late);
         drop(m);
+    }
+
+    /// A race begun on what AAAA answered, once it connects, lets go of the
+    /// resolve still waiting for A: the resolver forgets it rather than
+    /// answering a setup that is gone (`Curl_resolv_destroy`).
+    #[test]
+    fn a_race_connected_cancels_the_resolve_still_going_on() {
+        let clock = ManualClock::new().unwrap();
+        let late = crate::conn::io::Late::new();
+        let up: SocketAddr = "[::1]:5".parse().unwrap();
+        let mut net = FakeNet::new(clock.clone())
+            .with_late_name("late.test", &[up.ip(), [127, 0, 0, 1].into()], &late)
+            .with_v6_first()
+            .with_peer(up, FakePeer::AcceptsAfter(Duration::from_millis(10)));
+        let peer = Peer::new(Scheme::HTTP, b"late.test".to_vec(), 5, None);
+        let route = NetRoute {
+            origin: TryArc::try_new(peer).unwrap(),
+            via: None,
+            ip: IpVersion::Any,
+            proxy: None,
+            tls: None,
+            cold: None,
+            delegation: Default::default(),
+        };
+        let mut m = ConnectMachine::new(
+            ConnNumber(0),
+            route,
+            crate::conn::Dial::Stream,
+            clock.now(),
+            Closer::System,
+            ConnSettings::DEFAULT,
+        );
+        let mut dns = DnsCache::default();
+        let mut raced = false;
+        let conn = loop {
+            let setup = DriveOptions {
+                wildcard: false,
+                max_age: Some(Duration::from_secs(60)),
+                delay: Duration::from_millis(200),
+                scope: None,
+                socket: SocketSetup::PLAIN,
+                haproxy: false,
+                layer: None,
+                linger: None,
+            };
+            let mut cx = Plain {
+                net: &mut net,
+                dns: &mut dns,
+                now: clock.now(),
+            };
+            match m.drive(&mut cx, setup).unwrap() {
+                Drove::Connecting(next, progress) => {
+                    m = next;
+                    raced |= m.resolving() && matches!(m.stage, Stage::Racing(_));
+                    match progress {
+                        Progress::Waiting { .. } | Progress::Resolving { .. } => {
+                            clock.advance(Duration::from_millis(1));
+                        }
+                        _ => {}
+                    }
+                }
+                Drove::Established(conn) => break conn,
+            }
+        };
+        assert!(raced, "the race began while A was awaited");
+        assert_eq!(conn.remote, Some(Remote::Inet(up)));
+        assert_eq!(net.resolving(), 0, "the resolve was cancelled");
+        let Transport::Stream(stream) = conn.transport else {
+            panic!("over the network");
+        };
+        net.close(stream.into_socket());
     }
 
     /// The attempt that connects wins, and the others are closed.

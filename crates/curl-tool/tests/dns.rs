@@ -13,8 +13,9 @@ use std::time::Duration;
 /// for A, `alpn=http/1.1` for HTTPS and nothing for AAAA, or with NXDOMAIN
 /// for a name under `nx`. A name under `silent` gets no answer, one under
 /// `slowa` its A late and one under `slowv6` its AAAA; one with `norec` in
-/// it gets no answer for its HTTPS record, one with `h3rec` `alpn=h3`, and
-/// one with `emptyrr` an answer without a record. Each query's type and
+/// it gets no answer for its HTTPS record, one with `h3rec` `alpn=h3`, one
+/// with `portrec` `alpn=h2 port=8443`, and one with `emptyrr` an answer
+/// without a record. Each query's type and
 /// name is sent on the channel.
 fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -44,7 +45,12 @@ fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
                 answer.extend_from_slice(b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x37\x00\x04");
                 answer.extend_from_slice(&[127, 0, 0, 1]);
             }
-            if !nx && kind == 65 && name.contains("h3rec") {
+            if !nx && kind == 65 && name.contains("portrec") {
+                answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x10");
+                answer.extend_from_slice(
+                    b"\x00\x01\x00\x00\x01\x00\x03\x02h2\x00\x03\x00\x02\x20\xfb",
+                );
+            } else if !nx && kind == 65 && name.contains("h3rec") {
                 answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x0a");
                 answer.extend_from_slice(b"\x00\x01\x00\x00\x01\x00\x03\x02h3");
             } else if !nx && kind == 65 && !name.contains("emptyrr") {
@@ -186,6 +192,110 @@ fn a_bad_setting_fails_the_resolve_as_c_does() {
     }
 }
 
+/// A resolve c-ares refuses for a bad setting says how it started and
+/// how it failed, as C's `hostip_resolv` does; one for an interface's
+/// name fails the bind, as C ignores the blocking resolve's result.
+#[test]
+fn a_refused_resolve_is_said_as_c_says_it() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let args = ["-v", "--trace-config", "dns", "--dns-ipv4-addr", "nope"];
+    let run = |more: &[&str]| {
+        let all = [&args[..], &["--dns-servers", &servers], more].concat();
+        let run = curl(&all);
+        (
+            run.status.code(),
+            String::from_utf8_lossy(&run.stderr).into_owned(),
+        )
+    };
+    let (code, said) = run(&["http://name.test:1/"]);
+    assert_eq!(code, Some(43), "{said}");
+    assert!(
+        said.contains("[A+AAAA] hostip_resolv started -> 43"),
+        "{said}"
+    );
+    assert!(said.contains("[A+AAAA] error resolving: 43"), "{said}");
+    let (code, said) = run(&["--interface", "host!bind.test", "http://127.0.0.1:1/"]);
+    assert_eq!(code, Some(45), "{said}");
+    assert!(said.contains("[A] hostip_resolv started -> 43"), "{said}");
+    assert!(said.contains("Could not bind to 'bind.test'"), "{said}");
+}
+
+/// Servers that refuse every query answer the resolve at once: it is not
+/// said to be incomplete with nothing ongoing.
+#[test]
+fn a_resolve_no_server_takes_is_not_said_incomplete() {
+    let run = curl(&[
+        "-v",
+        "--trace-config",
+        "dns",
+        "--dns-servers",
+        "127.0.0.1:1",
+        "http://name.test:1/",
+    ]);
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(6), "{said}");
+    assert!(
+        said.contains("Could not resolve host: name.test (Could not contact DNS servers)"),
+        "{said}"
+    );
+    assert!(!said.contains("ongoing=0"), "{said}");
+}
+
+/// A record not answered yet is said to be incomplete as it starts and as
+/// it is looked at again at once, as C says it, and at each look after.
+#[test]
+fn a_record_waited_for_is_said_incomplete() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let run = curl(&[
+        "-v",
+        "-k",
+        "--trace-config",
+        "dns",
+        "--dns-servers",
+        &servers,
+        "https://norec.test:1/",
+    ]);
+    let said = String::from_utf8_lossy(&run.stderr);
+    let lines: Vec<&str> = said.lines().collect();
+    let started = lines
+        .iter()
+        .position(|l| *l == "* [DNS] [HTTPS] hostip_resolv started -> 81")
+        .unwrap_or_else(|| panic!("{said}"));
+    let incomplete = "* [DNS] [HTTPS] resolve incomplete, responses=-, ongoing=1 for norec.test:1";
+    assert_eq!(lines[started - 1], incomplete, "{said}");
+    assert_eq!(
+        lines[started + 1],
+        "* [DNS] cache lookup norec.test:1 queries=HTTPS -> 0 not found",
+        "{said}"
+    );
+    assert_eq!(lines[started + 2], incomplete, "{said}");
+}
+
+/// A record for another port than the origin's is said not to apply, as C
+/// says it. The name's addresses never come, so that the record does
+/// first.
+#[test]
+fn a_record_for_another_port_is_not_applicable() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let run = curl(&[
+        "-v",
+        "-k",
+        "--connect-timeout",
+        "1",
+        "--dns-servers",
+        &servers,
+        "https://silent-portrec.test:1/",
+    ]);
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        said.contains("HTTPS-RR silent-portrec.test:1: not applicable"),
+        "{said}"
+    );
+}
+
 #[test]
 fn an_interface_named_by_host_is_resolved_by_the_servers_named() {
     let (dns, heard) = dns_server();
@@ -193,20 +303,25 @@ fn an_interface_named_by_host_is_resolved_by_the_servers_named() {
     let servers = format!("127.0.0.1:{dns}");
     let url = format!("http://127.0.0.1:{http}/");
     let run = curl(&[
+        "-v",
+        "--trace-config",
+        "dns",
         "--dns-servers",
         &servers,
         "--interface",
         "host!bind.test",
         &url,
     ]);
-    assert_eq!(
-        run.stdout,
-        b"ok",
-        "{}",
-        String::from_utf8_lossy(&run.stderr)
-    );
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.stdout, b"ok", "{said}");
     let asked: Vec<_> = heard.try_iter().collect();
     assert!(asked.contains(&(1, "bind.test".to_owned())), "{asked:?}");
+    // The blocking resolve's lines are c-ares's own, said once, as C's
+    // `Curl_resolv_blocking` says them.
+    let looked = said.matches("cache lookup bind.test:80 queries=A ").count();
+    assert_eq!(looked, 1, "{said}");
+    let started = said.matches("[A] hostip_resolv started -> 81").count();
+    assert_eq!(started, 1, "{said}");
 }
 
 #[test]
@@ -215,6 +330,8 @@ fn an_interface_name_that_does_not_exist_is_said_as_c_ares_says_it() {
     let servers = format!("127.0.0.1:{dns}");
     let run = curl(&[
         "-v",
+        "--trace-config",
+        "dns",
         "--dns-servers",
         &servers,
         "--interface",
@@ -228,6 +345,15 @@ fn an_interface_name_that_does_not_exist_is_said_as_c_ares_says_it() {
         "{said}"
     );
     assert!(said.contains("Could not bind to 'nx.test'"), "{said}");
+    // c-ares's status follows its words, and the lookup is said once.
+    assert!(
+        said.contains(
+            "[A] ares_take_result, result=6, ares_result=0, ares_status=4, dns=not found"
+        ),
+        "{said}"
+    );
+    let looked = said.matches("cache lookup nx.test:80 queries=A ").count();
+    assert_eq!(looked, 1, "{said}");
 }
 
 #[test]
@@ -248,6 +374,8 @@ fn an_interface_name_is_waited_for_no_longer_than_the_transfer_may_take() {
     let said = String::from_utf8_lossy(&run.stderr);
     assert_eq!(run.status.code(), Some(45), "{said}");
     assert!(said.contains("Could not bind to 'silent.test'"), "{said}");
+    // The wait given up is not the name's failure: C says nothing of it.
+    assert!(!said.contains("Could not resolve host"), "{said}");
     // Before c-ares would give up on its own, its first try taking 2 s.
     let took = started.elapsed();
     assert!(took < Duration::from_millis(1900), "{took:?}");

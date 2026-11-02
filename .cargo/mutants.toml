@@ -909,4 +909,7 @@ exclude_re = [
     # a live session always has its socket buffer: the second half of each
     # guard is for a library that would not.
     'curl-ldap/src/lib\.rs:.*: replace && with \|\| in (api_version|Libsession::sockbuf)$',
+    # The trait's default already answers nothing: the replacement is its
+    # own body, so the function is the same.
+    'curl-core/src/conn/io\.rs:.*: replace Resolver::partial -> Result<Option<Partial>, OutOfMemory> with Ok\(None\)$',
 ]

@@ -1258,6 +1258,15 @@ fn a_callback_reaches_the_quic_connection_s_tls_session() {
     assert!(natives.iter().all(|&reached| reached), "{natives:?}");
 }
 
+/// The HTTPS connect filter's timer among the transfer's, for HTTP/3
+/// alone: armed while the origin's record is to come, which it is over
+/// a resolver library; the threaded resolver says at once there is none,
+/// and C's filter, its attempts then complete, arms nothing
+/// (`cf_hc_connect`).
+fn alpn_eyeballs_timer() -> usize {
+    usize::from(!cfg!(feature = "threaded-resolver"))
+}
+
 /// A body with as much in flight as is meant to be waits, the transfer
 /// waiting on what the peer says rather than on the socket's room, until
 /// the peer acknowledges some (`cf_ngtcp2_send`, `cf_ngtcp2_adjust_pollset`).
@@ -1298,9 +1307,12 @@ fn a_body_in_flight_waits_for_its_acknowledgement() {
     assert_eq!(
         said[..3],
         [
-            "[HTTP/3] [0] cf_send(len=34612) -> 81, 0",
-            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=3",
-            "[HTTP/3] [0] cf_send(len=34612) -> 0, 34612",
+            "[HTTP/3] [0] cf_send(len=34612) -> 81, 0".to_owned(),
+            format!(
+                "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts={}",
+                2 + alpn_eyeballs_timer()
+            ),
+            "[HTTP/3] [0] cf_send(len=34612) -> 0, 34612".to_owned(),
         ]
     );
     let s = script.lock().unwrap();
@@ -3249,11 +3261,22 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
             "[TCP] cf_socket_close",
         ],
     );
-    let want = expect(
+    // The second attempt is chosen as soon as the record is known: over a
+    // resolver library, at the connect after the first attempt starts; over
+    // the threaded resolver, which says at once there is none, before it
+    // starts (`cf_hc_set_baller2` in `cf_hc_connect`'s init).
+    let start = "[SETUP] happy eyeballing to proxy 127.0.0.1:3128";
+    let second = "[HTTPS-CONNECT] 2nd attempt uses h1 from wanted versions";
+    let (a, b) = if cfg!(feature = "threaded-resolver") {
+        (second, start)
+    } else {
+        (start, second)
+    };
+    let want = expect(&format!(
         "
         [HTTPS-CONNECT] 1st attempt uses h3 from wanted versions
-        [SETUP] happy eyeballing to proxy 127.0.0.1:3128
-        [HTTPS-CONNECT] 2nd attempt uses h1 from wanted versions
+        {a}
+        {b}
         CONNECT-UDP tunnel failed, response 403
         [HTTPS-CONNECT] h3 baller failed, starting h1
         [SETUP] happy eyeballing to proxy 127.0.0.1:3128
@@ -3271,7 +3294,7 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
         [HAPPY-EYEBALLS] destroy
         [MULTI] [CONNECTING] reduced to [0][SSL][H1-PROXY][TCP]
         ",
-    );
+    ));
     assert_eq!(got, want, "{got:#?}");
 }
 
@@ -3334,9 +3357,16 @@ fn a_transfer_given_up_as_it_connects_lets_its_answer_go_as_c() {
 /// into a GET of `https://localhost:PORT/` from a server that accepts
 /// and says nothing, tells the lock function of the names six times as
 /// the setup goes and twice at the removal, in HTTP/3, HTTP/2 and
-/// HTTP/1.1 alike.
+/// HTTP/1.1 alike. Over the threaded resolver, which answers no record,
+/// nothing comes to look for or keep: C's threaded build tells it four
+/// times as the setup goes, and twice at the removal.
 #[test]
 fn a_name_s_https_record_is_looked_for_as_c_locks_it() {
+    let setup = if cfg!(feature = "threaded-resolver") {
+        4
+    } else {
+        6
+    };
     use crate::share::{Kind, Share, Told};
     for version in [
         crate::options::HttpVersion::Http3,
@@ -3369,7 +3399,7 @@ fn a_name_s_https_record_is_looked_for_as_c_locks_it() {
             hello(&first) || hello(&second),
             "{version:?}: the TLS hello went"
         );
-        assert_eq!(told.uses(), [Kind::Names; 6], "{version:?}");
+        assert_eq!(told.uses(), vec![Kind::Names; setup], "{version:?}");
         m.remove(id, &mut NoEvents).unwrap();
         assert_eq!(told.uses(), [Kind::Names; 2], "{version:?}");
     }
@@ -3379,7 +3409,8 @@ fn a_name_s_https_record_is_looked_for_as_c_locks_it() {
 /// ask for its HTTPS record; the first's answer, none, is kept, and the
 /// second, looking in the cache again as its answer is taken, finds it
 /// there and keeps nothing (`Curl_resolv_take_result`). C's tool, given
-/// two such URLs at once (`-Z --parallel-immediate`), traces the same.
+/// two such URLs at once (`-Z --parallel-immediate`), traces the same; its
+/// threaded build keeps no record, and the second finds the addresses.
 #[test]
 fn a_record_kept_meanwhile_is_found_not_kept_again() {
     let talk = [
@@ -3403,6 +3434,14 @@ fn a_record_kept_meanwhile_is_found_not_kept_again() {
     }
     let starts = ["[DNS] cache negative", "Hostname ", "HTTPS-RR "];
     let [one, two] = seen.map(|s| lines_of(&s, &starts));
+    if cfg!(feature = "threaded-resolver") {
+        // The threaded resolver answers no record: none is kept, and the
+        // second finds only the first's addresses, as C's threaded tool
+        // traces the same two URLs.
+        assert_eq!(one, expect(""));
+        assert_eq!(two, expect("Hostname localhost was found in DNS cache"));
+        return;
+    }
     assert_eq!(
         one,
         expect(&format!(
@@ -3810,13 +3849,20 @@ fn a_tunnelled_body_in_flight_waits_for_its_acknowledgement() {
                 || l.starts_with("[MULTI] [PERFORMING] pollset")
         })
         .collect();
+    let alpn = alpn_eyeballs_timer();
     assert_eq!(
         said,
         [
-            "[HTTP/3] [0] cf_send(len=34612) -> 81, 0",
-            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=3",
-            "[HTTP/3] [0] cf_send(len=34612) -> 0, 34612",
-            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2",
+            "[HTTP/3] [0] cf_send(len=34612) -> 81, 0".to_owned(),
+            format!(
+                "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts={}",
+                2 + alpn
+            ),
+            "[HTTP/3] [0] cf_send(len=34612) -> 0, 34612".to_owned(),
+            format!(
+                "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts={}",
+                1 + alpn
+            ),
         ]
     );
     let s = script.lock().unwrap();

@@ -105,6 +105,7 @@ fn an_https_setup_to_an_address_asks_for_no_record() {
 /// happy eyeballs delay; the answer, none, comes at the next connect and
 /// is kept, and the timer stays until the transfer completes. The next
 /// setup for the name finds the record kept and arms nothing.
+#[cfg(not(feature = "threaded-resolver"))]
 #[test]
 fn an_https_setup_to_a_name_waits_for_its_record_once() {
     let mut m = tls_server(2);
@@ -168,6 +169,67 @@ fn an_https_setup_to_a_name_waits_for_its_record_once() {
         [HTTPS-CONNECT] HTTPS-RR not available"
     ));
     assert_eq!(got[..want.len()], want);
+    assert!(
+        !got.iter().any(|l| l.starts_with("[TIMER] [ALPN")),
+        "{got:?}"
+    );
+}
+
+/// The threaded resolver resolves no record: each setup for a name looks
+/// for it in the cache as it starts the resolve and again right after,
+/// goes on without it and keeps nothing, arming no timer, as C's threaded
+/// build traces two GETs of `https://localhost:PORT/` in one run.
+#[cfg(feature = "threaded-resolver")]
+#[test]
+fn an_https_setup_to_a_name_goes_on_without_a_record_never_answered() {
+    let mut m = tls_server(2);
+    let url = format!("https://localhost:{PORT}/");
+    let starts = [
+        "[HTTPS-CONNECT]",
+        "[TIMER] [ALPN",
+        "[DNS] c",
+        "Hostname",
+        "HTTPS-RR",
+    ];
+    let e = tracing(b"multi,https-connect,timer,dns");
+    let first = https_get(&mut m, e, &url, |_| {});
+    assert_eq!(first.result, Ok(()));
+    let got = lines(&first, &starts);
+    let want = expect(&format!(
+        "[HTTPS-CONNECT] added
+        [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
+        [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
+        [DNS] cache lookup localhost:{PORT} queries=A -> 0 not found
+        [DNS] cached entry for localhost:{PORT} queries=A
+        [HTTPS-CONNECT] connect, init
+        [HTTPS-CONNECT] HTTPS-RR not available
+        [HTTPS-CONNECT] 1st attempt uses h1 from wanted versions
+        [HTTPS-CONNECT] HTTPS-RR not available
+        [HTTPS-CONNECT] connect -> 0, done=0
+        [HTTPS-CONNECT] adjust_pollset -> 0, 1 socks
+        [HTTPS-CONNECT] connect -> 0, done=1
+        [DNS] connected filter chain below
+        [DNS] connected filter chain below
+        [HTTPS-CONNECT] removing connected setup filter
+        [HTTPS-CONNECT] destroy"
+    ));
+    assert_eq!(got, want);
+    let e = tracing(b"https-connect,timer,dns");
+    let second = https_get(&mut m, e, &url, |_| {});
+    assert_eq!(second.result, Ok(()));
+    let got = lines(&second, &starts);
+    let want = expect(&format!(
+        "[HTTPS-CONNECT] added
+        [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
+        [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
+        [DNS] cache lookup localhost:{PORT} queries=A -> 0 found
+        Hostname localhost was found in DNS cache
+        [HTTPS-CONNECT] connect, init
+        [HTTPS-CONNECT] HTTPS-RR not available
+        [HTTPS-CONNECT] 1st attempt uses h1 from wanted versions
+        [HTTPS-CONNECT] HTTPS-RR not available"
+    ));
+    assert_eq!(got[..want.len()], want, "{got:#?}");
     assert!(
         !got.iter().any(|l| l.starts_with("[TIMER] [ALPN")),
         "{got:?}"

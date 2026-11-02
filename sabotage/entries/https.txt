@@ -357,3 +357,12 @@ features: threaded-resolver
                     unanswered = cfg!(feature = "threaded-resolver");
 --- new
                     unanswered = false;
+
+=== the threaded build's setup waits for and keeps a record never answered
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core an_https_setup_to_a_name_goes_on_without_a_record_never_answered
+features: threaded-resolver
+--- old
+                    unanswered = cfg!(feature = "threaded-resolver");
+--- new
+                    unanswered = false;

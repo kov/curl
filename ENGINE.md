@@ -2585,6 +2585,11 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
 - **The host.** `MultiEvents::internal` lets it make its value for the probe and `internal_gone`
   gives it back; the shim's is a `ShimEasy` marked internal, which `easy::handle` refuses as C's
   `state.internal` is refused, called back with its debug function and its master's data.
+- **c-ares.** `Libraries::dns` names a `DnsLibrary`, `curl-ares` in a build without the threaded
+  resolver: a channel per resolve (`DnsResolve`), held by the setup as `Via::Library`, its sockets
+  in the transfer's pollset and its next try on `TimerKind::AsyncName`. The `--dns-*` settings
+  (`options.dns`) are read as a resolve starts, and refused there as C refuses them. The resolves a
+  socket's interface name needs stay with the system's resolver.
 - **A name's HTTPS record.** `https.rs` starts a third probe of its own (`start_https`), named
   `_port._https.name` off port 443, before the name's addresses are asked for. Its answer, kept in
   the cache beside them, chooses the attempts' versions ahead of what is wanted, if it is about

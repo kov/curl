@@ -124,7 +124,6 @@ impl Feature {
 /// Sorted by name, case-insensitively, as C lists them.
 const FEATURES: &[Feature] = &[
     Feature::AltSvc,
-    #[cfg(feature = "threaded-resolver")]
     Feature::AsynchDns,
     Feature::Brotli,
     #[cfg(feature = "debug-hooks")]
@@ -320,7 +319,7 @@ mod tests {
     #[test]
     fn the_threaded_resolver_is_claimed_as_asynch_dns() {
         let v = version();
-        assert_eq!(v.claims("AsynchDNS"), cfg!(feature = "threaded-resolver"));
+        assert!(v.claims("AsynchDNS"));
         assert!(v.claims("threadsafe"));
     }
 

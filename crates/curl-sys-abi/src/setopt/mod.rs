@@ -723,6 +723,26 @@ fn apply(
             };
         }
         (ffi::CURLOPT_AUTOREFERER, Long(n)) => options.http.auto_referer = n != 0,
+        (ffi::CURLOPT_DNS_SERVERS, Ptr(p)) if !cfg!(feature = "threaded-resolver") => {
+            // SAFETY: the application passes a C string or null.
+            let v = unsafe { owned(p) }?;
+            options.dns.set(|d| &mut d.servers, v)?;
+        }
+        (ffi::CURLOPT_DNS_INTERFACE, Ptr(p)) if !cfg!(feature = "threaded-resolver") => {
+            // SAFETY: the application passes a C string or null.
+            let v = unsafe { owned(p) }?;
+            options.dns.set(|d| &mut d.interface, v)?;
+        }
+        (ffi::CURLOPT_DNS_LOCAL_IP4, Ptr(p)) if !cfg!(feature = "threaded-resolver") => {
+            // SAFETY: the application passes a C string or null.
+            let v = unsafe { owned(p) }?;
+            options.dns.set(|d| &mut d.local_ip4, v)?;
+        }
+        (ffi::CURLOPT_DNS_LOCAL_IP6, Ptr(p)) if !cfg!(feature = "threaded-resolver") => {
+            // SAFETY: the application passes a C string or null.
+            let v = unsafe { owned(p) }?;
+            options.dns.set(|d| &mut d.local_ip6, v)?;
+        }
         (ffi::CURLOPT_DOH_URL, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             let url = unsafe { owned(p) }?;

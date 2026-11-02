@@ -258,9 +258,9 @@ witness: curl-core multi::socket_tests::an_easy_handle_s_quick_exit_is_its_multi
 file: crates/curl-sys-abi/src/multi.rs
 witness: curl-sys-abi handle_tests::the_resolver_s_options_are_the_build_s
 --- old
-    if !curl_core::version::version().claims("AsynchDNS") {
+    if !cfg!(feature = "threaded-resolver") {
 --- new
-    if curl_core::version::version().claims("AsynchDNS") {
+    if cfg!(feature = "threaded-resolver") {
 
 === CURLOPT_QUICK_EXIT is the transfer's option
 file: crates/curl-sys-abi/src/setopt/mod.rs
@@ -350,13 +350,13 @@ witness: curl-core conn::threaded::tests::a_failure_is_given_no_reason
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::a_failure_without_a_reason_is_said_twice
 --- old
-                        None => trace::fail_with(cx, kind, &[what, host]),
-                    };
                     trace::fail_with(cx, kind, &[what, host])
+                }
+                _ => trace::fail_with(cx, kind, &[what, host]),
 --- new
-                        None => trace::fail_with(cx, kind, &[what, host]),
-                    };
                     kind
+                }
+                _ => trace::fail_with(cx, kind, &[what, host]),
 
 === the debug build's failed IPv6 resolve waits for the cache to miss
 file: crates/curl-core/src/conn/connect.rs

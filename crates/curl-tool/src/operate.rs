@@ -1857,6 +1857,22 @@ fn setopts(
             Ok(())
         },
     )?;
+    s.str("CURLOPT_DNS_SERVERS", op.tls.dns_servers, |o| {
+        let v = op.tls.dns_servers.map(copy).transpose().map_err(oom)?;
+        o.dns.set(|d| &mut d.servers, v).map_err(oom)
+    })?;
+    s.str("CURLOPT_DNS_INTERFACE", op.tls.dns_interface, |o| {
+        let v = op.tls.dns_interface.map(copy).transpose().map_err(oom)?;
+        o.dns.set(|d| &mut d.interface, v).map_err(oom)
+    })?;
+    s.str("CURLOPT_DNS_LOCAL_IP4", op.tls.dns_ipv4, |o| {
+        let v = op.tls.dns_ipv4.map(copy).transpose().map_err(oom)?;
+        o.dns.set(|d| &mut d.local_ip4, v).map_err(oom)
+    })?;
+    s.str("CURLOPT_DNS_LOCAL_IP6", op.tls.dns_ipv6, |o| {
+        let v = op.tls.dns_ipv6.map(copy).transpose().map_err(oom)?;
+        o.dns.set(|d| &mut d.local_ip6, v).map_err(oom)
+    })?;
     s.str("CURLOPT_DOH_URL", op.tls.doh_url, |o| {
         let url = op.tls.doh_url.map(copy).transpose().map_err(oom)?;
         o.doh.set(|d| &mut d.url, url).map_err(oom)
@@ -4009,6 +4025,11 @@ impl Linked {
                 ed25519: Some(&curl_openssl::ED25519),
                 tls: Some(Library::Owned(tls)),
                 gss,
+                dns: if cfg!(feature = "threaded-resolver") {
+                    None
+                } else {
+                    Some(&curl_ares::ARES)
+                },
                 idn: Some(&curl_idn2::IDN2),
                 h2: Some(&curl_nghttp2::NGHTTP2),
                 h3: Some(&curl_ngtcp2::NGTCP2),

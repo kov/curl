@@ -133,6 +133,10 @@ pub(crate) struct Tls<'a> {
     pub(crate) proxy_insecure: bool,
     /// `--doh-url`: where names are resolved.
     pub(crate) doh_url: Option<&'a [u8]>,
+    pub(crate) dns_servers: Option<&'a [u8]>,
+    pub(crate) dns_interface: Option<&'a [u8]>,
+    pub(crate) dns_ipv4: Option<&'a [u8]>,
+    pub(crate) dns_ipv6: Option<&'a [u8]>,
     /// `--doh-insecure`: the DoH server goes unverified.
     pub(crate) doh_insecure: bool,
     /// `--doh-cert-status`.
@@ -2012,10 +2016,17 @@ pub(crate) fn apply<'a>(
             existing_file(file, b"knownhosts", msgs)?;
             line.current().knownhosts = Some(file);
         }
-        // These need c-ares, which this library does not bind.
-        Opt::DnsInterface | Opt::DnsIpv4Addr | Opt::DnsIpv6Addr | Opt::DnsServers => {
+        // These need c-ares, which a build with the threaded resolver does
+        // not use.
+        Opt::DnsInterface | Opt::DnsIpv4Addr | Opt::DnsIpv6Addr | Opt::DnsServers
+            if cfg!(feature = "threaded-resolver") =>
+        {
             return Err(ParamError::LibcurlDoesntSupport);
         }
+        Opt::DnsInterface => line.current().tls.dns_interface = Some(value.text()),
+        Opt::DnsIpv4Addr => line.current().tls.dns_ipv4 = Some(value.text()),
+        Opt::DnsIpv6Addr => line.current().tls.dns_ipv6 = Some(value.text()),
+        Opt::DnsServers => line.current().tls.dns_servers = Some(value.text()),
         Opt::DohCertStatus => line.current().tls.doh_cert_status = value.toggle(),
         Opt::DohInsecure => line.current().tls.doh_insecure = value.toggle(),
         // A blank one makes it none again.

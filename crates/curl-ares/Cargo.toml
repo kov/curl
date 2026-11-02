@@ -1,0 +1,21 @@
+[package]
+name = "curl-ares"
+description = "Asynchronous name resolution for the curl rewrite, from c-ares"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "cares"
+
+[features]
+# The debug build's `CURL_DNS_SERVER`, which names the servers asked.
+debug-hooks = []
+
+[dependencies]
+curl-alloc = { path = "../curl-alloc" }
+curl-core = { path = "../curl-core" }
+curl-os = { path = "../curl-os" }
+libc = "0.2"
+
+[lints]
+workspace = true

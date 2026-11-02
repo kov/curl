@@ -48,11 +48,13 @@ const TOGGLES: &[(&str, bool)] = &[
 ];
 
 /// Each toggle, `resolv-threaded` ON when the library resolves with the
-/// threaded resolver, which it claims as `AsynchDNS`.
+/// threaded resolver, and `override-dns` where a debug build's c-ares takes
+/// `CURL_DNS_SERVER`.
 fn toggles() -> impl Iterator<Item = (&'static str, bool)> {
-    let threaded = curl_core::version::version().claims("AsynchDNS");
+    let threaded = cfg!(feature = "threaded-resolver");
     TOGGLES.iter().map(move |&(name, on)| match name {
         "resolv-threaded" => (name, threaded),
+        "override-dns" => (name, !threaded && cfg!(feature = "debug-hooks")),
         _ => (name, on),
     })
 }

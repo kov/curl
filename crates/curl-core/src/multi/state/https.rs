@@ -15,14 +15,15 @@
 //! name's addresses, as C keeps it, so a later setup for the name finds it,
 //! chooses by it and arms no timer.
 
+use super::RecordLookup;
 use super::{Connecting, SetupLend, StepCx};
 use crate::components::Component;
 use crate::conn::{ConnectMachine, Dial, NetRoute, Reply};
 use crate::conn::{HttpsLookup, address};
+use crate::doh::RecordAnswer;
 use crate::doh::{HttpsRecord, RecordAlpn};
 use crate::error::ErrorKind;
 use crate::multi::Host;
-use crate::multi::doh::{Lookup as DohLookup, RecordAnswer};
 use crate::multi::timers::{Deadlines, TimerKind};
 use crate::proto::http::Negotiation;
 use crate::share::Kind;
@@ -300,8 +301,14 @@ pub(super) fn connect_call<H: Host>(
             Ok(())
         }
         Record::Pending if c.record_lookup.is_some() => {
-            let lookup = c.record_lookup.as_ref().expect("looked at above");
-            let found = lookup.https();
+            let lookup = c.record_lookup.as_mut().expect("looked at above");
+            let (found, doh) = match lookup {
+                RecordLookup::Doh(lookup) => (lookup.https(), true),
+                RecordLookup::Library(resolve) => {
+                    resolve.perform().map_err(|_| ErrorKind::OutOfMemory)?;
+                    (resolve.record(), false)
+                }
+            };
             say_lookup(&c.route, cx);
             let Some(found) = found else {
                 let peer = c.route.target();
@@ -317,15 +324,33 @@ pub(super) fn connect_call<H: Host>(
                 );
                 return Ok(());
             };
+            if doh {
+                trace::of(cx, Component::Dns, format_args!("[DoH] probe done"));
+            } else {
+                let (result, dns) = match &found {
+                    RecordAnswer::Record(_) | RecordAnswer::NoRecord => (0, ""),
+                    RecordAnswer::NoSuchName | RecordAnswer::Failed => (6, "not "),
+                };
+                if let Some(RecordLookup::Library(r)) = &c.record_lookup {
+                    let status = r.status();
+                    trace::of(
+                        cx,
+                        Component::Dns,
+                        format_args!(
+                            "[HTTPS] ares_take_result, result={result}, ares_result=0, \
+                             ares_status={status}, dns={dns}found"
+                        ),
+                    );
+                }
+            }
             c.record_lookup = None;
-            trace::of(cx, Component::Dns, format_args!("[DoH] probe done"));
             let came = match found {
                 RecordAnswer::Record(record) => Came::Record(try_arc(record)?),
                 RecordAnswer::NoRecord => Came::NoRecord,
                 RecordAnswer::NoSuchName => Came::Negative,
                 RecordAnswer::Failed => Came::Failed,
             };
-            answer_came(c, cx, came, true)
+            answer_came(c, cx, came, doh)
         }
         Record::Pending if h.first.is_some() => answer_came(c, cx, Came::Negative, false),
         Record::NotAsked | Record::Pending | Record::Known => Ok(()),
@@ -465,7 +490,7 @@ fn say_record<H: Host>(
 }
 
 /// What the setup knows of the record, what it is, and the resolve under way.
-type LookedUp = (Record, Option<TryArc<HttpsRecord>>, Option<DohLookup>);
+type LookedUp = (Record, Option<TryArc<HttpsRecord>>, Option<RecordLookup>);
 
 /// The origin's record looked for in the cache, as C traces it
 /// (`hostip_resolv`, `Curl_dnscache_get`): what the setup knows of it.
@@ -504,11 +529,18 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
     } else {
         let lookup = if cx.easy().options().doh.url.is_some() {
             match crate::multi::doh::start_https(cx, name, peer.port()) {
-                Ok(lookup) => Some(lookup),
+                Ok(lookup) => Some(RecordLookup::Doh(lookup)),
                 Err(_) => return Err(ErrorKind::OutOfMemory),
             }
         } else {
-            None
+            match crate::multi::dns::start(cx, name, peer.port(), None) {
+                Some(Ok(resolve)) => Some(RecordLookup::Library(resolve)),
+                Some(Err(crate::conn::io::DnsRefused::OutOfMemory)) => {
+                    return Err(ErrorKind::OutOfMemory);
+                }
+                // Refused settings fail the addresses' resolve as well.
+                Some(Err(_)) | None => None,
+            }
         };
         // The resolver answers later (`CURLE_AGAIN`).
         let again = crate::error::AGAIN_NUMBER;
@@ -599,17 +631,20 @@ fn answered<H: Host>(
         trace::of_with(cx, Component::Dns, &line);
         return Ok(());
     }
-    match record.map(|r| r.print()) {
-        Some(Ok(shown)) => trace::of_with(cx, Component::Dns, &[b"[HTTPS] record: ", &shown]),
-        Some(Err(_)) => {}
-        None => trace::of(
-            cx,
-            Component::Dns,
-            format_args!("[HTTPS] no record available"),
-        ),
-    }
     let entry: [&[u8]; 4] = [b"cached entry for ", name, at, b" queries=HTTPS"];
-    trace::of_with(cx, Component::Dns, &entry);
+    // Only DoH's answer says itself and is kept before it is taken.
+    if doh {
+        match record.map(|r| r.print()) {
+            Some(Ok(shown)) => trace::of_with(cx, Component::Dns, &[b"[HTTPS] record: ", &shown]),
+            Some(Err(_)) => {}
+            None => trace::of(
+                cx,
+                Component::Dns,
+                format_args!("[HTTPS] no record available"),
+            ),
+        }
+        trace::of_with(cx, Component::Dns, &entry);
+    }
     done(cx);
     trace::of_with(
         cx,

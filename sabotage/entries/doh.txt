@@ -143,13 +143,9 @@ file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::doh_tests::a_probes_lines_say_whose_they_are
 --- old
                     over_doh: false,
-                    ..
-                } => {
-                    let kind = match explained {
+                    library_status,
 --- new
-                    ..
-                } => {
-                    let kind = match explained {
+                    library_status,
 
 === a probe's handle is the application's to use
 file: crates/curl-sys-abi/src/easy.rs

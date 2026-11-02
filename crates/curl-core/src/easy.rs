@@ -409,6 +409,7 @@ impl Easy {
         let url = from.doh.url.as_deref();
         to.set_url(url)?;
         to.set_default_protocol(Some(b"https"))?;
+        *to.dns.make_mut()? = from.dns.try_clone_for_resolve()?;
         to.callbacks.write = Some(body);
         to.upload =
             crate::options::UploadSource::Bytes(TryArc::try_new(crate::options::copy(query)?)?);

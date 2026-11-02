@@ -527,3 +527,15 @@ impl HttpsRecord {
         Ok(out)
     }
 }
+
+/// What a resolve of a name's HTTPS record came to.
+#[derive(Debug)]
+pub enum RecordAnswer {
+    Record(HttpsRecord),
+    /// The server answered, without one.
+    NoRecord,
+    /// The server said no such name, which is kept.
+    NoSuchName,
+    /// Anything else, which says nothing of the name and is not kept.
+    Failed,
+}

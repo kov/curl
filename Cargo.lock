@@ -61,6 +61,16 @@ name = "curl-alloc"
 version = "0.1.0"
 
 [[package]]
+name = "curl-ares"
+version = "0.1.0"
+dependencies = [
+ "curl-alloc",
+ "curl-core",
+ "curl-os",
+ "libc",
+]
+
+[[package]]
 name = "curl-brotli"
 version = "0.1.0"
 dependencies = [
@@ -169,6 +179,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "curl-alloc",
+ "curl-ares",
  "curl-brotli",
  "curl-core",
  "curl-gssapi",
@@ -191,6 +202,7 @@ name = "curl-tool"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-ares",
  "curl-brotli",
  "curl-core",
  "curl-gssapi",

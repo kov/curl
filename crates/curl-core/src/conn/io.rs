@@ -410,6 +410,66 @@ pub struct Partial {
     pub v6_answered: bool,
 }
 
+/// A library that resolves names with a resolve of its own for each ask, the
+/// transfer driving it as it drives its sockets (c-ares).
+pub trait DnsLibrary: Send + Sync + fmt::Debug {
+    /// Start a resolve, saying what C traces as it does.
+    fn resolve(
+        &self,
+        ask: DnsAsk<'_>,
+        say: &mut DnsSay<'_>,
+    ) -> Result<Box<dyn DnsResolve>, DnsRefused>;
+}
+
+/// What is said of a resolve as it starts, in parts of a line.
+pub type DnsSay<'a> = dyn FnMut(&[&[u8]]) + 'a;
+
+/// What a transfer asks of a [`DnsLibrary`].
+#[derive(Debug)]
+pub struct DnsAsk<'a> {
+    pub name: &'a [u8],
+    pub port: u16,
+    /// The addresses wanted; none for the name's HTTPS record.
+    pub family: Option<Family>,
+    /// For a connection over a stream, which the answer's hints say.
+    pub stream: bool,
+    pub options: &'a crate::options::DnsOptions,
+}
+
+/// Why a resolve did not start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DnsRefused {
+    OutOfMemory,
+    /// The library could not be set up (`CURLE_FAILED_INIT`).
+    Init,
+    /// A setting it takes is not one (`CURLE_BAD_FUNCTION_ARGUMENT`).
+    BadOption,
+    /// An answer's record could not be read.
+    BadRecord,
+}
+
+/// One resolve under way in a [`DnsLibrary`].
+pub trait DnsResolve: Send + fmt::Debug {
+    /// Process what is ready and what has timed out.
+    fn perform(&mut self) -> Result<(), OutOfMemory>;
+    /// The sockets it waits on, and for what.
+    fn wants(&self) -> &[(Box<dyn Socket>, Events)];
+    /// How soon `perform` is due at the latest, `within` at most.
+    fn due(&self, within: Duration) -> Duration;
+    /// What has come so far of a resolve of addresses.
+    fn partial(&self) -> Result<Partial, OutOfMemory>;
+    /// The queries still unanswered, and which have answered as C names them.
+    fn ongoing(&self) -> (u32, &'static str);
+    /// The answer of a resolve of addresses, once every query has one.
+    fn answer(&mut self) -> Option<Result<Vec<IpAddr>, ResolveFailure>>;
+    /// The answer of a resolve of an HTTPS record.
+    fn record(&mut self) -> Option<crate::doh::RecordAnswer>;
+    /// What it says of its failure beside the name, if anything.
+    fn explain(&self) -> Option<&'static str>;
+    /// Its status, as its trace numbers it.
+    fn status(&self) -> i32;
+}
+
 /// What finds the addresses names stand for (C's resolver backends):
 /// the system's, at once, or one that answers later, telling the multi
 /// which transfers to run again.

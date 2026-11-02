@@ -1,0 +1,33 @@
+# c-ares, against the tool's DNS server of its own.
+
+=== the servers named are not told to c-ares
+file: crates/curl-ares/src/lib.rs
+witness: curl-tool the_servers_named_find_the_address
+--- old
+        if let Some(servers) = servers {
+--- new
+        if let Some(servers) = servers.filter(|_| false) {
+
+=== a bad local address is taken for none
+file: crates/curl-ares/src/lib.rs
+witness: curl-tool a_bad_setting_fails_the_resolve_as_c_does
+--- old
+            Some(text) => u32::from(parsed::<Ipv4Addr>(text)?),
+--- new
+            Some(_) => 0,
+
+=== an HTTPS origin's record is not asked for of c-ares
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-tool an_https_origins_record_is_asked_for_under_its_port
+--- old
+                Some(Ok(resolve)) => Some(RecordLookup::Library(resolve)),
+--- new
+                Some(Ok(_)) => None,
+
+=== c-ares's reason is not said beside the name
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-tool a_name_that_does_not_exist_is_said_as_c_ares_says_it
+--- old
+        Via::Library(resolve) => (resolve.explain(), Some(resolve.status())),
+--- new
+        Via::Library(resolve) => (None, Some(resolve.status())),

@@ -1073,6 +1073,11 @@ impl TransferState {
                     Some(other) if leads => [Some(other), Some(lead)],
                     other => [Some(lead), other],
                 };
+                if let Some(connecting::RecordLookup::Library(r)) = &c.record_lookup {
+                    for (s, events) in r.wants() {
+                        set.add(&**s, *events)?;
+                    }
+                }
                 for a in order.into_iter().flatten() {
                     attempt_pollset(c, a, &mut set)?;
                 }
@@ -1141,6 +1146,9 @@ fn attempt_pollset<'a>(
     let Some(setup) = c.attempt(a) else {
         return Ok(());
     };
+    for (s, events) in setup.resolve_wants() {
+        set.add(s, events)?;
+    }
     match c.handshake(a) {
         Some(h) => {
             let events = h.interest(setup) | Events::IN;

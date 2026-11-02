@@ -100,8 +100,8 @@ fn a_version_listing_into_a_closed_pipe_ends_quietly() {
 /// C's threaded build refuses them.
 #[test]
 fn the_dns_options_need_a_library_that_has_them() {
-    // The reference build has c-ares, and takes them.
-    if std::env::var_os("CURL_TOOL_UNDER_TEST").is_some() {
+    // A build with c-ares takes them.
+    if !cfg!(feature = "threaded-resolver") {
         return;
     }
     for (option, value) in [

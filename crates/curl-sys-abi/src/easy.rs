@@ -774,6 +774,11 @@ const fn libraries_with(
         ed25519: Some(&curl_openssl::ED25519),
         tls: Some(curl_core::libraries::Library::Static(&OPENSSL)),
         gss,
+        dns: if cfg!(feature = "threaded-resolver") {
+            None
+        } else {
+            Some(&curl_ares::ARES)
+        },
         idn: Some(IDN),
         h2: Some(&curl_nghttp2::NGHTTP2),
         h3: Some(&curl_ngtcp2::NGTCP2),

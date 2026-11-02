@@ -518,6 +518,19 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         self.step.easy().options().doh.url.is_some()
     }
 
+    fn has_dns_library(&self) -> bool {
+        self.step.easy().libraries().dns.is_some()
+    }
+
+    fn dns_start(
+        &mut self,
+        name: &[u8],
+        port: u16,
+        family: crate::conn::io::Family,
+    ) -> Option<Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused>> {
+        crate::multi::dns::start(self.step, name, port, Some(family))
+    }
+
     fn doh_start(
         &mut self,
         name: &[u8],

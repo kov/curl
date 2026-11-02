@@ -259,6 +259,7 @@ impl std::fmt::Display for CurlVersion {
         let zlib = Library("zlib", curl_zlib::version());
         let brotli = Library("brotli", curl_brotli::version());
         let zstd = Library("zstd", curl_zstd::version());
+        let ares = Library("c-ares", curl_ares::version());
         let idn = Library("libidn2", curl_idn2::version());
         let psl = Library("libpsl", curl_psl::version());
         let ssh = Library("libssh", curl_libssh::version());
@@ -267,10 +268,17 @@ impl std::fmt::Display for CurlVersion {
         let gss = Library("mit-krb5", curl_gssapi::version());
         // Named by the library itself (`Curl_ldap_version`).
         let ldap = curl_ldap::version();
-        let libraries: [&dyn std::fmt::Display; 11] = [
-            &ssl, &zlib, &brotli, &zstd, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
+        let mut libraries: [&dyn std::fmt::Display; 12] = [
+            &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
         ];
-        version().components(&libraries).fmt(f)
+        // A build with the threaded resolver does not use c-ares.
+        let shown = if cfg!(feature = "threaded-resolver") {
+            libraries.copy_within(5.., 4);
+            &libraries[..11]
+        } else {
+            &libraries[..]
+        };
+        version().components(shown).fmt(f)
     }
 }
 
@@ -365,12 +373,17 @@ mod tests {
     #[test]
     fn names_the_libraries_as_c() {
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{} {}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{} {}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
             curl_brotli::version(),
             curl_zstd::version(),
+            if cfg!(feature = "threaded-resolver") {
+                String::new()
+            } else {
+                format!(" c-ares/{}", curl_ares::version())
+            },
             curl_idn2::version(),
             curl_psl::version(),
             curl_libssh::version(),

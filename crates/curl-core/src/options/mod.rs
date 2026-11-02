@@ -104,6 +104,7 @@ pub struct Options {
     pub small: Cold<Small>,
     /// Names resolved over DNS over HTTPS.
     pub doh: Cold<Doh>,
+    pub dns: Cold<DnsOptions>,
     pub http: Http,
     pub tls: Tls,
     /// What the test protocol `script:` plays.
@@ -808,6 +809,7 @@ impl Options {
             ssh: self.ssh.try_clone(Ssh::try_clone)?,
             small: self.small.try_clone(Small::try_clone)?,
             doh: self.doh.try_clone(Doh::try_clone)?,
+            dns: self.dns.try_clone(DnsOptions::try_clone)?,
             sockets: self.sockets.try_clone(Sockets::try_clone)?,
             http: self.http.try_clone()?,
             tls: self.tls.try_clone()?,
@@ -2585,6 +2587,48 @@ pub struct Doh {
     pub verify_peer: bool,
     pub verify_host: bool,
     pub verify_status: bool,
+}
+
+/// What a resolver library is told to use (`CURLOPT_DNS_SERVERS` and the
+/// rest), checked as a resolve starts, as C checks them.
+#[derive(Debug)]
+pub struct DnsOptions {
+    pub servers: Option<Vec<u8>>,
+    pub interface: Option<Vec<u8>>,
+    pub local_ip4: Option<Vec<u8>>,
+    pub local_ip6: Option<Vec<u8>>,
+}
+
+impl DnsOptions {
+    pub const NONE_SET: DnsOptions = DnsOptions {
+        servers: None,
+        interface: None,
+        local_ip4: None,
+        local_ip6: None,
+    };
+
+    fn try_clone(&self) -> Result<DnsOptions, OutOfMemory> {
+        let dup = |v: &Option<Vec<u8>>| v.as_deref().map(copy).transpose();
+        Ok(DnsOptions {
+            servers: dup(&self.servers)?,
+            interface: dup(&self.interface)?,
+            local_ip4: dup(&self.local_ip4)?,
+            local_ip6: dup(&self.local_ip6)?,
+        })
+    }
+}
+
+impl Cold<DnsOptions> {
+    /// A copy of what is set, for a resolve to read.
+    pub(crate) fn try_clone_for_resolve(&self) -> Result<DnsOptions, OutOfMemory> {
+        let group: &DnsOptions = self;
+        group.try_clone()
+    }
+}
+
+impl ColdGroup for DnsOptions {
+    const UNSET: &'static DnsOptions = &DnsOptions::NONE_SET;
+    const NONE: DnsOptions = DnsOptions::NONE_SET;
 }
 
 impl ColdGroup for Doh {

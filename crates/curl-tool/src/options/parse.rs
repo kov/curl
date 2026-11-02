@@ -1253,7 +1253,11 @@ mod tests {
         // What the library lacks is refused.
         assert_eq!(
             run(&["--dns-interface", "lo", "x"]),
-            Err(ParamError::LibcurlDoesntSupport)
+            if cfg!(feature = "threaded-resolver") {
+                Err(ParamError::LibcurlDoesntSupport)
+            } else {
+                Ok((1, None, None))
+            }
         );
         // Each operation has its own URLs and options.
         assert_eq!(

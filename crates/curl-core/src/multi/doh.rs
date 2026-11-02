@@ -22,7 +22,8 @@ use super::{EventCx, Host, Owner, Rows, Slots, StepCx, TransferId};
 use crate::conn::ConnectError;
 use crate::conn::io::{Family, ResolveFailure};
 use crate::doh::{
-    DohError, HttpsRecord, QueryType, RecordError, decode_answer, decode_https_record, encode_query,
+    DohError, HttpsRecord, QueryType, RecordAnswer, RecordError, decode_answer,
+    decode_https_record, encode_query,
 };
 use crate::error::ErrorKind;
 use crate::handler::{Handler, Write, WriteHandler};
@@ -51,18 +52,6 @@ enum QueryFailure {
     NoSuchName,
     /// Anything else, which says nothing of the name.
     Other,
-}
-
-/// What a resolve of a name's HTTPS record came to.
-#[derive(Debug)]
-pub(crate) enum RecordAnswer {
-    Record(HttpsRecord),
-    /// The server answered, without one.
-    NoRecord,
-    /// The server said no such name, which is kept.
-    NoSuchName,
-    /// Anything else, which says nothing of the name and is not kept.
-    Failed,
 }
 
 /// The state a resolve and its probes share.

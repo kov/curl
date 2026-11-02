@@ -3634,7 +3634,7 @@ fn a_wait_allocates_nothing() {
         // Connected and the request sent, the transfer waits to read. The
         // threaded resolver's wake is the multi's own, listed first while
         // a transfer is alive, as C's admin handle is.
-        let wake = u32::from(curl_core::version::version().claims("AsynchDNS"));
+        let wake = u32::from(cfg!(feature = "threaded-resolver"));
         let mut peer = None;
         let mut waits = [ffi::curl_waitfd {
             fd: -1,
@@ -6753,7 +6753,7 @@ fn the_resolver_s_options_are_the_build_s() {
         // SAFETY: a live multi and a `long` option.
         unsafe { curl_multi_setopt(m, o, n) }
     };
-    let refused = match curl_core::version::version().claims("AsynchDNS") {
+    let refused = match cfg!(feature = "threaded-resolver") {
         true => ffi::CURLM_BAD_FUNCTION_ARGUMENT,
         false => CURLM_OK,
     };

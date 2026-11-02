@@ -38,6 +38,9 @@ pub struct Libraries {
     /// The GSS-API library, if any: without it, Negotiate and SOCKS5's
     /// GSS-API method are not built in, as in a C build without one.
     pub gss: Option<&'static dyn Gss>,
+    /// What resolves names with a resolve of its own for each, if anything:
+    /// without it, the network's resolver does.
+    pub dns: Option<&'static dyn crate::conn::io::DnsLibrary>,
     /// What converts host names not in ASCII, if anything: without it,
     /// they are sent as they are, as in a C build without one.
     pub idn: Option<&'static dyn Idn>,
@@ -116,6 +119,7 @@ impl Random for ForcedEntropy {
 
 impl Libraries {
     pub const NONE: Libraries = Libraries {
+        dns: None,
         decoders: Decoders::none(),
         ed25519: None,
         tls: None,
@@ -332,7 +336,7 @@ mod tests {
         let printed = format!("{libraries:?}");
         assert!(
             printed.ends_with(
-                "ed25519: Some(Ed25519), tls: None, gss: None, idn: None, h2: None, h3: None, ssh: None, ldap: None, psl: None, random: None }"
+                "ed25519: Some(Ed25519), tls: None, gss: None, dns: None, idn: None, h2: None, h3: None, ssh: None, ldap: None, psl: None, random: None }"
             ),
             "{printed}"
         );

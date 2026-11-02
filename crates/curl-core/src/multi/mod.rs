@@ -10,6 +10,7 @@
 #[cfg(debug_assertions)]
 mod check;
 pub(crate) mod cx;
+pub(crate) mod dns;
 pub(crate) mod doh;
 pub(crate) mod mstate;
 mod notify;

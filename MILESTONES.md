@@ -1255,10 +1255,11 @@ Its first steps are milestone 6's design-review changes.
     `ssh_scp_close` closing before the server's EOF, so it follows C.
 90. **DoH's owner.** **Done.** `Owner::App` or `Owner::Internal`, so an internal transfer has an
     owner on every host, the tool's included; DoH runs its probes as such transfers, its DNS
-    messages decoded with C's checks (ENGINE.md §4.8.1). Left: the `--dns-*` options and their
-    setopts answer as C's build without c-ares does, as nothing binds c-ares; the reference build
-    has it. Claiming HTTPS-RR, and with it DoH's third query; a SOCKS destination's name over DoH
-    (both in DIVERGENCE.md).
+    messages decoded with C's checks (ENGINE.md §4.8.1). HTTPS-RR is claimed, asked for over DoH
+    and c-ares, and chooses the attempts' versions; a SOCKS destination's name goes over DoH, the
+    handshake waiting for it; what came of a resolve is connected to as C's DNS filter does.
+    `crates/curl-ares` binds c-ares with the `--dns-*` options and their setopts, a channel per
+    resolve, as the reference build has it; a `threaded-resolver` build goes without.
 91. **`multi/state.rs` split** **Done.** Mechanically, and the stale parts of ENGINE.md and DESIGN.md and
     stale size comments brought up to date; the two unsafe blocks the SAFETY scan did not match
     (`curl-ngtcp2/src/sys.rs`, `curl-sys-abi/src/printf/mod.rs`) examined.

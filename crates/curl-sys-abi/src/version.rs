@@ -127,6 +127,7 @@ static CAPATH: OnceLock<CBuf<4096>> = OnceLock::new();
 static LIBZ: OnceLock<CBuf<32>> = OnceLock::new();
 static BROTLI: OnceLock<CBuf<32>> = OnceLock::new();
 static ZSTD: OnceLock<CBuf<32>> = OnceLock::new();
+static ARES: OnceLock<CBuf<32>> = OnceLock::new();
 static QUIC: OnceLock<CBuf<64>> = OnceLock::new();
 static LIBSSH: OnceLock<CBuf<64>> = OnceLock::new();
 static INFO: OnceLock<Data> = OnceLock::new();
@@ -194,8 +195,17 @@ fn info() -> &'static curl_version_info_data {
                 ssl_version_num: 0,
                 libz_version: libz.as_ptr(),
                 protocols: protocol_names.0.as_ptr(),
-                ares: ptr::null(),
-                ares_num: 0,
+                ares: if cfg!(feature = "threaded-resolver") {
+                    ptr::null()
+                } else {
+                    ARES.get_or_init(|| cbuf(format_args!("{}", curl_ares::version())))
+                        .as_ptr()
+                },
+                ares_num: if cfg!(feature = "threaded-resolver") {
+                    0
+                } else {
+                    curl_ares::version_number() as _
+                },
                 libidn: curl_idn2::version_c().as_ptr(),
                 iconv_ver_num: 0,
                 libssh_version: libssh.as_ptr(),
@@ -226,6 +236,7 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let zlib = Library("zlib", curl_zlib::version());
             let brotli = Library("brotli", curl_brotli::version());
             let zstd = Library("zstd", curl_zstd::version());
+            let ares = Library("c-ares", curl_ares::version());
             let idn = Library("libidn2", curl_idn2::version());
             let psl = Library("libpsl", curl_psl::version());
             let ssh = Library("libssh", curl_libssh::version());
@@ -234,10 +245,17 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let gss = Library("mit-krb5", curl_gssapi::version());
             // Named by the library itself (`Curl_ldap_version`).
             let ldap = curl_ldap::version();
-            let libraries: [&dyn fmt::Display; 11] = [
-                &ssl, &zlib, &brotli, &zstd, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
+            let mut libraries: [&dyn fmt::Display; 12] = [
+                &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
             ];
-            cbuf(format_args!("{}", version().components(&libraries)))
+            // A build with the threaded resolver does not use c-ares.
+            let shown = if cfg!(feature = "threaded-resolver") {
+                libraries.copy_within(5.., 4);
+                &libraries[..11]
+            } else {
+                &libraries[..]
+            };
+            cbuf(format_args!("{}", version().components(shown)))
         })
         .as_ptr()
         .cast_mut()
@@ -274,17 +292,26 @@ mod tests {
 
     /// `curl_version` lists the libraries linked in after libcurl, in
     /// C's order and words, each version as the library says it.
+    fn ares_shown() -> String {
+        if cfg!(feature = "threaded-resolver") {
+            String::new()
+        } else {
+            format!(" c-ares/{}", curl_ares::version())
+        }
+    }
+
     #[test]
     fn names_the_libraries_as_c() {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{} {}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{}{} libidn2/{} libpsl/{} libssh/{} nghttp2/{} ngtcp2/{} nghttp3/{} mit-krb5/{} {}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
             curl_brotli::version(),
             curl_zstd::version(),
+            ares_shown(),
             curl_idn2::version(),
             curl_psl::version(),
             curl_libssh::version(),

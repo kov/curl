@@ -3,6 +3,13 @@
 
 use super::*;
 
+/// Who is asked for an origin's HTTPS record.
+#[derive(Debug)]
+pub(crate) enum RecordLookup {
+    Doh(crate::multi::doh::Lookup),
+    Library(Box<dyn crate::conn::io::DnsResolve>),
+}
+
 /// A request whose connection is being set up.
 #[derive(Debug)]
 pub(crate) struct Connecting {
@@ -17,7 +24,7 @@ pub(crate) struct Connecting {
     /// The origin's HTTPS record, once known that it has one.
     pub(super) record: Option<curl_alloc::TryArc<crate::doh::HttpsRecord>>,
     /// Its resolve over DoH, while it goes on: gone with the setup.
-    pub(super) record_lookup: Option<crate::multi::doh::Lookup>,
+    pub(super) record_lookup: Option<RecordLookup>,
     /// The race of an HTTP/3 attempt against one over TCP, once its first
     /// started: what the second is made from, and the QUIC attempt out
     /// of the lease while both run.
@@ -527,6 +534,28 @@ impl Connecting {
 /// receiving is paused, and not past the connect deadline
 /// (`multi_handle_timeout`).
 pub(super) fn connecting<H: Host>(
+    run: &mut Run,
+    c: Connecting,
+    cx: &mut StepCx<'_, H>,
+) -> (TransferState, Wake) {
+    let (state, wake) = connecting_step(run, c, cx);
+    // A resolver library's resolve held beside the setup times out only if
+    // run again (`Curl_async_pollset`'s `EXPIRE_ASYNC_NAME`).
+    if let TransferState::Connecting(c) = &state {
+        let now = cx.rest.clock.now();
+        let record = match &c.record_lookup {
+            Some(RecordLookup::Library(r)) => Some(now.after(r.due(Duration::from_secs(1)))),
+            _ => None,
+        };
+        let held = c.lead().and_then(|setup| setup.resolve_due(now));
+        if let Some(at) = [record, held].into_iter().flatten().min() {
+            arm(&mut run.deadlines, cx, TimerKind::AsyncName, at.since(now));
+        }
+    }
+    (state, wake)
+}
+
+fn connecting_step<H: Host>(
     run: &mut Run,
     mut c: Connecting,
     cx: &mut StepCx<'_, H>,
@@ -1982,6 +2011,7 @@ pub(crate) fn connect_failed<H: Host>(
     let failure = match e {
         ConnectError::OutOfMemory => return ErrorKind::OutOfMemory,
         ConnectError::Aborted => return ErrorKind::AbortedByCallback,
+        ConnectError::Refused(kind) => return kind,
         ConnectError::Unresolved(why) => {
             match why {
                 Unresolved::NoIpv6 => return no_ipv6(cx, route, proxy.is_some()),
@@ -2009,7 +2039,9 @@ pub(crate) fn connect_failed<H: Host>(
                     return kind;
                 }
                 Unresolved::Negative => trace_lookup(cx, route, None),
-                Unresolved::Resolver { over_doh: true, .. } => {}
+                Unresolved::Resolver {
+                    says_its_own: true, ..
+                } => {}
                 Unresolved::Resolver { queued, .. } => {
                     trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver(queued))));
                     trace_resolved(cx, route, Err(queued), &[]);
@@ -2040,6 +2072,7 @@ pub(crate) fn connect_failed<H: Host>(
                 Unresolved::Resolver {
                     explained,
                     over_doh: false,
+                    library_status,
                     ..
                 } => {
                     let kind = match explained {
@@ -2050,6 +2083,18 @@ pub(crate) fn connect_failed<H: Host>(
                         ),
                         None => trace::fail_with(cx, kind, &[what, host]),
                     };
+                    if let Some(status) = library_status {
+                        let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                        let code = trace::Code(Err(kind));
+                        trace::of(
+                            cx,
+                            Component::Dns,
+                            format_args!(
+                                "[{queries}] ares_take_result, result={code}, ares_result=0, \
+                                 ares_status={status}, dns=not found"
+                            ),
+                        );
+                    }
                     trace::fail_with(cx, kind, &[what, host])
                 }
                 _ => trace::fail_with(cx, kind, &[what, host]),
@@ -2075,6 +2120,19 @@ pub(crate) fn connect_failed<H: Host>(
                 );
             }
             trace::info_with(cx, &[b"Could not resolve: ", host, at]);
+            if let Unresolved::Resolver {
+                library_status: Some(_),
+                ..
+            } = why
+            {
+                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let code = trace::Code(Err(kind));
+                trace::of(
+                    cx,
+                    Component::Dns,
+                    format_args!("[{queries}] error resolving: {code}"),
+                );
+            }
             if why == Unresolved::Negative {
                 trace::info_with(cx, &[b"Could not resolve: ", host]);
             }

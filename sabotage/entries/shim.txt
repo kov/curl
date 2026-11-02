@@ -134,17 +134,17 @@ witness: curl-sys-abi handle_tests::http_options_reach_the_request
 file: crates/curl-sys-abi/src/version.rs
 witness: curl-sys-abi version::tests::names_the_libraries_as_c
 --- old
-                &ssl, &zlib, &brotli, &zstd, &idn, &psl, &ssh, &h2, &h3, &gss,
+                &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
 --- new
-                &ssl, &zlib, &zstd, &brotli, &idn, &psl, &ssh, &h2, &h3, &gss,
+                &ssl, &zlib, &zstd, &brotli, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
 
 === curl_version lists HTTP/3's libraries after GSS-API's
 file: crates/curl-sys-abi/src/version.rs
 witness: curl-sys-abi version::tests::names_the_libraries_as_c
 --- old
-                &ssl, &zlib, &brotli, &zstd, &idn, &psl, &ssh, &h2, &h3, &gss,
+                &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &h3, &gss, &ldap,
 --- new
-                &ssl, &zlib, &brotli, &zstd, &idn, &psl, &ssh, &h2, &gss, &h3,
+                &ssl, &zlib, &brotli, &zstd, &ares, &idn, &psl, &ssh, &h2, &gss, &h3, &ldap,
 
 === HTTP/3's feature bit is HTTP/2's
 file: crates/curl-sys-abi/src/version.rs

@@ -858,20 +858,27 @@ fn bytes_pass_through_the_connection_s_layers() {
 
 /// A read that would block while a layer holds bytes a poll cannot see
 /// runs the transfer again at once, which then reads them
-/// (`sendrecv_dl`'s `data_pending`): it does not wait on its socket.
+/// (`sendrecv_dl`'s `data_pending`): it does not wait on its socket, and
+/// the read's step says so itself, not leaving it to the pollset's check.
 #[test]
 fn bytes_a_layer_holds_are_read_without_waiting() {
     use crate::conn::layer::testing::holdback;
-    let ran = run(
-        "/",
-        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc",
-        false,
-        |o| {
-            o.layer = Some(holdback);
-        },
-    );
+    let reply: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+    let (mut m, talk, clock) = server(&[reply], false);
+    let start = clock.now();
+    let mut e = Easy::new();
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"multi");
+    e.set_components(Some(components));
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        o.layer = Some(holdback);
+    });
+    assert_eq!(clock.now(), start, "the transfer waited on its socket");
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.seen.body(), b"abc");
+    let stop = "[MULTI] [PERFORMING] sendrecv_dl() no EAGAIN/pending data, mark as dirty\n";
+    let said = ran.seen.text();
+    assert_eq!(said.iter().filter(|l| *l == stop).count(), 1, "{said:#?}");
 }
 
 /// An idle connection is asked down its layers whether it is alive before

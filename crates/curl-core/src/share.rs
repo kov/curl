@@ -52,12 +52,21 @@ impl Kind {
     }
 }
 
+/// What a use of the share's data wants of it (`curl_lock_access`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    /// To read it, beside others reading it (`CURL_LOCK_ACCESS_SHARED`).
+    Shared,
+    /// To itself (`CURL_LOCK_ACCESS_SINGLE`).
+    Single,
+}
+
 /// Told around each use of what a transfer's share keeps, as C calls the
 /// share's lock functions with the transfer's handle
 /// (`CURLSHOPT_LOCKFUNC`, `CURLSHOPT_UNLOCKFUNC`). The share's own locks
 /// guard the data; this lets the application see each use.
 pub trait ShareLock: Send + Sync {
-    fn lock(&self, kind: Kind);
+    fn lock(&self, kind: Kind, access: Access);
     fn unlock(&self, kind: Kind);
 }
 
@@ -214,7 +223,7 @@ pub(crate) fn watched<R>(
 ) -> R {
     let watch = watch.filter(|_| share.keeps(kind));
     if let Some(w) = watch {
-        w.lock(kind);
+        w.lock(kind, Access::Single);
     }
     let r = f();
     if let Some(w) = watch {
@@ -241,13 +250,18 @@ impl Drop for Inner {
     }
 }
 
+/// A call told to a watch: the access of a lock, none for an unlock.
+#[cfg(test)]
+pub(crate) type Call = (Option<Access>, Kind);
+
 /// A watch that records what it is told, and checks the share's own locks
 /// are free each time: the application is told outside them.
 #[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct Told {
     share: Share,
-    told: std::sync::Arc<Mutex<Vec<(bool, Kind)>>>,
+    /// Each call in turn: the access of a lock, none for an unlock.
+    told: std::sync::Arc<Mutex<Vec<Call>>>,
 }
 
 #[cfg(test)]
@@ -270,31 +284,37 @@ impl Told {
         let told = std::mem::take(&mut *lock(&self.told));
         assert!(
             told.chunks(2)
-                .all(|c| matches!(c, [(true, a), (false, b)] if a == b)),
+                .all(|c| matches!(c, [(Some(Access::Single), a), (None, b)] if a == b)),
             "{told:?}"
         );
         told.iter().step_by(2).map(|&(_, kind)| kind).collect()
     }
 
-    fn record(&self, locked: bool, kind: Kind) {
+    /// Every call since last asked, in turn: the access of a lock, none
+    /// for an unlock.
+    pub(crate) fn calls(&self) -> Vec<Call> {
+        std::mem::take(&mut *lock(&self.told))
+    }
+
+    fn record(&self, access: Option<Access>, kind: Kind) {
         let inner = &self.share.0;
         let free = inner.pool.try_lock().is_ok()
             && inner.dns.try_lock().is_ok()
             && inner.cookies.try_lock().is_ok()
             && inner.sessions.try_lock().is_ok();
         assert!(free, "told of {kind:?} under the share's own lock");
-        lock(&self.told).push((locked, kind));
+        lock(&self.told).push((access, kind));
     }
 }
 
 #[cfg(test)]
 impl ShareLock for Told {
-    fn lock(&self, kind: Kind) {
-        self.record(true, kind);
+    fn lock(&self, kind: Kind, access: Access) {
+        self.record(Some(access), kind);
     }
 
     fn unlock(&self, kind: Kind) {
-        self.record(false, kind);
+        self.record(None, kind);
     }
 }
 
@@ -308,6 +328,21 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A use of a kind it keeps is told as C locks every kind but the
+    /// public suffixes: to itself. One it does not keep is not told.
+    #[test]
+    fn a_use_is_told_to_itself_and_only_of_what_is_kept() {
+        let share = Share::new().unwrap();
+        share.keep(Kind::Names).unwrap();
+        let told = Told::new(&share);
+        watched(Some(&told), &share, Kind::Names, || ());
+        watched(Some(&told), &share, Kind::Cookies, || ());
+        assert_eq!(
+            told.calls(),
+            [(Some(Access::Single), Kind::Names), (None, Kind::Names)]
+        );
+    }
 
     /// What a share keeps changes only while nothing else holds it
     /// (`CURLSHE_IN_USE`): each kind is kept and let go on its own, the

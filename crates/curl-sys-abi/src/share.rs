@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use curl_alloc::try_box;
 use curl_core::handler::Handler;
-use curl_core::share::{Kind, Share, ShareInUse, ShareLock};
+use curl_core::share::{Access, Kind, Share, ShareInUse, ShareLock};
 
 use crate::easy::{HomeRef, ShimEasy};
 use crate::ffi::{
@@ -270,19 +270,16 @@ unsafe impl Send for LockCalls {}
 unsafe impl Sync for LockCalls {}
 
 impl ShareLock for LockCalls {
-    fn lock(&self, kind: Kind) {
+    fn lock(&self, kind: Kind, access: Access) {
+        let access = match access {
+            Access::Shared => ffi::CURL_LOCK_ACCESS_SHARED,
+            Access::Single => ffi::CURL_LOCK_ACCESS_SINGLE,
+        };
         if let Some(lock) = self.lock {
             // SAFETY: the application's lock function, called as C calls
             // it, with the handle it was given for, which outlives its
             // link to the share.
-            unsafe {
-                lock(
-                    self.curl,
-                    lock_data(kind),
-                    ffi::CURL_LOCK_ACCESS_SINGLE,
-                    self.user,
-                )
-            };
+            unsafe { lock(self.curl, lock_data(kind), access, self.user) };
         }
     }
 
@@ -333,7 +330,7 @@ pub unsafe extern "C" fn curl_share_cleanup(sh: *mut CURLSH) -> CURLSHcode {
         user,
     };
     if connections {
-        locks.lock(Kind::Connections);
+        locks.lock(Kind::Connections, Access::Single);
     }
     drop(gone);
     if connections {

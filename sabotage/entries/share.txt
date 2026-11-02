@@ -231,3 +231,11 @@ witness: curl-sys-abi handle_tests::a_share_is_refused_while_the_handle_holds_a_
     if easy.with_options(|o| o.output.verbose).unwrap_or(false) {
 --- new
     if true {
+
+=== a use of the share is told as wanting it shared
+file: crates/curl-core/src/share.rs
+witness: curl-core share::tests::a_use_is_told_to_itself_and_only_of_what_is_kept
+--- old
+        w.lock(kind, Access::Single);
+--- new
+        w.lock(kind, Access::Shared);

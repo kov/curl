@@ -18,7 +18,7 @@ use crate::handler::Handler;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::proto::http1::request::UserHeaders;
-use crate::share::{Kind, ShareLock};
+use crate::share::{Access, Kind, ShareLock};
 use crate::trace;
 
 /// The longest `Cookie:` line a request sends (`MAX_COOKIE_HEADER_LEN`).
@@ -169,7 +169,7 @@ fn load_text<H: Host>(cx: &mut StepCx<'_, H>, text: &[u8]) -> Result<(), ErrorKi
 fn tell_jar_used(easy: &Easy) -> Option<Handler<dyn ShareLock>> {
     easy.share().filter(|s| s.keeps(Kind::Cookies))?;
     let watch = easy.share_watch.clone()?;
-    watch.lock(Kind::Cookies);
+    watch.lock(Kind::Cookies, Access::Single);
     Some(watch)
 }
 

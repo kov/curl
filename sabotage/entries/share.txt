@@ -242,14 +242,6 @@ witness: curl-core share::tests::a_use_is_told_to_itself_and_only_of_what_is_kep
 --- new
         w.lock(kind, Access::Shared);
 
-=== a handle's own cookies stay in its jar through a share that keeps cookies
-file: crates/curl-core/src/easy.rs
-witness: curl-core proto::http::tests::a_handle_s_own_cookies_go_as_it_joins_a_share_and_its_jar_as_it_leaves
---- old
-                *jar = Jar::default();
---- new
-                let _ = jar;
-
 === a handle keeps a jar as it leaves a share that kept its cookies
 file: crates/curl-core/src/easy.rs
 witness: curl-core proto::http::tests::a_handle_s_own_cookies_go_as_it_joins_a_share_and_its_jar_as_it_leaves

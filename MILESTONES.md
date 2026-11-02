@@ -1259,9 +1259,10 @@ Its first steps are milestone 6's design-review changes.
 91. **`multi/state.rs` split** **Done.** Mechanically, and the stale parts of ENGINE.md and DESIGN.md and
     stale size comments brought up to date; the two unsafe blocks the SAFETY scan did not match
     (`curl-ngtcp2/src/sys.rs`, `curl-sys-abi/src/printf/mod.rs`) examined.
-92. **The share.** The kinds above with their lock callbacks. PSL per multi or share, with its
-    TTL; `ShareLock::lock` takes the access it wants; HSTS a `with_hsts` with told and untold
-    forms, as C tells the callback only around file loads.
+92. **The share.** **Done.** The kinds above with their lock callbacks. PSL per multi or share,
+    with its TTL; `ShareLock::lock` takes the access it wants; HSTS a `with_hsts` with told and
+    untold forms, as C tells the callback only around file loads; a handle's own jar goes as it
+    joins a share keeping cookies, and its jar as it leaves.
 
 ## Milestone 8: a WebKit port on the curl backend
 

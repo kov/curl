@@ -167,11 +167,11 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
   `curl_global_trace` levels) is a `Components` value the application gives each `Easy`; copies
   share it and it is read at each line. The shim's root keeps the process's one, the tool its own.
 - **Shared caches live in one owner, behind their own locks.** The share keeps each kind it is
-  asked for (idle connections, names, cookies) behind a mutex of its own, held for one use at a
-  time and never across a callback, so the share is `Send + Sync` and its safety never rests on
-  the application's lock functions. Those are told around each use, where and as C calls them
-  (a watch the handle holds with its share), outside the share's own locks. A kind not kept is
-  the multi's or the handle's own.
+  asked for (idle connections, names, cookies, TLS sessions, the public suffix list, the HSTS
+  cache) behind a mutex of its own, held for one use at a time and never across a callback, so
+  the share is `Send + Sync` and its safety never rests on the application's lock functions. Those
+  are told where and with the access C calls them (a watch the handle holds with its share),
+  outside the share's own locks. A kind not kept is the multi's or the handle's own.
 
 ## Types
 

@@ -179,7 +179,9 @@ curl-core/src/
   handler.rs                 handler traits, their verdict enums, Handler
   trace.rs, text.rs          failf/infof: a failure's reason and text lines, on a stack buffer
   components.rs              Components, Component, Level: which components trace
-  share.rs                   Share, Kind, ShareLock: what transfers of several handles keep
+  share.rs                   Share, Kind, Access, ShareLock: what transfers of several handles keep
+  psl.rs                     PslCache, PslUse, SuffixLibrary: the public suffix list of a multi or
+                             share, its time to live and its lock calls
   cookie.rs                  Jar, Cookie, Suffixes: the cookie jar (cookie.c)
   hsts.rs                    Hsts, HstsEntry, HstsReader, HstsWriter: the HSTS cache (hsts.c)
   altsvc.rs                  AltSvc, AltSvcCtrl, Alpn: the alt-svc cache (altsvc.c)
@@ -2481,8 +2483,9 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
 ### 4.6.1 The share
 
 `Share` (`share.rs`, `CURLSH`) keeps what it is asked to (`Share::keep`, `CURLSHOPT_SHARE`):
-idle connections (`Kind::Connections`), names (`Kind::Names`), cookies (`Kind::Cookies`), each
-behind a mutex of its own, and the network its idle connections close through at the end, as
+idle connections (`Kind::Connections`), names (`Kind::Names`), cookies (`Kind::Cookies`), TLS
+sessions (`Kind::SslSessions`), the public suffix list (`Kind::Psl`) and the HSTS cache
+(`Kind::Hsts`), each behind a mutex of its own, and the network its idle connections close through at the end, as
 C's share closes them through its own internal handle. Each closes through the closer its
 socket was opened with (§4.6): the CLOSESOCKETFUNCTION, with its CLOSESOCKETDATA, of the
 transfer that made the connection, even once that handle is gone, as C keeps both on the
@@ -2514,6 +2517,10 @@ letting go of its answer (`Curl_dns_entry_unlink`), the jar's start and a flush 
 A setup holds its answer, its first hop dialed or not, until it is connected, fails or is
 given up, as C's DNS filter holds its entry above the connect filters; a race's goes once,
 as the race ends or is given up.
+Each lock call says the access it wants (`Access`, `curl_lock_access`): `Single` everywhere but
+the public suffix list's reads, as in C. The list's calls come inside the jar's where the share
+keeps both (section 6.5), and the HSTS cache is told of only around the files a transfer reads,
+not at any other use (section 6.6).
 The cookie files a transfer starts with are told as one use around the whole walk, warnings
 and what each file's lines say traced inside it, as C locks once around it; each file is read
 under the mutex in a section of its own. The share's cleanup tells CONNECT around closing its connections with no handle, where C gives
@@ -4031,12 +4038,16 @@ its own, under C's 8190-byte cap. A `Set-Cookie:` line is stored before it is tr
 request at most. `Easy::save_cookies` writes the jar to `save_to` (`Curl_flush_cookies`):
 the shim at `curl_easy_cleanup` and FLUSH, the tool as each transfer's handle is done with.
 Files are written whole and renamed into place (`save::replace`, C's `Curl_fopen`). Domains
-are checked against public suffixes through `cookie::PublicSuffixes`, which `curl-psl`
-implements over libpsl; core cannot make one, so the handle is given it
-(`Easy::set_public_suffixes`, kept through `reset`, shared by duplicates): the tool gives
-every handle one list, as its share's `CURL_LOCK_DATA_PSL` does, and the shim each handle its
-own, loaded at the first question and kept, where C keeps one per multi or share, refreshed
-after 72 hours (`Curl_psl_use`; MILESTONES step 92). A handle given none behaves as
+are checked against public suffixes through `cookie::PublicSuffixes`, a list `curl-psl` makes
+over libpsl, reached through `Libraries::psl` (`psl::SuffixLibrary`). The list is the multi's
+(`Caches::psl`), or the share's where it keeps `Kind::Psl` (`psl::PslCache`, C's `data->psl`):
+loaded at the first question and looked for again from 72 hours on (`Curl_psl_use`), the system's
+latest, else the library's own unless the one kept is itself the system's, which then stays,
+looked for at each use. Only a server's cookies and those of the files a transfer starts with are
+asked of it: the application's and a reload's are not (`COOKIE_NOPSL`). Each question is one use:
+`Shared`, or `Shared`, `Single`, `Shared` where it looked for a list, each with its unlock.
+They are told in that order inside the jar's use, but after the question, once the jar's mutex is
+let go (`psl::PslUse`, DIVERGENCE.md). A handle whose libraries have none behaves as
 C built without libpsl: a domain needs a dot not at its end, or to be `localhost`
 (`bad_domain`). A list that cannot be loaded refuses every domain, as C's does.
 
@@ -4045,7 +4056,16 @@ C built without libpsl: a domain needs a dot not at its end, or to be `localhost
 `hsts::Hsts` is C's cache (`lib/hsts.c`), the hosts to reach only over HTTPS: each with whether
 its subdomains are included and when it expires, at most 10000 kept, oldest first. A handle has
 one once the application turns it on (`Easy::enable_hsts`, `add_hsts_file`: `CURLOPT_HSTS_CTRL`,
-`CURLOPT_HSTS`), kept through `reset`; a share does not keep one yet (milestone 7). As each
+`CURLOPT_HSTS`), kept through `reset`. A share keeping `Kind::Hsts` has its cache used in place of
+the handle's, whatever options the handle has set: joining, the handle's own is gone; leaving, it
+has none. Turned off while on the share, the handle lets the share's go (`left_shared_hsts`), and
+turned on again makes one of its own. The files named are the handle's (C's `state.hstslist`),
+surviving all this, and read into whichever cache it uses; with none they are not read
+(DIVERGENCE.md). Every use goes through `Easy::with_hsts` or `read_hsts`, under the share's
+mutex and untold; only the walk of the files, `Easy::with_hsts_told`, is told, `Single`, and
+that whenever the share keeps a cache, even with the handle using its own, as C's lock asks only
+what the share keeps. The application's reader and writer run out of the mutex: each entry a
+reader gives is one section, and a writer is given a copy taken as the save starts. As each
 transfer starts (pretransfer) the files named are read into it, then what the application's
 reader gives (`HstsReader`, `CURLOPT_HSTSREADFUNCTION`). As each leg starts, after the
 application's port is applied, an `http` URL to a host it keeps, by the host's own entry or the
@@ -4056,7 +4076,8 @@ debug build's `CURL_HSTS_HTTP` says so; one the cache cannot take is said and pa
 time is the clock's, or the debug build's `CURL_TIME`. The cache is written as the handle goes
 (`Easy::save_hsts`, which the shim's cleanup and the tool's handle call), to
 `HstsOptions::file` or the file last read, unless the cache's file is read-only
-(`CacheFile::ReadOnly`, `CURLHSTS_READONLYFILE`, which C never honours: DIVERGENCE.md), then to
+(`CacheFile::ReadOnly`, `CURLHSTS_READONLYFILE`, which C never honours: DIVERGENCE.md, a mode
+the handle holds, as a share's cache has several handles), then to
 the application's writer (`HstsWriter`). A copy of the handle reads its file and reader into a
 new cache of the same file mode, then takes the entries alive; the shim makes the copy's
 adapters before that read (`Easy::try_clone_with`), so the application's reader is handed the

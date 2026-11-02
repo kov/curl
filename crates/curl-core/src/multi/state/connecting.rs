@@ -616,6 +616,27 @@ fn connecting_step<H: Host>(
     if c.lead().is_some_and(ConnectMachine::unasked) {
         names::started(cx, &c.route);
     }
+    // The name's filter, below the record's, heads SETUP and the HTTPS
+    // connect filter: what more came of the resolve the race goes on
+    // beside is taken next. The first attempt holds it, whichever leads.
+    if c.attempt(Attempt::First)
+        .is_some_and(ConnectMachine::resolving)
+    {
+        let first = c.attempt_mut(Attempt::First);
+        let polled = first.poll_late(&mut DriveCx::new(cx, None));
+        match polled {
+            Ok(Some(found)) => resolved(&c, run, cx, Attempt::First, found),
+            Ok(None) => {}
+            Err(OutOfMemory) => {
+                return (
+                    TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
+                    Wake::Again,
+                );
+            }
+        }
+    }
+    // Then the HTTPS connect filter's own connect.
+    https::second_chosen(&mut c, cx);
     let mut c = c;
     if https::other_leads(&c) {
         c = match drive_other(run, c, cx) {
@@ -688,25 +709,6 @@ fn connecting_step<H: Host>(
             }
         }
         let lead = c.leader();
-        // The name's filter heads SETUP: what more came of the resolve the
-        // race goes on beside is taken first. The first attempt holds it,
-        // whichever leads.
-        if c.attempt(Attempt::First)
-            .is_some_and(ConnectMachine::resolving)
-        {
-            let first = c.attempt_mut(Attempt::First);
-            let polled = first.poll_late(&mut DriveCx::new(cx, None));
-            match polled {
-                Ok(Some(found)) => resolved(&c, run, cx, Attempt::First, found),
-                Ok(None) => {}
-                Err(OutOfMemory) => {
-                    return (
-                        TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
-                        Wake::Again,
-                    );
-                }
-            }
-        }
         let chain = enter_setup(&c, cx, &mut entered, lead);
         let partly = c.lead().and_then(ConnectMachine::partly_made);
         let https = c.https;

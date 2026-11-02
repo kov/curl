@@ -2606,8 +2606,10 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   first connect and its choice of attempts do not wait for A. The wait for AAAA runs on
   `TimerKind::HappyEyeballs`, the resolve's next try on `AsyncName`. The race holds the resolve
   still going on in its `Eyeballs`, and waits on it when it has nothing to try; a transfer timing
-  out then times out `Resolving`. What more it found is taken before SETUP is entered
-  (`poll_late`), from the first attempt whichever leads. A race's second attempt asks no resolver
+  out then times out `Resolving`. What more it found is taken once in each connect call, after
+  the record's answer and before the HTTPS connect filter's own connect (`poll_late`), from the
+  first attempt whichever leads, as C's chain puts the name's DNS filter between the record's and
+  the HTTPS connect filter. A race's second attempt asks no resolver
   of its own: before each drive it is given what the first's has found (`follow`).
 - **A name's HTTPS record.** `https.rs` starts a third probe of its own (`start_https`), named
   `_port._https.name` off port 443, before the name's addresses are asked for. Its answer, kept in
@@ -2615,7 +2617,8 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   the origin itself. The first attempt is chosen by the record if it was taken before
   `connect, init`, as C's init asks the DNS filter for it, the plan's dial changed to match
   (`set_dial`); `CURL_DBG_AWAIT_HTTPSRR` waits for it. A record arriving later chooses the
-  second. A server's no such name is kept as a negative entry and an answer
+  second, once the addresses' answer of the same call is taken (`second_chosen`, C's
+  `cf_hc_set_baller2` below the DNS filters). A server's no such name is kept as a negative entry and an answer
   without a record as an empty one; any other failure keeps nothing.
 - **The trace.** `Easy::doing` names DoH before each line but those of DNS and the like, which
   name themselves (`state.feat`). A probe is verbose only with DoH's trace on.

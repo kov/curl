@@ -101,11 +101,13 @@ fn an_https_setup_to_an_address_asks_for_no_record() {
 }
 
 /// A resolve of the library [`Ares`] stands for: a name's addresses,
-/// 127.0.0.1, at once, as c-ares answers `localhost` from the hosts file;
-/// its record, none, at the third run, the two before it just as it starts.
+/// 127.0.0.1, at once, as c-ares answers `localhost` from the hosts file,
+/// or `late`, as a DNS server answers, at the third run; its record, none,
+/// at the third run; the two runs before the third just as it starts.
 #[derive(Debug)]
 struct AresResolve {
     record: bool,
+    late: bool,
     performed: u32,
 }
 
@@ -121,20 +123,22 @@ impl crate::conn::io::DnsResolve for AresResolve {
         within
     }
     fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
+        // AAAA is not asked for over IPv4 alone.
         Ok(crate::conn::io::Partial {
             addrs: Vec::new(),
-            v6_answered: false,
+            v6_answered: true,
         })
     }
     fn ongoing(&self) -> (u32, &'static str) {
-        if self.record && self.performed < 3 {
+        if (self.record || self.late) && self.performed < 3 {
             (1, "-")
         } else {
             (0, "A")
         }
     }
     fn answer(&mut self) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
-        (!self.record).then(|| Ok(vec![std::net::IpAddr::from([127, 0, 0, 1])]))
+        (!self.record && (!self.late || self.performed >= 3))
+            .then(|| Ok(vec![std::net::IpAddr::from([127, 0, 0, 1])]))
     }
     fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
         (self.performed >= 3).then_some(crate::doh::RecordAnswer::NoSuchName)
@@ -148,9 +152,10 @@ impl crate::conn::io::DnsResolve for AresResolve {
     }
 }
 
-/// A resolver library standing for c-ares, the reference build's.
+/// A resolver library standing for c-ares, the reference build's: its
+/// addresses late if it says so.
 #[derive(Debug)]
-struct Ares;
+struct Ares(bool);
 
 impl crate::conn::io::DnsLibrary for Ares {
     fn resolve(
@@ -160,6 +165,7 @@ impl crate::conn::io::DnsLibrary for Ares {
     ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
         Ok(Box::new(AresResolve {
             record: ask.family.is_none(),
+            late: self.0,
             performed: 0,
         }))
     }
@@ -167,10 +173,15 @@ impl crate::conn::io::DnsLibrary for Ares {
 
 /// A handle as [`tracing`]'s, resolving through [`Ares`].
 fn tracing_over_ares(components: &[u8]) -> Easy {
+    tracing_over(&Ares(false), components)
+}
+
+/// The same, resolving through `ares`.
+fn tracing_over(ares: &'static Ares, components: &[u8]) -> Easy {
     let tls: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
     let libraries = SharedLibraries::new(Libraries {
         tls: Some(Library::Static(tls)),
-        dns: Some(&Ares),
+        dns: Some(ares),
         ..Libraries::NONE
     })
     .unwrap();
@@ -259,6 +270,50 @@ fn an_https_setup_to_a_name_waits_for_its_record_once() {
         !got.iter().any(|l| l.starts_with("[TIMER] [ALPN")),
         "{got:?}"
     );
+}
+
+/// A name's record and its addresses answered by the same connect, after
+/// the first attempt started: both are taken, the record's first, before
+/// the HTTPS connect filter chooses the second attempt by the record, as
+/// the chain's DNS filters head it (`cf_dns_connect` above
+/// `cf_hc_connect`). C's tool over c-ares, a DNS server answering the
+/// name, traces the same.
+#[test]
+fn a_record_and_addresses_come_together_are_taken_before_the_second_is_chosen() {
+    static LATE: Ares = Ares(true);
+    let mut m = tls_server(1);
+    let url = format!("https://name.test:{PORT}/");
+    let e = tracing_over(&LATE, b"https-connect,dns");
+    let ran = https_get(&mut m, e, &url, |_| {});
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let got = lines(
+        &ran,
+        &[
+            "[HTTPS-CONNECT] connect, init",
+            "[HTTPS-CONNECT] HTTPS-RR",
+            "[HTTPS-CONNECT] 1st",
+            "[DNS] cache",
+            "[DNS] [A] resolve",
+        ],
+    );
+    let want = expect(&format!(
+        "[DNS] cache lookup name.test:{PORT} queries=HTTPS -> 0 not found
+        [DNS] cache lookup name.test:{PORT} queries=HTTPS -> 0 not found
+        [DNS] cache lookup name.test:{PORT} queries=A -> 0 not found
+        [DNS] [A] resolve incomplete, responses=-, ongoing=1 for name.test:{PORT}
+        [DNS] cache lookup name.test:{PORT} queries=A -> 0 not found
+        [DNS] [A] resolve incomplete, responses=-, ongoing=1 for name.test:{PORT}
+        [HTTPS-CONNECT] connect, init
+        [HTTPS-CONNECT] HTTPS-RR not available
+        [HTTPS-CONNECT] 1st attempt uses h1 from wanted versions
+        [DNS] cache lookup name.test:{PORT} queries=HTTPS -> 0 not found
+        [DNS] cache negative name resolve for name.test:{PORT} type=HTTPS
+        [DNS] cache lookup name.test:{PORT} queries=A -> 0 not found
+        [DNS] [A] resolve complete for name.test:{PORT}
+        [DNS] cached entry for name.test:{PORT} queries=A
+        [HTTPS-CONNECT] HTTPS-RR not available"
+    ));
+    assert_eq!(got, want, "{got:#?}");
 }
 
 /// The threaded resolver resolves no record: each setup for a name looks

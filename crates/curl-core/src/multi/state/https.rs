@@ -389,19 +389,32 @@ fn answer_came<H: Host>(
     let h = c.https.as_mut().expect("the filter heads the setup");
     h.record = Record::Known;
     // Come before the first attempt is chosen, it chooses it, as C's
-    // `connect, init` asks the DNS filter for what it has taken.
+    // `connect, init` asks the DNS filter for what it has taken. Come
+    // after, it chooses the second as the filter's own connect runs, below
+    // the DNS filters (`second_chosen`).
     if h.first.is_none() {
         h.first_by_record = true;
     }
-    if let Some(first) = h.first {
-        // Whether the first's choice weighed HTTP/3, as it does again.
-        let choosing = first_choosing(c, cx);
-        choosing.first();
-        let said = choosing.asked_h3.get();
-        let second = choose_second(c, cx, first, said);
-        c.https.as_mut().expect("the filter heads the setup").second = second;
-    }
     Ok(())
+}
+
+/// The filter's own connect, below the chain's DNS filters, which have
+/// taken what came of the record and of the addresses: with the record
+/// known since the first attempt started, the second is chosen by it
+/// (`cf_hc_connect`'s `cf_hc_set_baller2`).
+pub(super) fn second_chosen<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) {
+    let Some(h) = c.https else {
+        return;
+    };
+    let (Record::Known, Some(first), Second::Unchosen) = (h.record, h.first, h.second) else {
+        return;
+    };
+    // Whether the first's choice weighed HTTP/3, as it does again.
+    let choosing = first_choosing(c, cx);
+    choosing.first();
+    let said = choosing.asked_h3.get();
+    let second = choose_second(c, cx, first, said);
+    c.https.as_mut().expect("the filter heads the setup").second = second;
 }
 
 /// The cache looked at for the record, not there (`Curl_dnscache_get`).

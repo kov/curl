@@ -238,10 +238,6 @@ pub(crate) const MAX_ATTEMPTS: usize = 6;
 /// connecting, while an address is left.
 #[derive(Debug)]
 struct Racing {
-    /// Its resolve was looked at in this pass already: as the race began
-    /// on what came of it so far, or as an attempt failed, C going on in
-    /// the same pass without looking again.
-    looked: bool,
     /// Its first run was made (`cf_ip_happy_init`), whether or not it had
     /// an address to start.
     ran: bool,
@@ -964,7 +960,6 @@ impl ConnectMachine {
             dial,
             created,
             stage: Stage::Racing(Racing {
-                looked: false,
                 ran: false,
                 resolve_failed: None,
                 last_failed: None,
@@ -1163,16 +1158,13 @@ impl ConnectMachine {
 
     /// The race's resolve still going on looked at, as C's DNS filter does
     /// above SETUP before the race runs: what came given to the race, and
-    /// once it has all come, how it was found. Not in the pass the race
-    /// began in, which goes on to it at once. A failure fails the race's
-    /// next drive.
+    /// once it has all come, how it was found. Once in each pass, before
+    /// the setup is driven, so not in the pass the race begins in. A
+    /// failure fails the race's next drive.
     pub(crate) fn poll_late(&mut self, cx: &mut dyn ConnCx) -> Result<Option<Found>, OutOfMemory> {
         let Stage::Racing(r) = &mut self.stage else {
             return Ok(None);
         };
-        if std::mem::take(&mut r.looked) {
-            return Ok(None);
-        }
         let Some(mut p) = r.eyeballs.late.0.take() else {
             return Ok(None);
         };
@@ -1304,7 +1296,6 @@ impl ConnectMachine {
             d.stream.into_socket(),
         );
         self.stage = Stage::Racing(Racing {
-            looked: false,
             ran: false,
             resolve_failed: None,
             last_failed: None,
@@ -1401,7 +1392,6 @@ impl ConnectMachine {
                                         );
                                         eyeballs.late = Late(Some(p));
                                         self.stage = Stage::Racing(Racing {
-                                            looked: true,
                                             ran: false,
                                             resolve_failed: None,
                                             last_failed: None,
@@ -1428,7 +1418,6 @@ impl ConnectMachine {
                     return Err(ConnectError::Unresolved(Unresolved::NoAddress(found)));
                 }
                 self.stage = Stage::Racing(Racing {
-                    looked: false,
                     ran: false,
                     resolve_failed: None,
                     last_failed: None,
@@ -1491,14 +1480,12 @@ impl ConnectMachine {
             Checked::Won(i) => return self.won(cx, setup, i, now),
             Checked::Failed(i, error) => {
                 let failure = r.attempts.remove(i).fail(cx, component, error)?;
-                r.looked = true;
                 return r
                     .failed(cx, of, Some(failure), ErrorKind::CouldntConnect)
                     .map(|p| Drove::Connecting(self, p));
             }
             Checked::QuicFailed(i, kind) => {
                 r.attempts.remove(i).discard(cx, component);
-                r.looked = true;
                 return r
                     .failed(cx, of, None, kind)
                     .map(|p| Drove::Connecting(self, p));
@@ -3789,7 +3776,6 @@ mod tests {
             ConnSettings::DEFAULT,
         );
         m.stage = Stage::Racing(Racing {
-            looked: false,
             ran: false,
             resolve_failed: None,
             last_failed: None,

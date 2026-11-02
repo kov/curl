@@ -302,11 +302,11 @@ witness: curl-core proto::http::tests::h3_trace::a_record_kept_meanwhile_is_foun
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-tool a_second_attempt_started_during_a_resolve_takes_what_it_finds
 --- old
-        if c.attempt(Attempt::First)
-            .is_some_and(ConnectMachine::resolving)
-        {
+    if c.attempt(Attempt::First)
+        .is_some_and(ConnectMachine::resolving)
+    {
 --- new
-        if c.lead().is_some_and(ConnectMachine::resolving) {
+    if c.lead().is_some_and(ConnectMachine::resolving) {
 
 === a record's HTTP/3 is taken where it is not allowed
 file: crates/curl-core/src/multi/state/https.rs
@@ -384,3 +384,18 @@ witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_wai
                     say_lookup(&c.route, cx);
 --- new
                 RecordLookup::Library(resolve) => {
+
+=== the second attempt is chosen before the addresses of the same call are taken
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::a_record_and_addresses_come_together_are_taken_before_the_second_is_chosen
+--- old
+    if h.first.is_none() {
+        h.first_by_record = true;
+    }
+    Ok(())
+--- new
+    if h.first.is_none() {
+        h.first_by_record = true;
+    }
+    second_chosen(c, cx);
+    Ok(())

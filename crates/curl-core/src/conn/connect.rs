@@ -3621,6 +3621,24 @@ fn literal(name: &[u8]) -> Option<IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A late resolve dropped with no network to tell, as running out of
+    /// memory drops it, lets go of what it held rather than aborting.
+    #[test]
+    fn a_late_resolve_dropped_lets_go_of_its_hold() {
+        let pending = Pending {
+            via: Via::Resolver {
+                id: ResolveId::FIRST,
+                held: Held,
+            },
+            family: Family::Any,
+            found: Found::Resolved,
+            keep_negative: false,
+            queried: Queried { v6: true, v4: true },
+            await_until: ManualClock::new().unwrap().now(),
+        };
+        drop(Late(Some(pending)));
+    }
     use crate::conn::io::{FakeNet, Peer as FakePeer};
     use crate::conn::{Peer, Scheme};
     use crate::options::IpVersion;

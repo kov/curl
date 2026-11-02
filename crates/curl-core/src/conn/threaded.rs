@@ -741,6 +741,38 @@ mod tests {
         assert_eq!(merged(None, Some(Err(Failed))), Err(Failed));
     }
 
+    /// A resolve is told of as soon as one family has answered, again as
+    /// the last does, and not while nothing has come.
+    #[test]
+    fn a_resolve_is_told_of_as_each_family_answers() {
+        let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
+        r.resolving
+            .try_push(Resolving {
+                id: ResolveId::FIRST,
+                waiter: Waiter::NONE,
+                left: 2,
+                asked_v6: true,
+                v6: None,
+                v4: None,
+                told: None,
+            })
+            .unwrap();
+        let told = |r: &mut ThreadedResolver| {
+            let mut n = 0;
+            r.answered(&mut |_, _| n += 1);
+            n
+        };
+        assert_eq!(told(&mut r), 0, "nothing came");
+        r.resolving[0].left = 1;
+        r.resolving[0].v4 = Some(Ok(vec![IpAddr::from([127, 0, 0, 1])]));
+        assert_eq!(told(&mut r), 1, "A came");
+        assert_eq!(told(&mut r), 0, "told once");
+        r.resolving[0].left = 0;
+        r.resolving[0].v4 = None;
+        assert_eq!(told(&mut r), 1, "every query answered, though empty");
+        r.resolving.clear();
+    }
+
     /// A cancelled resolve's answer is dropped as it comes, and the
     /// multi is not told of it.
     #[test]

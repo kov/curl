@@ -524,6 +524,10 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
         say_record(route, kept.as_ref(), cx);
         Ok((Record::Known, kept, None))
     } else {
+        // Without DoH or a resolver library, the threaded resolver is
+        // asked and never answers: it resolves only addresses
+        // (`Curl_async_getaddrinfo`).
+        let mut unanswered = false;
         let lookup = if cx.easy().options().doh.url.is_some() {
             match crate::multi::doh::start_https(cx, name, peer.port()) {
                 Ok(lookup) => Some(RecordLookup::Doh(lookup)),
@@ -536,7 +540,11 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
                     return Err(ErrorKind::OutOfMemory);
                 }
                 // Refused settings fail the addresses' resolve as well.
-                Some(Err(_)) | None => None,
+                Some(Err(_)) => None,
+                None => {
+                    unanswered = cfg!(feature = "threaded-resolver");
+                    None
+                }
             }
         };
         let mut lookup = lookup;
@@ -557,6 +565,13 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
         if matches!(lookup, Some(RecordLookup::Library(_))) {
             say_lookup(route, cx);
             look_at_library(route, &mut lookup, cx)?;
+        }
+        // It is looked at as a library is, and says nothing of the record,
+        // then or after: the setup goes on without one and keeps nothing of
+        // it, as C's threaded build does.
+        if unanswered {
+            say_lookup(route, cx);
+            return Ok((Record::Known, None, None));
         }
         Ok((Record::Pending, None, lookup))
     }

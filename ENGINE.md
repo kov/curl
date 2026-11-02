@@ -1155,7 +1155,8 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   uses, or a name `CURLOPT_RESOLVE` gives, which answers the addresses only); never an address,
   which asks for none, nor a name whose answer is cached. Once armed it is not cleared when the
   attempt wins: it stays in the transfer's pollset lines until `[TIMEOUT] all cleared` at
-  COMPLETED. Without DoH or c-ares the engine resolves no HTTPS-RR, and has the answer the
+  COMPLETED. Without DoH or c-ares, and without the threaded resolver, the engine resolves no
+  HTTPS-RR, and has the answer the
   reference build's resolver gives a name without one: it looks for the record in the DNS cache
   as the setup's first connect starts, as C's does (`queries=HTTPS -> 0 not found`, `hostip_resolv
   started -> 81`), and at the setup's next connect has the answer, none, as C's local resolver
@@ -1163,7 +1164,10 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   resolve for H:P type=HTTPS`). As C's `Curl_resolv_take_result` does, it looks in the cache again
   as the resolve starts and as the answer is taken, each a use of a share's names; one kept
   meanwhile by another transfer is not kept again (`Hostname 'H' was found in DNS cache`). A later setup for the name finds it (`Hostname H was found in DNS
-  cache`, `HTTPS-RR H:P: -`) and arms nothing.
+  cache`, `HTTPS-RR H:P: -`) and arms nothing. The threaded resolver is asked for the record and
+  never answers, as in C's threaded build: the setup looks in the cache once more as the resolve
+  starts, then goes on without the record and keeps nothing of it, each attempt it chooses saying
+  `HTTPS-RR not available`, and the timer is not armed for it.
 - `Shutdown`: the shutdown set's deadline is the multi's, not a transfer's: C arms EXPIRE_SHUTDOWN on its internal
   handle for the earliest deadline of the connections shutting down (cshutdn.c:359–367). Built:
   the `ShutdownSet` keeps it as one `Option<Instant>` of its own beside the `TimerQueue`, not a

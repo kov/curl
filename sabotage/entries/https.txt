@@ -348,3 +348,12 @@ features: debug-hooks
     let by_record = c.https.is_some_and(|h| h.first_by_record) && c.record.is_some();
 --- new
     let by_record = c.https.is_some_and(|h| h.first_by_record) || c.record.is_some();
+
+=== the threaded build waits for a record its resolver never answers
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-tool an_origins_record_the_threaded_resolver_cannot_answer_is_not_kept
+features: threaded-resolver
+--- old
+                    unanswered = cfg!(feature = "threaded-resolver");
+--- new
+                    unanswered = false;

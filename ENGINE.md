@@ -2970,6 +2970,8 @@ key has `CachePeer::hmac` and no key until a connection's key hashes to it
 given. An export (`Exporting`) tells the application's lock function, packs what may go out under
 the share's lock (no client certificate or password, a key of `:G` or none), lets the lock go, and
 only then calls the application's function, the multi unborrowed, telling the unlock at its end.
+Meanwhile the gate (`no_scache_lock`) refuses on that thread the calls C's refuses while it holds
+the cache's lock: on a handle using that cache, and on the multi if the cache is the multi's.
 
 **Early data** (TLS 1.3's 0-RTT, `CURLSSLOPT_EARLYDATA`, `--tls-earlydata`). A transfer that
 asks and makes requests (`TlsPeer::early_data`, not `bits.connect_only`) has OpenSSL put its

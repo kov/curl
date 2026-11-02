@@ -62,11 +62,13 @@ def main():
             if kind == "easy":
                 fields = (f"kills: {bool(r['data_is_killed'])}".lower(),
                           f"recurse: {bool(r['recurse'])}".lower(),
-                          f"not_in_event: {bool(r['no_event_cb'])}".lower())
+                          f"not_in_event: {bool(r['no_event_cb'])}".lower(),
+                          f"no_scache_lock: {bool(r['no_scache_lock'])}".lower())
             else:
                 fields = (f"kills: {bool(r['multi_is_killed'])}".lower(),
                           f"recurse: {bool(r['recurse'])}".lower(),
-                          f"in_notify: {bool(r['allow_ntfy_cb'])}".lower())
+                          f"in_notify: {bool(r['allow_ntfy_cb'])}".lower(),
+                          f"no_scache_lock: {bool(r['no_scache_lock'])}".lower())
             out.append(f"            {enum}::{variant} => {rules} {{ "
                        f"{', '.join(fields)} }},\n")
         out.append("        }\n    }\n}\n\n")

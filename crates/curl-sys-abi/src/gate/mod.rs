@@ -40,6 +40,9 @@ pub(crate) struct EasyRules {
     pub(crate) recurse: bool,
     /// The call is refused inside the multi's socket and timer callbacks.
     pub(crate) not_in_event: bool,
+    /// The call is refused while the sessions of the handle's cache go out
+    /// on this thread.
+    pub(crate) no_scache_lock: bool,
 }
 
 /// What api.c allows a multi call (`Curl_mapi_fn_props`).
@@ -51,6 +54,8 @@ pub(crate) struct MultiRules {
     pub(crate) recurse: bool,
     /// The call may run inside a notify callback, whatever `recurse` says.
     pub(crate) in_notify: bool,
+    /// The call is refused while the sessions of the multi's cache go out.
+    pub(crate) no_scache_lock: bool,
 }
 
 /// The context a running callback's adapter lent: its lifetime is erased,
@@ -272,6 +277,9 @@ pub(crate) struct MultiStack {
     events: Cell<u8>,
     /// Notify callbacks running.
     notifies: Cell<u8>,
+    /// The sessions of its cache are going out, the application's function
+    /// running (C's `is_locked` on its `locking_thread`).
+    exporting: Cell<bool>,
 }
 
 /// How a call admitted by the gate reaches the multi.
@@ -296,9 +304,22 @@ impl Drop for MultiEntry<'_> {
 }
 
 impl MultiStack {
+    /// The sessions of the multi's cache are going out, or no longer.
+    pub(crate) fn set_exporting(&self, exporting: bool) {
+        self.exporting.set(exporting);
+    }
+
+    /// Whether they are.
+    pub(crate) fn exporting(&self) -> bool {
+        self.exporting.get()
+    }
+
     /// Admit `call`, as `Curl_mapi_enter` does.
     pub(crate) fn enter(&self, call: MultiCall) -> Result<MultiEntry<'_>, Recursive> {
         let rules = call.rules();
+        if rules.no_scache_lock && self.exporting.get() {
+            return Err(Recursive);
+        }
         let in_notify = rules.in_notify && self.notifies.get() > 0;
         if !in_notify && !rules.recurse && self.depth.get() > 0 {
             return Err(Recursive);

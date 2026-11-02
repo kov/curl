@@ -177,12 +177,20 @@ witness: curl-core multi::ssls::tests::a_handle_with_no_cache_has_no_sessions
 file: crates/curl-core/src/multi/ssls.rs
 witness: curl-core multi::ssls::tests::the_application_is_told_as_c_calls_its_lock
 --- old
-            return Exporting { exported, told };
+            return Exporting {
+                exported,
+                share: Some(share.clone()),
+                told,
+            };
 --- new
             if let Some(w) = &told {
                 w.unlock(Kind::SslSessions);
             }
-            return Exporting { exported, told: None };
+            return Exporting {
+                exported,
+                share: Some(share.clone()),
+                told: None,
+            };
 
 === a line of the session file with no newline loses its last byte
 file: crates/curl-tool/src/operate/ssl_sessions.rs
@@ -229,3 +237,19 @@ witness: curl-tool a_session_file_s_bad_lines_are_warned_of
 --- new
             Some(_) => Ok(()),
 
+
+=== a call on a handle of the same cache is let in while its sessions go out
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi ssls::tests::what_uses_the_cache_is_refused_while_it_goes_out
+--- old
+        if call.rules().no_scache_lock && self.sessions_going_out() {
+--- new
+        if false && call.rules().no_scache_lock && self.sessions_going_out() {
+
+=== the multi is let run while the sessions of its cache go out
+file: crates/curl-sys-abi/src/gate/mod.rs
+witness: curl-sys-abi ssls::tests::what_uses_the_cache_is_refused_while_it_goes_out
+--- old
+        if rules.no_scache_lock && self.exporting.get() {
+--- new
+        if false && rules.no_scache_lock && self.exporting.get() {

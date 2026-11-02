@@ -1269,7 +1269,7 @@ Its first steps are milestone 6's design-review changes.
 93. **SSL session import and export.** **Done.** `SSLS-EXPORT`, `curl_easy_ssls_import`,
     `curl_easy_ssls_export` and `--ssl-sessions`: C's packed form byte for byte, a peer found by the
     salted HMAC of its key, and what may go out (ENGINE.md, TLS sessions). A session file written
-    by C's build resumes in this one and the other way round, and 1678 and 777 run.
+    by C's build resumes in this one and the other way round.
 
 ## Milestone 8: a WebKit port on the curl backend
 

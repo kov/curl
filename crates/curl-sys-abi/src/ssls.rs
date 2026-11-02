@@ -108,11 +108,20 @@ pub unsafe extern "C" fn curl_easy_ssls_export(
         return CURLE_RECURSIVE_API_CALL;
     };
     // The handle is not borrowed from here: the function may use it as the
-    // gate lets it.
+    // gate lets it, which is not to touch this cache.
+    let multi = easy.added().filter(|_| !exporting.on_share());
+    // SAFETY: the handle's multi outlives its `Added`.
+    let stack = multi.map(|(m, _)| unsafe { &m.as_ref().stack });
+    if let Some(stack) = stack {
+        stack.set_exporting(true);
+    }
     let done = exporting.deliver(&mut |session| {
         // SAFETY: the function and its pointer, as the caller guarantees.
         unsafe { give(curl, export_fn, userptr, session) }
     });
+    if let Some(stack) = stack {
+        stack.set_exporting(false);
+    }
     let mut held = callbacks::Held::default();
     let notes = &mut |kind, b: &[u8]| held.note(kind, b);
     let ended = easy.with_home(|home| match home {
@@ -314,6 +323,130 @@ mod tests {
             assert_eq!(got.5, b"foo");
             assert_eq!(got.2[..5], [1, 4, 0, 1, b'T'], "packed");
             curl_easy_cleanup(c);
+            curl_share_cleanup(sh);
+        }
+    }
+
+    /// Inside the application's function, another handle using the same
+    /// cache is refused what C's gate refuses it, while one using another
+    /// cache, and what the rule does not name, go on.
+    #[test]
+    fn what_uses_the_cache_is_refused_while_it_goes_out() {
+        use crate::multi::{curl_multi_add_handle, curl_multi_cleanup, curl_multi_init};
+        use crate::multi::{curl_multi_perform, curl_multi_remove_handle};
+        use crate::setopt::curl_easy_setopt;
+        use crate::share::{curl_share_cleanup, curl_share_init, curl_share_setopt};
+
+        struct Others {
+            same: *mut CURL,
+            apart: *mut CURL,
+            multi: *mut ffi::CURLM,
+            calls: u32,
+        }
+
+        const BLOB: [u8; 5] = [1, 4, 0, 1, b'T'];
+
+        unsafe extern "C" fn try_them(
+            _: *mut CURL,
+            others: *mut c_void,
+            _: *const c_char,
+            _: *const u8,
+            _: usize,
+            _: *const u8,
+            _: usize,
+            _: ffi::curl_off_t,
+            _: c_int,
+            _: *const c_char,
+            _: usize,
+        ) -> CURLcode {
+            // SAFETY: the pointer the test gave, and handles it made.
+            unsafe {
+                let o = &mut *others.cast::<Others>();
+                o.calls += 1;
+                let key = c"other:G".as_ptr();
+                let null = ptr::null();
+                let import = |c| curl_easy_ssls_import(c, key, null, 0, BLOB.as_ptr(), 5);
+                assert_eq!(import(o.same), CURLE_RECURSIVE_API_CALL, "the same cache");
+                assert_eq!(
+                    crate::easy::curl_easy_upkeep(o.same),
+                    CURLE_RECURSIVE_API_CALL
+                );
+                assert_eq!(import(o.apart), CURLE_BAD_FUNCTION_ARGUMENT, "no cache");
+                if !o.multi.is_null() {
+                    let mut running = 0;
+                    assert_eq!(
+                        curl_multi_perform(o.multi, &mut running),
+                        ffi::CURLM_RECURSIVE_API_CALL
+                    );
+                }
+            }
+            CURLE_OK
+        }
+
+        let key = c"peer:G".as_ptr();
+        let null = ptr::null();
+        // SAFETY: handles made here, with pointers holding what each call
+        // says, `others` outliving the exports.
+        unsafe {
+            let sh = curl_share_init();
+            let session = ffi::CURL_LOCK_DATA_SSL_SESSION.0 as c_int;
+            assert_eq!(
+                curl_share_setopt(sh, ffi::CURLSHOPT_SHARE, session),
+                ffi::CURLSHE_OK
+            );
+            let (a, b, apart) = (curl_easy_init(), curl_easy_init(), curl_easy_init());
+            for c in [a, b] {
+                assert_eq!(curl_easy_setopt(c, ffi::CURLOPT_SHARE, sh), CURLE_OK);
+            }
+            assert_eq!(
+                curl_easy_ssls_import(a, key, null, 0, BLOB.as_ptr(), 5),
+                CURLE_OK
+            );
+            let mut o = Others {
+                same: b,
+                apart,
+                multi: ptr::null_mut(),
+                calls: 0,
+            };
+            let code = curl_easy_ssls_export(a, Some(try_them), (&raw mut o).cast());
+            assert_eq!((code, o.calls), (CURLE_OK, 1));
+            assert_eq!(
+                curl_easy_ssls_import(b, key, null, 0, BLOB.as_ptr(), 5),
+                CURLE_OK,
+                "free again"
+            );
+
+            // A multi's cache, with no share: its other handle, and the multi.
+            let m = curl_multi_init();
+            let (c, d) = (curl_easy_init(), curl_easy_init());
+            assert_eq!(curl_multi_add_handle(m, c), ffi::CURLM_OK);
+            assert_eq!(curl_multi_add_handle(m, d), ffi::CURLM_OK);
+            assert_eq!(
+                curl_easy_ssls_import(c, key, null, 0, BLOB.as_ptr(), 5),
+                CURLE_OK
+            );
+            let mut o = Others {
+                same: d,
+                apart,
+                multi: m,
+                calls: 0,
+            };
+            let code = curl_easy_ssls_export(c, Some(try_them), (&raw mut o).cast());
+            assert_eq!((code, o.calls), (CURLE_OK, 1));
+            let mut running = 0;
+            assert_eq!(
+                curl_multi_perform(m, &mut running),
+                ffi::CURLM_OK,
+                "free again"
+            );
+            for h in [c, d] {
+                assert_eq!(curl_multi_remove_handle(m, h), ffi::CURLM_OK);
+                curl_easy_cleanup(h);
+            }
+            curl_multi_cleanup(m);
+            for h in [a, b, apart] {
+                curl_easy_cleanup(h);
+            }
             curl_share_cleanup(sh);
         }
     }

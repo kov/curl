@@ -533,7 +533,28 @@ impl ShimEasy {
 
     /// Admit `call` on the handle.
     pub(crate) fn enter(&self, call: EasyCall) -> Result<crate::gate::EasyEntry<'_>, Recursive> {
-        self.stack.enter(call, self.multi_stack())
+        let entry = self.stack.enter(call, self.multi_stack())?;
+        if call.rules().no_scache_lock && self.sessions_going_out() {
+            return Err(Recursive);
+        }
+        Ok(entry)
+    }
+
+    /// The sessions of the cache the handle uses are going out on this
+    /// thread (`Curl_ssl_scache_is_locked_by_current_thread`). Not asked of
+    /// a handle out of reach: a callback runs on its multi, which the gate
+    /// has refused every call this rule names but the WebSocket ones.
+    fn sessions_going_out(&self) -> bool {
+        let shared = self.with_home(|home| match home {
+            HomeRef::Detached(e) => e.ssls_going_out(),
+            HomeRef::Added(multi, id) => multi.easy_ssls_going_out(id),
+            HomeRef::Frame(..) => Some(false),
+        });
+        match shared {
+            Ok(Some(going)) => going,
+            Ok(None) => self.multi_stack().is_some_and(MultiStack::exporting),
+            Err(_) => false,
+        }
     }
 
     /// The handle's transfer, to add to a multi.

@@ -2399,6 +2399,10 @@ mod tests {
             b"http ",
             b" http",
             b"smb",
+            // Known to libcurl, as proxies' schemes, but no transfer's.
+            b"socks",
+            b"SOCKS5h",
+            b"http,socks4a",
             b"http,all",
             b"http,ft",
         ] {

@@ -3345,11 +3345,8 @@ pub(super) fn lookup_start(
             .map_err(oom)?;
         return Ok(Looked::Found(answer, found(Asked::Shortcut)));
     }
-    // A resolver library is not asked for IPv6 addresses it may not use.
-    let ask = match family {
-        Family::Any if !ipv6 => Family::V4,
-        other => other,
-    };
+    // Without IPv6 no caller asks for both families (`family`), and a
+    // resolver library is not asked for IPv6 alone.
     let over_doh = doh && cx.wants_doh();
     if over_doh || (cx.has_dns_library() && !(family == Family::V6 && !ipv6)) {
         // Said now, as the probes' own lines follow.
@@ -3378,7 +3375,7 @@ pub(super) fn lookup_start(
         let via = if over_doh {
             cx.doh_start(name, family).map(Via::Doh)
         } else {
-            match cx.dns_start(name, port, ask) {
+            match cx.dns_start(name, port, family) {
                 Some(Ok(resolve)) => Ok(Via::Library(resolve)),
                 Some(Err(DnsRefused::OutOfMemory)) | None => Err(ConnectError::OutOfMemory),
                 Some(Err(DnsRefused::Init)) => Err(ConnectError::Refused(ErrorKind::FailedInit)),

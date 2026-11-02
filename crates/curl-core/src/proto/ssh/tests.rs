@@ -2353,3 +2353,34 @@ fn an_sftp_status_keeps_its_number() {
         assert_eq!(crate::ssh::SftpStatus::from_number(n).number(), n);
     }
 }
+
+/// A download says the size it expects if the server gives one more than
+/// nothing, and the file's time if asked for it (`myssh_in_SFTP_FILETIME`).
+#[test]
+fn a_download_reports_its_size_and_time() {
+    let report = |content: &str, filetime: bool| {
+        let w = world(&[("/home/u/f", content)]);
+        let mut m = serving(PORT, &silent());
+        let url = "sftp://u@127.0.0.1:PORT/~/f";
+        let (id, _, _) = added(&mut m, &w, url, |o| o.filetime = filetime);
+        assert_eq!(
+            drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+            Ok(())
+        );
+        let e = m.remove(id, &mut NoEvents).unwrap().easy;
+        (e.report().sizes().download_expected, e.report().filetime())
+    };
+    assert_eq!(report("hello\n", false), (Some(6), None));
+    assert_eq!(report("", false), (None, None));
+    assert_eq!(report("hello\n", true), (Some(6), Some(1_000)));
+    // SFTP ends an empty file before it reads; SCP reads it.
+    let w = world(&[("/home/u/f", "")]);
+    let mut m = serving(PORT, &silent());
+    let (id, _, _) = added(&mut m, &w, "scp://u@127.0.0.1:PORT/home/u/f", |_| {});
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let e = m.remove(id, &mut NoEvents).unwrap().easy;
+    assert_eq!(e.report().sizes().download_expected, None);
+}

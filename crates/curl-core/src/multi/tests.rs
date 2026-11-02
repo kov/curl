@@ -522,6 +522,54 @@ impl MultiEvents<NoHost> for NotifyEvents {
     }
 }
 
+/// Says why it failed from a notification, and from a timer change.
+struct TellsFailure(Option<TransferId>);
+
+impl MultiEvents<NoHost> for TellsFailure {
+    fn timer(&mut self, cx: &mut EventCx<'_, NoHost>, _: TimerChange) -> Result<(), Abort> {
+        if let Some(id) = self.0.take() {
+            cx.tell_failure(id, b"from a timer");
+        }
+        Ok(())
+    }
+
+    fn wants_timer(&self) -> bool {
+        true
+    }
+
+    fn notify(&mut self, cx: &mut NotifyCx<'_, NoHost>, n: Notification) {
+        if let Notification::EasyDone(id) = n {
+            cx.tell_failure(id, b"from a notification");
+        }
+    }
+}
+
+/// A multi's callbacks reach the transfer named to say why it failed, as a
+/// `curl_easy_setopt` refused in one does.
+#[test]
+fn a_multi_s_callbacks_tell_a_transfer_s_failure() {
+    let (mut m, _clock) = multi();
+    m.set_notify(NotifyKind::EasyDone, true);
+    let mut done = easy("null://a");
+    let (sink, told) = crate::report::tests_told_sink();
+    done.options_mut().callbacks.failure = Some(sink);
+    let mut ev = TellsFailure(None);
+    let id = m.add(Box::new(done), (), &mut ev).unwrap();
+    drive_to_completion(&mut m, id, &mut ev).unwrap().unwrap();
+    assert_eq!(*told.lock().unwrap(), [b"from a notification".to_vec()]);
+
+    // Adding another transfer changes the timer.
+    let (mut m, _clock) = multi();
+    let mut first = easy("stall://a");
+    let (sink, told) = crate::report::tests_told_sink();
+    first.options_mut().callbacks.failure = Some(sink);
+    let id = m.add(Box::new(first), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let mut ev = TellsFailure(Some(id));
+    m.add(Box::new(easy("stall://b")), (), &mut ev).unwrap();
+    assert_eq!(*told.lock().unwrap(), [b"from a timer".to_vec()]);
+}
+
 fn notifying(m: &mut Multi) {
     m.set_notify(NotifyKind::InfoRead, true);
     m.set_notify(NotifyKind::EasyDone, true);

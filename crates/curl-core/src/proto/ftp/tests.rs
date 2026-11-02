@@ -4268,3 +4268,60 @@ fn a_range_cut_short_says_what_it_missed() {
     );
     assert!(!said.contains("Received only partial file"), "{said}");
 }
+
+/// A file of a single byte is read: what is left of a size said comes
+/// from the bytes that came, and none of the file's is taken for them.
+#[test]
+fn a_file_of_one_byte_is_read_whole() {
+    let replies: [&[u8]; 8] = [
+        b"220 hi\r\n",
+        b"331 password?\r\n",
+        b"230 in\r\n",
+        b"257 \"/\" is it\r\n",
+        b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+        b"200 binary\r\n",
+        b"213 1\r\n",
+        b"150 here\r\n226 done\r\n",
+    ];
+    let talk = Conversation::replies(&replies, false).greeting();
+    let file = data(b"x");
+    let mut m = serving(&[&talk], &[&file]);
+    let (id, body, text) = added(&mut m, URL, |_| {});
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", text.text());
+    assert_eq!(*body.0.lock().unwrap(), b"x");
+}
+
+/// A control connection serves only a transfer logging in with the same
+/// account (`Curl_ftp_conns_match`): one with another makes its own, and one
+/// with the same takes it.
+#[test]
+fn a_connection_is_reused_only_with_the_same_account() {
+    let run = |second: &'static [u8]| {
+        let again: [&[u8]; 3] = [
+            b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            b"213 5\r\n",
+            b"150 here\r\n226 done\r\n",
+        ];
+        let mut first: Vec<&[u8]> = LOGIN_AND_SETUP.to_vec();
+        first.push(b"150 here\r\n226 done\r\n");
+        first.extend_from_slice(&again);
+        let one = Conversation::replies(&first, false).greeting();
+        let mut fresh: Vec<&[u8]> = LOGIN_AND_SETUP.to_vec();
+        fresh.push(b"150 here\r\n226 done\r\n");
+        let two = Conversation::replies(&fresh, false).greeting();
+        let (f1, f2) = (data(b"hello"), data(b"hello"));
+        let mut m = serving(&[&one, &two], &[&f1, &f2]);
+        for account in [&b"mine"[..], second] {
+            let (id, _, text) = added(&mut m, URL, |o| {
+                o.line.make_mut().unwrap().ftp.account = Some(account.to_vec());
+            });
+            let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+            assert_eq!(result, Ok(()), "{}", text.text());
+            m.remove(id, &mut NoEvents).unwrap();
+        }
+        !two.received().is_empty()
+    };
+    assert!(!run(b"mine"), "the same account takes the connection");
+    assert!(run(b"another"), "another makes its own");
+}

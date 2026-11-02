@@ -1,3 +1,11 @@
+=== a control connection serves a transfer logging in with another account
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core proto::ftp::tests::a_connection_is_reused_only_with_the_same_account
+--- old
+                account: ftp.account.as_deref().map(copy_bytes).transpose()?,
+--- new
+                account: None,
+
 === a transfer's failure is lost to a DONE that goes well
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::ftp::tests::a_refused_file_fails_though_done_goes_well

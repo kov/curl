@@ -285,6 +285,70 @@ fn the_ssl_ctx_function_and_getinfo_hand_out_the_connection_s_objects() {
     }
 }
 
+/// A debug function's calls, by kind.
+unsafe extern "C" fn debug_kinds(
+    _: *mut CURL,
+    kind: ffi::curl_infotype,
+    _: *mut c_char,
+    _: usize,
+    kinds: *mut c_void,
+) -> c_int {
+    // SAFETY: the test's vector, alive through its handle's calls.
+    unsafe { &mut *kinds.cast::<Vec<ffi::curl_infotype>>() }.push(kind);
+    0
+}
+
+/// A handle that only connected, sending and receiving over TLS itself,
+/// has the records traced to its debug function while verbose, not after,
+/// and hands out the connection's `SSL` once it holds it.
+#[test]
+fn a_raw_call_over_tls_traces_its_records() {
+    let (port, server) = serve();
+    let mut seen = Seen::default();
+    let mut pair: (*mut Seen, *mut CURL) = (&raw mut seen, ptr::null_mut());
+    let c = handle(port, &raw mut seen, &raw mut pair);
+    let mut kinds: Vec<ffi::curl_infotype> = Vec::new();
+    let openssl = ffi::CURLSSLBACKEND_OPENSSL.0;
+    let request = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+    let debug = debug_kinds
+        as unsafe extern "C" fn(
+            *mut CURL,
+            ffi::curl_infotype,
+            *mut c_char,
+            usize,
+            *mut c_void,
+        ) -> c_int;
+    let mut sent = 0usize;
+    // SAFETY: a live handle, options of their types, and buffers and a
+    // vector that outlive their calls.
+    unsafe {
+        curl_easy_setopt(c, ffi::CURLOPT_CONNECT_ONLY, 1 as c_long);
+        curl_easy_setopt(c, ffi::CURLOPT_VERBOSE, 1 as c_long);
+        curl_easy_setopt(c, ffi::CURLOPT_DEBUGFUNCTION, debug as *mut c_void);
+        curl_easy_setopt(c, ffi::CURLOPT_DEBUGDATA, (&raw mut kinds).cast::<c_void>());
+        assert_eq!(crate::easy::curl_easy_perform(c), CURLE_OK);
+        kinds.clear();
+        let r =
+            crate::easy::curl_easy_send(c, request.as_ptr().cast(), request.len(), &raw mut sent);
+        assert_eq!((r, sent), (CURLE_OK, request.len()));
+    }
+    assert!(kinds.contains(&ffi::CURLINFO_SSL_DATA_OUT), "{kinds:?}");
+    let (_, backend, ssl) = session_info(c, ffi::CURLINFO_TLS_SSL_PTR);
+    assert_eq!(backend, openssl);
+    assert!(!ssl.is_null(), "the connection the handle holds");
+    kinds.clear();
+    // SAFETY: as above.
+    unsafe {
+        curl_easy_setopt(c, ffi::CURLOPT_VERBOSE, 0 as c_long);
+        let r = crate::easy::curl_easy_send(c, b"x".as_ptr().cast(), 1, &raw mut sent);
+        assert_eq!(r, CURLE_OK);
+    }
+    assert!(kinds.is_empty(), "{kinds:?}");
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    server.join().unwrap();
+}
+
 /// The function's error code fails the transfer with that code, said as
 /// C says it; a code no transfer ends with is an abort (DIVERGENCE.md).
 #[test]

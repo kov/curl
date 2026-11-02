@@ -67,6 +67,23 @@ exclude_re = [
     # do not set in their own process: test_22_httpsrr.py runs them.
     "awaits_record",
     "awaiting",
+    # The trace asks whether anything would hear a raw call's records only
+    # to save the work: `note_bytes` asks the same again before it speaks.
+    'curl-core/src/multi/raw\.rs:.*: replace <impl crate::conn::layer::ForTransfer for RawCx<.*>>::has_debug_handler -> bool with true$',
+    'curl-core/src/multi/raw\.rs:.*: replace && with \|\| in <impl crate::conn::layer::ForTransfer for RawCx<.*>>::has_debug_handler$',
+    # The room reserved for a header's line: one wrong only makes the
+    # fallible pushes after it grow the buffer.
+    'curl-core/src/proto/http/h3\.rs:.*: replace \+ with \* in Request::h3_event$',
+    # An encoded send's flush leaves payload 0 only with an empty buffer,
+    # where the loop's own condition ends it and `Ok(*sent)` follows either
+    # arm: adding 0 and skipping nothing changes nothing.
+    'curl-core/src/proto/ws\.rs:.*: replace (match guard self\.sendbuf_payload > 0 with true|> with >=) in WsConn::send_counting$',
+    # A pass consumes all it took out of the receive buffer before giving it
+    # back: dropping it costs a new allocation at the next read, no bytes.
+    'curl-core/src/proto/(xfer|ftp)\.rs:.*: replace <impl Source<H> for (ConnLease|DataSource<.*>)>::put_rx with \(\)$',
+    # `file:` has none of the flags `scheme` is asked for (TLS, reuse of
+    # TLS, datagrams), so no scheme answers as its does.
+    'curl-core/src/proto/mod\.rs:.*: delete match arm ProtoState::File\(_\) in ProtoState::scheme$',
     # A `Done` that does not await its protocol's answer never outlasts the
     # step it is entered in: the guards that tell it from a waiting one
     # in `due`, `fail`, `pollset` and the checker's `awaits_end` are never

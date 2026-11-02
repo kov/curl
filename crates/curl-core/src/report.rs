@@ -1023,6 +1023,27 @@ pub mod debug_info {
     }
 }
 
+/// What a test's failure sink heard.
+#[cfg(test)]
+pub(crate) type TestsTold = std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>;
+
+/// A failure sink for tests, and what it heard.
+#[cfg(test)]
+pub(crate) fn tests_told_sink() -> (
+    crate::handler::Handler<dyn crate::handler::TextSink>,
+    TestsTold,
+) {
+    #[derive(Clone)]
+    struct Told(TestsTold);
+    impl crate::handler::TextSink for Told {
+        fn write(&self, text: &[u8]) {
+            self.0.lock().unwrap().push(text.to_vec());
+        }
+    }
+    let told = Told(Default::default());
+    (crate::handler::Handler::text(told.clone()).unwrap(), told.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

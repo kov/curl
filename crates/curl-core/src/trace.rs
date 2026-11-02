@@ -701,6 +701,68 @@ impl fmt::Display for Ip {
 mod tests {
     use super::*;
 
+    /// What a raw call's notes hear.
+    fn heard(call: impl FnOnce(Notes<'_>)) -> Vec<Vec<u8>> {
+        let mut heard = Vec::new();
+        call(&mut |_, b: &[u8]| heard.push(b.to_vec()));
+        heard
+    }
+
+    /// A handle with a debug handler, verbose or not, tracing ids or not.
+    fn tracing(verbose: bool, handler: bool, ids: bool) -> crate::easy::Easy {
+        struct Nothing;
+        impl crate::handler::DebugHandler for Nothing {
+            fn debug(&self, _: &mut crate::multi::TransferCx<'_>, _: DebugKind, _: &[u8]) {}
+        }
+        let mut e = crate::easy::Easy::new();
+        e.options_mut().output.verbose = verbose;
+        if handler {
+            e.options_mut().callbacks.debug =
+                Some(crate::handler::Handler::debug(Nothing).unwrap());
+        }
+        if ids {
+            let components = crate::components::Components::new().unwrap();
+            components.configure(b"lib-ids");
+            e.set_components(Some(components));
+        }
+        e
+    }
+
+    /// A raw call's bytes reach a verbose handle's debug handler and only
+    /// that; with ids on, those short of a line are prefixed with them.
+    #[test]
+    fn a_raw_call_s_bytes_go_to_a_verbose_debug_handler() {
+        let note = |e: &crate::easy::Easy, bytes: &[u8]| {
+            heard(|notes| note_bytes(e, DebugKind::Text, bytes, notes))
+        };
+        assert!(note(&tracing(false, true, false), b"x").is_empty());
+        assert!(note(&tracing(true, false, false), b"x").is_empty());
+        assert_eq!(note(&tracing(true, true, false), b"x"), [b"x".to_vec()]);
+        let ids = tracing(true, true, true);
+        assert_eq!(note(&ids, b"x"), [b"[x-x] x".to_vec()]);
+        for len in [LINE_MAX, LINE_MAX + 1] {
+            let long = vec![b'x'; len];
+            assert_eq!(
+                note(&ids, &long),
+                std::slice::from_ref(&long),
+                "as they are"
+            );
+        }
+        let just_short = vec![b'x'; LINE_MAX - 1];
+        assert!(note(&ids, &just_short)[0].starts_with(b"[x-x] "));
+    }
+
+    /// Why a raw call failed is traced to a verbose handle whole, with its
+    /// newline, at the longest a reason can be.
+    #[test]
+    fn a_raw_call_s_failure_keeps_its_newline() {
+        let e = tracing(true, false, false);
+        let detail = vec![b'x'; DETAIL_MAX];
+        let lines = heard(|notes| note_failure(&e, &detail, notes));
+        assert_eq!(lines[0].len(), DETAIL_MAX + 1);
+        assert!(lines[0].ends_with(b"x\n"));
+    }
+
     /// A line that leaves room for C's newline and zero byte keeps all of
     /// itself; a longer one keeps 2043 bytes and `...`.
     #[test]

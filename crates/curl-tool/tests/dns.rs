@@ -210,6 +210,7 @@ fn an_interface_name_that_does_not_exist_is_said_as_c_ares_says_it() {
 fn an_interface_name_is_waited_for_no_longer_than_the_transfer_may_take() {
     let (dns, _heard) = dns_server();
     let servers = format!("127.0.0.1:{dns}");
+    let started = std::time::Instant::now();
     let run = curl(&[
         "-v",
         "--connect-timeout",
@@ -223,6 +224,9 @@ fn an_interface_name_is_waited_for_no_longer_than_the_transfer_may_take() {
     let said = String::from_utf8_lossy(&run.stderr);
     assert_eq!(run.status.code(), Some(45), "{said}");
     assert!(said.contains("Could not bind to 'silent.test'"), "{said}");
+    // Before c-ares would give up on its own, its first try taking 2 s.
+    let took = started.elapsed();
+    assert!(took < Duration::from_millis(1900), "{took:?}");
 }
 
 #[test]

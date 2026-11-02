@@ -492,3 +492,113 @@ pub(super) fn orphan<H: Host>(slots: &Slots<H>, id: TransferId) -> bool {
         Owner::Internal { master, probe, .. } => probe.orphaned() || slots.get(*master).is_none(),
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::disallowed_methods, clippy::disallowed_macros)]
+mod tests {
+    use super::*;
+
+    fn polled(queries: [Query; 2]) -> Polled {
+        let shared = TryArc::try_new(Mutex::new(State {
+            gone: false,
+            queries,
+            record: None,
+        }))
+        .unwrap();
+        Lookup(shared).poll()
+    }
+
+    fn found(a: &str) -> Query {
+        Query::Ended(Ok(vec![a.parse().unwrap()]))
+    }
+
+    /// While a probe runs the resolve says how many do and which ended,
+    /// as `Curl_resolv_query_str` names them.
+    #[test]
+    fn a_lookup_waiting_says_what_ended() {
+        let waiting = || Query::Waiting(Vec::new());
+        for (queries, ongoing, named) in [
+            ([waiting(), waiting()], 2, "-"),
+            ([found("::1"), waiting()], 1, "AAAA"),
+            ([waiting(), found("127.0.0.1")], 1, "A"),
+            ([Query::Unasked, waiting()], 1, "-"),
+        ] {
+            let Polled::Waiting {
+                ongoing: o,
+                responses,
+            } = polled(queries)
+            else {
+                panic!("a probe runs");
+            };
+            assert_eq!((o, responses), (ongoing, named));
+        }
+    }
+
+    /// Once every probe ended: the addresses, IPv6's first; no such name
+    /// only if every query said so; anything else a failure.
+    #[test]
+    fn a_lookup_done_gives_its_answer() {
+        let done = |queries| match polled(queries) {
+            Polled::Done(answer) => answer,
+            Polled::Waiting { .. } => panic!("every probe ended"),
+        };
+        let ip = |a: &str| a.parse::<IpAddr>().unwrap();
+        assert_eq!(
+            done([found("::1"), found("127.0.0.1")]),
+            Ok(vec![ip("::1"), ip("127.0.0.1")])
+        );
+        assert_eq!(
+            done([Query::Unasked, found("127.0.0.1")]),
+            Ok(vec![ip("127.0.0.1")])
+        );
+        let none = || Query::Ended(Err(QueryFailure::NoSuchName));
+        let other = || Query::Ended(Err(QueryFailure::Other));
+        assert_eq!(done([none(), none()]), Err(ResolveFailure::NotFound));
+        assert_eq!(done([none(), other()]), Err(ResolveFailure::Failed));
+        assert_eq!(
+            done([other(), found("127.0.0.1")]),
+            Ok(vec![ip("127.0.0.1")])
+        );
+    }
+
+    /// The numbers C's `DOHcode` gives each failure to make a query.
+    #[test]
+    fn a_query_that_cannot_be_made_is_numbered_as_c_numbers_it() {
+        for (e, n) in [
+            (DohError::BadLabel, 1),
+            (DohError::OutOfRange, 2),
+            (DohError::TooSmall, 4),
+            (DohError::OutOfMemory, 5),
+            (DohError::RdataLength, 6),
+            (DohError::Malformed, 7),
+            (DohError::BadRcode, 8),
+            (DohError::UnexpectedType, 9),
+            (DohError::UnexpectedClass, 10),
+            (DohError::BadId, 12),
+            (DohError::NameTooLong, 13),
+            (DohError::NoSuchName, 14),
+        ] {
+            assert_eq!(number(e), n, "{e:?}");
+        }
+    }
+
+    /// A record refused is said in the words of C's `CURLcode` for it.
+    #[test]
+    fn a_record_refused_is_said_in_cs_words() {
+        for (e, words) in [
+            (
+                RecordError::BadParameter,
+                "A libcurl function was given a bad argument",
+            ),
+            (RecordError::BadName, "Out of memory"),
+            (RecordError::OutOfMemory, "Out of memory"),
+            (RecordError::Weird, "Weird server reply"),
+            (
+                RecordError::BadAlpn,
+                "Unrecognized or bad HTTP Content or Transfer-Encoding",
+            ),
+        ] {
+            assert_eq!(record_error(e), words, "{e:?}");
+        }
+    }
+}

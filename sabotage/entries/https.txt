@@ -307,3 +307,23 @@ witness: curl-tool a_second_attempt_started_during_a_resolve_takes_what_it_finds
         {
 --- new
         if c.lead().is_some_and(ConnectMachine::resolving) {
+
+=== a record's HTTP/3 is taken where it is not allowed
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-tool a_record_s_http_3_is_not_taken_where_it_is_not_allowed
+--- old
+                RecordAlpn::H3 => (Alpn::H3, self.neg.allowed.h3 && self.may_h3()),
+--- new
+                RecordAlpn::H3 => (Alpn::H3, self.neg.allowed.h3 || self.may_h3()),
+
+=== a look at the record still to come is not said
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-tool an_https_origins_record_is_asked_for_under_its_port
+--- old
+fn say_lookup<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) {
+    let peer = route.target();
+--- new
+fn say_lookup<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) {
+    let _ = (route, cx);
+    return;
+    let peer = route.target();

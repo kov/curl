@@ -12,7 +12,8 @@ use std::time::Duration;
 /// A server on a port of its own that answers each query with `127.0.0.1`
 /// for A, `alpn=http/1.1` for HTTPS and nothing for AAAA, or with NXDOMAIN
 /// for a name under `nx`; a name under `silent` gets no answer, one under
-/// `slowa` its A late, and one with `norec` in it none for its HTTPS record.
+/// `slowa` its A late, one with `norec` in it none for its HTTPS record, and
+/// one with `h3rec` in it `alpn=h3` for it.
 /// Each query's type and name is sent on the channel.
 fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -42,7 +43,10 @@ fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
                 answer.extend_from_slice(b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x37\x00\x04");
                 answer.extend_from_slice(&[127, 0, 0, 1]);
             }
-            if !nx && kind == 65 {
+            if !nx && kind == 65 && name.contains("h3rec") {
+                answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x0a");
+                answer.extend_from_slice(b"\x00\x01\x00\x00\x01\x00\x03\x02h3");
+            } else if !nx && kind == 65 {
                 answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x10");
                 answer.extend_from_slice(b"\x00\x01\x00\x00\x01\x00\x09\x08http/1.1");
             }
@@ -121,6 +125,8 @@ fn an_https_origins_record_is_asked_for_under_its_port() {
     let run = curl(&[
         "-v",
         "-k",
+        "--trace-config",
+        "dns",
         "--dns-servers",
         &servers,
         "https://name.test:1/",
@@ -131,6 +137,13 @@ fn an_https_origins_record_is_asked_for_under_its_port() {
         asked.contains(&(65, "_1._https.name.test".to_owned())),
         "{asked:?}"
     );
+    // Each look at the record is said, as it starts and as the connect
+    // looks again for its answer: C says three.
+    let said = String::from_utf8_lossy(&run.stderr);
+    let looks = said
+        .matches("cache lookup name.test:1 queries=HTTPS -> 0 not found")
+        .count();
+    assert!(looks >= 2, "{said}");
 }
 
 #[test]
@@ -314,7 +327,12 @@ fn a_resolve_is_looked_at_as_soon_as_it_starts() {
         lines[started + 1].contains("cache lookup nx.test:1"),
         "{said}"
     );
-    assert!(lines[started + 2].contains("resolve incomplete"), "{said}");
+    // Still going on, or answered already where the server was quick.
+    let next = lines[started + 2];
+    assert!(
+        next.contains("resolve incomplete") || next.contains("Could not resolve host: nx.test"),
+        "{said}"
+    );
 }
 
 /// A debug build says what it refused, as C's does.
@@ -414,4 +432,31 @@ fn a_socket_closed_is_said_before_the_answer_is_taken() {
             "{said}"
         );
     }
+}
+
+#[test]
+fn a_record_s_http_3_is_not_taken_where_it_is_not_allowed() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    // The record offers HTTP/3 alone, which `--http2` does not allow: the
+    // attempts are what is wanted, as if it offered nothing. The record is
+    // known as the second attempt is chosen.
+    let run = curl(&[
+        "-v",
+        "-k",
+        "--http2",
+        "--trace-config",
+        "https-connect",
+        "--dns-servers",
+        &servers,
+        "https://h3rec.test:1/",
+    ]);
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(7), "{said}");
+    assert!(
+        said.contains("HTTPS-RR h3rec.test:1: 1 . alpn=h3"),
+        "{said}"
+    );
+    assert!(!said.contains("uses h3"), "{said}");
+    assert!(!said.contains("QUIC"), "{said}");
 }

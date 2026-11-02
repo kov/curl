@@ -31,7 +31,7 @@ witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 --- old
         Lookup::Found(answer) => return Ok(Looked::Found(answer, Found::Cached)),
 --- new
-        Lookup::Found(_) => Found::Resolved,
+        Lookup::Found(_) => (Found::Resolved, false),
 
 === a name answered without a resolver is not kept
 file: crates/curl-core/src/conn/connect.rs

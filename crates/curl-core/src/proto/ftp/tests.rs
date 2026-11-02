@@ -1430,6 +1430,58 @@ fn a_wildcard_download_tells_the_application_of_each_file() {
     assert!(received(&talk).ends_with("LIST\r\nEPSV\r\nTYPE I\r\nRETR c%.txt\r\n"));
 }
 
+/// A wildcard download whose files the application all passes over ends
+/// as its next request finds nothing left to get: straight from DO to
+/// COMPLETED, its connection let go with no DONE, as the C build's trace
+/// says (`multistate_do`'s skip for `CURLWC_DONE`).
+#[test]
+fn a_wildcard_download_with_nothing_left_skips_its_done() {
+    use crate::handler::{ChunkBegin, ChunkBeginHandler, FileInfo};
+    struct Passes;
+    impl ChunkBeginHandler for Passes {
+        fn begin(&self, _: &mut TransferCx<'_>, _: &FileInfo<'_>, _: usize) -> ChunkBegin {
+            ChunkBegin::Skip
+        }
+    }
+    let talk = listing_server(0);
+    let list = data(LISTING);
+    let mut m = serving(&[&talk], &[&list]);
+    let (id, body, text) = added_tracing(&mut m, WILDCARD, Easy::new(), b"multi", |o| {
+        let ftp = &mut o.line.make_mut().unwrap().ftp;
+        ftp.wildcard = true;
+        ftp.chunk_begin = Some(Handler::chunk_begin(Passes).unwrap());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"");
+    let states: Vec<&str> = said.lines().filter(|l| l.contains("] -> [")).collect();
+    // The C build's states, line for line.
+    let want = [
+        "INIT] -> [SETUP",
+        "SETUP] -> [CONNECT",
+        "CONNECT] -> [CONNECTING",
+        "CONNECTING] -> [PROTOCONNECT",
+        "PROTOCONNECT] -> [PROTOCONNECTING",
+        "PROTOCONNECTING] -> [DO",
+        "DO] -> [DOING",
+        "DOING] -> [DOING_MORE",
+        "DOING_MORE] -> [DID",
+        "DID] -> [PERFORMING",
+        "PERFORMING] -> [DONE",
+        "DONE] -> [INIT",
+        "INIT] -> [SETUP",
+        "SETUP] -> [CONNECT",
+        "CONNECT] -> [CONNECTING",
+        "CONNECTING] -> [PROTOCONNECT",
+        "PROTOCONNECT] -> [DO",
+        "DO] -> [COMPLETED",
+        "COMPLETED] -> [MSGSENT",
+    ]
+    .map(|s| format!("[MULTI] [{s}]"));
+    assert_eq!(states, want, "{states:#?}");
+}
+
 /// A listing that cannot be read fails the download as its next request
 /// starts, after it was read whole; one that names nothing the pattern
 /// matches fails it as nothing found.

@@ -1155,6 +1155,47 @@ fn a_url_too_long_to_read_back_fails_its_transfer() {
     );
 }
 
+/// A URL refused is reported as C's getinfo reads it back: its dots kept
+/// where the handle keeps paths as they are, removed otherwise; one the
+/// transfer refused to parse, here for its user, read back by getinfo's
+/// own parse, which takes the user and drops it (`effective_url`; the C
+/// build reports each as below).
+#[test]
+fn a_refused_url_is_reported_with_its_path_as_the_handle_keeps_it() {
+    let (mut m, _clock) = multi();
+    let ev = &mut NoEvents;
+    for (url, no_user, as_is, want) in [
+        ("foo://h/a/../b", false, true, &b"foo://h/a/../b"[..]),
+        ("foo://h/a/../b", false, false, b"foo://h/b"),
+        (
+            "http://u@127.0.0.1:1/a/../b",
+            true,
+            true,
+            b"http://127.0.0.1:1/a/../b",
+        ),
+        (
+            "http://u@127.0.0.1:1/a/../b",
+            true,
+            false,
+            b"http://127.0.0.1:1/b",
+        ),
+    ] {
+        let mut e = easy(url);
+        e.options_mut().url_rules.path_as_is = as_is;
+        e.options_mut().url_rules.disallow_user = no_user;
+        let id = m.add(Box::new(e), (), ev).unwrap();
+        m.perform(ev).unwrap();
+        let done = messages(&mut m);
+        assert!(done.len() == 1 && done[0].1.is_err(), "{url}: {done:?}");
+        assert_eq!(
+            m.easy(id).unwrap().report().url(),
+            Some(want),
+            "{url} {as_is}"
+        );
+        m.remove(id, ev).unwrap();
+    }
+}
+
 /// A transfer that ends before it was about to send gets the times it
 /// skipped (`mstate_enter_completed`).
 #[test]

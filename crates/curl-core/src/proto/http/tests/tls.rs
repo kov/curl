@@ -242,6 +242,67 @@ fn https_without_a_tls_library_is_not_supported() {
     assert_eq!(talk.received(), b"");
 }
 
+/// A handle's next transfer on the connection its last made keeps that
+/// handshake's verification result, as C keeps it in the handle's
+/// settings (`ssl_config->certverifyresult`; the C build reports 18 for
+/// both transfers on a self-signed server, the second reusing).
+#[test]
+fn a_reused_connection_keeps_the_handle_s_verify_result() {
+    let (_backend, libraries) = tls();
+    let [welcome, response] = served(OK);
+    let talk = Conversation::replies(&[&welcome, &response, &response], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let one = get_tls(&mut m, &libraries, "/a", talk.clone(), |_| {});
+    assert_eq!(one.result, Ok(()));
+    let first = one.easy.report().verify_result();
+    assert_ne!(first, 0, "the fake says a result");
+    let two = get_with(&mut m, one.easy, "/b", talk.clone(), |o| {
+        let url = format!("https://127.0.0.1:{PORT}/b");
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(two.result, Ok(()));
+    assert!(
+        two.seen
+            .text()
+            .iter()
+            .any(|l| l.starts_with("Reusing existing https: connection")),
+        "{:?}",
+        two.seen.text()
+    );
+    assert_eq!(two.easy.report().verify_result(), first);
+}
+
+/// The same of the proxy's: a handle's next transfer through the HTTPS
+/// proxy connection its last made keeps the proxy's verification result.
+#[test]
+fn a_reused_proxy_connection_keeps_the_handle_s_proxy_verify_result() {
+    let (_backend, libraries) = tls();
+    let [welcome, response] = served(OK);
+    let talk = Conversation::replies(&[&welcome, &response, &response], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries.clone());
+    let one = get_with(&mut m, e, "/", talk.clone(), |o| {
+        https_proxy(o, b"http://origin.example/p");
+    });
+    assert_eq!(one.result, Ok(()));
+    let first = one.easy.report().proxy_verify_result();
+    assert_ne!(first, 0, "the fake says a result");
+    let two = get_with(&mut m, one.easy, "/", talk.clone(), |o| {
+        https_proxy(o, b"http://origin.example/q");
+    });
+    assert_eq!(two.result, Ok(()), "{:?}", two.seen.text());
+    assert!(
+        two.seen
+            .text()
+            .iter()
+            .any(|l| l.starts_with("Reusing existing")),
+        "{:?}",
+        two.seen.text()
+    );
+    assert_eq!(two.easy.report().proxy_verify_result(), first);
+}
+
 /// A connection made with TLS serves the next transfer only if its TLS
 /// would be made the same (`url_match_ssl_config`): the same settings
 /// reuse it; a transfer that does not verify its peer, or plain HTTP to
@@ -1326,6 +1387,28 @@ fn talk_on(m: &mut Multi, id: crate::multi::TransferId) {
     let mut buf = [0u8; 64];
     let got = m.recv_raw(id, &mut buf, &mut |_, _| {});
     assert!(matches!(got, Some(Ok(_))), "{got:?}");
+}
+
+/// The connection a handle only made gives its TLS library's objects
+/// through the handle once a raw call took it up, from the share's pool
+/// that keeps it, as C's `data->conn` gives them once the call set it;
+/// none before.
+#[test]
+fn a_connection_only_made_gives_its_tls_objects_once_a_call_took_it_up() {
+    use crate::share::{Kind, Share};
+    let (_backend, libraries) = tls();
+    let talk = answering(1).remove(0);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    m.make_handle_own();
+    let share = Share::new().unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let mut e = only_connecting(&libraries);
+    e.set_share(Some(share.clone())).unwrap();
+    e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
+    assert!(e.tls_native().is_none(), "none before a call");
+    let sent = m.send_raw_for(&mut e, b"x", &mut |_, _| {});
+    assert!(sent.is_ok(), "{sent:?}");
+    assert!(e.tls_native().is_some(), "the share's connection's");
 }
 
 /// A ticket that comes as a handle in a multi reads the connection it only

@@ -1029,6 +1029,8 @@ struct Wire {
     /// Once its last reply is read, a read fails as on a connection the
     /// peer reset.
     resets: bool,
+    /// The reset polls in error and hung up, as Linux polls it.
+    reset_polls: bool,
     /// The peer answers each send with its next reply, not each
     /// request's head: a handshake whose messages have no blank line.
     per_send: bool,
@@ -1309,6 +1311,18 @@ impl Conversation {
             .lock()
             .expect("no test panics holding the wire")
             .resets = true;
+        self
+    }
+
+    /// The same peer, resetting as `resetting` does, the reset polled in
+    /// error and hung up beside readable, as Linux polls a socket the
+    /// peer reset.
+    pub fn resetting_polled(self) -> Conversation {
+        {
+            let mut wire = self.0.lock().expect("no test panics holding the wire");
+            wire.resets = true;
+            wire.reset_polls = true;
+        }
         self
     }
 
@@ -2010,6 +2024,11 @@ impl Socket for FakeSocket {
         let refuses = matches!(self.peer(), Peer::Refuses | Peer::RefusesAfter(_));
         if now == Events::OUT && !refuses && wire.readable() {
             now = now | Events::IN;
+            // A reset come polls in error and hung up beside readable,
+            // as Linux polls a socket the peer reset.
+            if wire.reset_polls && wire.resets && wire.answered == wire.replies.len() {
+                now = now | Events::ERR | Events::HUP;
+            }
         }
         if now == Events::OUT && refuses {
             // A refused connect polls in error, and hung up.
@@ -2597,6 +2616,21 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     use super::*;
+
+    /// A socket the system opened gives a library working on it, as
+    /// libssh and libldap do, the descriptor it is polled by.
+    #[test]
+    fn a_system_socket_gives_its_descriptor() {
+        use std::os::fd::AsRawFd as _;
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+        let s = curl_os::net::open(at, curl_os::net::Protocol::Tcp, true).unwrap();
+        let polled = match s.readiness() {
+            Readiness::Poll(fd) => fd.as_raw_fd(),
+            Readiness::Known { .. } => panic!("a system socket is polled"),
+        };
+        let given = Socket::descriptor(&s).expect("a descriptor");
+        assert_eq!(given.as_raw_fd(), polled);
+    }
 
     /// The system's resolver, which stands in for the reference build's
     /// c-ares, gives c-ares's reasons, in any build.

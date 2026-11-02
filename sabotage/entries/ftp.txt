@@ -394,3 +394,15 @@ features: test-util debug-hooks
 --- new
         let _ = shaken;
         racing
+
+=== a wildcard download with nothing left goes through DONE
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::ftp::tests::a_wildcard_download_with_nothing_left_skips_its_done
+features: test-util debug-hooks
+--- old
+        Done {
+            next: AfterRequest::Nothing,
+            ..self.done(Ok(()), false, Reached::Unmade)
+--- new
+        Done {
+            ..self.done(Ok(()), false, Reached::Unmade)

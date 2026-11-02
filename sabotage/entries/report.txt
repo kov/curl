@@ -297,3 +297,13 @@ witness: curl-core multi::tests::the_debug_limit_on_connections_is_read_as_c_rea
         n = n.checked_mul(10)?.checked_add(u32::from(d - b'0'))?;
 --- new
         n = n.wrapping_mul(10).wrapping_add(u32::from(d - b'0'));
+
+=== a transfer starting over forgets the handle's verify result
+file: crates/curl-core/src/report.rs
+witness: curl-core proto::http::tests::tls::a_reused_connection_keeps_the_handle_s_verify_result
+features: test-util debug-hooks
+--- old
+            verify_result: self.verify_result,
+            proxy_verify_result: self.proxy_verify_result,
+--- new
+            proxy_verify_result: self.proxy_verify_result,

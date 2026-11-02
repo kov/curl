@@ -2097,6 +2097,32 @@ fn a_location_not_followed_is_kept_resolved() {
     assert_eq!(ran.easy.report().redirect_url(), None);
 }
 
+/// A `Location:` not followed is read back as C's build reads it, paths
+/// as is or not: its dots removed and an empty query dropped
+/// (`follow_fake` parses with `CURLU_NON_SUPPORT_SCHEME` alone).
+#[test]
+fn a_location_not_followed_drops_its_dots_and_empty_query() {
+    let reply = |location: &str| {
+        format!("HTTP/1.1 201 Created\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n")
+            .into_bytes()
+    };
+    for (location, want) in [
+        (format!("http://127.0.0.1:{PORT}/x/../y"), "/y"),
+        ("/y?".to_string(), "/y"),
+    ] {
+        let ran = run("/p", &reply(&location), false, |o| {
+            o.url_rules.path_as_is = true;
+        });
+        assert_eq!(ran.result, Ok(()));
+        let shown = format!("http://127.0.0.1:{PORT}{want}");
+        assert_eq!(
+            ran.easy.report().redirect_url(),
+            Some(shown.as_bytes()),
+            "{location}"
+        );
+    }
+}
+
 /// A redirect to a URL whose user has a space resolves, spaces allowed,
 /// and is refused as its request is set up, as C's build says it: the
 /// next leg's URL is parsed without them (`follow_parse_url`, then
@@ -2115,6 +2141,35 @@ fn a_redirect_to_a_user_with_a_space_resolves_and_is_refused() {
         text.contains(&"URL rejected: Bad user\n".to_string()),
         "{text:?}"
     );
+}
+
+/// A redirect followed is resolved as C's build resolves it: a space
+/// encoded, `+` in a query, and with paths as they are, an absolute
+/// target's dots kept but a relative one's removed in the joining
+/// (`follow_parse_url`).
+#[test]
+fn a_redirect_followed_is_resolved_as_c_resolves_it() {
+    for (location, as_is, want) in [
+        ("/a b".to_string(), false, "/a%20b"),
+        ("/x?a b".to_string(), false, "/x?a+b"),
+        (format!("http://127.0.0.1:{PORT}/x/../y"), true, "/x/../y"),
+        ("x/../y".to_string(), true, "/y"),
+    ] {
+        let first = moved(&location, false);
+        let (mut m, talk, _) = server(&[&first, OK], false);
+        let ran = get(&mut m, "/p", talk, |o| {
+            o.http.follow = Follow::All;
+            o.url_rules.path_as_is = as_is;
+        });
+        assert_eq!(ran.result, Ok(()), "{location}: {:?}", ran.seen.text());
+        let mut want_sent = request_of("/p");
+        want_sent.extend_from_slice(&request_of(want));
+        assert_eq!(
+            String::from_utf8_lossy(&ran.request),
+            String::from_utf8_lossy(&want_sent),
+            "{location}"
+        );
+    }
 }
 
 fn moved(location: &str, close: bool) -> Vec<u8> {
@@ -3643,6 +3698,34 @@ fn a_shared_url_is_read_as_each_transfer_starts() {
         o.set_shared_url(Some(shared.clone()))
     });
     assert!(fixture::find(&ran.request, b"GET /two HTTP/1.1\r\n").is_some());
+}
+
+/// A URL the application keeps with a space it allowed is followed from
+/// as C's build follows it: the space sent encoded, and the redirect
+/// resolved against the URL as it was, space and all (`state.uh`).
+#[test]
+fn a_shared_url_s_space_is_kept_through_a_redirect() {
+    let text = format!("http://127.0.0.1:{PORT}/a b");
+    let allow = crate::url::ParseOptions {
+        allow_space: true,
+        ..crate::url::ParseOptions::NONE
+    };
+    let shared =
+        crate::url::SharedUrl::new(crate::url::Url::parse(text.as_bytes(), allow).unwrap())
+            .unwrap();
+    let first = redirect(302, "c");
+    let (mut m, talk, _) = server(&[&first, OK], false);
+    let ran = get(&mut m, "/ignored", talk, |o| {
+        o.set_shared_url(Some(shared.clone()));
+        o.http.follow = Follow::All;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let mut want = request_of("/a%20b");
+    want.extend_from_slice(&request_of("/c"));
+    assert_eq!(
+        String::from_utf8_lossy(&ran.request),
+        String::from_utf8_lossy(&want)
+    );
 }
 
 /// The request line carries the path percent-encoded, its lowercase hex

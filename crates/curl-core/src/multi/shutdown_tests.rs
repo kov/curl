@@ -855,6 +855,63 @@ fn a_reuse_check_says_what_the_socket_answered() {
     );
 }
 
+/// The reuse check says what the socket answered as C's
+/// `cf_socket_conn_is_alive` says it: input pending on a connection the
+/// peer closed looks alive, a reset is an error and dead; neither
+/// connection is reused.
+#[test]
+fn a_reuse_check_says_input_and_a_reset_apart() {
+    use crate::components::{Component, Components, Level};
+    for (first, line) in [
+        (
+            Conversation::replies(&[OK], true),
+            "* [TCP] is_alive: valid events, looks alive",
+        ),
+        (
+            Conversation::replies(&[OK], false).resetting_polled(),
+            "* [TCP] is_alive: err/hup/etc events, assume dead",
+        ),
+    ] {
+        let clock = ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], 4));
+        let second = Conversation::replies(&[OK], false);
+        let fake = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, first.clone())
+            .with_conversation(at, second.clone());
+        let env = Env {
+            clock: Box::new(clock),
+            net: Box::new(fake),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m: Multi = Multi::new(env).unwrap();
+        let components = Components::new().unwrap();
+        components.set(Component::Tcp, Level::Info);
+        let written = Written::default();
+        m.trace_internally_to(
+            components,
+            crate::handler::Handler::text(written.clone()).unwrap(),
+        );
+        let mut ev = Rec::default();
+        for _ in 0..2 {
+            let mut e = Box::new(Easy::new());
+            e.options_mut()
+                .set_url(Some(b"http://127.0.0.1:4/"))
+                .unwrap();
+            let id = m.add(e, (), &mut ev).unwrap();
+            by_perform(&mut m, id, &mut ev);
+        }
+        let lines = written.lines();
+        assert!(lines.iter().any(|l| l == line), "{lines:?}");
+        assert!(
+            !lines.iter().any(|l| l.contains("poll timeout")),
+            "{lines:?}"
+        );
+        assert!(!second.received().is_empty(), "a new connection made");
+    }
+}
+
 #[test]
 fn a_multi_traces_internally_when_asked() {
     let (mut m, _wire, _clock) = lingering(Linger::UntilPeer);

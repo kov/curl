@@ -34,6 +34,32 @@ fn h2_get(replies: &[&[u8]], path: &str, set: impl FnOnce(&mut Options)) -> (Ran
 
 const RESPONSE: &[u8] = b"S\nH 1 0\n:status: 200\ncontent-length: 5\nx-a: b\n\nD 1 5 1\nhello";
 
+/// A target in absolute form gives the stream's scheme, authority and
+/// path as C's build gives them: any scheme, a space kept
+/// (`Curl_h1_req_parse_read`'s `CURLU_NON_SUPPORT_SCHEME` and
+/// `CURLU_ALLOW_SPACE`).
+#[test]
+fn an_absolute_target_gives_the_stream_s_fields() {
+    let (ran, _) = h2_get(&[RESPONSE], "/", |o| {
+        o.http.custom.make_mut().unwrap().target = Some(b"foo://h:81/a b?q".to_vec());
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let text = ran.seen.text();
+    let fields: Vec<&String> = text
+        .iter()
+        .filter(|l| l.starts_with("[HTTP/2] [1] [:"))
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            "[HTTP/2] [1] [:method: GET]\n",
+            "[HTTP/2] [1] [:scheme: foo]\n",
+            "[HTTP/2] [1] [:authority: h:81]\n",
+            "[HTTP/2] [1] [:path: /a b?q]\n",
+        ]
+    );
+}
+
 /// A GET by prior knowledge goes as the stream's fields, after the
 /// client's SETTINGS; the response's fields come to the header handler
 /// and the trace as HTTP/1 lines, `HTTP/2 200 ` first, and its body to
@@ -2630,6 +2656,72 @@ fn a_promise_for_another_authority_fails_the_read() {
     assert_eq!(done[0].1, Err(ErrorKind::RecvError), "{sent}");
     assert!(sent.contains("R 1 1\n"), "{sent}");
     assert!(ev.offers.is_empty());
+}
+
+/// A promise is offered with its path as it came: C sets the pushed URL's
+/// path from the field as it is (`set_transfer_url`'s
+/// `CURLUPART_PATH`), its dots kept.
+#[test]
+fn a_promise_s_url_keeps_its_path_as_it_came() {
+    let mut ev = Pushes::answering(Answer::Take);
+    let reply = format!(
+        "S\nH 1 0\n:status: 200\n\nPP 1 2\n:method: GET\n:scheme: http\n\
+         :authority: 127.0.0.1:{PORT}\n:path: /x/../y\n\nH 2 0\n:status: 200\n\n\
+         D 2 3 1\nabcD 1 2 1\nok"
+    );
+    let (done, sent) = pushed_get(reply.as_bytes(), &mut ev);
+    assert_eq!(done.len(), 2, "{done:?}\n{sent}");
+    let url = format!("http://127.0.0.1:{PORT}/x/../y");
+    assert_eq!(ev.offers[0].1.as_deref(), Some(url.as_bytes()));
+}
+
+/// A promise whose authority names no port, from an origin at its
+/// scheme's own port, is the request's origin: the pushed URL's port is
+/// read as its scheme's (`Curl_url_same_origin`, default ports), and the
+/// promise offered.
+#[test]
+fn a_promise_without_a_port_is_of_an_origin_at_the_default_port() {
+    let mut ev = Pushes::answering(Answer::Take);
+    let reply: &[u8] = b"S\nH 1 0\n:status: 200\n\nPP 1 2\n:method: GET\n:scheme: http\n\
+         :authority: 127.0.0.1\n:path: /pushed\n\nH 2 0\n:status: 200\n\n\
+         D 2 3 1\nabcD 1 2 1\nok";
+    let talk = Conversation::replies(&[reply, WINDOW_SENT], false).per_send();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], 80));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let o = e.options_mut();
+    o.set_url(Some(b"http://127.0.0.1/")).unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.http.version = HttpVersion::Http2Prior;
+    o.callbacks.write = Some(Handler::write(Seen::default()).unwrap());
+    let id = m.add(Box::new(e), (), &mut ev).unwrap();
+    for _ in 0..20 {
+        m.perform(&mut ev).unwrap();
+        while m.info_read().is_some() {}
+    }
+    let sent = String::from_utf8(talk.received()).unwrap();
+    assert_eq!(ev.offers.len(), 1, "{sent}");
+    assert_eq!(
+        ev.offers[0].1.as_deref(),
+        Some(&b"http://127.0.0.1/pushed"[..])
+    );
+    let ids: Vec<TransferId> =
+        std::iter::successors(m.next_transfer(None), |&t| m.next_transfer(Some(t))).collect();
+    for t in ids {
+        m.remove(t, &mut ev).unwrap();
+    }
+    let _ = id;
 }
 
 /// A promise of another origin than the request's, here by its scheme,

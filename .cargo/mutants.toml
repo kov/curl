@@ -983,4 +983,20 @@ exclude_re = [
     # bind, the connect and a session resumed say those, all before).
     'curl-core/src/multi/raw\.rs:.*: replace <impl crate::conn::layer::Trace for RawCx<.*>>::says_info -> bool with (true|false)$',
     'curl-core/src/multi/raw\.rs:.*: replace <impl crate::conn::layer::Trace for RawCx<.*>>::info_line_with with \(\)$',
+    # A location not followed is read back once before it is parsed again
+    # without its credentials, and that read has removed its dots and
+    # dropped an empty query already (C's `follow_fake` parses it with
+    # `CURLU_NON_SUPPORT_SCHEME` alone): the second parse's paths as they
+    # are and its empty query have nothing left to keep.
+    # `a_location_not_followed_drops_its_dots_and_empty_query` pins C's.
+    'curl-core/src/proto/http1/follow\.rs:.*: delete field path_as_is from struct ParseOptions expression in would_redirect$',
+    'curl-core/src/proto/http1/follow\.rs:.*: delete field get_empty from struct GetOptions expression in would_redirect$',
+    # A promise's `:authority` is refused unless it is the origin's host
+    # and port, or its host alone, before its URL is built
+    # (`serves_authority`): no user reaches the parse that disallows one.
+    'curl-core/src/proto/http/h2\.rs:.*: delete field disallow_user from struct ParseOptions expression in Request::pushed_url$',
+    # An SSH request's session is gone only once freed, which marks the
+    # connection to close and ends the transfer in that step: no pollset
+    # is asked of it after, as with `self.live` above.
+    'curl-core/src/proto/ssh/mod\.rs:.*: replace match guard ssh_on\(line\)\.is_some_and\(\|sc\| sc\.session\.is_some\(\)\) with true in Request::pollset$',
 ]

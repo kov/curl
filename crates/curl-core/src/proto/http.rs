@@ -2046,7 +2046,15 @@ impl Request {
             // reaches it (`cf_socket_send`); a layer that fails says why
             // or not, as it would, and nothing here adds to it
             // (`Curl_xfer_send`). Over HTTP/2 or 3 the stream takes it
-            // (`cf_h2_send`, `cf_ngtcp2_send`).
+            // (`cf_h2_send`, `cf_ngtcp2_send`). HTTP/3 reads as it sends,
+            // and a response read can end the upload during the send
+            // (`upload_done`): what went is counted from where the send
+            // started and the head as it was, as `xfer_send` counts it.
+            let start = self.sent;
+            let head_left = match self.outgoing {
+                Sending::Head { left, .. } => left.get(),
+                _ => 0,
+            };
             let streamed = match self.wire {
                 Wire::H1 => None,
                 Wire::H2(_) => Some(self.h2_send(cx, lease, end, eos)),
@@ -2077,6 +2085,20 @@ impl Request {
             if let Some(kind) = failed {
                 return Err(kind);
             }
+            // The head's part and the body's are traced apart
+            // (`xfer_send`); both count as the request's.
+            let head = n.min(head_left);
+            if head > 0 {
+                trace::bytes(cx, DebugKind::HeaderOut, &self.out[start..start + head]);
+            }
+            upload::sent(cx, &self.out[start + head..start + n]);
+            cx.report_mut().sizes_mut().request += n as u64;
+            self.body_sent += (n - head) as u64;
+            // The upload ended during the send: nothing of it is left
+            // (`req_send_buffer_flush` skips in the buffer it emptied).
+            if !self.sending() {
+                return Ok(true);
+            }
             // A request sent at once that went short is put in C's buffer
             // and flushed, a second send at once (`Curl_req_send`,
             // `Curl_req_send_more`); any later short send waits.
@@ -2093,22 +2115,6 @@ impl Request {
                 trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
                 return Ok(false);
             }
-            // The head's part and the body's are traced apart
-            // (`xfer_send`); both count as the request's.
-            let head = match self.outgoing {
-                Sending::Head { left, .. } => n.min(left.get()),
-                _ => 0,
-            };
-            if head > 0 {
-                trace::bytes(
-                    cx,
-                    DebugKind::HeaderOut,
-                    &self.out[self.sent..self.sent + head],
-                );
-            }
-            upload::sent(cx, &self.out[self.sent + head..self.sent + n]);
-            cx.report_mut().sizes_mut().request += n as u64;
-            self.body_sent += (n - head) as u64;
             self.sent += n;
             if let Sending::Head { left, then, .. } = self.outgoing {
                 self.outgoing = match (NonZeroUsize::new(left.get() - head), then) {

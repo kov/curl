@@ -396,15 +396,13 @@ witness: curl-core proto::http::tests::the_report_s_url_and_the_request_keep_an_
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_post_sends_its_body_after_its_head
 --- old
-                    &self.out[self.sent..self.sent + head],
-                );
+                trace::bytes(cx, DebugKind::HeaderOut, &self.out[start..start + head]);
             }
-            upload::sent(cx, &self.out[self.sent + head..self.sent + n]);
+            upload::sent(cx, &self.out[start + head..start + n]);
 --- new
-                    &self.out[self.sent..self.sent + n],
-                );
+                trace::bytes(cx, DebugKind::HeaderOut, &self.out[start..start + n]);
             }
-            upload::sent(cx, &self.out[self.sent + n..self.sent + n]);
+            upload::sent(cx, &self.out[start + n..start + n]);
 
 === the body stops at its first buffer
 file: crates/curl-core/src/proto/http.rs

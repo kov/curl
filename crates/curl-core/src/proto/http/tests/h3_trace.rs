@@ -1307,6 +1307,63 @@ fn a_body_in_flight_waits_for_its_acknowledgement() {
     assert_eq!((s.body.bytes.len(), s.body.ended), (100_000, true));
 }
 
+/// An error response read while the head is sent, as the library's timer
+/// runs at the send's end (`cf_ngtcp2_send`'s `check_and_set_expiry`),
+/// stops the upload there: what that send took is still the head's,
+/// traced and counted as the head, and none of the body goes (`xfer_send`
+/// after `Curl_req_abort_sending`).
+#[test]
+fn an_error_read_as_the_head_is_sent_stops_the_body() {
+    let script = post_script(b"no\n", 1);
+    {
+        let mut s = script.lock().unwrap();
+        for told in s.on_read.back_mut().unwrap() {
+            if let Told::Header { name, value, .. } = told
+                && name == b":status"
+            {
+                *value = b"400".to_vec();
+            }
+        }
+        // Due as soon as the request is submitted: the send reads.
+        s.timer = Some(std::time::Duration::ZERO);
+    }
+    let ran = h3_with(&script, 1, |o| {
+        o.method = Method::Post;
+        o.upload = bytes(b"hello");
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let said = lines(
+        &ran,
+        &[
+            "HTTP error before end of send",
+            "abort upload",
+            "upload completely",
+            "Request completely",
+            "[HTTP/3] [0] cf_send(len=",
+        ],
+    );
+    assert_eq!(
+        said,
+        [
+            "HTTP error before end of send, stop sending",
+            "abort upload",
+            "[HTTP/3] [0] cf_send(len=148) -> 0, 143",
+        ]
+    );
+    // Traced once, whole, behind the transfer's ids.
+    let head = format!(
+        "POST / HTTP/3\r\nHost: localhost:{PORT}\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\
+         Content-Length: 5\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n"
+    );
+    assert_eq!(head.len(), 143);
+    assert_eq!(ran.seen.of("out"), [format!("[0-0] {head}").into_bytes()]);
+    assert_eq!(ran.seen.of("dataout"), Vec::<Vec<u8>>::new());
+    let sizes = ran.easy.report().sizes();
+    assert_eq!((sizes.request(), sizes.upload()), (143, 0));
+    assert_eq!(ran.seen.of("header")[0], b"HTTP/3 400 \r\n");
+    assert_eq!(script.lock().unwrap().body.bytes, b"");
+}
+
 /// A peer at `PORT` on IPv4 alone, whose datagrams meet `quic`, its first
 /// conversation `quic_talk`, and whose streams meet `tcp`, its next
 /// `tcp_talk`: the race's two attempts, QUIC's opened first.

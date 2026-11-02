@@ -1176,3 +1176,39 @@ features: test-util,debug-hooks
                     _ => wanted,
 --- new
                     _ => wanted,
+
+=== a send the upload ended during takes the head as it is after the send
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h3_trace::an_error_read_as_the_head_is_sent_stops_the_body
+--- old
+            let head = n.min(head_left);
+--- new
+            let _ = head_left;
+            let head = match self.outgoing {
+                Sending::Head { left, .. } => n.min(left.get()),
+                _ => 0,
+            };
+
+=== a send the upload ended during moves on past what was read
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h3_trace::an_error_read_as_the_head_is_sent_stops_the_body
+--- old
+            if !self.sending() {
+                return Ok(true);
+            }
+            // A request sent at once that went short is put in C's buffer
+--- new
+            // A request sent at once that went short is put in C's buffer
+
+=== a send the upload ended during is sliced from where the upload ended
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h3_trace::an_error_read_as_the_head_is_sent_stops_the_body
+--- old
+                trace::bytes(cx, DebugKind::HeaderOut, &self.out[start..start + head]);
+            }
+            upload::sent(cx, &self.out[start + head..start + n]);
+--- new
+                trace::bytes(cx, DebugKind::HeaderOut, &self.out[self.sent..self.sent + head]);
+            }
+            let _ = start;
+            upload::sent(cx, &self.out[self.sent + head..self.sent + n]);

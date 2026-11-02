@@ -98,6 +98,8 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::Psl => (c"PSL", crate::ffi::CURL_VERSION_PSL),
         Feature::Spnego => (c"SPNEGO", crate::ffi::CURL_VERSION_SPNEGO),
         Feature::Ssl => (c"SSL", crate::ffi::CURL_VERSION_SSL),
+        // A name alone, without a bit, as in C.
+        Feature::SslsExport => (c"SSLS-EXPORT", 0),
         Feature::Threadsafe => (c"threadsafe", crate::ffi::CURL_VERSION_THREADSAFE),
         Feature::UnixSockets => (c"UnixSockets", crate::ffi::CURL_VERSION_UNIX_SOCKETS),
         Feature::Zstd => (c"zstd", crate::ffi::CURL_VERSION_ZSTD),
@@ -369,6 +371,7 @@ mod tests {
             (true, "PSL", ffi::CURL_VERSION_PSL),
             (true, "SPNEGO", ffi::CURL_VERSION_SPNEGO),
             (true, "SSL", ffi::CURL_VERSION_SSL),
+            (true, "SSLS-EXPORT", 0),
             (true, "threadsafe", ffi::CURL_VERSION_THREADSAFE),
             (true, "UnixSockets", ffi::CURL_VERSION_UNIX_SOCKETS),
             (true, "zstd", ffi::CURL_VERSION_ZSTD),

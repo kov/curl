@@ -1,0 +1,231 @@
+TLS sessions in and out of the cache: the blob's form and its hostile cases,
+a peer found by the HMAC of its key, and what may go out.
+
+=== the HMAC of a key is not asked, so nothing a connection has finds a session imported
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::a_connection_finds_what_c_exported_by_its_key
+--- old
+                && p.hmac.is_some_and(|h| SaltedHmac::of_key(h.salt, key) == h)
+--- new
+                && p.hmac.is_some_and(|h| SaltedHmac::of_key(h.salt, key) != h)
+
+=== the HMAC hashes salt and key the wrong way round, so C's exports match nothing
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::a_connection_finds_what_c_exported_by_its_key
+--- old
+            hmac: hmac_sha256(&salt, &[key]),
+--- new
+            hmac: hmac_sha256(key, &[&salt]),
+
+=== a peer known only by its HMAC reads as a free slot and is written over
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::an_imported_peer_is_not_a_free_slot
+--- old
+        self.key.is_none() && self.hmac.is_none()
+--- new
+        self.key.is_none()
+
+=== a key that holds only in this directory goes out
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::what_is_confidential_or_local_stays
+--- old
+            && self.key.as_deref().is_none_or(key_is_global)
+--- new
+            && self.key.is_some()
+
+=== a peer with a client certificate goes out
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::what_is_confidential_or_local_stays
+--- old
+        self.cert == PeerCert::None
+            && self.password.is_none()
+--- new
+        self.password.is_none()
+
+=== a peer with a key password goes out
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::what_is_confidential_or_local_stays
+--- old
+        self.cert == PeerCert::None
+            && self.password.is_none()
+--- new
+        self.cert == PeerCert::None
+
+=== an import is given a lifetime of its own, as a connection's session is
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::an_import_leaves_the_lifetime_alone
+--- old
+        let per_peer = self.per_peer;
+        let peer = &mut self.peers[i];
+--- new
+        let mut s = s;
+        s.valid_until = s.valid_until.min(now + MOST_13);
+        let per_peer = self.per_peer;
+        let peer = &mut self.peers[i];
+
+=== a new salt every export, so a salted HMAC never names the peer twice
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::an_export_says_what_an_import_takes
+--- old
+    let hmac = match (peer.hmac, &peer.key) {
+--- new
+    let hmac = match (peer.hmac.filter(|_| peer.key.is_none()), &peer.key) {
+
+=== a peer told a salted HMAC of its key takes it over its own
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::a_salted_hmac_of_a_known_key_joins_its_peer
+--- old
+                peer.hmac.get_or_insert(wanted);
+--- new
+                peer.hmac = Some(wanted);
+
+=== the fields pack in another order than C's, so a byte-for-byte reader differs
+file: crates/curl-core/src/tls/cache/spack.rs
+witness: curl-core tls::cache::spack::tests::fields_read_in_any_order_and_pack_in_c_s
+--- old
+    out.add(&[IETF_ID])?;
+    out.add(&s.version.to_be_bytes())?;
+    out.add(&[VALID_UNTIL])?;
+    out.add(&s.valid_until.to_be_bytes())?;
+--- new
+    out.add(&[VALID_UNTIL])?;
+    out.add(&s.valid_until.to_be_bytes())?;
+    out.add(&[IETF_ID])?;
+    out.add(&s.version.to_be_bytes())?;
+
+=== a date's bytes are little-endian
+file: crates/curl-core/src/tls/cache/spack.rs
+witness: curl-core tls::cache::spack::tests::fields_read_in_any_order_and_pack_in_c_s
+--- old
+            VALID_UNTIL => s.valid_until = i64::from_be_bytes(r.array()?),
+--- new
+            VALID_UNTIL => s.valid_until = i64::from_le_bytes(r.array()?),
+
+=== a length past the end is read as far as there is, not refused
+file: crates/curl-core/src/tls/cache/spack.rs
+witness: curl-core tls::cache::spack::tests::every_truncation_is_refused
+--- old
+        let (data, rest) = self
+            .0
+            .split_at_checked(usize::from(len))
+            .ok_or(ErrorKind::ReadError)?;
+--- new
+        let (data, rest) = self.0.split_at(usize::from(len).min(self.0.len()));
+
+=== an unknown tag is passed over
+file: crates/curl-core/src/tls/cache/spack.rs
+witness: curl-core tls::cache::spack::tests::what_is_not_a_session_is_refused
+--- old
+            _ => return Err(ErrorKind::ReadError),
+--- new
+            _ => {}
+
+=== another version of the form is read as this one
+file: crates/curl-core/src/tls/cache/spack.rs
+witness: curl-core tls::cache::spack::tests::what_is_not_a_session_is_refused
+--- old
+    if r.array::<1>()? != [VERSION] {
+        return Err(ErrorKind::ReadError);
+    }
+--- new
+    r.array::<1>()?;
+
+=== an ALPN is kept past a zero byte in it, where C's string ends
+file: crates/curl-core/src/tls/cache/spack.rs
+witness: curl-core tls::cache::spack::tests::an_alpn_is_kept_whatever_it_says
+--- old
+    let name = &name[..end];
+    Ok(match
+--- new
+    let _ = end;
+    Ok(match
+
+=== the sectrust flag is dropped on the way out, so a session does not go out as it came
+file: crates/curl-core/src/tls/cache/spack.rs
+witness: curl-core tls::cache::spack::tests::fields_read_in_any_order_and_pack_in_c_s
+--- old
+    if s.sectrust {
+        out.add(&[SECTRUST])?;
+    }
+--- new
+
+=== a packed session is not held to C's buffer
+file: crates/curl-core/src/tls/cache/spack.rs
+witness: curl-core tls::cache::spack::tests::what_does_not_fit_is_refused_as_c_refuses_it
+--- old
+        if self.0.len() + bytes.len() + 1 > PACKED_MAX {
+--- new
+        if self.0.len() + bytes.len() > PACKED_MAX {
+
+=== a salted HMAC's length is asked before the blob is parsed, so test 777's lines say 43
+file: crates/curl-core/src/multi/ssls.rs
+witness: curl-core multi::ssls::tests::an_import_is_refused_in_c_s_order
+--- old
+    let no_peer = matches!(who, SessionFor::SaltedHmac([]));
+--- new
+    let no_peer = matches!(who, SessionFor::SaltedHmac(h) if h.len() != 64);
+
+=== a handle with no cache reads the blob first
+file: crates/curl-core/src/multi/ssls.rs
+witness: curl-core multi::ssls::tests::a_handle_with_no_cache_has_no_sessions
+--- old
+    if no_cache || packed.is_empty() || no_peer {
+--- new
+    if packed.is_empty() || no_peer {
+
+=== the application's lock is let go before its function runs
+file: crates/curl-core/src/multi/ssls.rs
+witness: curl-core multi::ssls::tests::the_application_is_told_as_c_calls_its_lock
+--- old
+            return Exporting { exported, told };
+--- new
+            if let Some(w) = &told {
+                w.unlock(Kind::SslSessions);
+            }
+            return Exporting { exported, told: None };
+
+=== a line of the session file with no newline loses its last byte
+file: crates/curl-tool/src/operate/ssl_sessions.rs
+witness: curl-tool operate::ssl_sessions::tests::lines_read_as_c_reads_them
+--- old
+            if last == b'\n' {
+                line.pop();
+                return Got::Line;
+            }
+            if self.eof {
+                return Got::Line;
+            }
+--- new
+            if last == b'\n' {
+                line.pop();
+                return Got::Line;
+            }
+            if self.eof {
+                line.pop();
+                return Got::Line;
+            }
+
+=== a line past the most is read
+file: crates/curl-tool/src/operate/ssl_sessions.rs
+witness: curl-tool operate::ssl_sessions::tests::a_line_past_the_most_ends_it_all
+--- old
+            if line.len() + text.len() + 1 > MAX_LINE || line.try_extend_from_slice(text).is_err() {
+--- new
+            if line.try_extend_from_slice(text).is_err() {
+
+=== a session's second part is cut at its other end, unlike C's test
+file: crates/curl-tool/src/operate/ssl_sessions.rs
+witness: curl-tool operate::ssl_sessions::tests::the_second_part_is_cut_as_c_cuts_it
+--- old
+    let blank_first = matches!(part.first(), Some(b' ' | b'\t'));
+--- new
+    let blank_first = matches!(part.last(), Some(b' ' | b'\t'));
+
+=== the sessions are not saved after the transfers
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool a_session_file_s_bad_lines_are_warned_of
+--- old
+            Some(name) => ssl_sessions::save(&run, name),
+--- new
+            Some(_) => Ok(()),
+

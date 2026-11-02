@@ -72,6 +72,8 @@ pub enum Feature {
     Spnego,
     /// TLS, by OpenSSL, which the tool and the C ABI give every handle.
     Ssl,
+    /// TLS sessions go in and out of the cache (`curl_easy_ssls_import`).
+    SslsExport,
     /// Nothing the library keeps is process-wide: handles may be made, and
     /// the C ABI initialised, from several threads at once (C's
     /// `threadsafe`, its global initialisation under a lock).
@@ -107,6 +109,7 @@ impl Feature {
             Feature::Psl => "PSL",
             Feature::Spnego => "SPNEGO",
             Feature::Ssl => "SSL",
+            Feature::SslsExport => "SSLS-EXPORT",
             Feature::Threadsafe => "threadsafe",
             Feature::UnixSockets => "UnixSockets",
             Feature::Zstd => "zstd",
@@ -137,6 +140,7 @@ const FEATURES: &[Feature] = &[
     Feature::Psl,
     Feature::Spnego,
     Feature::Ssl,
+    Feature::SslsExport,
     Feature::Threadsafe,
     Feature::UnixSockets,
     Feature::Zstd,

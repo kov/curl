@@ -320,7 +320,7 @@ fn json_quoted(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// `bytes` in base64, padded (`curlx_base64_encode`).
-fn base64(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+pub(crate) fn base64(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     let mut out = Vec::new();
     for chunk in bytes.chunks(3) {
         // The three bytes, zeros after the last, in the low 24 bits.
@@ -342,7 +342,7 @@ fn base64(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
 /// multiple of four, at most two `=` at its end, and only base64's
 /// characters before them (`curlx_base64_decode`). Empty text is not
 /// base64.
-fn base64_decode(text: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
+pub(crate) fn base64_decode(text: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
     if text.is_empty() || !text.len().is_multiple_of(4) {
         return Ok(None);
     }

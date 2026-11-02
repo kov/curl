@@ -2957,8 +2957,19 @@ slot: before TLS 1.3 at the handshake's end, TLS 1.3's NewSessionTicket messages
 transfer reads its response. A peer that fails its check has its sessions forgotten. A ticket
 arriving while a connection says goodbye has no transfer to be kept for and is dropped; C
 keeps it in the multi's cache through its internal handle (not built, MILESTONES.md). The trace is C's under `ssls`.
-`curl_easy_ssls_import` and `export` answer `CURLE_NOT_BUILT_IN`, as a C build without
-`USE_SSLS_EXPORT`, and `SSLS-EXPORT` is not reported.
+
+**Import and export** (`SSLS-EXPORT`, `curl_easy_ssls_import`, `curl_easy_ssls_export`,
+`--ssl-sessions`). `Easy::ssls_import` and `Multi::ssls_import` reach the cache a transfer of the
+handle would use, its share's or, while it is in one, its multi's; `perform`'s own multi does not
+count, and a handle with neither is refused. A blob is hostile: `tls::cache::spack` parses it
+before any lock, byte for byte C's `vtls_spack.c`, and refuses what does not parse; what parses
+may have no ticket, any ALPN name (`TicketAlpn::Other`, offered by no connection, going out as it
+came) or a date before 1970 (refused as it goes out). A peer imported by the salted HMAC of its
+key has `CachePeer::hmac` and no key until a connection's key hashes to it
+(`cf_ssl_find_peer_by_key`); a slot with either is not free. An import keeps the lifetime it is
+given. An export (`Exporting`) tells the application's lock function, packs what may go out under
+the share's lock (no client certificate or password, a key of `:G` or none), lets the lock go, and
+only then calls the application's function, the multi unborrowed, telling the unlock at its end.
 
 **Early data** (TLS 1.3's 0-RTT, `CURLSSLOPT_EARLYDATA`, `--tls-earlydata`). A transfer that
 asks and makes requests (`TlsPeer::early_data`, not `bits.connect_only`) has OpenSSL put its
@@ -4377,8 +4388,8 @@ freed.
   `curl_easy_recv`/`send`, CURLM_BAD_SOCKET, CURLM_BAD_FUNCTION_ARGUMENT.
 - Every function the system's libcurl exports is exported, so a program linked against it
   loads (Fedora's binaries bind every symbol as they start). The entry points of what the build
-  leaves out answer as C's build without them does (`unbuilt.rs`): TLS session export
-  `CURLE_NOT_BUILT_IN`, a server push's headers NULL. `curl_easy_option_*` walk C's
+  leaves out answer as C's build without them does: a server push's headers NULL.
+  `curl_easy_option_*` walk C's
   table, generated from `lib/easyoptions.c` and checked against the inventory
   (`gen/easyoptions.py`). `curl_multi_get_handles` answers NULL inside a transfer's callback,
   as `curl_multi_info_read` does here, where the handles are not reached.

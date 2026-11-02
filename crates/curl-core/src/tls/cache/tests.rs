@@ -401,3 +401,319 @@ fn every_session_of_a_peer_is_forgotten_at_once() {
     cache.remove_all(&p, &mut trace);
     assert!(cache.take(&p, 1000, &mut trace).is_none());
 }
+
+/// C's key for the session in `c_session.txt`, which C's build exported.
+const C_KEY: &[u8] = b"https:localhost:28443:KEY-V3:TLSVER-6-0:CA-55:\
+/home/kov/Projects/curl/build/c/tests/certs/test-ca.crt:IMPL-13:OpenSSL/3.5.9:G";
+
+/// A line of the file C's `--ssl-sessions` wrote: the salted HMAC of
+/// `C_KEY`, and the session.
+pub(crate) fn c_made_session() -> (Vec<u8>, Vec<u8>) {
+    let line = include_str!("c_session.txt").trim_end();
+    let (hmac, session) = line.split_once(':').unwrap();
+    let decode = |t: &str| crate::base64::decode(t.as_bytes()).unwrap().unwrap();
+    (decode(hmac), decode(session))
+}
+
+/// A session of `valid_until`, of `version`, for the import tests.
+fn imported(version: u16, valid_until: i64) -> TlsTicket {
+    TlsTicket::new(b"ticket".to_vec(), version, None, 0, valid_until)
+}
+
+fn say_nothing() -> impl FnMut(fmt::Arguments<'_>) {
+    |_| {}
+}
+
+/// A peer of `key` with default settings, as the cache looks one up.
+fn import_by_key(cache: &mut SessionCache, key: &[u8], s: TlsTicket) {
+    cache
+        .import(SessionFor::Key(key), s, NOW, &mut say_nothing())
+        .unwrap();
+}
+
+const NOW: i64 = 1000;
+
+fn no_salt(_: &mut [u8]) -> Result<(), ErrorKind> {
+    panic!("no salt wanted");
+}
+
+fn exported(cache: &mut SessionCache) -> Exported {
+    cache.export(NOW, &mut |b: &mut [u8]| {
+        b.fill(7);
+        Ok(())
+    })
+}
+
+/// C's salted HMAC of C's key is what this build's HMAC makes: a connection
+/// with C's key finds what C exported, and takes it.
+#[test]
+fn a_connection_finds_what_c_exported_by_its_key() {
+    let (hmac, blob) = c_made_session();
+    let mut cache = SessionCache::new(5);
+    let s = spack::unpack(&blob).unwrap();
+    let mut lines = Vec::new();
+    let mut trace = |l: fmt::Arguments<'_>| lines.push(l.to_string());
+    cache
+        .import(SessionFor::SaltedHmac(&hmac), s, NOW, &mut trace)
+        .unwrap();
+    assert_eq!(
+        lines,
+        ["successfully imported ticket for peer without key, now with 1 tickets"]
+    );
+    lines.clear();
+    let mut trace = |l: fmt::Arguments<'_>| lines.push(l.to_string());
+    let found = cache.find(C_KEY, Auth::NONE, &mut trace).unwrap();
+    assert_eq!(found, Some(0));
+    let key = std::str::from_utf8(C_KEY).unwrap();
+    assert_eq!(
+        lines,
+        [
+            format!("find peer slot for {key} among 5 slots"),
+            format!("peer entry 0 key recovered: {key}"),
+        ]
+    );
+    assert_eq!(cache.peers[0].key.as_deref(), Some(C_KEY));
+}
+
+/// A key of anything else, or a connection with a client certificate,
+/// finds nothing of an imported peer, which stays without a key.
+#[test]
+fn another_key_finds_nothing_of_an_imported_peer() {
+    let (hmac, blob) = c_made_session();
+    let mut cache = SessionCache::new(5);
+    let s = spack::unpack(&blob).unwrap();
+    cache
+        .import(SessionFor::SaltedHmac(&hmac), s, NOW, &mut say_nothing())
+        .unwrap();
+    let other = cache.find(b"https:other:443:G", Auth::NONE, &mut say_nothing());
+    assert_eq!(other.unwrap(), None);
+    let with_cert = Auth {
+        cert: Some(b"client.pem"),
+        ..Auth::NONE
+    };
+    assert_eq!(
+        cache.find(C_KEY, with_cert, &mut say_nothing()).unwrap(),
+        None
+    );
+    assert!(cache.peers[0].key.is_none());
+}
+
+/// A peer known only by its salted HMAC holds its slot: the next peer goes
+/// beside it, not over it.
+#[test]
+fn an_imported_peer_is_not_a_free_slot() {
+    let mut cache = SessionCache::new(5);
+    let both = [3; 64];
+    let s = imported(TLS1_3, 0);
+    cache
+        .import(SessionFor::SaltedHmac(&both), s, NOW, &mut say_nothing())
+        .unwrap();
+    import_by_key(&mut cache, b"other:G", imported(TLS1_3, 0));
+    assert_eq!(cache.peers.len(), 2);
+    assert_eq!(cache.peers[0].hmac.unwrap().bytes(), both);
+    assert_eq!(cache.peers[0].sessions.len(), 1);
+}
+
+/// A salted HMAC of any but 64 bytes is refused; the same one twice is one
+/// peer, with two sessions.
+#[test]
+fn a_salted_hmac_is_64_bytes() {
+    let mut cache = SessionCache::new(5);
+    for bad in [&[0u8; 63][..], &[0; 65], &[]] {
+        let s = imported(TLS1_3, 0);
+        let got = cache.import(SessionFor::SaltedHmac(bad), s, NOW, &mut say_nothing());
+        assert_eq!(got, Err(ErrorKind::BadFunctionArgument), "{}", bad.len());
+    }
+    assert!(cache.peers.is_empty());
+    for _ in 0..2 {
+        let s = imported(TLS1_3, 0);
+        cache
+            .import(SessionFor::SaltedHmac(&[1; 64]), s, NOW, &mut say_nothing())
+            .unwrap();
+    }
+    assert_eq!(cache.peers.len(), 1);
+    assert_eq!(cache.peers[0].sessions.len(), 2);
+}
+
+/// An import naming a peer by a salted HMAC of a key the cache knows joins
+/// that peer, which takes the salt if it has none, keeps its own if it has.
+#[test]
+fn a_salted_hmac_of_a_known_key_joins_its_peer() {
+    let mut cache = SessionCache::new(5);
+    import_by_key(&mut cache, b"known:G", imported(TLS1_3, 0));
+    let first = SaltedHmac::of_key([1; 32], b"known:G");
+    let s = imported(TLS1_3, 0);
+    cache
+        .import(
+            SessionFor::SaltedHmac(&first.bytes()),
+            s,
+            NOW,
+            &mut say_nothing(),
+        )
+        .unwrap();
+    assert_eq!(cache.peers.len(), 1, "one peer");
+    assert_eq!(cache.peers[0].hmac, Some(first), "the salt taken");
+    let second = SaltedHmac::of_key([2; 32], b"known:G");
+    let s = imported(TLS1_3, 0);
+    cache
+        .import(
+            SessionFor::SaltedHmac(&second.bytes()),
+            s,
+            NOW,
+            &mut say_nothing(),
+        )
+        .unwrap();
+    assert_eq!(cache.peers.len(), 1, "still one");
+    assert_eq!(cache.peers[0].hmac, Some(first), "its own kept");
+}
+
+/// An import keeps a session as it came, where `put` makes up a lifetime,
+/// cuts it, or drops one out of date. What is out of date does not go out.
+#[test]
+fn an_import_leaves_the_lifetime_alone() {
+    let far = NOW + 100 * MOST_13;
+    let mut cache = SessionCache::new(5);
+    import_by_key(&mut cache, b"far:G", imported(TLS1_3, far));
+    assert_eq!(cache.peers[0].sessions[0].valid_until, far);
+    import_by_key(&mut cache, b"none:G", imported(TLS1_3, 0));
+    assert_eq!(cache.peers[1].sessions[0].valid_until, 0);
+    import_by_key(&mut cache, b"old:G", imported(TLS1_3, NOW - 1));
+    assert_eq!(cache.peers[2].sessions.len(), 1);
+    let out = exported(&mut cache);
+    assert_eq!(out.tickets.len(), 2, "out of date, dropped");
+    assert!(cache.peers[2].sessions.is_empty());
+}
+
+/// Past a peer's two sessions the oldest goes; one not of TLS 1.3 replaces
+/// all, as a session a connection made does.
+#[test]
+fn an_import_keeps_what_a_peer_keeps() {
+    let mut cache = SessionCache::new(5);
+    for at in [1, 2, 3] {
+        import_by_key(&mut cache, b"k:G", imported(TLS1_3, NOW + at));
+    }
+    let until = |c: &SessionCache| {
+        c.peers[0]
+            .sessions
+            .iter()
+            .map(|s| s.valid_until)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(until(&cache), [NOW + 2, NOW + 3]);
+    import_by_key(&mut cache, b"k:G", imported(0x303, NOW + 4));
+    assert_eq!(until(&cache), [NOW + 4]);
+}
+
+/// A cache of no slot keeps nothing, and is no error.
+#[test]
+fn a_cache_of_no_slot_keeps_nothing() {
+    let mut cache = SessionCache::new(0);
+    import_by_key(&mut cache, b"k:G", imported(TLS1_3, 0));
+    let s = imported(TLS1_3, 0);
+    cache
+        .import(SessionFor::SaltedHmac(&[0; 64]), s, NOW, &mut say_nothing())
+        .unwrap();
+    assert!(cache.peers.is_empty());
+    assert!(cache.export(NOW, &mut no_salt).tickets.is_empty());
+}
+
+/// What goes out: the key, a salt and the HMAC of the key under it, the
+/// session packed and its facts; the salt kept for the next export.
+#[test]
+fn an_export_says_what_an_import_takes() {
+    let mut cache = SessionCache::new(5);
+    let early = TlsTicket::new(b"der".to_vec(), TLS1_3, Some(Chosen::H2), 9, NOW + 5);
+    import_by_key(&mut cache, b"k:G", early);
+    let out = exported(&mut cache);
+    assert_eq!((out.peers, out.tickets.len(), out.failed), (1, 1, None));
+    let t = out.tickets[0].view();
+    assert_eq!(t.key, Some(&b"k:G"[..]));
+    assert_eq!(t.salted_hmac[..32], [7; 32]);
+    assert_eq!(t.salted_hmac[32..], hmac_sha256(&[7; 32], &[b"k:G"]));
+    assert_eq!(
+        (t.valid_until, t.version, t.earlydata_max),
+        (NOW + 5, TLS1_3, 9)
+    );
+    assert_eq!(t.alpn, Some(&b"h2"[..]));
+    let packed = t.packed.to_vec();
+    let salted = *t.salted_hmac;
+
+    let mut other = SessionCache::new(5);
+    let s = spack::unpack(&packed).unwrap();
+    other
+        .import(SessionFor::SaltedHmac(&salted), s, NOW, &mut say_nothing())
+        .unwrap();
+    let found = other.find(b"k:G", Auth::NONE, &mut say_nothing()).unwrap();
+    assert_eq!(found, Some(0), "found by its key");
+    assert_eq!(other.peers[0].sessions[0].data, b"der");
+
+    let again = cache.export(NOW, &mut no_salt);
+    assert_eq!(
+        again.tickets[0].view().salted_hmac,
+        &salted,
+        "the same salt"
+    );
+}
+
+/// A peer with a client certificate, a blob as one, a password or a key
+/// that holds only here does not go out. A peer imported without a key
+/// does, its key none.
+#[test]
+fn what_is_confidential_or_local_stays() {
+    let mut cache = SessionCache::new(9);
+    let puts: [&dyn Fn(&mut TlsIdentity); 3] = [
+        &|i| i.options.cert = Some(b"/client.pem".to_vec()),
+        &|i| i.options.cert_blob = Some(b"blob".to_vec()),
+        &|i| i.options.key_password = Some(b"secret".to_vec()),
+    ];
+    for change in puts {
+        let p = peer(|i| change(i));
+        cache
+            .put(&p, imported(TLS1_3, NOW + 5), NOW, &mut say_nothing())
+            .unwrap();
+    }
+    assert_eq!(cache.peers.len(), 3);
+    assert_eq!(exported(&mut cache).tickets.len(), 0);
+    import_by_key(&mut cache, b"here:L", imported(TLS1_3, 0));
+    import_by_key(&mut cache, b":G", imported(TLS1_3, 0));
+    assert_eq!(
+        exported(&mut cache).tickets.len(),
+        0,
+        "`:G` alone is no key"
+    );
+    let s = imported(TLS1_3, 0);
+    cache
+        .import(SessionFor::SaltedHmac(&[1; 64]), s, NOW, &mut say_nothing())
+        .unwrap();
+    import_by_key(&mut cache, b"there:G", imported(TLS1_3, 0));
+    let out = exported(&mut cache);
+    let keys: Vec<_> = out.tickets.iter().map(|t| t.view().key).collect();
+    assert_eq!(keys, [None, Some(&b"there:G"[..])]);
+    assert_eq!(out.peers, 2);
+}
+
+/// One that will not pack ends the export there, those before it going out.
+/// A date before 1970 is a bad argument with nothing said, too large is
+/// said.
+#[test]
+fn an_export_stops_at_what_will_not_pack() {
+    let mut cache = SessionCache::new(5);
+    let before_1970 = spack::unpack(&[1, 3, 255, 255, 255, 255, 255, 255, 255, 255]).unwrap();
+    import_by_key(&mut cache, b"a:G", imported(TLS1_3, 0));
+    import_by_key(&mut cache, b"b:G", before_1970);
+    import_by_key(&mut cache, b"c:G", imported(TLS1_3, 0));
+    let out = exported(&mut cache);
+    assert_eq!(out.tickets.len(), 1);
+    assert_eq!(
+        out.failed,
+        Some(ExportStop::Other(ErrorKind::BadFunctionArgument))
+    );
+
+    let mut cache = SessionCache::new(5);
+    import_by_key(&mut cache, b"a:G", imported(TLS1_3, 0));
+    let big = TlsTicket::new(vec![0; 20000], TLS1_3, None, 0, 0);
+    import_by_key(&mut cache, b"b:G", big);
+    let out = exported(&mut cache);
+    assert_eq!(out.tickets.len(), 1);
+    assert_eq!(out.failed, Some(ExportStop::Packing(ErrorKind::TooLarge)));
+}

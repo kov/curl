@@ -93,6 +93,17 @@ impl Tracer {
     }
 }
 
+impl Tracer {
+    /// Trace what a handle with no transfer says.
+    pub(crate) fn note(&self, kind: DebugKind, data: &[u8]) {
+        let ids = TransferIds {
+            transfer: None,
+            conn: None,
+        };
+        self.entry(kind, data, false, ids);
+    }
+}
+
 struct Entry {
     tracer: Tracer,
     terminal: bool,

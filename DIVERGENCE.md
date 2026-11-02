@@ -576,3 +576,19 @@ not a difference: it is tracked in `MILESTONES.md`.
   allocator would fail, since no block is asked for first. The URL's lock is held across the
   application's `curl_global_init_mem` malloc, so a malloc callback calling `curl_url_*` on the
   same handle deadlocks. Pinned by `calls_cost_what_c_s_do` (`crates/curl-sys-abi/src/url.rs`).
+
+## TLS sessions from outside
+
+- **A session of no ticket is exported, not an abort.** A file or blob holding a version byte and
+  no ticket imports in both, and resumes nothing in both. C's debug build then aborts on its
+  `DEBUGASSERT(s->sdata)` as it exports (`Curl_ssl_session_pack`); its release build writes an empty
+  ticket, as the rewrite does: what is imported is not trusted to be anything. Measured against
+  the C build with `--ssl-sessions`. Pinned by `a_blob_may_say_nothing`
+  (`crates/curl-core/src/tls/cache/spack/tests.rs`).
+
+- **An export's function may use the share.** `curl_easy_ssls_export` tells the application's lock
+  function around the whole export as C does, but holds no lock of its own across the application's
+  function, whose sessions are made ready before the first call. Another handle on the same share
+  may import from inside that function: C's `DEBUGASSERT(!scache->is_locked)` aborts there in its
+  debug build. Pinned by `the_application_is_told_as_c_calls_its_lock`
+  (`crates/curl-core/src/multi/ssls/tests.rs`).

@@ -1653,7 +1653,7 @@ impl ConnectMachine {
                     .map_err(oom)?;
                 Some(crate::conn::quic::EarlyTicket {
                     most: ticket.earlydata_max,
-                    alpn: ticket.alpn,
+                    alpn: ticket.chosen(),
                     params,
                 })
             }

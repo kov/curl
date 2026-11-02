@@ -2142,3 +2142,64 @@ fn a_transfer_removed_mid_response_hears_its_progress_once_more() {
     assert_eq!(calls.len(), before + 1, "{calls:?}");
     assert_eq!(calls.last(), Some(&(5, true)), "{calls:?}");
 }
+
+/// A session imported into a share by no more than the salted HMAC of its
+/// peer's key resumes the next connection to that peer, its key learned; a
+/// connection of other settings does not find it.
+#[test]
+fn an_imported_session_resumes_the_peer_its_hmac_names() {
+    use crate::share::{Kind, Share};
+    use crate::tls::SessionFor;
+    let (backend, libraries) = ticketing();
+    let talks = answering(3);
+    let share = Share::new().unwrap();
+    share.keep(Kind::SslSessions).unwrap();
+    let transfer = |share: &Share, talk: &Conversation, verify: bool| {
+        let mut m = serving(Peer::Accepts, &[talk]);
+        let mut e = Easy::new();
+        e.set_libraries(libraries.clone());
+        e.set_share(Some(share.clone())).unwrap();
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"ssls");
+        e.set_components(Some(c));
+        let got = get_with(&mut m, e, "/", talk.clone(), |o| {
+            let url = format!("https://127.0.0.1:{PORT}/");
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.tls.verify_peer = verify;
+        });
+        assert_eq!(got.result, Ok(()));
+        got.seen.text()
+    };
+    // The peer's key, as a first transfer on a share of its own says it.
+    let first = Share::new().unwrap();
+    first.keep(Kind::SslSessions).unwrap();
+    let said = transfer(&first, &talks[0], true);
+    let line = said
+        .iter()
+        .find_map(|l| l.strip_prefix("[SSLS] find peer slot for "))
+        .unwrap();
+    let key = line.split(" among ").next().unwrap();
+    assert_eq!(backend.log().resumed, 0);
+
+    let salt = [9u8; 32];
+    let hmac = crate::hash::hmac_sha256(&salt, &[key.as_bytes()]);
+    let both = [salt, hmac].concat();
+    let ticket = crate::tls::fake::TICKET;
+    let len = u16::try_from(ticket.len()).unwrap().to_be_bytes();
+    let packed = [&[1, 4, len[0], len[1]][..], ticket].concat();
+    let mut holder = Easy::new();
+    holder.set_share(Some(share.clone())).unwrap();
+    holder
+        .ssls_import(SessionFor::SaltedHmac(&both), &packed, &mut |_, _| {})
+        .unwrap();
+
+    transfer(&share, &talks[1], false);
+    assert_eq!(backend.log().resumed, 0, "made with other settings");
+    let said = transfer(&share, &talks[2], true);
+    assert_eq!(backend.log().resumed, 1, "{said:#?}");
+    assert!(
+        said.iter()
+            .any(|l| l.contains("peer entry 0 key recovered: ")),
+        "{said:#?}"
+    );
+}

@@ -669,7 +669,7 @@ impl TlsSession for FakeSession {
                 let taken = io.take_session();
                 if let Some(t) = taken.as_ref().filter(|t| t.data == TICKET) {
                     self.log().resumed += 1;
-                    if let Some(alpn) = t.alpn.filter(|&a| self.alpn.offers(a))
+                    if let Some(alpn) = t.chosen().filter(|&a| self.alpn.offers(a))
                         && t.earlydata_max > 0
                         && self.early_data
                     {

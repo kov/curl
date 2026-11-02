@@ -4,6 +4,7 @@
 
 mod nonblocking;
 mod parallel;
+mod ssl_sessions;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -124,11 +125,24 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -
         claims: Claims::of_build(),
         started: Cell::new(None),
     };
-    let ending = if line.global.parallel {
-        parallel::run_all(line, &run)
-    } else {
-        run_all(line, &run)
+    let loaded = match line.global.ssl_sessions {
+        Some(name) => ssl_sessions::load(&run, name),
+        None => Ok(()),
     };
+    let ending = loaded.and_then(|()| {
+        let ran = if line.global.parallel {
+            parallel::run_all(line, &run)
+        } else {
+            run_all(line, &run)
+        };
+        // Saved whatever they ended with, which stays the result if a
+        // failure.
+        let saved = match line.global.ssl_sessions {
+            Some(name) => ssl_sessions::save(&run, name),
+            None => Ok(()),
+        };
+        ran.and(saved)
+    });
     if let (Some(program), Some(name)) = (program, line.global.libcurl)
         && program.into_inner().finish(name, &stdout, &msgs).is_err()
     {

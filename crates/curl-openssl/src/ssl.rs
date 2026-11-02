@@ -917,14 +917,11 @@ impl Session {
     /// Put the handshake off for early data, resuming a session that
     /// allows `most` bytes of it and agreed `chosen` by ALPN, if the
     /// transfer offers it (`Curl_on_session_reuse`).
-    fn defer(&mut self, most: usize, chosen: Chosen, io: &mut TlsCx<'_>) {
+    fn defer(&mut self, most: usize, chosen: Option<Chosen>, io: &mut TlsCx<'_>) {
+        let offered = chosen.filter(|&c| self.alpn.offers(c));
         if most == 0 {
             io.trace(format_args!("SSL session does not allow earlydata"));
-        } else if !self.alpn.offers(chosen) {
-            io.trace(format_args!(
-                "SSL session has different ALPN, no early data"
-            ));
-        } else {
+        } else if let Some(chosen) = offered {
             let name = chosen.name();
             io.info(format_args!(
                 "SSL session allows {most} bytes of early data, reusing ALPN '{name}'"
@@ -935,6 +932,10 @@ impl Session {
             });
             io.info(format_args!(
                 "ALPN: deferred handshake for early data using '{name}'."
+            ));
+        } else {
+            io.trace(format_args!(
+                "SSL session has different ALPN, no early data"
             ));
         }
     }
@@ -1037,6 +1038,11 @@ impl Session {
     /// Resume `ticket` on `ssl`, if the library takes it and, for a peer
     /// to verify, its connection was verified (`ossl_apply_session`).
     fn resume(&mut self, ssl: NonNull<SSL>, ticket: &TlsTicket, io: &mut TlsCx<'_>) {
+        // An imported session may have no ticket: nothing to resume with,
+        // and nothing said (`ossl_init_session_and_alpns`).
+        if ticket.data.is_empty() {
+            return;
+        }
         let mut der = ticket.data.as_ptr();
         let len = c_long::try_from(ticket.data.len()).unwrap_or(c_long::MAX);
         // SAFETY: `len` bytes at `der`, the ticket's; the session made is
@@ -1065,15 +1071,15 @@ impl Session {
                 unsafe { openssl_sys::SSL_set_session(s, ptr::null_mut()) };
                 io.info(format_args!("SSL session not peer verified, not reusing"));
             } else {
-                let alpn = ticket.alpn.map_or("-", Chosen::name);
-                io.info(format_args!("SSL reusing session with ALPN '{alpn}'"));
+                let alpn = ticket.alpn_name().unwrap_or(b"-");
+                io.info_with(&[b"SSL reusing session with ALPN '", alpn, b"'"]);
                 self.reused = true;
                 io.info(format_args!("SSL verify result: {verified:x}"));
                 // SAFETY: the session, alive until freed below.
                 let allows = unsafe { openssl_sys::SSL_SESSION_get_max_early_data(session) };
                 // SAFETY: the SSL.
                 let version = unsafe { openssl_sys::SSL_version(s) };
-                if let Some(chosen) = ticket.alpn
+                if ticket.alpn_name().is_some()
                     && self.early_data
                     && allows > 0
                     && version == openssl_sys::TLS1_3_VERSION
@@ -1082,7 +1088,7 @@ impl Session {
                     if self.quic {
                         self.quic_early = true;
                     } else {
-                        self.defer(ticket.earlydata_max, chosen, io);
+                        self.defer(ticket.earlydata_max, ticket.chosen(), io);
                     }
                 }
             }

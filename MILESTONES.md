@@ -600,7 +600,7 @@ milestone 2's review.
     follow mechanics. The redirect schemes come from an option with C's default list.
 43. **TLS through OpenSSL** (ENGINE.md 4.9 and 4.6's shutdown set). **Done**, but for: a TLS 1.3
     ticket that arrives while a connection says goodbye is dropped, where C keeps it;
-    `curl_easy_ssls_import` and `export` answer `CURLE_NOT_BUILT_IN`; a `PROV` key with no file
+    a `PROV` key with no file
     says it is not supported, where C opens the provider's store by no name; 1631 and 1632
     wait for the FTP server (stage 6), and 1679 for step 46's `--libcurl` output. And
     cargo-mutants, run over steps 43 and 44 together, leaves about 165 mutants no test checks,
@@ -690,8 +690,8 @@ milestone 2's review.
     (446, 780–783, 1586, 3109), alt-svc (358, 359) and DoH (2100, 2117), stage 7; Unix sockets
     (1470), step 46; GSS-API (1582) and `crypto` (1647, 1933–1938 and 14 more), run since step 44;
     `HTTPS-proxy` (1630, 3401) until i, 1631 and 1632 then for FTP; HTTP/2 and HTTP/3, stage 5; the FTP, mail, MQTT
-    and Gopher servers and their TLS forms, stage 6; NTLM, Schannel, ECH, `SSLS-EXPORT` (1678)
-    and 4656, not in this build. Every one of the 199 that runs on the C leg passes there
+    and Gopher servers and their TLS forms, stage 6; `SSLS-EXPORT` (1678), step 93; NTLM,
+    Schannel, ECH and 4656, not in this build. Every one of the 199 that runs on the C leg passes there
     (2095 failed once in that run, 56, and passes alone).
 44. **GSS-API** (Kerberos, SPNEGO, `--negotiate`, `--proxy-negotiate`): the Rust build then
     claims them and `crypto` turns on. Opening `crypto` runs 85 tests that already pass; the GSS-API tests are 2056, 2057, 2077, 2078,
@@ -746,8 +746,7 @@ Later, with the protocol that needs it: the scheme facts (family, PROTOPT flags,
 generated from `gen/schemes.py` rather than copied by hand; resting connect and DO states and
 connection-scoped protocol state, with the first stage-6 protocol or STARTTLS; FTP's data
 connection as a second chain beside the control connection's, and its FTP_ACCEPT and
-SERVER_RESPONSE timers traced; `curl_easy_ssls_import` and `export` (`SSLS-EXPORT`, 1678) with
-stage 7's shared state; `curl_multi_assign` from a transfer's own handler, if the corpus shows
+SERVER_RESPONSE timers traced; `curl_multi_assign` from a transfer's own handler, if the corpus shows
 it used.
 
 After the port, as an addition: a rustls backend behind the same `curl_core::tls` traits, to
@@ -1267,6 +1266,10 @@ Its first steps are milestone 6's design-review changes.
     with its TTL; `ShareLock::lock` takes the access it wants; HSTS a `with_hsts` with told and
     untold forms, as C tells the callback only around file loads; a handle's own jar goes as it
     joins a share keeping cookies, and its jar as it leaves.
+93. **SSL session import and export.** **Done.** `SSLS-EXPORT`, `curl_easy_ssls_import`,
+    `curl_easy_ssls_export` and `--ssl-sessions`: C's packed form byte for byte, a peer found by the
+    salted HMAC of its key, and what may go out (ENGINE.md, TLS sessions). A session file written
+    by C's build resumes in this one and the other way round, and 1678 and 777 run.
 
 ## Milestone 8: a WebKit port on the curl backend
 

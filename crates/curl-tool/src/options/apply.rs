@@ -755,6 +755,9 @@ pub(crate) struct Global<'a> {
     /// Where the trace goes: a file, `-` for standard output, `%` for
     /// standard error.
     pub(crate) trace_dump: Option<&'a [u8]>,
+    /// `--ssl-sessions`: the file TLS sessions are loaded from and saved
+    /// to.
+    pub(crate) ssl_sessions: Option<&'a [u8]>,
     /// `--trace-time`.
     pub(crate) trace_time: bool,
     /// `--trace-ids`: the transfer's and connection's numbers before
@@ -1842,6 +1845,13 @@ pub(crate) fn apply<'a>(
         }
         Opt::FormEscape => line.current().form_escape = value.toggle(),
         Opt::Stderr => crate::output::redirect_stderr(value.text(), msgs),
+        Opt::SslSessions => {
+            let file = value.text();
+            if file.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            line.global.ssl_sessions = Some(file);
+        }
         Opt::Data
         | Opt::DataAscii
         | Opt::DataBinary
@@ -2013,7 +2023,7 @@ pub(crate) fn apply<'a>(
             let url = value.text();
             line.current().tls.doh_url = (!url.is_empty()).then_some(url);
         }
-        Opt::Ech | Opt::FalseStart | Opt::Ntlm | Opt::ProxyNtlm | Opt::SslSessions => {
+        Opt::Ech | Opt::FalseStart | Opt::Ntlm | Opt::ProxyNtlm => {
             line.not_implemented(spec, "--")
         }
     }

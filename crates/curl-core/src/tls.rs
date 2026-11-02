@@ -32,11 +32,12 @@ use crate::time::Instant;
 
 pub use crate::conn::layer::Handshake;
 pub(crate) use cache::SessionCache;
-pub use cache::{SessionPeer, TLS1_3, TlsTicket};
+pub(crate) use cache::unpack as unpack_session;
+pub use cache::{SessionExport, SessionFor, SessionPeer, TLS1_3, TlsTicket};
 pub use keylog::{KeyLog, SharedKeyLog};
 pub use pin::pin_peer_pubkey;
 
-mod cache;
+pub(crate) mod cache;
 mod keylog;
 mod pin;
 
@@ -673,6 +674,11 @@ impl TlsCx<'_> {
     /// A line of the transfer's verbose output (`infof`).
     pub fn info(&mut self, line: fmt::Arguments<'_>) {
         self.cx.info(line);
+    }
+
+    /// `info` with a line made of `parts`, which need not be text.
+    pub fn info_with(&mut self, parts: &[&[u8]]) {
+        self.cx.info_with(parts);
     }
 
     /// A line only C's debug build says (`DEBUGF(infof(...))`): `info`

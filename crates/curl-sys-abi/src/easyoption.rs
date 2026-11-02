@@ -149,6 +149,11 @@ mod tests {
         let by_id = unsafe { &*curl_easy_option_by_id(ffi::CURLOPT_DIRLISTONLY) };
         // SAFETY: a static C string.
         assert_eq!(unsafe { CStr::from_ptr(by_id.name) }, c"DIRLISTONLY");
+        // An alias listed ahead of its option: `FILE`, before `WRITEDATA`.
+        // SAFETY: the table's rows live for ever.
+        let by_id = unsafe { &*curl_easy_option_by_id(ffi::CURLOPT_WRITEDATA) };
+        // SAFETY: a static C string.
+        assert_eq!(unsafe { CStr::from_ptr(by_id.name) }, c"WRITEDATA");
         assert!(curl_easy_option_by_id(CURLoption(0)).is_null());
         assert!(curl_easy_option_by_id(CURLoption(99_999)).is_null());
         let mut walked = 0;

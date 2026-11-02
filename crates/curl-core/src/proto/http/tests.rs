@@ -5620,22 +5620,253 @@ impl crate::cookie::PublicSuffixes for ExampleIsPublic {
     }
 }
 
-fn example_is_public() -> Result<crate::cookie::Suffixes, curl_alloc::OutOfMemory> {
-    crate::cookie::Suffixes::new(Box::new(ExampleIsPublic))
+/// Gives that list as the system's, counting how often it is asked.
+struct ExampleIsPublicLibrary;
+
+static LATEST_ASKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl crate::psl::SuffixLibrary for ExampleIsPublicLibrary {
+    fn latest(&self) -> Option<crate::cookie::Suffixes> {
+        LATEST_ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::cookie::Suffixes::new(Box::new(ExampleIsPublic)).ok()
+    }
+
+    fn builtin(&self) -> Option<crate::cookie::Suffixes> {
+        None
+    }
 }
 
-/// The handle's public suffixes, given or made when first wanted, keep a
-/// server from setting a cookie for a suffix; without them it may.
+/// Libraries with that list.
+static WITH_PSL: crate::libraries::Libraries = crate::libraries::Libraries {
+    psl: Some(&ExampleIsPublicLibrary),
+    ..crate::libraries::Libraries::NONE
+};
+
+fn with_psl() -> crate::libraries::SharedLibraries {
+    crate::libraries::SharedLibraries::of_static(&WITH_PSL)
+}
+
+/// Sets two cookies on a domain that is no public suffix to the list.
+const SETS_TWO: &[u8] = b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1; domain=127.0.0.1\r\n\
+    Set-Cookie: b=1; domain=www.example.com\r\nSet-Cookie: c=1; domain=www.example.com\r\n\
+    Content-Length: 0\r\n\r\n";
+
+fn www_host_and_jar_on(o: &mut Options) {
+    o.http.headers = UserHeaders::new([&b"Host: www.example.com"[..]]).unwrap();
+    o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
+}
+
+/// What a share keeping the list and cookies is told of a request whose
+/// response sets a cookie with a domain, as the C build calls it: the
+/// public suffixes inside the jar's use, had alone only when the list is
+/// looked for; a cookie on an address asks no list, and neither does the
+/// application's. A multi's list, with the share not keeping it, is told
+/// of to nobody.
+#[test]
+fn the_public_suffixes_are_told_inside_the_jar_as_c_locks_them() {
+    let _serial = PSL_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+    use crate::share::{Access, Kind, Share, Told};
+    let (s, n) = (Some(Access::Shared), None);
+    let single = Some(Access::Single);
+    let cookie = |a| (a, Kind::Cookies);
+    let psl = |a| (a, Kind::Psl);
+    let share = Share::new().unwrap();
+    share.keep(Kind::Cookies).unwrap();
+    share.keep(Kind::Psl).unwrap();
+    let told = Told::new(&share);
+    let (mut m, talk, _) = server(&[SETS_TWO], false);
+    let mut e = Easy::new();
+    e.set_libraries(with_psl());
+    e.set_share_watched(share.clone(), told.handler()).unwrap();
+    let mut ran = get_with(&mut m, e, "/", talk, www_host_and_jar_on);
+    assert_eq!(ran.result, Ok(()));
+    let calls = told.calls();
+    let setting = |looks: bool| {
+        let mut v = vec![cookie(single)];
+        if looks {
+            v.extend([psl(s), psl(n), psl(single), psl(n)]);
+        }
+        v.extend([psl(s), psl(n), cookie(n)]);
+        v
+    };
+    let tail: Vec<_> = [
+        vec![cookie(single), cookie(n)], // the cookie on an address
+        setting(true),
+        setting(false),
+    ]
+    .concat();
+    assert!(calls.ends_with(&tail), "{calls:?}");
+    let before = &calls[..calls.len() - tail.len()];
+    assert!(
+        before.iter().all(|c| c.1 == Kind::Cookies),
+        "none asks the list before the first: {before:?}"
+    );
+    // The application's cookies ask none.
+    ran.easy
+        .add_cookie(b"Set-Cookie: q=1; domain=www.example.com", |_| {})
+        .unwrap();
+    ran.easy.reload_cookies(|_| {}).unwrap();
+    let calls = told.calls();
+    assert!(calls.iter().all(|c| c.1 == Kind::Cookies), "{calls:?}");
+    assert_eq!(
+        ran.easy.cookie_list().unwrap().len(),
+        3,
+        "not the address's"
+    );
+    drop(ran);
+
+    // The share keeps the cookies alone: the multi's list, told of to none.
+    let share = Share::new().unwrap();
+    share.keep(Kind::Cookies).unwrap();
+    let told = Told::new(&share);
+    let (mut m, talk, _) = server(&[SETS_TWO], false);
+    let mut e = Easy::new();
+    e.set_libraries(with_psl());
+    e.set_share_watched(share.clone(), told.handler()).unwrap();
+    let ran = get_with(&mut m, e, "/", talk, www_host_and_jar_on);
+    assert_eq!(ran.result, Ok(()));
+    let calls = told.calls();
+    assert!(calls.iter().all(|c| c.1 == Kind::Cookies), "{calls:?}");
+    drop(ran);
+
+    // It keeps the list alone: told of, with no jar's use around it.
+    let share = Share::new().unwrap();
+    share.keep(Kind::Psl).unwrap();
+    let told = Told::new(&share);
+    let (mut m, talk, _) = server(&[SETS_TWO], false);
+    let mut e = Easy::new();
+    e.set_libraries(with_psl());
+    e.set_share_watched(share.clone(), told.handler()).unwrap();
+    let ran = get_with(&mut m, e, "/", talk, www_host_and_jar_on);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        told.calls(),
+        [
+            psl(s),
+            psl(n),
+            psl(single),
+            psl(n),
+            psl(s),
+            psl(n),
+            psl(s),
+            psl(n)
+        ]
+    );
+}
+
+/// The lines of a cookie file are checked each in turn, inside the one
+/// use of the jar the walk of the files is.
+#[test]
+fn a_cookie_file_s_lines_tell_the_public_suffixes_inside_the_walk() {
+    let _serial = PSL_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+    use crate::share::{Access, Kind, Share, Told};
+    let path = std::env::temp_dir().join(format!("curl-psl-told-{}", std::process::id()));
+    std::fs::write(
+        &path,
+        "www.example.com\tFALSE\t/\tFALSE\t0\tf1\tv\n\
+         www.example.com\tFALSE\t/\tFALSE\t0\tf2\tv\n",
+    )
+    .unwrap();
+    let share = Share::new().unwrap();
+    share.keep(Kind::Cookies).unwrap();
+    share.keep(Kind::Psl).unwrap();
+    let told = Told::new(&share);
+    let (mut m, talk, _) = server(&[OK], false);
+    let mut e = Easy::new();
+    e.set_libraries(with_psl());
+    e.set_share_watched(share.clone(), told.handler()).unwrap();
+    let name = path.as_os_str().as_encoded_bytes().to_vec();
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        o.http
+            .cookies
+            .make_mut()
+            .unwrap()
+            .files
+            .push(&name)
+            .unwrap();
+    });
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(ran.result, Ok(()));
+    let (s, n, single) = (Some(Access::Shared), None, Some(Access::Single));
+    let psl = |a| (a, Kind::Psl);
+    let cookie = |a| (a, Kind::Cookies);
+    assert_eq!(
+        told.calls()[..10],
+        [
+            cookie(single),
+            psl(s),
+            psl(n),
+            psl(single),
+            psl(n),
+            psl(s),
+            psl(n),
+            psl(s),
+            psl(n),
+            cookie(n)
+        ]
+    );
+}
+
+/// A multi's transfers use one list, as long as it is good: a handle's
+/// next transfer loads none, and one 72 hours on loads another. A share
+/// keeping one uses its own across multis.
+#[test]
+fn a_list_is_kept_by_the_multi_or_the_share_until_its_time() {
+    use crate::share::{Kind, Share};
+    use std::sync::atomic::Ordering::Relaxed;
+    const HOURS_72: std::time::Duration = std::time::Duration::from_secs(72 * 3600);
+    let asked = || LATEST_ASKED.swap(0, Relaxed);
+    let on_two = |share: Option<&Share>| {
+        let clock = ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+        let talks = [(); 3].map(|()| Conversation::replies(&[SETS_TWO], true));
+        let mut net = FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts);
+        for talk in &talks {
+            net = net.with_conversation(at, talk.clone());
+        }
+        let env = Env {
+            clock: Box::new(clock.clone()),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m = Multi::new(env).unwrap();
+        let steps = [(None, 1), (None, 0), (Some(HOURS_72), 1)];
+        for ((advance, want), talk) in steps.into_iter().zip(talks) {
+            if let Some(d) = advance {
+                clock.advance(d);
+            }
+            let mut e = Easy::new();
+            e.set_libraries(with_psl());
+            e.set_share(share.cloned()).unwrap();
+            let ran = get_with(&mut m, e, "/", talk, www_host_and_jar_on);
+            assert_eq!(ran.result, Ok(()));
+            assert_eq!(asked(), want, "{share:?} {advance:?}");
+        }
+    };
+    let _serial = PSL_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+    asked();
+    on_two(None);
+    let share = Share::new().unwrap();
+    share.keep(Kind::Psl).unwrap();
+    on_two(Some(&share));
+}
+
+/// The list's asked-for count is the process's: tests that load it take
+/// turns.
+static PSL_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The build's public suffixes keep a server from setting a cookie for a
+/// suffix; without them it may.
 #[test]
 fn a_handle_s_public_suffixes_refuse_cookies_for_a_suffix() {
+    let _serial = PSL_TESTS.lock().unwrap_or_else(|e| e.into_inner());
     let reply: &[u8] =
         b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1; domain=example.com\r\nContent-Length: 0\r\n\r\n";
-    for list in ["none", "given", "made"] {
+    for listed in [false, true] {
         let mut e = Easy::new();
-        match list {
-            "given" => e.set_public_suffixes(Some(example_is_public().unwrap())),
-            "made" => e.set_public_suffixes_from(example_is_public),
-            _ => e.set_public_suffixes(None),
+        if listed {
+            e.set_libraries(with_psl());
         }
         let (mut m, talk, _) = server(&[reply], false);
         let mut ran = get_with(&mut m, e, "/", talk, |o| {
@@ -5644,7 +5875,7 @@ fn a_handle_s_public_suffixes_refuse_cookies_for_a_suffix() {
         });
         assert_eq!(ran.result, Ok(()));
         let kept = ran.easy.cookie_list().unwrap();
-        assert_eq!(kept.is_empty(), list != "none", "{list}: {kept:?}");
+        assert_eq!(kept.is_empty(), listed, "{listed}: {kept:?}");
     }
 }
 

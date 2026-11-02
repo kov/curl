@@ -172,30 +172,28 @@ witness: curl-core proto::http::tests::a_share_keeps_cookies_for_its_handles
 file: crates/curl-core/src/cookie.rs
 witness: curl-core cookie::tests::without_the_list_every_domain_is_refused
 --- old
-    let problem = cfits && hfits && !suffixes.available();
+                problem = true;
 --- new
-    let problem = cfits && hfits && !suffixes.available() && false;
+                acceptable = true;
 
 === libpsl's answer is read the wrong way round
 file: crates/curl-psl/src/lib.rs
 witness: curl-psl tests::answers_as_libpsl
 --- old
-        unsafe { psl_is_public_suffix(ctx.as_ptr(), domain.as_ptr().cast()) != 0 }
+        unsafe { psl_is_public_suffix(self.as_ptr(), domain.as_ptr().cast()) != 0 }
 --- new
-        unsafe { psl_is_public_suffix(ctx.as_ptr(), domain.as_ptr().cast()) == 0 }
+        unsafe { psl_is_public_suffix(self.as_ptr(), domain.as_ptr().cast()) == 0 }
 
 === the application's cookies are not counted with the request's
 file: crates/curl-core/src/easy.rs
 witness: curl-core easy::tests::the_application_s_cookies_count_toward_the_limit
 --- old
         let mut set = self.set_cookies;
-        let suffixes = self.public_suffixes()?;
-        let list = suffixes.as_ref().map(Suffixes::list);
+        let list = self.unasked_suffixes();
         let added = self
 --- new
         let mut set = 0;
-        let suffixes = self.public_suffixes()?;
-        let list = suffixes.as_ref().map(Suffixes::list);
+        let list = self.unasked_suffixes();
         let added = self
 
 === a reset handle keeps its count of cookies stored

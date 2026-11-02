@@ -557,17 +557,9 @@ fn writes_negative_expiry_with_its_sign() {
 /// A list that could not be had.
 struct Missing;
 
-impl PublicSuffixes for Missing {
-    fn is_public_suffix(&self, _: &[u8]) -> bool {
-        unreachable!("not asked without the list")
-    }
-
-    fn accepts(&self, _: &[u8], _: &[u8]) -> bool {
-        unreachable!("not asked without the list")
-    }
-
-    fn available(&self) -> bool {
-        false
+impl crate::cookie::SuffixCheck for Missing {
+    fn with_list(&self, ask: &mut dyn FnMut(Option<&dyn PublicSuffixes>)) {
+        ask(None);
     }
 }
 
@@ -1079,7 +1071,7 @@ proptest! {
         ops in proptest::collection::vec(jar_op(), 1..12),
         listed in any::<bool>(),
     ) {
-        let suffixes: Option<&dyn PublicSuffixes> = listed.then_some(&Two);
+        let suffixes: Option<&dyn crate::cookie::SuffixCheck> = listed.then_some(&Two);
         let mut jar = Jar::default();
         let (mut now, mut set) = (NOW, 0u8);
         for op in &ops {

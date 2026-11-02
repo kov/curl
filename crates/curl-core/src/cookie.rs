@@ -72,11 +72,28 @@ pub trait PublicSuffixes: Send + Sync {
     /// Whether `host` may set a cookie for `domain`, both in lower case
     /// (`psl_is_cookie_domain_acceptable`).
     fn accepts(&self, host: &[u8], domain: &[u8]) -> bool;
+}
 
-    /// Whether the list could be had: without it, every domain is
-    /// refused (`Curl_psl_use` failing).
-    fn available(&self) -> bool {
-        true
+/// What the jar asks a cookie's domain of, for one use at a time
+/// (`Curl_psl_use`, `Curl_psl_release`): given no list, it could not be
+/// had, and the domain is refused.
+pub(crate) trait SuffixCheck {
+    fn with_list(&self, ask: &mut dyn FnMut(Option<&dyn PublicSuffixes>));
+}
+
+impl<T: PublicSuffixes> SuffixCheck for T {
+    fn with_list(&self, ask: &mut dyn FnMut(Option<&dyn PublicSuffixes>)) {
+        ask(Some(self));
+    }
+}
+
+/// Says the build has a list, for cookies whose domains are never asked
+/// about: the application's, a reload's (`COOKIE_NOPSL`).
+pub(crate) struct NeverAsked;
+
+impl SuffixCheck for NeverAsked {
+    fn with_list(&self, _: &mut dyn FnMut(Option<&dyn PublicSuffixes>)) {
+        unreachable!("the domains of these cookies are not checked");
     }
 }
 
@@ -434,7 +451,7 @@ impl Jar {
         text: &[u8],
         new_session: bool,
         trusted: bool,
-        suffixes: Option<&dyn PublicSuffixes>,
+        suffixes: Option<&dyn SuffixCheck>,
         now: i64,
         set: &mut u8,
         mut said: impl FnMut(&Said<'_>),
@@ -461,7 +478,7 @@ impl Jar {
     pub(crate) fn add_line<'a>(
         &'a mut self,
         line: &'a [u8],
-        suffixes: Option<&dyn PublicSuffixes>,
+        suffixes: Option<&dyn SuffixCheck>,
         now: i64,
         set: &mut u8,
     ) -> Result<Option<Said<'a>>, OutOfMemory> {
@@ -479,7 +496,7 @@ impl Jar {
         &'a mut self,
         value: &'a [u8],
         source: Source<'a>,
-        suffixes: Option<&dyn PublicSuffixes>,
+        suffixes: Option<&dyn SuffixCheck>,
         now: i64,
         set: &mut u8,
     ) -> Result<Option<Said<'a>>, OutOfMemory> {
@@ -492,7 +509,7 @@ impl Jar {
         &'a mut self,
         line: Line<'a>,
         source: Source<'a>,
-        suffixes: Option<&dyn PublicSuffixes>,
+        suffixes: Option<&dyn SuffixCheck>,
         now: i64,
         set: &mut u8,
     ) -> Result<Option<Said<'a>>, OutOfMemory> {
@@ -829,7 +846,7 @@ impl Cookie {
 fn header_cookie<'a>(
     value: &'a [u8],
     source: Source<'a>,
-    suffixes: Option<&dyn PublicSuffixes>,
+    suffixes: Option<&dyn SuffixCheck>,
     now: i64,
 ) -> Result<Parsed<'a>, OutOfMemory> {
     let value = until_zero(value);
@@ -989,7 +1006,7 @@ fn bad_domain(domain: &[u8]) -> bool {
 fn on_public_suffix(
     co: &mut Cookie,
     host: Option<&[u8]>,
-    suffixes: &dyn PublicSuffixes,
+    suffixes: &dyn SuffixCheck,
 ) -> Option<bool> {
     let domain = co.domain.as_deref()?;
     if is_ip_address(domain) {
@@ -1009,26 +1026,34 @@ fn on_public_suffix(
     let (cookie_low, clen, cfits) = trimmed(domain);
     let (host_low, hlen, hfits) = trimmed(host.unwrap_or_default());
     let mut acceptable = false;
-    let problem = cfits && hfits && !suffixes.available();
-    if cfits && hfits && !problem {
+    let mut problem = false;
+    let mut tailmatch = co.tailmatch;
+    if cfits && hfits {
         let cookie_low = &cookie_low[..clen];
-        match host {
-            Some(host) => {
-                acceptable = suffixes.accepts(&host_low[..hlen], cookie_low);
-                // Allowed on a public suffix, it is for that host alone;
-                // one not allowed is dropped, whatever it goes to.
-                if domain.eq_ignore_ascii_case(host) && suffixes.is_public_suffix(cookie_low) {
-                    co.tailmatch = false;
+        suffixes.with_list(&mut |list| {
+            let Some(list) = list else {
+                problem = true;
+                return;
+            };
+            match host {
+                Some(host) => {
+                    acceptable = list.accepts(&host_low[..hlen], cookie_low);
+                    // Allowed on a public suffix, it is for that host alone;
+                    // one not allowed is dropped, whatever it goes to.
+                    if domain.eq_ignore_ascii_case(host) && list.is_public_suffix(cookie_low) {
+                        tailmatch = false;
+                    }
+                }
+                None => {
+                    acceptable = true;
+                    if list.is_public_suffix(cookie_low) {
+                        tailmatch = false;
+                    }
                 }
             }
-            None => {
-                acceptable = true;
-                if suffixes.is_public_suffix(cookie_low) {
-                    co.tailmatch = false;
-                }
-            }
-        }
+        });
     }
+    co.tailmatch = tailmatch;
     (!acceptable).then_some(problem)
 }
 

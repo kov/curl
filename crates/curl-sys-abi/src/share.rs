@@ -210,28 +210,28 @@ fn kind(sh: &ShimShare, data: curl_lock_data, on: bool) -> CURLSHcode {
         ffi::CURL_LOCK_DATA_DNS
         | ffi::CURL_LOCK_DATA_CONNECT
         | ffi::CURL_LOCK_DATA_COOKIE
-        | ffi::CURL_LOCK_DATA_SSL_SESSION => {
-            let kind = core_kind(data).expect("one the core keeps");
-            let kept = match on {
-                true => sh.core.keep(kind),
-                false => sh.core.stop_keeping(kind),
-            };
-            // A handle may have linked on another thread since `in_use`
-            // was asked.
-            match kept {
-                Ok(()) => CURLSHE_OK,
-                Err(_) => CURLSHE_IN_USE,
-            }
-        }
-        // Each handle loads its own list; sharing it changes nothing a
-        // transfer can see.
-        ffi::CURL_LOCK_DATA_PSL if on => CURLSHE_OK,
+        | ffi::CURL_LOCK_DATA_SSL_SESSION => keep(sh, data, on),
+        // C has no way to stop sharing the list.
+        ffi::CURL_LOCK_DATA_PSL if on => keep(sh, data, on),
         // HSTS is not built in yet.
         ffi::CURL_LOCK_DATA_HSTS => ffi::CURLSHE_NOT_BUILT_IN,
         _ => CURLSHE_BAD_OPTION,
     }
 }
 
+/// Have the core keep `data`, or stop.
+fn keep(sh: &ShimShare, data: curl_lock_data, on: bool) -> CURLSHcode {
+    let kind = core_kind(data).expect("one the core keeps");
+    let kept = match on {
+        true => sh.core.keep(kind),
+        false => sh.core.stop_keeping(kind),
+    };
+    // A handle may have linked on another thread since `in_use` was asked.
+    match kept {
+        Ok(()) => CURLSHE_OK,
+        Err(_) => CURLSHE_IN_USE,
+    }
+}
 /// The kind of data the core keeps for `data`, if it keeps it.
 fn core_kind(data: curl_lock_data) -> Option<Kind> {
     match data {
@@ -239,6 +239,7 @@ fn core_kind(data: curl_lock_data) -> Option<Kind> {
         ffi::CURL_LOCK_DATA_DNS => Some(Kind::Names),
         ffi::CURL_LOCK_DATA_COOKIE => Some(Kind::Cookies),
         ffi::CURL_LOCK_DATA_SSL_SESSION => Some(Kind::SslSessions),
+        ffi::CURL_LOCK_DATA_PSL => Some(Kind::Psl),
         _ => None,
     }
 }
@@ -259,6 +260,7 @@ fn lock_data(kind: Kind) -> curl_lock_data {
         Kind::Names => ffi::CURL_LOCK_DATA_DNS,
         Kind::Cookies => ffi::CURL_LOCK_DATA_COOKIE,
         Kind::SslSessions => ffi::CURL_LOCK_DATA_SSL_SESSION,
+        Kind::Psl => ffi::CURL_LOCK_DATA_PSL,
     }
 }
 

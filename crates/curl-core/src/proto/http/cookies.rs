@@ -11,14 +11,14 @@
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::auth::creds::SameOrigin;
-use crate::cookie::{Jar, LoadError, Source, Suffixes};
+use crate::cookie::{Jar, LoadError, Source, SuffixCheck};
 use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::handler::Handler;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::proto::http1::request::UserHeaders;
-use crate::share::{Access, Kind, ShareLock};
+use crate::share::{Access, Kind, ShareLock, watched};
 use crate::trace;
 
 /// The longest `Cookie:` line a request sends (`MAX_COOKIE_HEADER_LEN`).
@@ -144,9 +144,8 @@ fn load_text<H: Host>(cx: &mut StepCx<'_, H>, text: &[u8]) -> Result<(), ErrorKi
     let new_session = cx.easy().options().http.cookies.new_session;
     let now = cx.unix_time();
     let mut held = Held::new(cx);
-    let easy = cx.easy_mut();
-    let suffixes = easy.public_suffixes().map_err(oom)?;
-    let list = suffixes.as_ref().map(Suffixes::list);
+    let (easy, suffixes) = cx.easy_and_suffixes();
+    let list = suffixes.as_ref().map(|s| s as &dyn SuffixCheck);
     let mut set = easy.set_cookies;
     let read = |jar: &mut Jar| {
         jar.load(text, new_session, false, list, now, &mut set, |said| {
@@ -158,7 +157,10 @@ fn load_text<H: Host>(cx: &mut StepCx<'_, H>, text: &[u8]) -> Result<(), ErrorKi
         None => easy.cookies.as_deref_mut().map(read),
     };
     easy.set_cookies = set;
+    let told = suffixes.as_ref().map_or(Ok(()), |s| s.tell());
+    drop(suffixes);
     held.trace(cx)?;
+    told.map_err(oom)?;
     // The jar is off only if the debug handler turned it off while an
     // earlier file was traced: there is nothing to read into.
     loaded.unwrap_or(Ok(())).map_err(oom)
@@ -176,11 +178,27 @@ fn tell_jar_used(easy: &Easy) -> Option<Handler<dyn ShareLock>> {
 /// Run `f` on the jar the handle uses, if its jar is on: its share's, if
 /// that keeps the cookies, as one use of it, else its own.
 fn jar_section<R>(easy: &mut Easy, f: impl FnOnce(&mut Jar) -> R) -> Option<R> {
+    jar_section_then(easy, f, || {})
+}
+
+/// As `jar_section`, `then` run with the jar let go but its use not yet
+/// told over.
+fn jar_section_then<R>(
+    easy: &mut Easy,
+    f: impl FnOnce(&mut Jar) -> R,
+    then: impl FnOnce(),
+) -> Option<R> {
     easy.cookies.as_ref()?;
-    match easy.with_shared_jar(f) {
-        Ok(r) => r,
-        Err(f) => easy.cookies.as_deref_mut().map(f),
-    }
+    let Some(share) = easy.share().filter(|s| s.keeps(Kind::Cookies)) else {
+        let r = easy.cookies.as_deref_mut().map(f);
+        then();
+        return r;
+    };
+    watched(easy.share_watch(), share, Kind::Cookies, || {
+        let r = share.cookies().as_mut().map(f);
+        then();
+        r
+    })
 }
 
 /// Trace lines said while the jar was in use, traced once it is not; held
@@ -305,8 +323,6 @@ pub(super) fn set_by_server<H: Host>(
     if cx.easy().cookies.is_none() {
         return Ok(());
     }
-    let suffixes = cx.easy_mut().public_suffixes().map_err(oom)?;
-    let list = suffixes.as_ref().map(Suffixes::list);
     let source = Source::Server {
         host: site.host,
         path: site.path,
@@ -315,15 +331,24 @@ pub(super) fn set_by_server<H: Host>(
     let now = cx.unix_time();
     let mut held = Held::new(cx);
     let mut set = cx.easy().set_cookies;
-    let stored = jar_section(cx.easy_mut(), |jar| {
-        let said = jar.set_by(value, source, list, now, &mut set)?;
-        if let Some(said) = said {
-            said.lines(|parts| held.hold(parts));
-        }
-        Ok(())
-    });
-    cx.easy_mut().set_cookies = set;
+    let (easy, suffixes) = cx.easy_and_suffixes();
+    let list = suffixes.as_ref().map(|s| s as &dyn SuffixCheck);
+    let mut told = Ok(());
+    let stored = jar_section_then(
+        easy,
+        |jar| {
+            let said = jar.set_by(value, source, list, now, &mut set)?;
+            if let Some(said) = said {
+                said.lines(|parts| held.hold(parts));
+            }
+            Ok(())
+        },
+        || told = suffixes.as_ref().map_or(Ok(()), |s| s.tell()),
+    );
+    easy.set_cookies = set;
+    drop(suffixes);
     held.trace(cx)?;
+    told.map_err(oom)?;
     stored.expect("on, checked above").map_err(oom)
 }
 

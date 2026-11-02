@@ -504,6 +504,16 @@ not a difference: it is tracked in `MILESTONES.md`.
   the share the change would replace. Pinned by `a_callback_cannot_change_the_share`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+## Public suffix locks
+
+- **The lock functions hear of the public suffix list after the jar has used it.** The order of
+  lock calls is C's, the list's inside the jar's, but where the share keeps cookies the jar's own
+  mutex is held as the list is asked, and the application is never called under it. So a
+  `CURL_LOCK_DATA_PSL` call comes once the jar's use is done, before its unlock, and where a file's
+  lines are traced, before those lines rather than among them. Pinned by
+  `the_public_suffixes_are_told_inside_the_jar_as_c_locks_them`
+  (`crates/curl-core/src/proto/http/tests.rs`).
+
 ## Handles the application never made
 
 - **The connection lock at share cleanup is called with no handle.** When `curl_share_cleanup`

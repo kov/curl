@@ -708,6 +708,7 @@ const fn libraries_with(
         h3: Some(&curl_ngtcp2::NGTCP2),
         ssh: Some(&curl_libssh::LIBSSH),
         ldap: Some(&curl_ldap::LIBLDAP),
+        psl: Some(&curl_psl::LIBPSL),
         random: RANDOM,
     }
 }
@@ -732,10 +733,7 @@ static OPENSSL: curl_openssl::OpenSsl = curl_openssl::OpenSsl::logging_keys_to(
 pub extern "C" fn curl_easy_init() -> *mut CURL {
     // C initialises the library for a program that did not.
     crate::root::init_unless_done();
-    // Each handle has its own list of public suffixes, made and loaded
-    // the first time a cookie asks, as C loads it in the handle's multi.
     let mut handle = Easy::new();
-    handle.set_public_suffixes_from(curl_psl::suffixes);
     handle.set_libraries(curl_core::libraries::SharedLibraries::of_static(libraries(
         crate::setopt::gssapi(),
     )));

@@ -34,6 +34,7 @@ mod netrc;
 pub mod options;
 mod progress;
 mod proto;
+pub mod psl;
 pub mod report;
 mod save;
 pub mod share;

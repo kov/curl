@@ -47,9 +47,11 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 file: crates/curl-core/src/proto/http/cookies.rs
 witness: curl-core proto::http::tests::a_share_s_jar_serves_the_transfers_of_a_multi
 --- old
-    match easy.with_shared_jar(f) {
+    let Some(share) = easy.share().filter(|s| s.keeps(Kind::Cookies)) else {
+        let r = easy.cookies.as_deref_mut().map(f);
 --- new
-    match Err::<Option<R>, _>(f) {
+    let Some(share) = easy.share().filter(|_| false) else {
+        let r = easy.cookies.as_deref_mut().map(f);
 
 === a setup lets go of its answer untold
 file: crates/curl-core/src/multi/state/connecting.rs
@@ -90,9 +92,9 @@ witness: curl-sys-abi handle_tests::a_share_is_held_and_locked_as_in_c
 file: crates/curl-sys-abi/src/share.rs
 witness: curl-sys-abi handle_tests::a_share_is_used_from_two_threads_at_once
 --- old
-                true => sh.core.keep(kind),
+        true => sh.core.keep(kind),
 --- new
-                true => sh.core.stop_keeping(kind),
+        true => sh.core.stop_keeping(kind),
 
 === a drive looks names up in the multi's cache though the share keeps them
 file: crates/curl-core/src/multi/cx.rs
@@ -120,9 +122,9 @@ witness: curl-core multi::tests::a_share_s_sockets_close_out_of_its_lock
 file: crates/curl-sys-abi/src/share.rs
 witness: curl-sys-abi share::tests::a_handle_linked_in_a_race_is_the_share_in_use
 --- old
-                Err(_) => CURLSHE_IN_USE,
+        Err(_) => CURLSHE_IN_USE,
 --- new
-                Err(_) => panic!("held"),
+        Err(_) => panic!("held"),
 
 === a share is changed under a running transfer
 file: crates/curl-sys-abi/src/share.rs
@@ -257,3 +259,106 @@ witness: curl-core proto::http::tests::a_handle_s_own_cookies_go_as_it_joins_a_s
         }
 --- new
         }
+
+=== a list past its time is kept
+file: crates/curl-core/src/psl.rs
+witness: curl-core psl::tests::a_list_is_looked_for_again_at_exactly_its_time
+--- old
+        if loaded.list.is_some() && loaded.expires > now {
+--- new
+        if loaded.list.is_some() {
+
+=== a list is good for one moment longer than C's
+file: crates/curl-core/src/psl.rs
+witness: curl-core psl::tests::a_list_is_looked_for_again_at_exactly_its_time
+--- old
+        if loaded.list.is_some() && loaded.expires > now {
+--- new
+        if loaded.list.is_some() && loaded.expires >= now {
+
+=== the system's list gives way to the library's when the system has none
+file: crates/curl-core/src/psl.rs
+witness: curl-core psl::tests::a_list_goes_only_for_one_at_least_as_good
+--- old
+            None if loaded.latest => None,
+--- new
+
+=== the system's list is looked for even after the library's own is had, only once
+file: crates/curl-core/src/psl.rs
+witness: curl-core psl::tests::a_list_goes_only_for_one_at_least_as_good
+--- old
+            loaded.latest = is_latest;
+--- new
+            loaded.latest = false;
+
+=== a transfer uses its multi's list though its share keeps one
+file: crates/curl-core/src/psl.rs
+witness: curl-core proto::http::tests::a_list_is_kept_by_the_multi_or_the_share_until_its_time
+--- old
+            Home::Share(share) => share.psl(),
+--- new
+            Home::Share(_) => &*Box::leak(Box::new(PslCache::default())),
+
+=== the public suffixes are told after the jar's use is over
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::the_public_suffixes_are_told_inside_the_jar_as_c_locks_them
+--- old
+        let r = share.cookies().as_mut().map(f);
+        then();
+        r
+    })
+--- new
+        share.cookies().as_mut().map(f)
+    })
+    .inspect(|_| then())
+
+=== the application is told of the public suffixes under the jar's lock
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::the_public_suffixes_are_told_inside_the_jar_as_c_locks_them
+--- old
+        let r = share.cookies().as_mut().map(f);
+        then();
+        r
+    })
+--- new
+        let mut jar = share.cookies();
+        let r = jar.as_mut().map(f);
+        then();
+        drop(jar);
+        r
+    })
+
+=== a list looked for is told as one read
+file: crates/curl-core/src/psl.rs
+witness: curl-core proto::http::tests::the_public_suffixes_are_told_inside_the_jar_as_c_locks_them
+--- old
+            if looked_for {
+                one(Access::Shared);
+                one(Access::Single);
+            }
+--- new
+            let _ = looked_for;
+
+=== a list's read is told as wanting it alone
+file: crates/curl-core/src/psl.rs
+witness: curl-core proto::http::tests::a_cookie_file_s_lines_tell_the_public_suffixes_inside_the_walk
+--- old
+            one(Access::Shared);
+        }
+--- new
+            one(Access::Single);
+        }
+
+=== a cookie file's public suffixes are not told
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::a_cookie_file_s_lines_tell_the_public_suffixes_inside_the_walk
+--- old
+    let told = suffixes.as_ref().map_or(Ok(()), |s| s.tell());
+    drop(suffixes);
+    held.trace(cx)?;
+    told.map_err(oom)?;
+    // The jar is off only
+--- new
+    drop(suffixes);
+    held.trace(cx)?;
+    // The jar is off only

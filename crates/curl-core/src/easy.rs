@@ -12,7 +12,7 @@ use crate::coding::Decoders;
 use crate::components::Components;
 use crate::conn::ConnId;
 use crate::conn::io::{SystemNet, Waker};
-use crate::cookie::{Jar, LoadError, Suffixes};
+use crate::cookie::{Jar, LoadError, NeverAsked, SuffixCheck};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::handler::Handler;
 use crate::hsts::{Hsts, LoadError as CacheLoadError};
@@ -81,9 +81,6 @@ pub struct Easy {
     /// Told around each use the transfers make of what the share keeps;
     /// goes with the share.
     pub(crate) share_watch: Option<Handler<dyn ShareLock>>,
-    /// The public suffixes cookies are checked against: without them, a
-    /// domain needs a dot, as in C built without libpsl.
-    suffixes: SuffixList,
     /// What the libraries bound beside the core do for it: the content
     /// codings it undoes, the signatures it makes, the TLS it speaks.
     libraries: SharedLibraries,
@@ -272,16 +269,6 @@ struct HostCaches {
     alt_svc: Option<AltSvc>,
 }
 
-/// Where a handle's public suffixes come from.
-#[derive(Debug, Default)]
-enum SuffixList {
-    #[default]
-    None,
-    Given(Suffixes),
-    /// Made the first time they are wanted.
-    Made(fn() -> Result<Suffixes, OutOfMemory>),
-}
-
 /// A handle's own multi (C's `multi_easy`).
 pub(crate) struct Private {
     pub(crate) multi: Multi,
@@ -414,11 +401,6 @@ impl Easy {
             caches: None,
             share: None,
             share_watch: None,
-            suffixes: match &self.suffixes {
-                SuffixList::Given(given) => SuffixList::Given(given.clone()),
-                SuffixList::Made(make) => SuffixList::Made(*make),
-                SuffixList::None => SuffixList::None,
-            },
             libraries: self.libraries.clone(),
             components: self.components.clone(),
             rtsp: None,
@@ -622,29 +604,10 @@ impl Easy {
         self.libraries.decoders
     }
 
-    /// The public suffixes cookies' domains are checked against, kept
-    /// through `reset` (libpsl's list, as C's build has it).
-    pub fn set_public_suffixes(&mut self, suffixes: Option<Suffixes>) {
-        self.suffixes = suffixes.map_or(SuffixList::None, SuffixList::Given);
-    }
-
-    /// As `set_public_suffixes`, with a list `make` makes the first time
-    /// one is wanted, so that a handle no cookie needs it for costs
-    /// nothing: as C loads it in the handle's multi.
-    pub fn set_public_suffixes_from(&mut self, make: fn() -> Result<Suffixes, OutOfMemory>) {
-        self.suffixes = SuffixList::Made(make);
-    }
-
-    /// The public suffixes, made now if they are made when wanted.
-    pub(crate) fn public_suffixes(&mut self) -> Result<Option<Suffixes>, OutOfMemory> {
-        if let SuffixList::Made(make) = self.suffixes {
-            self.suffixes = SuffixList::Given(make()?);
-        }
-        Ok(match &self.suffixes {
-            SuffixList::Given(given) => Some(given.clone()),
-            SuffixList::Made(_) => unreachable!("made above"),
-            SuffixList::None => None,
-        })
+    /// What says the build has public suffixes to the jar, for cookies
+    /// whose domains are not checked against them.
+    fn unasked_suffixes(&self) -> Option<&'static dyn SuffixCheck> {
+        self.libraries.psl.map(|_| &NeverAsked as &dyn SuffixCheck)
     }
 
     /// Turn the HSTS cache on, empty, if it is not, its file written back
@@ -834,8 +797,7 @@ impl Easy {
         // Counted with the last request's, and dropped silently past
         // their limit, as C counts it.
         let mut set = self.set_cookies;
-        let suffixes = self.public_suffixes()?;
-        let list = suffixes.as_ref().map(Suffixes::list);
+        let list = self.unasked_suffixes();
         let added = self
             .with_jar(true, |jar| {
                 let said = jar.add_line(line, list, now, &mut set)?;
@@ -877,8 +839,7 @@ impl Easy {
         let files = cookies.files.try_clone()?;
         let new_session = cookies.new_session;
         let now = SystemClock::new().unix_time();
-        let suffixes = self.public_suffixes()?;
-        let list = suffixes.as_ref().map(Suffixes::list);
+        let list = self.unasked_suffixes();
         let mut set = self.set_cookies;
         let loaded = self
             .with_jar(true, |jar| {

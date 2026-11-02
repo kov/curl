@@ -1,7 +1,8 @@
-//! The share: connections, resolved names, cookies and TLS sessions kept
-//! for every transfer given it, whichever handle and thread runs them
-//! (`CURLSH`, with `CURL_LOCK_DATA_CONNECT`, `CURL_LOCK_DATA_DNS`,
-//! `CURL_LOCK_DATA_COOKIE` and `CURL_LOCK_DATA_SSL_SESSION`).
+//! The share: connections, resolved names, cookies, TLS sessions and the
+//! public suffix list kept for every transfer given it, whichever handle
+//! and thread runs them (`CURLSH`, with `CURL_LOCK_DATA_CONNECT`,
+//! `CURL_LOCK_DATA_DNS`, `CURL_LOCK_DATA_COOKIE`,
+//! `CURL_LOCK_DATA_SSL_SESSION` and `CURL_LOCK_DATA_PSL`).
 //!
 //! Each kind of data it keeps has a lock of its own, held for one use of
 //! it at a time (a search for a connection, a lookup, a cookie stored) and
@@ -21,6 +22,7 @@ use crate::conn::io::{Net, SystemNet};
 use crate::conn::shutdown::NoSet;
 use crate::conn::{DnsCache, Pool};
 use crate::cookie::Jar;
+use crate::psl::PslCache;
 use crate::tls::SessionCache;
 
 /// A handle's share cannot change now: the handle holds a connection
@@ -39,6 +41,8 @@ pub enum Kind {
     Cookies,
     /// TLS sessions to resume (`CURL_LOCK_DATA_SSL_SESSION`).
     SslSessions,
+    /// The public suffix list (`CURL_LOCK_DATA_PSL`).
+    Psl,
 }
 
 impl Kind {
@@ -48,6 +52,7 @@ impl Kind {
             Kind::Names => 2,
             Kind::Cookies => 4,
             Kind::SslSessions => 8,
+            Kind::Psl => 16,
         }
     }
 }
@@ -83,6 +88,9 @@ struct Inner {
     cookies: Mutex<Option<Jar>>,
     /// The TLS sessions, a cache made when they are first kept.
     sessions: Mutex<Option<SessionCache>>,
+    /// The public suffix list, used by its transfers in place of each
+    /// one's multi's once it is kept. It has a lock of its own.
+    psl: PslCache,
     /// What the connections left idle at the end are closed through, as
     /// C's share closes them through its own internal handle.
     net: Mutex<Box<dyn Net + Send>>,
@@ -106,6 +114,7 @@ impl Share {
             dns: Mutex::new(DnsCache::default()),
             cookies: Mutex::new(None),
             sessions: Mutex::new(None),
+            psl: PslCache::default(),
             net: Mutex::new(net),
         })?))
     }
@@ -190,6 +199,11 @@ impl Share {
     /// The jar, locked; none if the share keeps no cookies.
     pub(crate) fn cookies(&self) -> MutexGuard<'_, Option<Jar>> {
         lock(&self.0.cookies)
+    }
+
+    /// The public suffix list.
+    pub(crate) fn psl(&self) -> &PslCache {
+        &self.0.psl
     }
 
     /// Keep alive its connections that have gone `interval` without, for
@@ -301,7 +315,8 @@ impl Told {
         let free = inner.pool.try_lock().is_ok()
             && inner.dns.try_lock().is_ok()
             && inner.cookies.try_lock().is_ok()
-            && inner.sessions.try_lock().is_ok();
+            && inner.sessions.try_lock().is_ok()
+            && !inner.psl.is_locked();
         assert!(free, "told of {kind:?} under the share's own lock");
         lock(&self.told).push((access, kind));
     }

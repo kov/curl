@@ -72,6 +72,9 @@ pub(crate) struct Caches {
     pub(crate) dns: DnsCache,
     /// The TLS sessions kept to resume (`multi->ssl_scache`).
     pub(crate) sessions: crate::tls::SessionCache,
+    /// The public suffix list its transfers use, unless their share keeps
+    /// one (`multi->psl`).
+    pub(crate) psl: crate::psl::PslCache,
 }
 
 impl Caches {
@@ -80,6 +83,7 @@ impl Caches {
             pool: Pool::new()?,
             dns: DnsCache::default(),
             sessions: crate::tls::SessionCache::new(crate::tls::SessionCache::PEERS),
+            psl: crate::psl::PslCache::default(),
         })
     }
 }

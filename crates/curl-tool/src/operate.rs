@@ -15,7 +15,6 @@ use std::os::fd::AsFd as _;
 use std::time::{Duration, Instant};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box, try_format};
-use curl_core::cookie::Suffixes;
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, UrlErrorKind};
 use curl_core::handler::{
@@ -89,8 +88,9 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -
         Ok(tracer) => tracer,
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
-    // The transfers share their connections, resolved names, cookies and
-    // TLS sessions, as C's tool gives each handle its share.
+    // The transfers share their connections, resolved names, cookies, TLS
+    // sessions and public suffix list, as C's tool gives each handle its
+    // share.
     let share = match Share::new() {
         Ok(share) => share,
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
@@ -101,16 +101,12 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -
         Kind::Names,
         Kind::Cookies,
         Kind::SslSessions,
+        Kind::Psl,
     ] {
         if kind != Kind::Connections || !line.global.parallel {
             share.keep(kind).expect("held by none yet");
         }
     }
-    // And one list of public suffixes (`CURL_LOCK_DATA_PSL`).
-    let suffixes = match curl_psl::suffixes() {
-        Ok(suffixes) => suffixes,
-        Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
-    };
     // The program `--libcurl` writes, made as the transfers are.
     let program = match line.global.libcurl.map(|_| Source::new()).transpose() {
         Ok(program) => program.map(RefCell::new),
@@ -123,7 +119,6 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -
         tracer: tracer.as_ref(),
         msgs,
         share: &share,
-        suffixes: &suffixes,
         linked,
         claims: Claims::of_build(),
         started: Cell::new(None),
@@ -666,7 +661,6 @@ struct Shared<'a, 'l> {
     tracer: Option<&'a Tracer>,
     msgs: Messages,
     share: &'a Share,
-    suffixes: &'a Suffixes,
     linked: &'a Linked,
     claims: Claims,
     /// When the last transfer, or its last attempt, started, for
@@ -1060,7 +1054,6 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     let mut easy = Handle(Easy::new());
     easy.set_share(Some(run.share.clone()))
         .expect("a handle made now holds no connection");
-    easy.set_public_suffixes(Some(run.suffixes.clone()));
     easy.set_libraries(run.linked.for_handle(run.claims));
     easy.set_components(run.global.components.clone());
     // From here the transfer exists: a failure to set it up is its
@@ -3983,6 +3976,7 @@ impl Linked {
                 h3: Some(&curl_ngtcp2::NGTCP2),
                 ssh: Some(&curl_libssh::LIBSSH),
                 ldap: Some(&curl_ldap::LIBLDAP),
+                psl: Some(&curl_psl::LIBPSL),
                 random: random()?,
             })
         };
@@ -4312,7 +4306,6 @@ mod tests {
         let stdout = Stdout::new().unwrap();
         let tracer = Tracer::new(&line.global, &stdout).unwrap();
         let share = Share::new().unwrap();
-        let suffixes = curl_psl::suffixes().unwrap();
         let program = RefCell::new(Source::new().unwrap());
         let linked = Linked::new().unwrap();
         let run = Shared {
@@ -4322,7 +4315,6 @@ mod tests {
             tracer: tracer.as_ref(),
             msgs,
             share: &share,
-            suffixes: &suffixes,
             linked: &linked,
             claims,
             started: Cell::new(None),

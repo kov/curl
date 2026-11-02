@@ -595,6 +595,25 @@ impl<H: Host> StepCx<'_, H> {
             .easy
     }
 
+    /// The transfer's handle, and the use it makes of the public suffix
+    /// list, kept by its share or its multi, if the build has one.
+    pub(crate) fn easy_and_suffixes(&mut self) -> (&mut Easy, Option<crate::psl::PslUse<'_>>) {
+        let now = self.rest.now;
+        let multi = &self.rest.caches.psl;
+        let easy = &mut *self
+            .rest
+            .tell
+            .slots
+            .get_mut(self.me)
+            .expect("the stepping transfer")
+            .easy;
+        let check = easy.libraries().psl.map(|library| {
+            let watch = easy.share_watch.as_ref();
+            crate::psl::PslUse::new(easy.share(), watch, multi, library, now)
+        });
+        (easy, check)
+    }
+
     pub(crate) fn speedometer_mut(&mut self) -> &mut Speedometer {
         &mut self
             .rest

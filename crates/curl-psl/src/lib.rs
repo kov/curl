@@ -1,22 +1,36 @@
-//! The public suffix list from libpsl (`lib/psl.c`): the latest list the
-//! system has (`psl_latest`), or the one built into the library if there
-//! is none, loaded the first time it is asked.
-//!
-//! C loads it again once it is 72 hours old (`PSL_TTL`); this keeps it for
-//! the life of the handle, which no test can tell apart.
+//! The public suffix lists libpsl gives: the latest the system has
+//! (`psl_latest`) and the one built into the library (`psl_builtin`). When
+//! each is loaded and how long kept is the core's (`curl_core::psl`).
 
 #![allow(unsafe_code)]
 
 use core::ffi::{c_char, c_int};
 use core::ptr::NonNull;
-use std::sync::OnceLock;
 
-use curl_alloc::{OutOfMemory, try_box};
+use curl_alloc::try_box;
 use curl_core::cookie::{PublicSuffixes, Suffixes};
+use curl_core::psl::SuffixLibrary;
 
-/// A new list, for handles to share.
-pub fn suffixes() -> Result<Suffixes, OutOfMemory> {
-    Suffixes::new(try_box(List::new())?)
+/// libpsl, for a handle's libraries.
+pub static LIBPSL: Libpsl = Libpsl;
+
+/// Where lists come from: libpsl.
+pub struct Libpsl;
+
+impl SuffixLibrary for Libpsl {
+    fn latest(&self) -> Option<Suffixes> {
+        Ctx::latest().and_then(list)
+    }
+
+    fn builtin(&self) -> Option<Suffixes> {
+        Ctx::builtin().and_then(list)
+    }
+}
+
+/// `ctx`, as a list the core holds; for want of the memory, none, as
+/// libpsl answers for want of its own.
+fn list(ctx: Ctx) -> Option<Suffixes> {
+    Suffixes::new(try_box(ctx).ok()?).ok()
 }
 
 /// The library's version, as `curl -V` names it (`psl_version`).
@@ -54,12 +68,6 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-/// The list, loaded when first asked.
-#[derive(Default)]
-pub struct List {
-    loaded: OnceLock<Option<Ctx>>,
-}
-
 /// A loaded list: the system's, which is freed with it, or the library's
 /// own, which is not.
 enum Ctx {
@@ -68,6 +76,19 @@ enum Ctx {
 }
 
 impl Ctx {
+    fn latest() -> Option<Ctx> {
+        // SAFETY: NULL asks for the system's list; the result is a new
+        // context or NULL.
+        let latest = unsafe { psl_latest(core::ptr::null()) };
+        NonNull::new(latest).map(Ctx::Latest)
+    }
+
+    fn builtin() -> Option<Ctx> {
+        // SAFETY: takes nothing; the result is static or NULL.
+        let builtin = unsafe { psl_builtin() };
+        NonNull::new(builtin.cast_mut()).map(Ctx::Builtin)
+    }
+
     fn as_ptr(&self) -> *const PslCtx {
         match self {
             Ctx::Latest(p) | Ctx::Builtin(p) => p.as_ptr(),
@@ -76,8 +97,8 @@ impl Ctx {
 }
 
 // SAFETY: a context is only read once loaded, and libpsl's queries on
-// one may run from several threads at once; it is freed only with the
-// list, which no other thread then reaches.
+// one may run from several threads at once; it is freed only as the last
+// holder of its list drops it, which no other thread then reaches.
 unsafe impl Send for Ctx {}
 // SAFETY: as for `Send`: shared, it is only read.
 unsafe impl Sync for Ctx {}
@@ -89,28 +110,6 @@ impl Drop for Ctx {
             // the list that owns it.
             unsafe { psl_free(p.as_ptr()) };
         }
-    }
-}
-
-impl List {
-    pub fn new() -> List {
-        List::default()
-    }
-
-    fn ctx(&self) -> Option<&Ctx> {
-        self.loaded
-            .get_or_init(|| {
-                // SAFETY: NULL asks for the system's list; the result is a
-                // new context or NULL.
-                let latest = unsafe { psl_latest(core::ptr::null()) };
-                if let Some(p) = NonNull::new(latest) {
-                    return Some(Ctx::Latest(p));
-                }
-                // SAFETY: takes nothing; the result is static or NULL.
-                let builtin = unsafe { psl_builtin() };
-                NonNull::new(builtin.cast_mut()).map(Ctx::Builtin)
-            })
-            .as_ref()
     }
 }
 
@@ -128,30 +127,25 @@ fn c_name(name: &[u8]) -> Option<[u8; NAME]> {
     Some(out)
 }
 
-impl PublicSuffixes for List {
-    fn available(&self) -> bool {
-        self.ctx().is_some()
-    }
-
+impl PublicSuffixes for Ctx {
     fn is_public_suffix(&self, domain: &[u8]) -> bool {
-        let (Some(ctx), Some(domain)) = (self.ctx(), c_name(domain)) else {
+        let Some(domain) = c_name(domain) else {
             // A name the list cannot be asked about is taken as one.
             return true;
         };
-        // SAFETY: `ctx` is a live context and `domain` a C string, both
+        // SAFETY: `self` is a live context and `domain` a C string, both
         // alive for the call.
-        unsafe { psl_is_public_suffix(ctx.as_ptr(), domain.as_ptr().cast()) != 0 }
+        unsafe { psl_is_public_suffix(self.as_ptr(), domain.as_ptr().cast()) != 0 }
     }
 
     fn accepts(&self, host: &[u8], domain: &[u8]) -> bool {
-        let (Some(ctx), Some(host), Some(domain)) = (self.ctx(), c_name(host), c_name(domain))
-        else {
+        let (Some(host), Some(domain)) = (c_name(host), c_name(domain)) else {
             return false;
         };
         // SAFETY: as above, for both names.
         unsafe {
             psl_is_cookie_domain_acceptable(
-                ctx.as_ptr(),
+                self.as_ptr(),
                 host.as_ptr().cast(),
                 domain.as_ptr().cast(),
             ) != 0
@@ -183,8 +177,7 @@ mod tests {
 
     #[test]
     fn answers_as_libpsl() {
-        let list = List::new();
-        assert!(list.available());
+        let list = Ctx::latest().or_else(Ctx::builtin).unwrap();
         assert!(list.is_public_suffix(b"com"));
         assert!(list.is_public_suffix(b"co.uk"));
         assert!(!list.is_public_suffix(b"example.com"));
@@ -208,15 +201,17 @@ mod tests {
         assert_eq!(c_name(b"a\0b"), None);
     }
 
-    /// Without a list every name is a suffix, and no cookie domain is
-    /// accepted.
+    /// The library gives the system's list or its own, each a list that
+    /// answers as libpsl's does, and the system's is freed with its last
+    /// holder.
     #[test]
-    fn without_a_list_nothing_is_accepted() {
-        let none = List {
-            loaded: OnceLock::from(None),
-        };
-        assert!(!none.available());
-        assert!(none.is_public_suffix(b"example.com"));
-        assert!(!none.accepts(b"www.example.com", b"example.com"));
+    fn the_library_gives_lists_that_answer() {
+        let builtin = LIBPSL.builtin();
+        assert!(builtin.is_some(), "this build's libpsl has one");
+        for list in [LIBPSL.latest(), builtin].into_iter().flatten() {
+            let held = list.clone();
+            drop(list);
+            assert_eq!(format!("{held:?}"), "Suffixes");
+        }
     }
 }

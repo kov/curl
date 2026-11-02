@@ -811,6 +811,39 @@ mod tests {
         assert_eq!(r.resolving.len(), 1);
     }
 
+    /// What has come of a resolve is told while it goes on, and whether
+    /// AAAA has answered or was never asked; of one unknown, nothing.
+    #[test]
+    fn what_came_is_told_while_a_resolve_goes_on() {
+        let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
+        let mut start = |family| match r.start(b"localhost", family, Waiter::NONE) {
+            Ok(Resolve::Pending(Queued { id, .. })) => id,
+            other => panic!("{other:?}"),
+        };
+        let (v4, any) = (start(Family::V4), start(Family::Any));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut told = 0;
+        let part = loop {
+            assert!(std::time::Instant::now() < deadline, "not answered");
+            r.answered(&mut |_, id| told += u32::from(id == any));
+            let part = r.partial(any).unwrap().expect("it goes on until taken");
+            if part.v6_answered && !part.addrs.is_empty() && told >= 1 {
+                break part;
+            }
+            std::thread::yield_now();
+        };
+        assert!(
+            part.addrs.iter().any(|a| a.is_loopback()),
+            "{:?}",
+            part.addrs
+        );
+        let only_v4 = r.partial(v4).unwrap().expect("it goes on until taken");
+        assert!(only_v4.v6_answered, "AAAA was never asked");
+        r.cancel(v4);
+        assert!(r.partial(v4).unwrap().is_none(), "gone");
+        r.cancel(any);
+    }
+
     /// An idle thread waits out its idle time while no more than the most
     /// run, though another took the work it was woken for; past the most
     /// (the most lowered), it ends.

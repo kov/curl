@@ -783,3 +783,76 @@ fn only_an_answer_about_the_name_is_kept_of_its_record() {
     let a = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x37\x00\x04\x7f\x00\x00\x01";
     assert_eq!(line(0, a, 1), (false, false), "another type of record");
 }
+
+/// Exactly when the wait for AAAA ends what came is connected to.
+#[test]
+fn the_wait_for_aaaa_ends_at_its_very_end() {
+    let clock = ManualClock::new().unwrap();
+    let target = Conversation::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", false);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_peer(at(80), Peer::Accepts)
+        .with_conversation(SERVER.into(), Conversation::replies(&[], false))
+        .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false))
+        .with_conversation(at(80), target.clone());
+    let mut m = multi_over(net, &clock);
+    m.add(asking("http://foo.test/x"), (), &mut NoEvents)
+        .unwrap();
+    for _ in 0..6 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    clock.advance(Duration::from_millis(25));
+    for _ in 0..6 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(
+        target.received().starts_with(b"GET /x"),
+        "connected at 25 ms"
+    );
+}
+
+/// The lines of the names' and the record's resolves over DoH, as C's.
+#[test]
+fn the_resolves_lines_are_c_s() {
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(SERVER.into(), Peer::Accepts)
+        .with_peer(at(443), Peer::Silent)
+        .with_conversation(SERVER.into(), Conversation::new(&http(&rcode(3)), false))
+        .with_conversation(
+            SERVER.into(),
+            Conversation::new(&http(&no_records()), false),
+        )
+        .with_conversation(SERVER.into(), Conversation::new(&http(&a_answer()), false));
+    let mut m = multi_over(net, &clock);
+    let mut easy = asking("https://foo.test/x");
+    let tls = Box::leak(Box::new(crate::tls::fake::FakeTls::new().unwrap()));
+    easy.set_libraries(
+        crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+            tls: Some(crate::libraries::Library::Static(tls)),
+            ..crate::libraries::Libraries::NONE
+        })
+        .unwrap(),
+    );
+    let lines = Lines::default();
+    let o = easy.options_mut();
+    o.output.verbose = true;
+    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"dns");
+    easy.set_components(Some(c));
+    m.add(easy, (), &mut NoEvents).unwrap();
+    run(&mut m, &clock);
+    let said = lines.0.lock().unwrap().clone();
+    let has = |want: &str| said.iter().filter(|l| l.trim_end() == want).count();
+    for want in [
+        "[DNS] cache lookup foo.test:443 queries=HTTPS -> 0 not found",
+        "[DNS] cache lookup foo.test:443 queries=A+AAAA -> 0 not found",
+        "[DNS] cached entry for foo.test:443 queries=A+AAAA",
+        "[DNS] cache negative name resolve for foo.test:443 type=HTTPS",
+        "[DNS] [A+AAAA] resolve complete for foo.test:443",
+    ] {
+        assert!(has(want) >= 1, "{want}: {said:?}");
+    }
+    assert_eq!(has("[DNS] [DoH] probe done"), 4, "{said:?}");
+}

@@ -314,3 +314,105 @@ fn a_label_is_at_most_63_bytes() {
         Err(DohError::BadLabel)
     );
 }
+
+/// A message answering with `n` records of `kind`, each with `data`.
+fn answering(kind: u16, data: &[u8], n: u8) -> Vec<u8> {
+    let mut m = vec![0, 0, 0x81, 0x80, 0, 1, 0, n, 0, 0, 0, 0];
+    m.extend_from_slice(b"\x01a\x00");
+    m.extend_from_slice(&kind.to_be_bytes());
+    m.extend_from_slice(&[0, 1]);
+    for _ in 0..n {
+        m.extend_from_slice(&[0xc0, 0x0c]);
+        m.extend_from_slice(&kind.to_be_bytes());
+        m.extend_from_slice(&[0, 1, 0, 0, 0, 60, 0, u8::try_from(data.len()).unwrap()]);
+        m.extend_from_slice(data);
+    }
+    m
+}
+
+#[test]
+fn an_answer_keeps_as_many_as_c_does() {
+    let m = answering(1, &[1, 2, 3, 4], 25);
+    assert_eq!(decode_answer(&m, QueryType::A).unwrap().addrs.len(), 24);
+    let m = answering(28, &[1; 16], 25);
+    assert_eq!(decode_answer(&m, QueryType::Aaaa).unwrap().addrs.len(), 24);
+    let m = answering(65, &[0, 1, 0], 5);
+    assert_eq!(decode_answer(&m, QueryType::Https).unwrap().https.len(), 4);
+}
+
+#[test]
+fn a_query_as_long_as_it_may_be_is_made() {
+    // Twelve of header, four of question, two for the first label's length
+    // and the root's: labels of 63 and their dots for the rest.
+    let fits = MAX_QUERY - 12 - 4 - 2;
+    let mut name = Vec::new();
+    while name.len() + 64 < fits {
+        name.extend_from_slice(&[b'a'; 63]);
+        name.push(b'.');
+    }
+    name.resize(fits, b'b');
+    assert_eq!(encode_query(&name, QueryType::A).unwrap().len(), MAX_QUERY);
+    name.push(b'b');
+    assert_eq!(
+        encode_query(&name, QueryType::A),
+        Err(DohError::NameTooLong)
+    );
+}
+
+/// A target of labels of 63, as long as `want` with their dots.
+fn target(want: usize) -> Vec<u8> {
+    let mut data = vec![0, 1];
+    let mut left = want;
+    while left > 0 {
+        let label = left.min(64) - 1;
+        data.push(u8::try_from(label).unwrap());
+        data.resize(data.len() + label, b'a');
+        left -= label + 1;
+    }
+    data.push(0);
+    data
+}
+
+#[test]
+fn a_record_s_target_is_as_long_as_c_takes() {
+    let max = decode_https_record(&target(MAX_TARGET)).unwrap();
+    assert_eq!(max.target.len(), MAX_TARGET, "its last dot among them");
+    assert_eq!(
+        decode_https_record(&target(MAX_TARGET + 64)).err(),
+        Some(RecordError::BadName)
+    );
+    // A label of 63 is one; one of 64 is not a label.
+    let mut data = vec![0, 1, 1, b'a', 63];
+    data.resize(data.len() + 63, b'b');
+    data.push(0);
+    assert!(decode_https_record(&data).is_ok());
+    data[4] = 64;
+    data.push(b'b');
+    assert_eq!(decode_https_record(&data).err(), Some(RecordError::BadName));
+}
+
+#[test]
+fn a_parameter_said_twice_is_refused() {
+    assert_eq!(
+        decode_https_record(b"\0\x01\0\0\x02\0\0\0\x02\0\0").err(),
+        Some(RecordError::Weird)
+    );
+}
+
+#[test]
+fn a_record_is_printed_as_c_prints_it() {
+    let data = b"\0\x01\0\
+        \0\0\0\0\
+        \0\x01\0\x06\x02h3\x02h2\
+        \0\x02\0\0\
+        \0\x03\0\x02\x01\xbb\
+        \0\x04\0\x08\x01\x02\x03\x04\x05\x06\x07\x08\
+        \0\x05\0\x02\xaa\xbb\
+        \0\x06\0\x20\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x02";
+    let shown = decode_https_record(data).unwrap().print().unwrap();
+    assert_eq!(
+        String::from_utf8(shown).unwrap(),
+        "1 . mandatory-keys(ignored) alpn=h3,h2 port=443 no-default-alpn \
+         ipv6hint=::1,::2 ipv4hint=1.2.3.4,5.6.7.8 ech=<2 bytes>"
+    );
+}

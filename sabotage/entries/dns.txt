@@ -607,3 +607,12 @@ witness: curl-core conn::connect::tests::a_late_resolve_dropped_lets_go_of_its_h
         }
 --- new
         let _ = self.0.take();
+
+=== a failure to connect counts from the step's start, not the clock
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-tool an_interface_name_is_waited_for_no_longer_than_the_transfer_may_take
+--- old
+    let now = cx.rest.clock.now();
+    let ms = cx.easy().report().timings().since_single_ms(now);
+--- new
+    let ms = cx.easy().report().timings().since_single_ms(cx.rest.now);

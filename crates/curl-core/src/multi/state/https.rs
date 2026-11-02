@@ -37,8 +37,8 @@ pub(crate) struct HttpsConnect {
     record: Record,
     /// Its first attempt's version, once started (`connect, init`).
     first: Option<Alpn>,
-    /// What is known of the record came before the first was chosen, as
-    /// the chain's first connect does it: from the cache, or awaited.
+    /// What is known of the record came before the first was chosen: from
+    /// the cache, or answered before `connect, init`.
     first_by_record: bool,
     /// Its second, of another version, over QUIC where the first is over
     /// TCP or the other way round (`ballers[1]`).
@@ -388,7 +388,9 @@ fn answer_came<H: Host>(
     }
     let h = c.https.as_mut().expect("the filter heads the setup");
     h.record = Record::Known;
-    if h.first.is_none() && awaits_record() {
+    // Come before the first attempt is chosen, it chooses it, as C's
+    // `connect, init` asks the DNS filter for what it has taken.
+    if h.first.is_none() {
         h.first_by_record = true;
     }
     if let Some(first) = h.first {
@@ -423,8 +425,8 @@ fn choosing<H: Host>(c: &Connecting, cx: &StepCx<'_, H>) -> Choosing {
     Choosing::of(&c.proto, &c.route, cx).by_record(c.record.as_ref(), c.route.origin.port())
 }
 
-/// The choice of the first attempt: without a record come since the chain's
-/// first connect, which is when C makes it.
+/// The choice of the first attempt: by the record only if it came before
+/// the choice is made, as C's `connect, init` asks the DNS filter for it.
 fn first_choosing<H: Host>(c: &Connecting, cx: &StepCx<'_, H>) -> Choosing {
     if c.https.is_some_and(|h| h.first_by_record) {
         choosing(c, cx)

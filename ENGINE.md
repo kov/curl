@@ -2607,9 +2607,10 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
 - **A name's HTTPS record.** `https.rs` starts a third probe of its own (`start_https`), named
   `_port._https.name` off port 443, before the name's addresses are asked for. Its answer, kept in
   the cache beside them, chooses the attempts' versions ahead of what is wanted, if it is about
-  the origin itself. The first attempt is chosen by what was known at the chain's first connect,
-  or, under `CURL_DBG_AWAIT_HTTPSRR`, once the record has come (`set_dial`); a record arriving
-  later chooses the second. A server's no such name is kept as a negative entry and an answer
+  the origin itself. The first attempt is chosen by the record if it was taken before
+  `connect, init`, as C's init asks the DNS filter for it, the plan's dial changed to match
+  (`set_dial`); `CURL_DBG_AWAIT_HTTPSRR` waits for it. A record arriving later chooses the
+  second. A server's no such name is kept as a negative entry and an answer
   without a record as an empty one; any other failure keeps nothing.
 - **The trace.** `Easy::doing` names DoH before each line but those of DNS and the like, which
   name themselves (`state.feat`). A probe is verbose only with DoH's trace on.

@@ -327,3 +327,24 @@ fn say_lookup<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) {
     let _ = (route, cx);
     return;
     let peer = route.target();
+
+=== a record come before the first attempt does not choose it
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-tool a_record_come_before_the_first_attempt_chooses_it
+--- old
+    if h.first.is_none() {
+        h.first_by_record = true;
+    }
+--- new
+    if h.first.is_none() && awaits_record() {
+        h.first_by_record = true;
+    }
+
+=== a record answered empty is said to be available
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-tool a_record_answered_empty_is_not_available
+features: debug-hooks
+--- old
+    let by_record = c.https.is_some_and(|h| h.first_by_record) && c.record.is_some();
+--- new
+    let by_record = c.https.is_some_and(|h| h.first_by_record) || c.record.is_some();

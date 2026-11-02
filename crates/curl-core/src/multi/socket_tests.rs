@@ -950,3 +950,146 @@ fn a_library_s_socket_closing_is_removed_though_its_number_comes_back() {
     );
     m.remove(id, &mut ev).unwrap();
 }
+
+/// A resolver library's resolve whose socket closes as it is dropped, as
+/// c-ares's `ares_destroy` closes its channel's: wherever the transfer
+/// lets it go, as it times out or as the application removes it, the
+/// close is said (`Curl_multi_will_close`), once.
+#[test]
+fn a_library_s_resolve_dropped_anywhere_says_its_socket_closed() {
+    #[derive(Debug)]
+    struct Closing {
+        wants: Vec<(Box<dyn Socket>, Events)>,
+        closed: crate::conn::io::SocketsClosed,
+    }
+
+    impl Drop for Closing {
+        fn drop(&mut self) {
+            for (socket, _) in &self.wants {
+                self.closed.said(socket.key()).unwrap();
+            }
+        }
+    }
+
+    impl crate::conn::io::DnsResolve for Closing {
+        fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
+            Ok(())
+        }
+        fn wants(&self) -> &[(Box<dyn Socket>, Events)] {
+            &self.wants
+        }
+        fn due(&self, within: Duration) -> Duration {
+            within
+        }
+        fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
+            Ok(crate::conn::io::Partial {
+                addrs: Vec::new(),
+                v6_answered: false,
+            })
+        }
+        fn ongoing(&self) -> (u32, &'static str) {
+            (2, "-")
+        }
+        fn answer(
+            &mut self,
+        ) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
+            None
+        }
+        fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
+            None
+        }
+        fn explain(&self) -> Option<&'static str> {
+            None
+        }
+        fn status(&self) -> i32 {
+            0
+        }
+    }
+
+    #[derive(Debug)]
+    struct Library(Mutex<Vec<Box<dyn Socket>>>);
+
+    #[derive(Clone, Default)]
+    struct Lines(Arc<Mutex<Vec<String>>>);
+
+    impl crate::handler::DebugHandler for Lines {
+        fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
+            if kind == crate::handler::DebugKind::Text {
+                let line = String::from_utf8_lossy(data).into_owned();
+                self.0.lock().unwrap().push(line);
+            }
+        }
+    }
+
+    impl crate::conn::io::DnsLibrary for Library {
+        fn resolve(
+            &self,
+            ask: crate::conn::io::DnsAsk<'_>,
+            _: &mut crate::conn::io::DnsSay<'_>,
+        ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
+            let socket = self.0.lock().unwrap().remove(0);
+            Ok(Box::new(Closing {
+                wants: vec![(socket, Events::IN)],
+                closed: ask.closed.clone(),
+            }))
+        }
+    }
+
+    let (mut m, clock, mut ev) = networked();
+    let at = SocketAddr::from(([127, 0, 0, 1], 3));
+    let mut own = FakeNet::new(clock.clone()).with_peer(at, Peer::Silent);
+    let mut open = || {
+        own.open(
+            &crate::conn::io::Remote::Inet(at),
+            crate::conn::io::SocketKind::Stream,
+        )
+        .unwrap()
+    };
+    let sockets = vec![open(), open()];
+    let keys: Vec<_> = sockets.iter().map(|s| s.key().get()).collect();
+    let library: &'static Library = Box::leak(Box::new(Library(Mutex::new(sockets))));
+    let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+        dns: Some(library),
+        ..crate::libraries::Libraries::NONE
+    })
+    .unwrap();
+    let told = |ev: &Sockets, key, what| ev.calls.iter().any(|c| c.1 == key && c.2 == what);
+    let lines = Lines::default();
+    let traced = |url: &str| {
+        let mut e = easy(url);
+        e.set_libraries(libraries.clone());
+        let o = e.options_mut();
+        o.output.verbose = true;
+        o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"multi");
+        e.set_components(Some(c));
+        e
+    };
+    let closes = |key: i32| {
+        let said = format!("Curl_multi_will_close fd={key}");
+        let lines = lines.0.lock().unwrap();
+        lines.iter().filter(|l| l.contains(&said)).count()
+    };
+
+    // Timed out: the step that fails it lets the resolve go.
+    let mut e = traced("http://one.test:80/");
+    e.options_mut().limits.total = crate::time::TimeLimit::from_millis(50);
+    m.add(Box::new(e), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert!(told(&ev, keys[0], SocketWhat::In), "{:?}", ev.calls);
+    assert!(!told(&ev, keys[0], Remove), "{:?}", ev.calls);
+    clock.advance(Duration::from_millis(50));
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert!(told(&ev, keys[0], Remove), "timed out: {:?}", ev.calls);
+    assert_eq!(closes(keys[0]), 1, "timed out");
+
+    // Removed by the application while it resolves.
+    let e = traced("http://two.test:80/");
+    let two = m.add(Box::new(e), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert!(told(&ev, keys[1], SocketWhat::In), "{:?}", ev.calls);
+    m.remove(two, &mut ev).unwrap();
+    assert!(told(&ev, keys[1], Remove), "removed: {:?}", ev.calls);
+    assert_eq!(closes(keys[1]), 1, "removed");
+}

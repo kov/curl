@@ -2232,7 +2232,10 @@ pub(crate) fn connect_failed<H: Host>(
     if let Some(proxy) = proxy {
         line.raw(b"over proxy ").raw(proxy.name()).raw(b" ");
     }
-    let ms = cx.easy().report().timings().since_single_ms(cx.rest.now);
+    // Read from the clock now, as `Curl_pgrs_now` reads it: a blocking
+    // resolve may have waited inside this step.
+    let now = cx.rest.clock.now();
+    let ms = cx.easy().report().timings().since_single_ms(now);
     // The last attempt's failure says what the setup's is.
     let why = failure.message();
     line.text(format_args!("after {ms} ms: {why}"));

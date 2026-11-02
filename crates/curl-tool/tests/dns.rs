@@ -11,10 +11,11 @@ use std::time::Duration;
 
 /// A server on a port of its own that answers each query with `127.0.0.1`
 /// for A, `alpn=http/1.1` for HTTPS and nothing for AAAA, or with NXDOMAIN
-/// for a name under `nx`; a name under `silent` gets no answer, one under
-/// `slowa` its A late, one with `norec` in it none for its HTTPS record, and
-/// one with `h3rec` in it `alpn=h3` for it.
-/// Each query's type and name is sent on the channel.
+/// for a name under `nx`. A name under `silent` gets no answer, one under
+/// `slowa` its A late and one under `slowv6` its AAAA; one with `norec` in
+/// it gets no answer for its HTTPS record, one with `h3rec` `alpn=h3`, and
+/// one with `emptyrr` an answer without a record. Each query's type and
+/// name is sent on the channel.
 fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let port = socket.local_addr().unwrap().port();
@@ -46,7 +47,7 @@ fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
             if !nx && kind == 65 && name.contains("h3rec") {
                 answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x0a");
                 answer.extend_from_slice(b"\x00\x01\x00\x00\x01\x00\x03\x02h3");
-            } else if !nx && kind == 65 {
+            } else if !nx && kind == 65 && !name.contains("emptyrr") {
                 answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x10");
                 answer.extend_from_slice(b"\x00\x01\x00\x00\x01\x00\x09\x08http/1.1");
             }
@@ -55,7 +56,16 @@ fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
             reply.extend_from_slice(&[0, 0, 0, 0]);
             reply.extend_from_slice(&q[12..i + 5]);
             reply.extend_from_slice(&answer);
-            socket.send_to(&reply, peer).unwrap();
+            if name.starts_with("slowv6") && kind == 28 {
+                // Late, while the other queries are answered.
+                let late = socket.try_clone().unwrap();
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(300));
+                    let _sent = late.send_to(&reply, peer);
+                });
+            } else {
+                socket.send_to(&reply, peer).unwrap();
+            }
             if told.send((kind, name)).is_err() {
                 return;
             }
@@ -241,6 +251,14 @@ fn an_interface_name_is_waited_for_no_longer_than_the_transfer_may_take() {
     // Before c-ares would give up on its own, its first try taking 2 s.
     let took = started.elapsed();
     assert!(took < Duration::from_millis(1900), "{took:?}");
+    // The failure counts the wait, as C's does.
+    let after = said
+        .split("Failed to connect to 127.0.0.1:1 after ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|ms| ms.parse::<u64>().ok())
+        .unwrap_or_else(|| panic!("{said}"));
+    assert!(after >= 900, "{said}");
 }
 
 #[test]
@@ -375,8 +393,8 @@ fn a_record_never_answered_says_its_socket_closed() {
 fn a_second_attempt_started_during_a_resolve_takes_what_it_finds() {
     let (dns, _heard) = dns_server();
     let servers = format!("127.0.0.1:{dns}");
-    // HTTP/3 leads; HTTP/2 starts after it while the A is still to come,
-    // and both go on to the address it brings.
+    // HTTP/3 leads, as the record says; HTTP/2 starts after it while the A
+    // is still to come, and both go on to the address it brings.
     let run = curl(&[
         "-v",
         "-k",
@@ -387,12 +405,13 @@ fn a_second_attempt_started_during_a_resolve_takes_what_it_finds() {
         "dns,happy-eyeballs",
         "--dns-servers",
         &servers,
-        "https://slowa.test:1/",
+        "https://slowa-h3rec.test:1/",
     ]);
     let said = String::from_utf8_lossy(&run.stderr);
     assert_eq!(run.status.code(), Some(7), "{said}");
     assert_eq!(said.matches("Trying 127.0.0.1:1...").count(), 2, "{said}");
-    assert!(said.contains("QUIC connect to 127.0.0.1"), "{said}");
+    // The QUIC one's refusal said, however far it got before the end.
+    assert!(said.contains("QUIC: connection to 127.0.0.1"), "{said}");
 }
 
 /// Where `needle` first is in `said`, which must have it.
@@ -459,4 +478,76 @@ fn a_record_s_http_3_is_not_taken_where_it_is_not_allowed() {
     );
     assert!(!said.contains("uses h3"), "{said}");
     assert!(!said.contains("QUIC"), "{said}");
+}
+
+#[test]
+fn a_record_answered_empty_is_not_available() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    // The debug build waits for the record before the first attempt is
+    // chosen, which the answer then chose; what it has is no record.
+    let run = Command::new(env!("CARGO_BIN_EXE_curl"))
+        .env("CURL_DBG_AWAIT_HTTPSRR", "1")
+        .args(["-sS", "--max-time", "20", "-v", "-k", "--trace-config"])
+        .args(["https-connect", "--dns-servers", &servers])
+        .arg("https://emptyrr.test:1/")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(7), "{said}");
+    assert!(said.contains("HTTPS-RR not available"), "{said}");
+    assert!(!said.contains("HTTPS-RR available"), "{said}");
+}
+
+#[test]
+fn an_attempt_dials_as_the_record_awaited_chooses() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    // HTTP/3 is wanted and the record offers HTTP/1.1 alone. The debug
+    // build waits for the record, which comes after the setup was planned:
+    // the first attempt is HTTP/1.1's, over TCP, not the plan's QUIC.
+    let run = Command::new(env!("CARGO_BIN_EXE_curl"))
+        .env("CURL_DBG_AWAIT_HTTPSRR", "1")
+        .args(["-sS", "--max-time", "20", "-v", "-k", "--http3"])
+        .args(["--trace-config", "https-connect", "--dns-servers", &servers])
+        .arg("https://rr.test:1/")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(7), "{said}");
+    if said.contains("1st attempt uses h1 from HTTPS-RR") {
+        // HTTP/3 is the second's, started once the first failed over TCP.
+        let quic = said.find("QUIC").unwrap_or(said.len());
+        assert!(at(&said, "h1 baller failed, starting h3") < quic, "{said}");
+    } else {
+        // A build that does not wait chooses before the record comes.
+        assert!(
+            said.contains("1st attempt uses h3 from wanted versions"),
+            "{said}"
+        );
+    }
+}
+
+#[test]
+fn a_record_come_before_the_first_attempt_chooses_it() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    // The record is answered at once, AAAA late: the attempts begin once
+    // AAAA is waited for no longer, the record taken, and the first is
+    // chosen by it, as C's `connect, init` asks the DNS filter for it.
+    let run = curl(&[
+        "-v",
+        "-k",
+        "--trace-config",
+        "https-connect",
+        "--dns-servers",
+        &servers,
+        "https://slowv6.test:1/",
+    ]);
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(7), "{said}");
+    assert!(
+        at(&said, "HTTPS-RR available") < at(&said, "1st attempt uses h1 from HTTPS-RR"),
+        "{said}"
+    );
 }

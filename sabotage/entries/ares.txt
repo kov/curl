@@ -129,3 +129,11 @@ witness: curl-tool a_socket_closed_is_said_before_the_answer_is_taken
 --- new
         let status = resolve.status();
         let _ = (queries, status);
+
+=== the sockets a transfer's libraries closed are never said
+file: crates/curl-core/src/multi/state/cx.rs
+witness: curl-core multi::socket_tests::a_library_s_resolve_dropped_anywhere_says_its_socket_closed
+--- old
+        let Some(closed) = slot.closed.as_ref().map(SocketsClosed::take) else {
+--- new
+        let Some(closed) = slot.closed.as_ref().map(|_| Vec::<SocketKey>::new()) else {

@@ -680,11 +680,10 @@ fn an_origins_record_is_asked_for_and_its_versions_chosen() {
     );
 }
 
-/// A record that came only after the chain's first connect does not choose
-/// the first attempt, whatever the plan dialed: C has chosen by then. The
-/// second is chosen by it.
+/// A record answered before the addresses chooses the first attempt, as
+/// C's `connect, init` takes what the DNS filter has: its probe ends first.
 #[test]
-fn a_record_that_comes_late_leaves_the_first_attempt_alone() {
+fn a_record_answered_first_chooses_the_first_attempt() {
     let clock = ManualClock::new().unwrap();
     let mut answer = vec![0, 0, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
     answer.extend_from_slice(b"\x03foo\x04test\x00\x00\x41\x00\x01");
@@ -719,14 +718,11 @@ fn a_record_that_comes_late_leaves_the_first_attempt_alone() {
     m.add(easy, (), &mut NoEvents).unwrap();
     run(&mut m, &clock);
     let said = lines.0.lock().unwrap().clone();
-    assert!(
-        said.iter().any(|l| l.contains("1st attempt uses")),
-        "{said:?}"
-    );
-    assert!(
-        !said
-            .iter()
-            .any(|l| l.contains("1st attempt uses") && l.contains("HTTPS-RR")),
+    let at = |want: &str| said.iter().position(|l| l.trim_end() == want);
+    let init = at("[HTTPS-CONNECT] connect, init").expect("init");
+    assert_eq!(
+        said.get(init + 1..init + 3).map(|l| l.join("")),
+        Some("[HTTPS-CONNECT] HTTPS-RR available\n[HTTPS-CONNECT] 1st attempt uses h1 from HTTPS-RR\n".to_owned()),
         "{said:?}"
     );
 }

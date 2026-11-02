@@ -20,12 +20,16 @@ pub(crate) fn start<H: Host>(
         Ok(dns) => dns,
         Err(_) => return Some(Err(DnsRefused::OutOfMemory)),
     };
+    let Ok(closed) = cx.closed_sockets() else {
+        return Some(Err(DnsRefused::OutOfMemory));
+    };
     let ask = DnsAsk {
         name,
         port,
         family,
         stream: true,
         options: &dns,
+        closed: &closed,
     };
     let mut say = |parts: &[&[u8]]| crate::trace::of_with(cx, Component::Dns, parts);
     Some(library.resolve(ask, &mut say))

@@ -18,7 +18,8 @@ use crate::multi::state::ConnRank;
 pub(crate) enum SetupPoint {
     /// Its first hop's name is being resolved.
     Resolving,
-    /// Attempts are made to the first hop, once `started`.
+    /// Attempts are made to the first hop, once the race `started`: it has
+    /// run, with an address to try or none yet.
     Racing { started: bool },
     /// Connected to the first hop, the handshakes in `made` made over it.
     Dialed(Made),

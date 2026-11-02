@@ -530,6 +530,10 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         }
     }
 
+    fn libraries_closed(&mut self) {
+        self.step.libraries_closed();
+    }
+
     fn await_resolve_tick(&mut self) -> Result<(), ()> {
         crate::progress::update(self.step, false).map_err(|_| ())
     }
@@ -597,10 +601,6 @@ impl<H: Host> Net for DriveCx<'_, '_, H> {
         super::mstate::trace(self.step, format_args!("Curl_multi_will_close fd={fd}"));
         let me = self.step.me;
         self.step.rest.announcing(me).close(socket);
-    }
-
-    fn will_close(&mut self, key: SocketKey) {
-        self.step.will_close(key);
     }
 
     fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
@@ -715,10 +715,6 @@ impl Net for CloseLater<'_> {
         self.more.try_push(socket).expect("room was made");
     }
 
-    fn will_close(&mut self, key: SocketKey) {
-        self.net.will_close(key);
-    }
-
     fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
         self.net.with_resolver(f);
     }
@@ -789,10 +785,6 @@ impl<H: Host> Net for Announcing<'_, H> {
         self.net.close(socket);
     }
 
-    fn will_close(&mut self, key: SocketKey) {
-        self.forget(key);
-    }
-
     fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver)) {
         self.net.with_resolver(f);
     }
@@ -813,6 +805,12 @@ impl<H: Host> Net for Announcing<'_, H> {
 }
 
 impl<H: Host> Announcing<'_, H> {
+    /// A socket another library owned closed: nothing waits on it from
+    /// here on, and the socket callback is told so.
+    pub(crate) fn will_close(&mut self, key: SocketKey) {
+        self.forget(key);
+    }
+
     fn forget(&mut self, key: SocketKey) {
         // A connection's in the set is the multi's own, whoever closes it.
         let who = if self.tell.sockets.has_conn(key) {

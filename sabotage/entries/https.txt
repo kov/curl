@@ -297,3 +297,13 @@ witness: curl-core proto::http::tests::h3_trace::a_record_kept_meanwhile_is_foun
 --- new
     let _ = kept;
 }
+
+=== a second attempt started during a resolve never sees its answer
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-tool a_second_attempt_started_during_a_resolve_takes_what_it_finds
+--- old
+        if c.attempt(Attempt::First)
+            .is_some_and(ConnectMachine::resolving)
+        {
+--- new
+        if c.lead().is_some_and(ConnectMachine::resolving) {

@@ -238,9 +238,16 @@ pub(crate) const MAX_ATTEMPTS: usize = 6;
 /// connecting, while an address is left.
 #[derive(Debug)]
 struct Racing {
-    /// Begun on what came of a resolve so far, not driven yet: C goes on to
-    /// the race in the pass that decided to, without looking for answers.
-    begun: bool,
+    /// Its resolve was looked at in this pass already: as the race began
+    /// on what came of it so far, or as an attempt failed, C going on in
+    /// the same pass without looking again.
+    looked: bool,
+    /// Its first run was made (`cf_ip_happy_init`), whether or not it had
+    /// an address to start.
+    ran: bool,
+    /// How its resolve ended, if it failed as it was looked at before the
+    /// race's run, which fails with it.
+    resolve_failed: Option<ConnectError>,
     /// How the last attempt failed, while more addresses may come.
     last_failed: Option<(Option<io::Error>, ErrorKind)>,
     eyeballs: Eyeballs,
@@ -321,6 +328,10 @@ pub(crate) trait ConnCx: LayerCx {
     fn await_resolve_tick(&mut self) -> Result<(), ()> {
         Ok(())
     }
+
+    /// The sockets the transfer's libraries closed are told, as soon as a
+    /// library is back from its work (`Curl_multi_will_close`).
+    fn libraries_closed(&mut self) {}
 
     /// The resolve of `name` in `family` by the transfer's resolver library,
     /// if it has one (`Curl_async_getaddrinfo`).
@@ -819,8 +830,13 @@ pub(crate) enum Progress {
     Waiting { until: Option<Instant> },
     /// Nothing until the resolver answers, or until `retry`, when
     /// queries waiting for a thread that could not be started are tried
-    /// again (`EXPIRE_ASYNC_NAME`).
-    Resolving { retry: Option<Instant> },
+    /// again (`EXPIRE_ASYNC_NAME`); or until `aaaa`, when what came is
+    /// connected to though AAAA has not (`EXPIRE_HAPPY_EYEBALLS`, which
+    /// stays armed as the race begins).
+    Resolving {
+        retry: Option<Instant>,
+        aaaa: Option<Instant>,
+    },
     /// Connected to the first hop, over which handshakes are to be made
     /// (`ConnLease::dialed`).
     Dialed,
@@ -935,7 +951,9 @@ impl ConnectMachine {
             dial,
             created,
             stage: Stage::Racing(Racing {
-                begun: false,
+                looked: false,
+                ran: false,
+                resolve_failed: None,
                 last_failed: None,
                 eyeballs,
                 attempts: Vec::new(),
@@ -1060,9 +1078,7 @@ impl ConnectMachine {
     pub(crate) fn reached(&self) -> SetupPoint {
         match &self.stage {
             Stage::Resolving(_) => SetupPoint::Resolving,
-            Stage::Racing(r) => SetupPoint::Racing {
-                started: r.last_start.is_some(),
-            },
+            Stage::Racing(r) => SetupPoint::Racing { started: r.ran },
             Stage::Dialed(d) => SetupPoint::Dialed(d.made),
         }
     }
@@ -1132,18 +1148,40 @@ impl ConnectMachine {
         }
     }
 
-    /// The setup's resolve is not wanted any more, closed through `net`,
-    /// which says what closes.
-    pub(crate) fn end_resolve(&mut self, net: &mut dyn Net) {
-        match &mut self.stage {
-            Stage::Resolving(p) => {
-                if let Some(p) = p.take() {
-                    p.cancel(net);
-                }
-            }
-            Stage::Racing(r) => r.eyeballs.late.cancel(net),
-            Stage::Dialed(d) => d.target_late.cancel(net),
+    /// The race's resolve still going on looked at, as C's DNS filter does
+    /// above SETUP before the race runs: what came given to the race, and
+    /// once it has all come, how it was found. Not in the pass the race
+    /// began in, which goes on to it at once. A failure fails the race's
+    /// next drive.
+    pub(crate) fn poll_late(&mut self, cx: &mut dyn ConnCx) -> Result<Option<Found>, OutOfMemory> {
+        let Stage::Racing(r) = &mut self.stage else {
+            return Ok(None);
+        };
+        if std::mem::take(&mut r.looked) {
+            return Ok(None);
         }
+        let Some(mut p) = r.eyeballs.late.0.take() else {
+            return Ok(None);
+        };
+        let peer = self.route.destination();
+        let (name, port) = (peer.name(), peer.port());
+        if let Some(answer) = p.polled((name, port), cx) {
+            return match settle(answer, (name, port), p, cx) {
+                Ok((answer, found)) => {
+                    r.eyeballs.answer = Addresses::Resolved(answer);
+                    Ok(Some(found))
+                }
+                Err(e) => {
+                    r.resolve_failed = Some(e);
+                    Ok(None)
+                }
+            };
+        }
+        if let Some(part) = p.partial(cx)? {
+            r.eyeballs.answer = Addresses::Resolved(part.answer(name, p.family)?);
+        }
+        r.eyeballs.late.0 = Some(p);
+        Ok(None)
     }
 
     /// Whether the name's resolve has not ended (`bits.dns_resolved`): the
@@ -1253,7 +1291,9 @@ impl ConnectMachine {
             d.stream.into_socket(),
         );
         self.stage = Stage::Racing(Racing {
-            begun: false,
+            looked: false,
+            ran: false,
+            resolve_failed: None,
             last_failed: None,
             eyeballs: Eyeballs::new(d.answer, self.route.ip),
             attempts: Vec::new(),
@@ -1326,6 +1366,7 @@ impl ConnectMachine {
                                 let oom = |OutOfMemory| ConnectError::OutOfMemory;
                                 if let Some(part) = p.partial(cx).map_err(oom)? {
                                     if !part.v6_answered && now < p.await_until {
+                                        let until = p.await_until;
                                         let left = p.await_until.since(now).as_millis();
                                         let queries = family_queries(p.family);
                                         cx.of(
@@ -1335,8 +1376,10 @@ impl ConnectMachine {
                                                  for AAAA result"
                                             ),
                                         );
-                                        let until = p.await_until;
-                                        retry = Some(retry.map_or(until, |at| at.min(until)));
+                                        self.stage = Stage::Resolving(Some(p));
+                                        let aaaa = Some(until);
+                                        let progress = Progress::Resolving { retry, aaaa };
+                                        return Ok(Drove::Connecting(self, progress));
                                     } else {
                                         let answer = part.answer(name, p.family).map_err(oom)?;
                                         let mut eyeballs = Eyeballs::new(
@@ -1345,7 +1388,9 @@ impl ConnectMachine {
                                         );
                                         eyeballs.late = Late(Some(p));
                                         self.stage = Stage::Racing(Racing {
-                                            begun: true,
+                                            looked: true,
+                                            ran: false,
+                                            resolve_failed: None,
                                             last_failed: None,
                                             eyeballs,
                                             attempts: Vec::new(),
@@ -1359,7 +1404,8 @@ impl ConnectMachine {
                                     }
                                 }
                                 self.stage = Stage::Resolving(Some(p));
-                                return Ok(Drove::Connecting(self, Progress::Resolving { retry }));
+                                let progress = Progress::Resolving { retry, aaaa: None };
+                                return Ok(Drove::Connecting(self, progress));
                             }
                         }
                     }
@@ -1369,7 +1415,9 @@ impl ConnectMachine {
                     return Err(ConnectError::Unresolved(Unresolved::NoAddress(found)));
                 }
                 self.stage = Stage::Racing(Racing {
-                    begun: false,
+                    looked: false,
+                    ran: false,
+                    resolve_failed: None,
                     last_failed: None,
                     eyeballs,
                     attempts: Vec::new(),
@@ -1378,25 +1426,8 @@ impl ConnectMachine {
                 return Ok(Drove::Connecting(self, Progress::Resolved(found)));
             }
             Stage::Racing(r) => {
-                let begun = std::mem::take(&mut r.begun);
-                if !begun && let Some(mut p) = r.eyeballs.late.0.take() {
-                    let peer = self.route.destination();
-                    let (name, port) = (peer.name(), peer.port());
-                    if let Some(answer) = p.polled((name, port), cx) {
-                        let (answer, found) = settle(answer, (name, port), p, cx)?;
-                        r.eyeballs.answer = Addresses::Resolved(answer);
-                        return Ok(Drove::Connecting(self, Progress::Resolved(found)));
-                    }
-                    if let Some(part) = p
-                        .partial(cx)
-                        .map_err(|OutOfMemory| ConnectError::OutOfMemory)?
-                    {
-                        let answer = part
-                            .answer(name, p.family)
-                            .map_err(|OutOfMemory| ConnectError::OutOfMemory)?;
-                        r.eyeballs.answer = Addresses::Resolved(answer);
-                    }
-                    r.eyeballs.late.0 = Some(p);
+                if let Some(e) = r.resolve_failed.take() {
+                    return Err(e);
                 }
                 r
             }
@@ -1406,6 +1437,8 @@ impl ConnectMachine {
         // more, and without more the last failure is the setup's.
         let idle = r.attempts.is_empty() && !r.eyeballs.more();
         if idle && !r.eyeballs.coming() {
+            // Looked for once more, as C's run does before it gives up.
+            assert!(r.eyeballs.next(cx, of).is_none(), "no address is left");
             let (error, kind) = r
                 .last_failed
                 .take()
@@ -1413,7 +1446,7 @@ impl ConnectMachine {
             return Err(ConnectError::Failed(error, kind));
         }
         // The race's first run sets it up (`cf_ip_happy_init`).
-        if r.last_start.is_none() && r.attempts.is_empty() {
+        if !std::mem::replace(&mut r.ran, true) {
             let transport = match component {
                 Component::Unix => 6,
                 Component::Udp => 5,
@@ -1425,10 +1458,18 @@ impl ConnectMachine {
             );
         }
         if idle {
-            let until = r.eyeballs.late.0.as_ref().and_then(|p| p.due(now));
             assert!(r.eyeballs.next(cx, of).is_none(), "no address is left");
             r.eyeballs.more_asked(cx, of);
-            return Ok(Drove::Connecting(self, Progress::Waiting { until }));
+            // The resolve's own timer, not the race's: the race has
+            // nothing to start (`cf_ip_ballers_run`).
+            let progress = match &r.eyeballs.late.0 {
+                Some(p) => Progress::Resolving {
+                    retry: p.due(now),
+                    aaaa: None,
+                },
+                None => Progress::Waiting { until: None },
+            };
+            return Ok(Drove::Connecting(self, progress));
         }
         // A running attempt that connected wins; one that failed is
         // dropped (`cf_ip_ballers_run`).
@@ -1437,12 +1478,14 @@ impl ConnectMachine {
             Checked::Won(i) => return self.won(cx, setup, i, now),
             Checked::Failed(i, error) => {
                 let failure = r.attempts.remove(i).fail(cx, component, error)?;
+                r.looked = true;
                 return r
                     .failed(cx, of, Some(failure), ErrorKind::CouldntConnect)
                     .map(|p| Drove::Connecting(self, p));
             }
             Checked::QuicFailed(i, kind) => {
                 r.attempts.remove(i).discard(cx, component);
+                r.looked = true;
                 return r
                     .failed(cx, of, None, kind)
                     .map(|p| Drove::Connecting(self, p));
@@ -2884,6 +2927,7 @@ pub(super) fn lookup_name(
                     Some(answer) => answer,
                     None => {
                         pending.cancel(cx.net());
+                        cx.libraries_closed();
                         return Err(ConnectError::Unresolved(Unresolved::GaveUp));
                     }
                 },
@@ -2910,9 +2954,7 @@ fn await_library(
     let dns = Component::Dns;
     let turn = |resolve: &mut Box<dyn DnsResolve>, cx: &mut dyn ConnCx| {
         let performed = resolve.perform();
-        for key in resolve.closed() {
-            cx.net().will_close(key);
-        }
+        cx.libraries_closed();
         match performed {
             Ok(()) => resolve.answer(),
             Err(OutOfMemory) => Some(Err(ResolveFailure::OutOfMemory)),
@@ -3076,11 +3118,8 @@ impl Pending {
                 net.with_resolver(&mut |r| r.cancel(id));
                 std::mem::forget(held);
             }
-            Via::Library(resolve) => {
-                for key in resolve.close() {
-                    net.will_close(key);
-                }
-            }
+            // Its sockets are told as they close (`SocketsClosed`).
+            Via::Library(resolve) => drop(resolve),
             Via::Doh(_) => {}
         }
     }
@@ -3166,9 +3205,7 @@ impl Pending {
                 let queries = family_queries(self.family);
                 say_not_cached(queries, (name, port), cx);
                 let performed = resolve.perform();
-                for key in resolve.closed() {
-                    cx.net().will_close(key);
-                }
+                cx.libraries_closed();
                 if performed.is_err() {
                     return Some(Err(ResolveFailure::OutOfMemory));
                 }
@@ -3381,20 +3418,14 @@ pub(super) fn lookup_start(
             }
         };
         // What it found it could not use is gone already.
-        if let Via::Library(resolve) = &mut via {
-            for key in resolve.closed() {
-                cx.net().will_close(key);
-            }
-        }
+        cx.libraries_closed();
         // A blocking resolve looks for its answer as it waits for it.
         if doh {
             if let Via::Library(resolve) = &mut via {
                 if resolve.perform().is_err() {
                     return Err(ConnectError::OutOfMemory);
                 }
-                for key in resolve.closed() {
-                    cx.net().will_close(key);
-                }
+                cx.libraries_closed();
                 let (ongoing, responses) = resolve.ongoing();
                 if ongoing > 0 {
                     let name = curl_alloc::Lossy(name);
@@ -3706,7 +3737,9 @@ mod tests {
             ConnSettings::DEFAULT,
         );
         m.stage = Stage::Racing(Racing {
-            begun: false,
+            looked: false,
+            ran: false,
+            resolve_failed: None,
             last_failed: None,
             eyeballs: Eyeballs::new(
                 Addresses::Resolved(
@@ -3819,7 +3852,7 @@ mod tests {
             now: clock.now(),
         };
         let m = match m.drive(&mut cx, setup) {
-            Ok(Drove::Connecting(m, Progress::Resolving { retry: None })) => m,
+            Ok(Drove::Connecting(m, Progress::Resolving { retry: None, .. })) => m,
             other => panic!("{other:?}"),
         };
         assert_eq!(net.resolving(), 1);

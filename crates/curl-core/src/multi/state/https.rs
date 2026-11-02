@@ -310,9 +310,7 @@ pub(super) fn connect_call<H: Host>(
                 RecordLookup::Library(resolve) => {
                     say_lookup(&c.route, cx);
                     resolve.perform().map_err(|_| ErrorKind::OutOfMemory)?;
-                    for key in resolve.closed() {
-                        cx.will_close(key);
-                    }
+                    cx.libraries_closed();
                     (resolve.record(), false)
                 }
             };
@@ -339,11 +337,8 @@ pub(super) fn connect_call<H: Host>(
                     );
                 }
             }
-            if let Some(RecordLookup::Library(r)) = c.record_lookup.take() {
-                for key in r.close() {
-                    cx.will_close(key);
-                }
-            }
+            c.record_lookup = None;
+            cx.libraries_closed();
             let came = match found {
                 RecordAnswer::Record(record) => Came::Record(try_arc(record)?),
                 RecordAnswer::NoRecord => Came::NoRecord,
@@ -576,9 +571,7 @@ fn look_at_library<H: Host>(
         return Ok(());
     };
     resolve.perform().map_err(|_| ErrorKind::OutOfMemory)?;
-    for key in resolve.closed() {
-        cx.will_close(key);
-    }
+    cx.libraries_closed();
     if resolve.ongoing().0 > 0 {
         say_incomplete(route, cx);
     }

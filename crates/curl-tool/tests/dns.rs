@@ -11,8 +11,9 @@ use std::time::Duration;
 
 /// A server on a port of its own that answers each query with `127.0.0.1`
 /// for A, `alpn=http/1.1` for HTTPS and nothing for AAAA, or with NXDOMAIN
-/// for a name under `nx`; a name under `silent` gets no answer, and one
-/// under `slowa` its A late. Each query's type and name is sent on the channel.
+/// for a name under `nx`; a name under `silent` gets no answer, one under
+/// `slowa` its A late, and one with `norec` in it none for its HTTPS record.
+/// Each query's type and name is sent on the channel.
 fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let port = socket.local_addr().unwrap().port();
@@ -29,7 +30,7 @@ fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
             }
             let kind = u16::from_be_bytes([q[i + 1], q[i + 2]]);
             let name = labels.join(".").to_lowercase();
-            if name.starts_with("silent") {
+            if name.starts_with("silent") || (name.contains("norec") && kind == 65) {
                 continue;
             }
             if name.starts_with("slowa") && kind == 1 {
@@ -329,4 +330,49 @@ fn a_debug_build_names_the_bad_setting() {
         let said = String::from_utf8_lossy(&run.stderr);
         assert!(said.contains(words), "{said}");
     }
+}
+
+#[test]
+fn a_record_never_answered_says_its_socket_closed() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let run = curl(&[
+        "-v",
+        "-k",
+        "--trace-config",
+        "multi",
+        "--dns-servers",
+        &servers,
+        "https://norec.test:1/",
+    ]);
+    assert_eq!(run.status.code(), Some(7));
+    let said = String::from_utf8_lossy(&run.stderr);
+    // The addresses' resolve's socket, the record's, and the attempt's, as C
+    // says them.
+    let closes = said.matches("Curl_multi_will_close fd=").count();
+    assert_eq!(closes, 3, "{said}");
+}
+
+#[test]
+fn a_second_attempt_started_during_a_resolve_takes_what_it_finds() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    // HTTP/3 leads; HTTP/2 starts after it while the A is still to come,
+    // and both go on to the address it brings.
+    let run = curl(&[
+        "-v",
+        "-k",
+        "--http3",
+        "--max-time",
+        "3",
+        "--trace-config",
+        "dns,happy-eyeballs",
+        "--dns-servers",
+        &servers,
+        "https://slowa.test:1/",
+    ]);
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(7), "{said}");
+    assert_eq!(said.matches("Trying 127.0.0.1:1...").count(), 2, "{said}");
+    assert!(said.contains("QUIC connect to 127.0.0.1"), "{said}");
 }

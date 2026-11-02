@@ -2591,14 +2591,19 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   (`options.dns`) are read as a resolve starts, and refused there as C refuses them. A blocking
   resolve, a socket's interface name or FTP's address, is the library's too, waited for in place for
   as long as the transfer may (`await_library`, `Curl_async_await`). A socket the library closes
-  is told to the multi (`DnsResolve::closed`, `Net::will_close`) as C's `sock_state_cb` tells it:
-  said, and forgotten, so a number the library uses again is announced anew.
+  is told as C's `sock_state_cb` tells it: said, and forgotten, so a number the library uses again
+  is announced anew. Every resolve the transfer starts is handed its slot's `SocketsClosed`, which
+  the library writes to as it closes, dropped or not; the multi reads it after each look at the
+  library and at the end of each step, so a resolve dropped anywhere is told without its owner
+  having to remember.
 - **Going on before the name is known.** Once AAAA has answered or its wait is over the setup goes
   on to its race though no address has come (`cf_dns_ready_to_connect`), so the HTTPS filter's
-  first connect and its choice of attempts do not wait for A. The race holds the resolve still
-  going on in its `Eyeballs`, and waits on it when it has nothing to try; a transfer timing out
-  then times out `Resolving`. A race's second attempt asks no resolver of its own: before each
-  drive it is given what the first's has found (`follow`).
+  first connect and its choice of attempts do not wait for A. The wait for AAAA runs on
+  `TimerKind::HappyEyeballs`, the resolve's next try on `AsyncName`. The race holds the resolve
+  still going on in its `Eyeballs`, and waits on it when it has nothing to try; a transfer timing
+  out then times out `Resolving`. What more it found is taken before SETUP is entered
+  (`poll_late`), from the first attempt whichever leads. A race's second attempt asks no resolver
+  of its own: before each drive it is given what the first's has found (`follow`).
 - **A name's HTTPS record.** `https.rs` starts a third probe of its own (`start_https`), named
   `_port._https.name` off port 443, before the name's addresses are asked for. Its answer, kept in
   the cache beside them, chooses the attempts' versions ahead of what is wanted, if it is about

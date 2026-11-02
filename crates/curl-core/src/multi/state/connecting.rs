@@ -688,6 +688,29 @@ fn connecting_step<H: Host>(
             }
         }
         let lead = c.leader();
+        // The name's filter heads SETUP: what more came of the resolve the
+        // race goes on beside is taken first. The first attempt holds it,
+        // whichever leads.
+        if c.attempt(Attempt::First)
+            .is_some_and(ConnectMachine::resolving)
+        {
+            let first = c.attempt_mut(Attempt::First);
+            let polled = first.poll_late(&mut DriveCx {
+                step: cx,
+                kept: None,
+                deadlines: None,
+            });
+            match polled {
+                Ok(Some(found)) => resolved(&c, run, cx, Attempt::First, found),
+                Ok(None) => {}
+                Err(OutOfMemory) => {
+                    return (
+                        TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
+                        Wake::Again,
+                    );
+                }
+            }
+        }
         let chain = enter_setup(&c, cx, &mut entered, lead);
         let partly = c.lead().and_then(ConnectMachine::partly_made);
         let https = c.https;
@@ -773,6 +796,28 @@ fn head_of(c: &Connecting) -> Head {
         record: c.https.is_some_and(|h| h.asks()),
         h2: false,
     }
+}
+
+/// Attempt `a`'s name resolved, found as `found` says: said, and timed.
+fn resolved<H: Host>(
+    c: &Connecting,
+    run: &mut Run,
+    cx: &mut StepCx<'_, H>,
+    a: Attempt,
+    found: Found,
+) {
+    run.deadlines.clear(TimerKind::AsyncName);
+    // A Unix socket's address is made, not looked up (`resolv_unix`).
+    if !c.route.destination().is_unix() {
+        trace_lookup(cx, &c.route, Some(found));
+        if let Found::Stale(asked) | Found::Resolved(asked) = found {
+            let answer = c.attempt(a).and_then(|m| m.answer().cloned());
+            let addrs = answer.as_ref().map_or(&[][..], |a| a.addrs());
+            trace_resolved(cx, &c.route, Ok(asked), addrs);
+        }
+    }
+    cx.mark(Timer::NameLookup);
+    report_answer(cx, c);
 }
 
 /// SETUP's connect is entered (`cf_setup_connect`), and traces the chain
@@ -1012,19 +1057,7 @@ fn connect_once<H: Host>(
     }
     match connected {
         Ok(Connected::Connecting(Progress::Resolved(found))) => {
-            run.deadlines.clear(TimerKind::AsyncName);
-            // A Unix socket's address is made, not looked up
-            // (`resolv_unix`).
-            if !c.route.destination().is_unix() {
-                trace_lookup(cx, &c.route, Some(found));
-                if let Found::Stale(asked) | Found::Resolved(asked) = found {
-                    let answer = c.attempt(a).and_then(|m| m.answer().cloned());
-                    let addrs = answer.as_ref().map_or(&[][..], |a| a.addrs());
-                    trace_resolved(cx, &c.route, Ok(asked), addrs);
-                }
-            }
-            cx.mark(Timer::NameLookup);
-            report_answer(cx, &c);
+            resolved(&c, run, cx, a, found);
             (TransferState::Connecting(c), Wake::Again)
         }
         // The drive traced the failure.
@@ -1049,10 +1082,14 @@ fn connect_once<H: Host>(
         // The resolver's answer wakes the multi; a thread it could not
         // start is tried for again at `retry`, or the connect limit's
         // own timer ends the wait (`Curl_async_pollset`).
-        Ok(Connected::Connecting(Progress::Resolving { retry })) => {
+        Ok(Connected::Connecting(Progress::Resolving { retry, aaaa })) => {
             match retry {
                 Some(at) => name_retry(run, cx, at),
                 None => run.deadlines.clear(TimerKind::AsyncName),
+            }
+            if let Some(at) = aaaa {
+                let wait = wait_ms(cx.now(), at);
+                arm(&mut run.deadlines, cx, TimerKind::Eyeballs, wait);
             }
             (TransferState::Connecting(c), Wake::Idle)
         }
@@ -1632,7 +1669,10 @@ pub(crate) fn side_progress<H: Host>(
                 due.eyeballs = SideTimer::Arm(at);
             }
         }
-        Progress::Resolving { retry } => {
+        Progress::Resolving { retry, aaaa } => {
+            if let Some(at) = aaaa {
+                due.eyeballs = SideTimer::Arm(at);
+            }
             due.name = retry.map_or(SideTimer::Clear, SideTimer::Arm);
         }
         Progress::Dialed => side_won(cx, route, &dialed()),

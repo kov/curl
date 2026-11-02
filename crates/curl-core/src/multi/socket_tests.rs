@@ -858,21 +858,15 @@ fn a_library_s_socket_closing_is_removed_though_its_number_comes_back() {
     struct Reopening {
         wants: Vec<(Box<dyn Socket>, Events)>,
         performed: u32,
-        closed: Vec<SocketKey>,
+        closed: crate::conn::io::SocketsClosed,
     }
 
     impl crate::conn::io::DnsResolve for Reopening {
-        fn closed(&mut self) -> Vec<SocketKey> {
-            std::mem::take(&mut self.closed)
-        }
-        fn close(self: Box<Self>) -> Vec<SocketKey> {
-            self.closed
-        }
         fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
             self.performed += 1;
             // Past the looks at it as it starts.
             if self.performed == 3 {
-                self.closed.push(self.wants[0].0.key());
+                self.closed.said(self.wants[0].0.key())?;
             }
             Ok(())
         }
@@ -913,14 +907,14 @@ fn a_library_s_socket_closing_is_removed_though_its_number_comes_back() {
     impl crate::conn::io::DnsLibrary for Library {
         fn resolve(
             &self,
-            _: crate::conn::io::DnsAsk<'_>,
+            ask: crate::conn::io::DnsAsk<'_>,
             _: &mut crate::conn::io::DnsSay<'_>,
         ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
             let socket = self.0.lock().unwrap().take().unwrap();
             Ok(Box::new(Reopening {
                 wants: vec![(socket, Events::IN)],
                 performed: 0,
-                closed: Vec::new(),
+                closed: ask.closed.clone(),
             }))
         }
     }

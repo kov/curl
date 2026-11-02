@@ -133,14 +133,6 @@ impl ConnLease {
         }
     }
 
-    /// Its machine, if it is setting up.
-    pub(crate) fn setup_mut(&mut self) -> Option<&mut ConnectMachine> {
-        match self.slot_mut() {
-            ConnSlot::Connecting(machine) => Some(machine),
-            _ => None,
-        }
-    }
-
     /// The setup failed, or was given up: the lease holds it failed, and
     /// its machine is given back, to be discarded or closed. None if it
     /// had failed already.

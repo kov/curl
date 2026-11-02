@@ -814,14 +814,6 @@ fn multi_done<H: Host>(
     if d.chain_made() {
         crate::deliver::Pipeline::done(cx);
     }
-    // A resolve still going on ends with the transfer, saying what it closes.
-    if let Some(setup) = d.lease.setup_mut() {
-        setup.end_resolve(&mut crate::multi::cx::DriveCx {
-            step: cx,
-            kept: None,
-            deadlines: None,
-        });
-    }
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
     let now = cx.rest.now;
     let kept = cx.rest.kept(cx.me, Kind::Names);
@@ -862,6 +854,8 @@ fn multi_done<H: Host>(
         d.origin.as_ref(),
         raced.is_some(),
     );
+    // A resolve the setup still had went with it.
+    cx.libraries_closed();
     Ok(RequestEnd {
         proto: d.proto,
         result: d.result,

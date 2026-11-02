@@ -275,6 +275,9 @@ struct Slot<H: Host> {
     /// The readers C would stack for the request's body, for the trace of
     /// a lift of the pause one of them asked for.
     readers: Option<Readers>,
+    /// The sockets its libraries closed, until they are told; made as its
+    /// first library's resolve starts.
+    closed: Option<crate::conn::io::SocketsClosed>,
 }
 
 /// An `Easy` the multi did not take, and why.
@@ -1343,6 +1346,7 @@ impl<H: Host> Multi<H> {
         let now = self.clock.now();
         let mut cx = StepCx::new(id, self.rest(now, ev));
         run.abandon(&mut cx);
+        cx.libraries_closed();
     }
 
     /// Step one transfer until it waits (`multi_runsingle`).
@@ -1389,6 +1393,8 @@ impl<H: Host> Multi<H> {
             cx.rest.now = cx.rest.clock.now();
             state::step(&mut run, &mut cx) == Wake::Again
         } {}
+        // What the step dropped closed its libraries' sockets.
+        cx.libraries_closed();
         // A second connection's setup, as the step left it.
         state::side_timers(&mut run, &mut cx);
         let now = cx.rest.now;
@@ -1773,6 +1779,7 @@ fn insert<H: Host>(
         run: Some(Run::new()),
         mstate: mstate::MState::Init,
         readers: None,
+        closed: None,
     });
     let slot = match slot {
         Ok(slot) => slot,

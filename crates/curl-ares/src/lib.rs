@@ -15,7 +15,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryVec, try_box};
 use curl_core::conn::io::{
     Connect, DnsAsk, DnsLibrary, DnsRefused, DnsResolve, DnsSay, Events, Family, Partial,
-    Readiness, Recv, Remote, ResolveFailure, Sent, Socket, SocketKey, SocketOption,
+    Readiness, Recv, Remote, ResolveFailure, Sent, Socket, SocketKey, SocketOption, SocketsClosed,
 };
 use curl_core::doh::{HttpsRecord, RecordAnswer, decode_https_record};
 
@@ -60,7 +60,7 @@ impl DnsLibrary for Ares {
         INIT.call_once(|| unsafe {
             sys::ares_library_init(sys::LIB_INIT_ALL);
         });
-        let resolving = Resolving::new()?;
+        let resolving = Resolving::new(ask.closed)?;
         let mut boxed = try_box(resolving).map_err(|OutOfMemory| DnsRefused::OutOfMemory)?;
         boxed.configure(&ask)?;
         boxed.say_servers(say);
@@ -88,8 +88,8 @@ struct Answers {
     /// An HTTPS query, with what its answer held.
     https: bool,
     record: Option<HttpsRecord>,
-    /// The sockets the channel closed, not yet told.
-    closed: Vec<SocketKey>,
+    /// Where the sockets the channel closes are told.
+    closed: SocketsClosed,
 }
 
 /// One resolve: its channel, and what it has found.
@@ -299,14 +299,15 @@ unsafe fn record_wire(record: *const sys::DnsRecord) -> Result<Option<Vec<u8>>, 
 }
 
 /// `sock_state_cb`: a socket with nothing left to wait for is about to close,
-/// which the multi is told as soon as the channel is back in our hands.
+/// which the transfer's multi is told as soon as c-ares is done, or as the
+/// channel goes.
 unsafe extern "C" fn socket_state(arg: *mut c_void, fd: c_int, readable: c_int, writable: c_int) {
     if readable != 0 || writable != 0 {
         return;
     }
     // SAFETY: `arg` is what `new` gave, the channel's `Answers`.
     let a = unsafe { answers(arg) };
-    if a.closed.try_push(SocketKey::new(fd)).is_err() {
+    if a.closed.said(SocketKey::new(fd)).is_err() {
         a.failed = Some(DnsRefused::OutOfMemory);
     }
 }
@@ -326,7 +327,7 @@ fn c_text(text: &[u8], why: &'static str) -> Result<Vec<u8>, DnsRefused> {
 }
 
 impl Resolving {
-    fn new() -> Result<Resolving, DnsRefused> {
+    fn new(closed: &SocketsClosed) -> Result<Resolving, DnsRefused> {
         let mut answers = try_box(Answers {
             ongoing: 0,
             a_answered: false,
@@ -339,7 +340,7 @@ impl Resolving {
             failed: None,
             https: false,
             record: None,
-            closed: Vec::new(),
+            closed: closed.clone(),
         })
         .map_err(|OutOfMemory| DnsRefused::OutOfMemory)?;
         // SAFETY: all zeroes is valid for each field of the options; only the
@@ -563,9 +564,6 @@ fn parsed<T: core::str::FromStr>(text: &[u8], why: &'static str) -> Result<T, Dn
 
 impl Drop for Resolving {
     fn drop(&mut self) {
-        if self.channel.is_null() {
-            return;
-        }
         // SAFETY: the channel is ours and goes here; its callbacks, told it
         // goes, still find the answers.
         unsafe { sys::ares_destroy(self.channel) };
@@ -573,18 +571,6 @@ impl Drop for Resolving {
 }
 
 impl DnsResolve for Resolving {
-    fn closed(&mut self) -> Vec<SocketKey> {
-        core::mem::take(&mut self.answers.closed)
-    }
-
-    fn close(mut self: Box<Self>) -> Vec<SocketKey> {
-        // SAFETY: the channel is ours and goes here, and `drop` sees that it
-        // has; its callbacks, told it goes, still find the answers.
-        unsafe { sys::ares_destroy(self.channel) };
-        self.channel = core::ptr::null_mut();
-        self.closed()
-    }
-
     fn perform(&mut self) -> Result<(), OutOfMemory> {
         let mut polls = [libc::pollfd {
             fd: -1,
@@ -804,35 +790,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_socket_with_nothing_to_wait_for_is_kept_to_be_told() {
-        let mut r = super::Resolving::new().unwrap();
+    fn a_socket_with_nothing_to_wait_for_is_told_to_close() {
+        let closed = SocketsClosed::new().unwrap();
+        let mut r = Resolving::new(&closed).unwrap();
         let arg: *mut core::ffi::c_void = (&raw mut *r.answers).cast();
         // SAFETY: `arg` is this resolve's answers, borrowed by nothing here.
-        unsafe { super::socket_state(arg, 7, 1, 0) };
-        assert!(
-            super::DnsResolve::closed(&mut r).is_empty(),
-            "it still waits"
-        );
+        unsafe { socket_state(arg, 7, 1, 0) };
+        assert!(closed.take().is_empty(), "it still waits");
         // SAFETY: as above.
-        unsafe { super::socket_state(arg, 7, 0, 0) };
-        let closed = super::DnsResolve::closed(&mut r);
-        assert_eq!(closed, [super::SocketKey::new(7)]);
-        assert!(super::DnsResolve::closed(&mut r).is_empty(), "told once");
-    }
-
-    #[test]
-    fn closing_a_resolve_gives_what_was_not_told_and_leaves_nothing() {
-        let mut r = Box::new(super::Resolving::new().unwrap());
-        let arg: *mut core::ffi::c_void = (&raw mut *r.answers).cast();
-        // SAFETY: `arg` is this resolve's answers, borrowed by nothing here.
-        unsafe { super::socket_state(arg, 9, 0, 0) };
-        let closed = super::DnsResolve::close(r);
-        assert_eq!(closed, [super::SocketKey::new(9)]);
+        unsafe { socket_state(arg, 7, 0, 0) };
+        assert_eq!(closed.take(), [SocketKey::new(7)]);
+        assert!(closed.take().is_empty(), "told once");
     }
 
     #[test]
     fn the_responses_are_named_as_c_names_them() {
-        let mut r = super::Resolving::new().unwrap();
+        let closed = SocketsClosed::new().unwrap();
+        let mut r = Resolving::new(&closed).unwrap();
         for (a, aaaa, named) in [
             (false, false, "-"),
             (true, false, "A"),
@@ -854,6 +828,7 @@ mod tests {
             family,
             stream: true,
             options,
+            closed: Box::leak(Box::new(SocketsClosed::new().unwrap())),
         }
     }
 

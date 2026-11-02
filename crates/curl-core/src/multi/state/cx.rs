@@ -2,6 +2,7 @@
 //! and what the connection's layers ask of them.
 
 use super::*;
+use crate::conn::io::SocketsClosed;
 
 /// A layer working for the stepping transfer traces as it does, keeps
 /// its failures and reports to it, and a QUIC connection receives in the
@@ -571,17 +572,41 @@ impl<H: Host> StepCx<'_, H> {
         matches!(left, TimeLeft::Expired(_))
     }
 
-    /// What is left of the transfer's time, as of the step's start: its
-    /// connect limit counts before DO (`Curl_timeleft_ms`).
-    /// A socket closes that another library owned: said, and nothing waits
-    /// on it from here on (`Curl_multi_will_close`).
-    pub(crate) fn will_close(&mut self, key: SocketKey) {
-        let fd = key.get();
-        mstate::trace(self, format_args!("Curl_multi_will_close fd={fd}"));
+    /// The sockets the transfer's libraries closed: each said, and nothing
+    /// waits on it from here on (`Curl_multi_will_close`).
+    pub(crate) fn libraries_closed(&mut self) {
         let me = self.me;
-        crate::conn::io::Net::will_close(&mut self.rest.announcing(me), key);
+        let slot = self.rest.tell.slots.get(me).expect("the stepping transfer");
+        let Some(closed) = slot.closed.as_ref().map(SocketsClosed::take) else {
+            return;
+        };
+        for key in closed {
+            let fd = key.get();
+            mstate::trace(self, format_args!("Curl_multi_will_close fd={fd}"));
+            self.rest.announcing(me).will_close(key);
+        }
     }
 
+    /// Where the transfer's libraries tell the sockets they close, made
+    /// the first time it is asked for.
+    pub(crate) fn closed_sockets(&mut self) -> Result<SocketsClosed, OutOfMemory> {
+        let me = self.me;
+        let slot = self
+            .rest
+            .tell
+            .slots
+            .get_mut(me)
+            .expect("the stepping transfer");
+        if let Some(closed) = &slot.closed {
+            return Ok(closed.clone());
+        }
+        let closed = SocketsClosed::new()?;
+        slot.closed = Some(closed.clone());
+        Ok(closed)
+    }
+
+    /// What is left of the transfer's time, as of the step's start: its
+    /// connect limit counts before DO (`Curl_timeleft_ms`).
     pub(crate) fn time_left(&self) -> TimeLeft {
         self.time_left_at(self.now())
     }

@@ -434,6 +434,35 @@ pub struct DnsAsk<'a> {
     /// For a connection over a stream, which the answer's hints say.
     pub stream: bool,
     pub options: &'a crate::options::DnsOptions,
+    /// Where the sockets the resolve closes are told, for as long as it
+    /// lives and as it goes.
+    pub closed: &'a SocketsClosed,
+}
+
+/// The sockets a library closed, which a transfer may have been waiting
+/// on, until the multi forgets them (`sock_state_cb`'s
+/// `Curl_multi_will_close`). Shared by the transfer and its library's
+/// resolves, so that one closing as it is dropped, wherever that is, is
+/// told all the same.
+#[derive(Clone, Debug)]
+pub struct SocketsClosed(TryArc<std::sync::Mutex<Vec<SocketKey>>>);
+
+impl SocketsClosed {
+    pub fn new() -> Result<SocketsClosed, OutOfMemory> {
+        Ok(SocketsClosed(TryArc::try_new(std::sync::Mutex::new(
+            Vec::new(),
+        ))?))
+    }
+
+    /// `key` closes, or has just closed.
+    pub fn said(&self, key: SocketKey) -> Result<(), OutOfMemory> {
+        self.0.lock().expect("no push panics").try_push(key)
+    }
+
+    /// Those closed since last taken, in their order.
+    pub fn take(&self) -> Vec<SocketKey> {
+        std::mem::take(&mut *self.0.lock().expect("no push panics"))
+    }
 }
 
 /// Why a resolve did not start.
@@ -450,11 +479,6 @@ pub enum DnsRefused {
 
 /// One resolve under way in a [`DnsLibrary`].
 pub trait DnsResolve: Send + fmt::Debug {
-    /// The sockets it closed since last asked, each named once.
-    fn closed(&mut self) -> Vec<SocketKey>;
-    /// It is not wanted any more: what it still had open closes, and is
-    /// named with those not yet asked for.
-    fn close(self: Box<Self>) -> Vec<SocketKey>;
     /// Process what is ready and what has timed out.
     fn perform(&mut self) -> Result<(), OutOfMemory>;
     /// The sockets it waits on, and for what.
@@ -593,13 +617,6 @@ pub trait Net {
 
     /// `f` given the network's resolver.
     fn with_resolver(&mut self, f: &mut dyn FnMut(&mut dyn Resolver));
-
-    /// A socket another library owns, that a transfer may be waiting on,
-    /// closes or has just closed: nothing waits on it from here on
-    /// (`Curl_multi_will_close`).
-    fn will_close(&mut self, key: SocketKey) {
-        let _ = key;
-    }
 
     /// The scope of the first local interface that is up, is not
     /// loopback and has a link-local IPv6 address, if any.

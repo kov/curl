@@ -50,21 +50,21 @@ witness: curl-tool an_interface_name_is_waited_for_no_longer_than_the_transfer_m
 
 === a socket c-ares closes is not kept to be told
 file: crates/curl-ares/src/lib.rs
-witness: curl-ares tests::a_socket_with_nothing_to_wait_for_is_kept_to_be_told
+witness: curl-ares tests::a_socket_with_nothing_to_wait_for_is_told_to_close
 --- old
-    if a.closed.try_push(SocketKey::new(fd)).is_err() {
+    if a.closed.said(SocketKey::new(fd)).is_err() {
 --- new
-    if fd < 0 && a.closed.try_push(SocketKey::new(fd)).is_err() {
+    if fd < 0 && a.closed.said(SocketKey::new(fd)).is_err() {
 
 === a closed socket stays registered with the application
 file: crates/curl-core/src/multi/cx.rs
 witness: curl-core multi::socket_tests::a_library_s_socket_closing_is_removed_though_its_number_comes_back
 --- old
-    fn will_close(&mut self, key: SocketKey) {
+    pub(crate) fn will_close(&mut self, key: SocketKey) {
         self.forget(key);
     }
 --- new
-    fn will_close(&mut self, key: SocketKey) {
+    pub(crate) fn will_close(&mut self, key: SocketKey) {
         let _ = key;
     }
 
@@ -101,3 +101,11 @@ witness: curl-tool a_resolve_is_looked_at_as_soon_as_it_starts
                             Looked::Pending(mut p) if !fresh || p.is_library() => {
 --- new
                             Looked::Pending(mut p) if !fresh => {
+
+=== the sockets a resolve closes are told where no one reads
+file: crates/curl-core/src/multi/dns.rs
+witness: curl-tool a_record_never_answered_says_its_socket_closed
+--- old
+    let Ok(closed) = cx.closed_sockets() else {
+--- new
+    let Ok(closed) = crate::conn::io::SocketsClosed::new() else {

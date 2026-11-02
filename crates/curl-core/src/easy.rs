@@ -526,6 +526,7 @@ impl Easy {
     pub fn set_share(&mut self, share: Option<Share>) -> Result<(), ShareInUse> {
         self.share_may_change()?;
         self.forget_pool(share.as_ref());
+        self.relink_jar(share.as_ref());
         self.share = share;
         self.share_watch = None;
         Ok(())
@@ -541,6 +542,7 @@ impl Easy {
     ) -> Result<(), ShareInUse> {
         self.share_may_change()?;
         self.forget_pool(Some(&share));
+        self.relink_jar(Some(&share));
         self.share = Some(share);
         self.share_watch = Some(watch);
         Ok(())
@@ -552,6 +554,7 @@ impl Easy {
     /// running transfer's connection.
     pub fn leave_share(&mut self) {
         self.forget_pool(None);
+        self.relink_jar(None);
         self.share = None;
         self.share_watch = None;
     }
@@ -576,6 +579,21 @@ impl Easy {
         if keeps(self.share.as_ref()) || keeps(next) {
             self.last_conn = None;
             self.report.set_conn(None);
+        }
+    }
+
+    /// As the share changes to `next`: joining one that keeps cookies, the
+    /// handle's own are gone and its jar stays on, the share's in its
+    /// place; leaving one, it has no jar until something turns one on
+    /// (`Curl_share_easy_link`, `Curl_share_easy_unlink`).
+    fn relink_jar(&mut self, next: Option<&Share>) {
+        let keeps = |s: Option<&Share>| s.is_some_and(|s| s.keeps(Kind::Cookies));
+        if keeps(next) {
+            if let Some(jar) = self.cookies.as_deref_mut() {
+                *jar = Jar::default();
+            }
+        } else if keeps(self.share.as_ref()) {
+            self.cookies = None;
         }
     }
 

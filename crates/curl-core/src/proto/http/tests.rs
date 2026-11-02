@@ -4019,6 +4019,46 @@ fn last_modified_gives_the_file_time_when_asked() {
 
 /// Handles on two threads store cookies in one share's jar at once, and
 /// every one is there at the end.
+/// Joining a share that keeps cookies, a handle's own are gone for good;
+/// leaving it, the handle has no jar, so a response's are not kept until
+/// one is turned on again (`Curl_share_easy_link`,
+/// `Curl_share_easy_unlink`).
+#[test]
+fn a_handle_s_own_cookies_go_as_it_joins_a_share_and_its_jar_as_it_leaves() {
+    use crate::share::{Kind, Share};
+    let names = |e: &mut Easy| e.cookie_list().unwrap().len();
+    let share = Share::new().unwrap();
+    share.keep(Kind::Cookies).unwrap();
+    let mut e = Easy::new();
+    e.add_cookie(b"Set-Cookie: own=1; domain=example.com", |_| {})
+        .unwrap();
+    assert_eq!(names(&mut e), 1);
+    e.set_share(Some(share.clone())).unwrap();
+    assert_eq!(names(&mut e), 0, "the share's, which has none");
+    e.add_cookie(b"Set-Cookie: sh=1; domain=example.com", |_| {})
+        .unwrap();
+    assert_eq!(names(&mut e), 1);
+    e.set_share(None).unwrap();
+    assert_eq!(names(&mut e), 0, "no jar, and the own one's not back");
+    assert!(e.cookies.is_none());
+    e.add_cookie(b"Set-Cookie: after=1; domain=example.com", |_| {})
+        .unwrap();
+    assert_eq!(names(&mut e), 1, "turned on by the cookie");
+    // A share that does not keep cookies takes nothing, and leaves it.
+    e.set_share(Some(Share::new().unwrap())).unwrap();
+    assert_eq!(names(&mut e), 1);
+    e.leave_share();
+    assert_eq!(names(&mut e), 1);
+    // From one that keeps them to another, the jar stays on: the second's.
+    let (one, two) = (Share::new().unwrap(), Share::new().unwrap());
+    one.keep(Kind::Cookies).unwrap();
+    two.keep(Kind::Cookies).unwrap();
+    e.set_share(Some(one)).unwrap();
+    assert!(e.cookies.is_some());
+    e.set_share(Some(two)).unwrap();
+    assert!(e.cookies.is_some());
+}
+
 #[test]
 fn a_share_s_jar_takes_cookies_from_two_threads() {
     use crate::share::{Kind, Share};

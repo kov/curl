@@ -74,6 +74,11 @@ exclude_re = [
     # options set before it; the core makes a socket nonblocking once, as
     # it opens it, before any send or read, so either half decides alone.
     'curl-core/src/conn/io\.rs:.*: replace && with \|\| in <impl Socket for FakeSocket>::set_nonblocking$',
+    # A raw call runs on a connection whose TLS session was made, and its
+    # peer checked, by the transfer that connected it: the context is set
+    # up (`configures_context`) and the chain reported (`check_peer`) only
+    # before and at the handshake, so a raw call is never asked either.
+    'curl-core/src/multi/raw\.rs:.*: replace <impl crate::conn::layer::ForTransfer for RawCx<.*>>::(certinfo_report -> Option<&mut crate::report::TransferReport> with Some\(Box::leak\(Box::new\(Default::default\(\)\)\)\)|has_tls_handler -> bool with true)$',
     # A library's Debug is for a failed test's message; nothing reads it.
     'curl-core/src/psl\.rs:.*: replace <impl fmt::Debug for dyn SuffixLibrary>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
     # A peer neither key nor HMAC names holds no session, so the slot search

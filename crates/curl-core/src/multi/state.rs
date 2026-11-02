@@ -42,6 +42,7 @@ mod https;
 mod leg;
 pub(crate) use leg::*;
 mod names;
+pub(crate) use names::{async_gone, async_kept};
 mod quictunnel;
 pub(crate) mod side;
 pub(crate) use side::{Shaken, SideSetup};
@@ -771,6 +772,9 @@ fn multi_done<H: Host>(
                     u8::from(premature)
                 ),
             );
+            // Any resolve still going on is not wanted
+            // (`Curl_resolv_shutdown_all`).
+            names::asyncs_done(cx);
             if let Some(proto) = d.proto.as_mut() {
                 match proto.done(
                     cx,
@@ -1577,7 +1581,9 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         TransferState::Setup(mut plan) => {
             // Let out of PENDING by another transfer (`multi_schedule_pending`).
             mstate::enter(cx, MState::Connect);
-            // The request starts over (`Curl_req_hard_reset`).
+            // The request starts over (`Curl_req_hard_reset`). It keeps no
+            // resolve's record: it waits before any lookup, and its leg
+            // let go of those of the request before as it started.
             upload::trace_reset(cx, false);
             // The rest of the plan is kept, but C makes its connection
             // anew as a waiting transfer looks again, reading the IP

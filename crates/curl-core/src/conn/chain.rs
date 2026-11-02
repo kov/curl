@@ -354,13 +354,6 @@ impl Chain {
     }
 }
 
-/// The DNS filters a chain over `route` holds, headed as `head` says:
-/// the HTTPS record's, the first hop's, and the SOCKS proxy's target's
-/// where it is resolved here.
-pub(crate) fn dns_filters(route: Dialing<'_>, head: Head) -> usize {
-    usize::from(head.record) + 1 + usize::from(resolves_target(route.route))
-}
-
 /// The handshakes whose filters a chain holds.
 #[derive(Clone, Copy)]
 struct Handshakes {
@@ -389,7 +382,7 @@ fn is_setup(filter: Component) -> bool {
 /// The route's SOCKS proxy is given an address, not a name, so a DNS
 /// filter of its own resolves the peer it is to reach
 /// (`Curl_cf_socks_proxy_insert_after`).
-fn resolves_target(route: &NetRoute) -> bool {
+pub(crate) fn resolves_target(route: &NetRoute) -> bool {
     route
         .socks()
         .is_some_and(|leg| leg.version.resolves_locally())

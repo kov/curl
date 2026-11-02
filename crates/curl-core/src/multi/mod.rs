@@ -46,9 +46,9 @@ use crate::tls::{TlsNative, TlsShared};
 use crate::upload::Readers;
 
 pub use crate::deliver::PauseRequest;
-pub(crate) use cx::TransferCalls;
 use cx::{Announcing, EngineRest, Telling};
 pub use cx::{EventCx, NotifyCx, TransferCx};
+pub(crate) use cx::{LoneCalls, TransferCalls};
 pub use notify::{Notification, NotifyKind};
 pub use push::{PushFields, PushOffer, Pushed};
 pub use sched::{Census, Counts};
@@ -1139,7 +1139,7 @@ impl<H: Host> Multi<H> {
     /// The transfer's handle, without what only the multi can decide: its
     /// share changes through [`Multi::set_share`].
     pub fn easy_mut(&mut self, id: TransferId) -> Option<EasyView<'_>> {
-        self.slots.get_mut(id).map(|slot| slot.easy.view())
+        self.slots.get_mut(id).map(|slot| slot.easy.view_as(id))
     }
 
     /// Use `share` for a transfer's next run, or none; refused while it

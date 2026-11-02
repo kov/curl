@@ -19,7 +19,7 @@ use crate::hsts::{Hsts, LoadError as CacheLoadError};
 use crate::id::ArenaPolicy;
 use crate::libraries::{Libraries, SharedLibraries};
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode};
-use crate::multi::{EventTable, drive_by_events_with};
+use crate::multi::{EventTable, TransferId, drive_by_events_with};
 use crate::options::{Lines, Options};
 use crate::report::TransferReport;
 use crate::save;
@@ -101,6 +101,17 @@ pub struct Easy {
     /// copied with the handle (C's `state.rtsp_*`). Made the first time
     /// either is set: few handles speak RTSP.
     rtsp: Option<Box<RtspState>>,
+    /// What C keeps of the resolves its transfers started and has not let
+    /// go of yet (`state.async`): not copied with the handle.
+    pub(crate) asyncs: crate::conn::asyncs::Asyncs,
+}
+
+/// A handle let go of lets go of its resolves' records, each said
+/// (`Curl_close`'s `Curl_resolv_destroy_all`).
+impl Drop for Easy {
+    fn drop(&mut self) {
+        self.asyncs_let_go(TransferId::lone());
+    }
 }
 
 /// A handle in a multi, as `Multi::easy_mut` gives it out: everything of
@@ -118,6 +129,9 @@ pub struct Easy {
 /// ```
 pub struct EasyView<'a> {
     easy: &'a mut Easy,
+    /// What its handlers are told it is: its id in its multi, or the
+    /// lone handle's.
+    id: TransferId,
 }
 
 impl std::ops::Deref for EasyView<'_> {
@@ -139,7 +153,11 @@ impl EasyView<'_> {
     }
 
     pub fn reset(&mut self) {
-        self.easy.reset();
+        self.easy.reset_as(self.id);
+    }
+
+    pub fn release_resolves(&mut self) {
+        self.easy.asyncs_let_go(self.id);
     }
 
     pub fn rtsp_mut(&mut self) -> Result<&mut RtspState, OutOfMemory> {
@@ -371,13 +389,11 @@ impl Easy {
     /// its stream's weight, and where its output, its headers, its trace
     /// and its progress go; nothing else.
     pub(crate) fn pushed(&self) -> Easy {
-        let mut pushed = Easy {
-            libraries: self.libraries.clone(),
-            components: self.components.clone(),
-            share: self.share.clone(),
-            share_watch: self.share_watch.clone(),
-            ..Easy::default()
-        };
+        let mut pushed = Easy::default();
+        pushed.libraries = self.libraries.clone();
+        pushed.components = self.components.clone();
+        pushed.share = self.share.clone();
+        pushed.share_watch = self.share_watch.clone();
         let (to, from) = (&mut pushed.options, &self.options);
         to.http.stream_weight = from.http.stream_weight;
         to.callbacks.write = from.callbacks.write.clone();
@@ -397,14 +413,12 @@ impl Easy {
         body: Handler<dyn WriteHandler>,
         left: Option<Duration>,
     ) -> Result<Easy, OutOfMemory> {
-        let mut probe = Easy {
-            doing: Some(crate::components::Component::Doh),
-            components: self.components.clone(),
-            libraries: self.libraries.clone(),
-            share_watch: self.share_watch.clone(),
-            share: self.share.clone(),
-            ..Easy::default()
-        };
+        let mut probe = Easy::default();
+        probe.doing = Some(crate::components::Component::Doh);
+        probe.components = self.components.clone();
+        probe.libraries = self.libraries.clone();
+        probe.share_watch = self.share_watch.clone();
+        probe.share = self.share.clone();
         let (to, from) = (&mut probe.options, &self.options);
         let url = from.doh.url.as_deref();
         to.set_url(url)?;
@@ -501,6 +515,7 @@ impl Easy {
             libraries: self.libraries.clone(),
             components: self.components.clone(),
             rtsp: None,
+            asyncs: Default::default(),
         };
         prepare(&mut copy.options)?;
         let now = crate::date::cache_now(SystemClock::new().unix_time());
@@ -553,6 +568,14 @@ impl Easy {
     /// for its last socket error (`curl_easy_reset`). The private multi
     /// and the cookie jar stay.
     pub fn reset(&mut self) {
+        self.reset_as(TransferId::lone());
+    }
+
+    /// The same, its handlers told it is `me`.
+    fn reset_as(&mut self, me: TransferId) {
+        // Said while the handle's settings still trace (`curl_easy_reset`'s
+        // `Curl_req_hard_reset`, before `Curl_freeset`).
+        self.asyncs_let_go(me);
         self.options = Options::default();
         self.report = self.report.reset();
         self.meter_titled = false;
@@ -560,6 +583,32 @@ impl Easy {
         self.wildcard_resolve = false;
         self.auth = Auth::default();
         self.set_cookies = 0;
+    }
+
+    /// Let go of what the handle keeps of the resolves its transfers
+    /// started, each said as C says it (`Curl_close`'s
+    /// `Curl_resolv_destroy_all`). Dropping the handle does it too; one
+    /// whose debug handler reaches what holds the handle calls it first,
+    /// while that is whole.
+    pub fn release_resolves(&mut self) {
+        self.asyncs_let_go(TransferId::lone());
+    }
+
+    /// Whether it keeps a record of a resolve, which `release_resolves`
+    /// or dropping it lets go of.
+    pub fn holds_resolves(&self) -> bool {
+        self.asyncs.nth_newest(0).is_some()
+    }
+
+    /// Each of its resolves' records let go of, the newest first, said as
+    /// it goes outside any transfer's step, its handlers told it is `me`
+    /// (`Curl_resolv_destroy_all`).
+    fn asyncs_let_go(&mut self, me: TransferId) {
+        while let Some(id) = self.asyncs.pop_newest() {
+            let id = id.get();
+            let dns = crate::components::Component::Dns;
+            trace::of_lone(self, me, dns, format_args!("[{id}] destroy async"));
+        }
     }
 
     /// What RTSP keeps from one request to the next.
@@ -651,7 +700,12 @@ impl Easy {
 
     /// The handle as one in a multi is reached, for code taking either.
     pub fn view(&mut self) -> EasyView<'_> {
-        EasyView { easy: self }
+        self.view_as(TransferId::lone())
+    }
+
+    /// The handle as its multi reaches it, as `id`.
+    pub(crate) fn view_as(&mut self, id: TransferId) -> EasyView<'_> {
+        EasyView { easy: self, id }
     }
 
     /// Forget the last connection, if the pool it is in changes: leaving

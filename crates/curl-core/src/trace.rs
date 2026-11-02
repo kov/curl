@@ -195,6 +195,41 @@ pub(crate) fn info_outside(calls: &mut dyn crate::multi::TransferCalls, args: fm
     }
 }
 
+/// A line of `component`'s on `easy` outside any multi, as it is reset or
+/// let go of (`Curl_close`): after its ids, through its debug handler, or
+/// without one to its standard error.
+pub(crate) fn of_lone(
+    easy: &mut crate::easy::Easy,
+    me: crate::multi::TransferId,
+    component: Component,
+    args: fmt::Arguments<'_>,
+) {
+    if !easy.options().output.verbose || !handle_traces(easy, component) {
+        return;
+    }
+    let mut line = Text::<LINE_MAX>::new();
+    push_ids_of(easy, &mut line);
+    line.push_fmt(format_args!("[{}] ", component.name()));
+    line.push_fmt(args);
+    end_line(&mut line);
+    let handler = easy.options().callbacks.debug.clone();
+    let sink = easy.options().callbacks.stderr.clone();
+    match handler {
+        Some(handler) => {
+            let mut calls = crate::multi::LoneCalls { easy, me };
+            handler.debug(
+                &mut TransferCx::new(&mut calls),
+                DebugKind::Text,
+                line.bytes(),
+            );
+        }
+        None => {
+            progress::to_stderr(sink.as_ref(), b"* ");
+            progress::to_stderr(sink.as_ref(), line.bytes());
+        }
+    }
+}
+
 /// A line of `component`'s, or with none of the verbose output, of a
 /// call on the connection `easy`'s transfer left: as a transfer's, after
 /// its ids.

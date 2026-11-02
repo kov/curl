@@ -98,21 +98,13 @@ features: debug-hooks
 file: crates/curl-core/src/easy.rs
 witness: curl-core easy::tests::a_pushed_handle_takes_its_parent_s_libraries_and_share
 --- old
-            components: self.components.clone(),
-            share: self.share.clone(),
-            share_watch: self.share_watch.clone(),
-            ..Easy::default()
+        pushed.components = self.components.clone();
 --- new
-            share: self.share.clone(),
-            share_watch: self.share_watch.clone(),
-            ..Easy::default()
 
 === a pushed handle uses no share
 file: crates/curl-core/src/easy.rs
 witness: curl-core easy::tests::a_pushed_handle_takes_its_parent_s_libraries_and_share
 --- old
-            share: self.share.clone(),
-            share_watch: self.share_watch.clone(),
-            ..Easy::default()
+        pushed.share = self.share.clone();
+        pushed.share_watch = self.share_watch.clone();
 --- new
-            ..Easy::default()

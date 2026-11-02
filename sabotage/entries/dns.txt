@@ -479,13 +479,13 @@ features: test-util
         let wants_quic = proto.negotiation().is_some_and(|n| n.wanted.h3);
 
 === the DNS filter of the HTTPS record is not told the chain below connected
-file: crates/curl-core/src/conn/chain.rs
+file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_has_the_record_s_dns_filter_and_the_addresses
 features: test-util
 --- old
-    usize::from(head.record) + 1 + usize::from(resolves_target(route.route))
+    names::connected(cx, ConnRank::First, target, head.record);
 --- new
-    1 + usize::from(resolves_target(route.route))
+    names::connected(cx, ConnRank::First, target, false);
 
 === the addresses' DNS filter after the HTTPS record's is traced as added
 file: crates/curl-core/src/multi/state/names.rs
@@ -656,3 +656,103 @@ witness: curl-core multi::socket_tests::a_library_s_resolve_is_run_again_when_it
             Some(RecordLookup::Library(r)) => Some(now.after(r.due(Duration::from_secs(1)))),
 --- new
             Some(RecordLookup::Library(_)) => None,
+
+=== a DNS filter connected keeps its resolve's record
+file: crates/curl-core/src/multi/state/names.rs
+witness: curl-core proto::http::tests::https_trace::resolves_are_let_go_of_where_c_lets_them_go
+--- old
+        let gone = cx.easy_mut().asyncs.take(holder);
+--- new
+        let gone: Option<ResolveId> = None;
+
+=== the records still kept are walked oldest first
+file: crates/curl-core/src/conn/asyncs.rs
+witness: curl-core proto::http::tests::https_trace::resolves_are_let_go_of_where_c_lets_them_go
+--- old
+        self.all().iter().rev().nth(n).map(|k| k.id)
+--- new
+        self.all().iter().nth(n).map(|k| k.id)
+
+=== a transfer done says nothing of the resolves it still keeps
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::https_trace::resolves_are_let_go_of_where_c_lets_them_go
+--- old
+            names::asyncs_done(cx);
+--- new
+
+=== a request starting keeps the last one's records
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core proto::http::tests::https_trace::resolves_are_let_go_of_where_c_lets_them_go
+--- old
+    super::names::asyncs_let_go(cx);
+--- new
+
+=== a handle dropped lets go of its records unsaid
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::https_trace::resolves_are_let_go_of_where_c_lets_them_go
+--- old
+    fn drop(&mut self) {
+        self.asyncs_let_go(TransferId::lone());
+--- new
+    fn drop(&mut self) {
+        self.asyncs = Default::default();
+
+=== a blocking resolve keeps its record past its wait
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::socket_tests::a_blocking_resolve_lets_go_of_its_record_as_its_wait_ends
+--- old
+    cx.resolve_gone(Holder::Blocking);
+--- new
+
+=== the record found meanwhile says nothing of its own ask
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::h3_trace::a_record_kept_meanwhile_is_found_not_kept_again
+--- old
+    names::async_shut(cx, Holder::Record);
+--- new
+
+=== the record asked of the threaded resolver is not numbered
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-tool the_record_asked_of_the_threaded_resolver_is_let_go_of_as_c_s
+features: threaded-resolver
+--- old
+        names::async_kept(cx, Holder::Record).map_err(oom)?;
+--- new
+        if !unanswered {
+            names::async_kept(cx, Holder::Record).map_err(oom)?;
+        }
+
+=== a handle reset keeps its resolves' records
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::https_trace::resolves_are_let_go_of_where_c_lets_them_go
+--- old
+        self.asyncs_let_go(me);
+        self.options = Options::default();
+--- new
+        self.options = Options::default();
+
+=== the C handle's cleanup lets go of its resolves unsaid
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::cleanup_and_reset_tell_the_debug_function_of_the_resolves_let_go
+--- old
+    easy.release_resolves();
+    // The jar is written as the handle goes (`Curl_flush_cookies`); one
+--- new
+    // The jar is written as the handle goes (`Curl_flush_cookies`); one
+
+=== the C handle's reset says its resolves after its debug function is gone
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::cleanup_and_reset_tell_the_debug_function_of_the_resolves_let_go
+--- old
+    easy.release_resolves();
+    let me = NonNull::from(easy);
+--- new
+    let me = NonNull::from(easy);
+
+=== a handle's lines outside a step do not name it as its multi does
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-sys-abi handle_tests::cleanup_and_reset_tell_the_debug_function_of_the_resolves_let_go
+--- old
+        (id == self.me).then_some(&*self.easy)
+--- new
+        (id == TransferId::lone()).then_some(&*self.easy)

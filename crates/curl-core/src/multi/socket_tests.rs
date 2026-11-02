@@ -1288,6 +1288,54 @@ fn a_blocking_resolve_may_be_stopped_by_the_progress_handler() {
     assert_eq!(clock.now().since(start), Duration::from_secs(1));
 }
 
+/// A blocking resolve, an interface's name, lets go of its record as its
+/// wait ends, before the transfer is done, rather than with the transfer
+/// (`Curl_resolv_blocking`'s `Curl_resolv_destroy`); C's tool binding to
+/// `host!NAME` says its `destroy async` there.
+#[test]
+fn a_blocking_resolve_lets_go_of_its_record_as_its_wait_ends() {
+    #[derive(Clone, Default)]
+    struct Lines(Arc<Mutex<Vec<String>>>);
+
+    impl crate::handler::DebugHandler for Lines {
+        fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
+            if kind == crate::handler::DebugKind::Text {
+                let line = String::from_utf8_lossy(data).trim_end().to_owned();
+                self.0.lock().unwrap().push(line);
+            }
+        }
+    }
+
+    let (mut m, clock, _ev) = networked();
+    let (_, _, libraries) = closing_library(&clock, 1);
+    let lines = Lines::default();
+    let mut e = easy("http://127.0.0.1:3/");
+    e.set_libraries(libraries);
+    let o = e.options_mut();
+    o.limits.total = crate::time::TimeLimit::from_millis(3000);
+    o.output.verbose = true;
+    o.callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    o.sockets.make_mut().unwrap().local.interface =
+        Some(crate::options::Interface::Host(b"bind.test".to_vec()));
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"dns,multi");
+    e.set_components(Some(c));
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    // The library never answers: the bind fails as the wait times out.
+    let ended = crate::multi::wait::drive_by_events(&mut m, id);
+    assert!(matches!(ended, Ok(Err(_))), "{ended:?}");
+    drop(m.remove(id, &mut NoEvents).unwrap());
+    let lines = lines.0.lock().unwrap();
+    let said: Vec<&str> = lines
+        .iter()
+        .map(String::as_str)
+        .filter(|l| l.ends_with(" async") || l.contains("multi_done: status"))
+        .collect();
+    assert_eq!(said.len(), 2, "{lines:#?}");
+    assert_eq!(said[0], "[DNS] [1] destroy async", "{lines:#?}");
+    assert!(said[1].contains("multi_done: status"), "{lines:#?}");
+}
+
 /// A resolver library's resolve that waits on no socket is run again when
 /// the library says, whatever stage it holds: resolving, beside a race
 /// begun on AAAA's answer, or as the origin's record (`Curl_async_pollset`'s

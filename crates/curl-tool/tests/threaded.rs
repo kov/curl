@@ -51,3 +51,24 @@ fn an_origins_record_the_threaded_resolver_cannot_answer_is_not_kept() {
         .count();
     assert_eq!(looks, 2, "looked at no more: {said}");
 }
+
+/// The record's ask is numbered all the same, as C keeps a record of it
+/// (`hostip_async_new`): the connect refused, it is told it is not wanted
+/// as the transfer is done, and let go of with the handle, as C's
+/// threaded build traces them for `https://localhost:1/`.
+#[test]
+fn the_record_asked_of_the_threaded_resolver_is_let_go_of_as_c_s() {
+    let run = Command::new(env!("CARGO_BIN_EXE_curl"))
+        .args(["-sS", "-v", "-k", "--max-time", "5"])
+        .args(["--trace-config", "dns"])
+        .arg("https://localhost:1/")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&run.stderr);
+    let asyncs: Vec<&str> = said.lines().filter(|l| l.ends_with(" async")).collect();
+    assert_eq!(
+        asyncs,
+        ["* [DNS] [1] shutdown async", "* [DNS] [1] destroy async"],
+        "{said}"
+    );
+}

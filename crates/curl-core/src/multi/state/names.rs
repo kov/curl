@@ -4,13 +4,16 @@
 //! (`cf_dns_connect`). The engine resolves without filters; these say
 //! what C's would, where they would.
 
-use super::StepCx;
+use super::{ConnRank, StepCx};
 use crate::components::Component;
+use crate::conn::asyncs::Holder;
+use crate::conn::io::ResolveId;
 use crate::conn::{NetRoute, Peer};
 use crate::multi::Host;
 use crate::options::IpVersion;
 use crate::text::Text;
 use crate::trace;
+use curl_alloc::OutOfMemory;
 
 /// The address queries a DNS filter asks for a name, from the IP version
 /// alone (`Curl_resolv_dns_queries`): an address's own family is no
@@ -105,16 +108,84 @@ pub(super) fn started<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute) {
     }
 }
 
-/// The chain below each of the `filters` DNS filters is connected, the
-/// lowest first (`cf_dns_connect`).
-pub(super) fn connected<H: Host>(cx: &mut StepCx<'_, H>, filters: usize) {
-    for _ in 0..filters {
+/// The chain below each of the DNS filters of the chain set up for
+/// `rank` is connected, the lowest first: the SOCKS proxy's target's if it
+/// is resolved here, the first hop's, and the origin's HTTPS record's if
+/// one is asked for. Each lets go of its resolve's record
+/// (`cf_dns_connect`'s `Curl_resolv_destroy`).
+pub(super) fn connected<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    rank: ConnRank,
+    target: bool,
+    record: bool,
+) {
+    let filters = [
+        target.then_some(Holder::Target),
+        Some(Holder::Addresses(rank)),
+        record.then_some(Holder::Record),
+    ];
+    for holder in filters.into_iter().flatten() {
         trace::of(
             cx,
             Component::DnsFilter,
             format_args!("connected filter chain below"),
         );
+        let gone = cx.easy_mut().asyncs.take(holder);
+        if let Some(id) = gone {
+            said(cx, id, "destroy");
+        }
     }
+}
+
+/// A record of a resolve that answers later kept for `holder`, numbered
+/// by the multi (`hostip_async_new`).
+pub(crate) fn async_kept<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    holder: Holder,
+) -> Result<(), OutOfMemory> {
+    let id = cx.rest.caches.resolves.next();
+    cx.easy_mut().asyncs.keep(id, holder)
+}
+
+/// The newest of `holder`'s told it is no longer needed, its answer found
+/// in the cache meanwhile (`Curl_resolv_take_result`'s
+/// `Curl_async_shutdown`).
+pub(crate) fn async_shut<H: Host>(cx: &mut StepCx<'_, H>, holder: Holder) {
+    if let Some(id) = cx.easy().asyncs.newest(holder) {
+        said(cx, id, "shutdown");
+    }
+}
+
+/// The newest of `holder`'s let go of (`Curl_async_destroy`).
+pub(crate) fn async_gone<H: Host>(cx: &mut StepCx<'_, H>, holder: Holder) {
+    if let Some(id) = cx.easy_mut().asyncs.take(holder) {
+        said(cx, id, "destroy");
+    }
+}
+
+/// The transfer is done: each record still kept told so, the newest
+/// first, and kept until the handle lets go of them (`multi_done`'s
+/// `Curl_resolv_shutdown_all`).
+pub(crate) fn asyncs_done<H: Host>(cx: &mut StepCx<'_, H>) {
+    let mut n = 0;
+    while let Some(id) = cx.easy().asyncs.nth_newest(n) {
+        said(cx, id, "shutdown");
+        n += 1;
+    }
+}
+
+/// The request starts from nothing: each record still kept let go of, the
+/// newest first (`Curl_req_hard_reset`'s `Curl_resolv_destroy_all`).
+pub(crate) fn asyncs_let_go<H: Host>(cx: &mut StepCx<'_, H>) {
+    while let Some(id) = cx.easy_mut().asyncs.pop_newest() {
+        said(cx, id, "destroy");
+    }
+}
+
+/// `[N] shutdown async` or `[N] destroy async`.
+fn said<H: Host>(cx: &mut StepCx<'_, H>, id: ResolveId, what: &str) {
+    let id = id.get();
+    trace::of(cx, Component::Dns, format_args!("[{id}] {what} async"));
 }
 
 /// The SOCKS proxy's target, resolved here, has a DNS filter of its own,

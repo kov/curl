@@ -18,6 +18,7 @@ use std::num::NonZeroU32;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
+use super::asyncs::Holder;
 use super::bind::{BindFailed, bind_local};
 use super::chain::SetupPoint;
 #[cfg(test)]
@@ -38,6 +39,7 @@ use crate::conn::layer::LayerCalls as _;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::handler::Configured;
 use crate::multi::doh::{Lookup as DohLookup, Polled as DohPolled};
+use crate::multi::state::ConnRank;
 use crate::options::{IpVersion, KeepAlive, Sockets};
 use crate::time::Instant;
 use crate::trace::{Ip, Line};
@@ -337,6 +339,16 @@ pub(crate) trait ConnCx: LayerCx {
     /// The number of the transfer the setup is for, as its lines name
     /// it, 0 before it has one.
     fn transfer_number(&self) -> u64;
+
+    /// Which of the transfer's connections the setup is for.
+    fn rank(&self) -> ConnRank;
+
+    /// A record kept on the transfer of a resolve that answers later, for
+    /// `holder`, numbered by the multi (`hostip_async_new`).
+    fn resolve_kept(&mut self, holder: Holder) -> Result<(), OutOfMemory>;
+
+    /// The newest of `holder`'s let go of (`Curl_async_destroy`).
+    fn resolve_gone(&mut self, holder: Holder);
 }
 
 /// What a QUIC attempt is made with: the transfer's libraries, what its
@@ -458,6 +470,16 @@ impl ConnCx for Plain<'_> {
     fn transfer_number(&self) -> u64 {
         0
     }
+
+    fn rank(&self) -> ConnRank {
+        ConnRank::First
+    }
+
+    fn resolve_kept(&mut self, _: Holder) -> Result<(), OutOfMemory> {
+        Ok(())
+    }
+
+    fn resolve_gone(&mut self, _: Holder) {}
 
     fn fails_ipv6_resolves(&self) -> bool {
         false
@@ -1333,8 +1355,16 @@ impl ConnectMachine {
                         let (looked, fresh) = match pending {
                             None => {
                                 let family = family(self.route.ip, cx);
-                                let looked =
-                                    lookup_start((name, port), family, cx, setup, true, true)?;
+                                let holder = Holder::Addresses(cx.rank());
+                                let looked = lookup_start(
+                                    (name, port),
+                                    family,
+                                    cx,
+                                    setup,
+                                    true,
+                                    true,
+                                    holder,
+                                )?;
                                 (looked, true)
                             }
                             Some(p) => (Looked::Pending(p), false),
@@ -2244,7 +2274,7 @@ impl ConnectMachine {
         }
         let family = family(leg.version.ip(self.route.ip), cx);
         let at = (leg.to.name(), leg.to.port());
-        match lookup_start(at, family, cx, setup, true, true) {
+        match lookup_start(at, family, cx, setup, true, true, Holder::Target) {
             Ok(Looked::Found(answer, found)) => Ok((
                 SocksTarget::Found(answer, Came::from(found)),
                 Late::default(),
@@ -2652,8 +2682,23 @@ fn address(
 /// through the cache, which keeps what is found but not that nothing
 /// was, the resolver waited for, and traced as `hostip_resolv` traces
 /// it. `None` if it stands for none, said as C fails it; the binding
-/// to a local name's and FTP's address to offer the server.
+/// to a local name's and FTP's address to offer the server. A resolve it
+/// waited for lets go of its record as the wait ends, after its lines
+/// (`Curl_resolv_blocking`'s `Curl_resolv_destroy`).
 pub(crate) fn resolve_blocking(
+    cx: &mut dyn ConnCx,
+    host: &[u8],
+    port: u16,
+    family: Family,
+    setup: DriveOptions,
+) -> Result<Option<TryArc<Answer>>, ErrorKind> {
+    let resolved = resolve_blocking_said(cx, host, port, family, setup);
+    cx.resolve_gone(Holder::Blocking);
+    resolved
+}
+
+/// `resolve_blocking`'s resolve, and its lines.
+fn resolve_blocking_said(
     cx: &mut dyn ConnCx,
     host: &[u8],
     port: u16,
@@ -2913,7 +2958,15 @@ pub(super) fn lookup_name(
     setup: DriveOptions,
     keep_negative: bool,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
-    match lookup_start((name, port), family, cx, setup, keep_negative, false)? {
+    match lookup_start(
+        (name, port),
+        family,
+        cx,
+        setup,
+        keep_negative,
+        false,
+        Holder::Blocking,
+    )? {
         Looked::Found(answer, found) => Ok((answer, found)),
         Looked::Pending(mut pending) => {
             let answer = match &pending.via {
@@ -3295,7 +3348,8 @@ fn family_queries(family: Family) -> &'static str {
 
 /// A lookup started: the cache, then the shortcuts, then, if `doh` may
 /// answer it and the transfer wants it, DoH, else the resolver, whose
-/// answer may come later (`hostip_resolv_start`).
+/// answer may come later (`hostip_resolv_start`). One that answers later
+/// is kept on the transfer for `holder`, as C keeps its record of it.
 pub(super) fn lookup_start(
     (name, port): (&[u8], u16),
     family: Family,
@@ -3303,6 +3357,7 @@ pub(super) fn lookup_start(
     setup: DriveOptions,
     keep_negative: bool,
     doh: bool,
+    holder: Holder,
 ) -> Result<Looked, ConnectError> {
     if is_onion(name) {
         return Err(ConnectError::Unresolved(Unresolved::Onion));
@@ -3389,6 +3444,12 @@ pub(super) fn lookup_start(
                     _ => None,
                 };
                 if let Some(kind) = refused {
+                    // Its record was made before the resolve was asked
+                    // for, and goes as it fails (`hostip_resolv_start`).
+                    if kind != ErrorKind::OutOfMemory {
+                        cx.resolve_kept(holder).map_err(oom)?;
+                        cx.resolve_gone(holder);
+                    }
                     let code = crate::trace::Code(Err(kind));
                     let port = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
                     let error =
@@ -3440,6 +3501,7 @@ pub(super) fn lookup_start(
                 format_args!("[{queries}] hostip_resolv started -> {AGAIN_NUMBER}"),
             );
         }
+        cx.resolve_kept(holder).map_err(oom)?;
         return Ok(Looked::Pending(Pending {
             via,
             queried: Queried {
@@ -3474,7 +3536,10 @@ pub(super) fn lookup_start(
         await_until: now.after(aaaa_await()),
     };
     match started.expect("the network lends its resolver") {
-        Ok(Resolve::Pending(queued)) => Ok(Looked::Pending(pending(queued))),
+        Ok(Resolve::Pending(queued)) => {
+            cx.resolve_kept(holder).map_err(oom)?;
+            Ok(Looked::Pending(pending(queued)))
+        }
         Ok(Resolve::Answer(addrs)) => {
             let at_once = pending(Queued::once(ResolveId::FIRST));
             let (answer, found) = settle(Ok(addrs), (name, port), at_once, cx)?;

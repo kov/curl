@@ -3408,7 +3408,8 @@ fn a_name_s_https_record_is_looked_for_as_c_locks_it() {
 /// Two transfers to one name's `https` origin, set up together, both
 /// ask for its HTTPS record; the first's answer, none, is kept, and the
 /// second, looking in the cache again as its answer is taken, finds it
-/// there and keeps nothing (`Curl_resolv_take_result`). C's tool, given
+/// there and keeps nothing, telling its own ask it is not wanted
+/// (`Curl_resolv_take_result`'s `Curl_async_shutdown`). C's tool, given
 /// two such URLs at once (`-Z --parallel-immediate`), traces the same; its
 /// threaded build keeps no record, and the second finds the addresses.
 #[test]
@@ -3432,7 +3433,14 @@ fn a_record_kept_meanwhile_is_found_not_kept_again() {
     for _ in 0..5 {
         m.perform(&mut NoEvents).unwrap();
     }
-    let starts = ["[DNS] cache negative", "Hostname ", "HTTPS-RR "];
+    // The records of the two asks numbered 1 and 2 by the multi.
+    let starts = [
+        "[DNS] cache negative",
+        "Hostname ",
+        "HTTPS-RR ",
+        "[DNS] [1] shutdown",
+        "[DNS] [2] shutdown",
+    ];
     let [one, two] = seen.map(|s| lines_of(&s, &starts));
     if cfg!(feature = "threaded-resolver") {
         // The threaded resolver answers no record: none is kept, and the
@@ -3453,6 +3461,7 @@ fn a_record_kept_meanwhile_is_found_not_kept_again() {
         expect(&format!(
             "Hostname localhost was found in DNS cache
             Hostname 'localhost' was found in DNS cache
+            [DNS] [2] shutdown async
             HTTPS-RR localhost:{PORT}: -"
         ))
     );

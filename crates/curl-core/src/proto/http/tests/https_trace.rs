@@ -316,6 +316,103 @@ fn a_record_and_addresses_come_together_are_taken_before_the_second_is_chosen() 
     assert_eq!(got, want, "{got:#?}");
 }
 
+/// The lines of `ran` about its resolves' records, with what they follow:
+/// the DNS filters connecting and the transfer done.
+fn asyncs(seen: &Seen) -> Vec<String> {
+    seen.text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .filter(|l| {
+            l.ends_with(" async")
+                || l == "[DNS] connected filter chain below"
+                || l.contains("multi_done: status")
+        })
+        .collect()
+}
+
+/// Each resolve that answers later is numbered by the multi and kept on
+/// the handle until C lets it go: the addresses' as their filter
+/// connects, then the record's (`cf_dns_connect`); every one still kept
+/// told it is not wanted as a transfer that failed is done, the newest
+/// first (`Curl_resolv_shutdown_all`), and let go of as the next request
+/// on the handle starts (`Curl_req_hard_reset`), the handle is reset, or it
+/// is let go of (`Curl_close`). C's tool over c-ares, a DNS server answering the names,
+/// traces the same: to a server that answers, to a port that refuses,
+/// again with `--retry`, and to another name.
+#[test]
+fn resolves_are_let_go_of_where_c_lets_them_go() {
+    static LATE: Ares = Ares(true);
+    let mut m = tls_server(1);
+    let get = |m: &mut Multi, e: Easy, url: String| https_get(m, e, &url, |_| {});
+    let e = tracing_over(&LATE, b"dns,multi");
+    let up = get(&mut m, e, format!("https://name.test:{PORT}/"));
+    assert_eq!(up.result, Ok(()), "{:#?}", up.seen.text());
+    assert_eq!(
+        asyncs(&up.seen),
+        expect(
+            "[DNS] connected filter chain below
+            [DNS] [2] destroy async
+            [DNS] connected filter chain below
+            [DNS] [1] destroy async
+            [MULTI] [DONE] multi_done: status: 0 prem: 0 done: 0"
+        )
+    );
+    // Refused: both kept past the transfer.
+    let refused = PORT + 1;
+    let e = tracing_over(&LATE, b"dns,multi");
+    let failed = get(&mut m, e, format!("https://name.test:{refused}/"));
+    assert_eq!(failed.result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(
+        asyncs(&failed.seen),
+        expect(
+            "[MULTI] [CONNECTING] multi_done: status: 7 prem: 1 done: 0
+            [DNS] [4] shutdown async
+            [DNS] [3] shutdown async"
+        )
+    );
+    // Its next request, everything found in the cache now, lets them go
+    // as it starts.
+    let again = get(&mut m, failed.easy, format!("https://name.test:{refused}/"));
+    assert_eq!(again.result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(
+        asyncs(&again.seen),
+        expect(
+            "[DNS] [4] destroy async
+            [DNS] [3] destroy async
+            [MULTI] [CONNECTING] multi_done: status: 7 prem: 1 done: 0"
+        )
+    );
+    // A handle let go of lets go of those it still keeps.
+    let e = tracing_over(&LATE, b"dns,multi");
+    let other = get(&mut m, e, format!("https://other.test:{refused}/"));
+    let seen = other.seen.clone();
+    drop(other);
+    assert_eq!(
+        asyncs(&seen),
+        expect(
+            "[MULTI] [CONNECTING] multi_done: status: 7 prem: 1 done: 0
+            [DNS] [6] shutdown async
+            [DNS] [5] shutdown async
+            [DNS] [6] destroy async
+            [DNS] [5] destroy async"
+        )
+    );
+    // So does one reset, through the handlers it had (`curl_easy_reset`).
+    let e = tracing_over(&LATE, b"dns,multi");
+    let mut reset = get(&mut m, e, format!("https://reset.test:{refused}/"));
+    reset.easy.reset();
+    assert_eq!(
+        asyncs(&reset.seen),
+        expect(
+            "[MULTI] [CONNECTING] multi_done: status: 7 prem: 1 done: 0
+            [DNS] [8] shutdown async
+            [DNS] [7] shutdown async
+            [DNS] [8] destroy async
+            [DNS] [7] destroy async"
+        )
+    );
+}
+
 /// The threaded resolver resolves no record: each setup for a name looks
 /// for it in the cache as it starts the resolve and again right after,
 /// goes on without it and keeps nothing, arming no timer, as C's threaded

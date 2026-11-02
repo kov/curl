@@ -6,6 +6,7 @@
 //! `ConnectMachine`, in the slot it keeps once established. `io` is the
 //! engine's way to the network.
 
+pub(crate) mod asyncs;
 mod bind;
 mod buf;
 pub(crate) mod capsule;
@@ -75,6 +76,9 @@ pub(crate) struct Caches {
     /// The public suffix list its transfers use, unless their share keeps
     /// one (`multi->psl`).
     pub(crate) psl: crate::psl::PslCache,
+    /// The numbers its transfers' resolves are given, as C's multi numbers
+    /// them, beside the connections' (`last_resolv_id`).
+    pub(crate) resolves: asyncs::ResolveCount,
 }
 
 impl Caches {
@@ -84,6 +88,7 @@ impl Caches {
             dns: DnsCache::default(),
             sessions: crate::tls::SessionCache::new(crate::tls::SessionCache::PEERS),
             psl: crate::psl::PslCache::default(),
+            resolves: asyncs::ResolveCount::default(),
         })
     }
 }

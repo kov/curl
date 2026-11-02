@@ -73,6 +73,16 @@ impl<T> Key<T> {
     pub fn index(self) -> u32 {
         self.row
     }
+
+    /// The key of something in no arena: of the row C keeps free as its
+    /// invalid id, which no arena hands out (`UINT_MAX`).
+    pub(crate) fn lone() -> Key<T> {
+        Key {
+            row: u32::MAX,
+            generation: NonZeroU32::MAX,
+            _of: PhantomData,
+        }
+    }
 }
 
 impl<T> Clone for Key<T> {

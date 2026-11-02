@@ -486,6 +486,18 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
             .map_or(0, |n| n.get())
     }
 
+    fn rank(&self) -> super::state::ConnRank {
+        self.step.rank()
+    }
+
+    fn resolve_kept(&mut self, holder: crate::conn::asyncs::Holder) -> Result<(), OutOfMemory> {
+        super::state::async_kept(self.step, holder)
+    }
+
+    fn resolve_gone(&mut self, holder: crate::conn::asyncs::Holder) {
+        super::state::async_gone(self.step, holder);
+    }
+
     fn fails_ipv6_resolves(&self) -> bool {
         self.step.rest.fail_ipv6
     }
@@ -1184,6 +1196,66 @@ impl<H: Host> TransferCalls for EventCalls<'_, '_, H> {
     }
 
     // Outside a transfer's handlers, its connection is not lent.
+    fn ws_send(
+        &mut self,
+        _: &[u8],
+        _: &crate::ws::Asked<'_>,
+    ) -> Result<crate::ws::Sent, ErrorKind> {
+        Err(ErrorKind::SendError)
+    }
+
+    fn ws_start_frame(&mut self, _: &crate::ws::Asked<'_>) -> Result<(), ErrorKind> {
+        Err(ErrorKind::SendError)
+    }
+
+    fn ws_recv(&mut self, _: &mut [u8]) -> Result<crate::ws::Received, ErrorKind> {
+        Err(ErrorKind::BadFunctionArgument)
+    }
+
+    fn ws_meta(&self) -> Option<crate::ws::Meta> {
+        None
+    }
+}
+
+/// A handle's handlers as they are called outside any transfer's step, as
+/// it is reset or let go of (`Curl_close`): they reach that handle alone,
+/// as `me`, its id in its multi or the lone handle's, and pause nothing.
+pub(crate) struct LoneCalls<'a> {
+    pub(crate) easy: &'a mut Easy,
+    pub(crate) me: TransferId,
+}
+
+impl TransferCalls for LoneCalls<'_> {
+    fn me(&self) -> TransferId {
+        self.me
+    }
+
+    fn census(&self) -> Census {
+        Census {
+            counts: Counts::default(),
+            pending: 0,
+            unread: 0,
+        }
+    }
+
+    fn easy(&self, id: TransferId) -> Option<&Easy> {
+        (id == self.me).then_some(&*self.easy)
+    }
+
+    fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
+        (id == self.me).then_some(&mut *self.easy)
+    }
+
+    fn pause(&mut self, _: TransferId, _: PauseRequest) -> Result<(), ErrorKind> {
+        Err(ErrorKind::BadFunctionArgument)
+    }
+
+    fn fail(&mut self, _: &[u8]) {}
+
+    fn tls_native(&self, _: TransferId) -> Option<TlsNative> {
+        None
+    }
+
     fn ws_send(
         &mut self,
         _: &[u8],

@@ -2999,7 +2999,9 @@ fn filter_life(line: &str) -> bool {
 /// later is traced as C's threaded one: each query queued, IPv6's first,
 /// then each family's addresses as its answer is taken, IPv4's first; and
 /// none for a name that has none (`async_thrdd_query`,
-/// `async_thrdd_report_item`).
+/// `async_thrdd_report_item`). Each resolve's record, numbered by the
+/// multi, is let go of as the transfer is done and its handle is
+/// (`Curl_resolv_shutdown_all`, `Curl_resolv_destroy_all`).
 #[test]
 fn a_queued_resolve_is_traced_as_c_s_threaded_resolver() {
     use crate::conn::io::{Late, Peer, SharedNet};
@@ -3045,6 +3047,8 @@ fn a_queued_resolve_is_traced_as_c_s_threaded_resolver() {
             "[DNS] Host late.test:1 resolved IPv6: (none)",
             "[DNS] [A+AAAA] resolve complete for late.test:1",
             "[DNS] cached entry for late.test:1 queries=A+AAAA",
+            "[DNS] [1] shutdown async",
+            "[DNS] [1] destroy async",
         ]
     );
     assert_eq!(
@@ -3055,6 +3059,8 @@ fn a_queued_resolve_is_traced_as_c_s_threaded_resolver() {
             "[DNS] [A] hostip_resolv started -> 81",
             "[DNS] Host gone.test:1 resolved IPv4: (none)",
             "[DNS] cache negative name resolve for gone.test:1 type=A",
+            "[DNS] [2] shutdown async",
+            "[DNS] [2] destroy async",
         ]
     );
 }

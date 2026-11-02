@@ -496,6 +496,7 @@ pub(super) fn start_leg<H: Host>(
     mstate::enter(cx, MState::Connect);
     // The request starts from nothing (`Curl_req_hard_reset`).
     upload::trace_reset(cx, rewinding);
+    super::names::asyncs_let_go(cx);
     // Counted from nothing for each request (`Curl_init_do`).
     let (speedometer, report) = cx.progress_parts();
     report.sizes_mut().new_request();

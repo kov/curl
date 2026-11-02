@@ -175,6 +175,21 @@ impl CSide {
     }
 }
 
+/// A handle is freed only once what it kept of its resolves has been said
+/// through its debug function, while the handle was whole
+/// (`curl_easy_cleanup`); were the `Easy` to say it as it drops, the debug
+/// adapter would reach a handle half gone.
+impl Drop for ShimEasy {
+    fn drop(&mut self) {
+        if let Home::Detached(easy) = self.home.get_mut() {
+            assert!(
+                !easy.holds_resolves(),
+                "a handle freed without letting go of its resolves"
+            );
+        }
+    }
+}
+
 impl ShimEasy {
     /// A handle, in memory of its own, for `easy` with the C-side
     /// settings `c`: its adapters are made for it (`adapt`), whatever
@@ -847,6 +862,9 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
             return;
         }
     }
+    // What it keeps of its resolves goes first, said through the debug
+    // function while the handle is whole (`Curl_resolv_destroy_all`).
+    easy.release_resolves();
     // The jar is written as the handle goes (`Curl_flush_cookies`); one
     // that cannot be fails nothing, as in C, which says so only in the
     // trace, of which there is none outside a transfer here.
@@ -1009,6 +1027,10 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
     let Ok(_entry) = easy.enter(EasyCall::Reset) else {
         return;
     };
+    // What it keeps of its resolves goes first, said through the debug
+    // function it has until now (`Curl_req_hard_reset`, before
+    // `Curl_freeset`).
+    easy.release_resolves();
     let me = NonNull::from(easy);
     let (ccb, set) = (CCallbacks::new(), CSettings::new());
     easy.ccb.set(ccb);
@@ -1210,6 +1232,30 @@ impl ShimEasy {
     /// The multi `curl_easy_perform` runs the handle in, once made.
     pub(crate) fn private_multi(&self) -> Option<NonNull<ShimMulti>> {
         self.private.get()
+    }
+
+    /// Let go of what the handle keeps of its resolves, each said through
+    /// its debug function (`Curl_resolv_destroy_all`). On its own, the
+    /// `Easy` is out of the handle meanwhile, so that the function may call
+    /// the handle, which finds it as one being added; in a multi, the
+    /// function is called as one of its transfer's.
+    pub(crate) fn release_resolves(&self) {
+        if matches!(*self.home.borrow(), Home::Detached(_)) {
+            let mut easy = self.detach();
+            easy.release_resolves();
+            self.return_home(easy);
+            return;
+        }
+        let released = self.with_easy(|e| match e {
+            EasyRef::Easy(mut easy) => easy.release_resolves(),
+            // Inside a callback its transfer still runs: they go as its
+            // next request starts, or with the handle.
+            EasyRef::Frame(..) => {}
+        });
+        match released {
+            // A handle being added keeps none.
+            Ok(()) | Err(Recursive) => {}
+        }
     }
 
     /// The transfer the multi gave back.

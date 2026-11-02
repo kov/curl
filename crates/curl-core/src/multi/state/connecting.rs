@@ -1909,7 +1909,8 @@ pub(super) fn up<H: Host>(
     }
     https::call_ended(c.https, cx, Ok(true));
     let route = c.lease.conn().dialing().expect("set up over the network");
-    names::connected(cx, crate::conn::chain::dns_filters(route, head));
+    let target = crate::conn::chain::resolves_target(route.route);
+    names::connected(cx, ConnRank::First, target, head.record);
     chain_connect_ended(cx, Ok(true));
     // Its TLS is up now, and its socket was when it connected
     // (`Curl_pgrsTime` for `TIMER_APPCONNECT` as the SSL filter connects),

@@ -1233,7 +1233,7 @@ Its first steps are milestone 6's design-review changes.
     the pollset has no step to say them in: the HTTP proxy tunnel's `[H1-PROXY-1]` state lines,
     TLS's `[SSL-1]` detail lines beyond those the first chain says, `adjust_pollset`'s, and
     `[TIMER] [SHUTDOWN]`, as no timer stands for the shutdown of a data connection.
-85. **Budgets.** **Done.** 768 and 2120 stay as tripwires; `held` is the budget, and DESIGN.md says a size
+85. **Budgets.** **Done.** 768 and 2128 stay as tripwires; `held` is the budget, and DESIGN.md says a size
     trade is justified only against a budget derived from C. The socket rule allows sockets a
     protocol owns by nature (FTP's listener, TFTP's datagrams).
 86. **Types a budget cost.** **Done.** The handshake moves into `ConnectMachine`; each timer holds its own

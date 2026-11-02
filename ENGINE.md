@@ -2611,6 +2611,19 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   first attempt whichever leads, as C's chain puts the name's DNS filter between the record's and
   the HTTPS connect filter. A race's second attempt asks no resolver
   of its own: before each drive it is given what the first's has found (`follow`).
+- **What C keeps of each resolve.** A resolve that does not answer at once (a library's, the
+  threaded resolver's, DoH's, and the record's ask in builds that cannot answer it) gets a number
+  from the multi (`ResolveCount` in `Caches`, C's `last_resolv_id`) and a record on the handle
+  (`Easy::asyncs`, C's `state.async`), naming the DNS filter it is for: the record's, a
+  connection's addresses', the SOCKS target's, or a blocking resolve. The records are for the
+  lines alone; the resolves themselves end as their answers come. A record goes where C's does:
+  as its filter connects (`destroy async` after that filter's `connected filter chain below`), at
+  once if the ask failed, as a blocking resolve's wait ends, or, still kept, as the next request
+  on the handle starts, as the handle is reset, or as it is dropped (`trace::of_lone`, through a
+  handler context reaching that handle alone, under its id in its multi if it is in one). The C
+  shim lets go of them before it frees a handle, while the handle is whole, and asserts as it
+  frees one that none is left. A transfer done tells each still kept it is not wanted, the newest
+  first (`shutdown async` after `multi_done`), as does a record found in the cache meanwhile.
 - **A name's HTTPS record.** `https.rs` starts a third probe of its own (`start_https`), named
   `_port._https.name` off port 443, before the name's addresses are asked for. Its answer, kept in
   the cache beside them, chooses the attempts' versions ahead of what is wanted, if it is about

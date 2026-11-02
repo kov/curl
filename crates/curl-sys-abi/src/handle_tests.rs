@@ -3046,6 +3046,97 @@ fn the_trace_goes_to_the_debug_function_or_the_stream() {
     close(stream);
 }
 
+/// A handle tracing DNS to `debug`, with `seen` its data, to a name the
+/// resolver library answers and a port that refuses.
+#[cfg(feature = "c-ares")]
+fn refused_tracing_dns(debug: DebugFn, seen: &mut Seen) -> *mut CURL {
+    let c = curl_easy_init();
+    pointer(
+        c,
+        ffi::CURLOPT_URL,
+        c"https://localhost:1/".as_ptr().cast_mut(),
+    );
+    let components = curl_core::components::Components::new().unwrap();
+    components.configure(b"dns");
+    // SAFETY: a live handle.
+    let easy = unsafe { crate::easy::handle(c) }.unwrap();
+    let set = easy.with_home(|e| match e {
+        crate::easy::HomeRef::Detached(e) => e.set_components(Some(components)),
+        _ => unreachable!("in no multi"),
+    });
+    assert!(set.is_ok());
+    long(c, ffi::CURLOPT_VERBOSE, 1);
+    function(c, ffi::CURLOPT_DEBUGFUNCTION, debug as *const ());
+    pointer(c, ffi::CURLOPT_DEBUGDATA, ptr::from_mut(seen));
+    c
+}
+
+/// The lines `seen` was told of resolves' records.
+#[cfg(feature = "c-ares")]
+fn asyncs_seen(seen: &Seen) -> Vec<&str> {
+    seen.texts
+        .iter()
+        .map(String::as_str)
+        .filter(|t| t.ends_with(" async\n"))
+        .collect()
+}
+
+/// Cleanup and reset tell the debug function of each resolve's record the
+/// handle still keeps, as C's `Curl_close` and `curl_easy_reset` do before
+/// they stop tracing: C's tool says `[DNS] [1] shutdown async` for
+/// `https://localhost:1/` as the transfer is done, and `[DNS] [1] destroy
+/// async` as the handle goes. A handle reset in its multi is told as that
+/// multi's transfer, which a debug function asking it for its response
+/// code finds.
+#[cfg(feature = "c-ares")]
+#[test]
+fn cleanup_and_reset_tell_the_debug_function_of_the_resolves_let_go() {
+    let (shut, destroyed) = ("[DNS] [1] shutdown async\n", "[DNS] [1] destroy async\n");
+    let mut seen = Seen::default();
+    let c = refused_tracing_dns(debug_count, &mut seen);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
+    assert_eq!(asyncs_seen(&seen), [shut]);
+    // SAFETY: a live handle, then not used again.
+    unsafe { curl_easy_cleanup(c) };
+    assert_eq!(asyncs_seen(&seen), [shut, destroyed]);
+
+    let mut seen = Seen::default();
+    let c = refused_tracing_dns(debug_count, &mut seen);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
+    // SAFETY: a live handle.
+    unsafe { crate::easy::curl_easy_reset(c) };
+    assert_eq!(asyncs_seen(&seen), [shut, destroyed]);
+    // SAFETY: a live handle, then not used again.
+    unsafe { curl_easy_cleanup(c) };
+    assert_eq!(asyncs_seen(&seen), [shut, destroyed], "nothing left");
+
+    let mut seen = Seen::default();
+    let c = refused_tracing_dns(debug_asking, &mut seen);
+    let multi = curl_multi_init();
+    // SAFETY: a live multi and handle, the handle reset while added and
+    // the transfer done, then both let go of.
+    unsafe {
+        assert_eq!(curl_multi_add_handle(multi, c), CURLM_OK);
+        let mut running = 1;
+        let mut rounds = 0;
+        while running > 0 {
+            assert_eq!(curl_multi_perform(multi, &raw mut running), CURLM_OK);
+            let waited = curl_multi_wait(multi, ptr::null_mut(), 0, 100, ptr::null_mut());
+            assert_eq!(waited, CURLM_OK);
+            rounds += 1;
+            assert!(rounds < 100, "the transfer never ends");
+        }
+        assert_eq!(asyncs_seen(&seen), [shut]);
+        crate::easy::curl_easy_reset(c);
+        assert_eq!(asyncs_seen(&seen), [shut, destroyed]);
+        assert_eq!(curl_multi_remove_handle(multi, c), CURLM_OK);
+        curl_easy_cleanup(c);
+        assert_eq!(curl_multi_cleanup(multi), CURLM_OK);
+    }
+}
+
 /// A debug function that, as it is told text, asks for the handle's
 /// response code: one called with the handle borrowed would fail it.
 unsafe extern "C" fn debug_asking(
@@ -6124,8 +6215,9 @@ fn a_handle_costs_no_more_than_cs() {
     // `held` is the budget, from C. `made` is a tripwire inside it, to
     // raise with a reason when a field earns its place (DESIGN.md): RTSP's
     // state on the handle and its interleave function on the shim are made
-    // when first set, a pointer each until then.
-    assert!(made_bytes <= 2_120, "a new handle holds {made_bytes} bytes");
+    // when first set, a pointer each until then, as is the list of its
+    // resolves' records (C's `state.async`).
+    assert!(made_bytes <= 2_128, "a new handle holds {made_bytes} bytes");
     assert!(held <= 3_081, "an added handle holds {held} bytes");
     // The `Easy`, the shim's handle, the write adapter and its count, the
     // URL; then the slot, and the multi's tables as they grow.

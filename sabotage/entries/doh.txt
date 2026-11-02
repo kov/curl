@@ -134,9 +134,8 @@ witness: curl-core multi::doh_tests::a_name_resolves_over_doh
 file: crates/curl-core/src/easy.rs
 witness: curl-core multi::doh_tests::a_probes_lines_say_whose_they_are
 --- old
-            doing: Some(crate::components::Component::Doh),
+        probe.doing = Some(crate::components::Component::Doh);
 --- new
-            doing: None,
 
 === the failure over DoH is said twice
 file: crates/curl-core/src/multi/state/connecting.rs

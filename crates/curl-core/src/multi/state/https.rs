@@ -16,8 +16,10 @@
 //! chooses by it and arms no timer.
 
 use super::RecordLookup;
+use super::names;
 use super::{Connecting, SetupLend, StepCx};
 use crate::components::Component;
+use crate::conn::asyncs::Holder;
 use crate::conn::{ConnectMachine, Dial, NetRoute, Reply};
 use crate::conn::{HttpsLookup, address};
 use crate::doh::RecordAnswer;
@@ -29,6 +31,7 @@ use crate::proto::http::Negotiation;
 use crate::share::Kind;
 use crate::text::Text;
 use crate::trace;
+use curl_alloc::OutOfMemory;
 use curl_alloc::TryArc;
 
 /// The HTTPS connect filter heading a setup.
@@ -541,6 +544,7 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
         // asked and never answers: it resolves only addresses
         // (`Curl_async_getaddrinfo`).
         let mut unanswered = false;
+        let mut refused = false;
         let lookup = if cx.easy().options().doh.url.is_some() {
             match crate::multi::doh::start_https(cx, name, peer.port()) {
                 Ok(lookup) => Some(RecordLookup::Doh(lookup)),
@@ -553,13 +557,25 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
                     return Err(ErrorKind::OutOfMemory);
                 }
                 // Refused settings fail the addresses' resolve as well.
-                Some(Err(_)) => None,
+                Some(Err(_)) => {
+                    refused = true;
+                    None
+                }
                 None => {
                     unanswered = cfg!(feature = "threaded-resolver");
                     None
                 }
             }
         };
+        // Its record is made as it is asked for (`hostip_async_new`), and
+        // goes at once if the asking failed; the resolver C's threaded
+        // build asks, or the one a library-less build stands in for, keeps
+        // it as a library's resolve does.
+        let oom = |OutOfMemory| ErrorKind::OutOfMemory;
+        names::async_kept(cx, Holder::Record).map_err(oom)?;
+        if refused {
+            names::async_gone(cx, Holder::Record);
+        }
         let mut lookup = lookup;
         look_at_library(route, &mut lookup, cx)?;
         // The resolver answers later (`CURLE_AGAIN`).
@@ -649,6 +665,7 @@ fn found_since<H: Host>(
 ) {
     let name = route.target().name();
     trace::info_with(cx, &[b"Hostname '", name, b"' was found in DNS cache"]);
+    names::async_shut(cx, Holder::Record);
     say_record(route, kept, cx);
 }
 

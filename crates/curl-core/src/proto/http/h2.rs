@@ -543,10 +543,11 @@ impl Request {
         lease
             .get()
             .put_h2(try_box(conn).map_err(|_| ErrorKind::OutOfMemory)?);
-        // The request went whole in HTTP/1.1.
+        // The request went whole in HTTP/1.1, but its stream holds no
+        // body's end: an error response ending it resets it, as C's
+        // fresh stream has no `body_eos`.
         self.wire = Wire::H2(H2Stream {
             id: stream,
-            body_eos: true,
             ..H2Stream::default()
         });
         self.version = SentIn::Http2;
@@ -1827,9 +1828,10 @@ impl Request {
         };
         request.head = Some(HeadParser::new(exchange));
         request.version = SentIn::Http2;
+        // No body's end, as C's fresh stream has none: an error
+        // response ending it resets it.
         request.wire = Wire::H2(H2Stream {
             id: Some(promised),
-            body_eos: true,
             ..H2Stream::default()
         });
         request.stage = Stage::Head;

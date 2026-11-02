@@ -811,3 +811,17 @@ features: test-util debug-hooks
         }
 --- new
         let _ = id;
+
+=== an upgraded stream is made with its body ended
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core proto::http::tests::h2::an_upgraded_stream_ended_by_an_error_is_reset
+features: test-util debug-hooks
+--- old
+        self.wire = Wire::H2(H2Stream {
+            id: stream,
+            ..H2Stream::default()
+--- new
+        self.wire = Wire::H2(H2Stream {
+            id: stream,
+            body_eos: true,
+            ..H2Stream::default()

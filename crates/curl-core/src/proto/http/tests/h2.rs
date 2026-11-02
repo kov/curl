@@ -447,6 +447,36 @@ fn a_101_switches_an_upgrade_to_http2() {
     assert_eq!(ran.easy.report().response_code(), Some(200));
 }
 
+/// An error response that ends the upgraded stream resets it, as C's
+/// build does: the stream holds no body's end (`on_stream_frame`'s
+/// END_STREAM with `body_eos` unset).
+#[test]
+fn an_upgraded_stream_ended_by_an_error_is_reset() {
+    let reply: &[u8] = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: h2c\r\n\r\n\
+                         S\nH 1 1\n:status: 404\n\n";
+    let talk = Conversation::new(reply, false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"http/2");
+    e.set_components(Some(components));
+    let ran = get_with(&mut m, e, "/u", talk.clone(), |o| {
+        o.http.version = HttpVersion::Http2;
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    assert_eq!(ran.easy.report().response_code(), Some(404));
+    let text = ran.seen.text();
+    assert!(
+        text.iter().any(|l| l
+            == "[HTTP/2] [1] EOS frame with unfinished upload and HTTP status 404, abort \
+                upload by RST\n"),
+        "{text:?}"
+    );
+    let sent = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(sent.contains("R 1 5\n"), "{sent}");
+}
+
 /// A body of unknown size asks for a 100 over HTTP/1.1, but not with an
 /// upgrade (`addexpect`): it goes chunked, unannounced.
 #[test]
@@ -2498,6 +2528,22 @@ fn a_pushed_response_becomes_a_transfer_of_its_own() {
     let url = format!("http://127.0.0.1:{PORT}/pushed");
     assert_eq!(ev.offers[0].1.as_deref(), Some(url.as_bytes()));
     assert_eq!(ev.seen.body(), b"abc");
+}
+
+/// A pushed response that is an error, ending its stream, resets it, as
+/// C's build does against a server pushing a 404: the stream holds no
+/// body's end (`on_stream_frame`'s END_STREAM with `body_eos` unset).
+#[test]
+fn a_pushed_error_ending_its_stream_resets_it() {
+    let mut ev = Pushes::answering(Answer::Take);
+    let reply = format!(
+        "S\nH 1 0\n:status: 200\n\nPP 1 2\n:method: GET\n:scheme: http\n\
+         :authority: 127.0.0.1:{PORT}\n:path: /pushed\n\nH 2 1\n:status: 404\n\n\
+         D 1 2 1\nok"
+    );
+    let (done, sent) = pushed_get(reply.as_bytes(), &mut ev);
+    assert_eq!(done.len(), 2, "{done:?}\n{sent}");
+    assert!(sent.contains("R 2 5\n"), "{sent}");
 }
 
 /// A push on a share's connection (`CURL_LOCK_DATA_CONNECT`) is taken as

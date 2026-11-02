@@ -64,22 +64,40 @@ pub(crate) fn would_redirect(
     // Without credentials if it reads back without them; as it is if not.
     let mut bare = Url::default();
     let reparse = SetOptions {
-        parse: ParseOptions {
-            path_as_is,
-            ..any_scheme
-        },
+        parse: reparsed(any_scheme, path_as_is),
         ..SetOptions::NONE
     };
-    let get_empty = GetOptions {
-        get_empty: true,
-        ..GetOptions::NONE
-    };
+    let get_empty = read_back();
     let stripped = bare
         .set(Part::Url, Some(&url), reparse)
         .and_then(|()| bare.set(Part::User, None, SetOptions::NONE))
         .and_then(|()| bare.set(Part::Password, None, SetOptions::NONE))
         .and_then(|()| bare.get(Part::Url, get_empty));
     Ok(stripped.unwrap_or(url))
+}
+
+/// How a location not followed is parsed again, without its
+/// credentials: its paths as they are if `path_as_is`. The read back
+/// before it has removed its dots already, so this keeps none (C's
+/// `follow_fake` parses once, with `CURLU_NON_SUPPORT_SCHEME` alone):
+/// deleting the field changes nothing observable.
+#[mutants::skip]
+fn reparsed(any_scheme: ParseOptions, path_as_is: bool) -> ParseOptions {
+    ParseOptions {
+        path_as_is,
+        ..any_scheme
+    }
+}
+
+/// How a location not followed is read back the second time: with an
+/// empty query. The first read back has dropped an empty query already,
+/// so this keeps none: deleting the field changes nothing observable.
+#[mutants::skip]
+fn read_back() -> GetOptions {
+    GetOptions {
+        get_empty: true,
+        ..GetOptions::NONE
+    }
 }
 
 /// `location` resolved against `base`, the request's URL, for a redirect

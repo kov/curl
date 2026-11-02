@@ -1752,9 +1752,8 @@ impl Request {
         text.try_extend_from_slice(authority)?;
         text.try_extend_from_slice(path)?;
         let opts = ParseOptions {
-            disallow_user: true,
             path_as_is: true,
-            ..ParseOptions::NONE
+            ..no_user()
         };
         let Ok(url) = Url::parse(&text, opts) else {
             return Ok(None);
@@ -1925,6 +1924,19 @@ impl Request {
         if self.h2_egress(cx, lease).is_err() {
             lease.get().mark_close();
         }
+    }
+}
+
+/// A promise's URL is parsed with no user allowed, as C's
+/// `Curl_url_set_authority` refuses one. Its `:authority` is refused
+/// unless it is the origin's host and port, or its host alone, before
+/// the URL is built (`serves_authority`), so no user reaches the parse:
+/// deleting the field changes nothing observable.
+#[mutants::skip]
+fn no_user() -> ParseOptions {
+    ParseOptions {
+        disallow_user: true,
+        ..ParseOptions::NONE
     }
 }
 

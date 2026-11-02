@@ -85,6 +85,7 @@ dependencies = [
  "curl-alloc",
  "curl-core",
  "curl-os",
+ "mutants",
  "proptest",
 ]
 
@@ -216,6 +217,7 @@ dependencies = [
  "curl-psl",
  "curl-zlib",
  "curl-zstd",
+ "mutants",
  "proptest",
 ]
 
@@ -273,6 +275,12 @@ name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+
+[[package]]
+name = "mutants"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "add0ac067452ff1aca8c5002111bd6b1c895baee6e45fcbc44e0193aea17be56"
 
 [[package]]
 name = "num-traits"

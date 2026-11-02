@@ -44,6 +44,8 @@ curl-ngtcp2 = { path = "../curl-ngtcp2" }
 curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }
 curl-zstd = { path = "../curl-zstd" }
+# `#[mutants::skip]`, for cargo-mutants: an attribute and nothing else.
+mutants = "0.0.4"
 
 [dev-dependencies]
 # The tests build what the core reports.

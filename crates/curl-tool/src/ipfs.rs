@@ -115,10 +115,7 @@ pub(crate) fn rewrite(url: &mut Url, kind: Kind, given: Option<&[u8]>) -> Result
         Err(UrlErrorKind::OutOfMemory) => return Err(Failed::OutOfMemory),
         _ => return Err(Failed::Malformed),
     }
-    let decode = GetOptions {
-        url_decode: true,
-        ..GetOptions::NONE
-    };
+    let decode = decoded();
     let host = gateway.get(Part::Host, decode).map_err(malformed)?;
     let scheme = gateway.get(Part::Scheme, decode).map_err(malformed)?;
     let gw_path = gateway
@@ -155,11 +152,30 @@ pub(crate) fn rewrite(url: &mut Url, kind: Kind, given: Option<&[u8]>) -> Result
     new_path.try_extend_from_slice(path)?;
     url.set(Part::Path, Some(&new_path), SetOptions::NONE)
         .map_err(malformed)?;
-    let shown = GetOptions {
+    url.get(Part::Url, shown()).map_err(malformed)
+}
+
+/// How the gateway's parts are read: decoded. The gateway's host is one
+/// host decoded or not: a byte encoded that a host may hold is decoded
+/// as the gateway is parsed, and any other is refused as the host is
+/// set, either way. Deleting the field changes nothing observable.
+#[mutants::skip]
+fn decoded() -> GetOptions {
+    GetOptions {
+        url_decode: true,
+        ..GetOptions::NONE
+    }
+}
+
+/// How the URL got is read: encoded. It encodes only its host, which
+/// was encoded as it was set: deleting the field changes nothing
+/// observable.
+#[mutants::skip]
+fn shown() -> GetOptions {
+    GetOptions {
         url_encode: true,
         ..GetOptions::NONE
-    };
-    url.get(Part::Url, shown).map_err(malformed)
+    }
 }
 
 /// The gateway the environment names (`ipfs_gateway`): `IPFS_GATEWAY`

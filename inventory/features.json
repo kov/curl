@@ -1,5 +1,5 @@
 {
- "c-commit": "fbbdeb1ae566d711fd496c879ba41e51c40c17c1",
+ "c-commit": "c5ae8137e4405788a0de934ed34bb4baf832e6aa",
  "data": {
   "backends": {
    "all": [
@@ -8159,7 +8159,7 @@
     "NTLM_WB"
    ],
    "table-missing-from-docs": [],
-   "test-feature-blocks": 1056,
+   "test-feature-blocks": 1067,
    "test-feature-vocabulary": [
     {
      "name": "--libcurl",
@@ -8241,7 +8241,7 @@
       ],
       "regex": "HSTS"
      },
-     "tests": 19
+     "tests": 20
     },
     {
      "name": "HTTPS-proxy",
@@ -8360,7 +8360,7 @@
       ],
       "regex": "PSL"
      },
-     "tests": 8
+     "tests": 9
     },
     {
      "name": "SSL",
@@ -8541,7 +8541,7 @@
      "origin": {
       "kind": "src/curlinfo.c"
      },
-     "tests": 67
+     "tests": 69
     },
     {
      "name": "crypto",
@@ -8704,7 +8704,15 @@
      "origin": {
       "kind": "protocol-as-feature"
      },
-     "tests": 1
+     "tests": 2
+    },
+    {
+     "name": "libssh",
+     "origin": {
+      "kind": "runtests.pl-assignment",
+      "line": 632
+     },
+     "tests": 5
     },
     {
      "name": "libssh2",
@@ -8756,7 +8764,7 @@
      "origin": {
       "kind": "protocol-as-feature"
      },
-     "tests": 27
+     "tests": 29
     },
     {
      "name": "mqtts",
@@ -8799,7 +8807,7 @@
      "origin": {
       "kind": "src/curlinfo.c"
      },
-     "tests": 272
+     "tests": 274
     },
     {
      "name": "python",
@@ -8814,7 +8822,7 @@
      "origin": {
       "kind": "protocol-as-feature"
      },
-     "tests": 1
+     "tests": 2
     },
     {
      "name": "rustls",
@@ -8871,14 +8879,14 @@
      "origin": {
       "kind": "protocol-as-feature"
      },
-     "tests": 6
+     "tests": 7
     },
     {
      "name": "tftp",
      "origin": {
       "kind": "protocol-as-feature"
      },
-     "tests": 1
+     "tests": 2
     },
     {
      "name": "threaded-resolver",
@@ -8960,7 +8968,7 @@
      "origin": {
       "kind": "protocol-as-feature"
      },
-     "tests": 29
+     "tests": 30
     },
     {
      "name": "xattr",
@@ -8983,7 +8991,7 @@
      "tests": 2
     }
    ],
-   "test-files-with-features": 1050,
+   "test-files-with-features": 1061,
    "tool-added-features": [
     {
      "bit": null,

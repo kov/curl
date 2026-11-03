@@ -4625,8 +4625,9 @@ peer gets a protocol error, not an out-of-memory one.
   that what is refused is the library's.
 - Budgets count allocations on the test's thread (`curl_alloc::track::count_allocations`). They
   are set as each scenario lands, at what this design calls for: the first, a plain GET over
-  `FakeNet`, is fixed beside the test (`GET_BUDGET`) at 48, some of these taking more than one: the multi and its clock, shared
-  with the QUIC connections it makes; the easy's URL, user
+  `FakeNet`, is fixed beside the test (`GET_BUDGET`) at 48, some of these taking more than one: the multi, and the test's clock,
+  shared with the QUIC connections the multi makes (a build without `test-util` reads the system
+  clock and holds none); the easy's URL, user
   agent and handlers; the transfer's place in the multi and its slot, boxed so the table's
   empty rows cost little, as C's hold pointers; the URL as fetched and its parts; the URL read
   back once parsed, as C reads it back; the target grown by its query; the protocol's state;

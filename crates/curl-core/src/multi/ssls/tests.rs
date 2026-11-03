@@ -170,3 +170,18 @@ fn an_import_and_an_export_trace_as_c_does() {
         ]
     );
 }
+
+/// Sessions marked going out are going out on the thread that marked
+/// them and no other, as C's `locking_thread` says, until the mark goes.
+#[test]
+fn sessions_go_out_only_on_the_thread_that_marks_them() {
+    let out = SessionsOut::new().unwrap();
+    assert!(!out.here());
+    out.set(true);
+    assert!(out.here());
+    let other = out.clone();
+    let there = std::thread::spawn(move || other.here()).join().unwrap();
+    assert!(!there, "seen as going out on another thread");
+    out.set(false);
+    assert!(!out.here());
+}

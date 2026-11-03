@@ -295,3 +295,11 @@ witness: curl-sys-abi ssls::tests::what_uses_the_cache_is_refused_while_it_goes_
                 .is_some_and(SessionsOut::here),
 --- new
             None => false,
+
+=== every thread is taken to be the one whose export marked the sessions
+file: crates/curl-core/src/multi/ssls.rs
+witness: curl-core multi::ssls::tests::sessions_go_out_only_on_the_thread_that_marks_them
+--- old
+        ThreadMark(BYTE.with(|b| std::ptr::from_ref(b).addr()))
+--- new
+        ThreadMark(BYTE.with(|_| 0))

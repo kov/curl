@@ -11,7 +11,6 @@
 
 use std::fmt;
 use std::sync::Mutex;
-use std::thread::{self, ThreadId};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
@@ -125,7 +124,25 @@ fn import(
 /// would want the cache meanwhile, as the shim's gate does: each a key to
 /// the one fact, none a copy of it.
 #[derive(Clone)]
-pub struct SessionsOut(TryArc<Mutex<Option<ThreadId>>>);
+pub struct SessionsOut(TryArc<Mutex<Option<ThreadMark>>>);
+
+/// A thread, told apart from every other one alive: the address of a byte
+/// of its own. Unlike `thread::current()`, it takes nothing to make: on a
+/// thread Rust did not start, as an application's are, that allocates a
+/// handle kept to the thread's end, which C's leak checks report.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ThreadMark(usize);
+
+impl ThreadMark {
+    fn here() -> ThreadMark {
+        thread_local! {
+            // Const and with nothing to drop, so the thread's own storage
+            // holds it, made and let go of with the thread.
+            static BYTE: u8 = const { 0 };
+        }
+        ThreadMark(BYTE.with(|b| std::ptr::from_ref(b).addr()))
+    }
+}
 
 impl SessionsOut {
     /// Not going out.
@@ -136,15 +153,15 @@ impl SessionsOut {
     /// Whether they are going out on this thread
     /// (`Curl_ssl_scache_is_locked_by_current_thread`).
     pub fn here(&self) -> bool {
-        *self.locked() == Some(thread::current().id())
+        *self.locked() == Some(ThreadMark::here())
     }
 
     /// They go out from this thread, or no longer go out.
     fn set(&self, going: bool) {
-        *self.locked() = going.then(|| thread::current().id());
+        *self.locked() = going.then(ThreadMark::here);
     }
 
-    fn locked(&self) -> std::sync::MutexGuard<'_, Option<ThreadId>> {
+    fn locked(&self) -> std::sync::MutexGuard<'_, Option<ThreadMark>> {
         // Nothing panics holding it: a panic aborts the process.
         self.0.lock().expect("no panic holds its lock")
     }

@@ -214,6 +214,16 @@ mod tests {
     use super::*;
     use crate::easy::{curl_easy_cleanup, curl_easy_init};
 
+    /// A C string is the text and its zero byte, an empty text's too.
+    #[test]
+    fn a_c_string_ends_in_its_zero_byte() {
+        for text in [&b""[..], b"example.test:443"] {
+            let made = c_string(text).unwrap();
+            assert_eq!(made[..text.len()], *text);
+            assert_eq!(made[text.len()..], [0]);
+        }
+    }
+
     /// Without a handle or with nothing to import or export with, each
     /// says so, as test 1678 asks.
     #[test]

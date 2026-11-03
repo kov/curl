@@ -569,7 +569,7 @@ pub(super) fn orphan<H: Host>(slots: &Slots<H>, id: TransferId) -> bool {
 mod tests {
     use super::*;
 
-    fn polled(queries: [Query; 2]) -> Polled {
+    fn lookup(queries: [Query; 2]) -> Lookup {
         let shared = TryArc::try_new(Mutex::new(State {
             gone: false,
             queries,
@@ -577,7 +577,35 @@ mod tests {
             released: Released::new().unwrap(),
         }))
         .unwrap();
-        Lookup(shared).poll()
+        Lookup(shared)
+    }
+
+    fn polled(queries: [Query; 2]) -> Polled {
+        lookup(queries).poll()
+    }
+
+    /// What has come while a probe runs: the addresses of the queries that
+    /// ended, and which have, a query never asked counted as answered.
+    #[test]
+    fn a_lookup_going_on_says_which_queries_answered() {
+        let waiting = || Query::Waiting(Vec::new());
+        let ip = |a: &str| a.parse::<IpAddr>().unwrap();
+        for (queries, v6, v4, addrs) in [
+            ([waiting(), waiting()], false, false, vec![]),
+            ([found("::1"), waiting()], true, false, vec![ip("::1")]),
+            (
+                [waiting(), found("127.0.0.1")],
+                false,
+                true,
+                vec![ip("127.0.0.1")],
+            ),
+            ([Query::Unasked, waiting()], true, false, vec![]),
+            ([waiting(), Query::Unasked], false, true, vec![]),
+        ] {
+            let part = lookup(queries).partial().unwrap();
+            assert_eq!((part.v6_answered, part.v4_answered), (v6, v4), "{part:?}");
+            assert_eq!(part.addrs, addrs);
+        }
     }
 
     fn found(a: &str) -> Query {

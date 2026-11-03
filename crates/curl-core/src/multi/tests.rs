@@ -809,6 +809,81 @@ fn callbacks_reach_the_multi_through_their_contexts() {
     assert_eq!((limits.max_host, limits.max_total), (n(7), n(8)));
 }
 
+/// Sets a transfer's URL from the timer and from a notification, as
+/// `curl_easy_setopt(CURLOPT_URL)` does from them, and has it reported,
+/// then forgets it, as `CURLOPT_CURLU` does; and counts the owners the
+/// timer reaches.
+#[derive(Default)]
+struct ShowsUrl {
+    target: Option<TransferId>,
+    /// Where, whether the URL set was reported, and whether any was once
+    /// forgotten.
+    seen: Vec<(&'static str, bool, bool)>,
+    owners: Vec<usize>,
+}
+
+impl MultiEvents<NoHost> for ShowsUrl {
+    fn timer(&mut self, cx: &mut EventCx<'_, NoHost>, _: TimerChange) -> Result<(), Abort> {
+        let Some(id) = self.target else { return Ok(()) };
+        self.owners.push(cx.owners().count());
+        cx.options_mut(id)
+            .unwrap()
+            .set_url(Some(b"null://timer"))
+            .unwrap();
+        cx.show_set_url(id);
+        let shown = cx.info(id).unwrap().shows_set_url();
+        cx.forget_url(id);
+        let report = cx.info(id).unwrap();
+        let kept = report.shows_set_url() || report.url().is_some();
+        self.seen.push(("timer", shown, kept));
+        Ok(())
+    }
+
+    fn wants_timer(&self) -> bool {
+        true
+    }
+
+    fn notify(&mut self, cx: &mut NotifyCx<'_, NoHost>, n: Notification) {
+        let Notification::EasyDone(id) = n else {
+            return;
+        };
+        cx.options_mut(id)
+            .unwrap()
+            .set_url(Some(b"null://notify"))
+            .unwrap();
+        cx.show_set_url(id);
+        let shown = cx.info(id).unwrap().shows_set_url();
+        cx.forget_url(id);
+        let report = cx.info(id).unwrap();
+        let kept = report.shows_set_url() || report.url().is_some();
+        self.seen.push(("notify", shown, kept));
+    }
+}
+
+/// A multi's callbacks set the URL a transfer reports, and take it away,
+/// running or done; the timer reaches every transfer's owner.
+#[test]
+fn callbacks_show_and_forget_a_transfer_s_url() {
+    let (mut m, _clock) = multi();
+    m.set_notify(NotifyKind::EasyDone, true);
+    let mut ev = ShowsUrl::default();
+    let first = m.add(Box::new(stall_within(5000)), (), &mut ev).unwrap();
+    m.perform(&mut ev).unwrap();
+    assert!(m.easy(first).unwrap().report().url().is_some(), "started");
+    ev.target = Some(first);
+    // The timer hears of the add.
+    m.add(Box::new(easy("null://b")), (), &mut ev).unwrap();
+    ev.target = None;
+    m.perform(&mut ev).unwrap();
+    assert_eq!(
+        (&ev.owners[..], &ev.seen[..]),
+        (
+            &[2][..],
+            &[("timer", true, false), ("notify", true, false)][..]
+        )
+    );
+}
+
 fn multi_with_waker() -> (Multi, ManualClock, TryArc<Waker>) {
     let clock = ManualClock::new().unwrap();
     let waker = TryArc::try_new(Waker::new().unwrap()).unwrap();

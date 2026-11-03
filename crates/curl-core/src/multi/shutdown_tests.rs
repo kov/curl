@@ -966,27 +966,45 @@ fn work_for_no_transfer_is_said_only_on_the_internal_trace() {
     );
 }
 
+/// What a transfer's debug handler reached as it heard one of the socket
+/// callback's lines, outside the transfer's step.
+#[derive(Clone, Copy, Debug)]
+struct Reach {
+    /// Its options, to change.
+    options: bool,
+    /// Its URL, as its options give it.
+    url: bool,
+    /// Its TLS library's objects.
+    native: bool,
+    /// It could pause it.
+    paused: bool,
+}
+
 /// What a transfer's debug handler reaches as it hears the socket
-/// callback's lines, outside the transfer's step: its options, its TLS
-/// library's objects, and whether it could pause it.
+/// callback's lines.
 #[derive(Clone, Default)]
-struct Reached(Arc<Mutex<Vec<(bool, bool, bool)>>>);
+struct Reached(Arc<Mutex<Vec<Reach>>>);
 
 impl crate::handler::DebugHandler for Reached {
     fn debug(&self, cx: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
         if kind == crate::handler::DebugKind::Text && data.starts_with(b"socket cb:") {
             let me = cx.me();
-            let options = cx.options_mut(me).is_some();
-            let native = cx.tls_native(me).is_some();
-            let paused = cx.pause(me, crate::deliver::PauseRequest::SEND).is_ok();
-            self.0.lock().unwrap().push((options, native, paused));
+            let reach = Reach {
+                options: cx.options_mut(me).is_some(),
+                url: cx.options(me).and_then(crate::options::Options::url)
+                    == Some(&b"https://127.0.0.1:4/"[..]),
+                native: cx.tls_native(me).is_some(),
+                paused: cx.pause(me, crate::deliver::PauseRequest::SEND).is_ok(),
+            };
+            self.0.lock().unwrap().push(reach);
         }
     }
 }
 
 /// A transfer's handlers, called as the event drive's socket callback
-/// traces on it, reach its options and, once its handshake is done, its
-/// TLS library's objects, but cannot pause it, as only its step may.
+/// traces on it, reach its options, to change or to read, and, once its
+/// handshake is done, its TLS library's objects, but cannot pause it, as
+/// only its step may.
 #[test]
 fn a_handler_hearing_the_socket_callback_reaches_its_transfer() {
     // Answered late, so it waits to read with its session up.
@@ -1002,12 +1020,10 @@ fn a_handler_hearing_the_socket_callback_reaches_its_transfer() {
     let reached = reached.0.lock().unwrap().clone();
     assert!(!reached.is_empty());
     assert!(
-        reached
-            .iter()
-            .all(|&(options, _, paused)| options && !paused),
+        reached.iter().all(|r| r.options && r.url && !r.paused),
         "{reached:?}"
     );
-    assert!(reached.iter().any(|&(_, native, _)| native), "{reached:?}");
+    assert!(reached.iter().any(|r| r.native), "{reached:?}");
 }
 
 /// A multi with no internal trace says nothing of a shutdown, its

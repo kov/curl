@@ -447,6 +447,7 @@ impl<H: Host> StepCx<'_, H> {
                 if let super::super::Owner::App(owner) = owner {
                     rest.events.unpushed(refused.easy, owner);
                 }
+                trace::info(self, format_args!("failed to add handle to multi"));
                 return Offered::Denied;
             }
         };
@@ -468,10 +469,14 @@ impl<H: Host> StepCx<'_, H> {
             // One that could not begin is taken out as the step ends, as
             // it was, its handle closed (`discard_newhandle`), and its
             // stream is refused.
-            Err(_) => {
+            Err(kind) => {
                 let slot = self.rest.tell.slots.get_mut(id).expect("just put back");
                 slot.discard = true;
                 *self.rest.discards = true;
+                // Said by the transfer that heard the promise
+                // (`http2_data_setup`'s failure).
+                let code = trace::Code(Err(kind));
+                trace::fail(self, kind, format_args!("error setting up stream: {code}"));
                 Offered::Denied
             }
         }

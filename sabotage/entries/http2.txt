@@ -833,3 +833,20 @@ witness: curl-core a_push_that_cannot_start_leaves_nothing_running
             match after.routed.try_reserve(1) {
 --- new
             match Ok::<(), ()>(()) {
+
+=== a push refused as it is added is given back without a word
+file: crates/curl-core/src/multi/state/cx.rs
+witness: curl-core a_push_that_cannot_start_leaves_nothing_running
+features: test-util debug-hooks
+--- old
+                trace::info(self, format_args!("failed to add handle to multi"));
+--- new
+
+=== a push whose stream cannot be set up is given back without a word
+file: crates/curl-core/src/multi/state/cx.rs
+witness: curl-core a_push_that_cannot_start_leaves_nothing_running
+features: test-util debug-hooks
+--- old
+                trace::fail(self, kind, format_args!("error setting up stream: {code}"));
+--- new
+                let _ = code;

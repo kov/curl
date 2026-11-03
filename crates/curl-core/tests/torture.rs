@@ -1419,6 +1419,11 @@ struct PushRun {
     cancels: usize,
     /// The transfers the last pass left running.
     running: u32,
+    /// The lines C says of a push that could not be added
+    /// (`Curl_multi_add_perform`) and of one whose stream could not be set
+    /// up (`http2_data_setup`) were traced.
+    said_unadded: bool,
+    said_unset: bool,
 }
 
 /// An HTTP/2 GET whose response promises a push the application takes,
@@ -1464,6 +1469,9 @@ fn push_scenario() -> Result<PushRun, OutOfMemory> {
     o.limits.total = TimeLimit::from_millis(10_000);
     o.http.version = curl_core::options::HttpVersion::Http2Prior;
     o.callbacks.write = Some(Handler::write(Taker(ev.took.clone()))?);
+    let traced = TryArc::try_new(Traced::default())?;
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(Tracer(traced.clone()))?);
     let id = match m.add(try_box(easy)?, (), &mut ev) {
         Ok(id) => id,
         Err(AddError {
@@ -1481,6 +1489,8 @@ fn push_scenario() -> Result<PushRun, OutOfMemory> {
         body_at_unpushed: None,
         cancels: 0,
         running: u32::MAX,
+        said_unadded: false,
+        said_unset: false,
     };
     for _ in 0..20 {
         run.running = m.perform(&mut ev).expect("a pass allocates nothing");
@@ -1496,6 +1506,14 @@ fn push_scenario() -> Result<PushRun, OutOfMemory> {
     run.accepted = ev.accepted;
     run.unpushed = ev.unpushed;
     run.body_at_unpushed = ev.body_at_unpushed;
+    let said = |needle: &[u8]| {
+        track::untracked(|| {
+            let text = traced.0.lock().unwrap();
+            text.windows(needle.len()).any(|w| w == needle)
+        })
+    };
+    run.said_unadded = said(b"failed to add handle to multi\n");
+    run.said_unset = said(b"error setting up stream: 27\n");
     run.cancels = track::untracked(|| {
         String::from_utf8(talk.received())
             .expect("the fake's frames are text")
@@ -1525,6 +1543,7 @@ fn a_push_that_cannot_start_leaves_nothing_running() {
     let mut limit = 0;
     let mut discarded = 0;
     let mut stranded_by_read = 0;
+    let mut unadded = 0;
     loop {
         let live = track::live_tracked();
         let (outcome, refused) = track::fail_once_after(limit, push_scenario);
@@ -1553,7 +1572,19 @@ fn a_push_that_cannot_start_leaves_nothing_running() {
             let run = outcome.expect("nothing refused");
             assert_eq!((run.parent, run.pushed_messages), (Some(Ok(())), 1));
             assert_eq!((run.accepted, run.unpushed), (1, 0));
+            assert!(!run.said_unadded && !run.said_unset, "{run:?}");
             break;
+        }
+        // Refused as it is added, it is given back at once and said so.
+        if let Ok(run) = &outcome
+            && !run.added
+            && run.unpushed == 1
+        {
+            unadded += 1;
+            track::untracked(|| {
+                assert!(run.said_unadded, "refusing {limit}: {run:?}");
+                assert!(!run.said_unset, "refusing {limit}: {run:?}");
+            });
         }
         if let Ok(run) = &outcome
             && run.added
@@ -1565,12 +1596,15 @@ fn a_push_that_cannot_start_leaves_nothing_running() {
                 assert_eq!(run.pushed_messages, 0, "refusing {limit}: {run:?}");
                 assert_eq!(run.cancels, 1, "refusing {limit}: {run:?}");
                 assert_eq!(run.body_at_unpushed, Some(2), "refusing {limit}: {run:?}");
+                assert!(run.said_unset, "refusing {limit}: {run:?}");
+                assert!(!run.said_unadded, "refusing {limit}: {run:?}");
             });
         }
         limit += 1;
         assert!(limit < 100_000, "the scenario never ran to the end");
     }
     assert!(discarded > 0, "no refusal fell in the push's start");
+    assert!(unadded > 0, "no refusal fell in the push's adding");
     track::untracked(|| {
         eprintln!(
             "torture: {limit} allocations, {discarded} in a push's start, \

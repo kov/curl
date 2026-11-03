@@ -5184,6 +5184,30 @@ fn a_tunnel_redials_when_the_proxy_closes_on_its_407() {
     );
 }
 
+/// A SOCKS proxy's target found in the cache is said to be once, as the
+/// lookup finds it (`hostip_resolv`), not again as the handshake starts.
+#[test]
+fn a_socks_target_found_in_the_cache_is_said_once() {
+    let talk = || Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, OK], false).per_send();
+    let (first, second) = (talk(), talk());
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let set = |o: &mut Options| {
+        o.set_url(Some(b"http://localhost/a")).unwrap();
+        o.proxy.make_mut().unwrap().url = Some(format!("socks5://127.0.0.1:{PORT}").into_bytes());
+        o.limits.reuse.fresh = true;
+    };
+    let ran = get(&mut m, "/", first.clone(), set);
+    assert_eq!(ran.result, Ok(()));
+    let ran = get(&mut m, "/", second.clone(), set);
+    let said = ran.seen.text();
+    assert_eq!(ran.result, Ok(()), "{said:?}");
+    let found = said
+        .iter()
+        .filter(|l| *l == "Hostname localhost was found in DNS cache\n")
+        .count();
+    assert_eq!(found, 1, "{said:?}");
+}
+
 /// Suppressed, the proxy's answer to `CONNECT` reaches neither the header
 /// handler nor the included output, but is still kept with the headers
 /// (`CURLOPT_SUPPRESS_CONNECT_HEADERS`, ahead of which C collects them).

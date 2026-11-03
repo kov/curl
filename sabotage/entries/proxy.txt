@@ -464,18 +464,6 @@ witness: curl-core proto::http::tests::a_proxy_closing_on_the_credentials_is_con
         );
         let _ = Stage::Racing(Racing {
 
-=== a tunnel's setup traces the origin's name as found in the cache
-file: crates/curl-core/src/multi/state/connecting.rs
-witness: curl-core proto::http::tests::a_proxy_s_name_is_the_one_found_in_the_cache
---- old
-    // The name looked up: the proxy's, or what a connect-to names in the
-    // origin's place.
-    let peer = route.destination();
---- new
-    // The name looked up: the proxy's, or what a connect-to names in the
-    // origin's place.
-    let peer = &*route.origin;
-
 === the byte after a CONNECT answer's line is not counted before the line
 file: crates/curl-core/src/multi/state/tunnel.rs
 witness: curl-core proto::http::tests::the_tunnel_takes_stock_for_each_byte_of_the_answer
@@ -826,3 +814,13 @@ features: test-util
             cx.report_mut().set_protocol(spoken);
 --- new
             let _ = spoken;
+
+=== a SOCKS target found in the cache is said to be again as its handshake starts
+file: crates/curl-core/src/multi/state/socks.rs
+witness: curl-core proto::http::tests::a_socks_target_found_in_the_cache_is_said_once
+features: test-util debug-hooks
+--- old
+        SocksTarget::Found(answer) => {
+--- new
+        SocksTarget::Found(answer) => {
+            trace::info_with(cx, &[b"Hostname ", answer.name(), b" was found in DNS cache"]);

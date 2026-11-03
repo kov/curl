@@ -29,7 +29,11 @@ witness: curl-core multi::tests::stale_answers_are_dropped
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 --- old
-        Lookup::Found(answer) => return Ok(Looked::Found(answer, Found::Cached)),
+        Lookup::Found(answer) => {
+            say_found_cached(queries, (name, port), cx);
+            cx.info_with(&[b"Hostname ", name, b" was found in DNS cache"]);
+            return Ok(Looked::Found(answer, Found::Cached));
+        }
 --- new
         Lookup::Found(_) => (Found::Resolved, false),
 
@@ -40,9 +44,9 @@ witness: curl-core multi::tests::connections_are_numbered_in_their_traces
         cx.names()
             .section(|c| c.put(answer.clone(), port, false))
             .map_err(oom)?;
-        return Ok(Looked::Found(answer, found(Asked::Shortcut)));
+        say_cached_entry(queries, (name, port), cx);
 --- new
-        return Ok(Looked::Found(answer, found(Asked::Shortcut)));
+        say_cached_entry(queries, (name, port), cx);
 
 === a transfer's end drops nothing stale
 file: crates/curl-core/src/multi/state.rs

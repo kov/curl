@@ -611,26 +611,9 @@ pub(crate) enum SocksTarget {
     None,
     /// The name was looked up here and did not resolve.
     Unresolved,
-    /// The name's addresses, and where they came from.
-    Found(TryArc<Answer>, Came),
-}
-
-/// Where a lookup's answer came from, all a setup reads of its `Found`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Came {
-    Cached,
-    Stale,
-    Resolved,
-}
-
-impl From<Found> for Came {
-    fn from(found: Found) -> Came {
-        match found {
-            Found::Cached => Came::Cached,
-            Found::Stale(_) => Came::Stale,
-            Found::Resolved(_) | Found::Meanwhile => Came::Resolved,
-        }
-    }
+    /// The name's addresses; where they came from was said as they were
+    /// looked up.
+    Found(TryArc<Answer>),
 }
 
 /// What answered a name the cache did not.
@@ -2319,12 +2302,9 @@ impl ConnectMachine {
         let family = family(leg.version.ip(self.route.ip), cx);
         let at = (leg.to.name(), leg.to.port());
         match lookup_start(at, family, cx, setup, true, Holder::Target) {
-            Ok(Looked::Found(answer, found)) => {
+            Ok(Looked::Found(answer, _)) => {
                 cx.hold(Holder::Target);
-                Ok((
-                    SocksTarget::Found(answer, Came::from(found)),
-                    Late::default(),
-                ))
+                Ok((SocksTarget::Found(answer), Late::default()))
             }
             // As the proxy's own name's, its answer comes later.
             Ok(Looked::Pending(p)) => Ok((SocksTarget::None, Late(Some(p)))),
@@ -2353,9 +2333,9 @@ impl ConnectMachine {
             Taken::Done(done) => done,
         };
         d.target = match done {
-            Ok((answer, found)) => {
+            Ok((answer, _)) => {
                 cx.hold(Holder::Target);
-                SocksTarget::Found(answer, Came::from(found))
+                SocksTarget::Found(answer)
             }
             Err(ConnectError::Unresolved(_)) => SocksTarget::Unresolved,
             Err(e) => return Err(e),
@@ -2808,19 +2788,7 @@ fn resolve_blocking_said(
     let at = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
     let at = at.bytes();
     let dns = Component::Dns;
-    // The C debug build's line.
-    #[cfg(feature = "debug-hooks")]
-    cx.of_with(
-        dns,
-        &[
-            b"[",
-            queries.as_bytes(),
-            b"] hostip_resolv(",
-            name,
-            at,
-            b")",
-        ],
-    );
+    // The lookup said its own lines as it looked in the cache.
     let looked = lookup_name((host, port), family, cx, setup, false);
     // A library's resolve said its lines as it went, and however it ends
     // the caller hears only that there is no answer (`Curl_resolv_blocking`,
@@ -2937,25 +2905,6 @@ fn resolve_blocking_said(
         Err(ConnectError::Refused(kind)) => return Err(*kind),
         Err(ConnectError::Failed(..)) => unreachable!("a resolve makes no attempt"),
     };
-    match found {
-        Some(Found::Stale(_)) => {
-            cx.info(format_args!("Hostname in DNS cache was stale, zapped"));
-        }
-        None => cx.of(
-            dns,
-            format_args!("cache entry does not have type={queries} addresses"),
-        ),
-        Some(_) => {}
-    }
-    let (code, not) = match found {
-        Some(Found::Cached | Found::Meanwhile) => (Ok(()), ""),
-        Some(Found::Stale(_) | Found::Resolved(_)) => (Ok(()), "not "),
-        None => (Err(ErrorKind::CouldntResolveHost), "not "),
-    };
-    let code = crate::trace::Code(code);
-    let rest =
-        crate::text::Text::<64>::clipped(format_args!(" queries={queries} -> {code} {not}found")).0;
-    cx.of_with(dns, &[b"cache lookup ", name, at, rest.bytes()]);
     let queued = match found {
         Some(Found::Stale(Asked::Resolver(q)) | Found::Resolved(Asked::Resolver(q))) => q,
         _ => None,
@@ -2964,40 +2913,19 @@ fn resolve_blocking_said(
         let xfer = cx.transfer_number();
         say_queued(xfer, q, name, at, &mut |parts| cx.of_with(dns, parts));
     }
-    if found == Some(Found::Cached) {
-        cx.info_with(&[b"Hostname ", name, b" was found in DNS cache"]);
-    }
     match looked {
         Ok((answer, found)) => {
-            if let Found::Stale(asked) | Found::Resolved(asked) = found {
-                let started = match asked {
-                    Asked::Shortcut => 0,
-                    Asked::Resolver(_) => AGAIN_NUMBER,
-                    // A blocking resolve's are not taken in the start.
-                    Asked::Doh | Asked::InStart => unreachable!("handled above"),
-                };
+            // An answer had at once said its start and keeping as it was
+            // kept; one the resolver gives is waited for, and kept without
+            // a word (`Curl_resolv_blocking`).
+            if let Found::Stale(Asked::Resolver(_)) | Found::Resolved(Asked::Resolver(_)) = found {
                 cx.of(
                     dns,
-                    format_args!("[{queries}] hostip_resolv started -> {started}"),
+                    format_args!("[{queries}] hostip_resolv started -> {AGAIN_NUMBER}"),
                 );
                 if let Some(q) = queued {
                     let addrs = answer.addrs();
                     say_answered(q, name, at, addrs, &mut |parts| cx.of_with(dns, parts));
-                }
-                // Only an answer had at once is said to be kept: one the
-                // resolver gives is waited for without a word
-                // (`Curl_resolv_blocking`).
-                if asked == Asked::Shortcut {
-                    cx.of_with(
-                        dns,
-                        &[
-                            b"cached entry for ",
-                            name,
-                            at,
-                            b" queries=",
-                            queries.as_bytes(),
-                        ],
-                    );
                 }
             }
             Ok(Some(answer))
@@ -3715,6 +3643,23 @@ fn say_found_cached(queries: &str, (name, port): (&[u8], u16), cx: &mut dyn Conn
     );
 }
 
+/// That the cache keeps that the name has no addresses of the families
+/// asked for, as `Curl_dnscache_get` says it (`fetch_entry`).
+fn say_negative_cached(queries: &str, (name, port): (&[u8], u16), cx: &mut dyn ConnCx) {
+    cx.of(
+        Component::Dns,
+        format_args!("cache entry does not have type={queries} addresses"),
+    );
+    let at = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
+    let code = crate::trace::Code(Err(ErrorKind::CouldntResolveHost));
+    let rest =
+        crate::text::Text::<64>::clipped(format_args!(" queries={queries} -> {code} not found")).0;
+    cx.of_with(
+        Component::Dns,
+        &[b"cache lookup ", name, at.bytes(), rest.bytes()],
+    );
+}
+
 /// That the name is not in the cache, as `Curl_dnscache_get` says it each
 /// time it is asked.
 fn say_not_cached(queries: &str, (name, port): (&[u8], u16), cx: &mut dyn ConnCx) {
@@ -3725,6 +3670,16 @@ fn say_not_cached(queries: &str, (name, port): (&[u8], u16), cx: &mut dyn ConnCx
         Component::Dns,
         &[b"cache lookup ", name, at.bytes(), rest.bytes()],
     );
+}
+
+/// The queries of a setup's resolve in `family` of the address `ip`,
+/// which asks for its own family too, as the DNS trace names them.
+fn setup_queries(family: Family, ip: IpAddr) -> &'static str {
+    match (family, ip) {
+        (Family::Any, _) | (Family::V4, IpAddr::V6(_)) | (Family::V6, IpAddr::V4(_)) => "A+AAAA",
+        (Family::V4, IpAddr::V4(_)) => "A",
+        (Family::V6, IpAddr::V6(_)) => "AAAA",
+    }
 }
 
 /// The queries of a resolve in `family`, as the DNS trace names them
@@ -3765,6 +3720,28 @@ fn start<V: Backend>(
     if is_onion(name) {
         return Err(ConnectError::Unresolved(Unresolved::Onion));
     }
+    // A setup's name an address asks for its own family too
+    // (`cf_dns_start`); a blocking resolve's caller asks for `family`.
+    let queries = match literal(name) {
+        Some(ip) if V::SETUP => setup_queries(family, ip),
+        _ => family_queries(family),
+    };
+    // The C debug build's line, before the cache is looked in.
+    #[cfg(feature = "debug-hooks")]
+    {
+        let at = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
+        cx.of_with(
+            Component::Dns,
+            &[
+                b"[",
+                queries.as_bytes(),
+                b"] hostip_resolv(",
+                name,
+                at.bytes(),
+                b")",
+            ],
+        );
+    }
     if family == Family::V6 && cx.fails_ipv6_resolves() {
         return Err(ConnectError::Unresolved(Unresolved::DebugFailIpv6));
     }
@@ -3776,23 +3753,43 @@ fn start<V: Backend>(
         wildcard,
         max_age,
     };
+    // What the cache had, said once it has been looked in, outside its
+    // lock (`Curl_dnscache_get`, `hostip_resolv`).
     let (found, stale): (fn(Asked) -> Found, bool) = match cx
         .names()
         .section(|c| c.lookup((name, port), family, wildcard, max_age))
     {
-        Lookup::Found(answer) => return Ok(Looked::Found(answer, Found::Cached)),
-        Lookup::Negative => return Err(ConnectError::Unresolved(Unresolved::Negative)),
+        Lookup::Found(answer) => {
+            say_found_cached(queries, (name, port), cx);
+            cx.info_with(&[b"Hostname ", name, b" was found in DNS cache"]);
+            return Ok(Looked::Found(answer, Found::Cached));
+        }
+        Lookup::Negative => {
+            say_negative_cached(queries, (name, port), cx);
+            return Err(ConnectError::Unresolved(Unresolved::Negative));
+        }
         Lookup::Stale => (Found::Stale, true),
         Lookup::Missing => (Found::Resolved, false),
     };
+    if stale {
+        cx.info(format_args!("Hostname in DNS cache was stale, zapped"));
+    }
+    say_not_cached(queries, (name, port), cx);
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
     if let Some(answer) = shortcut(name).map_err(oom)? {
         // Told though no resolver is asked, as C tells it.
         cx.announce_resolve()?;
         let answer = TryArc::try_new(answer).map_err(oom)?;
+        // Started, then kept, each said where C says it: around the
+        // cache's lock (`hostip_resolv`, `Curl_dnscache_add`).
+        cx.of(
+            Component::Dns,
+            format_args!("[{queries}] hostip_resolv started -> 0"),
+        );
         cx.names()
             .section(|c| c.put(answer.clone(), port, false))
             .map_err(oom)?;
+        say_cached_entry(queries, (name, port), cx);
         return Ok(Looked::Found(answer, found(Asked::Shortcut)));
     }
     // Without IPv6 no caller asks for both families (`family`), and a
@@ -3800,28 +3797,6 @@ fn start<V: Backend>(
     let doh = V::doh(cx);
     let over_doh = doh.is_some();
     if over_doh || (cx.has_dns_library() && !(family == Family::V6 && !ipv6)) {
-        // Said now, as the probes' own lines follow.
-        let queries = family_queries(family);
-        // A blocking resolve's caller said it.
-        #[cfg(feature = "debug-hooks")]
-        if V::SETUP {
-            let at = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
-            cx.of_with(
-                Component::Dns,
-                &[
-                    b"[",
-                    queries.as_bytes(),
-                    b"] hostip_resolv(",
-                    name,
-                    at.bytes(),
-                    b")",
-                ],
-            );
-        }
-        if stale {
-            cx.info(format_args!("Hostname in DNS cache was stale, zapped"));
-        }
-        say_not_cached(queries, (name, port), cx);
         cx.announce_resolve()?;
         let via = if let Some(doh) = doh {
             cx.doh_start(name, family).map(doh)
@@ -3967,24 +3942,7 @@ fn start<V: Backend>(
             // The setup's resolve says its lines as it starts and as it
             // goes; a blocking resolve's caller says them as it ends.
             if V::SETUP {
-                let queries = family_queries(family);
                 let at = crate::text::Text::<8>::clipped(format_args!(":{port}")).0;
-                #[cfg(feature = "debug-hooks")]
-                cx.of_with(
-                    Component::Dns,
-                    &[
-                        b"[",
-                        queries.as_bytes(),
-                        b"] hostip_resolv(",
-                        name,
-                        at.bytes(),
-                        b")",
-                    ],
-                );
-                if stale {
-                    cx.info(format_args!("Hostname in DNS cache was stale, zapped"));
-                }
-                say_not_cached(queries, (name, port), cx);
                 let xfer = cx.transfer_number();
                 say_queued(xfer, queued, name, at.bytes(), &mut |parts| {
                     cx.of_with(Component::Dns, parts);

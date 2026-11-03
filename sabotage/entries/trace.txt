@@ -463,12 +463,12 @@ witness: curl-core multi::tests::a_race_with_no_attempt_left_says_so
                 format_args!(""),
 
 === a cache lookup is said to find what it missed
-file: crates/curl-core/src/multi/state/connecting.rs
+file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 --- old
-        Some(Found::Stale(_) | Found::Resolved(_)) => (Ok(()), "not "),
+        crate::text::Text::<64>::clipped(format_args!(" queries={queries} -> 0 not found")).0;
 --- new
-        Some(Found::Stale(_) | Found::Resolved(_)) => (Ok(()), ""),
+        crate::text::Text::<64>::clipped(format_args!(" queries={queries} -> 0 found")).0;
 
 === a shortcut is said to answer later
 file: crates/curl-core/src/multi/state/connecting.rs
@@ -528,34 +528,31 @@ witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
                         at,
 
 === a negative entry is found without a word
-file: crates/curl-core/src/multi/state/connecting.rs
+file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
 --- old
-            format_args!("cache entry does not have type={queries} addresses"),
+    cx.of(
+        Component::Dns,
+        format_args!("cache entry does not have type={queries} addresses"),
+    );
 --- new
-            format_args!("cache entry does not have addresses"),
+    cx.of(
+        Component::Dns,
+        format_args!("cache entry does not have addresses"),
+    );
 
 === a stale answer is said after the lookup
-file: crates/curl-core/src/multi/state/connecting.rs
+file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
 --- old
-    let code = trace::Code(code);
-    let rest = Text::<64>::clipped(format_args!(" queries={queries} -> {code} {not}found")).0;
-    trace::of_with(
-        cx,
-        Component::Dns,
-        &[b"cache lookup ", name, at, rest.bytes()],
-    );
+    if stale {
+        cx.info(format_args!("Hostname in DNS cache was stale, zapped"));
+    }
+    say_not_cached(queries, (name, port), cx);
 --- new
-    let code = trace::Code(code);
-    let rest = Text::<64>::clipped(format_args!(" queries={queries} -> {code} {not}found")).0;
-    trace::of_with(
-        cx,
-        Component::Dns,
-        &[b"cache lookup ", name, at, rest.bytes()],
-    );
-    if let Some(Found::Stale(_)) = found {
-        trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"));
+    say_not_cached(queries, (name, port), cx);
+    if stale {
+        cx.info(format_args!("Hostname in DNS cache was stale, zapped"));
     }
 
 === the custom method the C debug function sets during a redirect is overwritten

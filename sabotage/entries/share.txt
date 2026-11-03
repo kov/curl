@@ -100,10 +100,10 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::ftp::tests::a_socks_target_s_entry_is_let_go_as_its_filter_goes
 features: test-util debug-hooks
 --- old
-            Ok(Looked::Found(answer, found)) => {
+            Ok(Looked::Found(answer, _)) => {
                 cx.hold(Holder::Target);
 --- new
-            Ok(Looked::Found(answer, found)) => {
+            Ok(Looked::Found(answer, _)) => {
 
 === a setup given up keeps the entries its DNS filters hold past the transfer
 file: crates/curl-core/src/multi/state.rs
@@ -689,3 +689,33 @@ features: test-util debug-hooks
             held.let_go(&mut DriveCx::new(cx, None));
         }
         self.offer_port(cx, pc, carrier, cmd, offered, bound)?;
+
+=== an address's entry is said to be kept before it is put in the share's names
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::ftp::tests::a_lookup_s_lines_fall_about_the_share_s_locks_as_c_s
+features: test-util debug-hooks
+--- old
+        cx.names()
+            .section(|c| c.put(answer.clone(), port, false))
+            .map_err(oom)?;
+        say_cached_entry(queries, (name, port), cx);
+        return Ok(Looked::Found(answer, found(Asked::Shortcut)));
+--- new
+        say_cached_entry(queries, (name, port), cx);
+        cx.names()
+            .section(|c| c.put(answer.clone(), port, false))
+            .map_err(oom)?;
+        return Ok(Looked::Found(answer, found(Asked::Shortcut)));
+
+=== a lookup of an address does not say what the cache had
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::ftp::tests::a_lookup_s_lines_fall_about_the_share_s_locks_as_c_s
+features: test-util debug-hooks
+--- old
+    say_not_cached(queries, (name, port), cx);
+    let oom = |OutOfMemory| ConnectError::OutOfMemory;
+--- new
+    let oom = |OutOfMemory| ConnectError::OutOfMemory;
+    if shortcut(name).map_err(oom)?.is_none() {
+        say_not_cached(queries, (name, port), cx);
+    }

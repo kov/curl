@@ -266,9 +266,13 @@ witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_c_r
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_c_resolves_it
 --- old
-    cx.of_with(dns, &[b"cache lookup ", name, at, rest.bytes()]);
+    say_not_cached(queries, (name, port), cx);
+    let oom = |OutOfMemory| ConnectError::OutOfMemory;
 --- new
-    let _ = rest;
+    if V::SETUP {
+        say_not_cached(queries, (name, port), cx);
+    }
+    let oom = |OutOfMemory| ConnectError::OutOfMemory;
 
 === an active data connection accepted is taken as available before its TLS is made
 file: crates/curl-core/src/proto/ftp.rs

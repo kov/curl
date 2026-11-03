@@ -4782,6 +4782,55 @@ fn an_offered_address_is_let_go_of_once_its_socket_listens() {
     );
 }
 
+/// Each lookup says its lines where C's says them about the share's lock
+/// of its names: the debug build's `hostip_resolv(` before the cache is
+/// looked in, what it had after, the start, then the keeping after the
+/// entry is put (`hostip_resolv`, `Curl_dnscache_get`,
+/// `Curl_dnscache_add`). The sequence is C's for an active download: the
+/// control connection's lookup, then the offered address's.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_lookup_s_lines_fall_about_the_share_s_locks_as_c_s() {
+    let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n226 done\r\n");
+    let control = Conversation::replies(&replies, false).greeting();
+    let data = Conversation::replies(&[b"hello"], true).greeting();
+    let (mut m, _) = serving_active(&[&control], &[&data]);
+    let text = Text::default();
+    let mut e = Easy::new();
+    lock_logged(&mut e, &text);
+    let (id, _, _) = added_tracing(&mut m, URL, e, b"dns", |o| {
+        o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+        o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    let lines = [
+        "hostip_resolv(",
+        "cache lookup",
+        "hostip_resolv started",
+        "cached entry",
+    ];
+    let marks: Vec<&str> = said
+        .lines()
+        .filter_map(|l| match l {
+            "LOCK" => Some(l),
+            _ => lines.into_iter().find(|m| l.contains(m)),
+        })
+        .collect();
+    let lookup = [
+        "hostip_resolv(",
+        "LOCK",
+        "cache lookup",
+        "hostip_resolv started",
+        "LOCK",
+        "cached entry",
+    ];
+    let expected = [&lookup[..], &["LOCK"], &lookup[..], &["LOCK", "LOCK"]].concat();
+    assert_eq!(marks, expected, "{said}");
+}
+
 /// Through a SOCKS5 proxy that is not to resolve the name, each
 /// connection has two DNS filters, the proxy's and its target's, each
 /// holding its entry until it is destroyed: twelve locks in all, as C's

@@ -1483,14 +1483,17 @@ fn port_text(port: u16) -> Text<8> {
 fn debug_failed_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, proxy: bool) -> ErrorKind {
     let peer = route.destination();
     let (host, at) = (peer.name(), port_text(peer.port()));
-    let queries = queries(peer, route.ip, cx.rest.ipv6_works).as_bytes();
-    // The C debug build's line, said here always: only a debug build
-    // fails the resolve.
-    trace::of_with(
-        cx,
-        Component::Dns,
-        &[b"[", queries, b"] hostip_resolv(", host, at.bytes(), b")"],
-    );
+    // The C debug build's line, which the lookup said in a debug build;
+    // said here in any other, as only a debug build fails the resolve.
+    #[cfg(not(feature = "debug-hooks"))]
+    {
+        let queries = queries(peer, route.ip, cx.rest.ipv6_works).as_bytes();
+        trace::of_with(
+            cx,
+            Component::Dns,
+            &[b"[", queries, b"] hostip_resolv(", host, at.bytes(), b")"],
+        );
+    }
     trace::info(cx, format_args!("DEBUG fail ipv6 resolve"));
     let (what, kind): (&[u8], _) = if proxy {
         (b"proxy", ErrorKind::CouldntResolveProxy)
@@ -1502,80 +1505,22 @@ fn debug_failed_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, proxy: b
     trace::fail_with(cx, kind, &[b"Could not resolve: ", host])
 }
 
-/// The name `route` connects to first was looked up in the cache, as
-/// C's `hostip_resolv` and `Curl_dnscache_get` trace it: found, missing
-/// (or stale, said first) and so resolved, or `None`, the resolver's no
-/// kept from before.
+/// The name `route` connects to first was looked up in the cache, whose
+/// lines the lookup said as it looked (`hostip_resolv`,
+/// `Curl_dnscache_get`): what is left is the queries of a resolve that
+/// queued its own and said none as it went.
 fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, found: Option<Found>) {
-    // Said as the answer was taken.
-    if let Some(
-        Found::Stale(Asked::Doh | Asked::InStart)
-        | Found::Resolved(Asked::Doh | Asked::InStart)
-        | Found::Meanwhile,
-    ) = found
-    {
-        return;
-    }
-    // The name looked up: the proxy's, or what a connect-to names in the
-    // origin's place.
-    let peer = route.destination();
-    let (name, at, queries) = (
-        peer.name(),
-        port_text(peer.port()),
-        queries(peer, route.ip, cx.rest.ipv6_works),
-    );
-    let at = at.bytes();
-    // The C debug build's line.
-    #[cfg(feature = "debug-hooks")]
-    trace::of_with(
-        cx,
-        Component::Dns,
-        &[
-            b"[",
-            queries.as_bytes(),
-            b"] hostip_resolv(",
-            name,
-            at,
-            b")",
-        ],
-    );
-    match found {
-        Some(Found::Stale(_)) => {
-            trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"));
-        }
-        // What the resolver said no to is kept as an entry without
-        // addresses (`fetch_entry`).
-        None => trace::of(
-            cx,
-            Component::Dns,
-            format_args!("cache entry does not have type={queries} addresses"),
-        ),
-        Some(_) => {}
-    }
-    let (code, not) = match found {
-        Some(Found::Cached | Found::Meanwhile) => (Ok(()), ""),
-        Some(Found::Stale(_) | Found::Resolved(_)) => (Ok(()), "not "),
-        None => (Err(ErrorKind::CouldntResolveHost), "not "),
-    };
-    let code = trace::Code(code);
-    let rest = Text::<64>::clipped(format_args!(" queries={queries} -> {code} {not}found")).0;
-    trace::of_with(
-        cx,
-        Component::Dns,
-        &[b"cache lookup ", name, at, rest.bytes()],
-    );
     if let Some(
         Found::Stale(Asked::Resolver(Some(q))) | Found::Resolved(Asked::Resolver(Some(q))),
     ) = found
     {
+        let peer = route.destination();
+        let (name, at) = (peer.name(), port_text(peer.port()));
         let xfer = cx.easy().report().transfer_number().map_or(0, |n| n.get());
         let dns = Component::Dns;
-        crate::conn::say_queued(xfer, q, name, at, &mut |parts| {
+        crate::conn::say_queued(xfer, q, name, at.bytes(), &mut |parts| {
             trace::of_with(cx, dns, parts);
         });
-    }
-    if found == Some(Found::Cached) {
-        trace::info_with(cx, &[b"Hostname ", name, b" was found in DNS cache"]);
     }
 }
 
@@ -1701,8 +1646,8 @@ fn trace_resolved<H: Host>(
         Some(Asked::Resolver(_) | Asked::Doh) | None => crate::error::AGAIN_NUMBER,
     };
     let dns = Component::Dns;
-    // Said with the start, for an answer taken in it.
-    if !matches!(asked, Some(Asked::Doh | Asked::InStart)) {
+    // Said with the start, for an answer taken in it or had at once.
+    if !matches!(asked, Some(Asked::Doh | Asked::InStart | Asked::Shortcut)) {
         trace::of(
             cx,
             dns,
@@ -1729,6 +1674,10 @@ fn trace_resolved<H: Host>(
                 at,
             ],
         );
+    }
+    // Said as it was kept, around the cache's lock.
+    if asked == Asked::Shortcut {
+        return;
     }
     trace::of_with(
         cx,

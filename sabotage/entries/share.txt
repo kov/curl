@@ -553,3 +553,19 @@ witness: curl-core a_share_stays_within_its_allocation_budget
             sessions_out: OnceLock::new(),
 --- new
             sessions_out: OnceLock::from(SessionsOut::new()?),
+
+=== a pushed handle is put on its share without taking up its jar and HSTS cache
+file: crates/curl-core/src/easy.rs
+witness: curl-core multi::doh_tests::a_handle_made_for_a_transfer_takes_up_its_share_s_cookies_and_hsts
+--- old
+        pushed.link_share(self.share.clone());
+--- new
+        pushed.share = self.share.clone();
+
+=== a DoH probe is put on its share without taking up its jar and HSTS cache
+file: crates/curl-core/src/easy.rs
+witness: curl-core multi::doh_tests::a_handle_made_for_a_transfer_takes_up_its_share_s_cookies_and_hsts
+--- old
+        probe.link_share(self.share.clone());
+--- new
+        probe.share = self.share.clone();

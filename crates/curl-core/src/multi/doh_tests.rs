@@ -367,6 +367,36 @@ impl crate::handler::WriteHandler for Dropped {
     }
 }
 
+/// A handle the library makes for a transfer's own, a DoH probe or a
+/// pushed stream, joins the transfer's share as `CURLOPT_SHARE` joins it
+/// (`Curl_share_easy_link`, from `doh_probe_run` and `h2_duphandle`): it
+/// takes up the share's jar, off, as C leaves its `cookie_engine` unset,
+/// and the share's HSTS cache, on.
+#[test]
+fn a_handle_made_for_a_transfer_takes_up_its_share_s_cookies_and_hsts() {
+    use crate::share::{Kind, Share};
+    let share = Share::new().unwrap();
+    share.keep(Kind::Cookies).unwrap();
+    share.keep(Kind::Hsts).unwrap();
+    let mut master = Easy::new();
+    master.set_share(Some(share.clone())).unwrap();
+    master
+        .add_cookie(b"example.com\tFALSE\t/\tFALSE\t0\tshared\t1", |_| {})
+        .unwrap();
+    master.options_mut().doh.make_mut().unwrap().url = Some(b"https://dns.test/".to_vec());
+    let body = crate::handler::Handler::write(Dropped).unwrap();
+    let probe = master.doh_probe(b"query", body, None).unwrap();
+    for mut made in [master.pushed(), probe] {
+        assert!(!made.jar.is_on(), "its jar off");
+        assert!(made.hsts_enabled(), "the share's HSTS cache");
+        assert_eq!(made.cookie_list().unwrap().len(), 1, "the share's jar");
+        // Turned on, it is the share's jar that is on.
+        made.enable_cookies().unwrap();
+        assert!(made.jar.is_on());
+        assert_eq!(made.cookie_list().unwrap().len(), 1, "still the share's");
+    }
+}
+
 /// A host that names its transfers: every probe has a value of its own,
 /// made once and given back once, whichever way the probe goes.
 #[test]

@@ -456,7 +456,9 @@ impl Easy {
         let mut pushed = Easy::default();
         pushed.libraries = self.libraries.clone();
         pushed.components = self.components.clone();
-        pushed.share = self.share.clone();
+        // Linked to the share as C links it (`Curl_share_easy_link`): the
+        // share's jar and HSTS cache taken up, the jar off.
+        pushed.link_share(self.share.clone());
         pushed.share_watch = self.share_watch.clone();
         let (to, from) = (&mut pushed.options, &self.options);
         to.http.stream_weight = from.http.stream_weight;
@@ -481,8 +483,8 @@ impl Easy {
         probe.doing = Some(crate::components::Component::Doh);
         probe.components = self.components.clone();
         probe.libraries = self.libraries.clone();
+        probe.link_share(self.share.clone());
         probe.share_watch = self.share_watch.clone();
-        probe.share = self.share.clone();
         let (to, from) = (&mut probe.options, &self.options);
         let url = from.doh.url.as_deref();
         to.set_url(url)?;
@@ -751,6 +753,14 @@ impl Easy {
         self.relink_hsts(None);
         self.share = None;
         self.share_watch = None;
+    }
+
+    /// Join `share`, a handle made here that holds no connection, as
+    /// `CURLOPT_SHARE` joins it: what it keeps of cookies and HSTS taken
+    /// up as C points the handle at them.
+    fn link_share(&mut self, share: Option<Share>) {
+        self.set_share(share)
+            .expect("a handle just made holds no connection");
     }
 
     fn share_may_change(&self) -> Result<(), ShareInUse> {

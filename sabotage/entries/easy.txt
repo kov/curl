@@ -105,6 +105,6 @@ witness: curl-core easy::tests::a_pushed_handle_takes_its_parent_s_libraries_and
 file: crates/curl-core/src/easy.rs
 witness: curl-core easy::tests::a_pushed_handle_takes_its_parent_s_libraries_and_share
 --- old
-        pushed.share = self.share.clone();
+        pushed.link_share(self.share.clone());
         pushed.share_watch = self.share_watch.clone();
 --- new

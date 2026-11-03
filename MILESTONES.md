@@ -1210,7 +1210,7 @@ protocols need, each step leaving behaviour and traces as they are:
 
 ## Milestone 7: shared state
 
-Status: **in progress**. SCOPE stage 7: the share interface (cookies, DNS, connections, SSL
+Status: **done**. SCOPE stage 7: the share interface (cookies, DNS, connections, SSL
 sessions, HSTS, PSL; alt-svc stays per handle, as C's has no share) with its lock callbacks, DoH (`--doh-url`, 2101), the `--dns-*`
 options, and SSL session import and export (`SSLS-EXPORT`, 1678).
 

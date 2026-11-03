@@ -503,6 +503,14 @@ not a difference: it is tracked in `MILESTONES.md`.
   use" once it does. The step in progress holds the transfer's `Easy` and may be using
   the share the change would replace. Pinned by `a_callback_cannot_change_the_share`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
+- **A share that stops keeping TLS sessions under a use leaves it no cache.** An application
+  that unshares `CURL_LOCK_DATA_SSL_SESSION` on one thread while a handle links on another can
+  have a transfer, an import or an export that chose the share's cache find it gone. C uses the
+  cache it has freed; here the use goes on with no cache: an import is refused, an export gives
+  nothing and a transfer neither takes nor gives a session, each lock call still made. Pinned by
+  `sessions_gone_under_a_use_are_no_cache` (`crates/curl-core/src/multi/ssls/tests.rs`) and
+  `sessions_gone_under_a_transfer_s_use_are_no_cache`
+  (`crates/curl-core/src/proto/http/tests/tls.rs`).
 
 ## Public suffix locks
 
@@ -513,6 +521,8 @@ not a difference: it is tracked in `MILESTONES.md`.
   lines are traced, before those lines rather than among them. Pinned by
   `the_public_suffixes_are_told_inside_the_jar_as_c_locks_them`
   (`crates/curl-core/src/proto/http/tests.rs`).
+
+## The HSTS cache on a share
 
 - **HSTS files named with no cache are not read.** A handle that named a file and then left a
   share keeping HSTS, or turned `CURLOPT_HSTS_CTRL` off while on it, has no cache and its files

@@ -303,3 +303,11 @@ witness: curl-core multi::ssls::tests::sessions_go_out_only_on_the_thread_that_m
         ThreadMark(BYTE.with(|b| std::ptr::from_ref(b).addr()))
 --- new
         ThreadMark(BYTE.with(|_| 0))
+
+=== an export from a handle whose share keeps the sessions makes the multi's mark too
+file: crates/curl-core/src/multi/ssls.rs
+witness: curl-core multi::ssls::tests::a_multi_marks_its_cache_only_for_an_export_from_it
+--- old
+        if kept_share(easy).is_none() && self.caches.sessions_out.is_none() {
+--- new
+        if kept_share(easy).is_none() || self.caches.sessions_out.is_none() {

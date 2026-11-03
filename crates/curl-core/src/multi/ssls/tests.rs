@@ -179,6 +179,41 @@ fn an_import_and_an_export_trace_as_c_does() {
     );
 }
 
+/// A multi marks its own cache going out with the first export from it,
+/// and not for one from a handle whose share keeps the sessions: that
+/// export marks the share's, and the multi allocates nothing for it.
+#[test]
+fn a_multi_marks_its_cache_only_for_an_export_from_it() {
+    use crate::conn::io::FakeNet;
+    use crate::multi::{Env, NoEvents, NoHost};
+    let clock = crate::time::ManualClock::new().unwrap();
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(FakeNet::new(clock)),
+        arena: crate::id::ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi<NoHost> = Multi::new(env).unwrap();
+    let (easy, share, _told) = kept_by_a_share();
+    let shared = m.add(Box::new(easy), (), &mut NoEvents).unwrap();
+    let own = m.add(Box::new(Easy::new()), (), &mut NoEvents).unwrap();
+    let export = |m: &mut Multi<NoHost>, id| {
+        let done = m
+            .ssls_export(id)
+            .expect("in the multi")
+            .expect("memory for the mark")
+            .deliver::<()>(&mut |_| Ok(()));
+        m.ssls_export_end(id, done, &mut no_notes())
+            .expect("in the multi")
+            .unwrap();
+    };
+    export(&mut m, shared);
+    assert!(share.sessions_out().is_some(), "the share's marked");
+    assert!(m.sessions_out().is_none(), "the multi's not made");
+    export(&mut m, own);
+    assert!(m.sessions_out().is_some(), "made by an export of its own");
+}
+
 /// Sessions marked going out are going out on the thread that marked
 /// them and no other, as C's `locking_thread` says, until the mark goes.
 #[test]

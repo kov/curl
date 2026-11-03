@@ -3184,88 +3184,145 @@ fn the_dns_cache_is_traced_as_c_looks_in_it() {
     );
 }
 
-/// A resolver library that has the answer as soon as its resolve starts
-/// is taken at once, inside the start, as C's `hostip_resolv_start` takes
-/// it (`hostip_resolv_take_result` on `CURLE_AGAIN`): the take's own line
-/// and `resolve complete`, then the resolve's record destroyed at once,
-/// numbered all the same (`hostip_async_new`, `Curl_async_destroy`), then
-/// `started -> 0` and the answer kept, with no look in the cache between
-/// and nothing left to shut down as the transfer is done. Built from C's
-/// code: no C build was seen to answer inside the start.
-#[test]
-fn an_answer_a_library_has_at_once_is_taken_inside_the_start() {
-    use crate::conn::io::{DnsAsk, DnsLibrary, DnsRefused, DnsResolve, DnsSay, Partial};
-    use std::net::IpAddr;
+/// A resolver library's resolve, of 127.0.0.1 or of a name that does not
+/// exist (`missing`): with its queries out as it is asked (`out`), answered
+/// at its first run, as a DNS server may answer before the start looks;
+/// otherwise answered as it is asked, as c-ares answers a name from the
+/// hosts file.
+#[derive(Clone, Copy, Debug)]
+struct FirstLook {
+    out: bool,
+    missing: bool,
+}
 
-    #[derive(Debug)]
-    struct AtOnce;
+#[derive(Debug)]
+struct FirstLookResolve {
+    asked: FirstLook,
+    performed: bool,
+}
 
-    impl DnsResolve for AtOnce {
-        fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
-            Ok(())
-        }
-        fn wants(&self) -> &[(Box<dyn crate::conn::io::Socket>, Events)] {
-            &[]
-        }
-        fn due(&self, within: Duration) -> Duration {
-            within
-        }
-        fn partial(&self) -> Result<Partial, curl_alloc::OutOfMemory> {
-            Ok(Partial {
-                addrs: vec![IpAddr::from([127, 0, 0, 1])],
-                v6_answered: true,
-                v4_answered: true,
-            })
-        }
-        fn ongoing(&self) -> (u32, &'static str) {
-            (0, "A")
-        }
-        fn answer(&mut self) -> Option<Result<Vec<IpAddr>, crate::conn::io::ResolveFailure>> {
-            Some(Ok(vec![IpAddr::from([127, 0, 0, 1])]))
-        }
-        fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
-            None
-        }
-        fn explain(&self) -> Option<&'static str> {
-            None
-        }
-        fn status(&self) -> i32 {
-            0
+impl crate::conn::io::DnsResolve for FirstLookResolve {
+    fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
+        self.performed = true;
+        Ok(())
+    }
+    fn wants(&self) -> &[(Box<dyn crate::conn::io::Socket>, Events)] {
+        &[]
+    }
+    fn due(&self, within: Duration) -> Duration {
+        within
+    }
+    fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
+        let done = self.ongoing().0 == 0;
+        let addrs = match done && !self.asked.missing {
+            true => vec![std::net::IpAddr::from([127, 0, 0, 1])],
+            false => Vec::new(),
+        };
+        Ok(crate::conn::io::Partial {
+            addrs,
+            v6_answered: true,
+            v4_answered: done,
+        })
+    }
+    fn ongoing(&self) -> (u32, &'static str) {
+        match self.asked.out && !self.performed {
+            true => (1, "-"),
+            false => (0, "A"),
         }
     }
-
-    #[derive(Debug)]
-    struct Library;
-
-    impl DnsLibrary for Library {
-        fn resolve(
-            &self,
-            _: DnsAsk<'_>,
-            _: &mut DnsSay<'_>,
-        ) -> Result<Box<dyn DnsResolve>, DnsRefused> {
-            Ok(Box::new(AtOnce))
+    fn answer(&mut self) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
+        if self.ongoing().0 > 0 {
+            None
+        } else if self.asked.missing {
+            Some(Err(crate::conn::io::ResolveFailure::NotFound))
+        } else {
+            Some(Ok(vec![std::net::IpAddr::from([127, 0, 0, 1])]))
         }
     }
+    fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
+        None
+    }
+    fn explain(&self) -> Option<&'static str> {
+        self.asked.missing.then_some("Domain name not found")
+    }
+    fn status(&self) -> i32 {
+        // `ARES_ENOTFOUND`.
+        if self.asked.missing { 4 } else { 0 }
+    }
+}
 
+impl crate::conn::io::DnsLibrary for FirstLook {
+    fn resolve(
+        &self,
+        _: crate::conn::io::DnsAsk<'_>,
+        _: &mut crate::conn::io::DnsSay<'_>,
+    ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
+        Ok(Box::new(FirstLookResolve {
+            asked: *self,
+            performed: false,
+        }))
+    }
+}
+
+/// The trace of a transfer of `url` over IPv4 alone, resolving through
+/// `library`, `set` as it is set up: its result, and its DNS lines and
+/// failures, as `dns_only` keeps them.
+fn over_first_look(
+    library: FirstLook,
+    url: &str,
+    set: impl FnOnce(&mut crate::options::Options),
+) -> (Result<(), ErrorKind>, Vec<String>) {
     let (mut m, _clock) = networked();
-    let library: &'static Library = Box::leak(Box::new(Library));
+    let library: &'static FirstLook = Box::leak(Box::new(library));
     let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
         dns: Some(library),
         ..crate::libraries::Libraries::NONE
     })
     .unwrap();
-    let (mut e, lines) = traced("tcp://now.test:1/");
+    let (mut e, lines) = traced(url);
     e.options_mut().ip_version = IpVersion::V4;
+    set(e.options_mut());
     e.set_libraries(libraries);
     let e = tracing(e, b"dns");
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-    assert_eq!(
-        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
-        Ok(())
-    );
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     m.remove(id, &mut NoEvents).unwrap();
+    let all = trace_of(&lines);
+    let failures: Vec<String> = all
+        .iter()
+        .filter(|l| l.starts_with("Could not"))
+        .cloned()
+        .collect();
+    let mut kept = dns_only(all.clone());
+    kept.retain(|l| l.starts_with("[DNS]"));
+    let lines = all
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .filter(|l| kept.contains(l) || failures.iter().any(|f| f.trim_end() == l))
+        .collect();
+    (result, lines)
+}
+
+/// A resolver library whose queries are out as its resolve starts, and
+/// that has the answer at the start's first look, has it taken inside
+/// the start, as C's `hostip_resolv_start` takes it
+/// (`hostip_resolv_take_result` on `CURLE_AGAIN`): the take's own line and
+/// `resolve complete`, then the resolve's record destroyed at once,
+/// numbered all the same (`hostip_async_new`, `Curl_async_destroy`), then
+/// `started -> 0` and the answer kept, with no look in the cache between
+/// and nothing left to shut down as the transfer is done. Built from C's
+/// code: a C build answers so only when a DNS server's answer beats the
+/// look, and the order is the same for the HTTPS record, seen so.
+#[test]
+fn an_answer_a_library_has_at_its_first_look_is_taken_inside_the_start() {
+    let library = FirstLook {
+        out: true,
+        missing: false,
+    };
+    let (result, lines) = over_first_look(library, "tcp://now.test:1/", |_| {});
+    assert_eq!(result, Ok(()));
     assert_eq!(
-        dns_only(trace_of(&lines)),
+        lines,
         [
             "[DNS] cache lookup now.test:1 queries=A -> 0 not found",
             "[DNS] [A] ares_take_result, result=0, ares_result=0, ares_status=0, dns=found",
@@ -3274,6 +3331,126 @@ fn an_answer_a_library_has_at_once_is_taken_inside_the_start() {
             "[DNS] [A] hostip_resolv started -> 0",
             "[DNS] cached entry for now.test:1 queries=A",
         ]
+    );
+}
+
+/// A resolver library that answers as its resolve is asked, with no query
+/// out, is not looked at inside the start: C's c-ares then returns
+/// `CURLE_OK` from `Curl_async_getaddrinfo`, which the start reports as
+/// `CURLE_AGAIN`, and the answer is taken at the look after it, the
+/// resolve's record kept until the chain below its filter connects. C's
+/// tool over c-ares traces `http://localhost4:PORT/`, a name from the
+/// hosts file, so.
+#[test]
+fn an_answer_a_library_had_as_it_was_asked_is_taken_at_the_next_look() {
+    let library = FirstLook {
+        out: false,
+        missing: false,
+    };
+    let (result, lines) = over_first_look(library, "tcp://now.test:1/", |_| {});
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        lines,
+        [
+            "[DNS] cache lookup now.test:1 queries=A -> 0 not found",
+            "[DNS] [A] hostip_resolv started -> 81",
+            "[DNS] cache lookup now.test:1 queries=A -> 0 not found",
+            "[DNS] [A] ares_take_result, result=0, ares_result=0, ares_status=0, dns=found",
+            "[DNS] [A] resolve complete for now.test:1",
+            "[DNS] cached entry for now.test:1 queries=A",
+            "[DNS] [1] destroy async",
+        ]
+    );
+}
+
+/// A resolver library that says a name does not exist at the start's
+/// first look fails inside the start, in C's order: the take's words
+/// (`Curl_async_take_result`'s and `hostip_resolv_take_result`'s
+/// `Curl_async_failed`), the record destroyed, `started -> 6`, the name
+/// kept as not existing, `hostip_resolv`'s failure, then the DNS filter's
+/// (`cf_dns_start`, `cf_dns_connect`). Built from C's code.
+#[test]
+fn a_failure_a_library_has_at_its_first_look_is_said_inside_the_start() {
+    let library = FirstLook {
+        out: true,
+        missing: true,
+    };
+    let (result, lines) = over_first_look(library, "tcp://nx.test:1/", |_| {});
+    assert_eq!(result, Err(ErrorKind::CouldntResolveHost));
+    assert_eq!(
+        lines,
+        [
+            "[DNS] cache lookup nx.test:1 queries=A -> 0 not found",
+            "Could not resolve host: nx.test (Domain name not found)",
+            "[DNS] [A] ares_take_result, result=6, ares_result=0, ares_status=4, dns=not found",
+            "Could not resolve host: nx.test",
+            "[DNS] [1] destroy async",
+            "[DNS] [A] hostip_resolv started -> 6",
+            "[DNS] cache negative name resolve for nx.test:1 type=A",
+            "Could not resolve: nx.test:1",
+            "Could not resolve: nx.test",
+            "[DNS] [A] error resolving: 6",
+        ]
+    );
+}
+
+/// A bind's name a resolver library answers at the start's first look is
+/// taken inside the blocking resolve's start, in the setup's order, its
+/// record destroyed as the start ends (`Curl_resolv_blocking`'s
+/// `hostip_resolv`); a name it says does not exist then fails there as the
+/// setup's does, and is kept as not existing (`hostip_resolv`'s
+/// `Curl_dnscache_add_negative`). Built from C's code.
+#[test]
+fn a_bind_s_name_a_library_answers_at_its_first_look_is_taken_inside_the_start() {
+    let bind = |name: &[u8]| {
+        let mut host = b"host!".to_vec();
+        host.extend_from_slice(name);
+        move |o: &mut crate::options::Options| {
+            o.sockets.make_mut().unwrap().local.interface =
+                crate::options::Interface::parse(&host).unwrap();
+        }
+    };
+    let library = FirstLook {
+        out: true,
+        missing: false,
+    };
+    // The bind's lines, after the setup's for its address.
+    let bind_s = |lines: Vec<String>, name: &str| {
+        let at = lines.iter().position(|l| l.contains(name)).unwrap();
+        lines[at..].to_vec()
+    };
+    let (_, lines) = over_first_look(library, "tcp://127.0.0.1:1/", bind(b"now.test"));
+    assert_eq!(
+        bind_s(lines, "now.test"),
+        [
+            "[DNS] cache lookup now.test:80 queries=A -> 0 not found",
+            "[DNS] [A] ares_take_result, result=0, ares_result=0, ares_status=0, dns=found",
+            "[DNS] [A] resolve complete for now.test:80",
+            "[DNS] [1] destroy async",
+            "[DNS] [A] hostip_resolv started -> 0",
+            "[DNS] cached entry for now.test:80 queries=A",
+        ]
+    );
+    let library = FirstLook {
+        out: true,
+        missing: true,
+    };
+    let (result, lines) = over_first_look(library, "tcp://127.0.0.1:1/", bind(b"nx.test"));
+    assert_eq!(result, Err(ErrorKind::InterfaceFailed));
+    let lines = bind_s(lines, "nx.test");
+    assert_eq!(
+        lines[..8],
+        [
+            "[DNS] cache lookup nx.test:80 queries=A -> 0 not found",
+            "Could not resolve host: nx.test (Domain name not found)",
+            "[DNS] [A] ares_take_result, result=6, ares_result=0, ares_status=4, dns=not found",
+            "Could not resolve host: nx.test",
+            "[DNS] [1] destroy async",
+            "[DNS] [A] hostip_resolv started -> 6",
+            "[DNS] cache negative name resolve for nx.test:80 type=A",
+            "Could not resolve: nx.test:80",
+        ],
+        "{lines:#?}"
     );
 }
 

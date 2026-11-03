@@ -823,16 +823,49 @@ features: threaded-resolver
 --- new
         let record = None;
 
-=== a library's answer had as its resolve starts is taken after the start
+=== a library's answer had at the start's first look is taken after the start
 file: crates/curl-core/src/conn/connect.rs
-witness: curl-core multi::tests::an_answer_a_library_has_at_once_is_taken_inside_the_start
+witness: curl-core multi::tests::an_answer_a_library_has_at_its_first_look_is_taken_inside_the_start
 features: test-util
 --- old
-                        Some(Ok(addrs)) => {
-                            // Had at once, it is taken inside the start
+    match resolve.answer() {
+        Some(Ok(addrs)) => {
+            say_taken(queries, resolve.status(), cx);
 --- new
-                        Some(Ok(addrs)) if addrs.is_empty() => {
-                            // Had at once, it is taken inside the start
+    match resolve.answer().filter(Result::is_err) {
+        Some(Ok(addrs)) => {
+            say_taken(queries, resolve.status(), cx);
+
+=== a library's answer had as it was asked is looked for inside the start
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::an_answer_a_library_had_as_it_was_asked_is_taken_at_the_next_look
+features: test-util
+--- old
+    if resolve.ongoing().0 == 0 {
+        return Ok(None);
+    }
+--- new
+    if resolve.ongoing().0 == u32::MAX {
+        return Ok(None);
+    }
+
+=== a failure taken inside the start keeps its record to the end
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core multi::tests::a_failure_a_library_has_at_its_first_look_is_said_inside_the_start
+features: test-util
+--- old
+                super::names::async_gone(cx, holder);
+--- new
+                let _ = holder;
+
+=== a blocking resolve's answer at the start's first look is taken in the wait
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_bind_s_name_a_library_answers_at_its_first_look_is_taken_inside_the_start
+features: test-util
+--- old
+                        return taken_in_start(answer, (name, port), pending, cx);
+--- new
+                        answer
 
 === an A answered empty is said only with the rest
 file: crates/curl-core/src/conn/connect.rs

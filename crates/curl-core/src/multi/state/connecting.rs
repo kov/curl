@@ -2138,6 +2138,23 @@ pub(crate) fn connect_failed<H: Host>(
                 }
                 _ => trace::fail_with(cx, kind, &[what, host]),
             };
+            // Failed inside its start, the resolve's record goes, and the
+            // start says it is done (`hostip_resolv_start`'s
+            // `Curl_async_destroy`, `hostip_resolv`).
+            if let Unresolved::Resolver {
+                in_start: Some(holder),
+                ..
+            } = why
+            {
+                super::names::async_gone(cx, holder);
+                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let code = trace::Code(Err(kind));
+                trace::of(
+                    cx,
+                    Component::Dns,
+                    format_args!("[{queries}] hostip_resolv started -> {code}"),
+                );
+            }
             // What the resolver said no to is kept as said
             // (`Curl_dnscache_add_negative`).
             if let Unresolved::Resolver {
@@ -2174,9 +2191,15 @@ pub(crate) fn connect_failed<H: Host>(
             // The name's filter says so of any resolver's failure
             // (`cf_dns_connect`).
             if let Unresolved::Resolver {
-                over_doh: false, ..
+                over_doh: false,
+                in_start,
+                ..
             } = why
             {
+                // A start that failed says so itself (`cf_dns_start`).
+                if in_start.is_some() {
+                    trace::info_with(cx, &[b"Could not resolve: ", host]);
+                }
                 let queries = queries(first, route.ip, cx.rest.ipv6_works);
                 let code = trace::Code(Err(kind));
                 trace::of(

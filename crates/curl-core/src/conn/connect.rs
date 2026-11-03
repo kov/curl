@@ -937,6 +937,9 @@ pub(crate) enum Unresolved {
         says_its_own: bool,
         /// A resolver library's status, which its trace numbers.
         library_status: Option<i32>,
+        /// A library's failure taken inside the start of its resolve,
+        /// whose record, this holder's, goes as the failure is said.
+        in_start: Option<Holder>,
     },
     /// A blocking resolve was given up on: its time ran out, or the
     /// application stopped it.
@@ -2707,8 +2710,9 @@ fn address(
 /// The addresses of `family` `host` stands for, for port `port`,
 /// resolved as C's blocking resolve does it (`Curl_resolv_blocking`):
 /// through the cache, which keeps what is found but not that nothing
-/// was, the resolver waited for, and traced as `hostip_resolv` traces
-/// it. `None` if it stands for none, said as C fails it; the binding
+/// was, unless the library said so inside the resolve's start, as
+/// `hostip_resolv` keeps it then (`Curl_dnscache_add_negative`); the
+/// resolver waited for, and traced as `hostip_resolv` traces it. `None` if it stands for none, said as C fails it; the binding
 /// to a local name's and FTP's address to offer the server. A resolve it
 /// waited for lets go of its record as the wait ends, after its lines
 /// (`Curl_resolv_blocking`'s `Curl_resolv_destroy`).
@@ -2763,6 +2767,66 @@ fn resolve_blocking_said(
     match looked {
         Ok((answer, Found::Stale(Asked::Doh) | Found::Resolved(Asked::Doh))) => {
             return Ok(Some(answer));
+        }
+        // Taken inside the start, which said so: only its keeping is left
+        // to say (`hostip_resolv`'s `Curl_dnscache_add`).
+        Ok((answer, Found::Stale(Asked::InStart) | Found::Resolved(Asked::InStart))) => {
+            cx.of_with(
+                dns,
+                &[
+                    b"cached entry for ",
+                    name,
+                    at,
+                    b" queries=",
+                    queries.as_bytes(),
+                ],
+            );
+            return Ok(Some(answer));
+        }
+        // Failed inside the start: the take's words, the start's, then
+        // what is kept of it (`hostip_resolv_take_result`'s
+        // `Curl_async_failed`, `hostip_resolv`).
+        Err(ConnectError::Unresolved(Unresolved::Resolver {
+            why,
+            explained,
+            library_status: Some(status),
+            in_start: Some(holder),
+            ..
+        })) => {
+            match explained {
+                Some(reason) => cx.fail_with(&[
+                    b"Could not resolve host: ",
+                    name,
+                    b" (",
+                    reason.as_bytes(),
+                    b")",
+                ]),
+                None => cx.fail_with(&[b"Could not resolve host: ", name]),
+            }
+            cx.of(
+                dns,
+                format_args!(
+                    "[{queries}] ares_take_result, result=6, ares_result=0, \
+                     ares_status={status}, dns=not found"
+                ),
+            );
+            cx.fail_with(&[b"Could not resolve host: ", name]);
+            cx.resolve_gone(holder);
+            cx.of(dns, format_args!("[{queries}] hostip_resolv started -> 6"));
+            if matches!(why, ResolveFailure::NotFound | ResolveFailure::NoData) {
+                cx.of_with(
+                    dns,
+                    &[
+                        b"cache negative name resolve for ",
+                        name,
+                        at,
+                        b" type=",
+                        queries.as_bytes(),
+                    ],
+                );
+            }
+            cx.fail_with(&[b"Could not resolve: ", name, at]);
+            return Ok(None);
         }
         Err(ConnectError::Unresolved(Unresolved::GaveUp) | ConnectError::Refused(_)) => {
             return Ok(None);
@@ -3010,7 +3074,10 @@ pub(super) fn lookup_name(
                     answer.expect("the network lends its resolver")
                 }
                 Via::Library(_) => match await_library(&mut pending, (name, port), cx) {
-                    Some(answer) => answer,
+                    Some((answer, TakenAt::InStart)) => {
+                        return taken_in_start(answer, (name, port), pending, cx);
+                    }
+                    Some((answer, TakenAt::Waited)) => answer,
                     None => {
                         pending.cancel(cx.net());
                         cx.libraries_closed();
@@ -3031,7 +3098,7 @@ fn await_library(
     pending: &mut Pending,
     (name, port): (&[u8], u16),
     cx: &mut dyn ConnCx,
-) -> Option<Result<Vec<IpAddr>, ResolveFailure>> {
+) -> Option<(Result<Vec<IpAddr>, ResolveFailure>, TakenAt)> {
     let queries = family_queries(pending.family);
     let Via::Library(resolve) = &mut pending.via else {
         unreachable!("only a library's resolve is awaited here");
@@ -3046,17 +3113,13 @@ fn await_library(
             Err(OutOfMemory) => Some(Err(ResolveFailure::OutOfMemory)),
         }
     };
-    let mut answer = turn(resolve, cx);
-    if answer.is_none() {
-        let (ongoing, responses) = resolve.ongoing();
-        let name = curl_alloc::Lossy(name);
-        cx.of(
-            dns,
-            format_args!(
-                "[{queries}] resolve incomplete, responses={responses}, \
-                 ongoing={ongoing} for {name}:{port}"
-            ),
-        );
+    let mut answer = match take_in_start(resolve, queries, (name, port), cx) {
+        Ok(Some(answer)) => return Some((answer, TakenAt::InStart)),
+        Ok(None) => None,
+        Err(_) => Some(Err(ResolveFailure::OutOfMemory)),
+    };
+    if answer.is_some() {
+        return answer.map(|answer| (answer, TakenAt::Waited));
     }
     cx.of(
         dns,
@@ -3082,7 +3145,16 @@ fn await_library(
         let status = resolve.status();
         say_taken(queries, status, cx);
     }
-    answer
+    answer.map(|answer| (answer, TakenAt::Waited))
+}
+
+/// Where a blocking resolve's answer was taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TakenAt {
+    /// Inside the start, as its queries were out (`hostip_resolv_start`).
+    InStart,
+    /// In the wait after it (`Curl_async_await`).
+    Waited,
 }
 
 /// The line of a library's resolve answered.
@@ -3675,42 +3747,7 @@ pub(super) fn lookup_start(
         let mut at_once = None;
         if doh {
             if let Via::Library(resolve) = &mut via {
-                if resolve.perform().is_err() {
-                    return Err(ConnectError::OutOfMemory);
-                }
-                cx.libraries_closed();
-                let (ongoing, responses) = resolve.ongoing();
-                if ongoing > 0 {
-                    let name = curl_alloc::Lossy(name);
-                    cx.of(
-                        Component::Dns,
-                        format_args!(
-                            "[{queries}] resolve incomplete, responses={responses}, \
-                             ongoing={ongoing} for {name}:{port}"
-                        ),
-                    );
-                } else {
-                    match resolve.answer() {
-                        Some(Ok(addrs)) => {
-                            // Had at once, it is taken inside the start
-                            // (`hostip_resolv_start`'s
-                            // `hostip_resolv_take_result`).
-                            say_taken(queries, resolve.status(), cx);
-                            let shown = curl_alloc::Lossy(name);
-                            cx.of(
-                                Component::Dns,
-                                format_args!("[{queries}] resolve complete for {shown}:{port}"),
-                            );
-                            at_once = Some(addrs);
-                        }
-                        Some(Err(ResolveFailure::OutOfMemory)) => {
-                            return Err(ConnectError::OutOfMemory);
-                        }
-                        // A failure is read again at the take after the
-                        // start, which says it.
-                        _ => {}
-                    }
-                }
+                at_once = take_in_start(resolve, queries, (name, port), cx)?;
             }
             if at_once.is_none() {
                 cx.of(
@@ -3723,29 +3760,7 @@ pub(super) fn lookup_start(
         // with an answer taken in the start (`hostip_async_new`,
         // `Curl_async_destroy`).
         cx.resolve_kept(holder).map_err(oom)?;
-        if let Some(addrs) = at_once {
-            cx.resolve_gone(holder);
-            cx.of(
-                Component::Dns,
-                format_args!("[{queries}] hostip_resolv started -> 0"),
-            );
-            let pending = Pending {
-                via,
-                queried: Queried {
-                    v6: false,
-                    v4: false,
-                },
-                family,
-                found,
-                keep_negative,
-                await_until: now.after(aaaa_await()),
-                looks,
-                live: None,
-            };
-            let (answer, _) = settle(Ok(addrs), (name, port), pending, cx)?;
-            return Ok(Looked::Found(answer, found(Asked::InStart)));
-        }
-        return Ok(Looked::Pending(Pending {
+        let pending = Pending {
             via,
             queried: Queried {
                 v6: false,
@@ -3757,7 +3772,13 @@ pub(super) fn lookup_start(
             await_until: now.after(aaaa_await()),
             looks,
             live: None,
-        }));
+        };
+        return match at_once {
+            Some(answer) => {
+                taken_in_start(answer, (name, port), pending, cx).map(|(a, f)| Looked::Found(a, f))
+            }
+            None => Ok(Looked::Pending(pending)),
+        };
     }
     // A resolver is not asked for IPv6 addresses alone without IPv6
     // (`can_resolve_dns_queries`); nothing is kept of it.
@@ -3837,6 +3858,94 @@ pub(super) fn lookup_start(
     }
 }
 
+/// A library's answer taken inside the start of its resolve, as
+/// `hostip_resolv_start` takes it on `CURLE_AGAIN`: looked for at once
+/// if its queries were out as it was asked, and taken if that look ended
+/// them, the take's lines said (`hostip_resolv_take_result`). One the
+/// library had as it was asked, with no query out, is not looked for:
+/// C's c-ares then returns `CURLE_OK` and the answer is taken at the next
+/// look (`Curl_async_getaddrinfo`). `None` while it is to come.
+fn take_in_start(
+    resolve: &mut Box<dyn DnsResolve>,
+    queries: &str,
+    (name, port): (&[u8], u16),
+    cx: &mut dyn ConnCx,
+) -> Result<Option<Result<Vec<IpAddr>, ResolveFailure>>, ConnectError> {
+    if resolve.ongoing().0 == 0 {
+        return Ok(None);
+    }
+    if resolve.perform().is_err() {
+        return Err(ConnectError::OutOfMemory);
+    }
+    cx.libraries_closed();
+    let (ongoing, responses) = resolve.ongoing();
+    if ongoing > 0 {
+        let name = curl_alloc::Lossy(name);
+        cx.of(
+            Component::Dns,
+            format_args!(
+                "[{queries}] resolve incomplete, responses={responses}, \
+                 ongoing={ongoing} for {name}:{port}"
+            ),
+        );
+        return Ok(None);
+    }
+    match resolve.answer() {
+        Some(Ok(addrs)) => {
+            say_taken(queries, resolve.status(), cx);
+            let shown = curl_alloc::Lossy(name);
+            cx.of(
+                Component::Dns,
+                format_args!("[{queries}] resolve complete for {shown}:{port}"),
+            );
+            Ok(Some(Ok(addrs)))
+        }
+        Some(Err(ResolveFailure::OutOfMemory)) => Err(ConnectError::OutOfMemory),
+        // A failure's lines are said with the failure.
+        Some(Err(why)) => Ok(Some(Err(why))),
+        None => Ok(None),
+    }
+}
+
+/// A library's answer taken inside the start of its resolve, `pending`:
+/// the resolve's record goes at once, and the start says it is done
+/// (`hostip_resolv_start`'s `Curl_async_destroy`, `hostip_resolv`); the
+/// answer kept, the name's not existing kept whatever `pending` says, as
+/// `hostip_resolv` keeps it (`Curl_dnscache_add_negative`). A failure's
+/// record goes with the failure's words, which come first
+/// (`Curl_async_failed`): the failure says when.
+fn taken_in_start(
+    answer: Result<Vec<IpAddr>, ResolveFailure>,
+    (name, port): (&[u8], u16),
+    mut pending: Pending,
+    cx: &mut dyn ConnCx,
+) -> Result<(TryArc<Answer>, Found), ConnectError> {
+    let (holder, found) = (pending.looks.holder, pending.found);
+    match answer {
+        Ok(addrs) => {
+            cx.resolve_gone(holder);
+            let queries = family_queries(pending.family);
+            cx.of(
+                Component::Dns,
+                format_args!("[{queries}] hostip_resolv started -> 0"),
+            );
+            let (answer, _) = settle(Ok(addrs), (name, port), pending, cx)?;
+            Ok((answer, found(Asked::InStart)))
+        }
+        Err(why) => {
+            pending.keep_negative = true;
+            let mut failed = match settle(Err(why), (name, port), pending, cx) {
+                Ok(_) => unreachable!("a failure settles as one"),
+                Err(failed) => failed,
+            };
+            if let ConnectError::Unresolved(Unresolved::Resolver { in_start, .. }) = &mut failed {
+                *in_start = Some(holder);
+            }
+            Err(failed)
+        }
+    }
+}
+
 /// The resolver's answer for `name` on `port`, as `pending` started it,
 /// kept in the cache; that the name does not exist kept too, if the
 /// lookup keeps negative answers.
@@ -3870,6 +3979,7 @@ pub(super) fn settle(
             over_doh,
             says_its_own,
             library_status,
+            in_start: None,
         })
     };
     let answer = match answer {

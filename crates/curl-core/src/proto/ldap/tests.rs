@@ -462,9 +462,10 @@ impl Ldap for FakeLdap {
         let attrs =
             some(parts.next()).map(|a| a.split(|&b| b == b',').map(<[u8]>::to_vec).collect());
         let scope = match parts.next() {
-            Some("one") => Scope::ONE_LEVEL,
-            Some("sub") => Scope::SUBTREE,
-            _ => Scope::BASE,
+            Some("one") => Scope::OneLevel,
+            Some("sub") => Scope::Subtree,
+            Some("children") => Scope::Subordinate,
+            _ => Scope::Base,
         };
         let filter = some(parts.next());
         Ok(Search {
@@ -581,7 +582,11 @@ fn shown(b: Option<&[u8]>) -> String {
 
 impl Session for FakeSession {
     fn set_version(&mut self, version: Version) {
-        self.call(format!("version {}", version.number()));
+        let number = match version {
+            Version::V2 => 2,
+            Version::V3 => 3,
+        };
+        self.call(format!("version {number}"));
     }
 
     fn set_no_referrals(&mut self) {
@@ -641,7 +646,7 @@ impl Session for FakeSession {
         let said = format!(
             "search {} {} {} {:?}",
             shown(search.dn.as_deref()),
-            search.scope.0,
+            search.scope as u8,
             shown(search.filter.as_deref()),
             search.attrs.as_ref().map(|a| a
                 .iter()

@@ -57,25 +57,19 @@ pub enum Version {
     V3,
 }
 
-impl Version {
-    /// Its number, as the library takes it.
-    pub fn number(self) -> i32 {
-        match self {
-            Version::V2 => 2,
-            Version::V3 => 3,
-        }
-    }
-}
-
-/// How far below its base a search looks (`LDAP_SCOPE_*`), as the library
-/// numbers it.
+/// How far below its base a search looks (`LDAP_SCOPE_*`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Scope(pub i32);
-
-impl Scope {
-    pub const BASE: Scope = Scope(0);
-    pub const ONE_LEVEL: Scope = Scope(1);
-    pub const SUBTREE: Scope = Scope(2);
+pub enum Scope {
+    /// The base entry alone.
+    #[default]
+    Base,
+    /// The entries right below the base.
+    OneLevel,
+    /// The base and everything below it.
+    Subtree,
+    /// Everything below the base but the base itself: OpenLDAP's
+    /// `children`, which C searches with as the library read it.
+    Subordinate,
 }
 
 /// A result code, the library's or the server's (`LDAP_*`).

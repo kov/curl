@@ -112,6 +112,13 @@ pub(crate) const LBER_SB_OPT_SET_MAX_INCOMING: c_int = 14;
 pub(crate) const LBER_SBIOD_LEVEL_TRANSPORT: c_int = 20;
 pub(crate) const LDAP_URL_SUCCESS: c_int = 0x00;
 pub(crate) const LDAP_URL_ERR_MEM: c_int = 0x01;
+pub(crate) const LDAP_URL_ERR_BADSCOPE: c_int = 0x08;
+pub(crate) const LDAP_SCOPE_BASE: c_int = 0x0000;
+pub(crate) const LDAP_SCOPE_ONELEVEL: c_int = 0x0001;
+pub(crate) const LDAP_SCOPE_SUBTREE: c_int = 0x0002;
+pub(crate) const LDAP_SCOPE_SUBORDINATE: c_int = 0x0003;
+pub(crate) const LDAP_VERSION2: c_int = 2;
+pub(crate) const LDAP_VERSION3: c_int = 3;
 
 #[link(name = "ldap")]
 unsafe extern "C" {

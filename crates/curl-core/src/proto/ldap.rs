@@ -540,7 +540,7 @@ impl Request {
             .map_err(oom)?;
         let search = Search {
             dn: Some(Vec::new()),
-            scope: Scope::BASE,
+            scope: Scope::Base,
             filter: Some(filter),
             attrs: Some(attrs),
         };

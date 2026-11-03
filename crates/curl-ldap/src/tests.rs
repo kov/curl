@@ -109,11 +109,14 @@ fn a_url_names_its_search() {
         .parse_url(b"ldap://h:389/dc=example,dc=com?cn,mail?sub?(cn=a*)")
         .unwrap();
     assert_eq!(s.dn.as_deref(), Some(&b"dc=example,dc=com"[..]));
-    assert_eq!(s.scope, Scope::SUBTREE);
+    assert_eq!(s.scope, Scope::Subtree);
     assert_eq!(s.filter.as_deref(), Some(&b"(cn=a*)"[..]));
     assert_eq!(s.attrs, Some(vec![b"cn".to_vec(), b"mail".to_vec()]));
     let base = LIBLDAP.parse_url(b"ldap://h/").unwrap();
-    assert_eq!((base.attrs, base.scope), (None, Scope::BASE));
+    assert_eq!((base.attrs, base.scope), (None, Scope::Base));
+    let scope = |url: &[u8]| LIBLDAP.parse_url(url).unwrap().scope;
+    assert_eq!(scope(b"ldap://h/dc=x??one"), Scope::OneLevel);
+    assert_eq!(scope(b"ldap://h/dc=x??children"), Scope::Subordinate);
     assert_eq!(LIBLDAP.parse_url(b"http://h/"), Err(UrlError(3)));
     assert_eq!(LIBLDAP.parse_url(b"ldap://h/?a?nonsuch"), Err(UrlError(8)));
     assert_eq!(LIBLDAP.parse_url(b"ldap://h/\0x"), Err(UrlError::BAD_URL));
@@ -249,12 +252,19 @@ fn a_session_over_a_wire_reads_and_writes_through_it() {
     wire.sent.clear();
     let search = Search {
         dn: Some(b"dc=x".to_vec()),
-        scope: Scope::SUBTREE,
+        scope: Scope::Subtree,
         filter: Some(b"(cn=*)".to_vec()),
         attrs: Some(vec![b"cn".to_vec()]),
     };
     let id = session.search(&mut wire, &search).unwrap();
-    assert!(!wire.sent.is_empty());
+    // The request's base, then its scope: the subtree's, 2.
+    let mut base_scope = ber(0x04, b"dc=x");
+    base_scope.extend_from_slice(&ber(0x0a, &[2]));
+    assert!(
+        wire.sent.windows(base_scope.len()).any(|w| w == base_scope),
+        "{:02x?}",
+        wire.sent
+    );
     let n = id.0 as u8;
     wire.incoming = ldap_message(
         n,
@@ -385,7 +395,7 @@ fn wired() -> Box<dyn Session> {
 fn a_wired_session_s_limits_and_answers_are_the_library_s() {
     let search = Search {
         dn: Some(b"dc=x".to_vec()),
-        scope: Scope::SUBTREE,
+        scope: Scope::Subtree,
         filter: None,
         attrs: None,
     };
@@ -486,7 +496,7 @@ proptest::proptest! {
         assert_eq!(session.set_max_incoming(256 * 1024), Ok(()));
         assert_eq!(session.use_wire(), Ok(()));
         let mut wire = Bytes::default();
-        let search = Search { dn: Some(b"dc=x".to_vec()), scope: Scope::SUBTREE, filter: None, attrs: None };
+        let search = Search { dn: Some(b"dc=x".to_vec()), scope: Scope::Subtree, filter: None, attrs: None };
         let id = session.search(&mut wire, &search).unwrap();
         let mut bytes = answer(id.0 as u8);
         for (at, byte, how) in edits {

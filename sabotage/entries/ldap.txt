@@ -111,3 +111,19 @@ witness: curl-ldap tests::a_socket_without_a_descriptor_makes_no_session
         let Some(socket) = socket else {
             return Err(SessionFailed::Library(Code::NO_MEMORY));
         };
+
+=== a URL's `children` scope is refused
+file: crates/curl-ldap/src/lib.rs
+witness: curl-ldap tests::a_url_names_its_search
+--- old
+        sys::LDAP_SCOPE_SUBORDINATE => Some(Scope::Subordinate),
+--- new
+        sys::LDAP_SCOPE_SUBORDINATE => None,
+
+=== a subtree search goes out as a search of the base
+file: crates/curl-ldap/src/lib.rs
+witness: curl-ldap tests::a_session_over_a_wire_reads_and_writes_through_it
+--- old
+        Scope::Subtree => sys::LDAP_SCOPE_SUBTREE,
+--- new
+        Scope::Subtree => sys::LDAP_SCOPE_BASE,

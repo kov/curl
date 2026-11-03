@@ -132,6 +132,28 @@ unsafe fn bytes<'a>(bv: &sys::berval) -> Option<&'a [u8]> {
     Some(unsafe { core::slice::from_raw_parts(bv.bv_val.cast::<u8>(), len) })
 }
 
+/// The scope the library read in a URL; none for one it numbers but no
+/// search here is made with.
+fn scope_of(n: c_int) -> Option<Scope> {
+    match n {
+        sys::LDAP_SCOPE_BASE => Some(Scope::Base),
+        sys::LDAP_SCOPE_ONELEVEL => Some(Scope::OneLevel),
+        sys::LDAP_SCOPE_SUBTREE => Some(Scope::Subtree),
+        sys::LDAP_SCOPE_SUBORDINATE => Some(Scope::Subordinate),
+        _ => None,
+    }
+}
+
+/// The library's number for `scope`.
+fn scope_number(scope: Scope) -> c_int {
+    match scope {
+        Scope::Base => sys::LDAP_SCOPE_BASE,
+        Scope::OneLevel => sys::LDAP_SCOPE_ONELEVEL,
+        Scope::Subtree => sys::LDAP_SCOPE_SUBTREE,
+        Scope::Subordinate => sys::LDAP_SCOPE_SUBORDINATE,
+    }
+}
+
 impl Ldap for Libldap {
     fn parse_url(&self, url: &[u8]) -> Result<Search, UrlError> {
         let mem = |OutOfMemory| UrlError::MEM;
@@ -153,9 +175,9 @@ impl Ldap for Libldap {
             let d = unsafe { &*lud };
             // SAFETY: NULL or the library's C strings, alive until the
             // description is freed.
-            let dn = unsafe { copied(d.lud_dn) }?;
+            let dn = unsafe { copied(d.lud_dn) }.map_err(mem)?;
             // SAFETY: as above.
-            let filter = unsafe { copied(d.lud_filter) }?;
+            let filter = unsafe { copied(d.lud_filter) }.map_err(mem)?;
             let attrs = if d.lud_attrs.is_null() {
                 None
             } else {
@@ -170,20 +192,21 @@ impl Ldap for Libldap {
                         break;
                     }
                     // SAFETY: one of the list's C strings.
-                    all.try_push(unsafe { copied(a) }?.expect("not NULL"))?;
+                    let a = unsafe { copied(a) }.map_err(mem)?.expect("not NULL");
+                    all.try_push(a).map_err(mem)?;
                 }
                 Some(all)
             };
             Ok(Search {
                 dn,
-                scope: Scope(d.lud_scope),
+                scope: scope_of(d.lud_scope).ok_or(UrlError(sys::LDAP_URL_ERR_BADSCOPE))?,
                 filter,
                 attrs,
             })
         })();
         // SAFETY: the library's description, freed once, not used after.
         unsafe { sys::ldap_free_urldesc(lud) };
-        search.map_err(mem)
+        search
     }
 
     fn session(
@@ -349,7 +372,10 @@ fn c_list(zs: &[Vec<u8>]) -> Result<Vec<*mut c_char>, OutOfMemory> {
 
 impl Session for Libsession {
     fn set_version(&mut self, version: Version) {
-        let version: c_int = version.number();
+        let version: c_int = match version {
+            Version::V2 => sys::LDAP_VERSION2,
+            Version::V3 => sys::LDAP_VERSION3,
+        };
         // SAFETY: a live session, and the option's int.
         unsafe {
             sys::ldap_set_option(
@@ -485,7 +511,7 @@ impl Session for Libsession {
                     ld,
                     dn.as_ref()
                         .map_or(ptr::null(), |d| d.as_ptr().cast::<c_char>()),
-                    search.scope.0,
+                    scope_number(search.scope),
                     filter
                         .as_ref()
                         .map_or(ptr::null(), |f| f.as_ptr().cast::<c_char>()),

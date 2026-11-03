@@ -26,7 +26,7 @@ use crate::save;
 
 pub use crate::save::{CacheFile, SaveError};
 use crate::share::{Kind, Share, ShareInUse, ShareLock, watched};
-use crate::time::{Clock as _, SystemClock};
+use crate::time::SystemClock;
 use crate::trace;
 
 /// A transfer's configuration. `Multi::add` takes it by value to run it
@@ -1334,8 +1334,7 @@ impl Easy {
     }
 
     /// Run the transfer to its end, blocking (`curl_easy_perform`), in the
-    /// handle's own multi, made the first time with the system's clock
-    /// and network.
+    /// handle's own multi, made the first time with the system's network.
     pub fn perform(&mut self) -> Result<(), Error> {
         self.perform_by(false)
     }
@@ -1359,18 +1358,15 @@ impl Easy {
                     Ok(w) => Some(TryArc::try_new(w).map_err(oom)?),
                     Err(_) => None,
                 };
-                let env = Env {
-                    clock: try_box(SystemClock::new()).map_err(oom)?,
-                    // A multi whose resolver cannot be set up is not made
-                    // (`Curl_multi_handle`'s `goto error`).
-                    net: try_box(
-                        SystemNet::for_multi(crate::conn::threaded::Threads::EASY)
-                            .map_err(|_| ErrorKind::OutOfMemory)?,
-                    )
-                    .map_err(oom)?,
-                    arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
-                    waker,
-                };
+                // A multi whose resolver cannot be set up is not made
+                // (`Curl_multi_handle`'s `goto error`).
+                let net = try_box(
+                    SystemNet::for_multi(crate::conn::threaded::Threads::EASY)
+                        .map_err(|_| ErrorKind::OutOfMemory)?,
+                )
+                .map_err(oom)?;
+                let arena = ArenaPolicy::new(16, 0).expect("a valid policy");
+                let env = Env::new(net, arena, waker);
                 let mut multi = Multi::new(env).map_err(oom)?;
                 // As few TLS peers as C's `multi_easy` keeps.
                 multi.keep_tls_sessions_of(crate::tls::SessionCache::PERFORM_PEERS);

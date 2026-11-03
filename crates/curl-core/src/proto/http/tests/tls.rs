@@ -1303,8 +1303,9 @@ fn a_share_keeping_sessions_serves_them_across_multis() {
     share.keep(Kind::SslSessions).unwrap();
     let told = Told::new(&share);
     let talks = answering(4);
+    let clock = ManualClock::new().unwrap();
     for (i, talk) in talks[..2].iter().enumerate() {
-        let mut m = serving(Peer::Accepts, &[talk]);
+        let mut m = serving_on(clock.clone(), Peer::Accepts, &[talk]);
         let mut e = Easy::new();
         e.set_libraries(libraries.clone());
         e.set_share_watched(share.clone(), told.handler()).unwrap();
@@ -1502,8 +1503,9 @@ fn a_ticket_read_out_of_a_multi_is_its_share_s() {
     let share = Share::new().unwrap();
     share.keep(Kind::SslSessions).unwrap();
     let told = Told::new(&share);
+    let clock = ManualClock::new().unwrap();
     for (i, talk) in answering(2).iter().enumerate() {
-        let mut m = serving(Peer::Accepts, &[talk]);
+        let mut m = serving_on(clock.clone(), Peer::Accepts, &[talk]);
         m.make_handle_own();
         let mut e = only_connecting(&libraries);
         let components = crate::components::Components::new().unwrap();
@@ -2292,8 +2294,9 @@ fn an_imported_session_resumes_the_peer_its_hmac_names() {
     let talks = answering(3);
     let share = Share::new().unwrap();
     share.keep(Kind::SslSessions).unwrap();
+    let clock = ManualClock::new().unwrap();
     let transfer = |share: &Share, talk: &Conversation, verify: bool| {
-        let mut m = serving(Peer::Accepts, &[talk]);
+        let mut m = serving_on(clock.clone(), Peer::Accepts, &[talk]);
         let mut e = Easy::new();
         e.set_libraries(libraries.clone());
         e.set_share(Some(share.clone())).unwrap();

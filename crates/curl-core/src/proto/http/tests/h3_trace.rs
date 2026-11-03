@@ -88,6 +88,17 @@ fn quic_server_on(clock: ManualClock, replies: &[&[u8]]) -> Multi {
 /// the replies of its turn; and the conversations of those over IPv6,
 /// the address tried first.
 fn quic_peer(clock: ManualClock, conns: &[&[&[u8]]]) -> (Multi, Vec<Conversation>) {
+    let reads = Box::new(clock.clone());
+    quic_peer_reading(clock, reads, conns)
+}
+
+/// `quic_peer`, the multi reading `reads`, a clock that tells `clock`'s
+/// time.
+fn quic_peer_reading(
+    clock: ManualClock,
+    reads: Box<dyn crate::time::Clock>,
+    conns: &[&[&[u8]]],
+) -> (Multi, Vec<Conversation>) {
     let mut net = FakeNet::new(clock.clone()).with_name(
         "localhost",
         &[
@@ -111,12 +122,33 @@ fn quic_peer(clock: ManualClock, conns: &[&[&[u8]]]) -> (Multi, Vec<Conversation
         }
     }
     let env = Env {
-        clock: Box::new(clock),
+        clock: reads,
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
     (Multi::new(env).unwrap(), talks)
+}
+
+/// A clock that moves a millisecond on as each reading of it is taken,
+/// as the system's moves while a step runs: one clock with `ManualClock`
+/// it wraps, and with that one's clones.
+struct Ticking(ManualClock);
+
+impl crate::time::Clock for Ticking {
+    fn now(&self) -> crate::time::Instant {
+        let at = self.0.now();
+        self.0.advance(std::time::Duration::from_millis(1));
+        at
+    }
+
+    fn unix_time(&self) -> i64 {
+        self.0.unix_time()
+    }
+
+    fn identity(&self) -> crate::time::ClockId {
+        self.0.identity()
+    }
 }
 
 /// A GET of `https://localhost:PORT/` in HTTP/3 alone, by `e`.
@@ -674,11 +706,11 @@ fn a_stream_closed_before_its_head_fails() {
     );
 }
 
-/// A connection a share keeps is reused by a multi whose clock reads
-/// behind the one it was made under: it goes on reading its own, so the
-/// library is never handed a time before one it had.
+/// A connection a share keeps is reused by another multi on the one clock
+/// they read, the library never handed a time before one it had though
+/// the clock moves within each step.
 #[test]
-fn a_shared_connection_keeps_its_clock_under_another_multi() {
+fn a_shared_connection_is_reused_by_another_multi_on_their_clock() {
     use crate::share::{Kind, Share};
     let share = Share::new().unwrap();
     share.keep(Kind::Connections).unwrap();
@@ -698,16 +730,22 @@ fn a_shared_connection_keeps_its_clock_under_another_multi() {
             Told::Closed(4, 0x100),
         ]);
     }
-    let ahead = ManualClock::new().unwrap();
-    ahead.advance(std::time::Duration::from_secs(10));
+    // A clock that moves as it is read: the connection reads it again for
+    // each call into its library, whoever steps it, never the step's time
+    // from before an earlier call.
+    let clock = ManualClock::new().unwrap();
     let replies: &[&[u8]] = &[b"server flight", b"response", b"second"];
-    let mut first = quic_server_on(ahead, replies);
+    let on = |clock: &ManualClock| {
+        let reads = Box::new(Ticking(clock.clone()));
+        quic_peer_reading(clock.clone(), reads, &[replies]).0
+    };
+    let mut first = on(&clock);
     let mut e = tracing(FakeTls::new().unwrap(), &script);
     e.set_share(Some(share.clone())).unwrap();
     assert_eq!(h3_get(&mut first, e).result, Ok(()));
     // The second request's packet, once the first is done.
     script.lock().unwrap().out.extend([vec![5; 75], vec![]]);
-    let mut second = quic_server_on(ManualClock::new().unwrap(), replies);
+    let mut second = on(&clock);
     let mut e = tracing(FakeTls::new().unwrap(), &script);
     e.set_share(Some(share.clone())).unwrap();
     let ran = h3_get(&mut second, e);

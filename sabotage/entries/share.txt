@@ -570,16 +570,16 @@ witness: curl-core multi::doh_tests::a_handle_made_for_a_transfer_takes_up_its_s
 --- new
         probe.share = self.share.clone();
 
-=== a share's names are stamped and aged by a clock other than the share's
+=== a share's names are stamped and aged by a clock other than its users'
 file: crates/curl-core/src/conn/dns.rs
-witness: curl-core multi::socket_tests::a_share_s_names_age_by_the_share_s_clock_whichever_multi_uses_them
+witness: curl-core multi::socket_tests::a_share_s_names_age_by_the_clock_of_the_multis_that_use_it
 features: test-util debug-hooks
 --- old
                 let now = share.now();
 --- new
-                let now = crate::time::Clock::now(&crate::time::SystemClock::new());
+                let now = crate::time::SystemClock::new().now();
 
-=== a share's public suffix list expires by a clock other than the share's
+=== a share's public suffix list expires by a clock other than its users'
 file: crates/curl-core/src/psl.rs
 witness: curl-core proto::http::tests::a_list_is_kept_by_the_multi_or_the_share_until_its_time
 features: test-util debug-hooks
@@ -587,5 +587,37 @@ features: test-util debug-hooks
                 let now = share.now();
                 let share = share.clone();
 --- new
-                let now = crate::time::Clock::now(&crate::time::SystemClock::new());
+                let now = crate::time::SystemClock::new().now();
                 let share = share.clone();
+
+=== a share used by multis on two clocks goes on unnoticed
+file: crates/curl-core/src/share.rs
+witness: curl-core multi::socket_tests::a_share_used_by_multis_on_two_clocks_fails_loudly
+features: test-util debug-hooks
+--- old
+            let kept = self.0.clock.get_or_init(|| clock.clone());
+            debug_assert_eq!(
+                kept.identity(),
+                clock.identity(),
+                "a share's users read one clock"
+            );
+--- new
+            self.0.clock.get_or_init(|| clock.clone());
+
+=== a multi using a share's names does not give it its clock
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::socket_tests::a_share_s_names_age_by_the_clock_of_the_multis_that_use_it
+features: test-util debug-hooks
+--- old
+        share.used_under(self.clock);
+--- new
+        // The share is not told of the multi's clock.
+
+=== the clones of a manual clock are taken for clocks of their own
+file: crates/curl-core/src/time.rs
+witness: curl-core multi::socket_tests::a_share_s_names_age_by_the_clock_of_the_multis_that_use_it
+features: test-util debug-hooks
+--- old
+        ClockId::of(&*self.0)
+--- new
+        ClockId::of(self)

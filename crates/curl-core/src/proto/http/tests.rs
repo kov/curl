@@ -1170,7 +1170,11 @@ const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
 /// A multi whose server at `PORT`, `peer`, takes the connections
 /// `conversations` in turn.
 fn serving(peer: Peer, conversations: &[&Conversation]) -> Multi {
-    let clock = ManualClock::new().unwrap();
+    serving_on(ManualClock::new().unwrap(), peer, conversations)
+}
+
+/// As `serving`, on `clock`: multis that use one share read one clock.
+fn serving_on(clock: ManualClock, peer: Peer, conversations: &[&Conversation]) -> Multi {
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
     let mut net = FakeNet::new(clock.clone()).with_peer(at, peer);
     for c in conversations {
@@ -6070,42 +6074,43 @@ fn a_cookie_file_s_lines_tell_the_public_suffixes_inside_the_walk() {
 
 /// A multi's transfers use one list, as long as it is good: a handle's
 /// next transfer loads none, and one 72 hours on loads another. A share
-/// keeping one uses its own across multis, 72 hours on by its own clock:
-/// the time of the multi using it means nothing to it.
+/// keeping one uses its own across multis, on the one clock they read.
 #[test]
 fn a_list_is_kept_by_the_multi_or_the_share_until_its_time() {
-    use crate::share::{self, Kind, Share};
+    use crate::share::{Kind, Share};
     use std::sync::atomic::Ordering::Relaxed;
     const HOURS_72: std::time::Duration = std::time::Duration::from_secs(72 * 3600);
     let asked = || LATEST_ASKED.swap(0, Relaxed);
-    let on_two = |share: Option<(&Share, &ManualClock)>| {
+    let on_two = |share: Option<&Share>| {
         let clock = ManualClock::new().unwrap();
         let at = SocketAddr::from(([127, 0, 0, 1], PORT));
         let talks = [(); 3].map(|()| Conversation::replies(&[SETS_TWO], true));
-        let mut net = FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts);
-        for talk in &talks {
-            net = net.with_conversation(at, talk.clone());
-        }
-        let env = Env {
-            clock: Box::new(clock.clone()),
-            net: Box::new(net),
-            arena: ArenaPolicy::new(16, 0).unwrap(),
-            waker: None,
-        };
-        let mut m = Multi::new(env).unwrap();
+        // Two multis on the one clock, which a share's transfers take
+        // turns in.
+        let which = |n: usize| if share.is_some() { n % 2 } else { 0 };
+        let mut multis = [0, 1].map(|k| {
+            let mut net = FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts);
+            for (_, talk) in talks.iter().enumerate().filter(|(n, _)| which(*n) == k) {
+                net = net.with_conversation(at, talk.clone());
+            }
+            let env = Env {
+                clock: Box::new(clock.clone()),
+                net: Box::new(net),
+                arena: ArenaPolicy::new(16, 0).unwrap(),
+                waker: None,
+            };
+            Multi::new(env).unwrap()
+        });
         let steps = [(None, 1), (None, 0), (Some(HOURS_72), 1)];
-        let keeper = share.map_or(&clock, |(_, kept_by)| kept_by);
-        for ((advance, want), talk) in steps.into_iter().zip(talks) {
+        for (n, ((advance, want), talk)) in steps.into_iter().zip(talks).enumerate() {
             if let Some(d) = advance {
-                keeper.advance(d);
+                clock.advance(d);
             }
-            if share.is_some() {
-                clock.advance(HOURS_72 * 2);
-            }
+            let m = &mut multis[which(n)];
             let mut e = Easy::new();
             e.set_libraries(with_psl());
-            e.set_share(share.map(|(s, _)| s.clone())).unwrap();
-            let ran = get_with(&mut m, e, "/", talk, www_host_and_jar_on);
+            e.set_share(share.cloned()).unwrap();
+            let ran = get_with(m, e, "/", talk, www_host_and_jar_on);
             assert_eq!(ran.result, Ok(()));
             assert_eq!(asked(), want, "{share:?} {advance:?}");
         }
@@ -6113,14 +6118,9 @@ fn a_list_is_kept_by_the_multi_or_the_share_until_its_time() {
     let _serial = PSL_TESTS.lock().unwrap_or_else(|e| e.into_inner());
     asked();
     on_two(None);
-    let kept_by = ManualClock::new().unwrap();
-    let share = Share::with_env(share::Env {
-        clock: Box::new(kept_by.clone()),
-        net: Box::new(crate::conn::io::SystemNet::default()),
-    })
-    .unwrap();
+    let share = Share::new().unwrap();
     share.keep(Kind::Psl).unwrap();
-    on_two(Some((&share, &kept_by)));
+    on_two(Some(&share));
 }
 
 /// The list's asked-for count is the process's: tests that load it take
@@ -7844,6 +7844,10 @@ impl crate::time::Clock for Ticking {
 
     fn unix_time(&self) -> i64 {
         0
+    }
+
+    fn identity(&self) -> crate::time::ClockId {
+        crate::time::ClockId::of(&self.0)
     }
 }
 

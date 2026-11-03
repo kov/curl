@@ -113,6 +113,7 @@ impl<H: Host> EngineRest<'_, H> {
             .expect("a transfer of the multi")
             .easy;
         let share = easy.shared(kind)?.clone();
+        share.used_under(self.clock);
         Some(Kept {
             share,
             watch: easy.share_watch.clone(),

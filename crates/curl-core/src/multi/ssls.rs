@@ -21,7 +21,7 @@ use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::handler::Handler;
 use crate::share::{Access, Kind, Share, ShareLock, watched};
-use crate::time::{Clock as _, SystemClock};
+use crate::time::SystemClock;
 use crate::tls::cache::{ExportStop, Exported};
 use crate::tls::{SessionCache, SessionExport, SessionFor, unpack_session};
 use crate::trace::note_line;

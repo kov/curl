@@ -41,7 +41,9 @@ use crate::id::{Arena, ArenaPolicy, Key};
 use crate::progress::Speedometer;
 use crate::progress::rate::{RateLimits, Way};
 use crate::share::{Kind, Share, ShareInUse, ShareLock, watched};
-use crate::time::{Clock, Instant};
+#[cfg(any(test, feature = "test-util"))]
+use crate::time::Clock;
+use crate::time::Instant;
 use crate::tls::{TlsNative, TlsShared};
 use crate::upload::Readers;
 
@@ -248,19 +250,34 @@ pub struct NoEvents;
 
 impl<H: Host> MultiEvents<H> for NoEvents {}
 
-/// How a multi is made: its clock, its network, the ids it hands out, and
-/// the waker other threads use to interrupt its waits. Without a waker,
-/// nothing can (C always makes one; the shim does too).
+/// How a multi is made: its network, the ids it hands out, and the waker
+/// other threads use to interrupt its waits. Without a waker, nothing can
+/// (C always makes one; the shim does too). It reads the system's clock,
+/// as C does; only a test gives it another.
 pub struct Env {
-    /// The multi's time. A share's names and public suffix list are kept
-    /// by the share's own clock, whatever this one reads. Its connections
-    /// are not: a connection carries the instants of the multis that used
-    /// it, so every multi whose transfers use one share that keeps
-    /// connections must read the same time, as `SystemClock`s all do.
+    /// The multi's time, a test's own. Every multi using one share reads
+    /// one clock, clones of one `ManualClock` say, as the share's names
+    /// and connections carry their instants: the debug build panics at a
+    /// share's use under a second.
+    #[cfg(any(test, feature = "test-util"))]
     pub clock: Box<dyn Clock>,
     pub net: Box<dyn Net + Send>,
     pub arena: ArenaPolicy,
     pub waker: Option<TryArc<Waker>>,
+}
+
+impl Env {
+    /// A multi on the system's clock, with `net`, `arena` and `waker`.
+    pub fn new(net: Box<dyn Net + Send>, arena: ArenaPolicy, waker: Option<TryArc<Waker>>) -> Env {
+        Env {
+            #[cfg(any(test, feature = "test-util"))]
+            clock: curl_alloc::try_box(crate::time::SystemClock::new())
+                .expect("a clock that holds nothing takes no memory"),
+            net,
+            arena,
+            waker,
+        }
+    }
 }
 
 /// The multi's state after a callback's abort.
@@ -530,7 +547,10 @@ impl<H: Host> Multi<H> {
             limits,
             pending_after: None,
             sockets: SocketTable::new(),
+            #[cfg(any(test, feature = "test-util"))]
             clock: crate::time::SharedClock::new(env.clock)?,
+            #[cfg(not(any(test, feature = "test-util")))]
+            clock: crate::time::SharedClock::system(),
             net,
             ipv6_works,
             fail_ipv6,

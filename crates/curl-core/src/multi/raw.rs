@@ -251,7 +251,6 @@ impl When {
     }
 
     fn on_no_clock() -> When {
-        use crate::time::Clock as _;
         let clock = crate::time::SystemClock::new();
         When {
             now: clock.now(),
@@ -546,7 +545,6 @@ fn pool_socket(pool: Option<&mut Pool>, easy: &mut Easy) -> Option<SocketKey> {
 /// Now, for a raw send or receive on a share's connection by a handle
 /// that has no multi, whose layers keep no time but their own.
 fn no_clock() -> Instant {
-    use crate::time::Clock as _;
     crate::time::SystemClock::new().now()
 }
 

@@ -26,7 +26,6 @@ use curl_core::multi::{
     NotifyCx, NotifyKind, PushOffer, Pushed, SocketEvent, SocketFor, SocketWhat, TimerChange,
     TransferId, UnknownSocket, WaitMode,
 };
-use curl_core::time::SystemClock;
 
 use crate::easy::{self, ShimEasy};
 use crate::error_codes::{MultiError, easy_code, multi_code};
@@ -95,7 +94,7 @@ pub(crate) struct ShimMulti {
 }
 
 impl ShimMulti {
-    /// A multi with the system's clock and network. Without a waker, which
+    /// A multi with the system's network. Without a waker, which
     /// takes a descriptor, `curl_multi_wakeup` fails, as in C.
     fn new() -> Result<ShimMulti, OutOfMemory> {
         // A multi whose resolver cannot be set up is not made
@@ -110,13 +109,9 @@ impl ShimMulti {
             Ok(w) => Some(TryArc::try_new(w)?),
             Err(_) => None,
         };
-        let env = Env {
-            clock: try_box(SystemClock::new())?,
-            net,
-            // Row 0 is C's admin handle's, so ids equal C's.
-            arena: ArenaPolicy::new(16, 1).expect("a valid policy"),
-            waker: waker.clone(),
-        };
+        // Row 0 is C's admin handle's, so ids equal C's.
+        let arena = ArenaPolicy::new(16, 1).expect("a valid policy");
+        let env = Env::new(net, arena, waker.clone());
         Ok(ShimMulti {
             magic: AtomicU32::new(MAGIC),
             stack: MultiStack::default(),

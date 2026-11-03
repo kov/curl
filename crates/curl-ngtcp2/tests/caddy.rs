@@ -16,7 +16,7 @@ use curl_core::http3::{
     StreamEvent, StreamId,
 };
 use curl_core::options::{CaSetting, ColdGroup as _, TlsOptions};
-use curl_core::time::{Clock, SystemClock};
+use curl_core::time::SystemClock;
 use curl_core::tls::{
     CaDefaults, Kept, Notes, TlsBackend, TlsCx, TlsIdentity, TlsPeer, TlsPeerKind,
 };

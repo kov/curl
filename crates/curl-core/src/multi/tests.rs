@@ -257,6 +257,10 @@ impl Clock for LaggingClock {
     fn unix_time(&self) -> i64 {
         self.inner.unix_time()
     }
+
+    fn identity(&self) -> crate::time::ClockId {
+        self.inner.identity()
+    }
 }
 
 fn lagging_multi() -> (Multi, std::sync::Arc<crate::test_cell::Cell<Duration>>) {

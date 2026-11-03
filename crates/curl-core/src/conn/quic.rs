@@ -2322,6 +2322,23 @@ pub(crate) mod tests {
         );
     }
 
+    /// The packets a connection receives are handed to its library at the
+    /// time of the clock it was made under, read as they are, not at the
+    /// time of whatever context calls it.
+    #[test]
+    fn received_packets_are_handed_over_at_the_connection_s_time() {
+        let script = Script::new();
+        let (mut q, mut cx) = quic_over(&script, true);
+        let own = std::mem::replace(&mut cx.clock, ManualClock::new().unwrap());
+        own.advance(Duration::from_secs(5));
+        cx.clock.advance(Duration::from_secs(2));
+        let mut below = Layers::default();
+        below.datagrams.push_back(Ok(b"one".to_vec()));
+        cx.below = Some(below);
+        q.ingress(&mut cx).unwrap();
+        assert_eq!(script.lock().unwrap().last_ts, Some(own.now()));
+    }
+
     /// A connection through a tunnel receives in a room of its own, C's
     /// 64 KiB grown to the path's largest datagram (`tunnel_inbuf`), and
     /// never asks for the multi's, which the proxy's connection below it

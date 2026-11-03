@@ -657,6 +657,7 @@ impl<H: Host> StepCx<'_, H> {
     /// list, kept by its share or its multi, if the build has one.
     pub(crate) fn easy_and_suffixes(&mut self) -> (&mut Easy, Option<crate::psl::PslUse<'_>>) {
         let now = self.rest.now;
+        let clock = self.rest.clock;
         let multi = &self.rest.caches.psl;
         let easy = &mut *self
             .rest
@@ -667,7 +668,11 @@ impl<H: Host> StepCx<'_, H> {
             .easy;
         let check = easy.libraries().psl.map(|library| {
             let watch = easy.share_watch.as_ref();
-            crate::psl::PslUse::new(easy.shared(Kind::Psl), watch, multi, library, now)
+            let share = easy.shared(Kind::Psl);
+            if let Some(share) = share {
+                share.used_under(clock);
+            }
+            crate::psl::PslUse::new(share, watch, multi, library, now)
         });
         (easy, check)
     }

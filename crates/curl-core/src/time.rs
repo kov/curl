@@ -1,4 +1,5 @@
-//! Time, as the engine sees it: instants read from a clock it is given.
+//! Time, as the engine sees it: instants read from the system's monotonic
+//! clock, or under `test-util` from a clock the test gives.
 //!
 //! Nothing below the multi reads the time itself. The drive reads its
 //! clock before each step and passes that `Instant` down, so under a
@@ -9,9 +10,8 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 
 /// A point in time: microseconds since its clock's epoch, plus one, so
-/// that `Option<Instant>` takes no more room than an instant. Instants from
-/// different clocks are not comparable; each multi has one clock, and each
-/// share one for the names and public suffixes it keeps.
+/// that `Option<Instant>` takes no more room than an instant. Every
+/// instant is the system clock's, but in a test given a clock of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Instant(NonZeroU64);
 
@@ -52,7 +52,11 @@ impl TimeLimit {
     }
 }
 
-/// Where a multi reads the time.
+/// Where a multi reads the time, for the tests that give it one
+/// (`multi::Env::clock`). A normal build has no clock to choose: every
+/// multi and share reads the system's, as C reads the OS's monotonic
+/// clock (`curlx_now`).
+#[cfg(any(test, feature = "test-util"))]
 pub trait Clock: Send {
     fn now(&self) -> Instant;
 
@@ -60,35 +64,103 @@ pub trait Clock: Send {
     /// negative before (`time(NULL)`). Read only where a date is compared
     /// with the present, never for a time limit.
     fn unix_time(&self) -> i64;
+
+    /// Which time it reads: two clocks of one identity read one time, as
+    /// the clones of a `ManualClock` do, and every `SystemClock`. A
+    /// share's users must read one ([`ClockId`]).
+    fn identity(&self) -> ClockId;
+}
+
+/// Which time a clock reads (`Clock::identity`).
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClockId(usize);
+
+#[cfg(any(test, feature = "test-util"))]
+impl ClockId {
+    /// The system's time, which every `SystemClock` reads.
+    pub const SYSTEM: ClockId = ClockId(0);
+
+    /// The time of whatever `at` points to, which no two live values
+    /// share: a clock's own, or the state its clones share.
+    pub fn of<T: ?Sized>(at: &T) -> ClockId {
+        ClockId((at as *const T).cast::<()>() as usize)
+    }
 }
 
 /// A multi's clock, held once and shared: the multi reads it, and so does
 /// each QUIC connection it makes, which keeps reading the clock it was
 /// made under wherever it is used later. The time a connection hands its
-/// library never comes from another clock, so it never runs back.
-#[derive(Clone)]
-pub(crate) struct SharedClock(curl_alloc::TryArc<std::sync::Mutex<Box<dyn Clock>>>);
+/// library never comes from another clock, so it never runs back. In a
+/// normal build it is the system's, and takes no room.
+#[cfg(not(any(test, feature = "test-util")))]
+#[derive(Clone, Debug)]
+pub(crate) struct SharedClock;
 
+#[cfg(not(any(test, feature = "test-util")))]
 impl SharedClock {
+    /// The system's clock.
+    pub(crate) fn system() -> Self {
+        SharedClock
+    }
+
+    pub(crate) fn now(&self) -> Instant {
+        SystemClock::new().now()
+    }
+
+    pub(crate) fn unix_time(&self) -> i64 {
+        SystemClock::new().unix_time()
+    }
+}
+
+/// A multi's clock, held once and shared (as in a normal build): the
+/// system's, or the one a test gave the multi.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Clone)]
+pub(crate) enum SharedClock {
+    System,
+    Given(curl_alloc::TryArc<std::sync::Mutex<Box<dyn Clock>>>),
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl SharedClock {
+    /// `clock`, held once; the system's needs no holding.
     pub(crate) fn new(clock: Box<dyn Clock>) -> Result<Self, curl_alloc::OutOfMemory> {
-        Ok(SharedClock(curl_alloc::TryArc::try_new(
+        if clock.identity() == ClockId::SYSTEM {
+            return Ok(SharedClock::System);
+        }
+        Ok(SharedClock::Given(curl_alloc::TryArc::try_new(
             std::sync::Mutex::new(clock),
         )?))
     }
 
-    fn get(&self) -> std::sync::MutexGuard<'_, Box<dyn Clock>> {
-        self.0.lock().expect("no reading of a clock panics")
+    fn get(given: &std::sync::Mutex<Box<dyn Clock>>) -> std::sync::MutexGuard<'_, Box<dyn Clock>> {
+        given.lock().expect("no reading of a clock panics")
     }
 
     pub(crate) fn now(&self) -> Instant {
-        self.get().now()
+        match self {
+            SharedClock::System => SystemClock::new().now(),
+            SharedClock::Given(given) => Self::get(given).now(),
+        }
     }
 
     pub(crate) fn unix_time(&self) -> i64 {
-        self.get().unix_time()
+        match self {
+            SharedClock::System => SystemClock::new().unix_time(),
+            SharedClock::Given(given) => Self::get(given).unix_time(),
+        }
+    }
+
+    pub(crate) fn identity(&self) -> ClockId {
+        match self {
+            SharedClock::System => ClockId::SYSTEM,
+            SharedClock::Given(given) => Self::get(given).identity(),
+        }
     }
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl Clock for SharedClock {
     fn now(&self) -> Instant {
         SharedClock::now(self)
@@ -97,42 +169,72 @@ impl Clock for SharedClock {
     fn unix_time(&self) -> i64 {
         SharedClock::unix_time(self)
     }
+
+    fn identity(&self) -> ClockId {
+        SharedClock::identity(self)
+    }
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl std::fmt::Debug for SharedClock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("SharedClock")
     }
 }
 
-/// The system's monotonic clock (C's `Curl_now`). Every one reads the
-/// same time: a connection a share keeps is used under the clocks of
-/// several multis, and its times compare under each (`multi::Env::clock`).
-#[derive(Debug)]
-pub struct SystemClock(());
+// The system's clock is the tests' to give a multi; a normal build reads
+// it with nothing to give.
+#[cfg(any(test, feature = "test-util"))]
+pub use system::SystemClock;
+#[cfg(not(any(test, feature = "test-util")))]
+pub(crate) use system::SystemClock;
 
-impl SystemClock {
-    pub fn new() -> Self {
-        SystemClock(())
+mod system {
+    use std::time::Duration;
+
+    use super::Instant;
+
+    /// The system's monotonic clock (C's `curlx_now`), and its calendar
+    /// time (`time(NULL)`).
+    #[derive(Debug)]
+    pub struct SystemClock(());
+
+    impl Default for SystemClock {
+        fn default() -> Self {
+            Self::new()
+        }
     }
-}
 
-impl Default for SystemClock {
-    fn default() -> Self {
-        Self::new()
+    impl SystemClock {
+        pub fn new() -> Self {
+            SystemClock(())
+        }
+
+        pub fn now(&self) -> Instant {
+            Instant::EPOCH.after(curl_os::time::monotonic())
+        }
+
+        pub fn unix_time(&self) -> i64 {
+            let secs = |d: Duration| i64::try_from(d.as_secs()).unwrap_or(i64::MAX);
+            match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+                Ok(after) => secs(after),
+                Err(before) => -secs(before.duration()),
+            }
+        }
     }
-}
 
-impl Clock for SystemClock {
-    fn now(&self) -> Instant {
-        Instant::EPOCH.after(curl_os::time::monotonic())
-    }
+    #[cfg(any(test, feature = "test-util"))]
+    impl super::Clock for SystemClock {
+        fn now(&self) -> Instant {
+            SystemClock::now(self)
+        }
 
-    fn unix_time(&self) -> i64 {
-        let secs = |d: Duration| i64::try_from(d.as_secs()).unwrap_or(i64::MAX);
-        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            Ok(after) => secs(after),
-            Err(before) => -secs(before.duration()),
+        fn unix_time(&self) -> i64 {
+            SystemClock::unix_time(self)
+        }
+
+        fn identity(&self) -> super::ClockId {
+            super::ClockId::SYSTEM
         }
     }
 }
@@ -190,6 +292,10 @@ impl Clock for ManualClock {
         let epoch = self.at().1;
         epoch + self.elapsed_secs()
     }
+
+    fn identity(&self) -> ClockId {
+        ClockId::of(&*self.0)
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +333,23 @@ mod tests {
             .as_secs();
         let now = i64::try_from(now).unwrap();
         assert!((now - 1..=now).contains(&told), "{told} for {now}");
+    }
+
+    /// A manual clock's clones are one clock, another manual clock is
+    /// not, and every system clock is the system's.
+    #[test]
+    fn a_clock_s_identity_is_the_time_it_reads() {
+        let clock = ManualClock::new().unwrap();
+        let other = ManualClock::new().unwrap();
+        assert_eq!(clock.identity(), clock.clone().identity());
+        assert_ne!(clock.identity(), other.identity());
+        assert_ne!(clock.identity(), ClockId::SYSTEM);
+        assert_eq!(Clock::identity(&SystemClock::new()), ClockId::SYSTEM);
+        let held = SharedClock::new(Box::new(clock.clone())).unwrap();
+        assert_eq!(held.identity(), clock.identity());
+        // The system's is not held at all.
+        let system = SharedClock::new(Box::new(SystemClock::new())).unwrap();
+        assert!(matches!(system, SharedClock::System));
     }
 
     #[test]

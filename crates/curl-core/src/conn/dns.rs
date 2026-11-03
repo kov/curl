@@ -90,8 +90,9 @@ pub(crate) enum Names<'a> {
 
 impl Names<'_> {
     /// Run `f` on the answers, as one use of them, at the time of their
-    /// keeper's clock: the share's are stamped and aged by its own, never
-    /// by the clock of the multi using them.
+    /// keeper's time: the share's are stamped and aged at the share's
+    /// (`Share::now`), read as the use begins, never at a time the multi
+    /// passes in.
     pub(crate) fn section<R>(&mut self, f: impl FnOnce(&mut Dated<'_>) -> R) -> R {
         match self {
             Names::Own { cache, now } => f(&mut Dated { cache, now: *now }),

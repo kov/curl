@@ -165,7 +165,7 @@ witness: curl-core proto::http::tests::h3_trace::a_stream_closed_before_its_head
 
 === a QUIC connection reads the time of whoever uses it
 file: crates/curl-core/src/conn/quic.rs
-witness: curl-core proto::http::tests::h3_trace::a_shared_connection_keeps_its_clock_under_another_multi
+witness: curl-core conn::quic::tests::received_packets_are_handed_over_at_the_connection_s_time
 --- old
         let from = d.from.unwrap_or(self.remote);
         let now = self.clock.now();
@@ -322,7 +322,7 @@ features: debug-hooks
 
 === a transfer in HTTP/3 alone does not allow HTTP/3 in a connection it reuses
 file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::h3_trace::a_shared_connection_keeps_its_clock_under_another_multi
+witness: curl-core proto::http::tests::h3_trace::a_shared_connection_is_reused_by_another_multi_on_their_clock
 --- old
             HttpVersion::Http3Only => (set(false, false, true), None),
 --- new

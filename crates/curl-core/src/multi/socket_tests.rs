@@ -131,7 +131,11 @@ impl Net for Counting {
 /// A multi over peers that refuse (port 2), stay silent (3) and accept
 /// after 5 ms (4), and the events that count its closes.
 fn networked() -> (Multi<Tagged>, ManualClock, Sockets) {
-    let clock = ManualClock::new().unwrap();
+    networked_on(ManualClock::new().unwrap())
+}
+
+/// As `networked`, on `clock`: multis that use one share read one clock.
+fn networked_on(clock: ManualClock) -> (Multi<Tagged>, ManualClock, Sockets) {
     let at = |port| SocketAddr::from(([127, 0, 0, 1], port));
     let closed = Arc::new(Cell::new(0));
     let net = FakeNet::new(clock.clone())
@@ -1206,8 +1210,9 @@ fn a_name_found_not_to_exist_after_the_race_began_is_kept_negative() {
     let (library, libraries) = no_such_names();
     let share = crate::share::Share::new().unwrap();
     share.keep(crate::share::Kind::Names).unwrap();
+    let clock = ManualClock::new().unwrap();
     for n in 1..=2 {
-        let (mut m, _clock, _ev) = networked();
+        let (mut m, _clock, _ev) = networked_on(clock.clone());
         let mut e = easy("http://nx.test:80/");
         e.set_libraries(libraries.clone());
         e.set_share(Some(share.clone())).unwrap();
@@ -1222,27 +1227,19 @@ fn a_name_found_not_to_exist_after_the_race_began_is_kept_negative() {
     }
 }
 
-/// A share's names are kept by the share's clock, whichever multi uses
-/// them: an answer kept under a multi whose time is far on goes stale once
-/// the share's time passes its timeout, though the next multi's is behind;
-/// and one kept under a multi whose time is behind stays good however far
-/// the next multi's time goes, while the share's stands still.
+/// A share's names are stamped and aged by the one clock of the multis
+/// that use it: an answer kept under one multi is good for the next until
+/// that clock passes its timeout, and then stale for both.
 #[test]
-fn a_share_s_names_age_by_the_share_s_clock_whichever_multi_uses_them() {
+fn a_share_s_names_age_by_the_clock_of_the_multis_that_use_it() {
     const TIMEOUT: Duration = Duration::from_secs(60);
     let (library, libraries) = no_such_names();
-    let kept_by = ManualClock::new().unwrap();
-    let share = crate::share::Share::with_env(crate::share::Env {
-        clock: Box::new(kept_by.clone()),
-        net: Box::new(crate::conn::io::SystemNet::default()),
-    })
-    .unwrap();
+    let share = crate::share::Share::new().unwrap();
     share.keep(crate::share::Kind::Names).unwrap();
-    let (mut late, late_clock, _late_ev) = networked();
-    let (mut early, early_clock, _early_ev) = networked();
-    late_clock.advance(Duration::from_secs(1000));
-    let fetch_from = |m: &mut Multi<Tagged>, url: &str| {
-        let mut e = easy(url);
+    let (mut first, clock, _first_ev) = networked();
+    let (mut second, _, _second_ev) = networked_on(clock.clone());
+    let fetch = |m: &mut Multi<Tagged>| {
+        let mut e = easy("http://nx.test:80/");
         e.set_libraries(libraries.clone());
         e.set_share(Some(share.clone())).unwrap();
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
@@ -1253,23 +1250,38 @@ fn a_share_s_names_age_by_the_share_s_clock_whichever_multi_uses_them() {
         m.remove(id, &mut NoEvents).unwrap();
         *library.0.lock().unwrap()
     };
-    let fetch = |m: &mut Multi<Tagged>| fetch_from(m, "http://nx.test:80/");
-    assert_eq!(fetch(&mut late), 1, "asked, and kept");
-    assert_eq!(
-        fetch(&mut early),
-        1,
-        "kept, though this multi's time is behind"
-    );
+    assert_eq!(fetch(&mut first), 1, "asked, and kept");
     // A negative answer ages twice as fast: half the timeout is all of it.
-    kept_by.advance(TIMEOUT / 2);
-    assert_eq!(fetch(&mut early), 2, "stale by the share's time");
-    // Another name, kept under the multi that is behind: both multis'
-    // time running on leaves it good.
-    let other = |m: &mut Multi<Tagged>| fetch_from(m, "http://other.test:80/");
-    assert_eq!(other(&mut early), 3, "asked, and kept");
-    late_clock.advance(TIMEOUT * 100);
-    early_clock.advance(TIMEOUT * 100);
-    assert_eq!(other(&mut late), 3, "good by the share's time");
+    clock.advance(TIMEOUT / 2 - Duration::from_secs(1));
+    assert_eq!(fetch(&mut second), 1, "kept, for the other multi too");
+    clock.advance(Duration::from_secs(2));
+    assert_eq!(fetch(&mut second), 2, "stale by the multis' clock");
+    assert_eq!(fetch(&mut first), 2, "kept again, for both");
+}
+
+/// The multis that use one share read one clock, as the share's names
+/// and connections carry its instants: a test that gives two of them
+/// clocks of their own fails at the second's first use of the share.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "a share's users read one clock")]
+fn a_share_used_by_multis_on_two_clocks_fails_loudly() {
+    let (_, libraries) = no_such_names();
+    let share = crate::share::Share::new().unwrap();
+    share.keep(crate::share::Kind::Names).unwrap();
+    let (mut first, _, _first_ev) = networked();
+    let (mut second, _, _second_ev) = networked();
+    for m in [&mut first, &mut second] {
+        let mut e = easy("http://nx.test:80/");
+        e.set_libraries(libraries.clone());
+        e.set_share(Some(share.clone())).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        assert_eq!(
+            crate::multi::wait::drive_by_events(m, id),
+            Ok(Err(crate::error::ErrorKind::CouldntResolveHost))
+        );
+        m.remove(id, &mut NoEvents).unwrap();
+    }
 }
 
 /// A resolver library is asked only for the families the system can use:

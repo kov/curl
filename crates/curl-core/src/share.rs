@@ -26,7 +26,7 @@ use crate::cookie::Jar;
 use crate::hsts::Hsts;
 use crate::multi::SessionsOut;
 use crate::psl::PslCache;
-use crate::time::{Clock, Instant, SystemClock};
+use crate::time::{Instant, SharedClock};
 use crate::tls::SessionCache;
 
 /// A handle's share cannot change now: the handle holds a connection
@@ -109,17 +109,11 @@ struct Inner {
     /// What the connections left idle at the end are closed through, as
     /// C's share closes them through its own internal handle.
     net: Mutex<Box<dyn Net + Send>>,
-    /// The time its names and public suffix list are kept by: whichever
-    /// multi uses them, the instants they hold are this clock's, read as
-    /// each use begins.
-    clock: Mutex<Box<dyn Clock>>,
-}
-
-/// How a share is made: the clock its names and public suffix list are
-/// kept by, and the network its idle connections close through.
-pub struct Env {
-    pub clock: Box<dyn Clock>,
-    pub net: Box<dyn Net + Send>,
+    /// The clock of the multis that use it, which must be one: their
+    /// names and connections carry its instants. A normal build has only
+    /// the system's; a test's share takes the first multi's.
+    #[cfg(any(test, feature = "test-util"))]
+    clock: OnceLock<SharedClock>,
 }
 
 /// A handle holds the share, so what it keeps cannot change.
@@ -127,23 +121,13 @@ pub struct Env {
 pub struct InUse;
 
 impl Share {
-    /// A share keeping nothing yet, on the system's clock, whose
-    /// connections are the system's.
+    /// A share keeping nothing yet, whose connections are the system's.
     pub fn new() -> Result<Share, OutOfMemory> {
         Share::with_net(try_box(SystemNet::default())?)
     }
 
-    /// A share keeping nothing yet, on the system's clock, whose
-    /// connections are `net`'s.
+    /// A share keeping nothing yet, whose connections are `net`'s.
     pub fn with_net(net: Box<dyn Net + Send>) -> Result<Share, OutOfMemory> {
-        Share::with_env(Env {
-            clock: try_box(SystemClock::new())?,
-            net,
-        })
-    }
-
-    /// A share keeping nothing yet, made as `env` says.
-    pub fn with_env(Env { clock, net }: Env) -> Result<Share, OutOfMemory> {
         Ok(Share(TryArc::try_new(Inner {
             keeps: AtomicU8::new(0),
             pool: Mutex::new(Pool::new()?),
@@ -154,7 +138,8 @@ impl Share {
             hsts: Mutex::new(None),
             psl: PslCache::default(),
             net: Mutex::new(net),
-            clock: Mutex::new(clock),
+            #[cfg(any(test, feature = "test-util"))]
+            clock: OnceLock::new(),
         })?))
     }
 
@@ -247,10 +232,35 @@ impl Share {
         self.0.pool.try_lock().is_err()
     }
 
-    /// The time by its clock, which what it keeps of names and public
-    /// suffixes is stamped and aged by.
+    /// The time its names and public suffixes are stamped and aged by:
+    /// the system's, or in a test the clock of the multis that use it.
     pub(crate) fn now(&self) -> Instant {
-        lock(&self.0.clock).now()
+        #[cfg(any(test, feature = "test-util"))]
+        let clock = self
+            .0
+            .clock
+            .get()
+            .expect("a share's names are used by a multi first");
+        #[cfg(not(any(test, feature = "test-util")))]
+        let clock = SharedClock::system();
+        clock.now()
+    }
+
+    /// A multi reading `clock` uses what the share keeps. Every user of
+    /// a share reads one clock, as the system's are all one: in a test,
+    /// the share takes the first one's, and the debug build panics at a
+    /// use under another.
+    #[cfg_attr(not(any(test, feature = "test-util")), allow(unused_variables))]
+    pub(crate) fn used_under(&self, clock: &SharedClock) {
+        #[cfg(any(test, feature = "test-util"))]
+        {
+            let kept = self.0.clock.get_or_init(|| clock.clone());
+            debug_assert_eq!(
+                kept.identity(),
+                clock.identity(),
+                "a share's users read one clock"
+            );
+        }
     }
 
     /// The names kept, locked.

@@ -1929,6 +1929,36 @@ fn a_url_handle_set_forgets_the_effective_url() {
         crate::url::curl_url_cleanup(u);
     }
     std::fs::remove_file(path).unwrap();
+
+    // Set from the transfer's own write function, it forgets the URL of
+    // the transfer under way, which no later request sets again.
+    unsafe extern "C" fn forgetting(
+        _: *mut c_char,
+        size: usize,
+        n: usize,
+        c: *mut c_void,
+    ) -> usize {
+        // SAFETY: the handle, live while its transfer runs.
+        let set =
+            unsafe { curl_easy_setopt(c.cast(), ffi::CURLOPT_CURLU, ptr::null_mut::<c_void>()) };
+        assert_eq!(set, CURLE_OK);
+        size * n
+    }
+    let (path, url) = file("curlu-effective-cb", b"x");
+    let c = curl_easy_init();
+    function(
+        c,
+        ffi::CURLOPT_WRITEFUNCTION,
+        forgetting as WriteFn as *const (),
+    );
+    pointer(c, ffi::CURLOPT_WRITEDATA, c);
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    assert_eq!(effective(c), c"", "set from a callback");
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    std::fs::remove_file(path).unwrap();
 }
 
 /// A handle holds only the pointer `CURLOPT_CURLU` gave it, never the

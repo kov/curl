@@ -517,3 +517,11 @@ witness: curl-sys-abi handle_tests::a_url_handle_set_forgets_the_effective_url
             easy::EasyRef::Easy(mut easy) => easy.forget_url(),
 --- new
             easy::EasyRef::Easy(_) => {}
+
+=== setting CURLOPT_CURLU from a callback keeps the running transfer's URL
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_url_handle_set_forgets_the_effective_url
+--- old
+            easy::EasyRef::Frame(frame, id) => unsafe { frame.forget_url(id) },
+--- new
+            easy::EasyRef::Frame(..) => {}

@@ -2003,12 +2003,13 @@ unsafe fn set_arg(easy: &ShimEasy, option: CURLoption, arg: Arg) -> CURLcode {
     easy.set.set(set);
     easy.errbuf.set(errbuf);
     if option == ffi::CURLOPT_CURLU {
-        // The last transfer's URL goes, as C frees `state.url`, on a
-        // handle no transfer of which runs: one setting it from a
-        // callback keeps what the transfer under way reports.
+        // The URL reported goes, as C frees `state.url`: the last
+        // transfer's, or the one under way's, set from its callback,
+        // until a request of it starts again.
         let forgot = easy.with_easy(|e| match e {
             easy::EasyRef::Easy(mut easy) => easy.forget_url(),
-            easy::EasyRef::Frame(..) => {}
+            // SAFETY: as in `with_options`.
+            easy::EasyRef::Frame(frame, id) => unsafe { frame.forget_url(id) },
         });
         forgot.expect("the handle was reached just above");
     }

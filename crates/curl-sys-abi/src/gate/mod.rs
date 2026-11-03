@@ -125,6 +125,32 @@ impl Frame {
         }
     }
 
+    /// Forget the URL a transfer reports, through the context lent
+    /// (`Easy::forget_url`).
+    ///
+    /// # Safety
+    ///
+    /// As `options_mut`.
+    pub(crate) unsafe fn forget_url(self, id: TransferId) {
+        match self {
+            Frame::Transfer(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.forget_url(id);
+            }
+            Frame::Event(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.forget_url(id);
+            }
+            Frame::Notify(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.forget_url(id);
+            }
+        }
+    }
+
     /// What a transfer's RTSP requests number and read, through the
     /// context lent, to read.
     ///

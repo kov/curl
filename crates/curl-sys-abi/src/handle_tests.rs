@@ -3260,6 +3260,65 @@ fn cleanup_and_reset_tell_the_debug_function_of_the_resolves_let_go() {
     }
 }
 
+/// A debug function told of the records a handle on its own lets go of,
+/// as it is cleaned up or reset outside any transfer, reaches the handle
+/// whole, as C's does: asked there for the last connect's error, it is
+/// answered with the refused connect's, as C's c-ares and threaded builds
+/// answer (`CURLINFO_OS_ERRNO`, 111).
+#[cfg(feature = "c-ares")]
+#[test]
+fn the_records_a_lone_handle_lets_go_of_are_told_with_the_handle_reachable() {
+    let destroyed = "[DNS] [1] destroy async\n";
+    let asked = "getinfo 0, errno 111\n";
+    for reset in [false, true] {
+        let mut seen = Seen::default();
+        let c = refused_tracing_dns(debug_asking_errno, &mut seen);
+        // SAFETY: a live handle.
+        assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
+        if reset {
+            // SAFETY: a live handle.
+            unsafe { crate::easy::curl_easy_reset(c) };
+        }
+        // SAFETY: a live handle, then not used again.
+        unsafe { curl_easy_cleanup(c) };
+        let at = seen.texts.iter().position(|t| t == destroyed);
+        let at = at.unwrap_or_else(|| panic!("{:#?}", seen.texts));
+        assert_eq!(
+            seen.texts.get(at + 1).map(String::as_str),
+            Some(asked),
+            "{:#?}",
+            seen.texts
+        );
+    }
+}
+
+/// A debug function that, as it is told a record is destroyed, asks for
+/// the handle's last connect error, and keeps what it was answered.
+unsafe extern "C" fn debug_asking_errno(
+    h: *mut CURL,
+    kind: ffi::curl_infotype,
+    ptr: *mut c_char,
+    n: usize,
+    data: *mut c_void,
+) -> c_int {
+    // SAFETY: as `debug_count` is called.
+    let r = unsafe { debug_count(h, kind, ptr, n, data) };
+    // SAFETY: the test passes a `Seen`.
+    let s = unsafe { &mut *data.cast::<Seen>() };
+    if kind == ffi::CURLINFO_TEXT
+        && s.texts
+            .last()
+            .is_some_and(|t| t.ends_with(" destroy async\n"))
+    {
+        let mut errno: c_long = -1;
+        // SAFETY: a live handle, and a long to the info.
+        let asked = unsafe { curl_easy_getinfo(h, ffi::CURLINFO_OS_ERRNO, &raw mut errno) };
+        s.texts
+            .push(format!("getinfo {}, errno {errno}\n", asked.0));
+    }
+    r
+}
+
 /// A debug function that, as it is told text, asks for the handle's
 /// response code: one called with the handle borrowed would fail it.
 unsafe extern "C" fn debug_asking(

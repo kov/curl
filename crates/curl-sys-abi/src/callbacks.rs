@@ -569,13 +569,15 @@ impl Adapter {
     }
 
     /// Call `f`, the application's code, with `cx` lent to the handle's
-    /// multi.
+    /// multi, or to the handle itself when its handlers are called
+    /// outside any transfer.
     pub(crate) fn call<R>(&self, cx: &mut TransferCx<'_>, f: impl FnOnce() -> R) -> R {
+        let me = cx.me();
         let frame = Frame::Transfer(NonNull::from(cx).cast());
+        // `cx` is not used again until `lend` or `lend_alone` returns.
         match self.easy().multi() {
-            // `cx` is not used again until `lend` returns.
             Some(multi) => multi.stack.lend(frame, f),
-            None => f(),
+            None => self.easy().lend_alone(frame, me, f),
         }
     }
 

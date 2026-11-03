@@ -1949,7 +1949,7 @@ fn refused(easy: &ShimEasy, option: CURLoption) {
     let why = &line[..line.len() - 1];
     let reached = easy.with_easy(|e| match e {
         easy::EasyRef::Easy(mut easy) => easy.tell_failure(why),
-        // SAFETY: the frame is the multi's innermost, and the borrow ends
+        // SAFETY: the frame is the innermost lent, and the borrow ends
         // with this call, inside its callback.
         easy::EasyRef::Frame(frame, id) => unsafe { frame.tell_failure(id, why) },
     });

@@ -4269,7 +4269,8 @@ struct ShimEasy {                         // what CURL * points to; stable addre
     magic: Cell<u32>,
     internal: bool,                       // a multi's own handle (C's `state.internal`): no call may use it
     stack: EasyStack,                     // easy calls under way (C's `data->callstack`)
-    home: RefCell<Home>,                  // Detached(Easy) | Added { multi: NonNull<ShimMulti>, id } | Nowhere (mid-add)
+    home: RefCell<Home>,                  // Detached(Easy) | Added { multi: NonNull<ShimMulti>, id }
+                                          // | Alone(Option<(Frame, TransferId)>) (its own handlers running) | Nowhere (mid-add)
     ccb: Cell<CCallbacks>,                // C fn pointers + userdata, read by the adapters when they run
     set: Cell<CSettings>,                 // what setopt keeps that the core holds only combined
     errbuf: Cell<*mut c_char>,            // CURLOPT_ERRORBUFFER
@@ -4310,7 +4311,11 @@ of 15 and 7) and returns an entry that pops the call when dropped. A multi entry
 An easy call reaches its `Easy` through `ShimEasy::with_easy`: in the handle, or in its multi by
 the same rule. The callback adapters (`callbacks.rs`) and `ShimEvents` push the frame around each
 C call with `MultiStack::lend` and restore the previous one after it; panics abort, so the pop
-cannot be skipped. The `'static` in `Frame` is lifetime erasure confined to the lend: the
+cannot be skipped. A handle in no multi whose own handlers run outside any transfer (its
+resolves' records let go of by cleanup or reset) has its `Easy` out for the call
+(`Home::Alone`); the adapter lends the frame to the handle itself (`ShimEasy::lend_alone`), so a
+call back into the handle reaches it, as C's reaches a whole handle. Reset and cleanup never reach
+a transfer through a frame: they may not recurse, and a frame exists only while a callback runs. The `'static` in `Frame` is lifetime erasure confined to the lend: the
 adapter turns its `&mut` context into the raw pointer before calling C and does not use the
 reference again until `lend` returns, so the only access path during the C call is the frame.
 `ShimEvents` holds `&ShimMulti`: every field it reaches is behind a `Cell` or never changes, and

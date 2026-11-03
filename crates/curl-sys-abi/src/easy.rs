@@ -135,6 +135,11 @@ enum Home {
         multi: NonNull<ShimMulti>,
         id: TransferId,
     },
+    /// Out of the handle while its own handlers are called outside any
+    /// transfer, as its resolves' records go (`Curl_resolv_destroy_all`):
+    /// reached through the context the callback running was lent, with
+    /// the id it is told it is, while one runs.
+    Alone(Option<(Frame, TransferId)>),
     /// Moved for a moment, or a multi's own handle, which has none.
     Nowhere,
 }
@@ -494,7 +499,7 @@ impl ShimEasy {
             // SAFETY: nothing runs on the multi, so its core is not
             // borrowed.
             Reach::Direct => unsafe { multi.core_mut() }.tls_native(id),
-            // SAFETY: the frame is the multi's innermost, and the borrow
+            // SAFETY: the frame is the innermost lent, and the borrow
             // ends with this call, inside its callback.
             Reach::Frame(frame) => unsafe { frame.tls_native(id) },
         })
@@ -542,7 +547,7 @@ impl ShimEasy {
             // SAFETY: a multi frees its transfers' handles' `Added` before
             // it is freed itself.
             Home::Added { multi, .. } => Some(unsafe { multi.as_ref() }),
-            Home::Detached(_) | Home::Nowhere => None,
+            Home::Detached(_) | Home::Alone(_) | Home::Nowhere => None,
         }
     }
 
@@ -585,7 +590,9 @@ impl ShimEasy {
     pub(crate) fn detach(&self) -> Box<Easy> {
         match self.home.replace(Home::Nowhere) {
             Home::Detached(easy) => easy,
-            Home::Added { .. } | Home::Nowhere => unreachable!("a handle on its own"),
+            Home::Added { .. } | Home::Alone(_) | Home::Nowhere => {
+                unreachable!("a handle on its own")
+            }
         }
     }
 
@@ -599,7 +606,7 @@ impl ShimEasy {
     pub(crate) fn added(&self) -> Option<(NonNull<ShimMulti>, TransferId)> {
         match *self.home.borrow() {
             Home::Added { multi, id } => Some((multi, id)),
-            Home::Detached(_) | Home::Nowhere => None,
+            Home::Detached(_) | Home::Alone(_) | Home::Nowhere => None,
         }
     }
 
@@ -609,7 +616,7 @@ impl ShimEasy {
         let Some((multi, id)) = self.added() else {
             return match &*self.home.borrow() {
                 Home::Detached(easy) => easy.holds_connection(),
-                Home::Added { .. } | Home::Nowhere => false,
+                Home::Added { .. } | Home::Alone(_) | Home::Nowhere => false,
             };
         };
         // SAFETY: the handle's multi outlives its `Added`.
@@ -642,12 +649,19 @@ impl ShimEasy {
         let added = self.added();
         let Some((multi, id)) = added else {
             let mut home = self.home.borrow_mut();
-            // Being added, the transfer is in neither place: a callback the
-            // add runs cannot reach it.
-            let Home::Detached(easy) = &mut *home else {
-                return Err(Recursive);
+            return match &mut *home {
+                Home::Detached(easy) => Ok(f(HomeRef::Detached(easy))),
+                // Its own handler running, the transfer is reached through
+                // what that handler was lent.
+                &mut Home::Alone(Some((frame, id))) => {
+                    drop(home);
+                    Ok(f(HomeRef::Frame(frame, id)))
+                }
+                // Being added, the transfer is in neither place: a callback
+                // the add runs cannot reach it.
+                Home::Alone(None) | Home::Nowhere => Err(Recursive),
+                Home::Added { .. } => unreachable!("not added"),
             };
-            return Ok(f(HomeRef::Detached(easy)));
         };
         // SAFETY: the handle's multi outlives its `Added`.
         let multi = unsafe { multi.as_ref() };
@@ -667,7 +681,7 @@ impl ShimEasy {
         self.with_easy(|e| match e {
             EasyRef::Easy(mut easy) => f(easy.options_mut()),
             EasyRef::Frame(frame, id) => {
-                // SAFETY: the frame is the multi's innermost, and the
+                // SAFETY: the frame is the innermost lent, and the
                 // borrow ends with this call, inside its callback.
                 let options = unsafe { frame.options_mut(id) };
                 f(options.expect("an added handle is in its multi"))
@@ -1203,12 +1217,27 @@ fn perform(easy: &ShimEasy, drive: Drive) -> CURLcode {
 }
 
 impl ShimEasy {
+    /// Run `f`, a handler of the handle's own called outside any transfer,
+    /// with `frame` lent to it as `id`, if the handle's `Easy` is out for
+    /// that call (`Home::Alone`); else as the call is.
+    pub(crate) fn lend_alone<R>(&self, frame: Frame, id: TransferId, f: impl FnOnce() -> R) -> R {
+        if !matches!(*self.home.borrow(), Home::Alone(None)) {
+            return f();
+        }
+        self.home.replace(Home::Alone(Some((frame, id))));
+        // Panics abort, so the restore below always runs.
+        let r = f();
+        let was = self.home.replace(Home::Alone(None));
+        assert!(matches!(was, Home::Alone(Some(_))), "lent once");
+        r
+    }
+
     /// Run `f` on the handle's transfer while it is in no multi; `None`
     /// while it is moved, as a perform moves it.
     pub(crate) fn with_detached<R>(&self, f: impl FnOnce(&mut Easy) -> R) -> Option<R> {
         match &mut *self.home.borrow_mut() {
             Home::Detached(e) => Some(f(e)),
-            Home::Added { .. } | Home::Nowhere => None,
+            Home::Added { .. } | Home::Alone(_) | Home::Nowhere => None,
         }
     }
 
@@ -1236,14 +1265,21 @@ impl ShimEasy {
 
     /// Let go of what the handle keeps of its resolves, each said through
     /// its debug function (`Curl_resolv_destroy_all`). On its own, the
-    /// `Easy` is out of the handle meanwhile, so that the function may call
-    /// the handle, which finds it as one being added; in a multi, the
+    /// `Easy` is out of the handle meanwhile (`Home::Alone`), so that the
+    /// function may call the handle, which reaches it through what the
+    /// function was lent, as C's reaches a handle whole; in a multi, the
     /// function is called as one of its transfer's.
     pub(crate) fn release_resolves(&self) {
         if matches!(*self.home.borrow(), Home::Detached(_)) {
-            let mut easy = self.detach();
+            let Home::Detached(mut easy) = self.home.replace(Home::Alone(None)) else {
+                unreachable!("matched above");
+            };
             easy.release_resolves();
-            self.return_home(easy);
+            let was = self.home.replace(Home::Detached(easy));
+            assert!(
+                matches!(was, Home::Alone(None)),
+                "no handler is left running"
+            );
             return;
         }
         let released = self.with_easy(|e| match e {

@@ -87,3 +87,14 @@ features: debug-hooks
 --- old
     easy.clear_error_buffer();
 --- new
+
+=== a lone handle's own handler is lent nothing to reach it through
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::the_records_a_lone_handle_lets_go_of_are_told_with_the_handle_reachable
+--- old
+            None => self.easy().lend_alone(frame, me, f),
+--- new
+            None => {
+                let _ = me;
+                f()
+            }

@@ -60,7 +60,9 @@ pub(crate) struct MultiRules {
 
 /// The context a running callback's adapter lent: its lifetime is erased,
 /// and it is reached only between the adapter's push and pop, while the
-/// adapter does not use its own reference.
+/// adapter does not use its own reference. It is lent to the handle's
+/// multi, or to the handle itself while its handlers are called outside
+/// any transfer (`Home::Alone`).
 #[derive(Clone, Copy)]
 pub(crate) enum Frame {
     /// A transfer's own callback: write, header, read, progress, debug.
@@ -76,8 +78,8 @@ impl Frame {
     ///
     /// # Safety
     ///
-    /// The frame is the multi's innermost, and the borrow ends before its
-    /// callback returns.
+    /// The frame is the innermost lent, by the handle's multi or by the
+    /// handle alone, and the borrow ends before its callback returns.
     pub(crate) unsafe fn options_mut<'a>(self, id: TransferId) -> Option<&'a mut Options> {
         match self {
             Frame::Transfer(cx) => {

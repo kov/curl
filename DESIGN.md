@@ -13,7 +13,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-tool` | The `curl` binary, written against the Rust API, not the C ABI. | forbidden |
 | `curl-alloc` | Fallible allocation; the debug build's memory tracker. | in named modules |
 | `curl-os` | Operating-system interfaces: the command line, the environment, the terminal, error texts, the user database, random bytes, files, sockets, polling and the system's resolver. | in named modules |
-| `curl-psl` | libpsl's public suffix list, behind `curl_core::cookie::PublicSuffixes`. | yes: it is a binding |
+| `curl-psl` | libpsl's public suffix list, behind `curl_core::psl::SuffixLibrary`. | yes: it is a binding |
 | `curl-zlib` | zlib's inflate, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-brotli` | brotli's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-zstd` | zstd's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
@@ -23,6 +23,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-libssh` | libssh's SCP and SFTP, behind `curl_core::ssh`'s traits. | yes: it is a binding |
 | `curl-ldap` | OpenLDAP's libldap, behind `curl_core::ldap`'s traits. | yes: it is a binding |
 | `curl-idn2` | libidn2's host names, behind `curl_core::idn::Idn`. | yes: it is a binding |
+| `curl-ares` | c-ares's resolves, behind `curl_core::conn::io::DnsLibrary`. | yes: it is a binding |
 | `curl-gssapi` | MIT krb5's GSS-API, behind `curl_core::gss::Gss`; with `debug-hooks`, the debug build's stub for the tests (`CURL_STUB_GSS_CREDS`). | in `sys.rs` |
 
 Code that must talk to C or to the OS gets its own crate, never a module of `curl-core`:

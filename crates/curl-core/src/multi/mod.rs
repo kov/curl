@@ -248,6 +248,11 @@ impl<H: Host> MultiEvents<H> for NoEvents {}
 /// the waker other threads use to interrupt its waits. Without a waker,
 /// nothing can (C always makes one; the shim does too).
 pub struct Env {
+    /// The multi's time. Every multi whose transfers use one `Share` must
+    /// read the same time, as `SystemClock`s all do: a share's caches are
+    /// stamped with the instants of whichever multi used them, and instants
+    /// of different clocks do not compare (a DNS answer kept under one
+    /// would never go stale, or go at once, under another).
     pub clock: Box<dyn Clock>,
     pub net: Box<dyn Net + Send>,
     pub arena: ArenaPolicy,

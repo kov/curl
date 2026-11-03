@@ -186,6 +186,8 @@ curl-core/src/
   hsts.rs                    Hsts, HstsEntry, HstsReader, HstsWriter: the HSTS cache (hsts.c)
   altsvc.rs                  AltSvc, AltSvcCtrl, Alpn: the alt-svc cache (altsvc.c)
   idn.rs                     Idn, IdnFailure: host names in Unicode, converted by a library
+  doh.rs                     DNS messages as DoH carries them, the query and the answer read
+                             back, and the HTTPS record (HttpsRecord, RecordAnswer), sans-IO
   http2.rs, http2/           Http2, Session, Event: the seam an HTTP/2 library implements;
                              fake.rs: FakeH2, frames as lines (test-util)
   http3.rs, http3/           Http3, Connection, Event: the seam a QUIC and HTTP/3 library
@@ -197,8 +199,9 @@ curl-core/src/
   gss.rs                     Gss, GssContext: the seam a GSS-API library implements
   tls.rs, tls/               TlsIdentity, the seam a TLS library implements (TlsBackend,
                              TlsSession, TlsIo, TlsPeer, TlsWait); cache.rs: SessionCache,
-                             SessionPeer, TlsTicket (vtls_scache.c); keylog.rs: KeyLog,
-                             SharedKeyLog;
+                             SessionPeer, TlsTicket (vtls_scache.c); cache/spack.rs, a
+                             session packed to leave the cache and come back
+                             (vtls_spack.c); keylog.rs: KeyLog, SharedKeyLog;
                              fake.rs: FakeTls (test-util)
   hash.rs                    MD5, SHA-256 and SHA-512/256, for Digest
   base64.rs                  base64 both ways and base64url (curlx/base64.c)
@@ -234,6 +237,9 @@ curl-core/src/
     wait.rs                  wait, the waker, drive_to_completion over Net
     push.rs                  a pushed response: what was promised, what the application made of it
     raw.rs                   what a handle does itself on the connection its transfer only made
+    doh.rs                   DoH's probes: Lookup, Probe, the transfers a setup adds per query
+    dns.rs                   a transfer's resolves by its resolver library (DnsLibrary)
+    ssls.rs                  a handle's TLS sessions imported and exported by the application
     props.rs                 random call sequences checked against a model (tests)
   conn/
     mod.rs                   Caches, ConnSlot, Conn, Route, ProxyRoute, NetRoute, Dialing, Scheme, Peer,
@@ -249,6 +255,8 @@ curl-core/src/
     h2proxy.rs, h3proxy.rs   a tunnel through an HTTPS proxy speaking HTTP/2 or HTTP/3
     capsule.rs               HTTP Datagrams in capsules, as a CONNECT-UDP tunnel carries them
     threaded.rs              the threaded resolver, its queries on a pool of threads
+    asyncs.rs                Asyncs, Holder, ResolveCount: C's records of the resolves that
+                             answer later, for the trace
     connect_to.rs            the CURLOPT_CONNECT_TO entry matcher and parser
     dns.rs                   DnsCache, Answer, the CURLOPT_RESOLVE entry parser
     buf.rs                   RecvBuf
@@ -2574,104 +2582,36 @@ Built: `ConnCx` and `DriveCx`; the tests drive with `Plain`, which traces nothin
 hooks. The closer is not a call-out: it is captured with the connection (§4.6). `ConnSettings`
 (the shutdown timeout, in ms) and `SocketOwner::Conn`; a shutdown's context is `Silent`.
 
-### 4.8.1 DoH
+### 4.8 Names
 
-A transfer with `options.doh.url` resolves a name the cache does not answer, and that is no
-address or `localhost`, by adding two transfers to its multi, AAAA's first (`multi/doh.rs`,
-C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of the engine.
-
-- **One owner.** The master's setup holds a `Lookup` where a resolver's id would be (`Via::Doh`
-  in `Pending`). A `Probe`, in the slot's `Owner::Internal`, shares its state: a body kept per
-  query, then what the query came to. `Lookup`'s `Drop` marks the state gone, so whichever way
-  the setup ends, nothing a probe does afterwards reaches anything: its writes fail, its end is
-  a no-op. `master` is only a row to wake, and its generation makes a reused row name nobody.
-- **One removal.** `Multi::reap` takes out every probe whose lookup or master is gone, and is
-  called at the end of `remove` and of each application transfer's step; so no orphan is left
-  between calls, which `check` asserts. Dropping the multi drops slots with their lookups.
-- **The master is not told through callbacks.** A probe's end records its query and wakes the
-  master; the master polls its `Lookup` in its own setup and takes the answer as it takes a
-  resolver's, into the cache. No address, and every query said the name does not exist: kept as
-  negative. Any other failure says nothing of the name and is not kept.
-- **What a probe has.** `Easy::doh_probe` makes it from nothing rather than from a copy of the
-  master, with C's list: the `doh` group's URL and verification, the master's share, its other
-  TLS file settings but not its client certificate, the time left. No proxy, no user agent.
-  HTTP/2 over TLS, `pipewait`. HTTPS only outside the debug hooks build.
-- **The host.** `MultiEvents::internal` lets it make its value for the probe and `internal_gone`
-  gives it back; the shim's is a `ShimEasy` marked internal, which `easy::handle` refuses as C's
-  `state.internal` is refused, called back with its debug function and its master's data.
-- **c-ares.** `Libraries::dns` names a `DnsLibrary`, `curl-ares` in a build without the threaded
-  resolver: a channel per resolve (`DnsResolve`), held by the setup as `Via::Library`, its sockets
-  in the transfer's pollset and its next try on `TimerKind::AsyncName`. The `--dns-*` settings
-  (`options.dns`) are read as a resolve starts, and refused there as C refuses them. A blocking
-  resolve, a socket's interface name or FTP's address, is the library's too, waited for in place for
-  as long as the transfer may (`await_library`, `Curl_async_await`). A socket the library closes
-  is told as C's `sock_state_cb` tells it: said, and forgotten, so a number the library uses again
-  is announced anew. Every resolve the transfer starts is handed its slot's `SocketsClosed`, which
-  the library writes to as it closes, dropped or not; the multi reads it after each look at the
-  library and at the end of each step, so a resolve dropped anywhere is told without its owner
-  having to remember. A resolve whose queries are out as it is asked is run once inside its start,
-  the setup's, a blocking one's and the HTTPS record's alike (`take_in_start`, `look_in_start`);
-  an answer the library has then is taken there, as `hostip_resolv_start` takes it on
-  `CURLE_AGAIN`: `ares_take_result` and `resolve complete`, its record destroyed at once,
-  `hostip_resolv started -> 0`, then the answer kept (`Asked::InStart`). A failure had then is
-  said in the same place: the take's words, the record destroyed, `started -> 6`, the name kept as
-  not existing whatever the lookup otherwise keeps (`Unresolved::Resolver::in_start`). One the
-  library had as it was asked, with no query out, is not looked at in the start, as c-ares's
-  `Curl_async_getaddrinfo` returns `CURLE_OK` for it: `started -> 81`, then the look after.
-- **Going on before the name is known.** Once AAAA has answered or its wait is over the setup goes
-  on to its race though no address has come (`cf_dns_ready_to_connect`), so the HTTPS filter's
-  first connect and its choice of attempts do not wait for A. The wait for AAAA runs on
-  `TimerKind::HappyEyeballs`, the resolve's next try on `AsyncName`. The race holds the resolve
-  still going on in its `Eyeballs`, and waits on it when it has nothing to try; a transfer timing
-  out then times out `Resolving`. What more it found is taken once in each connect call, after
-  the record's answer and before the HTTPS connect filter's own connect (`poll_late`), from the
-  first attempt whichever leads, as C's chain puts the name's DNS filter between the record's and
-  the HTTPS connect filter. A race's second attempt asks no resolver
-  of its own: before each drive it is given what the first's has found (`follow`).
-- **What C keeps of each resolve.** A resolve that does not answer at once (a library's, the
-  threaded resolver's, DoH's, and the record's ask in builds that cannot answer it) gets a number
-  from the multi (`ResolveCount` in `Caches`, C's `last_resolv_id`) and a record on the handle
-  (`Easy::asyncs`, C's `state.async`), naming the DNS filter it is for: the record's, a
-  connection's addresses', the SOCKS target's, or a blocking resolve. The records are for the
-  lines alone; the resolves themselves end as their answers come. A record goes where C's does:
-  as its filter connects (`destroy async` after that filter's `connected filter chain below`), at
-  once if the ask failed, as a blocking resolve's wait ends, or, still kept, as the next request
-  on the handle starts, as the handle is reset, or as it is dropped (`trace::of_lone`, through a
-  handler context reaching that handle alone, under its id in its multi if it is in one). The C
-  shim lets go of them before it frees a handle, while the handle is whole, and asserts as it
-  frees one that none is left. A transfer done tells each still kept it is not wanted, the newest
-  first (`shutdown async` after `multi_done`), as does a record found in the cache meanwhile.
-- **A name's HTTPS record.** `https.rs` starts a third probe of its own (`start_https`), named
-  `_port._https.name` off port 443, before the name's addresses are asked for. Its answer, kept in
-  the cache beside them, chooses the attempts' versions ahead of what is wanted, if it is about
-  the origin itself. The first attempt is chosen by the record if it was taken before
-  `connect, init`, as C's init asks the DNS filter for it, the plan's dial changed to match
-  (`set_dial`); `CURL_DBG_AWAIT_HTTPSRR` waits for it. A record arriving later chooses the
-  second, once the addresses' answer of the same call is taken (`second_chosen`, C's
-  `cf_hc_set_baller2` below the DNS filters). A server's no such name is kept as a negative entry and an answer
-  without a record as an empty one; any other failure keeps nothing.
-- **The trace.** `Easy::doing` names DoH before each line but those of DNS and the like, which
-  name themselves (`state.feat`). A probe is verbose only with DoH's trace on.
-
-### 4.8 Resolver
+A name is answered by the cache, the shortcuts, or one of three backends: the network's
+resolver (the system's or the threaded one, below), a resolver library (c-ares, §4.8.1), or
+DoH's transfers (§4.8.1). The setup holds the resolve it waits on as one of the three
+(`Via::Resolver`, `Via::Library`, `Via::Doh` in `Pending`).
 
 ```rust
 pub trait Resolver {
     fn start(&mut self, name: &[u8], family: Family, waiter: Waiter) -> Result<Resolve, ResolveFailure>;
     fn answer(&mut self, id: ResolveId) -> Option<Result<Vec<IpAddr>, ResolveFailure>>;
+    fn partial(&mut self, id: ResolveId) -> Result<Option<Partial>, OutOfMemory>;  // default: None
     fn wait(&mut self, id: ResolveId) -> Result<Vec<IpAddr>, ResolveFailure>;
     fn cancel(&mut self, id: ResolveId);
     fn answered(&mut self, each: &mut dyn FnMut(Waiter, ResolveId));
     fn waker(&self) -> Option<TryArc<Waker>>;
     fn explain(&self, why: ResolveFailure) -> Option<&'static str>;
+    fn pool(&self) -> Option<ResolverThreads>;                                   // default: None
+    fn retry(&self) -> Option<Duration>;                                         // default: None
 }
-pub enum Resolve { Answer(Vec<IpAddr>), Pending(ResolveId) }
+pub enum Resolve { Answer(Vec<IpAddr>), Pending(Queued) }
+pub struct Queued { pub id: ResolveId, pub v6: bool, pub v4: bool }
 ```
 
 The network has its resolver, as it has its sockets, lent to a closure (`Net::with_resolver`,
 so that a network a test shares behind a lock lends it too): the system's network the system's
-resolver, the tests' fake network names it answers for, at once or when the test lets them. `ResolveId` names one resolve of the resolver's, never reused, so a stale one fails closed
-(C's `Curl_resolv_has_answers` fails open). `Waiter` is the transfer that started it (C's
+resolver, the tests' fake network names it answers for, at once or when the test lets them. `ResolveId` names one resolve of the resolver's, numbered on from the last and wrapping
+after `u32::MAX`; an id asked about that the resolver no longer holds is a bug, and the threaded
+resolver panics on it rather than answering for another resolve (C's
+`Curl_resolv_has_answers` answers yes). `Waiter` is the transfer that started it (C's
 `mid` in each queued item): the multi asks the resolver which have answered each time it runs
 its own work, before the transfers (C's admin handle, `Curl_async_thrdd_multi_process`), and
 runs those again. The resolvers come in order: the shortcuts (IP literals and `localhost`),
@@ -2687,9 +2627,11 @@ does (C's second DNS filter): its resolve is held by the dialed setup, the hands
 `Handshake::SocksTarget`, starting once it has answered. What a resolve has found while it goes
 on (`Resolver::partial`, DoH's and the threaded resolver's) is connected to once AAAA has answered
 or 25 ms have passed (`cf_dns_ready_to_connect`): the race holds the resolve as `Racing::late`,
-its addresses growing as the queries answer, until the resolve answers or the race is won. A race
+its addresses growing as the queries answer, until the resolve answers, or the race is won,
+closed or discarded, each of which cancels it (`Late`; dropped without a network to tell, only
+on running out of memory, it stays in the resolver until the answer comes). A race
 out of addresses waits for what is still to come. The system's resolver asks `getaddrinfo` and answers at once, as C's
-synchronous resolver and the c-ares-like build do; the threaded resolver (step 48b) answers
+synchronous resolver does; the threaded resolver (step 48b) answers
 later, from a thread pool, waking the multi.
 
 The threaded resolver (`conn/threaded.rs`, `lib/vdns/asyn-thrdd.c` with `thrdpool.c` and
@@ -2773,6 +2715,85 @@ starts, once for each time the list is set (`Options::resolve` carries a stamp, 
 stamp it last read), as its source has them then; a list set while one is read, from the
 debug handler, is taken as read too, as C clears `state.resolve` after reading. They are permanent unless given with `+`, and `*` answers for any name on
 its port. A transfer's end prunes what has gone stale (`multi_done`).
+
+### 4.8.1 DoH, resolver libraries and the records
+
+A transfer with `options.doh.url` resolves a name the cache does not answer, and that is no
+address or `localhost`, by adding two transfers to its multi, AAAA's first (`multi/doh.rs`,
+C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of the engine.
+
+- **One owner.** The master's setup holds a `Lookup` where a resolver's id would be (`Via::Doh`
+  in `Pending`). A `Probe`, in the slot's `Owner::Internal`, shares its state: a body kept per
+  query, then what the query came to. `Lookup`'s `Drop` marks the state gone, so whichever way
+  the setup ends, nothing a probe does afterwards reaches anything: its writes fail, its end is
+  a no-op. `master` is only a row to wake, and its generation makes a reused row name nobody.
+- **One removal.** `Multi::reap` takes out every probe whose lookup or master is gone, and is
+  called at the end of `remove` and of each application transfer's step; so no orphan is left
+  between calls, which `check` asserts. Dropping the multi drops slots with their lookups.
+- **The master is not told through callbacks.** A probe's end records its query and wakes the
+  master; the master polls its `Lookup` in its own setup and takes the answer as it takes a
+  resolver's, into the cache. No address, and every query said the name does not exist: kept as
+  negative. Any other failure says nothing of the name and is not kept.
+- **What a probe has.** `Easy::doh_probe` makes it from nothing rather than from a copy of the
+  master, with C's list: the `doh` group's URL and verification, the master's share, its other
+  TLS file settings but not its client certificate, the time left. No proxy, no user agent.
+  HTTP/2 over TLS, `pipewait`. HTTPS only outside the debug hooks build.
+- **The host.** `MultiEvents::internal` lets it make its value for the probe and `internal_gone`
+  gives it back; the shim's is a `ShimEasy` marked internal, which `easy::handle` refuses as C's
+  `state.internal` is refused, called back with its debug function and its master's data.
+- **c-ares.** `Libraries::dns` names a `DnsLibrary`, `curl-ares` in a build without the threaded
+  resolver: a channel per resolve (`DnsResolve`), held by the setup as `Via::Library`, its sockets
+  in the transfer's pollset and its next try on `TimerKind::AsyncName`. The `--dns-*` settings
+  (`options.dns`) are read as a resolve starts, and refused there as C refuses them. A blocking
+  resolve, a socket's interface name or FTP's address, is the library's too, waited for in place for
+  as long as the transfer may (`await_library`, `Curl_async_await`). A socket the library closes
+  is told as C's `sock_state_cb` tells it: said, and forgotten, so a number the library uses again
+  is announced anew. Every resolve the transfer starts is handed its slot's `SocketsClosed`, which
+  the library writes to as it closes, dropped or not; the multi reads it after each look at the
+  library and at the end of each step, so a resolve dropped anywhere is told without its owner
+  having to remember. A resolve whose queries are out as it is asked is run once inside its start,
+  the setup's, a blocking one's and the HTTPS record's alike (`take_in_start`, `look_in_start`);
+  an answer the library has then is taken there, as `hostip_resolv_start` takes it on
+  `CURLE_AGAIN`: `ares_take_result` and `resolve complete`, its record destroyed at once,
+  `hostip_resolv started -> 0`, then the answer kept (`Asked::InStart`). A failure had then is
+  said in the same place: the take's words, the record destroyed, `started -> 6`, the name kept as
+  not existing whatever the lookup otherwise keeps (`Unresolved::Resolver::in_start`). One the
+  library had as it was asked, with no query out, is not looked at in the start, as c-ares's
+  `Curl_async_getaddrinfo` returns `CURLE_OK` for it: `started -> 81`, then the look after.
+- **Going on before the name is known.** Once AAAA has answered or its wait is over the setup goes
+  on to its race though no address has come (`cf_dns_ready_to_connect`), so the HTTPS filter's
+  first connect and its choice of attempts do not wait for A. The wait for AAAA runs on
+  `TimerKind::HappyEyeballs`, the resolve's next try on `AsyncName`. The race holds the resolve
+  still going on in its `Eyeballs`, and waits on it when it has nothing to try; a transfer timing
+  out then times out `Resolving`. What more it found is taken once in each connect call, after
+  the record's answer and before the HTTPS connect filter's own connect (`poll_late`), from the
+  first attempt whichever leads, as C's chain puts the name's DNS filter between the record's and
+  the HTTPS connect filter. A race's second attempt asks no resolver
+  of its own: before each drive it is given what the first's has found (`follow`).
+- **What C keeps of each resolve.** A resolve that does not answer at once (a library's, the
+  threaded resolver's, DoH's, and the record's ask in builds that cannot answer it) gets a number
+  from the multi (`ResolveCount` in `Caches`, C's `last_resolv_id`) and a record on the handle
+  (`Easy::asyncs`, C's `state.async`), naming the DNS filter it is for: the record's, a
+  connection's addresses', the SOCKS target's, or a blocking resolve. The records are for the
+  lines alone; the resolves themselves end as their answers come. A record goes where C's does:
+  as its filter connects (`destroy async` after that filter's `connected filter chain below`), at
+  once if the ask failed, as a blocking resolve's wait ends, or, still kept, as the next request
+  on the handle starts, as the handle is reset, or as it is dropped (`trace::of_lone`, through a
+  handler context reaching that handle alone, under its id in its multi if it is in one). The C
+  shim lets go of them before it frees a handle, while the handle is whole, and asserts as it
+  frees one that none is left. A transfer done tells each still kept it is not wanted, the newest
+  first (`shutdown async` after `multi_done`), as does a record found in the cache meanwhile.
+- **A name's HTTPS record.** `https.rs` starts a third probe of its own (`start_https`), named
+  `_port._https.name` off port 443, before the name's addresses are asked for. Its answer, kept in
+  the cache beside them, chooses the attempts' versions ahead of what is wanted, if it is about
+  the origin itself. The first attempt is chosen by the record if it was taken before
+  `connect, init`, as C's init asks the DNS filter for it, the plan's dial changed to match
+  (`set_dial`); `CURL_DBG_AWAIT_HTTPSRR` waits for it. A record arriving later chooses the
+  second, once the addresses' answer of the same call is taken (`second_chosen`, C's
+  `cf_hc_set_baller2` below the DNS filters). A server's no such name is kept as a negative entry and an answer
+  without a record as an empty one; any other failure keeps nothing.
+- **The trace.** `Easy::doing` names DoH before each line but those of DNS and the like, which
+  name themselves (`state.feat`). A probe is verbose only with DoH's trace on.
 
 ### 4.9 TLS
 

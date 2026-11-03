@@ -734,10 +734,9 @@ fn say_incomplete<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) {
 fn cached<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> HttpsLookup {
     let peer = route.target();
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
-    let now = cx.rest.now;
     let kept = cx.rest.kept(cx.me, Kind::Names);
     let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
-    let found = names.section(|d| d.lookup_https((peer.name(), peer.port()), max_age, now));
+    let found = names.section(|d| d.lookup_https((peer.name(), peer.port()), max_age));
     if matches!(found, HttpsLookup::Stale) {
         trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"));
     }
@@ -809,12 +808,11 @@ fn answered<H: Host>(
         Came::Record(record) => Some(record),
         Came::NoRecord | Came::Negative => None,
     };
-    let now = cx.rest.now;
     let kept = cx.rest.kept(cx.me, Kind::Names);
     let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
     let negative = matches!(came, Came::Negative);
     names
-        .section(|d| d.put_https(name, port, record.cloned(), negative, now))
+        .section(|d| d.put_https(name, port, record.cloned(), negative))
         .map_err(|_| ErrorKind::OutOfMemory)?;
     if negative {
         done(cx);

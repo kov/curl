@@ -820,10 +820,9 @@ fn multi_done<H: Host>(
         crate::deliver::Pipeline::done(cx);
     }
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
-    let now = cx.rest.now;
     let kept = cx.rest.kept(cx.me, Kind::Names);
     let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
-    names.section(|dns| dns.prune(now, max_age));
+    names.section(|dns| dns.prune(max_age));
     let stream_closed = d.premature && d.reached != Reached::Unmade;
     // The request is over (`Curl_req_done`), unless it failed.
     if d.result.is_ok() {

@@ -93,10 +93,12 @@ impl PslCache {
     }
 }
 
-/// Where a transfer's list is kept.
+/// Where a transfer's list is kept, and the time it is kept by: the
+/// multi's list at the step's, the share's at the share's own, read as
+/// the use is made (out of the jar's lock, where the list is asked).
 enum Home<'a> {
-    Multi(&'a PslCache),
-    Share(Share),
+    Multi { cache: &'a PslCache, now: Instant },
+    Share { share: Share, now: Instant },
 }
 
 /// A transfer's use of its list, for the jar to ask it as each cookie
@@ -104,7 +106,6 @@ enum Home<'a> {
 pub(crate) struct PslUse<'a> {
     home: Home<'a>,
     library: &'static dyn SuffixLibrary,
-    now: Instant,
     /// Told of each use, where the share keeps the list and the
     /// application watches it.
     watch: Option<Handler<dyn ShareLock>>,
@@ -114,8 +115,9 @@ pub(crate) struct PslUse<'a> {
 }
 
 impl<'a> PslUse<'a> {
-    /// The use a transfer makes of the list `library` loads, at `now`:
-    /// `share`'s, the share it is kept in, if any, else `multi`'s.
+    /// The use a transfer makes of the list `library` loads: `share`'s,
+    /// the share it is kept in, if any, at the share's time, else
+    /// `multi`'s, at `now`.
     pub(crate) fn new(
         share: Option<&Share>,
         watch: Option<&Handler<dyn ShareLock>>,
@@ -124,13 +126,16 @@ impl<'a> PslUse<'a> {
         now: Instant,
     ) -> PslUse<'a> {
         let (home, watch) = match share {
-            Some(share) => (Home::Share(share.clone()), watch.cloned()),
-            None => (Home::Multi(multi), None),
+            Some(share) => {
+                let now = share.now();
+                let share = share.clone();
+                (Home::Share { share, now }, watch.cloned())
+            }
+            None => (Home::Multi { cache: multi, now }, None),
         };
         PslUse {
             home,
             library,
-            now,
             watch,
             untold: RefCell::new(Some(Vec::new())),
         }
@@ -164,11 +169,10 @@ impl<'a> PslUse<'a> {
 
 impl SuffixCheck for PslUse<'_> {
     fn with_list(&self, ask: &mut dyn FnMut(Option<&dyn PublicSuffixes>)) {
-        let cache = match &self.home {
-            Home::Multi(cache) => *cache,
-            Home::Share(share) => share.psl(),
+        let (list, looked_for) = match &self.home {
+            Home::Multi { cache, now } => cache.at(self.library, *now),
+            Home::Share { share, now } => share.psl().at(self.library, *now),
         };
-        let (list, looked_for) = cache.at(self.library, self.now);
         if self.watch.is_some() {
             let mut untold = self.untold.borrow_mut();
             let kept = untold.as_mut().map(|u| u.try_push(looked_for));

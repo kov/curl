@@ -404,6 +404,12 @@ Timing records (`Timings::mark`) take the step's `now`; under
 `ManualClock` everything is deterministic. The calendar time (`unix_time`, C's `time(NULL)`)
 comes from the same clock, read where a date is compared with the present (a Retry-After
 date) and never for a limit; `ManualClock::set_unix_time` sets it for a test.
+A share has a clock of its own (`share::Env`, the system's for `Share::new`), which the names and
+public suffix list it keeps are stamped and aged by, read as each use of them begins: a use of
+them takes no `now` from the multi (`dns::Names::section` hands the cache over with its keeper's
+time, `psl::Home`), so whichever multi uses them, their instants are one clock's. A connection a
+share keeps carries the instants of the multis that used it, so the multis using one share that
+keeps connections must read one time, as `SystemClock`s do.
 
 ### 2.5 Errors and outcomes
 

@@ -79,6 +79,8 @@ detects at build time, kept as static strings. `curl_global_sslset` knows only O
   handed look the same as C's. A more efficient arrangement can come later as an opt-in.
 - **Time is an injected clock**, owned by the multi and read by the drive before each step;
   everything below receives that `now` as an argument, so timeouts are deterministic under test.
+  A share owns one too, which the names and public suffix list it keeps are aged by, whichever
+  multi uses them.
 - **Callbacks fire when C fires them.** The timer callback runs inside `add`, `remove` and
   `pause`; the socket callback inside `remove` and `pause`, including a pause made from a write
   callback; each transfer's pollset is assessed right after it runs. Ordering the application

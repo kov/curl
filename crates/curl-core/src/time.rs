@@ -10,7 +10,8 @@ use std::time::Duration;
 
 /// A point in time: microseconds since its clock's epoch, plus one, so
 /// that `Option<Instant>` takes no more room than an instant. Instants from
-/// different clocks are not comparable; each multi has one clock.
+/// different clocks are not comparable; each multi has one clock, and each
+/// share one for the names and public suffixes it keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Instant(NonZeroU64);
 
@@ -106,7 +107,7 @@ impl std::fmt::Debug for SharedClock {
 
 /// The system's monotonic clock (C's `Curl_now`). Every one reads the
 /// same time: a connection a share keeps is used under the clocks of
-/// several multis, and its times compare under each.
+/// several multis, and its times compare under each (`multi::Env::clock`).
 #[derive(Debug)]
 pub struct SystemClock(());
 

@@ -126,7 +126,6 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
         return Ok(());
     }
     cx.easy_mut().wildcard_resolve = false;
-    let now = cx.rest.now;
     for line in list.entries() {
         let (name, port, addrs, permanent, given) = match parse_entry(line) {
             Ok(None) => continue,
@@ -161,7 +160,7 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
         let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
         let (discarded, put) = names.section(|dns| {
             let discarded = dns.remove(name, port);
-            (discarded, dns.put(answer, port, now, permanent))
+            (discarded, dns.put(answer, port, permanent))
         });
         let at = Text::<8>::clipped(format_args!(":{port}")).0;
         let at = at.bytes();

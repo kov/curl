@@ -74,11 +74,14 @@ pub(crate) struct DnsCache {
     entries: HashMap<Key, Entry>,
 }
 
-/// The answers a transfer looks up and keeps: its multi's, or its
-/// share's, each use of those under the share's lock with the
-/// application told around it.
+/// The answers a transfer looks up and keeps: its multi's, at the step's
+/// time, or its share's, at the share's time, each use of those under the
+/// share's lock with the application told around it.
 pub(crate) enum Names<'a> {
-    Own(&'a mut DnsCache),
+    Own {
+        cache: &'a mut DnsCache,
+        now: Instant,
+    },
     Shared {
         share: &'a Share,
         watch: Option<&'a dyn ShareLock>,
@@ -86,12 +89,20 @@ pub(crate) enum Names<'a> {
 }
 
 impl Names<'_> {
-    /// Run `f` on the answers, as one use of them.
-    pub(crate) fn section<R>(&mut self, f: impl FnOnce(&mut DnsCache) -> R) -> R {
+    /// Run `f` on the answers, as one use of them, at the time of their
+    /// keeper's clock: the share's are stamped and aged by its own, never
+    /// by the clock of the multi using them.
+    pub(crate) fn section<R>(&mut self, f: impl FnOnce(&mut Dated<'_>) -> R) -> R {
         match self {
-            Names::Own(cache) => f(cache),
+            Names::Own { cache, now } => f(&mut Dated { cache, now: *now }),
             Names::Shared { share, watch } => {
-                watched(*watch, share, Kind::Names, || f(&mut share.dns()))
+                let now = share.now();
+                watched(*watch, share, Kind::Names, || {
+                    f(&mut Dated {
+                        cache: &mut share.dns(),
+                        now,
+                    })
+                })
             }
         }
     }
@@ -101,6 +112,67 @@ impl Names<'_> {
     /// counted, and nothing of the share is used.
     pub(crate) fn release(&mut self) {
         self.section(|_| ());
+    }
+}
+
+/// One use of a cache, at its keeper's time: what is kept is kept from
+/// then, and what was is aged to then.
+pub(crate) struct Dated<'a> {
+    cache: &'a mut DnsCache,
+    now: Instant,
+}
+
+impl Dated<'_> {
+    /// What is kept for `name` and `port`, as `DnsCache::lookup` says.
+    pub(crate) fn lookup(
+        &mut self,
+        key: (&[u8], u16),
+        family: Family,
+        wildcard: bool,
+        max_age: Option<Duration>,
+    ) -> Lookup {
+        self.cache.lookup(key, family, wildcard, max_age, self.now)
+    }
+
+    /// Keep `answer` for its name and `port` from now, as `DnsCache::put`.
+    pub(crate) fn put(
+        &mut self,
+        answer: TryArc<Answer>,
+        port: u16,
+        permanent: bool,
+    ) -> Result<bool, OutOfMemory> {
+        self.cache.put(answer, port, self.now, permanent)
+    }
+
+    /// Forget the addresses kept for `name` and `port`; whether some were.
+    pub(crate) fn remove(&mut self, name: &[u8], port: u16) -> bool {
+        self.cache.remove(name, port)
+    }
+
+    /// What is kept of an HTTPS record, as `DnsCache::lookup_https`.
+    pub(crate) fn lookup_https(
+        &mut self,
+        key: (&[u8], u16),
+        max_age: Option<Duration>,
+    ) -> HttpsLookup {
+        self.cache.lookup_https(key, max_age, self.now)
+    }
+
+    /// Keep what a name has of an HTTPS record from now, as
+    /// `DnsCache::put_https`.
+    pub(crate) fn put_https(
+        &mut self,
+        name: &[u8],
+        port: u16,
+        record: Option<TryArc<HttpsRecord>>,
+        negative: bool,
+    ) -> Result<(), OutOfMemory> {
+        self.cache.put_https(name, port, record, negative, self.now)
+    }
+
+    /// Drop the entries older than `max_age` by now, as `DnsCache::prune`.
+    pub(crate) fn prune(&mut self, max_age: Option<Duration>) {
+        self.cache.prune(self.now, max_age);
     }
 }
 
@@ -247,7 +319,7 @@ impl DnsCache {
     /// What is kept for `name` and `port`, or for any name on the port if
     /// `wildcard` (`fetch_entry`), if it answers for `family`: an entry
     /// older than `max_age` is dropped, none for ever.
-    pub(crate) fn lookup(
+    fn lookup(
         &mut self,
         (name, port): (&[u8], u16),
         family: Family,
@@ -292,7 +364,7 @@ impl DnsCache {
 
     /// Keep `answer` for its name and `port` from `now`, in place of what
     /// was kept for them; whether something was.
-    pub(crate) fn put(
+    fn put(
         &mut self,
         answer: TryArc<Answer>,
         port: u16,
@@ -320,14 +392,14 @@ impl DnsCache {
 
     /// Forget the addresses kept for `name` and `port`; whether some
     /// were.
-    pub(crate) fn remove(&mut self, name: &[u8], port: u16) -> bool {
+    fn remove(&mut self, name: &[u8], port: u16) -> bool {
         let probe = Probe(name, port, Keeps::Addresses);
         self.entries.remove(probe.key()).is_some()
     }
 
     /// What is kept of the HTTPS record of `name` and `port`: an entry
     /// older than `max_age` is dropped, none for ever.
-    pub(crate) fn lookup_https(
+    fn lookup_https(
         &mut self,
         (name, port): (&[u8], u16),
         max_age: Option<Duration>,
@@ -350,7 +422,7 @@ impl DnsCache {
     /// place of what was kept of it. The name is the answer of its
     /// addresses when they are kept, so the entry costs no more than its
     /// row.
-    pub(crate) fn put_https(
+    fn put_https(
         &mut self,
         name: &[u8],
         port: u16,
@@ -384,7 +456,7 @@ impl DnsCache {
     /// (`Curl_dnscache_prune`); while over the most kept, those over half
     /// the oldest's age. None keeps them for ever. Each entry's age is its
     /// own: the order they came in decides nothing.
-    pub(crate) fn prune(&mut self, now: Instant, max_age: Option<Duration>) {
+    fn prune(&mut self, now: Instant, max_age: Option<Duration>) {
         self.prune_to(now, max_age, MAX_ENTRIES);
     }
 

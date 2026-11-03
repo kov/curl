@@ -38,7 +38,7 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::connections_are_numbered_in_their_traces
 --- old
         cx.names()
-            .section(|c| c.put(answer.clone(), port, now, false))
+            .section(|c| c.put(answer.clone(), port, false))
             .map_err(oom)?;
         return Ok(Looked::Found(answer, found(Asked::Shortcut)));
 --- new
@@ -48,9 +48,9 @@ witness: curl-core multi::tests::connections_are_numbered_in_their_traces
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::stale_answers_are_dropped
 --- old
-    names.section(|dns| dns.prune(now, max_age));
+    names.section(|dns| dns.prune(max_age));
 --- new
-    names.section(|_| drop((now, max_age)));
+    names.section(|_| drop(max_age));
 
 === a resolve list is read by every transfer
 file: crates/curl-core/src/multi/state/leg.rs
@@ -74,7 +74,7 @@ witness: curl-core multi::tests::a_bad_resolve_entry_fails_the_transfer
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_resolver_s_answers_are_kept
 --- old
-                .section(|c| c.put(none, port, now, false))
+                .section(|c| c.put(none, port, false))
 --- new
                 .section(|_| Ok::<(), OutOfMemory>(drop((none, port))))
 
@@ -117,10 +117,14 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::answers_may_be_kept_for_ever
 --- old
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
-    let now = cx.rest.now;
+    let kept = cx.rest.kept(cx.me, Kind::Names);
+    let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
+    names.section(|dns| dns.prune(max_age));
 --- new
     let max_age = Some(std::time::Duration::from_secs(60));
-    let now = cx.rest.now;
+    let kept = cx.rest.kept(cx.me, Kind::Names);
+    let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
+    names.section(|dns| dns.prune(max_age));
 
 === a resolve list set while one is read is read by the next transfer
 file: crates/curl-core/src/multi/state/leg.rs

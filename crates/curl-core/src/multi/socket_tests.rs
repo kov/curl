@@ -1123,6 +1123,78 @@ fn a_library_s_resolve_dropped_anywhere_says_its_socket_closed() {
     assert_eq!(closes(keys[1]), 1, "removed");
 }
 
+/// A resolve that finds no name: AAAA answers first, the race begun
+/// without an address, and then A.
+#[derive(Debug)]
+struct NoSuchName {
+    performed: u32,
+}
+
+impl crate::conn::io::DnsResolve for NoSuchName {
+    fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
+        self.performed += 1;
+        Ok(())
+    }
+    fn wants(&self) -> &[(Box<dyn Socket>, Events)] {
+        &[]
+    }
+    fn due(&self, within: Duration) -> Duration {
+        within.min(Duration::from_millis(100))
+    }
+    fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
+        Ok(crate::conn::io::Partial {
+            addrs: Vec::new(),
+            v6_answered: self.performed >= 2,
+            v4_answered: false,
+        })
+    }
+    fn ongoing(&self) -> (u32, &'static str) {
+        match self.performed {
+            0 | 1 => (2, "-"),
+            2..=4 => (1, "AAAA"),
+            _ => (0, "A+AAAA"),
+        }
+    }
+    fn answer(&mut self) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
+        (self.performed > 4).then_some(Err(crate::conn::io::ResolveFailure::NotFound))
+    }
+    fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
+        None
+    }
+    fn explain(&self) -> Option<&'static str> {
+        None
+    }
+    fn status(&self) -> i32 {
+        4
+    }
+}
+
+#[derive(Debug)]
+struct NoSuchNames(Mutex<u32>);
+
+impl crate::conn::io::DnsLibrary for NoSuchNames {
+    fn resolve(
+        &self,
+        _: crate::conn::io::DnsAsk<'_>,
+        _: &mut crate::conn::io::DnsSay<'_>,
+    ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
+        *self.0.lock().unwrap() += 1;
+        Ok(Box::new(NoSuchName { performed: 0 }))
+    }
+}
+
+/// A resolver library that finds no name, AAAA's answer first, counting
+/// what it is asked; and the libraries a handle uses it through.
+fn no_such_names() -> (&'static NoSuchNames, crate::libraries::SharedLibraries) {
+    let library: &'static NoSuchNames = Box::leak(Box::new(NoSuchNames(Mutex::new(0))));
+    let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+        dns: Some(library),
+        ..crate::libraries::Libraries::NONE
+    })
+    .unwrap();
+    (library, libraries)
+}
+
 /// A name a resolver library says does not exist is kept as such in the
 /// share the transfer keeps its names in, as the tool's transfers do,
 /// however its answer came: AAAA's first, the race begun without an
@@ -1131,72 +1203,7 @@ fn a_library_s_resolve_dropped_anywhere_says_its_socket_closed() {
 /// (`Curl_dnscache_add_negative`).
 #[test]
 fn a_name_found_not_to_exist_after_the_race_began_is_kept_negative() {
-    #[derive(Debug)]
-    struct NoSuchName {
-        performed: u32,
-    }
-
-    impl crate::conn::io::DnsResolve for NoSuchName {
-        fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
-            self.performed += 1;
-            Ok(())
-        }
-        fn wants(&self) -> &[(Box<dyn Socket>, Events)] {
-            &[]
-        }
-        fn due(&self, within: Duration) -> Duration {
-            within.min(Duration::from_millis(100))
-        }
-        fn partial(&self) -> Result<crate::conn::io::Partial, curl_alloc::OutOfMemory> {
-            Ok(crate::conn::io::Partial {
-                addrs: Vec::new(),
-                v6_answered: self.performed >= 2,
-                v4_answered: false,
-            })
-        }
-        fn ongoing(&self) -> (u32, &'static str) {
-            match self.performed {
-                0 | 1 => (2, "-"),
-                2..=4 => (1, "AAAA"),
-                _ => (0, "A+AAAA"),
-            }
-        }
-        fn answer(
-            &mut self,
-        ) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
-            (self.performed > 4).then_some(Err(crate::conn::io::ResolveFailure::NotFound))
-        }
-        fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
-            None
-        }
-        fn explain(&self) -> Option<&'static str> {
-            None
-        }
-        fn status(&self) -> i32 {
-            4
-        }
-    }
-
-    #[derive(Debug)]
-    struct Library(Mutex<u32>);
-
-    impl crate::conn::io::DnsLibrary for Library {
-        fn resolve(
-            &self,
-            _: crate::conn::io::DnsAsk<'_>,
-            _: &mut crate::conn::io::DnsSay<'_>,
-        ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
-            *self.0.lock().unwrap() += 1;
-            Ok(Box::new(NoSuchName { performed: 0 }))
-        }
-    }
-
-    let library: &'static Library = Box::leak(Box::new(Library(Mutex::new(0))));
-    let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
-        dns: Some(library),
-        ..crate::libraries::Libraries::NONE
-    })
-    .unwrap();
+    let (library, libraries) = no_such_names();
     let share = crate::share::Share::new().unwrap();
     share.keep(crate::share::Kind::Names).unwrap();
     for n in 1..=2 {
@@ -1213,6 +1220,56 @@ fn a_name_found_not_to_exist_after_the_race_began_is_kept_negative() {
         m.remove(id, &mut NoEvents).unwrap();
         assert_eq!(*library.0.lock().unwrap(), 1, "asked once, by transfer 1");
     }
+}
+
+/// A share's names are kept by the share's clock, whichever multi uses
+/// them: an answer kept under a multi whose time is far on goes stale once
+/// the share's time passes its timeout, though the next multi's is behind;
+/// and one kept under a multi whose time is behind stays good however far
+/// the next multi's time goes, while the share's stands still.
+#[test]
+fn a_share_s_names_age_by_the_share_s_clock_whichever_multi_uses_them() {
+    const TIMEOUT: Duration = Duration::from_secs(60);
+    let (library, libraries) = no_such_names();
+    let kept_by = ManualClock::new().unwrap();
+    let share = crate::share::Share::with_env(crate::share::Env {
+        clock: Box::new(kept_by.clone()),
+        net: Box::new(crate::conn::io::SystemNet::default()),
+    })
+    .unwrap();
+    share.keep(crate::share::Kind::Names).unwrap();
+    let (mut late, late_clock, _late_ev) = networked();
+    let (mut early, early_clock, _early_ev) = networked();
+    late_clock.advance(Duration::from_secs(1000));
+    let fetch_from = |m: &mut Multi<Tagged>, url: &str| {
+        let mut e = easy(url);
+        e.set_libraries(libraries.clone());
+        e.set_share(Some(share.clone())).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        assert_eq!(
+            crate::multi::wait::drive_by_events(m, id),
+            Ok(Err(crate::error::ErrorKind::CouldntResolveHost))
+        );
+        m.remove(id, &mut NoEvents).unwrap();
+        *library.0.lock().unwrap()
+    };
+    let fetch = |m: &mut Multi<Tagged>| fetch_from(m, "http://nx.test:80/");
+    assert_eq!(fetch(&mut late), 1, "asked, and kept");
+    assert_eq!(
+        fetch(&mut early),
+        1,
+        "kept, though this multi's time is behind"
+    );
+    // A negative answer ages twice as fast: half the timeout is all of it.
+    kept_by.advance(TIMEOUT / 2);
+    assert_eq!(fetch(&mut early), 2, "stale by the share's time");
+    // Another name, kept under the multi that is behind: both multis'
+    // time running on leaves it good.
+    let other = |m: &mut Multi<Tagged>| fetch_from(m, "http://other.test:80/");
+    assert_eq!(other(&mut early), 3, "asked, and kept");
+    late_clock.advance(TIMEOUT * 100);
+    early_clock.advance(TIMEOUT * 100);
+    assert_eq!(other(&mut late), 3, "good by the share's time");
 }
 
 /// A resolver library is asked only for the families the system can use:

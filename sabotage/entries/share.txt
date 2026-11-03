@@ -119,9 +119,9 @@ witness: curl-sys-abi handle_tests::a_share_is_used_from_two_threads_at_once
 file: crates/curl-core/src/multi/cx.rs
 witness: curl-core proto::http::tests::a_share_s_uses_are_told_where_c_locks_them
 --- old
-        names(&mut self.step.rest.caches.dns, self.kept.as_ref())
+        names(&mut self.step.rest.caches.dns, now, self.kept.as_ref())
 --- new
-        names(&mut self.step.rest.caches.dns, None)
+        names(&mut self.step.rest.caches.dns, now, None)
 
 === a share's pool section closes a socket under its lock
 file: crates/curl-core/src/multi/cx.rs
@@ -309,9 +309,9 @@ witness: curl-core psl::tests::a_list_goes_only_for_one_at_least_as_good
 file: crates/curl-core/src/psl.rs
 witness: curl-core proto::http::tests::a_list_is_kept_by_the_multi_or_the_share_until_its_time
 --- old
-            Home::Share(share) => share.psl(),
+            Home::Share { share, now } => share.psl().at(self.library, *now),
 --- new
-            Home::Share(_) => &*Box::leak(Box::new(PslCache::default())),
+            Home::Share { now, .. } => Box::leak(Box::new(PslCache::default())).at(self.library, *now),
 
 === the public suffixes are told after the jar's use is over
 file: crates/curl-core/src/proto/http/cookies.rs
@@ -569,3 +569,23 @@ witness: curl-core multi::doh_tests::a_handle_made_for_a_transfer_takes_up_its_s
         probe.link_share(self.share.clone());
 --- new
         probe.share = self.share.clone();
+
+=== a share's names are stamped and aged by a clock other than the share's
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core multi::socket_tests::a_share_s_names_age_by_the_share_s_clock_whichever_multi_uses_them
+features: test-util debug-hooks
+--- old
+                let now = share.now();
+--- new
+                let now = crate::time::Clock::now(&crate::time::SystemClock::new());
+
+=== a share's public suffix list expires by a clock other than the share's
+file: crates/curl-core/src/psl.rs
+witness: curl-core proto::http::tests::a_list_is_kept_by_the_multi_or_the_share_until_its_time
+features: test-util debug-hooks
+--- old
+                let now = share.now();
+                let share = share.clone();
+--- new
+                let now = crate::time::Clock::now(&crate::time::SystemClock::new());
+                let share = share.clone();

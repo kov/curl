@@ -26,6 +26,7 @@ use crate::cookie::Jar;
 use crate::hsts::Hsts;
 use crate::multi::SessionsOut;
 use crate::psl::PslCache;
+use crate::time::{Clock, Instant, SystemClock};
 use crate::tls::SessionCache;
 
 /// A handle's share cannot change now: the handle holds a connection
@@ -108,6 +109,17 @@ struct Inner {
     /// What the connections left idle at the end are closed through, as
     /// C's share closes them through its own internal handle.
     net: Mutex<Box<dyn Net + Send>>,
+    /// The time its names and public suffix list are kept by: whichever
+    /// multi uses them, the instants they hold are this clock's, read as
+    /// each use begins.
+    clock: Mutex<Box<dyn Clock>>,
+}
+
+/// How a share is made: the clock its names and public suffix list are
+/// kept by, and the network its idle connections close through.
+pub struct Env {
+    pub clock: Box<dyn Clock>,
+    pub net: Box<dyn Net + Send>,
 }
 
 /// A handle holds the share, so what it keeps cannot change.
@@ -115,13 +127,23 @@ struct Inner {
 pub struct InUse;
 
 impl Share {
-    /// A share keeping nothing yet, whose connections are the system's.
+    /// A share keeping nothing yet, on the system's clock, whose
+    /// connections are the system's.
     pub fn new() -> Result<Share, OutOfMemory> {
         Share::with_net(try_box(SystemNet::default())?)
     }
 
-    /// A share keeping nothing yet, whose connections are `net`'s.
+    /// A share keeping nothing yet, on the system's clock, whose
+    /// connections are `net`'s.
     pub fn with_net(net: Box<dyn Net + Send>) -> Result<Share, OutOfMemory> {
+        Share::with_env(Env {
+            clock: try_box(SystemClock::new())?,
+            net,
+        })
+    }
+
+    /// A share keeping nothing yet, made as `env` says.
+    pub fn with_env(Env { clock, net }: Env) -> Result<Share, OutOfMemory> {
         Ok(Share(TryArc::try_new(Inner {
             keeps: AtomicU8::new(0),
             pool: Mutex::new(Pool::new()?),
@@ -132,6 +154,7 @@ impl Share {
             hsts: Mutex::new(None),
             psl: PslCache::default(),
             net: Mutex::new(net),
+            clock: Mutex::new(clock),
         })?))
     }
 
@@ -222,6 +245,12 @@ impl Share {
     #[cfg(test)]
     pub(crate) fn pool_is_locked(&self) -> bool {
         self.0.pool.try_lock().is_err()
+    }
+
+    /// The time by its clock, which what it keeps of names and public
+    /// suffixes is stamped and aged by.
+    pub(crate) fn now(&self) -> Instant {
+        lock(&self.0.clock).now()
     }
 
     /// The names kept, locked.

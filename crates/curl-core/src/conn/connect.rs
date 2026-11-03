@@ -467,7 +467,10 @@ impl ConnCx for Plain<'_> {
     }
 
     fn names(&mut self) -> Names<'_> {
-        Names::Own(self.dns)
+        Names::Own {
+            cache: self.dns,
+            now: self.now,
+        }
     }
 
     fn ipv6_works(&self) -> bool {
@@ -3395,11 +3398,10 @@ impl Pending {
             wildcard,
             max_age,
         } = self.looks;
-        let now = cx.now();
         let family = self.family;
         let looked = cx
             .names()
-            .section(|c| c.lookup((name, port), family, wildcard, max_age, now));
+            .section(|c| c.lookup((name, port), family, wildcard, max_age));
         let queries = family_queries(family);
         match looked {
             Lookup::Found(answer) => {
@@ -3648,7 +3650,7 @@ pub(super) fn lookup_start(
     };
     let (found, stale): (fn(Asked) -> Found, bool) = match cx
         .names()
-        .section(|c| c.lookup((name, port), family, wildcard, max_age, now))
+        .section(|c| c.lookup((name, port), family, wildcard, max_age))
     {
         Lookup::Found(answer) => return Ok(Looked::Found(answer, Found::Cached)),
         Lookup::Negative => return Err(ConnectError::Unresolved(Unresolved::Negative)),
@@ -3661,7 +3663,7 @@ pub(super) fn lookup_start(
         cx.announce_resolve()?;
         let answer = TryArc::try_new(answer).map_err(oom)?;
         cx.names()
-            .section(|c| c.put(answer.clone(), port, now, false))
+            .section(|c| c.put(answer.clone(), port, false))
             .map_err(oom)?;
         return Ok(Looked::Found(answer, found(Asked::Shortcut)));
     }
@@ -3967,7 +3969,6 @@ pub(super) fn settle(
     pending: Pending,
     cx: &mut dyn ConnCx,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
-    let now = cx.now();
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
     let queued = pending.queued();
     let over_doh = pending.over_doh();
@@ -4001,7 +4002,7 @@ pub(super) fn settle(
             let none = Answer::of(name, Vec::new(), family).map_err(oom)?;
             let none = TryArc::try_new(none).map_err(oom)?;
             cx.names()
-                .section(|c| c.put(none, port, now, false))
+                .section(|c| c.put(none, port, false))
                 .map_err(oom)?;
             return Err(refused(why, cx));
         }
@@ -4009,7 +4010,7 @@ pub(super) fn settle(
     };
     let answer = TryArc::try_new(answer).map_err(oom)?;
     cx.names()
-        .section(|c| c.put(answer.clone(), port, now, false))
+        .section(|c| c.put(answer.clone(), port, false))
         .map_err(oom)?;
     let asked = if says_its_own {
         Asked::Doh

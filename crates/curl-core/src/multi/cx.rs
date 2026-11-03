@@ -250,7 +250,7 @@ impl<H: Host> EngineRest<'_, H> {
             events: &mut *self.events,
             who: SocketFor::Transfer(who),
         };
-        (net, names(&mut self.caches.dns, kept))
+        (net, names(&mut self.caches.dns, self.now, kept))
     }
 
     /// The network as transfer `who`'s pool uses it, which tells the
@@ -355,13 +355,13 @@ pub(super) fn announce_closing<H: Host>(
 
 /// The names a setup looks up and keeps: the share's in `kept`, if it
 /// keeps them, else the multi's own.
-fn names<'k>(own: &'k mut DnsCache, kept: Option<&'k Kept>) -> Names<'k> {
+fn names<'k>(own: &'k mut DnsCache, now: Instant, kept: Option<&'k Kept>) -> Names<'k> {
     match kept {
         Some(k) => Names::Shared {
             share: &k.share,
             watch: k.watch(),
         },
-        None => Names::Own(own),
+        None => Names::Own { cache: own, now },
     }
 }
 
@@ -478,7 +478,8 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
     }
 
     fn names(&mut self) -> Names<'_> {
-        names(&mut self.step.rest.caches.dns, self.kept.as_ref())
+        let now = self.step.now();
+        names(&mut self.step.rest.caches.dns, now, self.kept.as_ref())
     }
 
     fn ipv6_works(&self) -> bool {

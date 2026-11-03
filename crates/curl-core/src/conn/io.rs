@@ -403,11 +403,13 @@ impl Queued {
 }
 
 /// What a resolve has found so far: every address of the queries that
-/// answered, and whether AAAA's is among them or was never asked.
+/// answered, and whether AAAA's and A's are among them, though with no
+/// address, or were never asked.
 #[derive(Debug)]
 pub struct Partial {
     pub addrs: Vec<IpAddr>,
     pub v6_answered: bool,
+    pub v4_answered: bool,
 }
 
 /// A library that resolves names with a resolve of its own for each ask, the
@@ -1432,10 +1434,11 @@ pub struct FakeNet {
     no_reasons: bool,
     /// How many of the sockets it opened were for datagrams.
     datagrams: u32,
-    /// Whether a late name's AAAA answers before its gate opens, as the
-    /// threaded resolver tells of each family as it answers: its IPv6
-    /// addresses come first, its IPv4 ones with the rest.
-    v6_first: bool,
+    /// The family of a late name that answers before its gate opens, if
+    /// one does, as the threaded resolver tells of each family as it
+    /// answers: that family's addresses come first, the other's with the
+    /// rest.
+    first: Option<Family>,
 }
 
 /// The gate of a fake name answered late: its resolves wait until the
@@ -1526,7 +1529,7 @@ impl FakeNet {
             binding: None,
             no_reasons: false,
             datagrams: 0,
-            v6_first: false,
+            first: None,
         }
     }
 
@@ -1647,7 +1650,13 @@ impl FakeNet {
 
     /// Its late names' AAAA answers come before their gates open.
     pub fn with_v6_first(mut self) -> FakeNet {
-        self.v6_first = true;
+        self.first = Some(Family::V6);
+        self
+    }
+
+    /// Its late names' A answers come before their gates open.
+    pub fn with_v4_first(mut self) -> FakeNet {
+        self.first = Some(Family::V4);
         self
     }
 
@@ -2474,9 +2483,9 @@ impl Resolver for FakeNet {
     }
 
     fn partial(&mut self, id: ResolveId) -> Result<Option<Partial>, OutOfMemory> {
-        if !self.v6_first {
+        let Some(first) = self.first else {
             return Ok(None);
-        }
+        };
         let r = self
             .resolving
             .iter()
@@ -2488,13 +2497,15 @@ impl Resolver for FakeNet {
             .iter()
             .find(|(n, _)| n.eq_ignore_ascii_case(&r.name))
         {
-            for a in all.iter().filter(|a| a.is_ipv6()) {
+            let v6 = first == Family::V6;
+            for a in all.iter().filter(|a| a.is_ipv6() == v6) {
                 addrs.try_push(*a)?;
             }
         }
         Ok(Some(Partial {
             addrs,
-            v6_answered: true,
+            v6_answered: first == Family::V6,
+            v4_answered: first == Family::V4,
         }))
     }
 

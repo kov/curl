@@ -171,6 +171,7 @@ impl Lookup {
         Ok(crate::conn::io::Partial {
             addrs,
             v6_answered: !matches!(state.queries[0], Query::Waiting(_)),
+            v4_answered: !matches!(state.queries[1], Query::Waiting(_)),
         })
     }
 

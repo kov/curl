@@ -127,6 +127,7 @@ impl crate::conn::io::DnsResolve for AresResolve {
         Ok(crate::conn::io::Partial {
             addrs: Vec::new(),
             v6_answered: true,
+            v4_answered: false,
         })
     }
     fn ongoing(&self) -> (u32, &'static str) {

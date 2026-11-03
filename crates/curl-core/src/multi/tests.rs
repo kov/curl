@@ -3007,6 +3007,64 @@ fn filter_life(line: &str) -> bool {
     .any(|p| line.contains(p))
 }
 
+/// A threaded resolve whose A answers with nothing while its AAAA is
+/// still out says so as C's does: as the answer is looked for, IPv4's
+/// `(none)` as A's item is taken, and A counted among the responses
+/// (`async_thrdd_check_done`, `hostip_resolv_take_result`), the DNS
+/// filter waiting on for AAAA (`cf_dns_ready_to_connect`); IPv6's
+/// addresses once AAAA comes.
+#[test]
+fn an_a_answered_empty_before_aaaa_is_said_as_it_comes() {
+    use crate::conn::io::{Late, Peer, SharedNet};
+    let clock = ManualClock::new().unwrap();
+    let late = Late::new();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(
+            std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 1)),
+            Peer::Accepts,
+        )
+        .with_late_name(
+            "v6only.test",
+            &[std::net::Ipv6Addr::LOCALHOST.into()],
+            &late,
+        )
+        .with_v4_first();
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(net));
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(SharedNet(shared)),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let (e, lines) = traced("tcp://v6only.test:1/");
+    let e = tracing(e, b"dns");
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    late.release();
+    m.perform(&mut NoEvents).unwrap();
+    m.remove(id, &mut NoEvents).unwrap();
+    assert_eq!(
+        dns_only(trace_of(&lines)),
+        [
+            "[DNS] cache lookup v6only.test:1 queries=A+AAAA -> 0 not found",
+            "[DNS] queueing query [0/1] AAAA v6only.test:1",
+            "[DNS] queueing query [0/1] A v6only.test:1",
+            "[DNS] [A+AAAA] hostip_resolv started -> 81",
+            "[DNS] cache lookup v6only.test:1 queries=A+AAAA -> 0 not found",
+            "[DNS] Host v6only.test:1 resolved IPv4: (none)",
+            "[DNS] [A+AAAA] resolve incomplete, responses=A, ongoing=1 for v6only.test:1",
+            "[DNS] [A+AAAA] still waiting 25ms for AAAA result",
+            "[DNS] cache lookup v6only.test:1 queries=A+AAAA -> 0 not found",
+            "[DNS] Host v6only.test:1 resolved IPv6: ::1",
+            "[DNS] [A+AAAA] resolve complete for v6only.test:1",
+            "[DNS] cached entry for v6only.test:1 queries=A+AAAA",
+            "[DNS] [1] shutdown async",
+            "[DNS] [1] destroy async",
+        ]
+    );
+}
+
 /// A resolver that queues each family as a query of its own and answers
 /// later is traced as C's threaded one: each query queued, IPv6's first,
 /// then each family's addresses as its answer is taken, IPv4's first; and
@@ -3156,6 +3214,7 @@ fn an_answer_a_library_has_at_once_is_taken_inside_the_start() {
             Ok(Partial {
                 addrs: vec![IpAddr::from([127, 0, 0, 1])],
                 v6_answered: true,
+                v4_answered: true,
             })
         }
         fn ongoing(&self) -> (u32, &'static str) {

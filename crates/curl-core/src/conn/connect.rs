@@ -3411,10 +3411,9 @@ impl Pending {
                             return Some(Err(ResolveFailure::OutOfMemory));
                         };
                         if let Some(part) = part {
-                            let v4 = part.addrs.iter().any(IpAddr::is_ipv4);
                             let came = Queried {
                                 v6: queried.v6 && part.v6_answered,
-                                v4: queried.v4 && v4,
+                                v4: queried.v4 && part.v4_answered,
                             };
                             say_came(said, came, name, at.bytes(), &part.addrs, cx);
                             self.live = Some(Queried {

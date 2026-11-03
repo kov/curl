@@ -193,6 +193,8 @@ struct Resolving {
     left: u8,
     /// IPv6's addresses were asked for.
     asked_v6: bool,
+    /// IPv4's were.
+    asked_v4: bool,
     v6: Option<Result<Vec<IpAddr>, ResolveFailure>>,
     v4: Option<Result<Vec<IpAddr>, ResolveFailure>>,
     /// Its queries left when it was last told of.
@@ -480,6 +482,7 @@ impl Resolver for ThreadedResolver {
             v6: None,
             v4: None,
             asked_v6: families.contains(&Family::V6),
+            asked_v4: families.iter().any(|&f| f != Family::V6),
             told: None,
         })?;
         if let Err(OutOfMemory) = self.queue(&mut queries) {
@@ -520,6 +523,7 @@ impl Resolver for ThreadedResolver {
         Ok(Some(Partial {
             addrs,
             v6_answered: r.v6.is_some() || !r.asked_v6,
+            v4_answered: r.v4.is_some() || !r.asked_v4,
         }))
     }
 
@@ -752,6 +756,7 @@ mod tests {
                 waiter: Waiter::NONE,
                 left: 2,
                 asked_v6: true,
+                asked_v4: true,
                 v6: None,
                 v4: None,
                 told: None,

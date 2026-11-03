@@ -880,6 +880,7 @@ fn a_library_s_socket_closing_is_removed_though_its_number_comes_back() {
             Ok(crate::conn::io::Partial {
                 addrs: Vec::new(),
                 v6_answered: false,
+                v4_answered: false,
             })
         }
         fn ongoing(&self) -> (u32, &'static str) {
@@ -982,6 +983,7 @@ impl crate::conn::io::DnsResolve for Closing {
         Ok(crate::conn::io::Partial {
             addrs: Vec::new(),
             v6_answered: false,
+            v4_answered: false,
         })
     }
     fn ongoing(&self) -> (u32, &'static str) {
@@ -1149,6 +1151,7 @@ fn a_name_found_not_to_exist_after_the_race_began_is_kept_negative() {
             Ok(crate::conn::io::Partial {
                 addrs: Vec::new(),
                 v6_answered: self.performed >= 2,
+                v4_answered: false,
             })
         }
         fn ongoing(&self) -> (u32, &'static str) {
@@ -1381,6 +1384,7 @@ fn a_library_s_resolve_is_run_again_when_it_says() {
             Ok(Partial {
                 addrs,
                 v6_answered: racing,
+                v4_answered: false,
             })
         }
         fn ongoing(&self) -> (u32, &'static str) {

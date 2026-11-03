@@ -77,6 +77,7 @@ struct Answers {
     a_answered: bool,
     aaaa_answered: bool,
     asked_v6: bool,
+    asked_v4: bool,
     v6: Vec<IpAddr>,
     v4: Vec<IpAddr>,
     /// C's `ares_status`: the last failure, success never overwritten.
@@ -333,6 +334,7 @@ impl Resolving {
             a_answered: false,
             aaaa_answered: false,
             asked_v6: false,
+            asked_v4: false,
             v6: Vec::new(),
             v4: Vec::new(),
             status: sys::ENOTFOUND,
@@ -489,6 +491,7 @@ impl Resolving {
         }
         if matches!(family, Family::Any | Family::V4) {
             say(&[b"[A] ares: query records for ", ask.name]);
+            self.answers.asked_v4 = true;
             query(libc::AF_INET, v4_done, &mut self.answers);
         }
         Ok(())
@@ -670,6 +673,7 @@ impl DnsResolve for Resolving {
         Ok(Partial {
             addrs,
             v6_answered: a.aaaa_answered || !a.asked_v6,
+            v4_answered: a.a_answered || !a.asked_v4,
         })
     }
 

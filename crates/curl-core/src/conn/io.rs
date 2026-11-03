@@ -489,7 +489,8 @@ pub trait DnsResolve: Send + fmt::Debug {
     fn partial(&self) -> Result<Partial, OutOfMemory>;
     /// The queries still unanswered, and which have answered as C names them.
     fn ongoing(&self) -> (u32, &'static str);
-    /// The answer of a resolve of addresses, once every query has one.
+    /// The answer of a resolve of addresses, once every query has one. A
+    /// failure other than for memory is given again if asked again.
     fn answer(&mut self) -> Option<Result<Vec<IpAddr>, ResolveFailure>>;
     /// The answer of a resolve of an HTTPS record.
     fn record(&mut self) -> Option<crate::doh::RecordAnswer>;

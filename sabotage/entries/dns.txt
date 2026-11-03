@@ -822,3 +822,14 @@ features: threaded-resolver
         let record = cx.resolve_id(Holder::Blocking);
 --- new
         let record = None;
+
+=== a library's answer had as its resolve starts is taken after the start
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::an_answer_a_library_has_at_once_is_taken_inside_the_start
+features: test-util
+--- old
+                        Some(Ok(addrs)) => {
+                            // Had at once, it is taken inside the start
+--- new
+                        Some(Ok(addrs)) if addrs.is_empty() => {
+                            // Had at once, it is taken inside the start

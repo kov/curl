@@ -633,6 +633,9 @@ pub(crate) enum Asked {
     /// DoH's transfers, a library or a resolver whose lines were said as
     /// it started and went on: only its answer is left to say.
     Doh,
+    /// A library that had the answer as its resolve started, taken there
+    /// and said with the start: only its keeping is left to say.
+    InStart,
 }
 
 /// What a setup's attempts connect to: the addresses a name resolved to,
@@ -2848,7 +2851,8 @@ fn resolve_blocking_said(
                 let started = match asked {
                     Asked::Shortcut => 0,
                     Asked::Resolver(_) => AGAIN_NUMBER,
-                    Asked::Doh => unreachable!("handled above"),
+                    // A blocking resolve's are not taken in the start.
+                    Asked::Doh | Asked::InStart => unreachable!("handled above"),
                 };
                 cx.of(
                     dns,
@@ -3669,6 +3673,7 @@ pub(super) fn lookup_start(
         // What it found it could not use is gone already.
         cx.libraries_closed();
         // A blocking resolve looks for its answer as it waits for it.
+        let mut at_once = None;
         if doh {
             if let Via::Library(resolve) = &mut via {
                 if resolve.perform().is_err() {
@@ -3685,14 +3690,62 @@ pub(super) fn lookup_start(
                              ongoing={ongoing} for {name}:{port}"
                         ),
                     );
+                } else {
+                    match resolve.answer() {
+                        Some(Ok(addrs)) => {
+                            // Had at once, it is taken inside the start
+                            // (`hostip_resolv_start`'s
+                            // `hostip_resolv_take_result`).
+                            say_taken(queries, resolve.status(), cx);
+                            let shown = curl_alloc::Lossy(name);
+                            cx.of(
+                                Component::Dns,
+                                format_args!("[{queries}] resolve complete for {shown}:{port}"),
+                            );
+                            at_once = Some(addrs);
+                        }
+                        Some(Err(ResolveFailure::OutOfMemory)) => {
+                            return Err(ConnectError::OutOfMemory);
+                        }
+                        // A failure is read again at the take after the
+                        // start, which says it.
+                        _ => {}
+                    }
                 }
             }
+            if at_once.is_none() {
+                cx.of(
+                    Component::Dns,
+                    format_args!("[{queries}] hostip_resolv started -> {AGAIN_NUMBER}"),
+                );
+            }
+        }
+        // Its record is made before the resolve starts, and goes at once
+        // with an answer taken in the start (`hostip_async_new`,
+        // `Curl_async_destroy`).
+        cx.resolve_kept(holder).map_err(oom)?;
+        if let Some(addrs) = at_once {
+            cx.resolve_gone(holder);
             cx.of(
                 Component::Dns,
-                format_args!("[{queries}] hostip_resolv started -> {AGAIN_NUMBER}"),
+                format_args!("[{queries}] hostip_resolv started -> 0"),
             );
+            let pending = Pending {
+                via,
+                queried: Queried {
+                    v6: false,
+                    v4: false,
+                },
+                family,
+                found,
+                keep_negative,
+                await_until: now.after(aaaa_await()),
+                looks,
+                live: None,
+            };
+            let (answer, _) = settle(Ok(addrs), (name, port), pending, cx)?;
+            return Ok(Looked::Found(answer, found(Asked::InStart)));
         }
-        cx.resolve_kept(holder).map_err(oom)?;
         return Ok(Looked::Pending(Pending {
             via,
             queried: Queried {

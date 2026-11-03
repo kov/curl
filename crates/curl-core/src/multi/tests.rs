@@ -3114,6 +3114,98 @@ fn the_dns_cache_is_traced_as_c_looks_in_it() {
     );
 }
 
+/// A resolver library that has the answer as soon as its resolve starts
+/// is taken at once, inside the start, as C's `hostip_resolv_start` takes
+/// it (`hostip_resolv_take_result` on `CURLE_AGAIN`): the take's own line
+/// and `resolve complete`, then the resolve's record destroyed at once,
+/// numbered all the same (`hostip_async_new`, `Curl_async_destroy`), then
+/// `started -> 0` and the answer kept, with no look in the cache between
+/// and nothing left to shut down as the transfer is done. Built from C's
+/// code: no C build was seen to answer inside the start.
+#[test]
+fn an_answer_a_library_has_at_once_is_taken_inside_the_start() {
+    use crate::conn::io::{DnsAsk, DnsLibrary, DnsRefused, DnsResolve, DnsSay, Partial};
+    use std::net::IpAddr;
+
+    #[derive(Debug)]
+    struct AtOnce;
+
+    impl DnsResolve for AtOnce {
+        fn perform(&mut self) -> Result<(), curl_alloc::OutOfMemory> {
+            Ok(())
+        }
+        fn wants(&self) -> &[(Box<dyn crate::conn::io::Socket>, Events)] {
+            &[]
+        }
+        fn due(&self, within: Duration) -> Duration {
+            within
+        }
+        fn partial(&self) -> Result<Partial, curl_alloc::OutOfMemory> {
+            Ok(Partial {
+                addrs: vec![IpAddr::from([127, 0, 0, 1])],
+                v6_answered: true,
+            })
+        }
+        fn ongoing(&self) -> (u32, &'static str) {
+            (0, "A")
+        }
+        fn answer(&mut self) -> Option<Result<Vec<IpAddr>, crate::conn::io::ResolveFailure>> {
+            Some(Ok(vec![IpAddr::from([127, 0, 0, 1])]))
+        }
+        fn record(&mut self) -> Option<crate::doh::RecordAnswer> {
+            None
+        }
+        fn explain(&self) -> Option<&'static str> {
+            None
+        }
+        fn status(&self) -> i32 {
+            0
+        }
+    }
+
+    #[derive(Debug)]
+    struct Library;
+
+    impl DnsLibrary for Library {
+        fn resolve(
+            &self,
+            _: DnsAsk<'_>,
+            _: &mut DnsSay<'_>,
+        ) -> Result<Box<dyn DnsResolve>, DnsRefused> {
+            Ok(Box::new(AtOnce))
+        }
+    }
+
+    let (mut m, _clock) = networked();
+    let library: &'static Library = Box::leak(Box::new(Library));
+    let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+        dns: Some(library),
+        ..crate::libraries::Libraries::NONE
+    })
+    .unwrap();
+    let (mut e, lines) = traced("tcp://now.test:1/");
+    e.options_mut().ip_version = IpVersion::V4;
+    e.set_libraries(libraries);
+    let e = tracing(e, b"dns");
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    m.remove(id, &mut NoEvents).unwrap();
+    assert_eq!(
+        dns_only(trace_of(&lines)),
+        [
+            "[DNS] cache lookup now.test:1 queries=A -> 0 not found",
+            "[DNS] [A] ares_take_result, result=0, ares_result=0, ares_status=0, dns=found",
+            "[DNS] [A] resolve complete for now.test:1",
+            "[DNS] [1] destroy async",
+            "[DNS] [A] hostip_resolv started -> 0",
+            "[DNS] cached entry for now.test:1 queries=A",
+        ]
+    );
+}
+
 /// A name the resolver says no to is kept so, and found so the next
 /// time; a stale answer is said to be, then resolved again.
 #[test]

@@ -1515,7 +1515,12 @@ fn debug_failed_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, proxy: b
 /// kept from before.
 fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, found: Option<Found>) {
     // Said as the answer was taken.
-    if let Some(Found::Stale(Asked::Doh) | Found::Resolved(Asked::Doh) | Found::Meanwhile) = found {
+    if let Some(
+        Found::Stale(Asked::Doh | Asked::InStart)
+        | Found::Resolved(Asked::Doh | Asked::InStart)
+        | Found::Meanwhile,
+    ) = found
+    {
         return;
     }
     // The name looked up: the proxy's, or what a connect-to names in the
@@ -1715,11 +1720,12 @@ fn trace_resolved<H: Host>(
     );
     let at = at.bytes();
     let code = match asked {
-        Ok(Asked::Shortcut) => 0,
+        Ok(Asked::Shortcut | Asked::InStart) => 0,
         Ok(Asked::Resolver(_) | Asked::Doh) | Err(_) => crate::error::AGAIN_NUMBER,
     };
     let dns = Component::Dns;
-    if asked != Ok(Asked::Doh) {
+    // Said with the start, for an answer taken in it.
+    if !matches!(asked, Ok(Asked::Doh | Asked::InStart)) {
         trace::of(
             cx,
             dns,

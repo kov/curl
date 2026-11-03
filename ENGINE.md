@@ -2608,7 +2608,11 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   is announced anew. Every resolve the transfer starts is handed its slot's `SocketsClosed`, which
   the library writes to as it closes, dropped or not; the multi reads it after each look at the
   library and at the end of each step, so a resolve dropped anywhere is told without its owner
-  having to remember.
+  having to remember. The setup's resolve is run once as it starts; an answer the library has
+  then is taken there, as `hostip_resolv_start` takes it: `ares_take_result` and `resolve
+  complete`, its record destroyed at once, `hostip_resolv started -> 0`, then the answer kept
+  (`Asked::InStart`). A failure had then, and the HTTPS record's answer, are taken at the look
+  right after the start.
 - **Going on before the name is known.** Once AAAA has answered or its wait is over the setup goes
   on to its race though no address has come (`cf_dns_ready_to_connect`), so the HTTPS filter's
   first connect and its choice of attempts do not wait for A. The wait for AAAA runs on

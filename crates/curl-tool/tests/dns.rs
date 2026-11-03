@@ -425,8 +425,15 @@ fn an_interface_named_by_host_is_resolved_by_the_servers_named() {
     // `Curl_resolv_blocking` says them.
     let looked = said.matches("cache lookup bind.test:80 queries=A ").count();
     assert_eq!(looked, 1, "{said}");
-    let started = said.matches("[A] hostip_resolv started -> 81").count();
+    // Started once: with `-> 0` if the server's answer was read inside
+    // the start, as C reads it then too, else `-> 81`.
+    let started = said.matches("[A] hostip_resolv started -> ").count();
     assert_eq!(started, 1, "{said}");
+    assert!(
+        said.contains("[A] hostip_resolv started -> 81")
+            || said.contains("[A] hostip_resolv started -> 0"),
+        "{said}"
+    );
 }
 
 #[test]

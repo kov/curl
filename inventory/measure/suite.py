@@ -33,6 +33,8 @@ OUT_OF_SCOPE = {"NTLM"}
 REPLACED = {
     96: ("crates/curl-tool/tests/memdebug.rs",
          "test96_memory_tracking_operational"),
+    558: ("crates/curl-sys-abi/src/debug.rs",
+          "test558_libtest_memory_tracking_operational"),
 }
 SKIPPED_LINE = r"^test (\d+) SKIPPED: (.*?)\s*$"
 

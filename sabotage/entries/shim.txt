@@ -466,3 +466,12 @@ features: debug-hooks
             post.fields = callbacks::PostFields::Copied(query.clone());
 --- new
             let _ = &post.fields;
+
+=== a string handed to the application is allocated untracked
+file: crates/curl-sys-abi/src/root.rs
+witness: curl-sys-abi debug::tests::test558_libtest_memory_tracking_operational
+features: debug-hooks
+--- old
+        let p = self.malloc(size).cast::<u8>();
+--- new
+        let p = self.raw_malloc(size).cast::<u8>();

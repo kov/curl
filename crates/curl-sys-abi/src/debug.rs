@@ -589,6 +589,112 @@ unsafe fn vlog(format: *const c_char, args: VaList<'_>) {
 mod tests {
     use super::*;
 
+    /// Memory tracking in the library, as the C suite's test 558 checks it
+    /// for C's. Test 558 matches C's source file names in the memdump
+    /// (`escape.c`); this checks the same property for ours: run as lib558
+    /// runs, with `CURL_MEMDEBUG` set, the memdump records the program's
+    /// own block and the escape's, each allocated and freed, and
+    /// tests/memanalyze.pl, the analyser runtests.pl uses, finds nothing
+    /// wrong in it. The library's start and end allocate nothing tracked,
+    /// as in the reference build, whose dump of lib558 holds the same four
+    /// records. Run in a process of its own, as the memdump is opened once
+    /// per process.
+    #[test]
+    fn test558_libtest_memory_tracking_operational() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let memdump =
+            std::env::temp_dir().join(format!("curl-sys-abi-memdump-{}", std::process::id()));
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "debug::tests::lib558", "--ignored"])
+            .env("CURL_MEMDEBUG", &memdump)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{stdout}");
+        assert!(stdout.contains("1 passed"), "the program ran: {stdout}");
+        let log = std::fs::read_to_string(&memdump).unwrap_or_default();
+
+        // The records are there: without them a clean analysis proves
+        // nothing. Each block is allocated where its caller says and
+        // freed by its address.
+        let allocated = |source: &str, size: &str| {
+            log.lines().find_map(|l| {
+                let rest = l.strip_prefix(&format!("MEM {source}"))?;
+                let (_, p) = rest.split_once(&format!(" malloc({size}) = "))?;
+                Some(p.to_string())
+            })
+        };
+        let freed = |source: &str, p: &str| {
+            log.lines().any(|l| {
+                l.starts_with(&format!("MEM {source}")) && l.ends_with(&format!(" free({p})"))
+            })
+        };
+        let own =
+            allocated("lib558.c:", "558").unwrap_or_else(|| panic!("no block of 558:\n{log}"));
+        assert!(
+            freed("lib558.c:", &own),
+            "the block of 558 not freed:\n{log}"
+        );
+        // The escape of fourteen bytes, each `%XX`, and its end.
+        let escaped = allocated("crates/curl-sys-abi/src/strings.rs:", "43")
+            .unwrap_or_else(|| panic!("no escape:\n{log}"));
+        assert!(
+            freed("crates/curl-sys-abi/src/root.rs:", &escaped),
+            "the escape not freed by curl_free:\n{log}"
+        );
+
+        let analysis = std::process::Command::new("perl")
+            .arg("-I")
+            .arg(root.join("tests"))
+            .arg(root.join("tests/memanalyze.pl"))
+            .arg(&memdump)
+            .output()
+            .unwrap();
+        std::fs::remove_file(&memdump).ok();
+        assert!(analysis.status.success(), "{analysis:?}");
+        let report = String::from_utf8_lossy(&analysis.stdout);
+        assert!(
+            report.is_empty(),
+            "memanalyze.pl found problems:\n{report}\n{log}"
+        );
+    }
+
+    /// lib558, as the C suite's test program runs it: the memdump started
+    /// as libtest's harness starts it, from `CURL_MEMDEBUG`, then the
+    /// library started, a block of the program's own and the escape of
+    /// fourteen bytes allocated and freed, and the library ended.
+    #[test]
+    #[ignore = "run by test558_libtest_memory_tracking_operational, CURL_MEMDEBUG set"]
+    #[allow(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "one contract covers the whole sequence"
+    )]
+    fn lib558() {
+        let name = std::env::var_os("CURL_MEMDEBUG").expect("CURL_MEMDEBUG set");
+        let name = std::ffi::CString::new(name.as_encoded_bytes()).unwrap();
+        let a: [u8; 14] = [
+            0x2f, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x91, 0xa2, 0xb3, 0xc4, 0xd5, 0xe6, 0xf7,
+        ];
+        // SAFETY: C strings, a buffer of the length given, and blocks
+        // from this pool freed once.
+        unsafe {
+            curl_dbg_memdebug(name.as_ptr());
+            let init = root::curl_global_init(c_long::from(crate::ffi::CURL_GLOBAL_ALL));
+            assert_eq!(init, crate::ffi::CURLE_OK);
+            let own = curl_dbg_malloc(558, 30, c"lib558.c".as_ptr());
+            curl_dbg_free(own, 31, c"lib558.c".as_ptr());
+            let escaped = crate::strings::curl_easy_escape(
+                ptr::null_mut(),
+                a.as_ptr().cast(),
+                c_int::try_from(a.len()).unwrap(),
+            );
+            assert!(!escaped.is_null());
+            root::curl_free(escaped.cast());
+            root::curl_global_cleanup();
+        }
+        track::flush_log();
+    }
+
     /// The memdump lines are the ones tests/memanalyzer.pm parses, and the
     /// application's pool and the shim's are one.
     #[test]

@@ -2394,6 +2394,8 @@ impl ConnectMachine {
         }
     }
 
+    /// End the setup, its sockets told as they close, and a resolve it
+    /// goes on beside let go of in the resolver (`Curl_resolv_destroy`).
     pub(crate) fn discard(self, cx: &mut dyn ConnCx) {
         let component = self.dialing().socket_component();
         match self.stage {
@@ -2402,8 +2404,12 @@ impl ConnectMachine {
                 for a in r.attempts.drain(..) {
                     a.discard(cx, component);
                 }
+                r.eyeballs.late.cancel(cx.net());
             }
-            Stage::Dialed(d) => discard(cx, component, d.stream.into_socket()),
+            Stage::Dialed(mut d) => {
+                discard(cx, component, d.stream.into_socket());
+                d.target_late.cancel(cx.net());
+            }
             stage @ Stage::Resolving(_) => ConnectMachine { stage, ..self }.close(cx.net()),
         }
     }
@@ -3243,7 +3249,8 @@ impl Drop for Held {
     }
 }
 
-/// A resolve the setup goes on beside. Dropped on a path that has no
+/// A resolve the setup goes on beside, cancelled as the setup ends, is
+/// won, closed or discarded. Dropped instead, on a path that has no
 /// network to tell, only what runs out of memory, the resolver keeps the
 /// answer until it goes.
 #[derive(Debug, Default)]
@@ -4558,6 +4565,75 @@ mod tests {
             panic!("over the network");
         };
         net.close(stream.into_socket());
+    }
+
+    /// A race begun on what AAAA answered, discarded while A is still
+    /// awaited, as the setup's other race's win discards it, lets go of the
+    /// resolve in the resolver: none is left to answer a setup that is
+    /// gone (`Curl_resolv_destroy`).
+    #[test]
+    fn a_race_discarded_cancels_the_resolve_still_going_on() {
+        let clock = ManualClock::new().unwrap();
+        let late = crate::conn::io::Late::new();
+        let up: SocketAddr = "[::1]:5".parse().unwrap();
+        let mut net = FakeNet::new(clock.clone())
+            .with_late_name("late.test", &[up.ip(), [127, 0, 0, 1].into()], &late)
+            .with_v6_first()
+            .with_peer(up, FakePeer::AcceptsAfter(Duration::from_secs(60)));
+        let peer = Peer::new(Scheme::HTTP, b"late.test".to_vec(), 5, None);
+        let route = NetRoute {
+            origin: TryArc::try_new(peer).unwrap(),
+            via: None,
+            ip: IpVersion::Any,
+            proxy: None,
+            tls: None,
+            cold: None,
+            delegation: Default::default(),
+        };
+        let mut m = ConnectMachine::new(
+            ConnNumber(0),
+            route,
+            crate::conn::Dial::Stream,
+            clock.now(),
+            Closer::System,
+            ConnSettings::DEFAULT,
+        );
+        let mut dns = DnsCache::default();
+        let setup = DriveOptions {
+            wildcard: false,
+            max_age: Some(Duration::from_secs(60)),
+            delay: Duration::from_millis(200),
+            scope: None,
+            socket: SocketSetup::PLAIN,
+            haproxy: false,
+            layer: None,
+            linger: None,
+        };
+        let m = loop {
+            let mut cx = Plain {
+                net: &mut net,
+                dns: &mut dns,
+                now: clock.now(),
+            };
+            match m.drive(&mut cx, setup).unwrap() {
+                Drove::Connecting(next, _) => {
+                    if next.resolving() && matches!(next.stage, Stage::Racing(_)) {
+                        break next;
+                    }
+                    m = next;
+                    clock.advance(Duration::from_millis(1));
+                }
+                Drove::Established(_) => panic!("the race is not won"),
+            }
+        };
+        assert_eq!(net.resolving(), 1, "A is awaited");
+        let mut cx = Plain {
+            net: &mut net,
+            dns: &mut dns,
+            now: clock.now(),
+        };
+        m.discard(&mut cx);
+        assert_eq!(net.resolving(), 0, "the resolve was cancelled");
     }
 
     /// The attempt that connects wins, and the others are closed.

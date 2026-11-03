@@ -886,3 +886,18 @@ features: test-util
                                 v4: queried.v4 && part.v4_answered,
 --- new
                                 v4: queried.v4 && part.addrs.iter().any(IpAddr::is_ipv4),
+
+                        Some(Ok(addrs)) if addrs.is_empty() => {
+                            // Had at once, it is taken inside the start
+
+=== a race discarded leaves its late resolve in the resolver
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::a_race_discarded_cancels_the_resolve_still_going_on
+features: test-util
+--- old
+                r.eyeballs.late.cancel(cx.net());
+            }
+            Stage::Dialed(mut d) => {
+--- new
+            }
+            Stage::Dialed(mut d) => {

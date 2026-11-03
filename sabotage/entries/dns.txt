@@ -5,17 +5,17 @@
 file: crates/curl-core/src/conn/dns.rs
 witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 --- old
-            e.port == port && e.https == https && e.answer.name.eq_ignore_ascii_case(name)
+        port == other_port && keeps == other_keeps && name.eq_ignore_ascii_case(other_name)
 --- new
-            e.port == port && e.https == https && e.answer.name[..] == *name
+        port == other_port && keeps == other_keeps && name == other_name
 
 === a wildcard answers for nothing
 file: crates/curl-core/src/conn/dns.rs
 witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 --- old
-            .or_else(|| self.row(b"*", port, false).filter(|_| wildcard));
+            probe.0 = b"*";
 --- new
-            .or_else(|| None.filter(|_| wildcard));
+            probe.0 = b"\0none";
 
 === an answer never goes stale
 file: crates/curl-core/src/conn/dns.rs
@@ -956,3 +956,12 @@ features: test-util
                     if kind != ErrorKind::OutOfMemory {
 --- new
                     if kind == ErrorKind::OutOfMemory {
+
+=== the wildcard answers for a name whose own entry is not for the family asked
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core conn::dns::tests::a_wildcard_answers_only_for_names_without_an_entry
+features: test-util
+--- old
+        if found.is_none() && wildcard {
+--- new
+        if wildcard && found.is_none_or(|(k, _)| k.answer.family != Family::Any && k.answer.family != family) {

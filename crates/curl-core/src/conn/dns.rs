@@ -3,6 +3,9 @@
 //! (`CURLOPT_RESOLVE`, `Curl_loadhostpairs`).
 
 use crate::share::{Kind, Share, ShareLock, watched};
+use std::borrow::Borrow;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
@@ -64,10 +67,11 @@ impl Answer {
 /// The most entries kept (`MAX_DNS_CACHE_SIZE`).
 const MAX_ENTRIES: usize = 29999;
 
-/// The answers of a multi, by name and port.
+/// The answers of a multi, by name, in any case, port and what is kept of
+/// the name (C's hash on `name:port`).
 #[derive(Debug, Default)]
 pub(crate) struct DnsCache {
-    entries: Vec<Entry>,
+    entries: HashMap<Key, Entry>,
 }
 
 /// The answers a transfer looks up and keeps: its multi's, or its
@@ -100,24 +104,110 @@ impl Names<'_> {
     }
 }
 
+/// What an entry keeps of its name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Keeps {
+    Addresses,
+    /// What the name has of an HTTPS record (HTTPS-RR): an entry of its
+    /// own, as C keeps both (`CURL_DNST_HTTPS`).
+    Https,
+}
+
+/// What names an entry: a name, in any case, a port, and what is kept.
+/// The keys kept and the ones looked for are hashed and compared as one,
+/// so that a lookup needs no key of its own made.
+trait Named {
+    fn named(&self) -> (&[u8], u16, Keeps);
+}
+
+impl Hash for dyn Named + '_ {
+    fn hash<S: Hasher>(&self, state: &mut S) {
+        let (name, port, keeps) = self.named();
+        state.write_usize(name.len());
+        let mut folded = [0u8; 64];
+        for chunk in name.chunks(folded.len()) {
+            let folded = &mut folded[..chunk.len()];
+            folded.copy_from_slice(chunk);
+            folded.make_ascii_lowercase();
+            state.write(folded);
+        }
+        port.hash(state);
+        keeps.hash(state);
+    }
+}
+
+impl PartialEq for dyn Named + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        let (name, port, keeps) = self.named();
+        let (other_name, other_port, other_keeps) = other.named();
+        port == other_port && keeps == other_keeps && name.eq_ignore_ascii_case(other_name)
+    }
+}
+
+impl Eq for dyn Named + '_ {}
+
+/// An entry's key: the answer it is of, whose name it is kept under, the
+/// port, and what is kept.
 #[derive(Debug)]
-struct Entry {
+struct Key {
     /// The name's addresses; or, for its HTTPS record, the name, which
     /// is the addresses' answer when it has one.
     answer: TryArc<Answer>,
     port: u16,
+    keeps: Keeps,
+}
+
+impl Named for Key {
+    fn named(&self) -> (&[u8], u16, Keeps) {
+        (&self.answer.name, self.port, self.keeps)
+    }
+}
+
+impl Hash for Key {
+    fn hash<S: Hasher>(&self, state: &mut S) {
+        <dyn Named>::hash(self, state);
+    }
+}
+
+impl PartialEq for Key {
+    fn eq(&self, other: &Key) -> bool {
+        <dyn Named as PartialEq>::eq(self, other)
+    }
+}
+
+impl Eq for Key {}
+
+impl<'a> Borrow<dyn Named + 'a> for Key {
+    fn borrow(&self) -> &(dyn Named + 'a) {
+        self
+    }
+}
+
+/// A name, port and what is kept of the name, looked for.
+struct Probe<'a>(&'a [u8], u16, Keeps);
+
+impl Named for Probe<'_> {
+    fn named(&self) -> (&[u8], u16, Keeps) {
+        (self.0, self.1, self.2)
+    }
+}
+
+impl Probe<'_> {
+    fn key(&self) -> &dyn Named {
+        self
+    }
+}
+
+#[derive(Debug)]
+struct Entry {
     added: Instant,
     /// Given by the application without `+`: it never goes stale.
     permanent: bool,
-    /// What it keeps is what the name has of an HTTPS record (HTTPS-RR),
-    /// not its addresses: an entry of its own, as C keeps both
-    /// (`CURL_DNST_HTTPS`).
-    https: bool,
     /// The record, for an entry that says the name has one.
     record: Option<TryArc<HttpsRecord>>,
-    /// It says that the name has no record, as a name's not existing is
-    /// said: it ages twice as fast.
-    negative: bool,
+    /// It says the name does not exist, or has no HTTPS record: it ages
+    /// twice as fast.
+    says_no: bool,
 }
 
 /// What the cache had of a name's HTTPS record.
@@ -154,14 +244,6 @@ pub(crate) enum Lookup {
 }
 
 impl DnsCache {
-    /// The entry for `name` and `port`, the name in any case: its
-    /// addresses', or its HTTPS record's if `https`.
-    fn row(&self, name: &[u8], port: u16, https: bool) -> Option<usize> {
-        self.entries.iter().position(|e| {
-            e.port == port && e.https == https && e.answer.name.eq_ignore_ascii_case(name)
-        })
-    }
-
     /// What is kept for `name` and `port`, or for any name on the port if
     /// `wildcard` (`fetch_entry`), if it answers for `family`: an entry
     /// older than `max_age` is dropped, none for ever.
@@ -173,19 +255,22 @@ impl DnsCache {
         max_age: Option<Duration>,
         now: Instant,
     ) -> Lookup {
-        let row = self
-            .row(name, port, false)
-            .or_else(|| self.row(b"*", port, false).filter(|_| wildcard));
-        let Some(row) = row else {
+        let mut probe = Probe(name, port, Keeps::Addresses);
+        let mut found = self.entries.get_key_value(probe.key());
+        if found.is_none() && wildcard {
+            probe.0 = b"*";
+            found = self.entries.get_key_value(probe.key());
+        }
+        let Some((key, entry)) = found else {
             return Lookup::Missing;
         };
         if let Some(max_age) = max_age
-            && self.entries[row].stale_at(now, max_age)
+            && entry.stale_at(now, max_age)
         {
-            self.entries.remove(row);
+            self.entries.remove(probe.key());
             return Lookup::Stale;
         }
-        let answer = &self.entries[row].answer;
+        let answer = &key.answer;
         if answer.family != Family::Any && answer.family != family {
             return Lookup::Missing;
         }
@@ -193,6 +278,16 @@ impl DnsCache {
             return Lookup::Negative;
         }
         Lookup::Found(answer.clone())
+    }
+
+    /// Keep `entry` under `key`, a key equal to it gone first.
+    fn keep(&mut self, key: Key, entry: Entry) -> Result<(), OutOfMemory> {
+        self.entries.try_reserve(1)?;
+        // Room was made above: it does not grow.
+        #[allow(clippy::disallowed_methods)]
+        let replaced = self.entries.insert(key, entry);
+        assert!(replaced.is_none(), "the key's entry was taken out first");
+        Ok(())
     }
 
     /// Keep `answer` for its name and `port` from `now`, in place of what
@@ -205,28 +300,29 @@ impl DnsCache {
         permanent: bool,
     ) -> Result<bool, OutOfMemory> {
         let replaced = self.remove(&answer.name, port);
-        self.entries.try_push(Entry {
+        let says_no = answer.addrs.is_empty();
+        let key = Key {
             answer,
             port,
-            added: now,
-            permanent,
-            https: false,
-            record: None,
-            negative: false,
-        })?;
+            keeps: Keeps::Addresses,
+        };
+        self.keep(
+            key,
+            Entry {
+                added: now,
+                permanent,
+                record: None,
+                says_no,
+            },
+        )?;
         Ok(replaced)
     }
 
     /// Forget the addresses kept for `name` and `port`; whether some
     /// were.
     pub(crate) fn remove(&mut self, name: &[u8], port: u16) -> bool {
-        match self.row(name, port, false) {
-            Some(row) => {
-                self.entries.remove(row);
-                true
-            }
-            None => false,
-        }
+        let probe = Probe(name, port, Keeps::Addresses);
+        self.entries.remove(probe.key()).is_some()
     }
 
     /// What is kept of the HTTPS record of `name` and `port`: an entry
@@ -237,16 +333,17 @@ impl DnsCache {
         max_age: Option<Duration>,
         now: Instant,
     ) -> HttpsLookup {
-        let Some(row) = self.row(name, port, true) else {
+        let probe = Probe(name, port, Keeps::Https);
+        let Some(entry) = self.entries.get(probe.key()) else {
             return HttpsLookup::Missing;
         };
         if let Some(max_age) = max_age
-            && self.entries[row].stale_at(now, max_age)
+            && entry.stale_at(now, max_age)
         {
-            self.entries.remove(row);
+            self.entries.remove(probe.key());
             return HttpsLookup::Stale;
         }
-        HttpsLookup::Found(self.entries[row].record.clone())
+        HttpsLookup::Found(entry.record.clone())
     }
 
     /// Keep what `name` has of an HTTPS record on `port`, from `now`, in
@@ -261,27 +358,32 @@ impl DnsCache {
         negative: bool,
         now: Instant,
     ) -> Result<(), OutOfMemory> {
-        let answer = match self.row(name, port, false) {
-            Some(row) => self.entries[row].answer.clone(),
+        let addresses = Probe(name, port, Keeps::Addresses);
+        let answer = match self.entries.get_key_value(addresses.key()) {
+            Some((key, _)) => key.answer.clone(),
             None => TryArc::try_new(Answer::new(name, Vec::new())?)?,
         };
-        if let Some(row) = self.row(name, port, true) {
-            self.entries.remove(row);
-        }
-        self.entries.try_push(Entry {
+        self.entries.remove(Probe(name, port, Keeps::Https).key());
+        let key = Key {
             answer,
             port,
-            added: now,
-            permanent: false,
-            https: true,
-            record,
-            negative,
-        })
+            keeps: Keeps::Https,
+        };
+        self.keep(
+            key,
+            Entry {
+                added: now,
+                permanent: false,
+                record,
+                says_no: negative,
+            },
+        )
     }
 
     /// Drop the entries older than `max_age` by `now`
     /// (`Curl_dnscache_prune`); while over the most kept, those over half
-    /// the oldest's age. None keeps them for ever.
+    /// the oldest's age. None keeps them for ever. Each entry's age is its
+    /// own: the order they came in decides nothing.
     pub(crate) fn prune(&mut self, now: Instant, max_age: Option<Duration>) {
         self.prune_to(now, max_age, MAX_ENTRIES);
     }
@@ -291,13 +393,13 @@ impl DnsCache {
             return;
         };
         loop {
-            self.entries.retain(|e| !e.stale_at(now, max_age));
+            self.entries.retain(|_, e| !e.stale_at(now, max_age));
             if self.entries.len() <= most {
                 return;
             }
             let oldest = self
                 .entries
-                .iter()
+                .values()
                 .filter(|e| !e.permanent)
                 .map(|e| e.age(now))
                 .max()
@@ -320,7 +422,7 @@ impl Entry {
     /// (`dnscache_entry_is_stale`).
     fn age(&self, now: Instant) -> Duration {
         let age = now.since(self.added);
-        if self.negative || (!self.https && self.answer.addrs.is_empty()) {
+        if self.says_no {
             age.saturating_mul(2)
         } else {
             age
@@ -783,6 +885,60 @@ mod tests {
         );
         assert!(cache.remove(b"*", 81));
         assert!(!cache.remove(b"*", 81));
+    }
+
+    /// A wildcard answers only what no entry of the name's own does: an
+    /// entry of the name, even one not for the family asked, goes first;
+    /// it is the port's alone; a stale one goes as it is looked at; and
+    /// an HTTPS record is never the wildcard's.
+    #[test]
+    fn a_wildcard_answers_only_for_names_without_an_entry() {
+        let clock = ManualClock::new().unwrap();
+        let now = clock.now();
+        let answer = |name: &[u8], ip_: &str, family| {
+            TryArc::try_new(Answer::of(name, vec![ip(ip_)], family).unwrap()).unwrap()
+        };
+        let mut cache = DnsCache::default();
+        cache
+            .put(answer(b"*", "1.1.1.1", Family::Any), 80, now, false)
+            .unwrap();
+        cache
+            .put(answer(b"Own.test", "2.2.2.2", Family::Any), 80, now, false)
+            .unwrap();
+        cache
+            .put(answer(b"v6.test", "::1", Family::V6), 80, now, false)
+            .unwrap();
+        let mut look = |name: &[u8], port, family, at| match cache.lookup(
+            (name, port),
+            family,
+            true,
+            MAX_AGE,
+            at,
+        ) {
+            Lookup::Found(a) => Some(a.addrs()[0]),
+            Lookup::Missing => None,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(look(b"OWN.test", 80, Family::Any, now), Some(ip("2.2.2.2")));
+        assert_eq!(look(b"other", 80, Family::Any, now), Some(ip("1.1.1.1")));
+        assert_eq!(look(b"other", 81, Family::Any, now), None, "the port's");
+        assert_eq!(
+            look(b"v6.test", 80, Family::V4, now),
+            None,
+            "its own entry, not the wildcard"
+        );
+        cache.put_https(b"*", 80, None, false, now).unwrap();
+        assert_eq!(
+            cache.lookup_https((b"other", 80), MAX_AGE, now),
+            HttpsLookup::Missing
+        );
+        let later = now.after(MAX_AGE.unwrap());
+        assert!(matches!(
+            cache.lookup((b"other", 80), Family::Any, true, MAX_AGE, later),
+            Lookup::Stale
+        ));
+        assert!(!cache.remove(b"*", 80), "gone as it went stale");
+        assert!(cache.remove(b"own.TEST", 80));
     }
 
     #[test]

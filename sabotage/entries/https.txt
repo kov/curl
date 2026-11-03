@@ -31,17 +31,17 @@ features: test-util
 file: crates/curl-core/src/conn/dns.rs
 witness: curl-core conn::dns::tests::a_name_s_https_record_is_kept_apart_from_its_addresses
 --- old
-            e.port == port && e.https == https && e.answer.name.eq_ignore_ascii_case(name)
+            keeps: Keeps::Https,
 --- new
-            e.port == port && e.answer.name.eq_ignore_ascii_case(name)
+            keeps: Keeps::Addresses,
 
 === a name's HTTPS record ages as its addresses do
 file: crates/curl-core/src/conn/dns.rs
 witness: curl-core conn::dns::tests::a_name_s_https_record_is_kept_apart_from_its_addresses
 --- old
-        if self.negative || (!self.https && self.answer.addrs.is_empty()) {
+                says_no: negative,
 --- new
-        if !self.https && self.answer.addrs.is_empty() {
+                says_no: false,
 
 === a failed chain is named past the HTTPS connect filter
 file: crates/curl-core/src/conn/chain.rs

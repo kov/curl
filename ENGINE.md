@@ -2698,8 +2698,9 @@ server in a network namespace answering `fe80::1`), neither query gives a scope,
 re-query gains nothing; the connect fills a link-local address's missing scope from the
 interface, as cf-socket.c does. Only pytest's test_21_16 looks for the re-query's line, and it
 needs a build that overrides DNS, which the threaded oracle is not.
-`DnsCache` is in the multi's `Caches`, or a share's (section 4.6.1): entries by name, in
-any case, and port, each a `TryRc<Answer>` that the connect machine using it shares, recording
+`DnsCache` is in the multi's `Caches`, or a share's (section 4.6.1): a hash map keyed by name, in
+any case, port and kind (addresses or HTTPS-RR), as C hashes `name:port`; a lookup probes it with
+a borrowed key, the `*` wildcard a second probe only when wildcards are on. Each key holds a `TryRc<Answer>` that the connect machine using it shares, recording
 the family asked (`dns_queries`): an answer for one family is no answer for both. A setup
 looks in the cache first (`hostip_resolv`), then asks the shortcuts, then the resolver, and
 keeps what they answer for the cache's timeout (`CURLOPT_DNS_CACHE_TIMEOUT`, the transfer's: 60

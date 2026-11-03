@@ -125,6 +125,32 @@ impl Frame {
         }
     }
 
+    /// Report the URL a transfer's options give, through the context
+    /// lent (`Easy::show_set_url`).
+    ///
+    /// # Safety
+    ///
+    /// As `options_mut`.
+    pub(crate) unsafe fn show_set_url(self, id: TransferId) {
+        match self {
+            Frame::Transfer(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.show_set_url(id);
+            }
+            Frame::Event(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.show_set_url(id);
+            }
+            Frame::Notify(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &mut *cx.as_ptr() }.show_set_url(id);
+            }
+        }
+    }
+
     /// Forget the URL a transfer reports, through the context lent
     /// (`Easy::forget_url`).
     ///

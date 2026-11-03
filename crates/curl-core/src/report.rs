@@ -71,14 +71,26 @@ impl ResponseVersion {
 }
 
 /// The URL a transfer reports, as C's `effective_url` reads `state.url`
-/// back: none before one is given; its text without credentials; or,
-/// for one given that cannot be read back, the error reading it gives.
+/// back: none before one is given; its text without credentials; for
+/// one given that cannot be read back, the error reading it gives; or
+/// the one the options give (`CURLOPT_URL`), read back only as it is
+/// asked for, as C's points at `STRING_SET_URL`.
 #[derive(Debug, Default)]
 enum ShownUrl {
     #[default]
     Unset,
     Shown(Vec<u8>),
     Unreadable(ErrorKind),
+    Set,
+}
+
+/// `given` read back as getinfo reads a URL (`effective_url`): parsed
+/// whatever its scheme, then without its credentials, or the error
+/// reading it gives.
+pub fn read_back(given: &[u8], path_as_is: bool) -> Result<Vec<u8>, ErrorKind> {
+    Url::parse(given, getinfo_parse(path_as_is))
+        .and_then(|url| url.shown())
+        .map_err(crate::error::url_error)
 }
 
 /// How C's getinfo parses the URL it reports (`effective_url`).
@@ -511,17 +523,29 @@ impl TransferReport {
     }
 
     /// The URL the transfer used, its credentials taken out
-    /// (`CURLINFO_EFFECTIVE_URL`).
+    /// (`CURLINFO_EFFECTIVE_URL`); none while the one reported is the
+    /// options' (`shows_set_url`).
     pub fn url(&self) -> Option<&[u8]> {
         match &self.url {
             ShownUrl::Shown(text) => Some(text),
-            ShownUrl::Unset | ShownUrl::Unreadable(_) => None,
+            ShownUrl::Unset | ShownUrl::Unreadable(_) | ShownUrl::Set => None,
         }
+    }
+
+    /// Whether the URL reported is the one the options give, until a
+    /// transfer starts: `read_back` reads it as getinfo asks.
+    pub fn shows_set_url(&self) -> bool {
+        matches!(self.url, ShownUrl::Set)
     }
 
     /// Report no URL, until a transfer starts with one.
     pub(crate) fn forget_url(&mut self) {
         self.url = ShownUrl::Unset;
+    }
+
+    /// Report the URL the options give, until a transfer starts.
+    pub(crate) fn show_set_url(&mut self) {
+        self.url = ShownUrl::Set;
     }
 
     /// Why the URL cannot be reported, if it cannot: it does not read
@@ -532,7 +556,7 @@ impl TransferReport {
     pub fn url_failure(&self, path_as_is: bool) -> Option<ErrorKind> {
         match &self.url {
             ShownUrl::Unreadable(kind) => Some(*kind),
-            ShownUrl::Unset => None,
+            ShownUrl::Unset | ShownUrl::Set => None,
             ShownUrl::Shown(text) => match Url::parse(text, getinfo_parse(path_as_is)) {
                 Ok(_) => None,
                 Err(e) => Some(crate::error::url_error(e)),
@@ -562,11 +586,10 @@ impl TransferReport {
         given: &[u8],
         path_as_is: bool,
     ) -> Result<(), OutOfMemory> {
-        let read = Url::parse(given, getinfo_parse(path_as_is)).and_then(|url| url.shown());
-        self.url = match read {
+        self.url = match read_back(given, path_as_is) {
             Ok(text) => ShownUrl::Shown(text),
-            Err(UrlErrorKind::OutOfMemory) => return Err(OutOfMemory),
-            Err(e) => ShownUrl::Unreadable(crate::error::url_error(e)),
+            Err(ErrorKind::OutOfMemory) => return Err(OutOfMemory),
+            Err(kind) => ShownUrl::Unreadable(kind),
         };
         Ok(())
     }

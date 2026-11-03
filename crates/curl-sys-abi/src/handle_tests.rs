@@ -1961,6 +1961,94 @@ fn a_url_handle_set_forgets_the_effective_url() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// `CURLOPT_URL` is the URL reported until a transfer starts, as C's
+/// setopt points `state.url` at it: without its credentials, as getinfo
+/// reads it back, or its error if it does not read back; after a
+/// transfer, in place of that transfer's; NULL reports none; and set from
+/// a transfer's callback, in place of the URL under way.
+#[test]
+fn a_url_set_is_the_effective_url_until_a_transfer_starts() {
+    let effective = |c| {
+        let mut url: *const c_char = c"untouched".as_ptr();
+        // SAFETY: a live handle, and a string pointer for the info.
+        let code = unsafe { curl_easy_getinfo(c, ffi::CURLINFO_EFFECTIVE_URL, &mut url) };
+        // SAFETY: getinfo gives NULL or a string that lives while the
+        // handle does.
+        let text = (!url.is_null()).then(|| unsafe { CStr::from_ptr(url) }.to_owned());
+        (code, text)
+    };
+    let shown = |text: &CStr| (CURLE_OK, Some(text.to_owned()));
+    let set = |c, url: &CStr| pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    let c = curl_easy_init();
+    assert_eq!(set(c, c"http://user:secret@127.0.0.1:1/a"), CURLE_OK);
+    assert_eq!(effective(c), shown(c"http://127.0.0.1:1/a"));
+    assert_eq!(set(c, c"http://[invalid/"), CURLE_OK);
+    assert_eq!(effective(c), (ffi::CURLE_URL_MALFORMAT, None));
+    // Read back as getinfo is asked, `CURLOPT_PATH_AS_IS` as it is then.
+    assert_eq!(set(c, c"http://127.0.0.1:1/a/../b"), CURLE_OK);
+    assert_eq!(effective(c), shown(c"http://127.0.0.1:1/b"));
+    assert_eq!(long(c, ffi::CURLOPT_PATH_AS_IS, 1), CURLE_OK);
+    assert_eq!(effective(c), shown(c"http://127.0.0.1:1/a/../b"));
+    assert_eq!(long(c, ffi::CURLOPT_PATH_AS_IS, 0), CURLE_OK);
+    // SAFETY: a live handle.
+    unsafe { crate::easy::curl_easy_reset(c) };
+    assert_eq!(effective(c), shown(c""), "after a reset");
+    let (path, url) = file("url-effective", b"x");
+    let (then_path, then) = file("url-effective-then", b"x");
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    assert_eq!(set(c, &url), CURLE_OK);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    assert_eq!(set(c, &then), CURLE_OK);
+    assert_eq!(effective(c), shown(&then), "after a transfer");
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, ptr::null_mut::<c_char>()),
+        CURLE_OK
+    );
+    assert_eq!(effective(c), shown(c""), "none");
+
+    // Set from the transfer's own write function, it is reported in
+    // place of the URL under way, which no later request sets again.
+    struct Swap {
+        c: *mut CURL,
+        to: *const c_char,
+    }
+    unsafe extern "C" fn swapping(_: *mut c_char, size: usize, n: usize, s: *mut c_void) -> usize {
+        // SAFETY: a `Swap` live through the transfer.
+        let s = unsafe { &*s.cast::<Swap>() };
+        // SAFETY: the handle, live while its transfer runs, and a string.
+        let set = unsafe { curl_easy_setopt(s.c, ffi::CURLOPT_URL, s.to) };
+        assert_eq!(set, CURLE_OK);
+        size * n
+    }
+    let mut swap = Swap {
+        c,
+        to: then.as_ptr(),
+    };
+    function(
+        c,
+        ffi::CURLOPT_WRITEFUNCTION,
+        swapping as WriteFn as *const (),
+    );
+    pointer(c, ffi::CURLOPT_WRITEDATA, &raw mut swap);
+    assert_eq!(set(c, &url), CURLE_OK);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    assert_eq!(effective(c), shown(&then), "set from a callback");
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    assert_eq!(set(c, &url), CURLE_OK);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    // SAFETY: a live handle.
+    unsafe { crate::easy::curl_easy_reset(c) };
+    assert_eq!(effective(c), shown(c""), "after a transfer and a reset");
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    for path in [path, then_path] {
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 /// A handle holds only the pointer `CURLOPT_CURLU` gave it, never the
 /// URL handle itself: after a transfer, after a copy of the handle, and
 /// after one added and taken out unstarted, the application's

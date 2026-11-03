@@ -156,6 +156,10 @@ impl EasyView<'_> {
         self.easy.forget_url();
     }
 
+    pub fn show_set_url(&mut self) {
+        self.easy.show_set_url();
+    }
+
     pub fn reset(&mut self) {
         self.easy.reset_as(self.id);
     }
@@ -358,6 +362,17 @@ impl Easy {
     /// then empty.
     pub fn forget_url(&mut self) {
         self.report.forget_url();
+    }
+
+    /// Report the URL the options give (`CURLOPT_URL`) until the next
+    /// transfer starts, as setting it points C's `state.url` at it, or
+    /// none if none is set: read back only as getinfo asks.
+    pub fn show_set_url(&mut self) {
+        if self.options.url().is_some() {
+            self.report.show_set_url();
+        } else {
+            self.report.forget_url();
+        }
     }
 
     /// The method of the running or last request, as

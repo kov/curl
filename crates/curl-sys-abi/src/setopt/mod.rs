@@ -2013,6 +2013,18 @@ unsafe fn set_arg(easy: &ShimEasy, option: CURLoption, arg: Arg) -> CURLcode {
         });
         forgot.expect("the handle was reached just above");
     }
+    if option == ffi::CURLOPT_URL {
+        // The URL reported is the one set, or none, as C points
+        // `state.url` at it: in place of the last transfer's, or of the
+        // one under way's, set from its callback, until a request of it
+        // starts again.
+        let shown = easy.with_easy(|e| match e {
+            easy::EasyRef::Easy(mut easy) => easy.show_set_url(),
+            // SAFETY: as in `with_options`.
+            easy::EasyRef::Frame(frame, id) => unsafe { frame.show_set_url(id) },
+        });
+        shown.expect("the handle was reached just above");
+    }
     if let Some(n) = cseq {
         let Ok(n) = keepalive_value(n) else {
             unreachable!("checked as applied")

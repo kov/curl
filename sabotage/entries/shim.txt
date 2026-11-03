@@ -332,7 +332,7 @@ witness: curl-sys-abi handle_tests::no_string_option_takes_an_over_long_string
 file: crates/curl-core/src/report.rs
 witness: curl-sys-abi handle_tests::a_refused_url_is_reported_without_its_credentials
 --- old
-            Err(e) => ShownUrl::Unreadable(crate::error::url_error(e)),
+            Err(kind) => ShownUrl::Unreadable(kind),
 --- new
             Err(_) => ShownUrl::Unset,
 
@@ -523,5 +523,21 @@ file: crates/curl-sys-abi/src/setopt/mod.rs
 witness: curl-sys-abi handle_tests::a_url_handle_set_forgets_the_effective_url
 --- old
             easy::EasyRef::Frame(frame, id) => unsafe { frame.forget_url(id) },
+--- new
+            easy::EasyRef::Frame(..) => {}
+
+=== setting CURLOPT_URL keeps the last transfer's effective URL
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_url_set_is_the_effective_url_until_a_transfer_starts
+--- old
+            easy::EasyRef::Easy(mut easy) => easy.show_set_url(),
+--- new
+            easy::EasyRef::Easy(_) => {}
+
+=== setting CURLOPT_URL from a callback keeps the running transfer's URL
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_url_set_is_the_effective_url_until_a_transfer_starts
+--- old
+            easy::EasyRef::Frame(frame, id) => unsafe { frame.show_set_url(id) },
 --- new
             easy::EasyRef::Frame(..) => {}

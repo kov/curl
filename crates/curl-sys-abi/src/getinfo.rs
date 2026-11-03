@@ -528,6 +528,22 @@ pub unsafe extern "C" fn curl_easy_getinfo(
         rtsp_info(easy, info)
     } else if info == ffi::CURLINFO_TLS_SSL_PTR || info == ffi::CURLINFO_TLS_SESSION {
         crate::tls::session_info(easy, info).map(|tsi| Some(Value::Struct(tsi.cast())))
+    } else if info == ffi::CURLINFO_EFFECTIVE_URL
+        && easy.with_report(TransferReport::shows_set_url) == Ok(true)
+    {
+        // The URL set, read back as it is asked for, as C reads back the
+        // `state.url` its setopt pointed at `STRING_SET_URL`.
+        easy.with_options(|o| {
+            // None once the options lose it, as C frees the two together.
+            let read = o
+                .url()
+                .map(|given| curl_core::report::read_back(given, o.url_rules.path_as_is));
+            Some(match read {
+                Some(Ok(text)) => string(kept(easy, |i| &mut i.effective_url, &text)),
+                Some(Err(kind)) => Value::Withheld(crate::error_codes::easy_code(kind)),
+                None => string(kept(easy, |i| &mut i.effective_url, b"")),
+            })
+        })
     } else {
         let path_as_is = if info == ffi::CURLINFO_EFFECTIVE_URL {
             easy.with_options(|o| o.url_rules.path_as_is)

@@ -1722,6 +1722,40 @@ fn strings_are_copied_and_bounded() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// The resolver library's options are kept where c-ares answers names,
+/// and not built in where the threaded resolver does, as C's build
+/// without c-ares answers.
+#[test]
+fn the_resolver_library_options_are_kept_with_c_ares_alone() {
+    let c = curl_easy_init();
+    let values = [
+        (ffi::CURLOPT_DNS_SERVERS, c"127.0.0.1"),
+        (ffi::CURLOPT_DNS_INTERFACE, c"lo"),
+        (ffi::CURLOPT_DNS_LOCAL_IP4, c"127.0.0.2"),
+        (ffi::CURLOPT_DNS_LOCAL_IP6, c"::1"),
+    ];
+    let set = values.map(|(o, v)| pointer(c, o, v.as_ptr().cast_mut()));
+    let threaded = cfg!(feature = "threaded-resolver");
+    let code = if threaded {
+        ffi::CURLE_NOT_BUILT_IN
+    } else {
+        CURLE_OK
+    };
+    assert_eq!(set, [code; 4]);
+    let kept = options(c, |o| {
+        [
+            o.dns.servers.clone(),
+            o.dns.interface.clone(),
+            o.dns.local_ip4.clone(),
+            o.dns.local_ip6.clone(),
+        ]
+    });
+    let want = values.map(|(_, v)| (!threaded).then(|| v.to_bytes().to_vec()));
+    assert_eq!(kept, want);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// The scheme options set what a URL and a redirect may use: a refused
 /// list keeps the one before, NULL brings back the default, and the
 /// deprecated masks take C's bits.

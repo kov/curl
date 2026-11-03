@@ -1109,7 +1109,9 @@ fn a_data_connection_s_tunnel_waits_on_its_socket() {
 /// control connection does, with a `CONNECT` of its own to the port the
 /// server named, on the origin's name (`ftp_control_addr_dup`); its
 /// lines name the control connection's proxy, as C's second socket's
-/// filters say them.
+/// filters say them. Each `CONNECT` carries the application's
+/// `Authorization` for the proxy, as an FTP request is no redirect's
+/// (`Curl_auth_allowed_to_host`).
 #[test]
 fn the_data_connection_tunnels_through_the_proxy() {
     let talk = through(&[], TUNNELED);
@@ -1119,6 +1121,8 @@ fn the_data_connection_tunnels_through_the_proxy() {
         let proxy = o.proxy.make_mut().unwrap();
         proxy.url = Some(format!("http://127.0.0.1:{PROXY_PORT}").into_bytes());
         proxy.tunnel = true;
+        let line: &[u8] = b"Authorization: Bearer tunnel";
+        proxy.headers = crate::options::UserHeaders::new([line]).unwrap();
     });
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let said = text.text();
@@ -1134,6 +1138,9 @@ fn the_data_connection_tunnels_through_the_proxy() {
         asked.starts_with("CONNECT 127.0.0.1:8022 HTTP/1.1\r\n"),
         "{asked}"
     );
+    let authorized = "\r\nAuthorization: Bearer tunnel\r\n";
+    assert!(sent.contains(authorized), "the control's: {sent}");
+    assert!(asked.contains(authorized), "the data's: {asked}");
     assert!(
         said.contains("Establishing HTTP proxy tunnel to 127.0.0.1:8022\n"),
         "{said}"

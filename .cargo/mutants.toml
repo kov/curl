@@ -898,6 +898,12 @@ exclude_re = [
     # The calls a multi's event makes on a transfer only trace its lines
     # (`info_outside`): no handler is given them, so none starts a frame.
     'curl-core/src/multi/cx\.rs:.*: replace <impl TransferCalls for EventCalls<.*>>::ws_start_frame -> Result<\(\), ErrorKind> with Ok\(\(\)\)$',
+    # Only `info_outside` asks calls for the transfer's own `Easy`, and only
+    # a multi's event gives it calls: a lone handle's handlers, called as
+    # it is reset or let go of, go through `of_lone`, which never asks.
+    'curl-core/src/multi/cx\.rs:.*: replace <impl TransferCalls for LoneCalls<.*>>::own -> Option<&Easy> with (None|Some\(Box::leak\(Box::new\(Default::default\(\)\)\)\))$',
+    # The export mark's Debug names no field; nothing reads it.
+    'curl-core/src/multi/ssls\.rs:.*: replace <impl fmt::Debug for SessionsOut>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
     # The bound only rejects the draws that would weigh some letters of
     # MQTT's client id over others; any bound still gives letters and
     # digits (`Curl_rand_alnum`).
@@ -963,8 +969,16 @@ exclude_re = [
     'curl-core/src/proto/ftp\.rs:\d+:46: replace == with != in Request::control_waits$',
     # A range sets `dont_check` with its size to stop at, so "No data was
     # received" needs a size said, nothing got and no range: and the size
-    # check before it already fails that, as C's `ftp_done` does.
-    'curl-core/src/proto/ftp\.rs:\d+:82: replace > with < in Request::check_partial$',
+    # check before it already fails that, as C's `ftp_done` does. With a
+    # range, nothing got against a size said fails that check too, as the
+    # size to stop at is never 0: the guard read either way decides nothing.
+    'curl-core/src/proto/ftp\.rs:\d+:(82: replace > with <|12: delete !) in Request::check_partial$',
+    # An FTP data connection's layers hold nothing once a read through them
+    # would block: TLS's input pending is cleared by that read, an HTTP/1
+    # tunnel's and an HTTP/2 proxy's held bytes are given out before it, and
+    # TCP holds none. The read loop's look after a would-block never finds
+    # any, as it can on a connection that carries capsules or QUIC.
+    'curl-core/src/proto/ftp\.rs:.*: replace <impl Source<H> for DataSource<.*>>::data_pending -> bool with false$',
     # A POP3 body has no size said (`start_to_end`): the read loop asks a
     # sink's count only against a size, so POP3's is never asked.
     'curl-core/src/proto/pop3\.rs:.*: replace <impl Sink<H, S> for Body<.*>>::bytecount -> u64 with [01]$',

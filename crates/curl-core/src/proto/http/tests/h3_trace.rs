@@ -1931,6 +1931,32 @@ fn a_race_both_attempts_lose_fails_with_the_first_s_failure() {
     );
 }
 
+/// Both attempts fail, the second once TCP connected, its handshake cut
+/// short: the second, kept as it failed, is the one attempt connected at
+/// the network level, and reports the ends the transfer keeps (`cf_hc_cntrl`'s
+/// `CF_CTRL_CONN_INFO_UPDATE`). C's tool, `--http3` to a TCP server that
+/// hangs up on the handshake and nothing on UDP, reports them so.
+#[test]
+fn a_race_lost_after_the_second_connected_keeps_the_second_s_ends() {
+    let quic_talk = Conversation::replies(&[], false).per_send();
+    let tcp_talk = Conversation::replies(&[b""], true).greeting();
+    let mut m = racing_peer(Peer::Refuses, &quic_talk, Peer::Accepts, &tcp_talk);
+    let e = tracing(FakeTls::agreeing().unwrap(), &first_flight_only());
+    let ran = h3_race(&mut m, e, &tcp_talk);
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::CouldntConnect),
+        "{:#?}",
+        ran.seen.text()
+    );
+    let ends = ran.easy.report().primary().expect("the second's ends");
+    assert_eq!(
+        ends.remote,
+        crate::conn::io::Remote::Inet(std::net::SocketAddr::from(([127, 0, 0, 1], PORT)))
+    );
+    assert!(ends.local.is_some());
+}
+
 /// `e` with an alt-svc cache that knows `entry`, a line of its file.
 fn knowing(mut e: Easy, name: &str, entry: &str) -> Easy {
     let file = std::env::temp_dir().join(format!("curl-core-h3-alt-{name}-{}", std::process::id()));

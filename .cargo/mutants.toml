@@ -1035,4 +1035,15 @@ exclude_re = [
     # The lookup is polled no more once done, so what is left in its
     # query is never read.
     'curl-core/src/multi/doh\.rs:.*: replace match guard addrs\.is_empty\(\) with false in Lookup::poll$',
+    # A step's own transfer is never asked for its handle through the
+    # step: `TransferCalls::own` is called only by `info_outside`, whose
+    # one caller passes `EventCalls`.
+    "curl-core/src/multi/state/cx\\.rs:.*: replace <impl TransferCalls for StepCx<'_, H>>::own -> Option<&Easy> with ",
+    # A record asked for with nothing to answer it (no library, no DoH, a
+    # resolver that does not say it is asked) is pending with no lookup
+    # only behind the system's resolver, which answers the addresses at
+    # once: the first attempt is chosen in the call that asked, so no
+    # later call finds it unchosen. Only the tests' fake resolver, which
+    # answers later and stands for no build of C's, reaches the guard.
+    'curl-core/src/multi/state/https\.rs:.*: replace match guard h\.first\.is_some\(\) with true in connect_call$',
 ]

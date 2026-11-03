@@ -351,7 +351,7 @@ fn a_record_and_addresses_come_together_are_taken_before_the_second_is_chosen() 
 /// inside the start, as C's `hostip_resolv_start` takes it on
 /// `CURLE_AGAIN`: the take's line, `resolve complete`, its resolve's record
 /// destroyed, `started -> 0`, then the record kept and said, before the
-/// addresses are asked for; none, it is kept as none after `started -> 6`.
+/// addresses are asked for, and the first attempt chosen by it; none, it is kept as none after `started -> 6`.
 /// C's tool over c-ares, a DNS server answering the record at once, was
 /// seen to trace the first so.
 #[test]
@@ -376,8 +376,16 @@ fn a_record_had_at_the_start_s_first_look_is_taken_inside_the_start() {
     ];
     let mut m = tls_server(1);
     let url = format!("https://localhost:{PORT}/");
-    let ran = https_get(&mut m, tracing_over(&FIRST, b"dns"), &url, |_| {});
+    let traced = tracing_over(&FIRST, b"dns,https-connect");
+    let ran = https_get(&mut m, traced, &url, |_| {});
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    // Kept as the setup's, the record chooses the first attempt.
+    let chose = lines(&ran, &["[HTTPS-CONNECT] HTTPS-RR", "[HTTPS-CONNECT] 1st"]);
+    let want = expect(
+        "[HTTPS-CONNECT] HTTPS-RR available
+        [HTTPS-CONNECT] 1st attempt uses h1 from HTTPS-RR",
+    );
+    assert_eq!(chose[..want.len()], want, "{chose:#?}");
     let want = expect(&format!(
         "[DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
         [DNS] [HTTPS] ares_take_result, result=0, ares_result=0, ares_status=1, dns=found

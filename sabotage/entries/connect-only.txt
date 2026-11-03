@@ -192,7 +192,7 @@ features: test-util
             sessions: Some(&mut self.caches.sessions),
             when: When::of(&self.clock),
         };
-        let easy = &mut self.slots.get_mut(id)?.easy;
+        let easy = &mut self.slots.app_mut(id)?.easy;
         Some(raw(around, easy, way, notes))
 --- new
         let around = Around {
@@ -200,7 +200,7 @@ features: test-util
             sessions: None,
             when: When::of(&self.clock),
         };
-        let easy = &mut self.slots.get_mut(id)?.easy;
+        let easy = &mut self.slots.app_mut(id)?.easy;
         Some(raw(around, easy, way, notes))
 
 === a ticket read out of a multi goes to the multi that ran it
@@ -262,11 +262,9 @@ file: crates/curl-core/src/multi/mod.rs
 witness: curl-core proto::http::tests::tls::a_connection_only_made_shows_its_tls_objects_once_taken_up
 features: test-util
 --- old
-        tls_native_in(&self.slots, Some(&self.caches.pool), id).or_else(|| {
-            raw::reserved_tls_native(Some(&self.caches.pool), &self.slots.get(id)?.easy)
-        })
+            .or_else(|| raw::reserved_tls_native(Some(&self.caches.pool), &slot.easy))
 --- new
-        tls_native_in(&self.slots, Some(&self.caches.pool), id)
+            .or_else(|| slot.easy.share().and(None))
 
 === a send past its frame's end forgets what went
 file: crates/curl-core/src/proto/ws.rs

@@ -441,7 +441,7 @@ impl<H: Host> Multi<H> {
             sessions: Some(&mut self.caches.sessions),
             when: When::of(&self.clock),
         };
-        let easy = &mut self.slots.get_mut(id)?.easy;
+        let easy = &mut self.slots.app_mut(id)?.easy;
         Some(raw(around, easy, way, notes))
     }
 
@@ -450,7 +450,7 @@ impl<H: Host> Multi<H> {
     /// (`CURLINFO_ACTIVESOCKET`, `Curl_getconnectinfo`). `None` if `id` is
     /// not in this multi.
     pub fn active_socket(&mut self, id: TransferId) -> Option<Option<SocketKey>> {
-        let slot = self.slots.get_mut(id)?;
+        let slot = self.slots.app_mut(id)?;
         if let Some(lease) = slot.run.as_ref().and_then(|r| r.state.lease()) {
             let slot = self.caches.pool.slot_of(lease);
             return Some(slot.and_then(|s| s.sockets().next()).map(|s| s.key()));
@@ -866,7 +866,7 @@ impl<H: Host> Multi<H> {
             sessions: Some(&mut self.caches.sessions),
             when: When::of(&self.clock),
         };
-        let easy = &mut self.slots.get_mut(id)?.easy;
+        let easy = &mut self.slots.app_mut(id)?.easy;
         Some(ws(around, easy, call, notes))
     }
 

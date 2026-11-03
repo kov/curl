@@ -308,7 +308,9 @@ impl MultiEvents<CHost> for ShimEvents<'_> {
         // SAFETY: a transfer's owner is its live handle.
         let child = ShimEasy::doh_probe(unsafe { parent.as_ref() }, easy)?;
         // SAFETY: made above, live until `internal_gone`.
-        let easy = unsafe { child.as_ref() }.detach();
+        let shim = unsafe { child.as_ref() };
+        let easy = shim.detach();
+        shim.attach_internal(NonNull::from(self.multi));
         Ok((easy, Some(child)))
     }
 

@@ -369,10 +369,8 @@ fn run_probe<H: Host>(
     };
     rest.tell.counts.internal_added();
     rest.dirty.insert(id.index());
-    let slot = rest.tell.slots.get(id).expect("just added");
-    if let Owner::Internal { host: Some(h), .. } = &slot.owner {
-        rest.events.added(id, h);
-    }
+    // The host is not told of it (`MultiEvents::added`): its id is no
+    // call's to take.
     let mut cx = StepCx::new(id, rest.reborrow());
     super::trace_membership(&mut cx, "added to");
     Ok(())

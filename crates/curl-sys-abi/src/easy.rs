@@ -135,6 +135,9 @@ enum Home {
         multi: NonNull<ShimMulti>,
         id: TransferId,
     },
+    /// A DoH probe's, in its master's multi, which names it by no id:
+    /// reached only by its own handlers, which lend through that multi.
+    Internal(NonNull<ShimMulti>),
     /// Out of the handle while its own handlers are called outside any
     /// transfer, as its resolves' records go (`Curl_resolv_destroy_all`):
     /// reached through the context the callback running was lent, with
@@ -546,7 +549,7 @@ impl ShimEasy {
         match *self.home.borrow() {
             // SAFETY: a multi frees its transfers' handles' `Added` before
             // it is freed itself.
-            Home::Added { multi, .. } => Some(unsafe { multi.as_ref() }),
+            Home::Added { multi, .. } | Home::Internal(multi) => Some(unsafe { multi.as_ref() }),
             Home::Detached(_) | Home::Alone(_) | Home::Nowhere => None,
         }
     }
@@ -590,7 +593,7 @@ impl ShimEasy {
     pub(crate) fn detach(&self) -> Box<Easy> {
         match self.home.replace(Home::Nowhere) {
             Home::Detached(easy) => easy,
-            Home::Added { .. } | Home::Alone(_) | Home::Nowhere => {
+            Home::Added { .. } | Home::Internal(_) | Home::Alone(_) | Home::Nowhere => {
                 unreachable!("a handle on its own")
             }
         }
@@ -602,11 +605,17 @@ impl ShimEasy {
         assert!(matches!(was, Home::Nowhere), "attached once detached");
     }
 
+    /// The probe's handle is in `multi`, as a transfer of the multi's own.
+    pub(crate) fn attach_internal(&self, multi: NonNull<ShimMulti>) {
+        let was = self.home.replace(Home::Internal(multi));
+        assert!(matches!(was, Home::Nowhere), "attached once detached");
+    }
+
     /// Where the handle is: its multi and id, if in one.
     pub(crate) fn added(&self) -> Option<(NonNull<ShimMulti>, TransferId)> {
         match *self.home.borrow() {
             Home::Added { multi, id } => Some((multi, id)),
-            Home::Detached(_) | Home::Alone(_) | Home::Nowhere => None,
+            Home::Detached(_) | Home::Internal(_) | Home::Alone(_) | Home::Nowhere => None,
         }
     }
 
@@ -616,7 +625,7 @@ impl ShimEasy {
         let Some((multi, id)) = self.added() else {
             return match &*self.home.borrow() {
                 Home::Detached(easy) => easy.holds_connection(),
-                Home::Added { .. } | Home::Alone(_) | Home::Nowhere => false,
+                Home::Added { .. } | Home::Internal(_) | Home::Alone(_) | Home::Nowhere => false,
             };
         };
         // SAFETY: the handle's multi outlives its `Added`.
@@ -659,7 +668,8 @@ impl ShimEasy {
                 }
                 // Being added, the transfer is in neither place: a callback
                 // the add runs cannot reach it.
-                Home::Alone(None) | Home::Nowhere => Err(Recursive),
+                // A probe's is no call's to reach, as C refuses its handle.
+                Home::Alone(None) | Home::Internal(_) | Home::Nowhere => Err(Recursive),
                 Home::Added { .. } => unreachable!("not added"),
             };
         };
@@ -1233,7 +1243,7 @@ impl ShimEasy {
     pub(crate) fn with_detached<R>(&self, f: impl FnOnce(&mut Easy) -> R) -> Option<R> {
         match &mut *self.home.borrow_mut() {
             Home::Detached(e) => Some(f(e)),
-            Home::Added { .. } | Home::Alone(_) | Home::Nowhere => None,
+            Home::Added { .. } | Home::Internal(_) | Home::Alone(_) | Home::Nowhere => None,
         }
     }
 

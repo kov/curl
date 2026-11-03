@@ -163,7 +163,10 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
   response and a connection like any other, so it is an ordinary slot whose owner is
   `Owner::Internal { master, .. }` rather than `Owner::App`: on every host, as the host's own
   value is optional there. The application is never told of one: no message, no removal, no
-  place in its lists.
+  place in its lists, no `added`. Every call taking a `TransferId` looks it up through
+  `Slots::app`, which finds none for an internal transfer, as C's API refuses a
+  `state.internal` handle; only its owner, the host's value its callbacks name it by, is
+  answered.
 - **The Rust multi carries the application's values.** `Multi<H: Host>` stores one value per
   transfer and one per socket, so the shim keeps no second map from ids to its handles.
 - **Typestate is used where C keeps flags.** Examples are a connection before and after its

@@ -1167,6 +1167,9 @@ impl<'a> TransferCx<'a> {
 /// What a `TransferCx` reaches, whatever the multi's `Host`.
 pub(crate) trait TransferCalls {
     fn me(&self) -> TransferId;
+    /// Transfer `me`'s own `Easy`, for the library's trace of it: one of
+    /// the multi's own among them, which `easy` refuses.
+    fn own(&self) -> Option<&Easy>;
     fn census(&self) -> Census;
     fn easy(&self, id: TransferId) -> Option<&Easy>;
     fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy>;
@@ -1198,16 +1201,20 @@ impl<H: Host> TransferCalls for EventCalls<'_, '_, H> {
         self.me
     }
 
+    fn own(&self) -> Option<&Easy> {
+        self.cx.slots.get(self.me).map(|s| &*s.easy)
+    }
+
     fn census(&self) -> Census {
         self.cx.census()
     }
 
     fn easy(&self, id: TransferId) -> Option<&Easy> {
-        self.cx.slots.get(id).map(|s| &*s.easy)
+        self.cx.slots.app(id).map(|s| &*s.easy)
     }
 
     fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
-        self.cx.slots.get_mut(id).map(|s| &mut *s.easy)
+        self.cx.slots.app_mut(id).map(|s| &mut *s.easy)
     }
 
     fn pause(&mut self, _: TransferId, _: PauseRequest) -> Result<(), ErrorKind> {
@@ -1253,6 +1260,10 @@ pub(crate) struct LoneCalls<'a> {
 impl TransferCalls for LoneCalls<'_> {
     fn me(&self) -> TransferId {
         self.me
+    }
+
+    fn own(&self) -> Option<&Easy> {
+        Some(&*self.easy)
     }
 
     fn census(&self) -> Census {
@@ -1350,46 +1361,47 @@ impl<H: Host> EventCx<'_, H> {
     }
 
     pub fn options(&self, id: TransferId) -> Option<&Options> {
-        self.slots.get(id).map(|s| s.easy.options())
+        self.slots.app(id).map(|s| s.easy.options())
     }
 
     pub fn info(&self, id: TransferId) -> Option<&TransferReport> {
-        self.slots.get(id).map(|s| s.easy.report())
+        self.slots.app(id).map(|s| s.easy.report())
     }
 
     /// As `Multi::tls_native`.
     pub fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
+        self.slots.app(id)?;
         super::tls_native_in(self.slots, self.pool, id)
     }
 
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {
-        self.slots.get_mut(id).map(|s| s.easy.options_mut())
+        self.slots.app_mut(id).map(|s| s.easy.options_mut())
     }
 
     /// As `Easy::tell_failure`, of a transfer.
     pub fn tell_failure(&mut self, id: TransferId, why: &[u8]) {
-        if let Some(slot) = self.slots.get_mut(id) {
+        if let Some(slot) = self.slots.app_mut(id) {
             slot.easy.tell_failure(why);
         }
     }
 
     /// As `Easy::forget_url`, of a transfer.
     pub fn forget_url(&mut self, id: TransferId) {
-        if let Some(slot) = self.slots.get_mut(id) {
+        if let Some(slot) = self.slots.app_mut(id) {
             slot.easy.forget_url();
         }
     }
 
     /// As `Easy::show_set_url`, of a transfer.
     pub fn show_set_url(&mut self, id: TransferId) {
-        if let Some(slot) = self.slots.get_mut(id) {
+        if let Some(slot) = self.slots.app_mut(id) {
             slot.easy.show_set_url();
         }
     }
 
     /// As `TransferCx::rtsp`.
     pub fn rtsp(&self, id: TransferId) -> Option<crate::easy::RtspState> {
-        self.slots.get(id).map(|s| s.easy.rtsp())
+        self.slots.app(id).map(|s| s.easy.rtsp())
     }
 
     /// As `TransferCx::rtsp_mut`.
@@ -1397,7 +1409,7 @@ impl<H: Host> EventCx<'_, H> {
         &mut self,
         id: TransferId,
     ) -> Option<Result<&mut crate::easy::RtspState, OutOfMemory>> {
-        self.slots.get_mut(id).map(|s| s.easy.rtsp_mut())
+        self.slots.app_mut(id).map(|s| s.easy.rtsp_mut())
     }
 
     /// A copy of a transfer's `Easy` (`curl_easy_duphandle`).
@@ -1411,7 +1423,7 @@ impl<H: Host> EventCx<'_, H> {
         id: TransferId,
         prepare: &mut dyn FnMut(&mut Options) -> Result<(), OutOfMemory>,
     ) -> Option<Result<Easy, OutOfMemory>> {
-        self.slots.get(id).map(|s| s.easy.try_clone_with(prepare))
+        self.slots.app(id).map(|s| s.easy.try_clone_with(prepare))
     }
 
     /// What the application gave with the transfer when it added it.
@@ -1536,7 +1548,7 @@ impl<H: Host> NotifyCx<'_, H> {
     }
 
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {
-        self.multi.slots.get_mut(id).map(|s| s.easy.options_mut())
+        self.multi.slots.app_mut(id).map(|s| s.easy.options_mut())
     }
 
     /// As `Easy::tell_failure`, of a transfer.
@@ -1570,7 +1582,7 @@ impl<H: Host> NotifyCx<'_, H> {
         &mut self,
         id: TransferId,
     ) -> Option<Result<&mut crate::easy::RtspState, OutOfMemory>> {
-        self.multi.slots.get_mut(id).map(|s| s.easy.rtsp_mut())
+        self.multi.slots.app_mut(id).map(|s| s.easy.rtsp_mut())
     }
 
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {

@@ -173,7 +173,7 @@ pub(crate) fn of_with<H: Host>(cx: &mut StepCx<'_, H>, component: Component, par
 /// a handle a callback of the multi was given): after its ids, through
 /// its debug handler, or without one to its standard error.
 pub(crate) fn info_outside(calls: &mut dyn crate::multi::TransferCalls, args: fmt::Arguments<'_>) {
-    let Some(easy) = calls.easy(calls.me()) else {
+    let Some(easy) = calls.own() else {
         return;
     };
     let options = easy.options();

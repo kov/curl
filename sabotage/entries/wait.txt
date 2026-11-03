@@ -87,7 +87,7 @@ witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_messages
 --- old
-    if m.slots.get(id).is_none() {
+    if m.slots.app(id).is_none() {
         return Err(MultiErrorKind::BadEasyHandle);
     }
     m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;

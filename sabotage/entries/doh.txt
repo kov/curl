@@ -80,9 +80,7 @@ witness: curl-core multi::doh_tests::the_probes_go_as_the_answer_comes
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::doh_tests::a_probe_is_not_the_applications_to_remove
 --- old
-        if self.slots.get(id)?.owner.is_internal() {
-            return None;
-        }
+        self.slots.app(id)?;
         let (easy, owner, status)
 --- new
         let (easy, owner, status)
@@ -264,3 +262,24 @@ witness: curl-core multi::doh_tests::the_resolves_lines_are_c_s
                     }
 --- new
                     let _ = (&answer, port);
+
+=== a call naming a probe by its id reaches it
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::doh_tests::no_call_reaches_a_probe
+--- old
+        self.get(id)
+            .filter(|s| !s.owner.is_internal())
+            .map(|s| &**s)
+--- new
+        self.get(id).map(|s| &**s)
+
+=== the host is told a probe's id as it is added
+file: crates/curl-core/src/multi/doh.rs
+witness: curl-core multi::doh_tests::no_call_reaches_a_probe
+--- old
+    // The host is not told of it (`MultiEvents::added`): its id is no
+    // call's to take.
+--- new
+    if let Owner::Internal { host: Some(h), .. } = &rest.tell.slots.get(id).expect("added").owner {
+        rest.events.added(id, h);
+    }

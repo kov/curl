@@ -881,3 +881,205 @@ fn the_resolves_lines_are_c_s() {
         assert_eq!(near.trim_end(), "[DNS] [DoH] probe done", "{said:?}");
     }
 }
+
+/// What a probe's own handlers, the socket callback and the multi answer
+/// for a probe: nothing but its owner, as C's API refuses an internal
+/// handle (`Curl_eapi_enter`); nor is the host told its id as it is added.
+/// Each table says what each call came to. `tls_native` and `easy_ssls_going_out` are not asked: a probe here
+/// speaks no TLS and keeps no sessions, so they answer nothing either way.
+#[test]
+fn no_call_reaches_a_probe() {
+    use std::sync::{Arc, Mutex};
+    type Seen = Arc<Mutex<Vec<(&'static str, bool)>>>;
+    struct Named;
+    impl Host for Named {
+        type Transfer = u32;
+        type Socket = ();
+    }
+    /// Its own handler's calls, on itself and on its master.
+    struct Own {
+        master: Arc<Mutex<Option<TransferId>>>,
+        seen: Seen,
+    }
+    impl crate::handler::DebugHandler for Own {
+        fn debug(&self, cx: &mut TransferCx<'_>, _: crate::handler::DebugKind, _: &[u8]) {
+            let me = cx.me();
+            let Some(master) = *self.master.lock().unwrap() else {
+                return;
+            };
+            if me == master {
+                return;
+            }
+            let calls = [
+                ("master's options", cx.options(master).is_some()),
+                ("options", cx.options(me).is_none()),
+                ("info", cx.info(me).is_none()),
+                ("options_mut", cx.options_mut(me).is_none()),
+                ("rtsp", cx.rtsp(me).is_none()),
+                ("rtsp_mut", cx.rtsp_mut(me).is_none()),
+                ("duplicate", cx.duplicate(me).is_none()),
+                (
+                    "duplicate_with",
+                    cx.duplicate_with(me, &mut |_| Ok(())).is_none(),
+                ),
+                (
+                    "pause",
+                    cx.pause(me, PauseRequest::CONT) == Err(ErrorKind::BadFunctionArgument),
+                ),
+            ];
+            self.seen.lock().unwrap().extend(calls);
+        }
+    }
+    #[derive(Default)]
+    struct Ev {
+        master: Option<TransferId>,
+        seen: Vec<(&'static str, bool)>,
+        added: Vec<u32>,
+    }
+    impl MultiEvents<Named> for Ev {
+        fn added(&mut self, _: TransferId, owner: &u32) {
+            self.added.push(*owner);
+        }
+        fn internal(
+            &mut self,
+            _: &mut EventCx<'_, Named>,
+            _: TransferId,
+            easy: Box<Easy>,
+        ) -> Result<(Box<Easy>, Option<u32>), OutOfMemory> {
+            Ok((easy, Some(100)))
+        }
+        fn wants_sockets(&self) -> bool {
+            true
+        }
+        fn socket(
+            &mut self,
+            cx: &mut EventCx<'_, Named>,
+            who: SocketFor,
+            _: SocketKey,
+            _: SocketWhat,
+            _: Option<()>,
+        ) -> Result<(), Abort> {
+            let (SocketFor::Transfer(id), Some(master)) = (who, self.master) else {
+                return Ok(());
+            };
+            if id == master {
+                return Ok(());
+            }
+            let calls = [
+                ("socket's master's options", cx.options(master).is_some()),
+                ("socket's owner", cx.owner(id) == Some(&100)),
+                ("socket's options", cx.options(id).is_none()),
+                ("socket's info", cx.info(id).is_none()),
+                ("socket's options_mut", cx.options_mut(id).is_none()),
+                ("socket's rtsp", cx.rtsp(id).is_none()),
+                ("socket's rtsp_mut", cx.rtsp_mut(id).is_none()),
+                ("socket's duplicate", cx.duplicate(id).is_none()),
+            ];
+            self.seen.extend(calls);
+            Ok(())
+        }
+    }
+    let clock = ManualClock::new().unwrap();
+    let net = FakeNet::new(clock.clone()).with_peer(SERVER.into(), Peer::Silent);
+    let mut m: Multi<Named> = Multi::new(Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    })
+    .unwrap();
+    let mut easy = asking("http://foo.test/x");
+    let master = Arc::new(Mutex::new(None));
+    let seen = Seen::default();
+    let own = Own {
+        master: master.clone(),
+        seen: seen.clone(),
+    };
+    let o = easy.options_mut();
+    o.output.verbose = true;
+    o.callbacks.debug = Some(crate::handler::Handler::debug(own).unwrap());
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"doh");
+    easy.set_components(Some(components));
+    let mut ev = Ev::default();
+    let id = m.add(easy, 7, &mut ev).unwrap();
+    *master.lock().unwrap() = Some(id);
+    ev.master = Some(id);
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    let mut cursor = None;
+    let probe = loop {
+        let p = m.slots.next_after(cursor).expect("a probe");
+        cursor = Some(p);
+        if m.slots.get(p).unwrap().owner.is_internal() {
+            break p;
+        }
+    };
+    let share = crate::share::Share::new().unwrap();
+    let told = crate::share::Told::new(&share);
+    let mut buf = [0; 4];
+    let mut notes = |_: crate::handler::DebugKind, _: &[u8]| {};
+    let done = m
+        .ssls_export(id)
+        .expect("the master's")
+        .deliver(&mut |_| Err(()));
+    let calls = [
+        ("master's easy", m.easy(id).is_some()),
+        ("owner", m.owner(probe) == Some(&100)),
+        ("easy", m.easy(probe).is_none()),
+        ("easy_mut", m.easy_mut(probe).is_none()),
+        ("holds_connection", !m.holds_connection(probe)),
+        ("set_share", m.set_share(probe, None).is_none()),
+        (
+            "set_share_watched",
+            m.set_share_watched(probe, share.clone(), told.handler())
+                .is_none(),
+        ),
+        ("leave_share", m.leave_share(probe).is_none()),
+        (
+            "pause",
+            m.pause(probe, PauseRequest::CONT, &mut ev) == Err(ErrorKind::BadFunctionArgument),
+        ),
+        ("upkeep", m.upkeep(probe, &mut ev).is_none()),
+        (
+            "recv_raw",
+            m.recv_raw(probe, &mut buf, &mut notes).is_none(),
+        ),
+        ("send_raw", m.send_raw(probe, b"x", &mut notes).is_none()),
+        ("active_socket", m.active_socket(probe).is_none()),
+        (
+            "ws",
+            m.ws(probe, crate::ws::Call::Recv(&mut buf), &mut notes)
+                .is_none(),
+        ),
+        (
+            "ssls_import",
+            m.ssls_import(probe, crate::tls::SessionFor::Key(b"k"), b"", &mut notes)
+                .is_none(),
+        ),
+        ("ssls_export", m.ssls_export(probe).is_none()),
+        (
+            "ssls_export_end",
+            m.ssls_export_end(probe, done, &mut notes).is_none(),
+        ),
+        (
+            "drive_within",
+            super::wait::drive_within(&mut m, probe, 1, &mut ev)
+                == Err(MultiErrorKind::BadEasyHandle),
+        ),
+        ("remove", m.remove(probe, &mut ev).is_none()),
+        ("still there", m.owner(probe).is_some()),
+    ];
+    let wrong = |seen: &[(&str, bool)]| -> Vec<String> {
+        seen.iter()
+            .filter(|(_, ok)| !ok)
+            .map(|(what, _)| (*what).to_owned())
+            .collect()
+    };
+    assert_eq!(wrong(&calls), Vec::<String>::new());
+    assert_eq!(ev.added, [7], "told of the master alone");
+    assert!(!ev.seen.is_empty(), "the probe's socket was told");
+    assert_eq!(wrong(&ev.seen), Vec::<String>::new());
+    let own = seen.lock().unwrap().clone();
+    assert!(!own.is_empty(), "the probe's handler was called");
+    assert_eq!(wrong(&own), Vec::<String>::new());
+}

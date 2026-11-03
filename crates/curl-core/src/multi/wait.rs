@@ -316,7 +316,7 @@ fn drive_round<H: Host>(
     ev: &mut dyn MultiEvents<H>,
 ) -> Result<Option<Result<(), ErrorKind>>, MultiErrorKind> {
     // Checked on every round, as a callback may take it out.
-    if m.slots.get(id).is_none() {
+    if m.slots.app(id).is_none() {
         return Err(MultiErrorKind::BadEasyHandle);
     }
     m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
@@ -481,7 +481,7 @@ pub fn drive_by_events_with<H: Host>(
     table.internal = m.shutdowns.internal().cloned();
     loop {
         // Checked on every round, as a callback may take it out.
-        if m.slots.get(id).is_none() {
+        if m.slots.app(id).is_none() {
             return Err(MultiErrorKind::BadEasyHandle);
         }
         let start = m.clock.now();

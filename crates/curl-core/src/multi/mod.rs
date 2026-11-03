@@ -155,7 +155,8 @@ pub trait MultiEvents<H: Host> {
 
     /// Transfer `id`, owned by `owner`, was just added, before the timer
     /// hears of it: from here the host may name it, as a timer callback
-    /// inside the add may.
+    /// inside the add may. Only of the application's: one of the multi's
+    /// own is named to the host only by the value `internal` made for it.
     fn added(&mut self, id: TransferId, owner: &H::Transfer) {
         let _ = (id, owner);
     }
@@ -381,6 +382,26 @@ impl ConnLimits {
 /// slot boxed, as C's holds a pointer: a table's empty rows cost little,
 /// and C's limits on a transfer's memory count them.
 type Slots<H> = Arena<Box<Slot<H>>, Transfer>;
+
+impl<H: Host> Slots<H> {
+    /// Transfer `id`'s slot, if it is one the application may name: every
+    /// call the multi and its contexts take a `TransferId` in comes through
+    /// here, and finds none for a transfer of the multi's own, as C refuses
+    /// a `state.internal` handle (`Curl_eapi_enter`). Only what callbacks
+    /// are handed to name a transfer by, its owner, is answered for one.
+    fn app(&self, id: TransferId) -> Option<&Slot<H>> {
+        self.get(id)
+            .filter(|s| !s.owner.is_internal())
+            .map(|s| &**s)
+    }
+
+    /// The same, to change.
+    fn app_mut(&mut self, id: TransferId) -> Option<&mut Slot<H>> {
+        self.get_mut(id)
+            .filter(|s| !s.owner.is_internal())
+            .map(|s| &mut **s)
+    }
+}
 
 pub struct Multi<H: Host = NoHost> {
     slots: Slots<H>,
@@ -696,9 +717,7 @@ impl<H: Host> Multi<H> {
     /// premature end, and leaves no message.
     /// One the multi added for itself is not the application's to remove.
     pub fn remove(&mut self, id: TransferId, ev: &mut dyn MultiEvents<H>) -> Option<Removed<H>> {
-        if self.slots.get(id)?.owner.is_internal() {
-            return None;
-        }
+        self.slots.app(id)?;
         let (easy, owner, status) = self.take_out(id, ev)?;
         let Owner::App(owner) = owner else {
             unreachable!("looked at above");
@@ -1128,7 +1147,7 @@ impl<H: Host> Multi<H> {
     }
 
     pub fn easy(&self, id: TransferId) -> Option<&Easy> {
-        self.slots.get(id).map(|s| &*s.easy)
+        self.slots.app(id).map(|s| &*s.easy)
     }
 
     /// Whether a transfer holds a connection, its own running or one it
@@ -1136,7 +1155,7 @@ impl<H: Host> Multi<H> {
     /// started one until the connection goes back. `false` if `id` is not
     /// in this multi.
     pub fn holds_connection(&self, id: TransferId) -> bool {
-        let Some(slot) = self.slots.get(id) else {
+        let Some(slot) = self.slots.app(id) else {
             return false;
         };
         slot.easy.holds_connection() || self.running_on_connection(id)
@@ -1154,7 +1173,7 @@ impl<H: Host> Multi<H> {
     /// The transfer's handle, without what only the multi can decide: its
     /// share changes through [`Multi::set_share`].
     pub fn easy_mut(&mut self, id: TransferId) -> Option<EasyView<'_>> {
-        self.slots.get_mut(id).map(|slot| slot.easy.view_as(id))
+        self.slots.app_mut(id).map(|slot| slot.easy.view_as(id))
     }
 
     /// Use `share` for a transfer's next run, or none; refused while it
@@ -1168,7 +1187,7 @@ impl<H: Host> Multi<H> {
         if self.holds_connection(id) {
             return Some(Err(ShareInUse));
         }
-        Some(self.slots.get_mut(id)?.easy.set_share(share))
+        Some(self.slots.app_mut(id)?.easy.set_share(share))
     }
 
     /// As [`Multi::set_share`], `watch` told around each use the transfer
@@ -1182,7 +1201,7 @@ impl<H: Host> Multi<H> {
         if self.holds_connection(id) {
             return Some(Err(ShareInUse));
         }
-        Some(self.slots.get_mut(id)?.easy.set_share_watched(share, watch))
+        Some(self.slots.app_mut(id)?.easy.set_share_watched(share, watch))
     }
 
     /// Take a transfer off its share, a connection its handle only made
@@ -1190,10 +1209,12 @@ impl<H: Host> Multi<H> {
     /// transfer is running on a connection. `None` if `id` is not in this
     /// multi.
     pub fn leave_share(&mut self, id: TransferId) -> Option<Result<(), ShareInUse>> {
-        if self.running_on_connection(id) {
+        let running = self.running_on_connection(id);
+        let slot = self.slots.app_mut(id)?;
+        if running {
             return Some(Err(ShareInUse));
         }
-        self.slots.get_mut(id)?.easy.leave_share();
+        slot.easy.leave_share();
         Some(Ok(()))
     }
 
@@ -1201,9 +1222,9 @@ impl<H: Host> Multi<H> {
     /// holds, while it holds one, or of the one it only made once a call
     /// took that up (`CURLINFO_TLS_SSL_PTR`).
     pub fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
-        tls_native_in(&self.slots, Some(&self.caches.pool), id).or_else(|| {
-            raw::reserved_tls_native(Some(&self.caches.pool), &self.slots.get(id)?.easy)
-        })
+        let slot = self.slots.app(id)?;
+        tls_native_in(&self.slots, Some(&self.caches.pool), id)
+            .or_else(|| raw::reserved_tls_native(Some(&self.caches.pool), &slot.easy))
     }
 
     fn run_of(&self, id: TransferId) -> &Run {
@@ -1834,7 +1855,7 @@ fn pause_transfer<H: Host>(
     id: TransferId,
     req: PauseRequest,
 ) -> Result<(), ErrorKind> {
-    let Some(slot) = rest.tell.slots.get_mut(id) else {
+    let Some(slot) = rest.tell.slots.app_mut(id) else {
         return Err(ErrorKind::BadFunctionArgument);
     };
     // A run out of its slot is delivering output, so it has a connection.
@@ -1986,7 +2007,7 @@ impl<H: Host> Multi<H> {
         id: TransferId,
         ev: &mut dyn MultiEvents<H>,
     ) -> Option<Result<(), OutOfMemory>> {
-        let easy = &self.slots.get(id)?.easy;
+        let easy = &self.slots.app(id)?.easy;
         let interval = easy.options().limits.reuse.upkeep.0;
         let share = easy.share().filter(|s| s.keeps(Kind::Connections)).cloned();
         let watch = easy.share_watch.clone();

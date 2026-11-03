@@ -764,17 +764,21 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
         self.me
     }
 
+    fn own(&self) -> Option<&Easy> {
+        Some(self.easy())
+    }
+
     fn census(&self) -> Census {
         let tell = &self.rest.tell;
         super::super::census_of(tell.slots, tell.counts.get())
     }
 
     fn easy(&self, id: TransferId) -> Option<&Easy> {
-        self.rest.tell.slots.get(id).map(|s| &*s.easy)
+        self.rest.tell.slots.app(id).map(|s| &*s.easy)
     }
 
     fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
-        self.rest.tell.slots.get_mut(id).map(|s| &mut *s.easy)
+        self.rest.tell.slots.app_mut(id).map(|s| &mut *s.easy)
     }
 
     fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind> {
@@ -810,10 +814,10 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
     }
 
     fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
+        let slot = self.rest.tell.slots.app(id)?;
         if id == self.me {
             return self.lent;
         }
-        let slot = self.rest.tell.slots.get(id)?;
         slot.run
             .as_ref()?
             .state

@@ -272,7 +272,7 @@ impl Easy {
 impl<H: Host> Multi<H> {
     /// `Easy::ssls_going_out` of the transfer `id` of the multi.
     pub fn easy_ssls_going_out(&self, id: TransferId) -> Option<bool> {
-        self.slots.get(id)?.easy.ssls_going_out()
+        self.slots.app(id)?.easy.ssls_going_out()
     }
 
     /// As `Easy::ssls_import`, for the transfer `id` of the multi, which
@@ -286,7 +286,7 @@ impl<H: Host> Multi<H> {
         notes: Notes<'_>,
     ) -> Option<Result<(), ErrorKind>> {
         let now = self.clock.unix_time();
-        let easy = &self.slots.get(id)?.easy;
+        let easy = &self.slots.app(id)?.easy;
         let own = &mut self.caches.sessions;
         Some(import(easy, Some(own), now, who, packed, notes))
     }
@@ -295,7 +295,7 @@ impl<H: Host> Multi<H> {
     /// if `id` is not in this multi.
     pub fn ssls_export(&mut self, id: TransferId) -> Option<Exporting> {
         let now = self.clock.unix_time();
-        let easy = &self.slots.get(id)?.easy;
+        let easy = &self.slots.app(id)?.easy;
         let own = &mut self.caches.sessions;
         Some(Exporting::begin(easy, Some(own), now))
     }
@@ -308,7 +308,7 @@ impl<H: Host> Multi<H> {
         done: ExportDone<E>,
         notes: Notes<'_>,
     ) -> Option<Result<(), ExportFailed<E>>> {
-        Some(done.end(&self.slots.get(id)?.easy, notes))
+        Some(done.end(&self.slots.app(id)?.easy, notes))
     }
 }
 

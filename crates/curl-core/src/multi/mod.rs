@@ -68,10 +68,20 @@ use timers::{Due, TimerAnnounce, TimerKind, TimerQueue};
 
 /// The application's types a multi carries: a value per transfer, handed
 /// back with its messages and on removal, and a value per socket it
-/// watches, handed back to its socket callback (`curl_multi_assign`).
+/// watches, handed back to its socket callback (`curl_multi_assign`);
+/// and what the multi asks of a transfer's value.
 pub trait Host {
     type Transfer;
     type Socket: Copy;
+
+    /// The URL the application keeps for `transfer` elsewhere than its
+    /// options, asked for as each of its transfers starts and before
+    /// `Options::shared_url` (C's `set.uh`, read by `Curl_pretransfer`).
+    /// The share lasts the read alone: the transfer keeps a copy.
+    fn start_url(transfer: &Self::Transfer) -> Option<crate::url::SharedUrl> {
+        let _ = transfer;
+        None
+    }
 }
 
 /// A multi that carries nothing for the application.

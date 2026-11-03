@@ -736,7 +736,8 @@ impl Options {
 
     /// The URL to transfer as the application keeps it, read as each
     /// transfer starts (`CURLOPT_CURLU`): it goes before `url`, which
-    /// setting it, even to none, clears.
+    /// setting it, even to none, clears, and after the multi host's
+    /// (`Host::start_url`).
     pub fn shared_url(&self) -> Option<&SharedUrl> {
         self.shared_url.as_ref()
     }

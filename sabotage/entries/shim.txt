@@ -485,24 +485,30 @@ witness: curl-sys-abi handle_tests::a_url_handle_is_not_read_until_a_transfer_st
 --- new
             set.curlu = p.cast_const().cast();
             // SAFETY: none: the planted fault.
-            unsafe { crate::url::share_into(options, p.cast()) };
+            let shared = unsafe { crate::url::shared(p.cast()) };
+            options.set_shared_url(shared.map(|s| curl_core::url::SharedUrl::clone(&s)));
 
-=== a transfer takes a copy of its URL handle as it is added
-file: crates/curl-sys-abi/src/url.rs
+=== a transfer keeps a share of its URL handle from its add on
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::a_url_handle_is_freed_by_its_cleanup_alone
+features: debug-hooks
+--- old
+    let added = match core {
+--- new
+    // SAFETY: none: the planted fault.
+    if let Some(shared) = unsafe { crate::url::shared(set.curlu) } {
+        let shared = curl_core::url::SharedUrl::clone(&shared);
+        transfer.options_mut().set_shared_url(Some(shared));
+    }
+    let added = match core {
+
+=== a transfer starts without asking its host for its URL
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-sys-abi handle_tests::a_url_handle_is_read_as_the_transfer_starts
 --- old
-        options.set_shared_url(Some(SharedUrl::clone(&shared)));
+    let host = cx.host_start_url();
 --- new
-        let copy = shared.with(|u| u.try_clone()).unwrap();
-        options.set_shared_url(Some(SharedUrl::new(copy).unwrap()));
-
-=== a URL handle set on an added handle is not the one it starts with
-file: crates/curl-sys-abi/src/setopt/mod.rs
-witness: curl-sys-abi handle_tests::a_url_handle_is_read_as_the_transfer_starts
---- old
-    if option == ffi::CURLOPT_CURLU && easy.added().is_some() {
---- new
-    if false {
+    let host: Option<crate::url::SharedUrl> = None;
 
 === setting CURLOPT_CURLU keeps the last transfer's effective URL
 file: crates/curl-sys-abi/src/setopt/mod.rs

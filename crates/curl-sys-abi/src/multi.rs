@@ -50,6 +50,18 @@ impl Host for CHost {
     type Transfer = NonNull<ShimEasy>;
     /// The socket's `socketp` (`curl_multi_assign`).
     type Socket = *mut c_void;
+
+    /// `CURLOPT_CURLU`'s handle, read through its pointer as the transfer
+    /// starts, as C reads `set.uh`; the handle holds only the pointer.
+    fn start_url(transfer: &NonNull<ShimEasy>) -> Option<curl_core::url::SharedUrl> {
+        // SAFETY: a transfer's owner is a live handle while it is added.
+        let u = unsafe { transfer.as_ref() }.set.get().curlu;
+        // SAFETY: a `CURLOPT_CURLU` that is not NULL is a handle from
+        // `curl_url`, which the application keeps live while the transfer
+        // it is set for runs, as C requires of `set.uh`.
+        let shared = unsafe { crate::url::shared(u) }?;
+        Some(curl_core::url::SharedUrl::clone(&shared))
+    }
 }
 
 /// The application's multi callbacks, as setopt left them.
@@ -479,10 +491,6 @@ pub(crate) fn add(multi: &ShimMulti, reach: Reach, easy: &ShimEasy) -> Result<()
         easy.return_home(transfer);
         return Err(MultiErrorKind::OutOfMemory.into());
     }
-    // SAFETY: a `CURLOPT_CURLU` that is not NULL is a handle from
-    // `curl_url`, which the application keeps live while the transfer
-    // it is added for runs, as C requires of `set.uh`.
-    unsafe { crate::url::share_into(transfer.options_mut(), set.curlu) };
     let mut ev = ShimEvents::new(multi);
     let added = match core {
         Core::Direct(core) => core.add(transfer, owner, &mut ev),

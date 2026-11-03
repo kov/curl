@@ -507,6 +507,18 @@ impl<H: Host> StepCx<'_, H> {
             .expect("the stepping transfer")
             .easy
     }
+
+    /// The URL the host keeps for the stepping transfer, shared for the
+    /// caller's read (`Host::start_url`).
+    pub(crate) fn host_start_url(&self) -> Option<crate::url::SharedUrl> {
+        let slot = self
+            .rest
+            .tell
+            .slots
+            .get(self.me)
+            .expect("the stepping transfer");
+        slot.owner.host().and_then(H::start_url)
+    }
 }
 
 impl<H: Host> StepCx<'_, H> {

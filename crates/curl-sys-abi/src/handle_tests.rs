@@ -1931,6 +1931,64 @@ fn a_url_handle_set_forgets_the_effective_url() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// A handle holds only the pointer `CURLOPT_CURLU` gave it, never the
+/// URL handle itself: after a transfer, after a copy of the handle, and
+/// after one added and taken out unstarted, the application's
+/// `curl_url_cleanup` frees it at once, as C's does.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_url_handle_is_freed_by_its_cleanup_alone() {
+    use curl_alloc::track::measure;
+    let (path, url) = file("curlu-freed", b"x");
+    let c = curl_easy_init();
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    let fresh = || {
+        let u = crate::url::curl_url();
+        // SAFETY: a live URL handle and a C string.
+        let rc = unsafe { crate::url::curl_url_set(u, ffi::CURLUPART_URL, url.as_ptr(), 0) };
+        assert_eq!(rc, ffi::CURLUE_OK);
+        assert_eq!(pointer(c, ffi::CURLOPT_CURLU, u), CURLE_OK);
+        u
+    };
+    let freed = |u, what: &str| {
+        // SAFETY: a live URL handle, which the handle no longer reads.
+        let ((), m) = measure(|| unsafe { crate::url::curl_url_cleanup(u) });
+        assert!(
+            m.bytes < 0,
+            "{what}: the URL handle is freed ({} bytes)",
+            m.bytes
+        );
+    };
+    let u = fresh();
+    // SAFETY: a live handle, its URL handle live through the transfer.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    freed(u, "after a transfer");
+
+    let u = fresh();
+    // SAFETY: as above.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    // SAFETY: a live handle.
+    let d = unsafe { easy::curl_easy_duphandle(c) };
+    assert!(!d.is_null());
+    freed(u, "after a copy of the handle");
+
+    let u = fresh();
+    let multi = curl_multi_init();
+    // SAFETY: a live multi and handle.
+    unsafe {
+        assert_eq!(curl_multi_add_handle(multi, c), CURLM_OK);
+        assert_eq!(curl_multi_remove_handle(multi, c), CURLM_OK);
+    }
+    freed(u, "after an unstarted transfer");
+    // SAFETY: live handles, not used again.
+    unsafe {
+        assert_eq!(curl_multi_cleanup(multi), CURLM_OK);
+        curl_easy_cleanup(d);
+        curl_easy_cleanup(c);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
 /// A URL handle changed after it is set is read as it is when the
 /// transfer starts: by perform, and by a multi when it first drives the
 /// transfer, not when it is added (`Curl_pretransfer`).

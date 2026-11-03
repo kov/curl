@@ -1032,10 +1032,9 @@ fn apply(
             options.port = std::num::NonZeroU16::new(port);
         }
         (ffi::CURLOPT_CURLU, Ptr(p)) => {
-            // Kept as given, read only as a transfer starts (`set.uh`):
-            // the application need not have a URL handle behind it until
-            // then. Setting it clears the text URL, and the shared URL an
-            // earlier transfer took from the last one.
+            // Kept as given, read only as a transfer starts (`set.uh`,
+            // `Host::start_url`): the application need not have a URL
+            // handle behind it until then. Setting it clears the text URL.
             set.curlu = p.cast_const().cast();
             options.set_shared_url(None);
         }
@@ -2012,15 +2011,6 @@ unsafe fn set_arg(easy: &ShimEasy, option: CURLoption, arg: Arg) -> CURLcode {
             easy::EasyRef::Frame(..) => {}
         });
         forgot.expect("the handle was reached just above");
-    }
-    if option == ffi::CURLOPT_CURLU && easy.added().is_some() {
-        // A handle already added starts with the URL handle set now, as
-        // C's reads `set.uh` only as it starts.
-        // SAFETY: a `CURLOPT_CURLU` that is not NULL is a handle from
-        // `curl_url`, which the application keeps live while the
-        // transfer it is set for runs, as C requires of `set.uh`.
-        let shared = easy.with_options(|o| unsafe { crate::url::share_into(o, set.curlu) });
-        shared.expect("the options were reached just above");
     }
     if let Some(n) = cseq {
         let Ok(n) = keepalive_value(n) else {

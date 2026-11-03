@@ -9,14 +9,18 @@ pub(super) fn pretransfer<H: Host>(
     run: &mut Run,
     cx: &mut StepCx<'_, H>,
 ) -> Result<Url, ErrorKind> {
-    // The application's own URL goes first, as it is now: one that
-    // cannot be read back is none (`Curl_pretransfer`).
-    let shared = cx.easy().options().shared_url().map(|shared| {
+    // The application's own URL goes first, as it is now: the host's,
+    // then the options'; one that cannot be read back is none
+    // (`Curl_pretransfer`). The host's share goes with this read.
+    let host = cx.host_start_url();
+    let shared = host.as_ref().or(cx.easy().options().shared_url());
+    let shared = shared.map(|shared| {
         shared.with(|url| {
             let readable = url.get(Part::Url, GetOptions::NONE).is_ok();
             (readable, url.try_clone())
         })
     });
+    drop(host);
     let unset = match &shared {
         Some((readable, _)) => !readable,
         None => cx.easy().options().url().is_none(),

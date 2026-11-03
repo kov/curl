@@ -308,7 +308,8 @@ impl RecordAlpn {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct HttpsRecord {
     pub priority: u16,
-    /// As C has it, a name's dots written out, up to its first NUL.
+    /// As C has it: from DoH a name's dots written out, up to its first NUL;
+    /// from c-ares, as c-ares writes it.
     pub target: Vec<u8>,
     /// The versions offered that are known, in the record's order, without
     /// repeats.
@@ -402,57 +403,11 @@ pub fn decode_https_record(data: &[u8]) -> Result<HttpsRecord, RecordError> {
             return Err(RecordError::Weird);
         }
         let (value, next) = after.split_at(length);
-        set_parameter(&mut record, key, value)?;
+        record.set_parameter(key, value)?;
         params = next;
         least = u32::from(key) + 1;
     }
     Ok(record)
-}
-
-/// One parameter taken (`Curl_httpsrr_set`).
-fn set_parameter(record: &mut HttpsRecord, key: u16, value: &[u8]) -> Result<(), RecordError> {
-    let oom = |_| RecordError::OutOfMemory;
-    match key {
-        0 => record.mandatory = true,
-        1 => decode_alpns(record, value)?,
-        2 => {
-            if !value.is_empty() {
-                return Err(RecordError::BadParameter);
-            }
-            record.no_default_alpn = true;
-        }
-        3 => {
-            let port: [u8; 2] = value.try_into().map_err(|_| RecordError::BadParameter)?;
-            record.port = Some(u16::from_be_bytes(port));
-        }
-        4 => {
-            if value.is_empty() || !value.len().is_multiple_of(4) {
-                return Err(RecordError::BadParameter);
-            }
-            record.ipv4_hints.clear();
-            for a in value.as_chunks::<4>().0 {
-                record.ipv4_hints.try_push((*a).into()).map_err(oom)?;
-            }
-        }
-        5 => {
-            if value.is_empty() {
-                return Err(RecordError::BadParameter);
-            }
-            record.ech.clear();
-            record.ech.try_extend_from_slice(value).map_err(oom)?;
-        }
-        6 => {
-            if value.is_empty() || !value.len().is_multiple_of(16) {
-                return Err(RecordError::BadParameter);
-            }
-            record.ipv6_hints.clear();
-            for a in value.as_chunks::<16>().0 {
-                record.ipv6_hints.try_push((*a).into()).map_err(oom)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 /// The ids of an ALPN list, each prefixed by its length, which must fill
@@ -482,6 +437,53 @@ fn decode_alpns(record: &mut HttpsRecord, mut value: &[u8]) -> Result<(), Record
 }
 
 impl HttpsRecord {
+    /// One parameter taken, its key's earlier value replaced
+    /// (`Curl_httpsrr_set`).
+    pub fn set_parameter(&mut self, key: u16, value: &[u8]) -> Result<(), RecordError> {
+        let oom = |_| RecordError::OutOfMemory;
+        match key {
+            0 => self.mandatory = true,
+            1 => decode_alpns(self, value)?,
+            2 => {
+                if !value.is_empty() {
+                    return Err(RecordError::BadParameter);
+                }
+                self.no_default_alpn = true;
+            }
+            3 => {
+                let port: [u8; 2] = value.try_into().map_err(|_| RecordError::BadParameter)?;
+                self.port = Some(u16::from_be_bytes(port));
+            }
+            4 => {
+                if value.is_empty() || !value.len().is_multiple_of(4) {
+                    return Err(RecordError::BadParameter);
+                }
+                self.ipv4_hints.clear();
+                for a in value.as_chunks::<4>().0 {
+                    self.ipv4_hints.try_push((*a).into()).map_err(oom)?;
+                }
+            }
+            5 => {
+                if value.is_empty() {
+                    return Err(RecordError::BadParameter);
+                }
+                self.ech.clear();
+                self.ech.try_extend_from_slice(value).map_err(oom)?;
+            }
+            6 => {
+                if value.is_empty() || !value.len().is_multiple_of(16) {
+                    return Err(RecordError::BadParameter);
+                }
+                self.ipv6_hints.clear();
+                for a in value.as_chunks::<16>().0 {
+                    self.ipv6_hints.try_push((*a).into()).map_err(oom)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// As the trace shows it (`Curl_httpsrr_print`).
     pub(crate) fn print(&self) -> Result<Vec<u8>, OutOfMemory> {
         let mut out = Vec::new();

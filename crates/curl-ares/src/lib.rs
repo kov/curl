@@ -17,7 +17,7 @@ use curl_core::conn::io::{
     Connect, DnsAsk, DnsLibrary, DnsRefused, DnsResolve, DnsSay, Events, Family, Partial,
     Readiness, Recv, Remote, ResolveFailure, Sent, Socket, SocketKey, SocketOption, SocketsClosed,
 };
-use curl_core::doh::{HttpsRecord, RecordAnswer, decode_https_record};
+use curl_core::doh::{HttpsRecord, RecordAnswer, RecordError};
 
 /// The most addresses kept of one answer (`async_ares_node2addr`).
 const MAX_ADDRESSES: usize = 256;
@@ -216,25 +216,22 @@ unsafe extern "C" fn record_done(
         return;
     }
     // SAFETY: c-ares passes a record alive for the call.
-    match unsafe { record_wire(dnsrec) } {
-        Ok(None) => {}
-        Ok(Some(wire)) => match decode_https_record(&wire) {
-            Ok(record) => a.record = Some(record),
-            Err(_) => a.failed = Some(DnsRefused::BadRecord),
-        },
-        Err(OutOfMemory) => a.failed = Some(DnsRefused::OutOfMemory),
+    match unsafe { https_record(dnsrec) } {
+        Ok(record) => a.record = Some(record),
+        Err(RecordError::OutOfMemory) => a.failed = Some(DnsRefused::OutOfMemory),
+        Err(_) => a.failed = Some(DnsRefused::BadRecord),
     }
 }
 
-/// The answer's HTTPS records as one record's data, as `Curl_httpsrr_from_ares`
-/// folds them into one: the last's target and priority, every one's parameters.
+/// The answer's HTTPS records folded into one, as `Curl_httpsrr_from_ares`
+/// folds them: the last's priority, the last target not empty, and each
+/// parameter as the last to set it says. An answer with none, of a CNAME
+/// alone, is a record of nothing, priority 0, as C's is.
 ///
 /// # Safety
 /// `record` is alive for the call.
-unsafe fn record_wire(record: *const sys::DnsRecord) -> Result<Option<Vec<u8>>, OutOfMemory> {
-    let (mut priority, mut target) = (0u16, None);
-    let mut params = Vec::new();
-    let mut any = false;
+unsafe fn https_record(record: *const sys::DnsRecord) -> Result<HttpsRecord, RecordError> {
+    let mut folded = HttpsRecord::default();
     // SAFETY: `record` is alive, as the caller says.
     let count = unsafe { sys::ares_dns_record_rr_cnt(record, sys::SECTION_ANSWER) };
     for i in 0..count {
@@ -244,18 +241,21 @@ unsafe fn record_wire(record: *const sys::DnsRecord) -> Result<Option<Vec<u8>>, 
         if unsafe { sys::ares_dns_rr_get_type(rr) } != sys::REC_TYPE_HTTPS {
             continue;
         }
-        any = true;
+        let into = &mut folded;
         // SAFETY: as above.
         let name = unsafe { sys::ares_dns_rr_get_str(rr, sys::RR_HTTPS_TARGET) };
         if !name.is_null() {
             // SAFETY: not null: a string of the record's.
             let name = unsafe { CStr::from_ptr(name) }.to_bytes();
             if !name.is_empty() {
-                target = Some(name);
+                into.target.clear();
+                into.target
+                    .try_extend_from_slice(name)
+                    .map_err(|OutOfMemory| RecordError::OutOfMemory)?;
             }
         }
         // SAFETY: as above.
-        priority = unsafe { sys::ares_dns_rr_get_u16(rr, sys::RR_HTTPS_PRIORITY) };
+        into.priority = unsafe { sys::ares_dns_rr_get_u16(rr, sys::RR_HTTPS_PRIORITY) };
         // SAFETY: as above.
         let options = unsafe { sys::ares_dns_rr_get_opt_cnt(rr, sys::RR_HTTPS_PARAMS) };
         for o in 0..options {
@@ -276,27 +276,10 @@ unsafe fn record_wire(record: *const sys::DnsRecord) -> Result<Option<Vec<u8>>, 
                 // SAFETY: not null: `length` bytes of the record's.
                 unsafe { core::slice::from_raw_parts(value, length) }
             };
-            params.try_extend_from_slice(&key.to_be_bytes())?;
-            let length = u16::try_from(length).unwrap_or(u16::MAX);
-            params.try_extend_from_slice(&length.to_be_bytes())?;
-            params.try_extend_from_slice(value)?;
+            into.set_parameter(key, value)?;
         }
     }
-    if !any {
-        return Ok(None);
-    }
-    let mut wire = Vec::new();
-    wire.try_extend_from_slice(&priority.to_be_bytes())?;
-    for label in target.iter().flat_map(|t| t.split(|&b| b == b'.')) {
-        if label.is_empty() {
-            continue;
-        }
-        wire.try_push(u8::try_from(label.len()).unwrap_or(u8::MAX))?;
-        wire.try_extend_from_slice(label)?;
-    }
-    wire.try_push(0)?;
-    wire.try_extend_from_slice(&params)?;
-    Ok(Some(wire))
+    Ok(folded)
 }
 
 /// `sock_state_cb`: a socket with nothing left to wait for is about to close,
@@ -811,6 +794,7 @@ impl Socket for FdSocket {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use curl_core::doh::RecordAlpn;
 
     #[test]
     fn a_socket_with_nothing_to_wait_for_is_told_to_close() {
@@ -941,6 +925,62 @@ mod tests {
             assert_eq!(entries(&*r), first);
         }
         assert!(r.answer().is_none(), "the server says nothing");
+    }
+
+    /// The HTTPS record folded from an answer of `records`, each an
+    /// answer's type and data, as c-ares hands it to `record_done`.
+    fn folded(records: &[(u16, &[u8])]) -> Result<HttpsRecord, RecordError> {
+        let mut message = b"\0\0\x81\x80\0\x01\0".to_vec();
+        message.push(u8::try_from(records.len()).unwrap());
+        message.extend_from_slice(b"\0\0\0\0\x02_1\x06_https\x01x\x04test\0\0\x41\0\x01");
+        for (kind, data) in records {
+            message.extend_from_slice(b"\xc0\x0c");
+            message.extend_from_slice(&kind.to_be_bytes());
+            message.extend_from_slice(b"\0\x01\0\0\0\x37");
+            message.extend_from_slice(&u16::try_from(data.len()).unwrap().to_be_bytes());
+            message.extend_from_slice(data);
+        }
+        let mut record = core::ptr::null_mut();
+        // SAFETY: the message's bytes for its length; `record` is written.
+        let parsed =
+            unsafe { sys::ares_dns_parse(message.as_ptr(), message.len(), 0, &raw mut record) };
+        assert_eq!(parsed, sys::SUCCESS);
+        // SAFETY: c-ares made it, alive until destroyed below.
+        let folded = unsafe { https_record(record) };
+        // SAFETY: made by `ares_dns_parse`, and used no more.
+        unsafe { sys::ares_dns_record_destroy(record) };
+        folded
+    }
+
+    /// Several HTTPS records are one, as `Curl_httpsrr_from_ares` folds
+    /// them: the last's priority, the last target not empty, and each
+    /// parameter the last record to have it says; another type is passed,
+    /// and an answer of none is a record of nothing.
+    #[test]
+    fn an_answers_https_records_are_folded_as_c_folds_them() {
+        let a: (u16, &[u8]) = (1, b"\x7f\0\0\x01");
+        let two = folded(&[
+            a,
+            (65, b"\0\x01\0\0\x01\0\x03\x02h3\0\x04\0\x04\x7f\0\0\x02"),
+            (65, b"\0\x02\0\0\x01\0\x03\x02h2"),
+        ])
+        .unwrap();
+        assert_eq!(two.priority, 2);
+        assert_eq!(two.target, b"");
+        assert_eq!(two.alpns, [RecordAlpn::H2]);
+        assert_eq!(two.ipv4_hints, [Ipv4Addr::new(127, 0, 0, 2)]);
+        let alias = folded(&[
+            (65, b"\0\x01\x03alt\x04test\0\0\x01\0\x03\x02h2"),
+            (65, b"\0\x01\0\0\x01\0\x09\x08http/1.1"),
+        ])
+        .unwrap();
+        assert_eq!(alias.target, b"alt.test");
+        assert_eq!(alias.alpns, [RecordAlpn::H1]);
+        assert_eq!(folded(&[a]), Ok(HttpsRecord::default()));
+        assert_eq!(
+            folded(&[(65, b"\0\x01\0\0\x03\0\x01\x01")]),
+            Err(RecordError::BadParameter)
+        );
     }
 
     #[test]

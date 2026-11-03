@@ -175,4 +175,15 @@ unsafe extern "C" {
         value: *mut *const u8,
         length: *mut usize,
     ) -> c_ushort;
+    /// A message's bytes read into a record, for the tests to hand over
+    /// as c-ares would.
+    #[cfg(test)]
+    pub fn ares_dns_parse(
+        buf: *const u8,
+        length: usize,
+        flags: c_uint,
+        record: *mut *mut DnsRecord,
+    ) -> c_int;
+    #[cfg(test)]
+    pub fn ares_dns_record_destroy(record: *mut DnsRecord);
 }

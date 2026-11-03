@@ -15,8 +15,11 @@ use std::time::Duration;
 /// `slowa` or `nxslow` its A late and one under `slowv6` its AAAA; one with `norec` in
 /// it gets no answer for its HTTPS record, one with `h3rec` `alpn=h3`, one
 /// with `portrec` `alpn=h2 port=8443`, and one with `emptyrr` an answer
-/// without a record. Each query's type and
-/// name is sent on the channel.
+/// without a record. One with `tworec` gets two records, `1 . alpn=h3
+/// ipv4hint=127.0.0.2` then `2 . alpn=h2`, and one with `aliasrec` two,
+/// `1 alt.test. alpn=h2` then `1 . alpn=http/1.1`; one with `cnameonly`
+/// gets a CNAME and no record. Each query's type and name is sent on the
+/// channel.
 fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let port = socket.local_addr().unwrap().port();
@@ -41,11 +44,28 @@ fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
             }
             let nx = name.starts_with("nx");
             let mut answer = Vec::new();
+            let mut answers = 1;
             if !nx && kind == 1 {
                 answer.extend_from_slice(b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x37\x00\x04");
                 answer.extend_from_slice(&[127, 0, 0, 1]);
             }
-            if !nx && kind == 65 && name.contains("portrec") {
+            if !nx && kind == 65 && name.contains("tworec") {
+                answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x12");
+                answer.extend_from_slice(b"\x00\x01\x00\x00\x01\x00\x03\x02h3");
+                answer.extend_from_slice(b"\x00\x04\x00\x04\x7f\x00\x00\x02");
+                answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x0a");
+                answer.extend_from_slice(b"\x00\x02\x00\x00\x01\x00\x03\x02h2");
+                answers = 2;
+            } else if !nx && kind == 65 && name.contains("aliasrec") {
+                answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x13");
+                answer.extend_from_slice(b"\x00\x01\x03alt\x04test\x00\x00\x01\x00\x03\x02h2");
+                answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x10");
+                answer.extend_from_slice(b"\x00\x01\x00\x00\x01\x00\x09\x08http/1.1");
+                answers = 2;
+            } else if !nx && kind == 65 && name.contains("cnameonly") {
+                answer.extend_from_slice(b"\xc0\x0c\x00\x05\x00\x01\x00\x00\x00\x37\x00\x0a");
+                answer.extend_from_slice(b"\x03cdn\x04test\x00");
+            } else if !nx && kind == 65 && name.contains("portrec") {
                 answer.extend_from_slice(b"\xc0\x0c\x00\x41\x00\x01\x00\x00\x00\x37\x00\x10");
                 answer.extend_from_slice(
                     b"\x00\x01\x00\x00\x01\x00\x03\x02h2\x00\x03\x00\x02\x20\xfb",
@@ -58,7 +78,7 @@ fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
                 answer.extend_from_slice(b"\x00\x01\x00\x00\x01\x00\x09\x08http/1.1");
             }
             let mut reply = vec![q[0], q[1], 0x81, if nx { 0x83 } else { 0x80 }, 0, 1, 0];
-            reply.push(u8::from(!answer.is_empty()));
+            reply.push(if answer.is_empty() { 0 } else { answers });
             reply.extend_from_slice(&[0, 0, 0, 0]);
             reply.extend_from_slice(&q[12..i + 5]);
             reply.extend_from_slice(&answer);
@@ -736,6 +756,36 @@ fn a_record_answered_empty_is_not_available() {
     assert_eq!(run.status.code(), Some(7), "{said}");
     assert!(said.contains("HTTPS-RR not available"), "{said}");
     assert!(!said.contains("HTTPS-RR available"), "{said}");
+}
+
+/// An answer of several records is taken as one, as C's
+/// `Curl_httpsrr_from_ares` folds them: each parameter as the last record
+/// to have it says, the last priority and the last target not empty. An
+/// answer of none, a CNAME alone, is a record of nothing, as C's is.
+#[test]
+fn an_answer_of_two_records_is_taken_as_one() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    for (name, record) in [
+        ("tworec", "2 . alpn=h2 ipv4hint=127.0.0.2"),
+        ("aliasrec", "not applicable"),
+        ("cnameonly", "0 ."),
+    ] {
+        let run = Command::new(env!("CARGO_BIN_EXE_curl"))
+            .env("CURL_DBG_AWAIT_HTTPSRR", "1")
+            .args(["-sS", "--max-time", "20", "-v", "-k", "--trace-config"])
+            .args(["https-connect", "--dns-servers", &servers])
+            .arg(format!("https://{name}.test:1/"))
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&run.stderr);
+        assert_eq!(run.status.code(), Some(7), "{said}");
+        assert!(
+            said.contains(&format!("HTTPS-RR {name}.test:1: {record}")),
+            "{said}"
+        );
+        assert!(said.contains("HTTPS-RR available"), "{said}");
+    }
 }
 
 #[test]

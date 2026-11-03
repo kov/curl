@@ -149,3 +149,30 @@ witness: curl-ares tests::a_socket_still_waited_on_keeps_its_entry
             let known = self.wants[kept..]
                 .iter()
                 .position(|(socket, _)| socket.key() == key && false);
+
+=== an answer's HTTPS records are not folded, the last taken alone
+file: crates/curl-ares/src/lib.rs
+witness: curl-ares tests::an_answers_https_records_are_folded_as_c_folds_them
+--- old
+        let into = &mut folded;
+--- new
+        folded = HttpsRecord::default();
+        let into = &mut folded;
+
+=== an HTTPS record's empty target replaces the one before it
+file: crates/curl-ares/src/lib.rs
+witness: curl-tool an_answer_of_two_records_is_taken_as_one
+--- old
+            if !name.is_empty() {
+                into.target.clear();
+--- new
+            if !name.is_empty() || name.is_empty() {
+                into.target.clear();
+
+=== an answer without an HTTPS record gives none, where C's gives an empty one
+file: crates/curl-ares/src/lib.rs
+witness: curl-tool an_answer_of_two_records_is_taken_as_one
+--- old
+        Ok(record) => a.record = Some(record),
+--- new
+        Ok(record) => a.record = Some(record).filter(|r| r.priority != 0),

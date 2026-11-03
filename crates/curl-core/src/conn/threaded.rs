@@ -874,11 +874,53 @@ mod tests {
             "{:?}",
             part.addrs
         );
+        // A's answer is told as it comes, with AAAA's.
+        let part = loop {
+            assert!(std::time::Instant::now() < deadline, "A not answered");
+            let part = r.partial(any).unwrap().expect("it goes on until taken");
+            if part.v4_answered {
+                break part;
+            }
+            std::thread::yield_now();
+        };
+        assert!(part.v6_answered, "{part:?}");
         let only_v4 = r.partial(v4).unwrap().expect("it goes on until taken");
         assert!(only_v4.v6_answered, "AAAA was never asked");
         r.cancel(v4);
         assert!(r.partial(v4).unwrap().is_none(), "gone");
         r.cancel(any);
+        let Ok(Resolve::Pending(Queued { id: only_v6, .. })) =
+            r.start(b"localhost", Family::V6, Waiter::NONE)
+        else {
+            panic!("not queued");
+        };
+        let part = r.partial(only_v6).unwrap().expect("it goes on until taken");
+        assert!(part.v4_answered, "A was never asked");
+        r.cancel(only_v6);
+    }
+
+    /// A query asked is not told answered before its answer comes.
+    #[test]
+    fn a_query_asked_is_not_answered_before_it_comes() {
+        let held = DebugVars {
+            delay: Some(Duration::from_secs(1)),
+            ..DebugVars::default()
+        };
+        let mut r = ThreadedResolver::with_debug(Threads::MULTI, held).unwrap();
+        for (family, v6, v4) in [
+            (Family::V4, true, false),
+            (Family::V6, false, true),
+            (Family::Any, false, false),
+        ] {
+            let Ok(Resolve::Pending(Queued { id, .. })) =
+                r.start(b"localhost", family, Waiter::NONE)
+            else {
+                panic!("{family:?} not queued");
+            };
+            let part = r.partial(id).unwrap().expect("it goes on until taken");
+            assert_eq!((part.v6_answered, part.v4_answered), (v6, v4), "{family:?}");
+            r.cancel(id);
+        }
     }
 
     /// An idle thread waits out its idle time while no more than the most

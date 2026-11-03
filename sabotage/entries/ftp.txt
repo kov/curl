@@ -406,3 +406,13 @@ features: test-util debug-hooks
 --- new
         Done {
             ..self.done(Ok(()), false, Reached::Unmade)
+
+=== each pass waiting on the data connection copies the control connection's host
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core an_ftp_data_tunnel_s_wait_allocates_nothing_per_pass
+--- old
+        let host = control.route.destination().shown();
+        Some(data.connect(cx, host, &mut Lent(&mut self.base.pipeline)))
+--- new
+        let host = copied(control.route.destination().shown()).ok()?;
+        Some(data.connect(cx, &host, &mut Lent(&mut self.base.pipeline)))

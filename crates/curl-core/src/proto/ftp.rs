@@ -1793,15 +1793,23 @@ impl Request {
         }
     }
 
-    /// The host the control connection is said to be to: its first proxy,
-    /// else the peer a connect-to names, else the origin
-    /// (`CURL_CONN_HOST_DISPNAME`), which the data connection's lines name.
-    fn control_host(&self) -> Result<Vec<u8>, ErrorKind> {
+    /// The data connection, if there is one, moved on as far as it goes
+    /// now (`DataConn::connect`), its proxies' handshakes lent the
+    /// request's pipeline. Its lines name the host the control connection
+    /// is said to be to: its first proxy, else the peer a connect-to
+    /// names, else the origin (`CURL_CONN_HOST_DISPNAME`), borrowed, as
+    /// each pass that waits on the connection asks again.
+    fn connect_data<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+    ) -> Option<Result<Reached, ErrorKind>> {
+        let data = self.data.as_deref_mut()?;
         let control = self
             .control
             .as_ref()
             .expect("DO knows its control connection");
-        copied(control.route.destination().shown())
+        let host = control.route.destination().shown();
+        Some(data.connect(cx, host, &mut Lent(&mut self.base.pipeline)))
     }
 
     /// The answer to `EPSV` or `PASV` (`ftp_state_pasv_resp`): the data
@@ -2233,10 +2241,7 @@ impl Request {
         if !self.initiating {
             trace::of(cx, Component::Ftp, format_args!("ftp_initiate_transfer()"));
         }
-        let host = self.control_host()?;
-        let reached = self
-            .with_data(|r, data| data.connect(cx, &host, r))
-            .ok_or(ErrorKind::FailedInit)?;
+        let reached = self.connect_data(cx).ok_or(ErrorKind::FailedInit)?;
         if reached? != Reached::Up {
             self.initiating = true;
             return Ok(());
@@ -2492,11 +2497,10 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<DoStep, ErrorKind> {
-        let host = self.control_host()?;
         {
             let (pc, mut carrier) = ftp_of(lease);
             let listened = self.data.as_deref().is_some_and(DataConn::listens);
-            if let Some(connected) = self.with_data(|r, data| data.connect(cx, &host, r)) {
+            if let Some(connected) = self.connect_data(cx) {
                 // One the server is to connect to is not waited for here:
                 // it connects once told what to move.
                 let listens = listened;
@@ -3074,11 +3078,42 @@ impl Request {
 /// HTTP.
 impl crate::multi::state::SetupLend for Request {
     fn trusted(&self) -> Option<crate::auth::creds::Trusted> {
-        CredentialGate::FIRST.trusted()
+        Lent::credentials_trusted()
     }
 
     fn pipeline(&mut self) -> &mut Pipeline {
         &mut self.base.pipeline
+    }
+
+    fn negotiation(&self) -> Option<crate::proto::http::Negotiation> {
+        None
+    }
+
+    fn negotiation_mut(&mut self) -> Option<&mut crate::proto::http::Negotiation> {
+        None
+    }
+}
+
+/// What the request lends its data connection's setup, as it lends its
+/// control connection's: its pipeline alone, borrowed apart from the
+/// rest of it, beside which the setup borrows the control connection's
+/// host.
+struct Lent<'a>(&'a mut Pipeline);
+
+impl Lent<'_> {
+    /// The credentials are trusted as a first request's.
+    fn credentials_trusted() -> Option<crate::auth::creds::Trusted> {
+        CredentialGate::FIRST.trusted()
+    }
+}
+
+impl crate::multi::state::SetupLend for Lent<'_> {
+    fn trusted(&self) -> Option<crate::auth::creds::Trusted> {
+        Lent::credentials_trusted()
+    }
+
+    fn pipeline(&mut self) -> &mut Pipeline {
+        self.0
     }
 
     fn negotiation(&self) -> Option<crate::proto::http::Negotiation> {
@@ -3448,7 +3483,6 @@ impl Request {
         pc: &mut FtpConn,
         carrier: &mut Carrier<'_>,
     ) -> Result<bool, ErrorKind> {
-        let host = self.control_host()?;
         if self.port_cmd.is_none() {
             return Ok(true);
         }
@@ -3456,7 +3490,7 @@ impl Request {
             set_state(cx, pc, State::Stop);
         }
         let reached = self
-            .with_data(|r, data| data.connect(cx, &host, r))
+            .connect_data(cx)
             .expect("an active data connection is set up");
         if reached? == Reached::Up {
             self.due = None;

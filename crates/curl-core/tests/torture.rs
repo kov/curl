@@ -100,6 +100,10 @@ fn main() {
             an_http_2_body_s_frames_allocate_nothing,
         ),
         (
+            "an_ftp_data_tunnel_s_wait_allocates_nothing_per_pass",
+            an_ftp_data_tunnel_s_wait_allocates_nothing_per_pass,
+        ),
+        (
             "a_share_s_connection_survives_every_allocation_failing",
             a_share_s_connection_survives_every_allocation_failing,
         ),
@@ -1069,6 +1073,88 @@ fn an_http_2_body_s_frames_allocate_nothing() {
         eprintln!("budget: an HTTP/2 GET made {n1} allocations, {n64} for 64 frames")
     });
     assert_eq!(n64, n1, "64 frames made {n64} allocations, one {n1}");
+}
+
+/// The proxy's answer that opens a tunnel.
+const TUNNELED: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
+
+/// An FTP download through an HTTP proxy's tunnel, whose data
+/// connection's `CONNECT` the proxy answers only when let: the passes of
+/// DO_MORE that wait for it allocate nothing, however many there are, as
+/// C's `ftp_do_more` does not (test 1631 under load).
+fn an_ftp_data_tunnel_s_wait_allocates_nothing_per_pass() {
+    const PASSES: u64 = 20;
+    let (clock, net, file) = track::untracked(|| {
+        let clock = ManualClock::new().expect("a clock");
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 8080));
+        let greeted = [TUNNELED, b"220 hi\r\n"].concat();
+        let control = Conversation::replies(
+            &[
+                &greeted,
+                b"331 password?\r\n",
+                b"230 in\r\n",
+                b"257 \"/\" is it\r\n",
+                b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+                b"200 binary\r\n",
+                b"213 5\r\n",
+                b"150 here\r\n226 done\r\n",
+            ],
+            false,
+        )
+        .per_send();
+        let file = Conversation::replies(&[&[TUNNELED, b"hello"].concat()], true)
+            .per_send()
+            .held();
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, control)
+            .with_conversation(at, file.clone());
+        (clock, net, file)
+    });
+    let env = Env {
+        clock: try_box(clock).expect("memory"),
+        net: try_box(net).expect("memory"),
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).expect("memory");
+    let mut easy = Easy::new();
+    let o = easy.options_mut();
+    o.set_url(Some(b"ftp://127.0.0.1:8021/f")).expect("memory");
+    let proxy = o.proxy.make_mut().expect("memory");
+    proxy.url = Some(b"http://127.0.0.1:8080".to_vec());
+    proxy.tunnel = true;
+    let took = TryArc::try_new(Took::default()).expect("memory");
+    o.callbacks.write = Some(Handler::write(Taker(took.clone())).expect("memory"));
+    let id = m
+        .add(try_box(easy).expect("memory"), (), &mut NoEvents)
+        .expect("added");
+    let asked = || track::untracked(|| file.received().starts_with(b"CONNECT "));
+    for _ in 0..100 {
+        if asked() {
+            break;
+        }
+        m.perform(&mut NoEvents).expect("performed");
+    }
+    assert!(asked(), "the data connection's CONNECT is sent");
+    let ((), n) = track::count_allocations(|| {
+        for _ in 0..PASSES {
+            m.perform(&mut NoEvents).expect("performed");
+        }
+    });
+    track::untracked(|| {
+        eprintln!("budget: {PASSES} passes waiting on a data tunnel made {n} allocations")
+    });
+    assert_eq!(
+        n, 0,
+        "{PASSES} passes waiting on the data connection's tunnel"
+    );
+    file.allow(1);
+    let result =
+        curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents).expect("in the multi");
+    assert_eq!(result, Ok(()));
+    assert_eq!(took.body.get(), 5);
+    m.remove(id, &mut NoEvents).expect("in the multi");
 }
 
 /// One fake network for a multi and the share whose connections it

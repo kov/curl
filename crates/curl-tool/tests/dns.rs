@@ -338,6 +338,46 @@ fn a_record_waited_for_is_said_incomplete() {
     assert_eq!(lines[started + 2], incomplete, "{said}");
 }
 
+/// A record c-ares fails as it is asked, its name not one it can ask for,
+/// is taken at the look just after the start, before the addresses are
+/// asked for, as C takes it: not said to be incomplete.
+#[test]
+fn a_record_failed_as_it_is_asked_is_taken_at_the_next_look() {
+    let label = "a".repeat(72);
+    let url = format!("https://{label}.test:1/");
+    let run = curl(&[
+        "-v",
+        "-k",
+        "--trace-config",
+        "dns",
+        "--dns-servers",
+        "127.0.0.1:1",
+        &url,
+    ]);
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert_eq!(run.status.code(), Some(6), "{said}");
+    let lines: Vec<&str> = said.lines().collect();
+    let started = lines
+        .iter()
+        .position(|l| *l == "* [DNS] [HTTPS] hostip_resolv started -> 81")
+        .unwrap_or_else(|| panic!("{said}"));
+    assert_eq!(
+        lines[started + 1],
+        format!("* [DNS] cache lookup {label}.test:1 queries=HTTPS -> 0 not found"),
+        "{said}"
+    );
+    assert_eq!(
+        lines[started + 2],
+        "* [DNS] [HTTPS] ares_take_result, result=6, ares_result=0, ares_status=8, \
+         dns=not found",
+        "{said}"
+    );
+    assert!(
+        lines[started + 3].starts_with("* [DNS] [A+AAAA] cf_dns_start host"),
+        "{said}"
+    );
+}
+
 /// A record for another port than the origin's is said not to apply, as C
 /// says it. The name's addresses never come, so that the record does
 /// first.

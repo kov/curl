@@ -2810,7 +2810,9 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   said in the same place: the take's words, the record destroyed, `started -> 6`, the name kept as
   not existing whatever the lookup otherwise keeps (`Unresolved::Resolver::in_start`). One the
   library had as it was asked, with no query out, is not looked at in the start, as c-ares's
-  `Curl_async_getaddrinfo` returns `CURLE_OK` for it: `started -> 81`, then the look after.
+  `Curl_async_getaddrinfo` returns `CURLE_OK` for it: `started -> 81`, then the look after,
+  which takes the answer there if the library has it, the HTTPS record's as the addresses'
+  (`look_at_library`, `hostip_resolv_take_result`).
 - **Going on before the name is known.** Once AAAA has answered or its wait is over the setup goes
   on to its race though no address has come (`cf_dns_ready_to_connect`), so the HTTPS filter's
   first connect and its choice of attempts do not wait for A. The wait for AAAA runs on

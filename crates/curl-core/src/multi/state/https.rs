@@ -604,7 +604,7 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
         }
         let mut lookup = lookup;
         if let Some(found) = look_in_start(route, &mut lookup, cx)? {
-            return taken_in_start(route, found, lookup, cx);
+            return taken_by_library(route, found, Taken::InStart, lookup, cx);
         }
         // The resolver answers later (`CURLE_AGAIN`).
         let again = crate::error::AGAIN_NUMBER;
@@ -621,7 +621,11 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
         }
         if matches!(lookup, Some(RecordLookup::Library(_))) {
             say_lookup(route, false, cx);
-            look_at_library(route, &mut lookup, cx)?;
+            // Its answer is taken if the library has it by now, as one
+            // it had as it was asked (`hostip_resolv_take_result`).
+            if let Some(found) = look_at_library(route, &mut lookup, cx)? {
+                return taken_by_library(route, found, Taken::Later, lookup, cx);
+            }
         }
         // It is looked at as a library is, and says nothing of the record,
         // then or after: the setup goes on without one and keeps nothing of
@@ -650,22 +654,18 @@ fn look_in_start<H: Host>(
     if resolve.ongoing().0 == 0 {
         return Ok(None);
     }
-    resolve.perform().map_err(|_| ErrorKind::OutOfMemory)?;
-    cx.libraries_closed();
-    if resolve.ongoing().0 > 0 {
-        say_incomplete(route, cx);
-        return Ok(None);
-    }
-    Ok(resolve.record().map(|found| (found, resolve.status())))
+    look_at_library(route, lookup, cx)
 }
 
-/// The record's answer, `found`, taken inside its resolve's start, the
-/// library's `status` said with it (`hostip_resolv_take_result`): the
-/// resolve, `lookup`, let go, and its record with the start's end, among
-/// the answer's lines (`hostip_resolv_start`'s `Curl_async_destroy`).
-fn taken_in_start<H: Host>(
+/// The record's answer, `found`, taken where `taken` says, the library's
+/// `status` said with it (`hostip_resolv_take_result`): the resolve,
+/// `lookup`, let go; taken inside its start, its record goes with the
+/// start's end, among the answer's lines (`hostip_resolv_start`'s
+/// `Curl_async_destroy`).
+fn taken_by_library<H: Host>(
     route: &NetRoute,
     (found, status): (RecordAnswer, i32),
+    taken: Taken,
     lookup: Option<RecordLookup>,
     cx: &mut StepCx<'_, H>,
 ) -> Result<LookedUp, ErrorKind> {
@@ -689,7 +689,7 @@ fn taken_in_start<H: Host>(
         RecordAnswer::NoSuchName => Came::Negative,
         RecordAnswer::Failed => Came::Failed,
     };
-    answered(route, &came, Taken::InStart, cx)?;
+    answered(route, &came, taken, cx)?;
     let kept = match came {
         Came::Record(record) => Some(record),
         _ => None,
@@ -697,22 +697,24 @@ fn taken_in_start<H: Host>(
     Ok((Record::Known, kept, None))
 }
 
-/// A library's resolve run once just after it starts, as C looks for the
-/// answer at once (`hostip_resolv`).
+/// A library's resolve run once, as C looks for the answer inside the
+/// start and again just after it (`hostip_resolv`): what it has then, with
+/// the library's status.
 fn look_at_library<H: Host>(
     route: &NetRoute,
     lookup: &mut Option<RecordLookup>,
     cx: &mut StepCx<'_, H>,
-) -> Result<(), ErrorKind> {
+) -> Result<Option<(RecordAnswer, i32)>, ErrorKind> {
     let Some(RecordLookup::Library(resolve)) = lookup else {
-        return Ok(());
+        return Ok(None);
     };
     resolve.perform().map_err(|_| ErrorKind::OutOfMemory)?;
     cx.libraries_closed();
     if resolve.ongoing().0 > 0 {
         say_incomplete(route, cx);
+        return Ok(None);
     }
-    Ok(())
+    Ok(resolve.record().map(|found| (found, resolve.status())))
 }
 
 /// A record's query not yet answered.

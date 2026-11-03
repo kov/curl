@@ -921,10 +921,26 @@ witness: curl-core proto::http::tests::https_trace::a_record_had_at_the_start_s_
 features: test-util
 --- old
         if let Some(found) = look_in_start(route, &mut lookup, cx)? {
-            return taken_in_start(route, found, lookup, cx);
+            return taken_by_library(route, found, Taken::InStart, lookup, cx);
         }
 --- new
-        look_at_library(route, &mut lookup, cx)?;
+        // Not looked at inside the start.
+
+=== a record the library has by the look after the start is left for a later connect
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-tool a_record_failed_as_it_is_asked_is_taken_at_the_next_look
+--- old
+            if let Some(found) = look_at_library(route, &mut lookup, cx)? {
+                return taken_by_library(route, found, Taken::Later, lookup, cx);
+            }
+--- new
+            if let Some(RecordLookup::Library(resolve)) = &mut lookup {
+                resolve.perform().map_err(|_| ErrorKind::OutOfMemory)?;
+                cx.libraries_closed();
+                if resolve.ongoing().0 > 0 {
+                    say_incomplete(route, cx);
+                }
+            }
 
 === an A answered empty is said only with the rest
 file: crates/curl-core/src/conn/connect.rs

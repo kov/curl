@@ -5974,6 +5974,65 @@ fn header_lines_appended_during_a_redirect_go_with_the_next_request() {
     }
 }
 
+/// The handle and what its header function heard: each line with the
+/// methods `CURLINFO_HTTPAUTH_AVAIL` gave as it was delivered.
+struct AuthAvail {
+    c: *mut CURL,
+    lines: Vec<(String, c_long)>,
+}
+
+unsafe extern "C" fn auth_avail(
+    ptr: *mut c_char,
+    size: usize,
+    n: usize,
+    data: *mut c_void,
+) -> usize {
+    // SAFETY: the test passes `AuthAvail` and the shim `size * n` bytes.
+    let (a, b) = unsafe {
+        (
+            &mut *data.cast::<AuthAvail>(),
+            core::slice::from_raw_parts(ptr.cast::<u8>(), size * n),
+        )
+    };
+    let avail: c_long = info(a.c, ffi::CURLINFO_HTTPAUTH_AVAIL);
+    a.lines
+        .push((String::from_utf8(b.to_vec()).unwrap(), avail));
+    size * n
+}
+
+/// A challenge's methods are available to the header function from the
+/// line that offers them on, as C reads them before it delivers the line
+/// (`Curl_http_input_auth`): WebKit's curl backend asks at the head's end.
+#[test]
+fn a_challenge_is_available_to_the_header_function_as_its_line_arrives() {
+    let (port, server) = serve(vec![
+        b"HTTP/1.1 401 No\r\nWWW-Authenticate: Basic realm=\"r\"\r\n\
+          Content-Length: 0\r\nConnection: close\r\n\r\n",
+    ]);
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    let mut heard = AuthAvail {
+        c,
+        lines: Vec::new(),
+    };
+    function(
+        c,
+        ffi::CURLOPT_HEADERFUNCTION,
+        auth_avail as WriteFn as *const (),
+    );
+    pointer(c, ffi::CURLOPT_HEADERDATA, &raw mut heard);
+    // SAFETY: a live handle, whose header data lives through the transfer.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    server.join().unwrap();
+    let basic = c_long::try_from(ffi::CURLAUTH_BASIC).unwrap();
+    let avail: Vec<_> = heard.lines.iter().map(|(_, a)| *a).collect();
+    assert_eq!(avail, [0, basic, basic, basic, basic], "{:?}", heard.lines);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// `CURLOPT_PROXYHEADER`'s list is read as each `CONNECT` is made: a line
 /// appended after the option goes to the proxy, and one appended as the
 /// proxy asks for credentials goes with the `CONNECT` that gives them.

@@ -986,8 +986,6 @@ impl Request {
         }) = self.auth()
         {
             let report = cx.report_mut();
-            report.add_auth_offered(offered.host.offered);
-            report.add_proxy_auth_offered(offered.proxy.offered);
             if let Some(picked) = act.picked.filter(|p| !p.is_empty()) {
                 report.set_auth_used(picked);
             }
@@ -2570,6 +2568,12 @@ impl Request {
             }
             trace::info(cx, format_args!("{note}"));
         }
+        // What its challenges offer is the report's as the line is read,
+        // before it is delivered (`Curl_http_input_auth`).
+        let (host, proxy) = line.offered;
+        let report = cx.report_mut();
+        report.add_auth_offered(host);
+        report.add_proxy_auth_offered(proxy);
         // The document's time, if asked for; one that cannot be read is
         // the epoch (`http_header_l`).
         if line.kind == LineKind::Header

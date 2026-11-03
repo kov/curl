@@ -60,6 +60,9 @@ pub(crate) struct Line<'a> {
     pub(crate) then: Result<(), HeadError>,
     /// The codings a `Transfer-Encoding` line was read for.
     pub(crate) codings: Option<CodingTale<'a>>,
+    /// The methods the response's challenges have offered with this line,
+    /// the origin's then the proxy's.
+    pub(crate) offered: (AuthMethods, AuthMethods),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -631,6 +634,7 @@ impl HeadParser {
             early: first,
             then,
             codings,
+            offered: self.meta.offered(),
         }))
     }
 

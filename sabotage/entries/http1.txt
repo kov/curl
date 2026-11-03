@@ -387,3 +387,11 @@ witness: curl-core proto::http1::response::tests::an_alias_is_a_200_in_http_1_0
             starts(b"HTTP/") || self.aliases.iter().any(|a| starts(a))
 --- new
             starts(b"HTTP/") || self.aliases.iter().any(|a| line.starts_with(a))
+
+=== a challenge's methods reach the report only after its line is delivered
+file: crates/curl-core/src/proto/http.rs
+witness: curl-sys-abi handle_tests::a_challenge_is_available_to_the_header_function_as_its_line_arrives
+--- old
+        let (host, proxy) = line.offered;
+--- new
+        let (host, proxy) = <(AuthMethods, AuthMethods)>::default();

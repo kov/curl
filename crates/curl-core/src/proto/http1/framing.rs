@@ -790,6 +790,12 @@ impl Meta {
         self.challenges.of(side).negotiate_line_answered(any, last);
     }
 
+    /// The methods the challenges read so far offer, the origin's then
+    /// the proxy's.
+    pub(crate) fn offered(&self) -> (AuthMethods, AuthMethods) {
+        (self.challenges.host.offered, self.challenges.proxy.offered)
+    }
+
     /// The 401's and 407's challenges, taken for the handle to keep.
     pub(crate) fn take_challenges(&mut self) -> Offered {
         std::mem::take(&mut self.challenges)

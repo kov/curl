@@ -65,26 +65,7 @@ fn serve() -> (u16, JoinHandle<()>) {
 
 /// The same for `n` connections, one after another.
 fn serve_n(n: usize) -> (u16, JoinHandle<()>) {
-    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
-    let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
-    let mut name = X509Name::builder().unwrap();
-    name.append_entry_by_nid(Nid::COMMONNAME, "localhost")
-        .unwrap();
-    let name = name.build();
-    let mut cert = X509::builder().unwrap();
-    cert.set_version(2).unwrap();
-    cert.set_subject_name(&name).unwrap();
-    cert.set_issuer_name(&name).unwrap();
-    cert.set_pubkey(&key).unwrap();
-    cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
-        .unwrap();
-    cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
-        .unwrap();
-    cert.sign(&key, MessageDigest::sha256()).unwrap();
-    let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
-    acceptor.set_private_key(&key).unwrap();
-    acceptor.set_certificate(&cert.build()).unwrap();
-    let acceptor = acceptor.build();
+    let acceptor = acceptor();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
@@ -108,6 +89,31 @@ fn serve_n(n: usize) -> (u16, JoinHandle<()>) {
         }
     });
     (port, server)
+}
+
+/// A TLS server's side, with a certificate for `localhost` signed by
+/// itself.
+fn acceptor() -> SslAcceptor {
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+    let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
+    let mut name = X509Name::builder().unwrap();
+    name.append_entry_by_nid(Nid::COMMONNAME, "localhost")
+        .unwrap();
+    let name = name.build();
+    let mut cert = X509::builder().unwrap();
+    cert.set_version(2).unwrap();
+    cert.set_subject_name(&name).unwrap();
+    cert.set_issuer_name(&name).unwrap();
+    cert.set_pubkey(&key).unwrap();
+    cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
+        .unwrap();
+    cert.sign(&key, MessageDigest::sha256()).unwrap();
+    let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
+    acceptor.set_private_key(&key).unwrap();
+    acceptor.set_certificate(&cert.build()).unwrap();
+    acceptor.build()
 }
 
 /// What the callbacks saw.
@@ -684,4 +690,309 @@ fn a_retried_verify_waits_for_the_application_to_unpause() {
         assert_eq!((*seen).verifies, 2);
         assert!(!(*seen).in_write.is_empty());
     }
+}
+
+/// A DoH server on loopback, a thread for each connection: each request
+/// is told on the channel once its body is in, then answered with no
+/// name found and the connection closed. With `answer` false, each
+/// connection is told as it is accepted, and held open unread.
+fn doh_server(answer: bool) -> (u16, std::sync::mpsc::Receiver<Vec<u8>>) {
+    let acceptor = std::sync::Arc::new(acceptor());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (told, heard) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for tcp in listener.incoming() {
+            let tcp = tcp.unwrap();
+            let (acceptor, told) = (acceptor.clone(), told.clone());
+            std::thread::spawn(move || {
+                if !answer {
+                    let _told = told.send(Vec::new());
+                    let mut held = tcp;
+                    while matches!(held.read(&mut [0u8; 512]), Ok(n) if n > 0) {}
+                    return;
+                }
+                tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                let Ok(mut tls) = acceptor.accept(tcp) else {
+                    return;
+                };
+                let whole = |r: &[u8]| {
+                    let Some(end) = r.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        return false;
+                    };
+                    let head = String::from_utf8_lossy(&r[..end]).to_ascii_lowercase();
+                    let length = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length: "))
+                        .map_or(0, |n| n.trim().parse::<usize>().unwrap());
+                    r.len() >= end + 4 + length
+                };
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                while !whole(&request) {
+                    match tls.read(&mut buf) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => request.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let _told = told.send(request);
+                let body = [0, 0, 0x81, 0x83, 0, 0, 0, 0, 0, 0, 0, 0];
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/dns-message\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _sent = tls.write_all(head.as_bytes());
+                let _sent = tls.write_all(&body);
+            });
+        }
+    });
+    (port, heard)
+}
+
+/// The handles other than the master's a debug function was called with,
+/// and what asking about the master from each probe's first call said.
+struct ProbesSeen {
+    master: *mut CURL,
+    handles: Vec<usize>,
+    master_asked: Vec<CURLcode>,
+}
+
+unsafe extern "C" fn probes_seen(
+    h: *mut CURL,
+    _: ffi::curl_infotype,
+    _: *mut c_char,
+    _: usize,
+    data: *mut c_void,
+) -> c_int {
+    // SAFETY: the test's `ProbesSeen`, alive through the transfer.
+    let seen = unsafe { &mut *data.cast::<ProbesSeen>() };
+    if h != seen.master && !seen.handles.contains(&(h as usize)) {
+        seen.handles.push(h as usize);
+        let mut code: c_long = -1;
+        // SAFETY: the master, live through its transfer; getinfo may
+        // recurse, as in C.
+        seen.master_asked.push(unsafe {
+            curl_easy_getinfo(seen.master, ffi::CURLINFO_RESPONSE_CODE, &raw mut code)
+        });
+    }
+    0
+}
+
+/// A handle for `http://nx.test/`, its names asked of the DoH server on
+/// `port`, linked to `share`, and tracing DoH where it is verbose.
+fn doh_handle(port: u16, share: *mut ffi::CURLSH) -> *mut CURL {
+    let c = curl_easy_init();
+    let doh = std::ffi::CString::new(format!("https://127.0.0.1:{port}/dns")).unwrap();
+    // SAFETY: a live handle and share, and options of their types.
+    unsafe {
+        assert_eq!(
+            curl_easy_setopt(c, ffi::CURLOPT_URL, c"http://nx.test/".as_ptr()),
+            CURLE_OK
+        );
+        assert_eq!(
+            curl_easy_setopt(c, ffi::CURLOPT_DOH_URL, doh.as_ptr()),
+            CURLE_OK
+        );
+        assert_eq!(curl_easy_setopt(c, ffi::CURLOPT_SHARE, share), CURLE_OK);
+    }
+    let components = curl_core::components::Components::new().unwrap();
+    components.configure(b"doh");
+    // SAFETY: a live handle.
+    let easy = unsafe { crate::easy::handle(c) }.unwrap();
+    let set = easy.with_home(|e| match e {
+        crate::easy::HomeRef::Detached(e) => e.set_components(Some(components)),
+        _ => unreachable!("in no multi"),
+    });
+    assert!(set.is_ok());
+    c
+}
+
+/// What a C stream holds, read from its start; the stream is closed.
+fn drain(stream: *mut libc::FILE) -> String {
+    let mut said = Vec::new();
+    let mut buf = [0u8; 4096];
+    // SAFETY: a live stream, closed last and not used again.
+    unsafe {
+        libc::fflush(stream);
+        libc::rewind(stream);
+        loop {
+            let n = libc::fread(buf.as_mut_ptr().cast(), 1, buf.len(), stream);
+            if n == 0 {
+                break;
+            }
+            said.extend_from_slice(&buf[..n]);
+        }
+        libc::fclose(stream);
+    }
+    String::from_utf8_lossy(&said).into_owned()
+}
+
+/// The server's certificate is checked as the DoH options say, apart
+/// from the transfer's own: told not to, the probes post their queries;
+/// by default the self-signed certificate stops them. A probe traces
+/// through the master's debug function with a handle of its own, or to
+/// the master's error stream, and goes with the transfer, its handle
+/// cleaned up and the share let go of.
+#[test]
+fn doh_probes_verify_the_server_as_the_doh_options_say() {
+    type DebugFn = unsafe extern "C" fn(
+        *mut CURL,
+        ffi::curl_infotype,
+        *mut c_char,
+        usize,
+        *mut c_void,
+    ) -> c_int;
+    let (port, heard) = doh_server(true);
+    let share = crate::share::curl_share_init();
+    let c = doh_handle(port, share);
+    let mut seen = ProbesSeen {
+        master: c,
+        handles: Vec::new(),
+        master_asked: Vec::new(),
+    };
+    let debug = probes_seen as DebugFn;
+    // SAFETY: a live handle, options of their types, and data that
+    // outlives the transfer.
+    unsafe {
+        for o in [
+            ffi::CURLOPT_DOH_SSL_VERIFYPEER,
+            ffi::CURLOPT_DOH_SSL_VERIFYHOST,
+            ffi::CURLOPT_DOH_SSL_VERIFYSTATUS,
+        ] {
+            assert_eq!(curl_easy_setopt(c, o, 0 as c_long), CURLE_OK);
+        }
+        assert_eq!(
+            curl_easy_setopt(c, ffi::CURLOPT_VERBOSE, 1 as c_long),
+            CURLE_OK
+        );
+        assert_eq!(
+            curl_easy_setopt(c, ffi::CURLOPT_DEBUGFUNCTION, debug),
+            CURLE_OK
+        );
+        assert_eq!(
+            curl_easy_setopt(c, ffi::CURLOPT_DEBUGDATA, (&raw mut seen).cast::<c_void>()),
+            CURLE_OK
+        );
+        assert_eq!(
+            crate::easy::curl_easy_perform(c),
+            ffi::CURLE_COULDNT_RESOLVE_HOST
+        );
+        curl_easy_cleanup(c);
+    }
+    let requests: Vec<Vec<u8>> = heard.try_iter().collect();
+    assert_eq!(requests.len(), 2, "one for each query");
+    for r in &requests {
+        assert!(
+            r.starts_with(b"POST /dns "),
+            "{}",
+            String::from_utf8_lossy(r)
+        );
+    }
+    assert_eq!(seen.handles.len(), 2, "a handle for each probe");
+    assert_eq!(seen.master_asked, [CURLE_OK, CURLE_OK], "lent the multi");
+    // By default the probes verify, and trace to the error stream.
+    let c = doh_handle(port, share);
+    // SAFETY: a stream of the C library's, closed by `drain`.
+    let stream = unsafe { libc::tmpfile() };
+    assert!(!stream.is_null());
+    // SAFETY: a live handle, and a stream that outlives it.
+    unsafe {
+        assert_eq!(
+            curl_easy_setopt(c, ffi::CURLOPT_VERBOSE, 1 as c_long),
+            CURLE_OK
+        );
+        assert_eq!(curl_easy_setopt(c, ffi::CURLOPT_STDERR, stream), CURLE_OK);
+        assert_eq!(
+            crate::easy::curl_easy_perform(c),
+            ffi::CURLE_COULDNT_RESOLVE_HOST
+        );
+        curl_easy_cleanup(c);
+    }
+    assert_eq!(heard.try_iter().count(), 0, "the certificate is refused");
+    let said = drain(stream);
+    assert!(said.contains("* [DoH] "), "{said}");
+    // SAFETY: a live share, its handles cleaned up.
+    let cleaned = unsafe { crate::share::curl_share_cleanup(share) };
+    assert_eq!(
+        cleaned,
+        ffi::CURLSHE_OK,
+        "no probe's handle holds the share"
+    );
+}
+
+/// A multi cleaned up while its transfer's probes are out cleans up
+/// their handles too, letting go of the share.
+#[test]
+fn a_multi_cleaned_up_cleans_up_its_probes_handles() {
+    let (port, heard) = doh_server(false);
+    cleaned_up_with_probes_out(port, &heard);
+}
+
+/// `curl_multi_cleanup` of a multi whose transfer's probes are out, the
+/// first connected to the server on `port`, which tells `heard` of it.
+fn cleaned_up_with_probes_out(port: u16, heard: &std::sync::mpsc::Receiver<Vec<u8>>) {
+    let share = crate::share::curl_share_init();
+    let c = doh_handle(port, share);
+    let m = curl_multi_init();
+    let mut running: c_int = 1;
+    // SAFETY: a live multi, handle and share; the handle cleaned up after
+    // the multi, as C allows.
+    unsafe {
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        // Until a probe has connected; the other waits to share its
+        // connection (`CURLOPT_PIPEWAIT`).
+        let mut accepted = 0;
+        let mut turns = 0;
+        while accepted == 0 {
+            turns += 1;
+            assert!(turns < 1000, "the probes never connected");
+            assert_eq!(curl_multi_perform(m, &raw mut running), CURLM_OK);
+            assert_eq!(
+                curl_multi_wait(m, ptr::null_mut(), 0, 10, ptr::null_mut()),
+                CURLM_OK
+            );
+            accepted += heard.try_iter().count();
+        }
+        assert!(running > 0);
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+        curl_easy_cleanup(c);
+        assert_eq!(
+            crate::share::curl_share_cleanup(share),
+            ffi::CURLSHE_OK,
+            "no probe's handle holds the share"
+        );
+    }
+}
+
+/// A probe's handle is freed as its transfer ends and as its multi is
+/// cleaned up: nothing the transfer allocated is left after either.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_probe_s_handle_is_freed_when_it_goes() {
+    use curl_alloc::track::measure;
+    let (port, heard) = doh_server(true);
+    let performed = || {
+        let share = crate::share::curl_share_init();
+        let c = doh_handle(port, share);
+        // SAFETY: a live handle and share, each not used again.
+        unsafe {
+            assert_eq!(
+                crate::easy::curl_easy_perform(c),
+                ffi::CURLE_COULDNT_RESOLVE_HOST
+            );
+            curl_easy_cleanup(c);
+            assert_eq!(crate::share::curl_share_cleanup(share), ffi::CURLSHE_OK);
+        }
+    };
+    // Once before, for what is made once a process.
+    performed();
+    let ((), m) = measure(performed);
+    assert_eq!(m.bytes, 0, "a transfer's probes leave nothing");
+    let (port, heard_out) = doh_server(false);
+    cleaned_up_with_probes_out(port, &heard_out);
+    let ((), m) = measure(|| cleaned_up_with_probes_out(port, &heard_out));
+    assert_eq!(m.bytes, 0, "a multi's probes leave nothing");
+    drop(heard);
 }

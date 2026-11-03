@@ -319,3 +319,24 @@ witness: curl-core doh::tests::a_record_s_target_is_as_long_as_c_takes
 const MAX_TARGET: usize = 253;
 --- new
 const MAX_TARGET: usize = 2048;
+
+=== a probe's handle stays internal as it goes, so its cleanup refuses it
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi tls_tests::doh_probes_verify_the_server_as_the_doh_options_say
+--- old
+    pub(crate) fn release_internal(&self) {
+        self.internal.set(false);
+    }
+--- new
+    pub(crate) fn release_internal(&self) {}
+
+=== a multi cleaned up with probes out leaves their handles
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi tls_tests::a_probe_s_handle_is_freed_when_it_goes
+features: debug-hooks
+--- old
+    fn internal_gone(&mut self, easy: Box<Easy>, host: NonNull<ShimEasy>) {
+        self.0.internal_gone(easy, host);
+    }
+--- new
+    fn internal_gone(&mut self, _: Box<Easy>, _: NonNull<ShimEasy>) {}

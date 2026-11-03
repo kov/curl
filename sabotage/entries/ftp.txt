@@ -416,3 +416,12 @@ witness: curl-core an_ftp_data_tunnel_s_wait_allocates_nothing_per_pass
 --- new
         let host = copied(control.route.destination().shown()).ok()?;
         Some(data.connect(cx, &host, &mut Lent(&mut self.base.pipeline)))
+
+=== each pass dialing the data connection boxes its setup anew
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core an_ftp_data_connect_s_wait_allocates_nothing_per_pass
+--- old
+                        Ok(Drove::Connecting(mut m, progress)) => {
+--- new
+                        Ok(Drove::Connecting(m, progress)) => {
+                            let mut m = *curl_alloc::try_box(m).map_err(|_| ErrorKind::OutOfMemory)?;

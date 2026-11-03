@@ -51,9 +51,14 @@ pub(crate) struct DataConn {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the setup is held inline, as the request boxes the data connection whole: \
+              boxed apart, each pass that drives it would box it anew"
+)]
 enum Phase {
     /// Being set up: its first hop dialed, then the handshakes over it.
-    Connecting(Box<ConnectMachine>, SideSetup),
+    Connecting(ConnectMachine, SideSetup),
     /// Listening for the server to connect, until `deadline`
     /// (`cf_tcp_accept`).
     Listening {
@@ -109,7 +114,6 @@ impl DataConn {
             closer,
             ConnSettings::DEFAULT,
         );
-        let machine = curl_alloc::try_box(machine).map_err(|_| ErrorKind::OutOfMemory)?;
         Ok(DataConn {
             phase: Some(Phase::Connecting(machine, SideSetup::default())),
             tls,
@@ -207,33 +211,22 @@ impl DataConn {
                                 continue;
                             }
                             Ok(Shaken::Up) => {
-                                let conn = (*machine).handshaken();
+                                let conn = machine.handshaken();
                                 crate::multi::state::side_let_go(cx);
                                 *chain = None;
                                 self.up(cx, host, conn)?;
                                 continue;
                             }
                             Err(kind) => {
-                                discard_in(cx, *machine);
+                                discard_in(cx, machine);
                                 crate::multi::state::side_let_go(cx);
                                 return Err(kind);
                             }
                         }
                     }
                     let route = machine.route().clone();
-                    match crate::multi::state::side_drive(cx, *machine) {
-                        Ok(Drove::Connecting(m, progress)) => {
-                            let mut m = match curl_alloc::try_box_or_back(m) {
-                                Ok(m) => m,
-                                Err(m) => {
-                                    let answered = m.answer().is_some();
-                                    discard_in(cx, m);
-                                    if answered {
-                                        crate::multi::state::side_let_go(cx);
-                                    }
-                                    return Err(ErrorKind::OutOfMemory);
-                                }
-                            };
+                    match crate::multi::state::side_drive(cx, machine) {
+                        Ok(Drove::Connecting(mut m, progress)) => {
                             if let Progress::Resolved(found) = progress {
                                 crate::multi::state::side_resolved(cx, &m, found);
                             }

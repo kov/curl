@@ -104,6 +104,10 @@ fn main() {
             an_ftp_data_tunnel_s_wait_allocates_nothing_per_pass,
         ),
         (
+            "an_ftp_data_connect_s_wait_allocates_nothing_per_pass",
+            an_ftp_data_connect_s_wait_allocates_nothing_per_pass,
+        ),
+        (
             "a_share_s_connection_survives_every_allocation_failing",
             a_share_s_connection_survives_every_allocation_failing,
         ),
@@ -1073,6 +1077,89 @@ fn an_http_2_body_s_frames_allocate_nothing() {
         eprintln!("budget: an HTTP/2 GET made {n1} allocations, {n64} for 64 frames")
     });
     assert_eq!(n64, n1, "64 frames made {n64} allocations, one {n1}");
+}
+
+/// The trace's text, kept untracked: the test's, not the library's.
+#[derive(Default)]
+struct Traced(std::sync::Mutex<Vec<u8>>);
+
+struct Tracer(TryArc<Traced>);
+
+impl DebugHandler for Tracer {
+    fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        if kind == DebugKind::Text {
+            track::untracked(|| self.0.0.lock().unwrap().extend_from_slice(data));
+        }
+    }
+}
+
+/// An FTP download whose data connection dials an address that never
+/// answers: the passes that drive its setup on allocate nothing, however
+/// many there are, as C's `ftp_do_more` does not.
+fn an_ftp_data_connect_s_wait_allocates_nothing_per_pass() {
+    const PASSES: u64 = 20;
+    let (clock, net) = track::untracked(|| {
+        let clock = ManualClock::new().expect("a clock");
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 8021));
+        let data_at = std::net::SocketAddr::from(([127, 0, 0, 1], 8022));
+        let control = Conversation::replies(
+            &[
+                b"220 hi\r\n",
+                b"331 password?\r\n",
+                b"230 in\r\n",
+                b"257 \"/\" is it\r\n",
+                b"229 Entering Extended Passive Mode (|||8022|)\r\n",
+            ],
+            false,
+        )
+        .per_send()
+        .greeting();
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_peer(data_at, Peer::Silent)
+            .with_conversation(at, control);
+        (clock, net)
+    });
+    let env = Env {
+        clock: try_box(clock).expect("memory"),
+        net: try_box(net).expect("memory"),
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).expect("memory");
+    let mut easy = Easy::new();
+    let traced = TryArc::try_new(Traced::default()).expect("memory");
+    let o = easy.options_mut();
+    o.set_url(Some(b"ftp://127.0.0.1:8021/f")).expect("memory");
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(Tracer(traced.clone())).expect("memory"));
+    let id = m
+        .add(try_box(easy).expect("memory"), (), &mut NoEvents)
+        .expect("added");
+    let dialing = || {
+        track::untracked(|| {
+            let text = traced.0.lock().unwrap();
+            let needle = b"Trying 127.0.0.1:8022...";
+            text.windows(needle.len()).any(|w| w == needle)
+        })
+    };
+    for _ in 0..100 {
+        if dialing() {
+            break;
+        }
+        m.perform(&mut NoEvents).expect("performed");
+    }
+    assert!(dialing(), "the data connection dials");
+    let ((), n) = track::count_allocations(|| {
+        for _ in 0..PASSES {
+            m.perform(&mut NoEvents).expect("performed");
+        }
+    });
+    track::untracked(|| {
+        eprintln!("budget: {PASSES} passes dialing a data connection made {n} allocations")
+    });
+    assert_eq!(n, 0, "{PASSES} passes dialing the data connection");
+    m.remove(id, &mut NoEvents).expect("in the multi");
 }
 
 /// The proxy's answer that opens a tunnel.

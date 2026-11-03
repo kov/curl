@@ -37,13 +37,20 @@ use super::{
     StreamId, Wants,
 };
 
+/// Run `f`, the fake's own bookkeeping, untracked: a library's memory is
+/// its own, not the core's to account for, and the torture tests refuse
+/// only the core's.
+fn own<R>(f: impl FnOnce() -> R) -> R {
+    curl_alloc::track::untracked(f)
+}
+
 /// The fake library.
 #[derive(Debug, Default)]
 pub struct FakeH2;
 
 impl Http2 for FakeH2 {
     fn client(&self) -> Result<Box<dyn Session>, OutOfMemory> {
-        Ok(Box::new(FakeSession::default()))
+        Ok(own(|| Box::new(FakeSession::default())))
     }
 
     fn error_text(&self, code: H2Error) -> &'static str {
@@ -59,7 +66,7 @@ impl Http2 for FakeH2 {
     }
 
     fn settings_payload(&self, settings: &[Setting], out: &mut [u8]) -> Result<usize, FrameError> {
-        let text = settings_text(settings);
+        let text = own(|| settings_text(settings));
         let n = text.len();
         out.get_mut(..n)
             .ok_or(FrameError {
@@ -360,7 +367,7 @@ impl FakeSession {
             "PP" => {
                 let id = num(1)? as i32;
                 let promised = num(2)? as i32;
-                let Some((fields, at)) = block(&input[nl + 1..]) else {
+                let Some((fields, at)) = own(|| block(&input[nl + 1..])) else {
                     return Ok(None);
                 };
                 for field in fields {
@@ -374,13 +381,15 @@ impl FakeSession {
                 let frame = described(&input[..nl + 1 + at], &[]);
                 check(events(Event::Received(frame)))?;
                 // The client sends nothing on a pushed stream.
-                self.streams.push((
-                    promised,
-                    Stream {
-                        local_end: true,
-                        ..Stream::default()
-                    },
-                ));
+                own(|| {
+                    self.streams.push((
+                        promised,
+                        Stream {
+                            local_end: true,
+                            ..Stream::default()
+                        },
+                    ));
+                });
                 check(events(Event::Promised {
                     stream: StreamId(id),
                     promised: StreamId(promised),
@@ -390,7 +399,7 @@ impl FakeSession {
             "H" => {
                 let id = num(1)? as i32;
                 let end = num(2)? == 1;
-                let Some((fields, at)) = block(&input[nl + 1..]) else {
+                let Some((fields, at)) = own(|| block(&input[nl + 1..])) else {
                     return Ok(None);
                 };
                 for field in fields {
@@ -478,12 +487,13 @@ impl FakeSession {
                     last_stream: StreamId(last),
                     error: H2Error(code),
                 }))?;
-                let refused: Vec<i32> = self
-                    .streams
-                    .iter()
-                    .filter(|(i, s)| *i > last && !s.closed)
-                    .map(|(i, _)| *i)
-                    .collect();
+                let refused: Vec<i32> = own(|| {
+                    self.streams
+                        .iter()
+                        .filter(|(i, s)| *i > last && !s.closed)
+                        .map(|(i, _)| *i)
+                        .collect()
+                });
                 for id in refused {
                     self.stream(id).unwrap().closed = true;
                     check(events(Event::Closed {
@@ -500,8 +510,10 @@ impl FakeSession {
 
 impl Session for FakeSession {
     fn submit_settings(&mut self, settings: &[Setting]) -> Result<(), FrameError> {
-        self.queued
-            .push_back(format!("S {}\n", settings_text(settings)).into_bytes());
+        own(|| {
+            self.queued
+                .push_back(format!("S {}\n", settings_text(settings)).into_bytes());
+        });
         Ok(())
     }
 
@@ -518,39 +530,43 @@ impl Session for FakeSession {
     ) -> Result<StreamId, FrameError> {
         self.next = if self.next == 0 { 1 } else { self.next + 2 };
         let id = self.next;
-        let mut frame = format!("H {id} {}\n", u8::from(!body)).into_bytes();
-        // A weight not the default goes with the head, as PRIORITY does.
-        if weight != super::DEFAULT_WEIGHT {
-            frame.extend_from_slice(format!("weight: {weight}\n").as_bytes());
-        }
-        for (name, value) in fields {
-            frame.extend_from_slice(name);
-            frame.extend_from_slice(b": ");
-            frame.extend_from_slice(value);
+        own(|| {
+            let mut frame = format!("H {id} {}\n", u8::from(!body)).into_bytes();
+            // A weight not the default goes with the head, as PRIORITY does.
+            if weight != super::DEFAULT_WEIGHT {
+                frame.extend_from_slice(format!("weight: {weight}\n").as_bytes());
+            }
+            for (name, value) in fields {
+                frame.extend_from_slice(name);
+                frame.extend_from_slice(b": ");
+                frame.extend_from_slice(value);
+                frame.push(b'\n');
+            }
             frame.push(b'\n');
-        }
-        frame.push(b'\n');
-        self.queued.push_back(frame);
-        self.streams.push((
-            id,
-            Stream {
-                local_end: !body,
-                body,
-                ..Stream::default()
-            },
-        ));
+            self.queued.push_back(frame);
+            self.streams.push((
+                id,
+                Stream {
+                    local_end: !body,
+                    body,
+                    ..Stream::default()
+                },
+            ));
+        });
         Ok(StreamId(id))
     }
 
     fn upgrade(&mut self, _: &[u8], _: bool) -> Result<StreamId, FrameError> {
         self.next = 1;
-        self.streams.push((
-            1,
-            Stream {
-                local_end: true,
-                ..Stream::default()
-            },
-        ));
+        own(|| {
+            self.streams.push((
+                1,
+                Stream {
+                    local_end: true,
+                    ..Stream::default()
+                },
+            ));
+        });
         Ok(StreamId(1))
     }
 
@@ -559,7 +575,7 @@ impl Session for FakeSession {
         bytes: &[u8],
         events: &mut dyn FnMut(Event<'_>) -> Heard,
     ) -> Result<usize, FrameError> {
-        self.input.extend_from_slice(bytes);
+        own(|| self.input.extend_from_slice(bytes));
         while let Some(n) = self.frame(events)? {
             self.input.drain(..n);
         }
@@ -589,12 +605,13 @@ impl Session for FakeSession {
                 return Ok(());
             }
         }
-        let open: Vec<i32> = self
-            .streams
-            .iter()
-            .filter(|(_, s)| s.body && !s.local_end && !s.deferred && !s.closed)
-            .map(|(i, _)| *i)
-            .collect();
+        let open: Vec<i32> = own(|| {
+            self.streams
+                .iter()
+                .filter(|(_, s)| s.body && !s.local_end && !s.deferred && !s.closed)
+                .map(|(i, _)| *i)
+                .collect()
+        });
         for id in open {
             loop {
                 let mut room = [0u8; 16384];
@@ -606,7 +623,7 @@ impl Session for FakeSession {
                         break;
                     }
                     BodyRead::Failed => {
-                        self.queued.push_back(format!("R {id} 2\n").into_bytes());
+                        own(|| self.queued.push_back(format!("R {id} 2\n").into_bytes()));
                         let s = self.stream(id).unwrap();
                         s.closed = true;
                         events(Event::Closed {
@@ -616,8 +633,11 @@ impl Session for FakeSession {
                         break;
                     }
                 };
-                let mut frame = format!("D {id} {n} {}\n", u8::from(last)).into_bytes();
-                frame.extend_from_slice(&room[..n]);
+                let frame = own(|| {
+                    let mut frame = format!("D {id} {n} {}\n", u8::from(last)).into_bytes();
+                    frame.extend_from_slice(&room[..n]);
+                    frame
+                });
                 events(Event::Sent(described(&frame, &[])));
                 let more = out(&frame);
                 if last {
@@ -652,7 +672,7 @@ impl Session for FakeSession {
         if window > 0 && s.consumed >= window / 2 {
             let by = std::mem::take(&mut s.consumed);
             s.received -= by;
-            self.queued.push_back(format!("U {id} {by}\n").into_bytes());
+            own(|| self.queued.push_back(format!("U {id} {by}\n").into_bytes()));
         }
         Ok(())
     }
@@ -711,7 +731,7 @@ impl Session for FakeSession {
         if self.open(id).is_none() {
             return Ok(());
         }
-        self.queued.push_back(format!("U {id} {by}\n").into_bytes());
+        own(|| self.queued.push_back(format!("U {id} {by}\n").into_bytes()));
         Ok(())
     }
 
@@ -724,26 +744,30 @@ impl Session for FakeSession {
 
     fn reset(&mut self, stream: StreamId, error: H2Error) -> Result<(), FrameError> {
         let id = stream.0;
-        self.queued
-            .push_back(format!("R {id} {error}\n").into_bytes());
-        if let Some(s) = self.stream(id)
-            && !s.closed
-        {
-            s.closed = true;
-            self.resets.push((id, error));
-        }
+        own(|| {
+            self.queued
+                .push_back(format!("R {id} {error}\n").into_bytes());
+            if let Some(s) = self.stream(id)
+                && !s.closed
+            {
+                s.closed = true;
+                self.resets.push((id, error));
+            }
+        });
         Ok(())
     }
 
     fn goaway(&mut self, error: H2Error, debug: &[u8]) -> Result<(), FrameError> {
-        self.goaway_debug = debug.to_vec();
-        self.queued.push_back(format!("G 0 {error}\n").into_bytes());
+        own(|| {
+            self.goaway_debug = debug.to_vec();
+            self.queued.push_back(format!("G 0 {error}\n").into_bytes());
+        });
         self.goaway = true;
         Ok(())
     }
 
     fn ping(&mut self) -> Result<(), FrameError> {
-        self.queued.push_back(b"P\n".to_vec());
+        own(|| self.queued.push_back(b"P\n".to_vec()));
         Ok(())
     }
 

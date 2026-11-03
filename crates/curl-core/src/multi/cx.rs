@@ -70,6 +70,9 @@ pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) clock: &'a crate::time::SharedClock,
     /// The count of lookups dropped each resolve over DoH started shares.
     pub(super) reaping: &'a mut super::doh::Reaping,
+    /// A pushed transfer the step added could not start: marked in its
+    /// slot, it is taken out as the step ends.
+    pub(super) discards: &'a mut bool,
     /// The tests' layer each connection set up is given.
     #[cfg(any(test, feature = "test-util"))]
     pub(super) linger: Option<crate::conn::layer::Linger>,
@@ -94,6 +97,7 @@ impl<H: Host> EngineRest<'_, H> {
             now: self.now,
             clock: self.clock,
             reaping: &mut *self.reaping,
+            discards: &mut *self.discards,
             #[cfg(any(test, feature = "test-util"))]
             linger: self.linger,
         }

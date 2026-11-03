@@ -116,6 +116,10 @@ fn main() {
             a_share_s_connection_survives_every_allocation_failing,
         ),
         (
+            "a_push_that_cannot_start_leaves_nothing_running",
+            a_push_that_cannot_start_leaves_nothing_running,
+        ),
+        (
             "a_lost_trailer_line_fails_the_request",
             a_lost_trailer_line_fails_the_request,
         ),
@@ -1361,6 +1365,218 @@ fn shared_scenario() -> Result<[Result<(), ErrorKind>; 2], OutOfMemory> {
 
 fn a_share_s_connection_survives_every_allocation_failing() {
     torture(shared_scenario, Ok([Ok(()), Ok(())]));
+}
+
+/// An application taking every push a server offers, counting what the
+/// multi tells it: its transfers added, the pushes it took and the ones
+/// given back, and the parent's body written as one was given back.
+struct Pushing {
+    took: TryArc<Took>,
+    added: usize,
+    accepted: usize,
+    unpushed: usize,
+    body_at_unpushed: Option<u64>,
+}
+
+impl MultiEvents<NoHost> for Pushing {
+    fn added(&mut self, _: curl_core::multi::TransferId, (): &()) {
+        self.added += 1;
+    }
+
+    fn wants_push(&self) -> bool {
+        true
+    }
+
+    fn push(
+        &mut self,
+        _: &mut EventCx<'_, NoHost>,
+        _: &curl_core::multi::PushOffer<'_>,
+        easy: Box<Easy>,
+    ) -> curl_core::multi::Pushed<NoHost> {
+        self.accepted += 1;
+        curl_core::multi::Pushed::Accepted { easy, owner: () }
+    }
+
+    fn unpushed(&mut self, easy: Box<Easy>, (): ()) {
+        self.unpushed += 1;
+        self.body_at_unpushed = Some(self.took.body.get());
+        drop(easy);
+    }
+}
+
+/// What a run of `push_scenario` came to.
+#[derive(Debug)]
+struct PushRun {
+    parent: Option<Result<(), ErrorKind>>,
+    /// The pushed transfer was added to the multi.
+    added: bool,
+    accepted: usize,
+    unpushed: usize,
+    /// Messages for transfers other than the parent.
+    pushed_messages: usize,
+    body_at_unpushed: Option<u64>,
+    /// The promised stream's cancels sent.
+    cancels: usize,
+    /// The transfers the last pass left running.
+    running: u32,
+}
+
+/// An HTTP/2 GET whose response promises a push the application takes,
+/// driven until nothing runs: the multi must count no transfer running
+/// once the parent is done, whatever became of the push.
+fn push_scenario() -> Result<PushRun, OutOfMemory> {
+    static FAKE: curl_core::http2::fake::FakeH2 = curl_core::http2::fake::FakeH2;
+    const REPLY: &[u8] = b"S\nH 1 0\n:status: 200\n\nPP 1 2\n:method: GET\n:scheme: http\n\
+        :authority: 127.0.0.1\n:path: /pushed\n\nH 2 0\n:status: 200\n\n\
+        D 2 3 1\nabcD 1 2 1\nok";
+    let (clock, net, talk, libraries) = track::untracked(|| {
+        let clock = ManualClock::new().expect("a clock");
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 80));
+        let talk = Conversation::replies(&[REPLY, b""], false).per_send();
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        let libraries = SharedLibraries::new(Libraries {
+            h2: Some(&FAKE as &dyn curl_core::http2::Http2),
+            ..Libraries::NONE
+        })
+        .expect("memory");
+        (clock, net, talk, libraries)
+    });
+    let env = Env {
+        clock: try_box(clock)?,
+        net: try_box(net)?,
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env)?;
+    let mut ev = Pushing {
+        took: TryArc::try_new(Took::default())?,
+        added: 0,
+        accepted: 0,
+        unpushed: 0,
+        body_at_unpushed: None,
+    };
+    let mut easy = Easy::new();
+    easy.set_libraries(libraries);
+    let o = easy.options_mut();
+    o.set_url(Some(b"http://127.0.0.1/"))?;
+    o.limits.total = TimeLimit::from_millis(10_000);
+    o.http.version = curl_core::options::HttpVersion::Http2Prior;
+    o.callbacks.write = Some(Handler::write(Taker(ev.took.clone()))?);
+    let id = match m.add(try_box(easy)?, (), &mut ev) {
+        Ok(id) => id,
+        Err(AddError {
+            kind: MultiErrorKind::OutOfMemory,
+            ..
+        }) => return Err(OutOfMemory),
+        Err(e) => panic!("add refused with {:?}, not for memory", e.kind),
+    };
+    let mut run = PushRun {
+        parent: None,
+        added: false,
+        accepted: 0,
+        unpushed: 0,
+        pushed_messages: 0,
+        body_at_unpushed: None,
+        cancels: 0,
+        running: u32::MAX,
+    };
+    for _ in 0..20 {
+        run.running = m.perform(&mut ev).expect("a pass allocates nothing");
+        while let Some(msg) = m.info_read() {
+            if msg.id == id {
+                run.parent = Some(msg.result);
+            } else {
+                run.pushed_messages += 1;
+            }
+        }
+    }
+    run.added = ev.added > 1;
+    run.accepted = ev.accepted;
+    run.unpushed = ev.unpushed;
+    run.body_at_unpushed = ev.body_at_unpushed;
+    run.cancels = track::untracked(|| {
+        String::from_utf8(talk.received())
+            .expect("the fake's frames are text")
+            .matches("R 2 8\n")
+            .count()
+    });
+    let mut left = None;
+    while let Some(t) = m.next_transfer(left) {
+        if t == id {
+            left = Some(t);
+            continue;
+        }
+        m.remove(t, &mut ev).expect("in the multi");
+    }
+    m.remove(id, &mut ev).expect("in the multi");
+    Ok(run)
+}
+
+/// A push the application took whose transfer cannot start, for want of
+/// memory, is taken out of the multi again and its handle given back to
+/// the host to close, with no message, its stream cancelled once, as C
+/// closes it (`discard_newhandle`): the multi counts nothing running, and
+/// the parent finishes. It goes as the parent's step ends, not inside the
+/// read that offered it, so the parent's body is written by then
+/// (`DIVERGENCE.md`).
+fn a_push_that_cannot_start_leaves_nothing_running() {
+    let mut limit = 0;
+    let mut discarded = 0;
+    let mut stranded_by_read = 0;
+    loop {
+        let live = track::live_tracked();
+        let (outcome, refused) = track::fail_once_after(limit, push_scenario);
+        if let Ok(run) = &outcome
+            && run.running != 0
+        {
+            // A refusal as a started push's own frame is read fails the
+            // parent's read, and the push, its stream no longer read, is
+            // left to its timeout: a failed read strands the connection's
+            // other transfers, which this test does not cover.
+            let stranded = run.added
+                && run.unpushed == 0
+                && run.parent == Some(Err(ErrorKind::RecvError))
+                && run.running == 1;
+            if !stranded {
+                track::untracked(|| panic!("refusing {limit}, transfers still run: {run:?}"));
+            }
+            stranded_by_read += 1;
+        }
+        assert_eq!(
+            track::live_tracked(),
+            live,
+            "a run refusing allocation {limit} left blocks behind"
+        );
+        if !refused {
+            let run = outcome.expect("nothing refused");
+            assert_eq!((run.parent, run.pushed_messages), (Some(Ok(())), 1));
+            assert_eq!((run.accepted, run.unpushed), (1, 0));
+            break;
+        }
+        if let Ok(run) = &outcome
+            && run.added
+            && run.unpushed == 1
+        {
+            discarded += 1;
+            track::untracked(|| {
+                assert_eq!(run.parent, Some(Ok(())), "refusing {limit}: {run:?}");
+                assert_eq!(run.pushed_messages, 0, "refusing {limit}: {run:?}");
+                assert_eq!(run.cancels, 1, "refusing {limit}: {run:?}");
+                assert_eq!(run.body_at_unpushed, Some(2), "refusing {limit}: {run:?}");
+            });
+        }
+        limit += 1;
+        assert!(limit < 100_000, "the scenario never ran to the end");
+    }
+    assert!(discarded > 0, "no refusal fell in the push's start");
+    track::untracked(|| {
+        eprintln!(
+            "torture: {limit} allocations, {discarded} in a push's start, \
+             {stranded_by_read} stranding it by a failed read"
+        );
+    });
 }
 
 /// A count the handlers keep, `Sync` as a handler is; a lock makes no

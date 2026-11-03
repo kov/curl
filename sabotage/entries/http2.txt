@@ -825,3 +825,11 @@ features: test-util debug-hooks
             id: stream,
             body_eos: true,
             ..H2Stream::default()
+
+=== a promised stream is routed into room not made before the offer
+file: crates/curl-core/src/proto/http/h2.rs
+witness: curl-core a_push_that_cannot_start_leaves_nothing_running
+--- old
+            match after.routed.try_reserve(1) {
+--- new
+            match Ok::<(), ()>(()) {

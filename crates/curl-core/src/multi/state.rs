@@ -2211,7 +2211,6 @@ pub(crate) fn start_pushed<H: Host>(
         proto,
         origin,
     });
-    run.url = whole?;
     run.method = Method::Get;
     run.alive = true;
     // A socket callback's abort is the multi's death, which fails this
@@ -2225,17 +2224,15 @@ pub(crate) fn start_pushed<H: Host>(
     cx.report_mut().restart(now);
     *cx.speedometer_mut() = Speedometer::default();
     cx.mark(Timer::StartOp);
+    // What can fail comes last: one that cannot start is taken out as a
+    // transfer timed from its start, as C's stream setup fails after its
+    // transfer's (`http2_data_setup` after `Curl_init_transfer`).
+    run.url = whole?;
     cx.report_mut()
         .set_url(url)
         .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
     mstate::enter(cx, MState::Performing);
     Ok(())
-}
-
-/// A pushed transfer that could not begin fails as it next runs.
-pub(crate) fn fail_pushed(run: &mut Run, kind: ErrorKind) {
-    let state = std::mem::replace(&mut run.state, TransferState::Init);
-    run.state = state.fail(kind);
 }
 
 #[cfg(test)]

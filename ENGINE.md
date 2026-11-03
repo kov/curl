@@ -996,7 +996,9 @@ retry of a transfer fails it with SendError.
   `Completed` clears the deadlines and queues the message and EASY_DONE.
 - **A pushed transfer starts in `Exchanging`** (`start_pushed`), given its lease and its
   request on the promised stream, owned by what the application's `MultiEvents::push` gave
-  (§4.4).
+  (§4.4). What can fail in its start comes last, so one that cannot start is set up as a
+  started transfer; its slot is marked `discard`, and the parent's `run_single` takes it out
+  as the step ends (`discard_unstarted`), before anything else runs it.
 
 ### 3.2 Per-request substates
 
@@ -2046,8 +2048,13 @@ as `with_sibling` lends one, with a request on the promised stream waiting for i
 key to the parent's connection, one more user found by no search (`Pool::pushed`); a
 connection of the multi's own not attached yet is attached then, and a share's not lent yet is
 lent then (`StepCx::pushed_lease`), as the step would at its end. The promised stream is routed to it at once,
-within the read, so the frames that follow the promise go to it as a sibling's. Refused, the
-stream is cancelled; failed (`CURL_PUSH_ERROROUT`), the parent fails too.
+within the read, so the frames that follow the promise go to it as a sibling's; the room to
+route it is made before the offer, and a push without it is refused unasked. Refused, the
+stream is cancelled; failed (`CURL_PUSH_ERROROUT`), the parent fails too. Taken, and then
+unable to start (only for memory), its stream is cancelled as a refused one's and the
+transfer is taken out as the parent's step ends, with no message, its `Easy` and owner handed
+back through `MultiEvents::unpushed` for the host to close, as C closes the handle it added
+(`discard_newhandle`); C does it inside the read (`DIVERGENCE.md`).
 
 An idle multiplexed connection's health is looked at once a second at most, healthy meanwhile,
 where an idle HTTP/1 one's input is polled at every reuse (`Curl_cpool_conn_seems_healthy`): its

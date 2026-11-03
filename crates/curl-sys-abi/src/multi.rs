@@ -384,11 +384,16 @@ impl MultiEvents<CHost> for ShimEvents<'_> {
         }
     }
 
+    /// The handle the application's push function took is closed, as C's
+    /// `discard_newhandle` closes it: out of the multi by now if `added`
+    /// attached it, so it goes home and the cleanup removes it from
+    /// nothing.
     fn unpushed(&mut self, easy: Box<Easy>, owner: NonNull<ShimEasy>) {
-        // SAFETY: made by `push`, handed to no one else.
+        // SAFETY: made by `push` and live until this cleanup: the push
+        // function took it, but the library closes it, as C's does.
         let child = unsafe { owner.as_ref() };
         child.return_home(easy);
-        // SAFETY: as above.
+        // SAFETY: as above, and not used again.
         unsafe { easy::curl_easy_cleanup(owner.as_ptr().cast()) };
     }
 

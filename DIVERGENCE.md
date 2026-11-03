@@ -543,6 +543,21 @@ not a difference: it is tracked in `MILESTONES.md`.
   gives them the share's internal admin handle, an easy handle the application never created.
   Pinned by `a_share_is_held_and_locked_as_in_c` (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+## Handles C closes inside a read
+
+- **A pushed transfer that cannot start goes as its parent's step ends.** When the push
+  callback has returned `CURL_PUSH_OK` and the pushed transfer then cannot be set up, which
+  only running out of memory causes, both close the handle the callback took without a
+  `CURLMSG_DONE`, and cancel its stream. C does it at once, inside the read of the
+  PUSH_PROMISE (`discard_newhandle`, through `Curl_multi_remove_handle`). Here the transfer is
+  taken out when the parent's step ends, the first point at which the connection it was
+  attached to is back with the multi. Until then the rest of that read is handled: the parent's
+  callbacks run for the frames after the promise, the handle is still among the multi's
+  (`curl_multi_get_handles`, its counts), and its "removed from multi" trace line, timer and
+  socket calls come after the parent's. Pinned by
+  `a_push_that_cannot_start_leaves_nothing_running` (`crates/curl-core/tests/torture.rs`),
+  which checks that the parent's body is written by the time the handle is given back.
+
 ## Descriptors C shares with a library
 
 - **libssh is handed a copy of the connection's socket.** C gives libssh the connection's own

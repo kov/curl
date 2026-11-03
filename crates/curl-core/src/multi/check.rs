@@ -53,6 +53,11 @@ impl<H: Host> Multi<H> {
                 "{id:?} is traced in {mstate:?} in {:?}",
                 run.state
             );
+            // A push that could not start goes with the step that added it.
+            assert!(
+                !self.slots.get(id).expect("just found").discard,
+                "{id:?}, a push that could not start, outlived the step that added it"
+            );
             let pause = self.slots.get(id).expect("just found").pause;
             assert!(
                 pause.recv != RecvPause::Held || run.state.holds_output(),
@@ -83,6 +88,7 @@ impl<H: Host> Multi<H> {
             }
         }
         assert_eq!(internals, self.counts.internals(), "the internal transfers");
+        assert!(!self.discards, "a discard is marked between calls");
         let counts = self.counts.get();
         assert_eq!(
             (counts.running, counts.current),

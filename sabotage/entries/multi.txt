@@ -299,6 +299,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
         mstate: mstate::MState::Init,
         readers: None,
         closed: None,
+        discard: false,
     });
 --- new
     let slot = Ok::<Box<Slot<H>>, Slot<H>>(Box::new(Slot {
@@ -312,6 +313,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
         mstate: mstate::MState::Init,
         readers: None,
         closed: None,
+        discard: false,
     }));
 
 === notifications get less room than a pass can queue
@@ -874,3 +876,20 @@ witness: curl-core multi::tests::a_request_waiting_to_be_made_times_out_closing_
                 TransferState::Done(x.done(Err(err), true, Reached::Making))
 --- new
                 TransferState::Done(x.done(Err(err), true, Reached::Unmade))
+
+=== a pushed transfer that cannot start stays in the multi, counted running
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core a_push_that_cannot_start_leaves_nothing_running
+--- old
+        put_back(&mut self.slots, &mut self.dirty, id, run);
+        self.discard_unstarted(ev);
+--- new
+        put_back(&mut self.slots, &mut self.dirty, id, run);
+
+=== a pushed transfer that cannot start is never marked to go
+file: crates/curl-core/src/multi/state/cx.rs
+witness: curl-core a_push_that_cannot_start_leaves_nothing_running
+--- old
+                slot.discard = true;
+--- new
+                slot.discard = false;

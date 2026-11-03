@@ -462,15 +462,18 @@ impl<H: Host> StepCx<'_, H> {
         cx.lent = lent;
         super::super::trace_membership(&mut cx, "added to");
         let started = start(&mut cx, &mut run);
-        // One that could not begin fails as it next runs, and its stream
-        // is refused.
-        if let Err(kind) = started {
-            fail_pushed(&mut run, kind);
-        }
         super::super::put_back(self.rest.tell.slots, self.rest.dirty, id, run);
         match started {
             Ok(()) => Offered::Added(id),
-            Err(_) => Offered::Denied,
+            // One that could not begin is taken out as the step ends, as
+            // it was, its handle closed (`discard_newhandle`), and its
+            // stream is refused.
+            Err(_) => {
+                let slot = self.rest.tell.slots.get_mut(id).expect("just put back");
+                slot.discard = true;
+                *self.rest.discards = true;
+                Offered::Denied
+            }
         }
     }
 

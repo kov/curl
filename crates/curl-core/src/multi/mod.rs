@@ -208,9 +208,12 @@ pub trait MultiEvents<H: Host> {
         false
     }
 
-    /// A push `push` took could not be added after all, the multi short
-    /// of memory: what was made for it is the host's to dispose of, as C
-    /// closes the handle (`discard_newhandle`).
+    /// A push `push` took could not be added after all, or was added and
+    /// could not start, the multi short of memory: what was made for it
+    /// is the host's to dispose of, as C closes the handle
+    /// (`discard_newhandle`). One added, which `added` told of, is out of
+    /// the multi by now, taken out as the step that added it ended, with
+    /// no message.
     fn unpushed(&mut self, easy: Box<Easy>, owner: H::Transfer) {
         let _ = (easy, owner);
     }
@@ -294,6 +297,10 @@ struct Slot<H: Host> {
     /// The sockets its libraries closed, until they are told; made as its
     /// first library's resolve starts.
     closed: Option<crate::conn::io::SocketsClosed>,
+    /// A pushed transfer that could not start: taken out, and its handle
+    /// given back to the host to close, as the step that added it ends
+    /// (`discard_newhandle`).
+    discard: bool,
 }
 
 /// An `Easy` the multi did not take, and why.
@@ -450,6 +457,9 @@ pub struct Multi<H: Host = NoHost> {
     /// Whether a resolve over DoH dropped since the multi last looked for
     /// probes to take out.
     reaping: doh::Reaping,
+    /// A step marked a pushed transfer that could not start, to be taken
+    /// out as the step ends; never set between calls.
+    discards: bool,
     life: Life,
     /// A transfer was told the library is a debug build.
     #[cfg(feature = "debug-hooks")]
@@ -530,6 +540,7 @@ impl<H: Host> Multi<H> {
             alive,
             counts: Tally::default(),
             reaping: doh::Reaping::default(),
+            discards: false,
             life: Life::Alive,
             #[cfg(feature = "debug-hooks")]
             warned: false,
@@ -1314,6 +1325,7 @@ impl<H: Host> Multi<H> {
             now,
             clock: &self.clock,
             reaping: &mut self.reaping,
+            discards: &mut self.discards,
             #[cfg(any(test, feature = "test-util"))]
             linger: self.linger,
         }
@@ -1476,6 +1488,7 @@ impl<H: Host> Multi<H> {
             self.timers.update(id, run.deadlines.wake_at());
         }
         put_back(&mut self.slots, &mut self.dirty, id, run);
+        self.discard_unstarted(ev);
         let internal = match &self.slots.get(id).expect("just run").owner {
             Owner::App(_) => None,
             Owner::Internal { master, probe, .. } => Some((*master, probe.clone())),
@@ -1499,6 +1512,34 @@ impl<H: Host> Multi<H> {
                 self.reap(ev, false);
             }
             None => self.reap(ev, false),
+        }
+    }
+
+    /// The pushed transfers the step just run added and could not start
+    /// are taken out, leaving no message, and their handles given back to
+    /// the host to close, as C closes the handle its application's push
+    /// callback took (`discard_newhandle`, through
+    /// `Curl_multi_remove_handle`). C does it inside the read that offered
+    /// the push; here the step's end is the first point where the
+    /// transfer's connection is back with the multi (`DIVERGENCE.md`).
+    /// The slots are looked through only if one was marked.
+    fn discard_unstarted(&mut self, ev: &mut dyn MultiEvents<H>) {
+        if !std::mem::take(&mut self.discards) {
+            return;
+        }
+        let mut cursor = None;
+        while let Some(id) = self.slots.next_after(cursor) {
+            cursor = Some(id);
+            if !self.slots.get(id).is_some_and(|s| s.discard) {
+                continue;
+            }
+            // C's close does not mind the timer callback's answer; an
+            // abort has left the multi dead meanwhile.
+            let (easy, owner, _unminded) = self.take_out(id, ev).expect("just found");
+            let Owner::App(owner) = owner else {
+                unreachable!("a pushed transfer is the application's");
+            };
+            ev.unpushed(easy, owner);
         }
     }
 
@@ -1828,6 +1869,7 @@ fn insert<H: Host>(
         mstate: mstate::MState::Init,
         readers: None,
         closed: None,
+        discard: false,
     });
     let slot = match slot {
         Ok(slot) => slot,

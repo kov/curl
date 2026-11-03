@@ -1679,8 +1679,15 @@ impl Request {
         let fields = std::mem::take(&mut self.stream().promise);
         let p = promised.0;
         trace::of(cx, H2, format_args!("[{p}] PUSH_PROMISE received"));
+        // Room to route the stream is made before the offer: nothing can
+        // fail between the application taking the push and its transfer
+        // starting but that start, refused unasked, as C refuses a push
+        // whose handle it cannot make (`h2_duphandle`).
         let offered = if cx.wants_push() {
-            self.offer(cx, lease, promised, &fields)
+            match after.routed.try_reserve(1) {
+                Ok(()) => self.offer(cx, lease, promised, &fields),
+                Err(_) => Offered::Denied,
+            }
         } else {
             if !cx.wants_push() {
                 trace::of(cx, H2, format_args!("Got PUSH_PROMISE, ignore it"));
@@ -1688,7 +1695,11 @@ impl Request {
             Offered::Denied
         };
         let pushed = match offered {
-            Offered::Added(to) => after.routed.try_push((promised, to)),
+            Offered::Added(to) => {
+                let routed = after.routed.try_push((promised, to));
+                routed.expect("room made before the offer");
+                Ok(())
+            }
             Offered::Denied => after.resets.try_push((promised, H2Error::CANCEL)),
             Offered::Failed => {
                 if let Some(id) = self.stream().id {

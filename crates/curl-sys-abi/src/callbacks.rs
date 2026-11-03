@@ -1347,6 +1347,24 @@ mod tests {
         let said: Vec<&[u8]> = held.pieces().map(|(_, b)| b).collect();
         let want: Vec<&[u8]> = lines.iter().map(Vec::as_slice).collect();
         assert_eq!(said, want);
+        // The first that fit are on the stack, those after kept apart.
+        assert_eq!((held.count, held.more.len()), (Held::LINES, 4));
+    }
+
+    /// A piece as long as the room left is held there; one longer, apart.
+    #[test]
+    fn a_piece_held_fills_the_room_exactly() {
+        let mut held = Held::default();
+        held.note(DebugKind::Text, &[b'a'; Held::BYTES - 1]);
+        held.note(DebugKind::Text, b"b");
+        assert_eq!(
+            (held.count, held.used, held.more.len()),
+            (2, Held::BYTES, 0)
+        );
+        let mut held = Held::default();
+        held.note(DebugKind::Text, &[b'a'; Held::BYTES + 1]);
+        held.note(DebugKind::Text, b"b");
+        assert_eq!((held.count, held.more.len()), (0, 2));
     }
 
     /// A few short pieces are held where the trace is, without an

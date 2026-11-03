@@ -564,9 +564,9 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
         say_record(route, kept.as_ref(), cx);
         Ok((Record::Known, kept, None))
     } else {
-        // Without DoH or a resolver library, the threaded resolver is
-        // asked and never answers: it resolves only addresses
-        // (`Curl_async_getaddrinfo`).
+        // Without DoH or a resolver library, the network's resolver is
+        // asked if it says so, and never answers: C's threaded one
+        // resolves only addresses (`Curl_async_getaddrinfo`).
         let mut unanswered = false;
         let mut refused = false;
         let lookup = if cx.easy().options().doh.url.is_some() {
@@ -586,7 +586,9 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
                     None
                 }
                 None => {
-                    unanswered = cfg!(feature = "threaded-resolver");
+                    cx.rest
+                        .net
+                        .with_resolver(&mut |r| unanswered = r.asked_for_records());
                     None
                 }
             }

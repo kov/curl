@@ -582,6 +582,12 @@ impl Resolver for ThreadedResolver {
         let state = self.shared.lock();
         (state.start_failed && !state.queue.is_empty()).then_some(Duration::from_millis(100))
     }
+
+    /// Asked, as C's threaded build asks it for a name's HTTPS record,
+    /// which it never answers.
+    fn asked_for_records(&self) -> bool {
+        true
+    }
 }
 
 /// The settings of a resolver's pool, reached beside the resolver that

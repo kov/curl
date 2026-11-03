@@ -99,13 +99,13 @@ fn quic_peer_reading(
     reads: Box<dyn crate::time::Clock>,
     conns: &[&[&[u8]]],
 ) -> (Multi, Vec<Conversation>) {
-    let mut net = FakeNet::new(clock.clone()).with_name(
+    let mut net = records_as_built(FakeNet::new(clock.clone()).with_name(
         "localhost",
         &[
             std::net::Ipv6Addr::LOCALHOST.into(),
             std::net::Ipv4Addr::LOCALHOST.into(),
         ],
-    );
+    ));
     let ats = [
         SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, PORT)),
         SocketAddr::from(([127, 0, 0, 1], PORT)),
@@ -1420,7 +1420,7 @@ fn an_error_read_as_the_head_is_sent_stops_the_body() {
 fn racing_peer(quic: Peer, quic_talk: &Conversation, tcp: Peer, tcp_talk: &Conversation) -> Multi {
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
-    let net = FakeNet::new(clock.clone())
+    let net = records_as_built(FakeNet::new(clock.clone()))
         .with_peer(at, tcp)
         .with_datagram_peer(at, quic)
         .with_conversation(at, quic_talk.clone())
@@ -3258,7 +3258,7 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
     let talk = Conversation::replies(&[&tunnel, WELCOME, &response], false).per_send();
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], UDP_PROXY_PORT));
-    let net = FakeNet::new(clock.clone())
+    let net = records_as_built(FakeNet::new(clock.clone()))
         .with_peer(at, Peer::Accepts)
         .with_conversation(at, refusing)
         .with_conversation(at, talk.clone());
@@ -3860,7 +3860,7 @@ fn a_tunnelled_body_in_flight_waits_for_its_acknowledgement() {
         .per_send();
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], UDP_PROXY_PORT));
-    let net = FakeNet::new(clock.clone())
+    let net = records_as_built(FakeNet::new(clock.clone()))
         .with_peer(at, Peer::Accepts)
         .with_conversation(at, talk.clone());
     let env = Env {

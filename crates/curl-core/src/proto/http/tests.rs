@@ -1176,7 +1176,7 @@ fn serving(peer: Peer, conversations: &[&Conversation]) -> Multi {
 /// As `serving`, on `clock`: multis that use one share read one clock.
 fn serving_on(clock: ManualClock, peer: Peer, conversations: &[&Conversation]) -> Multi {
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
-    let mut net = FakeNet::new(clock.clone()).with_peer(at, peer);
+    let mut net = records_as_built(FakeNet::new(clock.clone()).with_peer(at, peer));
     for c in conversations {
         net = net.with_conversation(at, (*c).clone());
     }
@@ -1187,6 +1187,15 @@ fn serving_on(clock: ManualClock, peer: Peer, conversations: &[&Conversation]) -
         waker: None,
     };
     Multi::new(env).unwrap()
+}
+
+/// `net`, its resolver asked for a name's HTTPS record as the build's
+/// own is: the threaded resolver is, and never answers.
+fn records_as_built(net: FakeNet) -> FakeNet {
+    match cfg!(feature = "threaded-resolver") {
+        true => net.with_records_asked(),
+        false => net,
+    }
 }
 
 /// A connection the server answers once, then closes as it is reused.

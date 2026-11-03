@@ -349,23 +349,27 @@ features: debug-hooks
 --- new
     let by_record = c.https.is_some_and(|h| h.first_by_record) || c.record.is_some();
 
-=== the threaded build waits for a record its resolver never answers
-file: crates/curl-core/src/multi/state/https.rs
+=== the threaded resolver does not say it is asked for records, and its build waits for one
+file: crates/curl-core/src/conn/threaded.rs
 witness: curl-tool an_origins_record_the_threaded_resolver_cannot_answer_is_not_kept
 features: threaded-resolver
 --- old
-                    unanswered = cfg!(feature = "threaded-resolver");
+    fn asked_for_records(&self) -> bool {
+        true
+    }
 --- new
-                    unanswered = false;
+    fn asked_for_records(&self) -> bool {
+        false
+    }
 
-=== the threaded build's setup waits for and keeps a record never answered
+=== the setup waits for and keeps a record its resolver says it never answers
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_goes_on_without_a_record_never_answered
 features: threaded-resolver
 --- old
-                    unanswered = cfg!(feature = "threaded-resolver");
+                        .with_resolver(&mut |r| unanswered = r.asked_for_records());
 --- new
-                    unanswered = false;
+                        .with_resolver(&mut |r| unanswered = r.asked_for_records() && false);
 
 === a library's record is not looked for again right after its resolve starts
 file: crates/curl-core/src/multi/state/https.rs

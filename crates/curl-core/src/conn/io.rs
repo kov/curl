@@ -555,6 +555,14 @@ pub trait Resolver {
     fn retry(&self) -> Option<Duration> {
         None
     }
+
+    /// Whether a name's HTTPS record is asked of it, which it never
+    /// answers, as C's threaded resolver is asked and resolves only
+    /// addresses (`Curl_async_getaddrinfo`); not, for one that is never
+    /// asked, as C's synchronous resolver is not.
+    fn asked_for_records(&self) -> bool {
+        false
+    }
 }
 
 /// The system's resolver as C's synchronous one: `getaddrinfo`, its
@@ -1432,6 +1440,9 @@ pub struct FakeNet {
     /// Whether its resolver gives no reason for a failure, as the
     /// threaded resolver gives none, rather than c-ares's.
     no_reasons: bool,
+    /// Whether its resolver is asked for a name's HTTPS record, which it
+    /// never answers, as the threaded resolver is.
+    records_asked: bool,
     /// How many of the sockets it opened were for datagrams.
     datagrams: u32,
     /// The family of a late name that answers before its gate opens, if
@@ -1528,6 +1539,7 @@ impl FakeNet {
             interfaces: Vec::new(),
             binding: None,
             no_reasons: false,
+            records_asked: false,
             datagrams: 0,
             first: None,
         }
@@ -1645,6 +1657,13 @@ impl FakeNet {
     /// resolver gives none.
     pub fn without_reasons(mut self) -> FakeNet {
         self.no_reasons = true;
+        self
+    }
+
+    /// Its resolver is asked for a name's HTTPS record, and never
+    /// answers, as the threaded resolver is.
+    pub fn with_records_asked(mut self) -> FakeNet {
+        self.records_asked = true;
         self
     }
 
@@ -2524,6 +2543,10 @@ impl Resolver for FakeNet {
 
     fn explain(&self, why: ResolveFailure) -> Option<&'static str> {
         c_ares_explains(why).filter(|_| !self.no_reasons)
+    }
+
+    fn asked_for_records(&self) -> bool {
+        self.records_asked
     }
 }
 

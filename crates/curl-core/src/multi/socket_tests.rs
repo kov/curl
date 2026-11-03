@@ -475,6 +475,10 @@ impl crate::conn::io::Resolver for Woken<'_> {
     fn pool(&self) -> Option<ResolverThreads> {
         self.2.clone()
     }
+
+    fn asked_for_records(&self) -> bool {
+        self.0.asked_for_records()
+    }
 }
 
 /// The fake network, its resolver woken by `.1`.
@@ -700,6 +704,10 @@ impl crate::conn::io::Resolver for Stalled<'_> {
 
     fn retry(&self) -> Option<Duration> {
         Some(Duration::from_millis(100))
+    }
+
+    fn asked_for_records(&self) -> bool {
+        self.0.asked_for_records()
     }
 }
 

@@ -1673,6 +1673,8 @@ fn an_active_download_accepts_the_server_s_connection() {
         received(&control)
     );
     assert!(said.contains("Connection accepted from server"), "{said}");
+    // An accepted connection has no DNS filter to say it is connected.
+    assert!(!said.contains("[DNS-1]"), "{said}");
     assert!(
         said.contains(
             "Established 2nd connection to 127.0.0.1 (127.0.0.1 port 20) from 127.0.0.1 port 40001"

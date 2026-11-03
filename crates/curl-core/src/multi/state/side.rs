@@ -76,9 +76,11 @@ pub(crate) fn call_failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind, chai
 /// The call ends with all of `connected` connected.
 pub(crate) fn call_connected<H: Host>(cx: &mut StepCx<'_, H>, connected: Chain) {
     // Its SOCKS proxy's target's filter, if it has one, below the first
-    // hop's; never the record's.
-    let target = connected.dns_filters() > 1;
-    names::connected(cx, ConnRank::Second, target, false);
+    // hop's; never the record's. An accepted connection has none.
+    if connected.dns_filters() > 0 {
+        let target = connected.dns_filters() > 1;
+        names::connected(cx, ConnRank::Second, target, false);
+    }
     let top = connected.top().unwrap_or(Component::DnsFilter);
     connect_ended_at(cx, top, Ok(true));
 }

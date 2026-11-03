@@ -464,3 +464,14 @@ impl crate::multi::state::SetupLend for Lent<'_> {
 impl crate::multi::state::SetupLend for Lent<'_> {
     fn trusted(&self) -> Option<crate::auth::creds::Trusted> {
         None
+
+=== an accepted data connection is said to have a DNS filter connected
+file: crates/curl-core/src/multi/state/side.rs
+witness: curl-core proto::ftp::tests::an_active_download_accepts_the_server_s_connection
+features: test-util debug-hooks
+--- old
+    if connected.dns_filters() > 0 {
+        let target = connected.dns_filters() > 1;
+--- new
+    if connected.dns_filters() > 0 || connected.dns_filters() == 0 {
+        let target = connected.dns_filters() > 1;

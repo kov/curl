@@ -220,6 +220,18 @@ witness: curl-core conn::threaded::tests::a_resolve_dropped_takes_its_queries_fr
 --- new
         state.resolving.retain(|r| r.id != id);
 
+=== a threaded resolve of both families is never told of
+file: crates/curl-core/src/conn/threaded.rs
+witness: curl-core conn::threaded::tests::what_came_is_told_while_a_resolve_goes_on
+--- old
+                    r.told = Some(r.left);
+                    each(r.waiter);
+--- new
+                    r.told = Some(r.left);
+                    if !r.asked_v6 {
+                        each(r.waiter);
+                    }
+
 === a threaded resolve outliving its resolver is waited for for ever
 file: crates/curl-core/src/conn/threaded.rs
 witness: curl-core conn::threaded::tests::a_resolve_outliving_its_resolver_fails

@@ -916,12 +916,17 @@ mod tests {
     fn what_came_is_told_while_a_resolve_goes_on() {
         let mut r = ThreadedResolver::new(Threads::MULTI).unwrap();
         let mut v4 = start(&mut r, b"localhost", Family::V4);
-        let mut any = start(&mut r, b"localhost", Family::Any);
+        // Its waiter apart from the other's, to tell which is told of.
+        let waiter = Waiter(Some(crate::multi::TransferId::lone()));
+        let mut any = match r.start(b"localhost", Family::Any, waiter) {
+            Ok(Resolve::Pending { resolve, .. }) => resolve,
+            other => panic!("{other:?}"),
+        };
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut told = 0;
         let part = loop {
             assert!(std::time::Instant::now() < deadline, "not answered");
-            r.answered(&mut |_| told += 1);
+            r.answered(&mut |w| told += u32::from(w == waiter));
             let part = any.partial().unwrap().expect("it goes on until taken");
             if part.v6_answered && !part.addrs.is_empty() && told >= 1 {
                 break part;

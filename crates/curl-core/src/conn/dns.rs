@@ -2,6 +2,8 @@
 //! (`lib/vdns/dnscache.c`), and the entries an application gives for them
 //! (`CURLOPT_RESOLVE`, `Curl_loadhostpairs`).
 
+use crate::conn::asyncs::Holder;
+use crate::multi::state::ConnRank;
 use crate::share::{Kind, Share, ShareLock, watched};
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -108,11 +110,70 @@ impl Names<'_> {
         }
     }
 
-    /// Tell the application of the use C makes as a setup lets go of the
-    /// answer it was given (`Curl_dns_entry_unlink`): here the answer is
-    /// counted, and nothing of the share is used.
+    /// Tell the application of the use C makes as a DNS filter lets go of
+    /// the entry it holds (`Curl_dns_entry_unlink`, `Holds`): here the
+    /// answer is counted, and nothing of the share is used.
     pub(crate) fn release(&mut self) {
         self.section(|_| ());
+    }
+}
+
+/// Which of a transfer's DNS filters hold an entry of the cache, one each
+/// at most (C's `cf_dns_ctx.dns`, the entry's count of users raised). A
+/// filter holds one from the moment its resolve answers, the setup keeping
+/// the addresses themselves, until the filter is destroyed: as its chain
+/// is connected (`Curl_conn_remove_setup_filters`), as the second chain
+/// is set up again (`Curl_conn_cf_discard_all`), or as the transfer is
+/// done with the setup unfinished (`CF_CTRL_DATA_DONE`). The filter goes
+/// with the setup's chain, not with the machine an attempt is driven by:
+/// a failed attempt, or a race's two attempts below the one filter, leave
+/// it as it is. Letting one go is a use of the cache, which a share's lock
+/// callbacks see (`Curl_dns_entry_unlink`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Holds(u8);
+
+impl Holds {
+    /// The bit of the filter `holder` names on `rank`'s chain: the first
+    /// hop's addresses' or the SOCKS proxy's target's. The record's filter
+    /// holds no entry of addresses, and a blocking resolve has no filter.
+    fn bit(holder: Holder, rank: ConnRank) -> u8 {
+        let (rank, at) = match holder {
+            Holder::Addresses(rank) => (rank, 0),
+            Holder::Target => (rank, 1),
+            Holder::Record | Holder::Blocking => unreachable!("{holder:?} holds no entry"),
+        };
+        match rank {
+            ConnRank::First => 1 << at,
+            ConnRank::Second => 1 << (at + 2),
+        }
+    }
+
+    /// `holder`'s filter on `rank`'s chain has its entry. One it holds
+    /// already stays its one: a setup dialed again resolves the SOCKS
+    /// proxy's target again, which C's filter, above the setup's, does not.
+    pub(crate) fn hold(&mut self, holder: Holder, rank: ConnRank) {
+        self.0 |= Holds::bit(holder, rank);
+    }
+
+    /// `holder`'s filter on `rank`'s chain goes: whether it held an entry.
+    pub(crate) fn take(&mut self, holder: Holder, rank: ConnRank) -> bool {
+        let bit = Holds::bit(holder, rank);
+        let held = self.0 & bit != 0;
+        self.0 &= !bit;
+        held
+    }
+
+    /// The filters of `rank`'s chain go, or of every chain with none:
+    /// how many entries they held.
+    pub(crate) fn take_all(&mut self, rank: Option<ConnRank>) -> u32 {
+        let mask = match rank {
+            Some(ConnRank::First) => 0b0011,
+            Some(ConnRank::Second) => 0b1100,
+            None => 0b1111,
+        };
+        let held = (self.0 & mask).count_ones();
+        self.0 &= !mask;
+        held
     }
 }
 

@@ -300,6 +300,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
         readers: None,
         closed: None,
         discard: false,
+        holds: Default::default(),
     });
 --- new
     let slot = Ok::<Box<Slot<H>>, Slot<H>>(Box::new(Slot {
@@ -314,6 +315,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
         readers: None,
         closed: None,
         discard: false,
+        holds: Default::default(),
     }));
 
 === notifications get less room than a pass can queue
@@ -406,16 +408,9 @@ witness: curl-core multi::tests::a_paused_transfer_does_not_connect
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::removing_a_connecting_transfer_closes_its_socket
 --- old
-    release(
-        cx,
-        d.lease,
-        premature,
-        stream_closed,
-        d.origin.as_ref(),
-        raced.is_some(),
-    );
+    release(cx, d.lease, premature, stream_closed, d.origin.as_ref());
 --- new
-    let _ = (stream_closed, raced);
+    let _ = stream_closed;
     let lease = d.lease;
     let home = lease.home().clone();
     let now = cx.rest.now;

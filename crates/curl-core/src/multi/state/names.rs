@@ -128,6 +128,23 @@ fn resolved_unix<H: Host>(cx: &mut StepCx<'_, H>, peer: &Peer) {
     }
 }
 
+/// The DNS filters of the chain set up for `rank`, top first: the origin's
+/// HTTPS record's if one is asked for, the first hop's, and the SOCKS
+/// proxy's target's if it is resolved here (`cf_dns_add_resolve`).
+pub(super) fn filters(
+    rank: ConnRank,
+    target: bool,
+    record: bool,
+) -> impl DoubleEndedIterator<Item = Holder> + Clone {
+    [
+        record.then_some(Holder::Record),
+        Some(Holder::Addresses(rank)),
+        target.then_some(Holder::Target),
+    ]
+    .into_iter()
+    .flatten()
+}
+
 /// The chain below each of the DNS filters of the chain set up for
 /// `rank` is connected, the lowest first: the SOCKS proxy's target's if it
 /// is resolved here, the first hop's, and the origin's HTTPS record's if
@@ -139,12 +156,7 @@ pub(super) fn connected<H: Host>(
     target: bool,
     record: bool,
 ) {
-    let filters = [
-        target.then_some(Holder::Target),
-        Some(Holder::Addresses(rank)),
-        record.then_some(Holder::Record),
-    ];
-    for holder in filters.into_iter().flatten() {
+    for holder in filters(rank, target, record).rev() {
         trace::of(
             cx,
             Component::DnsFilter,
@@ -154,6 +166,61 @@ pub(super) fn connected<H: Host>(
         if let Some(id) = gone {
             said(cx, id, "destroy");
         }
+    }
+}
+
+/// The setup filters of `connected`, the chain set up for `rank`, go once
+/// it is connected, top first (`Curl_conn_remove_setup_filters`), each
+/// said, and each DNS filter, `dns` naming them top first, letting go of
+/// the entry it holds (`cf_dns_ctx_destroy`). `each` is told of each
+/// filter as it goes.
+pub(super) fn setup_filters_go<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    connected: &super::Chain,
+    rank: ConnRank,
+    mut dns: impl Iterator<Item = Holder> + Clone,
+    mut each: impl FnMut(&mut StepCx<'_, H>, Component),
+) {
+    assert_eq!(
+        dns.clone().count(),
+        connected.dns_filters(),
+        "a holder for each DNS filter"
+    );
+    for filter in connected.going() {
+        trace::of(cx, filter, format_args!("removing connected setup filter"));
+        trace::of(cx, filter, format_args!("destroy"));
+        if filter == Component::DnsFilter {
+            let holder = dns.next().expect("a holder for each DNS filter");
+            filter_gone(cx, holder, rank);
+        }
+        each(cx, filter);
+    }
+}
+
+/// `holder`'s DNS filter on `rank`'s chain goes, letting go of the entry
+/// it holds, if it holds one (`Curl_dns_entry_unlink`). The record's holds
+/// none.
+fn filter_gone<H: Host>(cx: &mut StepCx<'_, H>, holder: Holder, rank: ConnRank) {
+    if holder != Holder::Record && cx.holds_mut().take(holder, rank) {
+        let_go(cx, 1);
+    }
+}
+
+/// The chain of `rank` is set up again, or the transfer is done with
+/// every setup, `rank` none: the entries its DNS filters still hold let
+/// go of (`Curl_conn_cf_discard_all`, `CF_CTRL_DATA_DONE`).
+pub(crate) fn filters_done<H: Host>(cx: &mut StepCx<'_, H>, rank: Option<ConnRank>) {
+    let held = cx.holds_mut().take_all(rank);
+    let_go(cx, held);
+}
+
+/// `n` entries let go of, each a use of the cache, its share's if the
+/// transfer shares one.
+fn let_go<H: Host>(cx: &mut StepCx<'_, H>, n: u32) {
+    let kept = cx.rest.kept(cx.me, crate::share::Kind::Names);
+    let mut names = cx.rest.net_names(cx.me, kept.as_ref()).1;
+    for _ in 0..n {
+        names.release();
     }
 }
 

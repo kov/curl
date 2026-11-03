@@ -71,15 +71,49 @@ witness: curl-core proto::http::tests::a_share_s_jar_serves_the_transfers_of_a_m
     let Some(share) = easy.shared(Kind::Cookies).filter(|_| false) else {
         let r = easy.own_jar().map(f);
 
-=== a setup lets go of its answer untold
-file: crates/curl-core/src/multi/state/connecting.rs
+=== a DNS filter lets go of its entry untold
+file: crates/curl-core/src/multi/state/names.rs
 witness: curl-core proto::http::tests::a_share_s_uses_are_told_where_c_locks_them
 --- old
-        // race ends.
-        let kept = cx.rest.kept(cx.me, Kind::Names);
-        cx.rest.net_names(cx.me, kept.as_ref()).1.release();
+    if holder != Holder::Record && cx.holds_mut().take(holder, rank) {
+        let_go(cx, 1);
+    }
 --- new
-        // race ends.
+    if holder != Holder::Record && cx.holds_mut().take(holder, rank) {
+        let_go(cx, 0);
+    }
+
+=== a connection's DNS filter lets go of its entry before the connection is said established
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::ftp::tests::a_share_s_names_are_let_go_as_each_connection_is_established
+features: test-util debug-hooks
+--- old
+    // `CURL_CONN_HOST_DISPNAME`.
+    say_established(cx, c.route.destination().shown(), &remote, local);
+--- new
+    names::filters_done(cx, Some(ConnRank::First));
+    // `CURL_CONN_HOST_DISPNAME`.
+    say_established(cx, c.route.destination().shown(), &remote, local);
+
+=== a SOCKS proxy's target, resolved here, holds no entry of the names
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::ftp::tests::a_socks_target_s_entry_is_let_go_as_its_filter_goes
+features: test-util debug-hooks
+--- old
+            Ok(Looked::Found(answer, found)) => {
+                cx.hold(Holder::Target);
+--- new
+            Ok(Looked::Found(answer, found)) => {
+
+=== a setup given up keeps the entries its DNS filters hold past the transfer
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::ftp::tests::a_refused_socks_connect_lets_go_of_both_filters_entries
+features: test-util debug-hooks
+--- old
+    // (`CF_CTRL_DATA_DONE`).
+    names::filters_done(cx, None);
+--- new
+    // (`CF_CTRL_DATA_DONE`).
 
 === a transfer's cookie files, all empty names, are read untold
 file: crates/curl-core/src/proto/http/cookies.rs
@@ -458,14 +492,16 @@ witness: curl-sys-abi handle_tests::the_lock_functions_are_told_of_the_list_and_
 --- new
         Kind::Hsts => ffi::CURL_LOCK_DATA_PSL,
 
-=== a data connection lets its name go at each call while it connects
-file: crates/curl-core/src/multi/state/connecting.rs
+=== a DNS filter's entry is let go of again as the transfer is done
+file: crates/curl-core/src/conn/dns.rs
 witness: curl-core proto::ftp::tests::a_share_s_names_are_told_for_both_connections
 features: test-util debug-hooks
 --- old
-    if answered && !holds {
+        let held = self.0 & bit != 0;
+        self.0 &= !bit;
+        held
 --- new
-    if answered && holds {
+        self.0 & bit != 0
 
 === a share's cleanup tells CONNECT by a kind it does not keep
 file: crates/curl-sys-abi/src/share.rs

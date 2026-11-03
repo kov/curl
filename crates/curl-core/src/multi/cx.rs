@@ -518,6 +518,11 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         self.step.easy().asyncs.newest(holder)
     }
 
+    fn hold(&mut self, holder: crate::conn::asyncs::Holder) {
+        let rank = self.step.rank();
+        self.step.holds_mut().hold(holder, rank);
+    }
+
     fn fails_ipv6_resolves(&self) -> bool {
         self.step.rest.fail_ipv6
     }

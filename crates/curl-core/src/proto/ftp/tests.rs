@@ -4646,6 +4646,215 @@ fn a_share_s_names_are_told_for_both_connections() {
     }
 }
 
+/// A share's locks of its names, written into the trace `Text` holds as
+/// they are taken, a `LOCK` line each, among its lines.
+struct LockLog(Text);
+
+impl crate::share::ShareLock for LockLog {
+    fn lock(&self, kind: crate::share::Kind, _: crate::share::Access) {
+        if kind == crate::share::Kind::Names {
+            self.0.0.lock().unwrap().extend_from_slice(b"LOCK\n");
+        }
+    }
+
+    fn unlock(&self, _: crate::share::Kind) {}
+}
+
+/// `e` on a share keeping names, its locks of them logged in `text`.
+fn lock_logged(e: &mut Easy, text: &Text) {
+    let share = crate::share::Share::new().unwrap();
+    share.keep(crate::share::Kind::Names).unwrap();
+    let watch: Box<dyn crate::share::ShareLock> = Box::new(LockLog(text.clone()));
+    e.set_share_watched(share, Handler::new(watch).unwrap())
+        .unwrap();
+}
+
+/// The lines of `said` that place a share's locks of its names: each lock,
+/// and each connection said to be established.
+fn lock_marks(said: &str) -> Vec<&str> {
+    said.lines()
+        .filter(|l| *l == "LOCK" || l.starts_with("Established "))
+        .map(|l| l.split(" to ").next().unwrap())
+        .collect()
+}
+
+/// A setup's DNS filter lets go of its entry of a share's names as it is
+/// destroyed, right after the connection is said to be established, as
+/// C's lock function is called (`cf_dns_ctx_destroy`): the control
+/// connection's name looked up and kept, let go once it is established;
+/// the data connection's the same; the names pruned at the end. The
+/// sequence is C's, run over the same download.
+#[test]
+fn a_share_s_names_are_let_go_as_each_connection_is_established() {
+    let talk = control(&[b"150 here\r\n226 done\r\n"]);
+    let file = data(b"hello");
+    let mut m = serving(&[&talk], &[&file]);
+    let text = Text::default();
+    let mut e = Easy::new();
+    lock_logged(&mut e, &text);
+    let (id, body, said) = added_easy(&mut m, URL, e, |o| {
+        o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()), "{}", said.text());
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let said = text.text();
+    let established = "Established connection";
+    let second = "Established 2nd connection";
+    assert_eq!(
+        lock_marks(&said),
+        [
+            "LOCK",
+            "LOCK",
+            established,
+            "LOCK",
+            "LOCK",
+            "LOCK",
+            second,
+            "LOCK",
+            "LOCK"
+        ],
+        "{said}"
+    );
+}
+
+/// Through a SOCKS5 proxy that is not to resolve the name, each
+/// connection has two DNS filters, the proxy's and its target's, each
+/// holding its entry until it is destroyed: twelve locks in all, as C's
+/// over the same download.
+#[test]
+fn a_socks_target_s_entry_is_let_go_as_its_filter_goes() {
+    let talk = through(&[&[5, 0]], &granted(PORT));
+    let data = [&granted(DATA_PORT)[..], b"hello"].concat();
+    let file = Conversation::replies(&[&[5, 0], &data], true).per_send();
+    let mut m = proxied(&talk, &file);
+    let text = Text::default();
+    let mut e = Easy::new();
+    lock_logged(&mut e, &text);
+    let (id, body, _) = added_easy(&mut m, URL, e, |o| {
+        o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+        o.proxy.make_mut().unwrap().url =
+            Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let established = "Established connection";
+    let second = "Established 2nd connection";
+    assert_eq!(
+        lock_marks(&said),
+        [
+            "LOCK",
+            "LOCK",
+            "LOCK",
+            "LOCK",
+            established,
+            "LOCK",
+            "LOCK",
+            "LOCK",
+            "LOCK",
+            "LOCK",
+            second,
+            "LOCK",
+            "LOCK",
+            "LOCK"
+        ],
+        "{said}"
+    );
+}
+
+/// A SOCKS5 proxy refusing the control connection's connect fails the
+/// setup with both its DNS filters holding their entries, the proxy's and
+/// its target's: each is let go of as the transfer is done
+/// (`CF_CTRL_DATA_DONE`), beside the names' pruning, as C's are.
+#[test]
+fn a_refused_socks_connect_lets_go_of_both_filters_entries() {
+    let [hi, lo] = PORT.to_be_bytes();
+    let refused = [5, 5, 0, 1, 127, 0, 0, 1, hi, lo];
+    let talk = Conversation::replies(&[&[5, 0], &refused], true).per_send();
+    let unused = data(b"");
+    let mut m = proxied(&talk, &unused);
+    let text = Text::default();
+    let mut e = Easy::new();
+    lock_logged(&mut e, &text);
+    let (id, _, _) = added_easy(&mut m, URL, e, |o| {
+        o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+        o.proxy.make_mut().unwrap().url =
+            Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert!(result.is_err(), "{said}");
+    let marks: Vec<&str> = said
+        .lines()
+        .filter(|l| *l == "LOCK" || l.contains("multi_done: "))
+        .map(|l| l.split("multi_done").next().unwrap())
+        .collect();
+    let done = "[MULTI] [CONNECTING] ";
+    assert_eq!(
+        marks,
+        ["LOCK", "LOCK", "LOCK", "LOCK", done, "LOCK", "LOCK", "LOCK"],
+        "{said}"
+    );
+}
+
+/// Over implicit TLS, the connections said to be established once their
+/// handshakes are made, each DNS filter lets go of its entry then, as over
+/// plain FTP: seven locks, as C's.
+#[test]
+fn a_protected_connection_s_entry_is_let_go_as_it_is_established() {
+    use crate::tls::fake::{self, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let replies = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"213 5\r\n"),
+        tls(b"150 here\r\n226 done\r\n"),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let talk = Conversation::replies(&replies, false).per_send();
+    let file = [WELCOME.to_vec(), tls(b"hello")];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    let file = Conversation::replies(&file, true).per_send();
+    let mut m = serving(&[&talk], &[&file]);
+    let text = Text::default();
+    let mut e = Easy::new();
+    e.set_libraries(with_tls());
+    lock_logged(&mut e, &text);
+    let (id, body, _) = added_easy(&mut m, "ftps://127.0.0.1:PORT/f", e, |o| {
+        o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let established = "Established connection";
+    let second = "Established 2nd connection";
+    assert_eq!(
+        lock_marks(&said),
+        [
+            "LOCK",
+            "LOCK",
+            established,
+            "LOCK",
+            "LOCK",
+            "LOCK",
+            second,
+            "LOCK",
+            "LOCK"
+        ],
+        "{said}"
+    );
+}
+
 /// A file's size said, its reads ask for no more than is left of it: what
 /// the data connection sends past it is not read (`xfer_recv_resp`'s
 /// `totalleft`).

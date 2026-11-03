@@ -250,13 +250,14 @@ witness: curl-core proto::http::tests::h3_trace::a_transfer_given_up_as_it_conne
 --- new
             Stage::Dialed(_) => None,
 
-=== a race given up keeps its answer
+=== a race given up keeps the entry its DNS filter holds
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::h3_trace::a_transfer_given_up_as_it_connects_lets_its_answer_go_as_c
 --- old
-    if lease.setup().and_then(ConnectMachine::answer).is_some() || raced {
+    // (`CF_CTRL_DATA_DONE`).
+    names::filters_done(cx, None);
 --- new
-    if lease.setup().and_then(ConnectMachine::answer).is_some() {
+    // (`CF_CTRL_DATA_DONE`).
 
 === a dialed first hop that heard nothing is taken for an answer
 file: crates/curl-core/src/conn/stream.rs

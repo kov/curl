@@ -836,7 +836,7 @@ fn multi_done<H: Host>(
     // (`cf_hc_ctx_destroy`), each running or failed once dialed. They go
     // with the connection, on no transfer's trace, their sockets
     // announced gone.
-    let raced = d.race.take().map(|race| {
+    if let Some(race) = d.race.take() {
         let Race { second, failed, .. } = *race;
         let me = cx.me;
         let mut close = |m: ConnectMachine| m.close(&mut cx.rest.announcing(me));
@@ -849,15 +849,8 @@ fn multi_done<H: Host>(
         {
             close(m);
         }
-    });
-    release(
-        cx,
-        d.lease,
-        premature,
-        stream_closed,
-        d.origin.as_ref(),
-        raced.is_some(),
-    );
+    }
+    release(cx, d.lease, premature, stream_closed, d.origin.as_ref());
     // A resolve the setup still had went with it.
     cx.libraries_closed();
     Ok(RequestEnd {
@@ -906,7 +899,6 @@ fn release<H: Host>(
     premature: bool,
     stream_closed: bool,
     origin: Option<&Origin>,
-    raced: bool,
 ) {
     // The connection's objects go with its lease: the step lends them no
     // more (`Curl_detach_connection`).
@@ -938,12 +930,9 @@ fn release<H: Host>(
         max: cx.rest.tell.limits.max_connects,
         attached: cx.rest.tell.slots.len(),
     };
-    if lease.setup().and_then(ConnectMachine::answer).is_some() || raced {
-        // A setup given up lets its answer go (`CF_CTRL_DATA_DONE`), a
-        // race's once.
-        let kept = cx.rest.kept(cx.me, Kind::Names);
-        cx.rest.net_names(cx.me, kept.as_ref()).1.release();
-    }
+    // The DNS filters of a setup given up let go of what they hold
+    // (`CF_CTRL_DATA_DONE`).
+    names::filters_done(cx, None);
     let home = lease.home().clone();
     let closes = lease.closes() || stream_closed;
     let multiplex = u8::from(lease.multiplexes());

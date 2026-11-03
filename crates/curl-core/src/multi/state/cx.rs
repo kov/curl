@@ -643,6 +643,18 @@ impl<H: Host> StepCx<'_, H> {
         self.rest.clock.unix_time()
     }
 
+    /// Which of the transfer's setups' DNS filters hold an entry of the
+    /// cache (`Holds`).
+    pub(crate) fn holds_mut(&mut self) -> &mut crate::conn::Holds {
+        &mut self
+            .rest
+            .tell
+            .slots
+            .get_mut(self.me)
+            .expect("the stepping transfer")
+            .holds
+    }
+
     pub(crate) fn easy_mut(&mut self) -> &mut Easy {
         &mut self
             .rest

@@ -2572,11 +2572,11 @@ The application's lock functions are told around each use, for the kinds the sha
 where and as C calls them (test 506 for names and cookies, 1554 for connections): the handle
 holds them as a watch with its share (`Easy::set_share_watched`, a `ShareLock`), and they are
 called outside the share's own mutex, so they can neither guard nor break it. Some of C's
-lock points do nothing here and are told all the same: a transfer joining its multi, a setup
-letting go of its answer (`Curl_dns_entry_unlink`), the jar's start and a flush with no file.
-A setup holds its answer, its first hop dialed or not, until it is connected, fails or is
-given up, as C's DNS filter holds its entry above the connect filters; a race's goes once,
-as the race ends or is given up.
+lock points do nothing here and are told all the same: a transfer joining its multi, a DNS
+filter letting go of its entry (`Curl_dns_entry_unlink`), the jar's start and a flush with no
+file. Each DNS filter of a setup lets go of its entry as C's does (§4.8, `Holds`): as it is
+destroyed once the connection is said established, or, the setup given up, as the transfer
+is done; a race's two attempts share one.
 Each lock call says the access it wants (`Access`, `curl_lock_access`): `Single` everywhere but
 the public suffix list's reads, as in C. The list's calls come inside the jar's where the share
 keeps both (section 6.5), and the HSTS cache is told of only around the files a transfer reads,
@@ -2743,7 +2743,17 @@ needs a build that overrides DNS, which the threaded oracle is not.
 `DnsCache` is in the multi's `Caches`, or a share's (section 4.6.1): a hash map keyed by name, in
 any case, port and kind (addresses or HTTPS-RR), as C hashes `name:port`; a lookup probes it with
 a borrowed key, the `*` wildcard a second probe only when wildcards are on. Each key holds a `TryRc<Answer>` that the connect machine using it shares, recording
-the family asked (`dns_queries`): an answer for one family is no answer for both. A setup
+the family asked (`dns_queries`): an answer for one family is no answer for both.
+That a setup's DNS filter holds its entry (C's `cf_dns_ctx.dns`, the entry's count of users)
+is the transfer's `Holds`, a bit for each filter: the first hop's addresses and the SOCKS
+target's, on the transfer's connection and its second. A filter holds its entry from the moment
+its resolve answers, a Unix socket's path too, until the filter goes: as its chain is connected,
+each DNS filter's `destroy` right after the connection is said established
+(`Curl_conn_remove_setup_filters`); as the second chain is set up again; or, the setup
+unfinished, as the transfer is done (`CF_CTRL_DATA_DONE`). Letting go is a use of the cache, the
+share's lock callbacks told of it (`Curl_dns_entry_unlink`). The filter outlives the machine an
+attempt is driven by: a failed attempt, or a race's two attempts below one filter, leave its bit
+as it is. The addresses themselves stay the machine's. A setup
 looks in the cache first (`hostip_resolv`), then asks the shortcuts, then the resolver, and
 keeps what they answer for the cache's timeout (`CURLOPT_DNS_CACHE_TIMEOUT`, the transfer's: 60
 seconds unless set, for ever at -1). That a name does not exist, or has no address of the family

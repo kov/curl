@@ -998,7 +998,6 @@ fn connect_once<H: Host>(
         return handshake_next(c, cx, a);
     }
     let setup = drive_options(cx);
-    let answered = c.attempt(a).and_then(ConnectMachine::answer).is_some();
     let mut displaced = None;
     // An HTTP/3 proxy's tunnels are the race's attempts, checked first.
     let mut connected = match tunnels_drive(&mut c, cx, a) {
@@ -1026,12 +1025,6 @@ fn connect_once<H: Host>(
             }
             decided => tunnel_decided(&mut c, a, run, cx, &mut displaced, decided),
         };
-    }
-    if answered && c.attempt(a).and_then(ConnectMachine::answer).is_none() && c.race.is_none() {
-        // Connected, or failed: the answer is let go; a race's, as the
-        // race ends.
-        let kept = cx.rest.kept(cx.me, Kind::Names);
-        cx.rest.net_names(cx.me, kept.as_ref()).1.release();
     }
     // The race is over once an attempt connects, a proxy's or not
     // (`cf_ip_happy_connect`).
@@ -1588,29 +1581,13 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, found: Option
 
 /// A second connection's `setup` moves on by one event, as the
 /// transfer's own does: through the names the transfer keeps, its
-/// share's if it shares them. The answer its name resolved to, let go as
-/// it connects or fails, is told to the share (`Curl_dns_entry_unlink`).
+/// share's if it shares them.
 pub(crate) fn side_drive<H: Host>(
     cx: &mut StepCx<'_, H>,
     setup: ConnectMachine,
 ) -> Result<Drove, ConnectError> {
     let options = drive_options(cx);
-    let kept = cx.rest.kept(cx.me, Kind::Names);
-    let answered = setup.answer().is_some();
-    let drove = setup.drive(&mut DriveCx::new(cx, None), options);
-    let holds = matches!(&drove, Ok(Drove::Connecting(m, _)) if m.answer().is_some());
-    if answered && !holds {
-        cx.rest.net_names(cx.me, kept.as_ref()).1.release();
-    }
-    drove
-}
-
-/// A second connection's setup, dialed, let go of the answer its name
-/// resolved to, made or given up: told to the share as `side_drive`
-/// tells it.
-pub(crate) fn side_let_go<H: Host>(cx: &mut StepCx<'_, H>) {
-    let kept = cx.rest.kept(cx.me, Kind::Names);
-    cx.rest.net_names(cx.me, kept.as_ref()).1.release();
+    setup.drive(&mut DriveCx::new(cx, None), options)
 }
 
 /// What one of a second connection's waits asks of its timer.
@@ -1972,11 +1949,6 @@ pub(super) fn up<H: Host>(
     // The race's loser goes with the HTTPS connect filter, its chain from
     // its setup filter down (`cf_hc_ctx_destroy`).
     let race = c.race.take();
-    if race.is_some() {
-        // The race's answer is let go as it ends.
-        let kept = cx.rest.kept(cx.me, Kind::Names);
-        cx.rest.net_names(cx.me, kept.as_ref()).1.release();
-    }
     // A first attempt that failed keeps its setup's filters, its
     // attempts gone as they failed, until then.
     let first_failed = race.as_ref().is_some_and(|r| r.first_failed.is_some());
@@ -1987,11 +1959,12 @@ pub(super) fn up<H: Host>(
     // One that failed once dialed goes with its connection.
     let mut kept = race.and_then(|r| r.failed.or(r.second.into_machine()));
     let mut lost = lost;
-    for filter in connected.going() {
-        trace::of(cx, filter, format_args!("removing connected setup filter"));
-        trace::of(cx, filter, format_args!("destroy"));
+    // Each DNS filter lets go of the entry it holds as it goes, the race's
+    // above both its attempts.
+    let dns = names::filters(ConnRank::First, target, head.record);
+    names::setup_filters_go(cx, &connected, ConnRank::First, dns, |cx, filter| {
         if filter != Component::HttpsConnect {
-            continue;
+            return;
         }
         if let Some(lost) = lost.take() {
             trace::of(cx, Component::Setup, format_args!("destroy"));
@@ -2003,7 +1976,7 @@ pub(super) fn up<H: Host>(
             trace::of(cx, Component::Setup, format_args!("destroy"));
             trace::of(cx, Component::HappyEyeballs, format_args!("destroy"));
         }
-    }
+    });
     assert!(lost.is_none(), "the HTTPS connect filter goes");
     let reduced = connected.reduced();
     mstate::trace(cx, format_args!("reduced to {reduced}"));

@@ -41,8 +41,10 @@ pub(crate) enum Shaken {
 }
 
 /// The second chain is set up over `route` (`Curl_conn_setup`), said as
-/// the transfer's own is.
+/// the transfer's own is, in place of the one before, whose DNS filters
+/// let go of what they hold (`Curl_conn_cf_discard_all`).
 pub(crate) fn chain_set_up<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute) {
+    names::filters_done(cx, Some(ConnRank::Second));
     cx.as_second(|cx| {
         trace::of(cx, Component::Setup, format_args!("added"));
         names::chain_set_up(cx, route, false, false);
@@ -105,10 +107,12 @@ pub(crate) fn entered_tls<H: Host>(cx: &mut StepCx<'_, H>, chain: Chain) {
 /// (`Curl_conn_remove_setup_filters`).
 pub(crate) fn setup_filters_go<H: Host>(cx: &mut StepCx<'_, H>, connected: Chain) {
     mstate::trace(cx, format_args!("connected {connected}"));
-    for filter in connected.going() {
-        trace::of(cx, filter, format_args!("removing connected setup filter"));
-        trace::of(cx, filter, format_args!("destroy"));
-    }
+    // Its SOCKS proxy's target's filter, if it has one, below the first
+    // hop's; never the record's; none for a connection accepted from the
+    // server.
+    let filters = connected.dns_filters();
+    let dns = names::filters(ConnRank::Second, filters > 1, false).take(filters);
+    names::setup_filters_go(cx, &connected, ConnRank::Second, dns, |_, _| {});
     let reduced = connected.reduced();
     mstate::trace(cx, format_args!("reduced to {reduced}"));
 }

@@ -356,6 +356,11 @@ pub(crate) trait ConnCx: LayerCx {
 
     /// The number of the newest of `holder`'s, if one is kept.
     fn resolve_number(&self, holder: Holder) -> Option<ResolveNumber>;
+
+    /// `holder`'s DNS filter, on the chain of the setup's rank, has the
+    /// entry its resolve answered with, until the filter goes
+    /// (`Holds`).
+    fn hold(&mut self, holder: Holder);
 }
 
 /// What a QUIC attempt is made with: the transfer's libraries, what its
@@ -496,6 +501,8 @@ impl ConnCx for Plain<'_> {
     fn resolve_number(&self, _: Holder) -> Option<ResolveNumber> {
         None
     }
+
+    fn hold(&mut self, _: Holder) {}
 
     fn fails_ipv6_resolves(&self) -> bool {
         false
@@ -1225,6 +1232,7 @@ impl ConnectMachine {
         let (name, port) = (peer.name(), peer.port());
         let mut p = match p.take((name, port), cx) {
             Taken::Done(Ok((answer, found))) => {
+                cx.hold(Holder::Addresses(cx.rank()));
                 r.eyeballs.answer = Addresses::Resolved(answer);
                 return Ok(Some(found));
             }
@@ -1382,6 +1390,9 @@ impl ConnectMachine {
                         if peer.path().len() >= curl_os::net::UNIX_PATH_ROOM {
                             return Err(ConnectError::Unresolved(Unresolved::UnixPathTooLong));
                         }
+                        // An entry of no cache's, which the filter holds
+                        // all the same (`Curl_dnsc_mk_addr`).
+                        cx.hold(Holder::Addresses(cx.rank()));
                         (Addresses::Unix, Found::Resolved(Asked::Shortcut))
                     }
                     None => {
@@ -1411,7 +1422,12 @@ impl ConnectMachine {
                             other => other,
                         };
                         match looked {
-                            Looked::Found(answer, found) => (Addresses::Resolved(answer), found),
+                            // Held, though it has no address to try, until
+                            // the transfer is done.
+                            Looked::Found(answer, found) => {
+                                cx.hold(Holder::Addresses(cx.rank()));
+                                (Addresses::Resolved(answer), found)
+                            }
                             // Nothing until the resolver answers, when the
                             // multi runs the transfer again.
                             Looked::Pending(mut p) => {
@@ -2303,10 +2319,13 @@ impl ConnectMachine {
         let family = family(leg.version.ip(self.route.ip), cx);
         let at = (leg.to.name(), leg.to.port());
         match lookup_start(at, family, cx, setup, true, Holder::Target) {
-            Ok(Looked::Found(answer, found)) => Ok((
-                SocksTarget::Found(answer, Came::from(found)),
-                Late::default(),
-            )),
+            Ok(Looked::Found(answer, found)) => {
+                cx.hold(Holder::Target);
+                Ok((
+                    SocksTarget::Found(answer, Came::from(found)),
+                    Late::default(),
+                ))
+            }
             // As the proxy's own name's, its answer comes later.
             Ok(Looked::Pending(p)) => Ok((SocksTarget::None, Late(Some(p)))),
             // The SOCKS handshake says the name failed, whatever the why.
@@ -2334,7 +2353,10 @@ impl ConnectMachine {
             Taken::Done(done) => done,
         };
         d.target = match done {
-            Ok((answer, found)) => SocksTarget::Found(answer, Came::from(found)),
+            Ok((answer, found)) => {
+                cx.hold(Holder::Target);
+                SocksTarget::Found(answer, Came::from(found))
+            }
             Err(ConnectError::Unresolved(_)) => SocksTarget::Unresolved,
             Err(e) => return Err(e),
         };

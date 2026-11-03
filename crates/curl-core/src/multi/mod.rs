@@ -318,6 +318,9 @@ struct Slot<H: Host> {
     /// given back to the host to close, as the step that added it ends
     /// (`discard_newhandle`).
     discard: bool,
+    /// Which of its setups' DNS filters hold an entry of the cache, let
+    /// go of as each filter goes, all of them by the transfer's end.
+    holds: crate::conn::Holds,
 }
 
 /// An `Easy` the multi did not take, and why.
@@ -1890,6 +1893,7 @@ fn insert<H: Host>(
         readers: None,
         closed: None,
         discard: false,
+        holds: Default::default(),
     });
     let slot = match slot {
         Ok(slot) => slot,

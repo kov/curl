@@ -212,14 +212,12 @@ impl DataConn {
                             }
                             Ok(Shaken::Up) => {
                                 let conn = machine.handshaken();
-                                crate::multi::state::side_let_go(cx);
                                 *chain = None;
                                 self.up(cx, host, conn)?;
                                 continue;
                             }
                             Err(kind) => {
                                 discard_in(cx, machine);
-                                crate::multi::state::side_let_go(cx);
                                 return Err(kind);
                             }
                         }

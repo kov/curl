@@ -28,7 +28,11 @@
 # not build against a curl-core with `debug-hooks` unless it has them too:
 # in the copy only, add `default = ["debug-hooks"]` to curl-sys-abi's
 # `[features]`, and check one mutant builds before the run, or every
-# mutant is unviable. The copy has no `build/deps`:
+# mutant is unviable. A blocking resolve's lines by c-ares and the
+# HTTPS filter's dial are checked only by curl-tool's `dns` tests: add
+# `--test-package curl-tool`. The threaded resolver is built only with
+# `curl-core/threaded-resolver`: its code is reached by a second run with
+# that feature, `--test-package curl-tool` too. The copy has no `build/deps`:
 # export `CURL_NGTCP2_DIR` naming the tree's `build/deps/ngtcp2`, or every
 # crate linking ngtcp2 fails to build.)
 # (The copy is made in `TMPDIR`: where `/tmp` is a small tmpfs it fills, and
@@ -991,4 +995,19 @@ exclude_re = [
     # connection to close and ends the transfer in that step: no pollset
     # is asked of it after, as with `self.live` above.
     'curl-core/src/proto/ssh/mod\.rs:.*: replace match guard ssh_on\(line\)\.is_some_and\(\|sc\| sc\.session\.is_some\(\)\) with true in Request::pollset$',
+    # The DNS cache's keys all hashed alike leave every lookup to compare
+    # names along one chain: slower, never another answer, as nothing
+    # reads the entries in the map's order (pruning keeps or drops each by
+    # its own age).
+    'curl-core/src/conn/dns\.rs:.*: replace <impl Hash for dyn Named \+._>::hash with \(\)$',
+    # Two `Key`s are compared only as one is inserted, and `keep` takes the
+    # equal key out first (its assert says nothing was replaced): the map
+    # compares the new key only with unequal ones. Lookups and removals
+    # compare through `dyn Named`.
+    'curl-core/src/conn/dns\.rs:.*: replace <impl PartialEq for Key>::eq -> bool with false$',
+    # The first family's addresses moved into the answer rather than
+    # copied into an empty one: the same addresses, one allocation fewer.
+    # The lookup is polled no more once done, so what is left in its
+    # query is never read.
+    'curl-core/src/multi/doh\.rs:.*: replace match guard addrs\.is_empty\(\) with false in Lookup::poll$',
 ]

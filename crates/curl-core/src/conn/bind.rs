@@ -6,7 +6,7 @@
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 
-use super::connect::{ConnCx, DriveOptions, resolve_blocking};
+use super::connect::{ConnCx, DriveOptions, Held, resolve_blocking};
 use super::io::{AF_INET, AF_INET6, Family, InterfaceAddress, Socket, SocketOption, ipv6_scope};
 use crate::conn::layer::LayerCalls as _;
 use crate::error::ErrorKind;
@@ -192,17 +192,23 @@ fn where_to_bind(
         // Not an interface: a name or an address, of the family connected
         // over alone.
         found = match resolve_host(cx, host, v6, setup)? {
-            Some(ip) => {
-                let h_af = if ip.is_ipv6() { AF_INET6 } else { AF_INET };
-                let rest = Text::<128>::clipped(format_args!(
-                    "' family {af} resolved to '{ip}' family {h_af}"
-                ))
-                .0;
-                cx.info_with(&[b"Name '", host, rest.bytes()]);
-                if ip.is_ipv6() != v6 {
-                    return Err(BindFailed::OtherFamily);
+            // Let go of once said, as C does (`Curl_dns_entry_unlink`).
+            Some(held) => {
+                let ip = held.addrs().first().copied();
+                if let Some(ip) = ip {
+                    let h_af = if ip.is_ipv6() { AF_INET6 } else { AF_INET };
+                    let rest = Text::<128>::clipped(format_args!(
+                        "' family {af} resolved to '{ip}' family {h_af}"
+                    ))
+                    .0;
+                    cx.info_with(&[b"Name '", host, rest.bytes()]);
                 }
-                Some((ip, 0))
+                held.let_go(cx);
+                match ip {
+                    Some(ip) if ip.is_ipv6() != v6 => return Err(BindFailed::OtherFamily),
+                    Some(ip) => Some((ip, 0)),
+                    None => None,
+                }
             }
             None => None,
         };
@@ -240,18 +246,18 @@ impl std::fmt::Display for Scope {
     }
 }
 
-/// The first address of the family IPv6 if `v6`, else IPv4, `host`
-/// stands for, resolved as C's blocking resolve does it
-/// (`Curl_resolv_blocking`, for port 80). `None` if it has none.
+/// The addresses of the family IPv6 if `v6`, else IPv4, `host` stands
+/// for, resolved as C's blocking resolve does it (`Curl_resolv_blocking`,
+/// for port 80), held until let go of. `None` if it has none.
 fn resolve_host(
     cx: &mut dyn ConnCx,
     host: &[u8],
     v6: bool,
     setup: DriveOptions,
-) -> Result<Option<IpAddr>, BindFailed> {
+) -> Result<Option<Held>, BindFailed> {
     let family = if v6 { Family::V6 } else { Family::V4 };
     match resolve_blocking(cx, host, BIND_RESOLVE_PORT, family, setup) {
-        Ok(answer) => Ok(answer.and_then(|a| a.addrs().first().copied())),
+        Ok(held) => Ok(held),
         Err(ErrorKind::OutOfMemory) => Err(BindFailed::OutOfMemory),
         Err(kind) => Err(BindFailed::Failed(kind)),
     }

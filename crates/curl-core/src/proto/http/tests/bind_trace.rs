@@ -271,3 +271,75 @@ fn an_interface_with_a_host_binds_to_both() {
         ))
     );
 }
+
+/// A share's locks of its names, among what a transfer saw, a `LOCK`
+/// line each.
+struct LockLog(Seen);
+
+impl crate::share::ShareLock for LockLog {
+    fn lock(&self, kind: crate::share::Kind, _: crate::share::Access) {
+        if kind == crate::share::Kind::Names {
+            self.0.0.lock().unwrap().push(("text", b"LOCK".to_vec()));
+        }
+    }
+
+    fn unlock(&self, _: crate::share::Kind) {}
+}
+
+/// The name bound to is resolved through a share's names, held until it
+/// is said, then let go of: a use of the names the application's lock
+/// function sees right after the line, as C's (`Curl_dns_entry_unlink`).
+/// The sequence is C's for the same bind, over a share keeping names: the
+/// setup's lookup and keeping, the bind's, its letting go, the setup's
+/// filter's at "Established", and the names pruned at the end.
+#[test]
+fn a_bind_s_name_is_let_go_of_after_it_is_said() {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let talk = Conversation::replies(&[OK], false);
+    let fake = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone())
+        .with_name("bindhost", &[IpAddr::from([127, 0, 0, 7])]);
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(fake),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let seen = Seen::default();
+    let mut e = tracing_tcp();
+    let share = crate::share::Share::new().unwrap();
+    share.keep(crate::share::Kind::Names).unwrap();
+    let watch: Box<dyn crate::share::ShareLock> = Box::new(LockLog(seen.clone()));
+    e.set_share_watched(share, Handler::new(watch).unwrap())
+        .unwrap();
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        o.sockets.make_mut().unwrap().local = interface("host!bindhost");
+        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let marks: Vec<String> = seen
+        .text()
+        .into_iter()
+        .filter(|l| l == "LOCK" || l.starts_with("Name '") || l.starts_with("Established "))
+        .map(|l| l.split(" to ").next().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        marks,
+        [
+            "LOCK",
+            "LOCK",
+            "LOCK",
+            "LOCK",
+            "Name 'bindhost' family 2 resolved",
+            "LOCK",
+            "Established connection",
+            "LOCK",
+            "LOCK",
+        ],
+        "{:?}",
+        seen.text()
+    );
+}

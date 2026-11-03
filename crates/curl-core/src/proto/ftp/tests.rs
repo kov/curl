@@ -4718,6 +4718,70 @@ fn a_share_s_names_are_let_go_as_each_connection_is_established() {
     );
 }
 
+/// The address an active download offers is resolved through a share's
+/// names and held until the socket listening for the server is set as
+/// the data connection's filter, then let go of, as C's
+/// `ftp_state_use_port` lets go of it as it cleans up; the wait for the
+/// server is armed after. The sequence is C's over the same download:
+/// the control connection's lookup and keeping, its filter's letting go
+/// at "Established", the offered address's lookup, keeping and letting
+/// go, and the names pruned at the end.
+#[test]
+fn an_offered_address_is_let_go_of_once_its_socket_listens() {
+    let mut replies = ACTIVE_LOGIN_AND_SETUP.to_vec();
+    replies.push(b"150 here\r\n226 done\r\n");
+    let control = Conversation::replies(&replies, false).greeting();
+    let data = Conversation::replies(&[b"hello"], true).greeting();
+    let (mut m, _) = serving_active(&[&control], &[&data]);
+    let text = Text::default();
+    let mut e = Easy::new();
+    lock_logged(&mut e, &text);
+    let (id, body, _) = added_tracing(&mut m, URL, e, b"all", |o| {
+        o.callbacks.debug = Some(Handler::debug(text.clone()).unwrap());
+        o.line.make_mut().unwrap().ftp.port = Some(b"-".to_vec());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    assert_eq!(*body.0.lock().unwrap(), b"hello");
+    let listens = "[TCP-ACCEPT-1] set filter for listen socket";
+    let marks: Vec<&str> = said
+        .lines()
+        .filter_map(|l| match l {
+            "LOCK" => Some(l),
+            _ if l.contains(listens) => Some(listens),
+            _ => ["Established connection", "Established 2nd connection"]
+                .into_iter()
+                .find(|e| l.contains(e)),
+        })
+        .collect();
+    assert_eq!(
+        marks,
+        [
+            "LOCK",
+            "LOCK",
+            "Established connection",
+            "LOCK",
+            "LOCK",
+            "LOCK",
+            listens,
+            "LOCK",
+            "Established 2nd connection",
+            "LOCK",
+        ],
+        "{said}"
+    );
+    said_in_order(
+        &said,
+        &[
+            listens,
+            "LOCK\n",
+            "[TIMER] [FTP_ACCEPT] set for ",
+            "Established 2nd connection",
+        ],
+    );
+}
+
 /// Through a SOCKS5 proxy that is not to resolve the name, each
 /// connection has two DNS filters, the proxy's and its target's, each
 /// holding its entry until it is destroyed: twelve locks in all, as C's

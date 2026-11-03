@@ -657,3 +657,35 @@ features: test-util debug-hooks
         ClockId::of(&*self.0)
 --- new
         ClockId::of(self)
+
+=== a bind lets go of the name it resolved before saying it
+file: crates/curl-core/src/conn/bind.rs
+witness: curl-core proto::http::tests::bind_trace::a_bind_s_name_is_let_go_of_after_it_is_said
+features: test-util debug-hooks
+--- old
+                    cx.info_with(&[b"Name '", host, rest.bytes()]);
+                }
+                held.let_go(cx);
+--- new
+                }
+                held.let_go(cx);
+                if let Some(ip) = ip {
+                    let h_af = if ip.is_ipv6() { AF_INET6 } else { AF_INET };
+                    let rest = Text::<128>::clipped(format_args!(
+                        "' family {af} resolved to '{ip}' family {h_af}"
+                    ))
+                    .0;
+                    cx.info_with(&[b"Name '", host, rest.bytes()]);
+                }
+
+=== FTP lets go of the address it offers before its socket listens
+file: crates/curl-core/src/proto/ftp.rs
+witness: curl-core proto::ftp::tests::an_offered_address_is_let_go_of_once_its_socket_listens
+features: test-util debug-hooks
+--- old
+        self.offer_port(cx, pc, carrier, cmd, offered, bound)?;
+--- new
+        if let Some(held) = held.take() {
+            held.let_go(&mut DriveCx::new(cx, None));
+        }
+        self.offer_port(cx, pc, carrier, cmd, offered, bound)?;

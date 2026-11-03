@@ -33,7 +33,7 @@ use crate::conn::io::{Closer, Events, InterfaceAddress, Remote, Sock, Socket};
 use crate::conn::layer::{LayerAnswer, LayerQuery, Lower as _};
 use crate::conn::line::LineConn;
 use crate::conn::mux::Carrier;
-use crate::conn::{ConnLease, NetRoute, Peer, RouteCold, Scheme};
+use crate::conn::{ConnLease, Held, NetRoute, Peer, RouteCold, Scheme};
 use crate::deliver::{self, Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, url_error};
 use crate::multi::Host;
@@ -3193,7 +3193,10 @@ enum PortCmd {
 impl Request {
     /// A socket listening for the server's data connection, and the
     /// command from `cmd` on that offers it (`ftp_state_use_port`): a
-    /// failure leaves nothing open, the state stopped.
+    /// failure leaves nothing open, the state stopped. However it ends,
+    /// the address resolved is let go of first, then the state stopped,
+    /// then a socket no filter took closed, as C's cleanup goes; and the
+    /// wait for the server armed once all is set.
     fn use_port<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -3201,33 +3204,45 @@ impl Request {
         carrier: &mut Carrier<'_>,
         cmd: PortCmd,
     ) -> Step {
-        let listened = self.listen(cx, pc);
-        let (sock, offered, bound) = match listened {
-            Ok(l) => l,
-            Err(e) => {
-                set_state(cx, pc, State::Stop);
-                return Err(e);
-            }
-        };
-        if let Err(e) = self.offer_port(cx, pc, carrier, cmd, offered, bound) {
-            close_socket(cx, sock);
-            set_state(cx, pc, State::Stop);
-            return Err(e);
+        let (mut held, mut sock) = (None, None);
+        let set = self.set_port(cx, pc, carrier, cmd, &mut held, &mut sock);
+        if let Some(held) = held {
+            held.let_go(&mut DriveCx::new(cx, None));
         }
-        let tls = match self.data_tls(pc, carrier) {
-            Ok(tls) => tls,
-            Err(e) => {
-                close_socket(cx, sock);
-                set_state(cx, pc, State::Stop);
-                return Err(e);
-            }
-        };
+        if set.is_err() {
+            set_state(cx, pc, State::Stop);
+        }
+        if let Some(sock) = sock {
+            close_socket(cx, sock);
+        }
+        if let (Ok(()), Some(at)) = (set, self.due) {
+            let kind = crate::multi::timers::TimerKind::FtpAccept;
+            crate::multi::state::trace_set(cx, kind, at);
+        }
+        set
+    }
+
+    /// `use_port`'s work, before its cleanup: what it resolved held in
+    /// `held`, the socket in `sock` until a filter takes it.
+    fn set_port<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        pc: &mut FtpConn,
+        carrier: &mut Carrier<'_>,
+        cmd: PortCmd,
+        held: &mut Option<Held>,
+        sock: &mut Option<Sock>,
+    ) -> Step {
+        let (offered, bound) = self.listen(cx, pc, held, sock)?;
+        self.offer_port(cx, pc, carrier, cmd, offered, bound)?;
+        let tls = self.data_tls(pc, carrier)?;
         let timeout = cx.easy().options().line.ftp.accept_timeout.map_or(
             std::time::Duration::from_secs(60),
             crate::time::TimeLimit::duration,
         );
         let deadline = cx.now().after(timeout);
-        let data = DataConn::listening(cx, sock, tls, deadline);
+        let listening = sock.take().expect("a socket listens");
+        let data = DataConn::listening(cx, listening, tls, deadline);
         if let Some(old) = self.data.take() {
             old.discard(cx);
         }
@@ -3235,7 +3250,6 @@ impl Request {
             Ok(data) => self.data = Some(data),
             Err(data) => {
                 data.discard(cx);
-                set_state(cx, pc, State::Stop);
                 return Err(ErrorKind::OutOfMemory);
             }
         }
@@ -3244,15 +3258,18 @@ impl Request {
         Ok(())
     }
 
-    /// The socket listening, the address the command offers and the one
-    /// it is bound to (`ftp_port_parse_string`, `ftp_port_default_host`,
-    /// `ftp_port_resolve_host`, `ftp_port_open_socket`,
-    /// `ftp_port_bind_socket`, `ftp_port_listen`).
+    /// The socket listening, in `sock`, the address the command offers and
+    /// the one it is bound to (`ftp_port_parse_string`,
+    /// `ftp_port_default_host`, `ftp_port_resolve_host`,
+    /// `ftp_port_open_socket`, `ftp_port_bind_socket`, `ftp_port_listen`);
+    /// the addresses resolved held in `held`.
     fn listen<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         pc: &mut FtpConn,
-    ) -> Result<(Sock, IpAddr, SocketAddr), ErrorKind> {
+        held: &mut Option<Held>,
+        sock: &mut Option<Sock>,
+    ) -> Result<(IpAddr, SocketAddr), ErrorKind> {
         let failed = ErrorKind::FtpPortFailed;
         let control = self
             .control
@@ -3301,12 +3318,12 @@ impl Request {
                 text_of(format_args!("{}", local.ip()))?
             }
         };
-        let addrs = self.port_addresses(cx, &host, ip_version)?;
+        let addrs = held.insert(self.port_addresses(cx, &host, ip_version)?);
         // A socket of the first family that opens.
         let mut dcx = DriveCx::new(cx, None);
         let mut opened = None;
         let mut why = None;
-        for &ip in &addrs {
+        for &ip in addrs.addrs() {
             use crate::conn::ConnCx as _;
             let mut at = Remote::Inet(SocketAddr::new(ip, 0));
             let open = dcx.open_socket(&mut at, crate::conn::io::SocketKind::Stream);
@@ -3338,20 +3355,15 @@ impl Request {
                 &[b"socket failure: ", why.as_bytes()],
             ));
         };
-        let sock = Sock::new(socket, socket_closer(cx));
+        let listening = sock.insert(Sock::new(socket, socket_closer(cx)));
         let state = pc.state.name();
         trace::of(
             cx,
             Component::Ftp,
             format_args!("[{state}] ftp_state_use_port(), opened socket"),
         );
-        match bind_listen(cx, &sock, offered, local, spec.min, spec.max, non_local) {
-            Ok(bound) => Ok((sock, offered, bound)),
-            Err(e) => {
-                close_socket(cx, sock);
-                Err(e)
-            }
-        }
+        let bound = bind_listen(cx, listening, offered, local, spec.min, spec.max, non_local)?;
+        Ok((offered, bound))
     }
 
     /// The addresses `host` names for the command to offer, as the
@@ -3361,19 +3373,13 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         host: &[u8],
         ip_version: crate::options::IpVersion,
-    ) -> Result<Vec<IpAddr>, ErrorKind> {
-        let mut addrs = Vec::new();
+    ) -> Result<Held, ErrorKind> {
         let setup = crate::multi::state::drive_options(cx);
         let mut dcx = DriveCx::new(cx, None);
         let family = crate::conn::family(ip_version, &dcx);
         let answer = crate::conn::resolve_blocking(&mut dcx, host, 0, family, setup)?;
         match answer {
-            Some(answer) => {
-                addrs
-                    .try_extend_from_slice(answer.addrs())
-                    .map_err(|_| ErrorKind::OutOfMemory)?;
-                Ok(addrs)
-            }
+            Some(answer) => Ok(answer),
             None => Err(trace::fail_with(
                 cx,
                 ErrorKind::CouldntResolveHost,

@@ -2744,17 +2744,49 @@ fn address(
 /// resolver waited for, and traced as `hostip_resolv` traces it. `None` if it stands for none, said as C fails it; the binding
 /// to a local name's and FTP's address to offer the server. A resolve it
 /// waited for lets go of its record as the wait ends, after its lines
-/// (`Curl_resolv_blocking`'s `Curl_resolv_destroy`).
+/// (`Curl_resolv_blocking`'s `Curl_resolv_destroy`). The answer is held
+/// as C's caller holds its entry, until the caller lets go of it.
 pub(crate) fn resolve_blocking(
     cx: &mut dyn ConnCx,
     host: &[u8],
     port: u16,
     family: Family,
     setup: DriveOptions,
-) -> Result<Option<TryArc<Answer>>, ErrorKind> {
+) -> Result<Option<Held>, ErrorKind> {
     let resolved = resolve_blocking_said(cx, host, port, family, setup);
     cx.resolve_gone(Holder::Blocking);
-    resolved
+    resolved.map(|answer| answer.map(|answer| Held(Some(answer))))
+}
+
+/// A blocking resolve's answer, held as C's caller holds its entry of the
+/// cache (`Curl_resolv_blocking`'s `pdns`) until it lets go of it with
+/// `let_go`, a use of the cache a share's lock callbacks see
+/// (`Curl_dns_entry_unlink`). Dropped without, a debug build panics: the
+/// application would miss that use.
+#[must_use = "a blocking resolve's answer is let go of with `let_go`"]
+#[derive(Debug)]
+pub(crate) struct Held(Option<TryArc<Answer>>);
+
+impl Held {
+    /// The addresses it holds.
+    pub(crate) fn addrs(&self) -> &[IpAddr] {
+        self.0.as_ref().expect("held until let go of").addrs()
+    }
+
+    /// Let go of it, a use of the cache it is kept in.
+    pub(crate) fn let_go(mut self, cx: &mut dyn ConnCx) {
+        self.0 = None;
+        cx.names().release();
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        debug_assert!(
+            self.0.is_none() || std::thread::panicking(),
+            "a blocking resolve's answer let go of with `let_go`"
+        );
+    }
 }
 
 /// `resolve_blocking`'s resolve, and its lines.
@@ -5009,6 +5041,7 @@ mod tests {
             let answer = resolve_blocking(&mut cx, host.as_bytes(), 0, Family::Any, setup).unwrap();
             let answer = answer.unwrap_or_else(|| panic!("{host} resolved"));
             assert_eq!(answer.addrs(), [ip.parse::<IpAddr>().unwrap()]);
+            answer.let_go(&mut cx);
         }
         let mut cx = Plain {
             net: &mut net,

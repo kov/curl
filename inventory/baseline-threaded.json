@@ -1,5 +1,5 @@
 {
- "c-commit": "549501dcc73b088374609b81b8dacfa3efbe9976",
+ "c-commit": "4a1aa08f6cffa12ffd240a073d0ceba9a4f028c1",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -28,11 +28,11 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2181,
-   "failed": 1,
-   "ok": 2089,
-   "ran": 2090,
-   "skipped": 91
+   "considered": 2193,
+   "failed": 0,
+   "ok": 2097,
+   "ran": 2097,
+   "skipped": 96
   },
   "curl-version": [
    "curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
@@ -214,8 +214,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-10-25T03:27:31Z",
-   "started": "2026-10-25T03:25:12Z"
+   "finished": "2026-11-03T01:18:59Z",
+   "started": "2026-11-03T01:16:14Z"
   },
   "protocols": [
    "dict",
@@ -1043,8 +1043,8 @@
      "outcome": "passed"
     },
     "test_04_stuttered::test_04_02_100_100_10[h3]": {
-     "message": null,
-     "outcome": "passed"
+     "message": "AssertionError: response #100 http_code: expected 200, got 502\n  json stat from curl:{\n    \"certs\": \"\",\n    \"conn_id\": 0,\n    \"content_type\": \"text/html; charset=UTF-8\",\n    \"errormsg\": null,\n    \"exitcode\": 0,\n    \"filename_effective\": \"download_41.data\",\n    \"ftp_entry_path\": null,\n    \"http_code\"",
+     "outcome": "failed"
     },
     "test_04_stuttered::test_04_03_1000_10_1[h2]": {
      "message": null,
@@ -3295,8 +3295,8 @@
      "outcome": "passed"
     },
     "test_19_shutdown::test_19_01_check_tcp_rst[http/1.1]": {
-     "message": null,
-     "outcome": "passed"
+     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n', '3 packets captured\\n', '16 packets received by filter\\n', '0 packe",
+     "outcome": "failed"
     },
     "test_19_shutdown::test_19_02_check_shutdown[h2]": {
      "message": null,
@@ -4135,40 +4135,40 @@
      "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h1_over_h3_proxytunnel]": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h2_over_h3_proxytunnel]": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h3_over_h1_proxytunnel]": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h3_over_h2_proxytunnel]": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_01_connect_tunnel[h3_over_h3_proxytunnel]": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_02_connect_tunnel_fail[fail_h1_over_h3_proxytunnel]": {
-     "message": "h2o_proxy not available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_02_connect_tunnel_fail[fail_h2_over_h3_proxytunnel]": {
-     "message": "h2o_proxy not available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_02_connect_tunnel_fail[fail_h3_over_h1_proxytunnel]": {
-     "message": "h2o_proxy not available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_02_connect_tunnel_fail[fail_h3_over_h3_proxytunnel]": {
-     "message": "h2o_proxy not available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_03_h3_target_auto_connect_udp[proxy_h1]": {
      "message": null,
@@ -4183,71 +4183,80 @@
      "outcome": "skipped"
     },
     "test_60_h3_proxy::test_60_05_graceful_shutdown": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_06_proxy_drop_mid_transfer": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_07_large_download": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_08_large_upload": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_09_parallel_downloads": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_10_proxy_basic_auth": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_11_connection_reuse": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_12_quic_session_resumption": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_13_udp_tunnel_payload_sizes[download-10m-10485760]": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_13_udp_tunnel_payload_sizes[download-1400-1400]": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_13_udp_tunnel_payload_sizes[download-1m-1048576]": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_14_udp_tunnel_capsule_absent": {
      "message": null,
      "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_16_h2_uses_connect_tcp_not_udp": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_17_happy_eyeballs_filter_present": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
     },
     "test_60_h3_proxy::test_60_18_happy_eyeballs_ipv4_all_proto": {
-     "message": "no h2o available",
-     "outcome": "skipped"
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_60_h3_proxy::test_60_19_http3_races_through_a_proxy[h2o]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_60_h3_proxy::test_60_19_http3_races_through_a_proxy[nghttpx]": {
+     "message": null,
+     "outcome": "passed"
     }
    },
    "counts": {
-    "passed": 908,
-    "skipped": 89
+    "failed": 2,
+    "passed": 931,
+    "skipped": 66
    },
-   "exit-status": 0,
+   "exit-status": 1,
    "functions-without-cases": []
   },
   "results": {
@@ -5191,10 +5200,7 @@
     "result": "ok"
    },
    "1275": {
-    "failed-parts": [
-     "exit"
-    ],
-    "result": "failed"
+    "result": "ok"
    },
    "1276": {
     "result": "ok"
@@ -8409,6 +8415,12 @@
    "3237": {
     "result": "ok"
    },
+   "3238": {
+    "result": "ok"
+   },
+   "3239": {
+    "result": "ok"
+   },
    "325": {
     "result": "ok"
    },
@@ -8658,17 +8670,45 @@
    "3611": {
     "result": "ok"
    },
+   "3612": {
+    "class": "feature missing from build",
+    "reason": "curl lacks libssh support",
+    "result": "skipped"
+   },
    "362": {
     "result": "ok"
    },
    "363": {
     "result": "ok"
    },
+   "3630": {
+    "result": "ok"
+   },
+   "3631": {
+    "class": "feature missing from build",
+    "reason": "curl lacks libssh support",
+    "result": "skipped"
+   },
    "364": {
     "result": "ok"
    },
    "365": {
     "result": "ok"
+   },
+   "3650": {
+    "class": "feature missing from build",
+    "reason": "curl lacks libssh support",
+    "result": "skipped"
+   },
+   "3651": {
+    "class": "feature missing from build",
+    "reason": "curl lacks libssh support",
+    "result": "skipped"
+   },
+   "3652": {
+    "class": "feature missing from build",
+    "reason": "curl lacks libssh support",
+    "result": "skipped"
    },
    "366": {
     "result": "ok"
@@ -8682,10 +8722,22 @@
    "369": {
     "result": "ok"
    },
+   "3690": {
+    "result": "ok"
+   },
    "37": {
     "result": "ok"
    },
    "370": {
+    "result": "ok"
+   },
+   "3700": {
+    "result": "ok"
+   },
+   "3701": {
+    "result": "ok"
+   },
+   "3702": {
     "result": "ok"
    },
    "371": {
@@ -10985,7 +11037,7 @@
    "-n",
    "-j8"
   ],
-  "runtests-exit-status": 1,
+  "runtests-exit-status": 0,
   "system": [
    "* curl 8.23.1-DEV (Linux) ",
    "* libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.25.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
@@ -10999,7 +11051,7 @@
    "* Args: -a -n -j8",
    "* Jobs: 8",
    "* Env: nghttpx-h3 ",
-   "* Seed: 260853",
+   "* Seed: 260854",
    "* Servers: SSL HTTP-IPv6 HTTP-unix FTP-IPv6"
   ]
  },

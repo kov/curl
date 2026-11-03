@@ -1,9 +1,9 @@
 {
- "c-commit": "fbbdeb1ae566d711fd496c879ba41e51c40c17c1",
+ "c-commit": "4a1aa08f6cffa12ffd240a073d0ceba9a4f028c1",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
-   "CMAKE_BUILD_RPATH": "/home/kov/Projects/curl/.claude/worktrees/agent-a53caaeaab145c9d0/build/deps/ngtcp2/lib",
+   "CMAKE_BUILD_RPATH": "/home/kov/Projects/curl/build/deps/ngtcp2/lib",
    "CMAKE_BUILD_TYPE": "Debug",
    "CURL_BROTLI": "ON",
    "CURL_DISABLE_HTTPSIG": "OFF",
@@ -28,10 +28,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2181,
+   "considered": 2193,
    "failed": 0,
-   "ok": 2089,
-   "ran": 2089,
+   "ok": 2101,
+   "ran": 2101,
    "skipped": 92
   },
   "curl-version": [
@@ -214,8 +214,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-10-31T07:57:48Z",
-   "started": "2026-10-31T07:55:25Z"
+   "finished": "2026-11-03T01:21:41Z",
+   "started": "2026-11-03T01:19:09Z"
   },
   "protocols": [
    "dict",
@@ -8410,6 +8410,12 @@
    "3237": {
     "result": "ok"
    },
+   "3238": {
+    "result": "ok"
+   },
+   "3239": {
+    "result": "ok"
+   },
    "325": {
     "result": "ok"
    },
@@ -8661,16 +8667,34 @@
    "3611": {
     "result": "ok"
    },
+   "3612": {
+    "result": "ok"
+   },
    "362": {
     "result": "ok"
    },
    "363": {
     "result": "ok"
    },
+   "3630": {
+    "result": "ok"
+   },
+   "3631": {
+    "result": "ok"
+   },
    "364": {
     "result": "ok"
    },
    "365": {
+    "result": "ok"
+   },
+   "3650": {
+    "result": "ok"
+   },
+   "3651": {
+    "result": "ok"
+   },
+   "3652": {
     "result": "ok"
    },
    "366": {
@@ -8685,10 +8709,22 @@
    "369": {
     "result": "ok"
    },
+   "3690": {
+    "result": "ok"
+   },
    "37": {
     "result": "ok"
    },
    "370": {
+    "result": "ok"
+   },
+   "3700": {
+    "result": "ok"
+   },
+   "3701": {
+    "result": "ok"
+   },
+   "3702": {
     "result": "ok"
    },
    "371": {
@@ -11006,7 +11042,7 @@
    "* Args: -a -n -j8",
    "* Jobs: 8",
    "* Env: nghttpx-h3 ",
-   "* Seed: 260724",
+   "* Seed: 260725",
    "* Servers: SSL HTTP-IPv6 HTTP-unix FTP-IPv6"
   ]
  },

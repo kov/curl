@@ -3448,8 +3448,25 @@ fn the_trace_goes_to_the_debug_function_or_the_stream() {
     close(stream);
 }
 
+/// A DNS server that never answers, for the tests' lifetime: a socket
+/// bound and never read, named as `CURLOPT_DNS_SERVERS` names it.
+#[cfg(feature = "c-ares")]
+fn silent_dns_server() -> &'static CStr {
+    static SERVER: std::sync::OnceLock<(std::net::UdpSocket, std::ffi::CString)> =
+        std::sync::OnceLock::new();
+    let (_, named) = SERVER.get_or_init(|| {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let at = socket.local_addr().unwrap();
+        (socket, std::ffi::CString::new(at.to_string()).unwrap())
+    });
+    named
+}
+
 /// A handle tracing DNS to `debug`, with `seen` its data, to a name the
-/// resolver library answers and a port that refuses.
+/// resolver library answers itself and a port that refuses. Its HTTPS
+/// record is asked of a server that never answers, so that the record's
+/// resolve is still out as the transfer ends, whatever the host's own
+/// resolver would answer and however soon.
 #[cfg(feature = "c-ares")]
 fn refused_tracing_dns(debug: DebugFn, seen: &mut Seen) -> *mut CURL {
     let c = curl_easy_init();
@@ -3458,6 +3475,8 @@ fn refused_tracing_dns(debug: DebugFn, seen: &mut Seen) -> *mut CURL {
         ffi::CURLOPT_URL,
         c"https://localhost:1/".as_ptr().cast_mut(),
     );
+    let servers = silent_dns_server().as_ptr().cast_mut();
+    assert_eq!(pointer(c, ffi::CURLOPT_DNS_SERVERS, servers), ffi::CURLE_OK);
     let components = curl_core::components::Components::new().unwrap();
     components.configure(b"dns");
     // SAFETY: a live handle.

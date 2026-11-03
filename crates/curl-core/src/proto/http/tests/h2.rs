@@ -836,8 +836,10 @@ fn a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked() {
                 other.upkeep_for(&asking(60_000), &mut NoEvents).unwrap();
             }
             Ask::DueWithoutMulti => {
+                // A handle no multi ran reads the system's clock, past a
+                // millisecond after the test's started.
                 clock.advance(Duration::from_secs(60));
-                share.upkeep(Duration::from_secs(60), clock.now());
+                asking(1).upkeep().unwrap();
             }
             Ask::Early => {
                 clock.advance(Duration::from_millis(59_999));

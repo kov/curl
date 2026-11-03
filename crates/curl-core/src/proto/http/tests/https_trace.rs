@@ -413,6 +413,95 @@ fn a_record_had_at_the_start_s_first_look_is_taken_inside_the_start() {
     assert_eq!(got[..want.len()], want, "{got:#?}");
 }
 
+/// The record's lines fall about a share's locks of its names as C's do:
+/// taken inside the start, it is said taken, its start ended, then kept,
+/// the lock between (`hostip_resolv`, `Curl_dnscache_add` and
+/// `Curl_dnscache_add_negative`); taken at a later look, the cache is
+/// looked in once, then the answer kept (`Curl_resolv_take_result`).
+/// Each sequence is C's tool's over c-ares for `https://localhost:PORT/`.
+#[test]
+fn a_record_s_lines_fall_about_the_share_s_locks_as_c_s() {
+    static FIRST: Ares = Ares {
+        late: false,
+        record_at: 1,
+        with_alpn: true,
+    };
+    static NONE_FIRST: Ares = Ares {
+        late: false,
+        record_at: 1,
+        with_alpn: false,
+    };
+    let starts = [
+        "LOCK",
+        "[DNS] cache lookup localhost:8990 queries=HTTPS",
+        "[DNS] cached entry for localhost:8990 queries=HTTPS",
+        "[DNS] cache negative",
+        "[DNS] [HTTPS] ares_take_result",
+        "[DNS] [HTTPS] resolve complete",
+        "[DNS] [HTTPS] hostip_resolv started",
+        "[DNS] [1]",
+    ];
+    let url = format!("https://localhost:{PORT}/");
+    let run = |ares: &'static Ares| {
+        let mut m = tls_server(1);
+        let mut e = tracing_over(ares, b"dns");
+        let seen = lock_logged(&mut e);
+        let ran = https_get(&mut m, e, &url, |o| {
+            o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        });
+        assert_eq!(ran.result, Ok(()), "{:#?}", seen.text());
+        let lines: Vec<String> = seen
+            .text()
+            .into_iter()
+            .map(|l| l.trim_end().to_owned())
+            .filter(|l| starts.iter().any(|s| l.starts_with(s)))
+            .collect();
+        lines
+    };
+    let want = expect(&format!(
+        "LOCK
+        [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
+        [DNS] [HTTPS] ares_take_result, result=0, ares_result=0, ares_status=1, dns=found
+        [DNS] [HTTPS] resolve complete for localhost:{PORT}
+        [DNS] [1] destroy async
+        [DNS] [HTTPS] hostip_resolv started -> 0
+        LOCK
+        [DNS] cached entry for localhost:{PORT} queries=HTTPS"
+    ));
+    assert_eq!(run(&FIRST)[..want.len()], want);
+    let want = expect(&format!(
+        "LOCK
+        [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
+        [DNS] [HTTPS] ares_take_result, result=6, ares_result=0, ares_status=1, dns=not found
+        [DNS] [1] destroy async
+        [DNS] [HTTPS] hostip_resolv started -> 6
+        LOCK
+        [DNS] cache negative name resolve for localhost:{PORT} type=HTTPS"
+    ));
+    assert_eq!(run(&NONE_FIRST)[..want.len()], want);
+    // Taken at a later look: the look in the cache, the take, the keeping.
+    let later = run(&LATER_NONE);
+    let at = later
+        .iter()
+        .position(|l| l.contains("ares_take_result"))
+        .expect("taken");
+    let want = expect(&format!(
+        "LOCK
+        [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
+        [DNS] [HTTPS] ares_take_result, result=6, ares_result=0, ares_status=1, dns=not found
+        LOCK
+        [DNS] cache negative name resolve for localhost:{PORT} type=HTTPS"
+    ));
+    assert_eq!(later[at - 2..at + 3], want, "{later:#?}");
+}
+
+/// The record answered, none, at the third look: after the start's.
+static LATER_NONE: Ares = Ares {
+    late: false,
+    record_at: 3,
+    with_alpn: false,
+};
+
 /// The lines of `ran` about its resolves' records, with what they follow:
 /// the DNS filters connecting and the transfer done.
 fn asyncs(seen: &Seen) -> Vec<String> {

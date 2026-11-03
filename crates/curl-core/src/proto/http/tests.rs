@@ -31,6 +31,32 @@ type Saw = (&'static str, Vec<u8>);
 #[derive(Clone, Default)]
 struct Seen(Arc<Mutex<Vec<Saw>>>);
 
+/// A share's locks of its names, among what a transfer saw, a `LOCK`
+/// line each.
+struct LockLog(Seen);
+
+impl crate::share::ShareLock for LockLog {
+    fn lock(&self, kind: crate::share::Kind, _: crate::share::Access) {
+        if kind == crate::share::Kind::Names {
+            self.0.0.lock().unwrap().push(("text", b"LOCK".to_vec()));
+        }
+    }
+
+    fn unlock(&self, _: crate::share::Kind) {}
+}
+
+/// `e` on a share keeping names, its locks of them logged in what the
+/// result sees, to be given as the transfer's debug handler.
+fn lock_logged(e: &mut Easy) -> Seen {
+    let seen = Seen::default();
+    let share = crate::share::Share::new().unwrap();
+    share.keep(crate::share::Kind::Names).unwrap();
+    let watch: Box<dyn crate::share::ShareLock> = Box::new(LockLog(seen.clone()));
+    e.set_share_watched(share, Handler::new(watch).unwrap())
+        .unwrap();
+    seen
+}
+
 impl Seen {
     fn of(&self, what: &str) -> Vec<Vec<u8>> {
         self.0

@@ -272,20 +272,6 @@ fn an_interface_with_a_host_binds_to_both() {
     );
 }
 
-/// A share's locks of its names, among what a transfer saw, a `LOCK`
-/// line each.
-struct LockLog(Seen);
-
-impl crate::share::ShareLock for LockLog {
-    fn lock(&self, kind: crate::share::Kind, _: crate::share::Access) {
-        if kind == crate::share::Kind::Names {
-            self.0.0.lock().unwrap().push(("text", b"LOCK".to_vec()));
-        }
-    }
-
-    fn unlock(&self, _: crate::share::Kind) {}
-}
-
 /// The name bound to is resolved through a share's names, held until it
 /// is said, then let go of: a use of the names the application's lock
 /// function sees right after the line, as C's (`Curl_dns_entry_unlink`).
@@ -308,13 +294,8 @@ fn a_bind_s_name_is_let_go_of_after_it_is_said() {
         waker: None,
     };
     let mut m = Multi::new(env).unwrap();
-    let seen = Seen::default();
     let mut e = tracing_tcp();
-    let share = crate::share::Share::new().unwrap();
-    share.keep(crate::share::Kind::Names).unwrap();
-    let watch: Box<dyn crate::share::ShareLock> = Box::new(LockLog(seen.clone()));
-    e.set_share_watched(share, Handler::new(watch).unwrap())
-        .unwrap();
+    let seen = lock_logged(&mut e);
     let ran = get_with(&mut m, e, "/", talk, |o| {
         o.sockets.make_mut().unwrap().local = interface("host!bindhost");
         o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());

@@ -363,9 +363,11 @@ pub(super) fn connect_call<H: Host>(
                 RecordAnswer::NoSuchName => Came::Negative,
                 RecordAnswer::Failed => Came::Failed,
             };
-            answer_came(c, cx, came, doh)
+            // The cache was looked in just above, once, as C's take looks
+            // (`Curl_resolv_take_result`).
+            answer_came(c, cx, came, doh, false)
         }
-        Record::Pending if h.first.is_some() => answer_came(c, cx, Came::Negative, false),
+        Record::Pending if h.first.is_some() => answer_came(c, cx, Came::Negative, false, true),
         Record::NotAsked | Record::Pending | Record::Known => Ok(()),
     }
 }
@@ -386,16 +388,22 @@ fn try_arc(record: HttpsRecord) -> Result<TryArc<HttpsRecord>, ErrorKind> {
 }
 
 /// What is known of the origin's record came: kept, and the second attempt
-/// chosen by it if the first has started.
+/// chosen by it if the first has started. The cache is looked in first
+/// if `look`, as the answer is taken (`Curl_resolv_take_result`): kept by
+/// another transfer since, it is not kept again.
 fn answer_came<H: Host>(
     c: &mut Connecting,
     cx: &mut StepCx<'_, H>,
     came: Came,
     doh: bool,
+    look: bool,
 ) -> Result<(), ErrorKind> {
-    // Looked for again as the answer is taken (`Curl_resolv_take_result`):
-    // kept by another transfer since, it is not kept again.
-    if let HttpsLookup::Found(kept) = cached(&c.route, cx) {
+    let found = if look {
+        cached(&c.route, cx)
+    } else {
+        HttpsLookup::Missing
+    };
+    if let HttpsLookup::Found(kept) = found {
         found_since(&c.route, kept.as_ref(), cx);
         c.record = kept;
     } else {
@@ -812,15 +820,33 @@ fn answered<H: Host>(
         Came::Record(record) => Some(record),
         Came::NoRecord | Came::Negative => None,
     };
+    let negative = matches!(came, Came::Negative);
+    let complete = |cx: &mut StepCx<'_, H>| {
+        trace::of_with(
+            cx,
+            Component::Dns,
+            &[b"[HTTPS] resolve complete for ", name, at],
+        );
+    };
+    // A library's answer is taken and its start ends before it is kept,
+    // each said on its side of the cache's lock (`Curl_resolv_take_result`,
+    // `hostip_resolv`); only DoH's says itself and is kept before it is
+    // taken.
+    if !doh {
+        if negative {
+            started(cx, 6);
+        } else {
+            complete(cx);
+            started(cx, 0);
+        }
+    }
     let kept = cx.rest.kept(cx.me, Kind::Names);
     let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
-    let negative = matches!(came, Came::Negative);
     names
         .section(|d| d.put_https(name, port, record.cloned(), negative))
         .map_err(|_| ErrorKind::OutOfMemory)?;
     if negative {
         done(cx);
-        started(cx, 6);
         let line: [&[u8]; 4] = [
             b"cache negative name resolve for ",
             name,
@@ -831,7 +857,6 @@ fn answered<H: Host>(
         return Ok(());
     }
     let entry: [&[u8]; 4] = [b"cached entry for ", name, at, b" queries=HTTPS"];
-    // Only DoH's answer says itself and is kept before it is taken.
     if doh {
         match record.map(|r| r.print()) {
             Some(Ok(shown)) => trace::of_with(cx, Component::Dns, &[b"[HTTPS] record: ", &shown]),
@@ -843,14 +868,9 @@ fn answered<H: Host>(
             ),
         }
         trace::of_with(cx, Component::Dns, &entry);
+        done(cx);
+        complete(cx);
     }
-    done(cx);
-    trace::of_with(
-        cx,
-        Component::Dns,
-        &[b"[HTTPS] resolve complete for ", name, at],
-    );
-    started(cx, 0);
     trace::of_with(cx, Component::Dns, &entry);
     say_record(route, record, cx);
     Ok(())

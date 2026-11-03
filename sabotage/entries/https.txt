@@ -283,11 +283,11 @@ witness: curl-core proto::http::tests::h3_trace::a_name_s_https_record_is_looked
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::h3_trace::a_record_kept_meanwhile_is_found_not_kept_again
 --- old
-    // kept by another transfer since, it is not kept again.
-    if let HttpsLookup::Found(kept) = cached(&c.route, cx) {
+    let found = if look {
+        cached(&c.route, cx)
 --- new
-    // kept by another transfer since, it is not kept again.
-    if let HttpsLookup::Found(kept) = HttpsLookup::Missing {
+    let found = if look {
+        HttpsLookup::Missing
 
 === an HTTPS record found as its answer is taken is not said to be none
 file: crates/curl-core/src/multi/state/https.rs
@@ -442,3 +442,24 @@ witness: curl-core proto::http::tests::https_trace::a_get_through_a_socks_proxy_
         c.lead().and_then(|m| m.addresses().cloned()),
 --- new
         c.lead().and_then(|m| m.answer().cloned()).map(Addresses::Resolved),
+
+=== a record taken in its start is kept before its start is said to end
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::a_record_s_lines_fall_about_the_share_s_locks_as_c_s
+features: test-util debug-hooks
+--- old
+        if negative {
+            started(cx, 6);
+        } else {
+--- new
+        if negative {
+        } else {
+
+=== a record taken at a later look looks in the cache twice
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::a_record_s_lines_fall_about_the_share_s_locks_as_c_s
+features: test-util debug-hooks
+--- old
+            answer_came(c, cx, came, doh, false)
+--- new
+            answer_came(c, cx, came, doh, true)

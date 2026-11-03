@@ -144,7 +144,7 @@ fn begin(easy: &ShimEasy) -> Option<Result<Exporting, OutOfMemory>> {
     // from the core the export borrows.
     let stack = easy.added().map(|(m, _)| unsafe { &m.as_ref().stack });
     let begun = easy.with_home(|home| match home {
-        HomeRef::Detached(e) => Some(Ok(e.ssls_export())),
+        HomeRef::Detached(e) => Some(e.ssls_export()),
         HomeRef::Added(multi, id) => {
             let begun = multi
                 .ssls_export(id)

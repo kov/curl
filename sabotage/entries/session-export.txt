@@ -177,20 +177,20 @@ witness: curl-core multi::ssls::tests::a_handle_with_no_cache_has_no_sessions
 file: crates/curl-core/src/multi/ssls.rs
 witness: curl-core multi::ssls::tests::the_application_is_told_as_c_calls_its_lock
 --- old
-            return Exporting {
+            return Ok(Exporting {
                 exported,
                 out: Some(out),
                 told,
-            };
+            });
 --- new
             if let Some(w) = &told {
                 w.unlock(Kind::SslSessions);
             }
-            return Exporting {
+            return Ok(Exporting {
                 exported,
                 out: Some(out),
                 told: None,
-            };
+            });
 
 === a line of the session file with no newline loses its last byte
 file: crates/curl-tool/src/operate/ssl_sessions.rs

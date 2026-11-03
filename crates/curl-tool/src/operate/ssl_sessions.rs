@@ -252,6 +252,7 @@ pub(super) fn save(run: &Shared<'_, '_>, name: &[u8]) -> Result<(), ErrorKind> {
     let mut first = true;
     let done = easy
         .ssls_export()
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?
         .deliver(&mut |session| save_session(run, &mut file, session, &mut first));
     let mut notes = notes(run);
     match done.end(&easy, &mut notes) {

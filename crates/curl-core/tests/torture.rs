@@ -84,6 +84,10 @@ fn main() {
             a_get_with_a_tls_library_allocates_as_one_without,
         ),
         (
+            "a_share_stays_within_its_allocation_budget",
+            a_share_stays_within_its_allocation_budget,
+        ),
+        (
             "an_https_get_survives_every_allocation_failing",
             an_https_get_survives_every_allocation_failing,
         ),
@@ -978,6 +982,23 @@ fn a_get_stays_within_its_allocation_budget() {
     assert!(
         n <= GET_BUDGET,
         "a plain GET made {n} allocations, over its {GET_BUDGET}"
+    );
+}
+
+/// What a share allocates as it is made, keeping nothing yet: itself and
+/// the network its idle connections close through. Whether its TLS
+/// sessions are going out to the application is made by its first export,
+/// as few shares have one; C's share holds that in itself
+/// (`Curl_ssl_scache_is_locked_by_current_thread`).
+const SHARE_BUDGET: u64 = 2;
+
+fn a_share_stays_within_its_allocation_budget() {
+    let (share, n) = track::count_allocations(curl_core::share::Share::new);
+    drop(share.expect("memory"));
+    track::untracked(|| eprintln!("budget: a share made {n} allocations"));
+    assert!(
+        n <= SHARE_BUDGET,
+        "a share made {n} allocations, over its {SHARE_BUDGET}"
     );
 }
 

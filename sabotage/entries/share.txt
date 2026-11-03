@@ -545,3 +545,11 @@ witness: curl-core proto::http::tests::a_jar_off_stays_off_on_a_share_that_keeps
                 on: self.jar.is_on(),
 --- new
                 on: true,
+
+=== a share makes its sessions' mark before any export
+file: crates/curl-core/src/share.rs
+witness: curl-core a_share_stays_within_its_allocation_budget
+--- old
+            sessions_out: OnceLock::new(),
+--- new
+            sessions_out: OnceLock::from(SessionsOut::new()?),

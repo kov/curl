@@ -221,13 +221,18 @@ impl<E> ExportDone<E> {
 }
 
 impl Exporting {
-    fn begin(easy: &Easy, own: Option<(&mut SessionCache, &SessionsOut)>, now: i64) -> Exporting {
+    fn begin(
+        easy: &Easy,
+        own: Option<(&mut SessionCache, &SessionsOut)>,
+        now: i64,
+    ) -> Result<Exporting, OutOfMemory> {
         let mut salt = |bytes: &mut [u8]| {
             easy.libraries()
                 .random(bytes)
                 .map_err(|_| ErrorKind::FailedInit)
         };
         if let Some(share) = kept_share(easy) {
+            let out = share.sessions_out_made()?.clone();
             let told = easy.share_watch.clone();
             if let Some(w) = &told {
                 w.lock(Kind::SslSessions, Access::Single);
@@ -237,28 +242,27 @@ impl Exporting {
                 .sessions()
                 .as_mut()
                 .map_or_else(Exported::default, |c| c.export(now, &mut salt));
-            let out = share.sessions_out().clone();
             out.set(true);
-            return Exporting {
+            return Ok(Exporting {
                 exported,
                 out: Some(out),
                 told,
-            };
+            });
         }
         let Some((cache, out)) = own else {
-            return Exporting {
+            return Ok(Exporting {
                 exported: Exported::default(),
                 out: None,
                 told: None,
-            };
+            });
         };
         let exported = cache.export(now, &mut salt);
         out.set(true);
-        Exporting {
+        Ok(Exporting {
             exported,
             out: Some(out.clone()),
             told: None,
-        }
+        })
     }
 
     /// Give each session to `f` in turn, until it stops or the one that
@@ -311,7 +315,9 @@ impl Easy {
     /// share's, are going out on this thread
     /// (`Curl_ssl_scache_is_locked_by_current_thread`).
     pub fn ssls_going_out(&self) -> bool {
-        kept_share(self).is_some_and(|s| s.sessions_out().here())
+        kept_share(self)
+            .and_then(Share::sessions_out)
+            .is_some_and(SessionsOut::here)
     }
 
     /// Keep the session `packed` for `who`, in the cache the handle's
@@ -329,8 +335,9 @@ impl Easy {
     }
 
     /// Begin giving out the sessions of the cache the handle's share keeps
-    /// (`curl_easy_ssls_export`, for a handle in no multi).
-    pub fn ssls_export(&self) -> Exporting {
+    /// (`curl_easy_ssls_export`, for a handle in no multi). It fails for
+    /// want of memory for the share's mark, made by its first export.
+    pub fn ssls_export(&self) -> Result<Exporting, OutOfMemory> {
         Exporting::begin(self, None, SystemClock::new().unix_time())
     }
 }
@@ -342,7 +349,7 @@ impl<H: Host> Multi<H> {
     pub fn easy_ssls_going_out(&self, id: TransferId) -> Option<bool> {
         let easy = &self.slots.app(id)?.easy;
         Some(match kept_share(easy) {
-            Some(share) => share.sessions_out().here(),
+            Some(share) => share.sessions_out().is_some_and(SessionsOut::here),
             None => self
                 .caches
                 .sessions_out
@@ -390,7 +397,7 @@ impl<H: Host> Multi<H> {
             Some(out) => Some((&mut self.caches.sessions, out)),
             None => None,
         };
-        Some(Ok(Exporting::begin(easy, own, now)))
+        Some(Exporting::begin(easy, own, now))
     }
 
     /// `ExportDone::end` for the transfer `id` of the multi. `None` if `id`

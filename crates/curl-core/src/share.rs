@@ -15,7 +15,7 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 
@@ -97,8 +97,9 @@ struct Inner {
     cookies: Mutex<Option<Jar>>,
     /// The TLS sessions, a cache made when they are first kept.
     sessions: Mutex<Option<SessionCache>>,
-    /// Whether its sessions are going out to the application's function.
-    sessions_out: SessionsOut,
+    /// Whether its sessions are going out to the application's function:
+    /// made by the first export, as few shares have one.
+    sessions_out: OnceLock<SessionsOut>,
     /// The HSTS cache, made when it is first kept.
     hsts: Mutex<Option<Hsts>>,
     /// The public suffix list, used by its transfers in place of each
@@ -127,7 +128,7 @@ impl Share {
             dns: Mutex::new(DnsCache::default()),
             cookies: Mutex::new(None),
             sessions: Mutex::new(None),
-            sessions_out: SessionsOut::new()?,
+            sessions_out: OnceLock::new(),
             hsts: Mutex::new(None),
             psl: PslCache::default(),
             net: Mutex::new(net),
@@ -259,9 +260,22 @@ impl Share {
         self.pool().upkeep(interval, &mut NoSet(&mut **net), now);
     }
 
-    /// Whether its sessions are going out.
-    pub(crate) fn sessions_out(&self) -> &SessionsOut {
-        &self.0.sessions_out
+    /// Whether its sessions are going out; none before its first export.
+    pub(crate) fn sessions_out(&self) -> Option<&SessionsOut> {
+        self.0.sessions_out.get()
+    }
+
+    /// Whether its sessions are going out, made for an export.
+    pub(crate) fn sessions_out_made(&self) -> Result<&SessionsOut, OutOfMemory> {
+        if let Some(out) = self.0.sessions_out.get() {
+            return Ok(out);
+        }
+        // Another thread's first export may have set one meanwhile, which
+        // is then the one, and this one is let go.
+        if let Err(lost) = self.0.sessions_out.set(SessionsOut::new()?) {
+            drop(lost);
+        }
+        Ok(self.0.sessions_out.get().expect("set just now"))
     }
 
     /// The TLS sessions, locked; none if the share keeps none.

@@ -38,6 +38,7 @@ fn a_handle_with_no_cache_has_no_sessions() {
     }
     let done = easy
         .ssls_export()
+        .expect("memory for the mark")
         .deliver::<()>(&mut |_| panic!("no session to give"));
     assert_eq!(done.end(&easy, &mut no_notes()), Ok(()));
 }
@@ -74,7 +75,7 @@ fn the_application_is_told_as_c_calls_its_lock() {
     assert_eq!(told.uses(), [Kind::SslSessions]);
 
     let mut seen = Vec::new();
-    let exporting = easy.ssls_export();
+    let exporting = easy.ssls_export().expect("memory for the mark");
     assert_eq!(
         told.calls(),
         [(Some(Access::Single), Kind::SslSessions)],
@@ -110,6 +111,7 @@ fn sessions_gone_under_a_use_are_no_cache() {
     easy.share_watch = Some(Emptying::handler(&told, Kind::SslSessions));
     let done = easy
         .ssls_export()
+        .expect("memory for the mark")
         .deliver::<()>(&mut |_| panic!("no session to give"));
     assert_eq!(done.end(&easy, &mut no_notes()), Ok(()));
     assert_eq!(told.uses(), [Kind::SslSessions]);
@@ -126,10 +128,13 @@ fn an_export_stops_when_told() {
         .unwrap();
     told.calls();
     let mut given = 0;
-    let done = easy.ssls_export().deliver(&mut |_| {
-        given += 1;
-        Err(1234)
-    });
+    let done = easy
+        .ssls_export()
+        .expect("memory for the mark")
+        .deliver(&mut |_| {
+            given += 1;
+            Err(1234)
+        });
     assert_eq!(given, 1);
     assert_eq!(told.uses(), [Kind::SslSessions]);
     assert_eq!(
@@ -156,7 +161,10 @@ fn an_import_and_an_export_trace_as_c_does() {
         .unwrap();
     easy.ssls_import(SessionFor::Key(b"k:G"), PACKED, &mut notes)
         .unwrap();
-    let done = easy.ssls_export().deliver::<()>(&mut |_| Ok(()));
+    let done = easy
+        .ssls_export()
+        .expect("memory for the mark")
+        .deliver::<()>(&mut |_| Ok(()));
     done.end(&easy, &mut notes).unwrap();
     assert_eq!(
         lines,

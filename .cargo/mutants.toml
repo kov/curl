@@ -682,10 +682,6 @@ exclude_re = [
     # so a stub context SPNEGO checks is never NTLM's, as in C's stub;
     # Kerberos contexts are not checked.
     'curl-gssapi/src/stub\.rs:.*: replace Ctx::is_ntlm -> bool with false$',
-    # The system's resolver answers as it starts, and the tests' `AtOnce`
-    # too: nothing ever asks either for an answer later, waits for one or
-    # cancels one, which `unreachable!` says.
-    'curl-core/src/conn/io\.rs:.*: replace <impl Resolver for (SystemResolver|AtOnce<F>)>::(answer|wait|cancel) .*$',
     # No test fails a resolve through `AtOnce`, so what it says of a
     # failure is never read.
     'curl-core/src/conn/io\.rs:.*: replace <impl Resolver for AtOnce<F>>::explain .*$',
@@ -694,11 +690,11 @@ exclude_re = [
     'curl-core/src/conn/io\.rs:.*: replace && with \|\| in <impl Resolver for FakeNet>::answered$',
     # std's thread start fails only when the system refuses a thread,
     # which no test can arrange.
-    'curl-core/src/conn/threaded\.rs:.*: replace -= with (\+=|/=) in ThreadedResolver::start_threads$',
+    'curl-core/src/conn/threaded\.rs:.*: replace -= with (\+=|/=) in (ThreadedResolver::)?start_threads$',
     # Joining a thread that has ended frees its handle: the thread has
     # ended either way, and the handles left are joined as the resolver
     # goes.
-    'curl-core/src/conn/threaded\.rs:.*: (replace ThreadedResolver::reap with \(\)|replace < with > in ThreadedResolver::reap)$',
+    'curl-core/src/conn/threaded\.rs:.*: (replace (ThreadedResolver::)?reap with \(\)|replace < with > in (ThreadedResolver::)?reap)$',
     # Reads the process's environment, which a test cannot set for itself
     # alone; `DebugVars::from_given` holds the reading, and is tested.
     'curl-core/src/conn/threaded\.rs:.*: replace DebugVars::from_env -> DebugVars with Default::default\(\)$',

@@ -11,7 +11,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
 use crate::conn::chain::{Chain, Head, SetupPoint};
-use crate::conn::io::{Closer, Events, Queued, Remote, ResolveFailure, SocketKey};
+use crate::conn::io::{Closer, Events, Remote, ResolveFailure, SocketKey};
 use crate::conn::layer::{LayerAnswer, LayerCx, LayerQuery};
 use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};

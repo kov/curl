@@ -474,10 +474,10 @@ witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 --- old
-        Ok(Asked::Shortcut | Asked::InStart) => 0,
+        Some(Asked::Shortcut | Asked::InStart) => 0,
 --- new
-        Ok(Asked::Shortcut) => crate::error::AGAIN_NUMBER,
-        Ok(Asked::InStart) => 0,
+        Some(Asked::Shortcut) => crate::error::AGAIN_NUMBER,
+        Some(Asked::InStart) => 0,
 
 === a resolver's answer is said to be a shortcut's
 file: crates/curl-core/src/conn/connect.rs

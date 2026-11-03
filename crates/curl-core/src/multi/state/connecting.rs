@@ -812,7 +812,7 @@ fn resolved<H: Host>(
         if let Found::Stale(asked) | Found::Resolved(asked) = found {
             let answer = c.attempt(a).and_then(|m| m.answer().cloned());
             let addrs = answer.as_ref().map_or(&[][..], |a| a.addrs());
-            trace_resolved(cx, &c.route, Ok(asked), addrs);
+            trace_resolved(cx, &c.route, Some(asked), addrs);
         }
     }
     cx.mark(Timer::NameLookup);
@@ -1697,19 +1697,19 @@ pub(crate) fn side_resolved<H: Host>(cx: &mut StepCx<'_, H>, setup: &ConnectMach
     trace_lookup(cx, route, Some(found));
     if let Found::Stale(asked) | Found::Resolved(asked) = found {
         let addrs = setup.answer().map_or(&[][..], |a| a.addrs());
-        trace_resolved(cx, route, Ok(asked), addrs);
+        trace_resolved(cx, route, Some(asked), addrs);
     }
 }
 
 /// The name `route` connects to first was resolved, `asked` what
-/// answered, to `addrs`, its answer kept; or the resolver failed, having
-/// queued what the error says. A shortcut answers at once; the resolver,
+/// answered, to `addrs`, its answer kept; or, with none, the resolver
+/// failed. A shortcut answers at once; the resolver,
 /// as the reference build's c-ares does, answers later (`CURLE_AGAIN`),
 /// its polls not traced.
 fn trace_resolved<H: Host>(
     cx: &mut StepCx<'_, H>,
     route: &NetRoute,
-    asked: Result<Asked, Option<Queued>>,
+    asked: Option<Asked>,
     addrs: &[IpAddr],
 ) {
     let peer = route.destination();
@@ -1720,27 +1720,27 @@ fn trace_resolved<H: Host>(
     );
     let at = at.bytes();
     let code = match asked {
-        Ok(Asked::Shortcut | Asked::InStart) => 0,
-        Ok(Asked::Resolver(_) | Asked::Doh) | Err(_) => crate::error::AGAIN_NUMBER,
+        Some(Asked::Shortcut | Asked::InStart) => 0,
+        Some(Asked::Resolver(_) | Asked::Doh) | None => crate::error::AGAIN_NUMBER,
     };
     let dns = Component::Dns;
     // Said with the start, for an answer taken in it.
-    if !matches!(asked, Ok(Asked::Doh | Asked::InStart)) {
+    if !matches!(asked, Some(Asked::Doh | Asked::InStart)) {
         trace::of(
             cx,
             dns,
             format_args!("[{queries}] hostip_resolv started -> {code}"),
         );
     }
-    if let Ok(Asked::Resolver(Some(q))) | Err(Some(q)) = asked {
+    if let Some(Asked::Resolver(Some(q))) = asked {
         crate::conn::say_answered(q, name, at, addrs, &mut |parts| {
             trace::of_with(cx, dns, parts);
         });
     }
-    if asked.is_err() {
+    let Some(asked) = asked else {
         return;
-    }
-    if let Ok(Asked::Resolver(_) | Asked::Doh) = asked {
+    };
+    if let Asked::Resolver(_) | Asked::Doh = asked {
         trace::of_with(
             cx,
             dns,
@@ -2082,13 +2082,16 @@ pub(crate) fn connect_failed<H: Host>(
                     says_its_own: true, ..
                 } => {}
                 Unresolved::Resolver { queued, .. } => {
-                    trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver(queued))));
-                    trace_resolved(cx, route, Err(queued), &[]);
+                    // A setup's resolve that queued its queries said its
+                    // own lines as they were answered (`says_its_own`).
+                    assert!(queued.is_none(), "a queued resolve says its own lines");
+                    trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver(None))));
+                    trace_resolved(cx, route, None, &[]);
                 }
                 Unresolved::NoAddress(found) => {
                     trace_lookup(cx, route, Some(found));
                     if let Found::Stale(asked) | Found::Resolved(asked) = found {
-                        trace_resolved(cx, route, Ok(asked), &[]);
+                        trace_resolved(cx, route, Some(asked), &[]);
                     }
                 }
             }

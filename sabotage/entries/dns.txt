@@ -294,14 +294,6 @@ witness: curl-core multi::tests::a_queued_resolve_is_traced_as_c_s_threaded_reso
 --- new
     for (queued, v6) in [(q.v6, true), (q.v4, false)] {
 
-=== a queued resolve that fails traces its queries' empty answers
-file: crates/curl-core/src/multi/state/connecting.rs
-witness: curl-core multi::tests::a_queued_resolve_is_traced_as_c_s_threaded_resolver
---- old
-                    trace_resolved(cx, route, Err(queued), &[]);
---- new
-                    trace_resolved(cx, route, Err(None), &[]);
-
 === resolve ids wrap past UINT32_MAX to 1, as C's do
 file: crates/curl-core/src/conn/io.rs
 witness: curl-core conn::io::resolve_ids_count_as_c_s

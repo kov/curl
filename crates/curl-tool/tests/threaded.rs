@@ -72,3 +72,31 @@ fn the_record_asked_of_the_threaded_resolver_is_let_go_of_as_c_s() {
         "{said}"
     );
 }
+
+/// The interface's name, resolved blocking as the connection binds, is
+/// queued under the number of the record kept of its resolve, the third
+/// after the origin's record and its addresses, as C's threaded build
+/// says it for `-4 --interface host!localhost4 https://localhost4:1/`.
+#[test]
+fn a_blocking_resolve_is_queued_under_its_record_s_number() {
+    let run = Command::new(env!("CARGO_BIN_EXE_curl"))
+        .args(["-sS", "-v", "-k", "-4", "--max-time", "5"])
+        .args(["--trace-config", "dns", "--interface", "host!localhost4"])
+        .arg("https://localhost4:1/")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&run.stderr);
+    let queued: Vec<&str> = said
+        .lines()
+        .filter(|l| l.contains("queueing query"))
+        .collect();
+    assert_eq!(
+        queued,
+        [
+            "* [DNS] queueing query [0/2] A localhost4:1",
+            "* [DNS] queueing query [0/3] A localhost4:80",
+        ],
+        "{said}"
+    );
+    assert!(said.contains("* [DNS] [3] destroy async\n"), "{said}");
+}

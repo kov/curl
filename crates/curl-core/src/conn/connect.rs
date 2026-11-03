@@ -2834,7 +2834,10 @@ fn resolve_blocking_said(
     };
     if let Some(q) = queued {
         let xfer = cx.transfer_number();
-        say_queued(xfer, None, q, name, at, &mut |parts| cx.of_with(dns, parts));
+        let record = cx.resolve_id(Holder::Blocking);
+        say_queued(xfer, record, q, name, at, &mut |parts| {
+            cx.of_with(dns, parts)
+        });
     }
     if found == Some(Found::Cached) {
         cx.info_with(&[b"Hostname ", name, b" was found in DNS cache"]);

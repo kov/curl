@@ -2721,9 +2721,9 @@ none, in the places C's lines fall among the cache's. The setup's resolve says t
 as it goes: as it starts (`hostip_resolv(name:port)` in the debug build, the cache's miss, each
 query, `hostip_resolv started -> 81`), then at each look for its answer the cache's miss and
 either `resolve incomplete, responses=R, ongoing=N` or each family's addresses not yet said, as
-they are taken. The transfer in `queueing query [transfer/id]` is the transfer's number and, for the
-setup's resolve, the id the number of the record kept of it (`hostip_async_new`). A blocking
-resolve's lines are written as it ends. A name not answered within
+they are taken. The transfer in `queueing query [transfer/id]` is the transfer's number and the
+id the number of the record kept of the resolve (`hostip_async_new`), for the setup's resolve
+and for a blocking one alike. A blocking resolve's other lines are written as it ends. A name not answered within
 the connect limit times out as "Resolving", not "Connection".
 
 Built so far (step 48b): the pool, its queries and answers, the eventfd it wakes, `SystemNet`

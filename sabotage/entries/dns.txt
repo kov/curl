@@ -552,9 +552,11 @@ witness: curl-core conn::connect::tests::a_bare_address_is_not_resolved
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it
 --- old
-        say_queued(xfer, None, q, name, at, &mut |parts| cx.of_with(dns, parts));
+        say_queued(xfer, record, q, name, at, &mut |parts| {
+            cx.of_with(dns, parts)
+        });
 --- new
-        let _ = (xfer, q);
+        let _ = (xfer, record, q);
 
 === a blocking resolve does not say the threaded resolver's answers
 file: crates/curl-core/src/conn/connect.rs
@@ -811,3 +813,12 @@ features: test-util
                 });
 --- new
                 pending.live = None;
+
+=== a blocking resolve is queued under the resolver's number
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-tool a_blocking_resolve_is_queued_under_its_record_s_number
+features: threaded-resolver
+--- old
+        let record = cx.resolve_id(Holder::Blocking);
+--- new
+        let record = None;

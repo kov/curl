@@ -18,7 +18,7 @@ use std::num::NonZeroU32;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
-use super::asyncs::Holder;
+use super::asyncs::{Holder, ResolveNumber};
 use super::bind::{BindFailed, bind_local};
 use super::chain::SetupPoint;
 #[cfg(test)]
@@ -355,7 +355,7 @@ pub(crate) trait ConnCx: LayerCx {
     fn resolve_shut(&mut self, holder: Holder);
 
     /// The number of the newest of `holder`'s, if one is kept.
-    fn resolve_id(&self, holder: Holder) -> Option<ResolveId>;
+    fn resolve_number(&self, holder: Holder) -> Option<ResolveNumber>;
 }
 
 /// What a QUIC attempt is made with: the transfer's libraries, what its
@@ -493,7 +493,7 @@ impl ConnCx for Plain<'_> {
 
     fn resolve_shut(&mut self, _: Holder) {}
 
-    fn resolve_id(&self, _: Holder) -> Option<ResolveId> {
+    fn resolve_number(&self, _: Holder) -> Option<ResolveNumber> {
         None
     }
 
@@ -2915,7 +2915,7 @@ fn resolve_blocking_said(
     };
     if let Some(q) = queued {
         let xfer = cx.transfer_number();
-        let record = cx.resolve_id(Holder::Blocking);
+        let record = cx.resolve_number(Holder::Blocking);
         say_queued(xfer, record, q, name, at, &mut |parts| {
             cx.of_with(dns, parts)
         });
@@ -2995,13 +2995,13 @@ fn resolve_blocking_said(
 /// resolve is, `record`, if it has one.
 pub(crate) fn say_queued(
     xfer: u64,
-    record: Option<ResolveId>,
+    record: Option<ResolveNumber>,
     q: Queued,
     name: &[u8],
     at: &[u8],
     say: &mut dyn FnMut(&[&[u8]]),
 ) {
-    let id = record.unwrap_or(q.id).get();
+    let id = record.map_or(q.id.get(), ResolveNumber::get);
     for (queued, query) in [(q.v6, "AAAA"), (q.v4, "A")] {
         if queued {
             let ids =
@@ -3842,7 +3842,7 @@ pub(super) fn lookup_start(
                     cx.info(format_args!("Hostname in DNS cache was stale, zapped"));
                 }
                 say_not_cached(queries, (name, port), cx);
-                let (xfer, record) = (cx.transfer_number(), cx.resolve_id(holder));
+                let (xfer, record) = (cx.transfer_number(), cx.resolve_number(holder));
                 say_queued(xfer, record, queued, name, at.bytes(), &mut |parts| {
                     cx.of_with(Component::Dns, parts);
                 });

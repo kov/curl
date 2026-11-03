@@ -7,7 +7,7 @@
 use super::{ConnRank, StepCx};
 use crate::components::Component;
 use crate::conn::asyncs::Holder;
-use crate::conn::io::ResolveId;
+use crate::conn::asyncs::ResolveNumber;
 use crate::conn::{NetRoute, Peer};
 use crate::multi::Host;
 use crate::options::IpVersion;
@@ -203,7 +203,7 @@ pub(crate) fn asyncs_let_go<H: Host>(cx: &mut StepCx<'_, H>) {
 }
 
 /// `[N] shutdown async` or `[N] destroy async`.
-fn said<H: Host>(cx: &mut StepCx<'_, H>, id: ResolveId, what: &str) {
+fn said<H: Host>(cx: &mut StepCx<'_, H>, id: ResolveNumber, what: &str) {
     let id = id.get();
     trace::of(cx, Component::Dns, format_args!("[{id}] {what} async"));
 }

@@ -7,7 +7,6 @@
 //! (`[N] shutdown async`, `[N] destroy async`). These are those records,
 //! kept on the handle, the newest last, for the lines alone.
 
-use crate::conn::io::ResolveId;
 use crate::multi::state::ConnRank;
 use curl_alloc::{OutOfMemory, TryVec, try_box};
 
@@ -29,7 +28,7 @@ pub(crate) enum Holder {
 /// One kept record.
 #[derive(Clone, Copy, Debug)]
 struct Kept {
-    id: ResolveId,
+    id: ResolveNumber,
     holder: Holder,
 }
 
@@ -105,7 +104,7 @@ impl Records {
 
 impl Asyncs {
     /// A record kept for `holder`, numbered `id`.
-    pub(crate) fn keep(&mut self, id: ResolveId, holder: Holder) -> Result<(), OutOfMemory> {
+    pub(crate) fn keep(&mut self, id: ResolveNumber, holder: Holder) -> Result<(), OutOfMemory> {
         let kept = match &mut self.0 {
             Some(kept) => kept,
             none => none.insert(try_box(Records::default())?),
@@ -121,7 +120,7 @@ impl Asyncs {
     }
 
     /// The newest of `holder`'s, if one is kept.
-    pub(crate) fn newest(&self, holder: Holder) -> Option<ResolveId> {
+    pub(crate) fn newest(&self, holder: Holder) -> Option<ResolveNumber> {
         (0..)
             .map_while(|n| self.newest_nth(n))
             .find(|k| k.holder == holder)
@@ -130,7 +129,7 @@ impl Asyncs {
 
     /// The newest of `holder`'s, let go of, if one is kept
     /// (`Curl_resolv_destroy`).
-    pub(crate) fn take(&mut self, holder: Holder) -> Option<ResolveId> {
+    pub(crate) fn take(&mut self, holder: Holder) -> Option<ResolveNumber> {
         let kept = self.0.as_mut()?;
         let at = (0..kept.len())
             .rev()
@@ -142,14 +141,14 @@ impl Asyncs {
 
     /// The newest, let go of, if any: one by one, each is
     /// (`Curl_resolv_destroy_all`).
-    pub(crate) fn pop_newest(&mut self) -> Option<ResolveId> {
+    pub(crate) fn pop_newest(&mut self) -> Option<ResolveNumber> {
         let id = self.0.as_mut()?.pop().map(|k| k.id);
         self.forget_empty();
         id
     }
 
     /// The `n`th, counting from the newest at 0.
-    pub(crate) fn nth_newest(&self, n: usize) -> Option<ResolveId> {
+    pub(crate) fn nth_newest(&self, n: usize) -> Option<ResolveNumber> {
         self.newest_nth(n).map(|k| k.id)
     }
 
@@ -161,15 +160,37 @@ impl Asyncs {
     }
 }
 
+/// The number of a resolve's record, as its lines show it: drawn from
+/// its multi's, in 32 bits from 1, past the last back to 1
+/// (`last_resolv_id`). A resolve would have to wait out four billion
+/// others to meet its number again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ResolveNumber(std::num::NonZeroU32);
+
+impl ResolveNumber {
+    /// The first a multi gives.
+    pub(crate) const FIRST: ResolveNumber = ResolveNumber(std::num::NonZeroU32::MIN);
+
+    /// Its number, as traces show it.
+    pub(crate) fn get(self) -> u32 {
+        self.0.get()
+    }
+
+    /// The one after it.
+    fn next(self) -> ResolveNumber {
+        ResolveNumber(self.0.checked_add(1).unwrap_or(std::num::NonZeroU32::MIN))
+    }
+}
+
 /// The multi's numbering of its transfers' resolves: from 1, past the
 /// last back to 1, never 0 (`last_resolv_id`).
 #[derive(Debug, Default)]
-pub(crate) struct ResolveCount(Option<ResolveId>);
+pub(crate) struct ResolveCount(Option<ResolveNumber>);
 
 impl ResolveCount {
     /// The next number.
-    pub(crate) fn next(&mut self) -> ResolveId {
-        let id = self.0.map_or(ResolveId::FIRST, ResolveId::next);
+    pub(crate) fn next(&mut self) -> ResolveNumber {
+        let id = self.0.map_or(ResolveNumber::FIRST, ResolveNumber::next);
         self.0 = Some(id);
         id
     }
@@ -178,6 +199,16 @@ impl ResolveCount {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Resolves are numbered as C's multi numbers them: from 1, and after
+    /// `UINT32_MAX` from 1 again, never 0 (`last_resolv_id`).
+    #[test]
+    fn resolve_numbers_count_as_c_s() {
+        assert_eq!(ResolveNumber::FIRST.get(), 1);
+        assert_eq!(ResolveNumber::FIRST.next().get(), 2);
+        let last = ResolveNumber(std::num::NonZeroU32::MAX);
+        assert_eq!(last.next(), ResolveNumber::FIRST);
+    }
 
     #[test]
     fn records_are_walked_newest_first_and_taken_by_holder() {
@@ -192,7 +223,7 @@ mod tests {
         // C's list is walked from its head, the newest.
         let walked: Vec<u32> = (0..3)
             .map_while(|n| kept.nth_newest(n))
-            .map(ResolveId::get)
+            .map(ResolveNumber::get)
             .collect();
         assert_eq!(walked, [2, 1]);
         assert_eq!(kept.newest(Holder::Record), Some(record));
@@ -213,7 +244,7 @@ mod tests {
     fn records_past_those_kept_in_place_keep_their_order() {
         let mut count = ResolveCount::default();
         let mut kept = Asyncs::default();
-        let ids: Vec<ResolveId> = (0..7).map(|_| count.next()).collect();
+        let ids: Vec<ResolveNumber> = (0..7).map(|_| count.next()).collect();
         let holders = [
             Holder::Record,
             Holder::Addresses(ConnRank::First),
@@ -229,7 +260,7 @@ mod tests {
         let walked = |kept: &Asyncs| -> Vec<u32> {
             (0..)
                 .map_while(|n| kept.nth_newest(n))
-                .map(ResolveId::get)
+                .map(ResolveNumber::get)
                 .collect()
         };
         assert_eq!(walked(&kept), [7, 6, 5, 4, 3, 2, 1]);
@@ -242,7 +273,7 @@ mod tests {
         assert_eq!(kept.take(Holder::Record), Some(ids[0]));
         assert_eq!(walked(&kept), [5, 4, 2]);
         let popped: Vec<u32> = std::iter::from_fn(|| kept.pop_newest())
-            .map(ResolveId::get)
+            .map(ResolveNumber::get)
             .collect();
         assert_eq!(popped, [5, 4, 2]);
         assert!(kept.0.is_none());

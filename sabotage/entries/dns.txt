@@ -307,13 +307,13 @@ witness: curl-core multi::tests::a_queued_resolve_is_traced_as_c_s_threaded_reso
 --- new
     for (queued, v6) in [(q.v6, true), (q.v4, false)] {
 
-=== resolve ids wrap past UINT32_MAX to 1, as C's do
-file: crates/curl-core/src/conn/io.rs
-witness: curl-core conn::io::resolve_ids_count_as_c_s
+=== resolve numbers wrap past UINT32_MAX to 1, as C's do
+file: crates/curl-core/src/conn/asyncs.rs
+witness: curl-core conn::asyncs::tests::resolve_numbers_count_as_c_s
 --- old
-        ResolveId(self.0.checked_add(1).unwrap_or(std::num::NonZeroU32::MIN))
+        ResolveNumber(self.0.checked_add(1).unwrap_or(std::num::NonZeroU32::MIN))
 --- new
-        ResolveId(self.0.checked_add(1).unwrap_or(std::num::NonZeroU32::MAX))
+        ResolveNumber(self.0.checked_add(1).unwrap_or(std::num::NonZeroU32::MAX))
 
 === a debug start failure leaves the queries for a retry
 file: crates/curl-core/src/conn/threaded.rs
@@ -824,7 +824,7 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-tool a_blocking_resolve_is_queued_under_its_record_s_number
 features: threaded-resolver
 --- old
-        let record = cx.resolve_id(Holder::Blocking);
+        let record = cx.resolve_number(Holder::Blocking);
 --- new
         let record = None;
 

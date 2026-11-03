@@ -511,10 +511,10 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         super::state::async_shut(self.step, holder);
     }
 
-    fn resolve_id(
+    fn resolve_number(
         &self,
         holder: crate::conn::asyncs::Holder,
-    ) -> Option<crate::conn::io::ResolveId> {
+    ) -> Option<crate::conn::asyncs::ResolveNumber> {
         self.step.easy().asyncs.newest(holder)
     }
 

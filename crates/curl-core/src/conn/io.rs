@@ -3011,13 +3011,3 @@ mod tests {
         net.close(Sock::new(s, Closer::System));
     }
 }
-
-/// Resolves are numbered as C's multi numbers them: from 1, and after
-/// `UINT32_MAX` from 1 again, never 0 (`last_resolv_id`).
-#[test]
-fn resolve_ids_count_as_c_s() {
-    assert_eq!(ResolveId::FIRST.get(), 1);
-    assert_eq!(ResolveId::FIRST.next().get(), 2);
-    let last = ResolveId(std::num::NonZeroU32::MAX);
-    assert_eq!(last.next(), ResolveId::FIRST);
-}

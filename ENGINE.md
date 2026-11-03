@@ -3736,7 +3736,7 @@ range and resume point, and the body read or sent.
   the hand-over is refused (`Carrier::bare_socket`) while a layer works on the stream or
   received bytes are unread, and for these schemes a tunnel's answer is read a byte at a time
   and a SOCKS grant no further than it goes, as C reads them, so the server's banner stays
-  in the socket. libssh's blocking calls leave the shared file description blocking; the
+  in the socket. The blocking calls of libssh leave the shared file description blocking; the
   shutdown's drain makes it nonblocking first, as C's does.
 - **The connect** is the session's: the host key checked against the fingerprints, the
   known-hosts file and the key handler, then the logins in C's order of fallbacks, then

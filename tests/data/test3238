@@ -34,7 +34,7 @@ PSL
 http
 </server>
 <name>
-share lock calls for cookies, the public suffix list and the HSTS cache
+share lock calls for cookies, the public suffix list and HSTS
 </name>
 <tool>
 lib%TESTNUMBER

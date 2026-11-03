@@ -3907,8 +3907,8 @@ fn take_in_start(
             );
             Ok(Some(Ok(addrs)))
         }
-        Some(Err(ResolveFailure::OutOfMemory)) => Err(ConnectError::OutOfMemory),
-        // A failure's lines are said with the failure.
+        // A failure's lines are said with the failure; one for memory fails
+        // the start as it settles (`settle`).
         Some(Err(why)) => Ok(Some(Err(why))),
         None => Ok(None),
     }

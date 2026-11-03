@@ -901,3 +901,58 @@ features: test-util
 --- new
             }
             Stage::Dialed(mut d) => {
+
+=== a lone handle's debug function reaches other transfers, not itself
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::tests::a_lone_handle_s_records_go_through_its_debug_function_reaching_it_alone
+features: test-util
+--- old
+        (id == self.me).then_some(&mut *self.easy)
+--- new
+        (id != self.me).then_some(&mut *self.easy)
+
+=== a resolve found answered in the cache meanwhile keeps its record wanted
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::tests::a_name_resolved_meanwhile_lets_the_second_transfer_s_resolve_go
+features: test-util
+--- old
+        super::state::async_shut(self.step, holder);
+--- new
+        let _ = holder;
+
+=== a queued resolve is numbered as its resolver numbers it
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::tests::a_queued_resolve_is_numbered_by_its_record
+features: test-util
+--- old
+        self.step.easy().asyncs.newest(holder)
+--- new
+        let _ = holder;
+        None
+
+=== a family's addresses are said again at each look
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::an_aaaa_answered_before_a_is_said_once_and_counted_at_each_look
+features: test-util
+--- old
+        v6: came.v6 && !said.v6,
+--- new
+        v6: came.v6 || !said.v6,
+
+=== a family not asked for is counted among the responses
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_family_not_asked_for_is_not_counted_among_the_responses
+features: test-util
+--- old
+                                v6: queried.v6 && part.v6_answered,
+--- new
+                                v6: queried.v6 || part.v6_answered,
+
+=== a library that cannot start a resolve makes no record of it
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_library_that_cannot_start_a_resolve_lets_its_record_go_at_once
+features: test-util
+--- old
+                    if kind != ErrorKind::OutOfMemory {
+--- new
+                    if kind == ErrorKind::OutOfMemory {

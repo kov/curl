@@ -425,3 +425,12 @@ witness: curl-core an_ftp_data_connect_s_wait_allocates_nothing_per_pass
 --- new
                         Ok(Drove::Connecting(m, progress)) => {
                             let mut m = *curl_alloc::try_box(m).map_err(|_| ErrorKind::OutOfMemory)?;
+
+=== a data connection's setup given up is dropped with its socket open
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core proto::ftp::tests::a_data_connection_its_socks_proxy_refuses_is_closed
+features: test-util
+--- old
+    setup.discard(&mut DriveCx::new(cx, None));
+--- new
+    let _ = (cx, setup);

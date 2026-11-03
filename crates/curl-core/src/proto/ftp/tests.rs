@@ -1259,6 +1259,43 @@ fn the_data_connection_goes_through_the_socks_proxy() {
     );
 }
 
+/// The data connection's SOCKS proxy refusing its connect fails the
+/// transfer, and the data connection's setup is let go of as C's second
+/// socket's filters are: its socket closed and said to be, none left open
+/// (`Curl_conn_cf_discard_chain`).
+#[test]
+fn a_data_connection_its_socks_proxy_refuses_is_closed() {
+    let talk = through(&[&[5, 0]], &granted(PORT));
+    let [hi, lo] = DATA_PORT.to_be_bytes();
+    let refused = [5, 5, 0, 1, 127, 0, 0, 1, hi, lo];
+    let file = Conversation::replies(&[&[5, 0], &refused], true).per_send();
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PROXY_PORT));
+    let net = Counted(Arc::new(Mutex::new(
+        FakeNet::new(clock.clone())
+            .with_peer(at, Net::Accepts)
+            .with_conversation(at, talk.clone())
+            .with_conversation(at, file.clone()),
+    )));
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net.clone()),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let (id, _body, text) = added_tracing(&mut m, URL, Easy::new(), b"all", |o| {
+        o.proxy.make_mut().unwrap().url =
+            Some(format!("socks5://127.0.0.1:{PROXY_PORT}").into_bytes());
+    });
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert!(result.is_err(), "{said}");
+    m.remove(id, &mut NoEvents).unwrap();
+    drop(m);
+    assert_eq!(net.open(), 0, "{said}");
+}
+
 const WILDCARD: &str = "ftp://127.0.0.1:PORT/d/*.txt";
 
 /// A directory's listing, in the Unix form: a file the pattern matches, a

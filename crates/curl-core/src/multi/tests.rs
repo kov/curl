@@ -3199,6 +3199,8 @@ struct FirstLook {
 struct FirstLookResolve {
     asked: FirstLook,
     performed: bool,
+    /// It runs out of memory where it would answer.
+    oom: bool,
 }
 
 impl crate::conn::io::DnsResolve for FirstLookResolve {
@@ -3233,6 +3235,8 @@ impl crate::conn::io::DnsResolve for FirstLookResolve {
     fn answer(&mut self) -> Option<Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure>> {
         if self.ongoing().0 > 0 {
             None
+        } else if self.oom {
+            Some(Err(crate::conn::io::ResolveFailure::OutOfMemory))
         } else if self.asked.missing {
             Some(Err(crate::conn::io::ResolveFailure::NotFound))
         } else {
@@ -3260,8 +3264,58 @@ impl crate::conn::io::DnsLibrary for FirstLook {
         Ok(Box::new(FirstLookResolve {
             asked: *self,
             performed: false,
+            oom: false,
         }))
     }
+}
+
+/// A resolver library whose resolve runs out of memory at the start's
+/// first look.
+#[derive(Debug)]
+struct OomAtFirstLook;
+
+impl crate::conn::io::DnsLibrary for OomAtFirstLook {
+    fn resolve(
+        &self,
+        _: crate::conn::io::DnsAsk<'_>,
+        _: &mut crate::conn::io::DnsSay<'_>,
+    ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
+        let asked = FirstLook {
+            out: true,
+            missing: false,
+        };
+        Ok(Box::new(FirstLookResolve {
+            asked,
+            performed: false,
+            oom: true,
+        }))
+    }
+}
+
+/// A resolver library that cannot start a resolve, as c-ares's channel
+/// cannot be made (`async_ares_init`).
+#[derive(Debug)]
+struct RefusesToStart;
+
+impl crate::conn::io::DnsLibrary for RefusesToStart {
+    fn resolve(
+        &self,
+        _: crate::conn::io::DnsAsk<'_>,
+        _: &mut crate::conn::io::DnsSay<'_>,
+    ) -> Result<Box<dyn crate::conn::io::DnsResolve>, crate::conn::io::DnsRefused> {
+        Err(crate::conn::io::DnsRefused::Init)
+    }
+}
+
+/// `library`, as the libraries a handle is given.
+fn with_dns(
+    library: &'static dyn crate::conn::io::DnsLibrary,
+) -> crate::libraries::SharedLibraries {
+    crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
+        dns: Some(library),
+        ..crate::libraries::Libraries::NONE
+    })
+    .unwrap()
 }
 
 /// The trace of a transfer of `url` over IPv4 alone, resolving through
@@ -3272,13 +3326,17 @@ fn over_first_look(
     url: &str,
     set: impl FnOnce(&mut crate::options::Options),
 ) -> (Result<(), ErrorKind>, Vec<String>) {
+    over_library(Box::leak(Box::new(library)), url, set)
+}
+
+/// The same, resolving through any `library`.
+fn over_library(
+    library: &'static dyn crate::conn::io::DnsLibrary,
+    url: &str,
+    set: impl FnOnce(&mut crate::options::Options),
+) -> (Result<(), ErrorKind>, Vec<String>) {
     let (mut m, _clock) = networked();
-    let library: &'static FirstLook = Box::leak(Box::new(library));
-    let libraries = crate::libraries::SharedLibraries::new(crate::libraries::Libraries {
-        dns: Some(library),
-        ..crate::libraries::Libraries::NONE
-    })
-    .unwrap();
+    let libraries = with_dns(library);
     let (mut e, lines) = traced(url);
     e.options_mut().ip_version = IpVersion::V4;
     set(e.options_mut());
@@ -3450,6 +3508,331 @@ fn a_bind_s_name_a_library_answers_at_its_first_look_is_taken_inside_the_start()
             "[DNS] cache negative name resolve for nx.test:80 type=A",
             "Could not resolve: nx.test:80",
         ],
+        "{lines:#?}"
+    );
+}
+
+/// A resolver library that runs out of memory at the start's first look
+/// fails the transfer for memory, not as a name not found.
+#[test]
+fn a_library_out_of_memory_at_its_first_look_fails_the_transfer_so() {
+    let (result, _) = over_library(&OomAtFirstLook, "tcp://now.test:1/", |_| {});
+    assert_eq!(result, Err(ErrorKind::OutOfMemory));
+}
+
+/// A resolver library that cannot start the resolve fails it as C's
+/// `hostip_resolv_start` does: the resolve's record, made before it was
+/// asked for, goes at once (`hostip_async_new`, `Curl_async_destroy`),
+/// then the start's code and `hostip_resolv`'s failure, then the DNS
+/// filter's (`cf_dns_start`, `cf_dns_connect`). Built from C's code.
+#[test]
+fn a_library_that_cannot_start_a_resolve_lets_its_record_go_at_once() {
+    let (result, lines) = over_library(&RefusesToStart, "tcp://now.test:1/", |_| {});
+    assert_eq!(result, Err(ErrorKind::FailedInit));
+    assert_eq!(
+        lines,
+        [
+            "[DNS] cache lookup now.test:1 queries=A -> 0 not found",
+            "[DNS] [1] destroy async",
+            "[DNS] [A] hostip_resolv started -> 2",
+            "Could not resolve: now.test",
+            "[DNS] [A] error resolving: 2",
+        ]
+    );
+}
+
+/// A handle holding a record of a resolve, out of any multi: its
+/// transfer's name answered by a library at the look after the start, to
+/// a peer that refuses, so that the record is kept to the end; traced for
+/// `components` through `probe`.
+fn holding_a_record(components: &[u8], probe: LoneProbe) -> (Box<Easy>, TransferId) {
+    let (mut m, _clock) = networked();
+    let library: &'static FirstLook = Box::leak(Box::new(FirstLook {
+        out: false,
+        missing: false,
+    }));
+    let mut e = easy("tcp://now.test:2/");
+    e.options_mut().output.verbose = true;
+    e.options_mut().ip_version = IpVersion::V4;
+    e.set_libraries(with_dns(library));
+    let e = tracing(e, components);
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Err(ErrorKind::CouldntConnect)
+    );
+    let mut easy = m.remove(id, &mut NoEvents).unwrap().easy;
+    easy.options_mut().callbacks.debug = Some(crate::handler::Handler::debug(probe).unwrap());
+    (easy, id)
+}
+
+/// What a lone handle's debug function saw as a record went: each line,
+/// and what it was let do then.
+#[derive(Clone, Default)]
+struct LoneProbe {
+    seen: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Another transfer's id, which the handle is not.
+    other: Arc<std::sync::Mutex<Option<TransferId>>>,
+}
+
+impl crate::handler::DebugHandler for LoneProbe {
+    fn debug(
+        &self,
+        cx: &mut crate::multi::TransferCx<'_>,
+        kind: crate::handler::DebugKind,
+        data: &[u8],
+    ) {
+        if kind != crate::handler::DebugKind::Text {
+            return;
+        }
+        let me = cx.me();
+        let other = self
+            .other
+            .lock()
+            .unwrap()
+            .expect("set before the records go");
+        let flags = crate::ws::SendFlags {
+            kind: Some(crate::ws::FrameKind::Text),
+            more: false,
+        };
+        let line = format!(
+            "{} itself={} other={} pause={:?} frame={:?}",
+            String::from_utf8_lossy(data).trim_end(),
+            cx.options_mut(me).is_some(),
+            cx.options_mut(other).is_some(),
+            cx.pause(me, PauseRequest::RECV),
+            cx.ws_start_frame(flags, 1),
+        );
+        self.seen.lock().unwrap().push(line);
+    }
+}
+
+/// A handle out of any multi that lets go of what it kept of its resolves
+/// says so through its debug function, as C's `Curl_close` does, only if
+/// it is verbose and traces DNS. The function reaches that handle alone,
+/// by its own id, and may neither pause it nor send a frame on it, as
+/// there is no transfer (`Curl_resolv_destroy_all`).
+#[test]
+fn a_lone_handle_s_records_go_through_its_debug_function_reaching_it_alone() {
+    let probe = LoneProbe::default();
+    let (mut easy, id) = holding_a_record(b"dns", probe.clone());
+    *probe.other.lock().unwrap() = Some(id);
+    assert!(easy.holds_resolves());
+    easy.release_resolves();
+    assert!(!easy.holds_resolves());
+    assert_eq!(
+        *probe.seen.lock().unwrap(),
+        [
+            "[DNS] [1] destroy async itself=true other=false pause=Err(BadFunctionArgument) \
+          frame=Err(SendError)"
+        ]
+    );
+    // Not tracing DNS, or not verbose, it says nothing.
+    let quiet = LoneProbe::default();
+    let (mut easy, id) = holding_a_record(b"tcp", quiet.clone());
+    *quiet.other.lock().unwrap() = Some(id);
+    assert!(easy.holds_resolves());
+    easy.release_resolves();
+    assert!(!easy.holds_resolves());
+    let silent = LoneProbe::default();
+    let (mut easy, id) = holding_a_record(b"dns", silent.clone());
+    *silent.other.lock().unwrap() = Some(id);
+    easy.options_mut().output.verbose = false;
+    easy.release_resolves();
+    assert_eq!(*quiet.seen.lock().unwrap(), Vec::<String>::new());
+    assert_eq!(*silent.seen.lock().unwrap(), Vec::<String>::new());
+}
+
+/// A network whose `late.test` answers both families late, IPv6's first
+/// (`first`), or IPv4's, and the multi over it.
+fn late_both(first: crate::conn::io::Family, late: &crate::conn::io::Late) -> (Multi, ManualClock) {
+    use crate::conn::io::{Peer, SharedNet};
+    let clock = ManualClock::new().unwrap();
+    let v6 = std::net::IpAddr::from(std::net::Ipv6Addr::LOCALHOST);
+    let v4 = std::net::IpAddr::from([127, 0, 0, 1]);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(std::net::SocketAddr::new(v6, 3), Peer::Silent)
+        .with_peer(std::net::SocketAddr::new(v4, 3), Peer::Silent)
+        .with_peer(std::net::SocketAddr::new(v6, 1), Peer::Accepts)
+        .with_peer(std::net::SocketAddr::new(v4, 1), Peer::Accepts)
+        .with_late_name("late.test", &[v6, v4], late);
+    let net = match first {
+        crate::conn::io::Family::V4 => net.with_v4_first(),
+        _ => net.with_v6_first(),
+    };
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(SharedNet(Arc::new(std::sync::Mutex::new(net)))),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    (Multi::new(env).unwrap(), clock)
+}
+
+/// The DNS lines of a transfer of `url` over `late_both`'s network, asked
+/// for `ip`, run `runs` times before the late family answers and once
+/// after.
+fn late_lines(
+    first: crate::conn::io::Family,
+    ip: IpVersion,
+    url: &str,
+    runs: usize,
+) -> Vec<String> {
+    let late = crate::conn::io::Late::new();
+    let (mut m, clock) = late_both(first, &late);
+    let (mut e, lines) = traced(url);
+    e.options_mut().ip_version = ip;
+    let e = tracing(e, b"dns");
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..runs {
+        m.perform(&mut NoEvents).unwrap();
+        clock.advance(Duration::from_millis(1));
+    }
+    late.release();
+    m.perform(&mut NoEvents).unwrap();
+    m.remove(id, &mut NoEvents).unwrap();
+    dns_only(trace_of(&lines))
+        .into_iter()
+        .filter(|l| !l.contains("queueing query") && !l.contains("cache lookup"))
+        .collect()
+}
+
+/// A threaded resolve whose AAAA answers while A is out says IPv6's
+/// addresses once, as they are taken, and counts AAAA among the responses
+/// and A as ongoing at each look after (`async_thrdd_report_item`,
+/// `hostip_resolv_take_result`); IPv4's once A comes.
+#[test]
+fn an_aaaa_answered_before_a_is_said_once_and_counted_at_each_look() {
+    let lines = late_lines(
+        crate::conn::io::Family::V6,
+        IpVersion::Any,
+        "tcp://late.test:3/",
+        3,
+    );
+    let incomplete = "[DNS] [A+AAAA] resolve incomplete, responses=AAAA, ongoing=1 for late.test:3";
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|l| l.as_str() == "[DNS] Host late.test:3 resolved IPv6: ::1")
+            .count(),
+        1,
+        "{lines:#?}"
+    );
+    assert!(
+        lines.iter().filter(|l| l.as_str() == incomplete).count() >= 2,
+        "{lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("responses=-")),
+        "{lines:#?}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|l| l.as_str() == "[DNS] Host late.test:3 resolved IPv4: 127.0.0.1")
+            .count(),
+        1,
+        "{lines:#?}"
+    );
+}
+
+/// A threaded resolve of IPv4 alone counts no AAAA among its responses,
+/// whatever its resolver has of IPv6, as AAAA was not asked
+/// (`Curl_resolv_has_answers`'s queries undertaken).
+#[test]
+fn a_family_not_asked_for_is_not_counted_among_the_responses() {
+    for (first, ip, queries) in [
+        (crate::conn::io::Family::V6, IpVersion::V4, "A"),
+        (crate::conn::io::Family::V4, IpVersion::V6, "AAAA"),
+    ] {
+        let lines = late_lines(first, ip, "tcp://late.test:3/", 2);
+        let incomplete =
+            format!("[DNS] [{queries}] resolve incomplete, responses=-, ongoing=1 for late.test:3");
+        assert!(lines.contains(&incomplete), "{lines:#?}");
+        assert!(
+            !lines.iter().any(|l| l.contains("incomplete, responses=A")),
+            "{lines:#?}"
+        );
+    }
+}
+
+/// Two transfers of one name, both waiting on its resolve: the first
+/// takes the answer and keeps it; the second, looking in the cache first
+/// as it looks for its own (`Curl_resolv_take_result`), finds it there,
+/// says so and tells its record it is not wanted (`Curl_async_shutdown`).
+#[test]
+fn a_name_resolved_meanwhile_lets_the_second_transfer_s_resolve_go() {
+    let late = crate::conn::io::Late::new();
+    let (mut m, _clock) = late_both(crate::conn::io::Family::V4, &late);
+    let (e, first) = traced("tcp://late.test:1/");
+    let one = m
+        .add(Box::new(tracing(e, b"dns")), (), &mut NoEvents)
+        .unwrap();
+    let (e, second) = traced("tcp://late.test:1/");
+    let two = m
+        .add(Box::new(tracing(e, b"dns")), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    late.release();
+    m.perform(&mut NoEvents).unwrap();
+    m.remove(one, &mut NoEvents).unwrap();
+    m.remove(two, &mut NoEvents).unwrap();
+    let first = dns_only(trace_of(&first));
+    assert!(
+        first
+            .iter()
+            .any(|l| l == "[DNS] cached entry for late.test:1 queries=A+AAAA"),
+        "{first:#?}"
+    );
+    let lines = trace_of(&second);
+    let at = lines
+        .iter()
+        .position(|l| l == "[DNS] cache lookup late.test:1 queries=A+AAAA -> 0 found\n")
+        .unwrap_or_else(|| panic!("{lines:#?}"));
+    assert_eq!(
+        lines[at + 1..at + 3],
+        [
+            "Hostname 'late.test' was found in DNS cache\n",
+            "[DNS] [2] shutdown async\n",
+        ],
+        "{lines:#?}"
+    );
+}
+
+/// A threaded resolve's queries are numbered as the transfer's record of
+/// it is, not as its resolver numbers it: here the multi's second record,
+/// the first having been a library's resolve, but the resolver's first
+/// (`hostip_async_new`, `async_thrdd_query`).
+#[test]
+fn a_queued_resolve_is_numbered_by_its_record() {
+    let late = crate::conn::io::Late::new();
+    let (mut m, _clock) = late_both(crate::conn::io::Family::V4, &late);
+    let library: &'static FirstLook = Box::leak(Box::new(FirstLook {
+        out: false,
+        missing: false,
+    }));
+    let mut e = easy("tcp://now.test:1/");
+    e.options_mut().ip_version = IpVersion::V4;
+    e.set_libraries(with_dns(library));
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    m.remove(id, &mut NoEvents).unwrap();
+    let (e, lines) = traced("tcp://late.test:1/");
+    let id = m
+        .add(Box::new(tracing(e, b"dns")), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    late.release();
+    m.perform(&mut NoEvents).unwrap();
+    m.remove(id, &mut NoEvents).unwrap();
+    let lines = dns_only(trace_of(&lines));
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "[DNS] queueing query [1/2] AAAA late.test:1"),
         "{lines:#?}"
     );
 }

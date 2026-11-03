@@ -322,6 +322,13 @@ mod tests {
         assert!(v.claims("threadsafe"));
     }
 
+    /// `Debug`, which tells runtests the build has the debug hooks, is
+    /// claimed by a build with them and by no other.
+    #[test]
+    fn the_debug_hooks_are_claimed_as_debug() {
+        assert_eq!(version().claims("Debug"), cfg!(feature = "debug-hooks"));
+    }
+
     /// A feature is claimed by its name in any case, as C's tool matches
     /// it; one the build lacks is not.
     #[test]

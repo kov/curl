@@ -372,17 +372,15 @@ mod tests {
             .iter()
             .fold(0, |b, &f| b | c_feature(f).1);
         assert_eq!(info.features, bits);
-        // The resolver is the core's choice; the core's tests pin it.
+        // The resolver and the debug hooks are the core's choice; the
+        // core's tests pin them.
         let asynch = version().features.contains(&Feature::AsynchDns);
+        let debug = version().features.contains(&Feature::Debug);
         let (listed, listed_bits): (Vec<_>, Vec<_>) = [
             (true, "alt-svc", ffi::CURL_VERSION_ALTSVC),
             (asynch, "AsynchDNS", ffi::CURL_VERSION_ASYNCHDNS),
             (true, "brotli", ffi::CURL_VERSION_BROTLI),
-            (
-                cfg!(feature = "debug-hooks"),
-                "Debug",
-                ffi::CURL_VERSION_DEBUG,
-            ),
+            (debug, "Debug", ffi::CURL_VERSION_DEBUG),
             (true, "GSS-API", ffi::CURL_VERSION_GSSAPI),
             (true, "HSTS", ffi::CURL_VERSION_HSTS),
             (true, "HTTP2", ffi::CURL_VERSION_HTTP2),

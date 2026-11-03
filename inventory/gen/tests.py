@@ -207,7 +207,10 @@ def parse_test(path):
             srv.append(l)
     t["servers"] = srv  # raw lines, in file order
     t["killserver"] = [l.strip() for l in gp("client", "killserver") if l.strip()]
-    tool = [l.strip() for l in gp("client", "tool")]
+    # runtests.pl's preprocessing replaces %TESTNUMBER before the tool is
+    # read (runner.pm `singletest_run`).
+    tool = [l.strip().replace("%TESTNUMBER", str(t["number"]))
+            for l in gp("client", "tool")]
     t["tool"] = tool[0] if tool and tool[0] else None
     t["name"] = " ".join(lines_text(gp("client", "name")))
     cmd_exists = partexists(xml, "client", "command")

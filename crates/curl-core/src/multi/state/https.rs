@@ -531,8 +531,14 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
     let at = Text::<8>::clipped(format_args!(":{port}")).0;
     let at = at.bytes();
     let dns = Component::Dns;
-    // The C debug build's line.
     super::names::record_started(cx, route);
+    // Over a Unix socket the filter resolves the socket in place of the
+    // record (`cf_dns_start` asks for its address alone), which is then
+    // known to be none.
+    if peer.is_unix() {
+        return Ok((Record::Known, None, None));
+    }
+    // The C debug build's line.
     #[cfg(feature = "debug-hooks")]
     trace::of_with(cx, dns, &[b"[HTTPS] hostip_resolv(", name, at, b")"]);
     let found = cached(route, cx);

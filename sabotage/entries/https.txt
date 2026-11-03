@@ -246,11 +246,9 @@ witness: curl-core proto::http::tests::h3_trace::a_connect_udp_tunnel_answered_h
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::h3_trace::a_transfer_given_up_as_it_connects_lets_its_answer_go_as_c
 --- old
-            Stage::Dialed(d) => &d.answer,
-        };
+            Stage::Dialed(d) => Some(&d.answer),
 --- new
-            Stage::Dialed(_) => return None,
-        };
+            Stage::Dialed(_) => None,
 
 === a race given up keeps its answer
 file: crates/curl-core/src/multi/state.rs
@@ -419,3 +417,23 @@ witness: curl-tool an_https_setup_whose_attempt_fails_waits_for_the_record
     h.record == Record::Pending || choosing(c, cx).second(first).is_some()
 --- new
     choosing(c, cx).second(first).is_some()
+
+=== a record is asked for over a Unix socket
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::over_a_unix_socket_no_record_is_asked_for
+--- old
+    if peer.is_unix() {
+        return Ok((Record::Known, None, None));
+    }
+--- new
+    if peer.is_unix() && false {
+        return Ok((Record::Known, None, None));
+    }
+
+=== a race over a Unix socket wants addresses its first never had
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::http::tests::https_trace::a_get_through_a_socks_proxy_over_a_unix_socket_races_the_socket
+--- old
+        c.lead().and_then(|m| m.addresses().cloned()),
+--- new
+        c.lead().and_then(|m| m.answer().cloned()).map(Addresses::Resolved),

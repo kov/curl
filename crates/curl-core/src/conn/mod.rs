@@ -31,9 +31,9 @@ pub mod threaded;
 pub(crate) mod tls;
 
 pub(crate) use connect::{
-    Asked, Came, ConnCx, ConnectError, ConnectMachine, DriveOptions, Drove, Found, Handshook,
-    MAX_ATTEMPTS, Made, OfFamily, Opened, Progress, QuicMaking, Reply, SocketSetup, SocksTarget,
-    Tunneled, Unresolved, family, queries, resolve_blocking, say_answered, say_queued,
+    Addresses, Asked, Came, ConnCx, ConnectError, ConnectMachine, DriveOptions, Drove, Found,
+    Handshook, MAX_ATTEMPTS, Made, OfFamily, Opened, Progress, QuicMaking, Reply, SocketSetup,
+    SocksTarget, Tunneled, Unresolved, family, queries, resolve_blocking, say_answered, say_queued,
 };
 pub(crate) use connect_to::{BadVia, via};
 pub(crate) use dns::{

@@ -642,7 +642,7 @@ pub(crate) enum Asked {
 /// or the Unix socket the route's first hop is, its one address
 /// (`Curl_unix2addr`). A pointer's size, as the setup's slot holds it.
 #[derive(Clone, Debug)]
-enum Addresses {
+pub(crate) enum Addresses {
     Resolved(TryArc<Answer>),
     Unix,
 }
@@ -1001,9 +1001,9 @@ impl ConnectMachine {
         created: Instant,
         closer: Closer,
         settings: ConnSettings,
-        answer: TryArc<Answer>,
+        answer: Addresses,
     ) -> ConnectMachine {
-        let eyeballs = Eyeballs::new(Addresses::Resolved(answer), route.ip);
+        let eyeballs = Eyeballs::new(answer, route.ip);
         ConnectMachine {
             number,
             route,
@@ -1249,14 +1249,19 @@ impl ConnectMachine {
     }
 
     pub(crate) fn answer(&self) -> Option<&TryArc<Answer>> {
-        let answer = match &self.stage {
-            Stage::Resolving(_) => return None,
-            Stage::Racing(r) => &r.eyeballs.answer,
-            Stage::Dialed(d) => &d.answer,
-        };
-        match answer {
+        match self.addresses()? {
             Addresses::Resolved(answer) => Some(answer),
             Addresses::Unix => None,
+        }
+    }
+
+    /// What its attempts connect to, the addresses or the Unix socket,
+    /// once known.
+    pub(crate) fn addresses(&self) -> Option<&Addresses> {
+        match &self.stage {
+            Stage::Resolving(_) => None,
+            Stage::Racing(r) => Some(&r.eyeballs.answer),
+            Stage::Dialed(d) => Some(&d.answer),
         }
     }
 
@@ -4190,7 +4195,7 @@ mod tests {
                 start,
                 Closer::System,
                 ConnSettings::DEFAULT,
-                answer(Vec::new()),
+                Addresses::Resolved(answer(Vec::new())),
             )
         };
         let mut dns = DnsCache::default();

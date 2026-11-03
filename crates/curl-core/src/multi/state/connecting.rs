@@ -182,8 +182,9 @@ impl Connecting {
 /// the request, both its attempts closed as the lease is given back.
 #[derive(Debug)]
 pub(super) struct Race {
-    /// The addresses the first resolved, which the second races.
-    pub(super) answer: TryArc<Answer>,
+    /// The addresses the first resolved, or the Unix socket it connects
+    /// to, which the second races.
+    pub(super) answer: Addresses,
     /// The connection's makings, which the second is made with.
     makings: (Closer, ConnSettings, Instant),
     /// The second attempt.
@@ -1219,10 +1220,10 @@ fn race_starts<H: Host>(c: &mut Connecting, cx: &StepCx<'_, H>) -> Result<(), Ou
     }
     let at = cx.now();
     let (Some(answer), Some(makings)) = (
-        c.lead().and_then(|m| m.answer().cloned()),
+        c.lead().and_then(|m| m.addresses().cloned()),
         c.lead().map(ConnectMachine::makings),
     ) else {
-        unreachable!("an attempt starts once its name is resolved");
+        unreachable!("an attempt starts once what it connects to is known");
     };
     c.race = Some(curl_alloc::try_box(Race {
         answer,
@@ -1295,11 +1296,10 @@ fn share_addresses(c: &mut Connecting) {
         return;
     };
     if let Some(answer) = answer {
-        race.answer = answer;
+        race.answer = Addresses::Resolved(answer);
     }
-    let answer = race.answer.clone();
-    if let Some(second) = race.second.running_mut() {
-        second.follow(answer, resolving);
+    if let (Addresses::Resolved(answer), Some(second)) = (&race.answer, race.second.running_mut()) {
+        second.follow(answer.clone(), resolving);
     }
 }
 

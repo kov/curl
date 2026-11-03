@@ -17,7 +17,7 @@ use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
 use crate::conn::shutdown::ConnSettings;
 use crate::conn::{
-    Acquired, Answer, Asked, BadEntry, BadVia, Conn, ConnLease, ConnSlot, ConnectError,
+    Acquired, Addresses, Answer, Asked, BadEntry, BadVia, Conn, ConnLease, ConnSlot, ConnectError,
     ConnectMachine, Connected, Dial, DriveOptions, Drove, Finish, Found, Full, Home, Limit,
     ListEntry, Made, NetRoute, Peer, Pool, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute,
     Released, ReuseRules, Route, Unresolved, WaitReason, parse_entry, queries,

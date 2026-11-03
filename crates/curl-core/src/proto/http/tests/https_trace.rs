@@ -978,3 +978,129 @@ fn an_https_setup_to_a_name_has_the_record_s_dns_filter_and_the_addresses() {
     ));
     assert_eq!(lines(&ran, &starts), want);
 }
+
+/// Over a Unix socket no record is asked for: the record's filter takes
+/// the socket's path as its address, as the addresses' filter does
+/// (`cf_dns_start` asks for an address alone), so the record is known to
+/// be none at once, and a handshake that fails ends the setup then. C's
+/// tool over c-ares traces the same, the server answering as no TLS one
+/// does (`test_11_02_unix_connect_http`).
+#[test]
+fn over_a_unix_socket_no_record_is_asked_for() {
+    use crate::conn::io::{Remote, UnixPeer};
+    use crate::conn::{Peer as Host, Scheme};
+    use crate::options::UnixSocket;
+    static LATE_RECORD: Ares = Ares {
+        late: false,
+        record_at: 3,
+        with_alpn: false,
+    };
+    let path = "/tmp/https-over-unix";
+    let peer = Host::unix(Scheme::HTTPS, path.as_bytes().to_vec(), 0, false);
+    let at = Remote::Unix(UnixPeer::of(curl_alloc::TryArc::try_new(peer).unwrap()));
+    let clock = ManualClock::new().unwrap();
+    // A server that is no TLS one: the handshake fails on its answer.
+    let talk = Conversation::replies(&[OK], false);
+    let net = FakeNet::new(clock.clone())
+        .with_peer_at(at.clone(), Peer::Accepts)
+        .with_conversation_at(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let e = tracing_over(&LATE_RECORD, b"dns,https-connect");
+    let url = format!("https://localhost:{PORT}/");
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.sockets.make_mut().unwrap().unix = Some(UnixSocket {
+            path: path.as_bytes().to_vec(),
+            abstract_name: false,
+        });
+    });
+    assert!(ran.result.is_err(), "{:#?}", ran.seen.text());
+    let got = lines(
+        &ran,
+        &[
+            "[DNS] [HTTPS]",
+            "[DNS] resolved",
+            "[DNS] [A+AAAA] cf_dns_start",
+            "[HTTPS-CONNECT] HTTPS-RR",
+            "[HTTPS-CONNECT] connect, all",
+        ],
+    );
+    let want = expect(&format!(
+        "[DNS] [HTTPS] created DNS filter for {path}:0, transport=6
+        [DNS] [HTTPS] cf_dns_start unix-domain-socket {path}:0
+        [DNS] resolved unix://{path}
+        [DNS] [A+AAAA] cf_dns_start unix-domain-socket {path}:0
+        [DNS] resolved unix://{path}
+        [HTTPS-CONNECT] HTTPS-RR not available
+        [HTTPS-CONNECT] HTTPS-RR not available
+        [HTTPS-CONNECT] connect, all attempts failed"
+    ));
+    assert_eq!(got, want, "{:#?}", ran.seen.text());
+}
+
+/// An HTTPS GET through a SOCKS proxy reached over a Unix socket, the
+/// origin's record still to come as its attempt starts: the race holds
+/// the attempt to the socket, which a second would race too, until the
+/// record has come, and the GET is made. C's tool traces the same through
+/// `socks5h://localhost<path>` (test 1470).
+#[test]
+fn a_get_through_a_socks_proxy_over_a_unix_socket_races_the_socket() {
+    use crate::conn::io::{Remote, UnixPeer};
+    use crate::conn::{Peer as Host, Scheme};
+    static LATE_RECORD: Ares = Ares {
+        late: false,
+        record_at: 3,
+        with_alpn: false,
+    };
+    let path = "/tmp/socks-over-unix";
+    let peer = Host::unix(Scheme::HTTP, path.as_bytes().to_vec(), 1080, false);
+    let at = Remote::Unix(UnixPeer::of(curl_alloc::TryArc::try_new(peer).unwrap()));
+    let clock = ManualClock::new().unwrap();
+    let response = fake::records(OK).unwrap();
+    let talk =
+        Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, WELCOME, &response], true).per_send();
+    let net = FakeNet::new(clock.clone())
+        .with_peer_at(at.clone(), Peer::Accepts)
+        .with_conversation_at(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let e = tracing_over(&LATE_RECORD, b"dns,https-connect");
+    let url = format!("https://origin.example:{PORT}/");
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.proxy.make_mut().unwrap().url = Some(format!("socks5h://localhost{path}").into_bytes());
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let got = lines(
+        &ran,
+        &[
+            "[DNS] [HTTPS] ares_take_result",
+            "[DNS] [A+AAAA] cf_dns_start",
+            "[DNS] resolved",
+            "[HTTPS-CONNECT] connect, init",
+            "[HTTPS-CONNECT] HTTPS-RR",
+            "[HTTPS-CONNECT] connect -> 0, done=1",
+        ],
+    );
+    let want = expect(&format!(
+        "[DNS] [A+AAAA] cf_dns_start unix-domain-socket {path}:1080
+        [DNS] resolved unix://{path}
+        [HTTPS-CONNECT] connect, init
+        [HTTPS-CONNECT] HTTPS-RR not available
+        [DNS] [HTTPS] ares_take_result, result=6, ares_result=0, ares_status=1, dns=not found
+        [HTTPS-CONNECT] HTTPS-RR not available
+        [HTTPS-CONNECT] connect -> 0, done=1"
+    ));
+    assert_eq!(got, want, "{:#?}", ran.seen.text());
+}

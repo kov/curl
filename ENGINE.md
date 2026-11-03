@@ -2802,7 +2802,9 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   frees one that none is left. A transfer done tells each still kept it is not wanted, the newest
   first (`shutdown async` after `multi_done`), as does a record found in the cache meanwhile.
 - **A name's HTTPS record.** `https.rs` starts a third probe of its own (`start_https`), named
-  `_port._https.name` off port 443, before the name's addresses are asked for. Its answer, kept in
+  `_port._https.name` off port 443, before the name's addresses are asked for; over a Unix socket
+  none is asked, its filter taking the socket's path as its address (`cf_dns_start`), and the
+  record is known to be none at once. Its answer, kept in
   the cache beside them, chooses the attempts' versions ahead of what is wanted, if it is about
   the origin itself. The first attempt is chosen by the record if it was taken before
   `connect, init`, as C's init asks the DNS filter for it, the plan's dial changed to match

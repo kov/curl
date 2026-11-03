@@ -82,13 +82,22 @@ pub(super) fn chain_set_up<H: Host>(
 }
 
 /// The HTTPS record's filter starts, for the origin (`cf_dns_start`).
+/// Over a Unix socket it asks for no record: the socket's path is made its
+/// address at once, as the addresses' filter makes it (`resolv_unix`).
 pub(super) fn record_started<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute) {
     let peer = route.target();
+    let unix = peer.is_unix();
+    let head: &[u8] = if unix {
+        b"[HTTPS] cf_dns_start unix-domain-socket "
+    } else {
+        b"[HTTPS] cf_dns_start host "
+    };
     trace::of_with(
         cx,
         Component::DnsFilter,
-        &[b"[HTTPS] cf_dns_start host ", peer.name(), at(peer).bytes()],
+        &[head, peer.name(), at(peer).bytes()],
     );
+    resolved_unix(cx, peer);
 }
 
 /// The addresses' filter starts, for the peer connected to
@@ -103,8 +112,19 @@ pub(super) fn started<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute) {
     let head = Text::<48>::clipped(format_args!("[{queries}] cf_dns_start {kind} ")).0;
     let dns = Component::DnsFilter;
     trace::of_with(cx, dns, &[head.bytes(), peer.name(), at(peer).bytes()]);
+    resolved_unix(cx, peer);
+}
+
+/// A Unix socket's path made its address, reported unless it is too long
+/// for one (`resolv_unix`, `cf_dns_report`); nothing for a name.
+fn resolved_unix<H: Host>(cx: &mut StepCx<'_, H>, peer: &Peer) {
+    let unix = peer.is_unix();
     if unix && peer.name().len() < curl_os::net::UNIX_PATH_ROOM {
-        trace::of_with(cx, dns, &[b"resolved unix://", peer.name()]);
+        trace::of_with(
+            cx,
+            Component::DnsFilter,
+            &[b"resolved unix://", peer.name()],
+        );
     }
 }
 

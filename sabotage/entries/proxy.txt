@@ -815,6 +815,24 @@ features: test-util
 --- new
             let _ = spoken;
 
+=== a redial through a SOCKS proxy looks its target up again
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::a_redial_through_a_socks_proxy_keeps_its_target_s_addresses
+features: test-util debug-hooks
+--- old
+                found @ SocksTarget::Found(..) => Some(found),
+--- new
+                SocksTarget::Found(..) => None,
+
+=== a redial makes its SOCKS target's DNS filter again
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::http::tests::a_redial_through_a_socks_proxy_keeps_its_target_s_addresses
+features: test-util debug-hooks
+--- old
+            if leg.version.resolves_locally() && !made.target_filter {
+--- new
+            if leg.version.resolves_locally() {
+
 === a SOCKS target found in the cache is said to be again as its handshake starts
 file: crates/curl-core/src/multi/state/socks.rs
 witness: curl-core proto::http::tests::a_socks_target_found_in_the_cache_is_said_once

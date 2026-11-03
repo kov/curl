@@ -108,7 +108,7 @@ fn start<H: Host>(
     let found = s.machine.dialed().target().clone();
     let leg = lent.route.socks().expect("through a SOCKS proxy");
     let target = leg.to;
-    if version.resolves_locally() {
+    if version.resolves_locally() && !s.machine.dialed().made().target_filter {
         super::names::target_started(cx, target, version.ip(lent.route.ip));
     }
     let resolved = match found {

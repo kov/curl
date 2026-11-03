@@ -914,7 +914,7 @@ pub(super) fn enter_chain<H: Host>(
     let filter = match due {
         Due::Socks(_) => {
             let leg = plan.socks().expect("through a SOCKS proxy");
-            if leg.version.resolves_locally() {
+            if leg.version.resolves_locally() && !made.target_filter {
                 names::target_created(cx, leg.to, leg.version.ip(plan.ip));
             }
             let at = port_text(leg.to.port());

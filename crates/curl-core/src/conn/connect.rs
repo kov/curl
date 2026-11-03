@@ -144,6 +144,10 @@ pub(crate) struct Made {
     /// The origin's QUIC connection through a CONNECT-UDP tunnel
     /// (`[HTTP/3][CAPSULE]`), in place of its TLS.
     pub(crate) quic: bool,
+    /// The SOCKS proxy's target's DNS filter, made before the setup was
+    /// started over: C's sits above the setup's, which a redial leaves as
+    /// it is, so it is neither made nor started again.
+    pub(crate) target_filter: bool,
 }
 
 /// What a tunnel through an HTTP proxy is a stream of.
@@ -253,6 +257,10 @@ struct Racing {
     attempts: Vec<Attempt>,
     /// When the last attempt started.
     last_start: Option<Instant>,
+    /// The SOCKS proxy's target's addresses, found before the setup was
+    /// started over: kept by their DNS filter, above the setup's, which a
+    /// redial leaves as it is (`cf_setup_connect`).
+    target: Option<SocksTarget>,
 }
 
 /// What a drive reaches while it works, as C's connection filters reach
@@ -1009,6 +1017,7 @@ impl ConnectMachine {
                 eyeballs,
                 attempts: Vec::new(),
                 last_start: None,
+                target: None,
             }),
             redials: 0,
             closer,
@@ -1350,6 +1359,10 @@ impl ConnectMachine {
             eyeballs: Eyeballs::new(d.answer, self.route.ip),
             attempts: Vec::new(),
             last_start: None,
+            target: match d.target {
+                found @ SocksTarget::Found(..) => Some(found),
+                SocksTarget::None | SocksTarget::Unresolved => None,
+            },
         });
         true
     }
@@ -1455,6 +1468,7 @@ impl ConnectMachine {
                                             eyeballs,
                                             attempts: Vec::new(),
                                             last_start: None,
+                                            target: None,
                                         });
                                         // Nothing to say: the race starts, with
                                         // no address yet if none came, as what
@@ -1481,6 +1495,7 @@ impl ConnectMachine {
                     eyeballs,
                     attempts: Vec::new(),
                     last_start: None,
+                    target: None,
                 });
                 return Ok(Drove::Connecting(self, Progress::Resolved(found)));
             }
@@ -2123,7 +2138,9 @@ impl ConnectMachine {
             // The connection is the first hop's; the handshakes over it
             // are still to be made.
             let answer = r.eyeballs.answer.clone();
-            let (target, target_late) = match self.socks_target(cx, setup) {
+            let kept = r.target.take();
+            let kept_target = kept.is_some();
+            let (target, target_late) = match self.socks_target(cx, setup, kept) {
                 Ok(target) => target,
                 Err(e) => {
                     cx.net().close(won.socket);
@@ -2136,11 +2153,12 @@ impl ConnectMachine {
                 .and_then(|t| t.quic().first_byte_at())
                 .unwrap_or(now);
             // The proxy's TLS is its QUIC connection's, made.
-            let made = if tunnel.is_some() {
+            let mut made = if tunnel.is_some() {
                 Made::default().with(Handshook::ProxyTls)
             } else {
                 Made::default()
             };
+            made.target_filter = kept_target;
             let mut stream = Stream::new(won.socket);
             // The tunnel is the layer its bytes pass through.
             if let Some(tunnel) = tunnel {
@@ -2287,12 +2305,17 @@ impl ConnectMachine {
 
     /// The destination's addresses, for a SOCKS proxy that is not to
     /// resolve its name (`Curl_conn_dns_add_addr_resolve`); a resolver
-    /// that finds nothing is for the handshake to say.
+    /// that finds nothing is for the handshake to say. Those `kept` from
+    /// before a redial are the ones, not looked up again.
     fn socks_target(
         &self,
         cx: &mut dyn ConnCx,
         setup: DriveOptions,
+        kept: Option<SocksTarget>,
     ) -> Result<(SocksTarget, Late), ConnectError> {
+        if let Some(kept) = kept {
+            return Ok((kept, Late::default()));
+        }
         let Some(leg) = self.route.socks() else {
             return Ok((SocksTarget::None, Late::default()));
         };
@@ -4379,6 +4402,7 @@ mod tests {
             ),
             attempts: Vec::new(),
             last_start: None,
+            target: None,
         });
         let mut raced = Raced {
             v4_starts: Vec::new(),

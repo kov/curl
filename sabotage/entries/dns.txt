@@ -578,7 +578,7 @@ file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::setup_trace::a_socks4_target_s_name_has_a_dns_filter_of_its_own
 features: test-util
 --- old
-            if leg.version.resolves_locally() {
+            if leg.version.resolves_locally() && !made.target_filter {
                 names::target_created(cx, leg.to, leg.version.ip(plan.ip));
 --- new
             if false {

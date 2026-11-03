@@ -5184,6 +5184,56 @@ fn a_tunnel_redials_when_the_proxy_closes_on_its_407() {
     );
 }
 
+/// Behind a SOCKS5 pre-proxy that is given the HTTP proxy's address, a
+/// redial for the proxy's 407 keeps the address the setup found for it:
+/// its DNS filter sits above the setup's, which C's redial leaves as it
+/// is (`cf_setup_connect`). The proxy's address is looked up once, as
+/// C's.
+#[test]
+fn a_redial_through_a_socks_proxy_keeps_its_target_s_addresses() {
+    let challenge: &[u8] = b"HTTP/1.1 407 Who\r\n\
+        Proxy-Authenticate: Basic realm=\"p\"\r\nProxy-Connection: close\r\n\
+        Content-Length: 0\r\n\r\n";
+    let first = Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, challenge], true).per_send();
+    let second =
+        Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, TUNNEL_UP, OK], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let mut e = Easy::new();
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"dns");
+    e.set_components(Some(components));
+    let ran = get_with(&mut m, e, "/", second.clone(), |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.make_mut().unwrap().url = Some(b"http://127.0.0.1:3128".to_vec());
+        o.proxy.make_mut().unwrap().pre_proxy =
+            Some(format!("socks5://127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().tunnel = true;
+        o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+        o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
+        o.proxy.make_mut().unwrap().auth = crate::options::HttpAuth(AuthMethods::ANY);
+    });
+    let said = ran.seen.text();
+    assert_eq!(ran.result, Ok(()), "{said:?}");
+    assert_eq!(ran.easy.report().connects(), 2);
+    assert!(
+        said.iter().any(|l| l == "Connect me again please\n"),
+        "{said:?}"
+    );
+    let looked = said
+        .iter()
+        .filter(|l| l.starts_with("[DNS] cache lookup 127.0.0.1:3128 "))
+        .count();
+    assert_eq!(looked, 1, "{said:?}");
+    // Its filter is made and started once.
+    for line in [
+        "[DNS] [A+AAAA] created DNS filter for 127.0.0.1:3128, transport=3\n",
+        "[DNS] [A+AAAA] cf_dns_start host 127.0.0.1:3128\n",
+    ] {
+        let n = said.iter().filter(|l| *l == line).count();
+        assert_eq!(n, 1, "{line} {said:?}");
+    }
+}
+
 /// A SOCKS proxy's target found in the cache is said to be once, as the
 /// lookup finds it (`hostip_resolv`), not again as the handshake starts.
 #[test]

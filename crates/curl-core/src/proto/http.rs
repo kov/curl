@@ -694,7 +694,28 @@ impl Request {
         Ok(request)
     }
 
+    /// A request of `scheme`, with the credentials the options, the URL
+    /// and a `.netrc` file give it where it may send them.
     fn of_scheme<H: Host>(
+        url: &Url,
+        scheme: Scheme,
+        before: Before<'_>,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<Request, ErrorKind> {
+        let mut request = Request::uncredentialed(url, scheme, before, cx)?;
+        // HTTP's user and password take control bytes
+        // (`PROTOPT_USERPWDCTRL`), RTSP's not.
+        let takes = Takes::of(Some(scheme));
+        let credentials = super::request_credentials(cx, request.gate.trusted(), url, takes)?;
+        // By the host's name: an IPv6 address without its brackets, a name
+        // in Unicode in its ASCII form (`Curl_netrc_scan` of `hostname`).
+        let name = request.base.peer.name();
+        request.base.credentials = super::with_netrc(credentials, name, takes, cx)?;
+        Ok(request)
+    }
+
+    /// A request of `scheme` with no credentials, none read.
+    fn uncredentialed<H: Host>(
         url: &Url,
         scheme: Scheme,
         before: Before<'_>,
@@ -746,18 +767,11 @@ impl Request {
                 CredentialGate::new(first, &peer, other_hosts)
             }
         };
-        // HTTP's user and password take control bytes
-        // (`PROTOPT_USERPWDCTRL`), RTSP's not.
-        let takes = Takes::of(Some(scheme));
-        let credentials = super::request_credentials(cx, gate.trusted(), url, takes)?;
-        // By the host's name: an IPv6 address without its brackets, a name
-        // in Unicode in its ASCII form (`Curl_netrc_scan` of `hostname`).
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
         Ok(Request {
             base: super::base::RequestBase {
                 peer,
                 pipeline: Pipeline::collecting(),
-                credentials,
+                credentials: None,
             },
             target,
             forward_target: None,

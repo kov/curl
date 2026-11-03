@@ -1778,7 +1778,9 @@ impl Request {
     /// The request a server imagines for a response it pushes on
     /// `promised`, as the pushed transfer's own: a GET of `url` gone in
     /// HTTP/2, the response's head to come (`http2_data_setup`, with the
-    /// size to come unknown).
+    /// size to come unknown). It sends nothing, so it reads no
+    /// credentials, as C's pushed handle goes to PERFORMING without the
+    /// connect that reads them (`Curl_multi_add_perform`).
     pub(crate) fn pushed<H: Host>(
         url: &Url,
         cx: &mut StepCx<'_, H>,
@@ -1792,7 +1794,8 @@ impl Request {
             method: Method::Get,
             http: &inherited,
         };
-        let mut request = Request::new(url, secured, before, cx)?;
+        let of = if secured { HTTPS } else { HTTP };
+        let mut request = Request::uncredentialed(url, of, before, cx)?;
         let options = cx.easy().options();
         let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);
         cx.easy_mut().auth.start(want, proxy_want);

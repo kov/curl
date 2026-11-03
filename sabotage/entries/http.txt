@@ -1568,10 +1568,10 @@ witness: curl-core proto::http::tests::netrc_reads::each_scheme_reads_a_netrc_on
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::netrc_reads::each_scheme_reads_a_netrc_once
 --- old
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        request.base.credentials = super::with_netrc(credentials, name, takes, cx)?;
 --- new
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
-        let credentials = super::with_netrc(credentials, peer.name(), takes, cx)?;
+        let credentials = super::with_netrc(credentials, name, takes, cx)?;
+        request.base.credentials = super::with_netrc(credentials, name, takes, cx)?;
 
 === a request that keeps no credentials does not read the netrc
 file: crates/curl-core/src/proto/mod.rs

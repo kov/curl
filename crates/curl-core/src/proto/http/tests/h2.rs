@@ -2443,6 +2443,9 @@ fn a_stream_paused_in_a_siblings_step_reopens_its_window_in_its_own() {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Answer {
     Take,
+    /// Taken, its handle asked to require a `.netrc` file that is not
+    /// there.
+    TakeRequiringNetrc,
     Deny,
     Fail,
 }
@@ -2490,9 +2493,14 @@ impl crate::multi::MultiEvents<crate::multi::NoHost> for Pushes {
         self.offers
             .push((fields, easy.report().url().map(<[u8]>::to_vec)));
         match self.answer {
-            Answer::Take => {
-                easy.options_mut().callbacks.write =
-                    Some(Handler::write(self.seen.clone()).unwrap());
+            Answer::Take | Answer::TakeRequiringNetrc => {
+                let o = easy.options_mut();
+                o.callbacks.write = Some(Handler::write(self.seen.clone()).unwrap());
+                if self.answer == Answer::TakeRequiringNetrc {
+                    let netrc = o.netrc.make_mut().unwrap();
+                    netrc.mode = crate::options::NetrcMode::Required;
+                    netrc.file = Some(b"/nonexistent/.netrc".to_vec());
+                }
                 crate::multi::Pushed::Accepted { easy, owner: () }
             }
             Answer::Deny => crate::multi::Pushed::Denied,
@@ -2583,6 +2591,21 @@ fn a_pushed_response_becomes_a_transfer_of_its_own() {
     );
     let url = format!("http://127.0.0.1:{PORT}/pushed");
     assert_eq!(ev.offers[0].1.as_deref(), Some(url.as_bytes()));
+    assert_eq!(ev.seen.body(), b"abc");
+}
+
+/// A pushed transfer sends no request, so it reads no credentials: a
+/// `.netrc` file its handle requires and cannot find fails nothing, as
+/// C's pushed handle goes to PERFORMING without its connection's setup
+/// (`Curl_multi_add_perform`), where the file is read.
+#[test]
+fn a_pushed_transfer_reads_no_netrc() {
+    let mut ev = Pushes::answering(Answer::TakeRequiringNetrc);
+    let reply = promising("http", &format!("127.0.0.1:{PORT}"));
+    let (done, sent) = pushed_get(&reply, &mut ev);
+    assert_eq!(done.len(), 2, "{done:?}\n{sent}");
+    assert!(done.iter().all(|(_, r)| r.is_ok()), "{done:?}\n{sent}");
+    assert!(!sent.contains("R 2 "), "{sent}");
     assert_eq!(ev.seen.body(), b"abc");
 }
 

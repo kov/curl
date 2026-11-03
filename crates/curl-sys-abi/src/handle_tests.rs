@@ -3463,10 +3463,12 @@ fn silent_dns_server() -> &'static CStr {
 }
 
 /// A handle tracing DNS to `debug`, with `seen` its data, to a name the
-/// resolver library answers itself and a port that refuses. Its HTTPS
+/// resolver answers itself and a port that refuses. Over c-ares its HTTPS
 /// record is asked of a server that never answers, so that the record's
 /// resolve is still out as the transfer ends, whatever the host's own
-/// resolver would answer and however soon.
+/// resolver would answer and however soon. The threaded build, as C's
+/// built without c-ares, has no servers to set and asks no record, which
+/// is then known at once.
 #[cfg(feature = "c-ares")]
 fn refused_tracing_dns(debug: DebugFn, seen: &mut Seen) -> *mut CURL {
     let c = curl_easy_init();
@@ -3476,7 +3478,12 @@ fn refused_tracing_dns(debug: DebugFn, seen: &mut Seen) -> *mut CURL {
         c"https://localhost:1/".as_ptr().cast_mut(),
     );
     let servers = silent_dns_server().as_ptr().cast_mut();
-    assert_eq!(pointer(c, ffi::CURLOPT_DNS_SERVERS, servers), ffi::CURLE_OK);
+    let set = if cfg!(feature = "threaded-resolver") {
+        ffi::CURLE_NOT_BUILT_IN
+    } else {
+        ffi::CURLE_OK
+    };
+    assert_eq!(pointer(c, ffi::CURLOPT_DNS_SERVERS, servers), set);
     let components = curl_core::components::Components::new().unwrap();
     components.configure(b"dns");
     // SAFETY: a live handle.

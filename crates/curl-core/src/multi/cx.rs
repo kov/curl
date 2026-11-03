@@ -498,6 +498,17 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
         super::state::async_gone(self.step, holder);
     }
 
+    fn resolve_shut(&mut self, holder: crate::conn::asyncs::Holder) {
+        super::state::async_shut(self.step, holder);
+    }
+
+    fn resolve_id(
+        &self,
+        holder: crate::conn::asyncs::Holder,
+    ) -> Option<crate::conn::io::ResolveId> {
+        self.step.easy().asyncs.newest(holder)
+    }
+
     fn fails_ipv6_resolves(&self) -> bool {
         self.step.rest.fail_ipv6
     }

@@ -12,7 +12,7 @@ use std::time::Duration;
 /// A server on a port of its own that answers each query with `127.0.0.1`
 /// for A, `alpn=http/1.1` for HTTPS and nothing for AAAA, or with NXDOMAIN
 /// for a name under `nx`. A name under `silent` gets no answer, one under
-/// `slowa` its A late and one under `slowv6` its AAAA; one with `norec` in
+/// `slowa` or `nxslow` its A late and one under `slowv6` its AAAA; one with `norec` in
 /// it gets no answer for its HTTPS record, one with `h3rec` `alpn=h3`, one
 /// with `portrec` `alpn=h2 port=8443`, and one with `emptyrr` an answer
 /// without a record. Each query's type and
@@ -36,7 +36,7 @@ fn dns_server() -> (u16, mpsc::Receiver<(u16, String)>) {
             if name.starts_with("silent") || (name.contains("norec") && kind == 65) {
                 continue;
             }
-            if name.starts_with("slowa") && kind == 1 {
+            if (name.starts_with("slowa") || name.starts_with("nxslow")) && kind == 1 {
                 thread::sleep(Duration::from_millis(300));
             }
             let nx = name.starts_with("nx");
@@ -540,6 +540,117 @@ fn a_second_attempt_started_during_a_resolve_takes_what_it_finds() {
     assert_eq!(said.matches("Trying 127.0.0.1:1...").count(), 2, "{said}");
     // The QUIC one's refusal said, however far it got before the end.
     assert!(said.contains("QUIC: connection to 127.0.0.1"), "{said}");
+}
+
+/// Two transfers at once to one name, run by `-Z`, its addresses answered
+/// late, one query after the other: the first transfer's answer is taken
+/// from c-ares and kept; the second, looking in the cache first as it
+/// looks for its own (`Curl_resolv_take_result`), finds it there and lets
+/// its resolve go. C's tool says the same for two `https://` URLs at once
+/// over a server of its own.
+#[test]
+fn a_name_another_transfer_resolved_meanwhile_is_taken_from_the_cache() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let url = "https://slowa.test:1/";
+    let run = curl(&[
+        "-v",
+        "-k",
+        "-4",
+        "-Z",
+        "--parallel-immediate",
+        "--trace-config",
+        "dns",
+        "--dns-servers",
+        &servers,
+        "-o",
+        "/dev/null",
+        url,
+        "-o",
+        "/dev/null",
+        url,
+    ]);
+    let said = String::from_utf8_lossy(&run.stderr);
+    let count = |needle: &str| said.matches(needle).count();
+    assert_eq!(
+        count("* [DNS] [A] resolve complete for slowa.test:1\n"),
+        1,
+        "{said}"
+    );
+    assert_eq!(count("[DNS] [HTTPS] ares_take_result"), 1, "{said}");
+    // The addresses found meanwhile say so, and let their resolve go.
+    let lines: Vec<&str> = said.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| *l == "* [DNS] cache lookup slowa.test:1 queries=A -> 0 found")
+        .unwrap_or_else(|| panic!("{said}"));
+    assert_eq!(
+        lines[at + 1],
+        "* Hostname 'slowa.test' was found in DNS cache",
+        "{said}"
+    );
+    let next = lines[at + 2];
+    assert!(
+        next.starts_with("* [DNS] [") && next.ends_with("] shutdown async"),
+        "{said}"
+    );
+}
+
+/// The same for a name that does not exist: the transfer that finds it
+/// so in the cache fails as C's `Curl_async_failed` says, after the
+/// cache's own lines, and the name's filter says the error; only the
+/// transfer c-ares answered gives its reason.
+#[test]
+fn a_name_another_transfer_found_missing_meanwhile_fails_from_the_cache() {
+    let (dns, _heard) = dns_server();
+    let servers = format!("127.0.0.1:{dns}");
+    let url = "http://nxslow.test:1/";
+    let run = curl(&[
+        "-v",
+        "-4",
+        "-Z",
+        "--parallel-immediate",
+        "--trace-config",
+        "dns",
+        "--dns-servers",
+        &servers,
+        "-o",
+        "/dev/null",
+        url,
+        "-o",
+        "/dev/null",
+        url,
+    ]);
+    let said = String::from_utf8_lossy(&run.stderr);
+    let lines: Vec<&str> = said.lines().collect();
+    let failed: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| l.starts_with("curl: (6)"))
+        .collect();
+    assert_eq!(
+        failed,
+        [
+            "curl: (6) Could not resolve host: nxslow.test (Domain name not found)",
+            "curl: (6) Could not resolve host: nxslow.test",
+        ],
+        "{said}"
+    );
+    let at = lines
+        .iter()
+        .position(|l| *l == "* [DNS] cache lookup nxslow.test:1 queries=A -> 6 not found")
+        .unwrap_or_else(|| panic!("{said}"));
+    assert_eq!(
+        lines[at - 1],
+        "* [DNS] cache entry does not have type=A addresses"
+    );
+    assert!(lines[at + 1].ends_with("] shutdown async"), "{said}");
+    assert_eq!(
+        lines[at + 2],
+        "* Could not resolve host: nxslow.test",
+        "{said}"
+    );
+    assert_eq!(lines[at + 3], "* [DNS] [A] error resolving: 6", "{said}");
 }
 
 /// Where `needle` first is in `said`, which must have it.

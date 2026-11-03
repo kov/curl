@@ -3043,6 +3043,9 @@ fn a_queued_resolve_is_traced_as_c_s_threaded_resolver() {
             "[DNS] queueing query [0/1] AAAA late.test:1",
             "[DNS] queueing query [0/1] A late.test:1",
             "[DNS] [A+AAAA] hostip_resolv started -> 81",
+            "[DNS] cache lookup late.test:1 queries=A+AAAA -> 0 not found",
+            "[DNS] [A+AAAA] resolve incomplete, responses=-, ongoing=2 for late.test:1",
+            "[DNS] cache lookup late.test:1 queries=A+AAAA -> 0 not found",
             "[DNS] Host late.test:1 resolved IPv4: 127.0.0.1",
             "[DNS] Host late.test:1 resolved IPv6: (none)",
             "[DNS] [A+AAAA] resolve complete for late.test:1",
@@ -3057,8 +3060,12 @@ fn a_queued_resolve_is_traced_as_c_s_threaded_resolver() {
             "[DNS] cache lookup gone.test:1 queries=A -> 0 not found",
             "[DNS] queueing query [1/2] A gone.test:1",
             "[DNS] [A] hostip_resolv started -> 81",
+            "[DNS] cache lookup gone.test:1 queries=A -> 0 not found",
+            "[DNS] [A] resolve incomplete, responses=-, ongoing=1 for gone.test:1",
+            "[DNS] cache lookup gone.test:1 queries=A -> 0 not found",
             "[DNS] Host gone.test:1 resolved IPv4: (none)",
             "[DNS] cache negative name resolve for gone.test:1 type=A",
+            "[DNS] [A] error resolving: 6",
             "[DNS] [2] shutdown async",
             "[DNS] [2] destroy async",
         ]
@@ -3118,6 +3125,7 @@ fn the_dns_cache_traces_what_it_keeps_and_lets_go() {
             "[DNS] cache lookup example.com:80 queries=A+AAAA -> 0 not found",
             "[DNS] [A+AAAA] hostip_resolv started -> 81",
             "[DNS] cache negative name resolve for example.com:80 type=A+AAAA",
+            "[DNS] [A+AAAA] error resolving: 6",
         ]
     );
     assert_eq!(
@@ -3126,6 +3134,7 @@ fn the_dns_cache_traces_what_it_keeps_and_lets_go() {
             "[DNS] cache entry does not have type=A+AAAA addresses",
             "[DNS] cache lookup example.com:80 queries=A+AAAA -> 6 not found",
             "Negative DNS entry",
+            "[DNS] [A+AAAA] error resolving: 6",
         ]
     );
     dns_lines(&mut m, "tcp://v4.test:1/", |_| {});

@@ -304,14 +304,29 @@ pub(super) fn connect_call<H: Host>(
             Ok(())
         }
         Record::Pending if c.record_lookup.is_some() => {
+            // Looked for in the cache first, where another transfer may
+            // have kept it meanwhile, which ends this one's resolve
+            // (`Curl_resolv_take_result`).
+            if let HttpsLookup::Found(kept) = cached(&c.route, cx) {
+                say_lookup(&c.route, true, cx);
+                found_since(&c.route, kept.as_ref(), cx);
+                c.record_lookup = None;
+                cx.libraries_closed();
+                c.record = kept;
+                h.record = Record::Known;
+                if h.first.is_none() {
+                    h.first_by_record = true;
+                }
+                return Ok(());
+            }
             let lookup = c.record_lookup.as_mut().expect("looked at above");
             let (found, doh) = match lookup {
                 RecordLookup::Doh(lookup) => {
-                    say_lookup(&c.route, cx);
+                    say_lookup(&c.route, false, cx);
                     (lookup.https(), true)
                 }
                 RecordLookup::Library(resolve) => {
-                    say_lookup(&c.route, cx);
+                    say_lookup(&c.route, false, cx);
                     resolve.perform().map_err(|_| ErrorKind::OutOfMemory)?;
                     cx.libraries_closed();
                     (resolve.record(), false)
@@ -420,10 +435,11 @@ pub(super) fn second_chosen<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>)
     c.https.as_mut().expect("the filter heads the setup").second = second;
 }
 
-/// The cache looked at for the record, not there (`Curl_dnscache_get`).
-fn say_lookup<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) {
+/// The cache looked at for the record, there or not (`Curl_dnscache_get`).
+fn say_lookup<H: Host>(route: &NetRoute, found: bool, cx: &mut StepCx<'_, H>) {
     let peer = route.target();
     let at = Text::<8>::clipped(format_args!(":{}", peer.port())).0;
+    let said: &[u8] = if found { b"found" } else { b"not found" };
     trace::of_with(
         cx,
         Component::Dns,
@@ -431,7 +447,8 @@ fn say_lookup<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) {
             b"cache lookup ",
             peer.name(),
             at.bytes(),
-            b" queries=HTTPS -> 0 not found",
+            b" queries=HTTPS -> 0 ",
+            said,
         ],
     );
 }
@@ -592,14 +609,14 @@ fn look_up<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) -> Result<LookedUp
             return Ok((Record::Known, kept, None));
         }
         if matches!(lookup, Some(RecordLookup::Library(_))) {
-            say_lookup(route, cx);
+            say_lookup(route, false, cx);
             look_at_library(route, &mut lookup, cx)?;
         }
         // It is looked at as a library is, and says nothing of the record,
         // then or after: the setup goes on without one and keeps nothing of
         // it, as C's threaded build does.
         if unanswered {
-            say_lookup(route, cx);
+            say_lookup(route, false, cx);
             return Ok((Record::Known, None, None));
         }
         Ok((Record::Pending, None, lookup))

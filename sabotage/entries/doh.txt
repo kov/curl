@@ -187,11 +187,13 @@ witness: curl-core multi::doh_tests::a_race_out_of_addresses_waits_for_the_rest
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::doh_tests::a_socks_destination_goes_over_doh
 --- old
-            d.target_late.0 = Some(p);
-            return Ok(false);
+            Taken::Waiting(p) => {
+                d.target_late.0 = Some(p);
+                return Ok(false);
 --- new
-            d.target_late.0 = Some(p);
-            return Ok(true);
+            Taken::Waiting(p) => {
+                d.target_late.0 = Some(p);
+                return Ok(true);
 
 === a record for another port is followed
 file: crates/curl-core/src/multi/state/https.rs

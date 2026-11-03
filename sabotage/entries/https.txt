@@ -284,8 +284,10 @@ witness: curl-core proto::http::tests::h3_trace::a_name_s_https_record_is_looked
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::h3_trace::a_record_kept_meanwhile_is_found_not_kept_again
 --- old
+    // kept by another transfer since, it is not kept again.
     if let HttpsLookup::Found(kept) = cached(&c.route, cx) {
 --- new
+    // kept by another transfer since, it is not kept again.
     if let HttpsLookup::Found(kept) = HttpsLookup::Missing {
 
 === an HTTPS record found as its answer is taken is not said to be none
@@ -320,11 +322,11 @@ witness: curl-tool a_record_s_http_3_is_not_taken_where_it_is_not_allowed
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-tool an_https_origins_record_is_asked_for_under_its_port
 --- old
-fn say_lookup<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) {
+fn say_lookup<H: Host>(route: &NetRoute, found: bool, cx: &mut StepCx<'_, H>) {
     let peer = route.target();
 --- new
-fn say_lookup<H: Host>(route: &NetRoute, cx: &mut StepCx<'_, H>) {
-    let _ = (route, cx);
+fn say_lookup<H: Host>(route: &NetRoute, found: bool, cx: &mut StepCx<'_, H>) {
+    let _ = (route, found, cx);
     return;
     let peer = route.target();
 
@@ -372,7 +374,7 @@ file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_waits_for_its_record_once
 --- old
         if matches!(lookup, Some(RecordLookup::Library(_))) {
-            say_lookup(route, cx);
+            say_lookup(route, false, cx);
 --- new
         if matches!(lookup, Some(RecordLookup::Library(_))) {
 
@@ -381,7 +383,7 @@ file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_waits_for_its_record_once
 --- old
                 RecordLookup::Library(resolve) => {
-                    say_lookup(&c.route, cx);
+                    say_lookup(&c.route, false, cx);
 --- new
                 RecordLookup::Library(resolve) => {
 
@@ -399,3 +401,13 @@ witness: curl-core proto::http::tests::https_trace::a_record_and_addresses_come_
     }
     second_chosen(c, cx);
     Ok(())
+
+=== an HTTPS record kept by another transfer is not looked for before the resolve
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-tool a_name_another_transfer_resolved_meanwhile_is_taken_from_the_cache
+--- old
+            if let HttpsLookup::Found(kept) = cached(&c.route, cx) {
+                say_lookup(&c.route, true, cx);
+--- new
+            if let HttpsLookup::Found(kept) = HttpsLookup::Missing {
+                say_lookup(&c.route, true, cx);

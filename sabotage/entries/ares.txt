@@ -98,9 +98,9 @@ witness: curl-core conn::connect::tests::a_second_attempt_goes_on_what_the_first
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-tool a_resolve_is_looked_at_as_soon_as_it_starts
 --- old
-                            Looked::Pending(mut p) if !fresh || p.is_library() => {
+                            Looked::Pending(p) if !fresh || p.is_library() || p.live.is_some() => {
 --- new
-                            Looked::Pending(mut p) if !fresh => {
+                            Looked::Pending(p) if !fresh || p.live.is_some() => {
 
 === the sockets a resolve closes are told where no one reads
 file: crates/curl-core/src/multi/dns.rs

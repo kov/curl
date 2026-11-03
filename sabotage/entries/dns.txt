@@ -552,7 +552,7 @@ witness: curl-core conn::connect::tests::a_bare_address_is_not_resolved
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::ftp::tests::the_address_port_offers_is_resolved_as_the_threaded_resolver_says_it
 --- old
-        say_queued(xfer, q, name, at, &mut |parts| cx.of_with(dns, parts));
+        say_queued(xfer, None, q, name, at, &mut |parts| cx.of_with(dns, parts));
 --- new
         let _ = (xfer, q);
 
@@ -765,3 +765,49 @@ witness: curl-openssl an_https_get_stays_within_its_allocation_budget
 --- new
         kept.more.try_reserve(1).map_err(|_| OutOfMemory)?;
         kept.push(Kept { id, holder })
+
+=== a resolve under way does not look in the cache first
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-tool a_name_another_transfer_resolved_meanwhile_is_taken_from_the_cache
+--- old
+        let queries = family_queries(family);
+        match looked {
+            Lookup::Found(answer) => {
+--- new
+        let queries = family_queries(family);
+        let looked = if name.is_empty() { looked } else { Lookup::Missing };
+        match looked {
+            Lookup::Found(answer) => {
+
+=== a negative answer found meanwhile fails as one found at the start
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-tool a_name_another_transfer_found_missing_meanwhile_fails_from_the_cache
+--- old
+                let failed = ConnectError::Unresolved(Unresolved::NegativeMeanwhile);
+--- new
+                let failed = ConnectError::Unresolved(Unresolved::Negative);
+
+=== a resolver's failure kept negative is said resolved
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
+features: test-util
+--- old
+                trace::info_with(cx, &[b"Could not resolve: ", host]);
+                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let code = trace::Code(Err(kind));
+--- new
+                trace::info_with(cx, &[b"Could not resolve: ", host]);
+                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let code = trace::Code(Ok(()));
+
+=== the threaded resolver says nothing as its resolve goes
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_queued_resolve_is_traced_as_c_s_threaded_resolver
+features: test-util
+--- old
+                pending.live = Some(Queried {
+                    v6: false,
+                    v4: false,
+                });
+--- new
+                pending.live = None;

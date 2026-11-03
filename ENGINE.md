@@ -581,9 +581,10 @@ otherwise being the HTTPS connect filter's choice over a TCP connection. A START
 (IMAP, POP3, SMTP, FTP's `AUTH`) says its connect as C's `Curl_conn_connect` does, under `SSL`:
 `added`, `Curl_conn_connect(block=B) -> R, done=D` (block=1 for FTP's, which waits), and once
 done the `APPCONNECT` time, `Established connection` and the chain `connected`/`reduced to`; a
-failure says `filter returned R` and `failed to connect` with the chain. Not traced: the async
-resolver's own lines (`[DNS] [N] shutdown async`, `destroy async`), and a SOCKS
-proxy's lookup of the destination. How many times `resolve incomplete` and its cache lookup are
+failure says `filter returned R` and `failed to connect` with the chain. Each resolve's record
+is said as C's are: `[DNS] [N] shutdown async` as the transfer is done, `[DNS] [N] destroy
+async` as its filter's chain connects or the handle lets go of it. Not traced: a SOCKS proxy's
+lookup of the destination. How many times `resolve incomplete` and its cache lookup are
 said depends on when answers arrive, in C as here.
 
 The TLS components, as the reference build traces them on the transfer. `SSL` (the origin's
@@ -1163,7 +1164,12 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   gives it before the attempt is looked at again, keeping it in the cache (`cache negative name
   resolve for H:P type=HTTPS`). As C's `Curl_resolv_take_result` does, it looks in the cache again
   as the resolve starts and as the answer is taken, each a use of a share's names; one kept
-  meanwhile by another transfer is not kept again (`Hostname 'H' was found in DNS cache`). A later setup for the name finds it (`Hostname H was found in DNS
+  meanwhile by another transfer is not kept again (`Hostname 'H' was found in DNS cache`). The
+  same holds for the addresses: each look for a resolve's answer (`Pending::take`) looks in the
+  cache first, and an answer another transfer kept meanwhile ends this one's resolve, its record
+  told so (`[N] shutdown async`); a name kept as not existing fails it, after the cache's own
+  lines, as C's `Curl_async_failed` says (`Could not resolve host: H`, then the filter's
+  `[Q] error resolving: 6`). A later setup for the name finds it (`Hostname H was found in DNS
   cache`, `HTTPS-RR H:P: -`) and arms nothing. The threaded resolver is asked for the record and
   never answers, as in C's threaded build: the setup looks in the cache once more as the resolve
   starts, then goes on without the record and keeps nothing of it, each attempt it chooses saying
@@ -2711,9 +2717,13 @@ A resolve that answers later says how it was queued (`Queued`: its id, and which
 as a query of their own), which the answer, or the failure, carries back to the transfer's DNS
 trace: each query as queued, `queueing query [transfer/id] AAAA name:port`, IPv6's first, and
 each query's addresses as taken, `Host name:port resolved IPv4: ...`, IPv4's first, `(none)` for
-none, in the places C's lines fall among the cache's. They are written, with the rest of the
-lookup's lines, as the answer is taken; the passes between, and the resolver's polling lines,
-are not traced, as they are not for the system's resolver either. A name not answered within
+none, in the places C's lines fall among the cache's. The setup's resolve says them as C's do,
+as it goes: as it starts (`hostip_resolv(name:port)` in the debug build, the cache's miss, each
+query, `hostip_resolv started -> 81`), then at each look for its answer the cache's miss and
+either `resolve incomplete, responses=R, ongoing=N` or each family's addresses not yet said, as
+they are taken. The transfer in `queueing query [transfer/id]` is the transfer's number and, for the
+setup's resolve, the id the number of the record kept of it (`hostip_async_new`). A blocking
+resolve's lines are written as it ends. A name not answered within
 the connect limit times out as "Resolving", not "Connection".
 
 Built so far (step 48b): the pool, its queries and answers, the eventfd it wakes, `SystemNet`

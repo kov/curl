@@ -1514,7 +1514,8 @@ fn debug_failed_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, proxy: b
 /// (or stale, said first) and so resolved, or `None`, the resolver's no
 /// kept from before.
 fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, found: Option<Found>) {
-    if let Some(Found::Stale(Asked::Doh) | Found::Resolved(Asked::Doh)) = found {
+    // Said as the answer was taken.
+    if let Some(Found::Stale(Asked::Doh) | Found::Resolved(Asked::Doh) | Found::Meanwhile) = found {
         return;
     }
     // The name looked up: the proxy's, or what a connect-to names in the
@@ -1554,7 +1555,7 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, found: Option
         Some(_) => {}
     }
     let (code, not) = match found {
-        Some(Found::Cached) => (Ok(()), ""),
+        Some(Found::Cached | Found::Meanwhile) => (Ok(()), ""),
         Some(Found::Stale(_) | Found::Resolved(_)) => (Ok(()), "not "),
         None => (Err(ErrorKind::CouldntResolveHost), "not "),
     };
@@ -1571,7 +1572,7 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, found: Option
     {
         let xfer = cx.easy().report().transfer_number().map_or(0, |n| n.get());
         let dns = Component::Dns;
-        crate::conn::say_queued(xfer, q, name, at, &mut |parts| {
+        crate::conn::say_queued(xfer, None, q, name, at, &mut |parts| {
             trace::of_with(cx, dns, parts);
         });
     }
@@ -2070,7 +2071,8 @@ pub(crate) fn connect_failed<H: Host>(
                     return kind;
                 }
                 Unresolved::Negative => trace_lookup(cx, route, None),
-                Unresolved::Resolver {
+                Unresolved::NegativeMeanwhile
+                | Unresolved::Resolver {
                     says_its_own: true, ..
                 } => {}
                 Unresolved::Resolver { queued, .. } => {
@@ -2150,10 +2152,23 @@ pub(crate) fn connect_failed<H: Host>(
                     ],
                 );
             }
+            // Said once, by the resolve, and only that it failed
+            // (`Curl_async_failed`).
+            if why == Unresolved::NegativeMeanwhile {
+                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let code = trace::Code(Err(kind));
+                trace::of(
+                    cx,
+                    Component::Dns,
+                    format_args!("[{queries}] error resolving: {code}"),
+                );
+                return kind;
+            }
             trace::info_with(cx, &[b"Could not resolve: ", host, at]);
+            // The name's filter says so of any resolver's failure
+            // (`cf_dns_connect`).
             if let Unresolved::Resolver {
-                library_status: Some(_),
-                ..
+                over_doh: false, ..
             } = why
             {
                 let queries = queries(first, route.ip, cx.rest.ipv6_works);
@@ -2166,6 +2181,13 @@ pub(crate) fn connect_failed<H: Host>(
             }
             if why == Unresolved::Negative {
                 trace::info_with(cx, &[b"Could not resolve: ", host]);
+                let queries = queries(first, route.ip, cx.rest.ipv6_works);
+                let code = trace::Code(Err(kind));
+                trace::of(
+                    cx,
+                    Component::Dns,
+                    format_args!("[{queries}] error resolving: {code}"),
+                );
             }
             return kind;
         }

@@ -42,7 +42,7 @@ mod https;
 mod leg;
 pub(crate) use leg::*;
 mod names;
-pub(crate) use names::{async_gone, async_kept};
+pub(crate) use names::{async_gone, async_kept, async_shut};
 mod quictunnel;
 pub(crate) mod side;
 pub(crate) use side::{Shaken, SideSetup};

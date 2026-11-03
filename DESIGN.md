@@ -146,6 +146,10 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
 - **Cross-references are generational keys, never pointers or references.** A `TransferId`
   or `ConnId` names an arena slot. Looking up a slot that has been freed and reused fails by
   itself, so a stale id is an error at the lookup instead of a use-after-free.
+- **Work a backend does for one waiter is an object the waiter owns, not an id.** A resolve
+  that answers later, from the network's resolver, a resolver library or DoH, is handed out as
+  a value holding what it shares with its backend; dropped on any path, it takes itself out
+  there. No teardown has a cancel to remember, and none needs the backend at hand.
 - **An easy handle is configuration plus at most one running transfer.** The C `CURL *` mixes
   the options, the in-flight state and the results of the last transfer. In Rust:
   - `Easy` owns the options;

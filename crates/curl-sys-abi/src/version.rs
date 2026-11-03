@@ -79,7 +79,6 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::AltSvc => (c"alt-svc", crate::ffi::CURL_VERSION_ALTSVC),
         Feature::AsynchDns => (c"AsynchDNS", crate::ffi::CURL_VERSION_ASYNCHDNS),
         Feature::Brotli => (c"brotli", crate::ffi::CURL_VERSION_BROTLI),
-        #[cfg(feature = "debug-hooks")]
         Feature::Debug => (c"Debug", crate::ffi::CURL_VERSION_DEBUG),
         Feature::GssApi => (c"GSS-API", crate::ffi::CURL_VERSION_GSSAPI),
         Feature::Hsts => (c"HSTS", crate::ffi::CURL_VERSION_HSTS),

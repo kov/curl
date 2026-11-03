@@ -30,8 +30,8 @@ pub enum Feature {
     /// The `br` content coding is undone by brotli, which the tool and the
     /// C ABI give every handle.
     Brotli,
-    /// A debug build, for the test suite: never for production.
-    #[cfg(feature = "debug-hooks")]
+    /// A debug build, for the test suite: never for production. Listed
+    /// only by a build with the `debug-hooks` feature.
     Debug,
     /// GSS-API, by MIT krb5, which the tool and the C ABI give every
     /// handle.
@@ -95,7 +95,6 @@ impl Feature {
             Feature::AltSvc => "alt-svc",
             Feature::AsynchDns => "AsynchDNS",
             Feature::Brotli => "brotli",
-            #[cfg(feature = "debug-hooks")]
             Feature::Debug => "Debug",
             Feature::GssApi => "GSS-API",
             Feature::Hsts => "HSTS",
